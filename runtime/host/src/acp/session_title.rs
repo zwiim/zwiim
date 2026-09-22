@@ -1,6 +1,6 @@
 //! Live ACP session titles.
 //!
-//! Agents publish a session name through `session_info_update.title`. Codeg
+//! Agents publish a session name through `session_info_update.title`. Zwiim
 //! used to ignore that field and only adopt a title the next time the
 //! conversation was loaded from disk. These helpers extract a usable title
 //! from the live notification so the lifecycle worker can write it immediately.

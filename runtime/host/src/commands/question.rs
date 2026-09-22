@@ -3,7 +3,7 @@
 //!
 //! One knob survives across restarts:
 //!   * `question.enabled` — feature kill switch (**default true**). When on,
-//!     `codeg-mcp` exposes the `ask_user_question` tool so an agent can block on
+//!     `zwiim-mcp` exposes the `ask_user_question` tool so an agent can block on
 //!     a multiple-choice question rendered above the conversation input box.
 //!
 //! Default-ON deliberately diverges from live-feedback / delegation (both

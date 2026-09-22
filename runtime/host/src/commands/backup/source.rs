@@ -34,7 +34,7 @@ use super::manifest::BackupPreview;
 
 /// Holds decrypted archives awaiting inspect/scan/stage. Wiped at startup by
 /// [`super::restore::cleanup_transient_dirs`].
-pub const PREPARED_DIR: &str = ".codeg-restore-prepared";
+pub const PREPARED_DIR: &str = ".zwiim-restore-prepared";
 const META_FILE: &str = "meta.json";
 const PLAIN_ZIP: &str = "plain.zip";
 /// How long a prepared source may sit unused before it is reaped. Refreshed on
@@ -292,7 +292,7 @@ mod tests {
     fn plaintext_archive(dir: &Path) -> PathBuf {
         use crate::commands::backup::manifest::{BackupManifest, BACKUP_FORMAT_VERSION, BACKUP_KIND};
         use sea_orm_migration::MigratorTrait;
-        let zip = dir.join("backup.codeg.zip");
+        let zip = dir.join("backup.zwiim.zip");
         let db = dir.join("db.bin");
         std::fs::write(&db, b"DB").unwrap();
         let mut b = archive::ArchiveBuilder::create(&zip).unwrap();
@@ -350,7 +350,7 @@ mod tests {
         let data_dir = dir.path().join("data");
         std::fs::create_dir_all(&data_dir).unwrap();
         let plain = plaintext_archive(dir.path());
-        let enc = dir.path().join("backup.codegbak");
+        let enc = dir.path().join("backup.zwiimbak");
         crypto::encrypt_file(&plain, &enc, "s3cret", &CancellationToken::new()).unwrap();
 
         // No passphrase: nothing is decrypted and no handle is issued.
@@ -397,7 +397,7 @@ mod tests {
         let data_dir = dir.path().join("data");
         std::fs::create_dir_all(&data_dir).unwrap();
         let plain = plaintext_archive(dir.path());
-        let enc = dir.path().join("backup.codegbak");
+        let enc = dir.path().join("backup.zwiimbak");
         crypto::encrypt_file(&plain, &enc, "s3cret", &CancellationToken::new()).unwrap();
         let prepared = prepare_source_core(&enc, &data_dir, Some("s3cret"), false)
             .await

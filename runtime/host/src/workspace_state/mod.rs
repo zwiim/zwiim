@@ -389,7 +389,7 @@ fn is_codeg_edit_temp_path(path: &Path) -> bool {
     path.file_name()
         .map(|name| {
             let name = name.to_string_lossy();
-            name.starts_with(".codeg-edit-") && name.ends_with(".tmp")
+            name.starts_with(".zwiim-edit-") && name.ends_with(".tmp")
         })
         .unwrap_or(false)
 }

@@ -1,18 +1,18 @@
-//! Self-cleanup watchdog for `codeg-mcp`.
+//! Self-cleanup watchdog for `zwiim-mcp`.
 //!
 //! On Windows, child processes don't die with their parent automatically.
 //! On Unix the kernel closes the inherited pipe ends so `stdin` reads EOF
 //! and the loop exits — usually. In both worlds a misbehaving intermediate
 //! (agent CLI that hangs, parent codeg crash that orphans the agent) can
-//! leave `codeg-mcp` running forever, holding open the binary file and a
+//! leave `zwiim-mcp` running forever, holding open the binary file and a
 //! companion connection that no one will ever read from.
 //!
-//! When the parent codeg / codeg-server passes `--parent-pid <pid>` on
-//! the command line, `codeg-mcp` spawns this watchdog. It polls the OS
+//! When the parent codeg / zwiim-host passes `--parent-pid <pid>` on
+//! the command line, `zwiim-mcp` spawns this watchdog. It polls the OS
 //! every couple of seconds and, the moment the parent PID stops existing,
 //! tears down the process. Polling (vs. a kernel notification) keeps the
 //! implementation tiny and identical across platforms; the 2 s tick is
-//! invisible next to the other work `codeg-mcp` does.
+//! invisible next to the other work `zwiim-mcp` does.
 //!
 //! The check is intentionally not exposed as a long-lived handle — there
 //! is no graceful "stop watching" path because the only outcome is
@@ -23,7 +23,7 @@
 
 use std::time::Duration;
 
-/// Default polling cadence. Fast enough that a stale `codeg-mcp.exe`
+/// Default polling cadence. Fast enough that a stale `zwiim-mcp.exe`
 /// releases its file handle well before a follow-up install retry, slow
 /// enough that the poll cost is invisible.
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -32,7 +32,7 @@ pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// a zombie awaiting reap on Unix; not exited on Windows).
 ///
 /// Best-effort: any unexpected OS error is treated as "alive" so a
-/// permission glitch can't cause the watchdog to kill `codeg-mcp` while
+/// permission glitch can't cause the watchdog to kill `zwiim-mcp` while
 /// the parent is in fact still running.
 pub fn parent_alive(pid: u32) -> bool {
     #[cfg(unix)]

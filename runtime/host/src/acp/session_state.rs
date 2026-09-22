@@ -433,7 +433,7 @@ pub struct SessionState {
     pub(crate) recent_events: RecentEventsBuffer,
 
     /// Per-launch token registered with the delegation broker's
-    /// `TokenRegistry` when `codeg-mcp` is injected at init.
+    /// `TokenRegistry` when `zwiim-mcp` is injected at init.
     /// Revoked when the connection tears down so a leaked binary can't
     /// keep round-tripping after the parent session ends.
     pub delegation_token: Option<String>,
@@ -1882,12 +1882,12 @@ impl SessionState {
 /// Max age of the background keep-alive: how long a connection with
 /// launched-but-unresolved background work stays exempt from the idle sweeps
 /// after the LAST `BackgroundActivity` event. Configurable via
-/// `CODEG_ACP_BACKGROUND_KEEPALIVE_MAX_SECS` (seconds; invalid → default 3600;
+/// `ZWIIM_ACP_BACKGROUND_KEEPALIVE_MAX_SECS` (seconds; invalid → default 3600;
 /// `0` disables the exemption entirely). Read once per process.
 pub(crate) fn background_keepalive_max_age() -> chrono::Duration {
     static SECS: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
     let secs = *SECS.get_or_init(|| {
-        std::env::var("CODEG_ACP_BACKGROUND_KEEPALIVE_MAX_SECS")
+        std::env::var("ZWIIM_ACP_BACKGROUND_KEEPALIVE_MAX_SECS")
             .ok()
             .and_then(|v| v.trim().parse::<i64>().ok())
             .filter(|v| *v >= 0)

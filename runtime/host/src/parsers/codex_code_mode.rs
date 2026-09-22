@@ -2438,14 +2438,14 @@ mod tests {
 
     #[test]
     fn mcp_and_plan_calls_keep_their_json_arguments() {
-        let src = "const plan = await tools.update_plan({plan:[{step:\"a\",status:\"pending\"}]});\nconst r = await tools.mcp__codeg_mcp__get_delegation_status({task_ids:[\"t1\"],wait_ms:60000});\ntext(JSON.stringify(r));";
+        let src = "const plan = await tools.update_plan({plan:[{step:\"a\",status:\"pending\"}]});\nconst r = await tools.mcp__zwiim_mcp__get_delegation_status({task_ids:[\"t1\"],wait_ms:60000});\ntext(JSON.stringify(r));";
         let got = calls(src);
         assert_eq!(got[0].tool_name, "update_plan");
         assert_eq!(
             got[0].input_preview,
             r#"{"plan":[{"status":"pending","step":"a"}]}"#
         );
-        assert_eq!(got[1].tool_name, "mcp__codeg_mcp__get_delegation_status");
+        assert_eq!(got[1].tool_name, "mcp__zwiim_mcp__get_delegation_status");
         assert_eq!(
             got[1].input_preview,
             r#"{"task_ids":["t1"],"wait_ms":60000}"#

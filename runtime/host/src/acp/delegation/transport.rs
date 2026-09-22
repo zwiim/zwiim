@@ -1,4 +1,4 @@
-//! Wire format for `codeg-mcp` companion ↔ main process round-trip over UDS
+//! Wire format for `zwiim-mcp` companion ↔ main process round-trip over UDS
 //! (Unix) or named pipe (Windows).
 //!
 //! The frame is dead simple: a little-endian `u32` byte length followed by
@@ -41,11 +41,11 @@
 //!
 //! ### Version coupling
 //!
-//! The companion (`codeg-mcp`) and the listener (inside the codeg main
+//! The companion (`zwiim-mcp`) and the listener (inside the codeg main
 //! process) ship in the SAME release artifact — the Tauri bundle, the
 //! server Docker image, and the standalone binary tree all install both
 //! binaries at the same path. The MCP config pointing the agent CLI at
-//! `codeg-mcp` uses an absolute path that is replaced atomically by the
+//! `zwiim-mcp` uses an absolute path that is replaced atomically by the
 //! upgrade, so an old-version companion talking to a new-version listener
 //! is not a supported configuration. As a consequence this protocol does
 //! NOT carry a version field and the tagged-enum cutover from the older
@@ -622,7 +622,7 @@ pub async fn client_browser_tab_op_round_trip(
 }
 
 /// Probe the listener: write a [`BrokerMessage::Ping`] and read the
-/// `{"ok": true}` answer back. Used by the codeg-mcp service-status indicator
+/// `{"ok": true}` answer back. Used by the zwiim-mcp service-status indicator
 /// to tell "listening" from "socket file exists but nobody is accepting".
 /// Callers should wrap this in their own timeout — a socket whose peer accepts
 /// but never answers would otherwise park here.
@@ -816,7 +816,7 @@ mod tests {
         // PID + nanosecond suffix keeps the pipe name unique across parallel
         // tests and avoids collisions with a live listener on the same box.
         let pipe_name = format!(
-            r"\\.\pipe\codeg-mcp-test-{}-{}",
+            r"\\.\pipe\zwiim-mcp-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -868,7 +868,7 @@ mod tests {
         // agents it launches. Under `tempdir()` this lands at 99 bytes there —
         // green, but one directory level from an unexplainable red.
         let dir = tempfile::tempdir_in("/tmp").unwrap();
-        let path = dir.path().join("codeg-mcp.sock");
+        let path = dir.path().join("zwiim-mcp.sock");
         let listener = UnixListener::bind(&path).unwrap();
         let server_path = path.to_string_lossy().to_string();
 

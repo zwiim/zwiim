@@ -1,4 +1,4 @@
-//! User-scoped preferences stored at `~/.codeg/preferences.json`.
+//! User-scoped preferences stored at `~/.zwiim/preferences.json`.
 //!
 //! These are settings that must be readable **before** the Tauri builder and
 //! tokio runtime start (e.g. the webview rendering flags applied via
@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 const PREFERENCES_FILE_NAME: &str = "preferences.json";
-const CODEG_DIR_NAME: &str = ".codeg";
+const ZWIIM_DIR_NAME: &str = ".zwiim";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -21,7 +21,7 @@ pub struct AppPreferences {
 }
 
 pub fn preferences_file_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(CODEG_DIR_NAME).join(PREFERENCES_FILE_NAME))
+    dirs::home_dir().map(|h| h.join(ZWIIM_DIR_NAME).join(PREFERENCES_FILE_NAME))
 }
 
 /// Read preferences synchronously. Missing / unreadable / malformed file

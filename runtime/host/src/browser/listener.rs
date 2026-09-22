@@ -695,7 +695,7 @@ mod tests {
         };
         let program = found.program.expect("a named program");
         assert!(
-            program.contains("browser") || program.contains("codeg") || program.contains("test"),
+            program.contains("browser") || program.contains("zwiim") || program.contains("test"),
             "expected this test binary to be named as the listener, got {program}"
         );
         // A port nobody has is nobody's program.

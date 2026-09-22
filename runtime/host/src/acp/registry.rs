@@ -127,7 +127,7 @@ impl BinaryDirEntry {
 pub struct AcpAgentMeta {
     pub agent_type: AgentType,
     /// 是否经 ACP 线缆（session/new 的 `mcpServers` 字段）向该 agent 转发 MCP
-    /// 服务器——既包括用户配置的服务器，也包括内置 codeg-mcp 伴生进程。
+    /// 服务器——既包括用户配置的服务器，也包括内置 zwiim-mcp 伴生进程。
     /// OpenClaw 拒绝 `mcpServers` 中的任何服务器条目（会使 session/new 失败），
     /// 故置 false。注意空列表 `[]` 仍会按 ACP schema 序列化、OpenClaw 可接受——
     /// 闸门只是保证该列表对 OpenClaw 恒为空（不含任何条目）。
@@ -1133,7 +1133,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `_meta.claudeCode.mcpServer` (SDK 0.3.274's `McpServerProvenance`,
             // `{name, source}`) is NOT consumed. It answers "which server serves
             // this `mcp__*` tool, and was it registered in-process by the host
-            // (`source: "sdk"`) or configured"; codeg injects codeg-mcp over
+            // (`source: "sdk"`) or configured"; codeg injects zwiim-mcp over
             // stdio, which is a configured source and never reads `sdk`, and the
             // only trust question codeg asks of an MCP tool call — is this one of
             // the companions I minted? — it already answers from the tool name
@@ -1141,7 +1141,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // the block is now emitted when `mcpServer` is present even with no
             // `parentToolUseId`, so `_meta.claudeCode.toolName` reaches a
             // top-level MCP tool's PERMISSION frame for the first time. That is
-            // the signal `inferLiveToolName` resolves the codeg-mcp companion
+            // the signal `inferLiveToolName` resolves the zwiim-mcp companion
             // cards on, so a pending MCP approval now shows the right card
             // instead of flipping to it once the call runs and the streamed
             // frame (which always carried `toolName`) refines it.
@@ -1184,7 +1184,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // 1.1.5 (#322) also widened codex-acp's MCP config filtering to
             // project `.codex` layers, which is why codeg forces
             // `DISABLE_MCP_CONFIG_FILTERING` (see `apply_codex_env_policy`) so
-            // the injected `codeg-mcp` server always survives. 1.1.6 adds
+            // the injected `zwiim-mcp` server always survives. 1.1.6 adds
             // steering (#309): `_session/steering` injects a user prompt into
             // the LIVE turn (initialize advertises `_meta.steering.supported`)
             // — codeg keeps codex on the MCP pull channel because 1.1.9 still
@@ -1677,7 +1677,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `mcp-client.ts` now drops MCP-server env entries whose key is in
             // `BLOCKED_EXECUTION_ENVS`. That list is loader/interpreter hijacks
             // (`NODE_OPTIONS`, `LD_PRELOAD`, `DYLD_*`, `PYTHONPATH`, `BASH_ENV`,
-            // …); codeg injects `codeg-mcp` with `CODEG_*`, so nothing we send
+            // …); codeg injects `zwiim-mcp` with `ZWIIM_*`, so nothing we send
             // is dropped. `engines.node` stays `>=20`.
             distribution: AgentDistribution::Npx {
                 version: "0.60.0",
@@ -1691,7 +1691,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
         AgentType::OpenClaw => AcpAgentMeta {
             agent_type,
             // OpenClaw 拒绝 `mcpServers` 中的任何服务器条目（会使 session/new 失败），
-            // 故不向其转发任何 MCP 条目（含 codeg-mcp 伴生进程）。详见 supports_mcp 字段注释。
+            // 故不向其转发任何 MCP 条目（含 zwiim-mcp 伴生进程）。详见 supports_mcp 字段注释。
             supports_mcp: false,
             name: "OpenClaw",
             description: "OpenClaw is a personal AI assistant you run on your own devices.",
@@ -1855,7 +1855,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `session/new` (and `session/load` / `session/resume`) with "ACP
             // stdio MCP server <name> does not declare a runtime identity" as
             // soon as any stdio server rides the wire — for Kimi that is always
-            // the codeg-mcp companion, so the whole agent was unusable, not
+            // the zwiim-mcp companion, so the whole agent was unusable, not
             // just delegation. codeg sat on 0.36.1 until 0.39.0 restored it.
             //
             // Root cause, if it ever regresses: 0.37.x added a SECOND converter
@@ -2045,7 +2045,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `true` only to satisfy the `only_openclaw_opts_out_of_mcp`
             // invariant — actual wire forwarding is short-circuited in
             // `connection.rs` (see the skip-list), so neither user servers nor
-            // the codeg-mcp companion are futilely forwarded.
+            // the zwiim-mcp companion are futilely forwarded.
             supports_mcp: true,
             name: "Pi",
             description: "Self-extensible coding agent (ACP via pi-acp)",
@@ -2214,7 +2214,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // It advertises loadSession + sessionCapabilities.list/resume and
             // accepts wire `mcpServers` (stdio + streamable HTTP; SSE and the
             // `acp` transport are explicitly rejected), so both the resume rung
-            // and the codeg-mcp companion work out of the box. Since 0.3.0 it
+            // and the zwiim-mcp companion work out of the box. Since 0.3.0 it
             // mounts the upstream skills chain (`skill_storage_spec` mirrors
             // its roots) and, since 0.2.0, offers `--setup` terminal auth for
             // storing the key in `$DSH_HOME/.credentials.yaml`.
@@ -2367,7 +2367,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // community bridge): verified handshake advertises `loadSession`
             // plus the full `sessionCapabilities` set (list/resume/fork/close/
             // delete/additionalDirectories), image + embeddedContext prompts,
-            // and MCP http+sse — so the resume rung and the codeg-mcp
+            // and MCP http+sse — so the resume rung and the zwiim-mcp
             // companion work with no adapters in between. Auth is the qoder
             // account (`qoder login`, or the IDE's qoder-browser flow); there
             // is no API-key env to manage. Model, mode (default/acceptEdits/
@@ -2848,7 +2848,7 @@ mod tests {
             Some("22.0.0"),
         );
         // Kimi Code must never land on 0.37.0–0.38.0: every session in that
-        // range dies on the codeg-mcp stdio entry (see the registry entry).
+        // range dies on the zwiim-mcp stdio entry (see the registry entry).
         assert_npx_version(
             AgentType::KimiCode,
             "2.0.2",

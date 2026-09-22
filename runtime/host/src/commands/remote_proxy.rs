@@ -1,6 +1,6 @@
 //! Remote-workspace IPC proxy.
 //!
-//! When a desktop window is opened against a remote codeg-server, every API
+//! When a desktop window is opened against a remote zwiim-host, every API
 //! call and WebSocket event for that connection is funnelled through Rust
 //! commands defined here. The webview never opens an HTTP/WS connection to
 //! the remote host directly — that path is blocked by the Tauri webview's
@@ -349,7 +349,7 @@ impl Default for RemoteProxyState {
 
 // ─── HTTP proxy command ────────────────────────────────────────────────
 
-/// Forward an HTTP API call to the remote codeg-server identified by
+/// Forward an HTTP API call to the remote zwiim-host identified by
 /// `connection_id`. The frontend's `RemoteDesktopTransport.call(cmd, args)`
 /// delegates to this; it never opens a fetch from the webview.
 ///
@@ -417,7 +417,7 @@ pub async fn remote_http_call(
 
     if !status.is_success() {
         let raw_body = response.text().await.unwrap_or_default();
-        // The remote codeg-server always returns `Json(AppCommandError)`
+        // The remote zwiim-host always returns `Json(AppCommandError)`
         // on errors (see `web/handlers/error.rs::IntoResponse`). Try to
         // deserialize so the caller sees the original code + i18n hint.
         if let Ok(structured) = serde_json::from_str::<AppCommandError>(&raw_body) {
@@ -573,7 +573,7 @@ pub async fn read_local_file_for_upload(
 }
 
 /// Forward a multipart upload (file bytes + optional session bucket) to the
-/// remote codeg-server identified by `connection_id`. Sibling of
+/// remote zwiim-host identified by `connection_id`. Sibling of
 /// `remote_http_call`, but multipart-shaped — the JSON proxy can't carry
 /// binary bodies, and webview `fetch` to a plain `http://` remote is
 /// blocked by mixed-content rules, so we cannot have the frontend hit
@@ -756,7 +756,7 @@ fn guess_mime_from_path(path: &std::path::Path) -> Option<String> {
 
 // ─── Workspace file upload / download proxy ───────────────────────────
 //
-// Issue #179 follow-up: a Tauri client bound to a remote codeg-server
+// Issue #179 follow-up: a Tauri client bound to a remote zwiim-host
 // previously had no path to upload/download workspace files. The web
 // build hits `/api/upload_workspace_file` etc. directly, but a webview
 // against a plain `http://` remote is blocked by mixed-content rules
@@ -1414,7 +1414,7 @@ async fn remote_error_from_response(
 /// Resolve the download URL the remote handed back, and refuse one that leaves
 /// the connection's origin.
 ///
-/// `codeg-server` always answers with a path (`create_download_ticket` builds
+/// `zwiim-host` always answers with a path (`create_download_ticket` builds
 /// `/api/workspace_download/<ticket>`), so the absolute branch only ever fires
 /// for a remote that went off-script. It matters because this is the one
 /// request that carries the connection's custom headers with no bearer token
@@ -1448,7 +1448,7 @@ fn absolute_remote_ticket_url(
 }
 
 fn partial_download_path(save_path: &str, transfer_id: &str) -> String {
-    format!("{save_path}.codeg-download-{transfer_id}.part")
+    format!("{save_path}.zwiim-download-{transfer_id}.part")
 }
 
 async fn write_response_stream_to_partial<S, F>(
@@ -1896,7 +1896,7 @@ async fn backoff_sleep(shutdown_rx: &mut watch::Receiver<bool>, fail_count: u32)
 }
 
 /// Forward a text frame from the remote WS to all current subscribers of
-/// this connection. The remote codeg-server's `ws.rs` emits frames shaped
+/// this connection. The remote zwiim-host's `ws.rs` emits frames shaped
 /// `{ "channel": "...", "payload": ... }` (see `WebEventBroadcaster`).
 /// We re-emit the payload as-is into the Tauri event named
 /// `remote-ws-event-{connection_id}`, but only to webview labels listed in
@@ -2043,7 +2043,7 @@ mod tests {
 
     #[test]
     fn ticket_url_resolves_a_path_against_the_connection() {
-        // The only shape `codeg-server` actually returns.
+        // The only shape `zwiim-host` actually returns.
         assert_eq!(
             absolute_remote_ticket_url("https://box.example", "/api/workspace_download/t1")
                 .unwrap(),
@@ -2248,7 +2248,7 @@ mod tests {
     #[test]
     fn partial_download_path_is_unique_sibling() {
         let path = partial_download_path("/tmp/out.zip", "abc");
-        assert_eq!(path, "/tmp/out.zip.codeg-download-abc.part");
+        assert_eq!(path, "/tmp/out.zip.zwiim-download-abc.part");
     }
 
     #[tokio::test]

@@ -10724,8 +10724,8 @@ mod tests {
         let script = concat!(
             "const wd=\"/tmp\";const taskA=\"A\";const taskB=\"B\";",
             "const [a,b]=await Promise.all([",
-            "tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",working_dir:wd,task:taskA}),",
-            "tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",working_dir:wd,task:taskB})",
+            "tools.mcp__zwiim_mcp__delegate_to_agent({agent_type:\"codex\",working_dir:wd,task:taskA}),",
+            "tools.mcp__zwiim_mcp__delegate_to_agent({agent_type:\"codex\",working_dir:wd,task:taskB})",
             "]);text(JSON.stringify({a,b}));"
         );
         assert!(
@@ -10758,7 +10758,7 @@ mod tests {
                         "item": {
                             "type": "McpToolCall",
                             "id": id,
-                            "server": "codeg-mcp",
+                            "server": "zwiim-mcp",
                             "tool": "delegate_to_agent",
                             "arguments": {"agent_type":"codex", "task":task},
                             "status": "completed",
@@ -10782,8 +10782,8 @@ mod tests {
                 .map(|(id, name, _)| (id.as_str(), name.as_str()))
                 .collect::<Vec<_>>(),
             vec![
-                ("exec-b", "mcp__codeg_mcp__delegate_to_agent"),
-                ("exec-a", "mcp__codeg_mcp__delegate_to_agent"),
+                ("exec-b", "mcp__zwiim_mcp__delegate_to_agent"),
+                ("exec-a", "mcp__zwiim_mcp__delegate_to_agent"),
             ],
             "semantic items replace the outer script with real MCP cards"
         );
@@ -10816,9 +10816,9 @@ mod tests {
         let sealed = format!("gAAAAAB{}", "qgWsi0g7nV3UTzqL".repeat(30));
         let native = native_team_0153_lines("FINAL_ANSWER", &sealed);
         let initial_script =
-            "const r = await tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",working_dir:\"/tmp/mcp-worker\",task:\"semantic initial\"});text(JSON.stringify(r));";
+            "const r = await tools.mcp__zwiim_mcp__delegate_to_agent({agent_type:\"codex\",working_dir:\"/tmp/mcp-worker\",task:\"semantic initial\"});text(JSON.stringify(r));";
         let continuation_script =
-            "const r = await tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",working_dir:\"/tmp/mcp-worker\",task:\"semantic followup\",continue_from_task_id:\"task-semantic-initial\"});text(JSON.stringify(r));";
+            "const r = await tools.mcp__zwiim_mcp__delegate_to_agent({agent_type:\"codex\",working_dir:\"/tmp/mcp-worker\",task:\"semantic followup\",continue_from_task_id:\"task-semantic-initial\"});text(JSON.stringify(r));";
         let initial_status = serde_json::json!({
             "task_id": "task-semantic-initial",
             "child_conversation_id": 901,
@@ -10849,7 +10849,7 @@ mod tests {
                     "item": {
                         "type": "McpToolCall",
                         "id": "mcp-semantic-initial",
-                        "server": "codeg-mcp",
+                        "server": "zwiim-mcp",
                         "tool": "delegate_to_agent",
                         "arguments": {
                             "agent_type": "codex",
@@ -10906,7 +10906,7 @@ mod tests {
                     "item": {
                         "type": "McpToolCall",
                         "id": "mcp-semantic-continuation",
-                        "server": "codeg-mcp",
+                        "server": "zwiim-mcp",
                         "tool": "delegate_to_agent",
                         "arguments": {
                             "agent_type": "codex",
@@ -10959,14 +10959,14 @@ mod tests {
             vec![
                 (
                     "mcp-semantic-initial",
-                    "mcp__codeg_mcp__delegate_to_agent",
+                    "mcp__zwiim_mcp__delegate_to_agent",
                     Some(
                         r#"{"agent_type":"codex","task":"semantic initial","working_dir":"/tmp/mcp-worker"}"#,
                     ),
                 ),
                 (
                     "mcp-semantic-continuation",
-                    "mcp__codeg_mcp__delegate_to_agent",
+                    "mcp__zwiim_mcp__delegate_to_agent",
                     Some(
                         r#"{"agent_type":"codex","continue_from_task_id":"task-semantic-initial","task":"semantic followup","working_dir":"/tmp/mcp-worker"}"#,
                     ),
@@ -11023,7 +11023,7 @@ mod tests {
 
     #[test]
     fn a_deferred_scripts_late_mcp_item_cannot_bind_to_the_next_script() {
-        let script = "const r=await tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",task:\"A\"});text(JSON.stringify(r));";
+        let script = "const r=await tools.mcp__zwiim_mcp__delegate_to_agent({agent_type:\"codex\",task:\"A\"});text(JSON.stringify(r));";
         let mut lines = code_mode_rollout(
             script,
             serde_json::json!("Script running with cell ID 34\nWall time 30.0 seconds\nOutput:\n"),
@@ -11042,7 +11042,7 @@ mod tests {
             serde_json::json!({
                 "type":"item_completed",
                 "item": {
-                    "type":"McpToolCall", "id":"exec-from-a", "server":"codeg-mcp",
+                    "type":"McpToolCall", "id":"exec-from-a", "server":"zwiim-mcp",
                     "tool":"delegate_to_agent", "arguments":{"task":"A"},
                     "status":"completed", "result":{"content":[], "isError":false}
                 }
@@ -11067,13 +11067,13 @@ mod tests {
     /// A refused MCP call still lets the SCRIPT finish, so the wrapper's own
     /// `Script completed` says nothing about the call inside it. The card has to
     /// settle on the semantic item's outcome or it contradicts the result block
-    /// written beside it. Shape taken verbatim from a real rollout: codeg-mcp
+    /// written beside it. Shape taken verbatim from a real rollout: zwiim-mcp
     /// refuses a `delegate_to_agent` past the delegation depth limit.
     #[test]
     fn a_failed_semantic_mcp_item_settles_its_card_as_failed() {
         let script = concat!(
             "const dir=\"/tmp/w\";",
-            "const res=await tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",working_dir:dir,task:t});",
+            "const res=await tools.mcp__zwiim_mcp__delegate_to_agent({agent_type:\"codex\",working_dir:dir,task:t});",
             "text(res.content[0].text);"
         );
         let mut lines = code_mode_rollout(
@@ -11093,7 +11093,7 @@ mod tests {
                     "item": {
                         "type": "McpToolCall",
                         "id": "exec-depth-limit",
-                        "server": "codeg-mcp",
+                        "server": "zwiim-mcp",
                         "tool": "delegate_to_agent",
                         "arguments": {"agent_type":"codex", "working_dir":"/tmp/w"},
                         "status": "failed",
@@ -11242,7 +11242,7 @@ mod tests {
             let mut lines = code_mode_rollout(
                 concat!(
                     "const rs = await Promise.all([\n",
-                    "  tools.mcp__codeg_mcp__get_delegation_status({task_ids:[\"t1\"],wait_ms:30000}),\n",
+                    "  tools.mcp__zwiim_mcp__get_delegation_status({task_ids:[\"t1\"],wait_ms:30000}),\n",
                     "  tools.write_stdin({session_id:480,chars:\"y\\n\"}),\n",
                     "]);\ntext(JSON.stringify(rs));"
                 ),
@@ -11262,7 +11262,7 @@ mod tests {
                             "item": {
                                 "type": "McpToolCall",
                                 "id": "exec-poll",
-                                "server": "codeg-mcp",
+                                "server": "zwiim-mcp",
                                 "tool": "get_delegation_status",
                                 "arguments": {"task_ids":["t1"], "wall_ms":30000},
                                 "status": "completed",
@@ -11300,7 +11300,7 @@ mod tests {
     #[test]
     fn a_thrown_script_keeps_its_own_card_over_a_matching_semantic_item() {
         let script = concat!(
-            "const r=await tools.mcp__codeg_mcp__task_progress({message:m});",
+            "const r=await tools.mcp__zwiim_mcp__task_progress({message:m});",
             "text(r.content[0].text.toUpperCase());"
         );
         let mut lines = code_mode_rollout(
@@ -11320,7 +11320,7 @@ mod tests {
                     "item": {
                         "type": "McpToolCall",
                         "id": "exec-progress",
-                        "server": "codeg-mcp",
+                        "server": "zwiim-mcp",
                         "tool": "task_progress",
                         "arguments": {"message":"halfway"},
                         "status": "completed",
@@ -12547,7 +12547,7 @@ mod tests {
     /// terminal card further down the transcript.
     fn deferred_script_rollout(wait_output: serde_json::Value) -> Vec<String> {
         let mut lines = code_mode_rollout(
-            "const r = await tools.mcp__codeg_mcp__get_delegation_status({task_ids:[\"t1\"],wait_ms:60000});\ntext(JSON.stringify(r));\n",
+            "const r = await tools.mcp__zwiim_mcp__get_delegation_status({task_ids:[\"t1\"],wait_ms:60000});\ntext(JSON.stringify(r));\n",
             serde_json::json!("Script running with cell ID 34\nWall time 11.0 seconds\nOutput:\n"),
         );
         lines.push(rollout_line(
@@ -12576,7 +12576,7 @@ mod tests {
     fn a_deferred_script_completed_mcp_item_replaces_its_wrapper_card() {
         let script = concat!(
             "const task=\"t1\";",
-            "const r=await tools.mcp__codeg_mcp__get_delegation_status({task_ids:[task],wait_ms:60000});",
+            "const r=await tools.mcp__zwiim_mcp__get_delegation_status({task_ids:[task],wait_ms:60000});",
             "text(JSON.stringify(r));"
         );
         let mut lines = code_mode_rollout(
@@ -12591,7 +12591,7 @@ mod tests {
                 "item": {
                     "type": "McpToolCall",
                     "id": "mcp-deferred-status",
-                    "server": "codeg-mcp",
+                    "server": "zwiim-mcp",
                     "tool": "get_delegation_status",
                     "arguments": {"task_ids":["t1"], "wait_ms":60000},
                     "result": {
@@ -12626,7 +12626,7 @@ mod tests {
             tool_uses(&detail),
             vec![ (
                 "mcp-deferred-status".into(),
-                "mcp__codeg_mcp__get_delegation_status".into(),
+                "mcp__zwiim_mcp__get_delegation_status".into(),
                 Some(r#"{"task_ids":["t1"],"wait_ms":60000}"#.into()),
             ) ],
             "the completed semantic item replaces the parked script card"
@@ -12660,7 +12660,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(
                 "call_1".to_string(),
-                "mcp__codeg_mcp__get_delegation_status".to_string()
+                "mcp__zwiim_mcp__get_delegation_status".to_string()
             )]
         );
         assert_eq!(
@@ -12768,7 +12768,7 @@ mod tests {
         // session map either: that cell is not a shell, and the long-running
         // call here is not even a command.
         let mut lines = code_mode_rollout(
-            "const r = await tools.mcp__codeg_mcp__ask_user_question({questions: []});\ntext(JSON.stringify(r));\n",
+            "const r = await tools.mcp__zwiim_mcp__ask_user_question({questions: []});\ntext(JSON.stringify(r));\n",
             serde_json::json!([
                 {"type": "input_text", "text": "Script running with cell ID 15\nWall time 11.0 seconds\nOutput:\n"},
             ]),
@@ -12793,7 +12793,7 @@ mod tests {
             uses.iter()
                 .map(|(id, name, _)| (id.as_str(), name.as_str()))
                 .collect::<Vec<_>>(),
-            vec![("call_1", "mcp__codeg_mcp__ask_user_question")]
+            vec![("call_1", "mcp__zwiim_mcp__ask_user_question")]
         );
 
         let _ = fs::remove_file(path);

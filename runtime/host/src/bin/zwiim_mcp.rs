@@ -1,4 +1,4 @@
-//! `codeg-mcp` — the per-launch stdio MCP companion that an agent CLI runs
+//! `zwiim-mcp` — the per-launch stdio MCP companion that an agent CLI runs
 //! to surface codeg's tools to its LLM: the multi-agent delegation tools
 //! (`delegate_to_agent` etc.), `check_user_feedback` (pull the user's mid-turn
 //! steering notes), `ask_user_question` (block on a multiple-choice card), and
@@ -10,7 +10,7 @@
 //! The agent's MCP config (injected by codeg via `load_mcp_servers_for_agent`)
 //! spawns this binary with three required flags:
 //!
-//!   codeg-mcp \
+//!   zwiim-mcp \
 //!     --parent-connection-id <uuid> \
 //!     --socket-path <abs path> \
 //!     --token <ephemeral secret>
@@ -22,7 +22,7 @@
 //! schema so only agents enabled in settings are advertised.
 //! Everything heavyweight — JSON-RPC dispatch, UDS round-trip, MCP tool
 //! schema, cancellation tracking — lives in
-//! `codeg_lib::acp::delegation::{companion, transport}` so it's
+//! `zwiim_host::acp::delegation::{companion, transport}` so it's
 //! unit-testable without spawning a process.
 //!
 //! Stdin lines are dispatched concurrently: synchronous methods
@@ -36,11 +36,11 @@ use std::io::Write;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use codeg_lib::acp::delegation::companion::{
+use zwiim_host::acp::delegation::companion::{
     dispatch_line, drain_and_cancel_all, CompanionContext, CompanionFeatures, InflightCalls,
     JsonRpcResponse, LineAction, SpawnResult,
 };
-use codeg_lib::acp::delegation::parent_watcher::{wait_for_parent_exit, DEFAULT_POLL_INTERVAL};
+use zwiim_host::acp::delegation::parent_watcher::{wait_for_parent_exit, DEFAULT_POLL_INTERVAL};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Stdout};
 use tokio::sync::Mutex;
 
@@ -48,8 +48,8 @@ struct Args {
     parent_connection_id: String,
     socket_path: String,
     token: String,
-    /// Optional PID of the codeg / codeg-server process that owns this
-    /// session. When set, codeg-mcp exits as soon as the parent is gone so
+    /// Optional PID of the codeg / zwiim-host process that owns this
+    /// session. When set, zwiim-mcp exits as soon as the parent is gone so
     /// orphaned companions don't keep the binary file locked (Windows
     /// upgrade failure) or hold open a UDS / pipe nobody will ever read
     /// from. Omitted by older parents — backward compatible.
@@ -130,7 +130,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--help" | "-h" => {
                 println!(
-                    "codeg-mcp --parent-connection-id <uuid> --socket-path <path> --token <secret> [--parent-pid <pid>] [--features delegation,feedback,ask,sessions,tasks] [--custom-agents custom:<id>,...] [--disabled-agents <agent>,...]"
+                    "zwiim-mcp --parent-connection-id <uuid> --socket-path <path> --token <secret> [--parent-pid <pid>] [--features delegation,feedback,ask,sessions,tasks] [--custom-agents custom:<id>,...] [--disabled-agents <agent>,...]"
                 );
                 std::process::exit(0);
             }
@@ -181,12 +181,12 @@ async fn write_response(
 async fn main() -> ExitCode {
     // Stderr-only subscriber: stdout is the JSON-RPC protocol channel, and
     // concurrent mcp processes share no log file. No hub/buffer/emitter.
-    let _log_guard = codeg_lib::logging::init::init_mcp();
+    let _log_guard = zwiim_host::logging::init::init_mcp();
 
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            let _ = writeln!(std::io::stderr(), "codeg-mcp: {e}");
+            let _ = writeln!(std::io::stderr(), "zwiim-mcp: {e}");
             return ExitCode::from(2);
         }
     };
@@ -232,7 +232,7 @@ async fn main() -> ExitCode {
                 drain_and_cancel_all(&ctx, &inflight, "parent process exited").await;
                 let _ = writeln!(
                     std::io::stderr(),
-                    "codeg-mcp: parent process exited, shutting down"
+                    "zwiim-mcp: parent process exited, shutting down"
                 );
                 // Hard exit on purpose: `tokio::io::stdin()` parks a
                 // blocking worker thread that the runtime can't cancel,
@@ -254,7 +254,7 @@ async fn main() -> ExitCode {
                         break;
                     }
                     Err(e) => {
-                        let _ = writeln!(std::io::stderr(), "codeg-mcp: read stdin: {e}");
+                        let _ = writeln!(std::io::stderr(), "zwiim-mcp: read stdin: {e}");
                         drain_and_cancel_all(&ctx, &inflight, "companion stdin error").await;
                         return ExitCode::from(1);
                     }
@@ -267,7 +267,7 @@ async fn main() -> ExitCode {
                 match action {
                     LineAction::Respond(resp) => {
                         if let Err(e) = write_response(&stdout, &resp).await {
-                            let _ = writeln!(std::io::stderr(), "codeg-mcp: write stdout: {e}");
+                            let _ = writeln!(std::io::stderr(), "zwiim-mcp: write stdout: {e}");
                             return ExitCode::from(1);
                         }
                     }
@@ -288,7 +288,7 @@ async fn main() -> ExitCode {
                             if let Err(e) = write_response(&stdout, &resp).await {
                                 let _ = writeln!(
                                     std::io::stderr(),
-                                    "codeg-mcp: write stdout: {e}"
+                                    "zwiim-mcp: write stdout: {e}"
                                 );
                                 // Relay failed (agent stdin gone) → skip any
                                 // post-relay action so feedback notes stay

@@ -2194,7 +2194,7 @@ mod tests {
                 // name + params are packed under arguments.{toolName,params}.
                 json!({"type":"function_call","timestamp":1782193811200i64,"cwd":"/Users/demo/app","sessionId":sid,
                        "name":"DeferExecuteTool","callId":"d1",
-                       "arguments":"{\"params\":{\"agent_type\":\"codex\",\"task\":\"build\",\"working_dir\":\"/Users/demo/app\"},\"toolName\":\"mcp__codeg-mcp__delegate_to_agent\"}"}),
+                       "arguments":"{\"params\":{\"agent_type\":\"codex\",\"task\":\"build\",\"working_dir\":\"/Users/demo/app\"},\"toolName\":\"mcp__zwiim-mcp__delegate_to_agent\"}"}),
                 // The result carries the real MCP report under providerData.toolResult.mcpMeta.
                 json!({"type":"function_call_result","timestamp":1782193811400i64,"cwd":"/Users/demo/app","sessionId":sid,
                        "name":"DeferExecuteTool","callId":"d1","status":"completed",
@@ -2203,10 +2203,10 @@ mod tests {
                          "mcpMeta":{"structuredContent":{"agent_type":"codex","child_conversation_id":15,"status":"running","task_id":"e5c9","message":"ok"}}}}}),
                 json!({"type":"function_call","timestamp":1782193811600i64,"cwd":"/Users/demo/app","sessionId":sid,
                        "name":"DeferExecuteTool","callId":"d2",
-                       "arguments":"{\"params\":{\"task_ids\":[\"e5c9\"],\"wait_ms\":60000},\"toolName\":\"mcp__codeg-mcp__get_delegation_status\"}"}),
+                       "arguments":"{\"params\":{\"task_ids\":[\"e5c9\"],\"wait_ms\":60000},\"toolName\":\"mcp__zwiim-mcp__get_delegation_status\"}"}),
                 json!({"type":"function_call","timestamp":1782193811700i64,"cwd":"/Users/demo/app","sessionId":sid,
                        "name":"DeferExecuteTool","callId":"d3",
-                       "arguments":"{\"params\":{\"task_id\":\"e5c9\"},\"toolName\":\"mcp__codeg-mcp__cancel_delegation\"}"}),
+                       "arguments":"{\"params\":{\"task_id\":\"e5c9\"},\"toolName\":\"mcp__zwiim-mcp__cancel_delegation\"}"}),
                 // A plain (non-deferred) tool must keep its name and text output.
                 json!({"type":"function_call","timestamp":1782193811800i64,"cwd":"/Users/demo/app","sessionId":sid,
                        "name":"Bash","callId":"b1","arguments":"{\"command\": \"ls\"}"}),
@@ -2252,9 +2252,9 @@ mod tests {
         };
         // Each DeferExecuteTool resolves to its inner MCP tool name; normalizeToolName
         // (frontend) then collapses the `mcp__…__` prefix to the canonical card name.
-        assert_eq!(name_of("d1"), "mcp__codeg-mcp__delegate_to_agent");
-        assert_eq!(name_of("d2"), "mcp__codeg-mcp__get_delegation_status");
-        assert_eq!(name_of("d3"), "mcp__codeg-mcp__cancel_delegation");
+        assert_eq!(name_of("d1"), "mcp__zwiim-mcp__delegate_to_agent");
+        assert_eq!(name_of("d2"), "mcp__zwiim-mcp__get_delegation_status");
+        assert_eq!(name_of("d3"), "mcp__zwiim-mcp__cancel_delegation");
         // Plain tool untouched.
         assert_eq!(name_of("b1"), "Bash");
 

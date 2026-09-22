@@ -96,23 +96,23 @@ impl WorkspaceTransferManager {
             cancels: Mutex::new(HashMap::new()),
             ticket_ttl: Duration::from_secs(DOWNLOAD_TICKET_TTL_SECS),
             workspace_upload_semaphore: Semaphore::new(env_usize(
-                "CODEG_WORKSPACE_UPLOAD_MAX_CONCURRENCY",
+                "ZWIIM_WORKSPACE_UPLOAD_MAX_CONCURRENCY",
                 DEFAULT_WORKSPACE_UPLOAD_CONCURRENCY,
             )),
             remote_upload_semaphore: Semaphore::new(env_usize(
-                "CODEG_REMOTE_WORKSPACE_UPLOAD_MAX_CONCURRENCY",
+                "ZWIIM_REMOTE_WORKSPACE_UPLOAD_MAX_CONCURRENCY",
                 DEFAULT_REMOTE_WORKSPACE_UPLOAD_CONCURRENCY,
             )),
             zip_semaphore: Semaphore::new(env_usize(
-                "CODEG_WORKSPACE_ZIP_MAX_CONCURRENCY",
+                "ZWIIM_WORKSPACE_ZIP_MAX_CONCURRENCY",
                 DEFAULT_WORKSPACE_ZIP_CONCURRENCY,
             )),
             remote_download_semaphore: Semaphore::new(env_usize(
-                "CODEG_REMOTE_WORKSPACE_DOWNLOAD_MAX_CONCURRENCY",
+                "ZWIIM_REMOTE_WORKSPACE_DOWNLOAD_MAX_CONCURRENCY",
                 DEFAULT_REMOTE_WORKSPACE_DOWNLOAD_CONCURRENCY,
             )),
             idle_timeout: env_duration_secs(
-                "CODEG_WORKSPACE_TRANSFER_IDLE_TIMEOUT_SECS",
+                "ZWIIM_WORKSPACE_TRANSFER_IDLE_TIMEOUT_SECS",
                 DEFAULT_TRANSFER_IDLE_TIMEOUT_SECS,
             ),
         }
@@ -230,18 +230,18 @@ mod tests {
 
     #[test]
     fn env_usize_uses_default_for_missing_invalid_and_zero() {
-        temp_env::with_var_unset("CODEG_WORKSPACE_UPLOAD_MAX_CONCURRENCY", || {
-            assert_eq!(env_usize("CODEG_WORKSPACE_UPLOAD_MAX_CONCURRENCY", 4), 4);
+        temp_env::with_var_unset("ZWIIM_WORKSPACE_UPLOAD_MAX_CONCURRENCY", || {
+            assert_eq!(env_usize("ZWIIM_WORKSPACE_UPLOAD_MAX_CONCURRENCY", 4), 4);
         });
         temp_env::with_var(
-            "CODEG_WORKSPACE_UPLOAD_MAX_CONCURRENCY",
+            "ZWIIM_WORKSPACE_UPLOAD_MAX_CONCURRENCY",
             Some("nope"),
             || {
-                assert_eq!(env_usize("CODEG_WORKSPACE_UPLOAD_MAX_CONCURRENCY", 4), 4);
+                assert_eq!(env_usize("ZWIIM_WORKSPACE_UPLOAD_MAX_CONCURRENCY", 4), 4);
             },
         );
-        temp_env::with_var("CODEG_WORKSPACE_UPLOAD_MAX_CONCURRENCY", Some("0"), || {
-            assert_eq!(env_usize("CODEG_WORKSPACE_UPLOAD_MAX_CONCURRENCY", 4), 4);
+        temp_env::with_var("ZWIIM_WORKSPACE_UPLOAD_MAX_CONCURRENCY", Some("0"), || {
+            assert_eq!(env_usize("ZWIIM_WORKSPACE_UPLOAD_MAX_CONCURRENCY", 4), 4);
         });
     }
 

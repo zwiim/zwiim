@@ -140,7 +140,7 @@ pub trait SessionInfoAccess: Send + Sync {
 
 /// The hot-swappable feature config read at MCP injection time. Kept tiny and
 /// separate from the other feature configs so the `sessions` tool group toggles
-/// independently — `codeg-mcp` is injected when ANY feature is enabled, and each
+/// independently — `zwiim-mcp` is injected when ANY feature is enabled, and each
 /// tool is listed only when its own feature is on.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionInfoConfig {

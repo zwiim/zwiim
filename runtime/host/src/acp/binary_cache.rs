@@ -17,9 +17,9 @@ static TRASH_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Root for codeg-managed agent binaries.
 ///
 /// Resolution order mirrors `paths.rs`:
-/// 1. `$CODEG_HOME/acp-binaries`
-/// 2. `$CODEG_DATA_DIR/acp-binaries` (server mode)
-/// 3. `<data-local>/app.codeg/acp-binaries`
+/// 1. `$ZWIIM_HOME/acp-binaries`
+/// 2. `$ZWIIM_DATA_DIR/acp-binaries` (server mode)
+/// 3. `<data-local>/app.zwiim/acp-binaries`
 ///
 /// **Not** `dirs::cache_dir()`, which is where this used to live. On Windows
 /// the two are the same directory (`%LOCALAPPDATA%`), so nothing moves there.
@@ -30,15 +30,15 @@ static TRASH_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// agent runtime that cannot be regenerated without a network round trip —
 /// losing it presents to the user as "the agent I installed is gone".
 pub(crate) fn cache_dir() -> Result<PathBuf, AcpError> {
-    if let Some(custom) = std::env::var_os("CODEG_HOME").filter(|s| !s.is_empty()) {
+    if let Some(custom) = std::env::var_os("ZWIIM_HOME").filter(|s| !s.is_empty()) {
         return Ok(PathBuf::from(custom).join("acp-binaries"));
     }
-    if let Some(data) = std::env::var_os("CODEG_DATA_DIR").filter(|s| !s.is_empty()) {
+    if let Some(data) = std::env::var_os("ZWIIM_DATA_DIR").filter(|s| !s.is_empty()) {
         return Ok(PathBuf::from(data).join("acp-binaries"));
     }
     let base = dirs::data_local_dir()
         .ok_or_else(|| AcpError::DownloadFailed("cannot determine data directory".into()))?;
-    Ok(base.join("app.codeg").join("acp-binaries"))
+    Ok(base.join("app.zwiim").join("acp-binaries"))
 }
 
 /// The pre-relocation root, when it is a DIFFERENT directory that still exists.
@@ -48,7 +48,7 @@ pub(crate) fn cache_dir() -> Result<PathBuf, AcpError> {
 /// read-through below is therefore a transient state that ends when
 /// [`migrate_legacy_root`] succeeds, never a steady-state dual root.
 pub(crate) fn legacy_cache_dir() -> Option<PathBuf> {
-    let legacy = dirs::cache_dir()?.join("app.codeg").join("acp-binaries");
+    let legacy = dirs::cache_dir()?.join("app.zwiim").join("acp-binaries");
     let current = cache_dir().ok()?;
     (legacy != current && legacy.is_dir()).then_some(legacy)
 }
@@ -434,7 +434,7 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
             // `SeCreateSymbolicLinkPrivilege`, so this can legitimately fail —
             // and an error is the right answer: the caller keeps the source
             // whenever a copy does not land. (Barely reachable: on Windows the
-            // two roots are the same path unless `CODEG_HOME`/`CODEG_DATA_DIR`
+            // two roots are the same path unless `ZWIIM_HOME`/`ZWIIM_DATA_DIR`
             // moves one of them, so there is normally nothing to migrate.)
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,

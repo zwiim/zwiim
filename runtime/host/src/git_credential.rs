@@ -70,7 +70,7 @@ pub fn absolutize(p: &Path) -> PathBuf {
 /// with stale scripts on disk.
 ///
 /// Paths are absolutized and shell-quoted before being substituted into the
-/// script body so a quirky data dir (`CODEG_DATA_DIR=$HOME/x`, paths with
+/// script body so a quirky data dir (`ZWIIM_DATA_DIR=$HOME/x`, paths with
 /// spaces, single quotes, or `"`) cannot break — or escape — the script.
 pub fn create_credential_helper_script(
     app_data_dir: &Path,
@@ -86,7 +86,7 @@ pub fn create_credential_helper_script(
         let script_path = app_data_dir.join("git-credential-codeg.sh");
         let content = format!(
             r#"#!/bin/sh
-# Codeg credential helper — calls the app binary to look up credentials.
+# Zwiim credential helper — calls the app binary to look up credentials.
 # Only responds to "get" action; ignores "store" and "erase".
 [ "$1" != "get" ] && exit 0
 exec {binary} --credential-helper --data-dir {data_dir} < /dev/stdin
@@ -124,17 +124,17 @@ if not "%~1"=="get" exit /b 0
 pub fn run_credential_helper() {
     // Parse the optional `--data-dir <path>` arg. Helper scripts written by
     // recent codeg versions embed this so server deployments and custom
-    // CODEG_DATA_DIR setups land on the right database.
+    // ZWIIM_DATA_DIR setups land on the right database.
     let explicit_data_dir = parse_data_dir_arg(std::env::args());
 
-    // Pin CODEG_DATA_DIR for downstream lookups (notably the file-based
+    // Pin ZWIIM_DATA_DIR for downstream lookups (notably the file-based
     // `keyring_store::tokens_file_path` in server mode). The DB path comes
     // from `--data-dir`, but the token file path comes from the env var,
     // and they must match — otherwise the helper finds the account row but
     // returns no token. set_var is safe here because run_credential_helper
     // is invoked from main() before any tokio runtime is built.
     if let Some(dir) = &explicit_data_dir {
-        std::env::set_var("CODEG_DATA_DIR", dir);
+        std::env::set_var("ZWIIM_DATA_DIR", dir);
     }
 
     // git's credential protocol expects this helper to be silent on a
@@ -277,20 +277,20 @@ fn parse_data_dir_arg<I: IntoIterator<Item = String>>(args: I) -> Option<std::pa
 
 /// Resolve the app data directory (same path Tauri uses).
 fn resolve_app_data_dir() -> Option<std::path::PathBuf> {
-    // On macOS: ~/Library/Application Support/app.codeg
-    // On Linux: ~/.local/share/app.codeg
-    // On Windows: %APPDATA%/app.codeg
+    // On macOS: ~/Library/Application Support/app.zwiim
+    // On Linux: ~/.local/share/app.zwiim
+    // On Windows: %APPDATA%/app.zwiim
     #[cfg(target_os = "macos")]
     {
-        dirs::data_dir().map(|d| d.join("app.codeg"))
+        dirs::data_dir().map(|d| d.join("app.zwiim"))
     }
     #[cfg(target_os = "linux")]
     {
-        dirs::data_dir().map(|d| d.join("app.codeg"))
+        dirs::data_dir().map(|d| d.join("app.zwiim"))
     }
     #[cfg(target_os = "windows")]
     {
-        dirs::data_dir().map(|d| d.join("app.codeg"))
+        dirs::data_dir().map(|d| d.join("app.zwiim"))
     }
 }
 
@@ -303,8 +303,8 @@ pub fn ensure_askpass_script(app_data_dir: &Path) -> std::io::Result<PathBuf> {
         if !script_path.exists() {
             let content = r#"#!/bin/sh
 case "$1" in
-*[Uu]sername*) echo "$CODEG_GIT_USERNAME" ;;
-*[Pp]assword*) echo "$CODEG_GIT_PASSWORD" ;;
+*[Uu]sername*) echo "$ZWIIM_GIT_USERNAME" ;;
+*[Pp]assword*) echo "$ZWIIM_GIT_PASSWORD" ;;
 esac
 "#;
             std::fs::write(&script_path, content)?;
@@ -322,12 +322,12 @@ esac
             let content = r#"@echo off
 echo %1 | findstr /i "username" >nul
 if %errorlevel% equ 0 (
-    echo %CODEG_GIT_USERNAME%
+    echo %ZWIIM_GIT_USERNAME%
     exit /b
 )
 echo %1 | findstr /i "password" >nul
 if %errorlevel% equ 0 (
-    echo %CODEG_GIT_PASSWORD%
+    echo %ZWIIM_GIT_PASSWORD%
     exit /b
 )
 "#;
@@ -352,8 +352,8 @@ pub fn inject_credentials(
         .env("GIT_CONFIG_KEY_0", "credential.helper")
         .env("GIT_CONFIG_VALUE_0", "")
         .env("GIT_ASKPASS", askpass_path)
-        .env("CODEG_GIT_USERNAME", username)
-        .env("CODEG_GIT_PASSWORD", token)
+        .env("ZWIIM_GIT_USERNAME", username)
+        .env("ZWIIM_GIT_PASSWORD", token)
         .env("GIT_TERMINAL_PROMPT", "0");
 }
 
@@ -754,16 +754,16 @@ mod tests {
     fn test_helper_script_embeds_data_dir() {
         let tmp = std::env::temp_dir().join(format!("codeg-cred-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).expect("create tmp dir");
-        let binary = std::path::PathBuf::from("/usr/local/bin/codeg-server");
+        let binary = std::path::PathBuf::from("/usr/local/bin/zwiim-host");
 
         let script_path = create_credential_helper_script(&tmp, &binary)
             .expect("script generation should succeed");
         let content = std::fs::read_to_string(&script_path).expect("read script");
 
         // Must invoke the embedded binary with both flags so server-mode
-        // deployments don't fall back to the hardcoded `app.codeg` path.
+        // deployments don't fall back to the hardcoded `app.zwiim` path.
         // Paths are sh-single-quoted so spaces / `$` / backticks survive.
-        assert!(content.contains("/usr/local/bin/codeg-server"));
+        assert!(content.contains("/usr/local/bin/zwiim-host"));
         assert!(content.contains("--credential-helper"));
         assert!(
             content.contains(&format!("--data-dir '{}'", tmp.display())),
@@ -833,7 +833,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_helper_script_absolutizes_relative_data_dir() {
-        // Regression: a relative `CODEG_DATA_DIR=data` previously produced
+        // Regression: a relative `ZWIIM_DATA_DIR=data` previously produced
         // a script that git couldn't find when invoked from the user's
         // repo working dir. The script must always reference an absolute
         // path so it resolves identically regardless of git's CWD.
@@ -846,7 +846,7 @@ mod tests {
 
         let rel = std::path::PathBuf::from("data");
         std::fs::create_dir_all(&rel).expect("create rel dir");
-        let binary = std::path::PathBuf::from("./codeg-server");
+        let binary = std::path::PathBuf::from("./zwiim-host");
 
         let script_path = create_credential_helper_script(&rel, &binary)
             .expect("script generation should succeed");
@@ -866,7 +866,7 @@ mod tests {
             "relative data-dir leaked into script:\n{content}"
         );
         assert!(
-            !content.contains("'./codeg-server'"),
+            !content.contains("'./zwiim-host'"),
             "relative binary path leaked into script:\n{content}"
         );
         // Positive check: an absolute path segment for the data dir must be
@@ -964,7 +964,7 @@ mod tests {
         let token = "ghp_test_token_value";
         let account_id = "acct-1";
 
-        // Override CODEG_DATA_DIR for the duration of this test — server-mode
+        // Override ZWIIM_DATA_DIR for the duration of this test — server-mode
         // `keyring_store` resolves `tokens.json` from this var.
         //
         // Through `temp_env`, NOT a bare `set_var` + manual restore. `STATE_LOCK`
@@ -982,7 +982,7 @@ mod tests {
         //
         // Order is always STATE_LOCK then SERIAL_TEST: nothing holding
         // SERIAL_TEST can reach STATE_LOCK, so the pair can't invert.
-        temp_env::with_vars([("CODEG_DATA_DIR", Some(&data_dir))], || {
+        temp_env::with_vars([("ZWIIM_DATA_DIR", Some(&data_dir))], || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -1019,7 +1019,7 @@ mod tests {
                 // `lookup_credential` doesn't race against an open WAL writer.
                 drop(db);
 
-                // Seed the file token store. Uses CODEG_DATA_DIR via
+                // Seed the file token store. Uses ZWIIM_DATA_DIR via
                 // `tokens_file_path`, which is exactly what we're validating.
                 crate::keyring_store::set_token(account_id, token).expect("set token");
 

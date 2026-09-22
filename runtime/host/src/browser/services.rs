@@ -1,4 +1,4 @@
-//! The local servers codeg has seen start, and telling the workspace about a
+//! The local servers zwiim has seen start, and telling the workspace about a
 //! new one.
 //!
 //! `service_url` reads an address out of terminal output; everything here is

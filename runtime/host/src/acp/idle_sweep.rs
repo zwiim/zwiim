@@ -11,7 +11,7 @@ use std::time::Duration;
 use crate::acp::manager::ConnectionManager;
 
 /// Default idle threshold (3 minutes). Override at startup via
-/// `CODEG_ACP_IDLE_TIMEOUT_SECS`. The sweep only runs against
+/// `ZWIIM_ACP_IDLE_TIMEOUT_SECS`. The sweep only runs against
 /// connections in `Connected` state with no `pending_permission`, and
 /// `last_activity_at` is bumped on every emit and on every frontend
 /// keepalive touch (~30s cadence for open tabs), so an actively-used
@@ -22,11 +22,11 @@ pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 180;
 /// trivially cheap relative to the wall-clock idle threshold.
 pub const SWEEP_INTERVAL_SECS: u64 = 60;
 
-/// Read the idle timeout from `CODEG_ACP_IDLE_TIMEOUT_SECS`, falling back
+/// Read the idle timeout from `ZWIIM_ACP_IDLE_TIMEOUT_SECS`, falling back
 /// to `DEFAULT_IDLE_TIMEOUT_SECS`. A `0` value disables the sweep
 /// (returns `None`); any unparseable value is treated as "use default".
 pub fn idle_timeout_from_env() -> Option<Duration> {
-    let secs = match std::env::var("CODEG_ACP_IDLE_TIMEOUT_SECS") {
+    let secs = match std::env::var("ZWIIM_ACP_IDLE_TIMEOUT_SECS") {
         Ok(raw) => raw.parse::<u64>().unwrap_or(DEFAULT_IDLE_TIMEOUT_SECS),
         Err(_) => DEFAULT_IDLE_TIMEOUT_SECS,
     };
@@ -69,27 +69,27 @@ mod tests {
 
     /// Single test sequences all env-var assertions to avoid the
     /// notorious parallel-test race on shared environment state. Cargo
-    /// runs tests in parallel by default; setting `CODEG_ACP_IDLE_TIMEOUT_SECS`
+    /// runs tests in parallel by default; setting `ZWIIM_ACP_IDLE_TIMEOUT_SECS`
     /// in concurrent tests would interleave with each other.
     #[test]
     fn idle_timeout_env_parsing() {
         // Disabled when zero.
-        std::env::set_var("CODEG_ACP_IDLE_TIMEOUT_SECS", "0");
+        std::env::set_var("ZWIIM_ACP_IDLE_TIMEOUT_SECS", "0");
         assert!(idle_timeout_from_env().is_none());
 
         // Falls back to default when unparseable.
-        std::env::set_var("CODEG_ACP_IDLE_TIMEOUT_SECS", "not-a-number");
+        std::env::set_var("ZWIIM_ACP_IDLE_TIMEOUT_SECS", "not-a-number");
         assert_eq!(
             idle_timeout_from_env().unwrap().as_secs(),
             DEFAULT_IDLE_TIMEOUT_SECS
         );
 
         // Uses provided value when it parses.
-        std::env::set_var("CODEG_ACP_IDLE_TIMEOUT_SECS", "120");
+        std::env::set_var("ZWIIM_ACP_IDLE_TIMEOUT_SECS", "120");
         assert_eq!(idle_timeout_from_env().unwrap().as_secs(), 120);
 
         // Falls back to default when unset.
-        std::env::remove_var("CODEG_ACP_IDLE_TIMEOUT_SECS");
+        std::env::remove_var("ZWIIM_ACP_IDLE_TIMEOUT_SECS");
         assert_eq!(
             idle_timeout_from_env().unwrap().as_secs(),
             DEFAULT_IDLE_TIMEOUT_SECS

@@ -1166,7 +1166,7 @@ fn parse_delegate_task_id(output: &str) -> Option<String> {
 /// so re-parse those. Depth-capped like the frontend walker.
 ///
 /// Shares `acp::lifecycle`'s key list rather than restating it: that list, its
-/// frontend twins in `delegation-card.ts` / `codeg-mcp-tool.ts`, and this
+/// frontend twins in `delegation-card.ts` / `zwiim-mcp-tool.ts`, and this
 /// walker must peel the same envelopes, or a card and the meta injected beneath
 /// it disagree about which task a call names.
 fn find_task_id_in_value(value: &serde_json::Value, depth: u8) -> Option<String> {
@@ -1228,7 +1228,7 @@ fn parse_resume_task_id(input: &str) -> Option<String> {
 /// set `meta["codeg.delegation"]` to the DB-derived snapshot. Skips blocks
 /// whose meta is already populated so the live-broker write (when present)
 /// always wins. Tool-name match is by substring to cover the MCP-prefixed
-/// (`mcp__codeg-mcp__delegate_to_agent`) and bare forms the host may have
+/// (`mcp__zwiim-mcp__delegate_to_agent`) and bare forms the host may have
 /// emitted.
 ///
 /// For `delegate_to_agent`, matching is by `parent_tool_use_id` first, then by
@@ -2079,7 +2079,7 @@ const CHAT_SCRATCH_STALE: std::time::Duration = std::time::Duration::from_secs(1
 /// Layout-invariant key for a chat scratch dir: its trailing `(<date>, <uuid>)`
 /// path components. The GC matches live dirs by this tail rather than the full
 /// path string, so a different *spelling* of the same data_dir (e.g. a symlinked
-/// vs canonical `CODEG_DATA_DIR` naming the same storage) still matches — a live
+/// vs canonical `ZWIIM_DATA_DIR` naming the same storage) still matches — a live
 /// dir must never be misclassified as an orphan and deleted. `<uuid>` is a v4
 /// UUID (globally unique), so the tail is collision-free in practice. Returns
 /// `None` if the path lacks a leaf or parent component.
@@ -2125,7 +2125,7 @@ pub(crate) async fn gc_orphan_chat_dirs_core_with_threshold(
     // Dirs bound to a live chat conversation, keyed by their layout-invariant
     // `(<date>, <uuid>)` tail (see `chat_dir_key`) rather than the full path
     // string. This survives a data_dir spelled differently across runs (e.g. a
-    // symlinked vs canonical `CODEG_DATA_DIR` pointing at the same storage),
+    // symlinked vs canonical `ZWIIM_DATA_DIR` pointing at the same storage),
     // which a full-string compare would miss — misclassifying the live dir as an
     // orphan and deleting it. We deliberately do NOT canonicalize (it fails on
     // missing paths and could itself alias two distinct dirs); keying by the tail
@@ -2907,7 +2907,7 @@ mod tests {
     fn inject_delegation_meta_populates_completed_child() {
         let mut turns = vec![tool_use_turn(
             Some("tu-1"),
-            "mcp__codeg-mcp__delegate_to_agent",
+            "mcp__zwiim-mcp__delegate_to_agent",
         )];
         let children = vec![summary_child(42, "tu-1", "completed")];
         inject_delegation_meta(&mut turns, &children);
@@ -2949,7 +2949,7 @@ mod tests {
     #[test]
     fn inject_delegation_meta_falls_back_to_the_task_id() {
         let mut turns = vec![
-            tool_use_turn(Some("call_73UFK2"), "mcp__codeg_mcp__delegate_to_agent"),
+            tool_use_turn(Some("call_73UFK2"), "mcp__zwiim_mcp__delegate_to_agent"),
             tool_result_turn(
                 "call_73UFK2",
                 "Delegation successful. task_id=8ff4c14c-740c-4482-b758-8f2091f97063. \
@@ -2993,7 +2993,7 @@ mod tests {
     fn inject_delegation_meta_binds_a_resume_call_by_its_task_id_argument() {
         let mut turns = vec![tool_use_turn_with_input(
             Some("tu-resume"),
-            "mcp__codeg-mcp__resume_delegation",
+            "mcp__zwiim-mcp__resume_delegation",
             Some(r#"{"task_id":"b0858712-9257","reason":"the app was killed"}"#),
         )];
         let mut child = summary_child(9, "tu-original-delegate", "completed");
@@ -3052,7 +3052,7 @@ mod tests {
         // `params` on `input_preview` on purpose, for readers to peel.
         assert_eq!(
             parse_resume_task_id(
-                r#"{"toolName":"mcp__codeg-mcp__resume_delegation","params":{"task_id":"abc-123"}}"#
+                r#"{"toolName":"mcp__zwiim-mcp__resume_delegation","params":{"task_id":"abc-123"}}"#
             )
             .as_deref(),
             Some("abc-123")
@@ -3065,7 +3065,7 @@ mod tests {
         // Cursor's `{providerIdentifier, toolName, args}`.
         assert_eq!(
             parse_resume_task_id(
-                r#"{"providerIdentifier":"codeg-mcp","toolName":"resume_delegation","args":{"task_id":"abc-123"}}"#
+                r#"{"providerIdentifier":"zwiim-mcp","toolName":"resume_delegation","args":{"task_id":"abc-123"}}"#
             )
             .as_deref(),
             Some("abc-123")

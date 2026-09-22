@@ -243,7 +243,7 @@ mod tauri_app {
         );
         tauri::async_runtime::spawn(async move {
             let _ =
-                notification::send_notification(app, "Codeg Web service".to_string(), body).await;
+                notification::send_notification(app, "Zwiim Web service".to_string(), body).await;
         });
     }
 
@@ -287,11 +287,11 @@ mod tauri_app {
     /// take effect: the next launch would read `false`, do nothing, and still
     /// hand WebKitGTK/WebView2 the inherited flags.
     #[cfg(any(target_os = "windows", target_os = "linux"))]
-    const RENDERING_OVERRIDE_OWNED_ENV: &str = "CODEG_WEBVIEW_RENDERING_OVERRIDE";
+    const RENDERING_OVERRIDE_OWNED_ENV: &str = "ZWIIM_WEBVIEW_RENDERING_OVERRIDE";
 
     /// Opt-out users can disable webview hardware acceleration to work around
     /// GPU driver bugs that produce a black-screen or glitching webview. The
-    /// flag is stored in a tiny sidecar file at `~/.codeg/preferences.json` so
+    /// flag is stored in a tiny sidecar file at `~/.zwiim/preferences.json` so
     /// it can be read **before** anything else in `run()` — `set_var` is only
     /// sound while the process is single-threaded, and the logging init alone
     /// spawns a `tracing_appender` worker.
@@ -458,7 +458,7 @@ mod tauri_app {
         // Skipped in debug builds so a locally-built `cargo run` instance
         // can run alongside an installed release build of codeg during
         // development. Debug desktop builds use an isolated SQLite file, but
-        // they still share other `app.codeg` data-dir artifacts with release.
+        // they still share other `app.zwiim` data-dir artifacts with release.
         #[cfg(not(debug_assertions))]
         let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // Second launches on Windows/Linux carry `codeg://…` on argv.
@@ -537,7 +537,7 @@ mod tauri_app {
             .manage(windows::AuxWindowState::new())
             .manage(web::WebServerState::new())
             // Remote-workspace IPC proxy. Routes HTTP / WS for windows
-            // opened against a remote codeg-server through Rust so we
+            // opened against a remote zwiim-host through Rust so we
             // bypass webview mixed-content blocking and can centrally
             // manage per-window subscriptions.
             .manage(std::sync::Arc::new(
@@ -579,13 +579,13 @@ mod tauri_app {
                 // source of truth; every desktop call site that
                 // historically read `app.path().app_data_dir()` and
                 // passed it to a credential helper has been migrated
-                // to the same helper so a pre-set `CODEG_DATA_DIR` is
+                // to the same helper so a pre-set `ZWIIM_DATA_DIR` is
                 // honored end-to-end.
                 //
                 // We also write the absolutized value back to the env,
                 // even when the operator pre-set it, so:
                 //   * subprocesses inherit an absolute path (a relative
-                //     `CODEG_DATA_DIR` would otherwise re-resolve
+                //     `ZWIIM_DATA_DIR` would otherwise re-resolve
                 //     against the subprocess CWD, which may differ
                 //     from ours), and
                 //   * any future caller that reaches for the env
@@ -597,7 +597,7 @@ mod tauri_app {
                 // main thread before any window or async runtime task
                 // reads the var, the Tauri plugins registered above
                 // (window state, opener, dialog, updater, process,
-                // notification) do not read `CODEG_DATA_DIR`, and the
+                // notification) do not read `ZWIIM_DATA_DIR`, and the
                 // value is never mutated again for the lifetime of the
                 // process.
                 let effective_data_dir = paths::resolve_effective_data_dir(&app_data_dir);
@@ -606,24 +606,24 @@ mod tauri_app {
                 // the `unsafe` block, mirroring the WebView2 rendering
                 // override.
                 unsafe {
-                    std::env::set_var("CODEG_DATA_DIR", &effective_data_dir);
+                    std::env::set_var("ZWIIM_DATA_DIR", &effective_data_dir);
                 }
 
-                // `CODEG_HOME` overrides `CODEG_DATA_DIR` inside
+                // `ZWIIM_HOME` overrides `ZWIIM_DATA_DIR` inside
                 // `paths::codeg_uploads_root` / `codeg_pets_root` for
-                // backwards-compatibility with the legacy `~/.codeg/`
+                // backwards-compatibility with the legacy `~/.zwiim/`
                 // layout. If both are set and point at different roots,
-                // uploads/pets land on `CODEG_HOME` while the database
-                // lands on `CODEG_DATA_DIR` — a silent split. The
+                // uploads/pets land on `ZWIIM_HOME` while the database
+                // lands on `ZWIIM_DATA_DIR` — a silent split. The
                 // backup story here is "loud warning, no automatic
                 // override": the operator likely meant one of them, but
                 // we don't know which.
-                if let Some(home) = std::env::var_os("CODEG_HOME").filter(|s| !s.is_empty()) {
+                if let Some(home) = std::env::var_os("ZWIIM_HOME").filter(|s| !s.is_empty()) {
                     let home_path = git_credential::absolutize(std::path::Path::new(&home));
                     if home_path != effective_data_dir {
                         tracing::warn!(
-                            "[paths][WARN] CODEG_HOME ({}) and CODEG_DATA_DIR ({}) point at different roots. \
-                             Uploads/pets follow CODEG_HOME; the database follows CODEG_DATA_DIR. \
+                            "[paths][WARN] ZWIIM_HOME ({}) and ZWIIM_DATA_DIR ({}) point at different roots. \
+                             Uploads/pets follow ZWIIM_HOME; the database follows ZWIIM_DATA_DIR. \
                              Unset one or align them to avoid split state.",
                             home_path.display(),
                             effective_data_dir.display()
@@ -688,13 +688,13 @@ mod tauri_app {
 
                 // Reclaim scratch directories this process loses track of
                 // mid-session. Its own timer on purpose: the ACP idle sweep is
-                // not spawned at all when `CODEG_ACP_IDLE_TIMEOUT_SECS=0`, and
+                // not spawned at all when `ZWIIM_ACP_IDLE_TIMEOUT_SECS=0`, and
                 // turning off idle disconnects must not also turn off disk
                 // reclamation on a machine leaking gigabytes per launch.
                 tauri::async_runtime::spawn(crate::scratch_sweep_task());
 
                 // Install bundled expert skills into the central store
-                // (`~/.codeg/skills/`). Runs in the background and does
+                // (`~/.zwiim/skills/`). Runs in the background and does
                 // not block startup; failures are logged but non-fatal.
                 tauri::async_runtime::spawn(async move {
                     let report = crate::commands::experts::ensure_central_experts_installed().await;
@@ -715,7 +715,7 @@ mod tauri_app {
                 });
 
                 // Install bundled scientific-research skills into the same
-                // central store (`~/.codeg/skills/`). Background, non-blocking;
+                // central store (`~/.zwiim/skills/`). Background, non-blocking;
                 // failures are logged but non-fatal.
                 tauri::async_runtime::spawn(async move {
                     let report = crate::commands::science::ensure_central_science_installed().await;
@@ -1116,7 +1116,7 @@ mod tauri_app {
                 // Spawn the idle sweep so connections abandoned without an
                 // explicit disconnect (e.g. window/tab closed without
                 // teardown, panic survivors) are reaped. Override the
-                // 60-second default via `CODEG_ACP_IDLE_TIMEOUT_SECS`
+                // 60-second default via `ZWIIM_ACP_IDLE_TIMEOUT_SECS`
                 // (set to `0` to disable).
                 if let Some(idle_timeout) = crate::acp::idle_timeout_from_env() {
                     let cm = app.state::<ConnectionManager>().clone_ref();
@@ -1128,8 +1128,7 @@ mod tauri_app {
                 }
 
                 // Office watch preview servers: reap dead children + ref0
-                // stragglers (live previews are never swept). Override via
-                // `CODEG_OFFICE_WATCH_IDLE_TIMEOUT_SECS` (`0` disables).
+                // stragglers (live previews are never swept).
                 if let Some(idle_timeout) = crate::office_watch::idle_timeout_from_env() {
                     tauri::async_runtime::spawn(crate::office_watch::office_watch_idle_sweep_task(
                         idle_timeout,
@@ -1139,7 +1138,7 @@ mod tauri_app {
 
                 // Automation engine: drives manual + scheduled fires, settles
                 // runs off the event bus, reconciles, and recovers on boot. One
-                // per process; mirrored in `bin/codeg_server.rs`.
+                // per process; mirrored in `bin/zwiim_host.rs`.
                 if let Some(engine) = crate::automation::build_engine(
                     crate::db::AppDatabase {
                         conn: app.state::<crate::db::AppDatabase>().conn.clone(),
@@ -1156,7 +1155,7 @@ mod tauri_app {
 
                 // Work-task engine: drives the todo→…→done pipeline, settles
                 // runs off the event bus, recovers merges from git truth on
-                // boot. One per process; mirrored in `bin/codeg_server.rs`.
+                // boot. One per process; mirrored in `bin/zwiim_host.rs`.
                 if let Some(engine) = crate::work_task::build_task_engine(
                     crate::db::AppDatabase {
                         conn: app.state::<crate::db::AppDatabase>().conn.clone(),
@@ -1239,7 +1238,7 @@ mod tauri_app {
                 if app.get_webview_window("main").is_none() {
                     let url = tauri::WebviewUrl::App(workspace_path.into());
                     let builder = tauri::WebviewWindowBuilder::new(app, "main", url)
-                        .title("Codeg")
+                        .title("Zwiim")
                         .inner_size(1260.0, 860.0)
                         .min_inner_size(400.0, 600.0);
                     let builder = windows::apply_platform_window_style(builder);
@@ -1724,9 +1723,9 @@ mod tauri_app {
                 logging_commands::open_logs_dir,
                 delegation_commands::get_delegation_settings,
                 delegation_commands::set_delegation_settings,
-                crate::commands::mcp_service::get_codeg_mcp_service_status,
-                crate::commands::mcp_service::start_codeg_mcp_service,
-                crate::commands::mcp_service::set_codeg_mcp_tool_group,
+                crate::commands::mcp_service::get_zwiim_mcp_service_status,
+                crate::commands::mcp_service::start_zwiim_mcp_service,
+                crate::commands::mcp_service::set_zwiim_mcp_tool_group,
                 feedback_commands::get_feedback_settings,
                 feedback_commands::set_feedback_settings,
                 feedback_commands::submit_session_feedback,

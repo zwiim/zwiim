@@ -1311,8 +1311,8 @@ mod tests {
         // A whitespace-only alias is not a name.
         assert_eq!(folder_display_label(&aliased), name);
 
-        aliased.alias = Some("Codeg".into());
-        assert_eq!(folder_display_label(&aliased), "Codeg");
+        aliased.alias = Some("Zwiim".into());
+        assert_eq!(folder_display_label(&aliased), "Zwiim");
     }
 
     /// Pin a conversation's `updated_at` so the factless branch's activity

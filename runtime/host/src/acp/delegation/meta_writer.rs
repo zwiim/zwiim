@@ -59,7 +59,7 @@ pub trait DelegationMetaWriter: Send + Sync {
     /// `raw_input` on the live `ToolCallState`. Used for calls the host
     /// announced identity-less (Cursor's `"MCP: tool"` with an empty input —
     /// the wire never re-sends title/arguments), once the companion
-    /// round-trip reveals which codeg-mcp tool the call actually is and with
+    /// round-trip reveals which zwiim-mcp tool the call actually is and with
     /// what arguments. Default no-op so `NoopMetaWriter` and mocks that don't
     /// observe identity writes stay unchanged.
     async fn write_tool_call_identity(

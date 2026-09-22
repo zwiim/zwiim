@@ -39,7 +39,7 @@ pub struct LogFileInfo {
 const READ_LOG_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 /// What the Settings UI needs to render the capture controls: the persisted
-/// global level and per-target overrides, plus whether `CODEG_LOG`/`RUST_LOG`
+/// global level and per-target overrides, plus whether `ZWIIM_LOG`/`RUST_LOG`
 /// currently locks them (env owns the live level, so the UI shows them
 /// read-only to avoid silent divergence).
 #[derive(Debug, Clone, Serialize)]
@@ -90,7 +90,7 @@ pub async fn set_log_settings_core(
     app_metadata_service::upsert_value(conn, LOGGING_LEVEL_KEY, &serialized)
         .await
         .map_err(AppCommandError::from)?;
-    // The env var (CODEG_LOG/RUST_LOG) owns the live level when set; persist the
+    // The env var (ZWIIM_LOG/RUST_LOG) owns the live level when set; persist the
     // choice for when it's later removed, but don't override it at runtime — the
     // UI locks the control in that case, so this also guards a stale client.
     if !crate::logging::init::env_level_is_set() {
@@ -359,8 +359,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         temp_env::with_vars(
             [
-                ("CODEG_HOME", None::<&str>),
-                ("CODEG_DATA_DIR", Some(tmp.path().to_str().unwrap())),
+                ("ZWIIM_HOME", None::<&str>),
+                ("ZWIIM_DATA_DIR", Some(tmp.path().to_str().unwrap())),
             ],
             || {
                 let logs = crate::paths::codeg_logs_root();
@@ -384,8 +384,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         temp_env::with_vars(
             [
-                ("CODEG_HOME", None::<&str>),
-                ("CODEG_DATA_DIR", Some(tmp.path().to_str().unwrap())),
+                ("ZWIIM_HOME", None::<&str>),
+                ("ZWIIM_DATA_DIR", Some(tmp.path().to_str().unwrap())),
             ],
             || {
                 let logs = crate::paths::codeg_logs_root();

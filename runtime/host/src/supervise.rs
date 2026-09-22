@@ -1,4 +1,4 @@
-//! `codeg-server --supervise` — a minimal process supervisor that owns the
+//! `zwiim-host --supervise` — a minimal process supervisor that owns the
 //! lifecycle of the real worker so an in-place upgrade can swap the binary
 //! and have the *new* version relaunched deterministically.
 //!
@@ -7,12 +7,12 @@
 //! reap reparented orphan children so they don't pile up as zombies.
 //!
 //! Relaunch contract: the worker performs the file swap and then exits with
-//! [`crate::update::runtime::EXIT_RESTART`]. We wait `CODEG_RESTART_DELAY_MS`
+//! [`crate::update::runtime::EXIT_RESTART`]. We wait `ZWIIM_RESTART_DELAY_MS`
 //! and respawn from the (now replaced) executable path.
 //!
 //! Failed-upgrade self-heal: a worker we just relaunched *because of* an
 //! upgrade is on probation. If it exits abnormally within
-//! `CODEG_UPGRADE_TRIAL_SECS` (the new binary can't even boot), we restore
+//! `ZWIIM_UPGRADE_TRIAL_SECS` (the new binary can't even boot), we restore
 //! the previous bundle from its `.bak` artifacts and relaunch that — once.
 //! This is the one recovery path that does **not** depend on the (now dead)
 //! HTTP rollback endpoint. Any other exit is propagated as-is — a fatal

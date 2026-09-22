@@ -28,7 +28,7 @@ use super::console::{ConsoleEntry, ConsoleLevel};
 pub const PICKER_JS: &str = include_str!("../../../src/browser-injected/picker.js");
 
 /// Name the picker publishes in the isolated world.
-pub const PICKER_GLOBAL: &str = "__codegPicker";
+pub const PICKER_GLOBAL: &str = "__zwiimPicker";
 
 /// Caps on what the page gets to say. The channel already refuses a message
 /// over 64 KiB, so these are not what keeps the host safe; they are what keeps
@@ -733,11 +733,11 @@ mod tests {
     fn the_picker_is_installed_and_armed_in_one_expression() {
         let js = install_and_pick("pick-7");
         assert!(js.contains(PICKER_JS));
-        assert!(js.contains("__codegPicker.start(\"pick-7\")"));
+        assert!(js.contains("__zwiimPicker.start(\"pick-7\")"));
         // The probe carries the arming but not the program.
         let probe = probe_and_pick("pick-7");
         assert!(!probe.contains(PICKER_JS));
-        assert!(probe.contains("__codegPicker.start(\"pick-7\")"));
+        assert!(probe.contains("__zwiimPicker.start(\"pick-7\")"));
         assert!(probe.contains(PICKER_ABSENT));
         // The token goes through serde, so a quote in it cannot end the string.
         let hostile = install_and_pick("\" ; alert(1) ; \"");
@@ -747,7 +747,7 @@ mod tests {
 
     #[test]
     fn the_picker_script_is_self_contained() {
-        assert!(PICKER_JS.contains("codegBrowserPicker"));
+        assert!(PICKER_JS.contains("zwiimBrowserPicker"));
         assert!(!PICKER_JS.contains("import "));
         assert!(!PICKER_JS.contains("require("));
         assert!(PICKER_JS.contains(PICKER_GLOBAL));

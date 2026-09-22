@@ -80,7 +80,7 @@ impl LogLevel {
     }
 }
 
-/// A per-target level override, e.g. `codeg_lib::acp` at `Debug` while the
+/// A per-target level override, e.g. `zwiim_host::acp` at `Debug` while the
 /// global level stays `Info`. `target` is a `tracing` target (a Rust module
 /// path); it maps directly to an `EnvFilter` directive `target=level`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

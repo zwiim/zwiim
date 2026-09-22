@@ -766,7 +766,7 @@ fn create_temp_file(
             .unwrap_or_default();
         let seq = SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let temp = parent.join(format!(
-            ".{stem}.codeg-{}-{seq}-{nonce}.tmp",
+            ".{stem}.zwiim-{}-{seq}-{nonce}.tmp",
             std::process::id()
         ));
         let mut options = fs::OpenOptions::new();

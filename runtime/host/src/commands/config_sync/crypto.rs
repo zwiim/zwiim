@@ -10,7 +10,7 @@
 //! ## Shape
 //!
 //! The envelope is JSON, not a binary header like
-//! [`crate::commands::backup::crypto`]'s `.codegbak`. Three reasons: the remote
+//! [`crate::commands::backup::crypto`]'s `.zwiimbak`. Three reasons: the remote
 //! file keeps its `config.json` name and stays a JSON document a cloud drive's
 //! web UI will preview; the import path can tell an encrypted payload from a
 //! plaintext one by looking at the same parsed value it already reads the

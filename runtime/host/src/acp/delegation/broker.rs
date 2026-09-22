@@ -1017,7 +1017,7 @@ fn attach_blocked(report: &mut DelegationTaskReport, blocked: BlockedOn) {
     // step with the tool description in `tool_schema.json`.
     report.message = Some(format!(
         "Running.\n{BLOCKED_LINE_PREFIX} {what}\nThe sub-agent is parked until \
-         a human answers in Codeg — it is not making progress. Tell the user, \
+         a human answers in Zwiim — it is not making progress. Tell the user, \
          then wait again."
     ));
     report.blocked_on = Some(blocked);
@@ -1306,7 +1306,7 @@ struct PendingToolCall {
     /// True when the entry came from an identity-less MCP announcement
     /// (Cursor's `"MCP: tool"` + empty input — see
     /// `lifecycle::CURSOR_IDENTITYLESS_MCP_TITLE`). Such an id belongs to
-    /// *some* codeg-mcp call whose identity only the companion round-trip can
+    /// *some* zwiim-mcp call whose identity only the companion round-trip can
     /// reveal, so it is additionally claimable by
     /// [`DelegationBroker::rewrite_identityless_tool_call`] (the
     /// `get_delegation_status` / `cancel_delegation` call-time rename), and a
@@ -1807,7 +1807,7 @@ impl DelegationBroker {
     /// Restore the identity of a pending identity-less MCP tool call at
     /// companion round-trip time: claim the oldest such candidate for this
     /// parent and rewrite its live `title` + `raw_input` to the actual
-    /// codeg-mcp tool (`get_delegation_status` / `cancel_delegation`) with
+    /// zwiim-mcp tool (`get_delegation_status` / `cancel_delegation`) with
     /// its real arguments — flipping the card from the generic "MCP: tool"
     /// WHILE the call runs, instead of only at the completion-time result
     /// sniff (which, for a `wait_ms`-blocked status long-poll, can be minutes
@@ -4473,7 +4473,7 @@ impl DelegationBroker {
     }
 
     /// How many delegation calls are parked awaiting a child's `TurnComplete`
-    /// right now. Surfaced by the codeg-mcp service-status indicator so the
+    /// right now. Surfaced by the zwiim-mcp service-status indicator so the
     /// popover can say the service is actually carrying traffic, not just
     /// listening.
     pub async fn running_delegation_count(&self) -> usize {

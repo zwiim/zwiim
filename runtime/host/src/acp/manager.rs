@@ -313,12 +313,12 @@ fn steered_turn_changed(
     !now_in_flight || now_turns_completed != admitted_turns_completed
 }
 
-/// Read the spawn-handshake timeout from `CODEG_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS`,
+/// Read the spawn-handshake timeout from `ZWIIM_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS`,
 /// falling back to `SPAWN_HANDSHAKE_TIMEOUT_SECS`. Returns the configured
 /// `Duration`. Tests can construct the manager with a custom value via
 /// `with_spawn_handshake_timeout` instead of mutating env.
 fn spawn_handshake_timeout_from_env() -> Duration {
-    let secs = std::env::var("CODEG_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS")
+    let secs = std::env::var("ZWIIM_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(SPAWN_HANDSHAKE_TIMEOUT_SECS);
@@ -440,7 +440,7 @@ pub struct ConnectionManager {
     /// Delegation broker + token registry + UDS path installed during app
     /// bootstrap (`install_delegation`). When present, `spawn_agent` propagates
     /// the injection to `spawn_agent_connection`, which makes
-    /// `codeg-mcp` appear in the agent's MCP server list during ACP
+    /// `zwiim-mcp` appear in the agent's MCP server list during ACP
     /// init. `Arc<OnceLock>` so the inner `Self` cloned from `clone_ref` sees
     /// the install too — the lock is set once at startup and never mutated.
     delegation_injection: Arc<std::sync::OnceLock<crate::acp::connection::DelegationInjection>>,
@@ -744,7 +744,7 @@ impl ConnectionManager {
         // SessionStarted has applied (so external_id is populated for the
         // next waiter), aborted (connection died), or the timeout fires.
         // Logged on every wait so production can audit real-world handshake
-        // latencies and tune `CODEG_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS`.
+        // latencies and tune `ZWIIM_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS`.
         if dedup_lock.is_some() {
             let timeout = self.spawn_handshake_timeout;
             let (outcome, elapsed) = wait_for_session_started(session_started_rx, timeout).await;
@@ -2374,7 +2374,7 @@ impl ConnectionManager {
     ///
     /// Used by the delegation-settings UI to enumerate the options the user
     /// can override, with the guarantee that what the UI shows is exactly
-    /// what `codeg-mcp` will pass through to `session/set_config_option`
+    /// what `zwiim-mcp` will pass through to `session/set_config_option`
     /// when a delegation actually fires.
     ///
     /// Returns `Ok(snapshot)` even when the agent advertises no options
@@ -4890,7 +4890,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_codex_goal_clear_interrupts_even_when_codeg_thinks_it_is_idle() {
-        // Codeg's `Prompting` only covers turns IT started. A goal loop's
+        // Zwiim's `Prompting` only covers turns IT started. A goal loop's
         // continuations are started by codex — detached turns no host request
         // owns — so the session reads "connected" while the agent is very much
         // working, which is precisely when the user hits Clear. Gating on our
@@ -7138,15 +7138,15 @@ mod tests {
     fn spawn_handshake_timeout_from_env_uses_default_when_unset() {
         // Snapshot env, mutate, restore. Single test owns this var to avoid
         // cross-test contention.
-        let prev = std::env::var("CODEG_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS").ok();
-        std::env::remove_var("CODEG_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS");
+        let prev = std::env::var("ZWIIM_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS").ok();
+        std::env::remove_var("ZWIIM_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS");
         let default = spawn_handshake_timeout_from_env();
         assert_eq!(default, Duration::from_secs(SPAWN_HANDSHAKE_TIMEOUT_SECS));
 
-        std::env::set_var("CODEG_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS", "5");
+        std::env::set_var("ZWIIM_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS", "5");
         assert_eq!(spawn_handshake_timeout_from_env(), Duration::from_secs(5));
 
-        std::env::set_var("CODEG_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS", "garbage");
+        std::env::set_var("ZWIIM_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS", "garbage");
         assert_eq!(
             spawn_handshake_timeout_from_env(),
             Duration::from_secs(SPAWN_HANDSHAKE_TIMEOUT_SECS),
@@ -7155,8 +7155,8 @@ mod tests {
 
         // Restore.
         match prev {
-            Some(v) => std::env::set_var("CODEG_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS", v),
-            None => std::env::remove_var("CODEG_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS"),
+            Some(v) => std::env::set_var("ZWIIM_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS", v),
+            None => std::env::remove_var("ZWIIM_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS"),
         }
     }
 

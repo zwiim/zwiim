@@ -50,12 +50,12 @@
 // every field is capped here and again in the host (`browser/handoff.rs`),
 // and the host's renderer marks the whole thing as page content rather than
 // instruction.
-;(function codegBrowserPicker() {
+;(function zwiimBrowserPicker() {
   "use strict"
-  if (typeof globalThis.__codegSend !== "function") return
-  if (globalThis.__codegPicker) return
+  if (typeof globalThis.__zwiimSend !== "function") return
+  if (globalThis.__zwiimPicker) return
 
-  var send = globalThis.__codegSend
+  var send = globalThis.__zwiimSend
   var stringify = JSON.stringify
   // Caps. The channel drops any message over 64 KiB, and what a page can put
   // in these fields is unbounded, so each is cut here — the host cuts them
@@ -570,7 +570,7 @@
       // stuck on can see what it is. Not a secret: the node is in the page's
       // DOM either way, and what keeps it honest is the inline `!important`
       // above, not being hard to find.
-      host.setAttribute("data-codeg-picker", "")
+      host.setAttribute("data-zwiim-picker", "")
       // A manual popover so the overlay can join the top layer, which is
       // painted above every ordinary child of the document no matter what
       // z-index they claim. Without it a page needs only to open a popover of
@@ -953,7 +953,7 @@
   // escape hatch as `helper.js`: the flag lives in this world, which page
   // scripts cannot reach, and only the host's own harness sets it.
   function trusted(event) {
-    return !!event.isTrusted || globalThis.__codegAcceptUntrusted === true
+    return !!event.isTrusted || globalThis.__zwiimAcceptUntrusted === true
   }
 
   /**
@@ -1287,7 +1287,7 @@
     }
   }
 
-  globalThis.__codegPicker = {
+  globalThis.__zwiimPicker = {
     // Arm the picker for one element. A second call replaces the first: the
     // host only ever waits for the pick it asked for last, and an id it does
     // not recognise is dropped there.

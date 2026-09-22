@@ -2,7 +2,7 @@
 //! (`browser_list_tabs` / `browser_snapshot` / `browser_console_messages` /
 //! `browser_screenshot`, and the five action tools `browser_click` /
 //! `browser_hover` / `browser_type` / `browser_press_key` /
-//! `browser_select_option`) carried by codeg-mcp.
+//! `browser_select_option`) carried by zwiim-mcp.
 //!
 //! Nothing here decides whether a page may be read or acted on. That decision
 //! is `crate::browser::agent`'s, and it is enforced inside

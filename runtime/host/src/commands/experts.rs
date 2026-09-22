@@ -2,7 +2,7 @@
 //!
 //! Experts are curated skills (from obra/superpowers) that codeg bundles
 //! into its binary via `include_dir!`. On startup they are extracted to a
-//! central directory `~/.codeg/skills/<id>/`. Users can then enable an
+//! central directory `~/.zwiim/skills/<id>/`. Users can then enable an
 //! expert for any ACP agent by creating a symbolic link (or Windows
 //! junction) from the agent's skill directory into the central copy.
 //!
@@ -47,7 +47,7 @@ use crate::models::agent::AgentType;
 
 static EXPERTS_BUNDLE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/experts");
 
-const CENTRAL_DIR_NAME: &str = ".codeg";
+const CENTRAL_DIR_NAME: &str = ".zwiim";
 const CENTRAL_SKILLS_SUBDIR: &str = "skills";
 const MANIFEST_FILE: &str = ".manifest.json";
 const EXPERTS_TOML: &str = "experts.toml";
@@ -112,7 +112,7 @@ pub struct ExpertListItem {
 #[serde(rename_all = "snake_case")]
 pub enum ExpertLinkState {
     NotLinked,
-    LinkedToCodeg,
+    LinkedToZwiim,
     LinkedElsewhere,
     BlockedByRealDirectory,
     Broken,
@@ -536,7 +536,7 @@ pub(crate) fn classify_link(link_path: &Path, expected_target: &Path) -> ExpertL
 
     match (resolved_link, resolved_expected) {
         (None, _) => ExpertLinkState::Broken,
-        (Some(l), Some(e)) if paths_equivalent(&l, &e) => ExpertLinkState::LinkedToCodeg,
+        (Some(l), Some(e)) if paths_equivalent(&l, &e) => ExpertLinkState::LinkedToZwiim,
         _ => ExpertLinkState::LinkedElsewhere,
     }
 }
@@ -850,7 +850,7 @@ fn link_one_locked(
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
             // Already exists — figure out what kind.
             match classify_link(&link_path, &central) {
-                ExpertLinkState::LinkedToCodeg => {
+                ExpertLinkState::LinkedToZwiim => {
                     // Idempotent success.
                 }
                 ExpertLinkState::BlockedByRealDirectory => {
@@ -931,7 +931,7 @@ fn unlink_one_locked(expert_id: &str, agent_type: AgentType) -> Result<(), Exper
         let state = classify_link(&candidate, &central);
         if matches!(
             state,
-            ExpertLinkState::LinkedToCodeg | ExpertLinkState::Broken
+            ExpertLinkState::LinkedToZwiim | ExpertLinkState::Broken
         ) {
             // Safe to remove a link to our central store or a broken link.
             remove_skill_entry(&candidate).map_err(|e| {

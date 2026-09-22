@@ -50,7 +50,7 @@ pub struct CustomAgentInfo {
     /// Mirrors [`CustomAgentDef::version_probe`] for the edit form.
     pub version_probe: Option<String>,
     /// Mirrors [`CustomAgentDef::supports_mcp`] — backs the settings toggle
-    /// that decides whether codeg-mcp rides along on `session/new`.
+    /// that decides whether zwiim-mcp rides along on `session/new`.
     pub supports_mcp: bool,
     /// False when the stored definition cannot produce launch metadata (e.g.
     /// a binary-only agent with no release for this platform). The row still

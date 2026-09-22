@@ -1125,8 +1125,8 @@ mod tests {
     #[tokio::test]
     async fn base_env_propagates_and_request_env_overrides() {
         let mut base_env = BTreeMap::new();
-        base_env.insert("CODEG_TEST_BASE_VAR".to_string(), "from_base".to_string());
-        base_env.insert("CODEG_TEST_OVERRIDE".to_string(), "loses".to_string());
+        base_env.insert("ZWIIM_TEST_BASE_VAR".to_string(), "from_base".to_string());
+        base_env.insert("ZWIIM_TEST_OVERRIDE".to_string(), "loses".to_string());
         let runtime = TerminalRuntime::with_base_env(base_env);
 
         let session_id = SessionId::new("test-session".to_string());
@@ -1135,9 +1135,9 @@ mod tests {
             "-c".into(),
             // Print both vars on separate lines so we can match each
             // independently regardless of shell quoting.
-            "printf '%s\\n' \"$CODEG_TEST_BASE_VAR\" \"$CODEG_TEST_OVERRIDE\"".into(),
+            "printf '%s\\n' \"$ZWIIM_TEST_BASE_VAR\" \"$ZWIIM_TEST_OVERRIDE\"".into(),
         ];
-        request.env = vec![EnvVariable::new("CODEG_TEST_OVERRIDE", "request_wins")];
+        request.env = vec![EnvVariable::new("ZWIIM_TEST_OVERRIDE", "request_wins")];
 
         let response = runtime
             .create_terminal(request)

@@ -230,7 +230,7 @@ pub struct CustomAgentDef {
     pub version_probe: Option<String>,
     /// User declaration that the agent accepts MCP servers over the ACP wire
     /// (`session/new`'s `mcpServers`) — which, for a custom agent, means the
-    /// built-in codeg-mcp companion (delegation, live feedback, task tools).
+    /// built-in zwiim-mcp companion (delegation, live feedback, task tools).
     ///
     /// Not every ACP agent does: some reject any entry in that field and fail
     /// session creation outright, so a custom agent that codeg cannot connect
@@ -552,7 +552,7 @@ pub fn build_meta(def: &CustomAgentDef) -> Result<AcpAgentMeta, CustomAgentError
     Ok(AcpAgentMeta {
         agent_type,
         // MCP is forwarded over the ACP wire (`session/new`'s `mcpServers`) —
-        // for a custom agent, the codeg-mcp companion is the whole of it. On
+        // for a custom agent, the zwiim-mcp companion is the whole of it. On
         // by default; the user turns it off for an agent that rejects server
         // entries and fails to connect (see `CustomAgentDef::supports_mcp`).
         // Built-ins declare the same flag as a constant, where OpenClaw is the
@@ -1392,7 +1392,7 @@ mod tests {
         let _guard = hydrate_guard();
         let mut def = npx_def("mcp-flag-agent");
         // On unless the user says otherwise: this is the gate
-        // `connection.rs` reads to decide whether codeg-mcp goes out on
+        // `connection.rs` reads to decide whether zwiim-mcp goes out on
         // `session/new`.
         assert!(build_meta(&def).expect("valid").supports_mcp);
 

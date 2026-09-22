@@ -1,5 +1,5 @@
 // Built-in browser helper. Injected by the Rust host into the ISOLATED world
-// of every browser tab (WKContentWorld "codeg" on macOS, a CDP isolated world
+// of every browser tab (WKContentWorld "zwiim" on macOS, a CDP isolated world
 // on Windows, a WebKitGTK script world on Linux) at document start, for every
 // frame. The page cannot see this script, its globals, or the native message
 // channel it talks over — an isolated world shares the DOM but has its own
@@ -22,16 +22,16 @@
 //      rejections, failed resource loads — as `console` messages, on the
 //      engines that report none of it to the host themselves.
 //
-// The host defines `__codegSend(string)` before this script runs. Messages
+// The host defines `__zwiimSend(string)` before this script runs. Messages
 // are `{ kind, payload }` JSON strings; the host treats every field as
 // untrusted input.
-;(function codegBrowserHelper() {
+;(function zwiimBrowserHelper() {
   "use strict"
-  if (typeof globalThis.__codegSend !== "function") return
-  if (globalThis.__codegHelperInstalled) return
-  globalThis.__codegHelperInstalled = true
+  if (typeof globalThis.__zwiimSend !== "function") return
+  if (globalThis.__zwiimHelperInstalled) return
+  globalThis.__zwiimHelperInstalled = true
 
-  var send = globalThis.__codegSend
+  var send = globalThis.__zwiimSend
   var stringify = JSON.stringify
   var now = function () {
     return Date.now()
@@ -183,7 +183,7 @@
   // flag below is the one exception, set by the host's own test harness
   // through a world-scoped eval (page scripts cannot reach this global).
   function trusted(event) {
-    return !!event.isTrusted || globalThis.__codegAcceptUntrusted === true
+    return !!event.isTrusted || globalThis.__zwiimAcceptUntrusted === true
   }
   function recordGesture(type, event, extra) {
     gestureSeq += 1
@@ -261,7 +261,7 @@
   // What the page prints, for an agent that has been given the page. WebKit
   // reports a page's console to nobody, so a shim in the PAGE world
   // (`console.js`) wraps `console.*` and dispatches each line on the document
-  // as a `codeg:console` event whose detail is one JSON string — the one kind
+  // as a `zwiim:console` event whose detail is one JSON string — the one kind
   // of value that crosses a world boundary unchanged. This side reads the
   // string with this world's own JSON, adds the address it came from (which
   // the page cannot forge here) and forwards it. Uncaught exceptions,
@@ -269,14 +269,14 @@
   // events reach a listener in this world like `popstate` does.
   //
   // Where the engine does report the console to the host (WebView2, over
-  // CDP), the host sets `__codegEngineConsole` before this script runs and
+  // CDP), the host sets `__zwiimEngineConsole` before this script runs and
   // none of this is wired — or every line would arrive twice, once from the
   // engine and once from here.
   //
   // Everything below is page-controlled: the page can dispatch the event
   // itself, and a page in a logging loop could flood the channel, so lines
   // are budgeted per second and the overflow is counted rather than sent.
-  var engineConsole = globalThis.__codegEngineConsole === true
+  var engineConsole = globalThis.__zwiimEngineConsole === true
   var parse = JSON.parse
   var getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor
   var CONSOLE_BUDGET_PER_SECOND = 200
@@ -386,7 +386,7 @@
   // to load is reported by no CDP console event, so that listener stays.
   if (!engineConsole) {
     document.addEventListener(
-      "codeg:console",
+      "zwiim:console",
       function (event) {
         var detail = event && event.detail
         if (typeof detail !== "string" || detail.length > 16384) return

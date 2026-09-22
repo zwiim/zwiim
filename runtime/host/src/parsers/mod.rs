@@ -296,7 +296,7 @@ pub trait AgentParser {
 ///
 /// Every caller goes through here so the internal `@agent` routing frame is
 /// stripped from every agent's history — not just the one agent whose parser
-/// happens to know about it. `codeg-mcp` is injected into every MCP-capable
+/// happens to know about it. `zwiim-mcp` is injected into every MCP-capable
 /// agent, so the frame lands in each of their native transcripts; a per-parser
 /// fix would silently miss whichever parser was written next.
 pub fn build_agent_parser(agent_type: AgentType) -> Box<dyn AgentParser> {
@@ -323,7 +323,7 @@ pub fn build_agent_parser(agent_type: AgentType) -> Box<dyn AgentParser> {
     Box::new(RouteSanitized(inner))
 }
 
-/// Removes Codeg's internal `@agent` routing frame from whatever a parser read
+/// Removes Zwiim's internal `@agent` routing frame from whatever a parser read
 /// back out of an agent's own transcript.
 ///
 /// Only complete frames that re-render byte-for-byte are touched (see

@@ -6,7 +6,7 @@
 //! `ExitPlanModeExtRequest { sessionId, toolCallId, planContent }`) to the client
 //! to get the user's approval before leaving plan mode. Grok waits for the reply.
 //!
-//! Codeg bridges that ext request into an interactive **plan-approval card**
+//! Zwiim bridges that ext request into an interactive **plan-approval card**
 //! rendered above the composer — the SAME shape as the `ask_user_question` bridge
 //! ([`crate::acp::question`]) and the permission dialog: a pending request is
 //! captured onto [`crate::acp::session_state::SessionState`] (in-memory, turn

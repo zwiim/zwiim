@@ -1,7 +1,7 @@
 //! macOS shim on top of `WKWebView` / `WKUserContentController` (objc2).
 //!
-//! The helper script and the `codegBrowser` message handler live in the
-//! `WKContentWorld` named `codeg`: a separate JavaScript global for the same
+//! The helper script and the `zwiimBrowser` message handler live in the
+//! `WKContentWorld` named `zwiim`: a separate JavaScript global for the same
 //! DOM, invisible to page scripts and immune to their prototype tampering.
 //! `WKContentWorld` needs macOS 11; older systems fall back to the page world
 //! (reported as `ChannelKind::Legacy`).
@@ -31,8 +31,8 @@ use super::super::channel::MessageSink;
 use super::super::hooks::{classify_load_error, LoadFailure};
 use super::super::profile::{self, BrowserProxy, ProxyScheme};
 
-pub const WORLD_NAME: &str = "codeg";
-pub const HANDLER_NAME: &str = "codegBrowser";
+pub const WORLD_NAME: &str = "zwiim";
+pub const HANDLER_NAME: &str = "zwiimBrowser";
 
 thread_local! {
     // Controllers that already carry our handler + scripts. A popup created
@@ -49,14 +49,14 @@ define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[ivars = HandlerIvars]
-    pub struct CodegMessageHandler;
+    pub struct ZwiimMessageHandler;
 
-    unsafe impl NSObjectProtocol for CodegMessageHandler {}
+    unsafe impl NSObjectProtocol for ZwiimMessageHandler {}
 
-    unsafe impl WKScriptMessageHandler for CodegMessageHandler {
+    unsafe impl WKScriptMessageHandler for ZwiimMessageHandler {
         #[unsafe(method(userContentController:didReceiveScriptMessage:))]
         fn did_receive(
-            this: &CodegMessageHandler,
+            this: &ZwiimMessageHandler,
             _controller: &WKUserContentController,
             message: &WKScriptMessage,
         ) {
@@ -78,7 +78,7 @@ define_class!(
     }
 );
 
-impl CodegMessageHandler {
+impl ZwiimMessageHandler {
     fn new(sink: MessageSink, mtm: MainThreadMarker) -> Retained<Self> {
         let this = mtm.alloc::<Self>().set_ivars(HandlerIvars { sink });
         // SAFETY: plain NSObject init.
@@ -91,7 +91,7 @@ fn mtm() -> Result<MainThreadMarker, String> {
 }
 
 /// Content worlds (macOS 11+): decided at runtime, not compile time, because
-/// codeg sets no minimumSystemVersion.
+/// zwiim sets no minimumSystemVersion.
 pub fn supports_content_world(controller: &WKUserContentController) -> bool {
     controller.respondsToSelector(sel!(addScriptMessageHandler:contentWorld:name:))
 }
@@ -115,16 +115,16 @@ pub fn install_world(
         // place already, and the sink resolves the tab per message.
         return Ok(supports_content_world(&controller));
     }
-    let handler = CodegMessageHandler::new(sink, mtm);
+    let handler = ZwiimMessageHandler::new(sink, mtm);
     let proto = ProtocolObject::from_ref(&*handler);
     // SAFETY: main thread, live controller; WebKit retains the handler.
     unsafe {
         if supports_content_world(&controller) {
-            let world = WKContentWorld::worldWithName(ns_string!("codeg"), mtm);
+            let world = WKContentWorld::worldWithName(ns_string!("zwiim"), mtm);
             controller.addScriptMessageHandler_contentWorld_name(
                 proto,
                 &world,
-                ns_string!("codegBrowser"),
+                ns_string!("zwiimBrowser"),
             );
             for source in scripts {
                 let script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly_inContentWorld(
@@ -139,7 +139,7 @@ pub fn install_world(
             add_page_scripts(&controller, page_scripts, mtm);
             Ok(true)
         } else {
-            controller.addScriptMessageHandler_name(proto, ns_string!("codegBrowser"));
+            controller.addScriptMessageHandler_name(proto, ns_string!("zwiimBrowser"));
             for source in scripts {
                 let script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
                     mtm.alloc(),
@@ -178,7 +178,7 @@ unsafe fn add_page_scripts(
     }
 }
 
-/// Evaluate `expression` in the `codeg` world of the main frame. The result
+/// Evaluate `expression` in the `zwiim` world of the main frame. The result
 /// arrives as the JSON string `{"ok":true,"value":…}` or
 /// `{"ok":false,"error":…}` so no platform value conversion is needed.
 pub fn eval_in_world(
@@ -211,7 +211,7 @@ pub fn eval_in_world(
     );
     // SAFETY: main thread, live webview.
     unsafe {
-        let world = WKContentWorld::worldWithName(ns_string!("codeg"), mtm);
+        let world = WKContentWorld::worldWithName(ns_string!("zwiim"), mtm);
         wk.evaluateJavaScript_inFrame_inContentWorld_completionHandler(
             &NSString::from_str(&wrapped),
             None,
@@ -581,7 +581,7 @@ pub use super::{NavigationEvent, NavigationSink};
 thread_local! {
     /// Wrappers by `WKWebView` pointer, kept alive here (`navigationDelegate`
     /// is a weak property).
-    static NAV_DELEGATES: RefCell<HashMap<usize, Retained<CodegNavigationDelegate>>> =
+    static NAV_DELEGATES: RefCell<HashMap<usize, Retained<ZwiimNavigationDelegate>>> =
         RefCell::new(HashMap::new());
     /// Whether the navigation action currently being decided targets the main
     /// frame. Set around the forward to wry, whose synchronous call into the
@@ -615,11 +615,11 @@ define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[ivars = NavigationDelegateIvars]
-    pub struct CodegNavigationDelegate;
+    pub struct ZwiimNavigationDelegate;
 
-    unsafe impl NSObjectProtocol for CodegNavigationDelegate {}
+    unsafe impl NSObjectProtocol for ZwiimNavigationDelegate {}
 
-    impl CodegNavigationDelegate {
+    impl ZwiimNavigationDelegate {
         #[unsafe(method(respondsToSelector:))]
         fn responds_to_selector(&self, selector: Sel) -> bool {
             self.class().responds_to(selector) || self.ivars().inner.respondsToSelector(selector)
@@ -631,7 +631,7 @@ define_class!(
         }
     }
 
-    unsafe impl WKNavigationDelegate for CodegNavigationDelegate {
+    unsafe impl WKNavigationDelegate for ZwiimNavigationDelegate {
         #[unsafe(method(webView:decidePolicyForNavigationAction:decisionHandler:))]
         fn decide_policy(
             &self,
@@ -744,7 +744,7 @@ define_class!(
     }
 );
 
-impl CodegNavigationDelegate {
+impl ZwiimNavigationDelegate {
     fn new(
         inner: Retained<ProtocolObject<dyn WKNavigationDelegate>>,
         sink: NavigationSink,
@@ -851,7 +851,7 @@ pub fn install_navigation_delegate(webview: &wry::WebView, sink: NavigationSink)
     // SAFETY: main thread, live webview.
     let inner = unsafe { wk.navigationDelegate() }
         .ok_or_else(|| "the webview has no navigation delegate to wrap".to_string())?;
-    let delegate = CodegNavigationDelegate::new(inner, sink, mtm);
+    let delegate = ZwiimNavigationDelegate::new(inner, sink, mtm);
     // SAFETY: main thread; the wrapper is retained in `NAV_DELEGATES` below,
     // which is what keeps the weak `navigationDelegate` valid.
     unsafe { wk.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
@@ -1164,7 +1164,7 @@ mod network {
     type AddExcludedDomain = unsafe extern "C" fn(*mut NSObject, *const c_char);
 
     /// Connections to these hosts never go through the proxy: pages served
-    /// from this machine (dev servers, codeg's own bridges) are the point of
+    /// from this machine (dev servers, zwiim's own bridges) are the point of
     /// the built-in browser and must keep working whatever the proxy would do
     /// with them — the exception every browser and the `NO_PROXY` convention
     /// make. (A remote-egress profile will want the opposite; it gets its own

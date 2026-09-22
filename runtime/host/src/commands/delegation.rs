@@ -62,7 +62,7 @@ pub struct DelegationSettings {
     pub enabled: bool,
     pub depth_limit: u32,
     /// Per-agent default overrides applied by the delegation broker when
-    /// codeg-mcp spawns a subagent. Empty map → no overrides anywhere,
+    /// zwiim-mcp spawns a subagent. Empty map → no overrides anywhere,
     /// which is the pre-existing behavior.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub agent_defaults: BTreeMap<AgentType, AgentDelegationDefaults>,

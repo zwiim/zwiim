@@ -645,7 +645,7 @@ pub enum AcpEvent {
         agent_type: crate::models::agent::AgentType,
         result: DelegationResultSummary,
     },
-    /// A human submitted a prompt from the Codeg conversation UI (desktop or
+    /// A human submitted a prompt from the Zwiim conversation UI (desktop or
     /// web). Synthetic, notification-only event: it mutates no `SessionState`
     /// field and exists purely to drive the chat-channel "user message" push.
     /// Emitted by `send_prompt_linked` on the genuine UI path only
@@ -1073,9 +1073,9 @@ pub struct AcpAgentInfo {
     pub sort_order: i32,
     pub installed_version: Option<String>,
     pub env: BTreeMap<String, String>,
-    /// The RESOLVED `CODEG_ACP_HOST_TOOLS` verdict for this agent — whether the
+    /// The RESOLVED `ZWIIM_ACP_HOST_TOOLS` verdict for this agent — whether the
     /// next launch hands the `fs/*` + `terminal/*` channels (and, with them,
-    /// codeg-mcp's delegation tools) back to the agent.
+    /// zwiim-mcp's delegation tools) back to the agent.
     ///
     /// Resolved by [`crate::acp::host_tools_policy::HostToolsPolicy::from_env`],
     /// the same function the launch uses, so it accounts for BOTH layers: the

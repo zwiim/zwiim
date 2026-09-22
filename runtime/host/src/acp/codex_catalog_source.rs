@@ -85,7 +85,7 @@ fn codex_acp_dir(prefix: &Path) -> PathBuf {
 }
 
 /// Candidate codex-acp package dirs: the global npm prefix and codeg's user
-/// prefix (`~/.codeg/npm-global`, used when a global install hit EACCES).
+/// prefix (`~/.zwiim/npm-global`, used when a global install hit EACCES).
 async fn codex_acp_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(prefix) = crate::commands::acp::cached_npm_global_prefix().await {

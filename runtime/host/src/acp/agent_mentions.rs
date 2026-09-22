@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use crate::acp::types::PromptInputBlock;
 use crate::models::agent::{is_valid_custom_agent_id, BUILTIN_AGENT_TYPES};
 
-// Reserved at every Codeg prompt ingress before any routing frame is appended.
+// Reserved at every Zwiim prompt ingress before any routing frame is appended.
 // The parser may therefore treat a structurally valid RS-bounded frame as
-// Codeg-authored without deleting an API caller's control-character text.
+// Zwiim-authored without deleting an API caller's control-character text.
 const ROUTE_FRAME_SEPARATOR: char = '\u{001e}';
 const ROUTE_FRAME_KIND: &str = "codeg_internal_agent_routes";
 /// Opening bytes of the frame's descriptor line — the anchor used to find a
@@ -76,7 +76,7 @@ fn visible_agent_reference_types(blocks: &[PromptInputBlock]) -> Vec<String> {
 }
 
 /// Append prompt-local routing for every agent the user visibly linked, when
-/// this connection actually received the codeg-mcp companion's delegation
+/// this connection actually received the zwiim-mcp companion's delegation
 /// group.
 ///
 /// The prompt IS the input: a visible `[label](codeg://agent/<type>)` link is
@@ -131,7 +131,7 @@ pub(crate) fn append_agent_routes(blocks: &mut Vec<PromptInputBlock>, delegation
 
 /// The frame's exact bytes ARE its identity: `parse_internal_agent_routes`
 /// only accepts a candidate it can re-render byte-for-byte, which is what lets
-/// the parsers strip a Codeg-authored frame without ever deleting look-alike
+/// the parsers strip a Zwiim-authored frame without ever deleting look-alike
 /// user prose.
 ///
 /// CONSEQUENCE: editing this string orphans every frame already written into an
@@ -173,9 +173,9 @@ fn render_internal_agent_routes_body(frame: &InternalAgentRoutes) -> String {
     let routes = serde_json::to_string(&frame.routes).expect("agent routes are serializable");
     format!(
         "{descriptor}\n\
-Codeg composer routing metadata (authoritative): {routes}\n\
+Zwiim composer routing metadata (authoritative): {routes}\n\
 When you delegate any of this work, route it through the `delegate_to_agent` \
-tool from the `codeg-mcp` server with `agent_type` taken from the matching \
+tool from the `zwiim-mcp` server with `agent_type` taken from the matching \
 route: do not substitute your own native sub-agent, task, or spawn mechanism, \
 and do not route it through any other delegation tool.\n"
     )
@@ -214,7 +214,7 @@ fn parse_internal_agent_routes_body(candidate: &str) -> Option<InternalAgentRout
     let routes_json = remainder
         .lines()
         .next()?
-        .strip_prefix("Codeg composer routing metadata (authoritative): ")?;
+        .strip_prefix("Zwiim composer routing metadata (authoritative): ")?;
     frame.routes = serde_json::from_str(routes_json).ok()?;
     if frame.kind != ROUTE_FRAME_KIND
         || frame.version != ROUTE_FRAME_VERSION
@@ -277,11 +277,11 @@ fn find_separated_frame(input: &str, from: usize) -> Option<(usize, usize)> {
 /// A frame whose separators the agent dropped or rewrote, matched on its body.
 ///
 /// WHY THIS EXISTS. Separators are the cheapest possible proof that a frame is
-/// Codeg-authored, but they only reach a transcript intact if the agent stores
+/// Zwiim-authored, but they only reach a transcript intact if the agent stores
 /// the prompt verbatim — and one does not. Antigravity's ACP server joins the
 /// prompt's text blocks with a space and replaces each separator with one, so a
 /// routed turn lands in `conversations/<id>.db` as
-/// `…（使用codeg-mcp工具）  {"kind":…delegation tool.\n ` — the same body, both
+/// `…（使用zwiim-mcp工具）  {"kind":…delegation tool.\n ` — the same body, both
 /// separators now spaces. The separated pass cannot see that, and the whole
 /// frame renders inside the user's bubble when the session is reopened.
 ///
@@ -327,7 +327,7 @@ fn unseparated_frame_end(input: &str, start: usize) -> Option<usize> {
 }
 
 /// Remove only complete frames that can be parsed and reproduced byte-for-byte.
-/// Codeg scrubs the reserved separator from every prompt at ingress, so a frame
+/// Zwiim scrubs the reserved separator from every prompt at ingress, so a frame
 /// that still round-trips can only have been appended at the final boundary —
 /// true for any agent's transcript, not just the one this was first written for.
 ///
@@ -381,7 +381,7 @@ pub(crate) fn contains_internal_agent_routes(input: &str) -> bool {
 /// Cutting at the SEPARATOR is sound because RS is reserved:
 /// `strip_route_separator_from_prompt` removes it from every prompt field at
 /// ingress, so a separator that survives into persisted history can only be one
-/// Codeg appended itself. The descriptor prefix carries no such guarantee — it
+/// Zwiim appended itself. The descriptor prefix carries no such guarantee — it
 /// is ordinary text a user could in principle type — but it is the only handle
 /// left on the agents that rewrite the separators away (Antigravity), and the
 /// blast radius of a false positive is one truncated sidebar title, against a
@@ -449,7 +449,7 @@ pub(crate) fn contains_only_internal_agent_routes(input: &str) -> bool {
 /// message permanently unsendable with no way for the user to find the offending
 /// byte, and it also let a model echo the frame back into a `delegate_to_agent`
 /// task string and kill the child prompt. Stripping keeps the invariant that
-/// motivated the check — a byte-exact frame inside a Codeg-authored turn can
+/// motivated the check — a byte-exact frame inside a Zwiim-authored turn can
 /// only have been appended by [`append_agent_routes`] — and makes it stronger,
 /// since no user-supplied RS reaches the wire at all.
 ///
@@ -582,7 +582,7 @@ mod tests {
 
     #[test]
     fn a_closed_delegation_gate_is_the_only_check_on_the_parent_agent() {
-        // A parent that never received codeg-mcp (OpenClaw's supports_mcp=false,
+        // A parent that never received zwiim-mcp (OpenClaw's supports_mcp=false,
         // pi's wire exclusion) reaches this function with the gate closed. There
         // is no agent-type check here on purpose: the injection gate is the
         // single source of truth.
@@ -768,7 +768,7 @@ mod tests {
     /// Exactly what Antigravity's ACP server writes into its trajectory: the
     /// prompt's text blocks joined with a space, and each separator replaced by
     /// one. Verified against a real `conversations/<id>.db`, where a routed turn
-    /// reads `…（使用codeg-mcp工具）  {"kind":…delegation tool.\n ` — note the
+    /// reads `…（使用zwiim-mcp工具）  {"kind":…delegation tool.\n ` — note the
     /// body's own newlines came through, which is why the scan can count them.
     fn as_antigravity_persists(blocks: &[PromptInputBlock]) -> String {
         blocks

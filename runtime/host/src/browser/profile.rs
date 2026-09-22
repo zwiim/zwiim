@@ -46,7 +46,7 @@ pub fn valid_profile_id(id: &str) -> bool {
 }
 
 /// `WKWebsiteDataStore` identifier of the default profile (macOS 14+):
-/// uuid5(NAMESPACE_URL, "https://codeg.app/browser-profile/default"). Fixed so
+/// uuid5(NAMESPACE_URL, "https://zwiim.app/browser-profile/default"). Fixed so
 /// the same store is found again after a restart or an update; the other
 /// profiles' identifiers come from `data_store_identifier`, which must keep
 /// producing this one for `default` (there is a test).
@@ -55,7 +55,7 @@ pub const DEFAULT_DATA_STORE_IDENTIFIER: [u8; 16] = [
 ];
 
 /// The data-store identifier of a profile (macOS 14+): a version-5 UUID of
-/// `https://codeg.app/browser-profile/<id>` in the URL namespace, so the
+/// `https://zwiim.app/browser-profile/<id>` in the URL namespace, so the
 /// same store is found again after a restart or an update and no two
 /// profiles can share one.
 pub fn data_store_identifier(profile_id: &str) -> [u8; 16] {
@@ -66,7 +66,7 @@ pub fn data_store_identifier(profile_id: &str) -> [u8; 16] {
     ];
     let mut hasher = Sha1::new();
     hasher.update(NAMESPACE_URL);
-    hasher.update(format!("https://codeg.app/browser-profile/{profile_id}").as_bytes());
+    hasher.update(format!("https://zwiim.app/browser-profile/{profile_id}").as_bytes());
     let digest = hasher.finalize();
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&digest[..16]);
@@ -79,7 +79,7 @@ pub fn data_store_identifier(profile_id: &str) -> [u8; 16] {
 /// folder) and Linux (WebKitGTK data directory). Unused on macOS, where the
 /// data store identifier plays this role.
 pub fn directory(profile_id: &str) -> PathBuf {
-    crate::paths::codeg_browser_profiles_root().join(profile_id)
+    crate::paths::zwiim_browser_profiles_root().join(profile_id)
 }
 
 /// Whether more than the default profile can exist here. macOS keeps the
@@ -259,7 +259,7 @@ fn platform_proxy_status() -> BrowserProxyStatus {
     let frozen = frozen_proxy();
     let mut status = status_for(ProxyApplies::Restart, current_proxy());
     if FROZEN_PROXY.get().is_some() && status.url != frozen.as_ref().map(BrowserProxy::to_url_string) {
-        status.reason = Some("restart codeg for browser tabs to use the new proxy".to_string());
+        status.reason = Some("restart zwiim for browser tabs to use the new proxy".to_string());
         status.url = frozen.map(|p| p.to_url_string());
     }
     status
@@ -511,7 +511,7 @@ const GOOGLE_SIGN_IN_HOSTS: [&str; 2] = ["accounts.google.com", "accounts.youtub
 /// Environment variable naming further hosts (comma-separated) that get the
 /// sign-in identity: another provider with the same refusal, or a server of
 /// one's own to check the switch against. Read once per process.
-pub const SIGN_IN_HOSTS_ENV: &str = "CODEG_BROWSER_SIGN_IN_HOSTS";
+pub const SIGN_IN_HOSTS_ENV: &str = "ZWIIM_BROWSER_SIGN_IN_HOSTS";
 
 fn extra_sign_in_hosts() -> &'static [String] {
     static EXTRA: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
@@ -530,7 +530,7 @@ fn host_matches(host: &str, known: &str) -> bool {
 }
 
 /// Whether `host` (or a parent domain of it) is one of the sign-in hosts:
-/// Google's, plus whatever `CODEG_BROWSER_SIGN_IN_HOSTS` names.
+/// Google's, plus whatever `ZWIIM_BROWSER_SIGN_IN_HOSTS` names.
 pub fn is_google_sign_in_host(host: &str) -> bool {
     is_sign_in_host_among(host, extra_sign_in_hosts())
 }

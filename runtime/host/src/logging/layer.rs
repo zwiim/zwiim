@@ -124,7 +124,7 @@ impl Visit for FieldVisitor {
 struct SpanFields(BTreeMap<String, String>);
 
 /// Layer that converts each event into a [`LogRecord`] and hands it to the
-/// global [`LogHub`]. A no-op until the hub is installed (so `codeg-mcp`, which
+/// global [`LogHub`]. A no-op until the hub is installed (so `zwiim-mcp`, which
 /// installs no hub, pays nothing). Requires `LookupSpan` so it can read span
 /// context from the registry.
 pub struct BufferEmitLayer;

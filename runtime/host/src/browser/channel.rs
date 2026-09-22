@@ -38,7 +38,7 @@ pub const CONSOLE_JS: &str = include_str!("../../../src/browser-injected/console
 /// would otherwise arrive twice, once from the engine and once from here.
 #[cfg(target_os = "windows")]
 pub const HELPER_JS_ENGINE_CONSOLE: &str = concat!(
-    "globalThis.__codegEngineConsole = true;\n",
+    "globalThis.__zwiimEngineConsole = true;\n",
     include_str!("../../../src/browser-injected/helper.js")
 );
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
@@ -54,7 +54,7 @@ pub type MessageSink = Arc<dyn Fn(String, bool, usize) + Send + Sync>;
 /// in the same world, so the page never sees either. WebKit spells the message
 /// handler the same way on both its ports, so macOS and Linux share this.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub const PREFIX_SCRIPT: &str = "globalThis.__codegSend = function (m) { window.webkit.messageHandlers.codegBrowser.postMessage(String(m)); };";
+pub const PREFIX_SCRIPT: &str = "globalThis.__zwiimSend = function (m) { window.webkit.messageHandlers.zwiimBrowser.postMessage(String(m)); };";
 
 /// The same primitive for a SUBFRAME's copy of the helper, posting through a
 /// handler the host treats as non-main-frame (Linux only — macOS learns the
@@ -66,7 +66,7 @@ pub const PREFIX_SCRIPT: &str = "globalThis.__codegSend = function (m) { window.
 /// engine's business, and a tab whose own page reported itself as a subframe
 /// would lose its address bar and never say hello.
 #[cfg(target_os = "linux")]
-pub const FRAME_PREFIX_SCRIPT: &str = "if (window.top !== window) { globalThis.__codegSend = function (m) { window.webkit.messageHandlers.codegBrowserFrame.postMessage(String(m)); }; }";
+pub const FRAME_PREFIX_SCRIPT: &str = "if (window.top !== window) { globalThis.__zwiimSend = function (m) { window.webkit.messageHandlers.zwiimBrowserFrame.postMessage(String(m)); }; }";
 
 #[derive(Debug, Deserialize)]
 pub struct Envelope {
@@ -280,7 +280,7 @@ mod tests {
 
     #[test]
     fn helper_is_bundled_and_self_contained() {
-        assert!(HELPER_JS.contains("codegBrowserHelper"));
+        assert!(HELPER_JS.contains("zwiimBrowserHelper"));
         assert!(!HELPER_JS.contains("import "));
         assert!(!HELPER_JS.contains("require("));
     }

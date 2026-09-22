@@ -212,8 +212,8 @@ fn merge_agent_env_with_color(
     // per-agent `env_json` `TMP` in place would send a 1.17 GB extraction
     // wherever that points while codeg cheerfully deleted an empty scratch
     // directory and reported the leak fixed. Users who want the churn on
-    // another volume set `CODEG_ACP_TMP_ROOT`; users who want the old
-    // pass-through wholesale set `CODEG_ACP_TMP_ISOLATION=0`.
+    // another volume set `ZWIIM_ACP_TMP_ROOT`; users who want the old
+    // pass-through wholesale set `ZWIIM_ACP_TMP_ISOLATION=0`.
     if let Some(dir) = scratch {
         crate::acp::scratch_dir::apply_to_env(&mut merged, dir);
     }
@@ -870,7 +870,7 @@ fn write_antigravity_settings(
     let parent = target.parent().unwrap_or(acp_dir);
     std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
 
-    let temp = parent.join(format!(".settings.json.codeg-{}.tmp", std::process::id()));
+    let temp = parent.join(format!(".settings.json.zwiim-{}.tmp", std::process::id()));
     std::fs::write(&temp, format!("{body}\n")).map_err(|err| err.to_string())?;
     if let Err(err) = std::fs::rename(&temp, &target) {
         let _ = std::fs::remove_file(&temp);
@@ -979,11 +979,11 @@ fn merge_antigravity_settings(
 }
 
 /// Codex-only launch policy: force codex-acp's MCP name-conflict de-duplication
-/// OFF. codeg injects its companion server (`codeg-mcp`) over ACP
+/// OFF. codeg injects its companion server (`zwiim-mcp`) over ACP
 /// `session/new.mcpServers`; codex-acp otherwise drops any ACP-passed server
 /// whose name collides with a `config.toml` entry — global *or* project layer
 /// (the check was widened to project `.codex/config.toml` in codex-acp #322) —
-/// silently stripping codeg-mcp and with it ask_user_question / delegation /
+/// silently stripping zwiim-mcp and with it ask_user_question / delegation /
 /// feedback / session_info. The late `retain` + `push` makes the override win
 /// over any user `runtime_env` twin, so the injection is guaranteed to survive.
 /// Codex launch env policy. `initial_agent_mode` is the preset resolved from
@@ -1242,7 +1242,7 @@ const INIT_TIMEOUT_SENTINEL: &str = "__codeg_init_timeout__";
 /// `AcpError::McpRejectedByAgent` and point the user at the `supports_mcp`
 /// switch. Same trick as [`INIT_TIMEOUT_SENTINEL`] — the inner future is typed
 /// to `sacp::Error`, which has nowhere to carry a codeg error kind.
-const MCP_SUSPECT_SENTINEL: &str = "__codeg_mcp_suspect__";
+const MCP_SUSPECT_SENTINEL: &str = "__zwiim_mcp_suspect__";
 
 /// Mark a `session/new` failure as possibly caused by the MCP servers codeg put
 /// on the wire.
@@ -1375,13 +1375,13 @@ impl AgentConnection {
 /// Directory handed to codex-acp via `APP_SERVER_LOGS` so its adapter-side
 /// (ACP ↔ Codex app-server translation) logs land on disk for support.
 ///
-/// Roots under the same `<cache>/app.codeg` tree as
+/// Roots under the same `<cache>/app.zwiim` tree as
 /// [`binary_cache::cache_dir`] for consistency. Returns `None` — and the
 /// caller injects nothing — when the system cache dir is unknown or the
 /// directory can't be created: diagnostics must never block a connection.
 fn codex_app_server_log_dir() -> Option<String> {
     let dir = dirs::cache_dir()?
-        .join("app.codeg")
+        .join("app.zwiim")
         .join("acp-logs")
         .join("codex-acp");
     std::fs::create_dir_all(&dir).ok()?;
@@ -1803,11 +1803,11 @@ async fn build_agent(
             };
             apply_codex_env_policy(agent_type, &mut merged_env, codex_initial_mode.as_deref());
             // codex-acp 1.0.0 honors APP_SERVER_LOGS as a directory for its
-            // adapter-side logs. Surface it only under CODEG_ACP_DEBUG so
+            // adapter-side logs. Surface it only under ZWIIM_ACP_DEBUG so
             // default runs are unchanged; a directory-creation failure silently
             // skips injection (diagnostics must never block a connect).
             let want_codex_logs = agent_type == AgentType::Codex
-                && std::env::var("CODEG_ACP_DEBUG")
+                && std::env::var("ZWIIM_ACP_DEBUG")
                     .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                     .unwrap_or(false);
             if want_codex_logs {
@@ -1884,7 +1884,7 @@ async fn build_agent(
                 .map(|a| {
                     // `false`: this branch never logged stdin/stdout, and the
                     // shared callback must not quietly widen that. Only the
-                    // Binary branch opts into the CODEG_ACP_DEBUG stdio dump.
+                    // Binary branch opts into the ZWIIM_ACP_DEBUG stdio dump.
                     a.with_debug(agent_debug_callback(agent_name, tail, false))
                 })
                 .map_err(|e| AcpError::SpawnFailed(e.to_string()))
@@ -2049,13 +2049,13 @@ async fn build_agent(
             //   contents, and permission-response payloads — all of
             //   which may contain API keys pasted by users or file
             //   contents the agent is editing. They are gated behind
-            //   the `CODEG_ACP_DEBUG=1` env var so production builds
+            //   the `ZWIIM_ACP_DEBUG=1` env var so production builds
             //   don't persist user content into OS-level log files
             //   (Console.app on macOS, journald on Linux).
             // - Max line length is kept short so what does get logged
             //   captures the JSON-RPC envelope (method, id) rather
             //   than large payload bodies.
-            let stdio_debug_enabled = std::env::var("CODEG_ACP_DEBUG")
+            let stdio_debug_enabled = std::env::var("ZWIIM_ACP_DEBUG")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
             let agent_name = meta.name.to_string();
@@ -4160,7 +4160,7 @@ fn claude_raw_sdk_session_meta(
 ///   `session/request_permission`, which codeg already handles. Scoped to
 ///   Codex to keep the blast radius off other agents (e.g. Claude's native
 ///   AskUserQuestion, which would otherwise un-gate and duplicate the
-///   codeg-mcp ask tool).
+///   zwiim-mcp ask tool).
 /// - Claude Code only: `_meta["subagent-transcript"] = true` — opt into
 ///   claude-agent-acp ≥0.63's subagent transcript forwarding (#881, SDK
 ///   `forwardSubagentText`). Subagent text/thought chunks then stream with
@@ -4554,11 +4554,11 @@ async fn send_load_session(
 /// actually reach the agent's model. Almost all adapters deliver them; pi-acp
 /// (0.0.31) accepts the `mcpServers` field but DROPS it — it never forwards MCP
 /// to the inner `pi --mode rpc` process, and pi has no native MCP. So forwarding
-/// either user servers or the built-in codeg-mcp companion to pi is futile, and
-/// injecting codeg-mcp would falsely mark delegation/feedback/ask as available
+/// either user servers or the built-in zwiim-mcp companion to pi is futile, and
+/// injecting zwiim-mcp would falsely mark delegation/feedback/ask as available
 /// (`feedback_tool_available`, a registered delegation token pi can never use).
 /// `supports_mcp` stays `true` for pi (session/new tolerates the field), so this
-/// is a separate, narrower gate. Gate codeg-mcp injection on it.
+/// is a separate, narrower gate. Gate zwiim-mcp injection on it.
 fn agent_delivers_wire_mcp(agent_type: AgentType) -> bool {
     !matches!(agent_type, AgentType::Pi)
 }
@@ -4575,7 +4575,7 @@ fn load_mcp_servers_for_agent(agent_type: AgentType) -> Vec<McpServer> {
     // (`mcpServers`, shared with the IDE). codeg manages those files directly
     // via the MCP settings UI, so forwarding the same servers over the ACP
     // wire here would double-register them — skip it. (The built-in
-    // `codeg-mcp` companion is injected separately by `inject_codeg_mcp`, so
+    // `zwiim-mcp` companion is injected separately by `inject_zwiim_mcp`, so
     // it still reaches them.)
     //
     // DeepSeek is deliberately NOT in this set: deepseek-acp reads no MCP file
@@ -4592,7 +4592,7 @@ fn load_mcp_servers_for_agent(agent_type: AgentType) -> Vec<McpServer> {
     // settings UI manages) and MERGES it with the wire list BY NAME, wire
     // winning — so forwarding would not actually double-mount. It is skipped
     // anyway because defining one server through two channels is noise, and
-    // because the `codeg-mcp` companion is injected separately regardless.
+    // because the `zwiim-mcp` companion is injected separately regardless.
     if matches!(
         agent_type,
         AgentType::Hermes
@@ -4630,7 +4630,7 @@ fn load_mcp_servers_for_agent(agent_type: AgentType) -> Vec<McpServer> {
     out
 }
 
-/// Context the connection layer needs to inject the built-in `codeg-mcp`
+/// Context the connection layer needs to inject the built-in `zwiim-mcp`
 /// MCP entry. Built once per `run_connection` from the live AppState pieces
 /// (broker config, token registry, UDS path) and passed through.
 ///
@@ -4689,17 +4689,17 @@ pub struct DelegationInjection {
     /// time so `delegate_to_agent` only advertises launchable targets.
     pub agent_availability: Arc<dyn AgentAvailabilityLookup>,
     /// Hot-swappable "is live-feedback enabled?" flag. Read at injection time
-    /// alongside the broker's delegation flag so `codeg-mcp` is injected when
+    /// alongside the broker's delegation flag so `zwiim-mcp` is injected when
     /// EITHER feature is on, and the companion is told which tool groups to
     /// expose. Shares the same `tokens` registry and UDS socket as delegation.
     pub feedback: crate::acp::feedback::FeedbackRuntimeConfig,
     /// Hot-swappable "is ask-user-question enabled?" flag. Read at injection
-    /// time alongside delegation + feedback so `codeg-mcp` is injected when ANY
+    /// time alongside delegation + feedback so `zwiim-mcp` is injected when ANY
     /// of the three is on, and the companion's `--features` lists `ask` to expose
     /// the `ask_user_question` tool.
     pub ask: crate::acp::question::QuestionRuntimeConfig,
     /// Hot-swappable "is get-session-info enabled?" flag. Read at injection time
-    /// alongside the other three so `codeg-mcp` is injected when ANY of the four
+    /// alongside the other three so `zwiim-mcp` is injected when ANY of the four
     /// is on, and the companion's `--features` lists `sessions` to expose the
     /// `get_session_info` tool. No teardown handle (the lookup is stateless).
     pub sessions: crate::acp::session_info::SessionInfoRuntimeConfig,
@@ -4722,7 +4722,7 @@ pub struct DelegationInjection {
     /// `ConnectionManager` as the listener's question lookup.
     pub questions: Arc<dyn crate::acp::question::SessionQuestionAccess>,
     /// Plan-approval registry handle for Grok's `exit_plan_mode` ext bridge.
-    /// Unlike delegation / ask / feedback this is NOT a codeg-mcp feature — it is
+    /// Unlike delegation / ask / feedback this is NOT a zwiim-mcp feature — it is
     /// Grok's native plan mode — so it has no runtime on/off flag and is always
     /// wired. Shares the same backing `ConnectionManager` as the question lookup.
     /// The `run_connection` handler registers approvals + parks on the reply
@@ -4731,19 +4731,19 @@ pub struct DelegationInjection {
     pub plan_approvals: Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
 }
 
-/// Locate the `codeg-mcp` companion binary across the supported deployment
+/// Locate the `zwiim-mcp` companion binary across the supported deployment
 /// shapes:
 ///
-/// 1. `CODEG_MCP_BIN` env override — explicit absolute path. Lets dev shells,
+/// 1. `ZWIIM_MCP_BIN` env override — explicit absolute path. Lets dev shells,
 ///    custom installs, and integration tests point at a freshly compiled
 ///    binary without touching the install layout.
 /// 2. Sibling of the running executable — the production layout for every
-///    shipping target. Tauri sidecar (`Contents/MacOS/codeg-mcp` on macOS,
+///    shipping target. Tauri sidecar (`Contents/MacOS/zwiim-mcp` on macOS,
 ///    next to `codeg.exe` on Windows, next to the unix binary on Linux
-///    deb/rpm), `install.sh`/`install.ps1` (drops `codeg-mcp` next to
-///    `codeg-server`), Docker image (`/usr/local/bin/codeg-mcp` next to
-///    `codeg-server`), and `cargo build` dev output
-///    (`target/<profile>/codeg-mcp`).
+///    deb/rpm), `install.sh`/`install.ps1` (drops `zwiim-mcp` next to
+///    `zwiim-host`), Docker image (`/usr/local/bin/zwiim-mcp` next to
+///    `zwiim-host`), and `cargo build` dev output
+///    (`target/<profile>/zwiim-mcp`).
 /// 3. `PATH` lookup — last-resort for atypical layouts where ops moved the
 ///    two binaries apart but kept both reachable on `PATH`.
 ///
@@ -4752,14 +4752,14 @@ pub struct DelegationInjection {
 /// injection — never paper over with a phantom path, because that fails
 /// inside the agent's MCP spawn loop and may take the entire ACP session
 /// down on stricter agents.
-pub fn locate_codeg_mcp_binary() -> Option<PathBuf> {
+pub fn locate_zwiim_mcp_binary() -> Option<PathBuf> {
     let filename = if cfg!(windows) {
-        "codeg-mcp.exe"
+        "zwiim-mcp.exe"
     } else {
-        "codeg-mcp"
+        "zwiim-mcp"
     };
 
-    if let Some(raw) = std::env::var_os("CODEG_MCP_BIN") {
+    if let Some(raw) = std::env::var_os("ZWIIM_MCP_BIN") {
         let candidate = PathBuf::from(raw);
         if is_executable_file(&candidate) {
             return Some(candidate);
@@ -4798,7 +4798,7 @@ fn is_executable_file(path: &Path) -> bool {
     true
 }
 
-/// Append the built-in `codeg-mcp` MCP entry if delegation is enabled
+/// Append the built-in `zwiim-mcp` MCP entry if delegation is enabled
 /// AND the companion binary is present on disk. Returns the per-launch token
 /// that was registered, or `None` when injection was skipped (disabled by
 /// config, or binary missing).
@@ -4809,7 +4809,7 @@ fn is_executable_file(path: &Path) -> bool {
 /// new ACP session ship a guaranteed-to-fail MCP server entry: stricter
 /// agents (Claude Code) refuse the whole session; lax agents lose the
 /// delegate tool silently. Skipping leaves the agent fully functional minus
-/// `delegate_to_agent`, which is the right degradation when codeg-mcp didn't
+/// `delegate_to_agent`, which is the right degradation when zwiim-mcp didn't
 /// make it into the install.
 /// Which tool groups a companion launch should expose. A struct rather than a
 /// positional bool list: the groups keep growing and seven adjacent `bool`s at a
@@ -4881,7 +4881,7 @@ fn companion_features_arg(flags: CompanionFeatureFlags) -> Option<String> {
     Some(features.join(","))
 }
 
-/// Outcome of injecting the `codeg-mcp` companion: the per-launch token to
+/// Outcome of injecting the `zwiim-mcp` companion: the per-launch token to
 /// stash for revocation, plus whether the `check_user_feedback` tool was exposed
 /// to this agent (so the session can gate submit + UI on its real capability).
 struct CompanionInjection {
@@ -4891,7 +4891,7 @@ struct CompanionInjection {
     delegation_enabled: bool,
 }
 
-async fn inject_codeg_mcp(
+async fn inject_zwiim_mcp(
     servers: &mut Vec<McpServer>,
     injection: &DelegationInjection,
     parent_connection_id: &str,
@@ -4899,19 +4899,19 @@ async fn inject_codeg_mcp(
     tasks_enabled: bool,
     host_tools: HostToolsPolicy,
 ) -> Option<CompanionInjection> {
-    inject_codeg_mcp_with_binary_locator(
+    inject_zwiim_mcp_with_binary_locator(
         servers,
         injection,
         parent_connection_id,
         working_dir,
         tasks_enabled,
         host_tools,
-        locate_codeg_mcp_binary,
+        locate_zwiim_mcp_binary,
     )
     .await
 }
 
-async fn inject_codeg_mcp_with_binary_locator<F>(
+async fn inject_zwiim_mcp_with_binary_locator<F>(
     servers: &mut Vec<McpServer>,
     injection: &DelegationInjection,
     parent_connection_id: &str,
@@ -4923,7 +4923,7 @@ async fn inject_codeg_mcp_with_binary_locator<F>(
 where
     F: FnOnce() -> Option<PathBuf>,
 {
-    // codeg-mcp carries BOTH the delegation tools and the live-feedback tool.
+    // zwiim-mcp carries BOTH the delegation tools and the live-feedback tool.
     // Inject it when EITHER feature is enabled; the `--features` arg tells the
     // companion which tool groups to expose so a disabled feature's tools never
     // surface to the LLM. (Historically this was gated on delegation alone.)
@@ -4988,10 +4988,10 @@ where
     let features_arg = companion_features_arg(flags)?;
     let Some(binary_path) = locate_binary() else {
         tracing::warn!(
-            "[delegation][WARN] codeg-mcp companion binary not found (checked CODEG_MCP_BIN, \
+            "[delegation][WARN] zwiim-mcp companion binary not found (checked ZWIIM_MCP_BIN, \
              exe sibling, and PATH); skipping delegate_to_agent / check_user_feedback / \
              ask_user_question / get_session_info tool injection for connection \
-             {parent_connection_id}. Reinstall codeg or set CODEG_MCP_BIN to fix."
+             {parent_connection_id}. Reinstall codeg or set ZWIIM_MCP_BIN to fix."
         );
         return None;
     };
@@ -4999,7 +4999,7 @@ where
     // targets; disabled BUILT-INS are subtracted companion-side
     // (`--disabled-agents`) so the embedded schema stays the single source of
     // truth for the builtin list and its order. Either flag is omitted when
-    // empty, which also keeps an older codeg-mcp binary — one that rejects
+    // empty, which also keeps an older zwiim-mcp binary — one that rejects
     // unknown flags at startup — working for installations needing neither.
     let (custom_slugs, disabled_builtins) = delegate_target_args(&disabled);
     let token = uuid::Uuid::new_v4().to_string();
@@ -5013,7 +5013,7 @@ where
             },
         )
         .await;
-    let mut server = McpServerStdio::new("codeg-mcp", binary_path.clone());
+    let mut server = McpServerStdio::new("zwiim-mcp", binary_path.clone());
     let mut args = vec![
         "--parent-connection-id".to_string(),
         parent_connection_id.to_string(),
@@ -5021,7 +5021,7 @@ where
         injection.socket_path.to_string_lossy().to_string(),
         "--token".to_string(),
         token.clone(),
-        // Self-cleanup watchdog: codeg-mcp exits when this PID is gone so
+        // Self-cleanup watchdog: zwiim-mcp exits when this PID is gone so
         // orphaned companions can't keep the binary file locked across an
         // installer upgrade (Windows) or hold a stale broker connection
         // (any platform).
@@ -5253,7 +5253,7 @@ async fn run_connection(
 
     // Shared question access + feature toggle (both live on the delegation
     // injection) for the agents that ask NATIVELY, over a blocking request of
-    // their own rather than the codeg-mcp tool: grok's `_x.ai/ask_user_question`
+    // their own rather than the zwiim-mcp tool: grok's `_x.ai/ask_user_question`
     // ext request (verified against 0.2.101) and pi's extension-UI `select`,
     // which pi-acp folds into `session/request_permission`. Both handlers
     // register the questions through the SAME interactive-card pipeline and
@@ -5535,7 +5535,7 @@ async fn run_connection(
             {
                 // Codex `elicitation/create`: question-style requests (Plan
                 // mode `request_user_input`, generic MCP forms) bridge into
-                // the same ask card as the codeg-mcp ask tool (reusing the ask
+                // the same ask card as the zwiim-mcp ask tool (reusing the ask
                 // access + kill switch); approval-style requests (MCP
                 // tool-call approvals, message-only confirms) route through
                 // the permission card via `pending_perms`.
@@ -5615,7 +5615,7 @@ async fn run_connection(
                         "[ACP][{agent_name_for_log}] Initialize TIMED OUT after {:?} \
                          — the agent never answered the handshake. Check the \
                          [stderr] lines above for agent-side errors. For a full \
-                         JSON-RPC trace, re-launch with CODEG_ACP_DEBUG=1.",
+                         JSON-RPC trace, re-launch with ZWIIM_ACP_DEBUG=1.",
                         init_started.elapsed()
                     );
                     return Err(sacp::util::internal_error(INIT_TIMEOUT_SENTINEL));
@@ -5694,7 +5694,7 @@ async fn run_connection(
             // Whether this agent accepts MCP server entries over the ACP wire
             // (`session/new`'s `mcpServers`). Almost all do; OpenClaw rejects
             // any server entry and fails session creation, so it must receive
-            // NONE — neither user-configured servers nor the built-in codeg-mcp
+            // NONE — neither user-configured servers nor the built-in zwiim-mcp
             // companion. A custom agent carries the same flag as a stored
             // declaration the user flips in settings, for the same reason:
             // codeg cannot know whether an arbitrary ACP agent tolerates the
@@ -5743,13 +5743,13 @@ async fn run_connection(
                     .collect()
             } else {
                 tracing::info!(
-                    "[ACP][{}] supports_mcp=false: skipping all MCP wire forwarding (user servers + codeg-mcp companion)",
+                    "[ACP][{}] supports_mcp=false: skipping all MCP wire forwarding (user servers + zwiim-mcp companion)",
                     agent_type
                 );
                 Vec::new()
             };
 
-            // Inject the built-in `codeg-mcp` MCP server. Stdio is
+            // Inject the built-in `zwiim-mcp` MCP server. Stdio is
             // unconditionally supported by the ACP wire — no `mcp_caps`
             // filter needed. The returned token is stashed on the session
             // state so connection teardown can revoke it. Skipped entirely
@@ -5760,7 +5760,7 @@ async fn run_connection(
                     // task_progress / task_complete tool group.
                     let tasks_enabled =
                         { state.read().await.owner_window_label == "work_task" };
-                    inject_codeg_mcp(
+                    inject_zwiim_mcp(
                         &mut mcp_servers,
                         inj,
                         &conn_id,
@@ -5778,7 +5778,7 @@ async fn run_connection(
             {
                 let mut s = state.write().await;
                 // Native steering is independent of the MCP companion — set it
-                // even when no codeg-mcp is injected (it's exactly the channel
+                // even when no zwiim-mcp is injected (it's exactly the channel
                 // that needs no tool; OpenClaw-style `supports_mcp: false`
                 // agents could ship it someday).
                 s.native_steering_available = native_steering_available;
@@ -6471,7 +6471,7 @@ async fn run_connection(
 /// Store the permission responder and emit event to frontend.
 /// Grok's native `ask_user_question` tool issues this ACP ext request
 /// (`_x.ai/ask_user_question`) and BLOCKS on the reply — it does NOT go through
-/// the codeg-mcp ask tool. Transparent over the raw params object
+/// the zwiim-mcp ask tool. Transparent over the raw params object
 /// (`{sessionId, toolCallId, questions, mode}`); the fields codeg needs are read
 /// by [`crate::acp::question::parse_grok_ext_questions`]. sacp routes typed
 /// handlers on the RAW wire method, so the derive keeps the leading `_`.
@@ -6508,7 +6508,7 @@ struct CodexElicitationRequest(serde_json::Value);
 /// Bridge grok's native `_x.ai/ask_user_question` ext request into codeg's
 /// interactive question card. Grok blocks on the reply, so codeg registers the
 /// questions through the shared [`crate::acp::question::SessionQuestionAccess`] —
-/// the SAME path the codeg-mcp ask tool uses (it sets `pending_question`,
+/// the SAME path the zwiim-mcp ask tool uses (it sets `pending_question`,
 /// broadcasts `QuestionRequest`, and the `AskQuestionCard` renders) — then answers
 /// the ext request with the user's choice, serialized to grok's own format, once
 /// they submit. Every early return responds with an error, which makes grok fall
@@ -6529,7 +6529,7 @@ async fn handle_grok_ask_user_question(
         let _ = responder.respond_with_internal_error("ask_user_question bridge unavailable");
         return;
     };
-    // Same kill switch as the codeg-mcp ask tool: when off, let grok fall back.
+    // Same kill switch as the zwiim-mcp ask tool: when off, let grok fall back.
     if !ask_cfg.is_enabled().await {
         let _ = responder.respond_with_internal_error("ask_user_question is disabled");
         return;
@@ -6567,7 +6567,7 @@ async fn handle_grok_ask_user_question(
     tokio::spawn(async move {
         match registered.answer_rx.await {
             Ok(outcome) => {
-                // Surface the answered "提问回答" capsule in-stream — the codeg-mcp
+                // Surface the answered "提问回答" capsule in-stream — the zwiim-mcp
                 // ask parity grok's native tool never emits into the ACP stream (it
                 // resolves the answer over THIS ext round-trip). Emit BEFORE
                 // unblocking grok so the card lands ahead of grok's follow-up text;
@@ -6616,7 +6616,7 @@ async fn handle_grok_ask_user_question(
 ///
 /// An agent whose permission mode consults the user before every MCP tool call
 /// (claude-agent-acp's default) gates the ask tool too, so asking the user a
-/// question used to cost TWO dialogs: a raw "run mcp__codeg-mcp__ask_user_question?"
+/// question used to cost TWO dialogs: a raw "run mcp__zwiim-mcp__ask_user_question?"
 /// approval dumping the questions as JSON, and only after "Yes" the real
 /// interactive card. The first one carries no decision the second doesn't — see
 /// [`crate::acp::question::is_codeg_ask_tool_name`] for why answering it is the
@@ -6673,7 +6673,7 @@ async fn try_auto_allow_codeg_ask(
         return Err(responder);
     };
     // Same kill switch as the ask tool itself (and as `try_bridge_pi_select_ask`):
-    // with the feature off codeg-mcp never exposed `ask_user_question`, so a
+    // with the feature off zwiim-mcp never exposed `ask_user_question`, so a
     // request naming it is not the tool this shortcut is allowed to speak for.
     let Some((_, ask_cfg)) = access else {
         return Err(responder);
@@ -6702,7 +6702,7 @@ async fn try_auto_allow_codeg_ask(
 /// call as raw JSON, and — because pi never emits a `session/update` for that
 /// `pi-ui-*` id — left NO record of the answer once the card was dismissed
 /// (#644). This registers the choices through the shared
-/// [`crate::acp::question::SessionQuestionAccess`] (the SAME path the codeg-mcp
+/// [`crate::acp::question::SessionQuestionAccess`] (the SAME path the zwiim-mcp
 /// ask tool uses), answers the blocked permission request with the option the
 /// user picked, and emits the answered `AskQuestionResultCard` into the stream.
 ///
@@ -6737,7 +6737,7 @@ async fn try_bridge_pi_select_ask(
     let Some((questions, ask_cfg)) = access else {
         return Err(responder);
     };
-    // Same kill switch as the codeg-mcp ask tool: when the feature is off, the
+    // Same kill switch as the zwiim-mcp ask tool: when the feature is off, the
     // approval card stays the way to answer.
     if !ask_cfg.is_enabled().await {
         return Err(responder);
@@ -6943,14 +6943,14 @@ async fn handle_grok_exit_plan_mode(
 ///
 ///   * Question-style (Plan-mode `request_user_input`, generic MCP forms) →
 ///     the shared [`crate::acp::question::SessionQuestionAccess`] path — the
-///     SAME one the codeg-mcp ask tool and the grok bridge use (it sets
+///     SAME one the zwiim-mcp ask tool and the grok bridge use (it sets
 ///     `pending_question`, broadcasts `QuestionRequest`, and `AskQuestionCard`
 ///     renders) — answered once the user submits.
 ///   * Approval-style (MCP tool-call approvals, message-only confirms) → the
 ///     permission card via `pending_perms`, exactly like the
 ///     `session/request_permission` fallback codex-acp used before the
 ///     capability was advertised. Auto-declining these would reject the tool
-///     call (including codeg-mcp's own tools in consent-requiring modes).
+///     call (including zwiim-mcp's own tools in consent-requiring modes).
 ///
 /// Question-path early returns DECLINE, which makes codex proceed with its own
 /// judgment — no worse than the pre-bridge `{answers:{}}`, so nothing here can
@@ -7063,13 +7063,13 @@ async fn handle_elicitation_request(
             .await;
         }
         // Question-style (codex `request_user_input`, generic MCP forms):
-        // bridge into the same ask card as the codeg-mcp ask tool.
+        // bridge into the same ask card as the zwiim-mcp ask tool.
         crate::acp::question::ElicitationPlan::Questions(questions) => {
             let Some((question_access, ask_cfg)) = access else {
                 let _ = responder.respond(decline());
                 return;
             };
-            // Same kill switch as the codeg-mcp ask tool and the grok bridge:
+            // Same kill switch as the zwiim-mcp ask tool and the grok bridge:
             // when the user has turned ask_user_question off, decline so codex
             // proceeds.
             if !ask_cfg.is_enabled().await {
@@ -11120,7 +11120,7 @@ fn stamp_opencode_tool_name(
 /// the result ITSELF is handed JSON source instead of the result.
 ///
 /// Verified against opencode 1.18.23 (driven over real ACP with a stub MCP
-/// server): a codeg-mcp `ask_user_question` completes as
+/// server): a zwiim-mcp `ask_user_question` completes as
 ///   content:   [{"type":"content","content":{"type":"text","text":"The user
 ///               answered your question(s):\n1. [框架] …\n   → 选项 A\n"}}]
 ///   rawOutput: {"output":"<that same text>","metadata":{"truncated":false}}
@@ -11496,7 +11496,7 @@ async fn gemini_mode_update_chunk(
 /// `raw_input` is `{"tool_name": "<server>__<tool>", "tool_input": {..real args..}}`.
 /// Peel it so the call is correlated (delegation `lifecycle.rs`), classified, and
 /// parsed as a direct MCP call — identical to how hosts like Claude Code surface
-/// MCP tools. Without this, Grok's `delegate_to_agent` (and the other codeg-mcp
+/// MCP tools. Without this, Grok's `delegate_to_agent` (and the other zwiim-mcp
 /// companion tools) never resolve to their dedicated cards, and the delegation
 /// broker can't correlate the parent tool call to bind the sub-session.
 ///
@@ -11539,7 +11539,7 @@ fn grok_mcp_output_text(raw_output: &serde_json::Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Recover a codeg-mcp companion tool's identity from its RESULT text, for
+/// Recover a zwiim-mcp companion tool's identity from its RESULT text, for
 /// Cursor sessions only.
 ///
 /// Cursor's ACP layer announces every MCP call from the first streaming
@@ -11547,7 +11547,7 @@ fn grok_mcp_output_text(raw_output: &serde_json::Value) -> Option<String> {
 /// title "MCP: tool" with an empty `raw_input`, and `sendToolCallUpdate`
 /// (bundle-verified) never forwards `title`/`raw_input` again. The ONLY
 /// wire signal that ever identifies the call is the MCP result text arriving
-/// on the completion update, and for the codeg-mcp companion tools that text
+/// on the completion update, and for the zwiim-mcp companion tools that text
 /// is a codeg-owned contract:
 ///
 /// * a `delegate_to_agent` ack opens with
@@ -11756,7 +11756,7 @@ fn pi_terminal_meta_marks_bash(
 /// pi computes this delta itself as `next.startsWith(prev) ? next.slice(prev.len)
 /// : next`, so in the degenerate case where its cumulative text stops being a
 /// prefix extension (stdout still growing AFTER stderr was first folded in) it
-/// re-sends the WHOLE text as a "delta" and we append it, duplicating. Codeg
+/// re-sends the WHOLE text as a "delta" and we append it, duplicating. Zwiim
 /// cannot detect that without holding the full snapshot, which
 /// `ToolCallOutputCache` deliberately does not do (8 KB tail only). Appending is
 /// the correct reading of the wire contract; the duplication is an upstream
@@ -12945,7 +12945,7 @@ fn track_grok_spawn_call(
 }
 
 /// True when a tool call's ACP `_meta` marks it as grok's native
-/// `ask_user_question` (`x.ai/tool.kind == "ask_user"`). Codeg answers grok's
+/// `ask_user_question` (`x.ai/tool.kind == "ask_user"`). Zwiim answers grok's
 /// blocking `_x.ai/ask_user_question` ext request by rendering the interactive
 /// `AskQuestionCard` (see `handle_grok_ask_user_question`), so the parallel
 /// `tool_call` stream grok emits for the same call is redundant — it is dropped
@@ -14440,7 +14440,7 @@ async fn emit_conversation_update(
             // Cursor loses MCP tool identity on the wire entirely (announced as
             // "MCP: tool" before McpArgs exists; updates never resend title or
             // raw_input). The completion update's result text is the one signal
-            // left — recover the codeg-mcp companion identity from it and record
+            // left — recover the zwiim-mcp companion identity from it and record
             // it as an authoritative override so the delegation / status cards
             // resolve instead of a generic tool. Gated to ids this connection
             // announced with the identity-less title (see the
@@ -16298,7 +16298,7 @@ mod tests {
     #[test]
     fn codeg_ask_auto_allow_option_picks_allow_once_for_codegs_own_ask_tool() {
         let req = claude_mcp_permission_request(
-            "mcp__codeg-mcp__ask_user_question",
+            "mcp__zwiim-mcp__ask_user_question",
             claude_permission_options(),
         );
         assert_eq!(
@@ -16308,7 +16308,7 @@ mod tests {
         // The title alone is enough: an agent that sends no request-level
         // `_meta.permission` block still gets the shortcut.
         let mut bare = claude_mcp_permission_request(
-            "mcp__codeg-mcp__ask_user_question",
+            "mcp__zwiim-mcp__ask_user_question",
             claude_permission_options(),
         );
         bare.meta = None;
@@ -16324,7 +16324,7 @@ mod tests {
         // codeg's, even though the tool half of the name matches.
         for foreign in [
             "mcp__other-server__ask_user_question",
-            "mcp__codeg-mcp__delegate_to_agent",
+            "mcp__zwiim-mcp__delegate_to_agent",
             "Bash",
         ] {
             let req = claude_mcp_permission_request(foreign, claude_permission_options());
@@ -16336,7 +16336,7 @@ mod tests {
         // An agent offering only a DURABLE allow writes a rule into the user's
         // own settings — that outlives this turn, so it stays their decision.
         let always_only = claude_mcp_permission_request(
-            "mcp__codeg-mcp__ask_user_question",
+            "mcp__zwiim-mcp__ask_user_question",
             vec![
                 sacp::schema::PermissionOption::new(
                     "allow-with-updates",
@@ -17328,7 +17328,7 @@ mod tests {
     #[test]
     fn codex_env_policy_forces_mcp_filter_off_and_overrides_user_twin() {
         // Codex gets the flag injected so codex-acp never drops the injected
-        // `codeg-mcp` server on a config.toml name collision.
+        // `zwiim-mcp` server on a config.toml name collision.
         let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
         apply_codex_env_policy(AgentType::Codex, &mut env, None);
         assert!(env
@@ -17971,7 +17971,7 @@ mod tests {
             assert!(matches!(
                 &prompt[1],
                 ContentBlock::Text(text)
-                    if text.text.contains("Codeg composer routing metadata (authoritative)")
+                    if text.text.contains("Zwiim composer routing metadata (authoritative)")
                         && text.text.contains(r#""agentType":"antigravity""#)
             ));
         }
@@ -19479,7 +19479,7 @@ mod tests {
     // that field on NewSessionRequest/LoadSessionRequest, so it always
     // serializes as `[]`; every agent (OpenClaw included) already receives
     // `mcpServers: []` on a fresh install with no servers configured and
-    // codeg-mcp off — the known-good payload. The connection-layer gate
+    // zwiim-mcp off — the known-good payload. The connection-layer gate
     // (`supports_mcp == false`) forces OpenClaw onto that empty payload
     // unconditionally. This pins the wire contract: both builders emit an
     // empty list, so no server entry can ever reach OpenClaw.
@@ -20382,7 +20382,7 @@ mod tests {
         assert_eq!(grok_live_tool_output(&None, &None), None);
     }
 
-    /// The captured opencode 1.18.23 completion envelope for a codeg-mcp
+    /// The captured opencode 1.18.23 completion envelope for a zwiim-mcp
     /// `ask_user_question` — the clean answer text on both channels, the
     /// `rawOutput` one wrapped in `{output, metadata}`.
     fn opencode_ask_raw_output() -> serde_json::Value {
@@ -20615,7 +20615,7 @@ mod tests {
     }
 
     /// End-to-end over the frames opencode 1.18.23 actually put on the wire for a
-    /// codeg-mcp `ask_user_question` (captured by driving `opencode acp` against a
+    /// zwiim-mcp `ask_user_question` (captured by driving `opencode acp` against a
     /// stub MCP server). The card reconstructs the answer from the result TEXT —
     /// opencode drops the MCP `structuredContent` — so the completion must hand
     /// the frontend that text, not the `{output, metadata}` blob that shadows it
@@ -20632,7 +20632,7 @@ mod tests {
             serde_json::json!({
                 "sessionUpdate": "tool_call",
                 "toolCallId": "call_probe_1",
-                "title": "codeg-mcp_ask_user_question",
+                "title": "zwiim-mcp_ask_user_question",
                 "kind": "other",
                 "status": "pending",
                 "locations": [],
@@ -22068,11 +22068,11 @@ mod tests {
     fn unwrap_grok_use_tool_peels_mcp_envelope() {
         // Grok's `use_tool` envelope nests the real MCP tool name + args.
         let raw = serde_json::json!({
-            "tool_name": "codeg-mcp__delegate_to_agent",
+            "tool_name": "zwiim-mcp__delegate_to_agent",
             "tool_input": {"agent_type": "codex", "task": "build", "working_dir": "/w"},
         });
         let (name, input) = unwrap_grok_use_tool(Some(&raw)).expect("envelope peels");
-        assert_eq!(name, "codeg-mcp__delegate_to_agent");
+        assert_eq!(name, "zwiim-mcp__delegate_to_agent");
         assert_eq!(input.get("task").and_then(|v| v.as_str()), Some("build"));
         assert_eq!(
             input.get("agent_type").and_then(|v| v.as_str()),
@@ -22139,11 +22139,11 @@ mod tests {
                    Call get_delegation_status with this id in the task_ids array.";
         assert_eq!(
             cursor_companion_title_from_content(Some(ack)),
-            Some("codeg-mcp__delegate_to_agent")
+            Some("zwiim-mcp__delegate_to_agent")
         );
         assert_eq!(
             cursor_companion_title_from_content(Some(&format!("  {ack}"))),
-            Some("codeg-mcp__delegate_to_agent")
+            Some("zwiim-mcp__delegate_to_agent")
         );
     }
 
@@ -22153,13 +22153,13 @@ mod tests {
         let report = r#"{"tasks":[{"agent_type":"claude_code","child_conversation_id":1576,"duration_ms":27288,"status":"completed","task_id":"799467c7-0188-4e7a-b5ef-241d4b141a83","text":"done"}]}"#;
         assert_eq!(
             cursor_companion_title_from_content(Some(report)),
-            Some("codeg-mcp__get_delegation_status")
+            Some("zwiim-mcp__get_delegation_status")
         );
         // Mixed batch with a running item still resolves.
         let mixed = r#"{"tasks":[{"task_id":"a","status":"running"},{"task_id":"b","status":"unknown"}]}"#;
         assert_eq!(
             cursor_companion_title_from_content(Some(mixed)),
-            Some("codeg-mcp__get_delegation_status")
+            Some("zwiim-mcp__get_delegation_status")
         );
     }
 
@@ -22196,7 +22196,7 @@ mod tests {
         let raw = Some(serde_json::json!({
             "type": "MCP",
             "tool_name": "delegate_to_agent",
-            "server_name": "codeg-mcp",
+            "server_name": "zwiim-mcp",
             "output": {"OkayOutput": "Delegation successful. task_id=2dc85849-5426."},
         }));
         assert_eq!(
@@ -22232,7 +22232,7 @@ mod tests {
             "toolCallId": "call-d",
             "title": "use_tool",
             "rawInput": {
-                "tool_name": "codeg-mcp__delegate_to_agent",
+                "tool_name": "zwiim-mcp__delegate_to_agent",
                 "tool_input": {"agent_type": "codex", "working_dir": "/w", "task": "run build"},
             },
         }))
@@ -22260,7 +22260,7 @@ mod tests {
             "rawOutput": {
                 "type": "MCP",
                 "tool_name": "delegate_to_agent",
-                "server_name": "codeg-mcp",
+                "server_name": "zwiim-mcp",
                 "output": {"OkayOutput": "Delegation successful. task_id=2dc85849-5426-44f7."},
             },
         }))
@@ -22290,7 +22290,7 @@ mod tests {
                 _ => None,
             })
             .expect("a tool_call event is emitted");
-        assert_eq!(title, "codeg-mcp__delegate_to_agent");
+        assert_eq!(title, "zwiim-mcp__delegate_to_agent");
         let raw_input = raw_input.expect("raw_input present after unwrap");
         assert!(
             raw_input.contains("\"agent_type\":\"codex\""),
@@ -22323,7 +22323,7 @@ mod tests {
         );
         assert_eq!(
             upd_title.as_deref(),
-            Some("codeg-mcp__delegate_to_agent"),
+            Some("zwiim-mcp__delegate_to_agent"),
             "the sparse-update wrapper title is overridden by the recorded name"
         );
         // No emitted event ever ships the generic `use_tool` wrapper title.
@@ -22362,7 +22362,7 @@ mod tests {
             "title": "use_tool",
             "status": "in_progress",
             "rawInput": {
-                "tool_name": "codeg-mcp__cancel_delegation",
+                "tool_name": "zwiim-mcp__cancel_delegation",
                 "tool_input": {"task_id": "abc-123"},
             },
         }))
@@ -22389,7 +22389,7 @@ mod tests {
                 _ => None,
             })
             .expect("a tool_call_update event is emitted");
-        assert_eq!(title.as_deref(), Some("codeg-mcp__cancel_delegation"));
+        assert_eq!(title.as_deref(), Some("zwiim-mcp__cancel_delegation"));
         let raw_input = raw_input.expect("raw_input present after unwrap");
         assert!(
             raw_input.contains("\"task_id\":\"abc-123\""),
@@ -22888,26 +22888,26 @@ mod tests {
     fn deferred_unwraps_codebuddy_mcp_tool_name() {
         // CodeBuddy wraps MCP calls as `{toolName, params}` via DeferExecuteTool.
         let input = Some(
-            r#"{"params":{"agent_type":"codex","task":"build"},"toolName":"mcp__codeg-mcp__delegate_to_agent"}"#
+            r#"{"params":{"agent_type":"codex","task":"build"},"toolName":"mcp__zwiim-mcp__delegate_to_agent"}"#
                 .to_string(),
         );
         assert_eq!(
             codebuddy_deferred_tool_name(AgentType::CodeBuddy, &input).as_deref(),
-            Some("mcp__codeg-mcp__delegate_to_agent")
+            Some("mcp__zwiim-mcp__delegate_to_agent")
         );
     }
 
     #[test]
     fn deferred_gates_on_codebuddy_and_shape() {
         let wrapped = Some(
-            r#"{"params":{"task_id":"a"},"toolName":"mcp__codeg-mcp__cancel_delegation"}"#
+            r#"{"params":{"task_id":"a"},"toolName":"mcp__zwiim-mcp__cancel_delegation"}"#
                 .to_string(),
         );
         // Only CodeBuddy is unwrapped.
         assert!(codebuddy_deferred_tool_name(AgentType::OpenCode, &wrapped).is_none());
         // Missing `params`, missing/blank `toolName`, or non-wrapper shapes → None.
         for raw in [
-            r#"{"toolName":"mcp__codeg-mcp__delegate_to_agent"}"#, // no params
+            r#"{"toolName":"mcp__zwiim-mcp__delegate_to_agent"}"#, // no params
             r#"{"params":{"x":1},"toolName":""}"#,                 // blank toolName
             r#"{"params":{"x":1}}"#,                               // no toolName
             r#"{"command":"ls"}"#,                                 // plain tool
@@ -23000,18 +23000,18 @@ mod tests {
         );
         // Deferred MCP tool: inner name recorded, then re-asserted on a bare update.
         let deferred = Some(
-            r#"{"params":{"agent_type":"codex","task":"x"},"toolName":"mcp__codeg-mcp__delegate_to_agent"}"#
+            r#"{"params":{"agent_type":"codex","task":"x"},"toolName":"mcp__zwiim-mcp__delegate_to_agent"}"#
                 .to_string(),
         );
         assert_eq!(
             resolve_rewritten_title(AgentType::CodeBuddy, &deferred, "tc3", false, false, &mut overrides)
                 .as_deref(),
-            Some("mcp__codeg-mcp__delegate_to_agent")
+            Some("mcp__zwiim-mcp__delegate_to_agent")
         );
         assert_eq!(
             resolve_rewritten_title(AgentType::CodeBuddy, &None, "tc3", true, false, &mut overrides)
                 .as_deref(),
-            Some("mcp__codeg-mcp__delegate_to_agent")
+            Some("mcp__zwiim-mcp__delegate_to_agent")
         );
         // Non-CodeBuddy agent with no prior classification: never rewritten.
         assert_eq!(
@@ -23073,7 +23073,7 @@ mod tests {
         );
         // DeferExecuteTool still wins over the meta path (distinct mechanism).
         let deferred = Some(
-            r#"{"params":{"agent_type":"codex","task":"x"},"toolName":"mcp__codeg-mcp__delegate_to_agent"}"#
+            r#"{"params":{"agent_type":"codex","task":"x"},"toolName":"mcp__zwiim-mcp__delegate_to_agent"}"#
                 .to_string(),
         );
         assert_eq!(
@@ -23086,7 +23086,7 @@ mod tests {
                 &mut overrides
             )
             .as_deref(),
-            Some("mcp__codeg-mcp__delegate_to_agent")
+            Some("mcp__zwiim-mcp__delegate_to_agent")
         );
     }
 
@@ -23421,7 +23421,7 @@ mod tests {
         DelegationInjection {
             broker,
             tokens: Arc::new(TokenRegistry::default()),
-            socket_path: std::path::PathBuf::from("/tmp/codeg-mcp.sock"),
+            socket_path: std::path::PathBuf::from("/tmp/zwiim-mcp.sock"),
             agent_availability,
             feedback: crate::acp::feedback::FeedbackRuntimeConfig::new(),
             ask: crate::acp::question::QuestionRuntimeConfig::new(),
@@ -23435,14 +23435,14 @@ mod tests {
         }
     }
 
-    // ─── inject_codeg_mcp: enabled=false short-circuit ──────────
+    // ─── inject_zwiim_mcp: enabled=false short-circuit ──────────
     //
     // Guards the "default off" product contract: when the broker config has
     // `enabled: false` (the new production default for fresh installs), the
     // delegate-MCP injection must not push a server entry and must not
     // register a per-launch token. The early return at the top of
-    // `inject_codeg_mcp` is the single chokepoint that keeps a
-    // codeg-mcp stdio MCP out of every ACP session until the user
+    // `inject_zwiim_mcp` is the single chokepoint that keeps a
+    // zwiim-mcp stdio MCP out of every ACP session until the user
     // opts in via the settings panel.
     #[tokio::test]
     async fn inject_codeg_delegate_skipped_when_broker_disabled() {
@@ -23456,7 +23456,7 @@ mod tests {
         );
 
         let mut servers: Vec<McpServer> = Vec::new();
-        let result = inject_codeg_mcp(
+        let result = inject_zwiim_mcp(
             &mut servers,
             &injection,
             "parent-conn",
@@ -23548,7 +23548,7 @@ mod tests {
         // process tree under that agent's own policy, and relays its output
         // back. Without this gate a sandboxed agent that cannot read `.env`
         // itself just asks a sibling to read it, and the switch's promise is
-        // false. This pins the exact boolean `inject_codeg_mcp` computes.
+        // false. This pins the exact boolean `inject_zwiim_mcp` computes.
         let delegation_for = |broker_enabled: bool, host_tools: HostToolsPolicy| {
             broker_enabled && host_tools.hosts_channels()
         };

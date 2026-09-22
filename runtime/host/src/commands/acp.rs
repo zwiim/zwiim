@@ -198,11 +198,11 @@ fn apply_custom_version_to_url(url: &str, registry_version: &str, custom_version
 /// runs whatever is installed, and nothing polls npm in the background.
 ///
 /// Exactly the value `latest` opts in; absence or any other value stays on the
-/// pin. Unlike `CODEG_ACP_HOST_TOOLS` there is no process-env second layer to
+/// pin. Unlike `ZWIIM_ACP_HOST_TOOLS` there is no process-env second layer to
 /// make "absent" ambiguous, so the settings control may delete the key for the
 /// pinned default — both readers (this one and `adapterChannelFromEnvText` in
 /// acp-agent-settings.tsx) treat absent as pinned.
-pub(crate) const ADAPTER_CHANNEL_ENV: &str = "CODEG_ADAPTER_CHANNEL";
+pub(crate) const ADAPTER_CHANNEL_ENV: &str = "ZWIIM_ADAPTER_CHANNEL";
 const ADAPTER_CHANNEL_LATEST: &str = "latest";
 
 /// Whether a resolved per-agent env opts into the `latest` adapter channel.
@@ -653,7 +653,7 @@ pub(crate) async fn verify_agent_installed(agent_type: AgentType) -> Result<(), 
 /// `npm list -g <package_name> --json` and parsing the JSON output.
 ///
 /// Checks both the system global prefix and the user-local prefix
-/// (`~/.codeg/npm-global/`) so packages installed via the EACCES fallback are
+/// (`~/.zwiim/npm-global/`) so packages installed via the EACCES fallback are
 /// found as well.
 ///
 /// `pub(crate)` so env diagnostics can report the installed version it sees
@@ -839,7 +839,7 @@ struct AgentDiag {
     resolve_npx: Option<String>,
     /// `<npm prefix -g>/bin/<cmd>` when it exists.
     system_prefix_bin: Option<String>,
-    /// `~/.codeg/npm-global/bin/<cmd>` (EACCES fallback) when it exists.
+    /// `~/.zwiim/npm-global/bin/<cmd>` (EACCES fallback) when it exists.
     user_prefix_bin: Option<String>,
     /// Homebrew global bin (`/opt/homebrew/bin/<cmd>` etc.) when it exists (macOS).
     homebrew_bin: Option<String>,
@@ -952,7 +952,7 @@ async fn diag_terminal_probe(cmd: &str, app_path: &[String]) -> TerminalProbe {
     };
     // `cmd` is a static registry command name — no shell metacharacters.
     let script =
-        format!("printf 'CODEG_PATH=%s\\n' \"$PATH\"; command -v {cmd} 2>/dev/null || true");
+        format!("printf 'ZWIIM_PATH=%s\\n' \"$PATH\"; command -v {cmd} 2>/dev/null || true");
     let mut c = crate::process::tokio_command(&shell);
     c.arg("-lic").arg(&script).kill_on_drop(true);
     let out = match tokio::time::timeout(DIAG_PROBE_TIMEOUT, c.output()).await {
@@ -966,7 +966,7 @@ async fn diag_terminal_probe(cmd: &str, app_path: &[String]) -> TerminalProbe {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut term_path: Option<String> = None;
     for line in stdout.lines() {
-        if let Some(p) = line.strip_prefix("CODEG_PATH=") {
+        if let Some(p) = line.strip_prefix("ZWIIM_PATH=") {
             term_path = Some(p.to_string());
         } else if line.starts_with('/') && probe.cmd_resolved.is_none() {
             probe.cmd_resolved = Some(line.trim().to_string());
@@ -1309,7 +1309,7 @@ fn compute_verdict(inp: &DiagInputs) -> DiagnosticsVerdict {
                 return diag_verdict(
                     DiagLevel::Fail,
                     "user_prefix_not_on_path",
-                    "Installed into the EACCES fallback prefix (~/.codeg/npm-global), which is not on the app's PATH.",
+                    "Installed into the EACCES fallback prefix (~/.zwiim/npm-global), which is not on the app's PATH.",
                 );
             }
             if agent.homebrew_bin.is_some() {
@@ -1453,7 +1453,7 @@ fn build_report(
                 None,
             ));
             checks.push(diag_check(
-                "~/.codeg/npm-global/bin/<cmd>",
+                "~/.zwiim/npm-global/bin/<cmd>",
                 a.user_prefix_bin.as_deref().unwrap_or("absent"),
                 if a.user_prefix_bin.is_some() { DiagLevel::Warn } else { DiagLevel::Info },
                 a.user_prefix_bin.as_ref().map(|_| "EACCES fallback dir — reached by the connect gate only if it's on PATH"),
@@ -1604,7 +1604,7 @@ fn render_plain_text(
         DiagLevel::Info => "--  ",
     };
     let mut out = String::new();
-    out.push_str("===== Codeg environment diagnostics =====\n");
+    out.push_str("===== Zwiim environment diagnostics =====\n");
     out.push_str(&format!("generated: {generated_at}\n"));
     if let Some(at) = agent_type {
         out.push_str(&format!("agent: {at:?}\n"));
@@ -1714,7 +1714,7 @@ mod diagnostics_tests {
     fn verdict_user_prefix_not_on_path() {
         let mut inp = base_inputs();
         let mut a = agent_installed_unresolved();
-        a.user_prefix_bin = Some("/home/u/.codeg/npm-global/bin/codex-acp".to_string());
+        a.user_prefix_bin = Some("/home/u/.zwiim/npm-global/bin/codex-acp".to_string());
         inp.agent = Some(a);
         let v = compute_verdict(&inp);
         assert_eq!(v.code, "user_prefix_not_on_path");
@@ -1930,7 +1930,7 @@ mod diagnostics_tests {
         let inp = base_inputs();
         let r = build_report(&inp, "FIXED-TS".to_string(), None);
         assert_eq!(r.generated_at, "FIXED-TS");
-        assert!(r.plain_text.contains("Codeg environment diagnostics"));
+        assert!(r.plain_text.contains("Zwiim environment diagnostics"));
         assert!(r.plain_text.contains("verdict [ok]"));
         assert!(!r.sections.is_empty());
     }
@@ -2444,7 +2444,7 @@ async fn install_npm_global_package_streaming_inner(
     Ok(())
 }
 
-/// Fallback: install an npm package into a user-local prefix (`~/.codeg/npm-global/`)
+/// Fallback: install an npm package into a user-local prefix (`~/.zwiim/npm-global/`)
 /// when the system global prefix is not writable (EACCES).
 async fn install_npm_to_user_prefix_streaming(
     package: &str,
@@ -2590,7 +2590,7 @@ async fn uninstall_npm_global_package(package: &str) -> Result<(), AcpError> {
     Ok(())
 }
 
-/// Uninstall an npm package from the user-local prefix (`~/.codeg/npm-global/`).
+/// Uninstall an npm package from the user-local prefix (`~/.zwiim/npm-global/`).
 async fn uninstall_npm_from_user_prefix(package_name: &str) -> Result<(), AcpError> {
     let prefix = match crate::process::user_npm_prefix() {
         Some(p) if p.exists() => p,
@@ -8830,7 +8830,7 @@ fn skill_content_path(layout: AgentSkillLayout, skill_path: &Path) -> PathBuf {
 /// recursively and files are unlinked. This prevents `remove_dir_all` from
 /// accidentally wiping the contents of a symlink target — which is critical
 /// for the Experts feature where agent skill dirs may contain symlinks into
-/// the central `~/.codeg/skills/` store.
+/// the central `~/.zwiim/skills/` store.
 pub(crate) fn remove_skill_entry(path: &Path) -> std::io::Result<()> {
     let meta = fs::symlink_metadata(path)?;
     let file_type = meta.file_type();
@@ -10575,7 +10575,7 @@ pub async fn acp_connect(
     app_handle: tauri::AppHandle,
     window: tauri::WebviewWindow,
 ) -> Result<String, AcpError> {
-    // Resolve through the effective data dir so a custom `CODEG_DATA_DIR`
+    // Resolve through the effective data dir so a custom `ZWIIM_DATA_DIR`
     // reaches the credential helper script the agent's git subprocess
     // will execute. `acp_connect` may be called before the app data dir
     // exists on disk (first launch); fall back to a sentinel that the
@@ -10673,7 +10673,7 @@ pub async fn acp_goal_control(
 /// read whatever `SessionConfigOptions` / `SessionModes` the agent advertises,
 /// and tear it down. The returned snapshot drives the delegation-settings UI
 /// so the user picks from the exact option set the agent will accept when
-/// codeg-mcp later spawns a subagent.
+/// zwiim-mcp later spawns a subagent.
 ///
 /// Does NOT touch the chat-side `selectorsCache`, `localStorage` preferences,
 /// or any active connection state — see `ConnectionManager::probe_agent_options`
@@ -14907,10 +14907,10 @@ base_url = \"https://example.test/v1\"
     }
 
     /// Drive the launch gate with an isolated pi agent dir AND an isolated codeg
-    /// home (the acknowledgement store lives there, via `CODEG_HOME`).
+    /// home (the acknowledgement store lives there, via `ZWIIM_HOME`).
     fn launch_block_for(agent_dir: &Path, codeg_home: &Path, cwd: &Path) -> Option<String> {
         temp_env::with_var(
-            "CODEG_HOME",
+            "ZWIIM_HOME",
             Some(codeg_home.to_string_lossy().to_string()),
             || pi_project_trust_launch_block(cwd, &pi_env_for(agent_dir)),
         )
@@ -18238,7 +18238,7 @@ wire_api = "chat"
         // leading double-quoted string makes PowerShell parse the line as a
         // string expression and fail with "Unexpected token" instead of running
         // uvx; an unquoted bare path runs in both cmd and PowerShell.
-        let path = r"C:\Users\Administrator\AppData\Local\app.codeg\acp-binaries\uv-tool\windows-x86_64\uvx.exe";
+        let path = r"C:\Users\Administrator\AppData\Local\app.zwiim\acp-binaries\uv-tool\windows-x86_64\uvx.exe";
         assert_eq!(shell_quote_arg_for(path, true), path);
         // On POSIX the backslash is the escape char, so it still forces quoting.
         assert_eq!(shell_quote_arg_for(path, false), format!("'{path}'"));

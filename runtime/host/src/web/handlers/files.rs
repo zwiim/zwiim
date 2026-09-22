@@ -237,17 +237,17 @@ pub const UPLOAD_MAX_BYTES: u64 = 20 * 1024 * 1024;
 /// is effectively a hard ceiling: concurrent admits cannot accumulate
 /// past `cap` because each one decrements the in-flight headroom seen
 /// by the next.
-const UPLOAD_TOTAL_BYTES_ENV: &str = "CODEG_UPLOAD_MAX_TOTAL_BYTES";
+const UPLOAD_TOTAL_BYTES_ENV: &str = "ZWIIM_UPLOAD_MAX_TOTAL_BYTES";
 
 /// Opt-in fail-closed mode for the quota config. When truthy and
-/// `CODEG_UPLOAD_MAX_TOTAL_BYTES` parses as `Invalid`, startup aborts
+/// `ZWIIM_UPLOAD_MAX_TOTAL_BYTES` parses as `Invalid`, startup aborts
 /// with a `FATAL` line instead of falling through to fail-open. Default
 /// (unset / "0" / "false") preserves the prior fail-open posture so a
 /// typo doesn't take down a production process unless the operator
 /// explicitly asks for that behavior.
-const UPLOAD_STRICT_ENV: &str = "CODEG_UPLOAD_QUOTA_STRICT";
+const UPLOAD_STRICT_ENV: &str = "ZWIIM_UPLOAD_QUOTA_STRICT";
 
-/// Outcome of parsing `CODEG_UPLOAD_MAX_TOTAL_BYTES`. Carries enough
+/// Outcome of parsing `ZWIIM_UPLOAD_MAX_TOTAL_BYTES`. Carries enough
 /// context that the startup banner can distinguish "operator turned it
 /// off" from "operator typo silently disabled the cap".
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -390,12 +390,12 @@ pub fn log_upload_quota_config_at_startup() {
     }
 }
 
-/// Strict-mode validation: returns `Err` when `CODEG_UPLOAD_QUOTA_STRICT`
+/// Strict-mode validation: returns `Err` when `ZWIIM_UPLOAD_QUOTA_STRICT`
 /// is truthy and the quota value is `Invalid`. Every other combination
 /// (unset, disabled, enabled, or invalid-but-strict-off) returns `Ok`.
 ///
 /// Callers choose the failure mode:
-///   * `codeg-server` (single-purpose process) — call early in `main`
+///   * `zwiim-host` (single-purpose process) — call early in `main`
 ///     and `process::exit(2)` on `Err`.
 ///   * Desktop web-service start — call before `persist_web_service_config`
 ///     and surface `Err` as an `AppCommandError` so the toggle fails
@@ -421,7 +421,7 @@ pub fn validate_upload_quota_config() -> Result<(), UploadQuotaStrictError> {
 /// disk, not the counter — and a uniform reservation size keeps the
 /// CAS loop and the cleanup path symmetric.
 ///
-/// **Scope:** this counter is process-local. Multiple `codeg-server`
+/// **Scope:** this counter is process-local. Multiple `zwiim-host`
 /// processes sharing the same `uploads_root` (horizontally-scaled
 /// deployments mounted on the same volume) will each maintain their
 /// own counter and can collectively exceed the cap. codeg is designed
@@ -757,7 +757,7 @@ pub async fn purge_upload_staging() {
 /// therefore always ≥ the bytes actually written — the streaming loop
 /// independently caps the file at `UPLOAD_MAX_BYTES` — so the quota stays a
 /// hard ceiling while a small upload only reserves its own size. This matters
-/// for operators with `CODEG_UPLOAD_MAX_TOTAL_BYTES` below `UPLOAD_MAX_BYTES`:
+/// for operators with `ZWIIM_UPLOAD_MAX_TOTAL_BYTES` below `UPLOAD_MAX_BYTES`:
 /// a blanket worst-case reservation would reject every upload outright.
 ///
 /// A missing/unparseable header (chunked transfer) falls back to the
@@ -1170,7 +1170,7 @@ mod tests {
     // ─── parse_upload_quota_config ────────────────────────────────────
     //
     // Tests the pure parser, NOT the env reader — mutating
-    // `CODEG_UPLOAD_MAX_TOTAL_BYTES` from a test would race the harness's
+    // `ZWIIM_UPLOAD_MAX_TOTAL_BYTES` from a test would race the harness's
     // parallel runner.
 
     #[test]
@@ -1221,8 +1221,8 @@ mod tests {
             raw_value: "10GB".to_string(),
         };
         let msg = err.to_string();
-        assert!(msg.contains("CODEG_UPLOAD_MAX_TOTAL_BYTES"));
-        assert!(msg.contains("CODEG_UPLOAD_QUOTA_STRICT"));
+        assert!(msg.contains("ZWIIM_UPLOAD_MAX_TOTAL_BYTES"));
+        assert!(msg.contains("ZWIIM_UPLOAD_QUOTA_STRICT"));
         assert!(msg.contains("10GB"));
     }
 

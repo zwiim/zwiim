@@ -1200,7 +1200,7 @@ pub async fn get_by_id(
 
 /// Resolve a `codeg://session/<ref>` path to a live (non-deleted) conversation.
 ///
-/// `session_ref` is either Codeg's numeric primary key (what MCP and the
+/// `session_ref` is either Zwiim's numeric primary key (what MCP and the
 /// `codeg://session/<id>` markdown mentions use) or the agent's own session
 /// id stored as `external_id` (a Grok UUID, a Codex thread id, …). Several
 /// rows can share an `external_id` across agents; the most recently updated

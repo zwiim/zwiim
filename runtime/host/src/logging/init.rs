@@ -10,7 +10,7 @@
 //!    hub::LogHub`], and returns a [`LogGuard`] the caller holds for the
 //!    process lifetime so buffered file lines flush on a graceful exit.
 //! 2. **Phase 2** — [`apply_persisted_level`], once the DB is open: overrides
-//!    the default level from the `logging.level` KV value (unless `CODEG_LOG` /
+//!    the default level from the `logging.level` KV value (unless `ZWIIM_LOG` /
 //!    `RUST_LOG` is set, which wins).
 //! 3. **Phase 3** — `LogHub::set_emitter`, once `AppState` exists: starts
 //!    `logs://appended` delivery to the viewer.
@@ -43,7 +43,7 @@ pub struct LogGuard {
 
 /// Standing per-target ceilings applied to EVERY constructed filter — the
 /// default/configured level, a persisted level, AND an explicit `RUST_LOG` /
-/// `CODEG_LOG` override. Each entry is the MOST VERBOSE level that target may
+/// `ZWIIM_LOG` override. Each entry is the MOST VERBOSE level that target may
 /// ever reach; see [`clamped_backstops`] for why that is a ceiling rather than a
 /// pin.
 ///
@@ -75,7 +75,7 @@ pub struct LogGuard {
 ///   and [`crate::logging::budget`] bounds whatever is left.
 ///
 ///   Protocol-level debugging stays reachable: a MORE SPECIFIC target beats a
-///   crate-level ceiling, so setting `CODEG_LOG` to
+///   crate-level ceiling, so setting `ZWIIM_LOG` to
 ///   `info,sacp::jsonrpc::transport_actor=trace` still dumps the wire.
 /// - `tungstenite` → `Debug` — `handshake/client.rs` TRACEs the serialized
 ///   handshake **in full**: `trace!("Request: {:?}", …)` over the raw request
@@ -102,7 +102,7 @@ pub struct LogGuard {
 ///   for a firehose and wrong for a credential, so the dump gets its own entry.
 ///   Backstops are appended last and win at equal specificity (see
 ///   [`build_env_filter`]), so a plain `tungstenite::handshake::client=trace`
-///   from the Settings UI or `CODEG_LOG` loses to this entry at any module
+///   from the Settings UI or `ZWIIM_LOG` loses to this entry at any module
 ///   depth. Asking for LESS is still honored: the clamp never raises
 ///   verbosity, so `off` still means off.
 ///
@@ -115,7 +115,7 @@ pub struct LogGuard {
 ///   `.sqlx_logging(false)`, but that is a per-call-site opt-out that a new
 ///   connection can forget; this makes forgetting harmless. Slow-query lines are
 ///   WARN and survive.
-/// - `codeg_lib::logging` → `Off` — the logging stack must not log about itself
+/// - `zwiim_host::logging` → `Off` — the logging stack must not log about itself
 ///   (cross-thread feedback-loop backstop; the layer's thread-local guard
 ///   handles the same-thread case).
 ///
@@ -128,14 +128,14 @@ const TARGET_BACKSTOPS: &[(&str, LogLevel)] = &[
     ("tungstenite", LogLevel::Debug),
     ("tungstenite::handshake::client", LogLevel::Debug),
     ("sqlx::query", LogLevel::Warn),
-    ("codeg_lib::logging", LogLevel::Off),
+    ("zwiim_host::logging", LogLevel::Off),
 ];
 
 /// The one target that is refused structurally rather than by level.
 ///
 /// [`TARGET_BACKSTOPS`] is a table of *levels*, and a level is negotiable:
 /// `EnvFilter` ranks a field-qualified directive above a plain target one, so
-/// `CODEG_LOG='tungstenite::handshake::client[{message}]=trace'` outranks the
+/// `ZWIIM_LOG='tungstenite::handshake::client[{message}]=trace'` outranks the
 /// entry there — and that `trace!` is a formatted event, so it has a `message`
 /// field to match on. The entry in the table still earns its place (it keeps
 /// the crate ceiling coherent and it is what the directive tests read), but it
@@ -242,7 +242,7 @@ fn env_override_directives(s: &str) -> String {
 ///   out of `split(',')` and both sides of `=` are compared as-is.
 ///
 /// **With nothing applicable the answer is `Off`, not "unbounded".** An
-/// expression like `codeg_lib=info` enables nothing else — `EnvFilter::builder()`
+/// expression like `zwiim_host=info` enables nothing else — `EnvFilter::builder()`
 /// leaves `default_directive` unset (`builder.rs:353`), so an unmatched target is
 /// disabled — and a ceiling emitted as `sacp=warn` there would *turn sacp on*, a
 /// floor masquerading as a ceiling, which is the whole bug this clamp prevents.
@@ -263,7 +263,7 @@ fn env_level_for_target(expr: &str, target: &str) -> LogLevel {
             // `target=level`. An OMITTED level is TRACE (`directive.rs:203`); an
             // INVALID one makes the whole directive unparseable, and
             // `parse_lossy` drops those — so must we, or we'd emit a ceiling for
-            // a directive `EnvFilter` never accepted. `CODEG_LOG=off,sacp=bogus`
+            // a directive `EnvFilter` never accepted. `ZWIIM_LOG=off,sacp=bogus`
             // is the case that matters: EnvFilter keeps only `off`, so appending
             // `sacp=warn` there would turn sacp back on.
             //
@@ -371,8 +371,8 @@ pub fn build_env_filter(settings: &LogSettings) -> EnvFilter {
 /// recursion backstop.
 fn is_valid_target(target: &str) -> bool {
     if target.is_empty()
-        || target == "codeg_lib::logging"
-        || target.starts_with("codeg_lib::logging::")
+        || target == "zwiim_host::logging"
+        || target.starts_with("zwiim_host::logging::")
     {
         return false;
     }
@@ -398,12 +398,12 @@ const LOG_FILE_SUFFIX: &str = "log";
 
 /// Retention for rotated daily files. A disk-bound necessity (daily files would
 /// otherwise accumulate forever), not a functional cap; generous default,
-/// overridable via `CODEG_LOG_MAX_FILES`.
+/// overridable via `ZWIIM_LOG_MAX_FILES`.
 ///
 /// Note this bounds the number of **files**, not their size — a single day's
 /// file is bounded separately by [`crate::logging::budget`].
 fn file_retention() -> usize {
-    std::env::var("CODEG_LOG_MAX_FILES")
+    std::env::var("ZWIIM_LOG_MAX_FILES")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|&n| n > 0)
@@ -411,12 +411,12 @@ fn file_retention() -> usize {
 }
 
 /// The env-override directive, or `None`: the first non-empty (trimmed) value of
-/// `CODEG_LOG` then `RUST_LOG`. Single source of truth for env-level precedence,
+/// `ZWIIM_LOG` then `RUST_LOG`. Single source of truth for env-level precedence,
 /// so the startup filter and the env-lock checks can't diverge — e.g. an empty
-/// `CODEG_LOG` must not mask a valid `RUST_LOG` (a `var().or_else(var)` would
+/// `ZWIIM_LOG` must not mask a valid `RUST_LOG` (a `var().or_else(var)` would
 /// treat the empty `Ok("")` as present and skip `RUST_LOG`).
 fn env_level_override() -> Option<String> {
-    ["CODEG_LOG", "RUST_LOG"].iter().find_map(|key| {
+    ["ZWIIM_LOG", "RUST_LOG"].iter().find_map(|key| {
         std::env::var(key)
             .ok()
             .map(|v| v.trim().to_string())
@@ -424,7 +424,7 @@ fn env_level_override() -> Option<String> {
     })
 }
 
-/// Whether an explicit `CODEG_LOG` / `RUST_LOG` is set (and non-empty). When
+/// Whether an explicit `ZWIIM_LOG` / `RUST_LOG` is set (and non-empty). When
 /// true the env var owns the live level: startup skips the persisted level and
 /// the Settings UI locks the control (so it can't silently diverge).
 pub fn env_level_is_set() -> bool {
@@ -477,7 +477,7 @@ fn init_file_writer(dir: &Path, prefix: &str) -> Option<(NonBlocking, WorkerGuar
     Some(tracing_appender::non_blocking(budgeted))
 }
 
-/// Build and install the subscriber. `file_dir` is `None` for `codeg-mcp`
+/// Build and install the subscriber. `file_dir` is `None` for `zwiim-mcp`
 /// (stderr only). Returns the reload handle and the appender guard.
 fn build_subscriber(
     initial: LogLevel,
@@ -502,7 +502,7 @@ fn build_subscriber(
     let (filter_layer, reload_handle) = reload::Layer::new(initial_filter);
 
     // stderr fmt layer — MUST target stderr (not the default stdout): in
-    // codeg-mcp stdout is the JSON-RPC channel, and elsewhere the migrated
+    // zwiim-mcp stdout is the JSON-RPC channel, and elsewhere the migrated
     // eprintln! all went to stderr.
     let file = file_dir.and_then(|dir| init_file_writer(dir, file_prefix));
 
@@ -546,10 +546,10 @@ pub fn init_desktop() -> LogGuard {
     init_with_file("codeg")
 }
 
-/// Phase 1 for `codeg-server`: stderr + file (`codeg-server.<date>.log`) +
+/// Phase 1 for `zwiim-host`: stderr + file (`zwiim-host.<date>.log`) +
 /// buffer.
 pub fn init_server() -> LogGuard {
-    init_with_file("codeg-server")
+    init_with_file("zwiim-host")
 }
 
 fn init_with_file(prefix: &str) -> LogGuard {
@@ -561,11 +561,11 @@ fn init_with_file(prefix: &str) -> LogGuard {
 
 /// Install a **stderr-only** subscriber (no file / buffer / hub / emitter) for
 /// process modes that run before — or instead of — the full logging stack:
-/// `codeg-mcp`, the `--supervise` supervisor, and the `--credential-helper`
+/// `zwiim-mcp`, the `--supervise` supervisor, and the `--credential-helper`
 /// subprocess. Without an installed subscriber, `tracing` calls on those paths
 /// are silently dropped (unlike the old `eprintln!`, which always hit stderr).
 ///
-/// stderr (not stdout) is mandatory: in `codeg-mcp` and the credential helper,
+/// stderr (not stdout) is mandatory: in `zwiim-mcp` and the credential helper,
 /// stdout is a protocol channel. No file appender: those modes are short-lived
 /// or multi-process and must not clobber a shared rolling file. No hub: nothing
 /// to buffer/emit, so `BufferEmitLayer` short-circuits.
@@ -574,13 +574,13 @@ pub fn init_stderr_only() -> LogGuard {
     LogGuard { _guard: guard }
 }
 
-/// Phase 1 for `codeg-mcp`. See [`init_stderr_only`].
+/// Phase 1 for `zwiim-mcp`. See [`init_stderr_only`].
 pub fn init_mcp() -> LogGuard {
     init_stderr_only()
 }
 
 /// Phase 2: override the default level from the persisted `logging.level` KV
-/// value, unless an explicit `CODEG_LOG` / `RUST_LOG` is set (env wins). No-op
+/// value, unless an explicit `ZWIIM_LOG` / `RUST_LOG` is set (env wins). No-op
 /// when no hub is installed (mcp) or the value is absent/unparseable.
 pub async fn apply_persisted_level(conn: &sea_orm::DatabaseConnection) {
     if env_level_is_set() {
@@ -609,7 +609,7 @@ mod tests {
             level: LogLevel::Info,
             targets: vec![
                 TargetDirective {
-                    target: "codeg_lib::acp".into(),
+                    target: "zwiim_host::acp".into(),
                     level: LogLevel::Debug,
                 },
                 // Whitespace-only target is skipped, not emitted as a bare "=trace".
@@ -618,22 +618,22 @@ mod tests {
                     level: LogLevel::Trace,
                 },
                 TargetDirective {
-                    target: "codeg_lib::web".into(),
+                    target: "zwiim_host::web".into(),
                     level: LogLevel::Warn,
                 },
             ],
         };
         let rendered = build_env_filter(&settings).to_string();
         assert!(
-            rendered.contains("codeg_lib::acp=debug"),
+            rendered.contains("zwiim_host::acp=debug"),
             "missing acp override: {rendered}"
         );
         assert!(
-            rendered.contains("codeg_lib::web=warn"),
+            rendered.contains("zwiim_host::web=warn"),
             "missing web override: {rendered}"
         );
         assert!(
-            rendered.contains("codeg_lib::logging=off"),
+            rendered.contains("zwiim_host::logging=off"),
             "missing backstop: {rendered}"
         );
         assert!(
@@ -652,21 +652,21 @@ mod tests {
                     level: LogLevel::Trace,
                 },
                 TargetDirective {
-                    target: "codeg_lib::logging".into(), // backstop override attempt → dropped
+                    target: "zwiim_host::logging".into(), // backstop override attempt → dropped
                     level: LogLevel::Trace,
                 },
                 TargetDirective {
-                    target: "codeg_lib::acp".into(),
+                    target: "zwiim_host::acp".into(),
                     level: LogLevel::Debug,
                 },
             ],
         };
         let rendered = build_env_filter(&settings).to_string();
-        assert!(rendered.contains("codeg_lib::acp=debug"), "{rendered}");
+        assert!(rendered.contains("zwiim_host::acp=debug"), "{rendered}");
         assert!(!rendered.contains("bad-target"), "{rendered}");
         // The logging module stays off; the override attempt is dropped.
-        assert!(rendered.contains("codeg_lib::logging=off"), "{rendered}");
-        assert!(!rendered.contains("codeg_lib::logging=trace"), "{rendered}");
+        assert!(rendered.contains("zwiim_host::logging=off"), "{rendered}");
+        assert!(!rendered.contains("zwiim_host::logging=trace"), "{rendered}");
     }
 
     #[test]
@@ -692,7 +692,7 @@ mod tests {
             "tungstenite=info",
             // Every SQL statement at INFO if a ConnectOptions forgets to opt out.
             "sqlx::query=warn",
-            "codeg_lib::logging=off",
+            "zwiim_host::logging=off",
         ] {
             assert!(rendered.contains(pin), "missing backstop {pin}: {rendered}");
         }
@@ -720,7 +720,7 @@ mod tests {
                 .parse_lossy(&env)
                 .to_string()
                 .contains("tungstenite=debug"),
-            "CODEG_LOG=trace re-opened the handshake dump: {env}"
+            "ZWIIM_LOG=trace re-opened the handshake dump: {env}"
         );
     }
 
@@ -741,7 +741,7 @@ mod tests {
                 .to_string();
             assert!(
                 !rendered.contains("tungstenite::handshake::client=trace"),
-                "CODEG_LOG={asked} reopened the dump: {rendered}"
+                "ZWIIM_LOG={asked} reopened the dump: {rendered}"
             );
         }
 
@@ -844,7 +844,7 @@ mod tests {
         tracing::subscriber::with_default(subscriber, || {
             tracing::trace!(target: "tungstenite::handshake::client", "Request: bearer s3cret");
             tracing::trace!(target: "tungstenite::protocol", "frame");
-            tracing::trace!(target: "codeg_lib::acp", "unrelated");
+            tracing::trace!(target: "zwiim_host::acp", "unrelated");
         });
 
         let seen = seen.lock().unwrap();
@@ -857,20 +857,20 @@ mod tests {
             "frame tracing must still arrive: {seen:?}"
         );
         assert!(
-            seen.iter().any(|t| t == "codeg_lib::acp"),
+            seen.iter().any(|t| t == "zwiim_host::acp"),
             "unrelated targets must still arrive: {seen:?}"
         );
     }
 
     #[test]
     fn env_override_appends_backstops_so_debug_cannot_reopen_them() {
-        // The explicit RUST_LOG/CODEG_LOG path bypasses build_env_filter, so it
+        // The explicit RUST_LOG/ZWIIM_LOG path bypasses build_env_filter, so it
         // must apply the same backstops itself — otherwise `RUST_LOG=debug`
         // re-opens the kill_tree per-PID firehose and the sacp wire dump.
         assert_eq!(
             env_override_directives("debug"),
             "debug,kill_tree=warn,sacp=warn,sacp_tokio=warn,tungstenite=debug,\
-             tungstenite::handshake::client=debug,sqlx::query=warn,codeg_lib::logging=off"
+             tungstenite::handshake::client=debug,sqlx::query=warn,zwiim_host::logging=off"
         );
         // And the parsed filter still carries the clamps under a global debug.
         let rendered = EnvFilter::builder()
@@ -919,7 +919,7 @@ mod tests {
         assert_eq!(
             env_override_directives("OFF"),
             "OFF,kill_tree=off,sacp=off,sacp_tokio=off,tungstenite=off,\
-             tungstenite::handshake::client=off,sqlx::query=off,codeg_lib::logging=off",
+             tungstenite::handshake::client=off,sqlx::query=off,zwiim_host::logging=off",
             "a bare off override collapses the ceilings, case-insensitively"
         );
     }
@@ -937,7 +937,7 @@ mod tests {
         assert_eq!(
             env_override_directives("sacp=off"),
             "sacp=off,kill_tree=off,sacp=off,sacp_tokio=off,tungstenite=off,\
-             tungstenite::handshake::client=off,sqlx::query=off,codeg_lib::logging=off"
+             tungstenite::handshake::client=off,sqlx::query=off,zwiim_host::logging=off"
         );
         // ...but the same target asking for MORE is still refused: that is the
         // firehose this whole clamp exists to keep shut.
@@ -947,16 +947,16 @@ mod tests {
         );
         // A compound expression's bare level is the ceiling for targets it
         // doesn't name.
-        let compound = env_override_directives("off,codeg_lib::acp=trace");
+        let compound = env_override_directives("off,zwiim_host::acp=trace");
         assert!(compound.contains("sacp=off"), "{compound}");
         assert!(!compound.contains("sacp=warn"), "{compound}");
-        let error_compound = env_override_directives("error,codeg_lib::acp=info");
+        let error_compound = env_override_directives("error,zwiim_host::acp=info");
         assert!(error_compound.contains("sacp=error"), "{error_compound}");
         assert!(!error_compound.contains("sacp=warn"), "{error_compound}");
         // No bare level at all: EnvFilter leaves unmatched targets disabled, so a
         // ceiling of `off` is the honest answer — emitting `warn` here would turn
         // sacp ON in an expression that never asked for it.
-        let targeted = env_override_directives("codeg_lib::acp=info");
+        let targeted = env_override_directives("zwiim_host::acp=info");
         assert!(targeted.contains("sacp=off"), "{targeted}");
         assert!(!targeted.contains("sacp=warn"), "{targeted}");
     }
@@ -1157,8 +1157,8 @@ mod tests {
 
     #[test]
     fn is_valid_target_grammar() {
-        assert!(is_valid_target("codeg_lib::acp"));
-        assert!(is_valid_target("codeg_lib::acp::delegation"));
+        assert!(is_valid_target("zwiim_host::acp"));
+        assert!(is_valid_target("zwiim_host::acp::delegation"));
         assert!(is_valid_target("a"));
         assert!(!is_valid_target(""));
         assert!(!is_valid_target("bad-target"));
@@ -1166,23 +1166,23 @@ mod tests {
         assert!(!is_valid_target("trailing::"));
         assert!(!is_valid_target("a:::b"));
         assert!(!is_valid_target("has space"));
-        assert!(!is_valid_target("codeg_lib::logging"));
-        assert!(!is_valid_target("codeg_lib::logging::hub"));
+        assert!(!is_valid_target("zwiim_host::logging"));
+        assert!(!is_valid_target("zwiim_host::logging::hub"));
     }
 
     #[test]
     fn env_level_override_precedence() {
         // Both unset → no override.
         temp_env::with_vars(
-            [("CODEG_LOG", None::<&str>), ("RUST_LOG", None::<&str>)],
+            [("ZWIIM_LOG", None::<&str>), ("RUST_LOG", None::<&str>)],
             || {
                 assert_eq!(env_level_override(), None);
                 assert!(!env_level_is_set());
             },
         );
-        // Empty CODEG_LOG must NOT mask a valid RUST_LOG (the bug Codex caught).
+        // Empty ZWIIM_LOG must NOT mask a valid RUST_LOG (the bug Codex caught).
         temp_env::with_vars(
-            [("CODEG_LOG", Some("")), ("RUST_LOG", Some("debug"))],
+            [("ZWIIM_LOG", Some("")), ("RUST_LOG", Some("debug"))],
             || {
                 assert_eq!(env_level_override().as_deref(), Some("debug"));
                 assert!(env_level_is_set());
@@ -1190,15 +1190,15 @@ mod tests {
         );
         // Both empty / whitespace-only → no override.
         temp_env::with_vars(
-            [("CODEG_LOG", Some("  ")), ("RUST_LOG", Some(""))],
+            [("ZWIIM_LOG", Some("  ")), ("RUST_LOG", Some(""))],
             || {
                 assert_eq!(env_level_override(), None);
                 assert!(!env_level_is_set());
             },
         );
-        // CODEG_LOG wins when both are non-empty.
+        // ZWIIM_LOG wins when both are non-empty.
         temp_env::with_vars(
-            [("CODEG_LOG", Some("trace")), ("RUST_LOG", Some("debug"))],
+            [("ZWIIM_LOG", Some("trace")), ("RUST_LOG", Some("debug"))],
             || {
                 assert_eq!(env_level_override().as_deref(), Some("trace"));
             },

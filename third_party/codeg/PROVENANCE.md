@@ -26,13 +26,14 @@ desktop-UI subsystems rather than re-copying a minimal skeleton. The build seam
 is Cargo features: upstream `default = ["tauri-runtime","browser-child"]`; Zwiim
 builds `default = []` (headless), so the WebKit/Tauri surface is never compiled.
 
-- Crate package: `zwiim-host` (was `codeg`). Lib target: `codeg_lib` (retained —
-  Codeg-derived core, grouped as an internal implementation detail per the
-  Naming Boundary). Bin targets: `zwiim-host` (from `src/bin/codeg_server.rs`),
-  `zwiim-mcp` (from `src/bin/codeg_mcp.rs`).
-- Environment/contract identifiers (`CODEG_*`, WS subprotocols, ACP, SACP,
-  SQLite, SeaORM) are preserved as compatibility-required names; Zwiim-owned
-  rebranding of these is a later slice (see Deferred, below).
+- Crate package: `zwiim-host` (was `codeg`). Lib target: `zwiim_host` (was
+  `codeg_lib`). Bin targets: `zwiim-host` (from `src/bin/zwiim_host.rs`, was
+  `codeg_server.rs`), `zwiim-mcp` (from `src/bin/zwiim_mcp.rs`, was
+  `codeg_mcp.rs`).
+- The Zwiim-owned naming rebrand has now been applied (see "Naming rebrand"
+  below). Protocol/technology identifiers (ACP, SACP, SQLite, SeaORM, Git, PTY)
+  are external and preserved. A residual set of Codeg-derived **agent-config
+  keys and serde field names** is still deferred (see Deferred, below).
 
 ## Retained Codeg core (integrated, headless)
 
@@ -45,7 +46,7 @@ Copied and kept, with only the modifications noted in the next section:
 | Filesystem, git, worktree, workspace state, uploads | `runtime/host/src/{web/handlers,workspace_state,git_repo.rs,...}` | Reused |
 | Event system (seq/snapshot/replay/reconnect) | `runtime/host/src/web/{event_bridge,ws}.rs` | Reused |
 | SQLite / SeaORM persistence (entities, services, migrations) | `runtime/host/src/db/` | Reused (migrations kept **dormant**, not trimmed) |
-| MCP host bridge (`codeg-mcp`) + delegation tool groups | `runtime/host/src/bin/codeg_mcp.rs`, `runtime/host/src/acp/{browser_tools,chat_authoring,work_task_tools}.rs` | Reused |
+| MCP host bridge (companion server, now `zwiim-mcp`) + delegation tool groups | `runtime/host/src/bin/zwiim_mcp.rs`, `runtime/host/src/acp/{browser_tools,chat_authoring,work_task_tools}.rs` | Reused (companion renamed `codeg-mcp` → `zwiim-mcp`) |
 | Shared command façade (business logic under `web/handlers`) | `runtime/host/src/commands/` | Reused (product commands removed; see below) |
 | Bundled agent skills (`experts`) | `runtime/host/src/commands/experts.rs`, `runtime/host/experts/` | Reused (relocated into crate for `include_dir!`) |
 | Process supervisor / PID-1 init + exec/supervise runtime constants | `runtime/host/src/supervise.rs`, `runtime/host/src/update/runtime.rs` | Reused |
@@ -78,14 +79,91 @@ dormant" rule; the runtime subsystem that drove them is gone.
 | `runtime/host/src/bin/codeg_server.rs` | Headless boot trimmed: removed wiring for chat_channel, pets, science, automation, work_task, office_watch, browser_bridge, and the self-update state. |
 | `runtime/host/src/app_state.rs` | Removed `chat_channel_manager`, `pet_state`, `update_state` fields + their default constructors. |
 
+## Naming rebrand (Zwiim Naming Boundary — applied)
+
+The Zwiim-owned Codeg-derived identifiers have been rebranded to the Zwiim
+boundary in one atomic slice. Renamed:
+
+- Lib target `codeg_lib` → `zwiim_host`; bin files `codeg_server.rs` →
+  `zwiim_host.rs`, `codeg_mcp.rs` → `zwiim_mcp.rs` (Cargo `[lib]`/`[[bin]]`
+  updated).
+- All internal environment variables `CODEG_*` → `ZWIIM_*`, renamed at both
+  producer and consumer together: supervisor/worker (`ZWIIM_SUPERVISED`,
+  `ZWIIM_RESTART_DELAY_MS`, `ZWIIM_RUNTIME`), credential helper
+  (`ZWIIM_GIT_USERNAME`/`ZWIIM_GIT_PASSWORD`, sh + cmd scripts + setters), ACP
+  adapter channel, PTY `ZWIIM_CMD`, `ZWIIM_DATA_DIR`, `ZWIIM_MCP_BIN`,
+  `ZWIIM_PORT`/`HOST`/`STATIC_DIR`/`TOKEN`, and the live PATH probe marker
+  (see Deviations).
+- MCP companion server instance name `codeg-mcp` → `zwiim-mcp`, renamed as one
+  closed loop: registration (`McpServerStdio::new("zwiim-mcp", …)`),
+  `locate_zwiim_mcp_binary`, the `zwiim-mcp-{triple}` sidecar filename
+  (`build.rs`), delegation rewrite constants (`zwiim-mcp__…`), the companion
+  `serverInfo.name`, and every parser matcher + test fixture.
+- On-disk directory `.codeg` → `.zwiim`, plus its filesystem children
+  (`.zwiimbak`, `.zwiim-restore*`, `.zwiim-ext/fs/edit/upload/download-*`,
+  `.zwiim-swap-state/snapshot/backup-tmp/acp-retry-patch`, `.zwiim-data`,
+  `app.zwiim`, `~/.zwiim`, `backup.zwiim.zip`, the data-dir `join("zwiim")`).
+- Functional product branding and current-behaviour identifiers: the
+  `Codeg composer routing metadata (authoritative)` wire marker (producer +
+  both consumers together), the `LinkedToCodeg` → `LinkedToZwiim` enum variant,
+  the browser message-bridge names (`__zwiimSend`, `zwiimBrowser`,
+  `zwiimBrowserFrame`, native handlers, injected JS in `resources/`),
+  user-facing strings (tray/quit menu, window titles, notifications,
+  diagnostics header, reserved-header error, agent-facing delegation/plan text),
+  and the `CodegMcp*` status types → `ZwiimMcp*`.
+- Removed the dead `CODEG_OFFICE_WATCH_*` comment reference and deleted an
+  orphaned duplicate `commands/backup/backup/` directory (dead — never declared
+  as a module).
+
+Provenance/history references to Codeg are **preserved verbatim** (this file,
+`third_party/codeg/**`, the upstream URL, `Codeg-derived:` notes, and inline
+history comments such as "Codeg used to render …", "Codeg additionally
+propagated titles …", and the discarded minisign-updater notes).
+
+### Accepted pre-ship behaviour notes
+
+1. **`.codeg` data is not migrated.** The canonical directory is now `.zwiim`.
+   No migration of existing pre-ship `.codeg` on-disk data is performed; pre-ship
+   installs start fresh under `.zwiim`.
+2. **Historical MCP transcript names may remain.** Existing SQLite transcript
+   data is not rewritten, so historical `codeg-mcp__<tool>` /
+   `mcp__codeg-mcp__<tool>` names may persist in stored transcripts. New sessions
+   register and emit `zwiim-mcp`.
+
+### Deviations from the approved slice
+
+- `CODEG_PATH` was approved for removal "if confirmed unused." It is **live** —
+  a producer/consumer pair in `commands/acp.rs` (a shell `printf` marker written
+  and then stripped back to read the child `PATH`). It was therefore **renamed**
+  to `ZWIIM_PATH` (both sides) rather than removed.
+- A larger residual of **lowercase `codeg` prose** (comments, test-fixture path
+  tokens, and a few user-facing strings such as "Reinstall codeg …") remains.
+  These fall outside the approved token families (`Codeg`, `CODEG_`,
+  `codeg_lib`, `codeg-mcp`, `.codeg`) and are left for a follow-up cosmetic pass.
+
 ## Deferred (not in this slice — explicit)
 
 Google/Supabase identity, host/device keypairs, QR pairing, final authorization
 & transport security, the versioned Zwiim Protocol, Session/Workspace/AgentAdapter
 facades, cloud relay, remote/mobile clients, OS-keychain secret store, final
-persistence cleanup, worktree-per-session isolation, and the full Zwiim-owned
-rebrand of internal `codeg_lib` / `CODEG_*` identifiers. The bearer token remains
+persistence cleanup, and worktree-per-session isolation. The bearer token remains
 a **transitional** bootstrap only.
+
+Explicitly **not** renamed in this slice (Codeg-derived, but outside the approved
+naming boundary or in excluded scope):
+
+- **Agent-config keys** written into ACP agents' config and matched by parsers:
+  `[providers.codeg]`, `[model_providers.codeg]`, `providers.codeg.env`, and the
+  `codeg-managed` model id. These are an agent-config-format/parser contract and
+  need coordinated writer+parser+fixture changes as their own slice.
+- **Serde field names** `codeg_version` (experts manifest) and
+  `codeg_config_encryption` (config-sync payload) — persisted-schema identifiers.
+- **OS-keychain service name** `"codeg"` in `keyring_store.rs` — explicitly
+  excluded ("OS keychain work") to avoid orphaning stored secrets.
+- **WS subprotocols** `codeg-events` / `codeg-token.` in the transitional bearer
+  auth (auth is itself a transitional bootstrap slated for replacement).
+- The `docs.codeg.app` documentation URL (points at upstream docs until Zwiim
+  docs exist).
 
 ## License obligations tracked
 

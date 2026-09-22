@@ -369,7 +369,7 @@ pub async fn upload_workspace_file(
                     ));
                 }
 
-                let staging_name = format!(".codeg-upload-{}.part", uuid::Uuid::new_v4().simple());
+                let staging_name = format!(".zwiim-upload-{}.part", uuid::Uuid::new_v4().simple());
                 let staging_path = final_abs
                     .parent()
                     .map(|p| p.join(&staging_name))

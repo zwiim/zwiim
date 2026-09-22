@@ -281,7 +281,7 @@ async fn apply_import(
 /// `dir` is a parameter rather than a call to [`rollback_dir`] for the same
 /// reason [`write_rollback_snapshot`] takes one: the command layer supplies the
 /// real directory, and a test supplies a temporary one instead of writing into
-/// the developer's `~/.codeg`.
+/// the developer's `~/.zwiim`.
 pub async fn apply_rollback_core(
     conn: &DatabaseConnection,
     dir: &Path,
@@ -562,7 +562,7 @@ mod tests {
     /// snapshots live. They did not: the reader took a directory and the writer
     /// called [`rollback_dir`] regardless, so an import driven against a
     /// temporary directory still wrote into — and PRUNED — the real
-    /// `~/.codeg/config-snapshots`. The button showed nothing while the test
+    /// `~/.zwiim/config-snapshots`. The button showed nothing while the test
     /// suite quietly evicted the developer's own eleventh-newest snapshot.
     #[tokio::test]
     async fn an_import_saves_its_rollback_point_where_the_list_will_look() {

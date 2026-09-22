@@ -66,16 +66,16 @@ pub fn build_router(
             post(handlers::delegation::set_delegation_settings),
         )
         .route(
-            "/get_codeg_mcp_service_status",
-            post(handlers::mcp_service::get_codeg_mcp_service_status),
+            "/get_zwiim_mcp_service_status",
+            post(handlers::mcp_service::get_zwiim_mcp_service_status),
         )
         .route(
-            "/start_codeg_mcp_service",
-            post(handlers::mcp_service::start_codeg_mcp_service),
+            "/start_zwiim_mcp_service",
+            post(handlers::mcp_service::start_zwiim_mcp_service),
         )
         .route(
-            "/set_codeg_mcp_tool_group",
-            post(handlers::mcp_service::set_codeg_mcp_tool_group),
+            "/set_zwiim_mcp_tool_group",
+            post(handlers::mcp_service::set_zwiim_mcp_tool_group),
         )
         .route(
             "/get_feedback_settings",

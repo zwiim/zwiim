@@ -8,7 +8,7 @@
 //! Encryption metadata is deliberately NOT carried here — it is purely an
 //! outer-envelope concern fully described by [`crate::commands::backup::crypto::EnvelopeHeader`].
 //! Keeping the manifest crypto-agnostic means the same archive bytes are
-//! self-describing whether or not they end up wrapped in the `.codegbak`
+//! self-describing whether or not they end up wrapped in the `.zwiimbak`
 //! envelope.
 
 use serde::{Deserialize, Serialize};
@@ -170,7 +170,7 @@ impl BackupProgress {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupPreview {
-    /// The archive is wrapped in the encrypted `.codegbak` envelope.
+    /// The archive is wrapped in the encrypted `.zwiimbak` envelope.
     pub encrypted: bool,
     /// Encrypted, but no (or no usable) passphrase was supplied, so the
     /// manifest could not be read yet. The UI should prompt for a passphrase.

@@ -132,7 +132,7 @@ pub struct LogHub {
 
 static LOG_HUB: OnceLock<Arc<LogHub>> = OnceLock::new();
 
-/// The process-global [`LogHub`], or `None` before init (or in `codeg-mcp`,
+/// The process-global [`LogHub`], or `None` before init (or in `zwiim-mcp`,
 /// which installs a stderr-only subscriber with no hub).
 pub fn log_hub() -> Option<&'static Arc<LogHub>> {
     LOG_HUB.get()

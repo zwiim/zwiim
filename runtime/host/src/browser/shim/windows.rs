@@ -1,10 +1,10 @@
 //! Windows shim on top of WebView2 (`webview2-com` + the `windows` crate).
 //!
 //! The helper script and the primitive it posts through live in a CDP
-//! **isolated world** named `codeg`:
+//! **isolated world** named `zwiim`:
 //! `Page.addScriptToEvaluateOnNewDocument {worldName}` injects the helper into
 //! that world for every document of every frame, and
-//! `Runtime.addBinding {executionContextName}` puts `__codegSend` there — a
+//! `Runtime.addBinding {executionContextName}` puts `__zwiimSend` there — a
 //! separate JavaScript global over the same DOM, invisible to page scripts and
 //! immune to their prototype tampering, exactly like macOS's `WKContentWorld`.
 //! Unlike macOS the world needs no prefix script: the binding *is* the send
@@ -84,10 +84,10 @@ pub use super::{NavigationEvent, NavigationSink};
 
 /// Name of the isolated world the helper and the binding live in. Must match
 /// nothing a page can name: CDP worlds are addressed by this string alone.
-pub const WORLD_NAME: &str = "codeg";
+pub const WORLD_NAME: &str = "zwiim";
 /// The function `Runtime.addBinding` exposes in that world; the helper's send
 /// primitive (`src/browser-injected/helper.js` looks for exactly this name).
-pub const BINDING_NAME: &str = "__codegSend";
+pub const BINDING_NAME: &str = "__zwiimSend";
 
 /// Whether a subframe may navigate to this address — the same decision the
 /// main frame's navigation handler makes, asked for a frame WebView2 would
@@ -98,7 +98,7 @@ pub type FrameNavigationSink = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync
 /// from, and whether the engine considers the request user-initiated).
 /// `false` refuses. Answered by the host so the engine keeps its own prompt
 /// — drawn inside the page's rectangle, in nobody's design language, and
-/// invisible to codeg — out of an embedded tab.
+/// invisible to zwiim — out of an embedded tab.
 pub type DownloadPermissionSink =
     std::sync::Arc<dyn Fn(&str, bool) -> bool + Send + Sync>;
 
@@ -137,7 +137,7 @@ struct SurfaceState {
     /// — still on the empty document it was created with — from one the ENGINE
     /// navigated before the host could inject anything (see `needs_world`).
     committed: Cell<bool>,
-    /// `codeg`-world execution contexts: which frame each is for, by the CDP
+    /// `zwiim`-world execution contexts: which frame each is for, by the CDP
     /// session that reported it and the id it has there. Ids are handed out per
     /// renderer and start over in each, so the id alone does not name a context
     /// — and this map is what decides whether a message came from the main
@@ -156,7 +156,7 @@ struct SurfaceState {
     recovering: Cell<bool>,
     recheck: Cell<bool>,
     /// `Runtime.addBinding` has been registered, so a world built from here on
-    /// will have `__codegSend` in it. Until then there is nothing to build one
+    /// will have `__zwiimSend` in it. Until then there is nothing to build one
     /// WITH: the helper would find no send primitive and give up, and the empty
     /// world it left behind is one nothing would ever build again.
     binding_ready: Cell<bool>,
@@ -309,7 +309,7 @@ pub fn debug_view(webview: &wry::WebView) -> Value {
 // The page ↔ host channel, over CDP
 // ---------------------------------------------------------------------------
 
-/// Install the helper in the `codeg` isolated world and the binding it posts
+/// Install the helper in the `zwiim` isolated world and the binding it posts
 /// through. Every step is awaited: the caller navigates only once this
 /// returns, so no document can load before the world is ready. `Ok(true)` —
 /// there is no page-world fallback on Windows, a failure is reported as one.
@@ -543,7 +543,7 @@ fn on_event(key: usize, event: &str, session: &str, raw: &str) {
                 return;
             };
             let mut contexts = state.contexts.borrow_mut();
-            // A frame holds one `codeg` world at a time, so an older entry
+            // A frame holds one `zwiim` world at a time, so an older entry
             // naming this frame is a context that is already gone — its
             // document was replaced, or the renderer that owed us its
             // `executionContextDestroyed` went away without sending one. It is
@@ -677,7 +677,7 @@ fn on_event(key: usize, event: &str, session: &str, raw: &str) {
     }
 }
 
-/// Build the `codeg` world for a document the injection did not reach and run
+/// Build the `zwiim` world for a document the injection did not reach and run
 /// the helper in it.
 ///
 /// `Page.addScriptToEvaluateOnNewDocument` only covers documents whose
@@ -686,7 +686,7 @@ fn on_event(key: usize, event: &str, session: &str, raw: &str) {
 /// over — so that one document would have no channel for its whole life, and
 /// a popup is exactly where the address bar and the gesture ring are needed.
 /// `Page.createIsolatedWorld` makes the same named world for a frame that
-/// exists; the binding is registered by world NAME, so `__codegSend` is in it
+/// exists; the binding is registered by world NAME, so `__zwiimSend` is in it
 /// and the helper finds what it expects.
 fn recover_world(webview: &ICoreWebView2, key: usize) {
     let Some(surface) = state(key) else {
@@ -796,7 +796,7 @@ fn ensure_world(webview: &ICoreWebView2, key: usize, again: bool) {
     recover_world(webview, key);
 }
 
-/// The `codeg` world of the main frame, once the helper has run there.
+/// The `zwiim` world of the main frame, once the helper has run there.
 ///
 /// The page's own session only: `Runtime.evaluate` here goes to that session,
 /// and a context belonging to another one could not be addressed by it anyway.
@@ -811,7 +811,7 @@ fn main_world_context(state: &SurfaceState) -> Option<i64> {
         })
 }
 
-/// Evaluate `expression` in the `codeg` world of the main frame. The result
+/// Evaluate `expression` in the `zwiim` world of the main frame. The result
 /// arrives as the JSON string `{"ok":true,"value":…}` or
 /// `{"ok":false,"error":…}` — the same envelope macOS produces, built inside
 /// the page so no platform value conversion is needed.
@@ -1089,7 +1089,7 @@ fn match_count(find: &ICoreWebView2Find) -> i32 {
 /// Highlight the next (or previous) occurrence of `query`, the way Ctrl+F does
 /// in Edge: the engine owns the search and the selection, so this never
 /// touches the DOM and cannot be observed or broken by the page. Its own find
-/// bar stays suppressed — codeg draws that. `callback` gets whether anything
+/// bar stays suppressed — zwiim draws that. `callback` gets whether anything
 /// matched.
 pub fn find_string(
     webview: &wry::WebView,
@@ -1363,7 +1363,7 @@ pub fn install_navigation_hooks(
     // The second download from the same page raises a permission request, and
     // until it is answered the engine draws its own bubble over the page and
     // holds `DownloadStarting` back — so a user who clicked would see nothing
-    // happen and codeg would have no idea there was anything to show. Only
+    // happen and zwiim would have no idea there was anything to show. Only
     // this one kind is taken over: a camera or a microphone is the user's to
     // grant, and the engine's prompt is the right place to do it.
     // SAFETY: main thread, live webview; the handler is owned by it.

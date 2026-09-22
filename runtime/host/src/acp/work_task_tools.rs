@@ -1,5 +1,5 @@
 //! Listener-facing access for the work-task reporting tools (`task_progress` /
-//! `task_complete`) carried by codeg-mcp. The listener resolves the caller's
+//! `task_complete`) carried by zwiim-mcp. The listener resolves the caller's
 //! parent connection from its per-launch token and hands the report here; the
 //! production impl (`crate::work_task::engine::EngineWorkTaskTools`) maps the
 //! connection to the owning task + execution generation and records it. Kept as

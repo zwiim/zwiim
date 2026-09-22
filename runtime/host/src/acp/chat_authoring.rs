@@ -1,7 +1,7 @@
 //! Chat-authoring domain types — backing the `create_automation` and
 //! `create_work_task` MCP tools.
 //!
-//! These are the first codeg-mcp tools that *write* app state: an agent talking
+//! These are the first zwiim-mcp tools that *write* app state: an agent talking
 //! to the user in an ordinary chat can park recurring work as an automation, or
 //! queue a task on the work-task board, without the user leaving the
 //! conversation to fill in a form.

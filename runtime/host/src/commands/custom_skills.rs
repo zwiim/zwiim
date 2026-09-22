@@ -1,6 +1,6 @@
 //! Custom (user-authored) skills management.
 //!
-//! The fourth "skill pack" in codeg's central store `~/.codeg/skills/<id>/`.
+//! The fourth "skill pack" in codeg's central store `~/.zwiim/skills/<id>/`.
 //! Unlike experts/science/office — which bundle *read-only* content into the
 //! binary — custom skills are created, edited, imported and deleted by the
 //! user. They live in the SAME central store and are enabled for an ACP agent
@@ -12,7 +12,7 @@
 //! store that holds a `SKILL.md` and whose id is NOT claimed by a bundled pack
 //! (experts ∪ science ∪ office). This keeps the store's disjoint-id-namespace
 //! safety model (see `science.rs`) holding for custom too, and lets a user drop
-//! a folder into `~/.codeg/skills` and have it appear on refresh. The startup
+//! a folder into `~/.zwiim/skills` and have it appear on refresh. The startup
 //! extraction of bundled packs is id-scoped (hash + manifest + backup, never a
 //! wipe), so it never touches unclaimed custom directories.
 //!
@@ -362,7 +362,7 @@ fn link_one_locked(
         Ok(is_copy) => copy_mode = is_copy,
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
             match classify_link(&link_path, &central) {
-                ExpertLinkState::LinkedToCodeg => {} // idempotent success
+                ExpertLinkState::LinkedToZwiim => {} // idempotent success
                 ExpertLinkState::BlockedByRealDirectory => {
                     return Err(CustomSkillsError::NameCollision {
                         path: link_path.to_string_lossy().to_string(),
@@ -402,7 +402,7 @@ fn link_one_locked(
 /// Remove one custom skill's link from one agent's skill dirs. **Assumes the
 /// mutation lock is already held.** Scans ALL of the agent's global dirs to
 /// handle shared-dir agents (`~/.agents/skills`). Only ever removes OUR links
-/// (LinkedToCodeg / Broken) — foreign links and real dirs are left untouched.
+/// (LinkedToZwiim / Broken) — foreign links and real dirs are left untouched.
 fn unlink_one_locked(id: &str, agent_type: AgentType) -> Result<(), CustomSkillsError> {
     let id = validate_skill_id(id).map_err(|e| CustomSkillsError::Metadata(e.to_string()))?;
     let dirs = scoped_skill_dirs(agent_type, AgentSkillScope::Global, None)
@@ -417,7 +417,7 @@ fn unlink_one_locked(id: &str, agent_type: AgentType) -> Result<(), CustomSkills
         let state = classify_link(&candidate, &central);
         if matches!(
             state,
-            ExpertLinkState::LinkedToCodeg | ExpertLinkState::Broken
+            ExpertLinkState::LinkedToZwiim | ExpertLinkState::Broken
         ) {
             remove_skill_entry(&candidate).map_err(|e| {
                 CustomSkillsError::Io(format!("remove link {}: {e}", candidate.display()))

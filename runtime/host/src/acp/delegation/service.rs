@@ -1,4 +1,4 @@
-//! Lifecycle handle for the codeg-mcp broker socket — the half of the
+//! Lifecycle handle for the zwiim-mcp broker socket — the half of the
 //! companion round-trip that lives inside codeg's own process.
 //!
 //! Both runtimes bind the socket once at boot and then forget about it: the

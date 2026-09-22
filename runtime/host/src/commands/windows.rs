@@ -2352,43 +2352,43 @@ fn tray_labels_for(locale: crate::models::system::AppLocale) -> TrayLabels {
     match locale {
         AppLocale::ZhCn => TrayLabels {
             show_workspace: "显示工作台",
-            quit: "退出 Codeg",
+            quit: "退出 Zwiim",
         },
         AppLocale::ZhTw => TrayLabels {
             show_workspace: "顯示工作臺",
-            quit: "退出 Codeg",
+            quit: "退出 Zwiim",
         },
         AppLocale::Ja => TrayLabels {
             show_workspace: "ワークスペースを表示",
-            quit: "Codeg を終了",
+            quit: "Zwiim を終了",
         },
         AppLocale::Ko => TrayLabels {
             show_workspace: "워크스페이스 표시",
-            quit: "Codeg 종료",
+            quit: "Zwiim 종료",
         },
         AppLocale::Es => TrayLabels {
             show_workspace: "Mostrar el área de trabajo",
-            quit: "Salir de Codeg",
+            quit: "Salir de Zwiim",
         },
         AppLocale::De => TrayLabels {
             show_workspace: "Arbeitsbereich anzeigen",
-            quit: "Codeg beenden",
+            quit: "Zwiim beenden",
         },
         AppLocale::Fr => TrayLabels {
             show_workspace: "Afficher l'espace de travail",
-            quit: "Quitter Codeg",
+            quit: "Quitter Zwiim",
         },
         AppLocale::Pt => TrayLabels {
             show_workspace: "Mostrar área de trabalho",
-            quit: "Sair do Codeg",
+            quit: "Sair do Zwiim",
         },
         AppLocale::Ar => TrayLabels {
             show_workspace: "إظهار مساحة العمل",
-            quit: "إنهاء Codeg",
+            quit: "إنهاء Zwiim",
         },
         AppLocale::En => TrayLabels {
             show_workspace: "Show Workspace",
-            quit: "Quit Codeg",
+            quit: "Quit Zwiim",
         },
     }
 }
@@ -2421,7 +2421,7 @@ pub fn install_tray_icon(
         .build()?;
 
     let mut builder = TrayIconBuilder::with_id(TRAY_ICON_ID)
-        .tooltip("Codeg")
+        .tooltip("Zwiim")
         .menu(&menu)
         // `false` is required for `on_tray_icon_event::Click` to fire on
         // every platform we ship: the default `true` causes the OS to
@@ -2693,7 +2693,7 @@ mod settings_route_tests {
     /// Every section the frontend's `SettingsSection` union can send must map
     /// to a real route. `general` is the one that looks redundant and is not:
     /// the fallback below it is Appearance, so a caller wanting the General
-    /// page — where the codeg-mcp tool switches live in full — must be able to
+    /// page — where the zwiim-mcp tool switches live in full — must be able to
     /// name it and land there.
     #[test]
     fn every_named_settings_section_resolves_to_its_own_route() {

@@ -2,7 +2,7 @@
 //! browser at all.
 //!
 //! Separate from `commands::browser`, which is the browser itself and exists
-//! only in the desktop build: this switch is read by the shared codeg-mcp
+//! only in the desktop build: this switch is read by the shared zwiim-mcp
 //! plumbing (injection, the service-status popover), so it has to compile in
 //! server mode too — where it is simply always answered "no" at the point of
 //! use, there being no native tabs there.

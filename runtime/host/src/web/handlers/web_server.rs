@@ -67,7 +67,7 @@ pub async fn start_web_server(
 pub async fn stop_web_server(
     Extension(state): Extension<Arc<AppState>>,
 ) -> Result<Json<()>, AppCommandError> {
-    // In web mode the serve task is owned by `codeg-server`'s main loop,
+    // In web mode the serve task is owned by `zwiim-host`'s main loop,
     // not WebServerState. Calling do_stop_web_server here would not stop
     // the process but WOULD trigger shutdown_signal — killing every live
     // WebSocket including the caller's own session. Reject instead.

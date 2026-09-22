@@ -38,7 +38,7 @@ pub const UPLOAD_I18N_KEY_TOO_LARGE: &str = "errors.upload.tooLarge";
 pub const UPLOAD_I18N_KEY_NOT_A_FILE: &str = "errors.upload.notAFile";
 
 /// Error key emitted when accepting one more upload would push the
-/// `uploads_root/` directory past `CODEG_UPLOAD_MAX_TOTAL_BYTES`. The
+/// `uploads_root/` directory past `ZWIIM_UPLOAD_MAX_TOTAL_BYTES`. The
 /// per-file `UPLOAD_MAX_BYTES` cap protects against one big payload; this
 /// cap protects against an attacker accumulating many small ones.
 /// Frontend params: `used`, `limit` (both byte counts as strings).

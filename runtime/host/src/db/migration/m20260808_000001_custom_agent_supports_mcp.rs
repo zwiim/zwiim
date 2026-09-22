@@ -12,7 +12,7 @@ impl MigrationTrait for Migration {
                     .table(CustomAgent::Table)
                     // Whether the agent accepts MCP servers over the ACP wire
                     // (`session/new`'s `mcpServers`) — for a custom agent that
-                    // means the built-in codeg-mcp companion. Some ACP agents
+                    // means the built-in zwiim-mcp companion. Some ACP agents
                     // fail session creation on any entry there, so the user can
                     // turn it off. Defaults on: that is what every row stored
                     // before this column did, and what almost every agent
@@ -53,7 +53,7 @@ mod tests {
 
     /// Agents registered before this column existed were all forwarded MCP, so
     /// the migration must leave them that way — a default of `false` would
-    /// silently drop the codeg-mcp companion (delegation, live feedback, task
+    /// silently drop the zwiim-mcp companion (delegation, live feedback, task
     /// tools) out of every existing custom agent's session.
     #[tokio::test]
     async fn up_defaults_existing_rows_to_forwarding_mcp() {

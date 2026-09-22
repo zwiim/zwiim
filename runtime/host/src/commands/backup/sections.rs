@@ -4,19 +4,19 @@
 //! Backup ([`super::core::create_backup_core`]) and restore
 //! ([`super::restore::apply_pending_restore_with_paths`]) both iterate
 //! [`MANAGED_SECTIONS`]. They used to keep separate hardcoded lists kept in
-//! sync by hand, and they drifted: `~/.codeg/acp-transcripts` — the ONLY copy
+//! sync by hand, and they drifted: `~/.zwiim/acp-transcripts` — the ONLY copy
 //! of a custom ACP agent's conversation text, since the DB stores no duplicate
 //! — was in neither list, so a backup/restore round-trip left the conversation
 //! rows behind with every message gone. One table, two consumers, plus
 //! `every_section_is_packed_and_swapped` so a new section that is added to the
 //! table but not wired up fails loudly instead of silently losing data.
 //!
-//! This is an ALLOWLIST, not `~/.codeg` minus a denylist: a future
-//! `~/.codeg/<secrets>` must not be swept into an archive just because nobody
+//! This is an ALLOWLIST, not `~/.zwiim` minus a denylist: a future
+//! `~/.zwiim/<secrets>` must not be swept into an archive just because nobody
 //! remembered to exclude it. Deliberately out of the table: `logs/`
 //! (diagnostics), `cache/` (refetchable), `npm-global/` (machine-bound
 //! toolchain), `agents/` (no reader/writer in the current code) and the
-//! `.codeg-*` scaffolding dirs.
+//! `.zwiim-*` scaffolding dirs.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -49,8 +49,8 @@ pub struct ManagedSection {
     pub kind: SectionKind,
     pub policy: SectionPolicy,
     /// Live location. `data_dir` is the only runtime input; everything else
-    /// resolves through `paths::*` (which honor `CODEG_HOME` /
-    /// `CODEG_DATA_DIR`).
+    /// resolves through `paths::*` (which honor `ZWIIM_HOME` /
+    /// `ZWIIM_DATA_DIR`).
     pub live_path: fn(data_dir: &Path) -> PathBuf,
 }
 
@@ -105,7 +105,7 @@ pub const MANAGED_SECTIONS: &[ManagedSection] = &[
         // what a replace can drop is a hand-made skill the backup predates —
         // the same semantics as `uploads`, and it survives in the safety
         // snapshot. Note `central_experts_dir()` resolves against the real home
-        // and does NOT honor `CODEG_HOME`/`CODEG_DATA_DIR`; changing that would
+        // and does NOT honor `ZWIIM_HOME`/`ZWIIM_DATA_DIR`; changing that would
         // relocate every existing user's skill library, so it stays as-is and
         // this entry is simply environment-independent.
         id: "skills",
@@ -162,14 +162,14 @@ pub fn normalize_section_ids(declared: &[String]) -> Vec<String> {
 }
 
 /// Exclude codeg-internal scaffolding from any packed section: upload staging
-/// (`uploads/.tmp/`) and any `.codeg-*` directory (restore staging / safety
+/// (`uploads/.tmp/`) and any `.zwiim-*` directory (restore staging / safety
 /// snapshots), which must never be archived even if a data-dir layout ever
 /// nests one inside a section root.
 pub fn is_excluded_section_entry(rel: &Path) -> bool {
     rel.components().any(|c| match c {
         std::path::Component::Normal(s) => {
             let s = s.to_string_lossy();
-            s == ".tmp" || s.starts_with(".codeg")
+            s == ".tmp" || s.starts_with(".zwiim")
         }
         _ => false,
     })
@@ -177,7 +177,7 @@ pub fn is_excluded_section_entry(rel: &Path) -> bool {
 
 /// Live location of every managed section, resolved once so backup and restore
 /// agree and so tests can point the whole set at a temp dir instead of the
-/// real `~/.codeg`.
+/// real `~/.zwiim`.
 #[derive(Debug, Clone)]
 pub struct LiveRoots {
     paths: BTreeMap<&'static str, PathBuf>,
@@ -309,7 +309,7 @@ mod tests {
     fn excludes_scaffolding_entries() {
         assert!(is_excluded_section_entry(Path::new(".tmp/partial")));
         assert!(is_excluded_section_entry(Path::new(
-            "a/.codeg-restore-staging/x"
+            "a/.zwiim-restore-staging/x"
         )));
         assert!(!is_excluded_section_entry(Path::new("a/b.png")));
     }

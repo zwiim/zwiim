@@ -9,7 +9,7 @@
 //!   parent LLM ─┐
 //!               │ ToolUse(delegate_to_agent, ...)
 //!               ▼
-//!   parent CLI ──stdio──► codeg-mcp (per-launch companion binary)
+//!   parent CLI ──stdio──► zwiim-mcp (per-launch companion binary)
 //!                                 │
 //!                                 │ UDS / named pipe (token-authed)
 //!                                 ▼
@@ -52,14 +52,14 @@ pub mod types;
 /// Canonical titles written onto a parent tool call that was announced
 /// identity-less (Cursor's `"MCP: tool"` — see
 /// `acp::lifecycle::CURSOR_IDENTITYLESS_MCP_TITLE`) once the companion
-/// round-trip reveals which codeg-mcp tool it actually is. Two writers must
+/// round-trip reveals which zwiim-mcp tool it actually is. Two writers must
 /// agree on these strings: the broker/listener call-time rewrite
 /// (`DelegationBroker::rewrite_identityless_tool_call`) and the
 /// completion-time result sniff in `acp::connection`
-/// (`cursor_companion_title_from_content`). The `codeg-mcp__<tool>` shape is
+/// (`cursor_companion_title_from_content`). The `zwiim-mcp__<tool>` shape is
 /// what the frontend's tool-name normalizer already resolves to the dedicated
 /// delegation / status cards.
-pub const DELEGATE_TOOL_REWRITE_TITLE: &str = "codeg-mcp__delegate_to_agent";
-pub const STATUS_TOOL_REWRITE_TITLE: &str = "codeg-mcp__get_delegation_status";
-pub const CANCEL_TOOL_REWRITE_TITLE: &str = "codeg-mcp__cancel_delegation";
-pub const RESUME_TOOL_REWRITE_TITLE: &str = "codeg-mcp__resume_delegation";
+pub const DELEGATE_TOOL_REWRITE_TITLE: &str = "zwiim-mcp__delegate_to_agent";
+pub const STATUS_TOOL_REWRITE_TITLE: &str = "zwiim-mcp__get_delegation_status";
+pub const CANCEL_TOOL_REWRITE_TITLE: &str = "zwiim-mcp__cancel_delegation";
+pub const RESUME_TOOL_REWRITE_TITLE: &str = "zwiim-mcp__resume_delegation";

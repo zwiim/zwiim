@@ -21,7 +21,7 @@
 //!
 //! Two decisions here are load-bearing and easy to get wrong later.
 //!
-//! **The code runs in the page's own world, not codeg's.** The tempting thing
+//! **The code runs in the page's own world, not zwiim's.** The tempting thing
 //! is to reuse the isolated world the rest of this subsystem evaluates in — it
 //! has a proven envelope and the page cannot see it. It is also where
 //! `browser_snapshot`, `browser_screenshot` and the action tools build their
@@ -38,7 +38,7 @@
 //! what a page's CSP switches off, and this must work on a page with a strict
 //! one. Inlined text can close the wrapper around it and return anything at
 //! all, so nothing in [`EvalAnswer`] can be trusted for a decision. Where the
-//! page *is* comes from a separate evaluation in codeg's own world, which no
+//! page *is* comes from a separate evaluation in zwiim's own world, which no
 //! agent text ever enters; see `commands::browser::agent_eval_core`.
 
 use serde::{Deserialize, Serialize};
@@ -141,7 +141,7 @@ pub struct EvalOutcome {
     /// The render stopped at the cap.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
-    /// Where the page was, read in codeg's own world after the code ran — not
+    /// Where the page was, read in zwiim's own world after the code ran — not
     /// from [`EvalAnswer`], which the snippet could have written itself.
     pub url: String,
 }
@@ -209,7 +209,7 @@ fn clip(text: &str, limit: usize) -> (String, bool) {
 ///
 /// All of it — renderer included — sits inside one function, so an evaluation
 /// leaves no names behind on the page's globals. A page that could see
-/// `__codegEvalRender` lying around would know codeg had run something, which
+/// `__zwiimEvalRender` lying around would know zwiim had run something, which
 /// is the page's business least of all.
 ///
 /// The snippet can break out of the function it is wrapped in — there is no
@@ -219,7 +219,7 @@ fn clip(text: &str, limit: usize) -> (String, bool) {
 /// deliberate property of the design and not a gap in it; see the module
 /// comment.
 pub fn eval_call(code: &str) -> String {
-    format!("(function(){{\n{RENDER_JS}\ntry {{\nvar __codegEvalValue = (function () {{\n{code}\n}})();\nreturn __codegEvalRender(__codegEvalValue);\n}} catch (e) {{\nreturn __codegEvalError(e);\n}}\n}})()")
+    format!("(function(){{\n{RENDER_JS}\ntry {{\nvar __zwiimEvalValue = (function () {{\n{code}\n}})();\nreturn __zwiimEvalRender(__zwiimEvalValue);\n}} catch (e) {{\nreturn __zwiimEvalError(e);\n}}\n}})()")
 }
 
 /// The renderer, as source text opening every call.
@@ -263,7 +263,7 @@ mod tests {
         assert!(js.contains("return 1 // done\n"));
         let after = js.split("return 1 // done").nth(1).unwrap();
         assert!(after.starts_with('\n'), "code is followed by a newline");
-        assert!(after.contains("__codegEvalRender"));
+        assert!(after.contains("__zwiimEvalRender"));
     }
 
     /// The answer type has no address in it, and cannot grow one by accident:
@@ -347,8 +347,8 @@ mod tests {
         // real browser; this pins the shape it measures.
         assert!(js.starts_with("(function(){\n"));
         assert!(js.ends_with("})()"));
-        assert!(js.contains("var __codegEvalClip"));
-        assert!(js.contains("__codegEvalError"));
+        assert!(js.contains("var __zwiimEvalClip"));
+        assert!(js.contains("__zwiimEvalError"));
         assert!(js.contains("return document.title"));
     }
 }

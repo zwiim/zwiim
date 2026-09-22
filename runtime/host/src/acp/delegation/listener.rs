@@ -1,4 +1,4 @@
-//! Main-process side of the `codeg-mcp` round-trip: accept UDS / named-pipe
+//! Main-process side of the `zwiim-mcp` round-trip: accept UDS / named-pipe
 //! connections from companion processes, validate the per-launch token,
 //! resolve the parent's current conversation, and hand off to the broker.
 //!
@@ -106,7 +106,7 @@ impl TokenRegistry {
 
     /// How many companions are currently reachable, and across how many
     /// distinct parent ACP connections. One token is minted per companion
-    /// launch, so `companions` counts injected `codeg-mcp` processes; the two
+    /// launch, so `companions` counts injected `zwiim-mcp` processes; the two
     /// numbers differ when a connection was re-injected without its old token
     /// having been revoked yet. Read-only — used by the service-status
     /// indicator, never by the wire path.
@@ -822,7 +822,7 @@ impl DelegationListener {
     /// session ids actually referenced in the prompt — any non-deleted session
     /// resolves. This is sound in codeg's single-tenant trust model: there is no
     /// per-user isolation anywhere (desktop is one local user; server mode shares
-    /// one `CODEG_TOKEN` + one data dir across an operator's devices), the user can
+    /// one `ZWIIM_TOKEN` + one data dir across an operator's devices), the user can
     /// already open every session in the UI, and the agent already has full
     /// filesystem access to every agent's raw session files via its own tools — so
     /// reading session metadata by id is strictly less capability than the agent

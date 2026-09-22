@@ -2025,7 +2025,7 @@ mod tests {
             field_bytes(2, &entry, &mut mcp_args);
         }
         field_str(5, "delegate_to_agent", &mut mcp_args);
-        field_str(9, "codeg-mcp", &mut mcp_args);
+        field_str(9, "zwiim-mcp", &mut mcp_args);
         let mut mcp_text = Vec::new();
         field_str(1, "Delegation successful. task_id=42.", &mut mcp_text);
         let mut mcp_item = Vec::new();
@@ -2189,7 +2189,7 @@ mod tests {
                 _ => None,
             })
             .expect("mcp tool present");
-        assert_eq!(mcp_name, "codeg-mcp__delegate_to_agent");
+        assert_eq!(mcp_name, "zwiim-mcp__delegate_to_agent");
         let mcp_json: Value = serde_json::from_str(&mcp_input.unwrap()).unwrap();
         assert_eq!(mcp_json.get("task").and_then(Value::as_str), Some("run build"));
         assert_eq!(

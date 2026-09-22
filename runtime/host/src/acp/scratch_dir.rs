@@ -56,11 +56,11 @@ const SCRATCH_NAMESPACE: &str = "codeg-acp";
 /// Opt out of isolation entirely and let the child inherit the ambient
 /// `TMP`/`TEMP`/`TMPDIR` the way it did before this module existed. Escape
 /// hatch for an agent that turns out to depend on a shared temp directory.
-const ISOLATION_ENV: &str = "CODEG_ACP_TMP_ISOLATION";
+const ISOLATION_ENV: &str = "ZWIIM_ACP_TMP_ISOLATION";
 
 /// Override for the scratch root. Set it to place the (potentially very large)
 /// extraction churn on a different volume.
-const ROOT_ENV: &str = "CODEG_ACP_TMP_ROOT";
+const ROOT_ENV: &str = "ZWIIM_ACP_TMP_ROOT";
 
 /// Bytes of `sockaddr_un::sun_path` — the kernel's hard cap on the path of an
 /// AF_UNIX socket, and the reason this module cannot nest its scratch
@@ -120,7 +120,7 @@ const REMOVE_RETRY_BASE: Duration = Duration::from_millis(2_000);
 
 /// How often the in-session sweep reclaims directories this process owns but
 /// has lost track of. Independent of the ACP idle sweep on purpose: that task
-/// is not spawned at all when `CODEG_ACP_IDLE_TIMEOUT_SECS=0`, and disabling
+/// is not spawned at all when `ZWIIM_ACP_IDLE_TIMEOUT_SECS=0`, and disabling
 /// idle disconnects must not also disable disk reclamation.
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(300);
 
@@ -136,7 +136,7 @@ fn registry() -> &'static Mutex<HashSet<String>> {
 }
 
 /// Whether launches get an isolated temp directory. On unless explicitly
-/// disabled with `CODEG_ACP_TMP_ISOLATION=0`.
+/// disabled with `ZWIIM_ACP_TMP_ISOLATION=0`.
 pub fn isolation_enabled() -> bool {
     !matches!(
         std::env::var(ISOLATION_ENV).as_deref(),
@@ -509,7 +509,7 @@ fn verify_root_is_ours(root: &Path) -> std::io::Result<()> {
     // predates the `0700` above, when `create_dir_all` took the umask default.
     // Tighten it rather than refuse: refusing would turn every upgrade into a
     // silent loss of isolation. Best-effort because a filesystem the user
-    // pointed `CODEG_ACP_TMP_ROOT` at may not carry Unix modes at all, and
+    // pointed `ZWIIM_ACP_TMP_ROOT` at may not carry Unix modes at all, and
     // ownership is the check that actually bounds who can get in.
     if meta.mode() & 0o077 != 0 {
         let _ = std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700));

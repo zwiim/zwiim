@@ -156,7 +156,7 @@ fn file_name_of(path: &Path) -> String {
 
 /// Where downloads land: the OS download folder, else `~/Downloads`. Not
 /// configurable in this pass, and deliberately NOT inside the app's data
-/// directory — a downloaded file belongs to the user, not to codeg.
+/// directory — a downloaded file belongs to the user, not to zwiim.
 pub fn downloads_dir() -> PathBuf {
     if let Some(dir) = dirs::download_dir() {
         return dir;

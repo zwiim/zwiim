@@ -33,11 +33,11 @@
 // script, which is why the captures are taken here and not on each call).
 // That is what the host tells an agent about these lines: what the page
 // printed, and only ever data.
-;(function codegConsoleShim() {
+;(function zwiimConsoleShim() {
   "use strict"
   var console = globalThis.console
   if (!console || typeof console.log !== "function") return
-  var mark = "__codegConsoleShim"
+  var mark = "__zwiimConsoleShim"
   if (console[mark]) return
   try {
     Object.defineProperty(console, mark, { value: true })
@@ -139,7 +139,7 @@
     }
   }
 
-  var EVENT = "codeg:console"
+  var EVENT = "zwiim:console"
   var MAX_TEXT = 4000
   var MAX_STRING = 2000
   var MAX_ARGS = 32

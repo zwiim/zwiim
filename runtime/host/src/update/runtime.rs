@@ -14,16 +14,16 @@ use std::sync::OnceLock;
 pub const EXIT_RESTART: i32 = 86;
 
 /// Set to `1` by the supervisor on the worker it spawns.
-pub const ENV_SUPERVISED: &str = "CODEG_SUPERVISED";
+pub const ENV_SUPERVISED: &str = "ZWIIM_SUPERVISED";
 /// Relaunch delay (milliseconds) the supervisor waits before respawning a
 /// worker that exited with [`EXIT_RESTART`]. The worker reports the same
 /// value to the frontend so its countdown matches reality.
-pub const ENV_RESTART_DELAY_MS: &str = "CODEG_RESTART_DELAY_MS";
+pub const ENV_RESTART_DELAY_MS: &str = "ZWIIM_RESTART_DELAY_MS";
 /// Deployment marker baked into the Docker image (`docker`). Only used for
 /// user-facing messaging ("permanent across recreation needs a pull").
-pub const ENV_RUNTIME: &str = "CODEG_RUNTIME";
+pub const ENV_RUNTIME: &str = "ZWIIM_RUNTIME";
 
-/// Default relaunch delay when `CODEG_RESTART_DELAY_MS` is unset.
+/// Default relaunch delay when `ZWIIM_RESTART_DELAY_MS` is unset.
 pub const DEFAULT_RESTART_DELAY_MS: u64 = 2000;
 
 /// Grace window (seconds) the supervisor gives a freshly-upgraded worker to
@@ -32,9 +32,9 @@ pub const DEFAULT_RESTART_DELAY_MS: u64 = 2000;
 /// back to the previous version; a crash after it has run longer is treated
 /// as an ordinary runtime fault and propagated (the new version had already
 /// demonstrated it can start).
-pub const ENV_UPGRADE_TRIAL_SECS: &str = "CODEG_UPGRADE_TRIAL_SECS";
+pub const ENV_UPGRADE_TRIAL_SECS: &str = "ZWIIM_UPGRADE_TRIAL_SECS";
 
-/// Default trial window when `CODEG_UPGRADE_TRIAL_SECS` is unset. A binary
+/// Default trial window when `ZWIIM_UPGRADE_TRIAL_SECS` is unset. A binary
 /// that cannot boot fails near-instantly; this is generous enough to never
 /// misfire on a server that is genuinely (if slowly) coming up.
 pub const DEFAULT_UPGRADE_TRIAL_SECS: u64 = 30;
@@ -125,9 +125,9 @@ pub fn self_exe() -> PathBuf {
             std::env::current_exe().unwrap_or_else(|_| {
                 // Last-resort fallback: resolve via PATH at exec time.
                 PathBuf::from(if cfg!(windows) {
-                    "codeg-server.exe"
+                    "zwiim-host.exe"
                 } else {
-                    "codeg-server"
+                    "zwiim-host"
                 })
             })
         })

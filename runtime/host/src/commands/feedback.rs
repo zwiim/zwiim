@@ -2,7 +2,7 @@
 //!
 //! One knob survives across restarts:
 //!   * `feedback.enabled` — feature kill switch (default false). When on,
-//!     `codeg-mcp` exposes the `check_user_feedback` tool so an agent can pull
+//!     `zwiim-mcp` exposes the `check_user_feedback` tool so an agent can pull
 //!     mid-turn user notes; the conversation UI shows the "send a note" bar.
 //!
 //! On startup `apply_persisted_feedback_config` reads this key from

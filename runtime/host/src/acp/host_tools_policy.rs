@@ -35,7 +35,7 @@ use crate::acp::file_system_runtime::env_value;
 /// Per-agent `env_json` / process-env key selecting which side hosts the
 /// `fs/*` and `terminal/*` channels. `default` | `agent`; anything else warns
 /// and falls back to `default`.
-pub(crate) const HOST_TOOLS_ENV: &str = "CODEG_ACP_HOST_TOOLS";
+pub(crate) const HOST_TOOLS_ENV: &str = "ZWIIM_ACP_HOST_TOOLS";
 
 /// The value that hands the channels back to the agent. Kept as a constant
 /// because the settings UI writes this exact string into `env_json`.
@@ -54,8 +54,8 @@ pub enum HostToolsPolicy {
     /// The agent falls back to its own file and shell backends, so its own
     /// OS sandbox and permission rules govern every read, write and command.
     ///
-    /// It also withholds codeg-mcp's `delegation` tool group (see
-    /// `inject_codeg_mcp`). `delegate_to_agent` is a third door into the same
+    /// It also withholds zwiim-mcp's `delegation` tool group (see
+    /// `inject_zwiim_mcp`). `delegate_to_agent` is a third door into the same
     /// room: it has codeg spawn a SECOND agent, in codeg's process tree under
     /// that agent's own policy, and relays its output back — so a sandboxed
     /// agent that cannot read `.env` itself would simply ask a sibling to read
@@ -159,7 +159,7 @@ mod tests {
                 HostToolsPolicy::from_env(&runtime("  agent  ")),
                 HostToolsPolicy::Agent
             );
-            // But it is not case-folded, matching CODEG_ACP_FS_POLICY. The UI
+            // But it is not case-folded, matching ZWIIM_ACP_FS_POLICY. The UI
             // writes the exact constant, so only a hand-edit can hit this, and
             // it warns rather than guessing.
             assert_eq!(

@@ -3,7 +3,7 @@ pub mod backup;
 #[cfg(feature = "tauri-runtime")]
 pub mod browser;
 /// The browser tool group's on/off switch. Unlike `browser` itself this is not
-/// desktop-only: the shared codeg-mcp plumbing reads it in both runtimes.
+/// desktop-only: the shared zwiim-mcp plumbing reads it in both runtimes.
 pub mod browser_tools;
 pub mod chat_authoring;
 pub mod config_sync;

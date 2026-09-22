@@ -1,4 +1,4 @@
-//! The `codeg-doc:` document guest: a local HTML file shown through a webview
+//! The `zwiim-doc:` document guest: a local HTML file shown through a webview
 //! of its own, whose every request the host answers from the file's folder.
 //! This is what the desktop shows for an `.html` file instead of an inline
 //! `srcdoc` preview: a real document with a real URL, so routing, `fetch` of
@@ -8,7 +8,7 @@
 //!
 //! - **Only guests have the scheme.** The handler is registered on the guest
 //!   webview's own builder, so the app's webview and ordinary browser tabs
-//!   cannot address `codeg-doc:` at all; and the handler is bound to one
+//!   cannot address `zwiim-doc:` at all; and the handler is bound to one
 //!   grant (root + entry) and checks the webview id it is called for.
 //! - **Only files under the root.** Same rule as the inline preview: the root
 //!   is the workspace folder the file sits in (else its own directory), the
@@ -59,8 +59,8 @@ use tauri::Url;
 
 /// Label prefix of every document guest webview. Like `browser-`, it must
 /// never appear in a capability (`mod.rs` has the test).
-pub const DOC_LABEL_PREFIX: &str = "codeg-doc-";
-pub const DOC_SCHEME: &str = "codeg-doc";
+pub const DOC_LABEL_PREFIX: &str = "zwiim-doc-";
+pub const DOC_SCHEME: &str = "zwiim-doc";
 
 /// The host part of one grant's document URLs, minted when the grant is.
 ///
@@ -140,8 +140,8 @@ pub fn engine_url(url: &Url) -> Url {
 /// scheme to `http(s)://<scheme>.<host>` on Windows, so both spellings count
 /// — but only that one host, in either spelling:
 ///
-/// - `codeg-doc.` as a PREFIX would make every registrable domain someone
-///   owns a guest address (`https://codeg-doc.example.com/`), and a guest is
+/// - `zwiim-doc.` as a PREFIX would make every registrable domain someone
+///   owns a guest address (`https://zwiim-doc.example.com/`), and a guest is
 ///   allowed to navigate to its own addresses, which is how a document with
 ///   scripts would send what it read to its author.
 /// - any host under the scheme would let one guest address ANOTHER guest's
@@ -375,7 +375,7 @@ impl DocGrant {
     /// The handler is registered per webview and checks the webview it is
     /// called for, but that only says which guest is asking — not what it
     /// asked for. A guest can address any host under the scheme (wry's
-    /// Windows filter is `http://codeg-doc.*`, and the macOS handler takes
+    /// Windows filter is `http://zwiim-doc.*`, and the macOS handler takes
     /// the scheme whatever the host), so a request for another guest's
     /// origin arrives right here. Answering it would serve this root's files
     /// — no leak in itself — under the other document's origin, which is the
@@ -1340,25 +1340,25 @@ mod tests {
         let own = "doc-1111";
         assert_eq!(
             document_url(own, Path::new("a b/c#d.html")),
-            "codeg-doc://doc-1111/a%20b/c%23d.html"
+            "zwiim-doc://doc-1111/a%20b/c%23d.html"
         );
         assert_eq!(
             document_url(own, Path::new("index.html")),
-            "codeg-doc://doc-1111/index.html"
+            "zwiim-doc://doc-1111/index.html"
         );
-        let doc = Url::parse("codeg-doc://doc-1111/other.html").unwrap();
+        let doc = Url::parse("zwiim-doc://doc-1111/other.html").unwrap();
         assert!(is_document_url(&doc, own));
-        assert!(is_document_url(&Url::parse("https://codeg-doc.doc-1111/x").unwrap(), own));
+        assert!(is_document_url(&Url::parse("https://zwiim-doc.doc-1111/x").unwrap(), own));
         assert!(!is_document_url(&Url::parse("https://example.com/").unwrap(), own));
         // Not every host that merely begins with the mapped prefix: that one
         // is registrable by anyone, and a guest may navigate to its own.
         assert!(!is_document_url(
-            &Url::parse("https://codeg-doc.example.com/steal").unwrap(),
+            &Url::parse("https://zwiim-doc.example.com/steal").unwrap(),
             own
         ));
         assert_eq!(
             guest_navigation(
-                &Url::parse("https://codeg-doc.example.com/steal").unwrap(),
+                &Url::parse("https://zwiim-doc.example.com/steal").unwrap(),
                 own,
                 true
             ),
@@ -1368,45 +1368,45 @@ mod tests {
         // no leak — the handler that answers is this guest's — but the origin
         // would be the other document's, and so would the storage.
         for other in [
-            "codeg-doc://doc-2222/other.html",
-            "https://codeg-doc.doc-2222/other.html",
+            "zwiim-doc://doc-2222/other.html",
+            "https://zwiim-doc.doc-2222/other.html",
         ] {
             let other = Url::parse(other).unwrap();
             assert!(!is_document_url(&other, own), "{other}");
         }
         assert_eq!(
-            guest_navigation(&Url::parse("codeg-doc://doc-2222/x").unwrap(), own, true),
+            guest_navigation(&Url::parse("zwiim-doc://doc-2222/x").unwrap(), own, true),
             GuestNavigation::Scheme
         );
         // A host that differs only in case is not this one: the `url` crate
         // leaves an opaque host as written, so an exact match is the rule
         // and refusing is the safe side of it.
         assert!(!is_document_url(
-            &Url::parse("codeg-doc://DOC-1111/x").unwrap(),
+            &Url::parse("zwiim-doc://DOC-1111/x").unwrap(),
             own
         ));
         // A port is a different origin even with the right host — a guest
         // could otherwise give itself a second `localStorage` by asking for
         // one. The default port of a special scheme is not a port.
         assert!(!is_document_url(
-            &Url::parse("codeg-doc://doc-1111:8080/x").unwrap(),
+            &Url::parse("zwiim-doc://doc-1111:8080/x").unwrap(),
             own
         ));
         assert!(!is_document_url(
-            &Url::parse("codeg-doc://doc-1111:80/x").unwrap(),
+            &Url::parse("zwiim-doc://doc-1111:80/x").unwrap(),
             own
         ));
         assert!(!is_document_url(
-            &Url::parse("http://codeg-doc.doc-1111:8080/x").unwrap(),
+            &Url::parse("http://zwiim-doc.doc-1111:8080/x").unwrap(),
             own
         ));
         assert!(is_document_url(
-            &Url::parse("http://codeg-doc.doc-1111:80/x").unwrap(),
+            &Url::parse("http://zwiim-doc.doc-1111:80/x").unwrap(),
             own
         ));
         assert_eq!(
             guest_navigation(
-                &Url::parse("codeg-doc://doc-1111:8080/x").unwrap(),
+                &Url::parse("zwiim-doc://doc-1111:8080/x").unwrap(),
                 own,
                 true
             ),
@@ -1417,7 +1417,7 @@ mod tests {
         let engine = engine_url(&doc);
         assert!(is_document_url(&engine, own));
         if cfg!(target_os = "windows") {
-            assert_eq!(engine.as_str(), "http://codeg-doc.doc-1111/other.html");
+            assert_eq!(engine.as_str(), "http://zwiim-doc.doc-1111/other.html");
         } else {
             assert_eq!(engine, doc);
         }
@@ -1482,7 +1482,7 @@ mod tests {
         let grant = DocGrant::new(ws.clone(), entry_c).unwrap();
         assert_eq!(
             grant.document_url(),
-            format!("codeg-doc://{}/docs/report.html", grant.host())
+            format!("zwiim-doc://{}/docs/report.html", grant.host())
         );
         let state = grant.state("t1");
         assert_eq!(state.mode, DocMode::Safe);
@@ -1527,7 +1527,7 @@ mod tests {
         guests.unbind("t1");
         assert!(guests.for_tab("t1").is_none());
         assert_eq!(guests.tabs_of(&first), vec!["t2".to_string()]);
-        assert_eq!(doc_label("t1"), "codeg-doc-t1");
+        assert_eq!(doc_label("t1"), "zwiim-doc-t1");
     }
 
     #[test]

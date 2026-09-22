@@ -131,7 +131,7 @@ fn detect_windows_shell_flavor(shell: &str) -> WindowsShellFlavor {
 }
 
 /// POSIX-side shell flavor. We only inject the `-l -i` login/interactive
-/// flags and the `eval "$CODEG_CMD"` wrapping for shells we know speak that
+/// flags and the `eval "$ZWIIM_CMD"` wrapping for shells we know speak that
 /// dialect — passing those to nu / xonsh / elvish / pwsh would cause spawn
 /// failures or weird behavior. Unknown shells get raw spawn (no flags) and,
 /// when an `initial_command` is requested, a plain `-c <command>` (the
@@ -170,9 +170,9 @@ fn configure_shell_command(cmd: &mut CommandBuilder, shell: &str, initial_comman
         match detect_windows_shell_flavor(shell) {
             WindowsShellFlavor::Cmd => {
                 if let Some(command) = initial_command {
-                    cmd.env("CODEG_CMD", command);
+                    cmd.env("ZWIIM_CMD", command);
                     // Set UTF-8 code page before running the actual command
-                    cmd.args(["/D", "/S", "/C", "chcp 65001 >nul & %CODEG_CMD%"]);
+                    cmd.args(["/D", "/S", "/C", "chcp 65001 >nul & %ZWIIM_CMD%"]);
                 } else {
                     // /K runs the command then stays open for interactive use
                     cmd.args(["/D", "/S", "/K", "chcp 65001 >nul"]);
@@ -180,12 +180,12 @@ fn configure_shell_command(cmd: &mut CommandBuilder, shell: &str, initial_comman
             }
             WindowsShellFlavor::PowerShell => {
                 if let Some(command) = initial_command {
-                    cmd.env("CODEG_CMD", command);
+                    cmd.env("ZWIIM_CMD", command);
                     cmd.args([
                         "-NoLogo",
                         "-NoProfile",
                         "-Command",
-                        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ErrorActionPreference = 'Stop'; Invoke-Expression $env:CODEG_CMD",
+                        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ErrorActionPreference = 'Stop'; Invoke-Expression $env:ZWIIM_CMD",
                     ]);
                 } else {
                     // -NoExit runs the command then stays open for interactive use
@@ -204,8 +204,8 @@ fn configure_shell_command(cmd: &mut CommandBuilder, shell: &str, initial_comman
                 cmd.env("TERM_PROGRAM", "codeg");
                 cmd.env("LANG", "C.UTF-8");
                 if let Some(command) = initial_command {
-                    cmd.env("CODEG_CMD", command);
-                    cmd.args(["-l", "-i", "-c", "eval \"$CODEG_CMD\""]);
+                    cmd.env("ZWIIM_CMD", command);
+                    cmd.args(["-l", "-i", "-c", "eval \"$ZWIIM_CMD\""]);
                 } else {
                     cmd.args(["-l", "-i"]);
                 }
@@ -229,8 +229,8 @@ fn configure_shell_command(cmd: &mut CommandBuilder, shell: &str, initial_comman
                     // Indirection via env var avoids quoting/escaping bugs
                     // for arbitrary commands (and keeps long commands off
                     // argv for readability in `ps`).
-                    cmd.env("CODEG_CMD", command);
-                    cmd.args(["-l", "-i", "-c", "eval \"$CODEG_CMD\""]);
+                    cmd.env("ZWIIM_CMD", command);
+                    cmd.args(["-l", "-i", "-c", "eval \"$ZWIIM_CMD\""]);
                 } else {
                     cmd.args(["-l", "-i"]);
                 }

@@ -185,7 +185,7 @@ pub const CHAT_AUTHORING_SETTINGS_CHANGED_EVENT: &str = "chat-authoring-settings
 /// Announces a delegation-settings write. Same cross-window rationale as
 /// [`CHAT_AUTHORING_SETTINGS_CHANGED_EVENT`], and load-bearing for the same
 /// reason: the record has two editors — the settings form, which writes all
-/// four keys, and the status-bar codeg-mcp popover, which writes only
+/// four keys, and the status-bar zwiim-mcp popover, which writes only
 /// `enabled` — so a form left open across a popover toggle would revert it on
 /// the next save. Payload: `DelegationSettings`.
 pub const DELEGATION_SETTINGS_CHANGED_EVENT: &str = "delegation-settings://changed";

@@ -3,8 +3,9 @@
 # Codeg-derived infrastructure (see third_party/codeg/PROVENANCE.md), built
 # headless: the `tauri-runtime` / desktop features are intentionally absent so
 # no Tauri/WebKit/desktop code compiles. Naming rebrand to the Zwiim boundary
-# is applied to the Zwiim-owned surface (crate, binaries, env, logs); grouped
-# Codeg-derived internals keep their identifiers per CLAUDE.md decision 1.
+# is applied to the Zwiim-owned surface (crate lib, binaries, env vars, the MCP
+# companion, on-disk `.zwiim` dir, wire markers, logs). Remaining Codeg-derived
+# agent-config keys and serde fields are a follow-up slice (see PROVENANCE.md).
 [package]
 name = "zwiim-host"
 version = "0.1.0"
@@ -19,7 +20,7 @@ default-run = "zwiim-host"
 autobins = false
 
 [lib]
-name = "codeg_lib"
+name = "zwiim_host"
 crate-type = ["rlib"]
 
 [features]
@@ -32,12 +33,12 @@ test-utils = []
 
 [[bin]]
 name = "zwiim-host"
-path = "src/bin/codeg_server.rs"
+path = "src/bin/zwiim_host.rs"
 required-features = []
 
 [[bin]]
 name = "zwiim-mcp"
-path = "src/bin/codeg_mcp.rs"
+path = "src/bin/zwiim_mcp.rs"
 required-features = []
 
 [dependencies]

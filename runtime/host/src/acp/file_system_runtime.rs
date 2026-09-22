@@ -39,11 +39,11 @@ impl FileSystemRuntimeError {
 /// Per-agent `env_json` / process-env key selecting the path-containment policy
 /// for the ACP `fs/*` channel. `default` | `strict` | `unrestricted`; anything
 /// else warns and falls back to `default`.
-pub(crate) const FS_POLICY_ENV: &str = "CODEG_ACP_FS_POLICY";
+pub(crate) const FS_POLICY_ENV: &str = "ZWIIM_ACP_FS_POLICY";
 /// Additional **writable** roots, joined with the platform `PATH` separator
 /// (`:` on unix, `;` on Windows — parsed with `std::env::split_paths`, so a
 /// Windows drive letter's colon is not mistaken for a separator).
-pub(crate) const FS_EXTRA_ROOTS_ENV: &str = "CODEG_ACP_FS_EXTRA_ROOTS";
+pub(crate) const FS_EXTRA_ROOTS_ENV: &str = "ZWIIM_ACP_FS_EXTRA_ROOTS";
 
 /// Which paths the ACP `fs/read_text_file` / `fs/write_text_file` handlers will
 /// serve.
@@ -59,7 +59,7 @@ pub(crate) const FS_EXTRA_ROOTS_ENV: &str = "CODEG_ACP_FS_EXTRA_ROOTS";
 ///
 /// That "buys no safety" reasoning is conditional, and the condition is
 /// [`crate::acp::host_tools_policy::HostToolsPolicy`] — do not read it as "a
-/// read gate can never work". Under `CODEG_ACP_HOST_TOOLS=agent` codeg hosts
+/// read gate can never work". Under `ZWIIM_ACP_HOST_TOOLS=agent` codeg hosts
 /// NEITHER channel, and the `cat` fallback stops working: measured against grok
 /// 1.0.0 with a kernel `deny`, the read failed `EPERM` and so did every
 /// `run_terminal_command` and `grep` retry, because they were children of the
@@ -80,7 +80,7 @@ pub struct FsAccessPolicy {
 
 impl FsAccessPolicy {
     /// Today's historical behavior: reads and writes both confined to the
-    /// session working directory. Reachable via `CODEG_ACP_FS_POLICY=strict`.
+    /// session working directory. Reachable via `ZWIIM_ACP_FS_POLICY=strict`.
     pub fn strict(workspace_root: &Path) -> Self {
         let roots = vec![canonical_root(workspace_root)];
         Self {
@@ -89,7 +89,7 @@ impl FsAccessPolicy {
         }
     }
 
-    /// No path gate at all in either direction. `CODEG_ACP_FS_POLICY=unrestricted`.
+    /// No path gate at all in either direction. `ZWIIM_ACP_FS_POLICY=unrestricted`.
     pub fn unrestricted() -> Self {
         Self {
             read_roots: Vec::new(),
@@ -99,7 +99,7 @@ impl FsAccessPolicy {
 
     /// The default: unrestricted reads; writes confined to the workspace, the
     /// agent's own data home (so plan files, skills and session state work),
-    /// the temp dirs (attachments), and any `CODEG_ACP_FS_EXTRA_ROOTS` entries.
+    /// the temp dirs (attachments), and any `ZWIIM_ACP_FS_EXTRA_ROOTS` entries.
     pub fn permissive(
         workspace_root: &Path,
         agent_type: AgentType,
@@ -124,7 +124,7 @@ impl FsAccessPolicy {
         }
     }
 
-    /// Resolve the policy for a connection from `CODEG_ACP_FS_POLICY`, checking
+    /// Resolve the policy for a connection from `ZWIIM_ACP_FS_POLICY`, checking
     /// the agent's `runtime_env` first (so it can be set per agent through the
     /// existing agent-settings `env_json`) then codeg's own process env.
     pub fn from_env(
@@ -194,7 +194,7 @@ fn raw_env_value(runtime_env: &BTreeMap<String, String>, key: &str) -> Option<Os
 /// Read a knob from the agent's `runtime_env` first, then codeg's process env,
 /// trimmed — for values compared as keywords, never as paths.
 ///
-/// Mirrors `CODEG_ACP_HOST_TOOLS` (`acp::host_tools_policy`): a codeg-only key
+/// Mirrors `ZWIIM_ACP_HOST_TOOLS` (`acp::host_tools_policy`): a codeg-only key
 /// that rides along in the per-agent `env_json`, so it is configurable per agent
 /// from the existing settings UI without a new surface.
 ///
@@ -213,7 +213,7 @@ pub(crate) fn env_value(runtime_env: &BTreeMap<String, String>, key: &str) -> Op
         })
 }
 
-/// Extra writable roots from `CODEG_ACP_FS_EXTRA_ROOTS`. Relative entries are
+/// Extra writable roots from `ZWIIM_ACP_FS_EXTRA_ROOTS`. Relative entries are
 /// dropped for the same reason as relative agent homes: they would be resolved
 /// against codeg's cwd, so `.` or `..` silently widens the policy to an
 /// unrelated tree (or to `/`). Dropping is fail-closed.
@@ -353,7 +353,7 @@ fn resolve_root_slot(slot: &RootSlot, runtime_env: &BTreeMap<String, String>) ->
         // config and credentials, exactly the tree the isolation invariant keeps
         // unwritable. So: refuse the slot. That is fail-closed (the agent's write
         // is rejected), and the user can still name the directory explicitly via
-        // `CODEG_ACP_FS_EXTRA_ROOTS`.
+        // `ZWIIM_ACP_FS_EXTRA_ROOTS`.
         // Expanded against the CHILD's home, for the same reason the
         // `default_rel` branch below uses it: `merge_agent_env` copies every
         // `runtime_env` entry into the child, `HOME` included, and overriding it
@@ -392,7 +392,7 @@ fn resolve_root_slot(slot: &RootSlot, runtime_env: &BTreeMap<String, String>) ->
         // here would hand the agent write access to every other agent's
         // credentials as a side effect. The agent still runs; only codeg's own
         // `fs/*` channel declines to authorize the whole home, and
-        // `CODEG_ACP_FS_EXTRA_ROOTS` can still name a narrower directory inside
+        // `ZWIIM_ACP_FS_EXTRA_ROOTS` can still name a narrower directory inside
         // it.
         if is_over_broad_root(&root, runtime_env) {
             tracing::warn!(
@@ -475,7 +475,7 @@ pub(crate) fn child_home_dir(runtime_env: &BTreeMap<String, String>) -> Option<P
         // from the OS account database, which we cannot read without duplicating a
         // passwd lookup — and codeg's `$HOME` is NOT that answer whenever the two
         // differ. Refuse rather than guess; the user can still name the directory
-        // via `CODEG_ACP_FS_EXTRA_ROOTS`.
+        // via `ZWIIM_ACP_FS_EXTRA_ROOTS`.
         Some(value) if value.is_empty() => {
             tracing::warn!(
                 "[ACP] {HOME_KEY} is removed for this launch, so the agent's own \
@@ -925,7 +925,7 @@ fn atomic_write_text(path: &Path, bytes: &[u8]) -> Result<(), FileSystemRuntimeE
     }
 
     let temp_path = parent.join(format!(
-        ".codeg-fs-{}.{}.tmp",
+        ".zwiim-fs-{}.{}.tmp",
         std::process::id(),
         uuid::Uuid::new_v4().simple()
     ));
@@ -1161,7 +1161,7 @@ mod tests {
     }
 
     /// `strict` is the historical behavior — keep a regression net on it, since
-    /// it is what `CODEG_ACP_FS_POLICY=strict` promises to restore.
+    /// it is what `ZWIIM_ACP_FS_POLICY=strict` promises to restore.
     #[tokio::test(flavor = "current_thread")]
     async fn strict_rejects_read_and_write_outside_workspace() {
         let workspace = temp_workspace();
@@ -1826,7 +1826,7 @@ mod tests {
     /// don't. Uses a private key so it cannot race another test.
     #[test]
     fn child_env_value_models_the_spawn_layers_env_remove() {
-        let key = "CODEG_TEST_FS_CHILD_ENV";
+        let key = "ZWIIM_TEST_FS_CHILD_ENV";
         let os = OsString::from;
 
         temp_env::with_var(key, Some("/parent/value"), || {
@@ -2294,7 +2294,7 @@ mod tests {
                 entry
                     .file_name()
                     .to_string_lossy()
-                    .starts_with(".codeg-fs-")
+                    .starts_with(".zwiim-fs-")
             });
         assert!(!leaked_tmp, "temporary file should be cleaned up");
 

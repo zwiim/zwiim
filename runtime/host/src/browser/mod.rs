@@ -23,7 +23,7 @@
 //!   workspace about a new one so it can offer to open it
 //! - `blank_page` — the empty tab's own page: `about:blank` in the app's
 //!   colours rather than the engine's white
-//! - `doc_guest`  — the `codeg-doc:` guest that shows a local HTML file
+//! - `doc_guest`  — the `zwiim-doc:` guest that shows a local HTML file
 //! - `profile`    — the tabs' own data store / directory and their proxy
 //! - `downloads`  — destination policy and records for page downloads
 //! - `registry`   — tab id → surface + last known state
@@ -42,7 +42,7 @@
 //!   `browser-smoke`, never in a release build)
 
 // `agent` and `types` are pure data and pure rules — serde and nothing else —
-// and they are compiled in BOTH runtimes. The codeg-mcp plumbing that carries
+// and they are compiled in BOTH runtimes. The zwiim-mcp plumbing that carries
 // the browser tools (`acp::browser_tools`, the broker wire, the companion) is
 // shared code, and it has to name the same `PageSnapshot` and the same
 // `GrantLevel` the desktop build produces. A second copy of those types for
