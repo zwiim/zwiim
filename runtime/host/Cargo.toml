@@ -1,0 +1,126 @@
+# Zwiim Host Runtime — headless core.
+#
+# Codeg-derived infrastructure (see third_party/codeg/PROVENANCE.md), built
+# headless: the `tauri-runtime` / desktop features are intentionally absent so
+# no Tauri/WebKit/desktop code compiles. Naming rebrand to the Zwiim boundary
+# is applied to the Zwiim-owned surface (crate, binaries, env, logs); grouped
+# Codeg-derived internals keep their identifiers per CLAUDE.md decision 1.
+[package]
+name = "zwiim-host"
+version = "0.1.0"
+description = "Zwiim Host Runtime — headless execution core"
+authors = ["Zwiim"]
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+default-run = "zwiim-host"
+# Only the explicit [[bin]] targets below — no auto-discovery of src/main.rs
+# (the Tauri desktop entrypoint) or src/bin/* under other names.
+autobins = false
+
+[lib]
+name = "codeg_lib"
+crate-type = ["rlib"]
+
+[features]
+# Headless build has no default features. `tauri-runtime` and the browser
+# desktop surface are deliberately unavailable in this crate.
+default = []
+# Exposes test scaffolding (`AppState::new_for_test`, etc.) to integration
+# tests. Uncompiled in release builds.
+test-utils = []
+
+[[bin]]
+name = "zwiim-host"
+path = "src/bin/codeg_server.rs"
+required-features = []
+
+[[bin]]
+name = "zwiim-mcp"
+path = "src/bin/codeg_mcp.rs"
+required-features = []
+
+[dependencies]
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+iana-time-zone = "0.1"
+cron = "0.12"
+thiserror = "2"
+dirs = "6"
+if-addrs = "0.13"
+walkdir = "2"
+ignore = "0.4"
+sacp = "11.0.0"
+sacp-tokio = "11.0.0"
+tokio = { version = "1", features = ["process", "io-util", "sync", "macros", "rt", "net", "rt-multi-thread"] }
+uuid = { version = "1", features = ["v4"] }
+sha1 = "0.10"
+futures = "0.3"
+futures-lite = "2"
+reqwest = { version = "0.12", features = ["stream", "json", "multipart", "gzip", "brotli"] }
+flate2 = "1"
+bzip2 = "0.5"
+zstd = "0.13"
+tar = "0.4"
+zip = "2"
+regex = "1"
+portable-pty = "0.8"
+urlencoding = "2"
+url = "2"
+sea-orm = { version = "1.1", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros"] }
+sea-orm-migration = { version = "1.1", features = ["sqlx-sqlite", "runtime-tokio-rustls"] }
+rusqlite = { version = "0.32", features = ["backup"] }
+toml = "0.8"
+toml_edit = "0.19"
+serde_yaml = "0.9"
+notify = "6"
+base64 = "0.22"
+agent-client-protocol-schema = { version = "0.11", features = ["unstable_session_usage", "unstable_session_fork", "unstable_session_resume", "unstable_elicitation", "unstable_boolean_config"] }
+kill_tree = { version = "0.2", features = ["tokio"] }
+which = "7"
+# Retained for the later Zwiim secret-store slice; not wired yet.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"], optional = true }
+axum = { version = "0.8", features = ["ws", "multipart"] }
+async_zip = { version = "0.0.18", features = ["tokio", "deflate"] }
+tower-http = { version = "0.6", features = ["fs", "cors", "compression-gzip", "compression-br"] }
+http = "1"
+percent-encoding = "2"
+http-body = "1"
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+futures-util = "0.3"
+tokio-util = { version = "0.7", features = ["io", "rt"] }
+prost = "0.13"
+rand = "0.8"
+qrcode = "0.14"
+image = { version = "0.25", default-features = false, features = ["png", "webp", "jpeg", "gif"] }
+include_dir = "0.7"
+sha2 = "0.10"
+aes-gcm = { version = "0.10", features = ["stream"] }
+argon2 = "0.5"
+tempfile = "3"
+minisign-verify = "0.2"
+semver = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt", "registry", "std"] }
+tracing-appender = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mac-notification-sys = "0.6"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Threading", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock"] }
+junction = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+temp-env = { version = "0.3", features = ["async_closure"] }
+tokio = { version = "1", features = ["test-util", "macros", "rt", "sync", "time"] }
+insta = { version = "1", features = ["json", "redactions"] }
+axum-test = { version = "17", features = ["ws"] }
+reqwest = { version = "0.12", features = ["json"] }

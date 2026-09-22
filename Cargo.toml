@@ -1,0 +1,17 @@
+# Zwiim — Rust workspace root.
+#
+# Slice 1 establishes a single headless runtime crate. The workspace is
+# intentionally minimal: do not split into many crates until a Zwiim-owned
+# boundary genuinely requires it (see CLAUDE.md working rules).
+[workspace]
+resolver = "2"
+members = ["runtime/host"]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+# Codeg-derived: sacp-tokio is vendored (see third_party/codeg/PROVENANCE.md).
+[patch.crates-io]
+sacp-tokio = { path = "runtime/host/vendor/sacp-tokio" }
