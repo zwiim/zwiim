@@ -1,9 +1,9 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { HostClient, HostController, ZwiimClientError } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
 import { numberPatch } from "@/panels/DiffPanel";
-import { FilesPanel } from "@/panels/FilesPanel";
+import { FilesPanel, FileView } from "@/panels/FilesPanel";
 import { GitPanel, relativeTime, statusLabel } from "@/panels/GitPanel";
 import { FakeTransport, tick } from "./fakes";
 
@@ -132,17 +132,21 @@ describe("files panel", () => {
           resolve({ path: "a.txt", content: "one\ntwo\n", etag: "e", mtime_ms: null, readonly: false, line_ending: "lf" });
       });
     };
-    await mount(t, <FilesPanel workspaceId="w1" />);
+    const onOpen = vi.fn();
+    await mount(t, <FilesPanel workspaceId="w1" selected={null} onOpen={onOpen} />);
     fireEvent.click(screen.getByText("a.txt"));
-    await tick();
+    expect(onOpen).toHaveBeenCalledWith("a.txt");
+    cleanup();
+
+    await mount(t, <FileView workspaceId="w1" path="a.txt" />);
     expect(screen.getByText("Opening…")).toBeTruthy();
     release();
     await tick();
     const rows = screen.getByTestId("file-content").querySelectorAll("tr");
     expect([...rows].map((r) => r.textContent)).toEqual(["1one", "2two"]);
+    cleanup();
 
-    fireEvent.click(screen.getByText("big.bin"));
-    await tick();
+    await mount(t, <FileView workspaceId="w1" path="big.bin" />);
     expect(screen.getByTestId("file-error").textContent).toBe("File is too large to open in editor");
     expect(screen.queryByTestId("file-content")).toBeNull();
   });
@@ -153,7 +157,7 @@ describe("files panel", () => {
       if (!p.path) return [{ name: "src", path: "src", kind: "dir" }];
       throw new ZwiimClientError("permission_denied", "Permission denied", 403);
     };
-    await mount(t, <FilesPanel workspaceId="w1" />);
+    await mount(t, <FilesPanel workspaceId="w1" selected={null} onOpen={() => {}} />);
     fireEvent.click(screen.getByText("src"));
     await tick();
     expect(screen.getByRole("alert").textContent).toBe("Permission denied");

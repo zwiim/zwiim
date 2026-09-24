@@ -218,7 +218,7 @@ The Desktop's visual layer is adapted from the Codeg web UI (reference only,
 
 | Codeg path | Zwiim path | Modifications |
 |---|---|---|
-| `src/app/globals.css` (neutral light/dark oklch color tokens, radius scale, `@theme inline` mapping) | `clients/desktop/src/styles.css` | Kept a subset: the neutral base/card/muted/border/destructive colors, a reduced set of sidebar tokens, and the radius scale. Dropped the chart, editor and other Codeg-specific tokens and utilities. Added the xterm stylesheet import and a system font stack. |
+| `src/app/globals.css` (neutral light/dark oklch color tokens, radius scale, `@theme inline` mapping) | `clients/desktop/src/styles.css` | Kept a subset: the neutral base/card/muted/border/destructive colors, a reduced set of sidebar tokens, and the radius scale. Dropped the chart, editor and other Codeg-specific tokens and utilities. Added the xterm stylesheet import and a system font stack. Desktop UI pass: replaced the dark token values with a Zwiim "Graphite" palette (lower-contrast borders, tone-separated surfaces). Added Zwiim `--code` and `--brand` tokens and scrollbar styling. |
 | `src/components/ui/button.tsx` (shadcn/cva) | `clients/desktop/src/components/ui/button.tsx` | Removed the Radix `Slot`/`asChild` path. Simplified the base and variant classes (no `aria-*` / `data-icon` states). Dropped the `link` variant and the `lg`, `icon-xs` and `icon-lg` sizes. Changed `rounded-4xl` to `rounded-md` and `icon-sm` to `size-7`. |
 | `src/components/ui/badge.tsx` (shadcn/cva) | `clients/desktop/src/components/ui/badge.tsx` | Removed the Radix `Slot`/`asChild` path. Simplified the base classes. Dropped the `ghost` and `link` variants and added `success` and `warning`. The default variant is now `secondary`. |
 

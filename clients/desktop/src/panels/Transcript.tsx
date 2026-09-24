@@ -1,12 +1,13 @@
 import { Check, ChevronRight, CircleDashed, Loader2, X } from "lucide-react";
 import type { HistoryBlock, HistoryTurn, LiveTurn, ToolCall } from "@zwiim/sdk";
-import { Badge } from "@/components/ui/badge";
 import { Markdown } from "@/components/Markdown";
 import { cn } from "@/lib/utils";
 
 export function UserBubble({ children }: { children: React.ReactNode }) {
   return (
-    <div className="bg-muted max-w-[80%] self-end rounded-lg px-3 py-2 whitespace-pre-wrap">{children}</div>
+    <div className="bg-muted max-w-[85%] self-end rounded-2xl rounded-br-md px-4 py-2.5 leading-relaxed whitespace-pre-wrap">
+      {children}
+    </div>
   );
 }
 
@@ -18,7 +19,7 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 function StatusIcon({ status }: { status: string | null }) {
-  if (status === "completed") return <Check className="size-3.5 text-emerald-600" />;
+  if (status === "completed") return <Check className="size-3.5 text-emerald-500" />;
   if (status === "failed") return <X className="text-destructive size-3.5" />;
   if (status === "in_progress") return <Loader2 className="text-muted-foreground size-3.5 animate-spin" />;
   return <CircleDashed className="text-muted-foreground size-3.5" />;
@@ -32,8 +33,8 @@ function Output({ text, error }: { text: string; error?: boolean }) {
   return (
     <pre
       className={cn(
-        "max-h-72 overflow-auto rounded-md p-2 font-mono text-xs leading-5 whitespace-pre-wrap",
-        error ? "text-destructive bg-destructive/5" : "bg-muted",
+        "max-h-72 overflow-auto rounded-lg p-3 font-mono text-xs leading-5 whitespace-pre-wrap",
+        error ? "text-destructive bg-destructive/5" : "bg-code",
       )}
     >
       {diff
@@ -65,11 +66,11 @@ export function ToolCallView(props: {
   const failed = props.status === "failed" || props.isError;
   const hasDetails = Boolean(props.input || props.output);
   return (
-    <details className="bg-card group rounded-md border text-xs" data-testid="tool-call" data-status={props.status ?? ""}>
+    <details className="group text-xs" data-testid="tool-call" data-status={props.status ?? ""}>
       <summary
         className={cn(
-          "flex list-none items-center gap-2 px-2.5 py-1.5 select-none",
-          hasDetails ? "cursor-pointer" : "cursor-default",
+          "text-muted-foreground -mx-2 flex list-none items-center gap-2 rounded-md px-2 py-1 select-none",
+          hasDetails ? "hover:bg-muted/60 hover:text-foreground cursor-pointer" : "cursor-default",
         )}
         onClick={(e) => !hasDetails && e.preventDefault()}
       >
@@ -77,21 +78,16 @@ export function ToolCallView(props: {
           className={cn("size-3 shrink-0 transition-transform group-open:rotate-90", !hasDetails && "invisible")}
         />
         <StatusIcon status={failed ? "failed" : props.status} />
-        <span className="truncate font-mono">{props.title || "Tool call"}</span>
-        {props.kind && props.kind !== "other" && (
-          <span className="text-muted-foreground shrink-0">{props.kind}</span>
-        )}
+        <span className="text-foreground/90 truncate font-mono">{props.title || "Tool call"}</span>
+        {props.kind && props.kind !== "other" && <span className="shrink-0">{props.kind}</span>}
         {props.status && (
-          <Badge
-            className="ml-auto shrink-0"
-            variant={failed ? "destructive" : props.status === "completed" ? "success" : "secondary"}
-          >
+          <span className={cn("ml-auto shrink-0", failed && "text-destructive")}>
             {failed ? "failed" : (STATUS_LABEL[props.status] ?? props.status)}
-          </Badge>
+          </span>
         )}
       </summary>
       {hasDetails && (
-        <div className="flex flex-col gap-2 border-t p-2">
+        <div className="mt-1 mb-2 ml-5 flex flex-col gap-2">
           {props.input && <Output text={props.input} />}
           {props.output && <Output text={props.output} error={failed} />}
         </div>
@@ -102,9 +98,12 @@ export function ToolCallView(props: {
 
 export function Thought({ text }: { text: string }) {
   return (
-    <details className="text-muted-foreground text-xs">
-      <summary className="cursor-pointer select-none">Thinking</summary>
-      <div className="mt-1 whitespace-pre-wrap">{text}</div>
+    <details className="group text-muted-foreground text-xs" data-testid="thought">
+      <summary className="hover:text-foreground flex w-fit cursor-pointer list-none items-center gap-1.5 select-none">
+        <ChevronRight className="size-3 transition-transform group-open:rotate-90" />
+        <span className="italic">Thinking</span>
+      </summary>
+      <div className="border-border mt-1.5 ml-1.5 border-l-2 pl-3 leading-relaxed whitespace-pre-wrap">{text}</div>
     </details>
   );
 }
@@ -127,7 +126,7 @@ export function HistoryTurnView({ turn }: { turn: HistoryTurn }) {
     turn.blocks.flatMap((b) => (b.type === "tool_call" && b.tool_call_id ? [b.tool_call_id] : [])),
   );
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2.5 leading-relaxed">
       {turn.blocks.map((b, i) => {
         switch (b.type) {
           case "text":
@@ -153,7 +152,7 @@ export function HistoryTurnView({ turn }: { turn: HistoryTurn }) {
             return b.is_error && b.output_preview ? <Output key={i} text={b.output_preview} error /> : null;
           case "image":
             return (
-              <img key={i} className="max-w-sm rounded-md border" src={`data:${b.mime_type};base64,${b.data}`} alt="" />
+              <img key={i} className="max-w-sm rounded-lg" src={`data:${b.mime_type};base64,${b.data}`} alt="" />
             );
           default:
             return null;
@@ -168,7 +167,7 @@ export function LiveTurnView({ turn, streaming }: { turn: LiveTurn; streaming?: 
   const toolCall = (id: string): ToolCall | undefined => turn.toolCalls[id];
   if (!turn.userMessage && !turn.message && !streaming) return null;
   return (
-    <div className="flex flex-col gap-2" data-testid="live-turn">
+    <div className="flex flex-col gap-2.5 leading-relaxed" data-testid="live-turn">
       {text && <UserBubble>{text}</UserBubble>}
       {turn.message?.content.map((b, i) => {
         if (b.type === "text") return <Markdown key={i} text={b.text} />;
@@ -185,8 +184,8 @@ export function LiveTurnView({ turn, streaming }: { turn: LiveTurn; streaming?: 
         );
       })}
       {streaming && (
-        <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
-          <Loader2 className="size-3 animate-spin" /> Working…
+        <span className="text-muted-foreground flex items-center gap-2 text-xs">
+          <Loader2 className="size-3.5 animate-spin" /> Working…
         </span>
       )}
     </div>

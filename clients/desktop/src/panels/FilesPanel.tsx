@@ -8,15 +8,23 @@ import { cn } from "@/lib/utils";
 /** A directory listing: loaded, or why it could not be. */
 type Listing = { nodes: FileTreeNode[] } | { error: string };
 
-/** Read-only workspace browser: the tree and file contents come from the host. */
-export function FilesPanel({ workspaceId }: { workspaceId: string }) {
+/**
+ * Read-only workspace browser; the tree comes from the host. Opening a file
+ * shows it beside the conversation.
+ */
+export function FilesPanel({
+  workspaceId,
+  selected,
+  onOpen,
+}: {
+  workspaceId: string;
+  /** The file showing, if any. */
+  selected: string | null;
+  onOpen(path: string): void;
+}) {
   const controller = useController();
   const [listings, setListings] = useState<Record<string, Listing>>({});
   const [open, setOpen] = useState<Set<string>>(new Set());
-  const [selected, setSelected] = useState<string | null>(null);
-  const [file, setFile] = useState<FileContent | null>(null);
-  const [fileError, setFileError] = useState<string | null>(null);
-  const selectedRef = useRef<string | null>(null);
 
   const load = useCallback(
     async (path: string) => {
@@ -40,15 +48,9 @@ export function FilesPanel({ workspaceId }: { workspaceId: string }) {
     void load("");
   }, [load]);
 
-  useEffect(() => {
-    selectedRef.current = null;
-    setSelected(null);
-    setFile(null);
-    setFileError(null);
-    reset();
-  }, [reset]);
+  useEffect(() => reset(), [reset]);
 
-  async function toggle(node: FileTreeNode) {
+  function toggle(node: FileTreeNode) {
     if (node.kind === "dir") {
       const next = new Set(open);
       if (next.has(node.path)) next.delete(node.path);
@@ -62,16 +64,7 @@ export function FilesPanel({ workspaceId }: { workspaceId: string }) {
       setOpen(next);
       return;
     }
-    selectedRef.current = node.path;
-    setSelected(node.path);
-    setFile(null);
-    setFileError(null);
-    try {
-      const content = await controller.client.request("files.read", { workspace_id: workspaceId, path: node.path });
-      if (selectedRef.current === node.path) setFile(content);
-    } catch (e) {
-      if (selectedRef.current === node.path) setFileError(errorMessage(e));
-    }
+    onOpen(node.path);
   }
 
   const renderListing = (path: string, depth: number): React.ReactNode => {
@@ -124,41 +117,76 @@ export function FilesPanel({ workspaceId }: { workspaceId: string }) {
   };
 
   return (
-    <div className="flex h-full min-h-0">
-      <div className="flex w-72 shrink-0 flex-col border-r">
-        <div className="flex items-center justify-between border-b px-3 py-1.5">
-          <span className="text-muted-foreground text-xs font-medium uppercase">Files</span>
-          <Button size="icon-sm" variant="ghost" title="Refresh" onClick={reset}>
-            <RefreshCw />
-          </Button>
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto p-1" data-testid="file-tree">
-          {renderListing("", 0)}
-        </div>
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex items-center justify-between px-3 py-1">
+        <span className="text-muted-foreground text-xs">Workspace files</span>
+        <Button size="icon-sm" variant="ghost" title="Refresh" onClick={reset}>
+          <RefreshCw />
+        </Button>
       </div>
-      <div className="flex min-w-0 flex-1 flex-col">
-        {selected === null ? (
-          <p className="text-muted-foreground m-auto text-xs">Select a file to view it</p>
-        ) : (
-          <>
-            <div className="text-muted-foreground flex items-center gap-2 border-b px-3 py-1.5 text-xs">
-              <span className="truncate font-mono">{selected}</span>
-              {file && <span className="ml-auto shrink-0">read-only</span>}
-            </div>
-            {fileError ? (
-              <p className="text-destructive p-3 text-xs" role="alert" data-testid="file-error">
-                {fileError}
-              </p>
-            ) : file ? (
-              <FileText text={file.content} />
-            ) : (
-              <p className="text-muted-foreground flex items-center gap-1.5 p-3 text-xs">
-                <Loader2 className="size-3 animate-spin" /> Opening…
-              </p>
-            )}
-          </>
-        )}
+      <div className="min-h-0 flex-1 overflow-auto px-1 pb-1" data-testid="file-tree">
+        {renderListing("", 0)}
       </div>
+    </div>
+  );
+}
+
+/** One file's contents, read-only, in its own tab. */
+export function FileView({ workspaceId, path }: { workspaceId: string; path: string }) {
+  const controller = useController();
+  const [file, setFile] = useState<FileContent | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const loads = useRef(0);
+
+  const refresh = useCallback(async () => {
+    const load = ++loads.current;
+    setError(null);
+    setLoading(true);
+    try {
+      const content = await controller.client.request("files.read", { workspace_id: workspaceId, path });
+      if (load === loads.current) setFile(content);
+    } catch (e) {
+      if (load === loads.current) {
+        setFile(null);
+        setError(errorMessage(e));
+      }
+    } finally {
+      if (load === loads.current) setLoading(false);
+    }
+  }, [controller, workspaceId, path]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col" data-testid="file-view">
+      <div className="text-muted-foreground flex h-10 shrink-0 items-center gap-2 border-b px-4 text-xs">
+        <span className="text-foreground truncate font-mono">{path}</span>
+        {file && <span className="ml-auto shrink-0">read-only</span>}
+        <Button
+          className={cn(!file && "ml-auto")}
+          size="icon-sm"
+          variant="ghost"
+          title="Reload"
+          onClick={refresh}
+          disabled={loading}
+        >
+          <RefreshCw className={cn(loading && "animate-spin")} />
+        </Button>
+      </div>
+      {error ? (
+        <p className="text-destructive p-4 text-xs" role="alert" data-testid="file-error">
+          {error}
+        </p>
+      ) : file ? (
+        <FileText text={file.content} />
+      ) : (
+        <p className="text-muted-foreground flex items-center gap-1.5 p-4 text-xs">
+          <Loader2 className="size-3 animate-spin" /> Opening…
+        </p>
+      )}
     </div>
   );
 }

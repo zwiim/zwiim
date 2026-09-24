@@ -1,8 +1,8 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HostClient, HostController, type SessionSummary, type WorkspaceInfo } from "@zwiim/sdk";
+import { HostClient, HostController, ZwiimClientError, type SessionSummary, type WorkspaceInfo } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
-import { DiffPanel } from "@/panels/DiffPanel";
+import { DiffPanel, DiffView } from "@/panels/DiffPanel";
 import { Sidebar, type SidebarProps } from "@/panels/Sidebar";
 import { TerminalPanel } from "@/panels/TerminalPanel";
 import { FakeTransport, tick } from "./fakes";
@@ -149,23 +149,31 @@ describe("diff on the host feed", () => {
     t.handlers["workspace.list"] = () => [root, worktree("a1b2c3d4")];
     let files = ["a.txt"];
     let version = 1;
-    t.handlers["git.diff"] = (p) => ({
-      base_commit: null,
-      truncated: false,
-      files: (p.file ? [p.file] : files).map((path: string) => ({
-        path,
-        change: "modified",
-        additions: version,
-        deletions: 0,
-        binary: false,
-        too_large: false,
-        untracked: false,
-      })),
-      ...(p.file ? { patch: `+v${version}` } : {}),
-    });
-    await mount(t, <DiffPanel workspace={worktree("a1b2c3d4")} />);
-    fireEvent.click(screen.getByText("a.txt"));
-    await tick();
+    t.handlers["git.diff"] = (p) => {
+      if (p.file && !files.includes(p.file)) throw new ZwiimClientError("not_found", "File has no changes", 404);
+      return {
+        base_commit: null,
+        truncated: false,
+        files: (p.file ? [p.file] : files).map((path: string) => ({
+          path,
+          change: "modified",
+          additions: version,
+          deletions: 0,
+          binary: false,
+          too_large: false,
+          untracked: false,
+        })),
+        ...(p.file ? { patch: `+v${version}` } : {}),
+      };
+    };
+    const ws = worktree("a1b2c3d4");
+    await mount(
+      t,
+      <>
+        <DiffPanel workspace={ws} selected="a.txt" onOpen={() => {}} />
+        <DiffView workspace={ws} path="a.txt" />
+      </>,
+    );
     expect(screen.getByTestId("diff-patch").textContent).toContain("+v1");
     const diffCalls = () => t.calls.filter((c) => c.op === "git.diff").length;
     const before = diffCalls();
@@ -181,17 +189,18 @@ describe("diff on the host feed", () => {
     await tick();
     expect(screen.getByTestId("diff-files").textContent).toContain("b.txt");
     expect(screen.getByTestId("diff-patch").textContent).toContain("+v2");
-    expect(t.calls.filter((c) => c.op === "git.diff").slice(before).map((c) => c.params)).toEqual([
-      { workspace_id: "a1b2c3d4" },
-      { workspace_id: "a1b2c3d4", file: "a.txt" },
-    ]);
+    const refetched = t.calls.filter((c) => c.op === "git.diff").slice(before).map((c) => c.params);
+    expect(refetched).toHaveLength(2);
+    expect(refetched).toContainEqual({ workspace_id: "a1b2c3d4" });
+    expect(refetched).toContainEqual({ workspace_id: "a1b2c3d4", file: "a.txt" });
 
-    // The open file was committed away: the selection closes.
+    // The open file was committed away: its tab says so instead of vanishing.
     files = ["b.txt"];
     await t.feedEvent("workspace.diff_changed", { workspace_id: "a1b2c3d4" });
     await tick();
     expect(screen.getByTestId("diff-files").textContent).not.toContain("a.txt");
-    expect(screen.getByTestId("diff-patch").textContent).toContain("Select a file");
+    expect(screen.getByTestId("diff-patch").textContent).toContain("no changes anymore");
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });
 

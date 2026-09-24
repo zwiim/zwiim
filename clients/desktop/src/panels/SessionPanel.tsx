@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowDown, Loader2, Square, SendHorizontal } from "lucide-react";
+import { ArrowDown, ArrowUp, GitBranch, GitBranchPlus, Loader2, Square } from "lucide-react";
 import {
   optionUnavailableDetails,
   type AgentSummary,
@@ -8,11 +8,11 @@ import {
   type SessionOptions,
   type SessionView,
 } from "@zwiim/sdk";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { agentChoices, rememberAgentChoices } from "@/lib/prefs";
-import { OptionsBar } from "./OptionsBar";
+import { cn } from "@/lib/utils";
+import { ControlSelect, OptionsBar, UnattendedBanner } from "./OptionsBar";
 import { RequestCard } from "./RequestCard";
 import { HistoryTurnView, LiveTurnView, stopReasonText } from "./Transcript";
 
@@ -115,20 +115,35 @@ function NewSession({
   const controller = useController();
   const online = useOnline();
   const agents = useHost((s) => s.agents);
+  const workspace = useHost((s) => s.workspaces?.find((w) => w.workspace_id === workspaceId) ?? null);
   const [chosen, setChosen] = useState<string | null>(null);
   const agent = agents ? defaultAgent(agents, chosen) : null;
   const advertised = agents?.find((a) => a.agent === agent)?.options ?? null;
   const [picks, setPicks] = useState<OptionsRequest>({});
   const start = advertised && agent ? newSessionOptions(advertised, agentChoices(agent), picks) : null;
-  const isRoot = useHost((s) => s.workspaces?.find((w) => w.workspace_id === workspaceId)?.kind === "root");
+  const isRoot = workspace?.kind === "root";
   const [inWorktree, setInWorktree] = useState(false);
+  const pick = (req: OptionsRequest) => {
+    setPicks((p) => ({ ...p, ...req }));
+    if (agent) rememberAgentChoices(agent, { model: req.model, effort: req.effort });
+  };
   return (
     <div className="flex h-full flex-col">
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6">
-        <p className="text-lg font-medium">Start a session</p>
-        {agents === null ? (
-          <p className="text-muted-foreground text-xs">Checking which agents this host can run…</p>
-        ) : agent === null ? (
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
+        <p className="text-xl font-semibold tracking-tight">Start a session</p>
+        {workspace && (
+          <p className="text-muted-foreground flex items-center gap-1.5 text-sm">
+            {workspace.alias ?? workspace.name}
+            {workspace.branch && (
+              <>
+                <GitBranch className="size-3.5" />
+                <span className="font-mono text-xs">{workspace.branch}</span>
+              </>
+            )}
+          </p>
+        )}
+        {agents === null && <p className="text-muted-foreground text-xs">Checking which agents this host can run…</p>}
+        {agents !== null && agent === null && (
           <div className="text-muted-foreground max-w-sm text-center text-xs" data-testid="no-agents">
             <p>No agent is available on this host.</p>
             <p className="mt-1">
@@ -139,43 +154,51 @@ function NewSession({
               .
             </p>
           </div>
-        ) : (
-          <select
-            className="bg-background rounded-md border px-2.5 py-1.5"
-            value={agent}
-            onChange={(e) => {
-              setChosen(e.target.value);
-              setPicks({});
-            }}
-            aria-label="Agent"
-          >
-            {agents.map((a) => (
-              <option key={a.agent} value={a.agent} disabled={!a.available}>
-                {agentLabel(a)}
-              </option>
-            ))}
-          </select>
-        )}
-        {start && (
-          <OptionsBar
-            options={start.shown}
-            disabled={!online}
-            onChange={(req) => {
-              setPicks((p) => ({ ...p, ...req }));
-              if (agent) rememberAgentChoices(agent, { model: req.model, effort: req.effort });
-            }}
-          />
-        )}
-        {isRoot && (
-          <label className="text-muted-foreground flex items-center gap-1.5 text-xs">
-            <input type="checkbox" checked={inWorktree} onChange={(e) => setInWorktree(e.target.checked)} />
-            In a new worktree
-          </label>
         )}
       </div>
       <Composer
         placeholder="Describe the task…"
         disabled={!online || agent === null}
+        unattended={start?.shown.mode?.current === "unattended"}
+        banner={start && <UnattendedBanner options={start.shown} disabled={!online} onChange={pick} />}
+        leading={
+          isRoot && (
+            <label
+              className={cn(
+                "hover:bg-muted has-[:focus-visible]:ring-ring/50 relative flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-xs has-[:focus-visible]:ring-2",
+                inWorktree ? "text-foreground bg-muted" : "text-muted-foreground",
+              )}
+              title="Start the session in a new worktree of this workspace"
+            >
+              <input
+                type="checkbox"
+                className="absolute inset-0 cursor-pointer opacity-0"
+                aria-label="In a new worktree"
+                checked={inWorktree}
+                onChange={(e) => setInWorktree(e.target.checked)}
+              />
+              <GitBranchPlus className="size-3.5" />
+              New worktree
+            </label>
+          )
+        }
+        controls={
+          agents &&
+          agent !== null && (
+            <>
+              <ControlSelect
+                label="Agent"
+                value={agent}
+                onChange={(a) => {
+                  setChosen(a);
+                  setPicks({});
+                }}
+                options={agents.map((a) => ({ value: a.agent, label: agentLabel(a), disabled: !a.available }))}
+              />
+              {start && <OptionsBar options={start.shown} disabled={!online} onChange={pick} />}
+            </>
+          )
+        }
         onSend={async (blocks, client_message_id) => {
           if (agent === null) return;
           // "New worktree + session" is two host operations: create, then start
@@ -214,6 +237,7 @@ function OpenSession({
   const online = useOnline();
   const view = useHost((s) => s.sessions[sessionId]);
   const summary = useHost((s) => s.sessionsByWorkspace[workspaceId]?.find((x) => x.session_id === sessionId));
+  const agentName = useHost((s) => s.agents?.find((a) => a.agent === summary?.agent)?.name ?? null);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -239,6 +263,8 @@ function OpenSession({
   const stopped = running ? null : stopReasonText(view?.lastStopReason ?? null);
   const [optionsBusy, setOptionsBusy] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
+  const empty =
+    view?.history?.length === 0 && !view.settled && !view.live.userMessage && !view.live.message && !running;
 
   async function changeOptions(request: OptionsRequest) {
     setOptionsBusy(true);
@@ -247,7 +273,7 @@ function OpenSession({
       await controller.setSessionOptions(sessionId, request);
       if (summary?.agent) rememberAgentChoices(summary.agent, { model: request.model, effort: request.effort });
     } catch (e) {
-      // The host changed nothing; the bar keeps showing what the agent holds.
+      // The host changed nothing; the controls keep showing what the agent holds.
       const unavailable = optionUnavailableDetails(e);
       setOptionsError(
         unavailable
@@ -272,96 +298,64 @@ function OpenSession({
     }
   }
 
+  const options = view?.options && !removed ? view.options : null;
+  const optionsDisabled = running || starting || !online || optionsBusy;
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-2 border-b px-4 py-2">
-        <span className="truncate font-medium">{summary?.title || "Session"}</span>
-        {summary?.agent && <Badge variant="outline">{summary.agent}</Badge>}
-        <SessionBadge view={view} />
-        <div className="ml-auto flex items-center gap-2">
-          {cancelError && <span className="text-destructive text-xs">{cancelError}</span>}
-          {running && !removed && !confirmCancel && (
-            <Button size="xs" variant="outline" disabled={!online} onClick={() => setConfirmCancel(true)}>
-              <Square /> Cancel
-            </Button>
-          )}
-          {running && !removed && confirmCancel && (
-            <span className="flex items-center gap-1.5 text-xs" data-testid="confirm-cancel">
-              Stop the agent's current turn?
-              <Button size="xs" variant="destructive" disabled={!online || cancelling} onClick={cancel}>
-                Stop
-              </Button>
-              <Button size="xs" variant="ghost" disabled={cancelling} onClick={() => setConfirmCancel(false)}>
-                Keep going
-              </Button>
-            </span>
-          )}
-        </div>
-      </div>
-      {view?.options && !removed && (
-        <div className="border-b px-4 py-2">
-          <OptionsBar
-            options={view.options}
-            disabled={running || starting || !online || optionsBusy}
-            disabledReason={running ? "Options change between turns" : starting ? "The agent is starting…" : null}
-            onChange={(req) => void changeOptions(req)}
-          />
-          {optionsError && (
-            <p className="text-destructive mt-1 text-xs" role="alert" data-testid="options-error">
-              {optionsError}
-            </p>
-          )}
-        </div>
-      )}
+      <header className="flex h-11 shrink-0 items-center gap-2.5 px-5">
+        <span className="truncate text-sm font-medium">{summary?.title || "Session"}</span>
+        {(agentName ?? summary?.agent) && (
+          <span className="text-muted-foreground shrink-0 text-xs">{agentName ?? summary?.agent}</span>
+        )}
+        <SessionStatus view={view} />
+      </header>
       <div className="relative flex min-h-0 flex-1 flex-col">
-      <div
-        ref={scroller}
-        onScroll={onScroll}
-        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-4"
-        data-testid="transcript"
-      >
-        {view?.history === null && (
-          <p className="text-muted-foreground flex items-center gap-1.5 text-xs">
-            <Loader2 className="size-3 animate-spin" /> Loading the conversation…
-          </p>
+        <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto" data-testid="transcript">
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-6 pt-4 pb-6">
+            {view?.history === null && (
+              <p className="text-muted-foreground flex items-center gap-1.5 text-xs">
+                <Loader2 className="size-3 animate-spin" /> Loading the conversation…
+              </p>
+            )}
+            {empty && <p className="text-muted-foreground py-10 text-center">No messages yet.</p>}
+            {view?.history?.map((t) => <HistoryTurnView key={t.turn_id} turn={t} />)}
+            {view?.settled && <LiveTurnView turn={view.settled} />}
+            {view && <LiveTurnView turn={view.live} streaming={running} />}
+            {stopped && (
+              <p className="text-muted-foreground text-xs" data-testid="stop-reason">
+                {stopped}
+              </p>
+            )}
+            {view?.lastError && (
+              <p className="text-destructive text-xs" role="alert">
+                {view.lastError.message}
+              </p>
+            )}
+            {view?.pendingRequest && (
+              <RequestCard
+                request={view.pendingRequest}
+                disabled={!online}
+                onAnswer={async (answer) => {
+                  await controller.client.request("session.respond", {
+                    session_id: sessionId,
+                    request_id: view.pendingRequest!.request_id,
+                    ...answer,
+                  });
+                }}
+              />
+            )}
+          </div>
+        </div>
+        {!atBottom && (
+          <Button
+            className="bg-card absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full shadow-lg"
+            size="xs"
+            variant="outline"
+            onClick={jump}
+          >
+            <ArrowDown /> Jump to latest
+          </Button>
         )}
-        {view?.history?.map((t) => <HistoryTurnView key={t.turn_id} turn={t} />)}
-        {view?.settled && <LiveTurnView turn={view.settled} />}
-        {view && <LiveTurnView turn={view.live} streaming={running} />}
-        {stopped && (
-          <p className="text-muted-foreground text-xs" data-testid="stop-reason">
-            {stopped}
-          </p>
-        )}
-        {view?.lastError && (
-          <p className="text-destructive text-xs" role="alert">
-            {view.lastError.message}
-          </p>
-        )}
-        {view?.pendingRequest && (
-          <RequestCard
-            request={view.pendingRequest}
-            disabled={!online}
-            onAnswer={async (answer) => {
-              await controller.client.request("session.respond", {
-                session_id: sessionId,
-                request_id: view.pendingRequest!.request_id,
-                ...answer,
-              });
-            }}
-          />
-        )}
-      </div>
-      {!atBottom && (
-        <Button
-          className="absolute bottom-3 left-1/2 -translate-x-1/2 shadow-md"
-          size="xs"
-          variant="outline"
-          onClick={jump}
-        >
-          <ArrowDown /> Jump to latest
-        </Button>
-      )}
       </div>
       <Composer
         placeholder={
@@ -372,25 +366,103 @@ function OpenSession({
               : "Send a message"
         }
         disabled={running || removed || !online}
+        unattended={options?.mode?.current === "unattended"}
+        notice={
+          <>
+            {optionsError && (
+              <p className="text-destructive text-xs" role="alert" data-testid="options-error">
+                {optionsError}
+              </p>
+            )}
+            {cancelError && (
+              <p className="text-destructive text-xs" role="alert">
+                {cancelError}
+              </p>
+            )}
+            {running && !removed && confirmCancel && (
+              <div
+                className="bg-card flex items-center gap-2 rounded-lg px-3 py-2 text-xs shadow-sm"
+                data-testid="confirm-cancel"
+              >
+                <span className="flex-1">Stop the agent's current turn?</span>
+                <Button size="xs" variant="ghost" disabled={cancelling} onClick={() => setConfirmCancel(false)}>
+                  Keep going
+                </Button>
+                <Button size="xs" variant="destructive" disabled={!online || cancelling} onClick={cancel}>
+                  Stop
+                </Button>
+              </div>
+            )}
+          </>
+        }
+        banner={options && <UnattendedBanner options={options} disabled={optionsDisabled} onChange={(req) => void changeOptions(req)} />}
+        controls={
+          options && (
+            <>
+              {(agentName ?? summary?.agent) && (
+                <span className="text-muted-foreground flex min-w-0 items-center gap-1 pl-2 text-xs">
+                  <span className="truncate">{agentName ?? summary?.agent}</span>
+                  <span aria-hidden>·</span>
+                </span>
+              )}
+              <OptionsBar
+                options={options}
+                disabled={optionsDisabled}
+                disabledReason={running ? "Options change between turns" : starting ? "The agent is starting…" : null}
+                onChange={(req) => void changeOptions(req)}
+              />
+            </>
+          )
+        }
+        action={
+          running &&
+          !removed && (
+            <button
+              type="button"
+              className="bg-foreground text-background hover:bg-foreground/85 focus-visible:ring-ring/50 grid size-8 shrink-0 place-items-center rounded-full outline-none focus-visible:ring-2 disabled:opacity-50"
+              aria-label="Stop agent"
+              title="Stop the agent's current turn"
+              data-testid="stop-agent"
+              disabled={!online || confirmCancel}
+              onClick={() => setConfirmCancel(true)}
+            >
+              <Square className="size-3 fill-current" />
+            </button>
+          )
+        }
         onSend={(blocks, client_message_id) => controller.sendMessage({ session_id: sessionId, blocks, client_message_id })}
       />
     </div>
   );
 }
 
-function SessionBadge({ view }: { view: SessionView | undefined }) {
+/** Where the agent is: a dot and a word, next to the session title. */
+function SessionStatus({ view }: { view: SessionView | undefined }) {
   if (!view) return null;
+  let text: string;
+  let dot: string;
   if (view.attach === "live") {
-    return (
-      <Badge variant={view.agentStatus === "prompting" ? "warning" : view.agentStatus === "connecting" ? "secondary" : "success"}>
-        {view.agentStatus === "prompting" ? "Working" : view.agentStatus === "connecting" ? "Starting…" : "Agent ready"}
-      </Badge>
-    );
+    const s = view.agentStatus;
+    text = s === "prompting" ? "Working" : s === "connecting" ? "Starting…" : "Agent ready";
+    dot = s === "prompting" ? "bg-amber-500 animate-pulse" : s === "connecting" ? "bg-muted-foreground animate-pulse" : "bg-emerald-500";
+  } else if (view.attach === "attaching") {
+    text = "Attaching…";
+    dot = "bg-muted-foreground animate-pulse";
+  } else if (view.attach === "error") {
+    text = view.attachError?.message ?? "Error";
+    dot = "bg-destructive";
+  } else if (view.attach === "detached") {
+    text = "Idle";
+    dot = "bg-muted-foreground/60";
+  } else {
+    return null;
   }
-  if (view.attach === "attaching") return <Badge>Attaching…</Badge>;
-  if (view.attach === "error") return <Badge variant="destructive">{view.attachError?.message ?? "Error"}</Badge>;
-  if (view.attach === "detached") return <Badge variant="outline">Idle</Badge>;
-  return null;
+  return (
+    <span className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-xs" data-testid="session-status">
+      <span className={cn("size-1.5 shrink-0 rounded-full", dot)} />
+      <span className="truncate">{text}</span>
+    </span>
+  );
 }
 
 /**
@@ -427,11 +499,25 @@ function useStickToBottom(deps: unknown[]) {
   return { ref, atBottom, onScroll, jump };
 }
 
-const COMPOSER_MAX_PX = 192;
+const COMPOSER_MAX_PX = 240;
 
+/**
+ * The control surface for the agent's next turn: the message, and in its
+ * toolbar the agent's options and send (or stop while it works).
+ */
 function Composer(props: {
   placeholder: string;
   disabled?: boolean;
+  /** Unattended is on: the frame says so. */
+  unattended?: boolean;
+  /** Above the composer: confirmations and errors. */
+  notice?: React.ReactNode;
+  /** Inside, above the message: mode warnings. */
+  banner?: React.ReactNode;
+  leading?: React.ReactNode;
+  controls?: React.ReactNode;
+  /** Replaces send (the stop button while the agent works). */
+  action?: React.ReactNode;
   onSend(blocks: PromptBlock[], clientMessageId: string): Promise<void>;
 }) {
   const [text, setText] = useState("");
@@ -465,31 +551,57 @@ function Composer(props: {
   }
 
   return (
-    <div className="border-t p-3">
-      {error && (
-        <p className="text-destructive mb-2 text-xs" role="alert">
-          {error}
-        </p>
-      )}
-      <div className="flex items-end gap-2">
-        <textarea
-          ref={area}
-          className="bg-background focus-visible:ring-ring/50 max-h-48 min-h-10 flex-1 resize-none rounded-md border px-3 py-2 outline-none focus-visible:ring-[3px]"
-          placeholder={props.placeholder}
-          value={text}
-          rows={1}
-          disabled={props.disabled || sending}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              void send();
-            }
+    <div className="shrink-0 px-6 pt-1 pb-4">
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-2">
+        {props.notice}
+        {error && (
+          <p className="text-destructive text-xs" role="alert">
+            {error}
+          </p>
+        )}
+        <div
+          className={cn(
+            "bg-card rounded-2xl shadow-lg ring-1 transition-shadow",
+            props.unattended ? "ring-amber-500/50" : "ring-border focus-within:ring-ring/60",
+          )}
+          data-testid="composer"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) area.current?.focus();
           }}
-        />
-        <Button size="icon" onClick={send} disabled={props.disabled || sending || !text.trim()} title="Send">
-          {sending ? <Loader2 className="animate-spin" /> : <SendHorizontal />}
-        </Button>
+        >
+          {props.banner}
+          <textarea
+            ref={area}
+            className="placeholder:text-muted-foreground block max-h-60 min-h-12 w-full resize-none bg-transparent px-4 pt-3.5 pb-1 leading-relaxed outline-none disabled:cursor-not-allowed"
+            placeholder={props.placeholder}
+            value={text}
+            rows={1}
+            disabled={props.disabled || sending}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                void send();
+              }
+            }}
+          />
+          <div className="flex items-center gap-1 px-2 pb-2">
+            {props.leading}
+            <div className="flex min-w-0 flex-1 items-center justify-end gap-0.5">{props.controls}</div>
+            {props.action || (
+              <button
+                type="button"
+                className="bg-brand text-brand-foreground hover:bg-brand/85 focus-visible:ring-ring/50 disabled:bg-muted disabled:text-muted-foreground grid size-8 shrink-0 place-items-center rounded-full outline-none focus-visible:ring-2"
+                onClick={send}
+                disabled={props.disabled || sending || !text.trim()}
+                title="Send"
+                aria-label="Send"
+              >
+                {sending ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
+              </button>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

@@ -129,16 +129,8 @@ export function GitPanel({ workspaceId }: { workspaceId: string }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-2 border-b px-4 py-1.5">
-        <span className="text-muted-foreground text-xs font-medium uppercase">Git</span>
-        <Button
-          className="ml-auto"
-          size="icon-sm"
-          variant="ghost"
-          title="Refresh"
-          onClick={refresh}
-          disabled={loading}
-        >
+      <div className="flex items-center gap-2 px-3 py-1">
+        <Button className="ml-auto" size="icon-sm" variant="ghost" title="Refresh" onClick={refresh} disabled={loading}>
           <RefreshCw className={cn(loading && "animate-spin")} />
         </Button>
       </div>
@@ -147,9 +139,9 @@ export function GitPanel({ workspaceId }: { workspaceId: string }) {
           {error}
         </p>
       )}
-      <div className="grid min-h-0 flex-1 grid-cols-2 divide-x">
-        <section className="flex min-h-0 flex-col" data-testid="git-status">
-          <div className="min-h-0 flex-1 overflow-auto p-3">
+      <div className="flex min-h-0 flex-1 flex-col">
+        <section className="flex max-h-[60%] min-h-0 shrink-0 flex-col border-b" data-testid="git-status">
+          <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">
             <div className="mb-2 flex items-center gap-2">
               <h3 className="text-xs font-medium">Changes</h3>
               {status && status.length > 0 && (
@@ -209,14 +201,18 @@ export function GitPanel({ workspaceId }: { workspaceId: string }) {
             </p>
           )}
         </section>
-        <section className="min-h-0 overflow-auto p-3" data-testid="git-log">
+        <section className="min-h-0 flex-1 overflow-auto p-3" data-testid="git-log">
           <h3 className="mb-2 text-xs font-medium">History</h3>
           {log === null && !error && <Loading />}
           {log?.length === 0 && <p className="text-muted-foreground text-xs">No commits yet</p>}
           {log?.map((c) => {
             const [subject, ...body] = c.message.trim().split("\n");
             return (
-              <div key={c.full_hash} className="border-b py-1.5 last:border-0" title={body.join("\n").trim() || undefined}>
+              <div
+                key={c.full_hash}
+                className="border-b py-1.5 last:border-0"
+                title={body.join("\n").trim() || undefined}
+              >
                 <div className="truncate text-xs">{subject}</div>
                 <div className="text-muted-foreground flex items-center gap-2 text-[11px]">
                   <span className="font-mono">{c.hash}</span>

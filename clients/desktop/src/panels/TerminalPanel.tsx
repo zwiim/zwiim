@@ -42,11 +42,21 @@ export class InputQueue {
   }
 }
 
-export function TerminalPanel({ workspaceId }: { workspaceId: string }) {
+export function TerminalPanel({
+  workspaceId,
+  leading,
+}: {
+  workspaceId: string;
+  /** Rendered before the terminal tabs (e.g. a collapse toggle). */
+  leading?: React.ReactNode;
+}) {
   const controller = useController();
   const online = useOnline();
   const terminals = useHost((s) => s.terminals);
   const [active, setActive] = useState<string | null>(null);
+  // Only a terminal the user opened or picked takes focus, not one restored
+  // on launch while they may be typing a message.
+  const [focusId, setFocusId] = useState<string | null>(null);
   const [confirmKill, setConfirmKill] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Only this workspace's terminals; others belong to their own workspaces.
@@ -63,7 +73,9 @@ export function TerminalPanel({ workspaceId }: { workspaceId: string }) {
   async function spawn() {
     setError(null);
     try {
-      setActive(await controller.spawnTerminal(workspaceId));
+      const id = await controller.spawnTerminal(workspaceId);
+      setActive(id);
+      setFocusId(id);
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -86,7 +98,12 @@ export function TerminalPanel({ workspaceId }: { workspaceId: string }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-1 overflow-x-auto border-b px-2 py-1" role="tablist" aria-label="Terminals">
+      <div
+        className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b px-2"
+        role="tablist"
+        aria-label="Terminals"
+      >
+        {leading}
         {list.map((t, i) => (
           <div
             key={t.terminal_id}
@@ -100,7 +117,10 @@ export function TerminalPanel({ workspaceId }: { workspaceId: string }) {
               role="tab"
               aria-selected={active === t.terminal_id}
               title={t.alive ? undefined : "This terminal has exited"}
-              onClick={() => setActive(t.terminal_id)}
+              onClick={() => {
+                setActive(t.terminal_id);
+                setFocusId(t.terminal_id);
+              }}
             >
               {t.title || `Terminal ${i + 1}`}
               {!t.alive && " (exited)"}
@@ -131,9 +151,7 @@ export function TerminalPanel({ workspaceId }: { workspaceId: string }) {
           className="bg-destructive/5 flex items-center gap-2 border-b px-3 py-1.5 text-xs"
           data-testid="confirm-kill"
         >
-          <span className="flex-1">
-            Kill {labelOf(confirmKill)}? Anything running in it stops.
-          </span>
+          <span className="flex-1">Kill {labelOf(confirmKill)}? Anything running in it stops.</span>
           <Button size="xs" variant="destructive" disabled={!online} onClick={() => kill(confirmKill)}>
             Kill
           </Button>
@@ -149,6 +167,7 @@ export function TerminalPanel({ workspaceId }: { workspaceId: string }) {
             controller={controller}
             terminalId={active}
             alive={list.find((t) => t.terminal_id === active)?.alive ?? false}
+            autoFocus={focusId === active}
             onError={setError}
           />
         ) : (
@@ -163,17 +182,21 @@ function TerminalView({
   controller,
   terminalId,
   alive,
+  autoFocus,
   onError,
 }: {
   controller: HostController;
   terminalId: string;
   /** An ended terminal stays readable; it takes no input or resizes. */
   alive: boolean;
+  autoFocus: boolean;
   onError(msg: string): void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const aliveRef = useRef(alive);
   aliveRef.current = alive;
+  const focusRef = useRef(autoFocus);
+  focusRef.current = autoFocus;
 
   useEffect(() => {
     const el = host.current!;
@@ -219,6 +242,8 @@ function TerminalView({
       }, 100);
     });
     const observer = new ResizeObserver(() => {
+      // A collapsed panel has no size; fitting to it would shrink the PTY.
+      if (el.clientWidth === 0 || el.clientHeight === 0) return;
       try {
         fit.fit();
       } catch {
@@ -226,7 +251,7 @@ function TerminalView({
       }
     });
     observer.observe(el);
-    term.focus();
+    if (focusRef.current) term.focus();
 
     return () => {
       clearTimeout(resizeTimer);

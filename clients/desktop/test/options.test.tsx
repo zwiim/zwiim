@@ -10,7 +10,7 @@ import {
 } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
 import { rememberAgentChoices } from "@/lib/prefs";
-import { OptionsBar } from "@/panels/OptionsBar";
+import { OptionsBar, UnattendedBanner } from "@/panels/OptionsBar";
 import { newSessionOptions, SessionPanel } from "@/panels/SessionPanel";
 import { FakeTransport, tick } from "./fakes";
 
@@ -43,6 +43,12 @@ const snapshot = (options: SessionOptions, status = "connected"): SessionSnapsho
   options,
 });
 
+/** Opens the mode menu and returns its entry for `name`, if the agent offers it. */
+function modeItem(name: string) {
+  if (!screen.queryByRole("menu")) fireEvent.click(screen.getByRole("button", { name: /^Mode:/ }));
+  return screen.queryByRole("menuitemradio", { name: new RegExp(`^${name}`) });
+}
+
 describe("options bar", () => {
   it("hides what the agent does not offer", () => {
     render(
@@ -54,39 +60,54 @@ describe("options bar", () => {
     );
     expect(screen.queryByLabelText("Effort")).toBeNull();
     expect(screen.getByLabelText("Model")).toBeTruthy();
-    expect(screen.queryByRole("radio", { name: "Unattended" })).toBeNull();
-    expect(screen.getByRole("radio", { name: "Plan" })).toBeTruthy();
+    expect(modeItem("Unattended")).toBeNull();
+    expect(modeItem("Plan")).toBeTruthy();
   });
 
   it("never enables unattended without an explicit confirmation", () => {
     const onChange = vi.fn();
     render(<OptionsBar options={opts()} disabled={false} onChange={onChange} />);
-    fireEvent.click(screen.getByRole("radio", { name: "Unattended" }));
+    fireEvent.click(modeItem("Unattended")!);
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.getByTestId("confirm-unattended")).toBeTruthy();
     fireEvent.click(screen.getByText("Keep asking"));
     expect(screen.queryByTestId("confirm-unattended")).toBeNull();
     expect(onChange).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("radio", { name: "Unattended" }));
+    fireEvent.click(modeItem("Unattended")!);
     fireEvent.click(screen.getByText("Run unattended"));
     expect(onChange).toHaveBeenCalledWith({ mode: "unattended" });
   });
 
   it("makes the unattended state obvious and easy to leave", () => {
     const onChange = vi.fn();
-    render(<OptionsBar options={opts("unattended")} disabled={false} onChange={onChange} />);
+    render(
+      <>
+        <UnattendedBanner options={opts("unattended")} disabled={false} onChange={onChange} />
+        <OptionsBar options={opts("unattended")} disabled={false} onChange={onChange} />
+      </>,
+    );
     expect(screen.getByTestId("unattended-banner").textContent).toContain("without asking");
+    expect(screen.getByRole("button", { name: "Mode: Unattended" })).toBeTruthy();
     fireEvent.click(screen.getByText("Ask first again"));
     expect(onChange).toHaveBeenCalledWith({ mode: "normal" });
+  });
+
+  it("closes the mode menu with Escape without changing anything", () => {
+    const onChange = vi.fn();
+    render(<OptionsBar options={opts()} disabled={false} onChange={onChange} />);
+    expect(modeItem("Ask")?.getAttribute("aria-checked")).toBe("true");
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it("switches plan on and off directly", () => {
     const onChange = vi.fn();
     const { rerender } = render(<OptionsBar options={opts()} disabled={false} onChange={onChange} />);
-    fireEvent.click(screen.getByRole("radio", { name: "Plan" }));
+    fireEvent.click(modeItem("Plan")!);
     expect(onChange).toHaveBeenLastCalledWith({ mode: "plan" });
     rerender(<OptionsBar options={opts("plan")} disabled={false} onChange={onChange} />);
-    fireEvent.click(screen.getByRole("radio", { name: "Ask" }));
+    fireEvent.click(modeItem("Ask")!);
     expect(onChange).toHaveBeenLastCalledWith({ mode: "normal" });
   });
 });
@@ -121,7 +142,7 @@ describe("new session options", () => {
     );
     await tick();
     expect((screen.getByLabelText("Model") as HTMLSelectElement).value).toBe("opus");
-    fireEvent.click(screen.getByRole("radio", { name: "Plan" }));
+    fireEvent.click(modeItem("Plan")!);
     const box = screen.getByPlaceholderText("Describe the task…");
     fireEvent.change(box, { target: { value: "go" } });
     fireEvent.keyDown(box, { key: "Enter" });
@@ -153,7 +174,11 @@ describe("open session options", () => {
     const { controller, frame } = await open(t);
     await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot(opts(), "prompting") });
     const bar = screen.getByTestId("options-bar");
+    // The agent's options live in the composer, next to send/stop.
+    expect(screen.getByTestId("composer").contains(bar)).toBe(true);
+    expect(within(screen.getByTestId("composer")).getByLabelText("Stop agent")).toBeTruthy();
     expect((within(bar).getByLabelText("Model") as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /^Mode:/ }) as HTMLButtonElement).disabled).toBe(true);
     expect(bar.textContent).toContain("between turns");
     await frame({ type: "event", event: { session_id: "s1", seq: 2, type: "agent.turn_complete", payload: { stop_reason: "end_turn" } } });
     await frame({ type: "event", event: { session_id: "s1", seq: 3, type: "agent.status", payload: { status: "connected" } } });

@@ -8,7 +8,7 @@ import {
   type WorkspaceInfo,
 } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
-import { DiffPanel } from "@/panels/DiffPanel";
+import { DiffPanel, DiffView } from "@/panels/DiffPanel";
 import { SessionPanel } from "@/panels/SessionPanel";
 import { busyMessage, Sidebar, type SidebarProps } from "@/panels/Sidebar";
 import { FakeTransport, tick } from "./fakes";
@@ -106,8 +106,10 @@ describe("workspace tree", () => {
     expect(wt).toContain("zwiim/a1b2c3d4");
     expect(wt).toContain("base main@3f9e1a2");
     expect(wt).toContain("1 working");
-    expect(wt).toContain("claude_code · working");
-    expect(wt).toContain("codex · idle");
+    // Each session says whether its agent is working; the agent is in the tooltip.
+    const rows = [...screen.getByTestId("workspace-a1b2c3d4").querySelectorAll("button[title]")].map((b) => b.getAttribute("title"));
+    expect(rows).toContain("Claude Code · working");
+    expect(rows).toContain("Codex · idle");
     // Nested under the root, not beside it.
     expect(screen.getByTestId("workspace-root").contains(screen.getByTestId("workspace-a1b2c3d4"))).toBe(true);
     const gone = screen.getByTestId("workspace-gone0000");
@@ -205,7 +207,8 @@ describe("diff", () => {
       ...(p.file === "src/a.rs" ? { patch: "@@ -1 +1,2 @@\n-old\n+new\n+more" } : {}),
       ...(p.file === "logo.png" ? { patch: null } : {}),
     });
-    await mount(t, () => <DiffPanel workspace={worktree("a1b2c3d4")} />);
+    const onOpen = vi.fn();
+    await mount(t, () => <DiffPanel workspace={worktree("a1b2c3d4")} selected={null} onOpen={onOpen} />);
     expect(screen.getByText("Against main@3f9e1a2")).toBeTruthy();
     const files = screen.getByTestId("diff-files").textContent!;
     expect(files).toContain("src/a.rs");
@@ -213,14 +216,18 @@ describe("diff", () => {
     expect(files).toContain("−1");
     expect(files).toContain("untracked");
     expect(files).toContain("binary");
-
+    // The list only lists: a file's patch opens in its own tab.
     fireEvent.click(screen.getByText("src/a.rs"));
-    await tick();
+    expect(onOpen).toHaveBeenCalledWith("src/a.rs");
+    expect(screen.queryByTestId("diff-patch")).toBeNull();
+    cleanup();
+
+    await mount(t, () => <DiffView workspace={worktree("a1b2c3d4")} path="src/a.rs" />);
     const patch = screen.getByTestId("diff-patch").textContent!;
     expect(patch).toContain("-old");
     expect(patch).toContain("+more");
-    fireEvent.click(screen.getByText("logo.png"));
-    await tick();
+    cleanup();
+    await mount(t, () => <DiffView workspace={worktree("a1b2c3d4")} path="logo.png" />);
     expect(screen.getByTestId("diff-patch").textContent).toContain("Binary file — content not shown.");
     expect(t.calls.filter((c) => c.op === "git.diff").map((c) => c.params)).toEqual([
       { workspace_id: "a1b2c3d4" },
@@ -232,7 +239,7 @@ describe("diff", () => {
   it("labels the root's diff as uncommitted changes", async () => {
     const t = new FakeTransport();
     t.handlers["git.diff"] = () => ({ base_commit: BASE, truncated: false, files: [] });
-    await mount(t, () => <DiffPanel workspace={root} />);
+    await mount(t, () => <DiffPanel workspace={root} selected={null} onOpen={() => {}} />);
     expect(screen.getByText("Uncommitted changes against HEAD")).toBeTruthy();
     expect(screen.getByText("No changes")).toBeTruthy();
   });

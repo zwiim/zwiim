@@ -133,12 +133,12 @@ describe("transcript", () => {
     t.handlers["session.cancel"] = () => ({});
     const { controller, frame } = await openSession(t);
     await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
-    fireEvent.click(screen.getByText("Cancel"));
+    fireEvent.click(screen.getByLabelText("Stop agent"));
     expect(screen.getByTestId("confirm-cancel")).toBeTruthy();
     fireEvent.click(screen.getByText("Keep going"));
     await tick();
     expect(t.calls.some((c) => c.op === "session.cancel")).toBe(false);
-    fireEvent.click(screen.getByText("Cancel"));
+    fireEvent.click(screen.getByLabelText("Stop agent"));
     fireEvent.click(screen.getByText("Stop"));
     await tick();
     expect(t.calls.filter((c) => c.op === "session.cancel")).toHaveLength(1);

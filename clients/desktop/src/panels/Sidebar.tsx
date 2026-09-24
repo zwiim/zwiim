@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FolderGit2, FolderPlus, GitBranch, GitBranchPlus, MessageSquare, Plus, Trash2 } from "lucide-react";
+import { FolderGit2, GitBranch, GitBranchPlus, Plus, Trash2 } from "lucide-react";
 import {
   busyDetails,
   dirtyDetails,
@@ -32,6 +32,9 @@ export function baseLabel(w: WorkspaceInfo): string | null {
   if (!w.base_commit) return null;
   return `base ${w.base_branch ?? "detached"}@${w.base_commit.slice(0, 7)}`;
 }
+
+/** Row actions stay out of the way until the row is hovered or focused. */
+const HOVER_ACTION = "opacity-0 group-hover:opacity-100 focus-visible:opacity-100";
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
@@ -69,15 +72,10 @@ export function Sidebar(props: SidebarProps) {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
-      <div className="flex items-center justify-between px-1">
-        <span className="text-muted-foreground text-xs font-medium tracking-wide uppercase">Workspaces</span>
-        <Button size="icon-sm" variant="ghost" title="Add workspace" onClick={addWorkspace} disabled={adding || !online}>
-          <FolderPlus />
-        </Button>
-      </div>
-      {error && <p className="text-destructive px-1 text-xs">{error}</p>}
-      <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto" data-testid="workspace-tree">
+    <div className="flex min-h-0 flex-1 flex-col gap-1.5">
+      <span className="text-muted-foreground px-2 text-[11px] font-medium tracking-wider uppercase">Workspaces</span>
+      {error && <p className="text-destructive px-2 text-xs">{error}</p>}
+      <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-1" data-testid="workspace-tree">
         {!loaded && <p className="text-muted-foreground px-2 text-xs">Loading…</p>}
         {loaded && tree.length === 0 && (
           <p className="text-muted-foreground px-2 text-xs">No workspaces yet. Add a folder to begin.</p>
@@ -85,6 +83,14 @@ export function Sidebar(props: SidebarProps) {
         {tree.map((node) => (
           <WorkspaceRow key={node.workspace.workspace_id} node={node} {...props} onError={setError} />
         ))}
+        <button
+          className="text-muted-foreground hover:text-foreground hover:bg-sidebar-accent mt-2 flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] disabled:opacity-50"
+          title="Add workspace"
+          onClick={addWorkspace}
+          disabled={adding || !online}
+        >
+          <Plus className="size-4" /> Add workspace
+        </button>
       </div>
     </div>
   );
@@ -116,44 +122,52 @@ function WorkspaceRow(props: SidebarProps & { node: WorkspaceNode; onError(messa
     <div data-testid={`workspace-${w.workspace_id}`}>
       <div
         className={cn(
-          "group hover:bg-sidebar-accent flex items-center gap-1 rounded-md pr-1",
-          selected && "bg-sidebar-accent font-medium",
+          "group hover:bg-sidebar-accent flex items-center gap-0.5 rounded-md pr-1",
+          selected && props.sessionId === null && "bg-sidebar-accent",
         )}
       >
         <button
-          className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"
+          className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-[13px]"
           onClick={() => props.onSelectWorkspace(w.workspace_id)}
         >
           {isRoot ? (
             <FolderGit2 className="text-muted-foreground size-4 shrink-0" />
           ) : (
-            <GitBranch className="text-muted-foreground size-4 shrink-0" />
+            <GitBranch className="text-muted-foreground size-3.5 shrink-0" />
           )}
           <span className="flex min-w-0 flex-col">
-            <span className={cn("truncate", w.removed && "text-muted-foreground line-through")}>
+            <span className={cn("truncate", isRoot && "font-medium", w.removed && "text-muted-foreground line-through")}>
               {isRoot ? (w.alias ?? w.name) : worktreeLabel(w)}
             </span>
             {!isRoot && baseLabel(w) && (
               <span className="text-muted-foreground truncate font-mono text-[10px] font-normal">{baseLabel(w)}</span>
             )}
           </span>
-          <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[10px] font-normal">
-            {isRoot && w.branch && <span className="text-muted-foreground font-mono">{w.branch}</span>}
-            {w.removed && <span className="text-muted-foreground">removed</span>}
+          <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[11px] font-normal">
             {working > 0 && (
-              <span className="rounded-full bg-amber-500/15 px-1.5 text-amber-700" title="Agents working">
+              <span className="text-amber-600 dark:text-amber-400" title="Agents working">
                 {working} working
               </span>
             )}
+            {isRoot && w.branch && <span className="text-muted-foreground font-mono">{w.branch}</span>}
+            {w.removed && <span className="text-muted-foreground">removed</span>}
           </span>
         </button>
         {isRoot && (
-          <Button size="icon-sm" variant="ghost" title="New worktree" onClick={newWorktree} disabled={creating || !online}>
+          <Button
+            className={HOVER_ACTION}
+            size="icon-sm"
+            variant="ghost"
+            title="New worktree"
+            onClick={newWorktree}
+            disabled={creating || !online}
+          >
             <GitBranchPlus />
           </Button>
         )}
         {!isRoot && !w.removed && (
           <Button
+            className={HOVER_ACTION}
             size="icon-sm"
             variant="ghost"
             title="Remove worktree"
@@ -165,16 +179,16 @@ function WorkspaceRow(props: SidebarProps & { node: WorkspaceNode; onError(messa
         )}
       </div>
       {removing && <RemoveWorktree workspace={w} onClose={() => setRemoving(false)} />}
-      <div className="border-sidebar-border ml-4 flex flex-col gap-0.5 border-l py-0.5 pl-2">
+      <div className="border-sidebar-border ml-[15px] flex flex-col gap-px border-l py-0.5 pl-1.5">
         {selected && !w.removed && (
           <button
             className={cn(
-              "hover:bg-sidebar-accent text-muted-foreground flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs",
-              props.sessionId === null && "bg-sidebar-accent text-foreground",
+              "hover:bg-sidebar-accent text-muted-foreground hover:text-foreground flex items-center gap-2 rounded-md px-2 py-1 text-left text-[13px]",
+              props.sessionId === null && "text-foreground",
             )}
             onClick={() => props.onSelectSession(w.workspace_id, null)}
           >
-            <Plus className="size-3.5" /> New session
+            <Plus className="size-3.5 shrink-0" /> New session
           </button>
         )}
         {sessions?.map((s) => (
@@ -197,19 +211,31 @@ function SessionRow(props: { session: SessionSummary; selected: boolean; onSelec
   const s = props.session;
   const view = useHost((st) => st.sessions[s.session_id]);
   const working = isSessionWorking(s, view);
+  const agent = useHost((st) => st.agents?.find((a) => a.agent === s.agent)?.name ?? s.agent);
   return (
     <button
       className={cn(
-        "hover:bg-sidebar-accent flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs",
-        props.selected && "bg-sidebar-accent font-medium",
+        "hover:bg-sidebar-accent flex items-center gap-2 rounded-md px-2 py-1 text-left text-[13px]",
+        props.selected ? "bg-sidebar-accent text-foreground" : "text-sidebar-foreground/85",
       )}
       onClick={props.onSelect}
-      title={`${s.agent ?? "agent"} · ${s.status}`}
+      title={agent ? `${agent} · ${working ? "working" : "idle"}` : undefined}
+      aria-current={props.selected || undefined}
     >
-      <MessageSquare className="text-muted-foreground size-3.5 shrink-0" />
+      <span
+        className={cn(
+          "size-1.5 shrink-0 rounded-full",
+          working ? "animate-pulse bg-amber-500" : "bg-muted-foreground/50",
+        )}
+      />
       <span className="truncate">{s.title || "Untitled session"}</span>
-      <span className="text-muted-foreground ml-auto shrink-0 text-[10px]">
-        {s.agent ?? "agent"} · {working ? "working" : "idle"}
+      <span
+        className={cn(
+          "ml-auto shrink-0 text-[11px]",
+          working ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground",
+        )}
+      >
+        {working ? "working" : "idle"}
       </span>
     </button>
   );
@@ -251,7 +277,7 @@ function RemoveWorktree({ workspace, onClose }: { workspace: WorkspaceInfo; onCl
   }
 
   return (
-    <div className="bg-card my-1 ml-2 flex flex-col gap-2 rounded-md border p-2 text-xs" role="alertdialog">
+    <div className="bg-card my-1 ml-2 flex flex-col gap-2 rounded-lg p-2.5 text-xs shadow-sm" role="alertdialog">
       {phase.kind === "confirm" && (
         <p>
           Remove worktree <span className="font-mono">{branch}</span>? Branch{" "}

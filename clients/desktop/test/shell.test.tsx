@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HostClient, HostController, type WorkspaceInfo } from "@zwiim/sdk";
 import { Workbench } from "@/App";
@@ -121,19 +121,75 @@ describe("workbench", () => {
     return t;
   }
 
-  it("keeps panels mounted across tabs", async () => {
+  it("shows the session, workspace views and terminal side by side", async () => {
     const t = workbenchHost();
     const c = await mount(t, <Workbench bridge={bridge()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Files" }));
-    await tick();
+    const panel = screen.getByTestId("workspace-panel");
+    expect(screen.getByPlaceholderText("Describe the task…")).toBeTruthy();
+    expect(panel.querySelector('[aria-label="Terminals"]')).toBeTruthy();
+    expect(screen.getByTestId("file-tree")).toBeTruthy();
+    c.dispose();
+  });
+
+  it("keeps panels mounted across tabs", async () => {
+    const t = workbenchHost();
+    t.handlers["git.status"] = () => [];
+    t.handlers["git.log"] = () => ({ entries: [] });
+    const c = await mount(t, <Workbench bridge={bridge()} />);
     fireEvent.click(screen.getByText("a.txt"));
     await tick();
     expect(screen.getByText("hello from a")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Session" }));
+    fireEvent.click(screen.getByRole("button", { name: "Git" }));
     await tick();
     fireEvent.click(screen.getByRole("button", { name: "Files" }));
     await tick();
     expect(screen.getByText("hello from a")).toBeTruthy();
+    expect(t.calls.filter((x) => x.op === "workspace.tree").length).toBe(1);
+    c.dispose();
+  });
+
+  it("opens a changed file as a tab beside the session and closes it back to the session", async () => {
+    const t = workbenchHost();
+    t.handlers["git.diff"] = (p) => ({
+      base_commit: null,
+      truncated: false,
+      files: [{ path: "src/a.txt", change: "modified", additions: 1, deletions: 0, binary: false, too_large: false, untracked: false }],
+      ...(p.file ? { patch: "@@ -1 +1 @@\n-old\n+new" } : {}),
+    });
+    const c = await mount(t, <Workbench bridge={bridge()} />);
+    expect(screen.queryByRole("navigation", { name: "Open tabs" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Diff" }));
+    await tick();
+    fireEvent.click(screen.getByText("src/a.txt"));
+    await tick();
+    const tabs = screen.getByRole("navigation", { name: "Open tabs" });
+    expect(tabs.textContent).toContain("New session");
+    expect(tabs.textContent).toContain("a.txt");
+    expect(screen.getByTestId("diff-patch").textContent).toContain("+new");
+    expect(screen.getByTestId("diff-view").parentElement!.getAttribute("data-active")).toBe("true");
+    // Opening it again reuses the tab.
+    fireEvent.click(within(screen.getByTestId("diff-files")).getByText("src/a.txt"));
+    expect(screen.getAllByLabelText("Close a.txt")).toHaveLength(1);
+    fireEvent.click(screen.getByLabelText("Close a.txt"));
+    expect(screen.queryByTestId("diff-view")).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Open tabs" })).toBeNull();
+    c.dispose();
+  });
+
+  it("collapses the workspace panel without losing its state, and remembers it", async () => {
+    const t = workbenchHost();
+    const c = await mount(t, <Workbench bridge={bridge()} />);
+    fireEvent.click(screen.getByText("a.txt"));
+    await tick();
+    fireEvent.click(screen.getByTitle("Hide panel"));
+    expect(screen.getByTestId("workspace-panel").getAttribute("aria-hidden")).toBe("true");
+    expect(JSON.parse(window.localStorage.getItem("zwiim.desktop.panel")!).collapsed).toBe(true);
+    fireEvent.click(screen.getByTitle("Show panel"));
+    expect(screen.getByText("hello from a")).toBeTruthy();
+    fireEvent.click(screen.getByTitle("Hide terminal"));
+    expect(JSON.parse(window.localStorage.getItem("zwiim.desktop.panel")!).terminalCollapsed).toBe(true);
+    expect(screen.getByTitle("Show terminal")).toBeTruthy();
+    fireEvent.click(screen.getByTitle("Show terminal"));
     expect(t.calls.filter((x) => x.op === "workspace.tree").length).toBe(1);
     c.dispose();
   });

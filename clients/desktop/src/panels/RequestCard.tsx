@@ -36,7 +36,10 @@ export function RequestCard({
   }
 
   return (
-    <div className="bg-card border-border flex flex-col gap-3 rounded-lg border p-3 shadow-sm" data-testid="request-card">
+    <div
+      className="bg-card flex flex-col gap-3 rounded-xl border-l-2 border-l-amber-500 p-4 shadow-sm"
+      data-testid="request-card"
+    >
       {request.kind === "permission" && (
         <>
           <p className="font-medium">{request.plan_markdown ? "The agent has a plan" : "Permission requested"}</p>
@@ -218,7 +221,7 @@ function PlanForm({
 
 function PlanText({ text }: { text: string }) {
   return (
-    <div className="bg-muted max-h-96 overflow-auto rounded-md p-3" data-testid="plan">
+    <div className="bg-background/60 max-h-96 overflow-auto rounded-lg p-3" data-testid="plan">
       <Markdown text={text} />
     </div>
   );
@@ -229,13 +232,13 @@ function ToolDetails({ tool }: { tool: PermissionTool }) {
   return (
     <div className="flex flex-col gap-2" data-testid="permission-tool">
       {tool.command && (
-        <pre className="bg-muted overflow-x-auto rounded-md p-2 font-mono text-xs whitespace-pre-wrap">
+        <pre className="bg-code overflow-x-auto rounded-lg px-3 py-2 font-mono text-xs whitespace-pre-wrap">
           $ {tool.command}
         </pre>
       )}
       {tool.diffs.map((d, i) => (
-        <div key={i} className="overflow-hidden rounded-md border text-xs">
-          <div className="bg-muted border-b px-2 py-1 font-mono">{d.path ?? "file"}</div>
+        <div key={i} className="bg-code overflow-hidden rounded-lg text-xs">
+          <div className="text-muted-foreground border-b px-3 py-1.5 font-mono">{d.path ?? "file"}</div>
           <pre className="max-h-60 overflow-auto font-mono leading-5">
             {(d.old_text ?? "").split("\n").filter((l, j, a) => l !== "" || j < a.length - 1).map((l, j) => (
               <div key={`o${j}`} className="bg-red-500/10 px-2 text-red-800 dark:text-red-300">

@@ -61,6 +61,37 @@ export function rememberSidebar(layout: SidebarLayout): void {
   write("sidebar", layout);
 }
 
+export const PANEL_MIN = 300;
+export const PANEL_MAX = 720;
+const PANEL_DEFAULT = 400;
+export const TERMINAL_MIN = 0.2;
+export const TERMINAL_MAX = 0.8;
+const TERMINAL_DEFAULT = 0.4;
+
+/** The right-hand panel: its width, and the terminal's share of its height. */
+export interface PanelLayout {
+  width: number;
+  collapsed: boolean;
+  terminal: number;
+  terminalCollapsed: boolean;
+}
+
+export function panelLayout(): PanelLayout {
+  const v = read<Partial<PanelLayout>>("panel", {});
+  const width = typeof v.width === "number" ? v.width : PANEL_DEFAULT;
+  const terminal = typeof v.terminal === "number" ? v.terminal : TERMINAL_DEFAULT;
+  return {
+    width: Math.min(PANEL_MAX, Math.max(PANEL_MIN, width)),
+    collapsed: v.collapsed === true,
+    terminal: Math.min(TERMINAL_MAX, Math.max(TERMINAL_MIN, terminal)),
+    terminalCollapsed: v.terminalCollapsed === true,
+  };
+}
+
+export function rememberPanel(layout: PanelLayout): void {
+  write("panel", layout);
+}
+
 /** Model and effort last chosen for an agent; a new session starts from them if still offered. */
 export interface AgentChoices {
   model: string | null;

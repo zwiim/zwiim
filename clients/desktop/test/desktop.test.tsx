@@ -238,7 +238,7 @@ describe("SessionPanel", () => {
     expect(transcript.textContent).toContain("earlier answer");
     expect(transcript.textContent).toContain("fix the bug");
     expect(transcript.textContent).toContain("Working on it");
-    expect(screen.getByText("Cancel")).toBeTruthy();
+    expect(screen.getByLabelText("Stop agent")).toBeTruthy();
 
     fireEvent.click(screen.getByText("Allow"));
     await tick();
