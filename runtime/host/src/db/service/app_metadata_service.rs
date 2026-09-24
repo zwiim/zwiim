@@ -32,6 +32,36 @@ pub async fn upsert_value<C: ConnectionTrait>(
     Ok(())
 }
 
+/// Insert `key = value` only if `key` is not already present; an existing value
+/// is left untouched. Lets concurrent first-time initializers race safely: the
+/// first insert wins and every caller then reads back the same value.
+pub async fn insert_if_absent<C: ConnectionTrait>(
+    conn: &C,
+    key: &str,
+    value: &str,
+) -> Result<(), DbError> {
+    let now = Utc::now();
+
+    app_metadata::Entity::insert(app_metadata::ActiveModel {
+        id: NotSet,
+        key: Set(key.to_string()),
+        value: Set(value.to_string()),
+        created_at: Set(now),
+        updated_at: Set(now),
+        deleted_at: NotSet,
+    })
+    .on_conflict(
+        OnConflict::column(app_metadata::Column::Key)
+            .do_nothing()
+            .to_owned(),
+    )
+    .do_nothing()
+    .exec(conn)
+    .await?;
+
+    Ok(())
+}
+
 pub async fn get_value(conn: &DatabaseConnection, key: &str) -> Result<Option<String>, DbError> {
     get_value_conn(conn, key).await
 }

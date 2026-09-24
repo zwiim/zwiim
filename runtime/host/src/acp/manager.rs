@@ -2295,6 +2295,7 @@ impl ConnectionManager {
                         deleted_at: Set(None),
                         pinned_at: Set(None),
                         origin_cwd: Set(None),
+                        session_id: NotSet,
                     };
                     let inserted = sibling.insert(txn).await?;
                     Ok(inserted.id)
@@ -3758,6 +3759,28 @@ impl ConnectionManager {
             }
         }
         None
+    }
+
+    /// How many live connections belong to the folder `folder_id` — either
+    /// bound to it or running with a working directory inside any of `dirs`
+    /// (the folder's path spellings). Each connection counts once. Feeds the
+    /// workspace removal guard: a worktree with a running agent is never
+    /// removed out from under it.
+    pub async fn count_live_in_folder(&self, folder_id: i32, dirs: &[&std::path::Path]) -> usize {
+        let connections = self.connections.lock().await;
+        let mut live = 0;
+        for conn in connections.values() {
+            let state = conn.state.read().await;
+            let in_folder = state.folder_id == Some(folder_id)
+                || state
+                    .working_dir
+                    .as_deref()
+                    .is_some_and(|wd| dirs.iter().any(|dir| wd.starts_with(dir)));
+            if in_folder {
+                live += 1;
+            }
+        }
+        live
     }
 }
 
@@ -7380,6 +7403,27 @@ mod tests {
         assert_eq!(sibling.status, "pending_review");
         assert_eq!(sibling.folder_id, folder_id);
         assert_eq!(sibling.git_branch.as_deref(), Some("feature/x"));
+
+        // Zwiim session identity: the continuing row keeps its session_id; the
+        // preserved-history sibling is a new row and so a new session.
+        use crate::db::entities::conversation as conv_entity;
+        use sea_orm::EntityTrait;
+        let current_sid = conv_entity::Entity::find_by_id(pre.id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap()
+            .session_id;
+        let sibling_sid = conv_entity::Entity::find_by_id(sibling_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap()
+            .session_id;
+        assert!(pre.session_id.is_some());
+        assert_eq!(current_sid, pre.session_id, "forked row keeps its session_id");
+        assert!(sibling_sid.is_some());
+        assert_ne!(sibling_sid, pre.session_id, "sibling gets a new session_id");
     }
 
     #[tokio::test]
@@ -8040,11 +8084,13 @@ mod tests {
                     id: "default".into(),
                     name: "Default".into(),
                     description: None,
+                    kind: None,
                 },
                 SessionModeInfo {
                     id: "yolo".into(),
                     name: "YOLO".into(),
                     description: None,
+                    kind: None,
                 },
             ],
         }

@@ -72,6 +72,13 @@ pub struct Model {
     /// Gemini/Cline/OpenClaw stale-external-id fallback matches on
     /// `origin_cwd ?? folder.path`. Always NULL for ordinary conversations.
     pub origin_cwd: Option<String>,
+    /// Zwiim-owned opaque, immutable session identity, bound 1:1 to this row:
+    /// minted once at insert (see `before_save`), kept across ACP reconnects,
+    /// host restarts, `external_id`/model changes, reparenting and
+    /// soft-delete/restore. A split/fork's newly inserted row gets its own.
+    /// NULL for Delegate/Loop rows, which are internal and never client-facing.
+    #[sea_orm(unique)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -90,4 +97,21 @@ impl Related<super::folder::Entity> for Entity {
     }
 }
 
-impl ActiveModelBehavior for ActiveModel {}
+#[async_trait::async_trait]
+impl ActiveModelBehavior for ActiveModel {
+    async fn before_save<C>(mut self, _db: &C, insert: bool) -> Result<Self, DbErr>
+    where
+        C: ConnectionTrait,
+    {
+        // A new client-facing row gets a new session_id. `kind` is written once
+        // at insert, so this is the only point the decision is made.
+        if insert && self.session_id.is_not_set() {
+            let client_facing = matches!(
+                self.kind.try_as_ref(),
+                Some(ConversationKind::Regular | ConversationKind::Chat)
+            );
+            self.session_id = sea_orm::ActiveValue::Set(client_facing.then(|| uuid::Uuid::new_v4().to_string()));
+        }
+        Ok(self)
+    }
+}

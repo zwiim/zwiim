@@ -1,0 +1,266 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { HostController } from "../src/client/controller";
+import { HostClient } from "../src/client/host-client";
+import { initialHostState, reduceHost, type HostState } from "../src/state/store";
+import { selectWorkspaceTree } from "../src/state/workspaces";
+import type {
+  HostFeedEvent,
+  HostSnapshot,
+  SessionSummary,
+  TerminalInfo,
+  WorkspaceInfo,
+} from "../src/types/protocol";
+import { FakeTransport, flush } from "./fakes";
+
+const ws = (id: string, extra: Partial<WorkspaceInfo> = {}): WorkspaceInfo => ({
+  workspace_id: id,
+  name: id,
+  alias: null,
+  kind: id === "root" ? "root" : "worktree",
+  parent_workspace_id: id === "root" ? null : "root",
+  branch: id === "root" ? "main" : `zwiim/${id}`,
+  base_branch: id === "root" ? null : "main",
+  base_commit: null,
+  removed: false,
+  ...extra,
+});
+const session = (id: string, workspace_id: string, created: number, extra: Partial<SessionSummary> = {}): SessionSummary => ({
+  session_id: id,
+  workspace_id,
+  title: null,
+  agent: "claude_code",
+  status: "pending_review",
+  live: false,
+  created_at: `2026-09-24T00:00:0${created}Z`,
+  updated_at: `2026-09-24T00:00:0${created}Z`,
+  ...extra,
+});
+const term = (id: string, title = "zsh", workspace_id: string | null = null): TerminalInfo => ({ terminal_id: id, title, workspace_id });
+
+const snap = (parts: Partial<HostSnapshot> = {}): HostSnapshot => ({
+  epoch: "e1",
+  seq: 0,
+  workspaces: [],
+  sessions: [],
+  terminals: [],
+  ...parts,
+});
+
+let seq = 0;
+function apply(state: HostState, ...events: Omit<HostFeedEvent, "seq">[]): HostState {
+  return events.reduce(
+    (s, e) => reduceHost(s, { type: "host_event", event: { ...e, seq: ++seq } as HostFeedEvent }),
+    state,
+  );
+}
+const fromSnapshot = (parts: Partial<HostSnapshot>, base = initialHostState()) =>
+  reduceHost(base, { type: "host_snapshot", snapshot: snap(parts) });
+const ids = (list: { session_id: string }[] | undefined) => list?.map((s) => s.session_id);
+
+describe("host feed reducers", () => {
+  it("a snapshot replaces workspaces, sessions and terminals", () => {
+    let s = fromSnapshot({
+      workspaces: [ws("root"), ws("a")],
+      sessions: [session("s2", "root", 2), session("s1", "root", 1), session("s3", "a", 3)],
+      terminals: [term("t1"), term("t2")],
+    });
+    s = reduceHost(s, { type: "terminal", terminal_id: "t1", patch: { attached: true } });
+    s = reduceHost(s, { type: "terminal", terminal_id: "t2", patch: { attached: true } });
+    s = reduceHost(s, { type: "session_frame", session_id: "s1", frame: { type: "attaching" } });
+    const diffBefore = s.diffRevision.root;
+
+    s = fromSnapshot(
+      {
+        workspaces: [ws("root"), ws("b")],
+        sessions: [session("s1", "root", 1, { title: "renamed" })],
+        terminals: [term("t1", "bash"), term("t3")],
+      },
+      s,
+    );
+    expect(s.workspaces?.map((w) => w.workspace_id)).toEqual(["root", "b"]);
+    // Every listed workspace has a session list, empty or not; unlisted ones are gone.
+    expect(s.sessionsByWorkspace).toEqual({ root: [session("s1", "root", 1, { title: "renamed" })], b: [] });
+    expect(s.terminals).toEqual({
+      t1: { terminal_id: "t1", title: "bash", workspace_id: null, alive: true, attached: true },
+      t2: { terminal_id: "t2", title: "zsh", workspace_id: null, alive: false, attached: true },
+      t3: { terminal_id: "t3", title: "zsh", workspace_id: null, alive: true, attached: false },
+    });
+    // Open-session views are UI state, not part of the feed.
+    expect(s.sessions.s1?.attach).toBe("attaching");
+    // Anything missed while away counts as a possible diff change.
+    expect(s.diffRevision.root).toBe(diffBefore! + 1);
+    expect(s.diffRevision.b).toBe(1);
+  });
+
+  it("workspace.changed upserts; a new workspace starts with no sessions", () => {
+    let s = fromSnapshot({ workspaces: [ws("root")], sessions: [session("s1", "root", 1)] });
+    s = apply(
+      s,
+      { type: "workspace.changed", payload: { workspace: ws("root", { branch: "dev" }) } },
+      { type: "workspace.changed", payload: { workspace: ws("a") } },
+    );
+    expect(s.workspaces?.map((w) => [w.workspace_id, w.branch])).toEqual([
+      ["root", "dev"],
+      ["a", "zwiim/a"],
+    ]);
+    expect(s.sessionsByWorkspace).toEqual({ root: [session("s1", "root", 1)], a: [] });
+    s = apply(s, { type: "workspace.changed", payload: { workspace: ws("a", { removed: true, branch: null }) } });
+    expect(s.workspaces?.[1]).toMatchObject({ removed: true, branch: null });
+  });
+
+  it("workspace.removed drops the workspace and its sessions", () => {
+    let s = fromSnapshot({ workspaces: [ws("root"), ws("a")], sessions: [session("s1", "a", 1)] });
+    s = apply(s, { type: "workspace.removed", payload: { workspace_id: "a" } });
+    expect(s.workspaces?.map((w) => w.workspace_id)).toEqual(["root"]);
+    expect(s.sessionsByWorkspace).toEqual({ root: [] });
+  });
+
+  it("workspace.diff_changed invalidates only that workspace's diff", () => {
+    const s0 = fromSnapshot({ workspaces: [ws("root"), ws("a")] });
+    const s = apply(s0, { type: "workspace.diff_changed", payload: { workspace_id: "a" } });
+    expect(s.diffRevision).toEqual({ root: s0.diffRevision.root, a: s0.diffRevision.a! + 1 });
+    // Invalidation only: the tree is untouched.
+    expect([s.workspaces, s.sessionsByWorkspace]).toEqual([s0.workspaces, s0.sessionsByWorkspace]);
+    expect(s.workspaces).toBe(s0.workspaces);
+  });
+
+  it("session.changed inserts newest first, updates in place, and moves between workspaces", () => {
+    let s = fromSnapshot({
+      workspaces: [ws("root"), ws("a")],
+      sessions: [session("s3", "root", 3), session("s1", "root", 1), session("s9", "a", 9)],
+    });
+    s = apply(
+      s,
+      { type: "session.changed", payload: { session: session("s2", "root", 2) } },
+      { type: "session.changed", payload: { session: session("s0", "root", 0) } },
+      { type: "session.changed", payload: { session: session("s4", "root", 4, { live: true, status: "in_progress" }) } },
+    );
+    expect(ids(s.sessionsByWorkspace.root)).toEqual(["s4", "s3", "s2", "s1", "s0"]);
+    expect(selectWorkspaceTree(s)[0]!.working).toBe(1);
+
+    s = apply(s, { type: "session.changed", payload: { session: session("s4", "root", 4, { title: "t", status: "pending_review" }) } });
+    expect(s.sessionsByWorkspace.root?.[0]).toMatchObject({ session_id: "s4", title: "t", status: "pending_review" });
+    expect(selectWorkspaceTree(s)[0]!.working).toBe(0);
+
+    // A legacy reparent: the worktree's session now belongs to the root.
+    s = apply(s, { type: "session.changed", payload: { session: session("s9", "root", 9) } });
+    expect(ids(s.sessionsByWorkspace.root)).toEqual(["s9", "s4", "s3", "s2", "s1", "s0"]);
+    expect(s.sessionsByWorkspace.a).toEqual([]);
+  });
+
+  it("session.removed removes the session", () => {
+    let s = fromSnapshot({ workspaces: [ws("root")], sessions: [session("s2", "root", 2), session("s1", "root", 1)] });
+    s = apply(s, { type: "session.removed", payload: { session_id: "s2", workspace_id: "root" } });
+    expect(ids(s.sessionsByWorkspace.root)).toEqual(["s1"]);
+  });
+
+  it("terminal.changed adds or retitles; terminal.removed ends or drops", () => {
+    let s = fromSnapshot({ terminals: [term("t1")] });
+    s = reduceHost(s, { type: "terminal", terminal_id: "t1", patch: { attached: true } });
+    s = apply(
+      s,
+      { type: "terminal.changed", payload: { terminal: term("t2") } },
+      { type: "terminal.changed", payload: { terminal: term("t1", "bash") } },
+    );
+    expect(s.terminals.t1).toEqual({ terminal_id: "t1", title: "bash", workspace_id: null, alive: true, attached: true });
+    expect(s.terminals.t2).toEqual({ terminal_id: "t2", title: "zsh", workspace_id: null, alive: true, attached: false });
+    s = apply(
+      s,
+      { type: "terminal.removed", payload: { terminal_id: "t1" } },
+      { type: "terminal.removed", payload: { terminal_id: "t2" } },
+    );
+    // Still on screen: kept, marked ended. Not on screen: gone.
+    expect(s.terminals).toEqual({ t1: { terminal_id: "t1", title: "bash", workspace_id: null, alive: false, attached: true } });
+    expect(apply(s, { type: "terminal.removed", payload: { terminal_id: "nope" } })).toBe(s);
+  });
+
+  it("snapshot plus events matches a fresh snapshot of the final host state", () => {
+    let s = fromSnapshot({
+      workspaces: [ws("root"), ws("a")],
+      sessions: [session("s1", "a", 1)],
+      terminals: [term("t1")],
+    });
+    s = apply(
+      s,
+      { type: "workspace.changed", payload: { workspace: ws("b") } },
+      { type: "session.changed", payload: { session: session("s2", "b", 2) } },
+      { type: "session.changed", payload: { session: session("s1", "root", 1) } },
+      { type: "workspace.removed", payload: { workspace_id: "a" } },
+      { type: "workspace.changed", payload: { workspace: ws("root", { branch: "dev" }) } },
+      { type: "terminal.removed", payload: { terminal_id: "t1" } },
+      { type: "terminal.changed", payload: { terminal: term("t2") } },
+    );
+    const fresh = fromSnapshot({
+      workspaces: [ws("root", { branch: "dev" }), ws("b")],
+      sessions: [session("s1", "root", 1), session("s2", "b", 2)],
+      terminals: [term("t2")],
+    });
+    expect([s.workspaces, s.sessionsByWorkspace, s.terminals]).toEqual([
+      fresh.workspaces,
+      fresh.sessionsByWorkspace,
+      fresh.terminals,
+    ]);
+  });
+});
+
+describe("controller on the host feed", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  async function live() {
+    const transport = new FakeTransport();
+    transport.handlers["workspace.list"] = () => [ws("root")];
+    const client = new HostClient({ transport, random: () => 0.5 });
+    const controller = new HostController(client);
+    client.start();
+    await flush();
+    transport.channel.open();
+    await flush();
+    return { transport, controller, store: controller.store };
+  }
+
+  it("applies another client's changes with no list calls", async () => {
+    const t = await live();
+    t.transport.feedEvent("workspace.changed", { workspace: ws("a") });
+    t.transport.feedEvent("session.changed", { session: session("s1", "a", 1, { live: true, status: "in_progress" }) });
+    t.transport.feedEvent("terminal.changed", { terminal: term("t1") });
+    const tree = selectWorkspaceTree(t.store.getState());
+    expect(tree[0]!.worktrees.map((n) => [n.workspace.workspace_id, ids(n.sessions ?? []), n.working])).toEqual([
+      ["a", ["s1"], 1],
+    ]);
+    expect(Object.keys(t.store.getState().terminals)).toEqual(["t1"]);
+    t.transport.feedEvent("terminal.removed", { terminal_id: "t1" });
+    expect(t.store.getState().terminals).toEqual({});
+    expect(t.transport.requests.map((r) => r.op)).toEqual(["host.hello", "agent.list"]);
+  });
+
+  it("invalidates a diff on workspace.diff_changed", async () => {
+    const t = await live();
+    const before = t.store.getState().diffRevision.root!;
+    t.transport.feedEvent("workspace.diff_changed", { workspace_id: "root" });
+    expect(t.store.getState().diffRevision.root).toBe(before + 1);
+    expect(t.transport.count("git.diff")).toBe(0);
+  });
+
+  it("mutation responses and feed events agree in either order", async () => {
+    const t = await live();
+    t.transport.handlers["workspace.create_worktree"] = () => {
+      // The feed can outrun the response, including another client's session.
+      t.transport.feedEvent("workspace.changed", { workspace: ws("a") });
+      t.transport.feedEvent("session.changed", { session: session("s1", "a", 1) });
+      return ws("a");
+    };
+    await t.controller.createWorktree("root");
+    expect(ids(t.store.getState().sessionsByWorkspace.a)).toEqual(["s1"]);
+
+    t.transport.handlers["terminal.spawn"] = () => ({ terminal_id: "t1" });
+    await t.controller.spawnTerminal("root");
+    t.transport.feedEvent("terminal.changed", { terminal: term("t1") });
+    expect(t.store.getState().terminals.t1).toMatchObject({ title: "zsh", alive: true });
+    t.transport.handlers["session.start"] = () => ({ session_id: "s2" });
+    await t.controller.startSession({ workspace_id: "root", agent: "claude_code", blocks: [] });
+    for (const op of ["workspace.list", "session.list", "terminal.list"] as const) {
+      expect(t.transport.count(op)).toBe(0);
+    }
+  });
+});

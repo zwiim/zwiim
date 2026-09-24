@@ -500,7 +500,7 @@ fn gitignore_cache_invalidate_root(root: &str) {
     cache.retain(|(r, _), _| r != root);
 }
 
-async fn should_refresh_git_status_for_paths(root_display: &str, changed_paths: &[String]) -> bool {
+pub(crate) async fn should_refresh_git_status_for_paths(root_display: &str, changed_paths: &[String]) -> bool {
     if changed_paths.is_empty() {
         return true;
     }

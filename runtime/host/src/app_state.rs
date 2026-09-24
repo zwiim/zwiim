@@ -72,6 +72,12 @@ pub struct AppState {
     /// download/swap already in flight. Handlers `try_lock` and reject when
     /// held (an upgrade is already running).
     pub system_op_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Outstanding one-time QR pairing invitations (in memory only; a restart
+    /// voids them).
+    pub pairing_invitations: Arc<crate::identity::pairing::PairingInvitations>,
+    /// Host-wide state feed behind `host.subscribe` (one generation per
+    /// process; started by its first subscriber).
+    pub host_feed: Arc<crate::host_feed::HostFeed>,
 }
 
 pub fn default_system_op_lock() -> Arc<tokio::sync::Mutex<()>> {
@@ -240,6 +246,8 @@ impl AppState {
             chat_authoring_config,
             browser_tools_config,
             system_op_lock: default_system_op_lock(),
+            pairing_invitations: Default::default(),
+            host_feed: Default::default(),
         }
     }
 }

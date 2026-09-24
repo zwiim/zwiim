@@ -297,6 +297,9 @@ mod tests {
             kind: Set(FolderKind::Regular),
             alias: Set(None),
             group_id: Set(group_id),
+            workspace_id: NotSet,
+            base_branch: NotSet,
+            base_commit: NotSet,
         }
         .insert(conn)
         .await

@@ -37,4 +37,7 @@ pub struct TerminalSnapshot {
 pub struct TerminalInfo {
     pub id: String,
     pub title: String,
+    /// The directory the terminal was started in.
+    #[serde(default)]
+    pub working_dir: String,
 }

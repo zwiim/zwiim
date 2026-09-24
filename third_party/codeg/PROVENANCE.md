@@ -50,7 +50,7 @@ Copied and kept, with only the modifications noted in the next section:
 | Shared command façade (business logic under `web/handlers`) | `runtime/host/src/commands/` | Reused (product commands removed; see below) |
 | Bundled agent skills (`experts`) | `runtime/host/src/commands/experts.rs`, `runtime/host/experts/` | Reused (relocated into crate for `include_dir!`) |
 | Process supervisor / PID-1 init + exec/supervise runtime constants | `runtime/host/src/supervise.rs`, `runtime/host/src/update/runtime.rs` | Reused |
-| Bearer-token + WS-subprotocol auth (transitional bootstrap) | `runtime/host/src/web/auth.rs` | Reused as-is (transitional; replacement is a later slice) |
+| Bearer-token + WS-subprotocol auth (transitional bootstrap) | `runtime/host/src/web/auth.rs` | Reused; extended for Identity V1 (see modifications). Public-key replacement is a later slice |
 
 ## Removed Codeg subsystems (DISCARD per CLAUDE.md)
 
@@ -78,6 +78,43 @@ dormant" rule; the runtime subsystem that drove them is gone.
 | `runtime/host/src/browser/{mod.rs,eval.rs}` | Kept ungated agent-facing browser tool modules (agent/capture/console/eval); relocated injected JS to in-crate `resources/browser-injected/` and repointed `include_str!`. Removed the Tauri-capabilities test (discarded config). |
 | `runtime/host/src/bin/codeg_server.rs` | Headless boot trimmed: removed wiring for chat_channel, pets, science, automation, work_task, office_watch, browser_bridge, and the self-update state. |
 | `runtime/host/src/app_state.rs` | Removed `chat_channel_manager`, `pet_state`, `update_state` fields + their default constructors. |
+| `runtime/host/src/web/auth.rs` | Identity V1: `require_token` also accepts the bearer credential of a trusted paired device (SHA-256 lookup in `trusted_devices`), in addition to the host access token. Header/WS-subprotocol mechanism unchanged. |
+| `runtime/host/src/web/router.rs`, `app_state.rs`, `bin/zwiim_host.rs`, `db/service/app_metadata_service.rs` | Identity V1 wiring: identity routes (`host_identity`, `pairing_invitation_create`, `trusted_device_list`, `trusted_device_revoke`; public `pairing_claim`), `pairing_invitations` AppState field, `host_id` minted at boot, `insert_if_absent` helper. |
+| `runtime/host/src/db/entities/{folder,conversation}.rs` | Workspace + Session Identity V1: nullable unique `workspace_id` / `session_id` columns, minted once in `ActiveModelBehavior::before_save` on insert (Regular folders; Regular/Chat conversations). |
+| `runtime/host/src/db/service/{folder,folder_group,conversation,import}_service.rs`, `acp/manager.rs` (fork sibling) | `workspace_id: NotSet` / `session_id: NotSet` added to ActiveModel literals so the insert hook mints them. |
+| `runtime/host/src/commands/folders.rs` | Extracted `remove_worktree_checkout` (git `worktree remove` + prune fallback) out of `git_remove_worktree_core`, unchanged behavior; `converge_removed_worktree_folder` made `pub(crate)` for the workspace facade. |
+| `runtime/host/src/acp/manager.rs` | Added `count_live_in_folder` (workspace removal guard). |
+| `runtime/host/src/terminal/manager.rs` | `TerminalInstance` records its start `working_dir`; added `count_live_under_dir` (workspace removal guard). |
+| `runtime/host/src/web/router.rs` | Workspace/session routes: `workspace_list`, `workspace_worktree_create`, `workspace_worktree_remove`, `session_list`. |
+| `runtime/host/src/web/router.rs` | Protocol V1: nests the Zwiim protocol router at `/zwiim/v1`; the `html_rewrite` middleware skips `/zwiim`. `/api` and `/ws/events` unchanged. |
+| `runtime/host/src/web/auth.rs` | Protocol V1: the WS token subprotocol also accepts the `zwiim-token.` prefix (used by `/zwiim/v1/ws`, which negotiates `zwiim-events`). Credential check unchanged; `codeg-token.` still accepted for the legacy socket. |
+| `runtime/host/src/web/router.rs` | Desktop V1: CORS restricted from `Any` to local desktop origins (`tauri://localhost`, `http(s)://tauri.localhost`, loopback `http://localhost|127.0.0.1|[::1]:<port>`) via `is_local_client_origin`. Same-origin web UI unaffected. |
+| `runtime/host/src/bin/zwiim_host.rs` | Desktop V1: default bind `0.0.0.0` → `127.0.0.1` (`ZWIIM_HOST` still overrides); writes `<data_dir>/local-host.json` after bind. |
+| `runtime/host/src/db/entities/folder.rs`, `db/service/{folder,folder_group}_service.rs` | Worktree Sessions V1: nullable `base_branch` / `base_commit` columns (the root's local HEAD when a worktree is created); `NotSet` added to ActiveModel literals. Migration `m20260924_000001_worktree_base` (Zwiim-owned). |
+| `runtime/host/src/commands/folders.rs` | Worktree Sessions V1: `converge_removed_worktree_folder` takes `reparent_to: Option<i32>`. The Zwiim facade passes `None` (sessions stay on the removed worktree, never moved to the root); the legacy Codeg `git_remove_worktree` path passes `Some(project)` and keeps its reparenting behavior. |
+| `runtime/host/src/acp/manager.rs`, `terminal/manager.rs` | Worktree Sessions V1: `count_live_in_folder` / `count_live_under_dir` take every spelling of the worktree path (raw + canonical) and count each connection/terminal once. |
+| `runtime/host/src/app_error.rs`, `web/handlers/error.rs` | Worktree Sessions V1: `AppErrorCode::WorkspaceRemoved` → HTTP 410 (Zwiim `workspace_removed`). |
+| `runtime/host/src/terminal/manager.rs` | Host State Feed V1: `spawn_with_id` emits a `terminal://spawned/<id>` signal (`TERMINAL_SPAWNED_PREFIX`) on the internal broadcaster right after registering the terminal. Output/exit events unchanged. |
+| `runtime/host/src/workspace_state/mod.rs` | Host State Feed V1: `should_refresh_git_status_for_paths` made `pub(crate)` so the feed classifies watcher batches with the same rules. The watcher itself is reused unchanged (paths-only mode). |
+| `runtime/host/src/app_state.rs`, `bin/zwiim_host.rs`, `lib.rs` | Host State Feed V1: `host_feed` AppState field (lazily started on first `host.subscribe`) and module registration. |
+
+Zwiim-owned additions (not Codeg-derived): `runtime/host/src/identity/`
+(host id, pairing, trusted devices, device-side store),
+`runtime/host/src/web/handlers/identity.rs`, `db/entities/trusted_device.rs`,
+`db/migration/m20260923_000001_trusted_devices.rs`, `runtime/host/src/workspace.rs`,
+`runtime/host/src/session.rs`, `runtime/host/src/web/handlers/workspace.rs`,
+`db/migration/m20260923_000002_workspace_session_ids.rs`, `runtime/host/src/protocol/`
+(Zwiim Protocol V1: errors, event/snapshot/history projection, HTTP ops, `/zwiim/v1/ws`),
+`runtime/host/src/local_host.rs` (local host discovery file),
+`runtime/host/src/workspace_diff.rs` (Worktree Sessions V1 `git.diff`; shells out
+to `git` directly, no Codeg code), `db/migration/m20260924_000001_worktree_base.rs`,
+`runtime/host/src/host_feed.rs` (Host State Feed V1: projects Codeg's internal
+broadcaster/event-bus signals and workspace-state watcher batches into the seven
+public feed events; drives the watcher through `start/stop_workspace_state_stream_core`
+without modifying it).
+`protocol/ws.rs` reuses Codeg's attach/replay machinery (`web/ws_attach.rs`
+`handle_attach` / `spawn_forwarder`) unmodified and mirrors the select-loop shape
+of `web/ws.rs`.
 
 ## Naming rebrand (Zwiim Naming Boundary — applied)
 
@@ -146,7 +183,12 @@ propagated titles …", and the discarded minisign-updater notes).
 Google/Supabase identity, host/device keypairs, QR pairing, final authorization
 & transport security, the versioned Zwiim Protocol, Session/Workspace/AgentAdapter
 facades, cloud relay, remote/mobile clients, OS-keychain secret store, final
-persistence cleanup, and worktree-per-session isolation. The bearer token remains
+persistence cleanup. (Worktree isolation landed in Worktree Sessions V1 as
+one worktree workspace holding N sessions.)
+
+Protocol V2 candidate, deliberately not in V1: an `agent.status` operation or
+event. V1 clients infer working/idle from the session's turn lifecycle and
+`session.list` (`live` + `status`). The bearer token remains
 a **transitional** bootstrap only.
 
 Explicitly **not** renamed in this slice (Codeg-derived, but outside the approved
@@ -158,12 +200,47 @@ naming boundary or in excluded scope):
   need coordinated writer+parser+fixture changes as their own slice.
 - **Serde field names** `codeg_version` (experts manifest) and
   `codeg_config_encryption` (config-sync payload) — persisted-schema identifiers.
-- **OS-keychain service name** `"codeg"` in `keyring_store.rs` — explicitly
-  excluded ("OS keychain work") to avoid orphaning stored secrets.
+- ~~**OS-keychain service name** `"codeg"` in `keyring_store.rs`~~ — renamed
+  to `"zwiim"` in Desktop completion D1 (see below).
 - **WS subprotocols** `codeg-events` / `codeg-token.` in the transitional bearer
   auth (auth is itself a transitional bootstrap slated for replacement).
 - The `docs.codeg.app` documentation URL (points at upstream docs until Zwiim
   docs exist).
+
+## Desktop Remote Client V1 — clients
+
+`clients/sdk` (`@zwiim/sdk`), the Desktop React app (`clients/desktop/src`) and
+its Tauri shell (`clients/desktop/src-tauri`) are **Zwiim-owned**, written for
+the Zwiim Protocol V1. They do not copy Codeg's client, transport or state code.
+
+The Desktop's visual layer is adapted from the Codeg web UI (reference only,
+`src/` at the tag above):
+
+| Codeg path | Zwiim path | Modifications |
+|---|---|---|
+| `src/app/globals.css` (neutral light/dark oklch color tokens, radius scale, `@theme inline` mapping) | `clients/desktop/src/styles.css` | Kept a subset: the neutral base/card/muted/border/destructive colors, a reduced set of sidebar tokens, and the radius scale. Dropped the chart, editor and other Codeg-specific tokens and utilities. Added the xterm stylesheet import and a system font stack. |
+| `src/components/ui/button.tsx` (shadcn/cva) | `clients/desktop/src/components/ui/button.tsx` | Removed the Radix `Slot`/`asChild` path. Simplified the base and variant classes (no `aria-*` / `data-icon` states). Dropped the `link` variant and the `lg`, `icon-xs` and `icon-lg` sizes. Changed `rounded-4xl` to `rounded-md` and `icon-sm` to `size-7`. |
+| `src/components/ui/badge.tsx` (shadcn/cva) | `clients/desktop/src/components/ui/badge.tsx` | Removed the Radix `Slot`/`asChild` path. Simplified the base classes. Dropped the `ghost` and `link` variants and added `success` and `warning`. The default variant is now `secondary`. |
+
+## Desktop completion D1 — Host + Protocol
+
+Zwiim-owned: `runtime/host/src/session_options.rs` (generic
+model/effort/mode options over the agent's native ACP config options,
+per-session persistence, the Claude plan-exit mode mapping), the
+`host.claim` / `agent.list` / `session.options` / `session.set_options`
+protocol ops, and the host-owner record in `identity/host.rs`.
+
+Modifications to Codeg-derived files:
+
+| File | Modification |
+|---|---|
+| `acp/types.rs` | `kind: Option<String>` on `SessionModeInfo` and `SessionConfigSelectOptionInfo` (the agent's `_meta.kind`). |
+| `acp/connection.rs` | `meta_kind` reads `_meta.kind` into the mapped option/mode values. A `CurrentModeUpdate` now also patches the mode-category config select (`sync_mode_config_option`) and emits `SessionConfigOptions`, so an agent that reports only its mode keeps both views in step. Test constructors gained `kind: None`. |
+| `acp/manager.rs`, `acp/session_state.rs` | Test constructors gained `kind: None`. |
+| `terminal/types.rs`, `terminal/manager.rs` | `TerminalInfo.working_dir` (serde default), filled by `list_with_exit_check`, so terminals can be scoped to a workspace. |
+| `host_feed.rs` | Terminal summaries carry `workspace_id`. |
+| `keyring_store.rs` | OS-keychain service renamed `codeg` → `zwiim`. Secrets stored under the old service are not migrated (pre-release). |
+| `bin/zwiim_host.rs` | Starts the session-options tracker. |
 
 ## License obligations tracked
 

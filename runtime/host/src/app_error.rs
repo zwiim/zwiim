@@ -137,6 +137,9 @@ pub enum AppErrorCode {
     /// connection (a second, concurrent send). Maps to HTTP 409 — an expected,
     /// recoverable condition in multi-client co-control, not a server fault.
     TurnInProgress,
+    /// Zwiim: the addressed worktree workspace was removed. Its sessions stay
+    /// readable but nothing may run in it again. Maps to HTTP 410.
+    WorkspaceRemoved,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]

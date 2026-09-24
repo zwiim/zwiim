@@ -48,6 +48,18 @@ pub struct Model {
     /// concurrently) is tolerated: the sidebar falls the folder back to top
     /// level. See `super::folder_group`.
     pub group_id: Option<i32>,
+    /// Zwiim-owned opaque, immutable workspace identity, minted once at insert
+    /// (see `before_save`) and never reassigned — it survives restart and
+    /// soft-delete/revive. NULL for Chat scratch folders, which are internal.
+    /// Never derived from `id`; `id` must not cross the client boundary.
+    #[sea_orm(unique)]
+    pub workspace_id: Option<String>,
+    /// Zwiim-owned: for a managed worktree, the root workspace's branch when it
+    /// was created (NULL if that HEAD was detached). NULL for roots.
+    pub base_branch: Option<String>,
+    /// Zwiim-owned: the commit a managed worktree's branch started at. The
+    /// workspace diff is taken against its merge-base with HEAD. NULL for roots.
+    pub base_commit: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -93,4 +105,18 @@ impl Related<super::folder_group::Entity> for Entity {
     }
 }
 
-impl ActiveModelBehavior for ActiveModel {}
+#[async_trait::async_trait]
+impl ActiveModelBehavior for ActiveModel {
+    async fn before_save<C>(mut self, _db: &C, insert: bool) -> Result<Self, DbErr>
+    where
+        C: ConnectionTrait,
+    {
+        // A new user-facing row gets a new workspace_id. `kind` is written once
+        // at insert, so this is the only point the decision is made.
+        if insert && self.workspace_id.is_not_set() {
+            let user_facing = matches!(self.kind.try_as_ref(), Some(FolderKind::Regular));
+            self.workspace_id = sea_orm::ActiveValue::Set(user_facing.then(|| uuid::Uuid::new_v4().to_string()));
+        }
+        Ok(self)
+    }
+}

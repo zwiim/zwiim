@@ -3311,33 +3311,7 @@ pub async fn git_remove_worktree_core(
             }
         }
 
-        let mut args = vec!["worktree", "remove"];
-        if force {
-            args.push("--force");
-        }
-        args.push(&worktree_path);
-        let removed = crate::process::tokio_command("git")
-            .args(&args)
-            .current_dir(&repo_path)
-            .output()
-            .await
-            .map_err(AppCommandError::io)?;
-        if !removed.status.success() {
-            if Path::new(&worktree_path).exists() {
-                return Err(git_command_error("worktree remove", &removed.stderr));
-            }
-            // The directory was deleted behind git's back — drop the stale
-            // registration so it can't block the branch delete below.
-            let pruned = crate::process::tokio_command("git")
-                .args(["worktree", "prune"])
-                .current_dir(&repo_path)
-                .output()
-                .await
-                .map_err(AppCommandError::io)?;
-            if !pruned.status.success() {
-                return Err(git_command_error("worktree prune", &pruned.stderr));
-            }
-        }
+        remove_worktree_checkout(&repo_path, &worktree_path, force).await?;
         removal.worktree_path = Some(worktree_path.clone());
 
         // Only the "delete everything" variant drops the folder: removing just
@@ -3360,7 +3334,7 @@ pub async fn git_remove_worktree_core(
                         db,
                         emitter,
                         wt_folder.id,
-                        project_folder_id,
+                        Some(project_folder_id),
                         &wt_folder.path,
                     )
                     .await;
@@ -3394,6 +3368,42 @@ pub async fn git_remove_worktree_core(
     Ok(removal)
 }
 
+/// `git worktree remove [--force] <worktree_path>` run from `repo_path`. When git
+/// refuses because the directory was deleted behind its back, the stale
+/// registration is pruned instead so it can't block a later branch delete.
+pub(crate) async fn remove_worktree_checkout(
+    repo_path: &str,
+    worktree_path: &str,
+    force: bool,
+) -> Result<(), AppCommandError> {
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.push(worktree_path);
+    let removed = crate::process::tokio_command("git")
+        .args(&args)
+        .current_dir(repo_path)
+        .output()
+        .await
+        .map_err(AppCommandError::io)?;
+    if !removed.status.success() {
+        if Path::new(worktree_path).exists() {
+            return Err(git_command_error("worktree remove", &removed.stderr));
+        }
+        let pruned = crate::process::tokio_command("git")
+            .args(["worktree", "prune"])
+            .current_dir(repo_path)
+            .output()
+            .await
+            .map_err(AppCommandError::io)?;
+        if !pruned.status.success() {
+            return Err(git_command_error("worktree prune", &pruned.stderr));
+        }
+    }
+    Ok(())
+}
+
 /// Where a removed worktree folder's conversations belong: the root repo folder
 /// it was created from, falling back to the caller's own root when the row has
 /// no recorded parent. `None` means there is nowhere safe to move them, and the
@@ -3421,10 +3431,13 @@ async fn reparent_target(
 }
 
 /// Converge DB + clients once a worktree directory is off disk: its
-/// conversations move to `project_folder_id` (stamped with `origin_cwd` so
-/// history still resolves), its tabs close, its folder row is soft-deleted, any
-/// to-do task pointing at it is detached, and every client is told. Returns the
+/// conversations move to `reparent_to` (stamped with `origin_cwd` so history
+/// still resolves), its tabs close, its folder row is soft-deleted, any to-do
+/// task pointing at it is detached, and every client is told. Returns the
 /// number of conversations moved.
+///
+/// With `reparent_to: None` (Zwiim worktree removal) the conversations stay on
+/// the soft-deleted folder, so they can never be resumed in another checkout.
 ///
 /// Write order matters — conversations first, so they are never left pointing at
 /// a folder that has already vanished — and each step ends in a broadcast,
@@ -3433,23 +3446,26 @@ async fn reparent_target(
 ///
 /// The work-task engine runs the same sequence for the worktree it minted
 /// (`converge_worktree_removal`), wrapped in its own task bookkeeping.
-async fn converge_removed_worktree_folder(
+pub(crate) async fn converge_removed_worktree_folder(
     db: &AppDatabase,
     emitter: &EventEmitter,
     worktree_folder_id: i32,
-    project_folder_id: i32,
+    reparent_to: Option<i32>,
     worktree_path: &str,
 ) -> u32 {
     use crate::db::service::{conversation_service, tab_service, work_task_service};
 
-    let moved = conversation_service::reparent_folder_conversations(
-        &db.conn,
-        worktree_folder_id,
-        project_folder_id,
-        worktree_path,
-    )
-    .await
-    .unwrap_or(0) as u32;
+    let moved = match reparent_to {
+        Some(project_folder_id) => conversation_service::reparent_folder_conversations(
+            &db.conn,
+            worktree_folder_id,
+            project_folder_id,
+            worktree_path,
+        )
+        .await
+        .unwrap_or(0) as u32,
+        None => 0,
+    };
 
     match tab_service::delete_folder_tabs_and_bump(&db.conn, worktree_folder_id).await {
         Ok(inv) => {
@@ -3492,15 +3508,17 @@ async fn converge_removed_worktree_folder(
 
     // Conversations first: this starts every client's refetch, so the moved rows
     // have the shortest possible window with no folder to render under.
-    crate::web::event_bridge::emit_event(
-        emitter,
-        crate::web::event_bridge::CONVERSATIONS_BULK_CHANGED_EVENT,
-        crate::web::event_bridge::ConversationsBulkChanged {
-            imported: 0,
-            updated: moved,
-            folder_ids: vec![project_folder_id],
-        },
-    );
+    if let Some(project_folder_id) = reparent_to {
+        crate::web::event_bridge::emit_event(
+            emitter,
+            crate::web::event_bridge::CONVERSATIONS_BULK_CHANGED_EVENT,
+            crate::web::event_bridge::ConversationsBulkChanged {
+                imported: 0,
+                updated: moved,
+                folder_ids: vec![project_folder_id],
+            },
+        );
+    }
     if folder_gone {
         emit_folder_deleted(emitter, worktree_folder_id);
     }

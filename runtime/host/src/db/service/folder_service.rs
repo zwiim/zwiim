@@ -176,6 +176,9 @@ async fn add_folder_inner(
             // A newly opened folder always lands at the top level; the user
             // moves it into a group afterwards.
             group_id: Set(None),
+            workspace_id: NotSet,
+            base_branch: NotSet,
+            base_commit: NotSet,
         };
         active.insert(conn).await?
     };
@@ -254,6 +257,9 @@ pub async fn ensure_folder_for_path(
             kind: Set(FolderKind::Regular),
             alias: Set(None),
             group_id: Set(None),
+            workspace_id: NotSet,
+            base_branch: NotSet,
+            base_commit: NotSet,
         };
         active.insert(conn).await?
     };
@@ -294,6 +300,9 @@ pub async fn add_chat_folder(
         // Hidden chat folders never appear in the sidebar's folder list, so
         // they are never in a group.
         group_id: Set(None),
+        workspace_id: NotSet,
+        base_branch: NotSet,
+        base_commit: NotSet,
     };
     let model = active.insert(conn).await?;
     Ok(to_detail(model))

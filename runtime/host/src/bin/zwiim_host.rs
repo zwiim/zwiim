@@ -147,12 +147,16 @@ async fn async_main() -> ExitCode {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(3080);
-    let host = std::env::var("ZWIIM_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+    // Loopback by default: local clients connect directly, remote clients will
+    // arrive through the outbound relay. Exposing the host on the network
+    // requires an explicit `ZWIIM_HOST`.
+    let host = std::env::var("ZWIIM_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     // ZWIIM_DATA_DIR was already resolved and absolutized in `main()` so
     // all path resolvers across the process see the same root. Read it
     // back rather than re-deriving the default.
     let data_dir =
         PathBuf::from(std::env::var("ZWIIM_DATA_DIR").expect("ZWIIM_DATA_DIR set by main()"));
+    let discovery_dir = data_dir.clone();
     let static_dir_env = std::env::var("ZWIIM_STATIC_DIR").ok();
 
     let static_dir = find_static_dir_standalone(static_dir_env.as_deref());
@@ -199,6 +203,18 @@ async fn async_main() -> ExitCode {
     // `logging.level` now that the DB is open. Phase 3 (wiring the emitter)
     // happens once AppState exists, below.
     zwiim_host::logging::init::apply_persisted_level(&db.conn).await;
+
+    // Mint (first boot) or load the persistent host identity.
+    let host_id = match zwiim_host::identity::host::ensure_host_id(&db.conn).await {
+        Ok(host_id) => {
+            tracing::info!("[SERVER] Host id: {host_id}");
+            Some(host_id)
+        }
+        Err(e) => {
+            tracing::error!("[SERVER] Failed to initialize host identity: {e}");
+            None
+        }
+    };
 
     // Resolve the access token *after* the DB is up so a generated token can be
     // persisted and reused across restarts (a self-update restart must not
@@ -293,7 +309,13 @@ async fn async_main() -> ExitCode {
         chat_authoring_config: chat_authoring_config.clone(),
         browser_tools_config: browser_tools_config.clone(),
         system_op_lock: zwiim_host::app_state::default_system_op_lock(),
+        pairing_invitations: Default::default(),
+        host_feed: Default::default(),
     });
+
+    // Follow agents' session options into the per-session preferences that
+    // idle respawn and host restart replay.
+    zwiim_host::session_options::spawn_tracker(state.clone());
 
     // Logging phase 3: wire the emitter so the Logs viewer's live tail
     // (`logs://appended`) reaches WS clients.
@@ -531,6 +553,20 @@ async fn async_main() -> ExitCode {
         .web_server_state
         .mark_externally_running(advertised_host.clone(), actual_port, token.clone());
     let addresses = addresses_for_bind(&advertised_host, actual_port);
+
+    // Local discovery for a desktop client on this machine (owner-only file;
+    // never logged).
+    if let Some(host_id) = host_id {
+        let info = zwiim_host::local_host::LocalHostInfo {
+            host_id,
+            url: zwiim_host::local_host::loopback_url(&advertised_host, actual_port),
+            token: token.clone(),
+            pid: std::process::id(),
+        };
+        if let Err(e) = zwiim_host::local_host::write(&discovery_dir, &info) {
+            tracing::warn!("[SERVER][WARN] could not write local host discovery file: {e}");
+        }
+    }
 
     // Token on stderr ONLY (bearer credential — keep it out of the log files
     // and the in-app viewer); the bind addresses are safe to log normally.

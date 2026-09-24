@@ -881,6 +881,10 @@ pub struct SessionModeInfo {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    /// The agent's `_meta.kind` for this mode (`standard` / `plan` /
+    /// `auto_review` / `full_access`), when it sent one.
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -894,6 +898,10 @@ pub struct SessionConfigSelectOptionInfo {
     pub value: String,
     pub name: String,
     pub description: Option<String>,
+    /// The agent's `_meta.kind` for this value (`standard` / `plan` /
+    /// `auto_review` / `full_access` on mode selects), when it sent one.
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

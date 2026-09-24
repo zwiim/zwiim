@@ -24,8 +24,11 @@ pub mod db;
 pub mod folder_links;
 pub mod git_credential;
 pub mod git_repo;
+pub mod host_feed;
+pub mod identity;
 pub mod intern;
 pub mod keyring_store;
+pub mod local_host;
 pub mod logging;
 pub mod models;
 mod network;
@@ -34,11 +37,16 @@ pub mod paths;
 #[cfg(feature = "tauri-runtime")]
 pub mod preferences;
 pub mod process;
+pub mod protocol;
+pub mod session;
+pub mod session_options;
 pub mod supervise;
 mod terminal;
 pub mod turn_timings;
 pub mod update;
 pub mod web;
+pub mod workspace;
+pub mod workspace_diff;
 pub mod workspace_state;
 pub mod workspace_transfer;
 

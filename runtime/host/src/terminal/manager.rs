@@ -64,6 +64,9 @@ struct TerminalInstance {
     _child: Box<dyn portable_pty::Child + Send>,
     title: String,
     owner_window_label: String,
+    /// Directory the shell was started in. Used by the workspace removal
+    /// guard; the shell may `cd` elsewhere afterwards.
+    working_dir: String,
     /// Shared with this terminal's reader thread — the thread appends, viewers
     /// read. Held behind its own lock rather than the map's so a chunk of
     /// output never waits on a write / resize / list call.
@@ -75,6 +78,11 @@ struct TerminalInstance {
 pub struct TerminalManager {
     terminals: Arc<Mutex<HashMap<String, TerminalInstance>>>,
 }
+
+/// Channel prefix of the event announcing a newly registered terminal — the
+/// counterpart of `terminal://exit/<id>`, so a host-wide projection of the
+/// terminal list can follow spawns without polling.
+pub(crate) const TERMINAL_SPAWNED_PREFIX: &str = "terminal://spawned/";
 
 pub(crate) fn resolve_shell() -> String {
     #[cfg(target_os = "windows")]
@@ -350,6 +358,7 @@ impl TerminalManager {
             _child: child,
             title: "Terminal".to_string(),
             owner_window_label: opts.owner_window_label,
+            working_dir: opts.working_dir.clone(),
             scrollback: scrollback.clone(),
             temp_files: opts.temp_files,
         };
@@ -358,6 +367,15 @@ impl TerminalManager {
             .lock()
             .unwrap()
             .insert(terminal_id.clone(), instance);
+        crate::web::event_bridge::emit_event(
+            &emitter,
+            &format!("{TERMINAL_SPAWNED_PREFIX}{terminal_id}"),
+            TerminalEvent {
+                terminal_id: terminal_id.clone(),
+                data: String::new(),
+                seq: 0,
+            },
+        );
 
         // Named writer thread
         std::thread::Builder::new()
@@ -514,6 +532,7 @@ impl TerminalManager {
             .map(|(id, inst)| TerminalInfo {
                 id: id.clone(),
                 title: inst.title.clone(),
+                working_dir: inst.working_dir.clone(),
             })
             .collect();
 
@@ -544,6 +563,37 @@ impl TerminalManager {
         let live = terminals
             .values()
             .filter(|instance| instance.owner_window_label == owner_window_label)
+            .count();
+
+        drop(terminals);
+
+        if let Some(emitter) = emitter {
+            for terminal_id in exited_terminal_ids {
+                emit_terminal_exit_event(emitter, &terminal_id);
+            }
+        }
+
+        live
+    }
+
+    /// How many still-running terminals were started inside any of `dirs`
+    /// (one directory's path spellings, itself or any descendant). Each
+    /// terminal counts once. Exited terminals are reaped first, like
+    /// [`Self::count_live_by_owner_window`].
+    pub fn count_live_under_dir(
+        &self,
+        dirs: &[&std::path::Path],
+        emitter: Option<&EventEmitter>,
+    ) -> usize {
+        let mut terminals = self.terminals.lock().unwrap();
+        let exited_terminal_ids = Self::reap_exited(&mut terminals);
+
+        let live = terminals
+            .values()
+            .filter(|instance| {
+                let wd = std::path::Path::new(&instance.working_dir);
+                dirs.iter().any(|dir| wd.starts_with(dir))
+            })
             .count();
 
         drop(terminals);

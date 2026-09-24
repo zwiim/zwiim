@@ -1,0 +1,191 @@
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  HostClient,
+  HostController,
+  ZwiimClientError,
+  type SessionMode,
+  type SessionOptions,
+  type SessionSnapshot,
+} from "@zwiim/sdk";
+import { HostProvider } from "@/lib/host-context";
+import { rememberAgentChoices } from "@/lib/prefs";
+import { OptionsBar } from "@/panels/OptionsBar";
+import { newSessionOptions, SessionPanel } from "@/panels/SessionPanel";
+import { FakeTransport, tick } from "./fakes";
+
+afterEach(cleanup);
+
+const opts = (
+  mode: SessionMode = "normal",
+  available: SessionMode[] = ["normal", "plan", "unattended"],
+  model = "sonnet",
+): SessionOptions => ({
+  model: {
+    current: model,
+    values: [
+      { value: "sonnet", label: "Sonnet", description: null },
+      { value: "opus", label: "Opus", description: null },
+    ],
+  },
+  effort: { current: "low", values: [{ value: "low", label: "Low", description: null }, { value: "high", label: "High", description: null }] },
+  mode: { current: mode, label: mode === "normal" ? "Manual" : "", available },
+});
+
+const snapshot = (options: SessionOptions, status = "connected"): SessionSnapshot => ({
+  status: status as SessionSnapshot["status"],
+  live_message: null,
+  tool_calls: [],
+  pending_request: null,
+  pending_user_message: null,
+  last_error: null,
+  usage: null,
+  options,
+});
+
+describe("options bar", () => {
+  it("hides what the agent does not offer", () => {
+    render(
+      <OptionsBar
+        options={{ ...opts("normal", ["normal", "plan"]), effort: null }}
+        disabled={false}
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.queryByLabelText("Effort")).toBeNull();
+    expect(screen.getByLabelText("Model")).toBeTruthy();
+    expect(screen.queryByRole("radio", { name: "Unattended" })).toBeNull();
+    expect(screen.getByRole("radio", { name: "Plan" })).toBeTruthy();
+  });
+
+  it("never enables unattended without an explicit confirmation", () => {
+    const onChange = vi.fn();
+    render(<OptionsBar options={opts()} disabled={false} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("radio", { name: "Unattended" }));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByTestId("confirm-unattended")).toBeTruthy();
+    fireEvent.click(screen.getByText("Keep asking"));
+    expect(screen.queryByTestId("confirm-unattended")).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("radio", { name: "Unattended" }));
+    fireEvent.click(screen.getByText("Run unattended"));
+    expect(onChange).toHaveBeenCalledWith({ mode: "unattended" });
+  });
+
+  it("makes the unattended state obvious and easy to leave", () => {
+    const onChange = vi.fn();
+    render(<OptionsBar options={opts("unattended")} disabled={false} onChange={onChange} />);
+    expect(screen.getByTestId("unattended-banner").textContent).toContain("without asking");
+    fireEvent.click(screen.getByText("Ask first again"));
+    expect(onChange).toHaveBeenCalledWith({ mode: "normal" });
+  });
+
+  it("switches plan on and off directly", () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<OptionsBar options={opts()} disabled={false} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("radio", { name: "Plan" }));
+    expect(onChange).toHaveBeenLastCalledWith({ mode: "plan" });
+    rerender(<OptionsBar options={opts("plan")} disabled={false} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("radio", { name: "Ask" }));
+    expect(onChange).toHaveBeenLastCalledWith({ mode: "normal" });
+  });
+});
+
+describe("new session options", () => {
+  it("starts from remembered model/effort when still offered, and normal mode unless picked", () => {
+    const a = newSessionOptions(opts(), { model: "opus", effort: "gone" }, {});
+    expect(a.request).toEqual({ model: "opus", effort: "low" });
+    expect(a.shown.mode?.current).toBe("normal");
+    const b = newSessionOptions(opts(), { model: null, effort: null }, { mode: "plan", effort: "high" });
+    expect(b.request).toEqual({ model: "sonnet", effort: "high", mode: "plan" });
+    expect(b.shown.mode?.current).toBe("plan");
+    // A mode the agent does not offer is never requested.
+    expect(newSessionOptions(opts("normal", ["normal"]), { model: null, effort: null }, { mode: "unattended" }).request.mode).toBeUndefined();
+  });
+
+  it("sends the chosen options with the first message", async () => {
+    rememberAgentChoices("claude_code", { model: "opus" });
+    const t = new FakeTransport();
+    t.handlers["agent.list"] = () => [
+      { agent: "claude_code", name: "Claude Code", available: true, reason: null, options: opts() },
+    ];
+    t.handlers["session.start"] = () => ({ session_id: "s1" });
+    const client = new HostClient({ transport: t });
+    const controller = new HostController(client);
+    client.start();
+    await tick();
+    render(
+      <HostProvider value={controller}>
+        <SessionPanel workspaceId="w1" sessionId={null} onSessionStarted={() => {}} />
+      </HostProvider>,
+    );
+    await tick();
+    expect((screen.getByLabelText("Model") as HTMLSelectElement).value).toBe("opus");
+    fireEvent.click(screen.getByRole("radio", { name: "Plan" }));
+    const box = screen.getByPlaceholderText("Describe the task…");
+    fireEvent.change(box, { target: { value: "go" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await tick();
+    expect(t.calls.find((c) => c.op === "session.start")!.params.options).toEqual({ model: "opus", effort: "low", mode: "plan" });
+    controller.dispose();
+  });
+});
+
+describe("open session options", () => {
+  async function open(t: FakeTransport) {
+    const client = new HostClient({ transport: t });
+    const controller = new HostController(client);
+    client.start();
+    await tick();
+    render(
+      <HostProvider value={controller}>
+        <SessionPanel workspaceId="w1" sessionId="s1" onSessionStarted={() => {}} />
+      </HostProvider>,
+    );
+    await tick();
+    const frame = (f: object) => act(async () => t.frame({ subscription_id: "sub-1", session_id: "s1", ...f } as never));
+    return { controller, frame };
+  }
+
+  it("changes options between turns only", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.set_options"] = (p) => ({ session_id: "s1", options: opts("normal", undefined, p.model) });
+    const { controller, frame } = await open(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot(opts(), "prompting") });
+    const bar = screen.getByTestId("options-bar");
+    expect((within(bar).getByLabelText("Model") as HTMLSelectElement).disabled).toBe(true);
+    expect(bar.textContent).toContain("between turns");
+    await frame({ type: "event", event: { session_id: "s1", seq: 2, type: "agent.turn_complete", payload: { stop_reason: "end_turn" } } });
+    await frame({ type: "event", event: { session_id: "s1", seq: 3, type: "agent.status", payload: { status: "connected" } } });
+    const model = within(screen.getByTestId("options-bar")).getByLabelText("Model") as HTMLSelectElement;
+    expect(model.disabled).toBe(false);
+    fireEvent.change(model, { target: { value: "opus" } });
+    await tick();
+    expect(t.calls.find((c) => c.op === "session.set_options")!.params).toEqual({ session_id: "s1", model: "opus" });
+    expect(model.value).toBe("opus");
+    controller.dispose();
+  });
+
+  it("reports an unavailable option and keeps the agent's value", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.set_options"] = () => {
+      throw new ZwiimClientError("option_unavailable", "not offered", 422, { option: "model", value: "opus" });
+    };
+    const { controller, frame } = await open(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot(opts()) });
+    const model = screen.getByLabelText("Model") as HTMLSelectElement;
+    fireEvent.change(model, { target: { value: "opus" } });
+    await tick();
+    expect(screen.getByTestId("options-error").textContent).toContain("does not offer opus");
+    expect(model.value).toBe("sonnet");
+    controller.dispose();
+  });
+
+  it("shows no options while the agent has not reported any", async () => {
+    const t = new FakeTransport();
+    const { controller, frame } = await open(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: { ...snapshot(opts()), options: null } });
+    expect(screen.queryByTestId("options-bar")).toBeNull();
+    controller.dispose();
+  });
+});

@@ -10,7 +10,7 @@ use axum::{
 };
 
 use crate::web::handlers::files::UPLOAD_MAX_BYTES;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 use super::shutdown::ShutdownSignal;
@@ -18,18 +18,54 @@ use super::{auth, handlers, ws};
 use crate::app_state::AppState;
 use tracing::Instrument;
 
+/// Origins of the local desktop client: the Tauri webview (`tauri://localhost`
+/// on macOS/Linux, `http(s)://tauri.localhost` on Windows) and loopback HTTP
+/// origins used by its development server.
+fn is_local_client_origin(origin: &str) -> bool {
+    if matches!(
+        origin,
+        "tauri://localhost" | "http://tauri.localhost" | "https://tauri.localhost"
+    ) {
+        return true;
+    }
+    let Some(rest) = origin.strip_prefix("http://") else {
+        return false;
+    };
+    let host = match rest.strip_prefix("[::1]") {
+        Some(port) => return port.is_empty() || is_port_suffix(port),
+        None => rest.split(':').next().unwrap_or_default(),
+    };
+    matches!(host, "localhost" | "127.0.0.1") && {
+        let port = &rest[host.len()..];
+        port.is_empty() || is_port_suffix(port)
+    }
+}
+
+fn is_port_suffix(s: &str) -> bool {
+    s.strip_prefix(':')
+        .is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
 pub fn build_router(
     state: Arc<AppState>,
     token: String,
     static_dir: std::path::PathBuf,
     shutdown_signal: Arc<ShutdownSignal>,
 ) -> Router {
+    // Cross-origin callers are limited to the local desktop client (the Tauri
+    // webview, or its dev server on loopback). The bundled web UI is served
+    // same-origin and needs no CORS.
     let cors = CorsLayer::new()
-        .allow_origin(Any)
+        .allow_origin(AllowOrigin::predicate(|origin, _| {
+            origin.to_str().is_ok_and(is_local_client_origin)
+        }))
         .allow_methods(Any)
         .allow_headers(Any);
 
     let token_for_ws = token.clone();
+    let zwiim_v1 = crate::protocol::router(token.clone(), state.db.conn.clone());
+    let db_for_api = state.db.conn.clone();
+    let db_for_ws = state.db.conn.clone();
 
     let api = Router::new()
         .route("/health", post(health_check))
@@ -1020,10 +1056,35 @@ pub fn build_router(
         )
         .route("/terminal_kill", post(handlers::terminal::terminal_kill))
         .route("/terminal_list", post(handlers::terminal::terminal_list))
+        // ─── Identity (host id, pairing invitations, trusted devices) ───
+        .route("/host_identity", post(handlers::identity::host_identity))
+        .route(
+            "/pairing_invitation_create",
+            post(handlers::identity::pairing_invitation_create),
+        )
+        .route(
+            "/trusted_device_list",
+            post(handlers::identity::trusted_device_list),
+        )
+        .route(
+            "/trusted_device_revoke",
+            post(handlers::identity::trusted_device_revoke),
+        )
+        // ─── Workspaces + sessions (Zwiim identities only) ───
+        .route("/workspace_list", post(handlers::workspace::workspace_list))
+        .route(
+            "/workspace_worktree_create",
+            post(handlers::workspace::workspace_worktree_create),
+        )
+        .route(
+            "/workspace_worktree_remove",
+            post(handlers::workspace::workspace_worktree_remove),
+        )
+        .route("/session_list", post(handlers::workspace::session_list))
         // Catch-all
         .fallback(api_not_found)
         .layer(middleware::from_fn(move |req, next| {
-            auth::require_token(req, next, token.clone())
+            auth::require_token(req, next, token.clone(), db_for_api.clone())
         }));
 
     // Public endpoints — no token required.
@@ -1037,7 +1098,10 @@ pub fn build_router(
         .route(
             "/workspace_download/{ticket}",
             get(handlers::workspace_files::consume_download_ticket),
-        );
+        )
+        // An unpaired device has no credential yet; the one-time pairing
+        // code in the body is what authorizes this call.
+        .route("/pairing_claim", post(handlers::identity::pairing_claim));
 
 
     // Wrap every API request in an `http` span (method, path, request id) so a
@@ -1064,7 +1128,7 @@ pub fn build_router(
     let ws_route = Router::new()
         .route("/ws/events", get(ws::ws_handler))
         .layer(middleware::from_fn(move |req, next| {
-            auth::require_token(req, next, token_for_ws.clone())
+            auth::require_token(req, next, token_for_ws.clone(), db_for_ws.clone())
         }));
 
     // Static file serving.
@@ -1083,6 +1147,7 @@ pub fn build_router(
                 && !path.contains('.')
                 && !path.starts_with("/api")
                 && !path.starts_with("/ws")
+                && !path.starts_with("/zwiim")
             {
                 let html_path = format!("{}.html", path.trim_end_matches('/'));
                 let html_file = dir.join(html_path.trim_start_matches('/'));
@@ -1107,6 +1172,7 @@ pub fn build_router(
 
     Router::new()
         .nest("/api", api)
+        .nest("/zwiim/v1", zwiim_v1)
         .merge(ws_route)
         .fallback_service(fallback)
         .layer(html_rewrite)
@@ -1152,6 +1218,50 @@ mod tests {
     use crate::web::shutdown::ShutdownSignal;
     use axum_test::TestServer;
     use std::sync::Arc;
+
+    #[test]
+    fn only_local_desktop_origins_are_allowed() {
+        use super::is_local_client_origin as ok;
+        for origin in [
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+            "http://localhost:1420",
+            "http://127.0.0.1:1420",
+            "http://[::1]:5173",
+            "http://localhost",
+        ] {
+            assert!(ok(origin), "{origin}");
+        }
+        for origin in [
+            "https://evil.example",
+            "http://localhost.evil.example",
+            "http://127.0.0.1.evil.example:80",
+            "http://localhost:80@evil.example",
+            "http://192.168.1.5:1420",
+            "null",
+        ] {
+            assert!(!ok(origin), "{origin}");
+        }
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_allows_tauri_and_rejects_foreign_origins() {
+        let server = health_test_server("t").await;
+        let preflight = |origin: &'static str| {
+            server
+                .method(axum::http::Method::OPTIONS, "/zwiim/v1/host.hello")
+                .add_header("origin", origin)
+                .add_header("access-control-request-method", "POST")
+        };
+        let res = preflight("tauri://localhost").await;
+        assert_eq!(
+            res.header("access-control-allow-origin"),
+            "tauri://localhost"
+        );
+        let res = preflight("https://evil.example").await;
+        assert!(res.maybe_header("access-control-allow-origin").is_none());
+    }
 
     async fn health_test_server(token: &str) -> TestServer {
         let db = fresh_in_memory_db().await;

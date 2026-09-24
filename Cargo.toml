@@ -1,11 +1,11 @@
 # Zwiim — Rust workspace root.
 #
-# Slice 1 establishes a single headless runtime crate. The workspace is
-# intentionally minimal: do not split into many crates until a Zwiim-owned
-# boundary genuinely requires it (see CLAUDE.md working rules).
+# The headless host runtime plus the desktop client's thin native shell. The
+# workspace is intentionally minimal: do not split into many crates until a
+# Zwiim-owned boundary genuinely requires it (see CLAUDE.md working rules).
 [workspace]
 resolver = "2"
-members = ["runtime/host"]
+members = ["runtime/host", "clients/desktop/src-tauri"]
 
 [workspace.package]
 edition = "2021"

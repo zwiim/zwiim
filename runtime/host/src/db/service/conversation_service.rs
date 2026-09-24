@@ -120,6 +120,7 @@ async fn create_inner(
         deleted_at: Set(None),
         pinned_at: Set(None),
         origin_cwd: Set(None),
+        session_id: NotSet,
     };
     Ok(model.insert(conn).await?)
 }
@@ -968,6 +969,7 @@ impl CarriedOverRow {
             // not to the history.
             pinned_at: Set(None),
             origin_cwd: Set(self.origin_cwd),
+            session_id: NotSet,
         }
     }
 }

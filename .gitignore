@@ -1,3 +1,9 @@
 /target
 **/*.rs.bk
 Cargo.lock.orig
+
+# Node / client builds
+node_modules/
+clients/desktop/dist/
+clients/desktop/src-tauri/gen/
+clients/desktop/src-tauri/binaries/

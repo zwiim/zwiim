@@ -2927,6 +2927,16 @@ async fn drain_permissions_locked(
     }
 }
 
+/// The agent's own classification of a mode or mode-like select value,
+/// `_meta.kind` (claude-agent-acp / codex-acp: `standard`, `plan`,
+/// `auto_review`, `full_access`). `None` when the agent sent none.
+fn meta_kind(meta: Option<&serde_json::Map<String, serde_json::Value>>) -> Option<String> {
+    meta?
+        .get("kind")?
+        .as_str()
+        .map(str::to_string)
+}
+
 fn map_session_modes(mode_state: &SessionModeState) -> SessionModeStateInfo {
     SessionModeStateInfo {
         current_mode_id: mode_state.current_mode_id.to_string(),
@@ -2937,6 +2947,7 @@ fn map_session_modes(mode_state: &SessionModeState) -> SessionModeStateInfo {
                 id: mode.id.to_string(),
                 name: mode.name.clone(),
                 description: mode.description.clone(),
+                kind: meta_kind(mode.meta.as_ref()),
             })
             .collect(),
     }
@@ -2976,6 +2987,7 @@ fn map_session_config_select_option(
         value: option.value.to_string(),
         name: option.name.clone(),
         description: option.description.clone(),
+        kind: meta_kind(option.meta.as_ref()),
     }
 }
 
@@ -3367,6 +3379,7 @@ fn build_grok_effort_option(
             description: desc
                 .clone()
                 .or_else(|| grok_effort_description(id).map(str::to_string)),
+            kind: None,
         })
         .collect();
     if let Some(def) = &spec.default {
@@ -3379,6 +3392,7 @@ fn build_grok_effort_option(
                     // The injected default (grok-4.5's `xhigh`) is absent from grok's
                     // switchable list, so it has no grok description — supply ours.
                     description: grok_effort_description(def).map(str::to_string),
+                    kind: None,
                 },
             );
         }
@@ -3476,6 +3490,7 @@ fn synthesize_grok_config_options(
                 .get("description")
                 .and_then(|v| v.as_str())
                 .map(str::to_string),
+            kind: None,
         });
     }
 
@@ -10608,6 +10623,31 @@ async fn run_conversation_loop<'a>(
     Ok(None)
 }
 
+/// `options` with the `mode`-category select moved to `mode_id`, or `None`
+/// when it already holds it or does not offer it. (Zwiim addition.)
+fn sync_mode_config_option(
+    options: &[SessionConfigOptionInfo],
+    mode_id: &str,
+) -> Option<Vec<SessionConfigOptionInfo>> {
+    let mut options = options.to_vec();
+    let select = options.iter_mut().find_map(|o| {
+        match (o.category.as_deref(), &mut o.kind) {
+            (Some("mode"), SessionConfigKindInfo::Select(select)) => Some(select),
+            _ => None,
+        }
+    })?;
+    let offered = select
+        .options
+        .iter()
+        .chain(select.groups.iter().flat_map(|g| g.options.iter()))
+        .any(|v| v.value == mode_id);
+    if !offered || select.current_value == mode_id {
+        return None;
+    }
+    select.current_value = mode_id.to_string();
+    Some(options)
+}
+
 /// Serialize tool-call `content` blocks into a single human-readable string.
 ///
 /// `include_diffs = false` skips `Diff` blocks. Used when the edit has been
@@ -14497,14 +14537,33 @@ async fn emit_conversation_update(
             .await;
         }
         SessionUpdate::CurrentModeUpdate(update) => {
+            let mode_id = update.current_mode_id.to_string();
             emit_with_state(
                 state,
                 emitter,
                 AcpEvent::ModeChanged {
-                    mode_id: update.current_mode_id.to_string(),
+                    mode_id: mode_id.clone(),
                 },
             )
             .await;
+            // Zwiim: an agent that switches mode on its own (Claude leaving plan
+            // mode on plan approval) reports it only as a mode update; keep the
+            // `mode`-category config option it also advertises in step.
+            let synced = {
+                let guard = state.read().await;
+                guard
+                    .config_options
+                    .as_ref()
+                    .and_then(|options| sync_mode_config_option(options, &mode_id))
+            };
+            if let Some(config_options) = synced {
+                emit_with_state(
+                    state,
+                    emitter,
+                    AcpEvent::SessionConfigOptions { config_options },
+                )
+                .await;
+            }
         }
         SessionUpdate::Plan(plan) => {
             emit_with_state(
@@ -19823,11 +19882,13 @@ mod tests {
                         value: "off".to_string(),
                         name: "Thinking: off".to_string(),
                         description: None,
+                        kind: None,
                     },
                     SessionConfigSelectOptionInfo {
                         value: "high".to_string(),
                         name: "Thinking: high".to_string(),
                         description: None,
+                        kind: None,
                     },
                 ],
                 groups: vec![],
@@ -20212,11 +20273,13 @@ mod tests {
                         value: "grok-4.5".to_string(),
                         name: "Grok 4.5".to_string(),
                         description: None,
+                        kind: None,
                     },
                     SessionConfigSelectOptionInfo {
                         value: "grok-composer-2.5-fast".to_string(),
                         name: "Composer 2.5".to_string(),
                         description: None,
+                        kind: None,
                     },
                 ],
                 groups: Vec::new(),
@@ -21701,6 +21764,7 @@ mod tests {
                     id: id.to_string(),
                     name: id.to_string(),
                     description: None,
+                    kind: None,
                 })
                 .collect(),
         });

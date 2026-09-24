@@ -4012,6 +4012,7 @@ mod tests {
                     id: "default".into(),
                     name: "Default".into(),
                     description: None,
+                    kind: None,
                 }],
             },
         });

@@ -1,5 +1,5 @@
 #[cfg(feature = "tauri-runtime")]
-const SERVICE_NAME: &str = "codeg";
+const SERVICE_NAME: &str = "zwiim";
 
 fn token_key(account_id: &str) -> String {
     format!("github-token:{}", account_id)

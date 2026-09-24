@@ -1,0 +1,8 @@
+{
+  "name": "zwiim",
+  "private": true,
+  "workspaces": [
+    "clients/sdk",
+    "clients/desktop"
+  ]
+}
