@@ -11,6 +11,7 @@ import type {
   LiveBlock,
   LiveMessage,
   PendingUserMessage,
+  SessionCommand,
   SessionErrorInfo,
   SessionEvent,
   SessionOptions,
@@ -52,6 +53,8 @@ export interface SessionView {
    * agent is away: the host re-applies them when it respawns.
    */
   options: SessionOptions | null;
+  /** The agent's slash commands; null until a live agent announces them. */
+  commands: SessionCommand[] | null;
   history: HistoryTurn[] | null;
   /** The transcript changed on the host since `history` was loaded. */
   historyStale: boolean;
@@ -110,6 +113,7 @@ export function initialSessionView(session_id: string): SessionView {
     usage: null,
     lastStopReason: null,
     options: null,
+    commands: null,
     history: null,
     historyStale: true,
   };
@@ -165,6 +169,8 @@ function applySnapshot(
     // A freshly spawned agent may not have advertised its options yet; its
     // `session.options` event follows.
     options: s.options ?? view.options,
+    // Likewise its commands, announced shortly after it starts.
+    commands: s.commands.length > 0 ? s.commands : view.commands,
     historyStale: true,
   };
 }
@@ -280,6 +286,8 @@ export function applyEvent(view: SessionView, ev: SessionEvent): SessionView {
       return { ...next, sessionStatus: ev.payload.status };
     case "session.options":
       return { ...next, options: ev.payload.options };
+    case "session.commands":
+      return { ...next, commands: ev.payload.commands };
     default:
       return next;
   }

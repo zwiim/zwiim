@@ -39,6 +39,7 @@ pub mod preferences;
 pub mod process;
 pub mod protocol;
 pub mod session;
+pub mod session_commands;
 pub mod session_options;
 pub mod supervise;
 mod terminal;

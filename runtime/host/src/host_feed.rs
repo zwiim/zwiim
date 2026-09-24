@@ -761,6 +761,7 @@ mod tests {
                 &self.state.emitter,
                 &self.state.data_dir.join("worktrees"),
                 &self.root_id,
+                None,
             )
             .await
             .unwrap()

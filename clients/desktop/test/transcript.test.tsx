@@ -35,6 +35,7 @@ const snapshot = (extra: Partial<SessionSnapshot> = {}): SessionSnapshot => ({
   last_error: null,
   usage: null,
   options: null,
+  commands: [],
   ...extra,
 });
 

@@ -36,6 +36,7 @@ const OPS: &[&str] = &[
     "files.create",
     "git.status",
     "git.log",
+    "git.branches",
     "git.commit",
     "git.diff",
     "terminal.spawn",
@@ -47,6 +48,7 @@ const OPS: &[&str] = &[
     "session.start",
     "session.send",
     "session.cancel",
+    "session.delete",
     "session.respond",
     "session.options",
     "session.set_options",
@@ -760,7 +762,18 @@ async fn session_operations_over_http() {
 
     h.ok("session.cancel", json!({"session_id": sid})).await;
     assert!(matches!(rx.recv().await, Some(ConnectionCommand::Cancel)));
-    let _ = wid;
+
+    // Delete: refused mid-turn; an idle session goes, and stays gone.
+    assert_eq!(
+        h.err("session.delete", json!({"session_id": sid})).await,
+        (StatusCode::CONFLICT, "turn_in_progress".into())
+    );
+    h.ok("session.delete", json!({"session_id": idle})).await;
+    let listed = h.ok("session.list", json!({"workspace_id": wid})).await;
+    assert!(listed.as_array().unwrap().iter().all(|s| s["session_id"] != idle.as_str()));
+    assert!(listed.as_array().unwrap().iter().any(|s| s["session_id"] == sid.as_str()));
+    assert_eq!(h.err("session.delete", json!({"session_id": idle})).await.1, "not_found");
+    assert_eq!(h.err("session.history", json!({"session_id": idle})).await.1, "not_found");
 }
 
 fn keys(v: &Value) -> Vec<String> {
@@ -808,6 +821,29 @@ async fn worktree_create_diff_and_guarded_removal() {
     assert_eq!(wt["base_commit"].as_str().unwrap().len(), 40);
     let listed = h.ok("workspace.list", json!({})).await;
     assert!(listed.as_array().unwrap().iter().any(|w| w == &wt));
+
+    // The base is a branch the host lists; anything else is refused.
+    let bases = h.ok("git.branches", json!({"workspace_id": wid})).await;
+    assert_eq!(keys(&bases), ["default", "local", "remote"]);
+    assert_eq!(bases["default"], "main");
+    assert!(bases["local"].as_array().unwrap().contains(&json!("main")));
+    let from_main = h
+        .ok(
+            "workspace.create_worktree",
+            json!({"workspace_id": wid, "base": "main"}),
+        )
+        .await;
+    assert_eq!(from_main["base_branch"], "main");
+    assert_eq!(from_main["base_commit"], wt["base_commit"]);
+    assert_eq!(
+        h.err(
+            "workspace.create_worktree",
+            json!({"workspace_id": wid, "base": "HEAD~1"})
+        )
+        .await
+        .1,
+        "invalid_input"
+    );
 
     // The client never names a path or branch, and only roots have worktrees.
     for (op, body) in [
@@ -1044,6 +1080,7 @@ async fn ws_subscribe_snapshot_live_replay_and_epoch() {
     assert_eq!(
         keys,
         [
+            "commands",
             "last_error",
             "live_message",
             "options",
@@ -1472,6 +1509,7 @@ async fn agent_list_reports_availability_only() {
         assert_eq!(available, a["reason"].is_null(), "{a}");
         assert!(a["name"].is_string());
         assert!(a["options"].is_null(), "no catalog before any session: {a}");
+        assert!(a["commands"].is_null(), "no commands before any session: {a}");
     }
     assert!(agents.iter().any(|a| a["agent"] == "claude_code"));
 }

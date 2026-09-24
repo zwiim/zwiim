@@ -36,6 +36,7 @@ pub async fn workspace_worktree_create(
             &state.emitter,
             &state.data_dir.join("worktrees"),
             &params.workspace_id,
+            None,
         )
         .await?,
     ))

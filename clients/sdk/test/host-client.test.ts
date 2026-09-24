@@ -16,6 +16,7 @@ const snapshot = {
   last_error: null,
   usage: null,
   options: null,
+  commands: [],
 };
 
 const delta = (seq: number, text: string): SessionEvent => ({

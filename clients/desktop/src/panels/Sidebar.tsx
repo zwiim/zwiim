@@ -3,9 +3,7 @@ import { FolderGit2, GitBranch, GitBranchPlus, Plus, Trash2 } from "lucide-react
 import {
   busyDetails,
   dirtyDetails,
-  isSessionWorking,
   selectWorkspaceTree,
-  type SessionSummary,
   type WorkspaceBusyDetails,
   type WorkspaceInfo,
   type WorkspaceNode,
@@ -13,12 +11,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { cn } from "@/lib/utils";
+import { NewWorktree } from "./NewWorktree";
 
 export interface SidebarProps {
   workspaceId: string | null;
-  sessionId: string | null;
   onSelectWorkspace(id: string): void;
-  onSelectSession(workspaceId: string, sessionId: string | null): void;
+  /** A new worktree started its first session. */
+  onSessionStarted(workspaceId: string, sessionId: string): void;
   pickFolder(): Promise<string | null>;
 }
 
@@ -97,37 +96,24 @@ export function Sidebar(props: SidebarProps) {
 }
 
 function WorkspaceRow(props: SidebarProps & { node: WorkspaceNode; onError(message: string | null): void }) {
-  const controller = useController();
   const online = useOnline();
-  const { workspace: w, sessions, working, worktrees } = props.node;
+  const { workspace: w, working, worktrees } = props.node;
   const isRoot = w.parent_workspace_id === null;
   const selected = props.workspaceId === w.workspace_id;
   const [creating, setCreating] = useState(false);
   const [removing, setRemoving] = useState(false);
-
-  async function newWorktree() {
-    props.onError(null);
-    setCreating(true);
-    try {
-      const wt = await controller.createWorktree(w.workspace_id);
-      props.onSelectWorkspace(wt.workspace_id);
-    } catch (e) {
-      props.onError(errorMessage(e));
-    } finally {
-      setCreating(false);
-    }
-  }
 
   return (
     <div data-testid={`workspace-${w.workspace_id}`}>
       <div
         className={cn(
           "group hover:bg-sidebar-accent flex items-center gap-0.5 rounded-md pr-1",
-          selected && props.sessionId === null && "bg-sidebar-accent",
+          selected && "bg-sidebar-accent",
         )}
       >
         <button
           className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-[13px]"
+          aria-current={selected || undefined}
           onClick={() => props.onSelectWorkspace(w.workspace_id)}
         >
           {isRoot ? (
@@ -136,7 +122,9 @@ function WorkspaceRow(props: SidebarProps & { node: WorkspaceNode; onError(messa
             <GitBranch className="text-muted-foreground size-3.5 shrink-0" />
           )}
           <span className="flex min-w-0 flex-col">
-            <span className={cn("truncate", isRoot && "font-medium", w.removed && "text-muted-foreground line-through")}>
+            <span
+              className={cn("truncate", isRoot && "font-medium", w.removed && "text-muted-foreground line-through")}
+            >
               {isRoot ? (w.alias ?? w.name) : worktreeLabel(w)}
             </span>
             {!isRoot && baseLabel(w) && (
@@ -145,7 +133,8 @@ function WorkspaceRow(props: SidebarProps & { node: WorkspaceNode; onError(messa
           </span>
           <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[11px] font-normal">
             {working > 0 && (
-              <span className="text-amber-600 dark:text-amber-400" title="Agents working">
+              <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400" title="Agents working">
+                <span className="size-1.5 animate-pulse rounded-full bg-amber-500" />
                 {working} working
               </span>
             )}
@@ -159,8 +148,11 @@ function WorkspaceRow(props: SidebarProps & { node: WorkspaceNode; onError(messa
             size="icon-sm"
             variant="ghost"
             title="New worktree"
-            onClick={newWorktree}
-            disabled={creating || !online}
+            onClick={() => {
+              props.onError(null);
+              setCreating(true);
+            }}
+            disabled={!online}
           >
             <GitBranchPlus />
           </Button>
@@ -178,73 +170,27 @@ function WorkspaceRow(props: SidebarProps & { node: WorkspaceNode; onError(messa
           </Button>
         )}
       </div>
+      {creating && (
+        <NewWorktree
+          rootId={w.workspace_id}
+          onClose={() => setCreating(false)}
+          onCreated={props.onSelectWorkspace}
+          onStarted={props.onSessionStarted}
+        />
+      )}
       {removing && <RemoveWorktree workspace={w} onClose={() => setRemoving(false)} />}
-      <div className="border-sidebar-border ml-[15px] flex flex-col gap-px border-l py-0.5 pl-1.5">
-        {selected && !w.removed && (
-          <button
-            className={cn(
-              "hover:bg-sidebar-accent text-muted-foreground hover:text-foreground flex items-center gap-2 rounded-md px-2 py-1 text-left text-[13px]",
-              props.sessionId === null && "text-foreground",
-            )}
-            onClick={() => props.onSelectSession(w.workspace_id, null)}
-          >
-            <Plus className="size-3.5 shrink-0" /> New session
-          </button>
-        )}
-        {sessions?.map((s) => (
-          <SessionRow
-            key={s.session_id}
-            session={s}
-            selected={selected && props.sessionId === s.session_id}
-            onSelect={() => props.onSelectSession(w.workspace_id, s.session_id)}
-          />
-        ))}
-        {worktrees.map((n) => (
-          <WorkspaceRow key={n.workspace.workspace_id} {...props} node={n} />
-        ))}
-      </div>
+      {worktrees.length > 0 && (
+        <div className="border-sidebar-border ml-[15px] flex flex-col gap-px border-l py-0.5 pl-1.5">
+          {worktrees.map((n) => (
+            <WorkspaceRow key={n.workspace.workspace_id} {...props} node={n} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function SessionRow(props: { session: SessionSummary; selected: boolean; onSelect(): void }) {
-  const s = props.session;
-  const view = useHost((st) => st.sessions[s.session_id]);
-  const working = isSessionWorking(s, view);
-  const agent = useHost((st) => st.agents?.find((a) => a.agent === s.agent)?.name ?? s.agent);
-  return (
-    <button
-      className={cn(
-        "hover:bg-sidebar-accent flex items-center gap-2 rounded-md px-2 py-1 text-left text-[13px]",
-        props.selected ? "bg-sidebar-accent text-foreground" : "text-sidebar-foreground/85",
-      )}
-      onClick={props.onSelect}
-      title={agent ? `${agent} · ${working ? "working" : "idle"}` : undefined}
-      aria-current={props.selected || undefined}
-    >
-      <span
-        className={cn(
-          "size-1.5 shrink-0 rounded-full",
-          working ? "animate-pulse bg-amber-500" : "bg-muted-foreground/50",
-        )}
-      />
-      <span className="truncate">{s.title || "Untitled session"}</span>
-      <span
-        className={cn(
-          "ml-auto shrink-0 text-[11px]",
-          working ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground",
-        )}
-      >
-        {working ? "working" : "idle"}
-      </span>
-    </button>
-  );
-}
-
-type RemovePhase =
-  | { kind: "confirm" }
-  | { kind: "dirty"; changes: number }
-  | { kind: "busy"; message: string };
+type RemovePhase = { kind: "confirm" } | { kind: "dirty"; changes: number } | { kind: "busy"; message: string };
 
 /**
  * Removal as the host decides it: a plain request first; the host answers

@@ -242,6 +242,21 @@ Modifications to Codeg-derived files:
 | `keyring_store.rs` | OS-keychain service renamed `codeg` → `zwiim`. Secrets stored under the old service are not migrated (pre-release). |
 | `bin/zwiim_host.rs` | Starts the session-options tracker. |
 
+## Session delete and slash commands
+
+Zwiim-owned: `runtime/host/src/session_commands.rs` (the agent's ACP
+available commands projected to Zwiim `name`/`description`/`hint`, with each
+agent's latest list kept for new sessions), `session::delete`, the
+`session.delete` protocol op, the `session.commands` event, and `commands` on
+the session snapshot and `agent.list`. Deletion reuses Codeg's
+`delete_conversation_with_cleanup_core` unmodified.
+
+Modifications to Codeg-derived files:
+
+| File | Modification |
+|---|---|
+| `bin/zwiim_host.rs` | Starts the session-commands tracker. |
+
 ## License obligations tracked
 
 - [x] Include Apache-2.0 license text (`third_party/codeg/LICENSE`).

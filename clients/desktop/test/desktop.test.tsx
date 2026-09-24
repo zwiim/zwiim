@@ -213,6 +213,7 @@ describe("SessionPanel", () => {
           last_error: null,
           usage: null,
           options: null,
+          commands: [],
         },
       });
       t.frame({

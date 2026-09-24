@@ -41,6 +41,7 @@ const snapshot = (options: SessionOptions, status = "connected"): SessionSnapsho
   last_error: null,
   usage: null,
   options,
+  commands: [],
 });
 
 /** Opens the mode menu and returns its entry for `name`, if the agent offers it. */

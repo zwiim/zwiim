@@ -355,12 +355,72 @@ async fn head_commit(repo: &str) -> Result<String, AppCommandError> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// The commit of branch `base` — a local branch, else a remote-tracking one
+/// (`origin/main`). Only branch refs resolve: never a revision expression.
+async fn branch_commit(repo: &str, base: &str) -> Result<String, AppCommandError> {
+    for reference in [format!("refs/heads/{base}"), format!("refs/remotes/{base}")] {
+        let out = crate::process::tokio_command("git")
+            .args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{reference}^{{commit}}"),
+            ])
+            .current_dir(repo)
+            .output()
+            .await
+            .map_err(AppCommandError::io)?;
+        if out.status.success() {
+            return Ok(String::from_utf8_lossy(&out.stdout).trim().to_string());
+        }
+    }
+    Err(
+        AppCommandError::invalid_input("No such branch to start the worktree from")
+            .with_detail(base.to_string()),
+    )
+}
+
+/// The branches a worktree of `repo` can start from, and the one to suggest:
+/// the remote's default branch (`origin/HEAD`), else the checked-out branch.
+#[derive(Debug, Serialize)]
+pub struct WorktreeBases {
+    pub local: Vec<String>,
+    pub remote: Vec<String>,
+    pub default: Option<String>,
+}
+
+pub async fn worktree_bases(repo: &str) -> Result<WorktreeBases, AppCommandError> {
+    let list = folders::git_list_all_branches(repo.to_string()).await?;
+    let origin_head = crate::process::tokio_command("git")
+        .args(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
+        .current_dir(repo)
+        .output()
+        .await
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|b| list.remote.contains(b));
+    let default = match origin_head {
+        Some(b) => Some(b),
+        None => folders::resolve_git_head(repo)
+            .await
+            .ok()
+            .and_then(|h| h.branch),
+    };
+    Ok(WorktreeBases {
+        local: list.local,
+        remote: list.remote,
+        default,
+    })
+}
+
 /// Create a managed git worktree from root workspace `root_workspace_id`.
 ///
 /// The host chooses both the branch (`zwiim/<suffix>`) and the directory
 /// (`<worktrees_dir>/<root workspace_id>/<repo>-<suffix>`); the client supplies
-/// neither. The branch starts at the root's current local HEAD (no fetch);
-/// that commit and the root's branch are recorded as the worktree's base. The
+/// neither. The branch starts at branch `base` when given, else at the root's
+/// current local HEAD (no fetch either way); that commit and branch are
+/// recorded as the worktree's base. The
 /// checkout is made with the existing `git worktree add` and registered through
 /// the existing worktree-folder path, so the new Folder row gets its own fresh
 /// `workspace_id`.
@@ -369,6 +429,7 @@ pub async fn create_worktree(
     emitter: &EventEmitter,
     worktrees_dir: &Path,
     root_workspace_id: &str,
+    base: Option<&str>,
 ) -> Result<WorkspaceInfo, AppCommandError> {
     let root = resolve(&db.conn, root_workspace_id).await?;
     if root.parent_id.is_some() {
@@ -378,11 +439,19 @@ pub async fn create_worktree(
         .with_detail(root_workspace_id.to_string()));
     }
     crate::git_repo::ensure_git_repo(&root.path)?;
-    let base_commit = head_commit(&root.path).await?;
-    let base_branch = folders::resolve_git_head(&root.path)
-        .await
-        .ok()
-        .and_then(|h| h.branch);
+    let (base_commit, base_branch) = match base {
+        Some(base) => (
+            branch_commit(&root.path, base).await?,
+            Some(base.to_string()),
+        ),
+        None => (
+            head_commit(&root.path).await?,
+            folders::resolve_git_head(&root.path)
+                .await
+                .ok()
+                .and_then(|h| h.branch),
+        ),
+    };
 
     let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
     let branch = format!("zwiim/{suffix}");
@@ -661,7 +730,7 @@ mod tests {
         let db = fresh_in_memory_db().await;
         let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
 
-        let wt = create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid)
+        let wt = create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None)
             .await
             .expect("create");
 
@@ -705,14 +774,56 @@ mod tests {
         assert_eq!(again.base_commit.as_deref(), Some(root_head.as_str()));
 
         // Only a root workspace can spawn worktrees.
-        let err = create_worktree(&db, &EventEmitter::Noop, &worktrees, &wt.workspace_id)
+        let err = create_worktree(&db, &EventEmitter::Noop, &worktrees, &wt.workspace_id, None)
             .await
             .expect_err("worktree of a worktree");
         assert!(matches!(err.code, AppErrorCode::InvalidInput));
-        let err = create_worktree(&db, &EventEmitter::Noop, &worktrees, "no-such-workspace")
+        let err = create_worktree(&db, &EventEmitter::Noop, &worktrees, "no-such-workspace", None)
             .await
             .expect_err("unknown workspace");
         assert!(matches!(err.code, AppErrorCode::NotFound));
+    }
+
+    #[tokio::test]
+    async fn worktree_starts_from_a_chosen_branch() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
+        let r = Path::new(&repo);
+        git(r, &["branch", "feature"]);
+        git(r, &["checkout", "-q", "feature"]);
+        git(r, &["commit", "-q", "--allow-empty", "-m", "on feature"]);
+        let feature = git(r, &["rev-parse", "HEAD"]);
+        git(r, &["checkout", "-q", "main"]);
+        let create = |base: &'static str| {
+            create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, Some(base))
+        };
+
+        // Without a remote, the suggestion is the checked-out branch.
+        let bases = worktree_bases(&repo).await.unwrap();
+        assert!(bases.local.contains(&"main".to_string()));
+        assert!(bases.local.contains(&"feature".to_string()));
+        assert_eq!(bases.default.as_deref(), Some("main"));
+
+        let wt = create("feature").await.expect("create from feature");
+        assert_eq!(wt.base_branch.as_deref(), Some("feature"));
+        assert_eq!(wt.base_commit.as_deref(), Some(feature.as_str()));
+        assert_eq!(git(Path::new(&wt.path), &["rev-parse", "HEAD"]), feature);
+
+        // A remote's default branch is suggested and can be the base.
+        git(r, &["remote", "add", "origin", &repo]);
+        git(r, &["fetch", "-q", "origin"]);
+        git(r, &["remote", "set-head", "origin", "main"]);
+        let bases = worktree_bases(&repo).await.unwrap();
+        assert_eq!(bases.default.as_deref(), Some("origin/main"));
+        assert!(bases.remote.contains(&"origin/feature".to_string()));
+        let wt = create("origin/main").await.expect("create from origin/main");
+        assert_eq!(wt.base_branch.as_deref(), Some("origin/main"));
+
+        // Only branches resolve: not revisions, options, or unknown names.
+        for bad in ["nope", "HEAD~1", "--output=/tmp/x", "main^{tree}", ""] {
+            let err = create(bad).await.expect_err(bad);
+            assert!(matches!(err.code, AppErrorCode::InvalidInput), "{bad}");
+        }
     }
 
     #[tokio::test]
@@ -722,8 +833,8 @@ mod tests {
         let emitter = EventEmitter::Noop;
 
         let (a, b) = tokio::join!(
-            create_worktree(&db, &emitter, &worktrees, &root_wid),
-            create_worktree(&db, &emitter, &worktrees, &root_wid),
+            create_worktree(&db, &emitter, &worktrees, &root_wid, None),
+            create_worktree(&db, &emitter, &worktrees, &root_wid, None),
         );
         let (a, b) = (a.expect("a"), b.expect("b"));
         assert_ne!(a.workspace_id, b.workspace_id);
@@ -765,7 +876,7 @@ mod tests {
         let db = fresh_in_memory_db().await;
         let (_dir, _repo, root_wid, worktrees) = root_repo(&db).await;
         let emitter = EventEmitter::Noop;
-        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid)
+        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
             .await
             .unwrap();
         let idle_agents = ConnectionManager::new();
@@ -839,7 +950,7 @@ mod tests {
         let db = fresh_in_memory_db().await;
         let (_dir, _repo, root_wid, worktrees) = root_repo(&db).await;
         let emitter = EventEmitter::Noop;
-        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid)
+        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
             .await
             .unwrap();
         let agents = ConnectionManager::new();
@@ -901,7 +1012,7 @@ mod tests {
         let db = fresh_in_memory_db().await;
         let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
         let emitter = EventEmitter::Noop;
-        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid)
+        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
             .await
             .unwrap();
         let branch = wt.branch.clone().unwrap();
@@ -944,13 +1055,13 @@ mod tests {
         let db = fresh_in_memory_db().await;
         let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
         let emitter = EventEmitter::Noop;
-        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid)
+        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
             .await
             .unwrap();
-        let other = create_worktree(&db, &emitter, &worktrees, &root_wid)
+        let other = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
             .await
             .unwrap();
-        let empty = create_worktree(&db, &emitter, &worktrees, &root_wid)
+        let empty = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
             .await
             .unwrap();
         let branch = git(Path::new(&wt.path), &["rev-parse", "--abbrev-ref", "HEAD"]);
@@ -1073,7 +1184,7 @@ mod tests {
         let db = fresh_in_memory_db().await;
         let (_dir, _repo, root_wid, worktrees) = root_repo(&db).await;
         let emitter = EventEmitter::Noop;
-        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid)
+        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
             .await
             .unwrap();
         let mgr = ConnectionManager::new();

@@ -374,6 +374,7 @@ mod tests {
             &EventEmitter::Noop,
             &dir.path().join("worktrees"),
             &root_wid,
+            None,
         )
         .await
         .unwrap();

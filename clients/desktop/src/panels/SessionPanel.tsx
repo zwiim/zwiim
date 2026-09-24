@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, GitBranch, GitBranchPlus, Loader2, Square } from "lucide-react";
+import { ArrowDown, ArrowUp, GitBranch, Loader2, Square } from "lucide-react";
 import {
   optionUnavailableDetails,
   type AgentSummary,
+  type OpParams,
   type OptionsRequest,
   type PromptBlock,
+  type SessionCommand,
   type SessionOptions,
   type SessionView,
 } from "@zwiim/sdk";
@@ -14,6 +16,7 @@ import { agentChoices, rememberAgentChoices } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
 import { ControlSelect, OptionsBar, UnattendedBanner } from "./OptionsBar";
 import { RequestCard } from "./RequestCard";
+import { useSlashMenu } from "./SlashCommands";
 import { HistoryTurnView, LiveTurnView, stopReasonText } from "./Transcript";
 
 const UNAVAILABLE: Record<string, string> = {
@@ -69,12 +72,87 @@ export function defaultAgent(agents: AgentSummary[], preferred: string | null): 
   return (usable.find((a) => a.agent === preferred) ?? usable[0])?.agent ?? null;
 }
 
+/**
+ * The agent a new session starts with and its options: the agent picked here
+ * (else the first usable one), and the model/effort/mode picks for it.
+ */
+export function useNewSessionAgent() {
+  const controller = useController();
+  const agents = useHost((s) => s.agents);
+  // An agent's defaults move with its last session (a model without effort,
+  // say), so a new session starts from what the host reports now.
+  useEffect(() => {
+    void controller.refreshAgents().catch(() => {});
+  }, [controller]);
+  const [chosen, setChosen] = useState<string | null>(null);
+  const agent = agents ? defaultAgent(agents, chosen) : null;
+  const advertised = agents?.find((a) => a.agent === agent)?.options ?? null;
+  const [picks, setPicks] = useState<OptionsRequest>({});
+  const start = advertised && agent ? newSessionOptions(advertised, agentChoices(agent), picks) : null;
+  return {
+    agents,
+    agent,
+    /** What the agent offers before any pick. */
+    advertised,
+    /** Its slash commands, from its last session on this host. */
+    commands: agents?.find((a) => a.agent === agent)?.commands ?? null,
+    start,
+    pick(req: OptionsRequest) {
+      setPicks((p) => ({ ...p, ...req }));
+      if (agent) rememberAgentChoices(agent, { model: req.model, effort: req.effort });
+    },
+    choose(next: string) {
+      setChosen(next);
+      setPicks({});
+    },
+  };
+}
+
+/** The agent picker and its options, as composer controls. */
+export function NewSessionControls({
+  picker,
+  disabled,
+}: {
+  picker: ReturnType<typeof useNewSessionAgent>;
+  disabled: boolean;
+}) {
+  const { agents, agent, start } = picker;
+  if (!agents || agent === null) return null;
+  return (
+    <>
+      <ControlSelect
+        label="Agent"
+        value={agent}
+        onChange={picker.choose}
+        options={agents.map((a) => ({ value: a.agent, label: agentLabel(a), disabled: !a.available }))}
+      />
+      {start && <OptionsBar options={start.shown} disabled={disabled} onChange={picker.pick} />}
+    </>
+  );
+}
+
+/** `session.start` for a new session's first message. */
+export function startParams(
+  picker: ReturnType<typeof useNewSessionAgent>,
+  workspace_id: string,
+  blocks: PromptBlock[],
+  client_message_id: string,
+): OpParams<"session.start"> | null {
+  if (picker.agent === null) return null;
+  const options = picker.start?.request ?? {};
+  return {
+    workspace_id,
+    agent: picker.agent,
+    blocks,
+    client_message_id,
+    ...(Object.keys(options).length > 0 ? { options } : {}),
+  };
+}
+
 export function SessionPanel(props: {
   workspaceId: string;
   sessionId: string | null;
   onSessionStarted(id: string): void;
-  /** "New worktree + session" selected the worktree it created. */
-  onWorkspaceCreated?(id: string): void;
 }) {
   const removed = useHost((s) => s.workspaces?.find((w) => w.workspace_id === props.workspaceId)?.removed ?? false);
   if (props.sessionId === null) {
@@ -85,48 +163,19 @@ export function SessionPanel(props: {
         </p>
       );
     }
-    return (
-      <NewSession
-        workspaceId={props.workspaceId}
-        onStarted={props.onSessionStarted}
-        onWorkspaceCreated={props.onWorkspaceCreated}
-      />
-    );
+    return <NewSession key={props.workspaceId} workspaceId={props.workspaceId} onStarted={props.onSessionStarted} />;
   }
   return (
-    <OpenSession
-      key={props.sessionId}
-      workspaceId={props.workspaceId}
-      sessionId={props.sessionId}
-      removed={removed}
-    />
+    <OpenSession key={props.sessionId} workspaceId={props.workspaceId} sessionId={props.sessionId} removed={removed} />
   );
 }
 
-function NewSession({
-  workspaceId,
-  onStarted,
-  onWorkspaceCreated,
-}: {
-  workspaceId: string;
-  onStarted(id: string): void;
-  onWorkspaceCreated?(id: string): void;
-}) {
+function NewSession({ workspaceId, onStarted }: { workspaceId: string; onStarted(id: string): void }) {
   const controller = useController();
   const online = useOnline();
-  const agents = useHost((s) => s.agents);
   const workspace = useHost((s) => s.workspaces?.find((w) => w.workspace_id === workspaceId) ?? null);
-  const [chosen, setChosen] = useState<string | null>(null);
-  const agent = agents ? defaultAgent(agents, chosen) : null;
-  const advertised = agents?.find((a) => a.agent === agent)?.options ?? null;
-  const [picks, setPicks] = useState<OptionsRequest>({});
-  const start = advertised && agent ? newSessionOptions(advertised, agentChoices(agent), picks) : null;
-  const isRoot = workspace?.kind === "root";
-  const [inWorktree, setInWorktree] = useState(false);
-  const pick = (req: OptionsRequest) => {
-    setPicks((p) => ({ ...p, ...req }));
-    if (agent) rememberAgentChoices(agent, { model: req.model, effort: req.effort });
-  };
+  const picker = useNewSessionAgent();
+  const { agents, agent, start } = picker;
   return (
     <div className="flex h-full flex-col">
       <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
@@ -143,83 +192,36 @@ function NewSession({
           </p>
         )}
         {agents === null && <p className="text-muted-foreground text-xs">Checking which agents this host can run…</p>}
-        {agents !== null && agent === null && (
-          <div className="text-muted-foreground max-w-sm text-center text-xs" data-testid="no-agents">
-            <p>No agent is available on this host.</p>
-            <p className="mt-1">
-              Install one on the host (for example Claude Code), then{" "}
-              <button className="underline" onClick={() => void controller.refreshAgents().catch(() => {})}>
-                check again
-              </button>
-              .
-            </p>
-          </div>
-        )}
+        {agents !== null && agent === null && <NoAgents />}
       </div>
       <Composer
         placeholder="Describe the task…"
         disabled={!online || agent === null}
         unattended={start?.shown.mode?.current === "unattended"}
-        banner={start && <UnattendedBanner options={start.shown} disabled={!online} onChange={pick} />}
-        leading={
-          isRoot && (
-            <label
-              className={cn(
-                "hover:bg-muted has-[:focus-visible]:ring-ring/50 relative flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-xs has-[:focus-visible]:ring-2",
-                inWorktree ? "text-foreground bg-muted" : "text-muted-foreground",
-              )}
-              title="Start the session in a new worktree of this workspace"
-            >
-              <input
-                type="checkbox"
-                className="absolute inset-0 cursor-pointer opacity-0"
-                aria-label="In a new worktree"
-                checked={inWorktree}
-                onChange={(e) => setInWorktree(e.target.checked)}
-              />
-              <GitBranchPlus className="size-3.5" />
-              New worktree
-            </label>
-          )
-        }
-        controls={
-          agents &&
-          agent !== null && (
-            <>
-              <ControlSelect
-                label="Agent"
-                value={agent}
-                onChange={(a) => {
-                  setChosen(a);
-                  setPicks({});
-                }}
-                options={agents.map((a) => ({ value: a.agent, label: agentLabel(a), disabled: !a.available }))}
-              />
-              {start && <OptionsBar options={start.shown} disabled={!online} onChange={pick} />}
-            </>
-          )
-        }
+        banner={start && <UnattendedBanner options={start.shown} disabled={!online} onChange={picker.pick} />}
+        controls={<NewSessionControls picker={picker} disabled={!online} />}
+        commands={picker.commands}
         onSend={async (blocks, client_message_id) => {
-          if (agent === null) return;
-          // "New worktree + session" is two host operations: create, then start
-          // in it. If the start fails, the worktree stays selected for a retry.
-          let target = workspaceId;
-          if (isRoot && inWorktree) {
-            target = (await controller.createWorktree(workspaceId)).workspace_id;
-            setInWorktree(false);
-            onWorkspaceCreated?.(target);
-          }
-          const options = start?.request ?? {};
-          const id = await controller.startSession({
-            workspace_id: target,
-            agent,
-            blocks,
-            client_message_id,
-            ...(Object.keys(options).length > 0 ? { options } : {}),
-          });
-          onStarted(id);
+          const params = startParams(picker, workspaceId, blocks, client_message_id);
+          if (params) onStarted(await controller.startSession(params));
         }}
       />
+    </div>
+  );
+}
+
+export function NoAgents() {
+  const controller = useController();
+  return (
+    <div className="text-muted-foreground max-w-sm text-center text-xs" data-testid="no-agents">
+      <p>No agent is available on this host.</p>
+      <p className="mt-1">
+        Install one on the host (for example Claude Code), then{" "}
+        <button className="underline" onClick={() => void controller.refreshAgents().catch(() => {})}>
+          check again
+        </button>
+        .
+      </p>
     </div>
   );
 }
@@ -238,16 +240,18 @@ function OpenSession({
   const view = useHost((s) => s.sessions[sessionId]);
   const summary = useHost((s) => s.sessionsByWorkspace[workspaceId]?.find((x) => x.session_id === sessionId));
   const agentName = useHost((s) => s.agents?.find((a) => a.agent === summary?.agent)?.name ?? null);
+  // Before its agent announces them (or while it is away), the commands it
+  // offered last.
+  const agentCommands = useHost((s) => s.agents?.find((a) => a.agent === summary?.agent)?.commands ?? null);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  const { ref: scroller, atBottom, onScroll, jump } = useStickToBottom([
-    view?.history,
-    view?.live,
-    view?.settled,
-    view?.pendingRequest,
-    view?.lastError,
-  ]);
+  const {
+    ref: scroller,
+    atBottom,
+    onScroll,
+    jump,
+  } = useStickToBottom([view?.history, view?.live, view?.settled, view?.pendingRequest, view?.lastError]);
 
   useEffect(() => {
     controller.openSession(sessionId);
@@ -318,7 +322,9 @@ function OpenSession({
               </p>
             )}
             {empty && <p className="text-muted-foreground py-10 text-center">No messages yet.</p>}
-            {view?.history?.map((t) => <HistoryTurnView key={t.turn_id} turn={t} />)}
+            {view?.history?.map((t) => (
+              <HistoryTurnView key={t.turn_id} turn={t} />
+            ))}
             {view?.settled && <LiveTurnView turn={view.settled} />}
             {view && <LiveTurnView turn={view.live} streaming={running} />}
             {stopped && (
@@ -367,6 +373,7 @@ function OpenSession({
         }
         disabled={running || removed || !online}
         unattended={options?.mode?.current === "unattended"}
+        commands={view?.commands ?? agentCommands}
         notice={
           <>
             {optionsError && (
@@ -395,7 +402,15 @@ function OpenSession({
             )}
           </>
         }
-        banner={options && <UnattendedBanner options={options} disabled={optionsDisabled} onChange={(req) => void changeOptions(req)} />}
+        banner={
+          options && (
+            <UnattendedBanner
+              options={options}
+              disabled={optionsDisabled}
+              onChange={(req) => void changeOptions(req)}
+            />
+          )
+        }
         controls={
           options && (
             <>
@@ -430,7 +445,9 @@ function OpenSession({
             </button>
           )
         }
-        onSend={(blocks, client_message_id) => controller.sendMessage({ session_id: sessionId, blocks, client_message_id })}
+        onSend={(blocks, client_message_id) =>
+          controller.sendMessage({ session_id: sessionId, blocks, client_message_id })
+        }
       />
     </div>
   );
@@ -444,7 +461,12 @@ function SessionStatus({ view }: { view: SessionView | undefined }) {
   if (view.attach === "live") {
     const s = view.agentStatus;
     text = s === "prompting" ? "Working" : s === "connecting" ? "Starting…" : "Agent ready";
-    dot = s === "prompting" ? "bg-amber-500 animate-pulse" : s === "connecting" ? "bg-muted-foreground animate-pulse" : "bg-emerald-500";
+    dot =
+      s === "prompting"
+        ? "bg-amber-500 animate-pulse"
+        : s === "connecting"
+          ? "bg-muted-foreground animate-pulse"
+          : "bg-emerald-500";
   } else if (view.attach === "attaching") {
     text = "Attaching…";
     dot = "bg-muted-foreground animate-pulse";
@@ -518,12 +540,15 @@ function Composer(props: {
   controls?: React.ReactNode;
   /** Replaces send (the stop button while the agent works). */
   action?: React.ReactNode;
+  /** The agent's slash commands, offered when a word starts with `/`. */
+  commands?: readonly SessionCommand[] | null;
   onSend(blocks: PromptBlock[], clientMessageId: string): Promise<void>;
 }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const area = useRef<HTMLTextAreaElement>(null);
+  const slash = useSlashMenu({ text, setText, area, commands: props.commands });
 
   // Grow with the text up to a limit, then scroll.
   useLayoutEffect(() => {
@@ -561,7 +586,7 @@ function Composer(props: {
         )}
         <div
           className={cn(
-            "bg-card rounded-2xl shadow-lg ring-1 transition-shadow",
+            "bg-card relative rounded-2xl shadow-lg ring-1 transition-shadow",
             props.unattended ? "ring-amber-500/50" : "ring-border focus-within:ring-ring/60",
           )}
           data-testid="composer"
@@ -569,6 +594,7 @@ function Composer(props: {
             if (e.target === e.currentTarget) area.current?.focus();
           }}
         >
+          {slash.menu}
           {props.banner}
           <textarea
             ref={area}
@@ -577,8 +603,13 @@ function Composer(props: {
             value={text}
             rows={1}
             disabled={props.disabled || sending}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              setText(e.target.value);
+              slash.track(e);
+            }}
+            onSelect={slash.track}
             onKeyDown={(e) => {
+              if (slash.onKeyDown(e)) return;
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 void send();

@@ -7,8 +7,9 @@
 //! so connection/conversation/folder ids, agent-native session ids, raw ACP
 //! JSON (`raw_input`/`raw_output`/`_meta`/`locations`), delegation, config and
 //! mode internals never reach a client. Session options reach clients only
-//! through the generic `session_options` projection, and host paths inside
-//! the session's workspace are made workspace-relative.
+//! through the generic `session_options` projection, slash commands through
+//! `session_commands`, and host paths inside the session's workspace are made
+//! workspace-relative.
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -199,6 +200,10 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
             "session.options",
             json!({ "options": crate::session_options::project(config_options) }),
         ),
+        AcpEvent::AvailableCommands { commands } => (
+            "session.commands",
+            json!({ "commands": crate::session_commands::project(commands) }),
+        ),
         _ => return None,
     })
 }
@@ -372,6 +377,7 @@ pub fn project_snapshot(s: &LiveSessionSnapshot, root: Option<&str>) -> Value {
             "code": e.code,
         })),
         "usage": s.usage.as_ref().map(|u| json!({ "used": u.used, "size": u.size })),
+        "commands": crate::session_commands::project(&s.available_commands),
     })
 }
 
@@ -846,6 +852,27 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn command_events_carry_only_zwiim_fields() {
+        let v = project_envelope(
+            "s",
+            None,
+            &env(AcpEvent::AvailableCommands {
+                commands: vec![crate::acp::types::AvailableCommandInfo {
+                    name: "review".into(),
+                    description: "Review a PR".into(),
+                    input_hint: Some("pr number".into()),
+                }],
+            }),
+        )
+        .unwrap();
+        assert_eq!(v.kind, "session.commands");
+        assert_eq!(
+            v.payload,
+            json!({"commands": [{"name": "review", "description": "Review a PR", "hint": "pr number"}]})
+        );
+    }
+
+    #[test]
     fn internal_events_are_not_projected() {
         for event in [
             AcpEvent::SessionStarted {
@@ -887,6 +914,7 @@ pub(crate) mod tests {
         assert_eq!(
             keys,
             [
+                "commands",
                 "last_error",
                 "live_message",
                 "options",

@@ -1,12 +1,6 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  HostClient,
-  HostController,
-  ZwiimClientError,
-  type SessionSummary,
-  type WorkspaceInfo,
-} from "@zwiim/sdk";
+import { HostClient, HostController, ZwiimClientError, type SessionSummary, type WorkspaceInfo } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
 import { DiffPanel, DiffView } from "@/panels/DiffPanel";
 import { SessionPanel } from "@/panels/SessionPanel";
@@ -67,9 +61,8 @@ async function mount(t: FakeTransport, ui: (c: HostController) => React.ReactNod
 function sidebarProps(overrides: Partial<SidebarProps> = {}): SidebarProps {
   return {
     workspaceId: null,
-    sessionId: null,
     onSelectWorkspace: vi.fn(),
-    onSelectSession: vi.fn(),
+    onSessionStarted: vi.fn(),
     pickFolder: vi.fn(async () => null),
     ...overrides,
   };
@@ -96,7 +89,7 @@ function treeHost() {
 }
 
 describe("workspace tree", () => {
-  it("shows root → worktrees → sessions with branch, base, and working counts", async () => {
+  it("shows root → worktrees with branch, base, and working counts, but not sessions", async () => {
     const { t } = treeHost();
     await mount(t, () => <Sidebar {...sidebarProps()} />);
     const tree = screen.getByTestId("workspace-tree").textContent!;
@@ -106,37 +99,43 @@ describe("workspace tree", () => {
     expect(wt).toContain("zwiim/a1b2c3d4");
     expect(wt).toContain("base main@3f9e1a2");
     expect(wt).toContain("1 working");
-    // Each session says whether its agent is working; the agent is in the tooltip.
-    const rows = [...screen.getByTestId("workspace-a1b2c3d4").querySelectorAll("button[title]")].map((b) => b.getAttribute("title"));
-    expect(rows).toContain("Claude Code · working");
-    expect(rows).toContain("Codex · idle");
+    // Sessions are tabs beside the conversation, not sidebar rows.
+    expect(wt).not.toContain("task s1");
+    expect(screen.queryByText("New session")).toBeNull();
     // Nested under the root, not beside it.
     expect(screen.getByTestId("workspace-root").contains(screen.getByTestId("workspace-a1b2c3d4"))).toBe(true);
     const gone = screen.getByTestId("workspace-gone0000");
     expect(gone.textContent).toContain("repo-gone0000");
     expect(gone.textContent).toContain("removed");
-    expect(gone.textContent).toContain("task s3");
     expect(gone.querySelector('[title="Remove worktree"]')).toBeNull();
     expect(screen.getAllByTitle("Remove worktree")).toHaveLength(1);
   });
 
-  it("selects a session under its worktree", async () => {
+  it("selects a worktree", async () => {
     const { t } = treeHost();
     const props = sidebarProps();
     await mount(t, () => <Sidebar {...props} />);
-    fireEvent.click(screen.getByText("task s2"));
-    expect(props.onSelectSession).toHaveBeenCalledWith("a1b2c3d4", "s2");
+    fireEvent.click(screen.getByText("zwiim/a1b2c3d4"));
+    expect(props.onSelectWorkspace).toHaveBeenCalledWith("a1b2c3d4");
   });
 
-  it("creates a worktree explicitly and selects it", async () => {
+  it("creates a worktree from the dialog without a task, and selects it", async () => {
     const { t } = treeHost();
     t.handlers["workspace.create_worktree"] = () => worktree("9f8e7d6c");
     const props = sidebarProps();
     await mount(t, () => <Sidebar {...props} />);
     fireEvent.click(screen.getByTitle("New worktree"));
     await tick();
+    const dialog = screen.getByRole("dialog", { name: "New worktree" });
+    expect((within(dialog).getByLabelText("Repository") as HTMLSelectElement).value).toBe("root");
+    // Nothing is created until asked.
+    expect(t.calls.some((c) => c.op === "workspace.create_worktree")).toBe(false);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    await tick();
     expect(t.calls.find((c) => c.op === "workspace.create_worktree")?.params).toEqual({ workspace_id: "root" });
+    expect(t.calls.some((c) => c.op === "session.start")).toBe(false);
     expect(props.onSelectWorkspace).toHaveBeenCalledWith("9f8e7d6c");
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.getByTestId("workspace-9f8e7d6c").textContent).toContain("zwiim/9f8e7d6c");
     expect(t.calls.some((c) => c.op === "session.start")).toBe(false);
   });
@@ -200,9 +199,33 @@ describe("diff", () => {
       base_commit: BASE,
       truncated: false,
       files: [
-        { path: "src/a.rs", change: "modified", additions: 2, deletions: 1, binary: false, too_large: false, untracked: false },
-        { path: "new.txt", change: "added", additions: 1, deletions: 0, binary: false, too_large: false, untracked: true },
-        { path: "logo.png", change: "added", additions: null, deletions: null, binary: true, too_large: false, untracked: true },
+        {
+          path: "src/a.rs",
+          change: "modified",
+          additions: 2,
+          deletions: 1,
+          binary: false,
+          too_large: false,
+          untracked: false,
+        },
+        {
+          path: "new.txt",
+          change: "added",
+          additions: 1,
+          deletions: 0,
+          binary: false,
+          too_large: false,
+          untracked: true,
+        },
+        {
+          path: "logo.png",
+          change: "added",
+          additions: null,
+          deletions: null,
+          binary: true,
+          too_large: false,
+          untracked: true,
+        },
       ],
       ...(p.file === "src/a.rs" ? { patch: "@@ -1 +1,2 @@\n-old\n+new\n+more" } : {}),
       ...(p.file === "logo.png" ? { patch: null } : {}),
@@ -246,27 +269,158 @@ describe("diff", () => {
 });
 
 describe("sessions and removed worktrees", () => {
-  it("New worktree + session chains create then start in the new worktree", async () => {
+  it("a new worktree with a task creates it, then starts the session there", async () => {
     const t = new FakeTransport();
     t.handlers["workspace.list"] = () => [root];
     t.handlers["workspace.create_worktree"] = () => worktree("9f8e7d6c");
     t.handlers["session.start"] = () => ({ session_id: "s9" });
-    const created = vi.fn();
-    const started = vi.fn();
-    await mount(t, () => (
-      <SessionPanel workspaceId="root" sessionId={null} onSessionStarted={started} onWorkspaceCreated={created} />
-    ));
-    fireEvent.click(screen.getByLabelText("In a new worktree"));
-    fireEvent.change(screen.getByPlaceholderText("Describe the task…"), { target: { value: "go" } });
-    fireEvent.click(screen.getByTitle("Send"));
+    const props = sidebarProps();
+    await mount(t, () => <Sidebar {...props} />);
+    fireEvent.click(screen.getByTitle("New worktree"));
     await tick();
-    expect(t.calls.map((c) => c.op).filter((op) => op.startsWith("workspace.create") || op === "session.start")).toEqual([
-      "workspace.create_worktree",
-      "session.start",
-    ]);
-    expect(t.calls.find((c) => c.op === "session.start")?.params).toMatchObject({ workspace_id: "9f8e7d6c" });
-    expect(created).toHaveBeenCalledWith("9f8e7d6c");
-    expect(started).toHaveBeenCalledWith("s9");
+    const dialog = screen.getByRole("dialog", { name: "New worktree" });
+    fireEvent.change(within(dialog).getByLabelText("What do you want to work on?"), { target: { value: "go" } });
+    expect((within(dialog).getByLabelText("Agent") as HTMLSelectElement).value).toBe("claude_code");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    await tick();
+    expect(
+      t.calls.map((c) => c.op).filter((op) => op.startsWith("workspace.create") || op === "session.start"),
+    ).toEqual(["workspace.create_worktree", "session.start"]);
+    expect(t.calls.find((c) => c.op === "session.start")?.params).toMatchObject({
+      workspace_id: "9f8e7d6c",
+      agent: "claude_code",
+      blocks: [{ type: "text", text: "go" }],
+    });
+    expect(props.onSelectWorkspace).toHaveBeenCalledWith("9f8e7d6c");
+    expect(props.onSessionStarted).toHaveBeenCalledWith("9f8e7d6c", "s9");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("starts from a chosen base branch, in plan mode, with an image attached", async () => {
+    const t = new FakeTransport();
+    t.handlers["workspace.list"] = () => [root];
+    t.handlers["git.branches"] = () => ({
+      local: ["main", "feature"],
+      remote: ["origin/main"],
+      default: "origin/main",
+    });
+    t.handlers["agent.list"] = () => [
+      {
+        agent: "claude_code",
+        name: "Claude Code",
+        available: true,
+        reason: null,
+        options: {
+          model: { current: "sonnet", values: [{ value: "sonnet", label: "Sonnet", description: null }] },
+          effort: null,
+          mode: { current: "normal", label: "Manual", available: ["normal", "plan", "unattended"] },
+        },
+      },
+    ];
+    t.handlers["workspace.create_worktree"] = () => worktree("9f8e7d6c");
+    t.handlers["session.start"] = () => ({ session_id: "s9" });
+    const props = sidebarProps();
+    await mount(t, () => <Sidebar {...props} />);
+    fireEvent.click(screen.getByTitle("New worktree"));
+    await tick();
+    const dialog = screen.getByRole("dialog", { name: "New worktree" });
+    // The remote's default branch is preselected; the mode menu is not offered here.
+    expect(within(dialog).getByLabelText("Base branch: origin/main")).toBeTruthy();
+    expect(within(dialog).queryByRole("button", { name: /^Mode:/ })).toBeNull();
+    fireEvent.click(within(dialog).getByLabelText("Base branch: origin/main"));
+    expect(
+      within(within(dialog).getByRole("listbox"))
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["origin/maindefault", "main", "feature"]);
+    fireEvent.change(within(dialog).getByLabelText("Search branches"), { target: { value: "feat" } });
+    fireEvent.keyDown(within(dialog).getByLabelText("Search branches"), { key: "Enter" });
+    expect(within(dialog).getByLabelText("Base branch: feature")).toBeTruthy();
+
+    fireEvent.click(within(dialog).getByTitle("More options"));
+    fireEvent.click(within(dialog).getByRole("menuitemcheckbox", { name: /Plan mode/ }));
+    expect(within(dialog).getByTestId("attachments").textContent).toContain("Plan mode");
+    const png = new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" });
+    fireEvent.change(within(dialog).getByTestId("attachment-input"), { target: { files: [png] } });
+    await within(dialog).findByLabelText("Remove shot.png");
+
+    fireEvent.change(within(dialog).getByLabelText("What do you want to work on?"), { target: { value: "plan it" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    await tick();
+    expect(t.calls.find((c) => c.op === "workspace.create_worktree")?.params).toEqual({
+      workspace_id: "root",
+      base: "feature",
+    });
+    expect(t.calls.find((c) => c.op === "session.start")?.params).toMatchObject({
+      workspace_id: "9f8e7d6c",
+      blocks: [
+        { type: "text", text: "plan it" },
+        { type: "image", mime_type: "image/png", data: "iVBORw==" },
+      ],
+      options: { model: "sonnet", mode: "plan" },
+    });
+  });
+
+  it("offers the agent's slash commands in the task box; Escape closes the menu, not the dialog", async () => {
+    const t = new FakeTransport();
+    t.handlers["workspace.list"] = () => [root];
+    t.handlers["git.branches"] = () => ({ local: ["main"], remote: [], default: "main" });
+    t.handlers["agent.list"] = () => [
+      {
+        agent: "claude_code",
+        name: "Claude Code",
+        available: true,
+        reason: null,
+        options: null,
+        commands: [{ name: "review", description: "Review a pull request", hint: null }],
+      },
+    ];
+    const props = sidebarProps();
+    await mount(t, () => <Sidebar {...props} />);
+    fireEvent.click(screen.getByTitle("New worktree"));
+    await tick();
+    const dialog = screen.getByRole("dialog", { name: "New worktree" });
+    const box = within(dialog).getByLabelText("What do you want to work on?") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "/re" } });
+    expect(within(dialog).getByRole("listbox", { name: "Commands" }).textContent).toContain("/review");
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(within(dialog).queryByRole("listbox", { name: "Commands" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "New worktree" })).toBeTruthy();
+    fireEvent.change(box, { target: { value: "" } });
+    fireEvent.change(box, { target: { value: "/" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(box.value).toBe("/review ");
+    expect(t.calls.some((c) => c.op === "workspace.create_worktree")).toBe(false);
+  });
+
+  it("keeps a created worktree when its session fails to start, and retries only the start", async () => {
+    const t = new FakeTransport();
+    t.handlers["workspace.list"] = () => [root];
+    t.handlers["workspace.create_worktree"] = () => worktree("9f8e7d6c");
+    let fail = true;
+    t.handlers["session.start"] = () => {
+      if (fail) throw new ZwiimClientError("agent_not_installed", "missing", 400);
+      return { session_id: "s9" };
+    };
+    const props = sidebarProps();
+    await mount(t, () => <Sidebar {...props} />);
+    fireEvent.click(screen.getByTitle("New worktree"));
+    await tick();
+    const dialog = screen.getByRole("dialog", { name: "New worktree" });
+    fireEvent.change(within(dialog).getByLabelText("What do you want to work on?"), { target: { value: "go" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    await tick();
+    expect(within(dialog).getByRole("alert").textContent).toContain(
+      "The worktree was created, but the session did not start",
+    );
+    expect((within(dialog).getByLabelText("Repository") as HTMLSelectElement).disabled).toBe(true);
+    fail = false;
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start session" }));
+    await tick();
+    expect(t.calls.filter((c) => c.op === "workspace.create_worktree")).toHaveLength(1);
+    expect(t.calls.filter((c) => c.op === "session.start")).toHaveLength(2);
+    expect(props.onSessionStarted).toHaveBeenCalledWith("9f8e7d6c", "s9");
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("keeps a removed worktree's session readable but never sendable", async () => {
@@ -275,12 +429,23 @@ describe("sessions and removed worktrees", () => {
     t.handlers["session.history"] = (p) => ({
       session_id: p.session_id,
       turns: [
-        { turn_id: "t1", role: "user", blocks: [{ type: "text", text: "old question" }], timestamp: "", completed_at: null, duration_ms: null, model: null, usage: null },
+        {
+          turn_id: "t1",
+          role: "user",
+          blocks: [{ type: "text", text: "old question" }],
+          timestamp: "",
+          completed_at: null,
+          duration_ms: null,
+          model: null,
+          usage: null,
+        },
       ],
     });
     await mount(t, () => <SessionPanel workspaceId="gone0000" sessionId="s3" onSessionStarted={() => {}} />);
     expect(screen.getByTestId("transcript").textContent).toContain("old question");
-    const composer = screen.getByPlaceholderText("This worktree was removed — the session is read-only") as HTMLTextAreaElement;
+    const composer = screen.getByPlaceholderText(
+      "This worktree was removed — the session is read-only",
+    ) as HTMLTextAreaElement;
     expect(composer.disabled).toBe(true);
     expect((screen.getByTitle("Send") as HTMLButtonElement).disabled).toBe(true);
     expect(t.calls.some((c) => c.op === "session.send")).toBe(false);

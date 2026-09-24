@@ -111,6 +111,9 @@ pub struct AgentSummary {
     /// What a new session can choose, from what the agent last advertised
     /// here; `null` before its first session on this host.
     pub options: Option<crate::session_options::SessionOptions>,
+    /// The slash commands it offered in its last session here; `null`
+    /// before its first.
+    pub commands: Option<Vec<crate::session_commands::SessionCommand>>,
 }
 
 /// The host's agents and whether each can be used. Detection only: nothing is
@@ -138,9 +141,12 @@ pub async fn agent_list(Extension(state): Extension<Arc<AppState>>) -> ZResult<V
             Ok(()) if !enabled => Some("disabled"),
             Ok(()) => None,
         };
-        let options = match crate::session_options::agent_name(agent) {
-            Some(name) => crate::session_options::for_new_session(&state.db.conn, &name).await,
-            None => None,
+        let (options, commands) = match crate::session_options::agent_name(agent) {
+            Some(name) => (
+                crate::session_options::for_new_session(&state.db.conn, &name).await,
+                crate::session_commands::for_new_session(&state.db.conn, &name).await,
+            ),
+            None => (None, None),
         };
         out.push(AgentSummary {
             agent,
@@ -148,6 +154,7 @@ pub async fn agent_list(Extension(state): Extension<Arc<AppState>>) -> ZResult<V
             available: reason.is_none(),
             reason,
             options,
+            commands,
         });
     }
     Ok(Json(out))
@@ -205,9 +212,18 @@ pub async fn workspace_open(
     }))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorktreeCreateParams {
+    pub workspace_id: String,
+    /// A branch from `git.branches` to start from; the root's HEAD when absent.
+    #[serde(default)]
+    pub base: Option<String>,
+}
+
 pub async fn workspace_create_worktree(
     Extension(state): Extension<Arc<AppState>>,
-    ZJson(p): ZJson<WorkspaceParams>,
+    ZJson(p): ZJson<WorktreeCreateParams>,
 ) -> ZResult<WorkspaceInfo> {
     Ok(Json(
         workspace::create_worktree(
@@ -215,6 +231,7 @@ pub async fn workspace_create_worktree(
             &state.emitter,
             &state.data_dir.join("worktrees"),
             &p.workspace_id,
+            p.base.as_deref(),
         )
         .await?,
     ))
@@ -404,6 +421,16 @@ pub struct GitLogParams {
     pub all_branches: Option<bool>,
     #[serde(default)]
     pub with_files: Option<bool>,
+}
+
+pub async fn git_branches(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<WorkspaceParams>,
+) -> ZResult<workspace::WorktreeBases> {
+    let root = workspace::resolve(&state.db.conn, &p.workspace_id)
+        .await?
+        .path;
+    Ok(Json(workspace::worktree_bases(&root).await?))
 }
 
 pub async fn git_log(
@@ -727,6 +754,20 @@ pub async fn session_cancel(
     ZJson(p): ZJson<SessionParams>,
 ) -> ZResult<Value> {
     session::cancel(&state.db, &state.connection_manager, &p.session_id).await?;
+    ok()
+}
+
+pub async fn session_delete(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<SessionParams>,
+) -> ZResult<Value> {
+    session::delete(
+        &state.db,
+        &state.emitter,
+        &state.connection_manager,
+        &p.session_id,
+    )
+    .await?;
     ok()
 }
 

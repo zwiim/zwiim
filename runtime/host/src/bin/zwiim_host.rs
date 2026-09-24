@@ -316,6 +316,8 @@ async fn async_main() -> ExitCode {
     // Follow agents' session options into the per-session preferences that
     // idle respawn and host restart replay.
     zwiim_host::session_options::spawn_tracker(state.clone());
+    // Keep each agent's slash commands for its next new session.
+    zwiim_host::session_commands::spawn_tracker(state.clone());
 
     // Logging phase 3: wire the emitter so the Logs viewer's live tail
     // (`logs://appended`) reaches WS clients.

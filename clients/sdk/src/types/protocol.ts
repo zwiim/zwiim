@@ -139,6 +139,13 @@ export interface GitLogEntry {
   pushed: boolean | null;
 }
 
+/** Branches a new worktree can start from, and the one to suggest (the remote's default branch, else the checked-out one). */
+export interface WorktreeBases {
+  local: string[];
+  remote: string[];
+  default: string | null;
+}
+
 export interface GitLogResult {
   entries: GitLogEntry[];
   has_upstream: boolean;
@@ -234,6 +241,15 @@ export interface OptionsRequest {
   mode?: SessionMode;
 }
 
+/** A slash command the agent offers. Run it by sending `/name args` as text. */
+export interface SessionCommand {
+  /** Without the leading `/`. */
+  name: string;
+  description: string;
+  /** What to type after the name, when the command takes input. */
+  hint: string | null;
+}
+
 export type AgentUnavailableReason = "not_installed" | "unsupported_platform" | "disabled";
 
 export interface AgentSummary {
@@ -244,6 +260,8 @@ export interface AgentSummary {
   reason: AgentUnavailableReason | (string & {}) | null;
   /** What a new session can choose; null before the agent's first session here. */
   options: SessionOptions | null;
+  /** The slash commands it offered in its last session here; null before its first. */
+  commands: SessionCommand[] | null;
 }
 
 /** Persisted session status. */
@@ -374,6 +392,8 @@ export interface SessionSnapshot {
   usage: Usage | null;
   /** Null until the agent has advertised its options. */
   options: SessionOptions | null;
+  /** Empty until the agent has announced its commands. */
+  commands: SessionCommand[];
 }
 
 interface EventBase<T extends string, P> {
@@ -394,7 +414,8 @@ export type SessionEvent =
   | EventBase<"agent.turn_complete", { stop_reason: string | null }>
   | EventBase<"agent.error", SessionErrorInfo>
   | EventBase<"session.status", { status: SessionStatus }>
-  | EventBase<"session.options", { options: SessionOptions }>;
+  | EventBase<"session.options", { options: SessionOptions }>
+  | EventBase<"session.commands", { commands: SessionCommand[] }>;
 
 export type HistoryBlock =
   | { type: "text"; text: string }
@@ -532,7 +553,9 @@ export interface Operations {
     { committed_files: number },
   ];
   "git.diff": [{ workspace_id: string; file?: string }, WorkspaceDiff];
-  "workspace.create_worktree": [{ workspace_id: string }, WorkspaceInfo];
+  "git.branches": [{ workspace_id: string }, WorktreeBases];
+  /** `base`: a branch from `git.branches`; the root's HEAD when absent. */
+  "workspace.create_worktree": [{ workspace_id: string; base?: string }, WorkspaceInfo];
   "workspace.remove_worktree": [{ workspace_id: string; force?: boolean }, WorktreeRemoved];
   "terminal.spawn": [{ workspace_id: string; shell?: string }, { terminal_id: string }];
   "terminal.write": [{ terminal_id: string; data: string }, Record<string, never>];
@@ -555,6 +578,7 @@ export interface Operations {
     { session_id: string },
   ];
   "session.cancel": [{ session_id: string }, Record<string, never>];
+  "session.delete": [{ session_id: string }, Record<string, never>];
   "session.options": [{ session_id: string }, { session_id: string; options: SessionOptions }];
   "session.set_options": [
     { session_id: string } & OptionsRequest,
@@ -590,5 +614,6 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "session.start",
   "session.send",
   "session.cancel",
+  "session.delete",
   "session.respond",
 ]);

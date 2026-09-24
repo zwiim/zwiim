@@ -12,6 +12,7 @@ const snapshot = {
   last_error: null,
   usage: null,
   options: null,
+  commands: [],
 };
 
 function setup() {
@@ -86,6 +87,35 @@ describe("HostController", () => {
     const view = t.store.getState().sessions.s1!;
     expect(view.historyStale).toBe(false);
     expect(view.lastStopReason).toBe("end_turn");
+  });
+
+  it("does not re-read a session being deleted, only one whose delete failed", async () => {
+    const t = setup();
+    let busy = false;
+    t.transport.handlers["session.delete"] = () => {
+      // The host stops the agent before the session is gone.
+      t.transport.channel.frame({ type: "detached", subscription_id: "sub-1", reason: "session_not_live" });
+      if (busy) throw new Error("turn_in_progress");
+      return {};
+    };
+    t.client.start();
+    await flush();
+    t.transport.channel.open();
+    await flush();
+    t.controller.openSession("s1");
+    await flush();
+    t.transport.channel.frame({ type: "snapshot", subscription_id: "sub-1", session_id: "s1", epoch: "e", snapshot, event_seq: 1 });
+    await flush();
+    busy = true;
+    const before = t.transport.count("session.history");
+    await t.controller.deleteSession("s1").catch(() => {});
+    await flush();
+    expect(t.transport.count("session.history")).toBe(before + 1);
+    busy = false;
+    await t.controller.deleteSession("s1");
+    await flush();
+    expect(t.transport.count("session.history")).toBe(before + 1);
+    expect(t.transport.count("session.options")).toBe(1);
   });
 
   it("keeps a finished turn on screen until the agent's transcript includes it", async () => {

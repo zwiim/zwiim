@@ -105,6 +105,7 @@ describe("workspace tree", () => {
           last_error: null,
           usage: null,
           options: null,
+          commands: [],
         },
       },
     });
@@ -143,6 +144,9 @@ describe("worktree operations", () => {
     ]);
     expect(t.store.getState().workspaces).toEqual([created]);
     expect(t.store.getState().sessionsByWorkspace.a).toEqual([]);
+
+    await t.controller.createWorktree("root", { base: "origin/main" });
+    expect(t.transport.requests.at(-1)!.params).toEqual({ workspace_id: "root", base: "origin/main" });
   });
 
   it("surfaces busy and dirty refusals with their details", async () => {
@@ -186,6 +190,27 @@ describe("worktree operations", () => {
       ["a", true, ["s1"]],
     ]);
     expect(t.transport.requests.length - listsBefore).toBe(2);
+  });
+
+  it("deletes a session once, following the feed", async () => {
+    const t = setup();
+    t.transport.handlers["workspace.list"] = () => [root, wt("a")];
+    t.transport.handlers["session.list"] = (p) => (p.workspace_id === "a" ? [session("s1", "a"), session("s2", "a")] : []);
+    t.transport.handlers["session.delete"] = (p) => {
+      if (p.session_id === "s2") throw hostError("turn_in_progress");
+      t.transport.feedEvent("session.removed", { session_id: "s1", workspace_id: "a" });
+      return {};
+    };
+    await goLive(t);
+    await t.controller.deleteSession("s1");
+    const busy = await t.controller.deleteSession("s2").catch((e: ZwiimClientError) => e);
+    expect((busy as ZwiimClientError).code).toBe("turn_in_progress");
+    expect(t.store.getState().sessionsByWorkspace.a!.map((s) => s.session_id)).toEqual(["s2"]);
+    const deletes = t.transport.requests.filter((r) => r.op === "session.delete");
+    expect(deletes.map((r) => [r.params, r.options?.mutating])).toEqual([
+      [{ session_id: "s1" }, true],
+      [{ session_id: "s2" }, true],
+    ]);
   });
 
   it("loads a diff, and one file's patch", async () => {

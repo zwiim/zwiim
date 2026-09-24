@@ -57,6 +57,8 @@ export class HostController {
   private readonly openSessions = new Set<string>();
   private readonly historyInFlight = new Set<string>();
   private readonly historyDirty = new Set<string>();
+  /** Sessions being or already deleted; their transcript and options are not re-read. */
+  private readonly deleted = new Set<string>();
   /**
    * Per session, bumped whenever options arrive; a `session.options` read
    * that raced a newer report is dropped.
@@ -157,10 +159,14 @@ export class HostController {
     return workspace;
   }
 
-  /** Create a worktree of a root workspace; the host picks branch and path. */
-  async createWorktree(root_workspace_id: string): Promise<WorkspaceInfo> {
+  /**
+   * Create a worktree of a root workspace, starting from branch `base` (one
+   * of `git.branches`) or else the root's HEAD; the host picks branch and path.
+   */
+  async createWorktree(root_workspace_id: string, opts: { base?: string } = {}): Promise<WorkspaceInfo> {
     const workspace = await this.client.request("workspace.create_worktree", {
       workspace_id: root_workspace_id,
+      ...(opts.base ? { base: opts.base } : {}),
     });
     this.store.dispatch({ type: "workspace_added", workspace });
     if (!(workspace.workspace_id in this.store.getState().sessionsByWorkspace)) {
@@ -181,6 +187,22 @@ export class HostController {
       ...(opts.force ? { force: true } : {}),
     });
     return removed;
+  }
+
+  /**
+   * Delete a session. The host refuses with `turn_in_progress` while its agent
+   * is working; `session.removed` on the feed drops it from every client.
+   */
+  async deleteSession(session_id: string): Promise<void> {
+    // Stopping the agent detaches the session before it is gone; do not re-read it.
+    this.deleted.add(session_id);
+    try {
+      await this.client.request("session.delete", { session_id });
+    } catch (e) {
+      this.deleted.delete(session_id);
+      void this.loadHistory(session_id);
+      throw e;
+    }
   }
 
   /** Stage and commit `files` (repo-relative). Never retried. */
@@ -238,7 +260,7 @@ export class HostController {
   }
 
   private async loadOptions(session_id: string): Promise<void> {
-    if (!this.openSessions.has(session_id)) return;
+    if (!this.openSessions.has(session_id) || this.deleted.has(session_id)) return;
     const revision = this.optionsRevision.get(session_id) ?? 0;
     let options: SessionOptions;
     try {
@@ -262,7 +284,7 @@ export class HostController {
   }
 
   private async loadHistory(session_id: string): Promise<void> {
-    if (!this.openSessions.has(session_id)) return;
+    if (!this.openSessions.has(session_id) || this.deleted.has(session_id)) return;
     if (this.historyInFlight.has(session_id)) {
       this.historyDirty.add(session_id);
       return;

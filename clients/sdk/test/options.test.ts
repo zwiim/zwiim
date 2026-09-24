@@ -21,6 +21,7 @@ const snapshot = (options: SessionOptions | null): SessionSnapshot => ({
   last_error: null,
   usage: null,
   options,
+  commands: [],
 });
 
 describe("session options state", () => {
@@ -53,6 +54,27 @@ describe("session options state", () => {
   });
 });
 
+describe("session commands state", () => {
+  it("follows command events, and keeps them across a respawn that has not announced yet", () => {
+    const review = { name: "review", description: "Review a PR", hint: "pr number" };
+    let v = initialSessionView("s1");
+    expect(v.commands).toBeNull();
+    v = reduceSession(v, { type: "snapshot", epoch: "e", seq: 1, snapshot: { ...snapshot(null), commands: [review] } });
+    expect(v.commands).toEqual([review]);
+    v = reduceSession(v, {
+      type: "event",
+      event: { session_id: "s1", seq: 2, type: "session.commands", payload: { commands: [] } },
+    });
+    expect(v.commands).toEqual([]);
+    v = reduceSession(v, {
+      type: "event",
+      event: { session_id: "s1", seq: 3, type: "session.commands", payload: { commands: [review] } },
+    });
+    v = reduceSession(v, { type: "snapshot", epoch: "e2", seq: 0, snapshot: snapshot(null) });
+    expect(v.commands).toEqual([review]);
+  });
+});
+
 describe("controller: agents, options, ownership", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
@@ -70,8 +92,8 @@ describe("controller: agents, options, ownership", () => {
 
   it("loads agents on connect", async () => {
     const agents: AgentSummary[] = [
-      { agent: "claude_code", name: "Claude Code", available: true, reason: null, options: opts("normal") },
-      { agent: "codex", name: "Codex", available: false, reason: "not_installed", options: null },
+      { agent: "claude_code", name: "Claude Code", available: true, reason: null, options: opts("normal"), commands: null },
+      { agent: "codex", name: "Codex", available: false, reason: "not_installed", options: null, commands: null },
     ];
     const transport = new FakeTransport();
     transport.handlers["agent.list"] = () => agents;

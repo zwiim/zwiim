@@ -24,7 +24,11 @@ vi.mock("@xterm/xterm", () => ({
     }
   },
 }));
-vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+vi.mock("@xterm/addon-fit", () => ({
+  FitAddon: class {
+    fit() {}
+  },
+}));
 globalThis.ResizeObserver ??= class {
   observe() {}
   disconnect() {}
@@ -83,9 +87,8 @@ async function mount(t: FakeTransport, ui: React.ReactNode) {
 
 const sidebarProps = (): SidebarProps => ({
   workspaceId: null,
-  sessionId: null,
   onSelectWorkspace: vi.fn(),
-  onSelectSession: vi.fn(),
+  onSessionStarted: vi.fn(),
   pickFolder: vi.fn(async () => null),
 });
 
@@ -102,7 +105,7 @@ describe("workspace tree on the host feed", () => {
     expect(t.calls.filter((c) => LIST_OPS.includes(c.op))).toEqual([]);
   });
 
-  it("shows another client's worktree, session and working status", async () => {
+  it("shows another client's worktree and its working count", async () => {
     const t = new FakeTransport();
     t.handlers["workspace.list"] = () => [root];
     await mount(t, <Sidebar {...sidebarProps()} />);
@@ -112,13 +115,14 @@ describe("workspace tree on the host feed", () => {
     await t.feedEvent("session.changed", { session: session("s1", "a1b2c3d4") });
     const row = () => screen.getByTestId("workspace-a1b2c3d4").textContent!;
     expect(row()).toContain("zwiim/a1b2c3d4");
-    expect(row()).toContain("task s1");
     expect(row()).not.toContain("working ");
 
     await t.feedEvent("session.changed", { session: session("s1", "a1b2c3d4", { live: true, status: "in_progress" }) });
     await t.feedEvent("session.changed", { session: session("s2", "a1b2c3d4", { live: true, status: "in_progress" }) });
     expect(row()).toContain("2 working");
-    await t.feedEvent("session.changed", { session: session("s1", "a1b2c3d4", { live: false, status: "pending_review" }) });
+    await t.feedEvent("session.changed", {
+      session: session("s1", "a1b2c3d4", { live: false, status: "pending_review" }),
+    });
     expect(row()).toContain("1 working");
     expect(t.calls.filter((c) => LIST_OPS.includes(c.op))).toEqual([]);
   });
@@ -137,7 +141,6 @@ describe("workspace tree on the host feed", () => {
     await t.feedEvent("workspace.removed", { workspace_id: "b2c3d4e5" });
     const gone = screen.getByTestId("workspace-a1b2c3d4");
     expect(gone.textContent).toContain("removed");
-    expect(gone.textContent).toContain("task s1");
     expect(gone.querySelector('[title="Remove worktree"]')).toBeNull();
     expect(screen.queryByTestId("workspace-b2c3d4e5")).toBeNull();
   });
@@ -189,7 +192,10 @@ describe("diff on the host feed", () => {
     await tick();
     expect(screen.getByTestId("diff-files").textContent).toContain("b.txt");
     expect(screen.getByTestId("diff-patch").textContent).toContain("+v2");
-    const refetched = t.calls.filter((c) => c.op === "git.diff").slice(before).map((c) => c.params);
+    const refetched = t.calls
+      .filter((c) => c.op === "git.diff")
+      .slice(before)
+      .map((c) => c.params);
     expect(refetched).toHaveLength(2);
     expect(refetched).toContainEqual({ workspace_id: "a1b2c3d4" });
     expect(refetched).toContainEqual({ workspace_id: "a1b2c3d4", file: "a.txt" });

@@ -21,6 +21,7 @@ const baseSnapshot: SessionSnapshot = {
   last_error: null,
   usage: { used: 10, size: 100 },
   options: null,
+  commands: [],
 };
 
 const run = (frames: SessionFrame[], view: SessionView = initialSessionView("s1")) =>

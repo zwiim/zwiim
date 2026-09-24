@@ -27,6 +27,7 @@ use crate::models::agent::AgentType;
 use crate::models::message::MessageTurn;
 use crate::protocol::error::ZwiimError;
 use crate::session_options::{OptionsRequest, SessionOptions};
+use crate::web::event_bridge::EventEmitter;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -422,6 +423,36 @@ pub async fn cancel(
         Some(connection_id) => Ok(connections.cancel(&db.conn, &connection_id).await?),
         None => Ok(()),
     }
+}
+
+/// Delete session `session_id`. Refused with `turn_in_progress` while a turn
+/// runs (cancel it first); an idle attached agent is stopped. The row is
+/// soft-deleted through the conversation delete path, so clients get
+/// `session.removed`; the agent-native transcript stays on disk.
+pub async fn delete(
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+    connections: &ConnectionManager,
+    session_id: &str,
+) -> Result<(), ZwiimError> {
+    let row = resolve(&db.conn, session_id).await?;
+    let lock = session_lock(session_id);
+    let _guard = lock.lock().await;
+    if let Some(connection_id) = connection_for(connections, &row).await {
+        if let Some(state) = connections.get_state(&connection_id).await {
+            if state.read().await.turn_in_flight {
+                return Err(ZwiimError::turn_in_progress());
+            }
+        }
+        connections.disconnect(&connection_id).await?;
+    }
+    crate::commands::conversations::delete_conversation_with_cleanup_core(
+        emitter,
+        &db.conn,
+        row.id,
+    )
+    .await?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -945,6 +976,63 @@ pub(crate) mod orchestration_tests {
             .unwrap_err();
         assert_eq!(busy.code, "turn_in_progress");
         assert_eq!(launcher.launches.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn delete_waits_for_the_turn_then_stops_the_agent() {
+        let db = fresh_in_memory_db().await;
+        let wid = workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let emitter = EventEmitter::Noop;
+
+        let sid = start(
+            &db,
+            &mgr,
+            &launcher,
+            &wid,
+            AgentType::ClaudeCode,
+            text("hi"),
+            None,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+        let busy = delete(&db, &emitter, &mgr, &sid).await.unwrap_err();
+        assert_eq!(busy.code, "turn_in_progress");
+        assert!(resolve(&db.conn, &sid).await.is_ok(), "nothing deleted mid-turn");
+
+        finish_turn(&mgr, "fake-conn-1").await;
+        delete(&db, &emitter, &mgr, &sid).await.unwrap();
+        settle().await;
+        assert!(mgr.get_state("fake-conn-1").await.is_none(), "agent stopped");
+        assert!(resolve(&db.conn, &sid).await.is_err());
+        assert!(list_for_workspace(&db.conn, &mgr, &wid)
+            .await
+            .unwrap()
+            .is_empty());
+        let gone = send(&db, &mgr, &launcher, &sid, text("again"), None)
+            .await
+            .unwrap_err();
+        assert_eq!(gone.code, "not_found");
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 1, "never resumed");
+
+        // A session with no agent attached deletes directly.
+        let other = start(
+            &db,
+            &mgr,
+            &launcher,
+            &wid,
+            AgentType::ClaudeCode,
+            text("hi"),
+            None,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+        mgr.disconnect("fake-conn-2").await.unwrap();
+        delete(&db, &emitter, &mgr, &other).await.unwrap();
+        assert!(resolve(&db.conn, &other).await.is_err());
     }
 
     #[tokio::test]

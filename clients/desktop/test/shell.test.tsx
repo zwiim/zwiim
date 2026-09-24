@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HostClient, HostController, type WorkspaceInfo } from "@zwiim/sdk";
+import { HostClient, HostController, ZwiimClientError, type WorkspaceInfo } from "@zwiim/sdk";
 import { Workbench } from "@/App";
 import { bootHost, type BootPhase } from "@/lib/boot";
 import type { DiscoveredHost, NativeBridge } from "@/lib/bridge";
@@ -114,10 +114,28 @@ describe("workbench", () => {
     t.handlers["workspace.list"] = () => [ws("w1"), ws("w2")];
     t.handlers["session.list"] = (p) =>
       p.workspace_id === "w2"
-        ? [{ session_id: "s9", workspace_id: null, title: "old task", agent: "claude_code", status: "pending_review", live: false, created_at: "", updated_at: "" }]
+        ? [
+            {
+              session_id: "s9",
+              workspace_id: null,
+              title: "old task",
+              agent: "claude_code",
+              status: "pending_review",
+              live: false,
+              created_at: "",
+              updated_at: "",
+            },
+          ]
         : [];
     t.handlers["workspace.tree"] = () => [{ name: "a.txt", path: "a.txt", kind: "file" }];
-    t.handlers["files.read"] = (p) => ({ path: p.path, content: "hello from a", etag: "e", truncated: false, binary: false, size: 12 });
+    t.handlers["files.read"] = (p) => ({
+      path: p.path,
+      content: "hello from a",
+      etag: "e",
+      truncated: false,
+      binary: false,
+      size: 12,
+    });
     return t;
   }
 
@@ -153,11 +171,20 @@ describe("workbench", () => {
     t.handlers["git.diff"] = (p) => ({
       base_commit: null,
       truncated: false,
-      files: [{ path: "src/a.txt", change: "modified", additions: 1, deletions: 0, binary: false, too_large: false, untracked: false }],
+      files: [
+        {
+          path: "src/a.txt",
+          change: "modified",
+          additions: 1,
+          deletions: 0,
+          binary: false,
+          too_large: false,
+          untracked: false,
+        },
+      ],
       ...(p.file ? { patch: "@@ -1 +1 @@\n-old\n+new" } : {}),
     });
     const c = await mount(t, <Workbench bridge={bridge()} />);
-    expect(screen.queryByRole("navigation", { name: "Open tabs" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Diff" }));
     await tick();
     fireEvent.click(screen.getByText("src/a.txt"));
@@ -172,7 +199,79 @@ describe("workbench", () => {
     expect(screen.getAllByLabelText("Close a.txt")).toHaveLength(1);
     fireEvent.click(screen.getByLabelText("Close a.txt"));
     expect(screen.queryByTestId("diff-view")).toBeNull();
-    expect(screen.queryByRole("navigation", { name: "Open tabs" })).toBeNull();
+    expect(screen.getByRole("navigation", { name: "Open tabs" }).textContent).not.toContain("a.txt");
+    expect(screen.getByPlaceholderText("Describe the task…")).toBeTruthy();
+    c.dispose();
+  });
+
+  it("shows a workspace's sessions as tabs, and + starts another there", async () => {
+    const t = workbenchHost();
+    const c = await mount(t, <Workbench bridge={bridge()} />);
+    const tabs = () => screen.getByRole("navigation", { name: "Open tabs" });
+    fireEvent.click(screen.getByText("repo-w2"));
+    await tick();
+    // A workspace opens at its newest session.
+    expect(within(tabs()).getByRole("button", { name: "old task" }).getAttribute("aria-current")).toBe("page");
+    expect(t.sent).toContainEqual(expect.objectContaining({ op: "session.subscribe", session_id: "s9" }));
+    fireEvent.click(within(tabs()).getByRole("button", { name: "New session" }));
+    expect(screen.getByPlaceholderText("Describe the task…")).toBeTruthy();
+    expect(tabs().textContent).toContain("old task");
+    fireEvent.click(within(tabs()).getByRole("button", { name: "old task" }));
+    expect(screen.queryByPlaceholderText("Describe the task…")).toBeNull();
+    // Another workspace has its own tabs; coming back returns to the session shown.
+    fireEvent.click(screen.getByText("repo-w1"));
+    expect(tabs().textContent).not.toContain("old task");
+    fireEvent.click(screen.getByText("repo-w2"));
+    expect(within(tabs()).getByRole("button", { name: "old task" }).getAttribute("aria-current")).toBe("page");
+    c.dispose();
+  });
+
+  it("deletes a session from its tab, then shows the tab beside it", async () => {
+    const t = workbenchHost();
+    const session = (session_id: string, title: string) => ({
+      session_id,
+      workspace_id: null,
+      title,
+      agent: "claude_code",
+      status: "pending_review",
+      live: false,
+      created_at: "",
+      updated_at: "",
+    });
+    t.handlers["session.list"] = (p) =>
+      p.workspace_id === "w2" ? [session("s10", "new task"), session("s9", "old task")] : [];
+    let busy = true;
+    t.handlers["session.delete"] = () => {
+      if (busy) throw new ZwiimClientError("turn_in_progress", "working", 409);
+      return {};
+    };
+    const c = await mount(t, <Workbench bridge={bridge()} />);
+    const tabs = () => screen.getByRole("navigation", { name: "Open tabs" });
+    fireEvent.click(screen.getByText("repo-w2"));
+    await tick();
+    expect(within(tabs()).getByRole("button", { name: "new task" }).getAttribute("aria-current")).toBe("page");
+
+    // Cancel leaves it; a working agent refuses, with nothing removed.
+    fireEvent.click(within(tabs()).getByRole("button", { name: "Delete new task" }));
+    fireEvent.click(within(screen.getByRole("alertdialog", { name: "Delete session" })).getByText("Cancel"));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    fireEvent.click(within(tabs()).getByRole("button", { name: "Delete new task" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+    await tick();
+    expect(screen.getByRole("alertdialog").textContent).toContain("The agent is still working");
+    expect(within(tabs()).getByRole("button", { name: "new task" })).toBeTruthy();
+
+    busy = false;
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+    await tick();
+    await t.feedEvent("session.removed", { session_id: "s10", workspace_id: "w2" });
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(within(tabs()).queryByRole("button", { name: "new task" })).toBeNull();
+    expect(within(tabs()).getByRole("button", { name: "old task" }).getAttribute("aria-current")).toBe("page");
+    expect(t.calls.filter((x) => x.op === "session.delete").map((x) => x.params)).toEqual([
+      { session_id: "s10" },
+      { session_id: "s10" },
+    ]);
     c.dispose();
   });
 

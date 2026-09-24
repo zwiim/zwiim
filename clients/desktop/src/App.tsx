@@ -11,15 +11,16 @@ import {
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
+  Plus,
   WifiOff,
   X,
 } from "lucide-react";
-import type { WorkspaceInfo } from "@zwiim/sdk";
+import { isSessionWorking, type SessionSummary, type WorkspaceInfo } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { useAccount } from "@/lib/account";
 import { bootHost, type BootPhase } from "@/lib/boot";
 import type { NativeBridge } from "@/lib/bridge";
-import { HostProvider, useController, useHost } from "@/lib/host-context";
+import { errorMessage, HostProvider, useController, useHost, useOnline } from "@/lib/host-context";
 import {
   lastSelection,
   panelLayout,
@@ -122,6 +123,8 @@ export function Workbench({ bridge }: { bridge: NativeBridge }) {
   const [docs, setDocs] = useState<OpenDoc[]>([]);
   /** The open file showing in the middle; null shows the session. */
   const [activeDoc, setActiveDoc] = useState<string | null>(null);
+  /** Each workspace's session last shown here (null: a new one), to return to it. */
+  const lastSession = useRef<Record<string, string | null>>({});
   const restored = useRef(false);
   const account = useAccount(bridge);
   const [showWelcome, setShowWelcome] = useState(() => !welcomed());
@@ -134,6 +137,24 @@ export function Workbench({ bridge }: { bridge: NativeBridge }) {
   const removed = workspace?.removed ?? false;
   const shownDocs = workspace && !removed ? docs.filter((d) => d.workspaceId === workspaceId) : [];
   const current = shownDocs.find((d) => docKey(d) === activeDoc) ?? null;
+
+  function selectSession(id: string | null) {
+    setSessionId(id);
+    setActiveDoc(null);
+  }
+
+  /** Show a workspace at the session last shown in it, else its newest one. */
+  function selectWorkspace(id: string) {
+    if (id === workspaceId) return;
+    const sessions = controller.store.getState().sessionsByWorkspace[id] ?? [];
+    const last = lastSession.current[id];
+    // A removed worktree cannot start a new session, so it opens at its newest.
+    const removed = workspaces?.find((w) => w.workspace_id === id)?.removed ?? false;
+    const keep = last === null ? !removed : sessions.some((x) => x.session_id === last);
+    setWorkspaceId(id);
+    setSessionId(keep ? (last ?? null) : (sessions[0]?.session_id ?? null));
+    setActiveDoc(null);
+  }
 
   function openDoc(doc: OpenDoc) {
     setDocs((all) => (all.some((d) => docKey(d) === docKey(doc)) ? all : [...all, doc]));
@@ -170,6 +191,7 @@ export function Workbench({ bridge }: { bridge: NativeBridge }) {
   }, [workspaces, workspaceId, hostId, controller]);
 
   useEffect(() => {
+    if (workspaceId) lastSession.current[workspaceId] = sessionId;
     if (hostId && restored.current) rememberSelection(hostId, { workspaceId, sessionId });
   }, [hostId, workspaceId, sessionId]);
 
@@ -192,15 +214,10 @@ export function Workbench({ bridge }: { bridge: NativeBridge }) {
         </div>
         <Sidebar
           workspaceId={workspaceId}
-          sessionId={sessionId}
-          onSelectWorkspace={(id) => {
-            setWorkspaceId(id);
-            setSessionId(null);
-          }}
-          onSelectSession={(wid, id) => {
+          onSelectWorkspace={selectWorkspace}
+          onSessionStarted={(wid, id) => {
             setWorkspaceId(wid);
-            setSessionId(id);
-            setActiveDoc(null);
+            selectSession(id);
           }}
           pickFolder={() => bridge.pickFolder()}
         />
@@ -218,27 +235,19 @@ export function Workbench({ bridge }: { bridge: NativeBridge }) {
                 This worktree was removed — its sessions are read-only.
               </p>
             )}
-            {shownDocs.length > 0 && (
-              <DocTabs
-                workspaceId={workspaceId}
-                sessionId={sessionId}
-                docs={shownDocs}
-                active={current && docKey(current)}
-                onSelect={setActiveDoc}
-                onClose={closeDoc}
-              />
-            )}
+            <CenterTabs
+              workspaceId={workspaceId}
+              sessionId={sessionId}
+              removed={removed}
+              docs={shownDocs}
+              active={current && docKey(current)}
+              onSelectSession={selectSession}
+              onSelectDoc={setActiveDoc}
+              onCloseDoc={closeDoc}
+            />
             <div className="relative min-h-0 flex-1">
               <TabPane active={current === null}>
-                <SessionPanel
-                  workspaceId={workspaceId}
-                  sessionId={sessionId}
-                  onSessionStarted={setSessionId}
-                  onWorkspaceCreated={(id) => {
-                    setWorkspaceId(id);
-                    setSessionId(null);
-                  }}
-                />
+                <SessionPanel workspaceId={workspaceId} sessionId={sessionId} onSessionStarted={setSessionId} />
               </TabPane>
               {workspace &&
                 shownDocs.map((d) => (
@@ -270,74 +279,242 @@ export function Workbench({ bridge }: { bridge: NativeBridge }) {
   );
 }
 
-/** The session and the files opened beside it, as tabs over the middle column. */
-function DocTabs({
+const NO_SESSIONS: SessionSummary[] = [];
+
+const tabClass = (selected: boolean) =>
+  cn(
+    "group -mb-px flex max-w-56 shrink-0 items-center gap-1.5 border-b-2 px-3 text-[13px] transition-colors",
+    selected ? "border-foreground text-foreground" : "text-muted-foreground hover:text-foreground border-transparent",
+  );
+
+/**
+ * The workspace's sessions and the files opened beside them, as tabs over the
+ * middle column. "+" starts another session in the same workspace.
+ */
+function CenterTabs({
   workspaceId,
   sessionId,
+  removed,
   docs,
   active,
-  onSelect,
-  onClose,
+  onSelectSession,
+  onSelectDoc,
+  onCloseDoc,
 }: {
   workspaceId: string;
   sessionId: string | null;
+  removed: boolean;
   docs: OpenDoc[];
+  /** The open file showing; null when a session shows. */
   active: string | null;
-  onSelect(key: string | null): void;
-  onClose(key: string): void;
+  onSelectSession(id: string | null): void;
+  onSelectDoc(key: string): void;
+  onCloseDoc(key: string): void;
 }) {
-  const title = useHost((s) =>
-    sessionId ? (s.sessionsByWorkspace[workspaceId]?.find((x) => x.session_id === sessionId)?.title ?? null) : null,
-  );
-  const tab = (selected: boolean) =>
-    cn(
-      "group -mb-px flex max-w-56 shrink-0 items-center gap-1.5 border-b-2 px-3 text-[13px] transition-colors",
-      selected ? "border-foreground text-foreground" : "text-muted-foreground hover:text-foreground border-transparent",
-    );
+  const listed = useHost((s) => s.sessionsByWorkspace[workspaceId] ?? NO_SESSIONS);
+  // The host lists newest first; tabs open left to right.
+  const sessions = [...listed].reverse();
+  const drafting = sessionId === null && !removed;
+  const [deleting, setDeleting] = useState<{ session: SessionSummary; anchor: DOMRect } | null>(null);
+
+  /** After a delete, the tab beside the deleted one shows (or a new session). */
+  function deleted(id: string) {
+    setDeleting(null);
+    if (id !== sessionId) return;
+    const at = sessions.findIndex((s) => s.session_id === id);
+    onSelectSession((sessions[at + 1] ?? sessions[at - 1])?.session_id ?? null);
+  }
+
   return (
-    <nav className="flex h-11 shrink-0 items-stretch overflow-x-auto border-b px-2" aria-label="Open tabs">
-      <button
-        className={tab(active === null)}
-        aria-current={active === null ? "page" : undefined}
-        onClick={() => onSelect(null)}
-      >
-        <MessageSquare className="size-3.5 shrink-0" />
-        <span className="truncate">{sessionId ? title || "Session" : "New session"}</span>
-      </button>
-      {docs.map((d) => {
-        const key = docKey(d);
-        const name = d.path.split("/").pop() || d.path;
-        const Icon = d.kind === "diff" ? FileDiff : FileText;
-        return (
-          <div
-            key={key}
-            className={tab(active === key)}
-            title={d.kind === "diff" ? `Changes in ${d.path}` : d.path}
-            onAuxClick={(e) => e.button === 1 && onClose(key)}
+    <>
+      <nav className="flex h-11 shrink-0 items-stretch overflow-x-auto border-b px-2" aria-label="Open tabs">
+        {sessions.map((s) => (
+          <SessionTab
+            key={s.session_id}
+            session={s}
+            selected={active === null && sessionId === s.session_id}
+            onSelect={() => onSelectSession(s.session_id)}
+            onDelete={(anchor) => setDeleting({ session: s, anchor })}
+          />
+        ))}
+        {drafting && (
+          <button
+            className={tabClass(active === null)}
+            aria-current={active === null ? "page" : undefined}
+            onClick={() => onSelectSession(null)}
           >
-            <button
-              className="flex min-w-0 items-center gap-1.5"
-              aria-current={active === key ? "page" : undefined}
-              onClick={() => onSelect(key)}
+            <MessageSquare className="size-3.5 shrink-0" />
+            <span className="truncate">New session</span>
+          </button>
+        )}
+        {!removed && (
+          <button
+            className="text-muted-foreground hover:text-foreground hover:bg-muted my-auto grid size-7 shrink-0 place-items-center rounded-md"
+            title="New session"
+            aria-label="New session"
+            onClick={() => onSelectSession(null)}
+          >
+            <Plus className="size-4" />
+          </button>
+        )}
+        {docs.length > 0 && <span className="bg-border mx-1.5 my-3 w-px shrink-0" aria-hidden />}
+        {docs.map((d) => {
+          const key = docKey(d);
+          const name = d.path.split("/").pop() || d.path;
+          const Icon = d.kind === "diff" ? FileDiff : FileText;
+          return (
+            <div
+              key={key}
+              className={tabClass(active === key)}
+              title={d.kind === "diff" ? `Changes in ${d.path}` : d.path}
+              onAuxClick={(e) => e.button === 1 && onCloseDoc(key)}
             >
-              <Icon className="size-3.5 shrink-0" />
-              <span className="truncate">{name}</span>
-            </button>
-            <button
-              className={cn(
-                "hover:bg-muted rounded p-0.5 opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
-                active === key && "opacity-100",
-              )}
-              aria-label={`Close ${name}`}
-              title="Close"
-              onClick={() => onClose(key)}
-            >
-              <X className="size-3" />
-            </button>
-          </div>
-        );
-      })}
-    </nav>
+              <button
+                className="flex min-w-0 items-center gap-1.5"
+                aria-current={active === key ? "page" : undefined}
+                onClick={() => onSelectDoc(key)}
+              >
+                <Icon className="size-3.5 shrink-0" />
+                <span className="truncate">{name}</span>
+              </button>
+              <button
+                className={cn(
+                  "hover:bg-muted rounded p-0.5 opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+                  active === key && "opacity-100",
+                )}
+                aria-label={`Close ${name}`}
+                title="Close"
+                onClick={() => onCloseDoc(key)}
+              >
+                <X className="size-3" />
+              </button>
+            </div>
+          );
+        })}
+      </nav>
+      {deleting && (
+        <DeleteSession
+          session={deleting.session}
+          anchor={deleting.anchor}
+          onClose={() => setDeleting(null)}
+          onDeleted={() => deleted(deleting.session.session_id)}
+        />
+      )}
+    </>
+  );
+}
+
+/** A session's tab: its title, a dot while its agent works, and delete. */
+function SessionTab({
+  session,
+  selected,
+  onSelect,
+  onDelete,
+}: {
+  session: SessionSummary;
+  selected: boolean;
+  onSelect(): void;
+  onDelete(anchor: DOMRect): void;
+}) {
+  const view = useHost((s) => s.sessions[session.session_id]);
+  const working = isSessionWorking(session, view);
+  const label = session.title || "Untitled session";
+  return (
+    <div className={tabClass(selected)} title={working ? `${label} · working` : (session.title ?? undefined)}>
+      <button
+        className="flex min-w-0 items-center gap-1.5"
+        aria-current={selected ? "page" : undefined}
+        onClick={onSelect}
+      >
+        {working ? (
+          <span className="grid size-3.5 shrink-0 place-items-center">
+            <span className="size-1.5 animate-pulse rounded-full bg-amber-500" />
+          </span>
+        ) : (
+          <MessageSquare className="size-3.5 shrink-0" />
+        )}
+        <span className="truncate">{label}</span>
+      </button>
+      <button
+        className={cn(
+          "hover:bg-muted rounded p-0.5 opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+          selected && "opacity-100",
+        )}
+        aria-label={`Delete ${label}`}
+        title="Delete session"
+        onClick={(e) => onDelete(e.currentTarget.getBoundingClientRect())}
+      >
+        <X className="size-3" />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Confirm deleting a session, under its tab. The host refuses while the
+ * agent is working; nothing is retried.
+ */
+function DeleteSession({
+  session,
+  anchor,
+  onClose,
+  onDeleted,
+}: {
+  session: SessionSummary;
+  anchor: DOMRect;
+  onClose(): void;
+  onDeleted(): void;
+}) {
+  const controller = useController();
+  const online = useOnline();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !pending) onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pending, onClose]);
+
+  async function remove() {
+    setPending(true);
+    setError(null);
+    try {
+      await controller.deleteSession(session.session_id);
+      onDeleted();
+    } catch (e) {
+      const busy = e && typeof e === "object" && "code" in e && e.code === "turn_in_progress";
+      setError(busy ? "The agent is still working. Stop it, then delete the session." : errorMessage(e));
+      setPending(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onPointerDown={() => !pending && onClose()} />
+      <div
+        role="alertdialog"
+        aria-label="Delete session"
+        className="bg-card fixed z-50 flex w-72 flex-col gap-2 rounded-lg border p-3 text-xs shadow-lg"
+        style={{ top: anchor.bottom + 6, left: Math.max(8, Math.min(anchor.right - 288, window.innerWidth - 296)) }}
+      >
+        <p>
+          Delete <span className="font-medium">{session.title || "Untitled session"}</span>? Its conversation will no
+          longer be available.
+        </p>
+        {error && <p className="text-destructive">{error}</p>}
+        <div className="flex justify-end gap-1.5">
+          <Button size="xs" variant="ghost" disabled={pending} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button size="xs" variant="destructive" autoFocus disabled={pending || !online} onClick={() => void remove()}>
+            Delete
+          </Button>
+        </div>
+      </div>
+    </>
   );
 }
 
