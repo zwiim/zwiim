@@ -666,6 +666,305 @@ New Rust dependencies (licenses checked in each crate's `Cargo.toml`):
 Its other dependencies (`socket2`, `fastrand`, `mio` and `log`) were already
 in the tree. No new npm dependencies.
 
+## Mobile Foundation R8.1 — Expo app on the Zwiim SDK
+
+Zwiim-owned, no Codeg code copied. A new React Native app
+(`clients/mobile/`) reaches a paired host through the existing SDK: its
+`HostClient` over its `ConnectionManager`, which alone chooses the direct
+LAN path or the Cloud relay. No mobile protocol or backend; the SDK, the
+host and the Cloud are unchanged.
+
+Generated from Expo templates (MIT, © 650 Industries, Inc.), then
+rewritten:
+- `create-expo-app` (`blank-typescript`, Expo SDK 57): `App.tsx`,
+  `index.ts`, `app.json`, `tsconfig.json`, `.gitignore` and `assets/`.
+  The template's `LICENSE`, agent files and web favicon were removed. The
+  icons are still the template's placeholders.
+- `create-expo-module --local`: the layout of `modules/zwiim-lan/`
+  (`expo-module.config.json`, podspec, `build.gradle`, manifest). Its
+  sample code and `LICENSE` were replaced or removed.
+
+App (`clients/mobile/`):
+- `src/host/connection.ts`: `HostConnection`.
+  - It builds a `ConnectionManager` and `HostClient` for the chosen mode
+    (Automatic, Local only or Cloud only).
+  - Screens read a view: mode, status, `lan`/`relay`, host id, error code
+    and feed event count.
+  - It connects, disconnects and reconnects, and changing the mode
+    reopens the connection.
+  - Requests go over a live connection only.
+  - Coming back to the foreground or back online skips the reconnect
+    backoff.
+- `src/host/open.ts`: opens a paired host from the secure store (pinned
+  key and device secret), with its Cloud and LAN inputs.
+- `src/platform/capabilities.ts`: the interfaces `SecureStore`,
+  `LanAccess`, `QrScanner` and `NetworkReachability`.
+  - `src/platform/memory-store.ts` is an in-memory `SecureStore`: nothing
+    is persisted. The Keychain/Keystore implementation is the next slice.
+  - `QrScanner` and `NetworkReachability` have no implementation yet.
+- `src/platform/lan.ts`:
+  - `nativeDial` is the SDK's `LanDial` over the native module;
+  - `knownEndpoint` is discovery of one known `address:port`. It stands in
+    for mDNS, and the tunnel handshake still proves the pinned key.
+- `modules/zwiim-lan/` (new local Expo module) provides TCP connections.
+  - iOS uses Network.framework (`NWConnection`); Android uses
+    `java.net.Socket`.
+  - It only moves bytes, which cross the bridge as base64.
+  - Addresses are literal: nothing is resolved through DNS.
+- `src/runtime.ts`: backs `crypto.getRandomValues` with `expo-crypto`.
+  Expo's runtime already supplies `URL`, `TextDecoder` (`fatal`), `fetch`
+  and `AbortController`. `runtimeProblem()` checks all of them on the
+  device.
+- `app.json`: name Zwiim, scheme `zwiim`, `dev.zwiim.mobile`, the iOS
+  local network usage text and `_zwiim._tcp` Bonjour service, the Android
+  network permissions, and `expo-dev-client`.
+- `metro.config.js`: bundles `clients/sdk` from source.
+- DEV ONLY, to be removed:
+  - `src/dev/{DevScreen.tsx,provision.ts,checks.ts}`: a temporary screen
+    and checks;
+  - `scripts/dev-stack.mjs`: a throwaway real Cloud and host, with a test
+    JWT minted from a random per-run secret. No real credentials.
+- Tests: `test/{connection,platform,dev}.test.ts`, on the SDK's fakes
+  (`clients/sdk/test/{relay-fakes,lan-fakes}.ts`).
+
+New npm dependencies (standalone project, its own `package-lock.json`;
+not a root workspace, because React Native pins its own React):
+- `expo` 57.0.25, `expo-crypto` 57.0.3, `expo-dev-client` 57.0.19 and
+  `expo-status-bar` 57.0.1, all MIT.
+- `react` 19.2.3 and `react-native` 0.86.3, both MIT.
+- Dev: `vitest` 4.1.11 (MIT), `typescript` 6.0.3 (Apache-2.0) and
+  `@types/react` 19.2 (MIT).
+
+Transitive licenses are mostly MIT, ISC, Apache-2.0 and BSD. The
+exceptions are build-time tools of the Expo CLI, not bundled into the app:
+- `lightningcss`: MPL-2.0;
+- `node-forge`: BSD-3-Clause OR GPL-2.0, used under BSD;
+- `argparse`: Python-2.0;
+- `caniuse-lite`: CC-BY-4.0.
+
+Re-check with a license scan before shipping.
+
+## Mobile Identity R8.2 — persistent identity, account, Hosts, QR pairing
+
+Zwiim-owned, no Codeg code copied. The mobile app keeps its device identity,
+pinned host keys and account in the platform's secure storage, signs in to
+the Zwiim account, lists the account's hosts from the Cloud and pairs by
+scanning the host's existing pairing QR. It reuses the SDK (`CloudClient`,
+`parsePairingInvitation`, `pairThroughCloud`, `ConnectionManager`) and the
+existing Cloud API and Supabase PKCE flow of the Desktop
+(`clients/desktop/src-tauri/src/account.rs`). The SDK, the host, the Cloud
+and the Noise protocol are unchanged.
+
+App (`clients/mobile/`):
+- `src/platform/vault-store.ts`: `VaultSecureStore`, the `SecureStore` over
+  `expo-secure-store` (iOS Keychain, `AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY`;
+  Android values encrypted with an Android Keystore key). One item each for
+  the device identity (secret key only; the public key is derived on read),
+  every pinned host, the access token and the account session (user id,
+  email, refresh token). Unreadable items read as absent.
+- `src/platform/capabilities.ts`: `SecureStore` gains the account session;
+  the unused `QrScanner` interface is removed (scanning is `expo-camera`'s).
+- `src/account/auth.ts`: `AccountAuth`, Google through Supabase Auth with
+  PKCE in the system auth session (`expo-web-browser`), returning to
+  `zwiim://auth-callback`. It renews the access token near expiry (one
+  renewal at a time; a refused renewal signs out) and signs out locally
+  first, then revokes upstream.
+- `src/account/hosts.ts`: the account's hosts (`GET /v1/hosts`) with
+  presence and whether this phone is paired with each.
+- `src/pairing/pairing.ts`: reads a scanned QR against the chosen host,
+  pairs through the Cloud, pins the QR's host key, and maps every failure
+  (not a code, wrong host, unknown host, expired, rejected/used, offline,
+  unreachable, signed out) to its words and next action; `pairingStep` is
+  the pairing screen's steps.
+- `src/config.ts`, `src/services.ts`: build-time public configuration
+  (`EXPO_PUBLIC_ZWIIM_CLOUD_URL`, `EXPO_PUBLIC_ZWIIM_SUPABASE_URL`,
+  `EXPO_PUBLIC_ZWIIM_SUPABASE_ANON_KEY`; none is a secret) and the app's
+  single store, account and Cloud client.
+- `src/ui/{tokens.ts,components.tsx}` and `src/screens/{SignInScreen,
+  HostsScreen,PairingScreen,HostScreen}.tsx`: the first screens, per
+  DESIGN.md: sign in, Hosts, pairing (camera scan, confirm, result) and the
+  paired host's connection (status, path and connection mode).
+- `App.tsx`: fonts, splash, routing between those screens; a dev link still
+  opens the dev screen.
+- `app.json`: `expo-secure-store`, `expo-web-browser`, `expo-camera`
+  (camera text; no microphone, `RECORD_AUDIO` blocked), `expo-font`,
+  `expo-splash-screen` and automatic light/dark.
+- DEV ONLY: `scripts/dev-stack.mjs` also stands in for Supabase Auth on
+  loopback (PKCE with the S256 check, refresh, logout) with tokens from its
+  random per-run secret, and serves a page with the host's pairing QR plus
+  codes that must fail. No real credentials. `src/dev/*` now keeps its
+  device identity through `ensureIdentity`.
+- Tests: `test/{store,account,pairing}.test.ts` and `test/auth-fakes.ts`
+  (a scripted Supabase Auth).
+
+New npm dependencies:
+- `expo-secure-store` 57.0.4, `expo-web-browser` 57.0.3, `expo-camera`
+  57.0.5, `expo-device` 57.0.2, `expo-haptics` 57.0.3, `expo-font` 57.0.4,
+  `expo-splash-screen` 57.0.9, `expo-system-ui` 57.0.4 and
+  `react-native-safe-area-context` 5.7.0: MIT.
+- `@noble/hashes` 2.4.0 (MIT): SHA-256 for the PKCE challenge.
+- `@expo-google-fonts/geist` 0.4.2 and `@expo-google-fonts/geist-mono`
+  0.4.3: MIT packaging of the Geist fonts, which are SIL OFL-1.1
+  (© The Geist Project Authors). The OFL requires its text to ship with the
+  fonts: add it to the app's licenses before shipping.
+
+## Mobile Hosts + Pairing UX R8.3 — navigation shell, Host bar, remembered mode
+
+Zwiim-owned, no Codeg code copied. The mobile entry flow (sign in → Hosts →
+pair → connected Host) on the R8.2 identity and the SDK's
+`ConnectionManager`. The SDK, the host, the Cloud and the Noise protocol are
+unchanged.
+
+App (`clients/mobile/`):
+- `App.tsx`: a native stack (sign in | Hosts, the Host shell, pairing as a
+  full-screen modal) chosen by whether an account is signed in. A
+  remembered, still-paired host opens straight into its shell on launch.
+  Sign out clears the account session only: pairings and modes stay.
+- `src/app/{navigation.ts,account.tsx,hooks.ts}`: route types, the signed-in
+  account in context, and hooks for the current host, the account's hosts
+  and a ticking clock.
+- `src/host/current.ts`: `CurrentHost`, the one open host connection. It
+  opens a host in its remembered mode, reuses the connection for the same
+  host, replaces it for another, asks `host.hello` once live, and forgets a
+  pairing the host refused (`device_refused`).
+- `src/host/status.ts`: how the connection reads (dot, path pill, status
+  line with a reconnect countdown) and which failures need a banner or a
+  full-screen state, with their next step.
+- `src/host/connection.ts`: `HostConnectionView.retryAt`, from the SDK's
+  `retryInMs`.
+- `src/platform/{capabilities,vault-store,memory-store,native}.ts`:
+  `Preferences` (each host's connection mode and the last host; not
+  secrets, kept in the same secure-store vault) and
+  `SecureStore.forgetHost`.
+- `src/account/hosts.ts`: row meta for the path and connection state, and
+  the last-used host first.
+- `src/screens/HostShell.tsx` (new; replaces `HostScreen.tsx`): bottom tabs
+  (Sessions, Files, Terminal as placeholders; Host), the persistent Host
+  bar with the Host switcher sheet, banners, the connection-mode sheet and
+  full-screen pairing states. `HostsScreen.tsx`: presence, last seen,
+  paired vs not, a sign-out footer. `PairingScreen.tsx`: a navigation
+  screen instead of a `Modal`; connects on success.
+- `src/ui/components.tsx`: `HostBar`, `PathPill`, `HostRow`, `Banner`,
+  `SkeletonRows`.
+- Tests: `test/current.test.ts`; additions to
+  `test/{store,connection,account}.test.ts`.
+
+New npm dependencies, all MIT:
+- `@react-navigation/native` 7.4.1, `@react-navigation/native-stack`
+  7.19.2 and `@react-navigation/bottom-tabs` 7.19.2, bringing
+  `@react-navigation/elements` 2.9.43, `@react-navigation/core` 7.22.1 and
+  `@react-navigation/routers` 7.6.4.
+- `react-native-screens` 4.26.2.
+
+## Mobile Sessions + Needs You R8.4 — Sessions tab, request answers
+
+Zwiim-owned, no Codeg code copied. The Sessions tab and a session shell on
+the SDK's `HostController` / `HostStore` and its request model
+(`agent.request`, `agent.request_resolved`, `session.respond`). The SDK,
+the host, the Cloud and the Noise protocol are unchanged.
+
+App (`clients/mobile/`):
+- `src/sessions/follow.ts` (new): `SessionFollower` attaches every live
+  session through `HostClient.attachSession` (which resubscribes from its
+  cursor after a reconnect) and detaches one that stops, so pending
+  requests reach the store; it notes when this phone first saw each.
+- `src/sessions/model.ts` (new): a session's state (needs you, working,
+  waiting, completed, cancelled, error), the NEEDS YOU / WORKING / RECENT
+  sections, request copy and `session.respond` errors.
+- `src/host/connection.ts`: a `HostStore` per connection, kept by the
+  SDK's `HostController` and the `SessionFollower`.
+- `src/host/current.ts`: the store in `CurrentHostState`; `respond()`
+  sends `session.respond` and leaves the update to the host's event.
+- `src/app/{hooks,navigation}.ts`, `App.tsx`: `useHostState`,
+  `usePendingCount`; a `Session` route pushed over the Host shell.
+- `src/screens/HostFrame.tsx` (new, from `HostShell.tsx`): the Host bar,
+  banners and connection states around a tab; reconnecting keeps the last
+  state dimmed and not actionable.
+- `src/screens/SessionsTab.tsx`, `requests.tsx`, `SessionScreen.tsx`
+  (new): NEEDS YOU cards (a command's permission answered in place), the
+  request sheet for questions, plans and other permissions, and a
+  session's header, state and request (the transcript is not on mobile
+  yet).
+- `src/screens/HostShell.tsx`: the Sessions tab and its NEEDS YOU badge.
+- `src/ui/components.tsx`: `SectionHeader`, `SessionRow`, `CommandBlock`;
+  the sheet rises above the keyboard.
+- Tests: `test/sessions.test.ts`; `test/current.test.ts` updated.
+
+No new dependencies.
+
+## Mobile Live Session R8.5 — transcript, Now bar, Stop, composer
+
+Zwiim-owned, no Codeg code copied. A session's live transcript on the SDK's
+`HostController.openSession` / `closeSession` and `SessionView` (history,
+the live turn, the settled turn, seq-ordered replay and snapshot), sending
+through `session.send` and stopping through `session.cancel`. The SDK, the
+host, the Cloud and the Noise protocol are unchanged.
+
+App (`clients/mobile/`):
+- `src/sessions/transcript.ts` (new): transcript rows from a `SessionView`
+  (history turns, then the settled and live turns, with history the live
+  view already shows left out), tool calls folded into one-line rows with
+  readable verbs and targets, the turn footer, and the Now bar's state
+  from the live turn alone.
+- `src/sessions/markdown.ts` (new): the small Markdown parser agents'
+  prose needs (paragraphs, headings, lists, quotes, fences, inline code,
+  bold).
+- `src/ui/markdown.tsx`, `src/ui/session.tsx` (new): the Markdown view,
+  user messages, thoughts, tool rows and their sheet, errors, the footer,
+  the Now bar and the composer, per DESIGN.md.
+- `src/sessions/follow.ts`: `SessionFollower` also follows the sessions on
+  screen (attach + history through the `HostController`), across
+  reconnects, until hidden.
+- `src/host/connection.ts`, `src/host/current.ts`: `showSession`,
+  `hideSession`, `send` (with a `client_message_id`, never retried) and
+  `cancel`.
+- `src/screens/SessionScreen.tsx`: the live session — transcript, the
+  request card and sheet, the Now bar with Stop, and the composer above
+  the keyboard; dimmed and not actionable while reconnecting.
+- `src/ui/components.tsx`: `useReduceMotion` exported.
+- Tests: `test/transcript.test.ts`.
+
+No new dependencies.
+
+## Mobile Files + Terminal R8.6 — Files tab, Changes, Terminal tab
+
+Zwiim-owned, no Codeg code copied. The Files tab on `workspace.tree`,
+`files.read`, `git.status` and `git.diff`; the Terminal tab on the SDK's
+`HostController.spawnTerminal` / `attachTerminal` / `detachTerminal` and
+`terminal.input` / `terminal.kill` (never `terminal.resize`: the phone shows
+the Host-sized terminal). The host, the Cloud and the Noise protocol are
+unchanged.
+
+Contract cleanup (`clients/sdk/`):
+- `src/transport/codec.ts`: one tool-call status spelling. The host writes
+  ACP's `in_progress` as `inprogress`; `normalizeToolStatus` maps it to
+  `in_progress` when decoding event frames (snapshot, replay, event) and
+  `session.history` results. `ToolCallStatus` names the canonical values.
+- `src/client/host-client.ts`: `request` decodes results through
+  `decodeResult`.
+- Desktop (`clients/desktop/src/panels/Transcript.tsx`) and mobile
+  (`src/sessions/transcript.ts`) read only `in_progress`.
+- Tests: `test/transport.test.ts`, `test/controller.test.ts`.
+
+App (`clients/mobile/`):
+- `src/files/model.ts` (new): breadcrumbs, folder entries, Changes rows
+  from `git.status` + `git.diff`, the patch parser and file-problem text.
+- `src/terminal/screen.ts`, `src/terminal/platform.ts` (new): a terminal's
+  screen from its output (reset / append) through `@xterm/headless`, as
+  styled lines; the keys row's sequences.
+- `src/host/connection.ts`, `src/host/current.ts`, `src/host/workspace.ts`:
+  the chosen workspace, `request`, and held terminals (attached while a
+  view holds them, re-attached after a reconnect: snapshot, then seq).
+- `src/screens/FilesTab.tsx`, `src/screens/FilesScreens.tsx`,
+  `src/screens/TerminalScreens.tsx`, `src/screens/workspaces.tsx`,
+  `src/ui/code.tsx`, `src/ui/terminal.tsx` (new): the screens, per
+  DESIGN.md Screens 6 and 7.
+- Tests: `test/files.test.ts`, `test/terminal.test.ts`,
+  `test/terminals.test.ts`.
+
+New dependency: `@xterm/headless` 6.0.0 (MIT, xtermjs.org), bundled into
+the app; its license travels with the package.
+
 ## License obligations tracked
 
 - [x] Include Apache-2.0 license text (`third_party/codeg/LICENSE`).
@@ -673,5 +972,6 @@ in the tree. No new npm dependencies.
 - [x] Preserve attribution (source/version/commit above).
 - [ ] Run `cargo license` on the Zwiim tree before first ship (deferred; long
       transitive tail unverified — see codeg-audit.md §11).
+- [ ] Ship the SIL OFL-1.1 text with the mobile app (Geist fonts).
 - [ ] Re-key / replace the minisign updater keys (updater replaced with a stub;
       no keys shipped — revisit when a Zwiim updater lands).

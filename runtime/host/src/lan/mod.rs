@@ -19,6 +19,11 @@
 //!   and addresses, and the host's static public key (TXT `v`, `id`, `pk`).
 //!   No name, path, session state or credential.
 //!
+//! - tells a paired device where to dial it (`host.lan_endpoint`, over a
+//!   connection the device already has): the port and the addresses of the
+//!   machine's network interfaces. A phone keeps it for the next connect,
+//!   without discovery.
+//!
 //! A device checks the advertised key against the one it pinned at pairing
 //! and the Noise handshake proves the host holds it, so a spoofed
 //! advertisement can at worst fail a connection, never capture one.
@@ -26,7 +31,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
@@ -363,6 +368,53 @@ pub async fn status(state: &AppState) -> Result<serde_json::Value, ZwiimError> {
         "advertised": listening.advertised,
         "last_error": listening.last_error,
     }))
+}
+
+/// `host.lan_endpoint`: where a paired device on this network can dial the
+/// host directly, while LAN access is listening; `null` otherwise. The port
+/// and addresses only.
+pub fn endpoint(state: &AppState) -> serde_json::Value {
+    let endpoint = state.lan.listening().port.and_then(|port| {
+        let addresses = interface_addresses();
+        (!addresses.is_empty()).then(|| serde_json::json!({ "addresses": addresses, "port": port }))
+    });
+    serde_json::json!({ "endpoint": endpoint })
+}
+
+/// Most addresses `host.lan_endpoint` reports; a device tries each in turn.
+const MAX_ENDPOINT_ADDRESSES: usize = 4;
+/// Interfaces no other device on the network dials: loopback, VPN and
+/// tunnel, container and VM bridges, and Apple's peer-to-peer links.
+const VIRTUAL_INTERFACES: &[&str] = &[
+    "lo", "utun", "tun", "tap", "ppp", "ipsec", "wg", "bridge", "br-", "docker", "veth", "vmnet", "vboxnet", "virbr",
+    "awdl", "llw", "anpi",
+];
+
+/// The machine's IPv4 addresses a device on the same network can dial,
+/// private ranges first. A device waits out a connect timeout on each
+/// address that does not answer, so virtual interfaces are left out.
+fn interface_addresses() -> Vec<String> {
+    let mut addresses: Vec<Ipv4Addr> = if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| !VIRTUAL_INTERFACES.iter().any(|prefix| i.name.starts_with(prefix)))
+        .filter_map(|i| match i.ip() {
+            IpAddr::V4(ip)
+                if !ip.is_loopback()
+                    && !ip.is_link_local()
+                    && !ip.is_unspecified()
+                    && !ip.is_multicast()
+                    && !ip.is_broadcast() =>
+            {
+                Some(ip)
+            }
+            _ => None,
+        })
+        .collect();
+    addresses.sort_by_key(|ip| (!ip.is_private(), *ip));
+    addresses.dedup();
+    addresses.truncate(MAX_ENDPOINT_ADDRESSES);
+    addresses.into_iter().map(|ip| ip.to_string()).collect()
 }
 
 /// `lan.set`: allow or stop LAN access, and remember the choice.

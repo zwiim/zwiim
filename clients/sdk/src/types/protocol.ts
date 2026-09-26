@@ -114,6 +114,17 @@ export interface LanStatus {
   last_error: string | null;
 }
 
+/**
+ * Where a paired device on the host's network can dial it directly
+ * (`host.lan_endpoint`): the LAN port and the machine's addresses. Only a
+ * hint: the device tunnel's handshake still proves the host holds its
+ * pinned key.
+ */
+export interface HostLanEndpoint {
+  addresses: string[];
+  port: number;
+}
+
 // ─── host ────────────────────────────────────────────────────────────────
 
 /** The account a host belongs to. Never a token. */
@@ -344,11 +355,17 @@ export type PromptBlock =
 
 export type UserBlock = PromptBlock;
 
+/**
+ * A tool call's progress, in the SDK's one spelling. The host may send ACP's
+ * `in_progress` as `inprogress`; the SDK decodes both to `in_progress`.
+ */
+export type ToolCallStatus = "pending" | "in_progress" | "completed" | "failed" | (string & {});
+
 export interface ToolCall {
   tool_call_id: string;
   title: string | null;
   kind?: string | null;
-  status: string | null;
+  status: ToolCallStatus | null;
   content: unknown;
 }
 
@@ -488,7 +505,7 @@ export type HistoryBlock =
       tool_call_id: string | null;
       title: string;
       input_preview: string | null;
-      status: string | null;
+      status: ToolCallStatus | null;
     }
   | {
       type: "tool_result";
@@ -593,6 +610,8 @@ export type ServerFrame =
 /** Request/response shape of every V1 operation the SDK exposes. */
 export interface Operations {
   "host.hello": [Record<string, never>, HostHello];
+  /** `null` while the host's LAN access is off. */
+  "host.lan_endpoint": [Record<string, never>, { endpoint: HostLanEndpoint | null }];
   "host.claim": [{ user_id: string; email?: string }, { owner: HostOwner }];
   "agent.list": [Record<string, never>, AgentSummary[]];
   "workspace.list": [Record<string, never>, WorkspaceInfo[]];

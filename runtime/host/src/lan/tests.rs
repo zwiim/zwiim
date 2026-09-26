@@ -129,6 +129,33 @@ async fn a_host_that_was_left_on_starts_listening_by_itself() {
 }
 
 #[tokio::test]
+async fn a_paired_device_learns_where_to_dial_the_host() {
+    let (h, _shutdown) = lan_host(false).await;
+    // Off: nothing to dial.
+    assert_eq!(direct(&h, "host.lan_endpoint", json!({})).await, (200, json!({"endpoint": null})));
+
+    let port = enable(&h).await;
+    let (device, host_id) = paired_device(&h).await;
+    let c = tunnel(&device, &host_id, loopback(port)).await;
+    let reply = ok(&h, &c, "host.lan_endpoint", json!({})).await;
+    if lan_address().is_some() {
+        let endpoint = reply["endpoint"].as_object().unwrap_or_else(|| panic!("an endpoint: {reply}"));
+        assert_eq!(endpoint.len(), 2, "port and addresses only: {reply}");
+        assert_eq!(endpoint["port"], port);
+        let addresses = endpoint["addresses"].as_array().unwrap();
+        assert!((1..=4).contains(&addresses.len()), "{reply}");
+        for address in addresses {
+            let ip: Ipv4Addr = address.as_str().unwrap().parse().unwrap();
+            assert!(!ip.is_loopback() && !ip.is_link_local(), "{reply}");
+        }
+    }
+
+    // Off again: withdrawn.
+    h.ok("lan.set", json!({"enabled": false})).await;
+    assert_eq!(direct(&h, "host.lan_endpoint", json!({})).await, (200, json!({"endpoint": null})));
+}
+
+#[tokio::test]
 async fn paired_devices_use_the_host_over_the_lan_port() {
     let (h, _shutdown) = lan_host(false).await;
     let port = enable(&h).await;

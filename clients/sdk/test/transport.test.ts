@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { base64Url, decodeServerFrame } from "../src/transport/codec";
+import { base64Url, decodeResult, decodeServerFrame, normalizeToolStatus } from "../src/transport/codec";
 import { LocalTransport } from "../src/transport/local";
 import { ZwiimClientError } from "../src/client/errors";
 
@@ -35,6 +35,82 @@ describe("codec", () => {
     expect(decodeServerFrame("[]")).toBeNull();
     expect(decodeServerFrame('{"type":"conversation://changed"}')).toBeNull();
     expect(decodeServerFrame("null")).toBeNull();
+  });
+
+  describe("tool status", () => {
+    // The host spells ACP's in_progress as "inprogress"; agents' own
+    // transcripts may already say "in_progress". Both decode the same.
+    const WIRE = ["inprogress", "in_progress"] as const;
+
+    it("has one canonical spelling", () => {
+      for (const s of WIRE) expect(normalizeToolStatus(s)).toBe("in_progress");
+      for (const s of ["pending", "completed", "failed"]) expect(normalizeToolStatus(s)).toBe(s);
+      expect(normalizeToolStatus(null)).toBeNull();
+      expect(normalizeToolStatus(undefined)).toBeNull();
+    });
+
+    it.each(WIRE)("decodes %s in live events, replays and snapshots", (wire) => {
+      const call = { tool_call_id: "t1", title: "Run", kind: "execute", status: wire, content: null };
+      const event = (seq: number, type: string, payload: unknown) => ({ session_id: "a", seq, type, payload });
+
+      const live = decodeServerFrame(
+        JSON.stringify({ type: "event", subscription_id: "s", event: event(1, "agent.tool_call", call) }),
+      );
+      expect(live?.type === "event" && (live.event.payload as { status: string }).status).toBe("in_progress");
+
+      const replay = decodeServerFrame(
+        JSON.stringify({
+          type: "replay",
+          subscription_id: "s",
+          session_id: "a",
+          epoch: "e",
+          high_water_seq: 2,
+          events: [event(1, "agent.tool_call", call), event(2, "agent.tool_call_update", { ...call, kind: undefined })],
+        }),
+      );
+      expect(replay?.type === "replay" && replay.events.map((e) => (e.payload as { status: string }).status)).toEqual([
+        "in_progress",
+        "in_progress",
+      ]);
+
+      const snap = decodeServerFrame(
+        JSON.stringify({
+          type: "snapshot",
+          subscription_id: "s",
+          session_id: "a",
+          epoch: "e",
+          event_seq: 1,
+          snapshot: { status: "prompting", tool_calls: [call, { ...call, tool_call_id: "t2", status: "completed" }] },
+        }),
+      );
+      expect(snap?.type === "snapshot" && snap.snapshot.tool_calls.map((t) => t.status)).toEqual([
+        "in_progress",
+        "completed",
+      ]);
+    });
+
+    it.each(WIRE)("decodes %s in session history", (wire) => {
+      const history = decodeResult("session.history", {
+        session_id: "a",
+        turns: [
+          {
+            turn_id: "t",
+            role: "assistant",
+            timestamp: "2026-09-26T00:00:00Z",
+            completed_at: null,
+            duration_ms: null,
+            model: null,
+            usage: null,
+            blocks: [
+              { type: "text", text: "hi" },
+              { type: "tool_call", tool_call_id: "c", title: "Bash", input_preview: null, status: wire },
+            ],
+          },
+        ],
+      });
+      const block = history.turns[0]!.blocks[1]!;
+      expect(block.type === "tool_call" && block.status).toBe("in_progress");
+    });
   });
 
   it("base64url-encodes without padding", () => {

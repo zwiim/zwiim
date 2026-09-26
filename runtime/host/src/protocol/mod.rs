@@ -77,6 +77,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
 
     let authenticated = Router::new()
         .route("/host.hello", post(http::host_hello))
+        .route("/host.lan_endpoint", post(http::host_lan_endpoint))
         .route("/agent.list", post(http::agent_list))
         .route("/workspace.list", post(http::workspace_list))
         .route("/workspace.add", post(http::workspace_add))

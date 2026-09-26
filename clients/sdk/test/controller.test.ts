@@ -49,6 +49,33 @@ describe("HostController", () => {
     }
   });
 
+  it.each(["inprogress", "in_progress"])("keeps one tool status in a loaded transcript (%s)", async (wire) => {
+    const t = setup();
+    t.transport.handlers["session.history"] = () => ({
+      session_id: "s1",
+      turns: [
+        {
+          turn_id: "t",
+          role: "assistant",
+          timestamp: "2026-09-26T00:00:00Z",
+          completed_at: null,
+          duration_ms: null,
+          model: null,
+          usage: null,
+          blocks: [{ type: "tool_call", tool_call_id: "c", title: "Bash", input_preview: null, status: wire }],
+        },
+      ],
+    });
+    t.client.start();
+    await flush();
+    t.transport.channel.open();
+    await flush();
+    t.controller.openSession("s1");
+    await flush();
+    const block = t.store.getState().sessions.s1?.history?.[0]?.blocks[0];
+    expect(block?.type === "tool_call" && block.status).toBe("in_progress");
+  });
+
   it("re-reads open transcripts on reconnect", async () => {
     const t = setup();
     t.client.start();

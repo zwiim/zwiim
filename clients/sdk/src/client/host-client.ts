@@ -13,6 +13,7 @@ import {
   type TerminalOutput,
 } from "../state/terminal";
 import type { SessionFrame } from "../state/session";
+import { decodeResult } from "../transport/codec";
 import type { EventChannel, Transport } from "../transport/transport";
 import {
   MUTATING_OPS,
@@ -302,9 +303,10 @@ export class HostClient {
       this.transport ?? (typeof this.source === "function" ? await this.source() : this.source);
     this.transport = transport;
     try {
-      return (await transport.request(op, params, {
+      const result = (await transport.request(op, params, {
         mutating: MUTATING_OPS.has(op),
       })) as OpResult<O>;
+      return decodeResult(op, result);
     } catch (e) {
       const terminal = isClientError(e) ? TERMINAL[e.code] : undefined;
       if (terminal && isClientError(e)) {

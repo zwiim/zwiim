@@ -23,6 +23,7 @@ pub(crate) const CONN: &str = "conn-secret-7f3a";
 
 const OPS: &[&str] = &[
     "host.hello",
+    "host.lan_endpoint",
     "host.claim",
     "agent.list",
     "workspace.list",

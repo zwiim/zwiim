@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["ZwiimLanModule"]
+  },
+  "android": {
+    "modules": ["dev.zwiim.lan.ZwiimLanModule"]
+  }
+}

@@ -44,7 +44,7 @@ export {
   type PairThroughCloudOptions,
 } from "./remote/pairing";
 export type { ByteChannel } from "./remote/tunnel";
-export { decodeServerFrame, base64Url } from "./transport/codec";
+export { decodeServerFrame, decodeResult, normalizeToolStatus, base64Url } from "./transport/codec";
 export * from "./client/errors";
 export * from "./client/connection";
 export * from "./client/host-client";

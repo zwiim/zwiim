@@ -144,6 +144,12 @@ pub async fn lan_status(Extension(state): Extension<Arc<AppState>>) -> ZResult<V
     Ok(Json(crate::lan::status(&state).await?))
 }
 
+/// Any paired device may ask: it is already connected, and learns only the
+/// port and addresses it can dial.
+pub async fn host_lan_endpoint(Extension(state): Extension<Arc<AppState>>) -> ZResult<Value> {
+    Ok(Json(crate::lan::endpoint(&state)))
+}
+
 pub async fn lan_set(Extension(state): Extension<Arc<AppState>>, ZJson(p): ZJson<LanSetParams>) -> ZResult<Value> {
     Ok(Json(crate::lan::set(&state, p.enabled).await?))
 }

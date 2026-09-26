@@ -1,5 +1,5 @@
 import { Check, ChevronRight, CircleDashed, Loader2, X } from "lucide-react";
-import type { HistoryBlock, HistoryTurn, LiveTurn, ToolCall } from "@zwiim/sdk";
+import type { HistoryBlock, HistoryTurn, LiveTurn, ToolCall, ToolCallStatus } from "@zwiim/sdk";
 import { Markdown } from "@/components/Markdown";
 import { cn } from "@/lib/utils";
 
@@ -18,7 +18,7 @@ const STATUS_LABEL: Record<string, string> = {
   failed: "failed",
 };
 
-function StatusIcon({ status }: { status: string | null }) {
+function StatusIcon({ status }: { status: ToolCallStatus | null }) {
   if (status === "completed") return <Check className="size-3.5 text-emerald-500" />;
   if (status === "failed") return <X className="text-destructive size-3.5" />;
   if (status === "in_progress") return <Loader2 className="text-muted-foreground size-3.5 animate-spin" />;
@@ -58,7 +58,7 @@ function Output({ text, error }: { text: string; error?: boolean }) {
 export function ToolCallView(props: {
   title: string | null;
   kind?: string | null;
-  status: string | null;
+  status: ToolCallStatus | null;
   input?: string | null;
   output?: string | null;
   isError?: boolean;
