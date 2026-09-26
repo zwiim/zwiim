@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronUp,
@@ -12,20 +12,32 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Plus,
+  Smartphone,
   WifiOff,
   X,
 } from "lucide-react";
-import { isSessionWorking, type SessionSummary, type WorkspaceInfo } from "@zwiim/sdk";
+import {
+  isSessionWorking,
+  type ConnectionMode,
+  type ConnectionPath,
+  type HostController,
+  type SessionSummary,
+  type WorkspaceInfo,
+} from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { useAccount } from "@/lib/account";
-import { bootHost, type BootPhase } from "@/lib/boot";
+import { bootHost, type BootOptions, type BootPhase } from "@/lib/boot";
 import type { NativeBridge } from "@/lib/bridge";
 import { errorMessage, HostProvider, useController, useHost, useOnline } from "@/lib/host-context";
 import {
+  connectionMode,
+  hostChoice,
   lastSelection,
   panelLayout,
   PANEL_MAX,
   PANEL_MIN,
+  rememberConnectionMode,
+  rememberHostChoice,
   rememberPanel,
   rememberSelection,
   rememberSidebar,
@@ -36,36 +48,127 @@ import {
   TERMINAL_MAX,
   TERMINAL_MIN,
   welcomed,
+  type HostChoice,
 } from "@/lib/prefs";
+import { connectRemote } from "@/lib/remote";
 import { AccountPanel, Welcome } from "@/panels/Account";
 import { cn } from "@/lib/utils";
-import { ConnectionStatus } from "@/panels/ConnectionStatus";
+import { ConnectionStatus, type RemoteLink } from "@/panels/ConnectionStatus";
+import { DevicesDialog } from "@/panels/Devices";
 import { DiffPanel, DiffView } from "@/panels/DiffPanel";
 import { FilesPanel, FileView } from "@/panels/FilesPanel";
 import { GitPanel } from "@/panels/GitPanel";
+import { HostPathDialog, HostPicker, PairDialog, type PairTarget } from "@/panels/Hosts";
 import { SessionPanel } from "@/panels/SessionPanel";
 import { Sidebar } from "@/panels/Sidebar";
 import { TerminalPanel } from "@/panels/TerminalPanel";
 
-export function App({ bridge }: { bridge: NativeBridge }) {
+const LOCAL: HostChoice = { kind: "local" };
+const sameChoice = (a: HostChoice, b: HostChoice) =>
+  a.kind === b.kind && (a.kind === "local" || a.hostId === (b as { hostId: string }).hostId);
+const choiceKey = (c: HostChoice) => (c.kind === "local" ? "local" : `remote:${c.hostId}`);
+
+/**
+ * A host on another computer, directly or through the account's Cloud as
+ * `mode` says. Throws when this computer cannot reach it at all (no way to
+ * in this build, not paired): the window then shows this computer's host
+ * instead.
+ */
+async function bootRemote(
+  bridge: NativeBridge,
+  hostId: string,
+  mode: ConnectionMode,
+  onPhase: (p: BootPhase) => void,
+  onPath: (path: ConnectionPath | null) => void,
+): Promise<HostController> {
+  onPhase({ phase: "discovering" });
+  const remote = bridge.remote;
+  const status = await bridge.accountStatus();
+  // Local only never contacts the Cloud.
+  const cloudUrl = mode === "local" ? null : (status.cloud_url ?? null);
+  const lan = mode !== "cloud" && Boolean(remote?.lan);
+  if (!remote || (!cloudUrl && !lan)) throw new Error("Remote hosts are not available in this build");
+  const { controller, manager } = await connectRemote(remote, cloudUrl, hostId, mode);
+  manager.onPath(onPath);
+  onPhase({ phase: "ready", controller });
+  return controller;
+}
+
+export function App({ bridge, bootOptions }: { bridge: NativeBridge; bootOptions?: BootOptions }) {
+  const [choice, setChoice] = useState<HostChoice>(() => (bridge.remote ? hostChoice() : LOCAL));
   const [boot, setBoot] = useState<BootPhase>({ phase: "discovering" });
   const [attempt, setAttempt] = useState(0);
+  const [mode, setMode] = useState<ConnectionMode>(connectionMode);
+  /** The path the remote host's connection takes now. */
+  const [path, setPath] = useState<ConnectionPath | null>(null);
+  /** The pairing dialog, when open. */
+  const [pairing, setPairing] = useState<PairTarget | null>(null);
 
+  /**
+   * Show another host. The current connection is closed and its state
+   * dropped with it; nothing carries over between hosts.
+   */
+  const shown = useRef(choice);
+  shown.current = choice;
+  const choose = useCallback((next: HostChoice) => {
+    if (sameChoice(shown.current, next)) return;
+    rememberHostChoice(next);
+    setBoot({ phase: "discovering" });
+    setChoice(next);
+  }, []);
+
+  const chooseMode = useCallback((next: ConnectionMode) => {
+    rememberConnectionMode(next);
+    setMode(next);
+  }, []);
+
+  // A new mode reconnects a remote host (the user asked); this computer's
+  // host is always reached locally.
+  const remoteMode = choice.kind === "remote" ? mode : null;
   useEffect(() => {
     let disposed = false;
     let controller: { dispose(): void } | null = null;
-    void bootHost(bridge, (p) => {
+    const onPhase = (p: BootPhase) => {
       if (!disposed) setBoot(p);
-    }).then((c) => {
-      controller = c;
-      if (disposed) c?.dispose();
-    });
-    // Closing the window only drops this connection; the host keeps running.
+    };
+    const onPath = (p: ConnectionPath | null) => {
+      if (!disposed) setPath(p);
+    };
+    setPath(null);
+    const connecting =
+      choice.kind === "local" || !remoteMode
+        ? bootHost(bridge, onPhase, bootOptions)
+        : bootRemote(bridge, choice.hostId, remoteMode, onPhase, onPath);
+    connecting.then(
+      (c) => {
+        controller = c;
+        if (disposed) c?.dispose();
+      },
+      () => {
+        if (!disposed) choose(LOCAL);
+      },
+    );
+    // Closing the window (or switching hosts) only drops this connection;
+    // the host keeps running.
     return () => {
       disposed = true;
       controller?.dispose();
     };
-  }, [bridge, attempt]);
+  }, [bridge, bootOptions, attempt, choice, choose, remoteMode]);
+
+  const pairDialog = pairing && (
+    <PairDialog
+      bridge={bridge}
+      target={pairing}
+      onClose={() => setPairing(null)}
+      onPaired={(host) => {
+        setPairing(null);
+        // Re-pairing the host already shown reconnects it with the new trust.
+        if (choice.kind === "remote" && choice.hostId === host.host_id) setAttempt((a) => a + 1);
+        else choose({ kind: "remote", hostId: host.host_id });
+      }}
+    />
+  );
 
   if (boot.phase !== "ready") {
     return (
@@ -77,22 +180,39 @@ export function App({ bridge }: { bridge: NativeBridge }) {
             <Button size="sm" variant="outline" onClick={() => setAttempt((a) => a + 1)}>
               Try again
             </Button>
+            {bridge.remote && (
+              <div className="w-64">
+                <HostPicker bridge={bridge} mode={mode} choice={choice} onChoose={choose} onPair={setPairing} />
+              </div>
+            )}
           </>
         ) : (
           <>
             <Loader2 className="text-muted-foreground size-5 animate-spin" />
             <p className="text-muted-foreground">
-              {boot.phase === "discovering" ? "Looking for the local host…" : "Starting the host…"}
+              {choice.kind === "remote"
+                ? "Connecting to the host…"
+                : boot.phase === "discovering"
+                  ? "Looking for the local host…"
+                  : "Starting the host…"}
             </p>
           </>
         )}
+        {pairDialog}
       </div>
     );
   }
 
   return (
-    <HostProvider value={boot.controller}>
-      <Workbench bridge={bridge} />
+    <HostProvider value={boot.controller} key={choiceKey(choice)}>
+      <Workbench
+        bridge={bridge}
+        choice={choice}
+        onChoose={choose}
+        onPair={setPairing}
+        link={{ mode, path, onMode: chooseMode }}
+      />
+      {pairDialog}
     </HostProvider>
   );
 }
@@ -114,10 +234,29 @@ interface OpenDoc {
 
 const docKey = (d: OpenDoc) => `${d.kind}:${d.workspaceId}:${d.path}`;
 
-export function Workbench({ bridge }: { bridge: NativeBridge }) {
+export function Workbench({
+  bridge,
+  choice = LOCAL,
+  onChoose,
+  onPair,
+  link,
+}: {
+  bridge: NativeBridge;
+  /** The host shown; this computer's unless one was chosen. */
+  choice?: HostChoice;
+  onChoose?(choice: HostChoice): void;
+  onPair?(target: PairTarget): void;
+  /** How a remote host is reached. */
+  link?: RemoteLink;
+}) {
   const workspaces = useHost((s) => s.workspaces);
   const controller = useController();
   const hostId = useHost((s) => s.host?.host_id ?? null);
+  const remote = choice.kind === "remote";
+  const refusedCode = useHost((s) => (s.connection.status === "live" ? null : (s.connection.error?.code ?? null)));
+  const [showDevices, setShowDevices] = useState(false);
+  /** A remote host's folder path being asked for, and where the answer goes. */
+  const [askPath, setAskPath] = useState<((path: string | null) => void) | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [docs, setDocs] = useState<OpenDoc[]>([]);
@@ -126,7 +265,19 @@ export function Workbench({ bridge }: { bridge: NativeBridge }) {
   /** Each workspace's session last shown here (null: a new one), to return to it. */
   const lastSession = useRef<Record<string, string | null>>({});
   const restored = useRef(false);
-  const account = useAccount(bridge);
+  // Signed out, a remote host cannot be reached through the Cloud: show
+  // this computer's. A direct connection never needed the account.
+  const direct = link?.mode === "local" || link?.path === "lan";
+  const onSignedOut = useCallback(() => {
+    if (remote && !direct) onChoose?.(LOCAL);
+  }, [remote, direct, onChoose]);
+  const account = useAccount(bridge, { remote, onSignedOut });
+  const remoteHostId = choice.kind === "remote" ? choice.hostId : null;
+
+  // The host no longer trusts this device (revoked): its pairing is void.
+  useEffect(() => {
+    if (remoteHostId && refusedCode === "device_refused") void bridge.remote?.forgetHost(remoteHostId);
+  }, [bridge, remoteHostId, refusedCode]);
   const [showWelcome, setShowWelcome] = useState(() => !welcomed());
   // First run only: once any account has signed in, signing out means local mode.
   useEffect(() => {
@@ -209,8 +360,33 @@ export function Workbench({ bridge }: { bridge: NativeBridge }) {
       <SidebarFrame>
         <div className="flex flex-col gap-2 px-1">
           <span className="text-[15px] font-semibold tracking-tight">Zwiim</span>
-          <ConnectionStatus onStartHost={() => bridge.startHost()} />
+          {bridge.remote && onChoose && (
+            <HostPicker
+              bridge={bridge}
+              mode={link?.mode ?? "auto"}
+              choice={choice}
+              onChoose={onChoose}
+              onPair={(t) => onPair?.(t)}
+            />
+          )}
+          <ConnectionStatus
+            onStartHost={remote ? undefined : () => bridge.startHost()}
+            remote={
+              remoteHostId
+                ? { onSignIn: account.signIn, onPair: () => onPair?.({ hostId: remoteHostId }) }
+                : undefined
+            }
+            link={remote ? link : undefined}
+          />
           <AccountPanel state={account} />
+          {!remote && (
+            <button
+              className="text-muted-foreground hover:text-foreground flex items-center gap-1.5 self-start text-xs"
+              onClick={() => setShowDevices(true)}
+            >
+              <Smartphone className="size-3.5" /> Devices
+            </button>
+          )}
         </div>
         <Sidebar
           workspaceId={workspaceId}
@@ -219,9 +395,20 @@ export function Workbench({ bridge }: { bridge: NativeBridge }) {
             setWorkspaceId(wid);
             selectSession(id);
           }}
-          pickFolder={() => bridge.pickFolder()}
+          pickFolder={() =>
+            remote ? new Promise<string | null>((resolve) => setAskPath(() => resolve)) : bridge.pickFolder()
+          }
         />
       </SidebarFrame>
+      {showDevices && <DevicesDialog bridge={bridge} onClose={() => setShowDevices(false)} />}
+      {askPath && (
+        <HostPathDialog
+          onDone={(path) => {
+            askPath(path);
+            setAskPath(null);
+          }}
+        />
+      )}
       <main className="flex min-w-0 flex-1 flex-col">
         <OfflineBanner />
         {workspaceId ? (

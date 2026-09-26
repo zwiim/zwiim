@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::ws::{Message, WebSocket};
+use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use axum::{
     extract::{Extension, WebSocketUpgrade},
     response::IntoResponse,
@@ -36,6 +36,7 @@ use super::events::{epoch_of, project_envelope, project_snapshot, project_termin
 use crate::app_state::AppState;
 use crate::host_feed::{HostEvent, HostSnapshot};
 use crate::session;
+use crate::web::auth::{device_revoked, Principal, WS_CLOSE_DEVICE_REVOKED};
 use crate::web::shutdown::ShutdownSignal;
 use crate::web::ws_attach::{self, DetachReason, ServerMsg, OUTBOUND_CAPACITY};
 
@@ -92,9 +93,11 @@ pub async fn ws_handler(
     ws: WebSocketUpgrade,
     Extension(state): Extension<Arc<AppState>>,
     Extension(shutdown_signal): Extension<Arc<ShutdownSignal>>,
+    principal: Option<Extension<Principal>>,
 ) -> impl IntoResponse {
+    let principal = principal.map(|Extension(p)| p);
     ws.protocols([ZWIIM_EVENTS_PROTOCOL])
-        .on_upgrade(|socket| handle_socket(socket, state, shutdown_signal))
+        .on_upgrade(|socket| handle_socket(socket, state, shutdown_signal, principal))
 }
 
 fn detach_reason(reason: DetachReason) -> &'static str {
@@ -232,6 +235,7 @@ async fn handle_socket(
     mut socket: WebSocket,
     state: Arc<AppState>,
     shutdown_signal: Arc<ShutdownSignal>,
+    principal: Option<Principal>,
 ) {
     if shutdown_signal.is_triggered() {
         let _ = socket.send(Message::Close(None)).await;
@@ -252,8 +256,21 @@ async fn handle_socket(
     let mut keepalive = tokio::time::interval(keepalive_interval());
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // A revoked device loses this socket at once, not at its next reconnect.
+    let revoked = device_revoked(principal, state.device_revocations.clone(), state.db.conn.clone());
+    tokio::pin!(revoked);
+
     loop {
         tokio::select! {
+            _ = &mut revoked => {
+                let _ = socket
+                    .send(Message::Close(Some(CloseFrame {
+                        code: WS_CLOSE_DEVICE_REVOKED,
+                        reason: "device_revoked".into(),
+                    })))
+                    .await;
+                break;
+            }
             _ = shutdown_signal.wait() => {
                 for sub_id in subs.keys() {
                     let frame = project_server_msg(

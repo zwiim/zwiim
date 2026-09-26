@@ -140,6 +140,33 @@ impl ZwiimError {
         )
     }
 
+    /// The caller lacks the authority the operation requires.
+    pub fn permission_denied(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::FORBIDDEN, "permission_denied", message)
+    }
+
+    /// The host's cryptographic identity has not finished loading (or could
+    /// not be loaded); the host log says which.
+    pub fn identity_unavailable() -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "identity_unavailable",
+            "The host identity is not available yet",
+        )
+    }
+
+    /// The resource already exists, or is bound to something else.
+    pub fn already_exists(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, "already_exists", message)
+    }
+
+    /// Zwiim Cloud could not be reached or failed the request. Only
+    /// Cloud-facing operations (`cloud.*`) return it; nothing local depends
+    /// on the Cloud.
+    pub fn cloud_unavailable(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_GATEWAY, "cloud_unavailable", message)
+    }
+
     pub fn unknown_operation() -> Self {
         Self::new(
             StatusCode::NOT_FOUND,
@@ -187,9 +214,7 @@ impl From<AppCommandError> for ZwiimError {
             }
             AppErrorCode::TurnInProgress => Self::turn_in_progress(),
             AppErrorCode::WorkspaceRemoved => Self::workspace_removed(),
-            AppErrorCode::PermissionDenied => {
-                Self::new(StatusCode::FORBIDDEN, "permission_denied", message)
-            }
+            AppErrorCode::PermissionDenied => Self::permission_denied(message),
             AppErrorCode::NotAGitRepository => Self::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "not_a_git_repository",

@@ -27,6 +27,8 @@ url = "2"
 base64 = "0.22"
 sha2 = "0.10"
 rand = "0.8"
+# Hosts on the local network: mDNS discovery (see src/lan.rs).
+mdns-sd = "0.21"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -5,8 +5,10 @@
 //! translation over the host runtime: clients address everything by
 //! `workspace_id` / `session_id` / `terminal_id`, and internal row ids,
 //! agent connection ids, ACP session ids and host paths never cross it.
-//! Authentication is the host's bearer check (`web::auth::require_token`);
-//! the legacy `/api` surface is unaffected.
+//! Authentication is the host's bearer check (`web::auth::require_token`).
+//! Device management and `host.claim` additionally require local host
+//! authority (`web::auth::require_local_authority`); `device.pair` is the one
+//! unauthenticated operation, authorized by its one-time pairing code.
 
 pub mod error;
 pub mod events;
@@ -14,7 +16,7 @@ pub mod http;
 pub mod ws;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use axum::{
     http::StatusCode,
@@ -42,6 +44,10 @@ async fn normalize_rejections(req: axum::extract::Request, next: Next) -> Respon
     }
     match res.status() {
         StatusCode::UNAUTHORIZED => ZwiimError::unauthenticated().into_response(),
+        StatusCode::FORBIDDEN => {
+            ZwiimError::permission_denied("This operation requires local host authority")
+                .into_response()
+        }
         StatusCode::METHOD_NOT_ALLOWED => ZwiimError::method_not_allowed().into_response(),
         StatusCode::PAYLOAD_TOO_LARGE => {
             ZwiimError::invalid_request("Request body is too large").into_response()
@@ -57,9 +63,20 @@ async fn unknown_operation() -> ZwiimError {
 /// The `/zwiim/v1` router. Nested by `web::router::build_router`, which
 /// supplies the `AppState` and `ShutdownSignal` extensions.
 pub fn router(token: String, db: DatabaseConnection) -> Router {
-    Router::new()
-        .route("/host.hello", post(http::host_hello))
+    // Operations only the host's operator may perform, never a paired device.
+    let local_authority = Router::new()
         .route("/host.claim", post(http::host_claim))
+        .route("/device.pair_invite", post(http::device_pair_invite))
+        .route("/device.list", post(http::device_list))
+        .route("/device.revoke", post(http::device_revoke))
+        .route("/cloud.enroll", post(http::cloud_enroll))
+        .route("/cloud.status", post(http::cloud_status))
+        .route("/lan.status", post(http::lan_status))
+        .route("/lan.set", post(http::lan_set))
+        .route_layer(middleware::from_fn(auth::require_local_authority));
+
+    let authenticated = Router::new()
+        .route("/host.hello", post(http::host_hello))
         .route("/agent.list", post(http::agent_list))
         .route("/workspace.list", post(http::workspace_list))
         .route("/workspace.add", post(http::workspace_add))
@@ -97,9 +114,16 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/session.list", post(http::session_list))
         .route("/session.history", post(http::session_history))
         .route("/ws", get(ws::ws_handler))
+        .merge(local_authority)
         .fallback(unknown_operation)
         .layer(middleware::from_fn(move |req, next| {
             auth::require_token(req, next, token.clone(), db.clone())
-        }))
+        }));
+
+    // An unpaired device has no credential; the one-time code in the body is
+    // what authorizes pairing.
+    Router::new()
+        .route("/device.pair", post(http::device_pair))
+        .merge(authenticated)
         .layer(middleware::from_fn(normalize_rejections))
 }

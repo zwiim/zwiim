@@ -81,6 +81,7 @@ pub async fn trusted_device_revoke(
     if !trusted_devices::revoke(&state.db.conn, &params.device_id).await? {
         return Err(AppCommandError::not_found("Unknown device"));
     }
+    state.device_revocations.announce(&params.device_id);
     tracing::info!("[identity] device {} revoked", params.device_id);
     Ok(Json(()))
 }

@@ -15,6 +15,33 @@ import type {
  * - `timeout`: a read did not complete in time.
  * - `invalid_response`: the host answered with something that is not V1.
  * - `host_mismatch`: the host at the URL is not the one we were bound to.
+ *
+ * Reaching a host through Zwiim Cloud adds:
+ *
+ * - `host_offline`: the host is not connected to the Cloud (retried).
+ * - `cloud_unavailable`: the Cloud is unreachable or restarting (retried).
+ * - `host_unknown`: the account has no such host (terminal).
+ * - `device_refused`: the host does not trust this device, e.g. it was
+ *   revoked (terminal).
+ * - `handshake_failed`: the host's tunnel handshake did not authenticate
+ *   against the pinned host key (terminal).
+ *
+ * Reaching a host directly on the local network (`LanTransport`,
+ * `ConnectionManager`) adds:
+ *
+ * - `lan_unavailable`: the host is not reachable directly: not advertised
+ *   on this network, or not answering there (retried; `auto` mode uses the
+ *   relay instead).
+ * - `host_identity_mismatch`: a host on this network advertises the
+ *   selected host's id with a key other than the pinned one (terminal).
+ *
+ * Pairing a device with a host's QR (`parsePairingInvitation`,
+ * `pairThroughCloud`) adds:
+ *
+ * - `pairing_invalid`: not a pairing QR, or not for this account's host.
+ * - `pairing_expired`: the QR's code has expired.
+ * - `pairing_rejected`: the host refused the code (unknown, expired or
+ *   already used).
  */
 export type ClientErrorCode =
   | HostErrorCode
@@ -23,6 +50,15 @@ export type ClientErrorCode =
   | "timeout"
   | "invalid_response"
   | "host_mismatch"
+  | "host_offline"
+  | "host_unknown"
+  | "device_refused"
+  | "handshake_failed"
+  | "lan_unavailable"
+  | "host_identity_mismatch"
+  | "pairing_invalid"
+  | "pairing_expired"
+  | "pairing_rejected"
   | (string & {});
 
 export class ZwiimClientError extends Error {

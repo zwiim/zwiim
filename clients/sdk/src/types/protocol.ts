@@ -26,6 +26,8 @@ export type HostErrorCode =
   | "workspace_busy"
   | "workspace_dirty"
   | "workspace_removed"
+  | "identity_unavailable"
+  | "cloud_unavailable"
   | "internal";
 
 export interface WireError {
@@ -55,6 +57,61 @@ export interface OptionUnavailableDetails {
 /** `host_owned` details: the account that already owns the host. */
 export interface HostOwnedDetails {
   owner_email: string | null;
+}
+
+// ─── device ──────────────────────────────────────────────────────────────
+
+/**
+ * A one-time key-pairing invitation: the v2 QR payload. It carries no network
+ * address; the device pins `host_static_pubkey`.
+ */
+export interface KeyPairingInvitation {
+  v: 2;
+  host_id: string;
+  host_static_pubkey: string;
+  code: string;
+  expires_at: string;
+}
+
+/** A device the host trusts, or has revoked. */
+export interface DeviceInfo {
+  device_id: string;
+  device_name: string;
+  status: "trusted" | "revoked";
+  /** X25519 static public key; `null` for a device paired with a bearer credential. */
+  device_pubkey: string | null;
+  paired_at: string;
+  revoked_at: string | null;
+  last_seen_at: string | null;
+}
+
+// ─── cloud ───────────────────────────────────────────────────────────────
+
+/** The host's link to Zwiim Cloud. Public facts only; never a credential. */
+export interface CloudStatus {
+  enrolled: boolean;
+  cloud_url: string | null;
+  /** The account the host is enrolled into. */
+  user_id: string | null;
+  enrolled_at: string | null;
+  connection: "not_enrolled" | "connecting" | "online" | "offline";
+  connected_since: string | null;
+  last_error: string | null;
+}
+
+// ─── lan ─────────────────────────────────────────────────────────────────
+
+/**
+ * The host's direct LAN access. Off until the operator turns it on; while
+ * on, the host advertises its id, port and public key on the local network
+ * and accepts the device tunnel on `port`.
+ */
+export interface LanStatus {
+  enabled: boolean;
+  listening: boolean;
+  port: number | null;
+  advertised: boolean;
+  last_error: string | null;
 }
 
 // ─── host ────────────────────────────────────────────────────────────────
@@ -590,6 +647,26 @@ export interface Operations {
   ];
   "session.list": [{ workspace_id: string }, SessionSummary[]];
   "session.history": [{ session_id: string }, SessionHistory];
+  /** Local host authority only, like `device.list` / `device.revoke` and `host.claim`. */
+  "device.pair_invite": [Record<string, never>, KeyPairingInvitation];
+  /** Unauthenticated: the one-time `code` authorizes it. */
+  "device.pair": [
+    { code: string; device_id: string; device_name?: string; device_pubkey: string },
+    { host_id: string; device_id: string },
+  ];
+  "device.list": [Record<string, never>, { devices: DeviceInfo[] }];
+  "device.revoke": [{ device_id: string }, Record<string, never>];
+  /** Local host authority only: enroll this host with a Zwiim Cloud. */
+  "cloud.enroll": [
+    { cloud_url: string; enrollment_token: string; name?: string },
+    CloudStatus,
+  ];
+  /** Local host authority only. */
+  "cloud.status": [Record<string, never>, CloudStatus];
+  /** Local host authority only. */
+  "lan.status": [Record<string, never>, LanStatus];
+  /** Local host authority only. Idempotent: sets, never toggles. */
+  "lan.set": [{ enabled: boolean }, LanStatus];
 }
 
 export type OpName = keyof Operations;
@@ -616,4 +693,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "session.cancel",
   "session.delete",
   "session.respond",
+  "device.pair",
+  "device.revoke",
+  "cloud.enroll",
 ]);

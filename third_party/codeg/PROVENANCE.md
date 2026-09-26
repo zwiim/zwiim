@@ -297,6 +297,375 @@ Modifications to Codeg-derived files:
 |---|---|
 | `bin/zwiim_host.rs` | Starts the session-commands tracker. |
 
+## Remote Foundation R1 — host and device cryptographic identity
+
+Zwiim-owned: `runtime/host/src/identity/host_keys.rs` (the host's Ed25519
+signing key and X25519 static key), key pairing and QR v2 in
+`identity/pairing.rs`, the device key model in `identity/trusted_devices.rs`
+(`device_pubkey`, `last_seen_at`, revocation announcements), the device static
+keypair and pinned hosts in `identity/device.rs`, migration
+`m20260926_000001_device_keys`, and the `device.pair_invite` / `device.pair` /
+`device.list` / `device.revoke` protocol ops.
+
+Key storage decision: the host's private keys live in the OS keychain (service
+`zwiim`, account `host-identity:<host_id>`). A headless host without a usable
+keychain opts into `ZWIIM_HOST_KEY_STORE=file`, which keeps them in
+`<data_dir>/host-keys.json` (mode `0600`, written then renamed). The public
+keys are recorded in `app_metadata`; a lost or different secret is reported
+(`identity_unavailable` on `device.pair_invite`) rather than replaced by a new
+identity. Keys load in the background after startup so a keychain prompt never
+holds up local clients.
+
+New dependencies (all permissive): `ed25519-dalek` 2, `x25519-dalek` 2,
+`subtle` 2 (BSD-3-Clause); `zeroize` 1 (Apache-2.0 OR MIT); `keyring` 3
+(MIT OR Apache-2.0), previously an optional dependency, is now always built.
+
+Modifications to Codeg-derived files:
+
+| File | Modification |
+|---|---|
+| `web/auth.rs` | Host token compared in constant time (SHA-256 digests + `subtle`). `require_token` records a `Principal` (host or device) and a device's `last_seen_at`. New `require_local_authority` middleware and `device_revoked` watch. |
+| `web/ws.rs` | `/ws/events` closes with 4403 `device_revoked` when its device is revoked. |
+| `web/router.rs` | Legacy `pairing_invitation_create` / `trusted_device_list` / `trusted_device_revoke` require local host authority. |
+| `app_state.rs`, `bin/zwiim_host.rs` | `host_keys` and `device_revocations` AppState fields; host keys loaded at startup. |
+| `db/entities/trusted_device.rs`, `db/migration/mod.rs` | `device_pubkey` (unique) and `last_seen_at` columns. |
+
+## Remote Foundation R2 — encrypted device tunnel
+
+Zwiim-owned: `runtime/host/src/tunnel/` — the Noise IK handshake and chunked
+message layer (`noise.rs`), the `req` / `res` / `ws.*` envelopes
+(`envelope.rs`), the device end (`client.rs`), the host adapter that routes
+tunnel messages in-process through the `/zwiim/v1` router (`host.rs`), and
+their tests; `DeviceIdentity::connect_tunnel` in `identity/device.rs`; the
+`runtime/host/examples/tunnel_client.rs` test client. No Codeg code was copied.
+The tunnel is local/test-only: tunnels are accepted in tests and on the opt-in
+loopback listener `ZWIIM_TUNNEL_TEST_ADDR`; no Cloud or relay exists yet.
+
+New dependencies (all permissive): `snow` 0.10 (Apache-2.0 OR MIT), bringing
+`chacha20`, `chacha20poly1305`, `poly1305` (Apache-2.0 OR MIT). `hyper` 1,
+`hyper-util` 0.1 (MIT) and `tower` 0.5 (MIT) were already in the tree through
+`axum` and are now direct dependencies.
+
+Modifications to Codeg-derived files:
+
+| File | Modification |
+|---|---|
+| `web/auth.rs` | New `TunnelPeer { device_id }` request extension, inserted only by the tunnel adapter. `require_token` accepts it in place of a bearer token after re-checking that the device is still trusted, then records `Principal::Device` and `last_seen_at` as for any device. |
+| `bin/zwiim_host.rs` | Opt-in loopback tunnel test listener (`ZWIIM_TUNNEL_TEST_ADDR`; non-loopback addresses refused). |
+
+Zwiim-owned files touched: `identity/host_keys.rs` (crate-internal accessor
+for the static secret, zeroized on drop), `protocol/mod.rs` and
+`protocol/tests.rs` (the test harness is `pub(crate)` so the tunnel tests
+reuse it).
+
+## Remote Foundation R3 — Zwiim Cloud and relay
+
+Zwiim-owned, no Codeg code copied:
+
+- `runtime/cloud/` — the new `zwiim-cloud` crate (axum service). It covers:
+  - the wire contract (`proto.rs`, always built);
+  - Supabase/JWT verification (`auth.rs`);
+  - the account ↔ host registry (`registry.rs`);
+  - enrollment tokens, tickets, presence and rendezvous (`hub.rs`);
+  - the endpoints, the control socket and the opaque relay (`server.rs`);
+  - TLS and the listener (`serve.rs`);
+  - the binary (`main.rs`);
+  - tests.
+- `runtime/host/src/cloud/` — the host side:
+  - the outbound control connector (`connector.rs`);
+  - WSS/HTTPS transport (`transport.rs`);
+  - the device side used by tests and the example (`device.rs`);
+  - enrollment and status (`mod.rs`);
+  - tests.
+- `runtime/host/src/tunnel/relay.rs` — the relay WebSocket as the R2 tunnel's
+  byte stream.
+
+The Cloud relays ciphertext only. Noise IK (R2) remains the end-to-end
+security boundary, and device trust stays a host decision.
+
+New dependencies, all permissive:
+- `jsonwebtoken` 9 (MIT) and its `pem` 3 (MIT);
+- dev-only: `rcgen` 0.13 (MIT OR Apache-2.0) and its `yasna` (MIT OR Apache-2.0).
+
+The Cloud crate also uses crates already in the tree: `rustls`, `tokio-rustls`, `hyper`, `hyper-util`, `sha2`, `subtle`, `ed25519-dalek`. The host adds `native-tls` (already in the tree) as a direct dependency.
+
+Modifications to Codeg-derived files:
+
+| File | Modification |
+|---|---|
+| `app_state.rs` | New `cloud: Arc<CloudLink>` field (connector state). |
+| `bin/zwiim_host.rs` | Builds `CloudLink::from_env()` (`ZWIIM_CLOUD_CA_CERT`) and starts the connector with the tunnel router. Docs updated. |
+
+Zwiim-owned files touched:
+- `identity/host_keys.rs` — crate-internal Ed25519 `sign`.
+- `protocol/error.rs` — `already_exists`, `cloud_unavailable`.
+- `protocol/http.rs`, `protocol/mod.rs` — `cloud.enroll` and `cloud.status`, both requiring local host authority.
+- `protocol/tests.rs`.
+- `tunnel/mod.rs`, `tunnel/host.rs`, `tunnel/tests.rs` — docs; test helpers made `pub(crate)`.
+- `examples/tunnel_client.rs` — relay mode.
+- The SDK protocol types.
+
+## Remote Foundation R4 — SDK relay transport
+
+Zwiim-owned, no Codeg code copied. All under `clients/sdk/`:
+
+- `src/remote/noise.ts` — a TypeScript port of the R2 Noise IK handshake and
+  transport cipher. It is checked against the cacophony test vector that
+  `snow` passes.
+- `src/remote/tunnel.ts` — the R2 framing, envelopes and multiplexing, on the
+  device side.
+- `src/remote/keys.ts` — device key generation and the base64url key encoding.
+- `src/remote/cloud.ts` — the Cloud's device API (hosts, tickets, enrollment
+  tokens, relay dial).
+- `src/transport/relay.ts` — `RelayTransport`: the `Transport` interface over
+  Cloud → relay → Noise.
+- `src/transport/select.ts` — `createTransport`, which picks local or relay.
+- Tests: `test/noise.test.ts`, `test/relay.test.ts`, `test/relay-fakes.ts`,
+  and `test/relay-integration.test.ts` (real Cloud and host, gated on
+  `ZWIIM_RELAY_IT`).
+
+Touched SDK files:
+- `transport/transport.ts` — optional `close()`.
+- `client/errors.ts` — codes `host_offline`, `host_unknown`, `device_refused`
+  and `handshake_failed`.
+- `client/host-client.ts` — these errors are now terminal, and the client
+  closes the transport on stop.
+- `index.ts` — exports.
+
+`LocalTransport` is unchanged. No Rust changes.
+
+New npm dependencies, all MIT:
+- `@noble/ciphers`
+- `@noble/curves`
+- `@noble/hashes`
+
+## Remote Experience R5 — Desktop as a remote client
+
+Zwiim-owned, no Codeg code copied.
+
+R1–R4 blocked one thing: remote QR pairing. `device.pair` required a tunnel
+from an already-trusted device, and nothing could carry a one-time code
+through the relay. The smallest compatible change: the device's first Noise
+IK message may carry a `DeviceHello {"pair": {code, device_id, device_name}}`
+payload. The host redeems the code (the existing `pairing::pair_device`) for
+the key the handshake proved, then answers the usual verdict. The handshake,
+the framing and the no-payload path are unchanged.
+
+Host (`runtime/host/src/`):
+- `tunnel/noise.rs` — `connect_with` sends a msg1 payload; the accept side
+  hands it to the verdict callback.
+- `tunnel/host.rs` — `DeviceHello` / `PairingHello`; with a hello, the verdict
+  is the pairing's outcome only.
+- `identity/device.rs` — `DeviceIdentity::pair_tunnel` for the Rust test
+  device; a test-only secret accessor.
+- `identity/pairing.rs` — doc comment.
+- `tunnel/tests.rs` — pairing in the handshake: a valid code, reconnecting
+  without it, a spent or unknown code, a hello that is not a pairing claim,
+  and a revoked device pairing again only with a fresh code.
+
+SDK (`clients/sdk/`):
+- `src/remote/pairing.ts` (new) — `parsePairingInvitation` (exactly the v2
+  fields; `pairing_invalid` / `pairing_expired`) and `pairThroughCloud`
+  (checks the account's Cloud record against the QR's key, then pairs in the
+  handshake; `pairing_rejected` when refused).
+- `src/remote/tunnel.ts` — optional msg1 `hello`.
+- `src/client/errors.ts` — the three pairing codes. `src/index.ts` — exports.
+- Tests: `test/pairing.test.ts` (new); `test/relay-fakes.ts` (the fake host
+  pairs in the handshake, and like the real host refuses a spent code even
+  for a trusted key); `test/relay-integration.test.ts` (pairing crosses the
+  real relay).
+
+Desktop native shell (`clients/desktop/src-tauri/`):
+- `src/cloud.rs` (new) — the only path from the UI to the Cloud's account
+  API. Three device calls are allowed, the access token is attached here (it
+  never enters the webview), and a refused token is refreshed once.
+- `src/device.rs` (new) — the device's X25519 identity and pinned hosts, in
+  one OS keychain item (`dev.zwiim.desktop` / `device-identity`). The Debug
+  output redacts the secret.
+- `src/account.rs` — `access_token` refreshes the Supabase session near expiry;
+  a refused refresh signs out. `StoredSession`'s Debug output redacts tokens.
+- `src/lib.rs` — commands `cloud_request`, `device_identity`,
+  `device_paired_hosts`, `device_pin_host`, `device_forget_host`; the
+  account status carries the Cloud URL.
+- `tauri.conf.json` — CSP `connect-src` allows `wss:` (the relay socket).
+
+Desktop UI (`clients/desktop/src/`):
+- `lib/remote.ts` (new) — the SDK's `CloudClient` over the shell's proxy;
+  `connectRemote` (`HostClient` + `RelayTransport` with the pinned key);
+  `pairRemote`.
+- `panels/Hosts.tsx` (new) — the host picker (this computer, then the
+  account's hosts with presence), the pairing dialog, and a host-path prompt
+  for adding a folder remotely.
+- `panels/Devices.tsx` (new) — on the local host only: paired devices with
+  revoke, the pairing QR, and turning on remote access (`cloud.enroll`).
+- `App.tsx` — host choice, and switching without a restart. The workbench is
+  remounted per host, so no state carries over between hosts.
+- `lib/account.ts`, `lib/bridge.ts`, `lib/prefs.ts`, `lib/host-context.tsx`,
+  `panels/ConnectionStatus.tsx` — remote-aware states and actions.
+- Tests:
+  - `test/remote.test.tsx` (new) — against the SDK's fake Cloud and hosts.
+  - `test/remote-e2e.test.ts` (new) — the real binaries through a
+    Cloudflare quick tunnel; gated on `ZWIIM_R5_E2E` (renamed in R6).
+  - `test/setup.ts` — tolerates Node-environment tests.
+
+New npm dependency: `uqr` (MIT), which renders the pairing QR. No new Rust
+dependencies.
+
+## Remote Deployment R6 — local Cloud/relay deployment
+
+Zwiim-owned, no Codeg code copied. This slice makes `zwiim-cloud` runnable as
+a real service behind a Cloudflare Tunnel. It does not redesign the Cloud,
+Noise (R2), or `RelayTransport`.
+
+Cloud (`runtime/cloud/`):
+- `config.rs` (new) — settings from the environment (`ZWIIM_CLOUD_*`),
+  validated at startup:
+  - a missing or invalid setting is refused with the variable named;
+  - plain HTTP is allowed on loopback only;
+  - a public-facts summary never includes secrets.
+- `main.rs` — rewritten around `config.rs`:
+  - `--check` validates the settings without listening;
+  - text or JSON logs;
+  - logs `stopped` after the graceful drain.
+- `server.rs`:
+  - `Limits { max_connections, max_relays }`;
+  - relays beyond `max_relays` are refused with close 1013;
+  - log lines use structured fields (host ID, relay ID, reason).
+- `serve.rs`:
+  - connection cap: a socket holds its slot until it closes, including after
+    a WebSocket upgrade;
+  - connections over the cap are closed on arrival, with a rate-limited
+    warning.
+- `auth.rs` — `AuthConfig`'s `Debug` output redacts the HS256 secret.
+- `Cargo.toml` — `tracing-subscriber` `json` feature. Its crates were already
+  in the tree.
+- Tests: config, limits.
+
+Host (`runtime/host/src/cloud/tests.rs`): test configuration only
+(`limits`). No host behavior changed.
+
+Desktop:
+- `src-tauri/src/account.rs` — Supabase URL and anon key are read from the
+  environment at startup, falling back to the build-time values, as the
+  Cloud URL already was.
+- `src-tauri/src/lib.rs` — uses that.
+- `src/panels/Devices.tsx` — Remote access offers "Move to this Cloud" when
+  the host is enrolled with a different Cloud URL than the app uses, for
+  example after a quick tunnel restarts. This re-enrolls the host with a new
+  single-use token.
+- Tests:
+  - `test/remote.test.tsx`;
+  - `test/remote-e2e.test.ts`, which now:
+    - is gated on `ZWIIM_REMOTE_E2E`;
+    - runs the Cloud and the tunnel through `deploy/dev`;
+    - verifies ES256 tokens against a local JWKS stand-in;
+    - adds checks for health, no legacy API, loopback-only listeners,
+      settings refusal, registry persistence, and a real Claude Code turn
+      (`ZWIIM_REMOTE_E2E_REAL_AGENT`).
+
+Deployment:
+- `deploy/dev/`:
+  - `cloud.env.example`;
+  - `env.sh`;
+  - `run-cloud.sh`;
+  - `tunnel.sh` (quick or named Cloudflare Tunnel, isolated from
+    `~/.cloudflared/config.yaml`).
+- `docs/deploy/local-cloud.md` — the development deployment guide.
+- `.gitignore` — `deploy/dev/cloud.env`.
+
+No new dependencies.
+
+## Remote Connectivity R7 — LAN/direct transport and connection selection
+
+Zwiim-owned, no Codeg code copied. A paired device reaches its host
+directly on the local network, in the same Noise tunnel (R2) and with the
+same device trust as through the relay (R3). The Zwiim Protocol, the relay
+protocol and the Cloud are unchanged.
+
+Host (`runtime/host/`):
+- `src/lan/mod.rs` (new):
+  - off until the operator turns it on (`lan.set`); the setting is stored
+    in `app_metadata`;
+  - while on, it accepts device tunnels on a TCP port on IPv4 interfaces
+    (`ZWIIM_LAN_PORT` pins the port) and serves them with
+    `tunnel::host::serve`, the same function the relay path uses. The port
+    has no HTTP, so no `/api`, no bearer token and no pairing endpoint;
+  - it advertises `<host_id>._zwiim._tcp.local.` over mDNS with TXT `v`,
+    `id` and `pk` (the static public key) only;
+  - concurrent tunnels are capped at 32.
+- `src/lan/tests.rs` (new):
+  - off by default, and on again after a restart;
+  - trusted, unknown and revoked devices, and a wrong host key;
+  - revoking or disabling ends tunnels;
+  - the port speaks only the tunnel;
+  - the connection limit;
+  - the advertisement, and discovery over real mDNS.
+- `src/protocol/{mod.rs,http.rs}`: `lan.status` and `lan.set`, which require
+  local host authority like `cloud.enroll`, so they are refused through
+  any tunnel. `src/protocol/tests.rs` lists them as local-authority ops.
+- `src/app_state.rs`, `src/lib.rs`, `src/bin/zwiim_host.rs`: wiring
+  (`LanLink`).
+- `Cargo.toml`: `mdns-sd`.
+
+SDK (`clients/sdk/`):
+- `src/transport/tunneled.ts` (new): `TunnelTransport`, the tunnel client
+  that `RelayTransport` used to contain, shared by both tunnel paths.
+  `src/transport/relay.ts` now extends it; its behaviour is unchanged.
+- `src/transport/lan.ts` (new): `LanTransport`. It discovers the host,
+  checks the advertised key against the pinned key before dialing, and
+  opens the same tunnel on a direct byte stream that the platform supplies.
+- `src/transport/connection-manager.ts` (new): `ConnectionManager` and
+  `activeConnection`.
+  - Modes: `auto`, `local` and `cloud`.
+  - A path is chosen only when no connection is open.
+  - In `auto`, the relay is used only when the LAN is unavailable, and LAN
+    retries use bounded backoff.
+  - Identity and trust failures are surfaced, never hidden behind the relay.
+- `src/transport/{select.ts,transport.ts}`, `src/client/{errors.ts,
+  host-client.ts}`, `src/types/protocol.ts`, `src/index.ts`:
+  - `lan` and `remote` targets;
+  - the `lan_unavailable` and `host_identity_mismatch` errors;
+  - `LanStatus`, `lan.status` and `lan.set`.
+- Tests:
+  - `test/lan-fakes.ts` and `test/connection-manager.test.ts`;
+  - `test/lan-integration.test.ts`, which uses a real host, real Cloud and
+    real mDNS and is gated on `ZWIIM_LAN_IT`;
+  - `test/it-support.ts`, with helpers shared with
+    `test/relay-integration.test.ts`.
+
+Desktop (`clients/desktop/`):
+- `src-tauri/src/lan.rs` (new): mDNS discovery (`mdns-sd`) and direct TCP
+  links for the webview's `LanTransport`.
+  - Only addresses and ports that discovery reported can be dialed.
+  - At most 8 links.
+  - Bytes cross IPC as base64.
+- `src-tauri/src/lib.rs`: the commands `lan_discover`, `lan_connect`,
+  `lan_send` and `lan_close`.
+- `src-tauri/src/cloud.rs`: `valid_host_id` is now `pub(crate)`.
+- `src-tauri/Cargo.toml`: `mdns-sd`.
+- `src/lib/{bridge.ts,remote.ts,prefs.ts,host-context.tsx}`:
+  - `tauriLan`;
+  - `connectRemote` builds a `ConnectionManager`;
+  - the persisted connection mode (default `auto`);
+  - error texts.
+- `src/App.tsx`, `src/panels/{ConnectionStatus.tsx,Hosts.tsx,Devices.tsx}`:
+  - the mode control;
+  - "Connected locally" or "Connected through Zwiim Cloud";
+  - LAN error labels;
+  - paired hosts reachable directly without signing in;
+  - the "Local network access" switch.
+- Tests: `test/remote.test.tsx` and `test/remote-e2e.test.ts`
+  (`connectRemote` signature).
+
+New Rust dependencies (licenses checked in each crate's `Cargo.toml`):
+- `mdns-sd` 0.21.4, Apache-2.0 OR MIT.
+- `flume` 0.12.0, Apache-2.0/MIT (transitive).
+- `if-addrs` 0.15.0, MIT OR BSD-3-Clause (transitive).
+- `socket-pktinfo` 0.4.1, MIT (transitive).
+
+Its other dependencies (`socket2`, `fastrand`, `mio` and `log`) were already
+in the tree. No new npm dependencies.
+
 ## License obligations tracked
 
 - [x] Include Apache-2.0 license text (`third_party/codeg/LICENSE`).

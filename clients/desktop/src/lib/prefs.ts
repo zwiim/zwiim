@@ -2,6 +2,8 @@
 // laid out. Local to this client and never authoritative — a remembered
 // workspace or session the host no longer lists is simply ignored.
 
+import type { ConnectionMode } from "@zwiim/sdk";
+
 const PREFIX = "zwiim.desktop.";
 
 function read<T>(key: string, fallback: T): T {
@@ -120,4 +122,30 @@ export function welcomed(): boolean {
 
 export function rememberWelcomed(): void {
   write("welcomed", true);
+}
+
+/** Which host this Desktop shows: this computer's, or one on another computer. */
+export type HostChoice = { kind: "local" } | { kind: "remote"; hostId: string };
+
+export function hostChoice(): HostChoice {
+  const v = read<Partial<{ kind: string; hostId: unknown }>>("host", {});
+  return v.kind === "remote" && typeof v.hostId === "string" ? { kind: "remote", hostId: v.hostId } : { kind: "local" };
+}
+
+export function rememberHostChoice(choice: HostChoice): void {
+  write("host", choice);
+}
+
+/**
+ * How a host on another computer is reached: directly on this network when
+ * it is there (`auto`), only directly (`local`), or only through Zwiim Cloud
+ * (`cloud`).
+ */
+export function connectionMode(): ConnectionMode {
+  const v = read<unknown>("connection_mode", "auto");
+  return v === "local" || v === "cloud" ? v : "auto";
+}
+
+export function rememberConnectionMode(mode: ConnectionMode): void {
+  write("connection_mode", mode);
 }

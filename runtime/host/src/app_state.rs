@@ -78,6 +78,18 @@ pub struct AppState {
     /// Host-wide state feed behind `host.subscribe` (one generation per
     /// process; started by its first subscriber).
     pub host_feed: Arc<crate::host_feed::HostFeed>,
+    /// The host's cryptographic identity keys. Loaded from the key store in
+    /// the background after startup (a keychain prompt must not hold up local
+    /// clients); unset until then.
+    pub host_keys: Arc<std::sync::OnceLock<crate::identity::host_keys::HostKeys>>,
+    /// Revoked device ids, announced so their open sockets close at once.
+    pub device_revocations: crate::identity::trusted_devices::Revocations,
+    /// The outbound link to Zwiim Cloud (remote connectivity only; nothing
+    /// local depends on it).
+    pub cloud: Arc<crate::cloud::CloudLink>,
+    /// Direct LAN access for paired devices (off unless the operator turns
+    /// it on).
+    pub lan: Arc<crate::lan::LanLink>,
 }
 
 pub fn default_system_op_lock() -> Arc<tokio::sync::Mutex<()>> {
@@ -248,6 +260,12 @@ impl AppState {
             system_op_lock: default_system_op_lock(),
             pairing_invitations: Default::default(),
             host_feed: Default::default(),
+            host_keys: Arc::new(std::sync::OnceLock::from(
+                crate::identity::host_keys::HostKeys::generate(),
+            )),
+            device_revocations: Default::default(),
+            cloud: Default::default(),
+            lan: Default::default(),
         }
     }
 }

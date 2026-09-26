@@ -98,6 +98,121 @@ pub async fn host_claim(
     }
 }
 
+// ─── cloud ───────────────────────────────────────────────────────────────
+//
+// Enrollment with Zwiim Cloud requires local host authority. Status is
+// public facts only: no token or key is ever returned.
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloudEnrollParams {
+    /// The Cloud's origin (`https://…`; `http` only on loopback).
+    pub cloud_url: String,
+    /// Single-use token minted by the account in the Cloud.
+    pub enrollment_token: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+pub async fn cloud_enroll(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<CloudEnrollParams>,
+) -> ZResult<Value> {
+    let name = p.name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+    if name.as_ref().is_some_and(|n| n.len() > 128 || n.chars().any(char::is_control)) {
+        return Err(ZwiimError::invalid_input("name must be at most 128 bytes, without control characters"));
+    }
+    Ok(Json(crate::cloud::enroll(&state, &p.cloud_url, &p.enrollment_token, name).await?))
+}
+
+pub async fn cloud_status(Extension(state): Extension<Arc<AppState>>) -> ZResult<Value> {
+    Ok(Json(crate::cloud::status(&state).await?))
+}
+
+// ─── lan ─────────────────────────────────────────────────────────────────
+//
+// Direct LAN access for paired devices: local host authority only, like
+// Cloud enrollment. Status is public facts only.
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LanSetParams {
+    pub enabled: bool,
+}
+
+pub async fn lan_status(Extension(state): Extension<Arc<AppState>>) -> ZResult<Value> {
+    Ok(Json(crate::lan::status(&state).await?))
+}
+
+pub async fn lan_set(Extension(state): Extension<Arc<AppState>>, ZJson(p): ZJson<LanSetParams>) -> ZResult<Value> {
+    Ok(Json(crate::lan::set(&state, p.enabled).await?))
+}
+
+// ─── device ──────────────────────────────────────────────────────────────
+//
+// Pairing, listing and revocation require local host authority (see
+// `web::auth::require_local_authority`); `device.pair` is authorized by the
+// one-time code it carries.
+
+/// Create a one-time key-pairing invitation: the v2 QR payload.
+pub async fn device_pair_invite(
+    Extension(state): Extension<Arc<AppState>>,
+) -> ZResult<crate::identity::pairing::KeyPairingInvitation> {
+    let host_keys = state.host_keys.get().ok_or_else(ZwiimError::identity_unavailable)?;
+    let host_id = crate::identity::host::ensure_host_id(&state.db.conn)
+        .await
+        .map_err(db_error)?;
+    Ok(Json(
+        state
+            .pairing_invitations
+            .create_for_key(host_id, host_keys.static_pubkey()),
+    ))
+}
+
+pub async fn device_pair(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(claim): ZJson<crate::identity::pairing::KeyPairingClaim>,
+) -> ZResult<crate::identity::pairing::KeyPairingGrant> {
+    let host_id = crate::identity::host::ensure_host_id(&state.db.conn)
+        .await
+        .map_err(db_error)?;
+    Ok(Json(
+        crate::identity::pairing::pair_device(&state.db.conn, &state.pairing_invitations, host_id, claim)
+            .await?,
+    ))
+}
+
+pub async fn device_list(Extension(state): Extension<Arc<AppState>>) -> ZResult<Value> {
+    let devices: Vec<crate::identity::trusted_devices::DeviceInfo> =
+        crate::identity::trusted_devices::list(&state.db.conn)
+            .await
+            .map_err(db_error)?;
+    Ok(Json(json!({ "devices": devices })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceRevokeParams {
+    pub device_id: String,
+}
+
+/// Revoke a device: it stops authenticating at once, and its open event
+/// sockets are closed.
+pub async fn device_revoke(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<DeviceRevokeParams>,
+) -> ZResult<Value> {
+    if !crate::identity::trusted_devices::revoke(&state.db.conn, &p.device_id)
+        .await
+        .map_err(db_error)?
+    {
+        return Err(ZwiimError::not_found("Device not found"));
+    }
+    state.device_revocations.announce(&p.device_id);
+    tracing::info!("[identity] device {} revoked", p.device_id);
+    ok()
+}
+
 // ─── agent ───────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]

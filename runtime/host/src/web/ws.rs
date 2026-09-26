@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::extract::ws::{Message, WebSocket};
+use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use axum::{
     extract::{Extension, WebSocketUpgrade},
     response::IntoResponse,
@@ -9,6 +9,7 @@ use axum::{
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use super::auth::{device_revoked, Principal, WS_CLOSE_DEVICE_REVOKED};
 use super::shutdown::ShutdownSignal;
 use super::ws_attach::{self, ClientMsg, DetachReason, ServerMsg, OUTBOUND_CAPACITY};
 use crate::app_state::AppState;
@@ -52,15 +53,18 @@ pub async fn ws_handler(
     ws: WebSocketUpgrade,
     Extension(state): Extension<Arc<AppState>>,
     Extension(shutdown_signal): Extension<Arc<ShutdownSignal>>,
+    principal: Option<Extension<Principal>>,
 ) -> impl IntoResponse {
+    let principal = principal.map(|Extension(p)| p);
     ws.protocols([super::auth::WS_EVENT_PROTOCOL])
-        .on_upgrade(|socket| handle_ws_connection(socket, state, shutdown_signal))
+        .on_upgrade(|socket| handle_ws_connection(socket, state, shutdown_signal, principal))
 }
 
 async fn handle_ws_connection(
     mut socket: WebSocket,
     state: Arc<AppState>,
     shutdown_signal: Arc<ShutdownSignal>,
+    principal: Option<Principal>,
 ) {
     // Late handshake guard: if shutdown already fired before this task
     // even started, exit before subscribing to anything else.
@@ -130,8 +134,21 @@ async fn handle_ws_connection(
     // lines. Task-local: one instance per WS connection.
     let mut lag_throttle = LagLogThrottle::new(LAG_LOG_WINDOW);
 
+    // A revoked device loses this socket at once, not at its next reconnect.
+    let revoked = device_revoked(principal, state.device_revocations.clone(), state.db.conn.clone());
+    tokio::pin!(revoked);
+
     loop {
         tokio::select! {
+            _ = &mut revoked => {
+                let _ = socket
+                    .send(Message::Close(Some(CloseFrame {
+                        code: WS_CLOSE_DEVICE_REVOKED,
+                        reason: "device_revoked".into(),
+                    })))
+                    .await;
+                break;
+            }
             // Server-initiated shutdown: notify any active attach
             // subscriptions before closing so the client can decide
             // whether to retry on the next reconnect.

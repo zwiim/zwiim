@@ -50,6 +50,8 @@ cron = "0.12"
 thiserror = "2"
 dirs = "6"
 if-addrs = "0.13"
+# LAN discovery: the host advertises itself over mDNS/DNS-SD (src/lan).
+mdns-sd = "0.21"
 walkdir = "2"
 ignore = "0.4"
 sacp = "11.0.0"
@@ -80,8 +82,19 @@ base64 = "0.22"
 agent-client-protocol-schema = { version = "0.11", features = ["unstable_session_usage", "unstable_session_fork", "unstable_session_resume", "unstable_elicitation", "unstable_boolean_config"] }
 kill_tree = { version = "0.2", features = ["tokio"] }
 which = "7"
-# Retained for the later Zwiim secret-store slice; not wired yet.
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"], optional = true }
+# OS keychain: holds the host's private identity keys (`identity::host_keys`).
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+# Host / device cryptographic identity (Ed25519 signing, X25519 static keys).
+ed25519-dalek = { version = "2", features = ["rand_core", "zeroize"] }
+x25519-dalek = { version = "2", features = ["static_secrets", "zeroize"] }
+subtle = "2"
+zeroize = { version = "1", features = ["derive"] }
+# Device tunnel (`tunnel`): Noise IK over the X25519 identity keys, and the
+# in-process HTTP/1 connection its event streams are routed through.
+snow = "0.10"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
+tower = { version = "0.5", features = ["util"] }
 axum = { version = "0.8", features = ["ws", "multipart"] }
 async_zip = { version = "0.0.18", features = ["tokio", "deflate"] }
 tower-http = { version = "0.6", features = ["fs", "cors", "compression-gzip", "compression-br"] }
@@ -89,6 +102,10 @@ http = "1"
 percent-encoding = "2"
 http-body = "1"
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+# Cloud connector (`cloud`): the wire contract only, and TLS trust for a
+# Cloud behind a private CA.
+zwiim-cloud = { path = "../cloud", default-features = false }
+native-tls = "0.2"
 futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["io", "rt"] }
 prost = "0.13"
@@ -122,4 +139,8 @@ temp-env = { version = "0.3", features = ["async_closure"] }
 tokio = { version = "1", features = ["test-util", "macros", "rt", "sync", "time"] }
 insta = { version = "1", features = ["json", "redactions"] }
 axum-test = { version = "17", features = ["ws"] }
+# The Cloud service itself, run in-process by the relay tests.
+zwiim-cloud = { path = "../cloud" }
+jsonwebtoken = { version = "9", default-features = false }
+rcgen = "0.13"
 reqwest = { version = "0.12", features = ["json"] }

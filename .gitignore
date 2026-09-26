@@ -7,3 +7,6 @@ node_modules/
 clients/desktop/dist/
 clients/desktop/src-tauri/gen/
 clients/desktop/src-tauri/binaries/
+
+# Local deployment configuration (may hold secrets)
+/deploy/dev/cloud.env

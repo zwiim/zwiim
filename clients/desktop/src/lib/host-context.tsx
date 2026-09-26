@@ -41,6 +41,15 @@ const FRIENDLY: Record<string, string> = {
   option_unavailable: "The agent does not offer that option right now.",
   host_owned: "This host already belongs to another account.",
   host_mismatch: "A different host is now answering at this address. Restart the app to connect to it.",
+  host_offline: "The host is offline. It reconnects when the host is back.",
+  cloud_unavailable: "Zwiim Cloud cannot be reached. This computer's host keeps working.",
+  host_unknown: "That host is not in your account.",
+  device_refused: "The host no longer trusts this computer. Pair it again from the host.",
+  handshake_failed: "The host did not prove the identity this computer paired with. Pair it again.",
+  lan_unavailable:
+    "The host cannot be reached on this network. Check that both computers are on the same network and that the host allows local connections.",
+  host_identity_mismatch:
+    "A computer on this network claims to be this host with a different identity. It was not connected to.",
 };
 
 export function errorMessage(e: unknown): string {

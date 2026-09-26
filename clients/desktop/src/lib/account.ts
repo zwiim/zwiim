@@ -7,6 +7,8 @@ import { rememberWelcomed } from "@/lib/prefs";
 /** How the signed-in account relates to the connected host. */
 export type Ownership =
   | { kind: "local" }
+  /** Reached through Zwiim Cloud: already the account's, never claimed from here. */
+  | { kind: "remote" }
   | { kind: "claiming" }
   | { kind: "owner" }
   | { kind: "mismatch"; ownerEmail: string | null };
@@ -29,8 +31,15 @@ export interface AccountState {
  * a host another account owns is never taken over — that shows as a
  * mismatch and local use carries on. Signing out only forgets the account
  * on this Desktop: the host, its agents, workspaces and sessions stay.
+ *
+ * `remote`: the host was reached through the account's Cloud, so it is the
+ * account's already; `host.claim` is for the local host only.
  */
-export function useAccount(bridge: NativeBridge): AccountState {
+export function useAccount(
+  bridge: NativeBridge,
+  options: { remote?: boolean; onSignedOut?: () => void } = {},
+): AccountState {
+  const { remote = false, onSignedOut } = options;
   const controller = useController();
   const online = useOnline();
   const host = useHost((s) => s.host);
@@ -44,7 +53,7 @@ export function useAccount(bridge: NativeBridge): AccountState {
 
   useEffect(() => {
     bridge.accountStatus().then(setStatus, (e) => {
-      setStatus({ available: false, account: null });
+      setStatus({ available: false, account: null, cloud_url: null });
       setError(errorMessage(e));
     });
   }, [bridge]);
@@ -54,7 +63,7 @@ export function useAccount(bridge: NativeBridge): AccountState {
 
   useEffect(() => {
     if (!online) claimed.current = null;
-    if (!account || !host || !online || owner) return;
+    if (remote || !account || !host || !online || owner) return;
     const key = `${host.host_id}:${account.user_id}`;
     if (claimed.current === key) return;
     claimed.current = key;
@@ -64,10 +73,11 @@ export function useAccount(bridge: NativeBridge): AccountState {
       const d = hostOwnedDetails(e);
       if (d) setRefused({ hostId: host.host_id, userId: account.user_id, ownerEmail: d.owner_email });
     });
-  }, [account, host, owner, online, controller]);
+  }, [remote, account, host, owner, online, controller]);
 
   let ownership: Ownership;
-  if (!account) ownership = { kind: "local" };
+  if (remote) ownership = { kind: "remote" };
+  else if (!account) ownership = { kind: "local" };
   else if (owner) {
     ownership =
       owner.user_id === account.user_id ? { kind: "owner" } : { kind: "mismatch", ownerEmail: owner.email };
@@ -81,7 +91,7 @@ export function useAccount(bridge: NativeBridge): AccountState {
     try {
       const next = await bridge.signIn();
       claimed.current = null;
-      setStatus((s) => ({ available: s?.available ?? true, account: next }));
+      setStatus((s) => ({ ...s, available: s?.available ?? true, account: next }));
       rememberWelcomed();
     } catch (e) {
       const msg = errorMessage(e);
@@ -98,11 +108,12 @@ export function useAccount(bridge: NativeBridge): AccountState {
     try {
       await bridge.signOut();
       claimed.current = null;
-      setStatus((s) => ({ available: s?.available ?? true, account: null }));
+      setStatus((s) => ({ ...s, available: s?.available ?? true, account: null }));
+      onSignedOut?.();
     } catch (e) {
       setError(errorMessage(e));
     }
-  }, [bridge]);
+  }, [bridge, onSignedOut]);
 
   return { status, account, ownership, pending, error, signIn, cancelSignIn, signOut };
 }

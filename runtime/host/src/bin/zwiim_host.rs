@@ -311,7 +311,35 @@ async fn async_main() -> ExitCode {
         system_op_lock: zwiim_host::app_state::default_system_op_lock(),
         pairing_invitations: Default::default(),
         host_feed: Default::default(),
+        host_keys: Default::default(),
+        device_revocations: Default::default(),
+        cloud: Arc::new(zwiim_host::cloud::CloudLink::from_env()),
+        lan: Arc::new(zwiim_host::lan::LanLink::from_env()),
     });
+
+    // Load (first boot: mint) the host's identity keys off the startup path.
+    if let Some(host_id) = host_id.clone() {
+        let state = state.clone();
+        tokio::spawn(async move {
+            use zwiim_host::identity::host_keys::{load_or_create, KeyStore};
+            let store = match KeyStore::from_env(&state.data_dir, &host_id) {
+                Ok(store) => store,
+                Err(e) => return tracing::error!("[SERVER] Host keys unavailable: {e}"),
+            };
+            match load_or_create(&state.db.conn, &store).await {
+                Ok(keys) => {
+                    tracing::info!(
+                        "[SERVER] Host keys ready ({}): sign {} static {}",
+                        store.name(),
+                        keys.sign_pubkey(),
+                        keys.static_pubkey()
+                    );
+                    let _ = state.host_keys.set(keys);
+                }
+                Err(e) => tracing::error!("[SERVER] Host keys unavailable ({}): {e}", store.name()),
+            }
+        });
+    }
 
     // Follow agents' session options into the per-session preferences that
     // idle respawn and host restart replay.
@@ -522,7 +550,48 @@ async fn async_main() -> ExitCode {
         state.clone(),
         token.clone(),
         static_dir,
-        shutdown_signal,
+        shutdown_signal.clone(),
+    );
+
+    // Device tunnels on a loopback address, for local verification only
+    // (remote devices reach a host through the Cloud relay). Off unless
+    // `ZWIIM_TUNNEL_TEST_ADDR` is set.
+    if let Some(addr) = std::env::var("ZWIIM_TUNNEL_TEST_ADDR").ok().filter(|s| !s.is_empty()) {
+        let addr: std::net::SocketAddr = match addr.parse() {
+            Ok(addr) => addr,
+            Err(e) => {
+                tracing::error!("[SERVER] Invalid ZWIIM_TUNNEL_TEST_ADDR {addr:?}: {e}");
+                return ExitCode::from(1);
+            }
+        };
+        let tunnel_router =
+            zwiim_host::tunnel::host::router(state.clone(), token.clone(), shutdown_signal.clone());
+        let (state, shutdown) = (state.clone(), shutdown_signal.clone());
+        tokio::spawn(async move {
+            if let Err(e) =
+                zwiim_host::tunnel::host::serve_test_listener(addr, state, tunnel_router, shutdown).await
+            {
+                tracing::error!("[SERVER] Tunnel test listener on {addr} failed: {e}");
+            }
+        });
+    }
+
+    // The outbound Cloud connection, for remote devices. Connects only once
+    // the host is enrolled (`cloud.enroll`); local clients never go through
+    // it, and nothing here waits on it.
+    zwiim_host::cloud::start(
+        state.clone(),
+        zwiim_host::tunnel::host::router(state.clone(), token.clone(), shutdown_signal.clone()),
+        shutdown_signal.clone(),
+    );
+
+    // Direct device tunnels on the local network, only if the operator
+    // turned LAN access on (`lan.set`). Same tunnel, same device trust as
+    // the Cloud relay; no HTTP and no `/api` on that port.
+    zwiim_host::lan::start(
+        state.clone(),
+        zwiim_host::tunnel::host::router(state.clone(), token.clone(), shutdown_signal.clone()),
+        shutdown_signal.clone(),
     );
 
     // Bind

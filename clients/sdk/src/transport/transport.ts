@@ -21,9 +21,14 @@ export interface EventChannel {
 
 /**
  * How a client reaches one host. `LocalTransport` is localhost HTTP + WS;
- * a relay transport would implement the same contract.
+ * `RelayTransport` and `LanTransport` are the same contract in the device
+ * tunnel, through Zwiim Cloud or directly on the local network, and
+ * `ConnectionManager` chooses between those two. Clients never need to know
+ * which one they hold.
  */
 export interface Transport {
   request(op: OpName, params: unknown, options?: RequestOptions): Promise<unknown>;
   openEvents(handlers: EventChannelHandlers): EventChannel;
+  /** Release any connection the transport holds open between calls. */
+  close?(): void;
 }

@@ -48,6 +48,7 @@ mod m20260907_000001_canvas_node_path;
 mod m20260923_000001_trusted_devices;
 mod m20260923_000002_workspace_session_ids;
 mod m20260924_000001_worktree_base;
+mod m20260926_000001_device_keys;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -102,6 +103,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260923_000001_trusted_devices::Migration),
             Box::new(m20260923_000002_workspace_session_ids::Migration),
             Box::new(m20260924_000001_worktree_base::Migration),
+            Box::new(m20260926_000001_device_keys::Migration),
         ]
     }
 }

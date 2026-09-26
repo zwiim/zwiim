@@ -20,6 +20,7 @@ pub mod commands;
 /// Built-in browser. Only its wire types and its grant rules compile in server
 /// mode — see `browser/mod.rs` for why those two, and only those two.
 pub mod browser;
+pub mod cloud;
 pub mod db;
 pub mod folder_links;
 pub mod git_credential;
@@ -27,6 +28,7 @@ pub mod git_repo;
 pub mod host_feed;
 pub mod identity;
 pub mod intern;
+pub mod lan;
 pub mod keyring_store;
 pub mod local_host;
 pub mod logging;
@@ -43,6 +45,7 @@ pub mod session_commands;
 pub mod session_options;
 pub mod supervise;
 mod terminal;
+pub mod tunnel;
 pub mod turn_timings;
 pub mod update;
 pub mod web;

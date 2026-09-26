@@ -7,10 +7,16 @@
 //! here and revokes it upstream when reachable; it never touches the host,
 //! its agents, workspaces or sessions.
 //!
-//! Supabase's URL and anon key are build-time configuration
-//! (`ZWIIM_SUPABASE_URL`, `ZWIIM_SUPABASE_ANON_KEY`). The anon key is public
-//! by design; no private secret is ever built in. Without them, sign-in is
-//! unavailable and the desktop runs in local mode only.
+//! The access token leaves the keychain only for Zwiim Cloud requests made
+//! here (`crate::cloud`), refreshed when it is about to expire; the web UI
+//! never holds it. A refresh the service refuses (the session was revoked or
+//! has lapsed) forgets the session, so the UI asks to sign in again.
+//!
+//! Supabase's URL and anon key are `ZWIIM_SUPABASE_URL` and
+//! `ZWIIM_SUPABASE_ANON_KEY` when the app starts, else the ones built in.
+//! The anon key is public by design; no private secret is ever built in.
+//! Without them, sign-in is unavailable and the desktop runs in local mode
+//! only.
 
 use std::time::Duration;
 
@@ -35,9 +41,22 @@ pub struct AuthConfig {
 }
 
 impl AuthConfig {
-    /// The build's configuration, if sign-in was configured for it.
-    pub fn from_build() -> Option<Self> {
-        Self::new(option_env!("ZWIIM_SUPABASE_URL")?, option_env!("ZWIIM_SUPABASE_ANON_KEY")?)
+    /// Sign-in's configuration, if any: the environment's, else the build's.
+    pub fn configured() -> Option<Self> {
+        let env = |name| std::env::var(name).ok();
+        Self::pick(
+            (env("ZWIIM_SUPABASE_URL"), env("ZWIIM_SUPABASE_ANON_KEY")),
+            (
+                option_env!("ZWIIM_SUPABASE_URL").map(str::to_string),
+                option_env!("ZWIIM_SUPABASE_ANON_KEY").map(str::to_string),
+            ),
+        )
+    }
+
+    /// The first complete, valid pair of URL and anon key.
+    fn pick(runtime: (Option<String>, Option<String>), build: (Option<String>, Option<String>)) -> Option<Self> {
+        let pair = |(url, key): (Option<String>, Option<String>)| Self::new(&url?, &key?);
+        pair(runtime).or_else(|| pair(build))
     }
 
     /// Only HTTPS, or plain HTTP to this machine (a local Supabase).
@@ -63,11 +82,18 @@ pub struct Account {
 }
 
 /// The session as kept in the keychain.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct StoredSession {
     pub account: Account,
     pub access_token: String,
     pub refresh_token: String,
+}
+
+/// Never prints the tokens.
+impl std::fmt::Debug for StoredSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredSession").field("account", &self.account).finish_non_exhaustive()
+    }
 }
 
 /// Where the session lives: the OS keychain in the app, memory in tests.
@@ -110,6 +136,66 @@ impl SessionStore for Keychain {
 /// The signed-in account, from the keychain alone: works offline.
 pub fn current(store: &dyn SessionStore) -> Result<Option<Account>, String> {
     Ok(store.load()?.map(|s| s.account))
+}
+
+/// What `access_token` reports when there is no usable session.
+pub const SIGN_IN_REQUIRED: &str = "Sign in to reach your hosts";
+/// Refresh a token this close to its expiry.
+const REFRESH_MARGIN_SECS: u64 = 60;
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// A JWT's `exp`, read without verifying it: the service verifies; this only
+/// decides when to refresh.
+fn token_expiry(token: &str) -> Option<u64> {
+    let payload = token.split('.').nth(1)?;
+    let claims: serde_json::Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).ok()?).ok()?;
+    claims.get("exp")?.as_u64()
+}
+
+/// A current access token for the signed-in account: the kept one, or a
+/// refreshed one when it expires within a minute (or `force`, after a
+/// service refused it). Errors with [`SIGN_IN_REQUIRED`] when signed out or
+/// the refresh was refused; the session is then forgotten.
+pub async fn access_token(config: &AuthConfig, store: &dyn SessionStore, force: bool) -> Result<String, String> {
+    let Some(session) = store.load()? else {
+        return Err(SIGN_IN_REQUIRED.into());
+    };
+    let fresh = token_expiry(&session.access_token).is_some_and(|exp| exp > now_secs() + REFRESH_MARGIN_SECS);
+    if fresh && !force {
+        return Ok(session.access_token);
+    }
+    let res = http()
+        .post(format!("{}/auth/v1/token?grant_type=refresh_token", config.url))
+        .header("apikey", &config.anon_key)
+        .json(&serde_json::json!({ "refresh_token": session.refresh_token }))
+        .send()
+        .await
+        .map_err(|e| format!("Cannot reach the sign-in service: {e}"))?;
+    if res.status().is_client_error() {
+        store.clear()?;
+        return Err(SIGN_IN_REQUIRED.into());
+    }
+    if !res.status().is_success() {
+        return Err(format!("The sign-in service is unavailable ({})", res.status()));
+    }
+    let token: TokenResponse = res
+        .json()
+        .await
+        .map_err(|e| format!("Unexpected sign-in response: {e}"))?;
+    // The same account, with the rotated tokens.
+    let renewed = StoredSession {
+        account: session.account,
+        access_token: token.access_token,
+        refresh_token: token.refresh_token,
+    };
+    store.save(&renewed)?;
+    Ok(renewed.access_token)
 }
 
 /// PKCE verifier and its S256 challenge.
@@ -330,6 +416,21 @@ mod tests {
     }
 
     #[test]
+    fn the_environment_overrides_the_build_only_as_a_whole() {
+        let some = |s: &str| Some(s.to_string());
+        let built = (some("https://built.supabase.co"), some("built-anon"));
+        let picked = AuthConfig::pick((some("https://env.supabase.co"), some("env-anon")), built.clone()).unwrap();
+        assert_eq!((picked.url.as_str(), picked.anon_key.as_str()), ("https://env.supabase.co", "env-anon"));
+        // Half a pair, or an invalid one, leaves the build's.
+        let partial_or_bad =
+            [(some("https://env.supabase.co"), None), (None, some("env-anon")), (some("http://env.example"), some("k"))];
+        for runtime in partial_or_bad {
+            assert_eq!(AuthConfig::pick(runtime, built.clone()).unwrap().url, "https://built.supabase.co");
+        }
+        assert!(AuthConfig::pick((None, None), (None, None)).is_none());
+    }
+
+    #[test]
     fn pkce_challenge_is_s256_of_the_verifier() {
         let (v, c) = pkce();
         assert_eq!(v.len(), 43);
@@ -373,6 +474,16 @@ mod tests {
                         challenge = q("code_challenge").unwrap();
                         assert_eq!(q("provider").as_deref(), Some("google"));
                         format!("HTTP/1.1 302 Found\r\nLocation: {}?code=the-code\r\nContent-Length: 0\r\n\r\n", q("redirect_to").unwrap())
+                    }
+                    "/auth/v1/token" if q("grant_type").as_deref() == Some("refresh_token") => {
+                        let body: serde_json::Value = serde_json::from_str(req.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+                        let (status, body) = if body["refresh_token"] == "rt" {
+                            let access = jwt_expiring(now_secs() + 3600);
+                            ("200 OK", serde_json::json!({"access_token":access,"refresh_token":"rt2","expires_in":3600,"user":{"id":"user-1","email":user_email}}).to_string())
+                        } else {
+                            ("400 Bad Request", r#"{"error":"invalid_grant"}"#.to_string())
+                        };
+                        format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len())
                     }
                     "/auth/v1/token" => {
                         assert!(req.to_lowercase().contains("apikey: anon"));
@@ -440,6 +551,68 @@ mod tests {
         sign_out(Some(&config), &store).await.unwrap();
         assert_eq!(current(&store).unwrap(), None);
         assert!(log.lock().unwrap().iter().any(|l| l.starts_with("POST /auth/v1/logout")));
+    }
+
+    /// An unsigned token carrying only `exp`.
+    fn jwt_expiring(exp: u64) -> String {
+        format!("h.{}.s", URL_SAFE_NO_PAD.encode(serde_json::json!({ "exp": exp }).to_string()))
+    }
+
+    fn signed_in(store: &Memory, access_token: String, refresh_token: &str) {
+        store
+            .save(&StoredSession {
+                account: Account { user_id: "user-1".into(), email: None },
+                access_token,
+                refresh_token: refresh_token.into(),
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn access_tokens_are_refreshed_near_expiry() {
+        let (base, log) = fake_supabase("me@example.com").await;
+        let config = AuthConfig::new(&base, "anon").unwrap();
+        let refreshes = || log.lock().unwrap().iter().filter(|l| l.contains("grant_type=refresh_token")).count();
+
+        // Signed out: nothing to send.
+        let store = Memory::default();
+        assert_eq!(access_token(&config, &store, false).await.unwrap_err(), SIGN_IN_REQUIRED);
+
+        // Current: used as is.
+        let current = jwt_expiring(now_secs() + 3600);
+        signed_in(&store, current.clone(), "rt");
+        assert_eq!(access_token(&config, &store, false).await.unwrap(), current);
+        assert_eq!(refreshes(), 0);
+
+        // About to expire: refreshed, and the rotated tokens are kept.
+        signed_in(&store, jwt_expiring(now_secs() + 10), "rt");
+        let renewed = access_token(&config, &store, false).await.unwrap();
+        assert!(token_expiry(&renewed).unwrap() > now_secs() + 3000);
+        let kept = store.load().unwrap().unwrap();
+        assert_eq!((kept.access_token.as_str(), kept.refresh_token.as_str()), (renewed.as_str(), "rt2"));
+        assert_eq!(kept.account.user_id, "user-1");
+        assert_eq!(refreshes(), 1);
+
+        // Refused by a service (forced): the refresh runs even for a current token.
+        signed_in(&store, current, "rt");
+        access_token(&config, &store, true).await.unwrap();
+        assert_eq!(refreshes(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_refused_refresh_signs_out() {
+        let (base, _) = fake_supabase("me@example.com").await;
+        let config = AuthConfig::new(&base, "anon").unwrap();
+        let store = Memory::default();
+        signed_in(&store, jwt_expiring(1), "revoked");
+        assert_eq!(access_token(&config, &store, false).await.unwrap_err(), SIGN_IN_REQUIRED);
+        assert_eq!(current(&store).unwrap(), None);
+
+        // Unreachable: the session is kept for later.
+        let offline = AuthConfig::new("http://127.0.0.1:9", "anon").unwrap();
+        signed_in(&store, jwt_expiring(1), "rt");
+        assert!(access_token(&offline, &store, false).await.unwrap_err().contains("Cannot reach"));
+        assert!(current(&store).unwrap().is_some());
     }
 
     #[tokio::test]

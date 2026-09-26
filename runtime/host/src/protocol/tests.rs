@@ -18,8 +18,8 @@ use crate::web::event_bridge::emit_with_state;
 use crate::web::router::build_router;
 use crate::web::shutdown::ShutdownSignal;
 
-const HOST_TOKEN: &str = "host-token";
-const CONN: &str = "conn-secret-7f3a";
+pub(crate) const HOST_TOKEN: &str = "host-token";
+pub(crate) const CONN: &str = "conn-secret-7f3a";
 
 const OPS: &[&str] = &[
     "host.hello",
@@ -54,9 +54,16 @@ const OPS: &[&str] = &[
     "session.set_options",
     "session.list",
     "session.history",
+    "device.pair_invite",
+    "device.list",
+    "device.revoke",
+    "cloud.enroll",
+    "cloud.status",
+    "lan.status",
+    "lan.set",
 ];
 
-fn git(dir: &std::path::Path, args: &[&str]) {
+pub(crate) fn git(dir: &std::path::Path, args: &[&str]) {
     let out = std::process::Command::new("git")
         .args(args)
         .current_dir(dir)
@@ -71,16 +78,16 @@ fn git(dir: &std::path::Path, args: &[&str]) {
     assert!(out.status.success(), "git {args:?}");
 }
 
-struct Host {
-    _dir: tempfile::TempDir,
-    root: String,
-    workspace_id: String,
-    folder_id: i32,
-    state: Arc<AppState>,
-    server: TestServer,
+pub(crate) struct Host {
+    pub(crate) _dir: tempfile::TempDir,
+    pub(crate) root: String,
+    pub(crate) workspace_id: String,
+    pub(crate) folder_id: i32,
+    pub(crate) state: Arc<AppState>,
+    pub(crate) server: TestServer,
 }
 
-async fn host(http_transport: bool) -> Host {
+pub(crate) async fn host(http_transport: bool) -> Host {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     std::fs::create_dir(&repo).unwrap();
@@ -140,7 +147,7 @@ impl Host {
         (status, value)
     }
 
-    async fn ok(&self, op: &str, body: Value) -> Value {
+    pub(crate) async fn ok(&self, op: &str, body: Value) -> Value {
         let (status, value) = self.call(op, body).await;
         assert_eq!(status, StatusCode::OK, "{op}: {value}");
         value
@@ -171,7 +178,7 @@ impl Host {
     }
 
     /// A seeded session bound to an in-process live agent connection.
-    async fn live_session(&self) -> (String, tokio::sync::mpsc::Receiver<ConnectionCommand>) {
+    pub(crate) async fn live_session(&self) -> (String, tokio::sync::mpsc::Receiver<ConnectionCommand>) {
         let conv = seed_conversation(&self.state.db, self.folder_id, AgentType::ClaudeCode).await;
         let rx = self
             .state
@@ -189,7 +196,7 @@ impl Host {
         (sid, rx)
     }
 
-    async fn emit(&self, event: AcpEvent) {
+    pub(crate) async fn emit(&self, event: AcpEvent) {
         let (state, emitter) = self
             .state
             .connection_manager
@@ -200,27 +207,42 @@ impl Host {
     }
 
     async fn ws(&self) -> TestWebSocket {
+        self.ws_as("/zwiim/v1/ws", HOST_TOKEN).await
+    }
+
+    async fn ws_as(&self, path: &str, token: &str) -> TestWebSocket {
         let proto = format!(
             "zwiim-events, zwiim-token.{}",
-            URL_SAFE_NO_PAD.encode(HOST_TOKEN)
+            URL_SAFE_NO_PAD.encode(token)
         );
         self.server
-            .get_websocket("/zwiim/v1/ws")
+            .get_websocket(path)
             .add_header("sec-websocket-protocol", proto)
             .await
             .into_websocket()
             .await
     }
+
+    /// `op` called with `bearer` instead of the host token.
+    async fn call_as(&self, bearer: &str, op: &str, body: Value) -> (StatusCode, Value) {
+        let res = self
+            .server
+            .post(&format!("/zwiim/v1/{op}"))
+            .authorization_bearer(bearer)
+            .json(&body)
+            .await;
+        (res.status_code(), res.json::<Value>())
+    }
 }
 
-fn delta(text: &str) -> AcpEvent {
+pub(crate) fn delta(text: &str) -> AcpEvent {
     AcpEvent::ContentDelta {
         text: text.into(),
         parent_tool_use_id: None,
     }
 }
 
-async fn session_id_of(state: &AppState, conversation_id: i32) -> String {
+pub(crate) async fn session_id_of(state: &AppState, conversation_id: i32) -> String {
     use sea_orm::EntityTrait;
     crate::db::entities::conversation::Entity::find_by_id(conversation_id)
         .one(&state.db.conn)
@@ -1606,4 +1628,248 @@ async fn session_options_live_and_idle() {
         .unwrap()
         .clone();
     assert_eq!(claude["options"]["mode"]["current"], "normal");
+}
+
+// ─── devices ─────────────────────────────────────────────────────────────
+
+fn device_key(byte: u8) -> String {
+    URL_SAFE_NO_PAD.encode([byte; 32])
+}
+
+async fn pair_by_key(h: &Host, device_id: &str, key: u8) -> (StatusCode, Value) {
+    let invite = h.ok("device.pair_invite", json!({})).await;
+    let res = h
+        .server
+        .post("/zwiim/v1/device.pair")
+        .json(&json!({
+            "code": invite["code"],
+            "device_id": device_id,
+            "device_name": "Phone",
+            "device_pubkey": device_key(key),
+        }))
+        .await;
+    (res.status_code(), res.json::<Value>())
+}
+
+/// A device paired the legacy way, holding a bearer credential.
+async fn bearer_device(h: &Host, device_id: &str) -> String {
+    crate::identity::trusted_devices::register(&h.state.db.conn, device_id, "Laptop")
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn device_pair_invite_list_and_revoke() {
+    let h = host(false).await;
+    let host_id = h.ok("host.hello", json!({})).await["host_id"].clone();
+    let static_pubkey = h.state.host_keys.get().unwrap().static_pubkey();
+
+    // The v2 QR payload: no addresses, no private material.
+    let invite = h.ok("device.pair_invite", json!({})).await;
+    let mut fields: Vec<_> = invite.as_object().unwrap().keys().cloned().collect();
+    fields.sort();
+    assert_eq!(fields, ["code", "expires_at", "host_id", "host_static_pubkey", "v"]);
+    assert_eq!(invite["v"], 2);
+    assert_eq!(invite["host_id"], host_id);
+    assert_eq!(invite["host_static_pubkey"], static_pubkey);
+
+    // `device.pair` needs no credential: the code authorizes it.
+    let pair = |code: &Value, device_id: &str, key: u8| {
+        h.server.post("/zwiim/v1/device.pair").json(&json!({
+            "code": code,
+            "device_id": device_id,
+            "device_name": "Phone",
+            "device_pubkey": device_key(key),
+        }))
+    };
+    let res = pair(&invite["code"], "dev-1", 1).await;
+    assert_eq!(res.status_code(), StatusCode::OK);
+    assert_eq!(res.json::<Value>(), json!({"host_id": host_id, "device_id": "dev-1"}));
+
+    // Reused code.
+    let res = pair(&invite["code"], "dev-2", 2).await;
+    assert_eq!(res.status_code(), StatusCode::FORBIDDEN);
+    assert_eq!(res.json::<Value>()["error"]["code"], "permission_denied");
+    // Unknown code.
+    let res = pair(&json!("not-a-code"), "dev-2", 2).await;
+    assert_eq!(res.json::<Value>()["error"]["code"], "permission_denied");
+    // Malformed.
+    let res = h
+        .server
+        .post("/zwiim/v1/device.pair")
+        .json(&json!({"code": "x", "device_id": "dev-2", "device_pubkey": device_key(2), "secret": 1}))
+        .await;
+    assert_eq!(res.json::<Value>()["error"]["code"], "invalid_request");
+
+    let listed = h.ok("device.list", json!({})).await;
+    let devices = listed["devices"].as_array().unwrap();
+    assert_eq!(devices.len(), 1);
+    let d = &devices[0];
+    assert_eq!(d["device_id"], "dev-1");
+    assert_eq!(d["device_name"], "Phone");
+    assert_eq!(d["status"], "trusted");
+    assert_eq!(d["device_pubkey"], device_key(1));
+    assert!(d["revoked_at"].is_null());
+    assert!(d.get("id").is_none() && d.get("credential_hash").is_none(), "{d}");
+
+    assert_eq!(h.ok("device.revoke", json!({"device_id": "dev-1"})).await, json!({}));
+    let d = &h.ok("device.list", json!({})).await["devices"][0];
+    assert_eq!(d["status"], "revoked");
+    assert!(d["revoked_at"].is_string());
+    assert_eq!(
+        crate::identity::trusted_devices::authenticate_key(&h.state.db.conn, &device_key(1))
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        h.err("device.revoke", json!({"device_id": "nope"})).await,
+        (StatusCode::NOT_FOUND, "not_found".into())
+    );
+    assert_eq!(h.err("device.revoke", json!({})).await.1, "invalid_request");
+}
+
+#[tokio::test]
+async fn device_key_conflicts_and_repairing() {
+    let h = host(false).await;
+    assert_eq!(pair_by_key(&h, "dev-1", 1).await.0, StatusCode::OK);
+    // One key, one device.
+    let (status, body) = pair_by_key(&h, "dev-2", 1).await;
+    assert_eq!((status, body["error"]["code"].as_str()), (StatusCode::CONFLICT, Some("already_exists")));
+    // A revoked device is trusted again only by pairing again.
+    h.ok("device.revoke", json!({"device_id": "dev-1"})).await;
+    assert_eq!(pair_by_key(&h, "dev-1", 1).await.0, StatusCode::OK);
+    assert_eq!(h.ok("device.list", json!({})).await["devices"][0]["status"], "trusted");
+}
+
+#[tokio::test]
+async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
+    let h = host(false).await;
+    let credential = bearer_device(&h, "dev-1").await;
+
+    // Normal operations stay available to a trusted device…
+    let (status, _) = h.call_as(&credential, "workspace.list", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    // …and it is recorded as seen.
+    let d = &h.ok("device.list", json!({})).await["devices"][0];
+    assert!(d["last_seen_at"].is_string(), "{d}");
+
+    // Local-authority operations are refused in the Zwiim shape.
+    for (op, body) in [
+        ("device.pair_invite", json!({})),
+        ("device.list", json!({})),
+        ("device.revoke", json!({"device_id": "dev-1"})),
+        ("host.claim", json!({"user_id": "u-mallory"})),
+    ] {
+        let (status, body) = h.call_as(&credential, op, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{op}");
+        assert_eq!(
+            body,
+            json!({"error": {"code": "permission_denied", "message": "This operation requires local host authority"}}),
+            "{op}"
+        );
+    }
+    // Nothing changed.
+    assert_eq!(h.ok("device.list", json!({})).await["devices"][0]["status"], "trusted");
+    assert_eq!(h.ok("host.hello", json!({})).await["owner"], Value::Null);
+
+    // The legacy `/api` device management is host-only too.
+    for route in ["pairing_invitation_create", "trusted_device_list", "trusted_device_revoke"] {
+        let res = h
+            .server
+            .post(&format!("/api/{route}"))
+            .authorization_bearer(&credential)
+            .json(&json!({"deviceId": "dev-1"}))
+            .await;
+        assert_eq!(res.status_code(), StatusCode::FORBIDDEN, "{route}");
+    }
+    let res = h
+        .server
+        .post("/api/trusted_device_list")
+        .authorization_bearer(HOST_TOKEN)
+        .await;
+    assert_eq!(res.status_code(), StatusCode::OK);
+
+    // Unknown and revoked devices do not authenticate at all.
+    assert_eq!(h.call_as("unknown-credential", "workspace.list", json!({})).await.0, StatusCode::UNAUTHORIZED);
+    h.ok("device.revoke", json!({"device_id": "dev-1"})).await;
+    let (status, body) = h.call_as(&credential, "workspace.list", json!({})).await;
+    assert_eq!((status, body["error"]["code"].as_str()), (StatusCode::UNAUTHORIZED, Some("unauthenticated")));
+}
+
+async fn expect_revoked_close(ws: &mut TestWebSocket) {
+    use axum_test::WsMessage;
+    loop {
+        let msg = tokio::time::timeout(Duration::from_secs(5), ws.receive_message())
+            .await
+            .expect("close within 5s");
+        match msg {
+            WsMessage::Close(Some(frame)) => {
+                assert_eq!(u16::from(frame.code), crate::web::auth::WS_CLOSE_DEVICE_REVOKED);
+                assert_eq!(frame.reason.as_str(), "device_revoked");
+                return;
+            }
+            WsMessage::Close(None) => panic!("closed without the revocation code"),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn revoking_a_device_closes_its_open_sockets() {
+    let h = host(true).await;
+    let credential = bearer_device(&h, "dev-1").await;
+    let other = bearer_device(&h, "dev-2").await;
+
+    let mut zwiim_ws = h.ws_as("/zwiim/v1/ws", &credential).await;
+    let mut legacy_ws = h.ws_as("/ws/events", &credential).await;
+    let mut other_ws = h.ws_as("/zwiim/v1/ws", &other).await;
+    let mut host_ws = h.ws().await;
+    // Both sockets are live before the revocation.
+    zwiim_ws.send_json(&json!({"op": "ping"})).await;
+    recv(&mut zwiim_ws).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    h.ok("device.revoke", json!({"device_id": "dev-1"})).await;
+    expect_revoked_close(&mut zwiim_ws).await;
+    expect_revoked_close(&mut legacy_ws).await;
+
+    // Other devices and the host keep their sockets.
+    for ws in [&mut other_ws, &mut host_ws] {
+        ws.send_json(&json!({"op": "ping"})).await;
+        assert_eq!(recv(ws).await["type"], "pong");
+    }
+
+    // The revoked device cannot open a new one.
+    let res = h
+        .server
+        .get("/zwiim/v1/ws")
+        .add_header(
+            "sec-websocket-protocol",
+            format!("zwiim-events, zwiim-token.{}", URL_SAFE_NO_PAD.encode(&credential)),
+        )
+        .await;
+    assert_eq!(res.status_code(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn pairing_invites_wait_for_the_host_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = crate::db::init_database(dir.path(), "test").await.unwrap();
+    let mut state = AppState::new_for_test(db, dir.path().to_path_buf());
+    state.host_keys = Default::default();
+    let app = build_router(
+        Arc::new(state),
+        HOST_TOKEN.to_string(),
+        dir.path().to_path_buf(),
+        Arc::new(ShutdownSignal::new()),
+    );
+    let server = TestServer::new(app).unwrap();
+    let res = server
+        .post("/zwiim/v1/device.pair_invite")
+        .authorization_bearer(HOST_TOKEN)
+        .json(&json!({}))
+        .await;
+    assert_eq!(res.status_code(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(res.json::<Value>()["error"]["code"], "identity_unavailable");
 }

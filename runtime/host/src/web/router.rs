@@ -1058,17 +1058,23 @@ pub fn build_router(
         .route("/terminal_list", post(handlers::terminal::terminal_list))
         // ─── Identity (host id, pairing invitations, trusted devices) ───
         .route("/host_identity", post(handlers::identity::host_identity))
-        .route(
-            "/pairing_invitation_create",
-            post(handlers::identity::pairing_invitation_create),
-        )
-        .route(
-            "/trusted_device_list",
-            post(handlers::identity::trusted_device_list),
-        )
-        .route(
-            "/trusted_device_revoke",
-            post(handlers::identity::trusted_device_revoke),
+        // Device management stays with the host's operator, never a paired
+        // device (matches `device.*` on `/zwiim/v1`).
+        .merge(
+            Router::new()
+                .route(
+                    "/pairing_invitation_create",
+                    post(handlers::identity::pairing_invitation_create),
+                )
+                .route(
+                    "/trusted_device_list",
+                    post(handlers::identity::trusted_device_list),
+                )
+                .route(
+                    "/trusted_device_revoke",
+                    post(handlers::identity::trusted_device_revoke),
+                )
+                .route_layer(middleware::from_fn(auth::require_local_authority)),
         )
         // ─── Workspaces + sessions (Zwiim identities only) ───
         .route("/workspace_list", post(handlers::workspace::workspace_list))

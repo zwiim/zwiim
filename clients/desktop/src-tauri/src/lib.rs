@@ -7,11 +7,22 @@
 //! speaks the Zwiim protocol, never reads host SQLite, and never touches
 //! project files — the UI talks to the host over localhost HTTP/WS through
 //! the TypeScript SDK.
+//!
+//! For hosts on other computers it keeps this device's identity and pairings
+//! in the keychain (`device`) and makes the account's Zwiim Cloud requests
+//! (`cloud`); the UI reaches those hosts through the Cloud relay, over the
+//! SDK's end-to-end encrypted tunnel. On the same local network it can
+//! reach them directly instead (`lan`): mDNS discovery and a TCP byte pipe
+//! to a discovered host, carrying the same tunnel.
 
 pub mod account;
+pub mod cloud;
+pub mod device;
+pub mod lan;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -129,22 +140,27 @@ struct SignIn {
 
 #[derive(Serialize)]
 struct AccountStatus {
-    /// This build can sign in (it was built with Supabase configuration).
+    /// Sign-in is configured (Supabase URL and anon key, at run or build time).
     available: bool,
     account: Option<account::Account>,
+    /// The Zwiim Cloud remote hosts are reached through; none without
+    /// sign-in or a configured Cloud.
+    cloud_url: Option<String>,
 }
 
 #[tauri::command]
 fn account_status() -> Result<AccountStatus, String> {
+    let available = account::AuthConfig::configured().is_some();
     Ok(AccountStatus {
-        available: account::AuthConfig::from_build().is_some(),
+        available,
         account: account::current(&account::Keychain)?,
+        cloud_url: cloud::configured_url().filter(|_| available),
     })
 }
 
 #[tauri::command]
 async fn account_sign_in(state: tauri::State<'_, SignIn>) -> Result<account::Account, String> {
-    let config = account::AuthConfig::from_build().ok_or("Sign-in is not available in this build")?;
+    let config = account::AuthConfig::configured().ok_or("Sign-in is not available in this build")?;
     account::sign_in(&config, &account::Keychain, account::open_in_browser, &state.cancel).await
 }
 
@@ -155,7 +171,93 @@ fn account_cancel_sign_in(state: tauri::State<'_, SignIn>) {
 
 #[tauri::command]
 async fn account_sign_out() -> Result<(), String> {
-    account::sign_out(account::AuthConfig::from_build().as_ref(), &account::Keychain).await
+    account::sign_out(account::AuthConfig::configured().as_ref(), &account::Keychain).await
+}
+
+/// An allowed Zwiim Cloud call, with the account's token added here.
+#[tauri::command]
+async fn cloud_request(method: String, path: String) -> Result<cloud::CloudReply, String> {
+    let config = account::AuthConfig::configured().ok_or("Sign-in is not available in this build")?;
+    let url = cloud::configured_url().ok_or("No Zwiim Cloud is configured")?;
+    let token = |force| {
+        let config = config.clone();
+        async move { account::access_token(&config, &account::Keychain, force).await }
+    };
+    cloud::request(&url, token, &method, &path).await
+}
+
+/// What the UI needs to open a tunnel as this device. The secret stays in
+/// memory there.
+#[derive(Serialize)]
+struct DeviceKey {
+    device_id: String,
+    device_name: String,
+    secret: String,
+}
+
+#[tauri::command]
+fn device_identity() -> Result<DeviceKey, String> {
+    let identity = device::identity(&device::Keychain)?;
+    Ok(DeviceKey { device_id: identity.device_id, device_name: identity.device_name, secret: identity.secret })
+}
+
+#[tauri::command]
+fn device_paired_hosts() -> Result<Vec<device::PairedHost>, String> {
+    device::paired_hosts(&device::Keychain)
+}
+
+#[tauri::command]
+fn device_pin_host(host: device::PairedHost) -> Result<(), String> {
+    device::pin_host(&device::Keychain, host)
+}
+
+#[tauri::command]
+fn device_forget_host(host_id: String) -> Result<(), String> {
+    device::forget_host(&device::Keychain, &host_id)
+}
+
+/// Hosts advertising on this network. Empty when `host_id` is not seen
+/// within `timeout_ms`.
+#[tauri::command]
+async fn lan_discover(
+    discovery: tauri::State<'_, lan::Discovery>,
+    host_id: String,
+    timeout_ms: u64,
+) -> Result<Vec<lan::Advertisement>, String> {
+    if !cloud::valid_host_id(&host_id) {
+        return Err("Not a host id".into());
+    }
+    discovery.discover(&host_id, Duration::from_millis(timeout_ms.min(10_000))).await
+}
+
+/// A byte pipe to a discovered host's endpoint; bytes and its end arrive on
+/// `on_event`.
+#[tauri::command]
+async fn lan_connect(
+    discovery: tauri::State<'_, lan::Discovery>,
+    links: tauri::State<'_, lan::Links>,
+    address: String,
+    port: u16,
+    timeout_ms: u64,
+    on_event: tauri::ipc::Channel<lan::LinkEvent>,
+) -> Result<u32, String> {
+    let timeout = Duration::from_millis(timeout_ms.min(10_000));
+    links
+        .connect(&discovery, &address, port, timeout, move |ev| {
+            let _ = on_event.send(ev);
+        })
+        .await
+}
+
+#[tauri::command]
+async fn lan_send(links: tauri::State<'_, lan::Links>, id: u32, data: String) -> Result<(), String> {
+    links.send(id, &data).await
+}
+
+#[tauri::command]
+async fn lan_close(links: tauri::State<'_, lan::Links>, id: u32) -> Result<(), String> {
+    links.close(id).await;
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -163,13 +265,24 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(SignIn::default())
+        .manage(lan::Discovery::default())
+        .manage(lan::Links::default())
         .invoke_handler(tauri::generate_handler![
             discover_host,
             start_host,
             account_status,
             account_sign_in,
             account_cancel_sign_in,
-            account_sign_out
+            account_sign_out,
+            cloud_request,
+            device_identity,
+            device_paired_hosts,
+            device_pin_host,
+            device_forget_host,
+            lan_discover,
+            lan_connect,
+            lan_send,
+            lan_close
         ])
         .run(tauri::generate_context!())
         .expect("error while running Zwiim Desktop");

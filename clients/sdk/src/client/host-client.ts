@@ -36,6 +36,20 @@ import { isClientError, ZwiimClientError } from "./errors";
 
 export type TransportSource = Transport | (() => Transport | Promise<Transport>);
 
+/**
+ * Failures retrying cannot fix, and the status each leaves the client in:
+ * the caller must re-authenticate, re-pair or pick another host, then
+ * `start()` again. Everything else reconnects with backoff.
+ */
+const TERMINAL: Readonly<Record<string, "unauthenticated" | "error">> = {
+  unauthenticated: "unauthenticated",
+  device_refused: "unauthenticated",
+  host_mismatch: "error",
+  host_unknown: "error",
+  handshake_failed: "error",
+  host_identity_mismatch: "error",
+};
+
 export interface HostClientOptions {
   /**
    * The transport, or a factory called before every connection attempt (so
@@ -141,6 +155,7 @@ export class HostClient {
   stop(): void {
     this.run++;
     this.teardown();
+    this.transport?.close?.();
     this.setState({ status: "disconnected", retryInMs: null });
   }
 
@@ -157,7 +172,9 @@ export class HostClient {
     this.setState({ status: phase, retryInMs: null });
     let hello: HostHello;
     try {
+      const previous = this.transport;
       this.transport = typeof this.source === "function" ? await this.source() : this.source;
+      if (previous && previous !== this.transport) previous.close?.();
       if (run !== this.run) return;
       hello = (await this.transport.request("host.hello", {})) as HostHello;
     } catch (e) {
@@ -209,12 +226,9 @@ export class HostClient {
     const code = isClientError(e) ? e.code : "network";
     const message = e instanceof Error ? e.message : String(e);
     this.teardown();
-    if (code === "unauthenticated" || code === "host_mismatch") {
-      this.setState({
-        status: code === "unauthenticated" ? "unauthenticated" : "error",
-        error: { code, message },
-        retryInMs: null,
-      });
+    const terminal = TERMINAL[code];
+    if (terminal) {
+      this.setState({ status: terminal, error: { code, message }, retryInMs: null });
       return;
     }
     const attempt = this.stateValue.attempt;
@@ -292,11 +306,12 @@ export class HostClient {
         mutating: MUTATING_OPS.has(op),
       })) as OpResult<O>;
     } catch (e) {
-      if (isClientError(e, "unauthenticated")) {
+      const terminal = isClientError(e) ? TERMINAL[e.code] : undefined;
+      if (terminal && isClientError(e)) {
         this.run++;
         this.teardown();
         this.setState({
-          status: "unauthenticated",
+          status: terminal,
           error: { code: e.code, message: e.message },
           retryInMs: null,
         });
