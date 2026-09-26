@@ -1,6 +1,6 @@
 //! Custom (user-authored) skills management.
 //!
-//! The fourth "skill pack" in codeg's central store `~/.zwiim/skills/<id>/`.
+//! The fourth "skill pack" in Zwiim's central store `~/.zwiim/skills/<id>/`.
 //! Unlike experts/science/office — which bundle *read-only* content into the
 //! binary — custom skills are created, edited, imported and deleted by the
 //! user. They live in the SAME central store and are enabled for an ACP agent
@@ -260,7 +260,7 @@ fn collect_custom_ids() -> Result<Vec<String>, CustomSkillsError> {
         let entry = entry.map_err(|e| CustomSkillsError::Io(e.to_string()))?;
         let file_name = entry.file_name();
         let name = file_name.to_string_lossy();
-        // Skip codeg-owned dotfiles (`.manifest.json`, `.manifest.science.json`).
+        // Skip zwiim-owned dotfiles (`.manifest.json`, `.manifest.science.json`).
         if name.starts_with('.') {
             continue;
         }
@@ -860,7 +860,7 @@ mod tests {
         // Absolute on every platform — a unix literal would not be on Windows.
         let dedicated = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("codeg-dedicated-skills");
+            .join("zwiim-dedicated-skills");
 
         assert!(hydrate(std::slice::from_ref(&def)).is_empty());
         assert!(
@@ -914,12 +914,12 @@ mod tests {
     async fn apply_links_does_not_deadlock() {
         let ops = vec![
             LinkOp {
-                expert_id: "zzz-codeg-custom-batch-absent-aaa".into(),
+                expert_id: "zzz-zwiim-custom-batch-absent-aaa".into(),
                 agent_type: AgentType::ClaudeCode,
                 enable: false,
             },
             LinkOp {
-                expert_id: "zzz-codeg-custom-batch-absent-bbb".into(),
+                expert_id: "zzz-zwiim-custom-batch-absent-bbb".into(),
                 agent_type: AgentType::Codex,
                 enable: false,
             },
@@ -937,13 +937,13 @@ mod tests {
         let ops = vec![
             LinkOp {
                 // Idempotent disable of an absent link → ok.
-                expert_id: "zzz-codeg-custom-batch-absent".into(),
+                expert_id: "zzz-zwiim-custom-batch-absent".into(),
                 agent_type: AgentType::ClaudeCode,
                 enable: false,
             },
             LinkOp {
                 // Enable of a skill with no central copy → fails its op.
-                expert_id: "zzz-codeg-custom-not-installed".into(),
+                expert_id: "zzz-zwiim-custom-not-installed".into(),
                 agent_type: AgentType::ClaudeCode,
                 enable: true,
             },
@@ -961,8 +961,8 @@ mod tests {
         // Deleting ids with no central dir + no links is an idempotent success;
         // this never touches real content.
         let results = custom_delete_skills(vec![
-            "zzz-codeg-custom-delete-absent-1".into(),
-            "zzz-codeg-custom-delete-absent-2".into(),
+            "zzz-zwiim-custom-delete-absent-1".into(),
+            "zzz-zwiim-custom-delete-absent-2".into(),
         ])
         .await
         .expect("batch returns Ok");
@@ -988,8 +988,8 @@ mod tests {
         let results = custom_import_from_agent(
             AgentType::ClaudeCode,
             vec![
-                "zzz-codeg-custom-import-absent-1".into(),
-                "zzz-codeg-custom-import-absent-2".into(),
+                "zzz-zwiim-custom-import-absent-1".into(),
+                "zzz-zwiim-custom-import-absent-2".into(),
             ],
         )
         .await

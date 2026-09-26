@@ -82,9 +82,9 @@ static NOTIFICATION_IDENTITY: OnceLock<NotificationIdentity> = OnceLock::new();
 /// This deliberately does NOT special-case `is_dev()`. The old code passed
 /// `"com.apple.Terminal"` in dev builds, copying `tauri-plugin-notification`,
 /// which made every dev notification land under Terminal's permission — an app
-/// most users have never granted, so nothing appeared and the codeg switches
+/// most users have never granted, so nothing appeared and the Zwiim switches
 /// the user could see governed nothing. Asking for our own identifier works
-/// whenever codeg is registered with LaunchServices (the usual case: it is
+/// whenever Zwiim is registered with LaunchServices (the usual case: it is
 /// installed), and when it is not, `setApplication` leaves `fakeBundleIdentifier`
 /// nil and the crate's swizzle falls back to `com.apple.Terminal` on its own —
 /// i.e. exactly the old behaviour, minus the silence about it.
@@ -273,7 +273,7 @@ const SETTINGS_LAUNCH_GRACE: std::time::Duration = std::time::Duration::from_mil
 /// revoked.
 ///
 /// Targets the identity notifications are *actually* delivered under, not
-/// necessarily this app's own — sending the user to codeg's page while the OS
+/// necessarily this app's own — sending the user to Zwiim's page while the OS
 /// files the notifications under another app would point them at switches that
 /// change nothing.
 #[cfg(feature = "tauri-runtime")]

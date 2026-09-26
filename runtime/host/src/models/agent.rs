@@ -12,7 +12,7 @@ pub const CUSTOM_AGENT_WIRE_PREFIX: &str = "custom:";
 /// launch metadata (`acp::registry`) and a dedicated transcript parser
 /// (`parsers::*`). [`AgentType::Custom`] is the open end: a user-registered
 /// ACP agent whose launch metadata lives in the database
-/// (`acp::custom_registry`) and whose history comes from codeg's own ACP
+/// (`acp::custom_registry`) and whose history comes from Zwiim's own ACP
 /// transcript (`parsers::acp_native`) rather than an agent-specific store.
 ///
 /// The `Custom` payload is an **interned** slug (`crate::intern`), not a

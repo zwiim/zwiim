@@ -1,6 +1,6 @@
 //! Restore: stage-then-swap-on-startup.
 //!
-//! The DB connection pool holds `codeg.db` open (WAL sidecars), so swapping it
+//! The DB connection pool holds `zwiim.db` open (WAL sidecars), so swapping it
 //! under a live connection risks corruption (and fails outright on Windows).
 //! Restore therefore runs in two phases:
 //!
@@ -45,9 +45,9 @@ pub const UPLOAD_TMP_DIR: &str = ".zwiim-restore-upload";
 /// Staging/archive subdirectory holding the database snapshot.
 pub const DB_STAGING_DIR: &str = "db";
 /// Fixed in-archive name of the database snapshot. The LIVE name varies
-/// (`codeg-dev.db` on debug desktop builds), so the two are mapped explicitly
+/// (`zwiim-dev.db` on debug desktop builds), so the two are mapped explicitly
 /// at swap time rather than assumed equal.
-pub const DB_STAGING_NAME: &str = "codeg.db";
+pub const DB_STAGING_NAME: &str = "zwiim.db";
 /// Per-unit swap progress, written inside the staging dir so a crashed swap
 /// can be resumed exactly once per unit.
 const SWAP_STATE_DIR: &str = ".zwiim-swap-state";
@@ -144,7 +144,7 @@ struct PendingRestore {
     created_at: String,
     app_version: String,
     latest_migration: String,
-    /// Which codeg-owned sections this restore is allowed to replace.
+    /// Which zwiim-owned sections this restore is allowed to replace.
     ///
     /// It has to live HERE rather than be re-derived at apply time: the swap
     /// runs in the *next* process and the manifest never reaches staging
@@ -1190,7 +1190,7 @@ mod tests {
         write_archive(
             &src,
             None,
-            &[("db/codeg.db", b"NEW-DB"), ("uploads/a.txt", b"A")],
+            &[("db/zwiim.db", b"NEW-DB"), ("uploads/a.txt", b"A")],
         );
 
         let live_base = dir.path().join("live");
@@ -1633,7 +1633,7 @@ mod tests {
 
         let mut manifest = BackupManifest {
             format_version: 1,
-            kind: "codeg-backup".to_string(),
+            kind: "zwiim-backup".to_string(),
             created_at: "2026-06-06T00:00:00Z".to_string(),
             app_version: "0.15.0".to_string(),
             latest_migration: String::new(),

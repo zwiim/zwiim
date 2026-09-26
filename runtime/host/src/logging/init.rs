@@ -62,7 +62,7 @@ pub struct LogGuard {
 ///   it several-fold onto disk — the shape behind the 34GB-in-8.8h field report
 ///   on 0.23.3 (issue #427). It also carries one **INFO** line per unhandled
 ///   method (`incoming_actor` "Rejecting message with error, no handler") which
-///   fires on the per-message hot path at the DEFAULT level. codeg keeps its own
+///   fires on the per-message hot path at the DEFAULT level. Zwiim keeps its own
 ///   throttled account of dropped / unclaimed messages
 ///   (`maybe_emit_ext_notification`, `TurnOutputProbe`), so none of that is
 ///   load-bearing.
@@ -539,11 +539,11 @@ fn build_subscriber(
     (reload_handle, guard)
 }
 
-/// Phase 1 for the desktop `codeg` binary: stderr + file (`codeg.<date>.log`) +
+/// Phase 1 for the desktop `zwiim` binary: stderr + file (`zwiim.<date>.log`) +
 /// buffer. Default level is env-or-`info`; [`apply_persisted_level`] refines it
 /// once the DB is open.
 pub fn init_desktop() -> LogGuard {
-    init_with_file("codeg")
+    init_with_file("zwiim")
 }
 
 /// Phase 1 for `zwiim-host`: stderr + file (`zwiim-host.<date>.log`) +
@@ -553,7 +553,7 @@ pub fn init_server() -> LogGuard {
 }
 
 fn init_with_file(prefix: &str) -> LogGuard {
-    let dir = crate::paths::codeg_logs_root();
+    let dir = crate::paths::zwiim_logs_root();
     let (reload, guard) = build_subscriber(LogLevel::default(), Some(&dir), prefix);
     LogHub::install(reload);
     LogGuard { _guard: guard }

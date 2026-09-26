@@ -63,7 +63,7 @@ pub(crate) async fn create_backup_core(
     // and a cross-filesystem temp turns every later rename into a full copy.
     // `cleanup_transient_dirs` already sweeps this root at startup.
     let work = tempfile::tempdir_in(scratch_root(inputs.data_dir)?).map_err(AppCommandError::io)?;
-    let db_snapshot = work.path().join("codeg.db");
+    let db_snapshot = work.path().join("zwiim.db");
     let zip_tmp = work.path().join("payload.zip");
     let external_scratch = work.path().to_path_buf();
 
@@ -126,8 +126,8 @@ pub(crate) async fn create_backup_core(
                 Some(path.to_string()),
             );
         };
-        builder.add_file("db/codeg.db", &db_snapshot_c, &cancel_c, &mut prog)?;
-        // Every codeg-owned section, straight off the shared table — see
+        builder.add_file("db/zwiim.db", &db_snapshot_c, &cancel_c, &mut prog)?;
+        // Every zwiim-owned section, straight off the shared table — see
         // `sections.rs` for why this must not be re-hardcoded here.
         let exclude = |rel: &Path| sections::is_excluded_section_entry(rel);
         for section in sections::MANAGED_SECTIONS {
@@ -399,7 +399,7 @@ mod tests {
                 .is_dir(),
             "the archive must be assembled under the data dir"
         );
-        assert!(manifest.entries.iter().any(|e| e.path == "db/codeg.db"));
+        assert!(manifest.entries.iter().any(|e| e.path == "db/zwiim.db"));
         assert!(manifest.entries.iter().any(|e| e.path == "uploads/att.txt"));
         assert!(!manifest.entries.iter().any(|e| e.path.contains(".tmp")));
 
@@ -419,7 +419,7 @@ mod tests {
         let out = dir.path().join("out");
         archive::extract_all(&dest, &out, &manifest, &cancel, &mut archive::null_progress())
             .unwrap();
-        assert_eq!(count_folders(&out.join("db/codeg.db")).await, 1);
+        assert_eq!(count_folders(&out.join("db/zwiim.db")).await, 1);
     }
 
     #[tokio::test]
@@ -516,7 +516,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(PathBuf::from(&staged.staging_dir).join("db/codeg.db").exists());
+        assert!(PathBuf::from(&staged.staging_dir).join("db/zwiim.db").exists());
         assert!(restore_dir.path().join(PENDING_MARKER).is_file());
 
         // Apply on "startup" → live DB carries the two seeded folders. Inject

@@ -267,7 +267,7 @@ pub async fn validate_github_token(
     let response = reqwest::Client::new()
         .get(&api_url)
         .header("Authorization", format!("Bearer {trimmed_token}"))
-        .header("User-Agent", "codeg")
+        .header("User-Agent", "zwiim")
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
@@ -363,7 +363,7 @@ pub async fn validate_gitlab_token(
     let response = client
         .get(format!("{origin}/api/v4/user"))
         .header("PRIVATE-TOKEN", trimmed_token)
-        .header("User-Agent", "codeg")
+        .header("User-Agent", "zwiim")
         .header("Accept", "application/json")
         .send()
         .await
@@ -401,7 +401,7 @@ pub async fn validate_gitlab_token(
     if let Ok(response) = client
         .get(format!("{origin}/api/v4/personal_access_tokens/self"))
         .header("PRIVATE-TOKEN", trimmed_token)
-        .header("User-Agent", "codeg")
+        .header("User-Agent", "zwiim")
         .header("Accept", "application/json")
         .send()
         .await
@@ -466,7 +466,7 @@ pub async fn validate_gitea_token(
     let response = reqwest::Client::new()
         .get(format!("{origin}/api/v1/user"))
         .header("Authorization", format!("token {trimmed_token}"))
-        .header("User-Agent", "codeg")
+        .header("User-Agent", "zwiim")
         .header("Accept", "application/json")
         .send()
         .await

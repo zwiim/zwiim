@@ -41,7 +41,7 @@
 //!
 //! ### Version coupling
 //!
-//! The companion (`zwiim-mcp`) and the listener (inside the codeg main
+//! The companion (`zwiim-mcp`) and the listener (inside the Zwiim main
 //! process) ship in the SAME release artifact — the Tauri bundle, the
 //! server Docker image, and the standalone binary tree all install both
 //! binaries at the same path. The MCP config pointing the agent CLI at
@@ -71,7 +71,7 @@ pub struct BrokerRequest {
     /// the agent passes it through to the companion via `--token`. Rejects
     /// anything else.
     pub token: String,
-    /// codeg-internal ACP connection UUID for the parent session.
+    /// zwiim-internal ACP connection UUID for the parent session.
     pub parent_connection_id: String,
     /// The MCP `tool_use_id` for the LLM-issued `delegate_to_agent` call.
     /// Used to bind the eventual child outcome back to the parent's
@@ -187,16 +187,16 @@ pub struct BrokerAskRequest {
     pub questions: Vec<QuestionSpec>,
 }
 
-/// Resolve a session the user referenced (`codeg://session/<id>`) into its
+/// Resolve a session the user referenced (`zwiim://session/<id>`) into its
 /// metadata + stats, optionally with its recent messages. Backs the
 /// `get_session_info` MCP tool. Authenticated by the same per-launch `token`; the
-/// lookup is by codeg's internal conversation id (the number in the reference),
+/// lookup is by Zwiim's internal conversation id (the number in the reference),
 /// so — unlike the delegation arms — it is NOT scoped to the parent connection
 /// (any non-deleted session the user references can be read).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrokerSessionRequest {
     pub token: String,
-    /// codeg's internal conversation PK (the number in `codeg://session/<id>`).
+    /// Zwiim's internal conversation PK (the number in `zwiim://session/<id>`).
     pub session_id: i32,
     /// How many of the most recent turns to include as compacted text. `None` /
     /// `0` → metadata only (no transcript parse); a positive value is clamped to
@@ -358,7 +358,7 @@ pub enum BrokerMessage {
     BrowserEval(BrokerBrowserEvalRequest),
     BrowserTabOp(BrokerBrowserTabOpRequest),
     /// Liveness probe. Unlike every other variant this one is NOT sent by a
-    /// companion — it comes from codeg's own service-status check
+    /// companion — it comes from Zwiim's own service-status check
     /// (`acp::delegation::service`), which is why it carries no `token`: a
     /// `{"ok": true}` answer reveals nothing beyond "the socket is being
     /// served", which the connect itself already proved. Answering it end to
@@ -864,7 +864,7 @@ mod tests {
         use tokio::net::UnixListener;
 
         // `/tmp`, not `$TMPDIR`: a socket path has ~104 bytes of `sun_path` to
-        // live in, and codeg exports a 72-byte per-session `TMPDIR` to the
+        // live in, and Zwiim exports a 72-byte per-session `TMPDIR` to the
         // agents it launches. Under `tempdir()` this lands at 99 bytes there —
         // green, but one directory level from an unexplainable red.
         let dir = tempfile::tempdir_in("/tmp").unwrap();

@@ -83,7 +83,7 @@ pub fn create_credential_helper_script(
 
     #[cfg(unix)]
     {
-        let script_path = app_data_dir.join("git-credential-codeg.sh");
+        let script_path = app_data_dir.join("git-credential-zwiim.sh");
         let content = format!(
             r#"#!/bin/sh
 # Zwiim credential helper — calls the app binary to look up credentials.
@@ -102,7 +102,7 @@ exec {binary} --credential-helper --data-dir {data_dir} < /dev/stdin
 
     #[cfg(windows)]
     {
-        let script_path = app_data_dir.join("git-credential-codeg.bat");
+        let script_path = app_data_dir.join("git-credential-zwiim.bat");
         let content = format!(
             r#"@echo off
 if not "%~1"=="get" exit /b 0
@@ -123,7 +123,7 @@ if not "%~1"=="get" exit /b 0
 /// to stdout. Exits immediately — does NOT start the Tauri GUI.
 pub fn run_credential_helper() {
     // Parse the optional `--data-dir <path>` arg. Helper scripts written by
-    // recent codeg versions embed this so server deployments and custom
+    // recent Zwiim versions embed this so server deployments and custom
     // ZWIIM_DATA_DIR setups land on the right database.
     let explicit_data_dir = parse_data_dir_arg(std::env::args());
 
@@ -164,7 +164,7 @@ pub fn run_credential_helper() {
     {
         Ok(rt) => rt,
         Err(e) => {
-            tracing::error!("[codeg credential-helper] tokio runtime build failed: {e}");
+            tracing::error!("[Zwiim credential-helper] tokio runtime build failed: {e}");
             return;
         }
     };
@@ -178,7 +178,7 @@ pub fn run_credential_helper() {
             // Silent — git falls through to the next helper. See block
             // comment above for why we don't log here.
         }
-        Err(e) => tracing::error!("[codeg credential-helper] lookup failed: {e}"),
+        Err(e) => tracing::error!("[Zwiim credential-helper] lookup failed: {e}"),
     }
 }
 
@@ -203,7 +203,7 @@ fn read_host_from_stdin() -> String {
     host
 }
 
-/// Look up a (username, token) pair for the given host using the codeg
+/// Look up a (username, token) pair for the given host using the Zwiim
 /// database in `app_data_dir` plus whichever token store is active for this
 /// build (OS keyring on desktop, `tokens.json` on server).
 ///
@@ -712,47 +712,47 @@ mod tests {
     #[test]
     fn test_parse_data_dir_arg_space_separated() {
         let args = vec![
-            "codeg".to_string(),
+            "zwiim".to_string(),
             "--credential-helper".to_string(),
             "--data-dir".to_string(),
-            "/tmp/codeg-data".to_string(),
+            "/tmp/zwiim-data".to_string(),
         ];
         assert_eq!(
             parse_data_dir_arg(args),
-            Some(std::path::PathBuf::from("/tmp/codeg-data"))
+            Some(std::path::PathBuf::from("/tmp/zwiim-data"))
         );
     }
 
     #[test]
     fn test_parse_data_dir_arg_equals_form() {
         let args = vec![
-            "codeg".to_string(),
-            "--data-dir=/tmp/codeg-data".to_string(),
+            "zwiim".to_string(),
+            "--data-dir=/tmp/zwiim-data".to_string(),
             "--credential-helper".to_string(),
         ];
         assert_eq!(
             parse_data_dir_arg(args),
-            Some(std::path::PathBuf::from("/tmp/codeg-data"))
+            Some(std::path::PathBuf::from("/tmp/zwiim-data"))
         );
     }
 
     #[test]
     fn test_parse_data_dir_arg_absent() {
-        let args = vec!["codeg".to_string(), "--credential-helper".to_string()];
+        let args = vec!["zwiim".to_string(), "--credential-helper".to_string()];
         assert_eq!(parse_data_dir_arg(args), None);
     }
 
     #[test]
     fn test_parse_data_dir_arg_missing_value_treated_as_absent() {
         // `--data-dir` at the very end with no following token: do not crash.
-        let args = vec!["codeg".to_string(), "--data-dir".to_string()];
+        let args = vec!["zwiim".to_string(), "--data-dir".to_string()];
         assert_eq!(parse_data_dir_arg(args), None);
     }
 
     #[cfg(unix)]
     #[test]
     fn test_helper_script_embeds_data_dir() {
-        let tmp = std::env::temp_dir().join(format!("codeg-cred-test-{}", uuid::Uuid::new_v4()));
+        let tmp = std::env::temp_dir().join(format!("zwiim-cred-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).expect("create tmp dir");
         let binary = std::path::PathBuf::from("/usr/local/bin/zwiim-host");
 
@@ -838,7 +838,7 @@ mod tests {
         // repo working dir. The script must always reference an absolute
         // path so it resolves identically regardless of git's CWD.
         let _guard = STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let unique = format!("codeg-rel-test-{}", uuid::Uuid::new_v4());
+        let unique = format!("zwiim-rel-test-{}", uuid::Uuid::new_v4());
         let tmp_root = std::env::temp_dir().join(&unique);
         std::fs::create_dir_all(&tmp_root).expect("create tmp root");
         let prev_cwd = std::env::current_dir().expect("cwd");
@@ -906,8 +906,8 @@ mod tests {
         // that happen to be present in a path.
         assert_eq!(bat_double_quote("%FOO%"), "\"%%FOO%%\"");
         assert_eq!(
-            bat_double_quote(r"C:\Users\%USERNAME%\codeg"),
-            "\"C:\\Users\\%%USERNAME%%\\codeg\""
+            bat_double_quote(r"C:\Users\%USERNAME%\zwiim"),
+            "\"C:\\Users\\%%USERNAME%%\\zwiim\""
         );
     }
 
@@ -917,7 +917,7 @@ mod tests {
         // Regression: a path with a `'` previously closed the sh quoted
         // string and could allow command substitution. With proper escaping
         // the literal apostrophe survives as data, never as syntax.
-        let tmp = std::env::temp_dir().join(format!("codeg-apos-test-{}", uuid::Uuid::new_v4()));
+        let tmp = std::env::temp_dir().join(format!("zwiim-apos-test-{}", uuid::Uuid::new_v4()));
         let with_apos = tmp.join("o'brien");
         std::fs::create_dir_all(&with_apos).expect("create tmp dir");
         let binary = std::path::PathBuf::from("/bin/echo");
@@ -957,7 +957,7 @@ mod tests {
         let _guard = STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let data_dir =
-            std::env::temp_dir().join(format!("codeg-helper-e2e-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("zwiim-helper-e2e-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&data_dir).expect("create data dir");
 
         let username = "octocat";

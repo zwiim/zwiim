@@ -35,7 +35,7 @@ pub struct AppState {
     /// `zwiim-mcp` MCP entry, revoked on parent teardown.
     pub delegation_tokens: Arc<TokenRegistry>,
     /// Absolute path of the UDS / named pipe the companion connects to.
-    /// PID-scoped so multiple codeg processes on the same host don't fight.
+    /// PID-scoped so multiple Zwiim processes on the same host don't fight.
     pub delegation_socket_path: PathBuf,
     /// Hot-swappable live-feedback (`check_user_feedback`) enable flag. Shared
     /// with the `DelegationInjection` so MCP injection reads it, and updated by

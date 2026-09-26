@@ -1022,7 +1022,7 @@ fn update_text(update: &Value) -> String {
 
 /// Classify a `user_message_chunk`'s `content` into a display block.
 ///
-/// Grok sends prose as `{type:"text"}`. Current codeg prompts send a native
+/// Grok sends prose as `{type:"text"}`. Current Zwiim prompts send a native
 /// `{type:"image"}` chunk (so grok's describe sidecar runs). Older transcripts
 /// still carry the embedded `{type:"resource", resource:{blob, mimeType, uri}}`
 /// shape from when we followed grok's `image:false` advertisement. Both
@@ -1169,7 +1169,7 @@ fn read_grok_ask_answers(
     out
 }
 
-/// Parse a grok `ask_user_question` `tool_result` content string into the codeg
+/// Parse a grok `ask_user_question` `tool_result` content string into the Zwiim
 /// `{answers, declined}` envelope (the shape `parseAskQuestionOutcome` reads).
 ///
 /// Verified against grok-0.2.101. The accepted template is `User has answered
@@ -2444,7 +2444,7 @@ mod tests {
     }
 
     /// No catalog on disk (the common case for a machine that only ever ran
-    /// grok through codeg) → the name heuristic still supplies a window.
+    /// grok through Zwiim) → the name heuristic still supplies a window.
     #[test]
     fn context_window_falls_back_to_the_name_heuristic() {
         let (_tmp, sessions) = fixture(SUMMARY, RING_UPDATES);

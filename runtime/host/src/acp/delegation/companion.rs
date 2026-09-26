@@ -71,7 +71,7 @@ use crate::models::AutomationAction;
 /// stuck UDS connect/read) and the shutdown-drain loop (so an
 /// unresponsive listener can't keep the EOF / watchdog path hung). 500 ms
 /// is generous for a same-host UDS exchange and short enough that a user
-/// won't notice the bound being hit. Misses are absorbed by the codeg
+/// won't notice the bound being hit. Misses are absorbed by the Zwiim
 /// main side's `cancel_by_parent` cascade when the parent ACP connection
 /// eventually ends.
 const BROKER_CANCEL_BUDGET: Duration = Duration::from_millis(500);
@@ -167,7 +167,7 @@ pub struct CompanionFeatures {
     /// three that decide which tabs exist (`browser_open_tab`,
     /// `browser_navigate`, `browser_close_tab`). Off unless the desktop
     /// build's setting says otherwise: the listing names the sites the user
-    /// has open, and nothing else codeg hands an agent is a window onto what
+    /// has open, and nothing else Zwiim hands an agent is a window onto what
     /// they are looking at right now.
     ///
     /// Reading a page, and acting on one, are then each gated per tab by the
@@ -698,8 +698,8 @@ async fn build_tools_call_spawn(
             register_and_spawn(inflight, id, None, round_trip, render_ask_result).await
         }
         "get_session_info" => {
-            // `session_id` is the codeg conversation id the agent read out of a
-            // `codeg://session/<id>` reference. Accept a JSON number or a numeric
+            // `session_id` is the Zwiim conversation id the agent read out of a
+            // `zwiim://session/<id>` reference. Accept a JSON number or a numeric
             // string (some hosts stringify integer args); reject anything else
             // synchronously so the LLM can fix it.
             let session_id = match parse_session_id(&arguments) {
@@ -709,7 +709,7 @@ async fn build_tools_call_spawn(
                         id,
                         -32602,
                         "get_session_info requires an integer `session_id` \
-                         (the number in the codeg://session/<id> reference)",
+                         (the number in the zwiim://session/<id> reference)",
                     ));
                 }
             };
@@ -758,7 +758,7 @@ async fn build_tools_call_spawn(
             };
             // No external_handle, and no broker-side cancel: dropping this
             // round-trip only suppresses the answer. The read itself finishes
-            // on the codeg side — which is what leaves the line on the tab's
+            // on the Zwiim side — which is what leaves the line on the tab's
             // activity strip, so a canceled call cannot read a page invisibly.
             let round_trip =
                 Box::pin(async move { client_browser_snapshot_round_trip(&socket, &req).await });
@@ -768,7 +768,7 @@ async fn build_tools_call_spawn(
         | "browser_select_option" => {
             // Five names, one request: they differ only in the action they
             // carry, and the checks (control grant, ref freshness) and the
-            // audit line are the same for all of them on the codeg side.
+            // audit line are the same for all of them on the Zwiim side.
             let (tab_id, request) = match browser_action_request(name.as_str(), &arguments) {
                 Ok(parsed) => parsed,
                 Err(msg) => return LineAction::Respond(err(id, -32602, msg)),
@@ -780,7 +780,7 @@ async fn build_tools_call_spawn(
             };
             // No external_handle, and no broker-side cancel, as for the read:
             // an action that has been sent to the page has happened, and the
-            // line it leaves on the strip is written on the codeg side.
+            // line it leaves on the strip is written on the Zwiim side.
             let round_trip =
                 Box::pin(async move { client_browser_act_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_browser_act_result).await
@@ -795,7 +795,7 @@ async fn build_tools_call_spawn(
                 tab_id,
                 query,
             };
-            // A registry read on the codeg side; the grant check and the
+            // A registry read on the Zwiim side; the grant check and the
             // strip line are in there, as for the snapshot.
             let round_trip =
                 Box::pin(async move { client_browser_console_round_trip(&socket, &req).await });
@@ -812,7 +812,7 @@ async fn build_tools_call_spawn(
                 request,
             };
             // No broker-side cancel, as for the read: the capture finishes on
-            // the codeg side, which is what leaves the line on the strip.
+            // the Zwiim side, which is what leaves the line on the strip.
             let round_trip =
                 Box::pin(async move { client_browser_capture_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_browser_capture_result).await
@@ -829,7 +829,7 @@ async fn build_tools_call_spawn(
             };
             // No broker-side cancel, and this one matters: the round trip is
             // parked on a dialog in front of a person. Cancelling it here
-            // would take the question away mid-read while the codeg side went
+            // would take the question away mid-read while the Zwiim side went
             // on waiting for an answer that could no longer be delivered.
             let round_trip =
                 Box::pin(async move { client_browser_eval_round_trip(&socket, &req).await });
@@ -1174,7 +1174,7 @@ async fn handle_cancel_notification(
 /// fire) so the broker doesn't hold a `pending` row open forever waiting
 /// for a `TurnComplete` whose response we couldn't deliver anyway. Each
 /// cancel is bounded by [`BROKER_CANCEL_BUDGET`] so a hung listener
-/// can't pin shutdown — the codeg main side's `cancel_by_parent` cascade
+/// can't pin shutdown — the Zwiim main side's `cancel_by_parent` cascade
 /// is the eventual backstop for any cancel that times out here.
 pub async fn drain_and_cancel_all(
     ctx: &CompanionContext,
@@ -1860,10 +1860,10 @@ pub fn browser_capture_request(
 
 /// Build the `browser_eval` request from the tool's arguments.
 ///
-/// The length check is here as well as on the codeg side, so an oversized
+/// The length check is here as well as on the Zwiim side, so an oversized
 /// snippet comes back as an argument error the model can act on rather than
 /// travelling the broker to be refused. Validating in both places is the point
-/// — the codeg-side one is the gate, this one is the message.
+/// — the zwiim-side one is the gate, this one is the message.
 pub fn browser_eval_request(
     arguments: &Value,
 ) -> Result<(String, crate::browser::eval::EvalRequest), String> {
@@ -3816,7 +3816,7 @@ mod tests {
     fn render_session_result_not_found_is_soft_with_note_text() {
         let outcome = json!({
             "found": false, "session_id": 9,
-            "note": "No session matches id 9. It may have been deleted, or never imported into codeg."
+            "note": "No session matches id 9. It may have been deleted, or never imported into Zwiim."
         });
         let rendered = render_session_result(&outcome);
         assert_eq!(rendered["isError"], false);
@@ -3928,7 +3928,7 @@ mod tests {
         use tokio::net::UnixListener;
 
         // `/tmp`, not `$TMPDIR`: a socket path has ~104 bytes of `sun_path` to
-        // live in, and codeg exports a 72-byte per-session `TMPDIR` to the
+        // live in, and Zwiim exports a 72-byte per-session `TMPDIR` to the
         // agents it launches. Under `tempdir()` this lands at 92 bytes there —
         // green, but with very little left for a deeper nesting.
         let dir = tempfile::tempdir_in("/tmp").unwrap();
@@ -4001,7 +4001,7 @@ mod tests {
         use tokio::net::UnixListener;
 
         // `/tmp`, not `$TMPDIR`: a socket path has ~104 bytes of `sun_path` to
-        // live in, and codeg exports a 72-byte per-session `TMPDIR` to the
+        // live in, and Zwiim exports a 72-byte per-session `TMPDIR` to the
         // agents it launches. Under `tempdir()` this lands at 92 bytes there —
         // green, but with very little left for a deeper nesting.
         let dir = tempfile::tempdir_in("/tmp").unwrap();
@@ -4193,7 +4193,7 @@ mod tests {
     }
 
     /// A result reads as what happened, and a refusal reads as the note the
-    /// codeg side wrote — neither is an `isError`, because both are things to
+    /// Zwiim side wrote — neither is an `isError`, because both are things to
     /// tell the user rather than a broken call.
     #[test]
     fn an_eval_result_reads_as_what_happened() {
@@ -4358,7 +4358,7 @@ mod tests {
 
     /// The five action tools build one request. What each needs, and what
     /// each refuses up front so the model can fix the call without a round
-    /// trip to codeg.
+    /// trip to Zwiim.
     #[test]
     fn action_tools_build_one_request_and_name_what_is_missing() {
         use crate::browser::agent::{ActionKind, PointerButton};

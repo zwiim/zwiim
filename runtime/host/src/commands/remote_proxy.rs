@@ -97,9 +97,9 @@ const WS_BACKOFF_MAX_SECS: u64 = 32;
 
 /// MUST match the values in `src-tauri/src/web/auth.rs` and
 /// `src/lib/transport/ws-auth.ts`. The server's auth middleware reads the
-/// `sec-websocket-protocol` header looking for `codeg-token.{base64url}`.
-const WS_EVENT_PROTOCOL: &str = "codeg-events";
-const WS_TOKEN_PROTOCOL_PREFIX: &str = "codeg-token.";
+/// `sec-websocket-protocol` header looking for `zwiim-token.{base64url}`.
+const WS_EVENT_PROTOCOL: &str = "zwiim-events";
+const WS_TOKEN_PROTOCOL_PREFIX: &str = "zwiim-token.";
 
 /// Internal Tauri-event channels emitted by this proxy. The frontend
 /// `RemoteDesktopTransport` reserves these names. MUST match the
@@ -1968,7 +1968,7 @@ async fn snapshot_subscribers(entry: &Arc<WsTaskEntry>) -> Vec<String> {
 /// Connect to the remote WebSocket with subprotocol-based token auth.
 /// The remote server's auth middleware (see `web/auth.rs`) accepts either
 /// `Authorization: Bearer …` or a subprotocol entry shaped
-/// `codeg-token.{base64url(token)}`. The latter is what browser
+/// `zwiim-token.{base64url(token)}`. The latter is what browser
 /// WebSocket clients use because browsers cannot set arbitrary headers
 /// on WS handshakes; we follow the same convention here so both transports
 /// share one server-side codepath.
@@ -2050,11 +2050,11 @@ mod tests {
             "https://box.example/api/workspace_download/t1"
         );
         // A base with a path prefix keeps it — this is why the resolution is
-        // string concatenation and not `Url::join`, which would drop `/codeg`.
+        // string concatenation and not `Url::join`, which would drop `/zwiim`.
         assert_eq!(
-            absolute_remote_ticket_url("https://box.example/codeg", "/api/workspace_download/t1")
+            absolute_remote_ticket_url("https://box.example/zwiim", "/api/workspace_download/t1")
                 .unwrap(),
-            "https://box.example/codeg/api/workspace_download/t1"
+            "https://box.example/zwiim/api/workspace_download/t1"
         );
         assert_eq!(
             absolute_remote_ticket_url("https://box.example/", "api/workspace_download/t1")

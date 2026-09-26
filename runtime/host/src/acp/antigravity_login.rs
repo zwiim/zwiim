@@ -38,11 +38,11 @@
 //!    browser that completes the consent does not have to be the process that
 //!    delivers the result.
 //!
-//! So: codeg starts a short-lived agent process purely to sign in, drives ACP
+//! So: Zwiim starts a short-lived agent process purely to sign in, drives ACP
 //! `initialize` + `authenticate` over its stdio, scrapes the printed URL, and
 //! shows it. The user opens it in whatever browser they have, consents, and
 //! lands on a `http://127.0.0.1:<port>/?state=…&code=…` page their browser
-//! cannot reach. They paste that address back, and codeg — which *is* on the
+//! cannot reach. They paste that address back, and Zwiim — which *is* on the
 //! machine where that port is listening — performs the redirect on their
 //! behalf. The agent then completes the exchange, runs its own onboarding, and
 //! writes the credential exactly where a real session will look for it.
@@ -62,13 +62,13 @@
 //!
 //! # Security
 //!
-//! `finish` takes a URL typed by the user and makes codeg issue an HTTP request
+//! `finish` takes a URL typed by the user and makes Zwiim issue an HTTP request
 //! — the shape of an SSRF. It is closed by construction: the request target is
-//! rebuilt from the `redirect_uri` **codeg captured from the agent's own
+//! rebuilt from the `redirect_uri` **zwiim captured from the agent's own
 //! authorization URL**, and only `code`/`state`/`error` are taken from the
 //! paste. The captured value is additionally required to be
 //! `http://127.0.0.1:<port>/`, matching the agent's hardcoded `_LOOPBACK_HOST`,
-//! so even a compromised upstream cannot redirect codeg off the loopback. The
+//! so even a compromised upstream cannot redirect Zwiim off the loopback. The
 //! request also bypasses any configured proxy: a loopback address must never
 //! leave the machine.
 //!
@@ -80,7 +80,7 @@
 //! is the other half, and it drives the agent's own ACP `logout` for the same
 //! reason [`start`] drives its `authenticate` — where the credential lives
 //! (a macOS login-keychain item, or a file under `GEMINI_HOME`) is decided by
-//! rules inside the agent, so deleting it from here would be codeg guessing at
+//! rules inside the agent, so deleting it from here would be Zwiim guessing at
 //! someone else's storage layout.
 
 use std::collections::BTreeMap;
@@ -147,7 +147,7 @@ const PENDING_TTL: Duration = Duration::from_secs(300);
 /// Worth spending, and not only for politeness: the ACP server reads stdin EOF
 /// as "the client is gone" and shuts down, and a graceful exit is the one path
 /// on which a self-extracting build removes its OWN unpacked directory. Every
-/// hard kill below leaves that to codeg's scratch cleanup instead.
+/// hard kill below leaves that to Zwiim's scratch cleanup instead.
 const STDIN_EOF_GRACE: Duration = Duration::from_millis(1_500);
 
 /// How long the tree gets to honor `SIGTERM` before the escalation to
@@ -203,12 +203,12 @@ pub struct AntigravityLoginOutcome {
     /// The agent's own words when it refused, already redacted. `None` on
     /// success.
     pub message: Option<String>,
-    /// Whether the same link can still be used. True only for a paste codeg
+    /// Whether the same link can still be used. True only for a paste Zwiim
     /// rejected on its own — the agent's listener never saw it, so the consent
     /// the user already gave is still good and only the paste needs fixing.
     /// False once the redirect has been delivered: it is one-shot.
     pub retryable: bool,
-    /// Where the agent stores the credential this sign-in produced, when codeg
+    /// Where the agent stores the credential this sign-in produced, when Zwiim
     /// can name it. Worth surfacing: it is a portable file, so a user with
     /// several headless machines can sign in once and copy it.
     pub credential_path: Option<String>,
@@ -520,7 +520,7 @@ async fn abandon_start(generation: u64) {
 /// `method_id` is taken from the caller rather than from the stored row on
 /// purpose. The panel can offer "sign in" for the method currently selected in
 /// the form, and the agent persists the choice itself (`_remember_auth_type`
-/// runs at the end of a successful `authenticate`), so codeg does not write
+/// runs at the end of a successful `authenticate`), so Zwiim does not write
 /// `settings.json` here — doing so would record the *saved* method, which is
 /// not necessarily the one being signed in.
 pub async fn start(
@@ -587,7 +587,7 @@ async fn start_claimed(
     // `initialize` first, and its answer awaited before `authenticate` goes
     // out. Not just protocol politeness: it keeps the URL `print` — which the
     // agent emits during `authenticate`, onto the same fd as the JSON-RPC
-    // frames — from racing a response codeg still has to parse.
+    // frames — from racing a response Zwiim still has to parse.
     // Not `?`: an early return here would drop `child` — which `kill_on_drop`
     // turns into a signal to the DIRECT process only, leaving a onefile
     // payload alive — and strand the scratch directory with it.
@@ -860,7 +860,7 @@ async fn initialize(
         "params": {
             "protocolVersion": 1,
             "clientCapabilities": { "fs": { "readTextFile": false, "writeTextFile": false } },
-            "clientInfo": { "name": "codeg", "version": env!("CARGO_PKG_VERSION") },
+            "clientInfo": { "name": "zwiim", "version": env!("CARGO_PKG_VERSION") },
         },
     });
     write_frame(stdin, &init).await?;
@@ -871,7 +871,7 @@ async fn initialize(
         })
 }
 
-/// The first thing the agent does after `authenticate` that codeg can act on.
+/// The first thing the agent does after `authenticate` that Zwiim can act on.
 enum StartSignal {
     /// It printed a link and is now blocking on its loopback listener.
     Url(String),
@@ -893,7 +893,7 @@ enum StartSignal {
 pub async fn finish(handle: &str, pasted: &str) -> Result<AntigravityLoginOutcome, AcpError> {
     let parsed = ParsedRedirect::parse(pasted);
 
-    // Validate WITHOUT consuming the attempt. A paste codeg itself rejects
+    // Validate WITHOUT consuming the attempt. A paste Zwiim itself rejects
     // never reached the agent, so the listener is still open and the consent
     // the user already gave in their browser is still good — making them redo
     // the whole Google round trip over a truncated copy would be gratuitous.
@@ -1043,7 +1043,7 @@ async fn finish_delivering(target: String, pending: Pending) -> AntigravityLogin
     }
 }
 
-/// Why codeg will not send this paste on, if it will not.
+/// Why Zwiim will not send this paste on, if it will not.
 ///
 /// Everything here is decidable without touching the agent, which is exactly
 /// what makes these failures cheap to retry. Takes the expected `state` rather
@@ -1115,17 +1115,17 @@ const SIGN_OUT_BUDGET: Duration =
 /// last one they ever get. Nothing the user can reasonably reach fixes that
 /// either: the credential is a login-keychain item on macOS and a file under
 /// `GEMINI_HOME` elsewhere, so it outlives uninstalling the Antigravity CLI and
-/// reinstalling codeg.
+/// reinstalling Zwiim.
 ///
 /// Driven through the agent's own ACP `logout` rather than by deleting the
 /// store from here. Which backend holds the credential is decided inside the
 /// agent (`credential_store.py::create_default_store` probes for a usable
 /// keychain and falls back to the file), and its `clear` deliberately wipes
-/// BOTH so an older plaintext token cannot survive — rules codeg would have to
+/// BOTH so an older plaintext token cannot survive — rules Zwiim would have to
 /// copy, and re-copy whenever they change.
 ///
 /// `logout` also removes `auth.type` from the server's `settings.json`, which
-/// is codeg's business: a session whose `auth.type` is missing fails outright
+/// is Zwiim's business: a session whose `auth.type` is missing fails outright
 /// with `Authentication required`. The caller puts the saved method back (see
 /// `acp_antigravity_sign_out_core`).
 pub async fn sign_out(runtime_env: &BTreeMap<String, String>) -> Result<(), AcpError> {
@@ -1204,7 +1204,7 @@ fn advertises_logout(handshake: &serde_json::Value) -> bool {
         .is_some_and(|value| !value.is_null())
 }
 
-/// The bits of a pasted redirect codeg is willing to act on.
+/// The bits of a pasted redirect Zwiim is willing to act on.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ParsedRedirect {
     code: Option<String>,
@@ -1262,7 +1262,7 @@ impl ParsedRedirect {
 /// Rebuild the redirect request from the captured listener address.
 ///
 /// The single place the SSRF question is answered: the host, port and path come
-/// from `redirect_uri`, which codeg read out of the agent's own authorization
+/// from `redirect_uri`, which Zwiim read out of the agent's own authorization
 /// URL and re-checks here against the agent's hardcoded loopback host. Only the
 /// three OAuth parameters come from the user.
 fn build_redirect_request(
@@ -1306,10 +1306,10 @@ fn is_loopback_redirect(redirect_uri: &str) -> bool {
 /// Perform the redirect against the agent's one-shot listener.
 async fn deliver_redirect(target: &str) -> Result<(), String> {
     let client = reqwest::Client::builder()
-        // A loopback address must never be handed to a proxy — and codeg's
+        // A loopback address must never be handed to a proxy — and Zwiim's
         // users routinely run behind one.
         .no_proxy()
-        // The loopback-only invariant is checked on the target codeg builds;
+        // The loopback-only invariant is checked on the target Zwiim builds;
         // following a redirect would let the response choose the next one and
         // step straight out of it. The shipped listener only ever answers 200,
         // so nothing legitimate is lost.
@@ -1528,7 +1528,7 @@ fn find_auth_url(line: &str) -> Option<String> {
 /// authorization URL.
 fn extract_redirect_uri(auth_url: &str) -> Result<String, String> {
     let redirect = query_param(auth_url, "redirect_uri").ok_or_else(|| {
-        "Antigravity's sign-in link carries no redirect address, so codeg cannot complete it"
+        "Antigravity's sign-in link carries no redirect address, so Zwiim cannot complete it"
             .to_string()
     })?;
     if !is_loopback_redirect(&redirect) {
@@ -2067,7 +2067,7 @@ mod tests {
     }
 
     /// The whole SSRF surface: whatever the user pastes, the request must go to
-    /// the address codeg captured.
+    /// the address Zwiim captured.
     #[test]
     fn the_request_target_ignores_the_pasted_host() {
         let parsed = ParsedRedirect::parse("http://evil.example/?code=4%2Fabc&state=good");

@@ -71,7 +71,7 @@ pub enum McpAppType {
     Qoder,
     /// Serializes as `antigravity`, matching `AgentType::as_wire`.
     Antigravity,
-    /// Serializes as `pi`, matching `AgentType::as_wire`. Scan-only: codeg
+    /// Serializes as `pi`, matching `AgentType::as_wire`. Scan-only: Zwiim
     /// reads and round-trips the pi MCP EXTENSION's config, but pi is not an
     /// assignable target and gets no MCP over the ACP wire. See the pi section
     /// below.
@@ -124,7 +124,7 @@ pub struct LocalMcpSourceWarning {
     pub message: String,
 }
 
-/// A local scan: every server codeg could read, plus a warning per source it
+/// A local scan: every server Zwiim could read, plus a warning per source it
 /// could not.
 ///
 /// Deliberately not a bare `Vec<LocalMcpServer>` with a fail-fast error. These
@@ -574,7 +574,7 @@ fn normalize_apps(apps: Vec<McpAppType>) -> Vec<McpAppType> {
 /// Whether `app`'s on-disk config can faithfully host `canonical_spec`. Codex's
 /// config.toml has only stdio and streamable-HTTP transports, so it cannot host an
 /// SSE server — writing one would persist a url-only entry that Codex loads as HTTP
-/// and codeg then reads back as `http`, silently reclassifying the shared canonical
+/// and Zwiim then reads back as `http`, silently reclassifying the shared canonical
 /// spec. Write paths preflight-exclude such (app, spec) pairs instead of writing a
 /// misrepresented entry or aborting the whole multi-agent operation. See issue #325.
 fn app_can_host_spec(app: McpAppType, canonical_spec: &Value) -> bool {
@@ -736,7 +736,7 @@ fn claude_settings_path() -> PathBuf {
     home_dir_or_default().join(".claude").join("settings.json")
 }
 
-/// The marketplace suffix codeg uses when toggling user-scope Claude Code
+/// The marketplace suffix Zwiim uses when toggling user-scope Claude Code
 /// MCP servers via `enabledPlugins`. Empirically validated: `figma@local`
 /// activates a user-scope MCP, `figma@user` does not. The suffix is treated
 /// by Claude Code CLI as a free-form tag identifying the source — `local`
@@ -777,12 +777,12 @@ fn cline_config_path() -> PathBuf {
 }
 
 /// Read a file that is absent for most users, distinguishing "nobody has
-/// configured this agent" from "this agent's config exists and codeg could not
+/// configured this agent" from "this agent's config exists and Zwiim could not
 /// read it".
 ///
 /// The absence test is the read itself, not `Path::exists()`: `exists()`
 /// answers `false` for ANY failed stat — a permission wall on a parent
-/// directory, a symlink loop — so it would report a file codeg simply could not
+/// directory, a symlink loop — so it would report a file Zwiim simply could not
 /// open as an empty config. `scan_local_servers` would then leave that agent
 /// out with no warning, and `require_complete_scan` would wave through a
 /// reassignment that strips the server from the agents it COULD read and then
@@ -815,13 +815,13 @@ fn read_json_file(path: &Path) -> Result<Value, AppCommandError> {
     // JSON-backed source.
     //
     // The writers share this reader, so an agent that truncates its config
-    // before rewriting it can be caught mid-write and have codeg start from
+    // before rewriting it can be caught mid-write and have Zwiim start from
     // `{}` — and unlike the ordinary stale read this subsystem already lives
     // with (nothing locks these files), that one loses settings even when the
     // agent's rewrite changed nothing. It is accepted deliberately: the window
     // is one non-atomic rewrite wide, while REFUSING empty files would leave a
     // user whose config is PERSISTENTLY 0 bytes — the reported case — unable to
-    // assign a server to that agent at all, and codeg cannot tell the two
+    // assign a server to that agent at all, and Zwiim cannot tell the two
     // apart from a single read.
     if raw.trim().is_empty() {
         return Ok(json!({}));
@@ -1344,10 +1344,10 @@ fn codex_entry_to_canonical(id: &str, value: &toml::Value) -> Result<Value, AppC
 
     // Codex's native `[mcp_servers.*]` tables carry no `type` key — the transport
     // is implied by the keys present (`command` = stdio, `url` = streamable HTTP).
-    // Honor an explicit `type` when present (older codeg output or hand-written
+    // Honor an explicit `type` when present (older Zwiim output or hand-written
     // configs), but when it is absent infer the transport from the keys rather
     // than blindly assuming stdio, which would drop every url-only HTTP server
-    // (including the ones codeg now writes). See issue #325.
+    // (including the ones Zwiim now writes). See issue #325.
     let raw_type = table
         .get("type")
         .and_then(toml::Value::as_str)
@@ -1605,7 +1605,7 @@ fn canonical_to_codex_entry(spec: &Value) -> Result<toml::Value, AppCommandError
         "sse" => {
             // Codex's config.toml has only stdio and streamable-HTTP transports — it
             // cannot represent SSE. Reject rather than degrade to a bare `url`, which
-            // Codex would load as HTTP and codeg would then read back as `http`,
+            // Codex would load as HTTP and Zwiim would then read back as `http`,
             // silently reclassifying the shared canonical spec (and defeating the ACP
             // wire-path SSE capability gate). Batch callers preflight-exclude Codex
             // from an SSE server's targets (see `app_can_host_spec`); this is the
@@ -2363,13 +2363,13 @@ fn read_cline_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
     Ok(out)
 }
 
-/// Convert codeg's canonical spec into a Cline `mcpServers` entry.
+/// Convert Zwiim's canonical spec into a Cline `mcpServers` entry.
 ///
 /// Cline validates each entry with a zod union whose `type` is a literal enum of
 /// exactly `stdio | sse | streamableHttp` — it does NOT accept the canonical
 /// `http`. Worse, `mcpServers` is validated as one `z.record`, so a single
 /// rejected entry makes Cline load *zero* servers. Remap `http` → `streamableHttp`
-/// (which codeg's reader collapses straight back to canonical `http` via
+/// (which Zwiim's reader collapses straight back to canonical `http` via
 /// `normalize_mcp_type`); stdio/sse already match Cline's literals and pass
 /// through untouched. See issue #325.
 fn canonical_to_cline_entry(spec: &Value) -> Result<Value, AppCommandError> {
@@ -2439,14 +2439,14 @@ fn remove_cline_server(id: &str) -> Result<bool, AppCommandError> {
 // Unlike every other agent above, this file is NOT read by the agent: the
 // deepseek-acp bridge takes MCP servers exclusively as `session/new`'s
 // `mcpServers` parameter and mounts them per session (that isolation is the
-// whole point of its design). The store below is therefore codeg's own record
+// whole point of its design). The store below is therefore Zwiim's own record
 // of "which servers should DeepSeek get", and `load_mcp_servers_for_agent`
 // forwards it over the ACP wire at every session birth — which is also why
 // `DeepSeek` is deliberately NOT on the forward skip list in `connection.rs`.
 //
 // It lives under the harness home (relocatable via `DSH_HOME`) rather than in
-// codeg's own data dir so it travels with the rest of the DeepSeek state a
-// user backs up or moves, and it holds codeg's canonical spec shape verbatim
+// Zwiim's own data dir so it travels with the rest of the DeepSeek state a
+// user backs up or moves, and it holds Zwiim's canonical spec shape verbatim
 // (`type` + `command`/`args`/`env` | `url`/`headers`) — there is no foreign
 // schema to translate to.
 //
@@ -2464,7 +2464,7 @@ fn deepseek_mcp_json_path() -> PathBuf {
 /// Write the DeepSeek MCP store with owner-only permissions.
 ///
 /// Every other agent's store is created by the agent itself, with whatever
-/// mode that agent chose; this one is created by CODEG, so its mode is codeg's
+/// mode that agent chose; this one is created by the host, so its mode is the host's
 /// responsibility — and a stdio entry's `env` map routinely carries the token
 /// the server authenticates with. Under the usual `022` umask a plain
 /// `fs::write` would leave a fresh file `0644`, readable by every local user.
@@ -2619,10 +2619,10 @@ fn remove_deepseek_server_at(path: &Path, id: &str) -> Result<bool, AppCommandEr
 // ---------------------------------------------------------------------------
 // pi  (<PI_CODING_AGENT_DIR|~/.pi/agent>/mcp.json  →  top-level `mcpServers`)
 //
-// The odd one out: this file belongs to neither pi nor codeg but to a
+// The odd one out: this file belongs to neither pi nor Zwiim but to a
 // THIRD-PARTY pi extension — pi itself has no MCP support, and the extension is
 // what reads `mcpServers` and mounts the servers. The schema it accepts is
-// Claude Code's (`command`/`args`/`env` | `url`/`headers`), which is codeg's
+// Claude Code's (`command`/`args`/`env` | `url`/`headers`), which is Zwiim's
 // canonical shape, so no translation layer is needed (issue #653).
 //
 // SCAN-ONLY, in both directions:
@@ -2848,7 +2848,7 @@ fn remove_qoder_server_at(path: &Path, id: &str) -> Result<bool, AppCommandError
 // `antigravity-acp/`. Entries are Claude-shaped — `command`/`args`/`env` for
 // stdio, `url` for remote (the loader keys off which of the two is present) —
 // and it tolerates both `{"mcpServers": {...}}` and a bare top-level map;
-// codeg always writes the explicit `mcpServers` wrapper.
+// Zwiim always writes the explicit `mcpServers` wrapper.
 //
 // Antigravity therefore sits ON the ACP forward skip list in `connection.rs`
 // (with Hermes/Kimi/Grok/Cursor/Qoder). The server would in fact MERGE the two
@@ -2862,7 +2862,7 @@ fn antigravity_mcp_config_path() -> PathBuf {
     crate::parsers::antigravity::resolve_antigravity_shared_config_dir().join("mcp_config.json")
 }
 
-/// Whether Antigravity's config holds an `mcpServers` value codeg refuses to
+/// Whether Antigravity's config holds an `mcpServers` value Zwiim refuses to
 /// touch (see [`antigravity_servers_object`]). Pure, and shared by the writer
 /// and the preflight below so the two can never disagree about what is
 /// editable.
@@ -2934,14 +2934,14 @@ fn read_antigravity_servers() -> Result<BTreeMap<String, Value>, AppCommandError
 /// The loader accepts BOTH `{"mcpServers": {...}}` and a bare top-level map —
 /// literally `data.get("mcpServers", data)`. That fallback is winner-take-all:
 /// the moment an `mcpServers` key exists, every bare sibling stops being read.
-/// So codeg cannot just add the wrapper to a bare document; doing that would
+/// So Zwiim cannot just add the wrapper to a bare document; doing that would
 /// silently unmount every server the user already had. Bare entries are moved
 /// INTO the wrapper instead, which is exactly the set the loader was returning
 /// before, so the agent sees no change.
 ///
 /// A present-but-not-an-object `mcpServers` is an `Err`, not something to
 /// migrate around: the loader hands that value straight to its `isinstance`
-/// check and rejects the WHOLE file, so codeg cannot know what the key means,
+/// check and rejects the WHOLE file, so Zwiim cannot know what the key means,
 /// and dropping it to make room for a wrapper would destroy it. Refusing the
 /// edit leaves the file exactly as the user wrote it — the same fail-closed
 /// rule the Antigravity settings writer follows.
@@ -2977,7 +2977,7 @@ fn antigravity_servers_object(root: &mut Value) -> Result<&mut Map<String, Value
 /// reports both for a non-object root and for a malformed `mcpServers` —
 /// `data.get("mcpServers", data)` returns that malformed value and the
 /// `isinstance` check below it then rejects the file. It does NOT fall back to
-/// the root in that case, so neither may codeg: reporting the root's siblings
+/// the root in that case, so neither may Zwiim: reporting the root's siblings
 /// as mounted servers would claim something the agent never sees.
 fn antigravity_servers_view(root: &Value) -> Option<&Map<String, Value>> {
     match root.get("mcpServers") {
@@ -3102,7 +3102,7 @@ fn local_mcp_readers() -> [LocalMcpReader; 15] {
 /// be read into a warning instead of failing the whole scan.
 ///
 /// These files belong to the other agents and to the user, so any of them can be
-/// empty, half-written or hand-edited into something codeg cannot parse. A
+/// empty, half-written or hand-edited into something Zwiim cannot parse. A
 /// fail-fast `?` here meant one such file hid every OTHER agent's servers too
 /// (issue #632: an empty `~/.gemini/config/mcp_config.json` emptied the entire
 /// local MCP list). The broken source drops out; the rest of the scan stands.
@@ -3114,7 +3114,7 @@ fn scan_local_servers_from_readers(readers: &[LocalMcpReader]) -> LocalMcpScan {
     let mut warnings: Vec<LocalMcpSourceWarning> = Vec::new();
     // OpenClaw is the one agent that shares a key with Kimi (`auth`), so keep
     // what its own config declares: below, that is what tells Kimi's pass an
-    // OpenClaw setting from an echo codeg once wrote into some other agent's
+    // OpenClaw setting from an echo Zwiim once wrote into some other agent's
     // file — and it has to be the VALUE, since the agent that wins the merge may
     // carry neither. See `KIMI_SHARED_KEYS`.
     let mut openclaw_declares: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
@@ -3263,7 +3263,7 @@ pub fn read_servers_for_agent_type(
         // change the servers forwarded to a pi ACP session.
         AgentType::Pi => Ok(BTreeMap::new()),
         // deepseek-acp has no native MCP config file: it takes servers only
-        // as `session/new`'s `mcpServers`. `$DSH_HOME/mcp.json` is codeg's own
+        // as `session/new`'s `mcpServers`. `$DSH_HOME/mcp.json` is Zwiim's own
         // record of what to send, and the ACP wire is the delivery path — so
         // unlike Kimi/Grok/Cursor, DeepSeek must stay OFF the forward skip
         // list in `connection.rs` or these servers never arrive.
@@ -3277,7 +3277,7 @@ pub fn read_servers_for_agent_type(
         // it rides the forward skip list rather than the wire.
         AgentType::Antigravity => read_antigravity_servers(),
         // Custom agents get MCP purely over the ACP wire (`session/new`'s
-        // `mcpServers`); codeg deliberately knows nothing about their native
+        // `mcpServers`); Zwiim deliberately knows nothing about their native
         // config files, so there is no per-agent store to read back here.
         AgentType::Custom(_) => Ok(BTreeMap::new()),
     }
@@ -3306,12 +3306,12 @@ fn read_kimi_code_servers() -> Result<BTreeMap<String, Value>, AppCommandError> 
     read_kimi_code_servers_at(&kimi_code_mcp_json_path())
 }
 
-/// Convert one Kimi `mcpServers` entry into codeg's canonical spec.
+/// Convert one Kimi `mcpServers` entry into Zwiim's canonical spec.
 ///
 /// Kimi Code validates `mcp.json` with a Zod discriminated union keyed on
 /// `transport` (`stdio`/`http`/`sse`): `command` ⇒ stdio, and a url-only remote
 /// entry DEFAULTS to streamable HTTP — it never infers SSE from the URL path, and
-/// `type` is not a recognized field (silently stripped). Mirror that so codeg
+/// `type` is not a recognized field (silently stripped). Mirror that so Zwiim
 /// classifies an entry the way Kimi actually will: stdio from `command`; otherwise
 /// a `url` is remote with transport taken from an explicit `transport` key (only
 /// `sse` yields SSE), else HTTP. `type` is intentionally NOT consulted for remote
@@ -3401,7 +3401,7 @@ fn is_kimi_timeout_ms(value: &Value) -> bool {
     ms.fract() == 0.0 && (1.0..=f64::from(i32::MAX)).contains(&ms)
 }
 
-/// The `mcp.json` fields Kimi models that no other agent codeg writes models —
+/// The `mcp.json` fields Kimi models that no other agent Zwiim writes models —
 /// checked against every per-server schema in this file plus OpenClaw's
 /// `McpServerConfig` and Cline's `McpServerRegistration`, the two richest. That
 /// exclusivity is what lets Kimi's copy be authoritative for them in
@@ -3421,7 +3421,7 @@ const KIMI_OWNED_KEYS: &[&str] = &[
 /// `McpServerConfig`. For these the OWNER's value wins, with Kimi's as the
 /// fallback — `scan_local_servers` collects it during the OpenClaw pass and
 /// hands it to `merge_kimi_extension_fields`. A copy held by any OTHER agent is
-/// only an echo codeg once wrote there and never wins, so removing the key in
+/// only an echo Zwiim once wrote there and never wins, so removing the key in
 /// either owner's config still takes effect.
 const KIMI_SHARED_KEYS: &[&str] = &["auth"];
 
@@ -3452,7 +3452,7 @@ fn is_kimi_extension_field(key: &str, value: &Value, stdio: bool) -> bool {
 /// Resolve the Kimi-only fields of the canonical spec a server resolved to from
 /// Kimi's own copy.
 ///
-/// codeg keeps ONE canonical spec per server across every agent, and
+/// Zwiim keeps ONE canonical spec per server across every agent, and
 /// `scan_local_servers` resolves a server present in several agents to the FIRST
 /// agent's copy. A server that also lives in, say, Codex's config would
 /// otherwise surface as Codex's projection, which never carried Kimi's fields —
@@ -3463,7 +3463,7 @@ fn is_kimi_extension_field(key: &str, value: &Value, stdio: bool) -> bool {
 /// removed it, not that some other agent's reader never had it.
 ///
 /// For [`KIMI_OWNED_KEYS`] Kimi's copy wins outright, its ABSENCE included.
-/// Those keys mean nothing to any other agent, but codeg's permissive writers do
+/// Those keys mean nothing to any other agent, but Zwiim's permissive writers do
 /// copy them into other agents' config files — so an earlier-scanned agent can
 /// hold a stale echo of one, and letting that echo stand would pin the canonical
 /// spec to a value the user has since changed or deleted in Kimi's own
@@ -3503,7 +3503,7 @@ fn merge_kimi_extension_fields(
     }
 }
 
-/// Convert codeg's canonical spec into a Kimi `mcpServers` entry.
+/// Convert Zwiim's canonical spec into a Kimi `mcpServers` entry.
 ///
 /// Kimi Code keys the transport off a `transport` field (Zod
 /// discriminated union), defaulting a url-only remote entry to streamable HTTP — an
@@ -3531,7 +3531,7 @@ fn canonical_to_kimi_code_entry(spec: &Value) -> Result<Value, AppCommandError> 
     // carry Kimi-compatible types; `type` is kept but Kimi ignores/strips it.
     // See issue #325.
     //
-    // `is_kimi_extension_field` covers the keys Kimi models but codeg has no UI
+    // `is_kimi_extension_field` covers the keys Kimi models but Zwiim has no UI
     // for. They exist on disk when the user set them through Kimi's own
     // `/mcp-config`, and dropping them would quietly break that server — an
     // OAuth'd remote losing its `auth`, or a `runtime_id`/`executor` entry
@@ -3999,7 +3999,7 @@ fn read_cursor_servers_at(path: &Path) -> Result<BTreeMap<String, Value>, AppCom
     Ok(out)
 }
 
-/// Convert codeg's canonical spec into a Cursor `mcpServers` entry: only the
+/// Convert Zwiim's canonical spec into a Cursor `mcpServers` entry: only the
 /// fields Cursor models, shape-discriminated (no `type`/`transport` key).
 fn canonical_to_cursor_entry(spec: &Value) -> Result<Value, AppCommandError> {
     let canonical = canonicalize_spec(spec, "Cursor write")?;
@@ -4077,7 +4077,7 @@ fn remove_cursor_server_at(path: &Path, id: &str) -> Result<bool, AppCommandErro
 // Hermes Agent  (~/.hermes/config.yaml  →  mcp_servers)
 //
 // Hermes reads the `mcp_servers` section of its own config.yaml natively at
-// launch (registering each as an `mcp-<name>` toolset), so codeg manages that
+// launch (registering each as an `mcp-<name>` toolset), so Zwiim manages that
 // section directly — the same "write the agent's own config file" model used
 // for Codex/OpenCode — rather than forwarding servers over the ACP wire. The
 // ACP forward path (`load_mcp_servers_for_agent`) deliberately skips Hermes to
@@ -4085,10 +4085,10 @@ fn remove_cursor_server_at(path: &Path, id: &str) -> Result<bool, AppCommandErro
 //
 // Hermes' entry shape: stdio = `{command, args, env}`; remote = `{url}` (+
 // `transport: sse` for SSE, optional `headers` / `client_cert` / `client_key`).
-// Translate to/from codeg's canonical spec, whose discriminator is `type`.
+// Translate to/from Zwiim's canonical spec, whose discriminator is `type`.
 // ---------------------------------------------------------------------------
 
-/// Convert one Hermes `mcp_servers` YAML entry into codeg's canonical spec.
+/// Convert one Hermes `mcp_servers` YAML entry into Zwiim's canonical spec.
 fn hermes_entry_to_canonical(
     entry: &serde_yaml::Value,
     id: &str,
@@ -4128,7 +4128,7 @@ fn hermes_entry_to_canonical(
     canonicalize_spec(&json, &source)
 }
 
-/// Convert codeg's canonical spec into a Hermes `mcp_servers` YAML entry.
+/// Convert Zwiim's canonical spec into a Hermes `mcp_servers` YAML entry.
 fn canonical_to_hermes_entry(spec: &Value) -> Result<serde_yaml::Value, AppCommandError> {
     let canonical = canonicalize_spec(spec, "Hermes conversion")?;
     let obj = canonical
@@ -4237,7 +4237,7 @@ fn read_hermes_servers_at(path: &Path) -> Result<BTreeMap<String, Value>, AppCom
 /// preserving every other key. Written through the Hermes secret writer
 /// (owner-only perms, symlink-preserving) since the file can carry env secrets.
 /// Note: like the structured model save, this round-trips config.yaml through
-/// serde_yaml and so drops comments — consistent with codeg's existing Hermes
+/// serde_yaml and so drops comments — consistent with Zwiim's existing Hermes
 /// config edits.
 fn upsert_hermes_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
     use serde_yaml::{Mapping, Value as Yaml};
@@ -6330,7 +6330,7 @@ mod tests {
 
         // The list survives the broken source; a reassignment computed from that
         // same list must not, or Antigravity is dropped from the "keep it here"
-        // set purely because codeg could not read it.
+        // set purely because Zwiim could not read it.
         let err = require_complete_scan(&scan_local_servers_from_readers(&readers))
             .expect_err("writers must stay fail-closed on a degraded scan");
         assert!(
@@ -6516,7 +6516,7 @@ mod tests {
 
     #[test]
     fn deepseek_mcp_json_round_trips_the_canonical_spec() {
-        // `$DSH_HOME/mcp.json` is codeg's OWN store (deepseek-acp reads no MCP
+        // `$DSH_HOME/mcp.json` is Zwiim's OWN store (deepseek-acp reads no MCP
         // file; the wire is the delivery path), so unlike every other agent it
         // keeps the canonical spec verbatim — `type` included. Round-tripping
         // it unchanged is what lets `load_mcp_servers_for_agent` map the entry
@@ -6602,7 +6602,7 @@ mod tests {
     fn deepseek_mcp_store_is_not_world_readable() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        // codeg CREATES this file (no other agent's store works that way), and
+        // Zwiim CREATES this file (no other agent's store works that way), and
         // a stdio entry's `env` carries the server's token — so a fresh file
         // must not inherit the umask's `0644`.
         let dir = tempfile::tempdir().expect("tempdir");
@@ -6698,7 +6698,7 @@ mod tests {
 
         // A MALFORMED `mcpServers` is not something to migrate around. The
         // loader hands that value to its `isinstance` check and rejects the
-        // WHOLE file — it does NOT fall back to the root — so codeg must
+        // WHOLE file — it does NOT fall back to the root — so Zwiim must
         // report no servers, and must refuse to edit rather than delete a key
         // whose meaning it cannot read.
         let malformed = dir.path().join("malformed.json");
@@ -6708,7 +6708,7 @@ mod tests {
         let seen = read_antigravity_servers_at(&malformed).expect("read malformed");
         assert!(
             seen.is_empty(),
-            "the agent sees nothing here, so neither may codeg: {seen:?}"
+            "the agent sees nothing here, so neither may Zwiim: {seen:?}"
         );
         assert!(
             upsert_antigravity_server_at(&malformed, "x", &json!({ "command": "x" })).is_err(),
@@ -6833,7 +6833,7 @@ mod tests {
                 .contains_key("ctx7"));
         }
 
-        // A file with actual content that is not JSON is still an error: codeg
+        // A file with actual content that is not JSON is still an error: Zwiim
         // must not overwrite something the user wrote and it failed to read.
         let broken = dir.path().join("broken.json");
         std::fs::write(&broken, "{ not json").expect("seed broken");
@@ -6843,7 +6843,7 @@ mod tests {
     #[test]
     fn a_config_that_cannot_be_stat_ed_is_an_error_not_an_empty_one() {
         // Absence is decided by the read, not by `Path::exists()`: `exists()`
-        // answers `false` for any failed stat, so a config codeg cannot open
+        // answers `false` for any failed stat, so a config Zwiim cannot open
         // would be reported as "this agent has none" — silently, with no
         // warning for `require_complete_scan` to refuse a reassignment on.
         let dir = tempfile::tempdir().expect("tempdir");
@@ -7031,7 +7031,7 @@ mod tests {
 
     #[test]
     fn qoder_settings_json_round_trips_and_preserves_foreign_keys() {
-        // `~/.qoder/settings.json` is QODER'S file, not codeg's: the CLI owns
+        // `~/.qoder/settings.json` is QODER'S file, not Zwiim's: the CLI owns
         // unrelated keys beside `mcpServers` (`securityScan`, `security.auth`,
         // `model.name`, the `projects` map, …). Every write must be a
         // read-modify-write merge that leaves those keys intact — the property
@@ -7046,7 +7046,7 @@ mod tests {
 
         // A realistic settings.json: foreign keys plus one valid server and
         // one entry too malformed to canonicalize (exercises the skip path
-        // on read — codeg must skip it, never rewrite the file to "fix" it).
+        // on read — Zwiim must skip it, never rewrite the file to "fix" it).
         std::fs::write(
             &path,
             serde_json::to_string_pretty(&json!({
@@ -7192,7 +7192,7 @@ mod tests {
         );
 
         // Every app the scan can ATTRIBUTE a server to must also be one the
-        // write paths can reach; otherwise the UI shows an assignment codeg can
+        // write paths can reach; otherwise the UI shows an assignment Zwiim can
         // neither edit nor clear. (The reverse is allowed: a write-only target
         // with no reader would just never show up.)
         let scannable = local_mcp_readers()
@@ -7491,7 +7491,7 @@ mod tests {
 
     #[test]
     fn codex_entry_infers_transport_when_type_absent() {
-        // Native Codex tables (and codeg's own post-#325 output) carry no `type`;
+        // Native Codex tables (and Zwiim's own post-#325 output) carry no `type`;
         // the reader must infer it from the transport keys, not assume stdio (which
         // silently dropped every url-only server). Mirrors the issue's config.
         let http = codex_entry("url = \"https://mcp.exa.ai/mcp\"\n");
@@ -7562,7 +7562,7 @@ mod tests {
             .expect("sse entry");
         assert_eq!(sse.get("type").and_then(Value::as_str), Some("sse"));
 
-        // And codeg reads `streamableHttp` straight back to canonical `http`.
+        // And Zwiim reads `streamableHttp` straight back to canonical `http`.
         let round_trip = canonicalize_spec(
             &json!({"type": "streamableHttp", "url": "https://mcp.exa.ai/mcp"}),
             "test",
@@ -7574,7 +7574,7 @@ mod tests {
     #[test]
     fn canonical_to_kimi_code_entry_pins_remote_transport() {
         // Kimi 0.23.3 keys the transport off `transport` (defaulting url-only to
-        // HTTP), so codeg must emit an explicit `transport` or an SSE server silently
+        // HTTP), so Zwiim must emit an explicit `transport` or an SSE server silently
         // downgrades to HTTP (#325). stdio is left as-is (Kimi infers it from
         // `command`).
         let sse = canonical_to_kimi_code_entry(&json!({"type": "sse", "url": "https://x/stream"}))
@@ -7635,7 +7635,7 @@ mod tests {
         assert_eq!(http_url.get("type").and_then(Value::as_str), Some("http"));
 
         // An on-disk `type` with NO `transport` does not classify: Kimi strips `type`
-        // and infers HTTP from the url, so codeg must too (not report it as SSE).
+        // and infers HTTP from the url, so Zwiim must too (not report it as SSE).
         let stale_type = kimi_code_entry_to_canonical(
             &json!({"type": "sse", "url": "https://host/mcp"}),
             "s",
@@ -7713,9 +7713,9 @@ mod tests {
 
     #[test]
     fn kimi_code_entry_preserves_kimi_only_fields_through_a_round_trip() {
-        // Fields Kimi models but codeg has no UI for must survive read→write:
+        // Fields Kimi models but Zwiim has no UI for must survive read→write:
         // dropping them breaks a server the user configured through Kimi's own
-        // `/mcp-config` the first time they touch it in codeg's editor.
+        // `/mcp-config` the first time they touch it in Zwiim's editor.
         let on_disk = json!({
             "command": "npx",
             "args": ["-y", "server"],
@@ -7779,7 +7779,7 @@ mod tests {
         assert_eq!(obj.get("args"), Some(&json!(["-y", "ctx7"])));
 
         // Kimi's copy is authoritative for the keys it owns, absence included:
-        // codeg's permissive writers copy them into other agents' files, so an
+        // Zwiim's permissive writers copy them into other agents' files, so an
         // earlier-scanned agent's stale copy must not pin the canonical spec.
         let mut stale = json!({
             "type": "stdio",
@@ -7835,7 +7835,7 @@ mod tests {
         );
 
         // But the same value in an agent that does NOT model `auth` is only an
-        // echo codeg wrote there, so removing it in Kimi must take effect.
+        // echo Zwiim wrote there, so removing it in Kimi must take effect.
         let mut echo = json!({
             "type": "http",
             "url": "https://host/mcp",
@@ -7933,7 +7933,7 @@ mod tests {
         let obj = after["remote"].as_object().expect("object");
         assert!(
             !obj.contains_key("bearerTokenEnvVar"),
-            "removing a field in codeg's editor must reach disk"
+            "removing a field in Zwiim's editor must reach disk"
         );
         assert_eq!(obj.get("auth").and_then(Value::as_str), Some("oauth"));
     }
@@ -7973,7 +7973,7 @@ mod tests {
 
     #[test]
     fn codex_entry_rejects_both_command_and_url() {
-        // Codex hard-errors on a mixed-transport entry; codeg must reject it rather
+        // Codex hard-errors on a mixed-transport entry; Zwiim must reject it rather
         // than silently classify as stdio and drop the `url` (#325).
         let both = codex_entry("command = \"npx\"\nurl = \"https://x/mcp\"\n");
         assert!(codex_entry_to_canonical("mixed", &both).is_err());

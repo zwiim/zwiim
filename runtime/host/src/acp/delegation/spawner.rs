@@ -100,7 +100,7 @@ pub trait ConnectionSpawner: Send + Sync {
     /// without leaking those types into the broker. If `working_dir` is
     /// `None`, the impl may fall back to the parent connection's `working_dir`.
     ///
-    /// Returns the new connection id (codeg-internal UUID, not the ACP
+    /// Returns the new connection id (zwiim-internal UUID, not the ACP
     /// session id assigned by the agent).
     async fn spawn(
         &self,

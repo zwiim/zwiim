@@ -437,8 +437,8 @@ async fn add_to_git_exclude(root: &Path, name: &str) {
     if !next.is_empty() && !next.ends_with('\n') {
         next.push('\n');
     }
-    if !next.contains("# codeg workspace links") {
-        next.push_str("# codeg workspace links\n");
+    if !next.contains("# Zwiim workspace links") {
+        next.push_str("# Zwiim workspace links\n");
     }
     next.push_str(&line);
     next.push('\n');
@@ -1078,7 +1078,7 @@ mod tests {
         // `info/exclude` patterns resolve against the work tree top level, so a
         // workspace folder nested inside the repo must carry its prefix —
         // otherwise the rule would hide an unrelated `<repo>/api`.
-        let top = std::env::temp_dir().join("codeg-exclude-test-repo");
+        let top = std::env::temp_dir().join("zwiim-exclude-test-repo");
         let nested = top.join("packages/app");
         std::fs::create_dir_all(&nested).expect("mkdir");
 

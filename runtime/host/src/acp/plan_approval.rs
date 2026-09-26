@@ -158,7 +158,7 @@ pub trait SessionPlanApprovalAccess: Send + Sync {
 }
 
 /// Parse Grok's `_x.ai/exit_plan_mode` ext-request params into the plan markdown
-/// and `toolCallId` codeg needs to render the approval card. Grok's wire shape is
+/// and `toolCallId` Zwiim needs to render the approval card. Grok's wire shape is
 /// `{ sessionId, toolCallId, planContent }`. Lenient: an empty / missing
 /// `planContent` is valid (the empty-plan approval surface), so the only hard
 /// error is a non-object payload. The markdown is length-bounded to

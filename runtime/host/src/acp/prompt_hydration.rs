@@ -26,7 +26,7 @@
 //! non-`file://` uri (`clipboard://…` synth ids), a non-image resource — is
 //! left untouched, so the desktop flow is byte-identical to before.
 //!
-//! Security: only files under `codeg_uploads_root()` are readable here. The
+//! Security: only files under `zwiim_uploads_root()` are readable here. The
 //! uri is percent-decoded, canonicalized, and prefix-checked against the
 //! canonicalized root, so `acp_prompt` cannot be used as an arbitrary-file
 //! read oracle (the viewer broadcast would otherwise ship the bytes to every

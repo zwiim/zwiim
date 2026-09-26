@@ -47,7 +47,7 @@ pub const CONFIG_SYNC_STATE_KEY: &str = "config_sync_state";
 /// Remote layout version, independent of the snapshot's `schemaVersion`.
 pub const PROTOCOL_VERSION: u32 = 1;
 
-pub const DEFAULT_REMOTE_DIR: &str = "codeg";
+pub const DEFAULT_REMOTE_DIR: &str = "zwiim";
 pub const DEFAULT_PROFILE: &str = "default";
 pub const DEFAULT_INTERVAL_MINUTES: u32 = 5;
 /// A day. Not a real limit, just a guard against a value that would overflow
@@ -815,7 +815,7 @@ mod tests {
             password: Some("app-password".to_string()),
             passphrase: None,
             encrypt: false,
-            remote_dir: Some("codeg".to_string()),
+            remote_dir: Some("zwiim".to_string()),
             profile: Some("work".to_string()),
             auto_sync: true,
             interval_minutes: 5,
@@ -1038,7 +1038,7 @@ mod tests {
         app_metadata_service::upsert_value(
             &db.conn,
             CONFIG_SYNC_SETTINGS_KEY,
-            r#"{"enabled":true,"serverUrl":"https://dav.example.com/dav","username":"alice","password":"legacy-secret","remoteDir":"codeg","profile":"work","autoSync":true,"intervalMinutes":5}"#,
+            r#"{"enabled":true,"serverUrl":"https://dav.example.com/dav","username":"alice","password":"legacy-secret","remoteDir":"zwiim","profile":"work","autoSync":true,"intervalMinutes":5}"#,
         )
         .await
         .expect("seed legacy row");
@@ -1074,7 +1074,7 @@ mod tests {
         app_metadata_service::upsert_value(
             &db.conn,
             CONFIG_SYNC_SETTINGS_KEY,
-            r#"{"enabled":true,"serverUrl":"https://dav.example.com/dav","username":"alice","password":"legacy-secret","remoteDir":"codeg","profile":"work","autoSync":true,"intervalMinutes":5}"#,
+            r#"{"enabled":true,"serverUrl":"https://dav.example.com/dav","username":"alice","password":"legacy-secret","remoteDir":"zwiim","profile":"work","autoSync":true,"intervalMinutes":5}"#,
         )
         .await
         .expect("seed half-migrated row");
@@ -1111,7 +1111,7 @@ mod tests {
         app_metadata_service::upsert_value(
             &db.conn,
             CONFIG_SYNC_SETTINGS_KEY,
-            r#"{"enabled":true,"serverUrl":"https://dav.example.com/dav","username":"alice","password":"legacy-secret","remoteDir":"codeg","profile":"work","autoSync":true,"intervalMinutes":5,"futureField":"written by a newer build"}"#,
+            r#"{"enabled":true,"serverUrl":"https://dav.example.com/dav","username":"alice","password":"legacy-secret","remoteDir":"zwiim","profile":"work","autoSync":true,"intervalMinutes":5,"futureField":"written by a newer build"}"#,
         )
         .await
         .expect("seed a row this build does not fully understand");
@@ -1236,7 +1236,7 @@ mod tests {
         app_metadata_service::upsert_value(
             &db.conn,
             CONFIG_SYNC_SETTINGS_KEY,
-            r#"{"enabled":true,"serverUrl":"https://dav.example.com/dav","username":"alice","password":"outdated","remoteDir":"codeg","profile":"work","autoSync":true,"intervalMinutes":5}"#,
+            r#"{"enabled":true,"serverUrl":"https://dav.example.com/dav","username":"alice","password":"outdated","remoteDir":"zwiim","profile":"work","autoSync":true,"intervalMinutes":5}"#,
         )
         .await
         .expect("seed row");
@@ -1463,7 +1463,7 @@ mod tests {
         let db = fresh_in_memory_db().await;
         let state = ConfigSyncState {
             last_uploaded_sha256: Some("abc".to_string()),
-            last_uploaded_target: Some("https://dav.example.com/dav\u{0}codeg\u{0}work".to_string()),
+            last_uploaded_target: Some("https://dav.example.com/dav\u{0}zwiim\u{0}work".to_string()),
             last_sync_at: Some("2026-01-01T00:00:00Z".to_string()),
             last_error: None,
         };

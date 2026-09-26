@@ -524,7 +524,7 @@ pub fn build_router(
         )
         // ─── Workspace files (web upload/download) ───
         //
-        // Issue #179: when codeg runs in server mode the user has no
+        // Issue #179: when Zwiim runs in server mode the user has no
         // native file dialog, so they need HTTP endpoints to move files
         // between the browser and the workspace. The upload handler
         // streams to a same-dir staging file then renames into place;

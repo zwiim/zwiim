@@ -147,7 +147,7 @@ pub(crate) fn filter_recent(
 
 /// List `.log` files in the logs dir, newest first. Empty if the dir is absent.
 pub fn list_log_files_core() -> Vec<LogFileInfo> {
-    let dir = crate::paths::codeg_logs_root();
+    let dir = crate::paths::zwiim_logs_root();
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return Vec::new();
     };
@@ -182,7 +182,7 @@ pub fn list_log_files_core() -> Vec<LogFileInfo> {
 /// no opener dependency or cfg-gating is needed here, and it compiles in server
 /// mode too.
 pub fn open_logs_dir_core() -> Result<String, AppCommandError> {
-    let dir = crate::paths::codeg_logs_root();
+    let dir = crate::paths::zwiim_logs_root();
     std::fs::create_dir_all(&dir).map_err(|e| {
         AppCommandError::io_error("Failed to create log directory").with_detail(e.to_string())
     })?;
@@ -206,7 +206,7 @@ pub fn read_log_file_core(name: &str, max_bytes: Option<usize>) -> Result<String
         return Err(AppCommandError::invalid_input("Not a log file"));
     }
 
-    let dir = crate::paths::codeg_logs_root();
+    let dir = crate::paths::zwiim_logs_root();
     let path = dir.join(name);
 
     // Defense in depth: the resolved file's parent must be the logs dir itself,
@@ -363,16 +363,16 @@ mod tests {
                 ("ZWIIM_DATA_DIR", Some(tmp.path().to_str().unwrap())),
             ],
             || {
-                let logs = crate::paths::codeg_logs_root();
+                let logs = crate::paths::zwiim_logs_root();
                 std::fs::create_dir_all(&logs).unwrap();
-                std::fs::write(logs.join("codeg.2026-01-01.log"), b"0123456789").unwrap();
+                std::fs::write(logs.join("zwiim.2026-01-01.log"), b"0123456789").unwrap();
                 assert_eq!(
-                    read_log_file_core("codeg.2026-01-01.log", None).unwrap(),
+                    read_log_file_core("zwiim.2026-01-01.log", None).unwrap(),
                     "0123456789"
                 );
                 // Capped read returns the newest tail.
                 assert_eq!(
-                    read_log_file_core("codeg.2026-01-01.log", Some(4)).unwrap(),
+                    read_log_file_core("zwiim.2026-01-01.log", Some(4)).unwrap(),
                     "6789"
                 );
             },
@@ -388,7 +388,7 @@ mod tests {
                 ("ZWIIM_DATA_DIR", Some(tmp.path().to_str().unwrap())),
             ],
             || {
-                let logs = crate::paths::codeg_logs_root();
+                let logs = crate::paths::zwiim_logs_root();
                 std::fs::create_dir_all(&logs).unwrap();
                 std::fs::write(logs.join("a.log"), b"a").unwrap();
                 std::fs::write(logs.join("b.txt"), b"b").unwrap();

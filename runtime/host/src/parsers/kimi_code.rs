@@ -75,7 +75,7 @@ fn resolve_kimi_code_home_from(
 /// (and carry `origin.kind == "injection"` system reminders), so they are skipped
 /// to avoid duplicate / noise messages. The working directory is recovered from
 /// `session_index.jsonl` (state.json has none); the model name from the session's
-/// own `logs/kimi-code.log` (the wire only stores the codeg-managed model alias).
+/// own `logs/kimi-code.log` (the wire only stores the zwiim-managed model alias).
 pub struct KimiCodeParser {
     base_dir: PathBuf,
 }
@@ -290,7 +290,7 @@ struct WireParse {
     messages: Vec<UnifiedMessage>,
     first_ts: Option<DateTime<Utc>>,
     last_ts: Option<DateTime<Utc>>,
-    /// The codeg-managed model alias from a `config.update` record (fallback only;
+    /// The zwiim-managed model alias from a `config.update` record (fallback only;
     /// the real model name is recovered from the session log).
     model_alias: Option<String>,
     /// First user prompt, already truncated for use as a fallback title.
@@ -857,8 +857,8 @@ fn resolve_title(state_title: Option<String>, first_user_text: Option<String>) -
 }
 
 /// Best-effort real model name from the session's own log
-/// (`… llm config … model=kimi-k2.7-code modelAlias=codeg-managed …`). The wire
-/// only stores the (codeg-managed) alias, so the log is the sole place the actual
+/// (`… llm config … model=kimi-k2.7-code modelAlias=zwiim-managed …`). The wire
+/// only stores the (zwiim-managed) alias, so the log is the sole place the actual
 /// model id appears. `modelAlias=` does not collide: only the exact `model=`
 /// token is matched.
 fn read_session_log_model(session_dir: &Path) -> Option<String> {
@@ -1069,7 +1069,7 @@ mod tests {
 
     fn unique_root(tag: &str) -> PathBuf {
         std::env::temp_dir()
-            .join(format!("codeg-kimi-{tag}-{}", uuid::Uuid::new_v4()))
+            .join(format!("zwiim-kimi-{tag}-{}", uuid::Uuid::new_v4()))
             .join(".kimi-code")
             .join("sessions")
     }
@@ -1080,7 +1080,7 @@ mod tests {
         vec![
             json!({"type":"metadata","protocol_version":"1.4","created_at":1782276644193i64}),
             json!({"type":"config.update","profileName":"agent","systemPrompt":"…","time":1782276644193i64}),
-            json!({"type":"config.update","modelAlias":"codeg-managed","thinkingLevel":"high","time":1782276644194i64}),
+            json!({"type":"config.update","modelAlias":"zwiim-managed","thinkingLevel":"high","time":1782276644194i64}),
             json!({"type":"turn.prompt","input":[{"type":"text","text":"执行一下pnpm build"}],"origin":{"kind":"user"},"time":1782276649227i64}),
             // append_message echoes the prompt + a system-reminder injection — both must be ignored.
             json!({"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"执行一下pnpm build"}],"origin":{"kind":"user"}},"time":1782276649228i64}),
@@ -1090,9 +1090,9 @@ mod tests {
             json!({"type":"context.append_loop_event","event":{"type":"tool.call","uuid":"Bash_0","turnId":"0","step":1,"toolCallId":"Bash_0","name":"Bash","args":{"command":"pnpm build","cwd":"/Users/demo/my-app","timeout":300},"description":"Running: pnpm build"},"time":1782276651425i64}),
             json!({"type":"context.append_loop_event","event":{"type":"tool.result","parentUuid":"Bash_0","toolCallId":"Bash_0","result":{"output":"✓ Compiled successfully"}},"time":1782276660973i64}),
             json!({"type":"context.append_loop_event","event":{"type":"step.end","uuid":"s1","turnId":"0","step":1,"usage":{"inputOther":7962,"output":37,"inputCacheRead":9472,"inputCacheCreation":0},"finishReason":"tool_use"},"time":1782276660973i64}),
-            json!({"type":"usage.record","model":"codeg-managed","usage":{"inputOther":7962,"output":37,"inputCacheRead":9472,"inputCacheCreation":0},"usageScope":"turn","time":1782276660974i64}),
+            json!({"type":"usage.record","model":"zwiim-managed","usage":{"inputOther":7962,"output":37,"inputCacheRead":9472,"inputCacheCreation":0},"usageScope":"turn","time":1782276660974i64}),
             json!({"type":"context.append_loop_event","event":{"type":"content.part","uuid":"p1","turnId":"0","step":2,"part":{"type":"text","text":"构建完成，没有错误。"}},"time":1782276664343i64}),
-            json!({"type":"usage.record","model":"codeg-managed","usage":{"inputOther":265,"output":36,"inputCacheRead":17408,"inputCacheCreation":0},"usageScope":"turn","time":1782276664500i64}),
+            json!({"type":"usage.record","model":"zwiim-managed","usage":{"inputOther":265,"output":36,"inputCacheRead":17408,"inputCacheCreation":0},"usageScope":"turn","time":1782276664500i64}),
         ]
     }
 
@@ -1283,7 +1283,7 @@ mod tests {
             &[
                 json!({"type":"metadata","protocol_version":"1.4","created_at":1782276644193i64}),
                 json!({"type":"config.update","systemPrompt":"big system prompt","time":1782276644193i64}),
-                json!({"type":"config.update","modelAlias":"codeg-managed","time":1782276644194i64}),
+                json!({"type":"config.update","modelAlias":"zwiim-managed","time":1782276644194i64}),
             ],
         );
 
@@ -1393,7 +1393,7 @@ mod tests {
             "agent-0",
             &[
                 json!({"type":"metadata","protocol_version":"1.4","created_at":1782276651000i64}),
-                json!({"type":"config.update","profileName":"coder","modelAlias":"codeg-managed","time":1782276651000i64}),
+                json!({"type":"config.update","profileName":"coder","modelAlias":"zwiim-managed","time":1782276651000i64}),
                 json!({"type":"turn.prompt","input":[{"type":"text","text":"run pnpm build"}],"origin":{"kind":"user"},"time":1782276651500i64}),
                 json!({"type":"context.append_loop_event","event":{"type":"tool.call","toolCallId":"s1","name":"Bash","args":{"command":"pnpm build","cwd":"/Users/demo/my-app"}},"time":1782276652000i64}),
                 json!({"type":"context.append_loop_event","event":{"type":"tool.result","toolCallId":"s1","result":{"output":"Exited with code 0"}},"time":1782276658000i64}),

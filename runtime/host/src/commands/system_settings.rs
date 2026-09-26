@@ -1054,7 +1054,7 @@ mod tests {
 
     /// A scheme-less address is what a user actually types, and what used to
     /// reach `HTTP_PROXY` verbatim — killing every npm-based agent install with
-    /// `ERR_INVALID_URL` while codeg's own reqwest calls kept working.
+    /// `ERR_INVALID_URL` while Zwiim's own reqwest calls kept working.
     #[test]
     fn scheme_less_proxy_addresses_gain_an_http_scheme() {
         assert_eq!(normalized_url("127.0.0.1:7890"), "http://127.0.0.1:7890");

@@ -2,13 +2,13 @@
 //!
 //! [`crate::acp::scratch_dir`] stops the bleeding; this hands back what already
 //! leaked. One reporter had 113 orphaned `%TEMP%\_MEI*` directories totalling
-//! 107.70 GB, which nothing in codeg would otherwise ever come back for —
-//! those directories are in the SYSTEM temp dir, not in codeg's own subtree.
+//! 107.70 GB, which nothing in Zwiim would otherwise ever come back for —
+//! those directories are in the SYSTEM temp dir, not in Zwiim's own subtree.
 //!
 //! # Why this is user-triggered and not a startup sweep
 //!
 //! `%TEMP%\_MEI*` is the namespace of every PyInstaller application on the
-//! machine, not codeg's. codeg cannot tell its own leaked directory from one
+//! machine, not Zwiim's. Zwiim cannot tell its own leaked directory from one
 //! belonging to some other app, so it does not get to delete them unasked. The
 //! flow is scan → show what was found → the user confirms.
 //!
@@ -88,7 +88,7 @@ fn is_py_binary_resource(name: &str) -> bool {
     name.contains("__py_binary_resource_")
 }
 
-/// Whether an entry is one codeg is willing to delete.
+/// Whether an entry is one Zwiim is willing to delete.
 ///
 /// The platform split is deliberate rather than incidental. On Windows the
 /// handle probe below is a real answer, so a whole unpack directory can be

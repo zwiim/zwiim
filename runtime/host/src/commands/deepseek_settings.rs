@@ -5,7 +5,7 @@
 //! (`$DSH_HOME/settings.yaml`, default `~/.dsh/settings.yaml`). Its `models`
 //! key is the catalog the adapter's `listModels` returns verbatim, which the
 //! bridge turns into the ACP `model` config option — i.e. the model dropdown
-//! codeg's composer shows for a DeepSeek session. Absent, the session inherits
+//! Zwiim's composer shows for a DeepSeek session. Absent, the session inherits
 //! the catalog the agent's own composition declares ([`default_models`]).
 //!
 //! The catalog is *advisory*: a request naming a model outside it still goes
@@ -26,7 +26,7 @@
 //!   written.
 //!
 //! Path resolution follows the repo-wide convention (`resolve_dsh_home_dir`):
-//! codeg's own process env, not the per-agent `env_json`, which only reaches
+//! Zwiim's own process env, not the per-agent `env_json`, which only reaches
 //! the spawned child.
 
 use std::fs;
@@ -137,10 +137,10 @@ pub struct DeepSeekCatalogModel {
     /// key (`resolveModels` throws on `Object.hasOwn(model, "imageDetail")`),
     /// and a refused section takes the whole catalog with it.
     ///
-    /// Kept in the shape so a document an older codeg wrote still PARSES: the
+    /// Kept in the shape so a document an older Zwiim wrote still PARSES: the
     /// panel then reports it through [`DeepSeekModelCatalog::invalid`] and the
     /// next save writes the entry without it. Dropping the field instead would
-    /// trip the unknown-key guard and refuse to edit a document codeg itself
+    /// trip the unknown-key guard and refuse to edit a document Zwiim itself
     /// produced.
     #[serde(default, skip_serializing)]
     pub image_detail: Option<String>,
@@ -227,7 +227,7 @@ pub fn default_models() -> Vec<DeepSeekCatalogModel> {
 #[serde(rename_all = "camelCase")]
 pub struct DeepSeekModelCatalog {
     /// Resolved `settings.yaml` path, shown so the user can find (or hand-edit)
-    /// the document codeg writes.
+    /// the document Zwiim writes.
     pub path: String,
     /// Whether that document exists at all.
     pub exists: bool,
@@ -310,7 +310,7 @@ fn load_deepseek_model_catalog_at(path: &Path) -> DeepSeekModelCatalog {
 /// be silently dropped by the first save.
 ///
 /// `imageDetail` is listed even though the agent no longer accepts it — see
-/// [`DeepSeekCatalogModel::image_detail`]. It is a key codeg once wrote, so
+/// [`DeepSeekCatalogModel::image_detail`]. It is a key Zwiim once wrote, so
 /// reading it and reporting it is the repair path; treating it as unknown here
 /// would refuse to edit the very documents that need fixing.
 const KNOWN_FIELDS: &[&str] = &[
@@ -369,7 +369,7 @@ fn read_models(raw: &str) -> Result<Option<Vec<DeepSeekCatalogModel>>, String> {
             if unknown {
                 let rendered = serde_yaml::to_string(key).unwrap_or_default();
                 return Err(format!(
-                    "`{SECTION_KEY}.{MODELS_KEY}` uses a field codeg does not know \
+                    "`{SECTION_KEY}.{MODELS_KEY}` uses a field Zwiim does not know \
                      ({}); edit the document by hand so nothing is lost",
                     rendered.trim()
                 ));
@@ -382,7 +382,7 @@ fn read_models(raw: &str) -> Result<Option<Vec<DeepSeekCatalogModel>>, String> {
 }
 
 /// Judge a submitted catalog by the adapter's own `resolveModels` rules, so a
-/// section codeg writes is one the adapter will actually load. Returns the
+/// section Zwiim writes is one the adapter will actually load. Returns the
 /// normalized list to store (ids/names trimmed).
 fn validate_models(models: &[DeepSeekCatalogModel]) -> Result<Vec<DeepSeekCatalogModel>, String> {
     let mut seen: Vec<String> = Vec::with_capacity(models.len());
@@ -661,7 +661,7 @@ fn resolve_write_target(path: &Path) -> Result<PathBuf, std::io::Error> {
 ///
 /// Mode: an existing document keeps its own, minus any world bits (a
 /// deliberately group-shared `0640` survives; a `0644` is repaired). A fresh
-/// one is `0600` — it is created by codeg, so its mode is codeg's
+/// one is `0600` — it is created by Zwiim, so its mode is Zwiim's
 /// responsibility, and under the usual `022` umask it would otherwise be
 /// readable by every local user.
 fn write_settings_document(path: &Path, body: &str) -> Result<(), AcpError> {
@@ -900,7 +900,7 @@ fn patch_settings_models(
 ) -> Result<String, String> {
     let newline = if existing.contains("\r\n") { "\r\n" } else { "\n" };
 
-    // A document codeg cannot parse is one it must not rewrite: the splice
+    // A document Zwiim cannot parse is one it must not rewrite: the splice
     // below reasons about indentation, and the verification at the end needs a
     // "before" to compare against.
     let before: Option<serde_yaml::Value> = if existing.trim().is_empty() {
@@ -1305,7 +1305,7 @@ mod tests {
 
     #[test]
     fn refuses_to_edit_entries_carrying_fields_it_would_drop() {
-        // A save rewrites the whole block, so a field codeg does not model
+        // A save rewrites the whole block, so a field Zwiim does not model
         // would be lost. Report it instead — the panel then refuses to edit.
         let doc = "llm-deepseek:\n  models:\n    - id: a\n      futureKnob: 1\n";
         let err = read_models(doc).expect_err("unknown field is reported");
@@ -1323,7 +1323,7 @@ mod tests {
             "      imagePixelBudget: 3\n",
             "      imageMaxBytes: 4\n",
             "      systemPromptUpdate: in-history\n",
-            // Retired upstream, but still a key codeg itself once wrote — so it
+            // Retired upstream, but still a key Zwiim itself once wrote — so it
             // stays READABLE here. Refusing it as unknown would lock the panel
             // out of exactly the documents that need repairing.
             "      imageDetail: low\n",
@@ -1506,7 +1506,7 @@ mod tests {
 
     #[test]
     fn a_stored_image_detail_is_reported_shown_without_it_and_dropped_on_save() {
-        // The full repair path for a document an older codeg wrote. Each step
+        // The full repair path for a document an older Zwiim wrote. Each step
         // carries its own half: the panel must be able to OPEN it (so the key
         // stays readable), must SAY it is not in effect (so nobody hunts for
         // why their models are missing), must not hand the key back to the
@@ -1658,7 +1658,7 @@ mod tests {
     #[test]
     fn replaces_a_block_written_flush_left_under_its_key() {
         // `serde_yaml`'s own emitter writes sequences at the key's indent, so a
-        // document codeg (or a script) produced looks like this.
+        // document Zwiim (or a script) produced looks like this.
         let existing = "llm-deepseek:\n  models:\n  - id: old\n  thinking: enabled\n";
         let patched = patch_settings_models(existing, Some(&[model("new")])).expect("patch");
         assert_eq!(models_of(&patched)[0].id, "new");

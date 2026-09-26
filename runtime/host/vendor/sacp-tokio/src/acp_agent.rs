@@ -499,7 +499,7 @@ impl AcpAgent {
                     command
                 };
                 for env_var in &stdio.env {
-                    // codeg convention: an empty value means "ensure this var is
+                    // Zwiim convention: an empty value means "ensure this var is
                     // ABSENT from the child" (strip an inherited value) rather
                     // than setting it empty. The child otherwise inherits this
                     // process's environment, so this lets the launch layer
@@ -1322,7 +1322,7 @@ mod tests {
         assert!(is_windows_unc_path(r"\\?\UNC\server\share\repo"));
         assert!(!is_windows_unc_path(r"C:\Users\user\repo"));
         assert!(!is_windows_unc_path(r"\\?\C:\Users\user\repo"));
-        assert!(!is_windows_unc_path(r"\\.\pipe\codeg"));
+        assert!(!is_windows_unc_path(r"\\.\pipe\zwiim"));
     }
 
     #[test]

@@ -12,6 +12,6 @@ edition = "2021"
 license = "Apache-2.0"
 publish = false
 
-# Codeg-derived: sacp-tokio is vendored (see third_party/codeg/PROVENANCE.md).
+# Upstream-derived: sacp-tokio is vendored (see third_party/codeg/PROVENANCE.md).
 [patch.crates-io]
 sacp-tokio = { path = "runtime/host/vendor/sacp-tokio" }

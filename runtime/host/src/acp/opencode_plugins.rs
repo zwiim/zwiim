@@ -44,7 +44,7 @@ pub struct PluginInfo {
     pub status: PluginStatus,
     /// For path plugins: the file opencode will import, resolved the way
     /// `resolvePathPluginTarget` resolves it. `None` for package plugins, and
-    /// for the path specs codeg cannot resolve on its own — see
+    /// for the path specs Zwiim cannot resolve on its own — see
     /// [`resolve_path_plugin_target`].
     pub resolved_path: Option<String>,
 }
@@ -123,7 +123,7 @@ fn is_path_spec(spec: &str) -> bool {
 
 /// `path.isAbsolute(raw) || /^[A-Za-z]:[\\/]/.test(raw)` — upstream tests the
 /// Windows drive form explicitly, so `C:\plugins\p.js` is a path plugin on every
-/// host, not only when codeg itself runs on Windows.
+/// host, not only when Zwiim itself runs on Windows.
 fn is_absolute_spec(spec: &str) -> bool {
     if Path::new(spec).is_absolute() || has_windows_drive_prefix(spec) {
         return true;
@@ -147,7 +147,7 @@ fn has_windows_drive_prefix(spec: &str) -> bool {
 /// is resolved against the directory opencode runs in — the project, not the
 /// config directory.
 ///
-/// `None` means codeg cannot name a local file for this spec: a `https://` spec
+/// `None` means Zwiim cannot name a local file for this spec: a `https://` spec
 /// has none, a `file://` URL with a real host is not local, and a relative spec
 /// has no base unless the caller knows the project directory. Callers must read
 /// `None` as "unknown", never as "absent" — answering "not installed" from a
@@ -195,7 +195,7 @@ fn file_url_body_to_path(body: &str) -> Option<PathBuf> {
     // `file:///C:/dir/p.js` with an EMPTY host, and `fileURLToPath` resolves
     // them rather than throwing `ERR_INVALID_FILE_URL_HOST`. opencode hands the
     // raw spec straight to `fileURLToPath`, so refusing the two-slash forms here
-    // would report a plugin opencode loads fine as one codeg cannot name.
+    // would report a plugin opencode loads fine as one Zwiim cannot name.
     let path_part = if has_windows_drive_prefix(body) {
         body.to_string()
     } else {
@@ -220,7 +220,7 @@ fn file_url_body_to_path(body: &str) -> Option<PathBuf> {
 ///
 /// Mirrors `resolvePluginTarget` in opencode 1.18.31: a bare package name
 /// becomes `<name>@latest`, anything already carrying a version or tag is used
-/// verbatim. Getting this wrong does not fail loudly — it just points codeg at
+/// verbatim. Getting this wrong does not fail loudly — it just points Zwiim at
 /// a directory opencode will never look in.
 pub(crate) fn effective_spec(declared_spec: &str, name: &str) -> String {
     if declared_spec == name {
@@ -259,7 +259,7 @@ pub(crate) fn plugin_package_dir(cache_dir: &Path, effective_spec: &str) -> Path
 
 /// Where opencode looks for the module itself. Its own hit test is a bare
 /// existence check on this directory (`Npm.add`'s fast path), which is why a
-/// `bun add` into the right parent satisfies it without codeg having to
+/// `bun add` into the right parent satisfies it without Zwiim having to
 /// reproduce arborist's bookkeeping.
 fn modern_pkg_json(cache_dir: &Path, effective_spec: &str, name: &str) -> PathBuf {
     plugin_package_dir(cache_dir, effective_spec)
@@ -268,7 +268,7 @@ fn modern_pkg_json(cache_dir: &Path, effective_spec: &str, name: &str) -> PathBu
         .join("package.json")
 }
 
-/// The pre-1.18 flat layout codeg used to both write and check.
+/// The pre-1.18 flat layout Zwiim used to both write and check.
 fn legacy_pkg_json(cache_dir: &Path, name: &str) -> PathBuf {
     cache_dir
         .join("node_modules")
@@ -297,7 +297,7 @@ fn classify_plugin(
 ) -> (PluginStatus, Option<String>, Option<PathBuf>) {
     if is_path_spec(declared_spec) {
         // opencode imports these straight off disk, so the package cache never
-        // enters into it: probing it (as codeg once did) reports a plugin that
+        // enters into it: probing it (as Zwiim once did) reports a plugin that
         // is present and working as "not installed", and then offers an install
         // that can only fail.
         return match resolve_path_plugin_target(declared_spec, relative_base) {
@@ -1009,7 +1009,7 @@ pub async fn uninstall_plugin(name: String) -> Result<PluginCheckSummary, String
     }
 
     // Step 3: and the legacy flat layout, which older installs (including
-    // codeg's own, before this) wrote into.
+    // Zwiim's own, before this) wrote into.
     let bun = resolve_bun_binary()?;
     let output = crate::process::tokio_command(&bun)
         .arg("remove")
@@ -1087,7 +1087,7 @@ mod layout_tests {
     use super::*;
 
     /// The directory key opencode derives. Getting this wrong fails silently —
-    /// codeg would report "installed" for a directory opencode never reads.
+    /// Zwiim would report "installed" for a directory opencode never reads.
     #[test]
     fn effective_spec_matches_upstream_resolve_plugin_target() {
         // Bare name → `<name>@latest`.
@@ -1184,7 +1184,7 @@ mod layout_tests {
     }
 
     /// Relative specs resolve against the directory opencode runs in. Without
-    /// that directory codeg cannot look anywhere, and "could not check" must not
+    /// that directory Zwiim cannot look anywhere, and "could not check" must not
     /// be reported as "not there".
     #[test]
     fn relative_path_plugin_needs_the_project_directory() {
@@ -1201,13 +1201,13 @@ mod layout_tests {
         assert_eq!(resolved.as_deref(), Some(plugin.as_path()));
 
         // No project directory: still a path plugin, but with no claim either
-        // way about a file codeg never got to look for.
+        // way about a file Zwiim never got to look for.
         let (status, _, resolved) = classify_plugin(&cache, spec, spec, None);
         assert_eq!(status, PluginStatus::Path);
         assert_eq!(resolved, None);
     }
 
-    /// A scheme codeg cannot resolve must not be joined onto the project
+    /// A scheme Zwiim cannot resolve must not be joined onto the project
     /// directory and then reported as absent.
     #[test]
     fn remote_url_plugin_is_never_resolved_against_a_local_directory() {
@@ -1245,7 +1245,7 @@ mod layout_tests {
         // NOT reject: the URL parser pushes it into the path, so both two-slash
         // forms normalize to `file:///C:/plugins/p.js`. Reading them as a host
         // and answering `None` would report a plugin opencode loads as one
-        // codeg cannot name.
+        // Zwiim cannot name.
         assert_eq!(
             resolve_path_plugin_target("file://C:/plugins/p.js", None),
             Some(PathBuf::from("C:/plugins/p.js"))

@@ -309,7 +309,7 @@ fn is_already_reaped(_err: &std::io::Error) -> bool {
 /// is what keeps `terminal/output`, `terminal/kill` and session teardown off
 /// the unbounded `Child::wait`. The task ends only once the process is **known**
 /// to be gone, so it never drops a possibly-live child (tokio does not kill on
-/// drop, and codeg never sets `kill_on_drop`).
+/// drop, and Zwiim never sets `kill_on_drop`).
 async fn own_terminal_process(terminal: Arc<TerminalInstance>, mut child: tokio::process::Child) {
     let pid = child.id();
     // Cumulative across every pass, never overwritten: a later `SIGKILL` pass
@@ -455,7 +455,7 @@ impl TerminalShellRuntimeConfig {
 pub struct TerminalRuntime {
     terminals: Mutex<TerminalMap>,
     /// Base environment merged into every spawned terminal command before
-    /// the agent's per-request `env` is applied. This is where the codeg
+    /// the agent's per-request `env` is applied. This is where the Zwiim
     /// git credential helper (`GIT_CONFIG_*`) lives so an agent that runs
     /// `git push` via the ACP `terminal/create` tool inherits the same
     /// auth path the agent process itself does. Per-request env from the
@@ -465,7 +465,7 @@ pub struct TerminalRuntime {
     /// Fallback working directory applied to spawned terminals when the
     /// agent's `terminal/create` request omits `cwd`. The connection layer
     /// sets this to the session's resolved working directory so terminals
-    /// default to the folder the conversation runs in instead of codeg's own
+    /// default to the folder the conversation runs in instead of Zwiim's own
     /// process cwd (often "/" on desktop, the dev crate dir in development).
     /// `None` leaves the process cwd inherited (legacy behavior).
     default_cwd: Option<PathBuf>,
@@ -549,7 +549,7 @@ impl TerminalRuntime {
         // directory surfaces as a loud spawn failure rather than silently
         // running somewhere else. Only when the agent omits `cwd` do we fall
         // back to the connection's session working directory — agents like
-        // CodeBuddy omit it, which would otherwise inherit codeg's own process
+        // CodeBuddy omit it, which would otherwise inherit Zwiim's own process
         // cwd instead of the folder the conversation runs in. The fallback is
         // guarded on `is_dir` so a not-yet-created session dir never turns into
         // a spawn failure (mirrors the cwd guard in `build_agent`).
@@ -562,7 +562,7 @@ impl TerminalRuntime {
         }
 
         // Apply the runtime's base env first (e.g. `GIT_CONFIG_*` for the
-        // codeg credential helper), then layer the agent's request env on top
+        // Zwiim credential helper), then layer the agent's request env on top
         // so agents can still override or scrub specific keys.
         for (key, value) in &self.base_env {
             command.env(key, value);
@@ -613,7 +613,7 @@ impl TerminalRuntime {
         // cannot — PowerShell's `Get-ChildItem`, cmd's `dir`. A path that long
         // can never be a real executable, so rerouting it is always at least as
         // correct. Deciding off a real failed spawn — rather than a pre-spawn
-        // `which` guess that runs in codeg's own cwd/env — means we never
+        // `which` guess that runs in Zwiim's own cwd/env — means we never
         // reroute a command that would otherwise have run.
         //
         // A spawn the kernel refuses with `ETXTBSY` is retried in place instead
@@ -1118,7 +1118,7 @@ mod tests {
 
     /// Regression: when an ACP agent calls `terminal/create` (e.g. to run
     /// `git push`), the runtime's base env — populated by the connection
-    /// layer with the codeg credential helper's `GIT_CONFIG_*` keys —
+    /// layer with the Zwiim credential helper's `GIT_CONFIG_*` keys —
     /// must reach the spawned process. Per-request `env` from the agent
     /// still wins on key collision so the agent can scrub or override
     /// specific keys for individual commands.
@@ -1346,7 +1346,7 @@ mod tests {
     }
 
     /// A `terminal/create` that omits `cwd` defaults to the runtime's
-    /// configured working directory rather than codeg's own process cwd.
+    /// configured working directory rather than Zwiim's own process cwd.
     #[tokio::test]
     async fn falls_back_to_default_cwd_when_request_omits_cwd() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1508,7 +1508,7 @@ mod tests {
 
         let session_id = SessionId::new("missing-cwd".to_string());
         let mut request = CreateTerminalRequest::new(session_id, "pwd".to_string());
-        request.cwd = Some(PathBuf::from("/codeg-nonexistent-cwd/does/not/exist"));
+        request.cwd = Some(PathBuf::from("/zwiim-nonexistent-cwd/does/not/exist"));
 
         let result = runtime.create_terminal(request).await;
         assert!(
@@ -1568,7 +1568,7 @@ mod tests {
     /// A relative, space-containing executable resolves against the terminal's
     /// effective cwd and runs directly — the shell fallback fires only on a
     /// genuine NotFound. This guards the regression where a pre-spawn `which`
-    /// check, run in codeg's own cwd, would shell-wrap and split the path.
+    /// check, run in Zwiim's own cwd, would shell-wrap and split the path.
     #[tokio::test]
     async fn relative_executable_with_spaces_runs_in_effective_cwd() {
         use std::os::unix::fs::PermissionsExt;
@@ -2103,7 +2103,7 @@ mod tests {
 
     /// A brand-new executable that something still holds open for writing is
     /// retried, not rejected. exec returns `ETXTBSY` while any write descriptor
-    /// to the file is open anywhere, and codeg forks constantly (git, agents,
+    /// to the file is open anywhere, and Zwiim forks constantly (git, agents,
     /// other terminals), so a descriptor inherited across a `fork()` can make an
     /// agent's just-written script briefly unrunnable — including in this test
     /// binary, which is where the flake was first observed.

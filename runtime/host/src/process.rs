@@ -151,7 +151,7 @@ fn is_exec_busy(err: &std::io::Error) -> bool {
 /// exec fails with `ETXTBSY` while *any* process holds the target file open for
 /// writing, so a multi-threaded process that writes an executable and then runs
 /// it races itself. Rust opens files `O_CLOEXEC`, but `CLOEXEC` only takes
-/// effect at exec: a `fork()` on another thread — codeg forks constantly, for
+/// effect at exec: a `fork()` on another thread — Zwiim forks constantly, for
 /// git, agents, and other terminals — copies the fd table while the write
 /// descriptor is still open, and that inherited copy keeps the file busy until
 /// the forked child reaches its own exec. An agent that writes `build.sh` and

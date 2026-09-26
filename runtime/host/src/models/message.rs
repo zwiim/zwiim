@@ -135,7 +135,7 @@ pub enum ContentBlock {
         status: Option<String>,
         /// ACP extensibility metadata associated with the tool call. The
         /// `delegate_to_agent` lifecycle writes
-        /// `meta["codeg.delegation"] = { status, child_connection_id,
+        /// `meta["zwiim.delegation"] = { status, child_connection_id,
         /// child_conversation_id, error_code? }` here so a snapshot or DB
         /// re-fetch can re-bind the parent UI to the child conversation
         /// without depending on the live event stream having survived.
@@ -231,7 +231,7 @@ pub struct MessageTurn {
     /// most parsers (event-log time vs. full turn span).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<DateTime<Utc>>,
-    /// The id the AGENT knows this turn's message by, when codeg can name it
+    /// The id the AGENT knows this turn's message by, when Zwiim can name it
     /// the same way the agent does. `id` above is positional (`turn-3`) and
     /// names nothing an agent could look up.
     ///

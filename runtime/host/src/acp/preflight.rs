@@ -42,7 +42,7 @@ pub struct CheckItem {
     pub fixes: Vec<FixAction>,
 }
 
-/// Everything the UI needs to explain that codeg's entry for this agent is an
+/// Everything the UI needs to explain that Zwiim's entry for this agent is an
 /// ACP *adapter*, not the vendor CLI the user already has — see
 /// [`registry::acp_adapter_relation`]. Deliberately STRUCTURED (no prose): the
 /// frontend owns the wording so it is localized, the same way
@@ -51,7 +51,7 @@ pub struct CheckItem {
 /// `None` on [`PreflightResult`] for every non-adapter agent.
 #[derive(Debug, Clone, Serialize)]
 pub struct AdapterInfo {
-    /// npm spec codeg installs, e.g. "@agentclientprotocol/claude-agent-acp@0.79.0".
+    /// npm spec Zwiim installs, e.g. "@agentclientprotocol/claude-agent-acp@0.79.0".
     pub adapter_package: String,
     /// Command the launch gate resolves, e.g. "claude-agent-acp".
     pub adapter_cmd: String,
@@ -61,7 +61,7 @@ pub struct AdapterInfo {
     pub native_cmd: String,
     /// Display name for the vendor CLI, e.g. "Claude Code CLI".
     pub native_label: String,
-    /// Where the user's own vendor CLI was found, if at all. codeg never
+    /// Where the user's own vendor CLI was found, if at all. Zwiim never
     /// launches it — it is named so the user sees we did look.
     pub native_path: Option<String>,
     /// Config dir both read, so no second login is needed.
@@ -410,7 +410,7 @@ async fn check_uv_environment(
 
     // Fallback: the agent's own CLI is already installed on PATH (e.g. a user
     // who ran the official installer has `hermes` available). The agent is
-    // launchable as-is, but installing uv unlocks codeg's managed install /
+    // launchable as-is, but installing uv unlocks Zwiim's managed install /
     // upgrade flow, so offer it as a non-blocking action.
     if let Some((cmd, _)) = system_cmd {
         if crate::commands::acp::resolve_command_on_path(cmd).is_some() {
@@ -557,7 +557,7 @@ async fn check_binary_environment(
             // the thing it predicts: `build_agent` falls back to a system
             // binary for every Binary agent, dir-tree or not, so a working
             // `opencode` on PATH connected fine while this check called it not
-            // installed. `dir_entry` describes the shape of the archive codeg
+            // installed. `dir_entry` describes the shape of the archive Zwiim
             // downloads; it says nothing about whether a system binary can be
             // launched.
             Ok(None)
@@ -569,7 +569,7 @@ async fn check_binary_environment(
                     label: "Binary cache".into(),
                     status: CheckStatus::Pass,
                     message: format!(
-                        "Using the system-installed {cmd} (codeg-managed download also available)"
+                        "Using the system-installed {cmd} (zwiim-managed download also available)"
                     ),
                     fixes: vec![],
                 }
@@ -799,7 +799,7 @@ mod adapter_tests {
         assert_eq!(info.native_label, "Claude Code CLI");
         assert_eq!(info.native_path.as_deref(), Some("/opt/homebrew/bin/claude"));
         assert_eq!(info.shared_config_dir, "~/.claude");
-        assert!(info.docs_url.ends_with("#acp-adapters"));
+        assert_eq!(info.docs_url, "https://agentclientprotocol.com/overview/agents");
     }
 
     #[test]

@@ -50,8 +50,8 @@ pub(crate) const FS_EXTRA_ROOTS_ENV: &str = "ZWIIM_ACP_FS_EXTRA_ROOTS";
 ///
 /// An EMPTY root list means "unrestricted" for that direction — not "deny
 /// everything". Reads default to unrestricted because the gate buys no safety
-/// AS LONG AS codeg also advertises `terminal(true)`: an agent refused a read
-/// simply `cat`s the file through the shell codeg runs for it (empirically what
+/// AS LONG AS Zwiim also advertises `terminal(true)`: an agent refused a read
+/// simply `cat`s the file through the shell Zwiim runs for it (empirically what
 /// grok does — it fell back to `run_terminal_command` with a
 /// `cat > … << 'PLAN_EOF'` heredoc, re-sending the whole payload as a shell
 /// command). Writes keep a root list mirroring the agents' own sandbox model
@@ -59,11 +59,11 @@ pub(crate) const FS_EXTRA_ROOTS_ENV: &str = "ZWIIM_ACP_FS_EXTRA_ROOTS";
 ///
 /// That "buys no safety" reasoning is conditional, and the condition is
 /// [`crate::acp::host_tools_policy::HostToolsPolicy`] — do not read it as "a
-/// read gate can never work". Under `ZWIIM_ACP_HOST_TOOLS=agent` codeg hosts
+/// read gate can never work". Under `ZWIIM_ACP_HOST_TOOLS=agent` Zwiim hosts
 /// NEITHER channel, and the `cat` fallback stops working: measured against grok
 /// 1.0.0 with a kernel `deny`, the read failed `EPERM` and so did every
 /// `run_terminal_command` and `grep` retry, because they were children of the
-/// agent's own sandboxed process. The escape hatch is codeg's terminal, not
+/// agent's own sandboxed process. The escape hatch is Zwiim's terminal, not
 /// some inherent property of shells.
 ///
 /// NOTE: deliberately NOT `Default` — an all-empty policy means "unrestricted",
@@ -126,7 +126,7 @@ impl FsAccessPolicy {
 
     /// Resolve the policy for a connection from `ZWIIM_ACP_FS_POLICY`, checking
     /// the agent's `runtime_env` first (so it can be set per agent through the
-    /// existing agent-settings `env_json`) then codeg's own process env.
+    /// existing agent-settings `env_json`) then Zwiim's own process env.
     pub fn from_env(
         workspace_root: &Path,
         agent_type: AgentType,
@@ -179,7 +179,7 @@ impl FsAccessPolicy {
     }
 }
 
-/// Read a knob VERBATIM from the agent's `runtime_env` first, then codeg's
+/// Read a knob VERBATIM from the agent's `runtime_env` first, then Zwiim's
 /// process env. Used where the value is a path (or path list) and must not be
 /// normalized: trimming `" / "` into `/` would turn a relative entry into the
 /// filesystem root.
@@ -191,15 +191,15 @@ fn raw_env_value(runtime_env: &BTreeMap<String, String>, key: &str) -> Option<Os
     }
 }
 
-/// Read a knob from the agent's `runtime_env` first, then codeg's process env,
+/// Read a knob from the agent's `runtime_env` first, then Zwiim's process env,
 /// trimmed — for values compared as keywords, never as paths.
 ///
-/// Mirrors `ZWIIM_ACP_HOST_TOOLS` (`acp::host_tools_policy`): a codeg-only key
+/// Mirrors `ZWIIM_ACP_HOST_TOOLS` (`acp::host_tools_policy`): a zwiim-only key
 /// that rides along in the per-agent `env_json`, so it is configurable per agent
 /// from the existing settings UI without a new surface.
 ///
 /// `pub(crate)` so [`crate::acp::host_tools_policy`] resolves its own knob with
-/// exactly this precedence — one notion of "a codeg launch knob" across both.
+/// exactly this precedence — one notion of "a Zwiim launch knob" across both.
 pub(crate) fn env_value(runtime_env: &BTreeMap<String, String>, key: &str) -> Option<String> {
     runtime_env
         .get(key)
@@ -215,7 +215,7 @@ pub(crate) fn env_value(runtime_env: &BTreeMap<String, String>, key: &str) -> Op
 
 /// Extra writable roots from `ZWIIM_ACP_FS_EXTRA_ROOTS`. Relative entries are
 /// dropped for the same reason as relative agent homes: they would be resolved
-/// against codeg's cwd, so `.` or `..` silently widens the policy to an
+/// against Zwiim's cwd, so `.` or `..` silently widens the policy to an
 /// unrelated tree (or to `/`). Dropping is fail-closed.
 ///
 /// The list is read VERBATIM — `split_paths` does not trim entries, so trimming
@@ -265,9 +265,9 @@ fn temp_roots() -> Vec<PathBuf> {
 /// `<GROK_HOME>/skills/*/SKILL.md`, both outside any workspace.
 ///
 /// Reuses the per-agent resolvers in `crate::parsers` (the same ones
-/// `external_transcript_sources` uses) so codeg has exactly ONE notion of where
+/// `external_transcript_sources` uses) so Zwiim has exactly ONE notion of where
 /// each agent lives. Where the agent's home is relocatable, the agent's
-/// `runtime_env` wins over codeg's process env — a per-agent `GROK_HOME` in
+/// `runtime_env` wins over Zwiim's process env — a per-agent `GROK_HOME` in
 /// `env_json` moves the agent's state, so it must move the allowed root too.
 /// Same shape as `commands::acp::pi_agent_dir_for_env`.
 fn agent_data_roots(agent_type: AgentType, runtime_env: &BTreeMap<String, String>) -> Vec<PathBuf> {
@@ -344,9 +344,9 @@ fn resolve_root_slot(slot: &RootSlot, runtime_env: &BTreeMap<String, String>) ->
         // A RELATIVE value yields NO root for this slot — and must not fall
         // through to a lower-precedence candidate or the default.
         //
-        // Absolutizing it would resolve against CODEG's cwd while the child runs
+        // Absolutizing it would resolve against the host's cwd while the child runs
         // in the workspace cwd, and that mismatch WIDENS rather than merely
-        // mismatching: `CODEX_HOME="."` with codeg launched from `/` yields the
+        // mismatching: `CODEX_HOME="."` with Zwiim launched from `/` yields the
         // root `/`, which every absolute path passes `starts_with` against.
         // Falling through would be wrong too — the child DID receive this value
         // and uses it, so the default (`~/.codex`) is an inactive profile holding
@@ -359,11 +359,11 @@ fn resolve_root_slot(slot: &RootSlot, runtime_env: &BTreeMap<String, String>) ->
         // `runtime_env` entry into the child, `HOME` included, and overriding it
         // is the classic way to isolate a CLI's config. With
         // `HOME=/srv/agy GEMINI_HOME=~/profile` the child's `expanduser` answers
-        // `/srv/agy/profile`, so resolving against codeg's own home would
+        // `/srv/agy/profile`, so resolving against Zwiim's own home would
         // authorize a directory the agent never opens while leaving the one it
         // does use unwritable. `None` means the child's home cannot be named at
         // all, which `child_home_dir` has already warned about — treat the slot
-        // as unresolvable rather than substituting codeg's answer for it.
+        // as unresolvable rather than substituting Zwiim's answer for it.
         let base = if *expands {
             expand_home_prefix(&value.to_string_lossy(), child_home_dir(runtime_env).as_ref())
         } else {
@@ -390,7 +390,7 @@ fn resolve_root_slot(slot: &RootSlot, runtime_env: &BTreeMap<String, String>) ->
         // `starts_with`. `GEMINI_HOME=~` is a legal setting that really does put
         // Antigravity's tree directly in the home directory, and honoring it
         // here would hand the agent write access to every other agent's
-        // credentials as a side effect. The agent still runs; only codeg's own
+        // credentials as a side effect. The agent still runs; only Zwiim's own
         // `fs/*` channel declines to authorize the whole home, and
         // `ZWIIM_ACP_FS_EXTRA_ROOTS` can still name a narrower directory inside
         // it.
@@ -409,7 +409,7 @@ fn resolve_root_slot(slot: &RootSlot, runtime_env: &BTreeMap<String, String>) ->
     }
 
     // No relocation reaches the child, so it falls back to a home-relative
-    // default — resolved against the CHILD's home, not codeg's (see
+    // default — resolved against the CHILD's home, not Zwiim's (see
     // `child_home_dir`).
     let mut root = child_home_dir(runtime_env)?;
     for segment in slot.default_rel {
@@ -431,7 +431,7 @@ fn resolve_root_slot(slot: &RootSlot, runtime_env: &BTreeMap<String, String>) ->
 /// `..` at all.
 ///
 /// BOTH homes are rejected. The child's is the one whose tree this is, and
-/// codeg's is the one holding every other agent's credentials; authorizing
+/// Zwiim's is the one holding every other agent's credentials; authorizing
 /// either wholesale defeats the isolation invariant, and they are only the same
 /// path when the launch does not relocate `HOME`.
 ///
@@ -452,7 +452,7 @@ fn is_over_broad_root(root: &Path, runtime_env: &BTreeMap<String, String>) -> bo
 ///
 /// `merge_agent_env` copies EVERY `runtime_env` entry into the child — `HOME`
 /// included, and overriding it is the classic way to isolate a CLI's config — so
-/// the home-relative defaults must follow the child's home. Using codeg's would
+/// the home-relative defaults must follow the child's home. Using Zwiim's would
 /// both grant the inactive profile (config/credentials the session never opens)
 /// and refuse the active one.
 ///
@@ -467,13 +467,13 @@ pub(crate) fn child_home_dir(runtime_env: &BTreeMap<String, String>) -> Option<P
     const HOME_KEY: &str = "HOME";
 
     // The three states are NOT interchangeable, and collapsing the last two is a
-    // real bug: `dirs::home_dir()` consults CODEG's `$HOME` before falling back to
-    // the passwd entry, so it answers for codeg, not for a child whose `HOME` was
+    // real bug: `dirs::home_dir()` consults the host's `$HOME` before falling back to
+    // the passwd entry, so it answers for Zwiim, not for a child whose `HOME` was
     // removed.
     let home = match runtime_env.get(HOME_KEY) {
         // Explicitly REMOVED (blank ⇒ `env_remove`): the child resolves its home
         // from the OS account database, which we cannot read without duplicating a
-        // passwd lookup — and codeg's `$HOME` is NOT that answer whenever the two
+        // passwd lookup — and Zwiim's `$HOME` is NOT that answer whenever the two
         // differ. Refuse rather than guess; the user can still name the directory
         // via `ZWIIM_ACP_FS_EXTRA_ROOTS`.
         Some(value) if value.is_empty() => {
@@ -486,13 +486,13 @@ pub(crate) fn child_home_dir(runtime_env: &BTreeMap<String, String>) -> Option<P
         }
         // Overridden: the child sees exactly this.
         Some(value) => PathBuf::from(value),
-        // Absent: the child inherits codeg's environment, so codeg's answer is
-        // exact — including its own passwd fallback when codeg has no `HOME`.
+        // Absent: the child inherits Zwiim's environment, so Zwiim's answer is
+        // exact — including its own passwd fallback when Zwiim has no `HOME`.
         None => {
             // On Windows the agents' home also derives from `HOMEDRIVE` +
             // `HOMEPATH` when `USERPROFILE` is absent (Python's rule, which
             // Hermes follows). If the launch relocates that pair without
-            // relocating `USERPROFILE`, codeg's answer may not be the child's, so
+            // relocating `USERPROFILE`, Zwiim's answer may not be the child's, so
             // fail closed instead of guessing.
             #[cfg(windows)]
             if runtime_env.contains_key("HOMEDRIVE") || runtime_env.contains_key("HOMEPATH") {
@@ -507,7 +507,7 @@ pub(crate) fn child_home_dir(runtime_env: &BTreeMap<String, String>) -> Option<P
     };
 
     // `dirs` accepts a relative `HOME` on unix, and a relative home would be
-    // absolutized against codeg's cwd — the same widening as a relative agent
+    // absolutized against Zwiim's cwd — the same widening as a relative agent
     // home, so refuse it the same way.
     if !home.is_absolute() {
         tracing::warn!(
@@ -694,8 +694,8 @@ fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
                 default_rel: &[".pi", "agent", "sessions"],
             },
         ],
-        // A custom ACP agent has no codeg-known private directory layout —
-        // codeg never reads its store (history comes from codeg's own ACP
+        // A custom ACP agent has no zwiim-known private directory layout —
+        // Zwiim never reads its store (history comes from Zwiim's own ACP
         // transcript), so there is nothing to widen the sandbox roots for.
         AgentType::Custom(_) => &[],
     }
@@ -1104,7 +1104,7 @@ mod tests {
     use std::fs;
 
     fn temp_workspace() -> PathBuf {
-        let path = std::env::temp_dir().join(format!("codeg-fs-test-{}", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("zwiim-fs-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&path).expect("create test workspace");
         path
     }
@@ -1478,7 +1478,7 @@ mod tests {
     /// fallback) are covered by `relocation_suffixes_match_the_agents_own_resolvers`.
     #[test]
     fn agent_data_roots_honor_runtime_env_relocation() {
-        let relocated = absolute_path("tmp/codeg-relocated-agent-home");
+        let relocated = absolute_path("tmp/zwiim-relocated-agent-home");
         let cases = [
             (AgentType::Grok, "GROK_HOME"),
             (AgentType::ClaudeCode, "CLAUDE_CONFIG_DIR"),
@@ -1508,7 +1508,7 @@ mod tests {
     /// writable, which for `GEMINI_CLI_HOME=$HOME` is the whole home directory.
     #[test]
     fn relocation_suffixes_match_the_agents_own_resolvers() {
-        let base = absolute_path("tmp/codeg-relocation-base");
+        let base = absolute_path("tmp/zwiim-relocation-base");
         let cases = [
             (AgentType::Gemini, "GEMINI_CLI_HOME", ".gemini"),
             (AgentType::OpenCode, "XDG_DATA_HOME", "opencode"),
@@ -1578,7 +1578,7 @@ mod tests {
         }
     }
 
-    /// A `~` follows the CHILD's home, not codeg's.
+    /// A `~` follows the CHILD's home, not Zwiim's.
     ///
     /// `merge_agent_env` copies `HOME` into the child like any other variable,
     /// and overriding it is the standard way to isolate a CLI's config — so
@@ -1588,8 +1588,8 @@ mod tests {
     /// leaving the one it does use unwritable. The `default_rel` branch already
     /// went through `child_home_dir`; this makes the override branch agree.
     #[test]
-    fn tilde_expands_against_the_childs_home_not_codegs() {
-        let codeg_home = dirs::home_dir().expect("home dir");
+    fn tilde_expands_against_the_childs_home_not_zwiims() {
+        let zwiim_home = dirs::home_dir().expect("home dir");
         // Platform-native: `child_home_dir` refuses a relative home, and a
         // unix-style `/srv/agy` is NOT absolute on Windows (no drive prefix),
         // so a shared literal would make this pass on unix and fail in the
@@ -1606,8 +1606,8 @@ mod tests {
             "the child's own home must anchor the expansion, got {roots:?}"
         );
         assert!(
-            !roots.contains(&codeg_home.join("profile")),
-            "codeg's home must not: {roots:?}"
+            !roots.contains(&zwiim_home.join("profile")),
+            "Zwiim's home must not: {roots:?}"
         );
     }
 
@@ -1657,7 +1657,7 @@ mod tests {
     /// `GEMINI_HOME=~/relocated` the agent's files really are at
     /// `$HOME/relocated`. Treating the value verbatim judged it RELATIVE and
     /// refused the slot, which left the agent unable to write its own directory
-    /// — while codeg, separately, created a literal `~` folder next to wherever
+    /// — while Zwiim, separately, created a literal `~` folder next to wherever
     /// it happened to be running.
     ///
     /// A BARE `~` is still refused. It is a legal setting that puts the tree
@@ -1696,7 +1696,7 @@ mod tests {
     }
 
     /// A blank relocation value must fall back to Hermes' default home, not
-    /// re-inherit codeg's process env — mirroring the launch contract.
+    /// re-inherit Zwiim's process env — mirroring the launch contract.
     #[test]
     fn hermes_blank_relocation_falls_back_to_default_home() {
         let runtime_env = BTreeMap::from([("HERMES_HOME".to_string(), "   ".to_string())]);
@@ -1710,7 +1710,7 @@ mod tests {
     /// inactive tree holds config and credentials, so it must not stay writable.
     #[test]
     fn relocation_excludes_the_inactive_default_root() {
-        let relocated = absolute_path("tmp/codeg-isolated-profile");
+        let relocated = absolute_path("tmp/zwiim-isolated-profile");
         let cases = [
             (AgentType::Codex, "CODEX_HOME"),
             (AgentType::Grok, "GROK_HOME"),
@@ -1763,7 +1763,7 @@ mod tests {
 
     /// A BLANK value in `env_json` is not "unset, use ours" — the vendored spawn
     /// layer `env_remove`s it, so the child falls back to its OWN default. Reading
-    /// through to codeg's process env would aim the root at a profile the child
+    /// through to Zwiim's process env would aim the root at a profile the child
     /// never opens, re-breaking the writes this change exists to allow.
     #[test]
     fn blank_runtime_value_falls_back_to_the_agents_default_not_our_env() {
@@ -1807,7 +1807,7 @@ mod tests {
     /// not to the masked key's inherited value.
     #[test]
     fn blank_runtime_value_falls_through_to_the_next_candidate() {
-        let xdg = absolute_path("tmp/codeg-xdg");
+        let xdg = absolute_path("tmp/zwiim-xdg");
         let roots = agent_data_roots(
             AgentType::Cursor,
             &BTreeMap::from([
@@ -1832,20 +1832,20 @@ mod tests {
         temp_env::with_var(key, Some("/parent/value"), || {
             let runtime = |value: &str| BTreeMap::from([(key.to_string(), value.to_string())]);
 
-            // Silent in runtime_env ⇒ the child inherits codeg's value.
+            // Silent in runtime_env ⇒ the child inherits Zwiim's value.
             assert_eq!(
                 child_env_value(&BTreeMap::new(), key, false),
                 Some(os("/parent/value"))
             );
             // EXACTLY empty ⇒ `env_remove` ⇒ the child sees NOTHING, and we must
-            // NOT read through to codeg's value.
+            // NOT read through to Zwiim's value.
             assert_eq!(child_env_value(&runtime(""), key, false), None);
             // Whitespace-only is NOT removed by the spawn layer — it reaches the
             // child verbatim, so a non-trimming resolver must see it verbatim.
             assert_eq!(child_env_value(&runtime("  "), key, false), Some(os("  ")));
             // …but IS unset for the resolvers that trim (Hermes, Cline).
             assert_eq!(child_env_value(&runtime("  "), key, true), None);
-            // Non-empty replaces codeg's value, verbatim when not trimming.
+            // Non-empty replaces Zwiim's value, verbatim when not trimming.
             assert_eq!(
                 child_env_value(&runtime(" /child/value "), key, false),
                 Some(os(" /child/value "))
@@ -1862,8 +1862,8 @@ mod tests {
     }
 
     /// A RELATIVE agent home must never become a root. It would be resolved
-    /// against codeg's cwd while the child runs in the workspace cwd, and that
-    /// mismatch widens: `"."` with codeg launched from `/` yields `/`, which every
+    /// against Zwiim's cwd while the child runs in the workspace cwd, and that
+    /// mismatch widens: `"."` with Zwiim launched from `/` yields `/`, which every
     /// absolute path passes `starts_with` against; `".."` grants an unrelated tree.
     #[test]
     fn relative_agent_root_is_refused_not_absolutized() {
@@ -1915,13 +1915,13 @@ mod tests {
 
     /// `merge_agent_env` copies every `runtime_env` entry into the child, `HOME`
     /// included — the classic way to isolate a CLI's config. The home-relative
-    /// defaults must therefore follow the CHILD's home: anchoring them on codeg's
+    /// defaults must therefore follow the CHILD's home: anchoring them on Zwiim's
     /// would grant the inactive profile and refuse the active one.
     #[cfg(not(windows))]
     #[test]
     fn home_relative_defaults_follow_the_childs_home() {
-        let codeg_home = dirs::home_dir().expect("home dir");
-        let isolated = PathBuf::from("/tmp/codeg-isolated-home");
+        let zwiim_home = dirs::home_dir().expect("home dir");
+        let isolated = PathBuf::from("/tmp/zwiim-isolated-home");
         let runtime_env =
             BTreeMap::from([("HOME".to_string(), isolated.to_string_lossy().to_string())]);
 
@@ -1937,14 +1937,14 @@ mod tests {
                 isolated.join(rel).display()
             );
             assert!(
-                !roots.contains(&codeg_home.join(rel)),
+                !roots.contains(&zwiim_home.join(rel)),
                 "{agent_type:?}: inactive {} must not stay writable, got {roots:?}",
-                codeg_home.join(rel).display()
+                zwiim_home.join(rel).display()
             );
         }
     }
 
-    /// A relative child `HOME` would be absolutized against codeg's cwd — the same
+    /// A relative child `HOME` would be absolutized against Zwiim's cwd — the same
     /// widening as a relative agent home — so the slot is refused instead.
     #[cfg(not(windows))]
     #[test]
@@ -1965,17 +1965,17 @@ mod tests {
     }
 
     /// A BLANK `HOME` is `env_remove`d, so the child resolves its home from the OS
-    /// account database — which codeg cannot read without duplicating a passwd
-    /// lookup, and `dirs::home_dir()` does NOT answer because it consults codeg's
+    /// account database — which Zwiim cannot read without duplicating a passwd
+    /// lookup, and `dirs::home_dir()` does NOT answer because it consults Zwiim's
     /// own `$HOME` first. So the slot is refused rather than guessed at.
     ///
-    /// Asserting "no roots" is stronger than asserting "not codeg's root", and it
+    /// Asserting "no roots" is stronger than asserting "not Zwiim's root", and it
     /// needs no `temp_env`, so it cannot race other tests that read `$HOME`.
     #[cfg(not(windows))]
     #[test]
     fn removed_child_home_refuses_the_slot() {
         let runtime_env = BTreeMap::from([("HOME".to_string(), String::new())]);
-        let codeg_home = dirs::home_dir().expect("home dir");
+        let zwiim_home = dirs::home_dir().expect("home dir");
 
         for agent_type in ALL_AGENT_TYPES {
             if agent_relocated_by_process_env(agent_type) {
@@ -1985,9 +1985,9 @@ mod tests {
             let roots = agent_data_roots(agent_type, &runtime_env);
             assert!(
                 roots.is_empty(),
-                "{agent_type:?}: a removed HOME must yield no root (never codeg's \
+                "{agent_type:?}: a removed HOME must yield no root (never Zwiim's \
                  {}), got {roots:?}",
-                codeg_home.display()
+                zwiim_home.display()
             );
         }
     }
@@ -2030,7 +2030,7 @@ mod tests {
     /// Same hazard through the user-facing knob.
     #[test]
     fn relative_extra_roots_are_dropped() {
-        let absolute = absolute_path("tmp/codeg-abs-extra");
+        let absolute = absolute_path("tmp/zwiim-abs-extra");
         let runtime_env = BTreeMap::from([(
             FS_EXTRA_ROOTS_ENV.to_string(),
             std::env::join_paths([Path::new("."), absolute.as_path()])
@@ -2174,7 +2174,7 @@ mod tests {
     /// first match must win rather than both being admitted.
     #[test]
     fn cursor_relocation_respects_resolver_precedence() {
-        let config_dir = absolute_path("tmp/codeg-cursor");
+        let config_dir = absolute_path("tmp/zwiim-cursor");
         let runtime_env = BTreeMap::from([
             (
                 "CURSOR_CONFIG_DIR".to_string(),
@@ -2182,7 +2182,7 @@ mod tests {
             ),
             (
                 "XDG_CONFIG_HOME".to_string(),
-                absolute_path("tmp/codeg-xdg").to_string_lossy().to_string(),
+                absolute_path("tmp/zwiim-xdg").to_string_lossy().to_string(),
             ),
         ]);
 
@@ -2195,7 +2195,7 @@ mod tests {
     /// roots on its own — the process-env-only resolver cannot see it.
     #[test]
     fn pi_session_dir_relocation_is_honored() {
-        let sessions = absolute_path("tmp/codeg-pi-sessions-elsewhere");
+        let sessions = absolute_path("tmp/zwiim-pi-sessions-elsewhere");
         let runtime_env = BTreeMap::from([(
             "PI_CODING_AGENT_SESSION_DIR".to_string(),
             sessions.to_string_lossy().to_string(),

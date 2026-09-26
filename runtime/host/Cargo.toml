@@ -1,11 +1,9 @@
 # Zwiim Host Runtime — headless core.
 #
-# Codeg-derived infrastructure (see third_party/codeg/PROVENANCE.md), built
+# Upstream-derived infrastructure (see third_party/codeg/PROVENANCE.md), built
 # headless: the `tauri-runtime` / desktop features are intentionally absent so
-# no Tauri/WebKit/desktop code compiles. Naming rebrand to the Zwiim boundary
-# is applied to the Zwiim-owned surface (crate lib, binaries, env vars, the MCP
-# companion, on-disk `.zwiim` dir, wire markers, logs). Remaining Codeg-derived
-# agent-config keys and serde fields are a follow-up slice (see PROVENANCE.md).
+# no Tauri/WebKit/desktop code compiles. All identifiers, keys and strings use
+# Zwiim naming.
 [package]
 name = "zwiim-host"
 version = "0.1.0"

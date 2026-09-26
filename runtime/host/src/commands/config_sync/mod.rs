@@ -170,7 +170,7 @@ mod tauri_commands {
 
     // ── By-content variants ──
     //
-    // A Tauri window connected to a REMOTE codeg server routes these over
+    // A Tauri window connected to a REMOTE Zwiim server routes these over
     // HTTP, where there is no shared filesystem to name a path on. Registering
     // them on the desktop too keeps one frontend code path for both.
 

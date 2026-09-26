@@ -14,7 +14,7 @@
 //! A conversation is re-parsed when its `conversation.updated_at` differs from
 //! what the last sync recorded. That covers:
 //!
-//!   * every codeg-driven turn — each one flips the row's status, bumping
+//!   * every zwiim-driven turn — each one flips the row's status, bumping
 //!     `updated_at`;
 //!   * every freshly imported session — it has no stamp at all;
 //!   * every **re-imported** session — `import_one` drops the stamp explicitly,
@@ -22,7 +22,7 @@
 //!     precisely the moment a CLI-grown transcript comes back into view.
 //!
 //! One case it does NOT cover: a transcript that grows in the agent's own CLI
-//! and is then never re-imported and never touched inside codeg. Nothing in the
+//! and is then never re-imported and never touched inside Zwiim. Nothing in the
 //! database moves, so nothing marks it stale. Closing that automatically would
 //! need a per-conversation transcript fingerprint the parser layer does not
 //! expose (each agent stores history differently — single file, many files, or
@@ -123,7 +123,7 @@ const TOP_CONVERSATIONS: usize = 8;
 /// changed how an UNCHANGED transcript is read — and Qoder sessions with real
 /// counters predate it, since a custom/BYO model has always exposed them and
 /// the parser reads every session under `~/.qoder/projects`, not just the ones
-/// codeg launched.
+/// Zwiim launched.
 const FACT_SCHEMA_VERSION: &str = "3";
 
 const FACT_SCHEMA_VERSION_KEY: &str = "token_usage_fact_schema_version";
@@ -146,7 +146,7 @@ pub enum TokenUsageSyncMode {
     #[default]
     Incremental,
     /// Drop everything and re-parse every conversation. The escape hatch for a
-    /// transcript that grew without codeg noticing.
+    /// transcript that grew without Zwiim noticing.
     Full,
 }
 
@@ -1623,7 +1623,7 @@ mod tests {
     #[test]
     fn breakdowns_split_by_folder_agent_and_model() {
         let mut labels = HashMap::new();
-        labels.insert(1, "codeg".to_string());
+        labels.insert(1, "zwiim".to_string());
         labels.insert(2, "other".to_string());
         let mut rows = vec![row("2026-08-01T10:00:00Z", 100), row("2026-08-01T11:00:00Z", 300)];
         rows[1].folder_id = 2;

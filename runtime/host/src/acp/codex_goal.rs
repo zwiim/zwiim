@@ -1,4 +1,4 @@
-//! Shared mapping of Codex's structured goal object into codeg's canonical
+//! Shared mapping of Codex's structured goal object into Zwiim's canonical
 //! `create_goal`/`update_goal` synthetic tool-call representation.
 //!
 //! codex-acp v1.1.0 (#263) stopped emitting `/goal` transitions as live
@@ -34,7 +34,7 @@ pub(crate) const LEGACY_GOAL_CONTROL_METHOD: &str = "_codex/session/goal_control
 /// reads the snapshot during the handshake latches whatever it finds.
 pub(crate) const LEGACY_GOAL_ACTIONS: [&str; 2] = ["pause", "clear"];
 
-/// A Codex goal object mapped to codeg's canonical synthetic goal marker.
+/// A Codex goal object mapped to Zwiim's canonical synthetic goal marker.
 ///
 /// The live path (`crate::acp::connection`) builds an `AcpEvent::ToolCall` from
 /// `title` and `output_json`, letting the frontend backfill the input from the

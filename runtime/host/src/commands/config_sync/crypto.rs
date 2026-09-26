@@ -63,7 +63,7 @@ use crate::app_error::{
 /// binary cannot read.
 pub const ENVELOPE_VERSION: u32 = 1;
 /// The JSON key whose presence identifies an encrypted payload.
-pub const ENVELOPE_MARKER: &str = "codegConfigEncryption";
+pub const ENVELOPE_MARKER: &str = "zwiimConfigEncryption";
 
 const ALGO: &str = "AES-256-GCM";
 const KDF: &str = "Argon2id";
@@ -113,7 +113,7 @@ impl Default for KdfParams {
 #[serde(rename_all = "camelCase")]
 pub struct EncryptedPayload {
     /// Named to match [`ENVELOPE_MARKER`] after `rename_all`.
-    pub codeg_config_encryption: u32,
+    pub zwiim_config_encryption: u32,
     pub algo: String,
     pub kdf: String,
     pub kdf_params: KdfParams,
@@ -180,7 +180,7 @@ pub fn encrypt(plain: &[u8], passphrase: &str) -> Result<Vec<u8>, AppCommandErro
         .map_err(|_| AppCommandError::task_execution_failed("Failed to encrypt the snapshot"))?;
 
     let payload = EncryptedPayload {
-        codeg_config_encryption: ENVELOPE_VERSION,
+        zwiim_config_encryption: ENVELOPE_VERSION,
         algo: ALGO.to_string(),
         kdf: KDF.to_string(),
         kdf_params,
@@ -204,7 +204,7 @@ pub fn passphrase_required_error() -> AppCommandError {
 
 /// Unwrap an envelope produced by [`encrypt`].
 pub fn decrypt(payload: &EncryptedPayload, passphrase: &str) -> Result<Vec<u8>, AppCommandError> {
-    if payload.codeg_config_encryption > ENVELOPE_VERSION {
+    if payload.zwiim_config_encryption > ENVELOPE_VERSION {
         return Err(invalid("Encrypted snapshot uses a newer envelope format"));
     }
     if !payload.algo.eq_ignore_ascii_case(ALGO) || !payload.kdf.eq_ignore_ascii_case(KDF) {
@@ -271,7 +271,7 @@ mod tests {
         rand::rngs::OsRng.fill_bytes(&mut salt);
         rand::rngs::OsRng.fill_bytes(&mut nonce);
         let mut payload = EncryptedPayload {
-            codeg_config_encryption: ENVELOPE_VERSION,
+            zwiim_config_encryption: ENVELOPE_VERSION,
             algo: ALGO.to_string(),
             kdf: KDF.to_string(),
             kdf_params: KdfParams::default(),
@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn a_newer_envelope_is_refused_rather_than_guessed_at() {
         let mut payload = seal(b"payload", "pw");
-        payload.codeg_config_encryption = ENVELOPE_VERSION + 1;
+        payload.zwiim_config_encryption = ENVELOPE_VERSION + 1;
         let err = decrypt(&payload, "pw").expect_err("must refuse");
         assert_eq!(
             err.i18n_key.as_deref(),

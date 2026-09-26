@@ -24,7 +24,7 @@ use crate::models::message::{ContentBlock, MessageTurn, TurnRole};
 ///   else the record uuid) along the ACTIVE parentUuid chain, then — new in
 ///   0.75.1 — against the full persisted transcript INCLUDING abandoned
 ///   branches, where a failed id finally falls through to the fingerprint. Up
-///   to 0.74.0 it ignored the fingerprint entirely, so codeg sent the id alone;
+///   to 0.74.0 it ignored the fingerprint entirely, so Zwiim sent the id alone;
 ///   from 0.75.1 both halves are sent, which is what turns a fork point on an
 ///   abandoned branch from a silent tail-fork into an exact hit.
 ///   `crate::parsers::claude` derives the id into
@@ -34,15 +34,15 @@ use crate::models::message::{ContentBlock, MessageTurn, TurnRole};
 /// * **codex-acp 1.8.0** first matches `message_id` against `items[].id`, then
 ///   falls back to hashing each agent message and taking the
 ///   `message_occurrence`-th match. Codex rollout files record NO item ids, so
-///   codeg cannot produce one it would recognise — the fingerprint is the only
-///   path that resolves there, and `message_id` is sent as codeg's own turn id
+///   Zwiim cannot produce one it would recognise — the fingerprint is the only
+///   path that resolves there, and `message_id` is sent as Zwiim's own turn id
 ///   purely because the field is required.
-/// * **deepseek-acp 0.8.0** is the only one that can use BOTH halves, so codeg
+/// * **deepseek-acp 0.8.0** is the only one that can use BOTH halves, so Zwiim
 ///   sends both. Its id side accepts either the wire id it stamps on message
 ///   chunks (`<turn>:<step>`) or the session log's own `message.id`, and
 ///   `crate::parsers::deepseek` records the latter. Its fingerprint side hashes
 ///   the history TWICE — once per assistant message, once per whole turn — and
-///   refuses (`invalid_params`) when the two land on different turns; codeg
+///   refuses (`invalid_params`) when the two land on different turns; Zwiim
 ///   renders one bubble per log turn, so the per-turn reading is the one that
 ///   matches, and the id is what keeps the ambiguous case from ever being
 ///   reached.
@@ -112,7 +112,7 @@ pub fn resolve_fork_point(
     match agent_type {
         // Codex rollouts carry no item ids, so the id can never match and the
         // fingerprint is the only thing that resolves. `message_id` is still
-        // required by the wire contract, so it carries codeg's own turn id —
+        // required by the wire contract, so it carries Zwiim's own turn id —
         // deliberately something codex will not find, which is exactly what
         // makes it fall through to the fingerprint branch.
         AgentType::Codex => {
@@ -139,7 +139,7 @@ pub fn resolve_fork_point(
         //
         // The `text.trim().is_empty()` guard below is load-bearing on Claude,
         // not just tidiness. Every turn `parsers::claude` leaves unnamed is one
-        // codeg SYNTHESIZED with no text of its own (a `/goal` marker, a bare
+        // Zwiim SYNTHESIZED with no text of its own (a `/goal` marker, a bare
         // top-level `tool_use`, a bare `tool_result`); `fingerprint("")` would
         // match every text-free grouping on the agent's side at once and then
         // pick between them by occurrence, forking somewhere arbitrary. A tail
@@ -157,7 +157,7 @@ pub fn resolve_fork_point(
                 .map(|fp| fingerprint_occurrence(turns, idx, fp));
             Some(ForkPoint {
                 // Same reasoning as codex when the transcript named nothing:
-                // the field is required, and codeg's own turn id (`turn-<n>`,
+                // the field is required, and Zwiim's own turn id (`turn-<n>`,
                 // a position, never a record uuid) is deliberately something
                 // neither adapter will find, which is what makes it fall
                 // through to the fingerprint.
@@ -324,7 +324,7 @@ mod tests {
         );
     }
 
-    /// The one case that must stay a tail fork: a turn codeg synthesized with
+    /// The one case that must stay a tail fork: a turn Zwiim synthesized with
     /// no text and no id. `fingerprint("")` would match every text-free
     /// grouping on Claude's side, so guessing between them by occurrence is
     /// strictly worse than not naming a point at all.
@@ -432,7 +432,7 @@ mod tests {
     }
 
     /// A log that named nothing still forks by content, the codex shape: the id
-    /// is codeg's own turn id, which DeepSeek cannot match, so it falls through
+    /// is Zwiim's own turn id, which DeepSeek cannot match, so it falls through
     /// to the fingerprint instead of failing.
     #[test]
     fn deepseek_falls_back_to_the_fingerprint_with_no_log_id() {

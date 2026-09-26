@@ -1,4 +1,4 @@
-//! The single table of codeg-owned data sections a backup packs and a restore
+//! The single table of zwiim-owned data sections a backup packs and a restore
 //! swaps back in.
 //!
 //! Backup ([`super::core::create_backup_core`]) and restore
@@ -40,7 +40,7 @@ pub enum SectionPolicy {
     ReplaceIfPresent,
 }
 
-/// One codeg-owned data section.
+/// One zwiim-owned data section.
 pub struct ManagedSection {
     /// Archive path prefix, snapshot subdirectory, and the stable identifier
     /// recorded in the manifest and the pending-restore marker. Never rename:
@@ -65,7 +65,7 @@ pub const MANAGED_SECTIONS: &[ManagedSection] = &[
         id: "uploads",
         kind: SectionKind::Dir,
         policy: SectionPolicy::AlwaysReplace,
-        live_path: |_| crate::paths::codeg_uploads_root(),
+        live_path: |_| crate::paths::zwiim_uploads_root(),
     },
     ManagedSection {
         // The conversation text of every custom ACP agent. `acp_transcript.rs`
@@ -74,7 +74,7 @@ pub const MANAGED_SECTIONS: &[ManagedSection] = &[
         id: "acp-transcripts",
         kind: SectionKind::Dir,
         policy: SectionPolicy::AlwaysReplace,
-        live_path: |_| crate::paths::codeg_acp_transcripts_root(),
+        live_path: |_| crate::paths::zwiim_acp_transcripts_root(),
     },
     ManagedSection {
         // Per-turn wall-clock spans for agents whose native store has no
@@ -82,7 +82,7 @@ pub const MANAGED_SECTIONS: &[ManagedSection] = &[
         id: "turn-timings",
         kind: SectionKind::Dir,
         policy: SectionPolicy::AlwaysReplace,
-        live_path: |_| crate::paths::codeg_turn_timings_root(),
+        live_path: |_| crate::paths::zwiim_turn_timings_root(),
     },
     ManagedSection {
         // `preferences.json` records the chosen background by filename, so the
@@ -90,13 +90,13 @@ pub const MANAGED_SECTIONS: &[ManagedSection] = &[
         id: "backgrounds",
         kind: SectionKind::Dir,
         policy: SectionPolicy::AlwaysReplace,
-        live_path: |_| crate::paths::codeg_backgrounds_root(),
+        live_path: |_| crate::paths::zwiim_backgrounds_root(),
     },
     ManagedSection {
         id: "pets",
         kind: SectionKind::Dir,
         policy: SectionPolicy::AlwaysReplace,
-        live_path: |_| crate::paths::codeg_pets_root(),
+        live_path: |_| crate::paths::zwiim_pets_root(),
     },
     ManagedSection {
         // Includes user-authored skills, which exist nowhere else. Built-in
@@ -123,12 +123,12 @@ pub const MANAGED_SECTIONS: &[ManagedSection] = &[
         id: "preferences.json",
         kind: SectionKind::File,
         policy: SectionPolicy::ReplaceIfPresent,
-        live_path: |_| crate::paths::codeg_home_dir().join("preferences.json"),
+        live_path: |_| crate::paths::zwiim_home_dir().join("preferences.json"),
     },
 ];
 
-/// `db/codeg.db` is deliberately NOT a managed section: its live filename
-/// varies (`codeg-dev.db` on debug desktop builds) and it is captured with
+/// `db/zwiim.db` is deliberately NOT a managed section: its live filename
+/// varies (`zwiim-dev.db` on debug desktop builds) and it is captured with
 /// `VACUUM INTO` rather than a file copy, so both sides handle it explicitly.
 pub const DB_SECTION_PREFIX: &str = "db";
 
@@ -161,7 +161,7 @@ pub fn normalize_section_ids(declared: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Exclude codeg-internal scaffolding from any packed section: upload staging
+/// Exclude zwiim-internal scaffolding from any packed section: upload staging
 /// (`uploads/.tmp/`) and any `.zwiim-*` directory (restore staging / safety
 /// snapshots), which must never be archived even if a data-dir layout ever
 /// nests one inside a section root.

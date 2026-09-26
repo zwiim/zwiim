@@ -202,14 +202,14 @@ fn configure_shell_command(cmd: &mut CommandBuilder, shell: &str, initial_comman
                         "-NoProfile",
                         "-NoExit",
                         "-Command",
-                        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $host.UI.RawUI.WindowTitle = 'codeg'",
+                        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $host.UI.RawUI.WindowTitle = 'zwiim'",
                     ]);
                 }
             }
             WindowsShellFlavor::Posix => {
                 cmd.env("TERM", "xterm-256color");
                 cmd.env("COLORTERM", "truecolor");
-                cmd.env("TERM_PROGRAM", "codeg");
+                cmd.env("TERM_PROGRAM", "zwiim");
                 cmd.env("LANG", "C.UTF-8");
                 if let Some(command) = initial_command {
                     cmd.env("ZWIIM_CMD", command);
@@ -229,7 +229,7 @@ fn configure_shell_command(cmd: &mut CommandBuilder, shell: &str, initial_comman
         // PTYs should respect whatever the user's shell rc files set up.
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        cmd.env("TERM_PROGRAM", "codeg");
+        cmd.env("TERM_PROGRAM", "zwiim");
 
         match detect_posix_shell_flavor(shell) {
             PosixShellFlavor::BashLike => {

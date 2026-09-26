@@ -1,6 +1,6 @@
 //! Built-in expert skills management.
 //!
-//! Experts are curated skills (from obra/superpowers) that codeg bundles
+//! Experts are curated skills (from obra/superpowers) that Zwiim bundles
 //! into its binary via `include_dir!`. On startup they are extracted to a
 //! central directory `~/.zwiim/skills/<id>/`. Users can then enable an
 //! expert for any ACP agent by creating a symbolic link (or Windows
@@ -8,7 +8,7 @@
 //!
 //! The central store is the single source of truth. Enabling/disabling is
 //! purely "does a link exist in the agent's skill dir" — there is no
-//! database state, and updates propagate automatically when codeg upgrades
+//! database state, and updates propagate automatically when Zwiim upgrades
 //! and re-extracts the bundled files.
 //!
 //! `experts/skills/` is vendored from upstream `skills/` verbatim, so a
@@ -169,7 +169,7 @@ pub struct InstallReport {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Manifest {
     #[serde(default)]
-    codeg_version: String,
+    zwiim_version: String,
     #[serde(default)]
     installed_at: String,
     #[serde(default)]
@@ -587,7 +587,7 @@ fn ensure_central_experts_installed_blocking() -> InstallReport {
         }
     }
 
-    manifest.codeg_version = env!("CARGO_PKG_VERSION").to_string();
+    manifest.zwiim_version = env!("CARGO_PKG_VERSION").to_string();
     manifest.installed_at = Utc::now().to_rfc3339();
     if let Err(e) = save_manifest(&manifest) {
         report.errors.push(format!("save manifest: {e}"));
@@ -1129,12 +1129,12 @@ mod tests {
         // than a wedged CI run.
         let ops = vec![
             LinkOp {
-                expert_id: "zzz-codeg-batch-test-absent-aaa".into(),
+                expert_id: "zzz-zwiim-batch-test-absent-aaa".into(),
                 agent_type: AgentType::ClaudeCode,
                 enable: false,
             },
             LinkOp {
-                expert_id: "zzz-codeg-batch-test-absent-bbb".into(),
+                expert_id: "zzz-zwiim-batch-test-absent-bbb".into(),
                 agent_type: AgentType::Codex,
                 enable: false,
             },
@@ -1152,7 +1152,7 @@ mod tests {
     async fn apply_links_collects_per_op_results_without_aborting() {
         let ops = vec![
             LinkOp {
-                expert_id: "zzz-codeg-batch-test-absent".into(),
+                expert_id: "zzz-zwiim-batch-test-absent".into(),
                 agent_type: AgentType::ClaudeCode,
                 enable: false,
             },

@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 pub enum TokenUsageBucket {
     #[default]
     Day,
-    /// ISO weeks — Monday-start. Not configurable: every locale codeg ships
+    /// ISO weeks — Monday-start. Not configurable: every locale Zwiim ships
     /// either uses Monday or reads a Monday-start week without friction, and a
     /// switch would have to thread through the streak math too.
     Week,

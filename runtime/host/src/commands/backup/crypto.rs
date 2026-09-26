@@ -28,7 +28,7 @@ use crate::app_error::{AppCommandError, BACKUP_I18N_KEY_BAD_PASSPHRASE};
 use super::cancelled_error;
 
 /// First 8 bytes of an encrypted backup.
-pub const ENVELOPE_MAGIC: &[u8; 8] = b"CODEGBAK";
+pub const ENVELOPE_MAGIC: &[u8; 8] = b"ZWIIMBAK";
 /// First 4 bytes of a plaintext ZIP (`PK\x03\x04`), used to disambiguate.
 pub const ZIP_MAGIC: &[u8; 4] = b"PK\x03\x04";
 pub const ENVELOPE_HEADER_VERSION: u8 = 1;

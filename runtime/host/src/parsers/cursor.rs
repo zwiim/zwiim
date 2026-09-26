@@ -49,7 +49,7 @@ fn resolve_cursor_config_from(
 /// Cursor (cursor-agent CLI) stores each conversation as a **SQLite blob
 /// store**. Interactive CLI/IDE chats — and the sub-agent children spawned by
 /// `task` tool calls — are grouped by the MD5 of the resolved working
-/// directory, while ACP sessions (what codeg drives) live under a flat
+/// directory, while ACP sessions (what Zwiim drives) live under a flat
 /// per-session root with a JSON sidecar:
 ///
 /// ```text
@@ -91,7 +91,7 @@ fn resolve_cursor_config_from(
 pub struct CursorParser {
     chats_dir: PathBuf,
     acp_sessions_dir: PathBuf,
-    /// Root of codeg's own per-turn timing journal (`crate::turn_timings`) —
+    /// Root of Zwiim's own per-turn timing journal (`crate::turn_timings`) —
     /// the fallback clock for turns whose store yields none (thinking+text
     /// only; the ACP store has no message timestamps).
     turn_timings_root: PathBuf,
@@ -103,7 +103,7 @@ impl CursorParser {
         Self {
             chats_dir: config_dir.join("chats"),
             acp_sessions_dir: config_dir.join("acp-sessions"),
-            turn_timings_root: crate::paths::codeg_turn_timings_root(),
+            turn_timings_root: crate::paths::zwiim_turn_timings_root(),
         }
     }
 
@@ -169,7 +169,7 @@ impl CursorParser {
             .unwrap_or_default();
 
         let (mut turns, store_clocked) = build_turns(&conn, &state, &meta);
-        // Overlay codeg's own turn-span journal — recorded live by the ACP
+        // Overlay Zwiim's own turn-span journal — recorded live by the ACP
         // connection layer. It fills turns the store left clockless (tool-free
         // turns) and replaces tool-span fallback clocks, which only cover the
         // tools, not the whole turn. CLI-native chats simply have no journal
@@ -270,7 +270,7 @@ impl AgentParser for CursorParser {
                 self.collect_summary(&chat_dir, &mut conversations);
             }
         }
-        // ACP sessions (codeg-driven) live under the flat per-uuid root.
+        // ACP sessions (zwiim-driven) live under the flat per-uuid root.
         for chat_dir in read_subdirs(&self.acp_sessions_dir) {
             self.collect_summary(&chat_dir, &mut conversations);
         }
@@ -357,7 +357,7 @@ struct ChatMeta {
 }
 
 fn open_store(path: &Path) -> Option<Connection> {
-    // Prefer a read-only handle — codeg never mutates cursor's stores.
+    // Prefer a read-only handle — Zwiim never mutates cursor's stores.
     if let Some(conn) =
         try_open_store(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
     {
@@ -376,7 +376,7 @@ fn open_store(path: &Path) -> Option<Connection> {
 
 fn try_open_store(path: &Path, flags: OpenFlags) -> Option<Connection> {
     let conn = Connection::open_with_flags(path, flags).ok()?;
-    // The CLI may hold the store open while codeg lists sessions; give reads a
+    // The CLI may hold the store open while Zwiim lists sessions; give reads a
     // short grace period instead of failing on a transient lock.
     let _ = conn.busy_timeout(std::time::Duration::from_millis(200));
     // Opening is lazy — probe so a handle that cannot actually read (stale WAL
@@ -903,14 +903,14 @@ fn decode_user_images(conn: &Connection, msg: &[u8]) -> Vec<ContentBlock> {
     out
 }
 
-/// Build codeg turns from the DAG: one User + one Assistant `MessageTurn` per
+/// Build Zwiim turns from the DAG: one User + one Assistant `MessageTurn` per
 /// `AgentConversationTurnStructure`; `!`-shell turns render as a user command
 /// turn plus an assistant turn holding the terminal card.
 ///
 /// The second return value indexes the assistant turns whose clock came from
 /// the STORE's own root `turn_timings` (IDE-written chats). Those clocks are
 /// authoritative; everything else — tool-span fallback or no clock at all —
-/// may be upgraded by codeg's turn-span journal downstream.
+/// may be upgraded by Zwiim's turn-span journal downstream.
 fn build_turns(
     conn: &Connection,
     state: &DecodedState,
@@ -1082,7 +1082,7 @@ fn build_turns(
     (turns, store_clocked)
 }
 
-/// Merge codeg's own turn-span journal (`crate::turn_timings`) onto the
+/// Merge Zwiim's own turn-span journal (`crate::turn_timings`) onto the
 /// store's turns: it fills turns the store left clockless (thinking+text-only
 /// turns have neither root `turn_timings` nor tool `f59`/`f60` stamps) AND
 /// replaces tool-span fallback clocks — the tool span only covers
@@ -1098,7 +1098,7 @@ fn build_turns(
 /// the journal line, and STOP at the first mismatch. The tail anchor is what
 /// makes the dominant divergence safe — turns recorded before the journal
 /// feature existed all sit at the FRONT of a session, so the recorded tail
-/// still aligns; a mid-walk confusion (a crash gap, a turn codeg never saw)
+/// still aligns; a mid-walk confusion (a crash gap, a turn Zwiim never saw)
 /// stops the walk instead of scanning, which could misassign spans between
 /// identical prompts. STORE-native clocks (root `turn_timings`, indexed by
 /// `store_clocked` — IDE-written chats) always win: the journal only
@@ -2745,7 +2745,7 @@ mod tests {
 
     /// Builds one tool-free `[user text → assistant text]` DAG turn and
     /// returns its blob id. No tool steps → no `f59`/`f60` → natively
-    /// clockless (the case codeg's timing journal exists for).
+    /// clockless (the case Zwiim's timing journal exists for).
     fn put_text_only_turn(store: &mut StoreBuilder, user_text: &str, reply: &str) -> Vec<u8> {
         let mut user_msg = Vec::new();
         field_str(1, user_text, &mut user_msg);
@@ -2765,7 +2765,7 @@ mod tests {
 
     /// Tool-free turns have no clock anywhere in the store (no root
     /// `turn_timings`, no tool stamps, no message timestamps — verified on
-    /// real ACP sessions). codeg's own turn-span journal fills them, and the
+    /// real ACP sessions). Zwiim's own turn-span journal fills them, and the
     /// alignment is tail-anchored: a leading turn recorded before the journal
     /// feature existed stays honestly clockless.
     #[test]

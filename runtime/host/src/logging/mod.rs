@@ -2,7 +2,7 @@
 //!
 //! One subscriber feeds three sinks: **stderr** (preserves the pre-tracing
 //! `eprintln!` behavior for terminal users), a **daily-rotating JSON-lines
-//! file** under [`crate::paths::codeg_logs_root`], and an **in-memory ring
+//! file** under [`crate::paths::zwiim_logs_root`], and an **in-memory ring
 //! buffer** ([`hub`]) that the Settings → Logs viewer reads and live-tails.
 //!
 //! - [`init`] wires the subscriber into each of the three binaries and owns

@@ -8,7 +8,7 @@
 //! use, there being no native tabs there.
 //!
 //! **Off by default**, unlike the other two read-only tool groups. Those hand
-//! an agent codeg's own state; this one hands it a listing of the sites the
+//! an agent Zwiim's own state; this one hands it a listing of the sites the
 //! user has open right now, which is the sort of thing that should be a
 //! decision rather than a default. Sharing an individual page is a second,
 //! per-tab decision on top of it (`crate::browser::agent`) — this switch only

@@ -6,12 +6,12 @@ use tokio::net::TcpListener;
 ///
 /// On Windows `CreateProcess` defaults to `bInheritHandles=TRUE`; without
 /// this call any leaked inheritable handle keeps the LISTEN port alive
-/// inside a child even after codeg exits — observed as "PID gone but
+/// inside a child even after Zwiim exits — observed as "PID gone but
 /// `:3080` still LISTENING" on issue #126.
 ///
 /// On Unix Tokio/Mio already creates sockets with `SOCK_CLOEXEC` /
 /// `FD_CLOEXEC`, but we re-set the flag defensively so the invariant is
-/// guaranteed at the codeg layer regardless of upstream changes.
+/// guaranteed at the Zwiim layer regardless of upstream changes.
 pub fn mark_listener_non_inheritable(listener: &TcpListener) -> io::Result<()> {
     #[cfg(windows)]
     {

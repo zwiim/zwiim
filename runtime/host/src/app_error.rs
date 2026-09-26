@@ -55,7 +55,7 @@ pub const UPLOAD_I18N_KEY_QUOTA_EXCEEDED: &str = "errors.upload.quotaExceeded";
 pub const BACKUP_I18N_KEY_BAD_PASSPHRASE: &str = "backup.restore.error.badPassphrase";
 /// A backup entry's bytes did not match the manifest checksum.
 pub const BACKUP_I18N_KEY_CORRUPTED: &str = "backup.restore.error.corrupted";
-/// The file is not a codeg backup, or its `format_version` is newer than this
+/// The file is not a Zwiim backup, or its `format_version` is newer than this
 /// binary understands.
 pub const BACKUP_I18N_KEY_UNKNOWN_FORMAT: &str = "backup.restore.error.unknownFormat";
 /// The backup was taken by a newer app version whose DB schema this binary
@@ -75,12 +75,12 @@ pub const BACKUP_I18N_KEY_ALREADY_PENDING: &str = "backup.restore.error.alreadyP
 // `src/lib/config-sync.ts`.
 
 /// The snapshot declares a schema this binary cannot represent — the machine
-/// that wrote it runs a newer codeg. Params: `snapshotVersion`, `appVersion`.
+/// that wrote it runs a newer Zwiim. Params: `snapshotVersion`, `appVersion`.
 pub const CONFIG_SYNC_I18N_KEY_NEWER_SCHEMA: &str = "configSync.error.newerSchema";
 /// `config.json` did not match the size/sha256 the manifest recorded — a
 /// truncated upload or a share that was written by two machines at once.
 pub const CONFIG_SYNC_I18N_KEY_CHECKSUM: &str = "configSync.error.checksum";
-/// The file is not a codeg config snapshot, or its JSON is malformed.
+/// The file is not a Zwiim config snapshot, or its JSON is malformed.
 pub const CONFIG_SYNC_I18N_KEY_INVALID_SNAPSHOT: &str = "configSync.error.invalidSnapshot";
 /// The remote directory holds no snapshot yet (nothing was ever uploaded).
 pub const CONFIG_SYNC_I18N_KEY_NO_REMOTE: &str = "configSync.error.noRemoteSnapshot";

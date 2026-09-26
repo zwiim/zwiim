@@ -8,7 +8,7 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i32,
-    /// ACP registry id — the agent's identity everywhere else in codeg.
+    /// ACP registry id — the agent's identity everywhere else in Zwiim.
     #[sea_orm(unique)]
     pub registry_id: String,
     pub name: String,

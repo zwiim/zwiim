@@ -129,7 +129,7 @@ mod tests {
     /// handshake); one that fails auth is a 401.
     async fn ws_status(server: &TestServer, bearer: &str) -> StatusCode {
         let protocol = format!(
-            "codeg-events, codeg-token.{}",
+            "zwiim-events, zwiim-token.{}",
             URL_SAFE_NO_PAD.encode(bearer)
         );
         server

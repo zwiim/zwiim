@@ -4,7 +4,7 @@
 //! entry (directory for regular repos, file for linked worktrees and
 //! submodules). We do **not** walk up to ancestors.
 //!
-//! Rationale: codeg scopes every workspace-facing feature (file tree
+//! Rationale: Zwiim scopes every workspace-facing feature (file tree
 //! watcher, git changes panel, log panel) to the directory the user opens.
 //! If one code path walks up and another doesn't, the UI falls into a
 //! "schizophrenic" state where some panels see a repo and others don't.

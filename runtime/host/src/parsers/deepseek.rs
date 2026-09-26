@@ -27,7 +27,7 @@ use crate::parsers::{
 /// (`expandHomePath`) before use. The value itself is otherwise passed through
 /// untrimmed, again like upstream. Upstream additionally absolutizes a
 /// relative value against the harness process's cwd — deliberately NOT
-/// mirrored, because that cwd is the session workspace, not codeg's, so
+/// mirrored, because that cwd is the session workspace, not Zwiim's, so
 /// resolving it here would name a directory the agent never uses.
 fn resolve_dsh_home_from(dsh_home_env: Option<OsString>, home_dir: Option<PathBuf>) -> PathBuf {
     dsh_home_env
@@ -415,7 +415,7 @@ fn parse_generation_log_filename(name: &str) -> Option<(u64, LogEncoding)> {
 /// to exactly one encoding and that lookup REJECTS generations carrying the
 /// other suffix, so comparing generations across encodings would let a stale
 /// file from a foreign encoding outrank the live one. A root holding both is
-/// malformed by that rule; codeg prefers the Zstandard set because
+/// malformed by that rule; Zwiim prefers the Zstandard set because
 /// `deepseek-acp` never configures `compression`, so every generation it has
 /// ever written is compressed — a raw file sharing the root is hand-placed or
 /// from a non-stock deployment. The alternative (refuse to read an ambiguous
@@ -955,7 +955,7 @@ fn parse_session_events(text: &str, attachments: Option<&Path>) -> SessionParse 
                 // `acp::fork`). Upstream keeps it stable "across every
                 // representation boundary" precisely for clients that read the
                 // JSONL, and matching it resolves to the message's log TURN —
-                // which is the granularity a codeg bubble already has.
+                // which is the granularity a Zwiim bubble already has.
                 let message_id = message
                     .and_then(|m| m.get("id"))
                     .and_then(Value::as_str)
@@ -1097,7 +1097,7 @@ fn parse_session_events(text: &str, attachments: Option<&Path>) -> SessionParse 
             // lock, `summary` records the summary and what it replaced, `end`
             // releases the lock (carrying `error` when the attempt failed).
             //
-            // The LOG is the only place codeg can see this. On the wire the
+            // The LOG is the only place Zwiim can see this. On the wire the
             // matching `compaction_update` / `compaction_summary_chunk` updates
             // are gated behind a `clientCapabilities.session.compaction` that
             // the pinned ACP schema crate cannot advertise, so the agent
@@ -1209,7 +1209,7 @@ fn parse_session_events(text: &str, attachments: Option<&Path>) -> SessionParse 
             // the model-free prune variant's metering record — it has no
             // start/end bracket of its own, and the backend this bridge
             // composes (`dsh-compaction-basic`) only ever summarizes, so no log
-            // codeg reads contains one.
+            // Zwiim reads contains one.
             _ => {}
         }
     }
@@ -1332,7 +1332,7 @@ mod tests {
             PathBuf::from("/home/demo/.dsh")
         );
         // ... and expands a leading `~` (`expandHomePath`) before use, so a
-        // `DSH_HOME=~/custom` names the same directory for codeg as for the
+        // `DSH_HOME=~/custom` names the same directory for Zwiim as for the
         // agent instead of a literal `./~/custom`.
         assert_eq!(
             resolve_dsh_home_from(
@@ -1993,7 +1993,7 @@ mod tests {
             Some((12, LogEncoding::Raw))
         );
         // The accepted band runs all the way to upstream's ceiling. A generation
-        // codeg's integer cannot hold would stop being a generation, and a
+        // Zwiim's integer cannot hold would stop being a generation, and a
         // retained predecessor beside it would win — so the width is not a
         // cosmetic choice, and `u32` (4_294_967_295) would already be too narrow.
         assert_eq!(

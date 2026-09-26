@@ -2,7 +2,7 @@
 @import "@xterm/xterm/css/xterm.css";
 @custom-variant dark (&:is(.dark *));
 
-/* Neutral theme tokens adapted from Codeg's `src/app/globals.css`
+/* Neutral theme tokens adapted from the upstream web UI's `src/app/globals.css`
    (Apache-2.0; see third_party/codeg/PROVENANCE.md). */
 :root {
   --radius: 0.625rem;

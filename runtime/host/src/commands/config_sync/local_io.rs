@@ -53,7 +53,7 @@ pub const MAX_IMPORT_BYTES: usize = 8 * 1024 * 1024;
 pub struct ConfigExportFile {
     /// Presence of this field is what distinguishes an export envelope from a
     /// bare `config.json`.
-    pub codeg_config_export: u32,
+    pub zwiim_config_export: u32,
     pub manifest: ConfigManifest,
     pub config: ConfigSnapshot,
 }
@@ -91,7 +91,7 @@ pub async fn build_export_core(
     let bytes = serialize_snapshot(&snapshot)?;
     let manifest = build_manifest(&bytes, app_version, snapshot.counts(), ENCRYPTION_NONE);
     Ok(ConfigExportFile {
-        codeg_config_export: EXPORT_FORMAT_VERSION,
+        zwiim_config_export: EXPORT_FORMAT_VERSION,
         manifest,
         config: snapshot,
     })
@@ -164,14 +164,14 @@ pub fn parse_export_bytes(
     }
 
     let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| {
-        AppCommandError::invalid_input("Not a codeg config file")
+        AppCommandError::invalid_input("Not a Zwiim config file")
             .with_detail(e.to_string())
             .with_i18n(CONFIG_SYNC_I18N_KEY_INVALID_SNAPSHOT, BTreeMap::new())
     })?;
 
-    if value.get("codegConfigExport").is_some() {
+    if value.get("zwiimConfigExport").is_some() {
         let export: ConfigExportFile = serde_json::from_value(value).map_err(|e| {
-            AppCommandError::invalid_input("Malformed codeg config export")
+            AppCommandError::invalid_input("Malformed Zwiim config export")
                 .with_detail(e.to_string())
                 .with_i18n(CONFIG_SYNC_I18N_KEY_INVALID_SNAPSHOT, BTreeMap::new())
         })?;
@@ -199,7 +199,7 @@ fn synthesize_export(snapshot_bytes: &[u8]) -> Result<ConfigExportFile, AppComma
     let canonical = serialize_snapshot(&snapshot)?;
     let manifest = build_manifest(&canonical, "unknown", snapshot.counts(), ENCRYPTION_NONE);
     Ok(ConfigExportFile {
-        codeg_config_export: EXPORT_FORMAT_VERSION,
+        zwiim_config_export: EXPORT_FORMAT_VERSION,
         manifest,
         config: snapshot,
     })
@@ -352,7 +352,7 @@ mod tests {
         seed_message(&source.conn, "Exported").await;
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let dest = dir.path().join("nested").join("codeg-config.json");
+        let dest = dir.path().join("nested").join("zwiim-config.json");
         let summary = export_to_file_core(&source.conn, "9.9.9", &dest)
             .await
             .expect("export");
@@ -397,7 +397,7 @@ mod tests {
 
     /// The encrypted `config.json` the sync uploads has to come back in through
     /// the same door: a user who downloads it from their cloud drive's web UI
-    /// should not be told their own file is not a codeg config.
+    /// should not be told their own file is not a Zwiim config.
     #[tokio::test]
     async fn an_encrypted_remote_config_json_is_accepted_with_the_stored_passphrase() {
         let _guard = credentials::test_guard().await;

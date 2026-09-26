@@ -202,7 +202,7 @@ pub struct CustomAgentDef {
     /// User declaration that this agent reads the shared `.agents/skills`
     /// store (`~/.agents/skills` plus project-local `.agents/skills`) — the
     /// cross-agent convention OpenCode, Gemini, Cline, Codex, pi, and Cursor
-    /// already follow. codeg cannot detect where an arbitrary ACP agent loads
+    /// already follow. Zwiim cannot detect where an arbitrary ACP agent loads
     /// skills from, so this stays off until the user turns it on; together
     /// with [`Self::skills_dir`] it is the gate that puts the agent into
     /// every skills matrix (see `skill_storage_spec`).
@@ -233,7 +233,7 @@ pub struct CustomAgentDef {
     /// built-in zwiim-mcp companion (delegation, live feedback, task tools).
     ///
     /// Not every ACP agent does: some reject any entry in that field and fail
-    /// session creation outright, so a custom agent that codeg cannot connect
+    /// session creation outright, so a custom agent that Zwiim cannot connect
     /// to at all is turned off here (OpenClaw is the built-in precedent — see
     /// [`AcpAgentMeta::supports_mcp`], the single gate both feed).
     ///
@@ -361,7 +361,7 @@ impl std::error::Error for CustomAgentError {}
 /// Whether `s` is usable as ONE directory name.
 ///
 /// The version label becomes a path segment of the binary cache
-/// (`binary_cache::binary_dir`), which codeg also *deletes* when reinstalling —
+/// (`binary_cache::binary_dir`), which Zwiim also *deletes* when reinstalling —
 /// so a definition must not be able to steer it out of the cache. Mirrors
 /// `acp_transcript::safe_component`, and deliberately rejects a Windows drive
 /// or alternate-data-stream prefix (`C:`, `f:s`) too, which `Path::is_absolute`
@@ -641,7 +641,7 @@ fn build_binary_distribution(
         Some(BinaryDirEntry {
             unix: intern(&unix),
             windows: intern(&windows),
-            // The ACP registry has no field for this, and codeg cannot know
+            // The ACP registry has no field for this, and Zwiim cannot know
             // which files an arbitrary agent's entry execs — so a custom
             // agent's tree is validated by its entry alone.
             required_siblings: crate::acp::registry::PlatformFiles::NONE,

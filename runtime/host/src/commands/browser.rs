@@ -532,7 +532,7 @@ pub fn doc_set_mode_core(
 /// Load a document guest's page again so the policy in force travels with
 /// it. Nothing committed yet (the first load still in flight, or refused):
 /// navigate to the document instead — a reload has nothing to reload, and
-/// the general retry path would refuse a `codeg-doc:` address.
+/// the general retry path would refuse a `zwiim-doc:` address.
 fn reload_document(
     app: &AppHandle,
     registry: &BrowserRegistry,
@@ -2172,7 +2172,7 @@ const EVAL_TIMEOUT: Duration = Duration::from_secs(10);
 /// 1. the `browser_eval` switch, then the grant — both read from the registry,
 ///    so a tab nobody shared never raises a dialog and an agent cannot use the
 ///    confirmation itself as a way to get someone's attention;
-/// 2. where the page actually is, read in codeg's own world, held against the
+/// 2. where the page actually is, read in Zwiim's own world, held against the
 ///    grant — so the origin named in the dialog is the live one, not the last
 ///    one the host happened to hear about;
 /// 3. the person;
@@ -2238,7 +2238,7 @@ fn eval_busy(tab_id: &str, refused: AskRefused) -> AppCommandError {
         .with_i18n(BROWSER_I18N_KEY_EVAL_BUSY, std::collections::BTreeMap::new())
 }
 
-/// Where the page is, as codeg's own world reports it, held against the tab's
+/// Where the page is, as Zwiim's own world reports it, held against the tab's
 /// grant and incarnation. Answers the page's address and **the origin of the
 /// grant that admitted it**.
 ///
@@ -2341,7 +2341,7 @@ async fn eval_on_shared_page(
         return Err((Some(agent::AgentOutcome::Refused), control_required(tab_id)));
     }
 
-    // Where the page is now, from codeg's world, held against the grant — and
+    // Where the page is now, from Zwiim's world, held against the grant — and
     // the origin of the grant that admitted it, which is what the dialog will
     // name.
     let (_, asked_origin) =
@@ -2463,7 +2463,7 @@ fn read_eval_answer(raw: &str) -> Result<EvalAnswer, AppCommandError> {
 /// Evaluate an expression in the page's own world, within [`EVAL_TIMEOUT`].
 ///
 /// Deliberately not `eval_in_world`: everything else in this module evaluates
-/// in codeg's isolated world, and an agent's own code is the one thing that
+/// in Zwiim's isolated world, and an agent's own code is the one thing that
 /// must never run there — see `browser::eval`.
 async fn run_in_page(surface: &BrowserSurface, js: &str) -> Result<String, AppCommandError> {
     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
@@ -2711,7 +2711,7 @@ pub async fn agent_open_tab_core(
         }
         Ok(Err(_)) | Err(_) => {
             return Err(open_failed(
-                "no codeg workspace window answered. There has to be one open to put a tab in",
+                "no Zwiim workspace window answered. There has to be one open to put a tab in",
             ))
         }
     };

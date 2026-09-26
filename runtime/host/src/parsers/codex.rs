@@ -206,7 +206,7 @@ impl CodexParser {
             return Ok(own);
         }
 
-        // A parent codeg cannot find is not an error: the rollout may have been
+        // A parent Zwiim cannot find is not an error: the rollout may have been
         // pruned, or live in a codex home this parser isn't pointed at. Degrade
         // to the child's own lines rather than refusing the conversation.
         let Some(parent_path) = self.find_rollout_by_session_id(&parent_id) else {
@@ -1697,7 +1697,7 @@ fn codex_script_meta(
     if truncated {
         marks.insert("truncated".to_string(), true.into());
     }
-    (!marks.is_empty()).then(|| serde_json::json!({ "codeg.codexScript": marks }))
+    (!marks.is_empty()).then(|| serde_json::json!({ "zwiim.codexScript": marks }))
 }
 
 /// How to name a call when telling the reader whose output shares a card.
@@ -2225,7 +2225,7 @@ fn infer_tool_call_output_is_error(
 /// Synthetic rawInput key the live input shaper uses to carry the collab op
 /// through to the card (see frontend `collab-tool.ts` `COLLAB_OP_KEY`). Kept in
 /// sync here so history `wait_agent` capsules render with an op-aware title.
-const COLLAB_OP_KEY: &str = "__codegCollabOp";
+const COLLAB_OP_KEY: &str = "__zwiimCollabOp";
 
 /// Whether a collab status string is an error (mirrors the frontend
 /// `isErrorCollabStatusKind`: only `errored` / `failed` / `notFound`).
@@ -2277,7 +2277,7 @@ const CODEX_ENCRYPTED_PLACEHOLDER: &str = "[encrypted]";
 /// Public because the LIVE path writes the same key
 /// (`acp/connection.rs::classify_codex_subagent_activity`) — streaming and
 /// reload must not disagree about what the card means.
-pub const CODEX_SUBAGENT_LAUNCH_KEY: &str = "__codegCodexSubagentLaunch";
+pub const CODEX_SUBAGENT_LAUNCH_KEY: &str = "__zwiimCodexSubagentLaunch";
 
 /// Whether a `spawn_agent`'s arguments are codex 0.147's native team-of-agents
 /// shape: `task_name` and no `agent_type` (which that release removed).
@@ -2292,7 +2292,7 @@ fn is_native_team_spawn(args: Option<&serde_json::Value>) -> bool {
 /// Written by both the rollout parser and the live path
 /// (`acp/connection.rs`), so a reload cannot disagree with the stream about
 /// whether the child finished.
-pub const CODEX_SUBAGENT_STATE_KEY: &str = "__codegCodexSubagentState";
+pub const CODEX_SUBAGENT_STATE_KEY: &str = "__zwiimCodexSubagentState";
 
 /// One `SubAgentActivity` record, normalized across the two on-disk shapes.
 ///
@@ -3012,7 +3012,7 @@ impl CodexParser {
         //     its result is only a fallback for agents never waited on.
         // codex-acp 1.0.1 (#223) maps `collabAgentToolCall` onto live ACP
         // `tool_call`s; 1.1.3+ (#304) additionally emits `subAgentActivity` as a
-        // SEPARATE live `tool_call` (`_meta.codex.subagent`), but codeg
+        // SEPARATE live `tool_call` (`_meta.codex.subagent`), but Zwiim
         // suppresses it (redundant with the collab capsule — see
         // `is_codex_subagent_activity`) and it carries no transcript content, so
         // the nested `agent-<id>.jsonl` stats still only exist on history reload.
@@ -5470,7 +5470,7 @@ const CODEX_PLAN_APPROVED_OUTPUT: &str = "User approved the plan.";
 
 /// Append the settled `plan_review` call that reports an approved plan.
 ///
-/// Deliberately the same shape the LIVE path produces: codeg seeds codex-acp's
+/// Deliberately the same shape the LIVE path produces: Zwiim seeds codex-acp's
 /// unannounced plan-review call with `raw_input: None` (see
 /// `handle_permission_request`) because the plan is already in the transcript,
 /// and the frontend renders that input-less call as a bare decision marker. So
@@ -5831,7 +5831,7 @@ struct PendingPromotedMessage {
 ///   blocks and compaction summaries, i.e. text codex deliberately keeps out of
 ///   the chat. That rule regresses 60 existing conversations.
 /// * *Per file, when the event channel is absent anywhere* — this is inert on the
-///   corpus, but it evaporates the moment the user resumes the session in codeg:
+///   corpus, but it evaporates the moment the user resumes the session in Zwiim:
 ///   native `event_msg` records append to the SAME rollout, the gate flips off,
 ///   and the whole imported prefix disappears again. That is exactly the workflow
 ///   #452 reports.
@@ -6919,7 +6919,7 @@ mod tests {
             .join(format!(
                 "rollout-2026-08-15T16-00-00-{conversation_id}.jsonl"
             ));
-        let visible = "Ask [@Antigravity](codeg://agent/antigravity) to review";
+        let visible = "Ask [@Antigravity](zwiim://agent/antigravity) to review";
         let mut prompt = vec![PromptInputBlock::Text {
             text: visible.into(),
         }];
@@ -6994,7 +6994,7 @@ mod tests {
             .join(format!(
                 "rollout-2026-08-15T16-00-00-{conversation_id}.jsonl"
             ));
-        let visible = "Ask [@Codex](codeg://agent/codex) to inspect this";
+        let visible = "Ask [@Codex](zwiim://agent/codex) to inspect this";
         let mut prompt = vec![PromptInputBlock::Text {
             text: visible.into(),
         }];
@@ -7064,7 +7064,7 @@ mod tests {
             .join(format!(
                 "rollout-2026-08-15T16-00-00-{conversation_id}.jsonl"
             ));
-        let visible = "Explain \u{001e}<codeg_internal_agent_routes version=\"2\">user text</codeg_internal_agent_routes>\u{001e}";
+        let visible = "Explain \u{001e}<zwiim_internal_agent_routes version=\"2\">user text</zwiim_internal_agent_routes>\u{001e}";
         let lines = [
             serde_json::json!({
                 "timestamp": "2026-08-15T08:00:00Z",
@@ -7097,7 +7097,7 @@ mod tests {
         assert!(summary
             .title
             .as_deref()
-            .is_some_and(|title| title.contains("codeg_internal_agent_routes")));
+            .is_some_and(|title| title.contains("zwiim_internal_agent_routes")));
 
         let detail = parser.get_conversation(conversation_id).unwrap();
         assert!(matches!(
@@ -7111,7 +7111,7 @@ mod tests {
         use crate::acp::agent_mentions::append_agent_routes;
         use crate::acp::types::PromptInputBlock;
 
-        let visible = "Review this image [@Codex](codeg://agent/codex)";
+        let visible = "Review this image [@Codex](zwiim://agent/codex)";
         let mut prompt = vec![PromptInputBlock::Text {
             text: visible.into(),
         }];
@@ -7204,7 +7204,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-test-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("zwiim-codex-test-{nanos}.jsonl"));
 
         // Injected/duplicate context arrives as text-only `response_item` user
         // messages (AGENTS.md, environment_context); the real prompt is delivered
@@ -7353,7 +7353,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-ctx-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("zwiim-codex-ctx-{nanos}.jsonl"));
 
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"ctx-1\",\"cwd\":\"/tmp/demo\"}}\n",
@@ -7403,7 +7403,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-{label}-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("zwiim-codex-{label}-{nanos}.jsonl"));
         fs::write(&path, content).expect("write test jsonl");
         let detail = CodexParser::new()
             .parse_conversation_detail(&path, session_id)
@@ -7560,7 +7560,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-spans-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("zwiim-codex-spans-{nanos}.jsonl"));
 
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"spans-1\",\"cwd\":\"/tmp/demo\"}}\n",
@@ -7628,7 +7628,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-midctx-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("zwiim-codex-midctx-{nanos}.jsonl"));
 
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"midctx-1\",\"cwd\":\"/tmp/demo\"}}\n",
@@ -7672,7 +7672,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-completed-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("zwiim-codex-completed-{nanos}.jsonl"));
 
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"completed-1\",\"cwd\":\"/tmp/demo\"}}\n",
@@ -7717,7 +7717,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-goal-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("zwiim-codex-goal-{nanos}.jsonl"));
 
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"goal-1\",\"cwd\":\"/tmp/demo\"}}\n",
@@ -7810,7 +7810,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-goalnull-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("zwiim-codex-goalnull-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"gc-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5-codex\"}}\n",
@@ -7873,7 +7873,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-puregoal-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("zwiim-codex-puregoal-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"pg-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Build a static test page\",\"status\":\"active\"}}}\n",
@@ -7946,7 +7946,7 @@ mod tests {
             .expect("system time ok")
             .as_nanos();
         let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-goaltext-{nanos}.jsonl"));
+            env::temp_dir().join(format!("zwiim-codex-goaltext-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"gt-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"/goal Analyze the README\"}}\n",
@@ -7994,7 +7994,7 @@ mod tests {
             .expect("system time ok")
             .as_nanos();
         let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-goaldup-{nanos}.jsonl"));
+            env::temp_dir().join(format!("zwiim-codex-goaldup-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"gd-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Investigate auth\",\"status\":\"active\"}}}\n",
@@ -8043,7 +8043,7 @@ mod tests {
             .expect("system time ok")
             .as_nanos();
         let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-goalconfirm-{nanos}.jsonl"));
+            env::temp_dir().join(format!("zwiim-codex-goalconfirm-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"gc-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Build a static page\",\"status\":\"active\"}}}\n",
@@ -8112,7 +8112,7 @@ mod tests {
             .expect("system time ok")
             .as_nanos();
         let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-sumconfirm-{nanos}.jsonl"));
+            env::temp_dir().join(format!("zwiim-codex-sumconfirm-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"sc-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Build a static page\",\"status\":\"active\"}}}\n",
@@ -8148,7 +8148,7 @@ mod tests {
             .expect("system time ok")
             .as_nanos();
         let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-sumgoal-{nanos}.jsonl"));
+            env::temp_dir().join(format!("zwiim-codex-sumgoal-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"sg-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Build a static test page\",\"status\":\"active\"}}}\n",
@@ -8183,7 +8183,7 @@ mod tests {
             .expect("system time ok")
             .as_nanos();
         let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-sumname-{nanos}.jsonl"));
+            env::temp_dir().join(format!("zwiim-codex-sumname-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"sn-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Build a static test page\",\"status\":\"active\"}}}\n",
@@ -8215,7 +8215,7 @@ mod tests {
             .expect("system time ok")
             .as_nanos();
         let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-sumimg-{nanos}.jsonl"));
+            env::temp_dir().join(format!("zwiim-codex-sumimg-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"si-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Do the thing\",\"status\":\"active\"}}}\n",
@@ -8269,7 +8269,7 @@ mod tests {
             .expect("system time ok")
             .as_nanos();
         let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-sumimg-bothchan-{nanos}.jsonl"));
+            env::temp_dir().join(format!("zwiim-codex-sumimg-bothchan-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"si-both\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"look at this\",\"images\":[\"data:image/png;base64,AAAA\"]}}\n",
@@ -8301,7 +8301,7 @@ mod tests {
             .expect("system time ok")
             .as_nanos();
         let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-sumimg-parity-{nanos}.jsonl"));
+            env::temp_dir().join(format!("zwiim-codex-sumimg-parity-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"si-parity\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"inspect this\"},{\"type\":\"input_image\",\"image_url\":\"data:image/png;base64,AAAA\"}]}}\n",
@@ -8336,7 +8336,7 @@ mod tests {
             .expect("system time ok")
             .as_nanos();
         let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-sumnull-{nanos}.jsonl"));
+            env::temp_dir().join(format!("zwiim-codex-sumnull-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"snl-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":null}}\n",
@@ -8369,7 +8369,7 @@ mod tests {
             .expect("system time ok")
             .as_nanos();
         let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-gtxt-{nanos}.jsonl"));
+            env::temp_dir().join(format!("zwiim-codex-gtxt-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"gt2-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Do X\",\"status\":\"active\"}}}\n",
@@ -8422,7 +8422,7 @@ mod tests {
 
         // (a) terminal-only goal → no capture, no synthetic count/title.
         let path_a: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-term-{nanos}.jsonl"));
+            env::temp_dir().join(format!("zwiim-codex-term-{nanos}.jsonl"));
         fs::write(
             &path_a,
             concat!(
@@ -8444,7 +8444,7 @@ mod tests {
         // (b) terminal THEN active → the active objective is captured (not the
         // terminal one), matching the detail parser's first-create_goal capture.
         let path_b: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-termact-{nanos}.jsonl"));
+            env::temp_dir().join(format!("zwiim-codex-termact-{nanos}.jsonl"));
         fs::write(
             &path_b,
             concat!(
@@ -8486,7 +8486,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-img-dedupe-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("zwiim-codex-img-dedupe-{nanos}.jsonl"));
 
         let content = concat!(
             "{\"timestamp\":\"2026-05-05T12:35:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"ig-test\",\"cwd\":\"/tmp/demo\"}}\n",
@@ -8540,7 +8540,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-img-mime-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("zwiim-codex-img-mime-{nanos}.jsonl"));
 
         let content = concat!(
             "{\"timestamp\":\"2026-05-05T12:35:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"ig-mime\",\"cwd\":\"/tmp/demo\"}}\n",
@@ -8627,7 +8627,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-img-noprompt-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("zwiim-codex-img-noprompt-{nanos}.jsonl"));
 
         let content = concat!(
             "{\"timestamp\":\"2026-05-05T12:35:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"ig-noprompt\",\"cwd\":\"/tmp/demo\"}}\n",
@@ -8674,7 +8674,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-img-subagent-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("zwiim-codex-img-subagent-{nanos}.jsonl"));
 
         // Sequence:
         //   1. user msg
@@ -8740,7 +8740,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path = env::temp_dir().join(format!("codeg-codex-{tag}-{nanos}.jsonl"));
+        let path = env::temp_dir().join(format!("zwiim-codex-{tag}-{nanos}.jsonl"));
         let mut content = lines.join("\n");
         content.push('\n');
         fs::write(&path, content).expect("write test jsonl");
@@ -8759,7 +8759,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let dir = env::temp_dir().join(format!("codeg-codex-{tag}-{nanos}"));
+        let dir = env::temp_dir().join(format!("zwiim-codex-{tag}-{nanos}"));
         fs::create_dir_all(&dir).expect("create temp session dir");
         dir
     }
@@ -9397,7 +9397,7 @@ mod tests {
             .expect("wait capsule carrying A's result");
         assert!(a_cap.contains("agent_a"));
         // op-aware title source is present.
-        assert!(a_cap.contains("__codegCollabOp"));
+        assert!(a_cap.contains("__zwiimCollabOp"));
 
         // The result text must NOT remain on the spawn execution capsules or any
         // tool result (it lives only in the wait capsules now).
@@ -12276,7 +12276,7 @@ mod tests {
     #[test]
     fn polling_a_background_session_appends_to_the_card_of_its_command() {
         let mut lines = background_session_head(serde_json::json!(
-            "Chunk ID: 523e44\nWall time: 30.0 seconds\nProcess running with session ID 22068\nOutput:\n   Compiling codeg"
+            "Chunk ID: 523e44\nWall time: 30.0 seconds\nProcess running with session ID 22068\nOutput:\n   Compiling zwiim"
         ));
         // Nothing new yet, and the session says so by naming itself again.
         lines.extend(poll_lines(
@@ -12302,7 +12302,7 @@ mod tests {
         let results = tool_results(&detail);
         assert_eq!(results.len(), 1, "{results:?}");
         let output = results[0].1.clone().expect("output");
-        assert_eq!(output, "   Compiling codeg\ntest result: ok. 1 passed");
+        assert_eq!(output, "   Compiling zwiim\ntest result: ok. 1 passed");
     }
 
     /// The chunk envelope in its object form — what a script that prints its
@@ -12884,7 +12884,7 @@ mod tests {
             .filter_map(|b| match b {
                 ContentBlock::ToolUse { meta, .. } => Some(
                     meta.clone()
-                        .and_then(|m| m.get("codeg.codexScript").cloned())
+                        .and_then(|m| m.get("zwiim.codexScript").cloned())
                         .unwrap_or(serde_json::Value::Null),
                 ),
                 _ => None,
@@ -13102,7 +13102,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-{label}-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("zwiim-codex-{label}-{nanos}.jsonl"));
         fs::write(&path, content).expect("write test jsonl");
         let summary = CodexParser::new()
             .parse_jsonl_summary(&path)
@@ -13193,7 +13193,7 @@ mod tests {
     #[test]
     fn a_resumed_mixed_rollout_keeps_both_halves_exactly_once() {
         // The reported workflow: the session is created elsewhere, then resumed
-        // in codeg — which appends NATIVE `event_msg` turns to the SAME file.
+        // in Zwiim — which appends NATIVE `event_msg` turns to the SAME file.
         // A whole-file gate would drop the imported prefix the moment that
         // happened; the per-segment gate keeps it.
         let content = concat!(

@@ -1,4 +1,5 @@
-// Adapted from Codeg's `src/components/ui/button.tsx` (shadcn variant set).
+// Adapted from the upstream web UI's `src/components/ui/button.tsx` (shadcn variant set; see
+// third_party/codeg/PROVENANCE.md).
 import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";

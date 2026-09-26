@@ -3,7 +3,7 @@
 //! # Why
 //!
 //! Some agent binaries are self-extracting archives that unpack into the system
-//! temp directory on every launch and only clean up on a GRACEFUL exit. codeg
+//! temp directory on every launch and only clean up on a GRACEFUL exit. Zwiim
 //! ends agent processes with `kill_tree`, which on Windows terminates
 //! unconditionally, so that cleanup never runs. The Antigravity ACP server is
 //! the acute case: its Windows build is a PyInstaller *onefile* whose archive
@@ -16,8 +16,8 @@
 //! extraction root through `GetTempPathW` (confirmed: the shipped bootloader
 //! imports `GetTempPathW` and not `GetTempPath2W`, and the archive carries no
 //! `pyi-runtime-tmpdir` option), and `GetTempPathW` reads `TMP`, then `TEMP`,
-//! then `USERPROFILE`. Pointing those at a directory codeg owns turns an
-//! unbounded leak into a directory codeg can delete.
+//! then `USERPROFILE`. Pointing those at a directory Zwiim owns turns an
+//! unbounded leak into a directory Zwiim can delete.
 //!
 //! macOS is the same bug two orders of magnitude smaller: that build is not
 //! PyInstaller, but it still drops ~172 KB of read-only resource files into
@@ -47,11 +47,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-/// Directory under the temp root that codeg owns outright. Every sweep is
+/// Directory under the temp root that Zwiim owns outright. Every sweep is
 /// confined to this subtree, which is what makes it safe to delete without
 /// asking: `%TEMP%` itself is a namespace shared with every other application,
-/// but nothing except codeg writes here.
-const SCRATCH_NAMESPACE: &str = "codeg-acp";
+/// but nothing except Zwiim writes here.
+const SCRATCH_NAMESPACE: &str = "zwiim-acp";
 
 /// Opt out of isolation entirely and let the child inherit the ambient
 /// `TMP`/`TEMP`/`TMPDIR` the way it did before this module existed. Escape
@@ -73,7 +73,7 @@ const ROOT_ENV: &str = "ZWIIM_ACP_TMP_ROOT";
 /// the child has left.
 ///
 /// Shared with [`crate::acp::delegation::listener`], which has the same budget
-/// to keep for codeg's OWN broker socket. One definition rather than two
+/// to keep for Zwiim's OWN broker socket. One definition rather than two
 /// because [`tests::sun_path_cap_matches_the_kernel`] checks this one against
 /// `libc`, and a second copy would be a number nothing verifies.
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -145,7 +145,7 @@ pub fn isolation_enabled() -> bool {
 }
 
 /// A scratch root is only usable if a child can still bind a unix socket
-/// INSIDE it. Isolation costs `/codeg-acp/<pid>-<hex>` — about 25 bytes — and
+/// INSIDE it. Isolation costs `/zwiim-acp/<pid>-<hex>` — about 25 bytes — and
 /// [`SUN_PATH_CAP`] is small enough that spending them can push a child that
 /// bound fine on the ambient temp directory over the cap (#754: a macOS
 /// `/var/folders/…/T` is 48 bytes, leaving 55 for a socket name; nesting under
@@ -166,7 +166,7 @@ fn leaves_room_for_a_child_socket(root: &Path) -> bool {
 /// `/tmp` because it is the shortest directory POSIX guarantees exists. Scoped
 /// by euid because, unlike a macOS per-user `/var/folders/…/T`, `/tmp` is
 /// shared with every other user on the machine: without the uid the first
-/// account to run codeg would own `codeg-acp` and every other account would be
+/// account to run Zwiim would own `zwiim-acp` and every other account would be
 /// unable to create inside it. [`create`] makes it `0700` so the contents stay
 /// as private as they were in the per-user directory this replaces.
 #[cfg(unix)]
@@ -226,7 +226,7 @@ fn warn_no_root_fits(root: &Path) {
 /// One root at a time, but not the same one forever: `choose_root` moves it
 /// when the ambient temp directory is too long to bind a unix socket under
 /// (#754). That keeps the set SMALL and ENUMERABLE rather than unbounded, which
-/// is what the sweeps actually need — [`sweep_roots`] visits every root codeg
+/// is what the sweeps actually need — [`sweep_roots`] visits every root Zwiim
 /// can pick, so relocating never strands a directory.
 pub fn scratch_root() -> PathBuf {
     if let Some(explicit) = std::env::var_os(ROOT_ENV).filter(|v| !v.is_empty()) {
@@ -258,7 +258,7 @@ pub fn scratch_root() -> PathBuf {
 /// More than one because [`scratch_root`]'s answer is not fixed for all time:
 /// it moves when the ambient temp directory crosses the length budget, when
 /// [`ROOT_ENV`] is set or cleared, and — for anyone upgrading past #754 — when
-/// codeg itself changes its mind about where the short root lives. Sweeping
+/// Zwiim itself changes its mind about where the short root lives. Sweeping
 /// only today's answer would strand yesterday's directories exactly the way
 /// this module's own docs warn about.
 fn sweep_roots() -> Vec<PathBuf> {
@@ -387,7 +387,7 @@ async fn remove_with_retries(name: String, path: PathBuf) {
 ///
 /// `None` is a normal outcome, not an error: the caller leaves
 /// `TMP`/`TEMP`/`TMPDIR` alone and the child uses the system temp directory
-/// exactly as it did before. A launch must never fail because codeg could not
+/// exactly as it did before. A launch must never fail because Zwiim could not
 /// make a scratch directory — and it WOULD fail if the variables were set to a
 /// path that does not exist, because the PyInstaller bootloader only creates
 /// its own `_MEIxxxxxx` leaf, not the parents above it.
@@ -469,9 +469,9 @@ pub(crate) fn create_root(root: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Refuse a scratch root codeg did not create.
+/// Refuse a scratch root Zwiim did not create.
 ///
-/// Guards the two ways `/tmp/codeg-acp-<euid>` can be waiting for us: a
+/// Guards the two ways `/tmp/zwiim-acp-<euid>` can be waiting for us: a
 /// directory another local account created first (they own it, so they can read
 /// and replace what the agent unpacks there), and a SYMLINK aimed somewhere
 /// else — `create_dir_all` is satisfied by a symlink to a directory, so without
@@ -505,7 +505,7 @@ fn verify_root_is_ours(root: &Path) -> std::io::Result<()> {
             format!("scratch root belongs to uid {}, not to us ({us})", meta.uid()),
         ));
     }
-    // Ours, but reachable by others — a root left behind by a codeg that
+    // Ours, but reachable by others — a root left behind by a Zwiim that
     // predates the `0700` above, when `create_dir_all` took the umask default.
     // Tighten it rather than refuse: refusing would turn every upgrade into a
     // silent loss of isolation. Best-effort because a filesystem the user
@@ -539,7 +539,7 @@ fn create_leaf(path: &Path) -> std::io::Result<()> {
 /// MUST be applied after every other contributor, `runtime_env` included.
 /// Precedence is the whole fix: `GetTempPathW` reads `TMP` first, so a
 /// per-agent `env_json` `TMP` left in place would send the extraction wherever
-/// it points while codeg deleted an empty scratch directory and reported
+/// it points while Zwiim deleted an empty scratch directory and reported
 /// success. Users who want the churn elsewhere set [`ROOT_ENV`]; users who want
 /// the old behavior wholesale set [`ISOLATION_ENV`] to `0`.
 pub(crate) fn apply_to_env(env: &mut std::collections::BTreeMap<String, String>, scratch: &Path) {
@@ -600,7 +600,7 @@ pub fn sweep_own_orphans() {
     }
 }
 
-/// Reclaim scratch directories left by OTHER codeg processes that have exited.
+/// Reclaim scratch directories left by OTHER Zwiim processes that have exited.
 ///
 /// Runs at startup, where the interesting orphans are the ones a crash or a
 /// force-quit left behind. Deletes only on a positively confirmed dead owner —
@@ -663,7 +663,7 @@ pub enum PidState {
 /// Deliberately NOT `delegation::parent_watcher::parent_alive`, which answers a
 /// bool and treats every `OpenProcess` failure as "gone". That is correct for
 /// its own caller — a child watching its own parent in the same session, where
-/// access-denied cannot happen — and wrong here, where one codeg instance is
+/// access-denied cannot happen — and wrong here, where one Zwiim instance is
 /// asking about another and an indeterminate answer must NOT authorize a
 /// delete.
 pub fn probe_pid(pid: u32) -> PidState {
@@ -719,11 +719,11 @@ pub fn probe_pid(pid: u32) -> PidState {
     }
 }
 
-/// `<owning codeg pid>-<8 hex>`.
+/// `<owning Zwiim pid>-<8 hex>`.
 ///
-/// The pid is CODEG'S, not the agent's: the directory is created before the
+/// The pid is the host's, not the agent's: the directory is created before the
 /// spawn, so the agent has no pid yet. It is what lets a startup sweep tell
-/// "some other codeg owns this" from "its owner is gone".
+/// "some other Zwiim owns this" from "its owner is gone".
 fn new_dir_name(pid: u32) -> String {
     let suffix: String = uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect();
     format!("{pid}-{suffix}")
@@ -804,7 +804,7 @@ mod tests {
     /// Length of a real macOS per-user temp directory,
     /// `/var/folders/hl/26lfwjvs4s760g9fm1nk15xm0000gn/T`. Short enough that a
     /// child could bind a socket directly in it, long enough that it cannot
-    /// also absorb `/codeg-acp/<pid>-<hex>` — which is the whole of #754.
+    /// also absorb `/zwiim-acp/<pid>-<hex>` — which is the whole of #754.
     #[cfg(unix)]
     const MACOS_TEMP_DIR_LEN: usize = 48;
 
@@ -825,7 +825,7 @@ mod tests {
     /// than against [`leaves_room_for_a_child_socket`]'s own opinion.
     ///
     /// Before the length budget existed this bound
-    /// `<ambient>/codeg-acp/<pid>-<hex>/znr-<uuid>.sock` — 119 bytes — and
+    /// `<ambient>/zwiim-acp/<pid>-<hex>/znr-<uuid>.sock` — 119 bytes — and
     /// failed with `path must be shorter than SUN_LEN`.
     #[cfg(unix)]
     #[test]
@@ -898,14 +898,14 @@ mod tests {
     }
 
     /// The other half: a root we DO own, merely left group/world-reachable by a
-    /// codeg that predates the `0700`. Refusing that would turn every upgrade
+    /// Zwiim that predates the `0700`. Refusing that would turn every upgrade
     /// into a silent loss of isolation, so it is tightened instead.
     #[cfg(unix)]
     #[test]
     fn a_loose_root_we_own_is_tightened_rather_than_refused() {
         use std::os::unix::fs::PermissionsExt;
         let holder = tempfile::tempdir().expect("tempdir");
-        let root = holder.path().join("codeg-acp");
+        let root = holder.path().join("zwiim-acp");
         std::fs::create_dir(&root).expect("create root");
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 

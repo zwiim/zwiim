@@ -143,7 +143,7 @@ pub struct DelegationListener {
     pub questions: Arc<dyn SessionQuestionAccess>,
     /// Resolves a referenced session for the `get_session_info` tool. Unlike the
     /// other arms this is NOT parent-scoped — it looks any non-deleted session up
-    /// by its codeg conversation id (still token-gated against an invalid caller).
+    /// by its Zwiim conversation id (still token-gated against an invalid caller).
     pub session_info: Arc<dyn SessionInfoAccess>,
     /// Records work-task reports (`task_progress` / `task_complete`) against the
     /// task the parent connection is executing. Same token → parent-connection
@@ -240,7 +240,7 @@ impl DelegationListener {
     /// disturbing an incumbent socket that is still serving this path.
     ///
     /// The staged path is measured too rather than assumed shorter. It usually
-    /// is — `.stg-<pid>-<8 hex>` is 8 bytes under `codeg-delegation-<pid>.sock`
+    /// is — `.stg-<pid>-<8 hex>` is 8 bytes under `zwiim-delegation-<pid>.sock`
     /// — but that holds only for names at least as long as the staged one, and
     /// a caller passing a SHORT name in a deep directory would otherwise clear
     /// this check and then fail the real `bind` on the staged path instead.
@@ -312,7 +312,7 @@ impl DelegationListener {
     /// Sibling path for [`Self::bind`]'s staged socket.
     ///
     /// PID-scoped like the socket itself, then salted. The PID is what makes it
-    /// safe: the staging directory is `$TMPDIR`, shared with every other codeg
+    /// safe: the staging directory is `$TMPDIR`, shared with every other Zwiim
     /// process, and two binds that picked the same staged name could interleave
     /// into real corruption — one process's `remove_file` clearing the other's
     /// staged entry, then its own bind recreating it under that name, so the
@@ -322,7 +322,7 @@ impl DelegationListener {
     /// already serialized by `DelegationService`'s state lock.
     ///
     /// The whole name is deliberately SHORTER than a real socket name
-    /// (`codeg-delegation-<pid>.sock`): `sun_path` caps a unix socket address
+    /// (`zwiim-delegation-<pid>.sock`): `sun_path` caps a unix socket address
     /// at 104 bytes on macOS, and a staged path longer than the real one could
     /// fail to bind where the real path would have succeeded — turning a safety
     /// measure into a startup failure. Replacing the file name rather than
@@ -592,7 +592,7 @@ impl DelegationListener {
             BrokerMessage::BrowserCapture(req) => {
                 // Bounded by the capture's own engine timeout, as the read
                 // is; the line it leaves on the strip is written on the
-                // codeg side whether or not the caller waits.
+                // Zwiim side whether or not the caller waits.
                 browser_capture_response(self.process_browser_capture(req).await)?
             }
             BrokerMessage::BrowserEval(req) => {
@@ -605,7 +605,7 @@ impl DelegationListener {
                 browser_eval_response(self.process_browser_eval(req).await)?
             }
             BrokerMessage::BrowserTabOp(req) => {
-                // Bounded by the settle timeout on the codeg side. No
+                // Bounded by the settle timeout on the Zwiim side. No
                 // peer-close race for the same reason the snapshot arm has
                 // none: dropping the future mid-flight would leave a tab open
                 // (or a page navigated) with nothing on the strip to say so.
@@ -817,10 +817,10 @@ impl DelegationListener {
     /// token yields a `found:false` outcome (the LLM can't usefully distinguish it
     /// from a deleted session, and we don't leak which).
     ///
-    /// SCOPE (deliberate, user-confirmed): the lookup is by codeg conversation id
+    /// SCOPE (deliberate, user-confirmed): the lookup is by Zwiim conversation id
     /// and is intentionally NOT scoped to the caller's parent connection or to the
     /// session ids actually referenced in the prompt — any non-deleted session
-    /// resolves. This is sound in codeg's single-tenant trust model: there is no
+    /// resolves. This is sound in Zwiim's single-tenant trust model: there is no
     /// per-user isolation anywhere (desktop is one local user; server mode shares
     /// one `ZWIIM_TOKEN` + one data dir across an operator's devices), the user can
     /// already open every session in the UI, and the agent already has full
@@ -1351,7 +1351,7 @@ fn parse_agent_type(raw: &str) -> Option<AgentType> {
 /// STRICTLY less than the cap: the array has to hold the terminating NUL too,
 /// so its last byte is never available to the path. Same rule, and the same
 /// constant, as [`crate::acp::scratch_dir`] applies to the temp directory it
-/// hands a child — this is codeg's own end of the identical budget.
+/// hands a child — this is Zwiim's own end of the identical budget.
 #[cfg(unix)]
 fn fits_sun_path(path: &Path) -> bool {
     path.as_os_str().len() < SUN_PATH_CAP
@@ -1363,7 +1363,7 @@ fn fits_sun_path(path: &Path) -> bool {
 /// `/tmp` because it is the shortest directory POSIX guarantees exists, and
 /// euid-scoped for the reason [`crate::acp::scratch_dir`] gives for its own
 /// twin: `/tmp` is shared with every other account on the machine, so an
-/// unscoped name would be owned by whichever user ran codeg first and
+/// unscoped name would be owned by whichever user ran Zwiim first and
 /// uncreatable by all the rest. [`DelegationListener::bind`] creates it `0700`,
 /// keeping the socket as private as it was in the per-user `$TMPDIR` this
 /// stands in for.
@@ -1375,42 +1375,42 @@ fn fits_sun_path(path: &Path) -> bool {
 /// The cost of staying out of it: nothing reclaims this directory either, so a
 /// process that dies without unlinking leaves one dead `.sock` inode behind
 /// until the OS temp reaper gets to it. That is not a regression — the primary
-/// `$TMPDIR/codeg-delegation-<pid>.sock` has always had exactly the same
+/// `$TMPDIR/zwiim-delegation-<pid>.sock` has always had exactly the same
 /// property, and a stale entry is inert (pid-scoped, never consulted, replaced
 /// by `rename` if the pid is ever recycled). Worth knowing before anyone adds a
 /// sweep: it would need to cover BOTH locations or it would just move the leak.
 #[cfg(unix)]
 fn short_socket_dir() -> PathBuf {
     PathBuf::from(format!(
-        "/tmp/codeg-{}",
+        "/tmp/zwiim-{}",
         // Always succeeds; `geteuid` has no failure mode.
         unsafe { libc::geteuid() }
     ))
 }
 
 /// Default socket path for the running process, scoped to PID so multiple
-/// codeg instances on the same machine don't collide.
+/// Zwiim instances on the same machine don't collide.
 ///
 /// Unix: a `.sock` file inside `temp_dir`, or — when that would not fit in
 /// `sun_path` — inside [`short_socket_dir`]. The fallback is not hypothetical
-/// housekeeping: codeg exports a ~72-byte per-session `TMPDIR` to the agents it
-/// launches, so a codeg started from inside one is already within a few bytes
+/// housekeeping: Zwiim exports a ~72-byte per-session `TMPDIR` to the agents it
+/// launches, so a Zwiim started from inside one is already within a few bytes
 /// of the macOS cap, and a container or a hand-set `TMPDIR` clears it outright.
 /// Without the fallback that produced a socket nobody could dial and no error
 /// anywhere — see [`DelegationListener::bind`].
 ///
-/// Windows: a named pipe address `\\.\pipe\codeg-delegation-<pid>`. Windows
+/// Windows: a named pipe address `\\.\pipe\zwiim-delegation-<pid>`. Windows
 /// named pipes live in their own kernel namespace and ignore `temp_dir`; the
 /// argument is kept for signature parity across platforms.
 #[cfg(unix)]
 pub fn default_socket_path(temp_dir: &Path) -> PathBuf {
-    let name = format!("codeg-delegation-{}.sock", std::process::id());
+    let name = format!("zwiim-delegation-{}.sock", std::process::id());
     let preferred = temp_dir.join(&name);
     if fits_sun_path(&preferred) {
         return preferred;
     }
     // No third candidate, because there is no third case to handle: this is
-    // `/tmp/codeg-` + at most 10 digits of euid + `/codeg-delegation-` + at
+    // `/tmp/zwiim-` + at most 10 digits of euid + `/zwiim-delegation-` + at
     // most 10 digits of pid + `.sock` — 54 bytes at its absolute widest, or
     // half the smallest `sun_path` any of these platforms has.
     let short = short_socket_dir().join(&name);
@@ -1427,7 +1427,7 @@ pub fn default_socket_path(temp_dir: &Path) -> PathBuf {
 
 #[cfg(windows)]
 pub fn default_socket_path(_temp_dir: &Path) -> PathBuf {
-    PathBuf::from(format!(r"\\.\pipe\codeg-delegation-{}", std::process::id()))
+    PathBuf::from(format!(r"\\.\pipe\zwiim-delegation-{}", std::process::id()))
 }
 
 #[cfg(test)]
@@ -3454,14 +3454,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn an_over_long_temp_dir_falls_back_to_the_short_socket_dir() {
-        let name = format!("codeg-delegation-{}.sock", std::process::id());
-        // A macOS `/var/folders/…/T` with codeg's own per-session nesting under
+        let name = format!("zwiim-delegation-{}.sock", std::process::id());
+        // A macOS `/var/folders/…/T` with Zwiim's own per-session nesting under
         // it — the shape that actually produces this — padded so the composed
         // path lands exactly ONE byte past what `sun_path` can hold. Sized from
         // the cap rather than hard-coded, so it keeps straddling the boundary
         // if either side of it moves.
         let prefix = "/var/folders/hl/";
-        let suffix = "/T/codeg-acp/12345-deadbeef";
+        let suffix = "/T/zwiim-acp/12345-deadbeef";
         let pad = SUN_PATH_CAP - 1 - name.len() - prefix.len() - suffix.len();
         let ambient = PathBuf::from(format!("{prefix}{}{suffix}", "z".repeat(pad)));
         assert_eq!(ambient.as_os_str().len() + 1 + name.len(), SUN_PATH_CAP);
@@ -3480,7 +3480,7 @@ mod tests {
 
     /// The STAGED path is measured too, not assumed shorter than the real one.
     ///
-    /// `.stg-<pid>-<8 hex>` is shorter than `codeg-delegation-<pid>.sock`, which
+    /// `.stg-<pid>-<8 hex>` is shorter than `zwiim-delegation-<pid>.sock`, which
     /// is why production never noticed, but it is longer than a short name — so
     /// a short name in a deep directory fits `sun_path` while the path `bind`
     /// actually hands the kernel does not. Refusing both together is what makes
@@ -3531,7 +3531,7 @@ mod tests {
     #[tokio::test]
     async fn the_chosen_socket_path_can_actually_be_bound_and_dialed() {
         let ambient = PathBuf::from(format!(
-            "/var/folders/hl/{}/T/codeg-acp/12345-deadbeef",
+            "/var/folders/hl/{}/T/zwiim-acp/12345-deadbeef",
             "z".repeat(60)
         ));
         let path = default_socket_path(&ambient);

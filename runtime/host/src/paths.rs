@@ -1,4 +1,4 @@
-//! Centralized resolution of codeg-owned filesystem paths.
+//! Centralized resolution of zwiim-owned filesystem paths.
 //!
 //! Mirrors the conventions already used by `preferences.rs` (`~/.zwiim/`)
 //! and `experts.rs` (`~/.zwiim/skills/`). New features that need a
@@ -20,7 +20,7 @@ const BACKGROUNDS_DIR_NAME: &str = "backgrounds";
 ///
 /// Returns the relative `.zwiim` path when no home directory is available;
 /// callers must still handle creation failures gracefully.
-pub fn codeg_home_dir() -> PathBuf {
+pub fn zwiim_home_dir() -> PathBuf {
     if let Some(custom) = std::env::var_os("ZWIIM_HOME").filter(|s| !s.is_empty()) {
         return PathBuf::from(custom);
     }
@@ -36,7 +36,7 @@ pub fn codeg_home_dir() -> PathBuf {
 /// 2. `$ZWIIM_DATA_DIR/pets` (server-mode data directory, populated by
 ///    `zwiim-host` from the corresponding env var)
 /// 3. `~/.zwiim/pets` (default for the desktop app)
-pub fn codeg_pets_root() -> PathBuf {
+pub fn zwiim_pets_root() -> PathBuf {
     if let Some(custom) = std::env::var_os("ZWIIM_HOME").filter(|s| !s.is_empty()) {
         return PathBuf::from(custom).join(PETS_DIR_NAME);
     }
@@ -52,8 +52,8 @@ pub fn codeg_pets_root() -> PathBuf {
 /// on Windows, WebKitGTK data directories on Linux; macOS keeps profiles in
 /// WebKit's own store and never reads this).
 ///
-/// Resolution order matches `codeg_pets_root()`.
-pub fn codeg_browser_profiles_root() -> PathBuf {
+/// Resolution order matches `zwiim_pets_root()`.
+pub fn zwiim_browser_profiles_root() -> PathBuf {
     if let Some(custom) = std::env::var_os("ZWIIM_HOME").filter(|s| !s.is_empty()) {
         return PathBuf::from(custom).join(BROWSER_PROFILES_DIR_NAME);
     }
@@ -67,12 +67,12 @@ pub fn codeg_browser_profiles_root() -> PathBuf {
 
 /// Root directory for attachments uploaded from the web client.
 ///
-/// Resolution order matches `codeg_pets_root()`:
+/// Resolution order matches `zwiim_pets_root()`:
 /// 1. `$ZWIIM_HOME/uploads`
 /// 2. `$ZWIIM_DATA_DIR/uploads` (server-mode data directory)
 /// 3. `~/.zwiim/uploads` (desktop default)
 ///
-/// Files in this directory are not garbage-collected by codeg itself —
+/// Files in this directory are not garbage-collected by Zwiim itself —
 /// later conversations may still reference them via `file://` URIs
 /// embedded in session history. To bound the long-term footprint on
 /// shared / multi-tenant servers, operators can set
@@ -86,10 +86,10 @@ pub fn codeg_browser_profiles_root() -> PathBuf {
 /// `zwiim-host` processes sharing the same uploads root (e.g.
 /// horizontally-scaled containers mounted on the same volume) will
 /// each enforce the cap independently and can collectively exceed it.
-/// codeg is designed for single-process deployments; horizontal
+/// Zwiim is designed for single-process deployments; horizontal
 /// scaling would require external coordination (file lock, Redis,
 /// reverse-proxy quota) that this codebase does not provide.
-pub fn codeg_uploads_root() -> PathBuf {
+pub fn zwiim_uploads_root() -> PathBuf {
     if let Some(custom) = std::env::var_os("ZWIIM_HOME").filter(|s| !s.is_empty()) {
         return PathBuf::from(custom).join(UPLOADS_DIR_NAME);
     }
@@ -103,11 +103,11 @@ pub fn codeg_uploads_root() -> PathBuf {
 
 /// Root directory for the user-selected workspace background image.
 ///
-/// Resolution mirrors [`codeg_pets_root`] exactly:
+/// Resolution mirrors [`zwiim_pets_root`] exactly:
 /// 1. `$ZWIIM_HOME/backgrounds` (explicit override)
 /// 2. `$ZWIIM_DATA_DIR/backgrounds` (server-mode data directory)
 /// 3. `~/.zwiim/backgrounds` (desktop default)
-pub fn codeg_backgrounds_root() -> PathBuf {
+pub fn zwiim_backgrounds_root() -> PathBuf {
     if let Some(custom) = std::env::var_os("ZWIIM_HOME").filter(|s| !s.is_empty()) {
         return PathBuf::from(custom).join(BACKGROUNDS_DIR_NAME);
     }
@@ -122,7 +122,7 @@ pub fn codeg_backgrounds_root() -> PathBuf {
 /// Root directory for application diagnostic logs (rotating files written by
 /// the `tracing` file appender; see `crate::logging`).
 ///
-/// Resolution mirrors [`codeg_uploads_root`] exactly so logs land on the same
+/// Resolution mirrors [`zwiim_uploads_root`] exactly so logs land on the same
 /// filesystem root as uploads/pets/the database:
 /// 1. `$ZWIIM_HOME/logs` (explicit override)
 /// 2. `$ZWIIM_DATA_DIR/logs` (server-mode data directory)
@@ -131,7 +131,7 @@ pub fn codeg_backgrounds_root() -> PathBuf {
 /// Pure env + `dirs::home_dir()`, so it is callable at the very start of a
 /// process — before the database (or, in `zwiim-host`, the tokio runtime)
 /// exists — which is exactly when the subscriber must be installed.
-pub fn codeg_logs_root() -> PathBuf {
+pub fn zwiim_logs_root() -> PathBuf {
     if let Some(custom) = std::env::var_os("ZWIIM_HOME").filter(|s| !s.is_empty()) {
         return PathBuf::from(custom).join(LOGS_DIR_NAME);
     }
@@ -143,17 +143,17 @@ pub fn codeg_logs_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(ZWIIM_DIR_NAME).join(LOGS_DIR_NAME))
 }
 
-/// Root directory for codeg's own per-turn timing observations (see
+/// Root directory for Zwiim's own per-turn timing observations (see
 /// `crate::turn_timings`) — wall-clock turn spans the ACP connection layer
 /// records for agents whose native session store carries no per-turn
 /// timestamps (Cursor). Written by the live connection, read back by the
 /// history parser.
 ///
-/// Resolution mirrors [`codeg_uploads_root`]:
+/// Resolution mirrors [`zwiim_uploads_root`]:
 /// 1. `$ZWIIM_HOME/turn-timings`
 /// 2. `$ZWIIM_DATA_DIR/turn-timings` (server-mode data directory)
 /// 3. `~/.zwiim/turn-timings` (desktop default)
-pub fn codeg_turn_timings_root() -> PathBuf {
+pub fn zwiim_turn_timings_root() -> PathBuf {
     if let Some(custom) = std::env::var_os("ZWIIM_HOME").filter(|s| !s.is_empty()) {
         return PathBuf::from(custom).join(TURN_TIMINGS_DIR_NAME);
     }
@@ -165,17 +165,17 @@ pub fn codeg_turn_timings_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(ZWIIM_DIR_NAME).join(TURN_TIMINGS_DIR_NAME))
 }
 
-/// Root directory for codeg's own ACP transcripts (see
+/// Root directory for Zwiim's own ACP transcripts (see
 /// `crate::acp_transcript`) — the raw `session/update` stream and outgoing
-/// prompts recorded for **custom ACP agents**, which have no codeg-side
+/// prompts recorded for **custom ACP agents**, which have no zwiim-side
 /// transcript parser of their own. Written by the live connection, read back
 /// by `crate::parsers::acp_native`.
 ///
-/// Resolution mirrors [`codeg_turn_timings_root`]:
+/// Resolution mirrors [`zwiim_turn_timings_root`]:
 /// 1. `$ZWIIM_HOME/acp-transcripts`
 /// 2. `$ZWIIM_DATA_DIR/acp-transcripts` (server-mode data directory)
 /// 3. `~/.zwiim/acp-transcripts` (desktop default)
-pub fn codeg_acp_transcripts_root() -> PathBuf {
+pub fn zwiim_acp_transcripts_root() -> PathBuf {
     if let Some(custom) = std::env::var_os("ZWIIM_HOME").filter(|s| !s.is_empty()) {
         return PathBuf::from(custom).join(ACP_TRANSCRIPTS_DIR_NAME);
     }

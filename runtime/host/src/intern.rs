@@ -78,8 +78,8 @@ mod tests {
 
     #[test]
     fn intern_returns_pointer_identical_slices() {
-        let a = intern("codeg-intern-test-alpha");
-        let b = intern(&String::from("codeg-intern-test-alpha"));
+        let a = intern("zwiim-intern-test-alpha");
+        let b = intern(&String::from("zwiim-intern-test-alpha"));
         assert_eq!(a, b);
         assert!(
             std::ptr::eq(a.as_ptr(), b.as_ptr()),
@@ -89,8 +89,8 @@ mod tests {
 
     #[test]
     fn intern_keeps_distinct_values_distinct() {
-        let a = intern("codeg-intern-test-one");
-        let b = intern("codeg-intern-test-two");
+        let a = intern("zwiim-intern-test-one");
+        let b = intern("zwiim-intern-test-two");
         assert_ne!(a, b);
     }
 

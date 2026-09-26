@@ -1,8 +1,8 @@
 //! Runtime source for codex's official model catalog.
 //!
-//! Because `model_catalog_json` is a whole-table replace, codeg must reproduce
+//! Because `model_catalog_json` is a whole-table replace, Zwiim must reproduce
 //! codex's own catalog inside the generated file — so it has to match the codex
-//! codeg **actually launches**. That codex is the one **nested** under the
+//! Zwiim **actually launches**. That codex is the one **nested** under the
 //! pinned `codex-acp` npm package (`.../codex-acp/node_modules/@openai/codex`),
 //! NOT the `codex` on PATH (often an unrelated standalone install of a different
 //! version, and the version that gets hoisted to the top-level `node_modules`).
@@ -15,7 +15,7 @@
 //! snapshot ([`crate::acp::codex_model_catalog::bundled_snapshot_models`])
 //! guarantees a result offline.
 //!
-//! The cache lives under [`crate::paths::codeg_home_dir`] (not the app data dir)
+//! The cache lives under [`crate::paths::zwiim_home_dir`] (not the app data dir)
 //! so both the async editor path and the **synchronous** config-write paths can
 //! reach it with zero `data_dir` threading.
 
@@ -30,7 +30,7 @@ const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const CODEX_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn cache_path() -> PathBuf {
-    crate::paths::codeg_home_dir()
+    crate::paths::zwiim_home_dir()
         .join("cache")
         .join("codex")
         .join("bundled-catalog.json")
@@ -84,7 +84,7 @@ fn codex_acp_dir(prefix: &Path) -> PathBuf {
     base.join("@agentclientprotocol").join("codex-acp")
 }
 
-/// Candidate codex-acp package dirs: the global npm prefix and codeg's user
+/// Candidate codex-acp package dirs: the global npm prefix and Zwiim's user
 /// prefix (`~/.zwiim/npm-global`, used when a global install hit EACCES).
 async fn codex_acp_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();

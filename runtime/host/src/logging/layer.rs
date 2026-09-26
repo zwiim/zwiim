@@ -245,8 +245,8 @@ mod tests {
 
     #[test]
     fn plain_event_has_empty_fields_and_spans() {
-        let recs = records_for("codeg_test_plain", || {
-            tracing::info!(target: "codeg_test_plain", "hello world");
+        let recs = records_for("zwiim_test_plain", || {
+            tracing::info!(target: "zwiim_test_plain", "hello world");
         });
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].message, "hello world");
@@ -256,8 +256,8 @@ mod tests {
 
     #[test]
     fn event_key_value_fields_are_captured() {
-        let recs = records_for("codeg_test_fields", || {
-            tracing::info!(target: "codeg_test_fields", user_id = 7, name = "ada", "msg");
+        let recs = records_for("zwiim_test_fields", || {
+            tracing::info!(target: "zwiim_test_fields", user_id = 7, name = "ada", "msg");
         });
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].message, "msg");
@@ -267,12 +267,12 @@ mod tests {
 
     #[test]
     fn nested_spans_captured_root_to_leaf() {
-        let recs = records_for("codeg_test_spans", || {
+        let recs = records_for("zwiim_test_spans", || {
             let outer = tracing::info_span!("outer", a = 1);
             let _o = outer.enter();
             let inner = tracing::info_span!("inner", b = 2);
             let _i = inner.enter();
-            tracing::info!(target: "codeg_test_spans", c = 3, "in span");
+            tracing::info!(target: "zwiim_test_spans", c = 3, "in span");
         });
         assert_eq!(recs.len(), 1);
         let r = &recs[0];
@@ -286,11 +286,11 @@ mod tests {
 
     #[test]
     fn span_field_recorded_after_creation_is_captured() {
-        let recs = records_for("codeg_test_late", || {
+        let recs = records_for("zwiim_test_late", || {
             let span = tracing::info_span!("late", id = tracing::field::Empty);
             let _g = span.enter();
             span.record("id", "abc");
-            tracing::info!(target: "codeg_test_late", "after record");
+            tracing::info!(target: "zwiim_test_late", "after record");
         });
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].spans.len(), 1);
@@ -302,10 +302,10 @@ mod tests {
 
     #[test]
     fn span_field_named_message_is_kept() {
-        let recs = records_for("codeg_test_spanmsg", || {
+        let recs = records_for("zwiim_test_spanmsg", || {
             let span = tracing::info_span!("op", message = "span note");
             let _g = span.enter();
-            tracing::info!(target: "codeg_test_spanmsg", "event msg");
+            tracing::info!(target: "zwiim_test_spanmsg", "event msg");
         });
         assert_eq!(recs.len(), 1);
         // The event's own message is unaffected; the span's `message` field is

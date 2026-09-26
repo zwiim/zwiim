@@ -90,13 +90,13 @@ pub(crate) fn resolve_gemini_home() -> PathBuf {
 /// It exists because rebuilding them by hand is exactly what went wrong:
 /// `acp::connection`'s settings-file writer used a bare `PathBuf::from`, which
 /// dropped the `~` expansion above and sent every `GEMINI_HOME=~/...` user's
-/// `auth.type` into a literal `~` directory beside codeg's working directory
+/// `auth.type` into a literal `~` directory beside Zwiim's working directory
 /// while the server read `$HOME/...` and kept failing `Authentication
 /// required`.
 /// `home_dir` is the home the value's `~` is expanded against, and that the
 /// `~/.gemini` default hangs off. A caller holding a launch environment must
 /// pass the CHILD's home (`acp::file_system_runtime::child_home_dir`), not
-/// codeg's: `merge_agent_env` copies `HOME` into the child like any other
+/// Zwiim's: `merge_agent_env` copies `HOME` into the child like any other
 /// variable, so `HOME=/srv/agy GEMINI_HOME=~/profile` means `/srv/agy/profile`
 /// to the server and nothing else.
 pub(crate) fn resolve_gemini_home_from_value(
@@ -650,7 +650,7 @@ fn open_trajectory(db_path: &Path) -> Option<Connection> {
     if std::fs::metadata(db_path).ok()?.len() == 0 {
         return None;
     }
-    // codeg never mutates the server's stores, so ask for a read-only handle;
+    // Zwiim never mutates the server's stores, so ask for a read-only handle;
     // fall back to read-write (no CREATE) exactly as the Cursor parser does,
     // because a live WAL whose index needs recovery cannot be recovered from a
     // read-only connection (SQLITE_READONLY_RECOVERY).
@@ -668,7 +668,7 @@ fn open_trajectory(db_path: &Path) -> Option<Connection> {
 
 fn try_open_trajectory(db_path: &Path, flags: OpenFlags) -> Option<Connection> {
     let conn = Connection::open_with_flags(db_path, flags).ok()?;
-    // The server may hold the trajectory open while codeg lists sessions; give
+    // The server may hold the trajectory open while Zwiim lists sessions; give
     // reads a short grace period rather than failing on a transient lock.
     let _ = conn.busy_timeout(std::time::Duration::from_millis(200));
     // Opening is lazy — probe so a handle that cannot actually read reports
@@ -1016,7 +1016,7 @@ const MCP_PROMPT_KEYS: [&str; 5] = [
 /// name `call_mcp_tool`, on BOTH the planner's announcement and the executing
 /// step. Projected verbatim, every MCP call in a session is named
 /// "call_mcp_tool" and its real identity is buried in a JSON blob, so none of
-/// codeg's MCP-aware cards (delegation, ask-question, the workbench
+/// Zwiim's MCP-aware cards (delegation, ask-question, the workbench
 /// companions) can match it.
 ///
 /// The server does not ship that shape to ACP clients either:

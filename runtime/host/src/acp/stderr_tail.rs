@@ -1,10 +1,10 @@
 //! Per-connection agent stderr ring buffer + diagnostic redaction.
 //!
-//! When an agent reports `EndTurn` without producing any output, codeg
+//! When an agent reports `EndTurn` without producing any output, Zwiim
 //! synthesizes an `"empty"` stop reason (see [`crate::acp::connection`]). The
 //! ACP wire carries no error in that case — the agent said "success" — so the
 //! only evidence available is out-of-band: what the agent printed to stderr,
-//! and what codeg failed to parse. This module owns the collection of that
+//! and what Zwiim failed to parse. This module owns the collection of that
 //! evidence.
 //!
 //! stderr is already tee'd to `tracing::debug!` at the three `with_debug`
@@ -378,7 +378,7 @@ const SAFE_EXPECT_PHRASES: &[&str] = &[
     "newtype struct",
 ];
 
-/// Identifiers from codeg's own ACP schema that are safe to echo back.
+/// Identifiers from Zwiim's own ACP schema that are safe to echo back.
 ///
 /// Drift (a new schema field not yet listed) degrades to `(redacted)` — a
 /// failure on the safe side.

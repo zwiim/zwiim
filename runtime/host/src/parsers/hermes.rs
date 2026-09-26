@@ -68,7 +68,7 @@ impl HermesParser {
 
     /// Open the Hermes state DB read-only. `mode=ro` reads committed WAL frames
     /// even while the Hermes ACP server is actively writing (verified against a
-    /// live process), and guarantees codeg never mutates Hermes data.
+    /// live process), and guarantees Zwiim never mutates Hermes data.
     async fn open_sqlite_connection(&self) -> Result<DatabaseConnection, ParseError> {
         let db_path = self.sqlite_db_path();
         let db_url = format!(
@@ -447,7 +447,7 @@ fn resolve_hermes_home(env: Option<String>, home: Option<PathBuf>) -> PathBuf {
         // truth") is `Path(os.environ["HERMES_HOME"].strip())` with no
         // `expanduser`, so `HERMES_HOME=~/somewhere` really does make Hermes
         // create and use a directory LITERALLY named `~`, next to wherever it
-        // was launched. Expanding here pointed codeg at `$HOME/somewhere`
+        // was launched. Expanding here pointed Zwiim at `$HOME/somewhere`
         // instead — a directory Hermes never touches — so the session list came
         // back empty and the `.env` base-URL reconcile
         // (`commands::acp::reconcile_hermes_runtime_env`) patched a file the

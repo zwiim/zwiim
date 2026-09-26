@@ -1224,7 +1224,7 @@ mod tests {
         let manifest = b
             .finish(crate::commands::backup::manifest::BackupManifest {
                 format_version: 1,
-                kind: "codeg-backup".to_string(),
+                kind: "zwiim-backup".to_string(),
                 created_at: String::new(),
                 app_version: String::new(),
                 latest_migration: String::new(),
@@ -1330,7 +1330,7 @@ mod tests {
         assert_eq!(snap_rowids, source_rowids);
     }
 
-    /// Backing up must not write into a store codeg does not own — not the
+    /// Backing up must not write into a store Zwiim does not own — not the
     /// database, and not a `-wal`/`-shm` created as a side effect of opening
     /// it for writing.
     #[cfg(unix)]

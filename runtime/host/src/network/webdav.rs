@@ -156,7 +156,7 @@ impl WebdavClient {
                 .path_segments_mut()
                 .map_err(|_| WebdavError::InvalidUrl)?;
             // `base` always ends in `/`, i.e. a trailing empty segment;
-            // pushing onto it without dropping that would yield `/dav//codeg`.
+            // pushing onto it without dropping that would yield `/dav//zwiim`.
             segments.pop_if_empty();
             for part in rel.split('/').filter(|s| !s.is_empty()) {
                 segments.push(part);
@@ -351,10 +351,10 @@ mod tests {
 
     #[test]
     fn base_url_without_trailing_slash_still_appends() {
-        let url = client().url_for("codeg/v1/default/config.json").expect("url");
+        let url = client().url_for("zwiim/v1/default/config.json").expect("url");
         assert_eq!(
             url.as_str(),
-            "https://dav.example.com/dav/codeg/v1/default/config.json"
+            "https://dav.example.com/dav/zwiim/v1/default/config.json"
         );
     }
 
@@ -363,17 +363,17 @@ mod tests {
     fn trailing_slash_in_the_configured_url_changes_nothing() {
         let with_slash = WebdavClient::new("https://dav.example.com/dav/", "u", "p")
             .expect("client")
-            .url_for("codeg/v1/default/config.json")
+            .url_for("zwiim/v1/default/config.json")
             .expect("url");
         assert_eq!(
             with_slash.as_str(),
-            "https://dav.example.com/dav/codeg/v1/default/config.json"
+            "https://dav.example.com/dav/zwiim/v1/default/config.json"
         );
     }
 
     #[test]
     fn segments_are_percent_encoded() {
-        let url = client().url_for("codeg/my drive/config.json").expect("url");
+        let url = client().url_for("zwiim/my drive/config.json").expect("url");
         assert!(url.as_str().contains("my%20drive"), "got {url}");
     }
 
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn path_segments_cannot_escape_the_configured_directory() {
-        assert_eq!(sanitize_path_segment(" codeg "), Some("codeg".to_string()));
+        assert_eq!(sanitize_path_segment(" zwiim "), Some("zwiim".to_string()));
         for bad in ["", "..", ".", "a/b", "a\\b", "\0"] {
             assert!(
                 sanitize_path_segment(bad).is_none(),

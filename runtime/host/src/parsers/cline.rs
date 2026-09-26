@@ -29,13 +29,13 @@ use super::{
 // SUB-agent is written — those get a row and a sibling messages file, never a
 // manifest of their own. Listing manifests therefore yields exactly the root
 // sessions, which is what the index's own `rootOnly` filter selects, without
-// codeg opening a live SQLite store owned by another process.
+// Zwiim opening a live SQLite store owned by another process.
 //
 // The pre-3.x layout (`state/taskHistory.json` + `tasks/<id>/`) is still read
 // as a fallback so history written by an older cline does not disappear.
 
 /// `sessions/<id>/<id>.json`. Mirrors the columns of the `sessions` table;
-/// only the fields codeg surfaces are declared.
+/// only the fields Zwiim surfaces are declared.
 #[derive(Debug, Default, Deserialize)]
 struct SessionManifest {
     #[serde(default)]
@@ -258,7 +258,7 @@ impl ClineParser {
         let mut manifest: SessionManifest = serde_json::from_str(&raw).ok()?;
         // A manifest whose `session_id` is missing or disagrees with its own
         // directory is still readable — the directory name is the id every
-        // other path is built from, and the id codeg recorded as `external_id`.
+        // other path is built from, and the id Zwiim recorded as `external_id`.
         if manifest.session_id != session_id {
             manifest.session_id = session_id.to_string();
         }
@@ -1309,7 +1309,7 @@ mod tests {
     }
 
     /// The manifest shape observed from cline 3.0.62, trimmed to the fields
-    /// codeg reads.
+    /// Zwiim reads.
     fn manifest(session_id: &str) -> serde_json::Value {
         json!({
             "version": 1,
@@ -1545,7 +1545,7 @@ mod tests {
         );
 
         // Quoted INSIDE its own wrapper is markup cline cannot express and
-        // codeg cannot recover: the first closing tag ends the block, and the
+        // Zwiim cannot recover: the first closing tag ends the block, and the
         // rest is left as written. Asserted so the ambiguity is a recorded
         // outcome rather than an accident — what matters is that the pass
         // shrinks the string and terminates.

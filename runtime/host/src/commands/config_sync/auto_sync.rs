@@ -5,7 +5,7 @@
 //!
 //! The obvious design is to flag "config changed" at each write site and
 //! debounce. That works when writes funnel through a handful of save
-//! functions; codeg's configuration writes are spread across `model_provider`,
+//! functions; Zwiim's configuration writes are spread across `model_provider`,
 //! `custom_agents`, `quick_messages`, `work_task`, and a dozen settings
 //! commands, so instrumenting them is both a wide change and one that every
 //! new feature can silently forget to make — and a forgotten write site means

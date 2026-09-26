@@ -11,7 +11,7 @@ use crate::app_error::{
     AppCommandError, UPLOAD_I18N_KEY_QUOTA_EXCEEDED, UPLOAD_I18N_KEY_TOO_LARGE,
 };
 use crate::commands::folders as folder_commands;
-use crate::paths::{codeg_uploads_root, simplify_verbatim_path};
+use crate::paths::{zwiim_uploads_root, simplify_verbatim_path};
 
 use super::upload_jail;
 
@@ -424,11 +424,11 @@ pub fn validate_upload_quota_config() -> Result<(), UploadQuotaStrictError> {
 /// **Scope:** this counter is process-local. Multiple `zwiim-host`
 /// processes sharing the same `uploads_root` (horizontally-scaled
 /// deployments mounted on the same volume) will each maintain their
-/// own counter and can collectively exceed the cap. codeg is designed
+/// own counter and can collectively exceed the cap. Zwiim is designed
 /// for single-process deployments; multi-process coordination would
 /// require an external mechanism (file lock, Redis, reverse-proxy
 /// quota) that this codebase does not provide. See the doc on
-/// `paths::codeg_uploads_root` for the operator-facing version of
+/// `paths::zwiim_uploads_root` for the operator-facing version of
 /// this contract.
 static UPLOAD_IN_FLIGHT_BYTES: AtomicU64 = AtomicU64::new(0);
 
@@ -734,7 +734,7 @@ async fn ensure_path_inside(
 /// expected case on a fresh install, and permission issues should not block
 /// the server from starting.
 pub async fn purge_upload_staging() {
-    let tmp_dir = codeg_uploads_root().join(".tmp");
+    let tmp_dir = zwiim_uploads_root().join(".tmp");
     match tokio::fs::remove_dir_all(&tmp_dir).await {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -773,7 +773,7 @@ pub async fn upload_attachment(
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<Json<UploadAttachmentResult>, AppCommandError> {
-    let uploads_root = codeg_uploads_root();
+    let uploads_root = zwiim_uploads_root();
     // Ensure root exists before canonicalize/ensure_path_inside can compare.
     tokio::fs::create_dir_all(&uploads_root)
         .await

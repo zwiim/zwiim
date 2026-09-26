@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn test_tokens_file_path_absolute_env_unchanged() {
-        let data_dir = std::env::current_dir().expect("cwd").join("codeg-data");
+        let data_dir = std::env::current_dir().expect("cwd").join("zwiim-data");
         let data_dir_str = data_dir.to_string_lossy().to_string();
         let resolved = tokens_file_path_for(Some(&data_dir_str));
         assert_eq!(resolved, data_dir.join("tokens.json"));

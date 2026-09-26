@@ -3,22 +3,22 @@
 //! [`FsAccessPolicy`](crate::acp::file_system_runtime::FsAccessPolicy), not a
 //! part of it (it governs the `terminal/*` channel too).
 //!
-//! codeg advertises `fs.readTextFile` / `fs.writeTextFile` / `terminal` on
+//! Zwiim advertises `fs.readTextFile` / `fs.writeTextFile` / `terminal` on
 //! Initialize, and an agent that sees them stops using its own in-process
 //! backends and delegates: grok, for instance, switches from its local file
 //! reader to `fs/read_text_file` and from its local shell to `terminal/create`.
-//! codeg then services both **in codeg's own process**
+//! Zwiim then services both **in Zwiim's own process**
 //! ([`crate::acp::file_system_runtime::FileSystemRuntime`],
 //! [`crate::acp::terminal_runtime::TerminalRuntime`]).
 //!
 //! That is the whole of issue #436: an OS-level sandbox the agent applies to
 //! ITSELF (grok's seatbelt/landlock profiles, `~/.grok/sandbox.toml`) covers the
-//! agent's process tree. codeg's process is not in it, so a kernel deny on
+//! agent's process tree. Zwiim's process is not in it, so a kernel deny on
 //! `**/.env` is structurally unable to see the read — the audit log records the
 //! profile as applied and enforced, and no violation, because from the kernel's
 //! point of view the agent never touched the file.
 //!
-//! codeg cannot fix that by *containing* the agent. Refusing the capabilities
+//! Zwiim cannot fix that by *containing* the agent. Refusing the capabilities
 //! instead restores the agent's ability to contain ITSELF: the operations move
 //! back inside its process, where its own sandbox and permission rules already
 //! work. Measured against grok 1.0.0 with `deny = ["**/.env_test"]`: with the
@@ -43,27 +43,27 @@ pub(crate) const HOST_TOOLS_AGENT: &str = "agent";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostToolsPolicy {
-    /// codeg advertises and services `fs/*` + `terminal/*`. Historical
+    /// Zwiim advertises and services `fs/*` + `terminal/*`. Historical
     /// behaviour and still the default: most agents ship no sandbox, so there
-    /// is nothing to restore, and codeg's hosting buys a consistent cwd and a
+    /// is nothing to restore, and Zwiim's hosting buys a consistent cwd and a
     /// single place to apply
     /// [`FsAccessPolicy`](crate::acp::file_system_runtime::FsAccessPolicy)'s
     /// write roots.
     Default,
-    /// codeg advertises NEITHER channel, and refuses both if called anyway.
+    /// Zwiim advertises NEITHER channel, and refuses both if called anyway.
     /// The agent falls back to its own file and shell backends, so its own
     /// OS sandbox and permission rules govern every read, write and command.
     ///
     /// It also withholds zwiim-mcp's `delegation` tool group (see
     /// `inject_zwiim_mcp`). `delegate_to_agent` is a third door into the same
-    /// room: it has codeg spawn a SECOND agent, in codeg's process tree under
+    /// room: it has Zwiim spawn a SECOND agent, in Zwiim's process tree under
     /// that agent's own policy, and relays its output back — so a sandboxed
     /// agent that cannot read `.env` itself would simply ask a sibling to read
     /// it. The remaining companion groups (feedback, ask, session info, task
-    /// reporting) surface codeg's own state rather than executing anything on
+    /// reporting) surface Zwiim's own state rather than executing anything on
     /// the user's machine, so they stay.
     ///
-    /// The cost, and why this is opt-in rather than the default: codeg's fs
+    /// The cost, and why this is opt-in rather than the default: Zwiim's fs
     /// write-root policy no longer applies (the agent's does), commands no
     /// longer run through [`crate::acp::terminal_runtime::TerminalRuntime`],
     /// and this agent cannot delegate.
@@ -77,7 +77,7 @@ pub enum HostToolsPolicy {
 impl HostToolsPolicy {
     /// Resolve from [`HOST_TOOLS_ENV`], checking the agent's `runtime_env`
     /// first (so it rides along in the existing per-agent `env_json`) then
-    /// codeg's own process env — the same precedence, and the same helper, as
+    /// Zwiim's own process env — the same precedence, and the same helper, as
     /// [`crate::acp::file_system_runtime::FsAccessPolicy::from_env`].
     pub fn from_env(runtime_env: &BTreeMap<String, String>) -> Self {
         match env_value(runtime_env, HOST_TOOLS_ENV).as_deref() {
@@ -92,7 +92,7 @@ impl HostToolsPolicy {
         }
     }
 
-    /// Whether codeg hosts the `fs/*` and `terminal/*` channels this launch.
+    /// Whether Zwiim hosts the `fs/*` and `terminal/*` channels this launch.
     /// One predicate for both because splitting them buys no boundary: an
     /// agent refused the read gate reaches the same file through a shell, and
     /// an agent refused the shell reads it through the fs channel. Only
@@ -104,7 +104,7 @@ impl HostToolsPolicy {
     /// One-line summary for the connection log.
     pub fn describe(self) -> &'static str {
         match self {
-            Self::Default => "codeg (fs + terminal advertised)",
+            Self::Default => "Zwiim (fs + terminal advertised)",
             Self::Agent => "agent (fs + terminal withheld; the agent's own sandbox applies)",
         }
     }
@@ -173,7 +173,7 @@ mod tests {
     fn per_agent_env_json_wins_over_process_env() {
         // The whole point of reading `runtime_env` first: the knob is set per
         // agent from the settings UI, so one sandboxed agent can hand its
-        // channels back without changing how codeg hosts every other agent.
+        // channels back without changing how Zwiim hosts every other agent.
         temp_env::with_var(HOST_TOOLS_ENV, Some("default"), || {
             assert_eq!(
                 HostToolsPolicy::from_env(&runtime("agent")),
@@ -205,7 +205,7 @@ mod tests {
         // `AcpAgentInfo::host_tools_agent_mode` is exactly
         // `!from_env(&env).hosts_channels()`. The settings UI reads that field
         // rather than the agent's `env` map, because an operator who exported
-        // the knob for codeg itself sets it for every agent whose own env_json
+        // the knob for Zwiim itself sets it for every agent whose own env_json
         // is silent — and those agents lose delegation with no warning if the
         // frontend only inspects `env`.
         let agent_mode = |env: &BTreeMap<String, String>| {

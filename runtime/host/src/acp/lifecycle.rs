@@ -215,7 +215,7 @@ pub(crate) async fn handle_event(
                 // conversation under a new session (`continues`), and
                 // destructive otherwise — a session re-minted under a live
                 // binding would otherwise overwrite the id the row's whole
-                // history hangs off. See codeg#500.
+                // history hangs off. See upstream #500.
                 let continues = crate::acp::continued_session_ids(agent_type, session_id);
                 let preserved =
                     conversation_service::bind_external_id(db_conn, cid, session_id, &continues)
@@ -793,7 +793,7 @@ async fn register_delegation_tool_call_from_event(
     // exact title: if the call turns out to be `delegate_to_agent`, its MCP
     // round-trip claims the id via the post-budget FIFO last resort and the
     // child binds to the REAL ACP id — which is what the live
-    // `meta["codeg.delegation"]` write and the historical
+    // `meta["zwiim.delegation"]` write and the historical
     // `inject_delegation_meta` match both key on. A non-delegation MCP call's
     // candidate is harmless: it's tombstoned when the call goes terminal and
     // GC'd by the unkeyed TTL otherwise; the FIFO only pays out when a
@@ -936,7 +936,7 @@ mod delegation_title_tests {
             None
         ));
         assert!(is_delegation_invocation(
-            "Run mcp__codeg__delegate_to_agent",
+            "Run mcp__zwiim__delegate_to_agent",
             None
         ));
     }

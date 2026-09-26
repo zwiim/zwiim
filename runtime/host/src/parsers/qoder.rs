@@ -26,7 +26,7 @@ use crate::parsers::{
 /// Resolve Qoder's global config dir the way Qoder itself does.
 ///
 /// The resolver is three env vars deep, and reading only the first of them
-/// puts codeg in a different directory than the CLI it just launched —
+/// puts Zwiim in a different directory than the CLI it just launched —
 /// sessions vanish from the list, and skills install where nothing loads them:
 ///
 /// ```js
@@ -53,7 +53,7 @@ use crate::parsers::{
 /// Re-checked against the pinned 1.1.45 bundle: same precedence, same keys,
 /// same `.qoder` config-dir name.)
 ///
-/// Not mirrored, deliberately: the `--config-dir` FLAG, which codeg never
+/// Not mirrored, deliberately: the `--config-dir` FLAG, which Zwiim never
 /// passes, and the `QODERCN_*` twin, which belongs to the separate `.qoder-cn`
 /// distribution rather than the `@qoder-ai/qodercli` package pinned here.
 pub(crate) fn resolve_qoder_config_dir() -> PathBuf {
@@ -1090,12 +1090,12 @@ mod tests {
     const SIDECHAIN_LINE: &str = r#"{"type":"assistant","uuid":"sc1","timestamp":"2026-08-16T15:45:35.000Z","message":{"role":"assistant","model":"qmodel_38max","content":[{"type":"text","text":"sub-agent internal output"}]},"parentUuid":null,"isSidechain":true,"cwd":"/private/tmp/probe","sessionId":"s1","userType":"external","entrypoint":"cli","version":"1.1.23","gitBranch":"main"}"#;
 
     // The shape a REAL ACP-entrypoint session writes (captured from
-    // `~/.qoder/projects/*/*.jsonl` on a machine codeg drove): the human prompt
+    // `~/.qoder/projects/*/*.jsonl` on a machine Zwiim drove): the human prompt
     // is a block ARRAY, not a string, and there is no `gitBranch`.
-    const ACP_USER_LINE: &str = r#"{"type":"user","uuid":"au1","timestamp":"2026-07-25T12:08:58.095Z","message":{"role":"user","content":[{"type":"text","text":"hi"}]},"permissionMode":"bypassPermissions","origin":{"kind":"human"},"promptId":"351c","parentUuid":null,"isSidechain":false,"cwd":"/Users/x/work/codeg","sessionId":"s2","userType":"external","entrypoint":"acp","version":"unknown"}"#;
+    const ACP_USER_LINE: &str = r#"{"type":"user","uuid":"au1","timestamp":"2026-07-25T12:08:58.095Z","message":{"role":"user","content":[{"type":"text","text":"hi"}]},"permissionMode":"bypassPermissions","origin":{"kind":"human"},"promptId":"351c","parentUuid":null,"isSidechain":false,"cwd":"/Users/x/work/zwiim","sessionId":"s2","userType":"external","entrypoint":"acp","version":"unknown"}"#;
     // …and a failed turn is a real assistant record carrying the raw provider
     // payload under `<synthetic>` + `isApiErrorMessage`.
-    const ACP_ERROR_LINE: &str = r#"{"type":"assistant","uuid":"aa1","timestamp":"2026-07-25T12:09:00.807Z","message":{"id":"eb4c","type":"message","role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","content":[{"type":"text","text":"{\"pricingUrl\":\"https://qoder.com/pricing?client=qoder\"}"}]},"isApiErrorMessage":true,"error":"unknown","displayErrorCode":"112","parentUuid":"au1","isSidechain":false,"cwd":"/Users/x/work/codeg","sessionId":"s2","userType":"external","entrypoint":"acp","version":"unknown"}"#;
+    const ACP_ERROR_LINE: &str = r#"{"type":"assistant","uuid":"aa1","timestamp":"2026-07-25T12:09:00.807Z","message":{"id":"eb4c","type":"message","role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","content":[{"type":"text","text":"{\"pricingUrl\":\"https://qoder.com/pricing?client=qoder\"}"}]},"isApiErrorMessage":true,"error":"unknown","displayErrorCode":"112","parentUuid":"au1","isSidechain":false,"cwd":"/Users/x/work/zwiim","sessionId":"s2","userType":"external","entrypoint":"acp","version":"unknown"}"#;
 
     #[test]
     fn summary_reads_real_layout() {
@@ -1403,7 +1403,7 @@ mod tests {
         // The consequence, named on purpose: with no content record left there
         // is no `started_at`, so a cleared session drops out of the SCAN list —
         // the same path every content-free transcript already takes. It is not a
-        // deletion: an already-imported session keeps its row in codeg's DB, and
+        // deletion: an already-imported session keeps its row in Zwiim's DB, and
         // the file itself is untouched.
         assert!(parse_summary(&path).is_none());
     }
@@ -1432,7 +1432,7 @@ mod tests {
         assert!(!detail.turns.is_empty(), "missing key is not an empty branch");
     }
 
-    // The ACP entrypoint — the one codeg itself drives — writes the human
+    // The ACP entrypoint — the one Zwiim itself drives — writes the human
     // prompt as a block ARRAY. Reading only `content.as_str()` dropped the whole
     // user turn AND left the session untitled.
     #[test]

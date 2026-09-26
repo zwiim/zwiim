@@ -823,7 +823,7 @@ fn tool_is_error(value: &Value) -> bool {
 /// CodeBuddy's OWN renderer skips exactly these records when it replays a
 /// session (`"message" === type && "user" === role && (isMeta ||
 /// !InputItemUtils.isRealUserMessageItem(item))` → `continue`), so rendering
-/// them as user turns was a codeg-only artifact: it split one exchange into two
+/// them as user turns was a zwiim-only artifact: it split one exchange into two
 /// prompts and dropped the raw notification XML — plus the model-facing guidance
 /// prose that follows the closing tag — into a chat bubble. The payload is not
 /// lost: `capture_task_notification` folds it onto the launching Agent card.
@@ -1233,7 +1233,7 @@ mod tests {
 
     #[test]
     fn parses_item_format_text_session() {
-        let root = std::env::temp_dir().join(format!("codeg-cb-text-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("zwiim-cb-text-{}", uuid::Uuid::new_v4()));
         let sid = "sess-text";
         write_session(
             &root,
@@ -1307,7 +1307,7 @@ mod tests {
     /// they agree on `expected` — a divergence makes the auto-title backfill
     /// oscillate between them.
     fn assert_title(tag: &str, records: &[Value], expected: Option<&str>) {
-        let root = std::env::temp_dir().join(format!("codeg-cb-{tag}-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("zwiim-cb-{tag}-{}", uuid::Uuid::new_v4()));
         let sid = "sess-title";
         write_session(&root, "Users-demo-app", sid, records);
 
@@ -1392,7 +1392,7 @@ mod tests {
 
     #[test]
     fn parses_tool_calls_with_error_detection() {
-        let root = std::env::temp_dir().join(format!("codeg-cb-tool-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("zwiim-cb-tool-{}", uuid::Uuid::new_v4()));
         let sid = "sess-tool";
         write_session(
             &root,
@@ -1467,7 +1467,7 @@ mod tests {
 
     #[test]
     fn empty_session_file_is_handled() {
-        let root = std::env::temp_dir().join(format!("codeg-cb-empty-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("zwiim-cb-empty-{}", uuid::Uuid::new_v4()));
         let dir = root.join("Users-demo-app");
         std::fs::create_dir_all(&dir).expect("create dir");
         std::fs::File::create(dir.join("empty.jsonl")).expect("create empty");
@@ -1485,7 +1485,7 @@ mod tests {
 
     #[test]
     fn metadata_only_session_is_not_listed() {
-        let root = std::env::temp_dir().join(format!("codeg-cb-meta-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("zwiim-cb-meta-{}", uuid::Uuid::new_v4()));
         let sid = "sess-meta";
         write_session(
             &root,
@@ -1508,7 +1508,7 @@ mod tests {
 
     #[test]
     fn model_falls_back_to_model_id_when_request_model_name_blank() {
-        let root = std::env::temp_dir().join(format!("codeg-cb-model-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("zwiim-cb-model-{}", uuid::Uuid::new_v4()));
         let sid = "sess-model";
         write_session(
             &root,
@@ -1538,7 +1538,7 @@ mod tests {
 
     #[test]
     fn read_tool_output_is_structurized() {
-        let root = std::env::temp_dir().join(format!("codeg-cb-read-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("zwiim-cb-read-{}", uuid::Uuid::new_v4()));
         let sid = "sess-read";
         write_session(
             &root,
@@ -1584,7 +1584,7 @@ mod tests {
 
     #[test]
     fn subagent_task_is_rewritten_to_agent() {
-        let root = std::env::temp_dir().join(format!("codeg-cb-agent-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("zwiim-cb-agent-{}", uuid::Uuid::new_v4()));
         let sid = "sess-agent";
         write_session(
             &root,
@@ -1720,7 +1720,7 @@ mod tests {
 
     #[test]
     fn subagent_tool_calls_loaded_into_agent_stats() {
-        let root = std::env::temp_dir().join(format!("codeg-cb-substats-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("zwiim-cb-substats-{}", uuid::Uuid::new_v4()));
         let sid = "sess-substats";
         write_session(
             &root,
@@ -1901,7 +1901,7 @@ mod tests {
         })
     }
 
-    /// `[[codeg-background-task]]{…}` payload of the tool result with this id.
+    /// `[[zwiim-background-task]]{…}` payload of the tool result with this id.
     fn lifecycle_marker(detail: &ConversationDetail, tool_use_id: &str) -> Value {
         let raw = detail
             .turns
@@ -1947,9 +1947,9 @@ mod tests {
         // `providerData.isMeta` user message. It used to render as a SECOND user
         // bubble inside one exchange, dumping the raw notification XML and its
         // model-facing guidance prose into the chat. CodeBuddy's own renderer
-        // skips these records; codeg folds the payload onto the launch card
+        // skips these records; Zwiim folds the payload onto the launch card
         // instead.
-        let root = std::env::temp_dir().join(format!("codeg-cb-meta-user-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("zwiim-cb-meta-user-{}", uuid::Uuid::new_v4()));
         let sid = "sess-bg";
         let mut records = async_launch_records();
         records.push(task_notification_record(
@@ -2027,7 +2027,7 @@ mod tests {
         // No `<task-notification>` yet (the worker is still running, or the CLI
         // died): `status: null` renders as "launched, result pending" — never as
         // a zombie "running". Mirrors `claude.rs`.
-        let root = std::env::temp_dir().join(format!("codeg-cb-unsettled-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("zwiim-cb-unsettled-{}", uuid::Uuid::new_v4()));
         let sid = "sess-bg";
         write_session(&root, "Users-demo-app", sid, &async_launch_records());
 
@@ -2043,7 +2043,7 @@ mod tests {
 
     #[test]
     fn a_failed_worker_notification_keeps_its_status() {
-        let root = std::env::temp_dir().join(format!("codeg-cb-bgfail-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("zwiim-cb-bgfail-{}", uuid::Uuid::new_v4()));
         let sid = "sess-bg";
         let mut records = async_launch_records();
         // A resumed worker re-notifies under the SAME id — last wins.
@@ -2076,7 +2076,7 @@ mod tests {
         // BLOCKING delegation finishes), but the detached worker still writes
         // `<session>/subagents/<taskId>.jsonl`. Without the spawn-renderer
         // fallback every backgrounded worker's nested tool calls were dropped.
-        let root = std::env::temp_dir().join(format!("codeg-cb-asyncsub-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("zwiim-cb-asyncsub-{}", uuid::Uuid::new_v4()));
         let sid = "sess-bg";
         write_session(&root, "Users-demo-app", sid, &async_launch_records());
         write_subagent(
@@ -2121,7 +2121,7 @@ mod tests {
         // load are gated on the PAIRED CALL being an `Agent`, not on the
         // renderer's presence — so a stray spawn renderer on a Bash result can
         // neither rewrite its output nor pull in a transcript.
-        let root = std::env::temp_dir().join(format!("codeg-cb-bgiso-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("zwiim-cb-bgiso-{}", uuid::Uuid::new_v4()));
         let sid = "sess-bg";
         let mut records = async_launch_records();
         records.push(
@@ -2181,7 +2181,7 @@ mod tests {
 
     #[test]
     fn deferred_mcp_tool_is_unwrapped() {
-        let root = std::env::temp_dir().join(format!("codeg-cb-defer-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("zwiim-cb-defer-{}", uuid::Uuid::new_v4()));
         let sid = "sess-defer";
         write_session(
             &root,
@@ -2298,7 +2298,7 @@ mod tests {
         // inside the recursively-scanned projects tree. It must feed ONLY the
         // Agent result's agent_stats — never surface as a top-level conversation,
         // nor be openable by its own id via get_conversation.
-        let root = std::env::temp_dir().join(format!("codeg-cb-sublist-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("zwiim-cb-sublist-{}", uuid::Uuid::new_v4()));
         let sid = "sess-list";
         write_session(
             &root,
@@ -2380,7 +2380,7 @@ mod tests {
         // (`<projects>/subagents/<sessionId>.jsonl`, 2 components) must still be
         // listed/opened — the nested sub-agent transcript shape is one level
         // deeper (`<project>/<session>/subagents/<agent>.jsonl`, 4 components).
-        let root = std::env::temp_dir().join(format!("codeg-cb-subdir-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("zwiim-cb-subdir-{}", uuid::Uuid::new_v4()));
         let sid = "sess-in-subagents-dir";
         write_session(
             &root,

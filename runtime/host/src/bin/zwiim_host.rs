@@ -65,11 +65,11 @@ fn main() -> ExitCode {
     //    though we found the database.
     //
     // 2. Fill in the default if unset, so every downstream resolver —
-    //    `paths::codeg_uploads_root`, `paths::codeg_pets_root`,
+    //    `paths::zwiim_uploads_root`, `paths::zwiim_pets_root`,
     //    the credential subprocess — converges on the same root the
     //    server itself chose for the database. Without this, a default
     //    deployment (env var unset) puts the DB under
-    //    `dirs::data_dir()/codeg` but uploads under `~/.zwiim/uploads`,
+    //    `dirs::data_dir()/zwiim` but uploads under `~/.zwiim/uploads`,
     //    splitting the persistent surface across two filesystem roots
     //    and silently breaking single-volume backups, container mounts,
     //    and any `file://` URI in session history that points at an
@@ -92,7 +92,7 @@ fn main() -> ExitCode {
     let _log_guard = zwiim_host::logging::init::init_server();
 
     // `ZWIIM_HOME` overrides `ZWIIM_DATA_DIR` for uploads/pets inside
-    // `paths::codeg_*_root` (legacy `~/.zwiim/` layout). If both are set
+    // `paths::zwiim_*_root` (legacy `~/.zwiim/` layout). If both are set
     // and resolve to different roots, the database and uploads land on
     // different filesystems — a silent split. Warn loudly so the
     // operator notices before relying on a backup or volume mount that

@@ -9,20 +9,15 @@ use sea_orm::DatabaseConnection;
 
 use crate::identity::trusted_devices;
 
-pub const WS_EVENT_PROTOCOL: &str = "codeg-events";
-const WS_TOKEN_PROTOCOL_PREFIX: &str = "codeg-token.";
-/// Token subprotocol of the Zwiim protocol socket (`/zwiim/v1/ws`).
-const ZWIIM_WS_TOKEN_PROTOCOL_PREFIX: &str = "zwiim-token.";
+pub const WS_EVENT_PROTOCOL: &str = "zwiim-events";
+/// Token subprotocol of the event sockets (`/ws/events`, `/zwiim/v1/ws`).
+const WS_TOKEN_PROTOCOL_PREFIX: &str = "zwiim-token.";
 
 fn token_from_ws_protocols(value: &str) -> Option<String> {
     value
         .split(',')
         .map(str::trim)
-        .find_map(|protocol| {
-            protocol
-                .strip_prefix(ZWIIM_WS_TOKEN_PROTOCOL_PREFIX)
-                .or_else(|| protocol.strip_prefix(WS_TOKEN_PROTOCOL_PREFIX))
-        })
+        .find_map(|protocol| protocol.strip_prefix(WS_TOKEN_PROTOCOL_PREFIX))
         .and_then(|encoded| URL_SAFE_NO_PAD.decode(encoded).ok())
         .and_then(|bytes| String::from_utf8(bytes).ok())
 }
@@ -92,16 +87,6 @@ mod tests {
         let token = "secret/token+value";
         let encoded = URL_SAFE_NO_PAD.encode(token);
         assert_eq!(
-            token_from_ws_protocols(&format!("codeg-events, codeg-token.{encoded}")).as_deref(),
-            Some(token)
-        );
-    }
-
-    #[test]
-    fn parses_token_from_zwiim_ws_protocols() {
-        let token = "secret/token+value";
-        let encoded = URL_SAFE_NO_PAD.encode(token);
-        assert_eq!(
             token_from_ws_protocols(&format!("zwiim-events, zwiim-token.{encoded}")).as_deref(),
             Some(token)
         );
@@ -109,6 +94,6 @@ mod tests {
 
     #[test]
     fn ignores_invalid_ws_protocol_token() {
-        assert!(token_from_ws_protocols("codeg-events, codeg-token.not-valid-@@@@").is_none());
+        assert!(token_from_ws_protocols("zwiim-events, zwiim-token.not-valid-@@@@").is_none());
     }
 }

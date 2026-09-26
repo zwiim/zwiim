@@ -106,7 +106,7 @@ where
 
 /// What an import does when a parsed session already has a SOFT-DELETED row.
 ///
-/// Deleting a conversation in codeg only stamps `deleted_at`; neither the row
+/// Deleting a conversation in Zwiim only stamps `deleted_at`; neither the row
 /// nor the agent's session file is destroyed. So "import" has a meaningful
 /// answer for a deleted session — bring it back — but only when the user asked
 /// for that specific session by name.
@@ -276,7 +276,7 @@ fn agent_type_db_str(agent_type: &AgentType) -> String {
 ///   activity).
 /// * [`conversation_service::refresh_external_activity`] adopts the transcript's
 ///   own last-activity time into `updated_at` (plus the fresh `message_count`)
-///   when it is strictly newer, so a conversation continued outside codeg sorts
+///   when it is strictly newer, so a conversation continued outside Zwiim sorts
 ///   and reads correctly in a recency-ordered sidebar.
 ///
 /// Both are single conditional UPDATEs whose guards are re-evaluated by the
@@ -528,7 +528,7 @@ mod tests {
         ConversationSummary {
             id: id.to_string(),
             agent_type: AgentType::ClaudeCode,
-            folder_path: Some("/tmp/codeg-import".to_string()),
+            folder_path: Some("/tmp/zwiim-import".to_string()),
             folder_name: None,
             title: title.map(|t| t.to_string()),
             started_at: Utc::now(),
@@ -590,7 +590,7 @@ mod tests {
     #[tokio::test]
     async fn reimport_refreshes_a_changed_title() {
         let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-import").await;
+        let folder = seed_folder(&db, "/tmp/zwiim-import").await;
         let at = AgentType::ClaudeCode;
 
         let first = import_one_skip(&db.conn, folder, &at, &summary("ext-1", Some("first prompt")))
@@ -624,7 +624,7 @@ mod tests {
         };
 
         let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-import-usage").await;
+        let folder = seed_folder(&db, "/tmp/zwiim-import-usage").await;
         let at = AgentType::ClaudeCode;
 
         import_one_skip(&db.conn, folder, &at, &summary("ext-usage", Some("t")))
@@ -674,7 +674,7 @@ mod tests {
     #[tokio::test]
     async fn import_inserts_a_pending_review_conversation() {
         let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-import-status").await;
+        let folder = seed_folder(&db, "/tmp/zwiim-import-status").await;
         let at = AgentType::ClaudeCode;
 
         assert_eq!(
@@ -698,7 +698,7 @@ mod tests {
     #[tokio::test]
     async fn reimport_skips_an_unchanged_title() {
         let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-import-same").await;
+        let folder = seed_folder(&db, "/tmp/zwiim-import-same").await;
         let at = AgentType::ClaudeCode;
         let s = summary("ext-1", Some("same title"));
 
@@ -717,7 +717,7 @@ mod tests {
     #[tokio::test]
     async fn reimport_never_clobbers_a_manual_rename() {
         let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-import-lock").await;
+        let folder = seed_folder(&db, "/tmp/zwiim-import-lock").await;
         let at = AgentType::ClaudeCode;
 
         import_one_skip(&db.conn, folder, &at, &summary("ext-1", Some("first prompt")))
@@ -746,7 +746,7 @@ mod tests {
     #[tokio::test]
     async fn reimport_with_no_title_keeps_the_existing_one() {
         let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-import-empty").await;
+        let folder = seed_folder(&db, "/tmp/zwiim-import-empty").await;
         let at = AgentType::ClaudeCode;
 
         import_one_skip(&db.conn, folder, &at, &summary("ext-1", Some("kept title")))
@@ -777,7 +777,7 @@ mod tests {
     #[tokio::test]
     async fn reimport_skips_a_soft_deleted_conversation() {
         let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-import-deleted").await;
+        let folder = seed_folder(&db, "/tmp/zwiim-import-deleted").await;
         let at = AgentType::ClaudeCode;
 
         import_one_skip(&db.conn, folder, &at, &summary("ext-1", Some("original")))
@@ -806,7 +806,7 @@ mod tests {
     #[tokio::test]
     async fn restore_brings_a_soft_deleted_conversation_back_in_place() {
         let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-import-restore").await;
+        let folder = seed_folder(&db, "/tmp/zwiim-import-restore").await;
         let at = AgentType::ClaudeCode;
 
         let first_end = Utc::now() - Duration::hours(5);
@@ -863,7 +863,7 @@ mod tests {
     #[tokio::test]
     async fn restore_is_idempotent_and_leaves_a_live_row_alone() {
         let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-import-restore-twice").await;
+        let folder = seed_folder(&db, "/tmp/zwiim-import-restore-twice").await;
         let at = AgentType::ClaudeCode;
 
         import_one_skip(&db.conn, folder, &at, &summary("ext-1", Some("kept")))
@@ -893,8 +893,8 @@ mod tests {
     #[tokio::test]
     async fn restore_lands_the_conversation_in_the_import_target_folder() {
         let db = fresh_in_memory_db().await;
-        let old_folder = seed_folder(&db, "/tmp/codeg-restore-old").await;
-        let target = seed_folder(&db, "/tmp/codeg-restore-target").await;
+        let old_folder = seed_folder(&db, "/tmp/zwiim-restore-old").await;
+        let target = seed_folder(&db, "/tmp/zwiim-restore-target").await;
         let at = AgentType::ClaudeCode;
 
         import_one_skip(&db.conn, old_folder, &at, &summary("ext-1", Some("t")))
@@ -919,7 +919,7 @@ mod tests {
     #[tokio::test]
     async fn restore_never_touches_a_delegation_child() {
         let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-restore-child").await;
+        let folder = seed_folder(&db, "/tmp/zwiim-restore-child").await;
         let at = AgentType::ClaudeCode;
 
         import_one_skip(&db.conn, folder, &at, &summary("parent-ext", Some("p")))
@@ -970,7 +970,7 @@ mod tests {
     #[tokio::test]
     async fn reimport_adopts_newer_transcript_activity() {
         let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-import-activity").await;
+        let folder = seed_folder(&db, "/tmp/zwiim-import-activity").await;
         let at = AgentType::ClaudeCode;
 
         let first_end = Utc::now() - Duration::hours(3);
@@ -1014,7 +1014,7 @@ mod tests {
     #[tokio::test]
     async fn reimport_never_moves_updated_at_backwards() {
         let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-import-monotonic").await;
+        let folder = seed_folder(&db, "/tmp/zwiim-import-monotonic").await;
         let at = AgentType::ClaudeCode;
 
         let end = Utc::now() - Duration::hours(1);
@@ -1052,7 +1052,7 @@ mod tests {
     #[tokio::test]
     async fn activity_refresh_preserves_pin_status_and_locked_title() {
         let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-import-preserve").await;
+        let folder = seed_folder(&db, "/tmp/zwiim-import-preserve").await;
         let at = AgentType::ClaudeCode;
 
         import_one_skip(
@@ -1101,14 +1101,14 @@ mod tests {
         assert_eq!(
             row.status,
             conversation::ConversationStatus::Completed,
-            "codeg's own status survives"
+            "Zwiim's own status survives"
         );
     }
 
     #[tokio::test]
     async fn sync_imported_sessions_refreshes_in_place_and_never_inserts() {
         let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-sync-scan").await;
+        let folder = seed_folder(&db, "/tmp/zwiim-sync-scan").await;
         let at = AgentType::ClaudeCode;
 
         let end = Utc::now() - Duration::hours(2);
@@ -1160,7 +1160,7 @@ mod tests {
     #[tokio::test]
     async fn sync_imported_sessions_skips_deleted_rows() {
         let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-sync-deleted").await;
+        let folder = seed_folder(&db, "/tmp/zwiim-sync-deleted").await;
         let at = AgentType::ClaudeCode;
 
         let end = Utc::now() - Duration::hours(2);
@@ -1199,7 +1199,7 @@ mod tests {
     #[tokio::test]
     async fn reimport_skips_a_delegation_child() {
         let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-import-child").await;
+        let folder = seed_folder(&db, "/tmp/zwiim-import-child").await;
         let at = AgentType::ClaudeCode;
         let at_str = serde_json::to_value(at)
             .expect("ser")

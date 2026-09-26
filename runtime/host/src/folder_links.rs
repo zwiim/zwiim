@@ -150,8 +150,8 @@ mod tests {
 
     #[test]
     fn register_is_idempotent_and_unregister_removes() {
-        let root = Path::new("/tmp/codeg-registry-a/root");
-        let target = Path::new("/tmp/codeg-registry-a/target");
+        let root = Path::new("/tmp/zwiim-registry-a/root");
+        let target = Path::new("/tmp/zwiim-registry-a/target");
         register(root, target);
         register(root, target);
         assert_eq!(count(root, target), 1);
@@ -163,8 +163,8 @@ mod tests {
     fn unknown_paths_are_denied() {
         // Neither path exists, so canonicalization fails and no entry can match.
         assert!(!is_allowed(
-            Path::new("/tmp/codeg-registry-b/root"),
-            Path::new("/tmp/codeg-registry-b/elsewhere/file.txt")
+            Path::new("/tmp/zwiim-registry-b/root"),
+            Path::new("/tmp/zwiim-registry-b/elsewhere/file.txt")
         ));
     }
 }

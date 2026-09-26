@@ -77,9 +77,9 @@ pub struct ToolCallState {
     /// extraction. `None` if the agent didn't supply it. Same partial-update
     /// preservation semantic as `locations`.
     ///
-    /// Convention used by codeg's multi-agent delegation (the `delegate_to_agent`
+    /// Convention used by Zwiim's multi-agent delegation (the `delegate_to_agent`
     /// MCP tool) — `DelegationBroker` writes the following object under
-    /// `meta["codeg.delegation"]` on the parent's active tool call:
+    /// `meta["zwiim.delegation"]` on the parent's active tool call:
     ///
     /// ```jsonc
     /// {
@@ -196,7 +196,7 @@ pub struct UsageInfo {
 ///
 /// Completed delegations are recovered without this field: a live page keeps the
 /// binding in `DelegationProvider` for its lifetime, and a cold load / refresh
-/// rebuilds `meta["codeg.delegation"]` (status + child id) from the child's
+/// rebuilds `meta["zwiim.delegation"]` (status + child id) from the child's
 /// persisted DB row via `commands::conversations::inject_delegation_meta`
 /// (authoritative, uncapped). The snapshot only has to recover the *running*
 /// binding, which the transient `DelegationStarted` event cannot supply on the
@@ -345,7 +345,7 @@ pub struct SessionState {
     /// Backend-internal — not serialized.
     pub pi_startup_banner: Option<String>,
 
-    /// Config-option values codeg asserted while establishing this session
+    /// Config-option values Zwiim asserted while establishing this session
     /// (`apply_preferred_session_options`) and the agent confirmed — the user's
     /// saved preferences on a connect, the parent's selectors on a fork.
     ///
@@ -366,7 +366,7 @@ pub struct SessionState {
     /// Config-option ids this launch pinned through the environment, which the
     /// agent will therefore refuse to change for as long as the process lives.
     ///
-    /// Cline forced this. codeg pins the provider with `CLINE_PROVIDER` — the
+    /// Cline forced this. Zwiim pins the provider with `CLINE_PROVIDER` — the
     /// only way a bring-your-own provider clears cline's ACP auth gate — and
     /// cline then answers `set_config_option("provider", …)` with `Invalid
     /// params: Cannot change provider: CLINE_PROVIDER environment variable is
@@ -375,7 +375,7 @@ pub struct SessionState {
     /// preference saved from one of those clicks is replayed — and fails —
     /// on every later connect.
     ///
-    /// codeg is what disabled the control, so codeg is what withholds it: these
+    /// Zwiim is what disabled the control, so Zwiim is what withholds it: these
     /// ids are dropped from what the frontend is told about and skipped when
     /// saved preferences are replayed.
     ///
@@ -2271,7 +2271,7 @@ mod tests {
 
     /// Only the spawn frame carries a task's identity, so it is the only one
     /// allowed to create a row: a progress delta for an id we never saw
-    /// announced means codeg failed to read the announcement, and a row with a
+    /// announced means Zwiim failed to read the announcement, and a row with a
     /// placeholder name and no type is worse than no row at all.
     #[test]
     fn async_task_rows_are_created_only_by_a_spawn_delta() {

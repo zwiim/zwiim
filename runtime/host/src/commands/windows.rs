@@ -1383,7 +1383,7 @@ pub async fn open_pet_window(
 
     let url = WebviewUrl::App(format!("pet?petId={pet_id}").into());
     let mut builder = WebviewWindowBuilder::new(&app, PET_WINDOW_LABEL, url)
-        .title("codeg pet")
+        .title("Zwiim pet")
         .inner_size(PET_BASE_WIDTH * scale, PET_BASE_HEIGHT * scale)
         .min_inner_size(PET_BASE_WIDTH * 0.5, PET_BASE_HEIGHT * 0.5)
         .max_inner_size(PET_BASE_WIDTH * 3.0, PET_BASE_HEIGHT * 3.0)
@@ -1716,7 +1716,7 @@ fn open_pet_panel_window(app: &AppHandle) -> Result<(), AppCommandError> {
 
     let url = WebviewUrl::App("pet-panel".into());
     let builder = WebviewWindowBuilder::new(app, PET_PANEL_LABEL, url)
-        .title("codeg sessions")
+        .title("Zwiim sessions")
         .inner_size(PET_PANEL_WIDTH, PET_PANEL_DEFAULT_HEIGHT)
         .position(panel_x, panel_y)
         .resizable(false)
@@ -1780,7 +1780,7 @@ pub async fn resize_pet_panel(app: AppHandle, height: f64) -> Result<(), AppComm
 /// conversation. Uses an event (not a URL reload) so the in-memory tab/session
 /// state survives — `PetFocusBridge` in the main window calls `openTab`.
 ///
-/// Only the pet panel calls this. A `codeg://` OS deep link cannot: the emit
+/// Only the pet panel calls this. A `zwiim://` OS deep link cannot: the emit
 /// reaches only webviews that have *already* registered a JS listener, which
 /// on a cold start is none of them — see `deep_link::PENDING_FOCUS` for the
 /// handoff that path uses instead.
@@ -2006,7 +2006,7 @@ fn load_macos_tray_template_icon() -> Result<tauri::image::Image<'static>, Strin
 pub const TRAY_MENU_ID_PREFIX: &str = "tray:";
 pub const TRAY_MENU_ID_SHOW: &str = "tray:show";
 pub const TRAY_MENU_ID_QUIT: &str = "tray:quit";
-pub const TRAY_ICON_ID: &str = "codeg-tray";
+pub const TRAY_ICON_ID: &str = "zwiim-tray";
 
 /// True after `install_tray_icon` returns `Ok`. The hide-on-close path
 /// in `lib.rs` consults this so we don't strand the user on systems

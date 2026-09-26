@@ -66,7 +66,7 @@ pub fn sweep_acp_binary_trash() {
 ///
 /// Deletes only directories whose recorded owner is positively confirmed dead
 /// (or is this process and not live — see `acp::scratch_dir`), and never leaves
-/// codeg's own `codeg-acp/` subtree, so a peer codeg instance's work and any
+/// Zwiim's own `zwiim-acp/` subtree, so a peer Zwiim instance's work and any
 /// other application's temp files are both out of reach by construction.
 pub fn sweep_acp_scratch_dirs() {
     crate::acp::scratch_dir::sweep_foreign_orphans();
@@ -217,7 +217,7 @@ mod tauri_app {
             CloseWindowBehavior::Ask => {
                 let count = running_terminals(&app);
                 if !prompt("ask", count) {
-                    // Fall back to the behavior codeg has always had. Exiting
+                    // Fall back to the behavior Zwiim has always had. Exiting
                     // on a press the user never got to answer would discard
                     // work; hiding discards nothing.
                     hide();
@@ -465,12 +465,12 @@ mod tauri_app {
         // initialization. The callback runs in the *original* process.
         //
         // Skipped in debug builds so a locally-built `cargo run` instance
-        // can run alongside an installed release build of codeg during
+        // can run alongside an installed release build of Zwiim during
         // development. Debug desktop builds use an isolated SQLite file, but
         // they still share other `app.zwiim` data-dir artifacts with release.
         #[cfg(not(debug_assertions))]
         let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            // Second launches on Windows/Linux carry `codeg://…` on argv.
+            // Second launches on Windows/Linux carry `zwiim://…` on argv.
             // macOS delivers the same URL via the deep-link plugin instead.
             crate::deep_link::handle_argv(app, &argv);
         }));
@@ -498,9 +498,9 @@ mod tauri_app {
             .plugin(tauri_plugin_process::init())
             .plugin(tauri_plugin_notification::init())
             // "Launch at login". LaunchAgent rather than AppleScript on macOS:
-            // writing `~/Library/LaunchAgents/codeg.plist` needs no Automation
+            // writing `~/Library/LaunchAgents/zwiim.plist` needs no Automation
             // consent prompt, where scripting System Events does. No extra
-            // startup args — an auto-started codeg is the same app the user
+            // startup args — an auto-started Zwiim is the same app the user
             // would have launched by hand.
             //
             // Nothing rewrites the registration at startup, deliberately. The
@@ -510,7 +510,7 @@ mod tauri_app {
             // an entry in place: GNOME sets `X-GNOME-Autostart-enabled=false`
             // inside the .desktop file the plugin would overwrite from a fixed
             // template. Refreshing would therefore silently undo a disable the
-            // user made outside codeg. Re-toggling the setting rewrites the
+            // user made outside Zwiim. Re-toggling the setting rewrites the
             // path, which is the same repair with consent attached.
             //
             // Two accepted defects live in `auto-launch`, which this plugin
@@ -519,7 +519,7 @@ mod tauri_app {
             // the plugin requires) would not help:
             //   * Windows writes the Run value as `{app_path} {args}` with the
             //     path unquoted. Per-user installs land under
-            //     `C:\Users\<name>\AppData\Local\codeg\`, so a username with a
+            //     `C:\Users\<name>\AppData\Local\zwiim\`, so a username with a
             //     space produces the classic unquoted-path value. Windows'
             //     successive-prefix parsing still resolves it; the residual
             //     risk is the usual hijack, which already requires the attacker
@@ -578,7 +578,7 @@ mod tauri_app {
 
                 // Unify the data root across every consumer:
                 //   * SQLite database (initialised below)
-                //   * `paths::codeg_uploads_root` / `codeg_pets_root`
+                //   * `paths::zwiim_uploads_root` / `zwiim_pets_root`
                 //   * `AppState.data_dir` and every desktop command
                 //     that injects a git credential helper / askpass
                 //     into a subprocess (terminal, ACP, folder ops)
@@ -619,7 +619,7 @@ mod tauri_app {
                 }
 
                 // `ZWIIM_HOME` overrides `ZWIIM_DATA_DIR` inside
-                // `paths::codeg_uploads_root` / `codeg_pets_root` for
+                // `paths::zwiim_uploads_root` / `zwiim_pets_root` for
                 // backwards-compatibility with the legacy `~/.zwiim/`
                 // layout. If both are set and point at different roots,
                 // uploads/pets land on `ZWIIM_HOME` while the database
@@ -1179,7 +1179,7 @@ mod tauri_app {
                     tauri::async_runtime::spawn(crate::work_task::run_task_engine(engine));
                 }
 
-                // OS `codeg://` URLs. Register the listener after the DB is
+                // OS `zwiim://` URLs. Register the listener after the DB is
                 // live so a warm-start click can look the conversation up.
                 // Cold-start URLs are also read here and baked into the main
                 // window path — an event emitted before the webview subscribes
@@ -1197,7 +1197,7 @@ mod tauri_app {
                     });
                     // The Linux bundler writes a `.desktop` whose `Exec` has no
                     // `%u` field code (tauri#16014), so an installed deb/rpm/
-                    // AppImage is advertised as the `x-scheme-handler/codeg`
+                    // AppImage is advertised as the `x-scheme-handler/zwiim`
                     // owner but is launched with no argument at all. The
                     // plugin's own registration writes a handler entry that
                     // does pass `%u`; on Windows it adds the HKCU class key a

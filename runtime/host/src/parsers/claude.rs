@@ -40,7 +40,7 @@ fn system_tag_regex() -> &'static Regex {
 /// (`lib/background-agent.ts`) splits on it and renders a lifecycle card;
 /// anything else renders the preview verbatim, so the prefix must never occur
 /// in organic tool output.
-pub(crate) const BACKGROUND_TASK_MARKER: &str = "[[codeg-background-task]]";
+pub(crate) const BACKGROUND_TASK_MARKER: &str = "[[zwiim-background-task]]";
 
 /// Cap for the folded `<result>` markdown carried on the lifecycle marker —
 /// generous for a sub-agent summary, bounded against a pathological one. Also
@@ -2110,7 +2110,7 @@ impl ClaudeRecordAccumulator {
     /// `<task-notification>`:
     ///
     /// ```text
-    /// [[codeg-background-task]]{"task_id":…,"status":…,"summary":…,"result":…}
+    /// [[zwiim-background-task]]{"task_id":…,"status":…,"summary":…,"result":…}
     /// ```
     ///
     /// `status` is null while no notification was observed — the frontend
@@ -3133,7 +3133,7 @@ mod tests {
     }
 
     #[test]
-    /// The user typed `/compact`; the divider is what it produced. Live, codeg
+    /// The user typed `/compact`; the divider is what it produced. Live, Zwiim
     /// echoes the prompt above the divider — so history has to as well, and at
     /// the same place, which is NOT where the CLI wrote the echo.
     fn the_compact_prompt_is_emitted_above_the_divider_it_caused() {
@@ -3638,7 +3638,7 @@ mod tests {
     #[test]
     fn parse_detail_sets_claude_context_window_stats() {
         let path = std::env::temp_dir().join(format!(
-            "codeg-claude-parser-{}.jsonl",
+            "zwiim-claude-parser-{}.jsonl",
             uuid::Uuid::new_v4()
         ));
         let mut file = fs::File::create(&path).expect("create temp jsonl");
@@ -3700,7 +3700,7 @@ mod tests {
     #[test]
     fn parse_prefers_ai_title_over_first_user_message() {
         let path = std::env::temp_dir().join(format!(
-            "codeg-claude-aititle-{}.jsonl",
+            "zwiim-claude-aititle-{}.jsonl",
             uuid::Uuid::new_v4()
         ));
         let mut file = fs::File::create(&path).expect("create temp jsonl");
@@ -3758,7 +3758,7 @@ mod tests {
     #[test]
     fn parse_falls_back_to_user_message_when_ai_title_empty() {
         let path = std::env::temp_dir().join(format!(
-            "codeg-claude-aititle-empty-{}.jsonl",
+            "zwiim-claude-aititle-empty-{}.jsonl",
             uuid::Uuid::new_v4()
         ));
         let mut file = fs::File::create(&path).expect("create temp jsonl");
@@ -3811,7 +3811,7 @@ mod tests {
         lines: &[serde_json::Value],
     ) -> (Option<String>, Option<String>) {
         let path =
-            std::env::temp_dir().join(format!("codeg-claude-{tag}-{}.jsonl", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("zwiim-claude-{tag}-{}.jsonl", uuid::Uuid::new_v4()));
         let mut file = fs::File::create(&path).expect("create temp jsonl");
         for line in lines {
             writeln!(file, "{line}").expect("write line");
@@ -3925,7 +3925,7 @@ mod tests {
         // The record carries a timestamp and a sessionId, so it must stay a
         // metadata line — never a visible turn or a counted message.
         let path = std::env::temp_dir().join(format!(
-            "codeg-claude-customtitle-turn-{}.jsonl",
+            "zwiim-claude-customtitle-turn-{}.jsonl",
             uuid::Uuid::new_v4()
         ));
         let mut file = fs::File::create(&path).expect("create temp jsonl");
@@ -3967,7 +3967,7 @@ mod tests {
         // finished, i.e. the assistant event timestamp itself (or the
         // turn_duration system event's timestamp ≈ same instant).
         let path = std::env::temp_dir().join(format!(
-            "codeg-claude-completed-{}.jsonl",
+            "zwiim-claude-completed-{}.jsonl",
             uuid::Uuid::new_v4()
         ));
         let mut file = fs::File::create(&path).expect("create temp jsonl");
@@ -4055,7 +4055,7 @@ mod tests {
     #[test]
     fn synthetic_assistant_excluded_from_detail() {
         let path = std::env::temp_dir().join(format!(
-            "codeg-claude-synthetic-{}.jsonl",
+            "zwiim-claude-synthetic-{}.jsonl",
             uuid::Uuid::new_v4()
         ));
         let mut file = fs::File::create(&path).expect("create temp jsonl");
@@ -4175,7 +4175,7 @@ mod tests {
 
     fn parse_lines_into_detail(lines: &[String]) -> crate::models::ConversationDetail {
         let path = std::env::temp_dir().join(format!(
-            "codeg-claude-usage-{}.jsonl",
+            "zwiim-claude-usage-{}.jsonl",
             uuid::Uuid::new_v4()
         ));
         let mut file = fs::File::create(&path).expect("create temp jsonl");
@@ -4193,7 +4193,7 @@ mod tests {
         detail
     }
 
-    /// The fork point codeg sends must be the id the ADAPTER would look up.
+    /// The fork point Zwiim sends must be the id the ADAPTER would look up.
     /// claude-agent-acp's `messageIdForGrouping` takes the API message id when
     /// the record has one, so an assistant turn must carry that — not the
     /// record uuid `MessageTurn::id`-adjacent code uses everywhere else.
@@ -4219,7 +4219,7 @@ mod tests {
     }
 
     /// `messageIdForGrouping` falls back to the record uuid when the message
-    /// carries no id, and so must codeg — otherwise those turns would silently
+    /// carries no id, and so must Zwiim — otherwise those turns would silently
     /// lose their fork point.
     #[test]
     fn assistant_turns_fall_back_to_the_record_uuid() {
@@ -4694,7 +4694,7 @@ mod tests {
         lines: &[String],
         subagents: &[(&str, Vec<String>)],
     ) -> crate::models::ConversationDetail {
-        let stem = std::env::temp_dir().join(format!("codeg-claude-sub-{}", uuid::Uuid::new_v4()));
+        let stem = std::env::temp_dir().join(format!("zwiim-claude-sub-{}", uuid::Uuid::new_v4()));
         let path = stem.with_extension("jsonl");
         let mut file = fs::File::create(&path).expect("create session jsonl");
         for line in lines {
@@ -4976,7 +4976,7 @@ mod tests {
     #[test]
     fn slash_command_keeps_user_turn_between_assistant_turns() {
         let path =
-            std::env::temp_dir().join(format!("codeg-claude-slash-{}.jsonl", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("zwiim-claude-slash-{}.jsonl", uuid::Uuid::new_v4()));
         let mut file = fs::File::create(&path).expect("create temp jsonl");
         // Client command /model: followed by stdout, no model turn -> stays hidden
         writeln!(

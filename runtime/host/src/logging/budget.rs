@@ -736,12 +736,12 @@ mod tests {
         let now = chrono::Utc::now();
         let today = now.format("%Y-%m-%d").to_string();
         // Same naming scheme tracing_appender uses for Rotation::DAILY.
-        std::fs::write(dir.path().join(format!("codeg.{today}.log")), vec![b'x'; 77]).unwrap();
+        std::fs::write(dir.path().join(format!("Zwiim.{today}.log")), vec![b'x'; 77]).unwrap();
         // A different day's file, and an unrelated file, must not be counted.
-        std::fs::write(dir.path().join("codeg.1999-01-01.log"), vec![b'x'; 5000]).unwrap();
+        std::fs::write(dir.path().join("zwiim.1999-01-01.log"), vec![b'x'; 5000]).unwrap();
         std::fs::write(dir.path().join("zwiim-host.log"), vec![b'x'; 5000]).unwrap();
 
-        let (day, existing) = resume_point(dir.path(), "codeg", "log");
+        let (day, existing) = resume_point(dir.path(), "zwiim", "log");
         assert_eq!(existing, 77);
         assert_eq!(day, unix_day_from_secs(now.timestamp()));
 

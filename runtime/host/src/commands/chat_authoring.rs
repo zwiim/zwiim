@@ -4,7 +4,7 @@
 //! Two surfaces live here, mirroring `crate::commands::session_info`:
 //!
 //!   * [`DbChatAuthoring`] — the production [`ChatAuthoringAccess`] impl the
-//!     delegation listener calls when a chat agent asks codeg to save an
+//!     delegation listener calls when a chat agent asks Zwiim to save an
 //!     automation or queue a board task. It resolves the target project, builds
 //!     the same drafts the editors build, and writes through
 //!     `automation_create_core` / `work_task_create_core` so the lists get their
@@ -84,11 +84,11 @@ impl DbChatAuthoring {
             match match_folder_by_path(&folders, raw) {
                 Some(f) => f,
                 None => {
-                    // "known to codeg" — the lookup spans every non-deleted
+                    // "known to zwiim" — the lookup spans every non-deleted
                     // folder row, which includes projects the user has opened
                     // before but currently has closed.
                     return Err(format!(
-                        "no project matching '{raw}' is known to codeg. Open the project first, \
+                        "no project matching '{raw}' is known to Zwiim. Open the project first, \
                          or omit folder_path to use the one this conversation is in."
                     ));
                 }
@@ -189,7 +189,7 @@ impl ChatAuthoringAccess for DbChatAuthoring {
         if !self.config.automations_enabled().await {
             return AuthoringOutcome::rejected(
                 KIND_AUTOMATION,
-                "Creating automations from chat is turned off in codeg's settings \
+                "Creating automations from chat is turned off in Zwiim's settings \
                  (Settings → General → Create from chat). Ask the user to enable it.",
             );
         }
@@ -287,7 +287,7 @@ impl ChatAuthoringAccess for DbChatAuthoring {
         if !self.config.work_tasks_enabled().await {
             return AuthoringOutcome::rejected(
                 KIND_WORK_TASK,
-                "Creating board tasks from chat is turned off in codeg's settings \
+                "Creating board tasks from chat is turned off in Zwiim's settings \
                  (Settings → General → Create from chat). Ask the user to enable it.",
             );
         }

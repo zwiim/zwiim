@@ -1,5 +1,5 @@
 //! `zwiim-mcp` — the per-launch stdio MCP companion that an agent CLI runs
-//! to surface codeg's tools to its LLM: the multi-agent delegation tools
+//! to surface Zwiim's tools to its LLM: the multi-agent delegation tools
 //! (`delegate_to_agent` etc.), `check_user_feedback` (pull the user's mid-turn
 //! steering notes), `ask_user_question` (block on a multiple-choice card), and
 //! `get_session_info` (resolve a referenced session by id), plus the
@@ -7,7 +7,7 @@
 //! `--features` groups (`delegation` / `feedback` / `ask` / `sessions` /
 //! `tasks` / `automations` / `taskboard`).
 //!
-//! The agent's MCP config (injected by codeg via `load_mcp_servers_for_agent`)
+//! The agent's MCP config (injected by Zwiim via `load_mcp_servers_for_agent`)
 //! spawns this binary with three required flags:
 //!
 //!   zwiim-mcp \
@@ -48,7 +48,7 @@ struct Args {
     parent_connection_id: String,
     socket_path: String,
     token: String,
-    /// Optional PID of the codeg / zwiim-host process that owns this
+    /// Optional PID of the Zwiim / zwiim-host process that owns this
     /// session. When set, zwiim-mcp exits as soon as the parent is gone so
     /// orphaned companions don't keep the binary file locked (Windows
     /// upgrade failure) or hold open a UDS / pipe nobody will ever read
@@ -225,10 +225,10 @@ async fn main() -> ExitCode {
                 // Best-effort: cancel every in-flight delegation BEFORE we
                 // hard-exit so the broker doesn't park each pending row
                 // on `rx.await` waiting for a TurnComplete it can never
-                // deliver. cancel_by_parent on the codeg main side is the
+                // deliver. cancel_by_parent on the Zwiim main side is the
                 // ultimate backstop, but firing the explicit cancels here
                 // closes the window between MCP shutdown and parent ACP
-                // disconnect detection on the codeg side.
+                // disconnect detection on the Zwiim side.
                 drain_and_cancel_all(&ctx, &inflight, "parent process exited").await;
                 let _ = writeln!(
                     std::io::stderr(),

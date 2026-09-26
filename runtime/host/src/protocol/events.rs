@@ -69,7 +69,7 @@ fn relativize(text: &str, root: Option<&str>) -> String {
 }
 
 /// Tool-call content as clients see it: workspace-relative, and without the
-/// agent-side terminal ids Codeg inlines as `[Terminal: <id>]`.
+/// agent-side terminal ids the host inlines as `[Terminal: <id>]`.
 fn tool_content(text: &str, root: Option<&str>) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -602,7 +602,7 @@ pub(crate) mod tests {
                         tool_name: "Bash".into(),
                         input_preview: Some("ls".into()),
                         status: Some("completed".into()),
-                        meta: Some(json!({"codeg.delegation": {"child_connection_id": "c"}})),
+                        meta: Some(json!({"zwiim.delegation": {"child_connection_id": "c"}})),
                     },
                     ContentBlock::ToolResult {
                         tool_use_id: Some("toolu_1".into()),
@@ -642,7 +642,7 @@ pub(crate) mod tests {
         for leaked in [
             "file:///",
             "msg_native",
-            "codeg.delegation",
+            "zwiim.delegation",
             "child_connection_id",
         ] {
             assert!(!text.contains(leaked), "{leaked} in {text}");

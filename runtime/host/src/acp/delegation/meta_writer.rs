@@ -1,6 +1,6 @@
 //! `DelegationMetaWriter` — broker capability that attaches the live
 //! delegation state onto the parent's active `delegate_to_agent`
-//! tool-call. The shape written under `meta["codeg.delegation"]`
+//! tool-call. The shape written under `meta["zwiim.delegation"]`
 //! follows the convention documented at
 //! [`crate::acp::session_state::ToolCallState::meta`].
 //!
@@ -36,9 +36,9 @@ use crate::web::event_bridge::{emit_with_state, emit_with_state_gated};
 /// Top-level key under which delegation state lives on a tool call's
 /// `meta` object. Single source of truth — both the writer and the
 /// frontend reader must spell it the same way.
-pub const DELEGATION_META_KEY: &str = "codeg.delegation";
+pub const DELEGATION_META_KEY: &str = "zwiim.delegation";
 
-/// Capability the broker uses to patch `meta["codeg.delegation"]` on
+/// Capability the broker uses to patch `meta["zwiim.delegation"]` on
 /// the parent connection's active `delegate_to_agent` tool call.
 ///
 /// Errors are swallowed at the impl boundary: a missing parent
@@ -120,7 +120,7 @@ impl DelegationMetaWriter for ConnectionManagerMetaWriter {
         // `upsert_tool_call` inserts on miss, so emitting for an id the turn no
         // longer holds would MINT a brand-new, otherwise-empty tool call
         // carrying nothing but this meta — and the frontend's
-        // `inferLiveToolName` reads "has codeg.delegation meta" as
+        // `inferLiveToolName` reads "has zwiim.delegation meta" as
         // `delegate_to_agent`, so that empty entry renders as a full (phantom)
         // delegation card. It is live-only state, so it vanishes on reload:
         // exactly the live/history divergence users see.
@@ -275,7 +275,7 @@ pub mod mock {
     }
 }
 
-/// Helper to construct the canonical `meta["codeg.delegation"]` value.
+/// Helper to construct the canonical `meta["zwiim.delegation"]` value.
 /// Keeps the schema in one place so the writer impls and the broker
 /// callsites can't drift apart on field naming.
 #[allow(clippy::too_many_arguments)]

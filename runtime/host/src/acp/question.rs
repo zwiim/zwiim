@@ -442,7 +442,7 @@ pub fn build_outcome(questions: &[QuestionSpec], answer: &QuestionAnswer) -> Que
     }
 }
 
-/// Some native asks carry NO `header` (the short category chip codeg renders):
+/// Some native asks carry NO `header` (the short category chip Zwiim renders):
 /// grok's `ask_user_question` tool and pi's extension-UI `select` both send bare
 /// question text. Synthesize one from the leading characters, bounded to
 /// [`MAX_HEADER_CHARS`]. Always returns a non-empty, in-bounds string so
@@ -457,13 +457,13 @@ fn synthesize_header(question: &str) -> String {
     }
 }
 
-/// Convert grok's native `_x.ai/ask_user_question` ext-request params into codeg
+/// Convert grok's native `_x.ai/ask_user_question` ext-request params into Zwiim
 /// [`QuestionSpec`]s, so grok's own questions render in the SAME interactive card
 /// as the `zwiim-mcp` ask tool (grok emits an ACP ext request and blocks on the
-/// reply; if codeg doesn't answer it, grok falls back to inert fire-and-forget
+/// reply; if Zwiim doesn't answer it, grok falls back to inert fire-and-forget
 /// rendering — see the connection handler). Grok's wire shape per question is
 /// `{question, options:[{label, description}], multiSelect}` — no `header`, which
-/// we synthesize. Counts are clamped to codeg's bounds because
+/// we synthesize. Counts are clamped to Zwiim's bounds because
 /// [`crate::acp::manager::ConnectionManager::register_question`] re-runs
 /// [`validate_specs`] and would otherwise decline the whole ask: more than
 /// [`MAX_QUESTIONS`] questions or [`MAX_OPTIONS`] options are truncated (logged,
@@ -679,24 +679,24 @@ pub fn pi_select_option_id(outcome: &QuestionOutcome, ask: &PiSelectAsk) -> Opti
         .map(|(_, option_id)| option_id.clone())
 }
 
-/// True when a host's name for a tool is codeg's OWN `ask_user_question`
+/// True when a host's name for a tool is Zwiim's OWN `ask_user_question`
 /// companion tool, in whatever spelling the host composed it
 /// (`mcp__zwiim-mcp__ask_user_question` from claude-agent-acp,
 /// `zwiim-mcp/ask_user_question`, `zwiim-mcp: ask_user_question`, …). Separators
 /// are folded and case is ignored, so only the two identifying words matter.
 ///
-/// BOTH halves have to be present — the server name codeg itself injects
+/// BOTH halves have to be present — the server name Zwiim itself injects
 /// (`zwiim-mcp`, see `acp::connection::inject_zwiim_mcp`) AND the tool name.
 /// The frontend can afford a bare `*ask_user_question` suffix rule because a
 /// wrong match there only picks a nicer card; this one unlocks an AUTO-APPROVAL
 /// of a blocked `session/request_permission`, and a third-party MCP server's
-/// similarly named tool is the user's to approve, not codeg's.
+/// similarly named tool is the user's to approve, not Zwiim's.
 ///
-/// Auto-approving codeg's own ask tool is not a permission being skipped: the
+/// Auto-approving Zwiim's own ask tool is not a permission being skipped: the
 /// tool's entire effect is to put the interactive question card on screen and
 /// block until the user answers it. The consent IS the next dialog, so gating it
 /// behind a generic "run this tool?" card asks the user to approve being asked.
-pub fn is_codeg_ask_tool_name(name: &str) -> bool {
+pub fn is_zwiim_ask_tool_name(name: &str) -> bool {
     let normalized = name
         .trim()
         .to_ascii_lowercase()
@@ -876,7 +876,7 @@ pub const ELICITATION_DECLINE_OPTION_ID: &str = "__decline";
 /// ask card: an MCP tool-call approval (`_meta.codex_approval_kind ==
 /// "mcp_tool_call"`) or a message-only confirm (a form with no renderable
 /// fields). Routing these through the permission flow keeps MCP approvals
-/// looking exactly like they did before codeg advertised `elicitation.form`
+/// looking exactly like they did before Zwiim advertised `elicitation.form`
 /// (codex-acp then used `session/request_permission` with the same options).
 pub struct ElicitationApproval {
     /// The human prompt ("Allow tool call?" / the MCP server's message).
@@ -956,7 +956,7 @@ fn codex_companion_role(raw: &Value, id: &str) -> Option<CodexUserInputShape> {
 /// actual question would never be displayed at all.
 ///
 /// The connection pins this at `initialize` from the RUNNING adapter's
-/// `agentInfo.version` (`SessionState::codex_user_input_shape`) — codeg's pin is
+/// `agentInfo.version` (`SessionState::codex_user_input_shape`) — Zwiim's pin is
 /// 1.12.0, but launch may resolve an older PATH install or a custom pinned
 /// version, and both are supported configurations.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -975,7 +975,7 @@ pub enum CodexUserInputShape {
 ///
 /// The identity has to come from the connection, not from the payload. `_meta`
 /// is an OPEN namespace: the ACP spec tells implementations to make no
-/// assumptions about keys they do not own, and this parser is shared — codeg
+/// assumptions about keys they do not own, and this parser is shared — Zwiim
 /// advertises `elicitation.form` to DeepSeek as well as Codex, and EITHER
 /// adapter also forwards arbitrary MCP-server forms through it. Deciding "this
 /// is codex" from `_meta.codex.*` in the request would let a third party, by
@@ -1046,7 +1046,7 @@ fn codex_property_meta<'a>(raw: &'a Value, id: &str) -> Option<&'a Value> {
 ///      question.
 ///   3. The pinned adapter's shape, which is 1.12.0's — the last resort for an
 ///      undatable form from an unidentified adapter, and the likeliest truth
-///      since the pin is what codeg launches.
+///      since the pin is what Zwiim launches.
 fn codex_form_shape(raw: &Value, peer: ElicitationPeer) -> Option<CodexUserInputShape> {
     // Identity first, and unconditionally: a non-codex peer gets the generic
     // reading no matter what its `_meta` says.
@@ -1080,7 +1080,7 @@ fn codex_form_shape(raw: &Value, peer: ElicitationPeer) -> Option<CodexUserInput
 /// The synthetic choice codex-acp ≥1.12.0 appends to an `isOther` question's
 /// `oneOf`, verbatim — label and description both.
 ///
-/// codeg's card already offers a free-text "Other" input on every question and
+/// Zwiim's card already offers a free-text "Other" input on every question and
 /// writes it to the MAIN field, while the note field this option points at is
 /// skipped as a companion. So the option is a dead end here: picking it sends
 /// codex the bare string "None of the above" and no elaboration.
@@ -1160,7 +1160,7 @@ fn is_codex_synthetic_other_choice(raw: &Value, id: &str, label: &str, value: &s
 /// agent namespace so every AskUserQuestion bridge can be recognized the same
 /// way; its own companion fields are named `question_<n>_custom`, which
 /// [`is_other_companion`]'s `__other` heuristic does not match. Reading the
-/// marker means codeg keeps collapsing the companion into the card's built-in
+/// marker means Zwiim keeps collapsing the companion into the card's built-in
 /// "Other" input no matter which adapter produced the form.
 ///
 /// Like [`is_secret_property`], this reads the raw JSON: the typed sacp
@@ -1226,7 +1226,7 @@ pub fn elicitation_auto_resolution_ms(raw: &Value) -> Option<u64> {
 /// then dates the form from its own markers and falls back to the pinned
 /// adapter's shape.
 ///
-/// Counts are clamped to codeg's bounds because
+/// Counts are clamped to Zwiim's bounds because
 /// [`crate::acp::manager::ConnectionManager::register_question`] re-runs
 /// [`validate_specs`]. Errors only on non-form / undeserializable requests,
 /// which the connection handler turns into a graceful decline.
@@ -1237,7 +1237,7 @@ pub fn classify_elicitation(
     let req: CreateElicitationRequest = serde_json::from_value(raw.clone())
         .map_err(|e| format!("unparseable elicitation request: {e}"))?;
     let ElicitationMode::Form(form) = &req.mode else {
-        // codeg only advertises `elicitation.form` — URL mode goes down
+        // Zwiim only advertises `elicitation.form` — URL mode goes down
         // codex-acp's `request_permission` fallback and never reaches here.
         return Err("elicitation is not form mode".to_string());
     };
@@ -1564,7 +1564,7 @@ fn parse_bool_answer(v: &str) -> Option<bool> {
 /// Every value is written under the MAIN field id, including a free-text
 /// "Other": the companion property skipped by [`is_custom_answer_property`] /
 /// [`is_other_companion`] is never written back. That is correct for codex,
-/// which falls back to the main field. If codeg ever advertises
+/// which falls back to the main field. If Zwiim ever advertises
 /// `elicitation.form` to an agent that requires the answer under the companion
 /// key instead (claude-agent-acp reads `question_<n>_custom` separately), this
 /// has to route the free-text answer there using the marker's `questionId`.
@@ -1672,7 +1672,7 @@ pub fn elicitation_cancel_response() -> CreateElicitationResponse {
 }
 
 /// Build the `raw_input` (questions) for the in-stream `AskQuestionResultCard`
-/// codeg synthesizes for a native ask that resolves out-of-band rather than as a
+/// Zwiim synthesizes for a native ask that resolves out-of-band rather than as a
 /// completed stream tool_call. Three callers: grok (answers over the
 /// `_x.ai/ask_user_question` ext round-trip — `handle_grok_ask_user_question`),
 /// codex `request_user_input` (answers over the `elicitation/create` round-trip
@@ -2096,7 +2096,7 @@ mod tests {
     /// The gate is the PEER, not the payload. `_meta` is an open namespace, so
     /// a non-codex speaker — DeepSeek, or any MCP server whose form either
     /// adapter relays — can carry a `codex` block of its own meaning. If that
-    /// were enough to unlock the codex fixups, a third party could make codeg
+    /// were enough to unlock the codex fixups, a third party could make Zwiim
     /// hide one of its fields (the companion skip), read its questions upside
     /// down (the orientation flip) and delete one of its options (the synthetic
     /// filter). None of those may fire on `ElicitationPeer::Other`.
@@ -2246,7 +2246,7 @@ mod tests {
     }
 
     /// A generic MCP server's form has no `codex` namespace at all, so it keeps
-    /// the JSON Schema reading codeg has always used — `description` is the
+    /// the JSON Schema reading Zwiim has always used — `description` is the
     /// prose, `title` the short label. The swap is codex-only.
     #[test]
     fn classify_elicitation_generic_mcp_form_keeps_description_as_the_question() {
@@ -2975,7 +2975,7 @@ mod tests {
 
     #[test]
     fn parse_grok_ext_clamps_questions_and_options_to_bounds() {
-        // 6 questions, each with 6 options — both past codeg's maxima.
+        // 6 questions, each with 6 options — both past Zwiim's maxima.
         let many: Vec<Value> = (0..6)
             .map(|qi| {
                 let opts: Vec<Value> = (0..6)
@@ -3138,7 +3138,7 @@ mod tests {
     }
 
     #[test]
-    fn is_codeg_ask_tool_name_accepts_every_host_spelling_of_codegs_own_tool() {
+    fn is_zwiim_ask_tool_name_accepts_every_host_spelling_of_zwiims_own_tool() {
         for spelling in [
             // claude-agent-acp: an MCP tool's permission card title IS the
             // raw tool name.
@@ -3150,14 +3150,14 @@ mod tests {
             "  MCP__Zwiim-MCP__Ask_User_Question  ",
         ] {
             assert!(
-                is_codeg_ask_tool_name(spelling),
-                "{spelling} is codeg's own ask tool"
+                is_zwiim_ask_tool_name(spelling),
+                "{spelling} is Zwiim's own ask tool"
             );
         }
     }
 
     #[test]
-    fn is_codeg_ask_tool_name_rejects_tools_that_are_not_codegs_ask() {
+    fn is_zwiim_ask_tool_name_rejects_tools_that_are_not_zwiims_ask() {
         for other in [
             // A third-party MCP server's similarly named tool: approving it is
             // the user's decision, so the bare suffix must NOT be enough.
@@ -3175,7 +3175,7 @@ mod tests {
             "",
         ] {
             assert!(
-                !is_codeg_ask_tool_name(other),
+                !is_zwiim_ask_tool_name(other),
                 "{other} must keep its approval card"
             );
         }

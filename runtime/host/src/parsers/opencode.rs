@@ -991,7 +991,7 @@ fn extract_opencode_file_image(value: &serde_json::Value) -> Option<ContentBlock
     })
 }
 
-/// One OpenCode tool call rewritten into codeg's shared tool vocabulary.
+/// One OpenCode tool call rewritten into Zwiim's shared tool vocabulary.
 struct NormalizedToolCall {
     tool_name: String,
     input_preview: Option<String>,
@@ -1095,7 +1095,7 @@ fn unwrap_skill_content(raw: &str) -> String {
 }
 
 /// Rewrite OpenCode's tool call into the canonical names and snake_case input
-/// keys every renderer in codeg dispatches on (`file_path`, `old_string`,
+/// keys every renderer in Zwiim dispatches on (`file_path`, `old_string`,
 /// `new_string`, `pattern`, …).
 ///
 /// OpenCode names its tool arguments in camelCase (`filePath`, `oldString`),
@@ -1425,7 +1425,7 @@ fn subtask_summary(value: &serde_json::Value) -> Option<String> {
 /// layout. So every answered question rendered as "no selection" even though the
 /// answers were sitting right there. Emitting the canonical
 /// `{"answers":[{header,question,selected}],"declined":false}` envelope — the
-/// same shape `render_ask_result` writes for codeg's own companion — routes it
+/// same shape `render_ask_result` writes for Zwiim's own companion — routes it
 /// through the parser both cards already share.
 ///
 /// A dismissal surfaces as `state.error` carrying `Question.RejectedError`'s

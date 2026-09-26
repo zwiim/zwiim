@@ -3,11 +3,11 @@
 //! On Windows, child processes don't die with their parent automatically.
 //! On Unix the kernel closes the inherited pipe ends so `stdin` reads EOF
 //! and the loop exits — usually. In both worlds a misbehaving intermediate
-//! (agent CLI that hangs, parent codeg crash that orphans the agent) can
+//! (agent CLI that hangs, parent Zwiim crash that orphans the agent) can
 //! leave `zwiim-mcp` running forever, holding open the binary file and a
 //! companion connection that no one will ever read from.
 //!
-//! When the parent codeg / zwiim-host passes `--parent-pid <pid>` on
+//! When the parent Zwiim / zwiim-host passes `--parent-pid <pid>` on
 //! the command line, `zwiim-mcp` spawns this watchdog. It polls the OS
 //! every couple of seconds and, the moment the parent PID stops existing,
 //! tears down the process. Polling (vs. a kernel notification) keeps the

@@ -1,6 +1,6 @@
 //! Zwiim-owned stub for the in-place self-updater.
 //!
-//! Replaces Codeg's minisign-verified download/swap installer (discarded per
+//! Replaces the upstream minisign-verified download/swap installer (discarded per
 //! CLAUDE.md — see `third_party/codeg/PROVENANCE.md`). This build ships no
 //! self-update path, so:
 //!

@@ -2,7 +2,7 @@
 //! it from the UI.
 //!
 //! "The zwiim-mcp service" is really three things stacked, and a session loses
-//! its codeg tools if ANY of them is missing:
+//! its Zwiim tools if ANY of them is missing:
 //!
 //!   1. the **companion binary** on disk — `zwiim-mcp`, which the agent CLI
 //!      spawns as a stdio MCP server (see `acp::connection::inject_zwiim_mcp`);
@@ -49,7 +49,7 @@ use crate::web::event_bridge::EventEmitter;
 #[serde(rename_all = "snake_case")]
 pub enum ZwiimMcpServiceState {
     /// The broker socket isn't answering. Companions would launch and fail to
-    /// reach codeg. Fixable here — see [`start_zwiim_mcp_service_core`].
+    /// reach Zwiim. Fixable here — see [`start_zwiim_mcp_service_core`].
     Stopped,
     /// The socket is fine but the `zwiim-mcp` binary isn't on disk, so nothing
     /// gets injected into an agent's MCP config. Needs a reinstall or

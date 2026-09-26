@@ -7,7 +7,7 @@
 //! dir and hands back a handle the later steps reuse.
 //!
 //! The trade is that the plaintext archive sits on disk for as long as the
-//! user takes to work through the restore dialog. That is accepted in codeg's
+//! user takes to work through the restore dialog. That is accepted in Zwiim's
 //! local-data threat model — the same directory already holds `tokens.json`
 //! and the database, mode `0700` — and it is bounded three ways, all of which
 //! are real code rather than intentions: released the moment staging succeeds,
@@ -297,7 +297,7 @@ mod tests {
         std::fs::write(&db, b"DB").unwrap();
         let mut b = archive::ArchiveBuilder::create(&zip).unwrap();
         b.add_file(
-            "db/codeg.db",
+            "db/zwiim.db",
             &db,
             &CancellationToken::new(),
             &mut archive::null_progress(),

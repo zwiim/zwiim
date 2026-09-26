@@ -14,7 +14,7 @@ use crate::models::agent::AgentType;
 /// resolution) and would otherwise collide on the rename target.
 static TRASH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Root for codeg-managed agent binaries.
+/// Root for zwiim-managed agent binaries.
 ///
 /// Resolution order mirrors `paths.rs`:
 /// 1. `$ZWIIM_HOME/acp-binaries`
@@ -53,7 +53,7 @@ pub(crate) fn legacy_cache_dir() -> Option<PathBuf> {
     (legacy != current && legacy.is_dir()).then_some(legacy)
 }
 
-/// Directory where codeg caches a managed `uv` toolchain (`uv` + `uvx`),
+/// Directory where Zwiim caches a managed `uv` toolchain (`uv` + `uvx`),
 /// downloaded on demand when the user has no system `uv` (used to launch
 /// custom Python ACP agents). Layout:
 /// `<cache_dir>/uv-tool/<platform>/{uv,uvx}`.
@@ -63,7 +63,7 @@ pub(crate) fn uv_tool_dir() -> Result<PathBuf, AcpError> {
         .join(registry::current_platform()))
 }
 
-/// Locate a codeg-managed uv tool binary (`uv` or `uvx`) if it has already
+/// Locate a zwiim-managed uv tool binary (`uv` or `uvx`) if it has already
 /// been downloaded into the cache. Returns `None` when not present, so
 /// callers fall back to PATH / common install locations.
 pub fn find_cached_uv_tool(tool: &str) -> Option<PathBuf> {
@@ -76,7 +76,7 @@ pub fn find_cached_uv_tool(tool: &str) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-/// Pinned `uv` toolchain version codeg downloads on demand when the user has no
+/// Pinned `uv` toolchain version Zwiim downloads on demand when the user has no
 /// system `uv` (used to launch custom Python ACP agents).
 const UV_TOOL_VERSION: &str = "0.8.10";
 
@@ -96,7 +96,7 @@ fn uv_archive_url() -> Option<String> {
     ))
 }
 
-/// Download + cache the `uv` toolchain (`uv` + `uvx`) into codeg's cache when no
+/// Download + cache the `uv` toolchain (`uv` + `uvx`) into Zwiim's cache when no
 /// system `uv` is available, so Python ACP agents work with zero prerequisites.
 /// Idempotent: returns the cached `uvx` path immediately if already present.
 pub async fn ensure_uv_tool(on_progress: impl Fn(&str)) -> Result<PathBuf, AcpError> {
@@ -331,7 +331,7 @@ fn migrate_root(legacy: &Path, current: &Path) {
         // into place, so `to` only ever exists complete. Two failures depend on
         // it. A crash mid-copy would otherwise leave a half-tree that the next
         // startup reads as a finished migration — `to.exists()` — and then
-        // deletes the intact source over. And a second codeg running the same
+        // deletes the intact source over. And a second Zwiim running the same
         // migration would otherwise be able to delete the copy this one just
         // landed, because its cleanup would name `to`; now its cleanup can only
         // ever reach its own staging directory.
@@ -370,7 +370,7 @@ fn migrate_root(legacy: &Path, current: &Path) {
 ///
 /// Deliberately NOT `.trash/`, which was the first thing to hand and is wrong:
 /// [`sweep_trash`] deletes every child of that directory unconditionally, and a
-/// peer codeg sweeping while this one is mid-copy would delete the staging tree
+/// peer Zwiim sweeping while this one is mid-copy would delete the staging tree
 /// out from under it. On Unix that is worse than it sounds — `remove_dir_all`
 /// walks by descriptor, so a sweep that opened the directory can keep deleting
 /// through the rename and gut the copy AFTER it was published, while the legacy
@@ -380,7 +380,7 @@ fn migrate_root(legacy: &Path, current: &Path) {
 /// agent id, and the trash sweep reads `.trash/`.
 const MIGRATION_STAGING: &str = ".migrating";
 
-/// Drop staging directories left behind by a codeg that is no longer running.
+/// Drop staging directories left behind by a Zwiim that is no longer running.
 ///
 /// Owner-pid gated for the same reason `acp::scratch_dir`'s foreign sweep is:
 /// a peer instance may be using one right now, and only a POSITIVELY confirmed
@@ -1007,7 +1007,7 @@ fn install_extracted_tree(
         // must fail here rather than install a tree that starts and then
         // misbehaves (Antigravity logs "Localharness not found." and keeps
         // going). This is also what keeps `installed_binary_path`'s matching
-        // check from ever rejecting a tree codeg itself installed.
+        // check from ever rejecting a tree Zwiim itself installed.
         for sibling in entry.required_siblings.for_current_platform() {
             let path = parent.join(sibling);
             if !path.is_file() {
@@ -1299,14 +1299,14 @@ mod tests {
 
     /// Staging must NOT live under `.trash/`, because `sweep_trash` deletes
     /// every child of that directory unconditionally — including, from a peer
-    /// codeg, a copy this one is still assembling.
+    /// Zwiim, a copy this one is still assembling.
     #[test]
     fn staging_is_out_of_the_trash_sweep() {
         assert_ne!(MIGRATION_STAGING, ".trash");
     }
 
     /// A staging directory abandoned by a process that is gone is reclaimed;
-    /// one whose owner is still alive is left alone, because a peer codeg may
+    /// one whose owner is still alive is left alone, because a peer Zwiim may
     /// be copying into it right now.
     #[test]
     fn dead_owners_staging_is_reclaimed_and_a_live_owner_is_not() {
@@ -1629,7 +1629,7 @@ mod tests {
         assert_eq!(normalize_version_label("1.25.1"), "1.25.1");
     }
 
-    // Custom agents download from URLs codeg did not vet, so a published
+    // Custom agents download from URLs Zwiim did not vet, so a published
     // digest must be enforced — and a mismatch must fail BEFORE extraction.
     #[test]
     fn archive_checksum_is_enforced_when_published() {

@@ -32,8 +32,8 @@ builds `default = []` (headless), so the WebKit/Tauri surface is never compiled.
   `codeg_mcp.rs`).
 - The Zwiim-owned naming rebrand has now been applied (see "Naming rebrand"
   below). Protocol/technology identifiers (ACP, SACP, SQLite, SeaORM, Git, PTY)
-  are external and preserved. A residual set of Codeg-derived **agent-config
-  keys and serde field names** is still deferred (see Deferred, below).
+  are external and preserved. The remaining agent-config keys, serde fields
+  and prose were renamed in the naming cleanup (see "Naming cleanup", below).
 
 ## Retained Codeg core (integrated, headless)
 
@@ -174,9 +174,8 @@ propagated titles …", and the discarded minisign-updater notes).
   and then stripped back to read the child `PATH`). It was therefore **renamed**
   to `ZWIIM_PATH` (both sides) rather than removed.
 - A larger residual of **lowercase `codeg` prose** (comments, test-fixture path
-  tokens, and a few user-facing strings such as "Reinstall codeg …") remains.
-  These fall outside the approved token families (`Codeg`, `CODEG_`,
-  `codeg_lib`, `codeg-mcp`, `.codeg`) and are left for a follow-up cosmetic pass.
+  tokens, and a few user-facing strings such as "Reinstall codeg …") remained
+  outside the approved token families; renamed in the naming cleanup below.
 
 ## Deferred (not in this slice — explicit)
 
@@ -191,21 +190,62 @@ event. V1 clients infer working/idle from the session's turn lifecycle and
 `session.list` (`live` + `status`). The bearer token remains
 a **transitional** bootstrap only.
 
-Explicitly **not** renamed in this slice (Codeg-derived, but outside the approved
-naming boundary or in excluded scope):
+Explicitly **not** renamed in this slice — all renamed since, in the naming
+cleanup below: the agent-config keys (`[providers.codeg]`,
+`[model_providers.codeg]`, `providers.codeg.env`, the `codeg-managed` model
+id), the serde fields `codeg_version` / `codeg_config_encryption`, the
+OS-keychain service (renamed in Desktop completion D1), the WS subprotocols
+`codeg-events` / `codeg-token.`, and the `docs.codeg.app` URL.
 
-- **Agent-config keys** written into ACP agents' config and matched by parsers:
-  `[providers.codeg]`, `[model_providers.codeg]`, `providers.codeg.env`, and the
-  `codeg-managed` model id. These are an agent-config-format/parser contract and
-  need coordinated writer+parser+fixture changes as their own slice.
-- **Serde field names** `codeg_version` (experts manifest) and
-  `codeg_config_encryption` (config-sync payload) — persisted-schema identifiers.
-- ~~**OS-keychain service name** `"codeg"` in `keyring_store.rs`~~ — renamed
-  to `"zwiim"` in Desktop completion D1 (see below).
-- **WS subprotocols** `codeg-events` / `codeg-token.` in the transitional bearer
-  auth (auth is itself a transitional bootstrap slated for replacement).
-- The `docs.codeg.app` documentation URL (points at upstream docs until Zwiim
-  docs exist).
+## Naming cleanup — no upstream naming in Zwiim code
+
+Every remaining `codeg` / `Codeg` / `CODEG` in the Zwiim tree was renamed
+(case-insensitive audit of all tracked files, one commit):
+
+- Identifiers: functions, constants, fields and tests (`codeg_home_dir` →
+  `zwiim_home_dir`, `codeg_*_root` → `zwiim_*_root`, `is_codeg_ask_tool_name`,
+  `codeg_temp_reclaim`, …) and the lowercase prose in comments, logs, errors,
+  agent-facing tool descriptions and UI strings (product name capitalised as
+  "Zwiim").
+- Agent-config keys written into agents' config and matched by the parsers,
+  writer + parser + fixtures together: `[providers.zwiim]`,
+  `[model_providers.zwiim]`, `providers.zwiim.env`, the `zwiim-managed` model
+  id and markers, `zwiim-model-catalog*.json`.
+- Agent-facing wire names: the `zwiim://agent/…` / `zwiim://session/…` mention
+  URIs, the `zwiim.delegation` `_meta` key, `<zwiim_internal_agent_routes>`,
+  `mcp__zwiim__…` matchers, ACP `clientInfo.name`.
+- Persisted/format identifiers: the database file `codeg.db` → `zwiim.db`
+  (`codeg-dev.db` → `zwiim-dev.db`), backup archive paths and the backup
+  envelope magic (`CODEGBAK` → `ZWIIMBAK`), serde fields `zwiim_version` /
+  `zwiim_config_encryption` / `zwiimConfigExport`, log file names
+  (`zwiim.<date>.log`), scratch/temp directory prefixes, the git credential
+  helper script (`git-credential-zwiim.*`), the WS subprotocols
+  `zwiim-events` / `zwiim-token.` (the duplicate legacy token prefix collapsed
+  into one), the Linux `x-scheme-handler/zwiim`.
+- The ACP-adapter docs link now points at the ACP agent list
+  (`https://agentclientprotocol.com/overview/agents`), not upstream docs.
+- History comments that named the upstream project ("Codeg used to render …",
+  "codeg#500", the discarded minisign updater) now say "upstream"; this file
+  keeps the attribution.
+
+Compatibility: an existing data directory's `codeg.db` (and its `-wal` /
+`-shm` sidecars) is renamed to `zwiim.db` once at startup, only when no
+`zwiim.db` exists (`db::adopt_legacy_database`), so a Host keeps its
+workspaces and sessions. Not migrated (pre-release): backups and config
+exports made before the rename, agent-config entries written under the old
+`codeg` keys, and stored transcripts that mention `codeg://` URIs.
+
+Intentionally retained references (all outside the Zwiim product surface):
+
+- `third_party/codeg/` (this file and `LICENSE`) and the comments that point
+  to it — Apache-2.0 attribution and change notices for the upstream project.
+- `CLAUDE.md`, `guidance.md`, `codeg-audit.md` — architecture and audit notes
+  about the upstream project itself.
+- `db::legacy_database_file_name` (`codeg.db` / `codeg-dev.db`) — read only to
+  adopt a pre-rename database; never created.
+- `Cargo.lock`: `phf_codegen`, `string_cache_codegen`, `tauri-codegen` —
+  third-party crates named for code generation; unrelated to the upstream
+  project.
 
 ## Desktop Remote Client V1 — clients
 

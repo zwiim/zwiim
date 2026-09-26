@@ -4,7 +4,7 @@
 //!
 //!   * [`DbSessionInfoLookup`] — the production [`SessionInfoAccess`] impl the
 //!     delegation listener calls to resolve a referenced session
-//!     (`codeg://session/<id>`) into metadata + token stats and, on demand, a
+//!     (`zwiim://session/<id>`) into metadata + token stats and, on demand, a
 //!     bounded compacted view of its recent messages. It reuses
 //!     [`get_folder_conversation_core`] (which reads the conversation row, uses
 //!     its bound `external_id` + `agent_type` to pick the right parser, and parses
@@ -68,7 +68,7 @@ const PARSE_TIMEOUT: Duration = Duration::from_secs(8);
 /// degrades to metadata-only immediately.
 const MAX_CONCURRENT_PARSES: usize = 4;
 
-/// Production [`SessionInfoAccess`]: resolves a session by codeg conversation id
+/// Production [`SessionInfoAccess`]: resolves a session by Zwiim conversation id
 /// against the DB + on-disk transcript. Wraps an `Arc<AppDatabase>` (like
 /// `DbDepthLookup` / `DbChildStatusLookup`) plus a semaphore bounding concurrent
 /// transcript parses. Construct via [`DbSessionInfoLookup::new`].

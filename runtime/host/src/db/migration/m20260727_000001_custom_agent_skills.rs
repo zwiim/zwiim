@@ -12,7 +12,7 @@ impl MigrationTrait for Migration {
                     .table(CustomAgent::Table)
                     // User declaration that the agent reads the shared
                     // `.agents/skills` store; gates every skills surface.
-                    // Defaults off — codeg cannot detect an arbitrary ACP
+                    // Defaults off — Zwiim cannot detect an arbitrary ACP
                     // agent's skill directory, so the user opts in.
                     .add_column(
                         ColumnDef::new(CustomAgent::SkillsSharedStore)

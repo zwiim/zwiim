@@ -385,7 +385,7 @@ fn canonicalize_watch_root(root: &Path) -> Result<(PathBuf, String), AppCommandE
     Ok((canonical, key))
 }
 
-fn is_codeg_edit_temp_path(path: &Path) -> bool {
+fn is_zwiim_edit_temp_path(path: &Path) -> bool {
     path.file_name()
         .map(|name| {
             let name = name.to_string_lossy();
@@ -593,7 +593,7 @@ fn is_ignored_watch_path(path: &Path, root: &Path) -> bool {
         return false;
     };
 
-    if is_codeg_edit_temp_path(relative) {
+    if is_zwiim_edit_temp_path(relative) {
         return true;
     }
 

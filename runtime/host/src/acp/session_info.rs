@@ -1,7 +1,7 @@
 //! Session-info lookup domain types — backing the `get_session_info` MCP tool.
 //!
 //! When the user references a session in the composer it serializes into the
-//! agent's prompt as `[title](codeg://session/<conversation_id>)`. The agent
+//! agent's prompt as `[title](zwiim://session/<conversation_id>)`. The agent
 //! reads the numeric id out of that link and calls `get_session_info`, which
 //! resolves it to the session's metadata + token-usage stats and, on demand, a
 //! bounded compacted view of its recent messages.
@@ -66,7 +66,7 @@ pub struct SessionMessages {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub found: bool,
-    /// The id that was queried (codeg's internal conversation PK). Echoed so the
+    /// The id that was queried (Zwiim's internal conversation PK). Echoed so the
     /// companion can render a precise not-found message.
     pub session_id: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -117,21 +117,21 @@ impl SessionInfo {
             session_id,
             note: Some(format!(
                 "No session matches id {session_id}. It may have been deleted, \
-                 or never imported into codeg."
+                 or never imported into Zwiim."
             )),
             ..Default::default()
         }
     }
 }
 
-/// Listener-facing access to resolve a session by its codeg conversation id. The
+/// Listener-facing access to resolve a session by its Zwiim conversation id. The
 /// production impl (`crate::commands::session_info::DbSessionInfoLookup`) reads
 /// the DB + parses the on-disk transcript; tests use an in-memory stub. Mirrors
 /// [`crate::acp::feedback::SessionFeedbackAccess`] and
 /// [`crate::acp::question::SessionQuestionAccess`].
 #[async_trait]
 pub trait SessionInfoAccess: Send + Sync {
-    /// Resolve `session_id` (codeg's internal conversation PK) into a
+    /// Resolve `session_id` (Zwiim's internal conversation PK) into a
     /// [`SessionInfo`]. When `max_messages > 0`, include up to that many of the
     /// most recent compacted turns (capped at [`MAX_SESSION_MESSAGES`]). A
     /// missing / deleted id yields [`SessionInfo::not_found`].

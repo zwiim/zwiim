@@ -175,7 +175,7 @@ pub fn serialize_snapshot(snapshot: &ConfigSnapshot) -> Result<Vec<u8>, AppComma
 
 pub fn parse_snapshot(bytes: &[u8]) -> Result<ConfigSnapshot, AppCommandError> {
     let snapshot: ConfigSnapshot = serde_json::from_slice(bytes).map_err(|e| {
-        AppCommandError::invalid_input("Not a codeg config snapshot")
+        AppCommandError::invalid_input("Not a Zwiim config snapshot")
             .with_detail(e.to_string())
             .with_i18n(CONFIG_SYNC_I18N_KEY_INVALID_SNAPSHOT, BTreeMap::new())
     })?;
@@ -212,7 +212,7 @@ pub fn validate_domains(snapshot: &ConfigSnapshot) -> Result<(), AppCommandError
 
 pub fn parse_manifest(bytes: &[u8]) -> Result<ConfigManifest, AppCommandError> {
     serde_json::from_slice(bytes).map_err(|e| {
-        AppCommandError::invalid_input("Not a codeg config manifest")
+        AppCommandError::invalid_input("Not a Zwiim config manifest")
             .with_detail(e.to_string())
             .with_i18n(CONFIG_SYNC_I18N_KEY_INVALID_SNAPSHOT, BTreeMap::new())
     })
@@ -291,7 +291,7 @@ fn reject_newer_schema(schema_version: u32) -> Result<(), AppCommandError> {
         params.insert("snapshotVersion".to_string(), schema_version.to_string());
         params.insert("appVersion".to_string(), SCHEMA_VERSION.to_string());
         return Err(AppCommandError::invalid_input(
-            "Config snapshot was written by a newer version of codeg",
+            "Config snapshot was written by a newer version of zwiim",
         )
         .with_i18n(CONFIG_SYNC_I18N_KEY_NEWER_SCHEMA, params));
     }
@@ -362,7 +362,7 @@ fn unix_hostname() -> Option<String> {
 
 /// Where pre-apply rollback snapshots live.
 pub fn rollback_dir() -> PathBuf {
-    crate::paths::codeg_home_dir().join("config-snapshots")
+    crate::paths::zwiim_home_dir().join("config-snapshots")
 }
 
 /// Write "what this machine looked like before the apply" next to the app's

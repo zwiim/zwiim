@@ -1,8 +1,8 @@
-//! History parser for agents that have **no codeg-side store parser**: custom
+//! History parser for agents that have **no zwiim-side store parser**: custom
 //! ACP agents.
 //!
 //! Every other parser in this module reverse-engineers one agent's private
-//! session store. This one reads codeg's own ACP transcript
+//! session store. This one reads Zwiim's own ACP transcript
 //! ([`crate::acp_transcript`]) — the raw `session/prompt` payloads and
 //! `session/update` notifications the connection layer witnessed — and projects
 //! them into [`MessageTurn`]s using nothing but ACP semantics.
@@ -23,7 +23,7 @@
 //! ## Turn boundaries
 //!
 //! ACP has no "turn ended" notification — the stop reason is the *response* to
-//! `session/prompt`. codeg records it as an explicit
+//! `session/prompt`. Zwiim records it as an explicit
 //! [`EntryKind::TurnEnd`](crate::acp_transcript::EntryKind::TurnEnd) line, so
 //! live-recorded transcripts have exact boundaries. Transcripts hydrated from a
 //! `session/load` replay have no such line (the agent replays only
@@ -56,7 +56,7 @@ impl AcpNativeParser {
     pub fn new(agent_type: AgentType) -> Self {
         Self {
             agent_type,
-            root: crate::paths::codeg_acp_transcripts_root(),
+            root: crate::paths::zwiim_acp_transcripts_root(),
         }
     }
 
@@ -102,7 +102,7 @@ impl AgentParser for AcpNativeParser {
     fn get_conversation(&self, conversation_id: &str) -> Result<ConversationDetail, ParseError> {
         let dir = self.agent_dir();
         // Reads the whole continuation chain: when the agent had forgotten the
-        // session and codeg started a fresh one, the earlier turns still live
+        // session and Zwiim started a fresh one, the earlier turns still live
         // under the previous session id.
         let transcript = acp_transcript::read_chain_in(&self.root, dir, conversation_id);
         if transcript.header.is_none() && transcript.is_empty() {
@@ -156,7 +156,7 @@ impl AcpNativeParser {
             folder_path,
             folder_name,
             // The first prompt's text is the only title an ACP transcript can
-            // honestly yield — ACP has no title channel, and codeg's DB-side
+            // honestly yield — ACP has no title channel, and Zwiim's DB-side
             // auto-title backfill takes it from here.
             title: first_prompt_title(&transcript.entries),
             started_at,
@@ -364,7 +364,7 @@ pub fn project_turns(entries: &[TranscriptEntry]) -> Vec<MessageTurn> {
     // second user turn.
     let mut prompt_just_recorded = false;
     // Timestamp of the prompt that opened the current turn. An assistant turn's
-    // span starts when codeg SENT the prompt, not when the first token arrived —
+    // span starts when Zwiim SENT the prompt, not when the first token arrived —
     // time-to-first-token is part of how long the agent took, and this matches
     // what `turn_timings` records for built-ins.
     let mut turn_start_hint: Option<u64> = None;
@@ -509,7 +509,7 @@ fn apply_update(
     }
     match update {
         SessionUpdate::UserMessageChunk(chunk) => {
-            // Live path: codeg already recorded the outgoing prompt, so the
+            // Live path: Zwiim already recorded the outgoing prompt, so the
             // agent's echo is a duplicate. Replay path: there is no recorded
             // prompt, so this IS the user turn and it also ends the previous
             // assistant turn.
@@ -1268,7 +1268,7 @@ mod tests {
 
     fn temp_root() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "codeg-acp-native-test-{}-{:?}",
+            "zwiim-acp-native-test-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -1374,7 +1374,7 @@ mod tests {
     #[test]
     fn a_session_restarted_after_the_agent_forgot_it_reads_as_one_conversation() {
         // The agent kept its sessions in memory, so reopening the conversation
-        // failed `session/load` and codeg opened `sess-new` for the same
+        // failed `session/load` and Zwiim opened `sess-new` for the same
         // conversation, linked back to `sess-old`. Both halves must render as
         // one history, listed once.
         let root = temp_root();
