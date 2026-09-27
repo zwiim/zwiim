@@ -1,6 +1,6 @@
 // The Host shell (DESIGN.md, Information Architecture): the current host's
-// four tabs, each under the Host bar. Sessions lists the host's sessions and
-// what they wait on; Files and Terminal inspect a workspace and run its
+// three tabs, each under the Host bar. Sessions lists the host's sessions and
+// what they wait on; Files inspects the selected worktree and runs its
 // terminals; the Host tab holds the connection, the host and the account. A pairing the host has
 // dropped replaces the shell until paired again.
 
@@ -18,12 +18,11 @@ import { connectionText, hostProblem } from "../host/status";
 import { secureStore } from "../platform/native";
 import { auth, cloud, currentHost } from "../services";
 import { Button, PathPill, Sheet, T } from "../ui/components";
-import { Folder, Icon, Laptop, MessagesSquare, SquareTerminal } from "../ui/icons";
+import { Folder, Icon, Laptop, MessagesSquare } from "../ui/icons";
 import { fonts, radius, space, useTheme } from "../ui/tokens";
 import { FilesTab } from "./FilesTab";
 import { HostFrame } from "./HostFrame";
 import { SessionsTab } from "./SessionsTab";
-import { TerminalTab } from "./TerminalScreens";
 
 const Tabs = createBottomTabNavigator<HostTabs>();
 
@@ -40,7 +39,6 @@ const tabIcon = (glyph: LucideIcon) =>
 const ICONS = {
   Sessions: tabIcon(MessagesSquare),
   Files: tabIcon(Folder),
-  Terminal: tabIcon(SquareTerminal),
   Host: tabIcon(Laptop),
 };
 
@@ -75,7 +73,6 @@ export function HostShell() {
         }}
       />
       <Tabs.Screen name="Files" component={FilesTab} options={{ tabBarIcon: ICONS.Files, tabBarButtonTestID: "tab-files" }} />
-      <Tabs.Screen name="Terminal" component={TerminalTab} options={{ tabBarIcon: ICONS.Terminal, tabBarButtonTestID: "tab-terminal" }} />
       <Tabs.Screen
         name="HostTab"
         component={HostTab}

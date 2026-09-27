@@ -2,7 +2,7 @@
 // a folder's entries and the path above it, the workspace's changes, a
 // file's patch as numbered lines, and a file's text. Pure; screens render it.
 
-import { isClientError, type DiffFile, type FileTreeNode, type GitStatusEntry, type WorkspaceDiff } from "@zwiim/sdk";
+import { isClientError, type DiffFile, type FileTreeNode, type GitStatusEntry, type WorkspaceDiff, type WorkspaceInfo } from "@zwiim/sdk";
 
 export interface Crumb {
   label: string;
@@ -136,6 +136,14 @@ export function previewLines(content: string): { lines: string[]; total: number 
 export interface Problem {
   title: string;
   body: string;
+}
+
+/** Changes for a plain folder: nothing to diff, and nothing wrong. */
+export function notGitProblem(workspace: WorkspaceInfo): Problem {
+  return {
+    title: "Not a Git repository",
+    body: `${workspace.alias ?? workspace.name} is a plain folder, so there are no changes to show. Files, terminals and sessions work as usual.`,
+  };
 }
 
 /** Why a folder, file or diff can't be shown, and what to do. */

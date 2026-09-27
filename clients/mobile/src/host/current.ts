@@ -1,7 +1,8 @@
 // The Host this phone is controlling: one connection at a time, shared by the
 // Hosts list, the Host bar and every tab of the Host shell. Choosing another
-// Host closes the first. The connection mode is kept per Host across
-// launches, and the Host itself is remembered to open again on launch.
+// Host closes the first. The connection mode and the worktree chosen in Files
+// are kept per Host across launches, and the Host itself is remembered to
+// open again on launch.
 
 import {
   ZwiimClientError,
@@ -12,6 +13,7 @@ import {
   type OpParams,
   type OpResult,
   type RequestAnswer,
+  type WorkspaceInfo,
 } from "@zwiim/sdk";
 import type { HostEntry } from "../account/hosts";
 import type { Preferences, SecureStore } from "../platform/capabilities";
@@ -27,7 +29,7 @@ export interface CurrentHostState {
   openError: ErrorInfo | null;
   /** The host's workspaces and sessions, once the connection is open. */
   store: HostStore | null;
-  /** The workspace Files and Terminal show, once chosen; kept while this host is. */
+  /** The worktree Files shows (a root or one of its worktrees), once chosen; kept per host. */
   workspaceId: string | null;
 }
 
@@ -79,7 +81,9 @@ export class CurrentHost {
     const run = ++this.#run;
     this.#set({ ...EMPTY, host });
     await this.#deps.prefs.setLastHost({ host_id: host.host_id, name: host.name });
-    const mode = (await this.#deps.prefs.connectionModes())[host.host_id] ?? "auto";
+    const [modes, chosen] = await Promise.all([this.#deps.prefs.connectionModes(), this.#deps.prefs.workspaces()]);
+    const mode = modes[host.host_id] ?? "auto";
+    if (run === this.#run && this.#state.workspaceId === null) this.#set({ workspaceId: chosen[host.host_id] ?? null });
     let connection: HostConnection;
     try {
       connection = await this.#deps.open(host.host_id, mode);
@@ -148,9 +152,25 @@ export class CurrentHost {
     return this.#opened().request(op, params);
   }
 
-  /** Show `workspace_id` in Files and Terminal. */
+  /** Show `workspace_id` in Files, now and on later launches. */
   chooseWorkspace(workspace_id: string): void {
     this.#set({ workspaceId: workspace_id });
+    const host = this.#state.host;
+    if (host) void this.#deps.prefs.setWorkspace(host.host_id, workspace_id).catch(() => {});
+  }
+
+  /** Add a folder under the host's home as a workspace, and show it. */
+  async addWorkspaceAt(home_path: string[]): Promise<WorkspaceInfo> {
+    const workspace = await this.#opened().addWorkspaceAt(home_path);
+    this.chooseWorkspace(workspace.workspace_id);
+    return workspace;
+  }
+
+  /** Create a worktree of a root workspace from its current branch, and show it. */
+  async createWorktree(root_workspace_id: string): Promise<WorkspaceInfo> {
+    const workspace = await this.#opened().createWorktree(root_workspace_id);
+    this.chooseWorkspace(workspace.workspace_id);
+    return workspace;
   }
 
   /** A terminal is on screen: its emulator, streamed until released. None before a connection opens. */
@@ -209,6 +229,7 @@ export class CurrentHost {
     if (view.error?.code === "device_refused" && host.paired) {
       this.#set({ host: { ...host, paired: false } });
       void this.#deps.store.forgetHost(host.host_id);
+      void this.#deps.prefs.setWorkspace(host.host_id, null).catch(() => {});
     }
   }
 

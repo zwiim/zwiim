@@ -1,5 +1,5 @@
-// The Terminal tab and a terminal (DESIGN.md, Screen 7): a watching surface
-// first, an input surface second. The tab lists the chosen workspace's
+// Terminals (DESIGN.md, Screen 7): a watching surface first, an input surface
+// second. The Terminals segment of Files lists the selected worktree's
 // terminals with a live preview; a terminal follows its output, takes a line
 // or a key at a time, and can be killed. The phone never resizes the Host's
 // PTY: it is shared with Desktop, so the view scrolls sideways instead.
@@ -20,17 +20,16 @@ import { useIsFocused } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { isClientError, type TerminalMeta, type WorkspaceInfo } from "@zwiim/sdk";
-import { useCurrentHost, useHostState, useTerminalScreen, useWorkspace } from "../app/hooks";
+import { useCurrentHost, useHostState, useTerminalScreen } from "../app/hooks";
 import { useRootNavigation, type RootStack } from "../app/navigation";
-import { workspaceLabel } from "../sessions/model";
+import { contextLabel, contextText, terminalsIn, workspaceLabel } from "../host/workspace";
 import { currentHost } from "../services";
 import { keySequence, type TermLine } from "../terminal/screen";
 import { Banner, Button, EmptyState, ScreenHeader, Sheet, StatusDot, T } from "../ui/components";
 import { useCharWidth, WideList } from "../ui/code";
 import { KeysRow, TERM_LINE_HEIGHT, TermRow, type TermKey } from "../ui/terminal";
 import { MONO_MAX_SCALE, radius, space, type, useTheme } from "../ui/tokens";
-import { HostFrame, useHostName } from "./HostFrame";
-import { WorkspacePicker } from "./workspaces";
+import { useHostName } from "./HostFrame";
 
 function terminalError(e: unknown, hostName: string, doing: string): string {
   if (isClientError(e, "network") || isClientError(e, "timeout")) return `Not connected to ${hostName}. Try again when it's back.`;
@@ -39,14 +38,16 @@ function terminalError(e: unknown, hostName: string, doing: string): string {
   return `Couldn't ${doing}. Try again.`;
 }
 
-export function TerminalTab() {
-  const workspace = useWorkspace();
-  const name = useHostName();
+/** The Terminals segment of Files: the selected worktree's terminals, and New terminal. */
+export function TerminalsSegment({ workspace }: { workspace: WorkspaceInfo }) {
   const nav = useRootNavigation();
+  const name = useHostName();
+  const { terminals, workspaces } = useHostState();
   const [spawning, setSpawning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const listed = terminalsIn(terminals, workspace.workspace_id);
+  const worktree = contextLabel(workspaces, workspace.workspace_id)?.worktree ?? workspaceLabel(workspace);
   const spawn = async () => {
-    if (!workspace) return;
     setSpawning(true);
     setError(null);
     try {
@@ -59,59 +60,25 @@ export function TerminalTab() {
     }
   };
   return (
-    <HostFrame title="Terminal" accessory={workspace ? <NewTerminal spawning={spawning} onSpawn={spawn} /> : null}>
-      {error ? <Banner text={error} /> : null}
-      {workspace ? (
-        <Terminals workspace={workspace} spawning={spawning} onSpawn={spawn} />
-      ) : (
-        <EmptyState glyph=">_" title="No workspaces" body={`Add a folder in Zwiim on ${name} to open a terminal in it.`} />
-      )}
-    </HostFrame>
-  );
-}
-
-/** The workspace chip, and `+` to start a terminal in that workspace. */
-function NewTerminal({ spawning, onSpawn }: { spawning: boolean; onSpawn(): void }) {
-  const theme = useTheme();
-  return (
-    <View style={styles.accessory}>
-      <WorkspacePicker />
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="New terminal"
-        accessibilityState={{ busy: spawning }}
-        disabled={spawning}
-        onPress={onSpawn}
-        hitSlop={6}
-        style={({ pressed }) => [styles.plus, { backgroundColor: pressed ? theme.raised : theme.surface, opacity: spawning ? 0.5 : 1 }]}
-        testID="terminal-new"
-      >
-        <T variant="headline">+</T>
-      </Pressable>
-    </View>
-  );
-}
-
-function Terminals({ workspace, spawning, onSpawn }: { workspace: WorkspaceInfo; spawning: boolean; onSpawn(): void }) {
-  const nav = useRootNavigation();
-  const name = useHostName();
-  const { terminals } = useHostState();
-  const listed = Object.values(terminals).filter((t) => t.workspace_id === workspace.workspace_id);
-  if (listed.length === 0) {
-    return (
-      <EmptyState
-        glyph=">_"
-        title={`No terminals in ${workspaceLabel(workspace)}`}
-        body={`Start one to run commands on ${name}.`}
-        action={<Button label="New terminal" loading={spawning} onPress={onSpawn} testID="terminal-new-empty" />}
-      />
-    );
-  }
-  return (
     <View>
-      {listed.map((t) => (
-        <TerminalRow key={t.terminal_id} meta={t} onPress={() => nav.navigate("TerminalView", { terminal_id: t.terminal_id })} />
-      ))}
+      {error ? <Banner text={error} /> : null}
+      {listed.length === 0 ? (
+        <EmptyState
+          glyph=">_"
+          title={`No terminals in ${worktree}`}
+          body={`Start one to run commands on ${name}.`}
+          action={<Button label="New terminal" loading={spawning} onPress={() => void spawn()} testID="terminal-new-empty" />}
+        />
+      ) : (
+        <>
+          <View style={styles.newRow}>
+            <Button kind="secondary" label="New terminal" loading={spawning} onPress={() => void spawn()} testID="terminal-new" />
+          </View>
+          {listed.map((t) => (
+            <TerminalRow key={t.terminal_id} meta={t} onPress={() => nav.navigate("TerminalView", { terminal_id: t.terminal_id })} />
+          ))}
+        </>
+      )}
     </View>
   );
 }
@@ -164,7 +131,7 @@ export function TerminalScreenView({ route, navigation }: NativeStackScreenProps
   const back = () => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Host"));
   const live = view?.status === "live";
   const alive = meta?.alive ?? false;
-  const workspace = workspaces?.find((w) => w.workspace_id === meta?.workspace_id);
+  const where = contextText(contextLabel(workspaces, meta?.workspace_id ?? null));
   const [confirming, setConfirming] = useState(false);
   const [killing, setKilling] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -198,7 +165,7 @@ export function TerminalScreenView({ route, navigation }: NativeStackScreenProps
       <ScreenHeader
         testID="terminal"
         title={title}
-        subtitle={[workspace ? workspaceLabel(workspace) : null, meta ? (alive ? "running" : "exited") : null].filter(Boolean).join(" · ")}
+        subtitle={[where, meta ? (alive ? "running" : "exited") : null].filter(Boolean).join(" · ")}
         onBack={back}
         trailing={
           !meta ? null : alive ? (
@@ -318,8 +285,7 @@ const styles = StyleSheet.create({
   page: { flex: 1 },
   flex: { flex: 1 },
   dim: { opacity: 0.6 },
-  accessory: { flexDirection: "row", alignItems: "center", gap: space.sm },
-  plus: { width: 32, height: 32, borderRadius: radius.sm, alignItems: "center", justifyContent: "center" },
+  newRow: { flexDirection: "row", paddingHorizontal: space.lg, paddingVertical: space.sm },
   row: { minHeight: 52, paddingHorizontal: space.lg, paddingVertical: 11, gap: space.sm },
   rowHead: { flexDirection: "row", alignItems: "center", gap: space.sm },
   preview: { borderRadius: radius.sm, paddingHorizontal: space.sm, paddingVertical: space.xs },

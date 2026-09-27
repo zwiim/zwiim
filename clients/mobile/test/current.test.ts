@@ -34,6 +34,9 @@ function setup(opts: Parameters<typeof world>[0] = {}) {
   return { w, vault, store, opened, launch, entry, prefs: new VaultPreferences(vault) };
 }
 
+/** The worktree kept for the host, as stored. */
+const chosenIn = (s: ReturnType<typeof setup>): unknown => JSON.parse(s.vault.items.get("workspaces") ?? "{}")[s.entry.host_id];
+
 const pin = (s: ReturnType<typeof setup>) => s.store.pinHost({ host_id: s.entry.host_id, host_static_pubkey: s.entry.static_pubkey });
 
 describe("the current host", () => {
@@ -107,6 +110,57 @@ describe("the current host", () => {
     await waitFor(() => current.state.view?.status === "live");
     // The first connection is closed: one link open, the new one.
     await waitFor(() => s.w.lan.openLinks.length === 1);
+    await current.clear();
+  });
+
+  it("keeps the worktree chosen on each host across a restart", async () => {
+    const s = setup();
+    await pin(s);
+    const first = s.launch();
+    await first.open(s.entry);
+    await waitFor(() => first.state.view?.status === "live");
+    first.chooseWorkspace("wt-1");
+    await waitFor(() => chosenIn(s) === "wt-1");
+    await first.clear();
+
+    const second = s.launch();
+    await second.open(s.entry);
+    expect(second.state.workspaceId).toBe("wt-1");
+    await second.clear();
+  });
+
+  it("shows a workspace it adds or a worktree it creates", async () => {
+    const s = setup();
+    await pin(s);
+    const made = (id: string, over: object = {}) => ({
+      workspace_id: id,
+      name: id,
+      alias: null,
+      kind: "root",
+      parent_workspace_id: null,
+      branch: "main",
+      is_git_repo: true,
+      base_branch: null,
+      base_commit: null,
+      removed: false,
+      display_path: "~/Projects/" + id,
+      ...over,
+    });
+    const asked: unknown[] = [];
+    s.w.host.backend.handlers["workspace.add"] = (p: unknown) => (asked.push(p), made("added"));
+    s.w.host.backend.handlers["workspace.create_worktree"] = (p: unknown) => (
+      asked.push(p), made("tree", { kind: "worktree", parent_workspace_id: "added", display_path: null })
+    );
+    const current = s.launch();
+    await current.open(s.entry);
+    await waitFor(() => current.state.view?.status === "live");
+
+    await current.addWorkspaceAt(["Projects", "added"]);
+    expect(current.state.workspaceId).toBe("added");
+    await current.createWorktree("added");
+    expect(current.state.workspaceId).toBe("tree");
+    expect(asked).toEqual([{ home_path: ["Projects", "added"] }, { workspace_id: "added" }]);
+    await waitFor(() => chosenIn(s) === "tree");
     await current.clear();
   });
 

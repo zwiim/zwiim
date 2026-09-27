@@ -151,13 +151,48 @@ export interface WorkspaceInfo {
   alias: string | null;
   kind: WorkspaceKind;
   parent_workspace_id: string | null;
-  /** Checked-out branch, read live; null when detached or removed. */
+  /**
+   * A Git repository now (`.git` in the workspace's own folder). A plain
+   * folder is still a full workspace (files, terminals, sessions); only a
+   * repository has branches, changes and worktrees. False once removed.
+   */
+  is_git_repo: boolean;
+  /** Checked-out branch, read live; null when detached, not a repository, or removed. */
   branch: string | null;
   /** Worktrees only: the root branch and commit it was created from. */
   base_branch: string | null;
   base_commit: string | null;
   /** A removed worktree, kept listed while it still holds sessions. */
   removed: boolean;
+  /**
+   * Roots only: "~" or "~/Projects/zwiim" when inside the host user's home;
+   * null for worktrees and roots outside home. Presentation only.
+   */
+  display_path: string | null;
+}
+
+/** A folder in `workspace.browse`. */
+export interface BrowseEntry {
+  /** One path segment; never "." / ".." / dot-prefixed. */
+  name: string;
+  /** `<folder>/.git` exists. */
+  is_git_repo: boolean;
+  /** A live workspace already points here. */
+  is_workspace: boolean;
+  /** The host can list it. */
+  is_readable: boolean;
+}
+
+/** The folders inside a folder under the host user's home. */
+export interface BrowseListing {
+  /** The folder's name segments under home; [] is home. */
+  path: string[];
+  /** "~" or "~/Projects": presentation only. */
+  display_path: string;
+  /** Child folders, sorted case-insensitively. */
+  entries: BrowseEntry[];
+  /** More than 1,000 folders; the first 1,000 are listed. */
+  truncated: boolean;
 }
 
 export interface WorktreeRemoved {
@@ -615,7 +650,11 @@ export interface Operations {
   "host.claim": [{ user_id: string; email?: string }, { owner: HostOwner }];
   "agent.list": [Record<string, never>, AgentSummary[]];
   "workspace.list": [Record<string, never>, WorkspaceInfo[]];
-  "workspace.add": [{ path: string }, WorkspaceInfo];
+  /** `path` needs local host authority; paired devices use `home_path` (folder names under home). */
+  "workspace.add": [{ path: string } | { home_path: string[] }, WorkspaceInfo];
+  "workspace.browse": [{ path: string[] }, BrowseListing];
+  /** Make one folder `name` inside the folder `path` (folder names under home); `already_exists` if taken. */
+  "workspace.create_folder": [{ path: string[]; name: string }, BrowseEntry];
   "workspace.open": [{ workspace_id: string }, WorkspaceDetail];
   "workspace.tree": [
     { workspace_id: string; path?: string; max_depth?: number },
@@ -701,6 +740,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "git.commit",
   "session.set_options",
   "workspace.add",
+  "workspace.create_folder",
   "workspace.create_worktree",
   "workspace.remove_worktree",
   "terminal.spawn",

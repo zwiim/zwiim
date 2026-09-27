@@ -56,9 +56,13 @@ export function DiffPanel({
 
   useEffect(() => setDiff(null), [workspaceId]);
 
+  const isRepo = workspace.is_git_repo;
   useEffect(() => {
-    void refresh();
-  }, [refresh, revision]);
+    // A plain folder has no diff: Git is never asked.
+    if (isRepo) void refresh();
+  }, [refresh, revision, isRepo]);
+
+  if (!isRepo) return <NotGitRepository name={workspace.alias ?? workspace.name} />;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -93,6 +97,19 @@ export function DiffPanel({
         ))}
         {diff?.truncated && <p className="text-muted-foreground p-2 text-xs">More files changed than can be listed.</p>}
       </section>
+    </div>
+  );
+}
+
+/** Git panels for a plain folder: nothing is wrong, there is just no Git. */
+export function NotGitRepository({ name }: { name: string }) {
+  return (
+    <div className="flex flex-col gap-1 p-4 text-xs" data-testid="not-git-repository">
+      <p className="font-medium">Not a Git repository</p>
+      <p className="text-muted-foreground">
+        {name} is a plain folder, so there are no changes or history to show. Files, terminals and sessions work as
+        usual.
+      </p>
     </div>
   );
 }

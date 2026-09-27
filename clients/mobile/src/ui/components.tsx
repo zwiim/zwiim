@@ -18,7 +18,7 @@ import {
   type TextStyle,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { ChevronDown, ChevronLeft, Icon } from "./icons";
+import { ChevronDown, ChevronLeft, Icon, X } from "./icons";
 import { fonts, MONO_MAX_SCALE, radius, space, type, useTheme } from "./tokens";
 
 type Variant = keyof typeof type;
@@ -349,20 +349,29 @@ export function ScreenHeader({
   title,
   subtitle,
   onBack,
+  close,
   trailing,
   testID,
 }: {
   title: string;
   subtitle?: string;
   onBack(): void;
+  /** ✕ instead of ‹: leaving cancels. */
+  close?: boolean;
   trailing?: ReactNode;
   testID?: string;
 }) {
   const theme = useTheme();
   return (
     <View style={[styles.screenHeader, { borderBottomColor: theme.line }]}>
-      <Pressable accessibilityRole="button" accessibilityLabel="Back" onPress={onBack} style={styles.back} testID={`${testID}-back`}>
-        <Icon icon={ChevronLeft} color={theme.fg} size={24} />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={close ? "Close" : "Back"}
+        onPress={onBack}
+        style={styles.back}
+        testID={`${testID}-back`}
+      >
+        <Icon icon={close ? X : ChevronLeft} color={theme.fg} size={24} />
       </Pressable>
       <View style={styles.hostRowText}>
         <T variant="headline" numberOfLines={1} testID={`${testID}-title`}>

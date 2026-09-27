@@ -24,7 +24,9 @@ use crate::models::agent::AgentType;
 use crate::session::{self, RequestAnswer, RuntimeLauncher};
 use crate::terminal::error::TerminalError;
 use crate::terminal::manager::SpawnOptions;
+use crate::web::auth::Principal;
 use crate::workspace::{self, WorkspaceInfo, WorktreeRemoved};
+use crate::workspace_browse::{self, BrowseEntry, BrowseListing};
 use crate::workspace_diff::{self, WorkspaceDiff};
 
 type ZResult<T> = Result<Json<T>, ZwiimError>;
@@ -295,18 +297,107 @@ pub async fn workspace_list(
     Ok(Json(workspace::list(&state.db.conn).await?))
 }
 
+/// Exactly one of `path` and `home_path`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceAddParams {
-    /// Absolute directory on the host, chosen by the user on the host.
-    pub path: String,
+    /// Absolute directory on the host, chosen by the user on the host. Local
+    /// host authority only: paired devices never send host paths.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Folder names under the host user's home directory (`workspace.browse`).
+    #[serde(default)]
+    pub home_path: Option<Vec<String>>,
 }
 
 pub async fn workspace_add(
     Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
     ZJson(p): ZJson<WorkspaceAddParams>,
 ) -> ZResult<WorkspaceInfo> {
-    Ok(Json(workspace::add(&state.db, &state.emitter, &p.path).await?))
+    let path = match (p.path, p.home_path) {
+        (Some(path), None) => {
+            if !matches!(principal.as_deref(), Some(Principal::Host)) {
+                return Err(ZwiimError::permission_denied(
+                    "Paired devices add a folder by home_path",
+                ));
+            }
+            path
+        }
+        (None, Some(segments)) => {
+            // An agent over the whole home folder is not a workspace.
+            if segments.is_empty() {
+                return Err(ZwiimError::invalid_input(
+                    "Choose a folder inside the home folder",
+                ));
+            }
+            let home = workspace::home_dir().ok_or_else(ZwiimError::internal)?;
+            workspace_browse::resolve_home_path(home, &segments)?
+                .to_string_lossy()
+                .into_owned()
+        }
+        _ => {
+            return Err(ZwiimError::invalid_input(
+                "Give exactly one of path and home_path",
+            ))
+        }
+    };
+    Ok(Json(workspace::add(&state.db, &state.emitter, &path).await?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceBrowseParams {
+    /// Folder names under the host user's home directory; `[]` is home.
+    pub path: Vec<String>,
+}
+
+/// The folders inside a folder under the host user's home directory, for
+/// choosing one to add. Never lists or names anything outside home.
+pub async fn workspace_browse(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<WorkspaceBrowseParams>,
+) -> ZResult<BrowseListing> {
+    let home = workspace::home_dir().ok_or_else(ZwiimError::internal)?;
+    let live: Vec<String> = workspace::list(&state.db.conn)
+        .await?
+        .into_iter()
+        .filter(|w| !w.removed)
+        .map(|w| w.path)
+        .collect();
+    let listing = tokio::task::spawn_blocking(move || {
+        let known = live
+            .iter()
+            .filter_map(|p| std::path::Path::new(p).canonicalize().ok())
+            .collect();
+        workspace_browse::browse(home, &p.path, &known)
+    })
+    .await
+    .map_err(|_| ZwiimError::internal())??;
+    Ok(Json(listing))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceCreateFolderParams {
+    /// The folder to create it in, as folder names under home; `[]` is home.
+    pub path: Vec<String>,
+    /// One plain, visible folder name.
+    pub name: String,
+}
+
+/// Make one new folder inside a folder under the host user's home directory,
+/// so it can then be added. Not a filesystem API: nothing else is written.
+pub async fn workspace_create_folder(
+    ZJson(p): ZJson<WorkspaceCreateFolderParams>,
+) -> ZResult<BrowseEntry> {
+    let home = workspace::home_dir().ok_or_else(ZwiimError::internal)?;
+    let entry = tokio::task::spawn_blocking(move || {
+        workspace_browse::create_folder(home, &p.path, &p.name)
+    })
+    .await
+    .map_err(|_| ZwiimError::internal())??;
+    Ok(Json(entry))
 }
 
 #[derive(Serialize)]
@@ -350,7 +441,7 @@ pub async fn workspace_create_worktree(
         workspace::create_worktree(
             &state.db,
             &state.emitter,
-            &state.data_dir.join("worktrees"),
+            &state.worktrees_dir,
             &p.workspace_id,
             p.base.as_deref(),
         )

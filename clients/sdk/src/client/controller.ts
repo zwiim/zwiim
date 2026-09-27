@@ -159,6 +159,13 @@ export class HostController {
     return workspace;
   }
 
+  /** Add the folder named by `home_path` (folder names under the host user's home, from `workspace.browse`). */
+  async addWorkspaceAt(home_path: string[]): Promise<WorkspaceInfo> {
+    const workspace = await this.client.request("workspace.add", { home_path });
+    this.store.dispatch({ type: "workspace_added", workspace });
+    return workspace;
+  }
+
   /**
    * Create a worktree of a root workspace, starting from branch `base` (one
    * of `git.branches`) or else the root's HEAD; the host picks branch and path.

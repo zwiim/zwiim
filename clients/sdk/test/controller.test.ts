@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostController } from "../src/client/controller";
 import { HostClient } from "../src/client/host-client";
 import { FakeTransport, flush } from "./fakes";
+import { MUTATING_OPS } from "../src/types/protocol";
 
 const snapshot = {
   status: "prompting" as const,
@@ -217,5 +218,44 @@ describe("HostController", () => {
     await t.controller.addWorkspace("/tmp/extra");
     expect(t.store.getState().workspaces?.map((w) => w.workspace_id)).toEqual(["w2"]);
     expect(t.transport.requests.at(-1)?.options).toEqual({ mutating: true });
+  });
+
+  it("adds a workspace by its folder names under the host's home", async () => {
+    const t = setup();
+    t.transport.handlers["workspace.add"] = () => ({
+      workspace_id: "w3",
+      name: "zwiim",
+      alias: null,
+      kind: "root",
+      parent_workspace_id: null,
+      display_path: "~/Projects/zwiim",
+    });
+    const added = await t.controller.addWorkspaceAt(["Projects", "zwiim"]);
+    expect(added.display_path).toBe("~/Projects/zwiim");
+    expect(t.transport.requests.at(-1)?.params).toEqual({ home_path: ["Projects", "zwiim"] });
+    expect(t.transport.requests.at(-1)?.options).toEqual({ mutating: true });
+    expect(t.store.getState().workspaces?.[0]?.display_path).toBe("~/Projects/zwiim");
+  });
+
+  it("browses without marking the read as mutating", () => {
+    expect(MUTATING_OPS.has("workspace.browse")).toBe(false);
+    expect(MUTATING_OPS.has("workspace.add")).toBe(true);
+  });
+
+  it("never retries creating a folder", async () => {
+    expect(MUTATING_OPS.has("workspace.create_folder")).toBe(true);
+    const t = setup();
+    t.transport.handlers["workspace.create_folder"] = () => ({
+      name: "new app",
+      is_git_repo: false,
+      is_workspace: false,
+      is_readable: true,
+    });
+    const entry = await t.controller.client.request("workspace.create_folder", { path: ["Projects"], name: "new app" });
+    expect(entry.name).toBe("new app");
+    expect(t.transport.requests.at(-1)).toMatchObject({
+      op: "workspace.create_folder",
+      params: { path: ["Projects"], name: "new app" },
+    });
   });
 });

@@ -64,6 +64,9 @@ export interface Preferences {
   setConnectionMode(hostId: string, mode: ConnectionMode): Promise<void>;
   lastHost(): Promise<LastHost | null>;
   setLastHost(host: LastHost | null): Promise<void>;
+  /** The worktree chosen in Files on each host; absent means its default. */
+  workspaces(): Promise<Record<string, string>>;
+  setWorkspace(hostId: string, workspace_id: string | null): Promise<void>;
 }
 
 /** Finding hosts on the local network and dialing them: the SDK's LAN inputs. */

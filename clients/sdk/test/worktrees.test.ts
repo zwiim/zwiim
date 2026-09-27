@@ -18,6 +18,8 @@ const root: WorkspaceInfo = {
   base_branch: null,
   base_commit: null,
   removed: false,
+  is_git_repo: true,
+  display_path: null,
 };
 const wt = (id: string, extra: Partial<WorkspaceInfo> = {}): WorkspaceInfo => ({
   workspace_id: id,
@@ -29,6 +31,8 @@ const wt = (id: string, extra: Partial<WorkspaceInfo> = {}): WorkspaceInfo => ({
   base_branch: "main",
   base_commit: "3f9e".padEnd(40, "0"),
   removed: false,
+  is_git_repo: true,
+  display_path: null,
   ...extra,
 });
 const session = (id: string, workspace_id: string, extra: Partial<SessionSummary> = {}): SessionSummary => ({

@@ -4,6 +4,7 @@ import {
   changeItems,
   crumbs,
   fileProblem,
+  notGitProblem,
   folderEntries,
   parentPath,
   parsePatch,
@@ -126,6 +127,26 @@ describe("previewing a file", () => {
     expect(total).toBe(PREVIEW_MAX_LINES + 10);
   });
 
+  it("says a plain folder has no changes, without calling it an error", () => {
+    const plain: WorkspaceInfo = {
+      workspace_id: "w",
+      name: "notes",
+      alias: null,
+      kind: "root",
+      parent_workspace_id: null,
+      is_git_repo: false,
+      branch: null,
+      base_branch: null,
+      base_commit: null,
+      removed: false,
+      display_path: "~/notes",
+    };
+    expect(notGitProblem(plain)).toEqual({
+      title: "Not a Git repository",
+      body: "notes is a plain folder, so there are no changes to show. Files, terminals and sessions work as usual.",
+    });
+  });
+
   it("says why a file can't be shown, from the host's error", () => {
     const err = (code: string, message = "m") => new ZwiimClientError(code as never, message);
     expect(fileProblem(err("not_found", "File does not exist"), "Mac", "file").title).toBe("This file is gone");
@@ -153,6 +174,8 @@ describe("the workspace Files and Terminal show", () => {
     base_branch: null,
     base_commit: null,
     removed: false,
+    is_git_repo: true,
+    display_path: null,
     ...over,
   });
 

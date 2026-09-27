@@ -50,6 +50,7 @@ pub mod turn_timings;
 pub mod update;
 pub mod web;
 pub mod workspace;
+pub mod workspace_browse;
 pub mod workspace_diff;
 pub mod workspace_state;
 pub mod workspace_transfer;

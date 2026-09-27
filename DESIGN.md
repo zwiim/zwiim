@@ -159,19 +159,19 @@ Launch
 └─ Signed in ──→ Hosts                         (root, remembers last Host)
                   ├─ Pair (full-screen modal flow)
                   └─ Host shell  ─ bottom tabs ─┬─ Sessions   (default)
-                     └─ Host bar (switch sheet) ├─ Files
-                                                ├─ Terminal
+                     └─ Host bar (switch sheet) ├─ Files      (Changes | Browse | Terminals)
                                                 └─ Host
                         Session (stack push, hides tabs)
                         File preview / Diff     (stack push)
                         Terminal view           (stack push)
+                        Browse Mac              (stack push, from New workspace)
                         Request sheet           (modal sheet, from list or session)
 ```
 
 **Navigation model (`@react-navigation/native` / Expo Router):**
 
 - Root stack: `SignIn` → `Hosts` → `HostShell`. Pairing is a full-screen modal stack.
-- `HostShell` is a bottom-tab navigator with four tabs. Max depth from a tab: 2.
+- `HostShell` is a bottom-tab navigator with three tabs. Max depth from a tab: 2.
 - A **Host bar** sits at the top of every tab: host dot, host name, path pill, `▾`.
   Tapping it opens the Host switcher sheet. The user always knows which machine
   they are controlling.
@@ -180,7 +180,26 @@ Launch
 - The Sessions tab icon carries a `need` badge with the count of pending requests
   across the Host.
 - Sheets for contextual actions (switch host, connection mode, request review,
-  session options, workspace filter). Never a full screen for a single decision.
+  session options, workspace and worktree). Never a full screen for a single decision.
+
+### Workspace context
+
+The Host's hierarchy is explicit: **Host → Workspace → Worktree**. A workspace
+is a folder added on the Host (a root); a worktree is the root checkout itself
+or one of its Git worktrees. Files works in one selected worktree, remembered
+per Host on the phone. Sessions stay Host-wide and attention-first: every row
+names where it lives as mono `workspace · worktree` (`zwiim · fix-auth`; the
+root checkout reads as its branch, `zwiim · main`) and the list is never
+filtered by the selection. Pushed File, Diff and Terminal screens carry the
+same `workspace · worktree` as their subtitle. The phone never shows a Host
+path; a workspace shows its `~/…` path only.
+
+Git is optional. A workspace that isn't a Git repository (a plain folder) is a
+full workspace: Browse, file previews, Terminals and sessions all work. It has
+no worktrees, so it has no worktree chip, no worktree sheet and no New
+worktree, and it reads as just its name (`notes`, never `notes · root`).
+Changes says "Not a Git repository" without asking Git. Adding a folder never
+initializes Git; running `git init` there turns it into a repository live.
 
 ## Screens
 
@@ -245,11 +264,11 @@ Camera permission denied: explain once, button **Open Settings**.
 
 Approved layout (variant A):
 
-- Host bar → large title "Sessions" → workspace filter chips (`All`, then each
-  workspace/worktree by name; horizontal scroll; `All ▾` sheet on narrow phones).
+- Host bar → large title "Sessions". Every session on the Host, never filtered
+  by the Files selection (see Workspace context).
 - **NEEDS YOU `n`** section, oldest first. Each request is a card (`surface`,
   3pt `need` left edge):
-  - meta line: agent · worktree (mono) · waiting time (mono, right)
+  - meta line: agent · workspace · worktree (mono) · waiting time (mono, right)
   - session title (`body` 600)
   - **permission with a command:** the command in a `code` block, then the
     agent's own options as buttons. The allow-once option is the `need` button on
@@ -258,7 +277,7 @@ Approved layout (variant A):
     button ("Review changes", "Review plan", "Answer") that opens the Request
     sheet. The session itself doesn't open.
 - **WORKING `n`**: rows with breathing dot, title, mono meta
-  `claude · site · Editing pair.tsx` (latest tool call title), elapsed time right.
+  `claude · site · main · Editing pair.tsx` (latest tool call title), elapsed time right.
 - **RECENT**: completed/idle sessions, most recent first, relative time right.
 - Tap any row → Session. Long-press → session actions sheet (Open, Stop turn if
   working, Delete).
@@ -271,7 +290,7 @@ Approved layout (variant A):
 Top to bottom:
 
 - **Nav header:** back, session title (`headline`, one line), mono subtitle
-  `agent · worktree · Host ⌂/☁`. Trailing `⋯` → options sheet (model, effort,
+  `agent · workspace · worktree · Host ⌂/☁`. Trailing `⋯` → options sheet (model, effort,
   mode from `SessionOptions`; only options the agent offers).
 - **Transcript** (inverted `FlatList`, newest at the bottom):
   - user messages: right-aligned `surface` block, radius 16/16/4/16.
@@ -311,9 +330,31 @@ Top to bottom:
 
 Inspection, not editing.
 
-- Segmented control at top: **Changes** | **Browse**. Default: Changes when the
-  workspace has uncommitted changes, otherwise Browse.
-- Workspace picker in the title row (sheet).
+- Title row: large title "Files", **New workspace** (`secondary`) on the right.
+- **Context bar** under the title: two chips, `[ zwiim ▾ ]  [ ⎇ fix-auth ▾ ]`.
+  The workspace chip opens the workspace sheet; the worktree chip opens the
+  worktree sheet for the current workspace. A plain folder shows the workspace
+  chip only.
+- Segmented control: **Changes** | **Browse** | **Terminals**, all scoped to
+  the selected worktree. Default: Changes when the worktree has uncommitted
+  changes, otherwise Browse. A chosen segment stays chosen across worktrees.
+- **Workspace sheet (level 1):** title "Workspaces" with **New workspace**
+  beside it, a search field (name, alias, `~/…` path), then one row per
+  workspace: accent dot when selected, `alias ?? name` (`headline`), mono
+  `~/Projects/zwiim`, and `2 worktrees · 1 working` when non-zero (a plain
+  folder adds `no Git`). Tapping a repository moves to level 2 (does not select
+  yet); tapping a plain folder selects it and closes the sheet.
+- **Worktree sheet (level 2):** back chevron (when entered from level 1) and
+  the workspace name; first row **Root** `· ⎇ main`, then each live worktree
+  `⎇ fix-auth` with mono `from main@3f9e1a2`; last, **New worktree**
+  (`secondary`, 48pt): one tap, created from the root's current branch and
+  selected. Choosing another base stays a Desktop feature. Tapping a row
+  selects it and closes the sheet.
+- **No workspaces:** "No workspaces yet" · "Add a folder on {Host} to work in it
+  from here." · **New workspace**.
+- **Changes** for a plain folder: "Not a Git repository" · "{name} is a plain
+  folder, so there are no changes to show. Files, terminals and sessions work as
+  usual." · **Browse files**. Default segment is Browse.
 - **Changes** (`git.status`): rows of mono paths with a status letter (M/A/D/?)
   and `+n −n`; tap → full-screen diff (`git.diff`), unified, per-hunk, horizontal
   scroll for long lines, line numbers in `faint`.
@@ -326,12 +367,35 @@ Inspection, not editing.
 - Branch and recent commits (`git.branches`, `git.log`) live in a small header
   card on Changes: `⎇ r8-mobile · 3 ahead` → tap for a log sheet.
 
-### 7. Terminal tab
+**Browse Mac** (stack push from New workspace): the Host user's home folder,
+one level per screen, to add a workspace.
+
+- Header: close `✕` (cancel, nothing is created), title "Browse Mac", mono
+  subtitle `~/Projects`.
+- A `..` row when below `~`, then **+ New folder** (accent), then folder rows:
+  `▸ name/` in mono with `Git` and `Workspace` tags (`surface` pills,
+  `monoSm`). Folders Zwiim can't read are dimmed and not openable. Hidden
+  folders are never listed; nothing above `~`.
+- **New folder** opens a sheet: title "New folder", mono `in ~/Projects`, a name
+  field, **Create folder** (`primary`, 48pt). Names are one plain folder name:
+  no slashes, not starting with a dot (said inline before sending). The Host
+  makes exactly that folder; the phone then opens it, so the bottom bar offers
+  **Add ~/Projects/new-app**. Nothing initializes Git.
+- Bottom bar (hidden at `~`, which can't be a workspace): **Add ~/Projects/zwiim**
+  (`primary`, 48pt). Adding selects the new workspace's root and returns to
+  Files; a folder that is already a workspace selects that one.
+- Android back climbs one folder before leaving.
+
+### 7. Terminals (a Files segment)
 
 A watching surface first, an input surface second.
 
-- List of terminals (`terminal.list`): mono title, cwd, a two-line live preview of
-  the last output, running/exited state. `+` spawns a new terminal in a chosen workspace.
+- List of the selected worktree's terminals: mono title, a two-line live preview
+  of the last output, running/exited state. **New terminal** (`secondary`) above
+  the list starts one in the selected worktree and opens it. Switching worktree
+  swaps the list; the other worktree's terminals keep running on the Host.
+- Empty: "No terminals in {worktree}" · "Start one to run commands on {Host}." ·
+  **New terminal**.
 - **Terminal view:** full-bleed `code` background, `term` type, output follows
   the tail; scrolling up pauses follow and shows a `↓ Live` pill to resume.
   Default is **watch mode** (no keyboard). A bottom bar holds:
@@ -402,6 +466,15 @@ glyph, a title, one line, one action.
 | Host identity mismatch (`handshake_failed`, `host_identity_mismatch`) | Full-screen state | "Couldn't verify MacBook Pro" · "The Mac answering isn't the one you paired with. Pair again if you reinstalled Zwiim." · **Pair again** |
 | Session disconnected (`AgentStatus = disconnected`) | Now bar + composer | Now bar: `Agent disconnected`. Composer placeholder "Send to restart the agent". Transcript stays readable |
 | Empty workspace | Files → Browse | "This folder is empty." |
+| No workspaces | Files | "No workspaces yet" · **New workspace** |
+| Folder can't be read | Browse Mac | "Zwiim can't open {folder} on {Host}." |
+| Folder gone | Browse Mac | "{folder} is gone." · **Up one folder** |
+| Long folder | Browse Mac | "Showing the first 1,000 folders." |
+| Name taken | Browse Mac → New folder | "There's already something named {name} in ~/Projects." |
+| Can't create here | Browse Mac → New folder | "Zwiim can't create folders in {folder} on {Host}." |
+| Not a repository | Files → Changes | "Not a Git repository" · **Browse files** |
+| Not a repository | Worktree sheet → New worktree | "{name} isn't a Git repository, so it can't have worktrees." |
+| No terminals | Files → Terminals | "No terminals in {worktree}" · **New terminal** |
 | No changes | Files → Changes | "No uncommitted changes on r8-mobile." |
 | No active sessions | Sessions | "No sessions yet in {workspace}" · **New session** |
 | Agent waiting for user | List card, Now bar amber, tab badge, sheet | As specified in Screens 4 and 5 |
@@ -447,3 +520,7 @@ glyph, a title, one line, one action.
 | 2026-09-26 | Now bar above the composer | Answers "what is it doing right now" without scrolling; puts Stop in the thumb zone |
 | 2026-09-26 | Since-you-left tracked on device | Answers "what happened while I was away" without a Host/protocol change |
 | 2026-09-26 | No push notifications in V1 design | No push infrastructure exists; a separate backend decision |
+| 2026-09-27 | Host → Workspace → Worktree made explicit; Terminal tab folded into Files | Files, Changes and Terminals all act on one selected worktree, so one context bar scopes them; three tabs keep Sessions the attention-first home |
+| 2026-09-27 | Sessions stay Host-wide, rows name `workspace · worktree` | Filtering by the selection would hide a blocked agent in another worktree |
+| 2026-09-27 | New workspace browses `~` only, by folder names | The phone never sends or sees a Host path; home is where projects live and the jail is simple |
+| 2026-09-27 | Browse Mac can make one folder; Git stays optional | Starting a project from the phone needs a folder, not a filesystem API; a plain folder is a full workspace, and only Git features step aside |

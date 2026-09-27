@@ -9,7 +9,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCurrentHost, useHostRead, useHostState } from "../app/hooks";
 import type { RootStack } from "../app/navigation";
 import { baseName, fileProblem, parentPath, parsePatch, previewLines } from "../files/model";
-import { workspaceLabel } from "../sessions/model";
+import { contextLabel, contextText } from "../host/workspace";
 import { currentHost } from "../services";
 import { Button, EmptyState, ScreenHeader, SkeletonRows, T } from "../ui/components";
 import { CodeView, DiffView } from "../ui/code";
@@ -18,8 +18,7 @@ import { useHostName } from "./HostFrame";
 
 function useWorkspaceName(workspace_id: string): string {
   const { workspaces } = useHostState();
-  const w = workspaces?.find((x) => x.workspace_id === workspace_id);
-  return w ? workspaceLabel(w) : "";
+  return contextText(contextLabel(workspaces, workspace_id)) ?? "";
 }
 
 /** Back to where the user came from, or the Host shell if opened directly. */

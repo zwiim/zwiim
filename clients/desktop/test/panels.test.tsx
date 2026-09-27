@@ -1,8 +1,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HostClient, HostController, ZwiimClientError } from "@zwiim/sdk";
+import { HostClient, HostController, ZwiimClientError, type WorkspaceInfo } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
-import { numberPatch } from "@/panels/DiffPanel";
+import { DiffPanel, numberPatch } from "@/panels/DiffPanel";
 import { FilesPanel, FileView } from "@/panels/FilesPanel";
 import { GitPanel, relativeTime, statusLabel } from "@/panels/GitPanel";
 import { FakeTransport, tick } from "./fakes";
@@ -20,6 +20,21 @@ async function mount(t: FakeTransport, ui: React.ReactNode) {
 }
 
 const log = (entries: object[] = []) => ({ entries, has_upstream: false });
+
+const W1: WorkspaceInfo = {
+  workspace_id: "w1",
+  name: "repo",
+  alias: null,
+  kind: "root",
+  parent_workspace_id: null,
+  is_git_repo: true,
+  branch: "main",
+  base_branch: null,
+  base_commit: null,
+  removed: false,
+  display_path: null,
+};
+const PLAIN: WorkspaceInfo = { ...W1, workspace_id: "p1", name: "notes", is_git_repo: false, branch: null };
 
 describe("git panel", () => {
   it("names status codes and dates readably", () => {
@@ -48,7 +63,7 @@ describe("git panel", () => {
       status = [{ status: "??", file: "b.txt" }];
       return { committed_files: p.files.length };
     };
-    await mount(t, <GitPanel workspaceId="w1" />);
+    await mount(t, <GitPanel workspace={W1} />);
     expect(screen.getByText("Modified")).toBeTruthy();
     expect(screen.getByText("Untracked")).toBeTruthy();
     expect(screen.getByText("init")).toBeTruthy();
@@ -75,7 +90,7 @@ describe("git panel", () => {
     t.handlers["git.commit"] = () => {
       throw new ZwiimClientError("unknown_outcome", "lost");
     };
-    await mount(t, <GitPanel workspaceId="w1" />);
+    await mount(t, <GitPanel workspace={W1} />);
     fireEvent.change(screen.getByLabelText("Commit message"), { target: { value: "x" } });
     const statusCalls = t.calls.filter((c) => c.op === "git.status").length;
     fireEvent.click(screen.getByRole("button", { name: /^Commit/ }));
@@ -89,12 +104,31 @@ describe("git panel", () => {
     const t = new FakeTransport();
     t.handlers["git.status"] = () => [];
     t.handlers["git.log"] = () => log();
-    await mount(t, <GitPanel workspaceId="w1" />);
+    await mount(t, <GitPanel workspace={W1} />);
     expect(screen.getByText("Working tree clean")).toBeTruthy();
     const before = t.calls.filter((c) => c.op === "git.status").length;
     await t.feedEvent("workspace.diff_changed", { workspace_id: "w1" });
     await tick();
     expect(t.calls.filter((c) => c.op === "git.status").length).toBe(before + 1);
+  });
+});
+
+describe("a plain folder (not a Git repository)", () => {
+  it("says so in the Git and Diff panels, without asking Git", async () => {
+    const t = new FakeTransport();
+    await mount(
+      t,
+      <>
+        <GitPanel workspace={PLAIN} />
+        <DiffPanel workspace={PLAIN} selected={null} onOpen={() => {}} />
+      </>,
+    );
+    const notes = screen.getAllByTestId("not-git-repository");
+    expect(notes).toHaveLength(2);
+    expect(notes[0]!.textContent).toContain("Not a Git repository");
+    expect(notes[0]!.textContent).toContain("notes is a plain folder");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(t.calls.filter((c) => c.op.startsWith("git."))).toEqual([]);
   });
 });
 

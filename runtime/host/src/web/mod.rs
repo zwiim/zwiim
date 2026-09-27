@@ -786,6 +786,12 @@ pub(crate) async fn do_start_web_server_tauri(
 
     let static_dir = find_static_dir_tauri(&app);
 
+    // Resolve through the effective data dir so a custom `ZWIIM_DATA_DIR`
+    // reaches the credential helper and any HTTP handler that reads
+    // `state.data_dir`.
+    let data_dir =
+        crate::paths::resolve_effective_data_dir(&app.path().app_data_dir().unwrap_or_default());
+
     // Build AppState for the router
     let app_state = Arc::new(AppState {
         db: crate::db::AppDatabase {
@@ -803,12 +809,9 @@ pub(crate) async fn do_start_web_server_tauri(
             .inner()
             .clone(),
         emitter: crate::web::event_bridge::EventEmitter::Tauri(app.clone()),
-        // Resolve through the effective data dir so a custom
-        // `ZWIIM_DATA_DIR` reaches the credential helper and any HTTP
-        // handler that reads `state.data_dir`.
-        data_dir: crate::paths::resolve_effective_data_dir(
-            &app.path().app_data_dir().unwrap_or_default(),
-        ),
+        data_dir: data_dir.clone(),
+        worktrees_dir: crate::app_state::default_worktrees_dir()
+            .unwrap_or_else(|| data_dir.join("worktrees")),
         web_server_state: WebServerState::new(), // placeholder; not used by handlers
         // Reuse the manager Tauri registered and started, NOT a fresh one: a
         // fresh `ChatChannelManager` has an empty channel registry, so every

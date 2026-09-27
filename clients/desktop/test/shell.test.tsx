@@ -36,6 +36,8 @@ const ws = (id: string): WorkspaceInfo => ({
   base_branch: null,
   base_commit: null,
   removed: false,
+  is_git_repo: true,
+  display_path: null,
 });
 
 async function mount(t: FakeTransport, ui: React.ReactNode) {

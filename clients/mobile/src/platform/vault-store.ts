@@ -124,6 +124,8 @@ export class VaultSecureStore implements SecureStore {
 
 const MODES = "connection-modes";
 const LAST_HOST = "last-host";
+const WORKSPACES = "workspaces";
+const isWorkspaceId = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(v);
 const isMode = (v: unknown): v is ConnectionMode => v === "auto" || v === "local" || v === "cloud";
 
 /** The app's `Preferences`, one JSON item each in the same vault. */
@@ -158,5 +160,22 @@ export class VaultPreferences implements Preferences {
   async setLastHost(host: LastHost | null): Promise<void> {
     if (host == null) await this.#vault.deleteItemAsync(LAST_HOST);
     else await this.#vault.setItemAsync(LAST_HOST, JSON.stringify({ host_id: host.host_id, name: host.name }));
+  }
+
+  /** Unreadable entries read as absent. */
+  async workspaces(): Promise<Record<string, string>> {
+    const o = parse(await this.#vault.getItemAsync(WORKSPACES)) ?? {};
+    const chosen: Record<string, string> = {};
+    for (const [hostId, id] of Object.entries(o)) if (isHostId(hostId) && isWorkspaceId(id)) chosen[hostId] = id;
+    return chosen;
+  }
+
+  async setWorkspace(hostId: string, workspace_id: string | null): Promise<void> {
+    if (!isHostId(hostId)) throw new Error("Not a host id");
+    const chosen = await this.workspaces();
+    if (workspace_id === null) delete chosen[hostId];
+    else if (isWorkspaceId(workspace_id)) chosen[hostId] = workspace_id;
+    else return;
+    await this.#vault.setItemAsync(WORKSPACES, JSON.stringify(chosen));
   }
 }

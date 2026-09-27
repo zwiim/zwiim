@@ -24,6 +24,7 @@ import {
   type OpName,
   type OpParams,
   type OpResult,
+  type WorkspaceInfo,
 } from "@zwiim/sdk";
 import type { LanAccess, NetworkReachability } from "../platform/capabilities";
 import { SessionFollower } from "../sessions/follow";
@@ -198,6 +199,16 @@ export class HostConnection {
         this.#release(terminal_id);
       },
     };
+  }
+
+  /** Add the folder named by its folder names under the host's home (`workspace.add`); never retried. */
+  async addWorkspaceAt(home_path: string[]): Promise<WorkspaceInfo> {
+    return this.#live().addWorkspaceAt(home_path);
+  }
+
+  /** Create a worktree of a root workspace from its current branch; never retried. */
+  async createWorktree(root_workspace_id: string): Promise<WorkspaceInfo> {
+    return this.#live().createWorktree(root_workspace_id);
   }
 
   /** Start a terminal in a workspace (`terminal.spawn`); never retried. */

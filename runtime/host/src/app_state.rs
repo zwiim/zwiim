@@ -23,6 +23,9 @@ pub struct AppState {
     pub acp_event_bus: Arc<InternalEventBus>,
     pub emitter: EventEmitter,
     pub data_dir: PathBuf,
+    /// Where new managed worktrees are created, as `<repo>/<hex>` under it.
+    /// Resolved once at startup by [`default_worktrees_dir`].
+    pub worktrees_dir: PathBuf,
     pub web_server_state: WebServerState,
     pub workspace_transfer: Arc<WorkspaceTransferManager>,
     /// Multi-agent delegation broker. Spawned in both desktop and server
@@ -206,6 +209,16 @@ pub fn build_delegation_stack(
     )
 }
 
+/// Where managed worktrees live: `ZWIIM_WORKTREES_DIR` when set, else
+/// `~/zwiim/worktrees` (a visible folder, grouped per project). `None` only
+/// when there is no home directory; callers then fall back to the data dir.
+pub fn default_worktrees_dir() -> Option<PathBuf> {
+    match std::env::var_os("ZWIIM_WORKTREES_DIR") {
+        Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
+        _ => dirs::home_dir().map(|home| home.join("zwiim").join("worktrees")),
+    }
+}
+
 impl AppState {
     /// Test-only constructor: build an `AppState` wired to an in-memory
     /// database and a `WebOnly` event emitter. Suitable for axum-test driven
@@ -242,6 +255,7 @@ impl AppState {
             event_broadcaster: broadcaster,
             acp_event_bus,
             emitter,
+            worktrees_dir: data_dir.join("worktrees"),
             data_dir,
             web_server_state: crate::web::WebServerState::new(),
             workspace_transfer: Arc::new(

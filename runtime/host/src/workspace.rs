@@ -52,6 +52,10 @@ pub struct WorkspaceInfo {
     pub kind: WorkspaceKind,
     /// The root workspace a worktree was created from; `None` for roots.
     pub parent_workspace_id: Option<String>,
+    /// Git sees a repository here now (`.git` at the workspace's own
+    /// folder); `false` for a plain folder, which is still a full workspace,
+    /// and once removed. Only a repository has worktrees and branches.
+    pub is_git_repo: bool,
     /// Branch checked out now; `None` when detached, not a repo, or removed.
     pub branch: Option<String>,
     /// For a worktree: the root's branch it was created from.
@@ -60,6 +64,9 @@ pub struct WorkspaceInfo {
     pub base_commit: Option<String>,
     /// A removed worktree: its sessions are readable, nothing runs in it.
     pub removed: bool,
+    /// Roots only: `~` or `~/Projects/zwiim` when inside the host user's
+    /// home, else `None`. Presentation only; never a host path.
+    pub display_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -191,11 +198,23 @@ pub(crate) async fn resolve_for_launch(
 
 // ─── projection ──────────────────────────────────────────────────────────
 
-async fn live_branch(row: &folder::Model) -> Option<String> {
+/// Whether the folder is a repository now, and its branch. A repository is
+/// the folder holding `.git` itself (a file in a linked worktree), the same
+/// test `create_worktree` applies: a plain folder inside some other
+/// repository is not one.
+async fn live_git(row: &folder::Model) -> (bool, Option<String>) {
     if row.deleted_at.is_some() {
-        return None;
+        return (false, None);
     }
-    folders::resolve_git_head(&row.path).await.ok()?.branch
+    let dot_git = Path::new(&row.path).join(".git");
+    if tokio::fs::symlink_metadata(dot_git).await.is_err() {
+        return (false, None);
+    }
+    let branch = folders::resolve_git_head(&row.path)
+        .await
+        .ok()
+        .and_then(|head| head.branch);
+    (true, branch)
 }
 
 pub(crate) async fn info(
@@ -206,16 +225,39 @@ pub(crate) async fn info(
         Some(parent_id) => workspace_id_of(conn, parent_id).await?,
         None => None,
     };
-    let branch = live_branch(&row).await;
-    Ok(to_info(row, parent_workspace_id, branch))
+    let git = live_git(&row).await;
+    Ok(to_info(row, parent_workspace_id, git))
+}
+
+/// The host user's home directory, canonical; `None` when there is none.
+pub(crate) fn home_dir() -> Option<&'static Path> {
+    static HOME: LazyLock<Option<PathBuf>> =
+        LazyLock::new(|| dirs::home_dir().and_then(|h| h.canonicalize().ok()));
+    HOME.as_deref()
+}
+
+/// `~` or `~/a/b` for a path inside `home`, else `None`. Presentation only.
+fn display_path(path: &str, home: Option<&Path>) -> Option<String> {
+    let rel = Path::new(path).strip_prefix(home?).ok()?;
+    let rel = rel.to_string_lossy();
+    Some(if rel.is_empty() {
+        "~".to_string()
+    } else {
+        format!("~/{rel}")
+    })
 }
 
 fn to_info(
     row: folder::Model,
     parent_workspace_id: Option<String>,
-    branch: Option<String>,
+    (is_git_repo, branch): (bool, Option<String>),
 ) -> WorkspaceInfo {
+    let display_path = match row.parent_id {
+        None => display_path(&row.path, home_dir()),
+        Some(_) => None,
+    };
     WorkspaceInfo {
+        display_path,
         removed: is_removed_worktree(&row),
         workspace_id: row.workspace_id.unwrap_or_default(),
         name: row.name,
@@ -227,6 +269,7 @@ fn to_info(
             WorkspaceKind::Root
         },
         parent_workspace_id,
+        is_git_repo,
         branch,
         base_branch: row.base_branch,
         base_commit: row.base_commit,
@@ -293,13 +336,13 @@ pub async fn list(conn: &DatabaseConnection) -> Result<Vec<WorkspaceInfo>, AppCo
             .filter(|r| with_sessions.contains(&r.id)),
     );
     rows.sort_by_key(|r| r.id);
-    let branches = futures::future::join_all(rows.iter().map(live_branch)).await;
+    let gits = futures::future::join_all(rows.iter().map(live_git)).await;
     Ok(rows
         .into_iter()
-        .zip(branches)
-        .map(|(r, branch)| {
+        .zip(gits)
+        .map(|(r, git)| {
             let parent = r.parent_id.and_then(|p| ids.get(&p).cloned());
-            to_info(r, parent, branch)
+            to_info(r, parent, git)
         })
         .collect())
 }
@@ -417,7 +460,7 @@ pub async fn worktree_bases(repo: &str) -> Result<WorktreeBases, AppCommandError
 /// Create a managed git worktree from root workspace `root_workspace_id`.
 ///
 /// The host chooses both the branch (`zwiim/<suffix>`) and the directory
-/// (`<worktrees_dir>/<root workspace_id>/<repo>-<suffix>`); the client supplies
+/// (`<worktrees_dir>/<repo>/<suffix>`); the client supplies
 /// neither. The branch starts at branch `base` when given, else at the root's
 /// current local HEAD (no fetch either way); that commit and branch are
 /// recorded as the worktree's base. The
@@ -459,9 +502,9 @@ pub async fn create_worktree(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "workspace".to_string());
-    let parent_dir = worktrees_dir.join(root_workspace_id);
+    let parent_dir = worktrees_dir.join(&repo_name);
     std::fs::create_dir_all(&parent_dir).map_err(AppCommandError::io)?;
-    let worktree_path: PathBuf = parent_dir.join(format!("{repo_name}-{suffix}"));
+    let worktree_path: PathBuf = parent_dir.join(&suffix);
     let worktree_path = worktree_path.to_string_lossy().into_owned();
 
     folders::git_worktree_add(
@@ -700,6 +743,19 @@ mod tests {
             .all(|w| w.path != "/tmp/zwiim-ws-chat-scratch"));
     }
 
+    #[test]
+    fn display_path_is_home_relative() {
+        let home = Path::new("/Users/me");
+        assert_eq!(display_path("/Users/me", Some(home)).as_deref(), Some("~"));
+        assert_eq!(
+            display_path("/Users/me/Projects/zwiim", Some(home)).as_deref(),
+            Some("~/Projects/zwiim")
+        );
+        assert_eq!(display_path("/Users/meow/x", Some(home)), None);
+        assert_eq!(display_path("/opt/x", Some(home)), None);
+        assert_eq!(display_path("/opt/x", None), None);
+    }
+
     #[tokio::test]
     async fn workspace_info_carries_no_raw_folder_id() {
         let db = fresh_in_memory_db().await;
@@ -714,6 +770,8 @@ mod tests {
                 "base_branch",
                 "base_commit",
                 "branch",
+                "display_path",
+                "is_git_repo",
                 "kind",
                 "name",
                 "parent_workspace_id",
@@ -723,6 +781,7 @@ mod tests {
         );
         assert_eq!(json["kind"], "root");
         assert_eq!(json["removed"], false);
+        assert_eq!(json["is_git_repo"], false);
     }
 
     #[tokio::test]
@@ -737,13 +796,16 @@ mod tests {
         assert_eq!(wt.kind, WorkspaceKind::Worktree);
         assert_eq!(wt.parent_workspace_id.as_deref(), Some(root_wid.as_str()));
         assert_ne!(wt.workspace_id, root_wid);
-        assert!(Path::new(&wt.path).starts_with(worktrees.join(&root_wid)));
         let branch = git(Path::new(&wt.path), &["rev-parse", "--abbrev-ref", "HEAD"]);
         assert!(
             branch.starts_with("zwiim/"),
             "host-chosen branch, got {branch}"
         );
+        // Grouped per project, named by the branch's suffix.
+        let suffix = branch.strip_prefix("zwiim/").unwrap();
+        assert_eq!(Path::new(&wt.path), worktrees.join("repo").join(suffix));
         assert_eq!(wt.alias.as_deref(), Some(branch.as_str()));
+        assert_eq!(wt.display_path, None, "worktrees carry no display path");
         assert_eq!(wt.branch.as_deref(), Some(branch.as_str()));
         assert!(git(Path::new(&repo), &["worktree", "list"]).contains(&branch));
 

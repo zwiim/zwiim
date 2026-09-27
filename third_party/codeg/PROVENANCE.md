@@ -965,6 +965,27 @@ App (`clients/mobile/`):
 New dependency: `@xterm/headless` 6.0.0 (MIT, xtermjs.org), bundled into
 the app; its license travels with the package.
 
+## Mobile Workspace Context R8.8 — browse, display path, worktree location
+
+Host (`runtime/host/`):
+
+| Path | Change |
+|---|---|
+| `src/app_state.rs`, `src/bin/zwiim_host.rs`, `src/web/mod.rs` | `AppState.worktrees_dir`, resolved once at startup by `default_worktrees_dir()`: `ZWIIM_WORKTREES_DIR`, else `~/zwiim/worktrees`, else `<data_dir>/worktrees`. |
+| `src/workspace.rs` | New managed worktrees go to `<worktrees_dir>/<repo>/<hex>` (was `<data_dir>/worktrees/<root workspace_id>/<repo>-<hex>`); branch `zwiim/<hex>` unchanged. Existing worktrees keep their stored path. |
+| `src/protocol/http.rs`, `src/web/handlers/workspace.rs`, `src/host_feed.rs` | Create worktrees under `state.worktrees_dir`. |
+| `src/workspace.rs` | `WorkspaceInfo.display_path`: roots only, `~` / `~/a/b` relative to the canonical home directory, else null. Presentation only. |
+| `src/workspace_browse.rs` (new, Zwiim-owned) | `workspace.browse`: folders under the host user's home by name segments; segments must be plain visible names, the canonical result must stay inside canonical home (escapes read as `not_found`), symlinked children followed only inside home, dot names hidden, 1,000-entry cap; `is_git_repo` / `is_workspace` / `is_readable` (permission bits, nothing opened). |
+| `src/protocol/http.rs`, `src/protocol/mod.rs` | `workspace.browse` route; `workspace.add` takes exactly one of `path` (local host authority only; devices get `permission_denied`) and `home_path` (resolved as above; `[]` refused). |
+
+### R8.8 follow-up — remote folder creation, non-Git workspaces
+
+| Path | Change |
+|---|---|
+| `src/workspace_browse.rs` (Zwiim-owned) | `create_folder`: one `create_dir` (never `create_dir_all`) of a plain visible name (≤ 255 bytes) inside a folder resolved by the same home jail; taken names (folder, file, dangling link) are `already_exists`, nothing overwritten. |
+| `src/protocol/http.rs`, `src/protocol/mod.rs` | `workspace.create_folder { path, name }` route, returning the new folder's browse entry. |
+| `src/workspace.rs` | `WorkspaceInfo.is_git_repo`: `.git` in the workspace's own folder (the test `create_worktree` applies); the branch is only read for a repository. Plain folders stay full workspaces; nothing initializes Git. |
+
 ## License obligations tracked
 
 - [x] Include Apache-2.0 license text (`third_party/codeg/LICENSE`).

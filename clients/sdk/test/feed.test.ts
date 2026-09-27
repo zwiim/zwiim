@@ -22,6 +22,8 @@ const ws = (id: string, extra: Partial<WorkspaceInfo> = {}): WorkspaceInfo => ({
   base_branch: id === "root" ? null : "main",
   base_commit: null,
   removed: false,
+  is_git_repo: true,
+  display_path: null,
   ...extra,
 });
 const session = (id: string, workspace_id: string, created: number, extra: Partial<SessionSummary> = {}): SessionSummary => ({

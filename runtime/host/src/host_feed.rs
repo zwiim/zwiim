@@ -759,7 +759,7 @@ mod tests {
             workspace::create_worktree(
                 &self.state.db,
                 &self.state.emitter,
-                &self.state.data_dir.join("worktrees"),
+                &self.state.worktrees_dir,
                 &self.root_id,
                 None,
             )
@@ -1209,6 +1209,38 @@ mod tests {
         .await;
         feed.until("swept", session_is(sid.clone(), |s| s["live"] == false))
             .await;
+    }
+
+    #[tokio::test]
+    async fn git_init_in_a_plain_workspace_makes_it_a_repository() {
+        let f = fixture().await;
+        let plain = f.dir.path().join("plain");
+        std::fs::create_dir(&plain).unwrap();
+        let plain = plain.canonicalize().unwrap();
+        let folder = seed_folder(&f.state.db, plain.to_str().unwrap()).await;
+        let plain_id = workspace::workspace_id_of(&f.state.db.conn, folder)
+            .await
+            .unwrap()
+            .unwrap();
+        let (snapshot, mut feed) = f.subscribe().await;
+        let listed = serde_json::to_value(&snapshot).unwrap();
+        let listed = listed["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["workspace_id"] == plain_id.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(listed["is_git_repo"], false);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        feed.drain(300).await;
+
+        git(&plain, &["init", "-q", "-b", "main"]);
+        feed.until(
+            "repository",
+            workspace_is(plain_id, |w| w["is_git_repo"] == true && w["branch"] == "main"),
+        )
+        .await;
     }
 
     #[tokio::test]

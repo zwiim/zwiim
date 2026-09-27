@@ -247,6 +247,8 @@ describe("host store", () => {
       base_branch: null,
       base_commit: null,
       removed: false,
+      is_git_repo: true,
+      display_path: null,
     };
     let s = reduceHost(initialHostState(), { type: "workspaces", workspaces: [w] });
     s = reduceHost(s, { type: "workspace_added", workspace: { ...w, name: "b" } });

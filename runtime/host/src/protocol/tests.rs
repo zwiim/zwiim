@@ -28,6 +28,8 @@ const OPS: &[&str] = &[
     "agent.list",
     "workspace.list",
     "workspace.add",
+    "workspace.browse",
+    "workspace.create_folder",
     "workspace.open",
     "workspace.tree",
     "workspace.create_worktree",
@@ -470,6 +472,195 @@ async fn workspace_add_registers_and_revives_by_path() {
 }
 
 #[tokio::test]
+async fn workspace_add_takes_one_form_and_host_paths_only_from_the_host() {
+    let h = host(false).await;
+    let other = h._dir.path().join("other").to_string_lossy().into_owned();
+    std::fs::create_dir(&other).unwrap();
+    for body in [
+        json!({}),
+        json!({"path": other.clone(), "home_path": ["Projects"]}),
+        json!({"home_path": []}),
+        json!({"home_path": [".."]}),
+        json!({"home_path": ["a/b"]}),
+    ] {
+        assert_eq!(
+            h.err("workspace.add", body.clone()).await,
+            (StatusCode::BAD_REQUEST, "invalid_input".into()),
+            "{body}"
+        );
+    }
+
+    // A paired device never sends a host path.
+    let credential = bearer_device(&h, "dev-1").await;
+    let res = h
+        .server
+        .post("/zwiim/v1/workspace.add")
+        .authorization_bearer(&credential)
+        .json(&json!({ "path": other }))
+        .await;
+    assert_eq!(res.status_code(), StatusCode::FORBIDDEN);
+    let body: Value = res.json();
+    assert_eq!(body["error"]["code"], "permission_denied");
+    let listed = h.ok("workspace.list", json!({})).await;
+    assert_eq!(listed.as_array().unwrap().len(), 1, "nothing added");
+}
+
+#[tokio::test]
+async fn workspace_browse_refuses_bad_segments() {
+    let h = host(false).await;
+    for path in [
+        json!([".."]),
+        json!(["."]),
+        json!([""]),
+        json!(["/etc"]),
+        json!([".ssh"]),
+    ] {
+        assert_eq!(
+            h.err("workspace.browse", json!({ "path": path })).await,
+            (StatusCode::BAD_REQUEST, "invalid_input".into()),
+            "{path}"
+        );
+    }
+    assert_eq!(
+        h.err("workspace.browse", json!({})).await.1,
+        "invalid_request"
+    );
+}
+
+#[tokio::test]
+async fn workspace_create_folder_refuses_bad_names_and_parents() {
+    // Only refusals here: a good request writes in the real home folder.
+    // `workspace_browse` tests the create itself against a temp home.
+    let h = host(false).await;
+    for body in [
+        json!({"path": [], "name": ".."}),
+        json!({"path": [], "name": ".hidden"}),
+        json!({"path": [], "name": "a/b"}),
+        json!({"path": [], "name": "/Users/x"}),
+        json!({"path": [], "name": ""}),
+        json!({"path": [".."], "name": "new"}),
+        json!({"path": ["/etc"], "name": "new"}),
+        json!({"path": [".ssh"], "name": "new"}),
+    ] {
+        assert_eq!(
+            h.err("workspace.create_folder", body.clone()).await,
+            (StatusCode::BAD_REQUEST, "invalid_input".into()),
+            "{body}"
+        );
+    }
+    for body in [
+        json!({"path": []}),
+        json!({"name": "new"}),
+        json!({"path": "/Users/x", "name": "new"}),
+        json!({"path": [], "name": "new", "absolute": "/tmp"}),
+    ] {
+        assert_eq!(
+            h.err("workspace.create_folder", body.clone()).await.1,
+            "invalid_request",
+            "{body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_plain_folder_is_a_full_workspace_without_git() {
+    let h = host(false).await;
+    let plain = h._dir.path().join("plain");
+    std::fs::create_dir(&plain).unwrap();
+    let plain = plain.canonicalize().unwrap().to_string_lossy().into_owned();
+
+    let added = h.ok("workspace.add", json!({"path": plain})).await;
+    let wid = added["workspace_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        (added["is_git_repo"].clone(), added["branch"].clone()),
+        (json!(false), Value::Null)
+    );
+    assert!(!std::path::Path::new(&plain).join(".git").exists(), "no git init");
+    let list = h.ok("workspace.list", json!({})).await;
+    let listed = |id: &str| {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["workspace_id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(listed(&wid)["is_git_repo"], false);
+    assert_eq!(listed(&h.workspace_id)["is_git_repo"], true);
+    assert_eq!(listed(&h.workspace_id)["branch"], "main");
+
+    // Files: create, read, write, list.
+    h.ok(
+        "files.create",
+        json!({"workspace_id": wid, "path": "", "name": "notes.md", "kind": "file"}),
+    )
+    .await;
+    let read = h
+        .ok("files.read", json!({"workspace_id": wid, "path": "notes.md"}))
+        .await;
+    h.ok(
+        "files.write",
+        json!({"workspace_id": wid, "path": "notes.md", "content": "hi\n", "etag": read["etag"]}),
+    )
+    .await;
+    assert_eq!(
+        h.ok("files.read", json!({"workspace_id": wid, "path": "notes.md"}))
+            .await["content"],
+        "hi\n"
+    );
+    let tree = h.ok("workspace.tree", json!({"workspace_id": wid})).await;
+    assert!(tree.to_string().contains("\"notes.md\""), "{tree}");
+
+    // A terminal starts in the folder.
+    let tid = h
+        .ok(
+            "terminal.spawn",
+            json!({"workspace_id": wid, "shell": "/bin/sh"}),
+        )
+        .await["terminal_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The folder's name only: responses never carry a host path.
+    h.ok(
+        "terminal.write",
+        json!({"terminal_id": tid, "data": "echo \"zw:$(basename \"$PWD\")\"\n"}),
+    )
+    .await;
+    let mut seen = false;
+    for _ in 0..50 {
+        let snap = h.ok("terminal.snapshot", json!({"terminal_id": tid})).await;
+        if snap["data"].as_str().unwrap_or_default().contains("zw:plain") {
+            seen = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    h.ok("terminal.kill", json!({"terminal_id": tid})).await;
+    assert!(seen, "pwd never printed the folder");
+
+    // Git features say so, in Zwiim's shape.
+    for (op, body) in [
+        ("workspace.create_worktree", json!({"workspace_id": wid})),
+        ("git.branches", json!({"workspace_id": wid})),
+        ("git.status", json!({"workspace_id": wid})),
+        ("git.diff", json!({"workspace_id": wid})),
+        ("git.log", json!({"workspace_id": wid, "limit": 5})),
+    ] {
+        assert_eq!(
+            h.err(op, body).await,
+            (StatusCode::UNPROCESSABLE_ENTITY, "not_a_git_repository".into()),
+            "{op}"
+        );
+    }
+    assert_eq!(
+        h.ok("workspace.list", json!({})).await.as_array().unwrap().len(),
+        2,
+        "no worktree made"
+    );
+}
+
+#[tokio::test]
 async fn session_list_and_history_use_public_ids_only() {
     let h = host(false).await;
     let wid = h.workspace_id.clone();
@@ -822,6 +1013,8 @@ async fn worktree_create_diff_and_guarded_removal() {
             "base_branch",
             "base_commit",
             "branch",
+            "display_path",
+            "is_git_repo",
             "kind",
             "name",
             "parent_workspace_id",
@@ -829,6 +1022,8 @@ async fn worktree_create_diff_and_guarded_removal() {
             "workspace_id"
         ]
     );
+    assert_eq!(wt["display_path"], Value::Null);
+    assert_eq!(wt["is_git_repo"], true);
     let wt_id = wt["workspace_id"].as_str().unwrap().to_string();
     let branch = wt["branch"].as_str().unwrap().to_string();
     assert_eq!(

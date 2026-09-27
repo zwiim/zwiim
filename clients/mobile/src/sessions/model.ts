@@ -14,6 +14,7 @@ import {
   type SessionView,
   type WorkspaceInfo,
 } from "@zwiim/sdk";
+import { contextLabel, contextText } from "../host/workspace";
 import type { DotState } from "../ui/components";
 
 export type SessionState =
@@ -105,10 +106,6 @@ export interface SessionSections {
 /** RECENT lists this many; the rest are counted. */
 export const RECENT_LIMIT = 50;
 
-export function workspaceLabel(w: WorkspaceInfo): string {
-  return w.alias ?? w.name;
-}
-
 function latestActivity(view: SessionView | undefined): string | null {
   if (!view) return null;
   const calls = Object.values(view.live.toolCalls);
@@ -141,8 +138,9 @@ function toItem(
   };
 }
 
+/** Where each session lives, as "workspace · worktree". */
 const workspaceNames = (workspaces: readonly WorkspaceInfo[] | null) =>
-  new Map((workspaces ?? []).map((w) => [w.workspace_id, workspaceLabel(w)]));
+  new Map((workspaces ?? []).map((w) => [w.workspace_id, contextText(contextLabel(workspaces, w.workspace_id))!]));
 
 /** One session as the list shows it; null when the host doesn't list it. */
 export function sessionItem(

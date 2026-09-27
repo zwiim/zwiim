@@ -34,7 +34,7 @@ export function usePendingCount(): number {
   return useHostSelector(pendingCount);
 }
 
-/** The workspace Files and Terminal show. */
+/** The worktree Files shows: its changes, files and terminals. */
 export function useWorkspace(): WorkspaceInfo | null {
   const { workspaceId } = useCurrentHost();
   const workspaces = useHostSelector((s) => s.workspaces);

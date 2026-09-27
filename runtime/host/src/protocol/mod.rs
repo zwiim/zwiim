@@ -81,6 +81,11 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/agent.list", post(http::agent_list))
         .route("/workspace.list", post(http::workspace_list))
         .route("/workspace.add", post(http::workspace_add))
+        .route("/workspace.browse", post(http::workspace_browse))
+        .route(
+            "/workspace.create_folder",
+            post(http::workspace_create_folder),
+        )
         .route("/workspace.open", post(http::workspace_open))
         .route("/workspace.tree", post(http::workspace_tree))
         .route(

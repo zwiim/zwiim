@@ -68,7 +68,8 @@ export function NewWorktree({
   const controller = useController();
   const online = useOnline();
   const workspaces = useHost((s) => s.workspaces);
-  const roots = (workspaces ?? []).filter((w) => w.kind === "root" && !w.removed);
+  // Only a Git repository has worktrees.
+  const roots = (workspaces ?? []).filter((w) => w.kind === "root" && !w.removed && w.is_git_repo);
   const [repo, setRepo] = useState(rootId);
   const [bases, setBases] = useState<WorktreeBases | null>(null);
   const [base, setBase] = useState<string | null>(null);

@@ -824,7 +824,7 @@ function WorkspacePanel({
             )}
             {visited.has("git") && (
               <TabPane active={tab === "git"}>
-                <GitPanel workspaceId={workspaceId} />
+                <GitPanel workspace={workspace} />
               </TabPane>
             )}
           </div>

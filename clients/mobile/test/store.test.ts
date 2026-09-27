@@ -125,6 +125,20 @@ describe("VaultPreferences", () => {
     expect([...vault.items.keys()].sort()).toEqual(["connection-modes"]);
   });
 
+  it("keeps the worktree chosen on each host", async () => {
+    const vault = new MapVault();
+    const before = new VaultPreferences(vault);
+    expect(await before.workspaces()).toEqual({});
+    await before.setWorkspace("host-1", "3f9e1a2c-0000-4000-8000-000000000001");
+    await before.setWorkspace("host-2", "w2");
+    await before.setWorkspace("host-2", null);
+    const after = new VaultPreferences(vault);
+    expect(await after.workspaces()).toEqual({ "host-1": "3f9e1a2c-0000-4000-8000-000000000001" });
+    vault.items.set("workspaces", JSON.stringify({ "host-1": "w1", "host-2": 7, "bad id": "w3", "host-3": "../x" }));
+    expect(await after.workspaces()).toEqual({ "host-1": "w1" });
+    await expect(after.setWorkspace("bad id", "w1")).rejects.toThrow("Not a host id");
+  });
+
   it("reads damaged entries as absent", async () => {
     const vault = new MapVault();
     const prefs = new VaultPreferences(vault);

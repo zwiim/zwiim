@@ -21,6 +21,7 @@ import type { Account } from "./src/account/auth";
 import { AccountScope, useAccount, type AccountContext } from "./src/app/account";
 import type { RootStack } from "./src/app/navigation";
 import { preferences, secureStore } from "./src/platform/native";
+import { BrowseMacScreen } from "./src/screens/BrowseMacScreen";
 import { DiffScreen, FileScreen } from "./src/screens/FilesScreens";
 import { HostShell } from "./src/screens/HostShell";
 import { HostsScreen } from "./src/screens/HostsScreen";
@@ -160,6 +161,7 @@ export default function App() {
                   <Stack.Screen name="File" component={FileScreen} />
                   <Stack.Screen name="Diff" component={DiffScreen} />
                   <Stack.Screen name="TerminalView" component={TerminalScreenView} />
+                  <Stack.Screen name="BrowseMac" component={BrowseMacScreen} />
                   <Stack.Screen name="Pair" component={PairRoute} options={{ presentation: "fullScreenModal" }} />
                 </>
               )}

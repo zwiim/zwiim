@@ -31,6 +31,8 @@ const workspace = (id: string, name: string): WorkspaceInfo => ({
   base_branch: null,
   base_commit: null,
   removed: false,
+  is_git_repo: true,
+  display_path: null,
 });
 
 const summary = (id: string, over: Partial<SessionSummary> = {}): SessionSummary => ({
@@ -149,7 +151,23 @@ describe("sessionSections", () => {
     expect(s.needsYou.map((i) => i.session_id)).toEqual(["old-wait", "new-wait"]);
     expect(s.working.map((i) => [i.session_id, i.activity])).toEqual([["busy", "Editing pair.tsx"]]);
     expect(s.recent.map((i) => i.session_id)).toEqual(["stopped", "done"]);
-    expect(s.needsYou[0]).toMatchObject({ workspace: "site", request: bash, waitingSince: T0 + 60_000 });
+    expect(s.needsYou[0]).toMatchObject({ workspace: "site · main", request: bash, waitingSince: T0 + 60_000 });
+  });
+
+  it("names each session's workspace and worktree, unfiltered", () => {
+    const worktree: WorkspaceInfo = {
+      ...workspace("w2", "zwiim-3f9e1a2c"),
+      kind: "worktree",
+      parent_workspace_id: "w1",
+      branch: "fix-auth",
+    };
+    const s = sessionSections({
+      workspaces: [workspace("w1", "zwiim"), worktree],
+      sessionsByWorkspace: { w1: [summary("root")], w2: [summary("wt", { workspace_id: "w2" })] },
+      sessions: {},
+    });
+    const where = Object.fromEntries(s.recent.map((i) => [i.session_id, i.workspace]));
+    expect(where).toEqual({ root: "zwiim · main", wt: "zwiim · fix-auth" });
   });
 
   it("orders NEEDS YOU by when the phone first saw each request", () => {

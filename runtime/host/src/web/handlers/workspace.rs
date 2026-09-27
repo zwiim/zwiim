@@ -34,7 +34,7 @@ pub async fn workspace_worktree_create(
         workspace::create_worktree(
             &state.db,
             &state.emitter,
-            &state.data_dir.join("worktrees"),
+            &state.worktrees_dir,
             &params.workspace_id,
             None,
         )

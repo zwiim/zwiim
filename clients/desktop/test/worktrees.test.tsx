@@ -23,6 +23,8 @@ const root: WorkspaceInfo = {
   base_branch: null,
   base_commit: null,
   removed: false,
+  is_git_repo: true,
+  display_path: null,
 };
 const worktree = (id: string, extra: Partial<WorkspaceInfo> = {}): WorkspaceInfo => ({
   workspace_id: id,
@@ -34,6 +36,8 @@ const worktree = (id: string, extra: Partial<WorkspaceInfo> = {}): WorkspaceInfo
   base_branch: "main",
   base_commit: BASE,
   removed: false,
+  is_git_repo: true,
+  display_path: null,
   ...extra,
 });
 const session = (id: string, agent: string, extra: Partial<SessionSummary> = {}): SessionSummary => ({
@@ -109,6 +113,25 @@ describe("workspace tree", () => {
     expect(gone.textContent).toContain("removed");
     expect(gone.querySelector('[title="Remove worktree"]')).toBeNull();
     expect(screen.getAllByTitle("Remove worktree")).toHaveLength(1);
+  });
+
+  it("offers no worktrees for a plain folder, and leaves it out of the repository list", async () => {
+    const { t } = treeHost();
+    const plain: WorkspaceInfo = { ...root, workspace_id: "plain", name: "notes", is_git_repo: false, branch: null };
+    t.handlers["workspace.list"] = () => [root, worktree("a1b2c3d4"), plain];
+    const props = sidebarProps();
+    await mount(t, () => <Sidebar {...props} />);
+    const row = screen.getByTestId("workspace-plain");
+    expect(row.textContent).toContain("notes");
+    expect(row.querySelector('[title="New worktree"]')).toBeNull();
+    expect(screen.getAllByTitle("New worktree")).toHaveLength(1);
+    fireEvent.click(screen.getByText("notes"));
+    expect(props.onSelectWorkspace).toHaveBeenCalledWith("plain");
+
+    fireEvent.click(screen.getByTitle("New worktree"));
+    await tick();
+    const repos = within(screen.getByRole("dialog", { name: "New worktree" })).getByLabelText("Repository") as HTMLSelectElement;
+    expect([...repos.options].map((o) => o.value)).toEqual(["root"]);
   });
 
   it("selects a worktree", async () => {

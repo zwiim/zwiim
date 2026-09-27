@@ -295,6 +295,8 @@ async fn async_main() -> ExitCode {
         event_broadcaster: broadcaster,
         acp_event_bus: acp_event_bus.clone(),
         emitter,
+        worktrees_dir: zwiim_host::app_state::default_worktrees_dir()
+            .unwrap_or_else(|| data_dir.join("worktrees")),
         data_dir,
         web_server_state: WebServerState::new(),
         workspace_transfer: Arc::new(

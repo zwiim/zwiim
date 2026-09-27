@@ -23,6 +23,8 @@ const ws = (id: string): WorkspaceInfo => ({
   base_branch: null,
   base_commit: null,
   removed: false,
+  is_git_repo: true,
+  display_path: null,
 });
 
 const me = { user_id: "u1", email: "me@example.com" };

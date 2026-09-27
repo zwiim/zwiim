@@ -1,8 +1,9 @@
 // The Files tab (DESIGN.md, Screen 6): inspection, not editing. Changes lists
 // what differs from the last commit (`git.status`, `git.diff`) and opens each
-// file's diff; Browse walks the workspace one folder at a time
-// (`workspace.tree`) and opens files read-only. Both follow the workspace
-// chosen in the title row.
+// file's diff; Browse walks the worktree one folder at a time
+// (`workspace.tree`) and opens files read-only; Terminals lists and starts its
+// terminals. All three follow the worktree chosen in the context bar. A plain
+// folder (not a Git repository) has no changes: Changes says so, unasked.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BackHandler, Pressable, ScrollView, StyleSheet, View } from "react-native";
@@ -10,15 +11,16 @@ import { useFocusEffect } from "@react-navigation/native";
 import type { FileTreeNode, WorkspaceInfo } from "@zwiim/sdk";
 import { useHostRead, useHostState, useWorkspace, type Loaded } from "../app/hooks";
 import { useRootNavigation } from "../app/navigation";
-import { changeItems, crumbs, fileProblem, folderEntries, parentPath, type ChangeItem } from "../files/model";
-import { workspaceLabel } from "../sessions/model";
+import { changeItems, crumbs, fileProblem, folderEntries, notGitProblem, parentPath, type ChangeItem } from "../files/model";
+import { workspaceLabel } from "../host/workspace";
 import { currentHost } from "../services";
 import { Button, EmptyState, Segmented, SkeletonRows, T } from "../ui/components";
 import { radius, space, useTheme } from "../ui/tokens";
 import { HostFrame, useHostName } from "./HostFrame";
-import { WorkspacePicker } from "./workspaces";
+import { TerminalsSegment } from "./TerminalScreens";
+import { ContextBar, NewWorkspaceButton } from "./workspaces";
 
-type Mode = "changes" | "browse";
+type Mode = "changes" | "browse" | "terminals";
 
 /** Read again when the tab is shown again (not on first show: it has just been read). */
 function useRefocus(reload: () => void) {
@@ -34,26 +36,36 @@ function useRefocus(reload: () => void) {
 export function FilesTab() {
   const workspace = useWorkspace();
   const name = useHostName();
+  // Kept across worktrees: switching shows the same segment of the next one.
+  const [chosen, setChosen] = useState<Mode | null>(null);
   return (
-    <HostFrame title="Files" accessory={<WorkspacePicker />}>
+    <HostFrame title="Files" accessory={workspace ? <NewWorkspaceButton /> : null}>
       {workspace ? (
-        <Files key={workspace.workspace_id} workspace={workspace} />
+        <>
+          <ContextBar />
+          <Files key={workspace.workspace_id} workspace={workspace} chosen={chosen} onChoose={setChosen} />
+        </>
       ) : (
-        <EmptyState glyph="/" title="No workspaces" body={`Add a folder in Zwiim on ${name} to browse it here.`} />
+        <EmptyState
+          glyph="/"
+          title="No workspaces yet"
+          body={`Add a folder on ${name} to work in it from here.`}
+          action={<NewWorkspaceButton />}
+        />
       )}
     </HostFrame>
   );
 }
 
-function Files({ workspace }: { workspace: WorkspaceInfo }) {
+function Files({ workspace, chosen, onChoose }: { workspace: WorkspaceInfo; chosen: Mode | null; onChoose(mode: Mode): void }) {
   const name = useHostName();
   const id = workspace.workspace_id;
   const revision = useHostState().diffRevision[id] ?? 0;
-  const [chosen, setChosen] = useState<Mode | null>(null);
   const [path, setPath] = useState("");
 
   // The host bumps the revision when the workspace's files change on disk.
-  const changes = useHostRead(`${id}:${revision}`, async () => {
+  // Git is never asked about a plain folder.
+  const changes = useHostRead(workspace.is_git_repo ? `${id}:${revision}` : null, async () => {
     const [status, diff] = await Promise.all([
       currentHost.request("git.status", { workspace_id: id, show_all_untracked: true }),
       currentHost.request("git.diff", { workspace_id: id }),
@@ -69,9 +81,25 @@ function Files({ workspace }: { workspace: WorkspaceInfo }) {
       tree.reload();
     }, [changes.reload, tree.reload]),
   );
+  // Files changing on disk re-read the folder shown, keeping it on screen meanwhile.
+  const reloadTree = tree.reload;
+  const seen = useRef(revision);
+  useEffect(() => {
+    if (seen.current === revision) return;
+    seen.current = revision;
+    reloadTree();
+  }, [revision, reloadTree]);
 
   // Changes first when there are any; Browse for a clean or non-Git workspace.
-  const settled = changes.data ? (changes.data.items.length ? "changes" : "browse") : changes.error ? "browse" : null;
+  const settled = !workspace.is_git_repo
+    ? "browse"
+    : changes.data
+      ? changes.data.items.length
+        ? "changes"
+        : "browse"
+      : changes.error
+        ? "browse"
+        : null;
   const mode = chosen ?? settled;
 
   // Android back climbs out of a folder before leaving the tab.
@@ -93,15 +121,18 @@ function Files({ workspace }: { workspace: WorkspaceInfo }) {
           options={[
             { key: "changes", label: "Changes" },
             { key: "browse", label: "Browse" },
+            { key: "terminals", label: "Terminals" },
           ]}
           value={mode ?? "changes"}
-          onChange={setChosen}
+          onChange={onChoose}
         />
       </View>
       {mode === null ? (
         <SkeletonRows />
       ) : mode === "changes" ? (
-        <Changes workspace={workspace} loaded={changes} hostName={name} />
+        <Changes workspace={workspace} loaded={changes} hostName={name} onBrowse={() => onChoose("browse")} />
+      ) : mode === "terminals" ? (
+        <TerminalsSegment workspace={workspace} />
       ) : (
         <Browse workspace={workspace} path={path} onPath={setPath} loaded={tree} hostName={name} />
       )}
@@ -113,14 +144,20 @@ function Changes({
   workspace,
   loaded,
   hostName,
+  onBrowse,
 }: {
   workspace: WorkspaceInfo;
   loaded: Loaded<{ items: ChangeItem[]; truncated: boolean }>;
   hostName: string;
+  onBrowse(): void;
 }) {
   const theme = useTheme();
   const nav = useRootNavigation();
   const branch = workspace.branch ?? "detached HEAD";
+  if (!workspace.is_git_repo) {
+    const p = notGitProblem(workspace);
+    return <EmptyState glyph="⎇" title={p.title} body={p.body} action={<Button kind="secondary" label="Browse files" onPress={onBrowse} />} />;
+  }
   if (loaded.error) {
     const p = fileProblem(loaded.error, hostName, "changes");
     return <EmptyState glyph="⎇" title={p.title} body={p.body} action={<Button kind="secondary" label="Try again" onPress={loaded.reload} />} />;

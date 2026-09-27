@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FolderGit2, GitBranch, GitBranchPlus, Plus, Trash2 } from "lucide-react";
+import { Folder, FolderGit2, GitBranch, GitBranchPlus, Plus, Trash2 } from "lucide-react";
 import {
   busyDetails,
   dirtyDetails,
@@ -116,7 +116,9 @@ function WorkspaceRow(props: SidebarProps & { node: WorkspaceNode; onError(messa
           aria-current={selected || undefined}
           onClick={() => props.onSelectWorkspace(w.workspace_id)}
         >
-          {isRoot ? (
+          {isRoot && !w.is_git_repo ? (
+            <Folder className="text-muted-foreground size-4 shrink-0" aria-label="Folder, not a Git repository" />
+          ) : isRoot ? (
             <FolderGit2 className="text-muted-foreground size-4 shrink-0" />
           ) : (
             <GitBranch className="text-muted-foreground size-3.5 shrink-0" />
@@ -142,7 +144,7 @@ function WorkspaceRow(props: SidebarProps & { node: WorkspaceNode; onError(messa
             {w.removed && <span className="text-muted-foreground">removed</span>}
           </span>
         </button>
-        {isRoot && (
+        {isRoot && w.is_git_repo && (
           <Button
             className={HOVER_ACTION}
             size="icon-sm"

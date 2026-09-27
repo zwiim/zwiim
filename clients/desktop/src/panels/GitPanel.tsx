@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUp, Loader2, RefreshCw } from "lucide-react";
-import type { GitLogEntry, GitStatusEntry } from "@zwiim/sdk";
+import type { GitLogEntry, GitStatusEntry, WorkspaceInfo } from "@zwiim/sdk";
+import { NotGitRepository } from "@/panels/DiffPanel";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { cn } from "@/lib/utils";
@@ -45,7 +46,9 @@ export function relativeTime(iso: string, now = Date.now()): string {
  * recent history. Refetched when the host says the workspace's diff may have
  * changed.
  */
-export function GitPanel({ workspaceId }: { workspaceId: string }) {
+export function GitPanel({ workspace }: { workspace: WorkspaceInfo }) {
+  const workspaceId = workspace.workspace_id;
+  const isRepo = workspace.is_git_repo;
   const controller = useController();
   const online = useOnline();
   const revision = useHost((s) => s.diffRevision[workspaceId] ?? 0);
@@ -90,8 +93,9 @@ export function GitPanel({ workspaceId }: { workspaceId: string }) {
   }, [workspaceId]);
 
   useEffect(() => {
-    void refresh();
-  }, [refresh, revision]);
+    // A plain folder has no status or history: Git is never asked.
+    if (isRepo) void refresh();
+  }, [refresh, revision, isRepo]);
 
   const files = status?.map((e) => e.file).filter((f) => !excluded.has(f)) ?? [];
   const canCommit = online && !committing && message.trim() !== "" && files.length > 0;
@@ -126,6 +130,8 @@ export function GitPanel({ workspaceId }: { workspaceId: string }) {
       return next;
     });
   const allIncluded = status !== null && status.every((e) => !excluded.has(e.file));
+
+  if (!isRepo) return <NotGitRepository name={workspace.alias ?? workspace.name} />;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
