@@ -535,9 +535,29 @@ pub async fn read(
     if let Some(live) = live_options(connections, row).await {
         return Some(project(&live));
     }
-    let catalog = agent_catalog(db, &row.agent_type).await?;
     let stored = load(db, session_id).await;
-    Some(project(&idle_options(catalog, &stored)))
+    Some(project(&idle_view(db, &row.agent_type, &stored, None).await?))
+}
+
+/// `idle_options` for session `stored` of `agent`, with the effort of the
+/// model it will run (`model`, else its current one) once that model has run
+/// here: a session moved to a model without effort shows none, and never
+/// keeps another model's effort.
+async fn idle_view(
+    db: &DatabaseConnection,
+    agent: &str,
+    stored: &Stored,
+    model: Option<&str>,
+) -> Option<Vec<SessionConfigOptionInfo>> {
+    let options = idle_options(agent_catalog(db, agent).await?, stored);
+    let current = Native::of(&options).model.as_ref().map(|m| m.current().to_string());
+    let Some(model) = model.map(str::to_string).or(current) else {
+        return Some(options);
+    };
+    Some(match model_efforts(db, agent).await.remove(&model) {
+        Some(effort) => overlay(with_model_effort(options, effort), &stored.values),
+        None => options,
+    })
 }
 
 /// What session `stored`'s agent will hold once (re)spawned: the agent's last
@@ -626,16 +646,28 @@ pub async fn change(
         settle(&state, &sets).await;
         return Ok(());
     }
-    let catalog = agent_catalog(db, &row.agent_type)
+    // Effort is resolved against the requested model's own.
+    let options = idle_view(db, &row.agent_type, &stored, request.model.as_deref())
         .await
         .ok_or_else(|| option_unavailable_any(request))?;
-    let options = idle_options(catalog, &stored);
     let sets = resolve(&options, request, stored.normal_mode.as_deref())?;
     let mut next = stored;
     for (config_id, value) in sets {
         next.values.insert(config_id, value);
     }
     remember_normal(&mut next, &options);
+    // A session keeps only an effort its model offers.
+    let view = idle_view(db, &row.agent_type, &next, None).await.unwrap_or_default();
+    let offered = Native::of(&view).effort.map(|e| (e.id.to_string(), e));
+    let catalog = agent_catalog(db, &row.agent_type).await.unwrap_or_default();
+    for effort_id in catalog.iter().filter(|o| o.category.as_deref() == Some(EFFORT_CATEGORY)).map(|o| &o.id) {
+        let kept = next.values.get(effort_id).is_some_and(|value| {
+            offered.as_ref().is_some_and(|(id, e)| id == effort_id && e.find(value).is_some())
+        });
+        if !kept {
+            next.values.remove(effort_id);
+        }
+    }
     write_json(db, &session_key(session_id), &next).await;
     Ok(())
 }
@@ -791,7 +823,7 @@ pub async fn apply_on_start(
 
 /// The native mode an agent enters when the user answers its plan-approval
 /// (`switch_mode`) request with `option_id`, for agents that switch without
-/// reporting it. Claude (claude-agent-acp ≤ 0.79) applies the mode chosen on
+/// reporting it. Claude (claude-agent-acp ≤ 0.81.0) applies the mode chosen on
 /// ExitPlanMode inside the SDK but leaves its advertised mode on `plan`.
 fn mode_after_plan_exit(agent: AgentType, option_id: &str) -> Option<&'static str> {
     match (agent, option_id) {

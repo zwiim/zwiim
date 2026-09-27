@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { agentChoices, rememberAgentChoices } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
+import { ContextRing } from "./ContextRing";
 import { ControlSelect, OptionsBar, UnattendedBanner } from "./OptionsBar";
 import { RequestCard } from "./RequestCard";
 import { useSlashMenu } from "./SlashCommands";
@@ -434,6 +435,7 @@ function OpenSession({
                 disabledReason={running ? "Options change between turns" : starting ? "The agent is starting…" : null}
                 onChange={(req) => void changeOptions(req)}
               />
+              <ContextRing view={view} agent={agentName ?? summary?.agent ?? null} />
             </>
           )
         }

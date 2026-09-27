@@ -18,6 +18,7 @@ import type {
   SessionSnapshot,
   SessionStatus,
   ToolCall,
+  TurnUsage,
   Usage,
   WireError,
 } from "../types/protocol";
@@ -46,7 +47,10 @@ export interface SessionView {
   settled: LiveTurn | null;
   pendingRequest: AgentRequest | null;
   lastError: SessionErrorInfo | null;
+  /** The context window as the agent last reported it; null until it does. */
   usage: Usage | null;
+  /** The last finished turn's tokens as the agent reported them. */
+  turnUsage: TurnUsage | null;
   lastStopReason: string | null;
   /**
    * Model / effort / mode, as the host last reported them. Kept while the
@@ -111,6 +115,7 @@ export function initialSessionView(session_id: string): SessionView {
     pendingRequest: null,
     lastError: null,
     usage: null,
+    turnUsage: null,
     lastStopReason: null,
     options: null,
     commands: null,
@@ -166,6 +171,7 @@ function applySnapshot(
     pendingRequest: s.pending_request,
     lastError: s.last_error,
     usage: s.usage,
+    turnUsage: s.turn_usage ?? null,
     // A freshly spawned agent may not have advertised its options yet; its
     // `session.options` event follows.
     options: s.options ?? view.options,
@@ -288,6 +294,10 @@ export function applyEvent(view: SessionView, ev: SessionEvent): SessionView {
       return { ...next, options: ev.payload.options };
     case "session.commands":
       return { ...next, commands: ev.payload.commands };
+    case "session.usage":
+      return { ...next, usage: ev.payload };
+    case "session.turn_usage":
+      return { ...next, turnUsage: ev.payload };
     default:
       return next;
   }

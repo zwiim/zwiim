@@ -12,7 +12,9 @@ import {
   type OpName,
   type OpParams,
   type OpResult,
+  type OptionsRequest,
   type RequestAnswer,
+  type SessionOptions,
   type WorkspaceInfo,
 } from "@zwiim/sdk";
 import type { HostEntry } from "../account/hosts";
@@ -202,6 +204,15 @@ export class CurrentHost {
    */
   async stopSession(session_id: string): Promise<void> {
     await this.#opened().stopSession(session_id);
+  }
+
+  /**
+   * Change a session's model, effort or mode between turns. The host applies
+   * it to the agent (or keeps it for the agent's next start) and reports the
+   * options now in effect, which replace the ones shown. Never retried.
+   */
+  async setSessionOptions(session_id: string, request: OptionsRequest): Promise<SessionOptions> {
+    return this.#opened().setSessionOptions(session_id, request);
   }
 
   /** A read of the host (its files, its Git state), over the open connection. */

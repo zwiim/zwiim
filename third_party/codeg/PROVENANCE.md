@@ -1006,6 +1006,18 @@ Host (`runtime/host/`), no Codeg-derived code changed:
 | `src/session_options.rs` (Zwiim-owned) | Each session report also records the effort its current model offers (`zwiim.agent_model_effort:{agent}` in `app_metadata`; `None` for a model without one). `preferred_for_start` checks a requested effort against the requested model's own once that model has run here (`option_unavailable` instead of the agent silently dropping it); an unseen model keeps the agent-wide check. |
 | `src/protocol/http.rs` | `AgentSummary.effort_by_model` (model value → effort choice or `null`). |
 
+## Session controls and provider-neutral context R8.15 — `session.usage`, `session.turn_usage`
+
+Host (`runtime/host/`):
+
+| Path | Change |
+|---|---|
+| `src/acp/types.rs` | `AcpEvent::UsageUpdate` fields are `Option<u64>` (`None`: the agent sent `null`). New `AcpEvent::TurnUsage` carries the prompt response's `usage` (total/input/output tokens, optional thought and cache read/write tokens). |
+| `src/acp/connection.rs` | `fix_usage_update_nulls` still patches `null` to `0` for the typed schema, and now names the patched fields under `_meta["zwiim/unreported"]` (`patch_usage_update_nulls`); `usage_update_event` maps them back to `None`, so a missing figure is never shown as 0. After each prompt response, its `usage` (when the agent sends one) is emitted as `TurnUsage` before the turn ends. Grok's synthesized usage is wrapped in `Some`. |
+| `src/acp/session_state.rs` | `UsageInfo` fields optional; `turn_usage: Option<TurnUsageInfo>` kept from `TurnUsage` and carried on the snapshot. |
+| `src/protocol/events.rs` (Zwiim-owned) | `session.usage { used, size }` and `session.turn_usage { … }` events; snapshot adds `turn_usage`. Unreported fields are `null`. |
+| `src/session_options.rs` (Zwiim-owned) | A session without a live agent reads and changes its options against the effort of the model it will run (`idle_view`), and a model change drops a kept effort the new model doesn't offer, so it is never replayed on respawn. |
+
 ## License obligations tracked
 
 - [x] Include Apache-2.0 license text (`third_party/codeg/LICENSE`).

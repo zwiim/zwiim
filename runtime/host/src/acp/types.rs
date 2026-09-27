@@ -578,8 +578,19 @@ pub enum AcpEvent {
     },
     /// Available slash commands updated
     AvailableCommands { commands: Vec<AvailableCommandInfo> },
-    /// Session usage/context window updated during conversation
-    UsageUpdate { used: u64, size: u64 },
+    /// Session usage/context window updated during conversation. `None`: the
+    /// agent sent `null` for that field (Zwiim: not reported, never 0).
+    UsageUpdate { used: Option<u64>, size: Option<u64> },
+    /// The token counts the agent reported for the turn that just ended (the
+    /// ACP prompt response's `usage`). Optional fields: not reported.
+    TurnUsage {
+        total_tokens: u64,
+        input_tokens: u64,
+        output_tokens: u64,
+        thought_tokens: Option<u64>,
+        cached_read_tokens: Option<u64>,
+        cached_write_tokens: Option<u64>,
+    },
     /// Out-of-turn activity surfaced from the agent's own session transcript
     /// by the background watcher (`acp::background_watch`; Claude-only today).
     /// Covers everything that happens OUTSIDE a zwiim-driven prompt turn:

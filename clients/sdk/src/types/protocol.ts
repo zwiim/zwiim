@@ -494,9 +494,26 @@ export interface SessionErrorInfo {
   code: string | number | null;
 }
 
+/**
+ * The session's context window as the agent last reported it. A field the
+ * agent did not report is null — never estimated.
+ */
 export interface Usage {
-  used: number;
-  size: number;
+  /** Tokens in the context window. */
+  used: number | null;
+  /** The context window's size, in tokens. */
+  size: number | null;
+}
+
+/** Token counts the agent reported for the last finished turn. */
+export interface TurnUsage {
+  total_tokens: number;
+  input_tokens: number;
+  output_tokens: number;
+  /** Null: not reported by the agent. */
+  thought_tokens: number | null;
+  cached_read_tokens: number | null;
+  cached_write_tokens: number | null;
 }
 
 export interface SessionSnapshot {
@@ -507,6 +524,8 @@ export interface SessionSnapshot {
   pending_user_message: PendingUserMessage | null;
   last_error: SessionErrorInfo | null;
   usage: Usage | null;
+  /** Null until the agent reports a finished turn's tokens. */
+  turn_usage?: TurnUsage | null;
   /** Null until the agent has advertised its options. */
   options: SessionOptions | null;
   /** Empty until the agent has announced its commands. */
@@ -532,7 +551,9 @@ export type SessionEvent =
   | EventBase<"agent.error", SessionErrorInfo>
   | EventBase<"session.status", { status: SessionStatus }>
   | EventBase<"session.options", { options: SessionOptions }>
-  | EventBase<"session.commands", { commands: SessionCommand[] }>;
+  | EventBase<"session.commands", { commands: SessionCommand[] }>
+  | EventBase<"session.usage", Usage>
+  | EventBase<"session.turn_usage", TurnUsage>;
 
 export type HistoryBlock =
   | { type: "text"; text: string }

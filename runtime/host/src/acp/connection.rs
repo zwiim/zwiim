@@ -9701,7 +9701,12 @@ async fn run_conversation_loop<'a>(
                         grok_window_change_usage(window, cb_state.grok_last_usage)
                     {
                         cb_state.grok_last_usage = Some((used, size));
-                        emit_with_state(state, emitter, AcpEvent::UsageUpdate { used, size }).await;
+                        emit_with_state(
+                            state,
+                            emitter,
+                            AcpEvent::UsageUpdate { used: Some(used), size: Some(size) },
+                        )
+                        .await;
                     }
                 }
 
@@ -9761,7 +9766,10 @@ async fn run_conversation_loop<'a>(
                                         emit_with_state(
                                             state,
                                             emitter,
-                                            AcpEvent::UsageUpdate { used, size },
+                                            AcpEvent::UsageUpdate {
+                                                used: Some(used),
+                                                size: Some(size),
+                                            },
                                         )
                                         .await;
                                     }
@@ -10041,6 +10049,11 @@ async fn run_conversation_loop<'a>(
                                     AcpEvent::SessionFailure { record: record.clone() },
                                 )
                                 .await;
+                            }
+                            // The turn's token counts, when the agent reports
+                            // them (claude-agent-acp, codex-acp).
+                            if let Some(usage) = &response.usage {
+                                emit_with_state(state, emitter, turn_usage_event(usage)).await;
                             }
                             let reason = response.stop_reason;
                             if !tracked_terminal_tool_calls.is_empty() {
@@ -13745,25 +13758,71 @@ async fn maybe_emit_ext_notification(
     }
 }
 
+/// The `TurnUsage` event for a prompt response's `usage`.
+fn turn_usage_event(usage: &sacp::schema::Usage) -> AcpEvent {
+    AcpEvent::TurnUsage {
+        total_tokens: usage.total_tokens,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        thought_tokens: usage.thought_tokens,
+        cached_read_tokens: usage.cached_read_tokens,
+        cached_write_tokens: usage.cached_write_tokens,
+    }
+}
+
+/// `_meta` key naming the `usage_update` fields the agent sent as `null`.
+const USAGE_UNREPORTED_META: &str = "zwiim/unreported";
+
 /// Fix null fields in `usage_update` notifications that would otherwise fail deserialization.
 ///
 /// Some ACP agents send `"used": null` in usage_update notifications, but the
 /// upstream schema expects `u64`. This function patches the raw JSON params
-/// so that `null` numeric fields default to `0`.
+/// so that `null` numeric fields default to `0`, and names the patched fields
+/// under `_meta[USAGE_UNREPORTED_META]` so they reach Zwiim as not reported.
 fn fix_usage_update_nulls(mut dispatch: Dispatch) -> Dispatch {
     if let Dispatch::Notification(ref mut msg) = dispatch {
         if let Some(update) = msg.params.get_mut("update") {
-            if update.get("sessionUpdate").and_then(|v| v.as_str()) == Some("usage_update") {
-                if update.get("used").map(|v| v.is_null()).unwrap_or(false) {
-                    update["used"] = serde_json::Value::from(0u64);
-                }
-                if update.get("size").map(|v| v.is_null()).unwrap_or(false) {
-                    update["size"] = serde_json::Value::from(0u64);
-                }
-            }
+            patch_usage_update_nulls(update);
         }
     }
     dispatch
+}
+
+fn patch_usage_update_nulls(update: &mut serde_json::Value) {
+    if update.get("sessionUpdate").and_then(|v| v.as_str()) != Some("usage_update") {
+        return;
+    }
+    let mut unreported = Vec::new();
+    for field in ["used", "size"] {
+        if update.get(field).map(|v| v.is_null()).unwrap_or(false) {
+            update[field] = serde_json::Value::from(0u64);
+            unreported.push(field);
+        }
+    }
+    if !unreported.is_empty() {
+        if !update.get("_meta").is_some_and(|m| m.is_object()) {
+            update["_meta"] = serde_json::json!({});
+        }
+        update["_meta"][USAGE_UNREPORTED_META] = serde_json::json!(unreported);
+    }
+}
+
+/// The `UsageUpdate` event for a `usage_update`, with the fields
+/// `patch_usage_update_nulls` filled in as not reported.
+fn usage_update_event(update: &sacp::schema::UsageUpdate) -> AcpEvent {
+    let reported = |field: &str, value: u64| {
+        let unreported = update
+            .meta
+            .as_ref()
+            .and_then(|m| m.get(USAGE_UNREPORTED_META))
+            .and_then(|v| v.as_array())
+            .is_some_and(|fields| fields.iter().any(|f| f == field));
+        (!unreported).then_some(value)
+    };
+    AcpEvent::UsageUpdate {
+        used: reported("used", update.used),
+        size: reported("size", update.size),
+    }
 }
 
 /// Read one AIR async-task frame out of a raw `session/update` dispatch.
@@ -14621,15 +14680,7 @@ async fn emit_conversation_update(
             emit_with_state(state, emitter, AcpEvent::AvailableCommands { commands }).await;
         }
         SessionUpdate::UsageUpdate(update) => {
-            emit_with_state(
-                state,
-                emitter,
-                AcpEvent::UsageUpdate {
-                    used: update.used,
-                    size: update.size,
-                },
-            )
-            .await;
+            emit_with_state(state, emitter, usage_update_event(&update)).await;
         }
         SessionUpdate::SessionInfoUpdate(info) => {
             // codex-acp v1.1.0 (#263) reports `/goal` transitions as structured
@@ -14772,6 +14823,23 @@ async fn emit_conversation_update(
 mod tests {
     use super::*;
     use sacp::schema::{Diff, SessionConfigId};
+
+    #[test]
+    fn usage_nulls_reach_zwiim_as_not_reported() {
+        let parse = |mut raw: serde_json::Value| {
+            patch_usage_update_nulls(&mut raw);
+            let update: sacp::schema::UsageUpdate = serde_json::from_value(raw).unwrap();
+            usage_update_event(&update)
+        };
+        let both = parse(serde_json::json!({"sessionUpdate": "usage_update", "used": 900, "size": 200_000}));
+        assert!(matches!(both, AcpEvent::UsageUpdate { used: Some(900), size: Some(200_000) }));
+        let no_used = parse(serde_json::json!({"sessionUpdate": "usage_update", "used": null, "size": 1_000_000}));
+        assert!(matches!(no_used, AcpEvent::UsageUpdate { used: None, size: Some(1_000_000) }));
+        let neither = parse(serde_json::json!({
+            "sessionUpdate": "usage_update", "used": null, "size": null, "_meta": {"cost": 1}
+        }));
+        assert!(matches!(neither, AcpEvent::UsageUpdate { used: None, size: None }));
+    }
 
     /// Unwrap a select selector. The Grok synthesizers below only ever build
     /// selects, so any other kind is a test failure rather than a branch to

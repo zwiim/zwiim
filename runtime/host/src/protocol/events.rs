@@ -204,6 +204,27 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
             "session.commands",
             json!({ "commands": crate::session_commands::project(commands) }),
         ),
+        AcpEvent::UsageUpdate { used, size } => {
+            ("session.usage", json!({ "used": used, "size": size }))
+        }
+        AcpEvent::TurnUsage {
+            total_tokens,
+            input_tokens,
+            output_tokens,
+            thought_tokens,
+            cached_read_tokens,
+            cached_write_tokens,
+        } => (
+            "session.turn_usage",
+            json!({
+                "total_tokens": total_tokens,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "thought_tokens": thought_tokens,
+                "cached_read_tokens": cached_read_tokens,
+                "cached_write_tokens": cached_write_tokens,
+            }),
+        ),
         _ => return None,
     })
 }
@@ -377,6 +398,14 @@ pub fn project_snapshot(s: &LiveSessionSnapshot, root: Option<&str>) -> Value {
             "code": e.code,
         })),
         "usage": s.usage.as_ref().map(|u| json!({ "used": u.used, "size": u.size })),
+        "turn_usage": s.turn_usage.as_ref().map(|u| json!({
+            "total_tokens": u.total_tokens,
+            "input_tokens": u.input_tokens,
+            "output_tokens": u.output_tokens,
+            "thought_tokens": u.thought_tokens,
+            "cached_read_tokens": u.cached_read_tokens,
+            "cached_write_tokens": u.cached_write_tokens,
+        })),
         "commands": crate::session_commands::project(&s.available_commands),
     })
 }
@@ -873,6 +902,60 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn usage_events_carry_only_what_the_agent_reported() {
+        let v = project_envelope("s", None, &env(AcpEvent::UsageUpdate { used: Some(5_000), size: Some(200_000) }))
+            .unwrap();
+        assert_eq!(v.kind, "session.usage");
+        assert_eq!(v.payload, json!({"used": 5_000, "size": 200_000}));
+        // A field the agent sent as null stays null, never 0.
+        let v = project_envelope("s", None, &env(AcpEvent::UsageUpdate { used: Some(12), size: None })).unwrap();
+        assert_eq!(v.payload, json!({"used": 12, "size": null}));
+
+        let v = project_envelope(
+            "s",
+            None,
+            &env(AcpEvent::TurnUsage {
+                total_tokens: 120,
+                input_tokens: 100,
+                output_tokens: 20,
+                thought_tokens: None,
+                cached_read_tokens: Some(80),
+                cached_write_tokens: None,
+            }),
+        )
+        .unwrap();
+        assert_eq!(v.kind, "session.turn_usage");
+        assert_eq!(
+            v.payload,
+            json!({
+                "total_tokens": 120,
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "thought_tokens": null,
+                "cached_read_tokens": 80,
+                "cached_write_tokens": null,
+            })
+        );
+
+        let mut state = SessionState::new("c".into(), AgentType::Codex, None, "w".into(), None);
+        let snap = project_snapshot(&state.to_snapshot(), None);
+        assert_eq!((&snap["usage"], &snap["turn_usage"]), (&Value::Null, &Value::Null));
+        state.apply_event(&AcpEvent::UsageUpdate { used: Some(7), size: Some(258_400) });
+        state.apply_event(&AcpEvent::TurnUsage {
+            total_tokens: 7,
+            input_tokens: 5,
+            output_tokens: 2,
+            thought_tokens: Some(1),
+            cached_read_tokens: None,
+            cached_write_tokens: None,
+        });
+        let snap = project_snapshot(&state.to_snapshot(), None);
+        assert_eq!(snap["usage"], json!({"used": 7, "size": 258_400}));
+        assert_eq!(snap["turn_usage"]["thought_tokens"], 1);
+        assert_eq!(snap["turn_usage"]["cached_read_tokens"], Value::Null);
+    }
+
+    #[test]
     fn internal_events_are_not_projected() {
         for event in [
             AcpEvent::SessionStarted {
@@ -922,6 +1005,7 @@ pub(crate) mod tests {
                 "pending_user_message",
                 "status",
                 "tool_calls",
+                "turn_usage",
                 "usage"
             ]
         );

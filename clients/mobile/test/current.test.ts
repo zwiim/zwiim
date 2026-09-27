@@ -4,6 +4,7 @@ import type { HostEntry } from "../src/account/hosts";
 import type { HostConnectionView } from "../src/host/connection";
 import { CurrentHost, type CurrentHostState } from "../src/host/current";
 import { otherBlockers, removeWorktree, stopAgentError, stopThenRemove } from "../src/host/removal";
+import { changeRequest } from "../src/sessions/controls";
 import { connectionText, hostProblem, hostRowState } from "../src/host/status";
 import { MemorySecureStore } from "../src/platform/memory-store";
 import { VaultPreferences } from "../src/platform/vault-store";
@@ -703,6 +704,57 @@ describe("stopping agents and removing worktrees (R8.13)", () => {
       failStops: (e: ZwiimClientError | null) => (stopFails = e),
     };
   }
+
+  it("changes one session's options one at a time; a new model brings its own effort (R8.15)", async () => {
+    const { current, s, listed } = await host();
+    const b = s.w.host.backend;
+    const effort = { current: "high", values: [{ value: "low", label: "Low", description: null }, { value: "high", label: "High", description: null }] };
+    const held: Record<string, { model: string; effort: string | null; mode: "normal" | "plan" | "unattended" }> = {
+      a: { model: "opus", effort: "high", mode: "normal" },
+      b: { model: "opus", effort: "high", mode: "normal" },
+    };
+    // The host's agent: Haiku offers no effort, and a model change never keeps another model's.
+    const options = (id: string) => ({
+      model: { current: held[id]!.model, values: [{ value: "opus", label: "Opus", description: null }, { value: "haiku", label: "Haiku", description: null }] },
+      effort: held[id]!.effort === null ? null : { ...effort, current: held[id]!.effort! },
+      mode: { current: held[id]!.mode, label: held[id]!.mode, available: ["normal", "plan", "unattended"] as ("normal" | "plan" | "unattended")[] },
+    });
+    b.handlers["session.set_options"] = (p: { session_id: string; model?: string; effort?: string; mode?: "normal" | "plan" | "unattended" }) => {
+      const h = held[p.session_id]!;
+      if (p.model) Object.assign(h, { model: p.model, effort: p.model === "haiku" ? null : "high" });
+      if (p.effort) {
+        if (h.effort === null) throw new ZwiimClientError("option_unavailable", "no", 422, { option: "effort", value: p.effort });
+        h.effort = p.effort;
+      }
+      if (p.mode) h.mode = p.mode;
+      return { session_id: p.session_id, options: options(p.session_id) };
+    };
+    const view = (id: string) => current.state.store!.getState().sessions[id];
+    const sent = () => b.requests.filter((r) => r.op === "session.set_options").map((r) => r.params);
+
+    await current.setSessionOptions("a", changeRequest({ model: "haiku" }));
+    expect(view("a")?.options?.model?.current).toBe("haiku");
+    expect(view("a")?.options?.effort).toBeNull();
+    await expect(current.setSessionOptions("a", changeRequest({ effort: "low" }))).rejects.toMatchObject({ code: "option_unavailable" });
+    await current.setSessionOptions("a", changeRequest({ model: "opus" }));
+    expect(view("a")?.options?.effort?.current).toBe("high");
+    await current.setSessionOptions("a", changeRequest({ effort: "low" }));
+    await current.setSessionOptions("a", changeRequest({ mode: "plan" }));
+    expect(view("a")?.options).toMatchObject({ model: { current: "opus" }, effort: { current: "low" }, mode: { current: "plan" } });
+    // Each request names one option: the old effort never rides along with a new model.
+    expect(sent()).toEqual([
+      { session_id: "a", model: "haiku" },
+      { session_id: "a", effort: "low" },
+      { session_id: "a", model: "opus" },
+      { session_id: "a", effort: "low" },
+      { session_id: "a", mode: "plan" },
+    ]);
+    // The other session in the worktree is untouched, and both stay listed.
+    expect(view("b")?.options ?? null).toBeNull();
+    expect(held.b).toEqual({ model: "opus", effort: "high", mode: "normal" });
+    expect([listed("a")?.live, listed("b")?.live]).toEqual([true, true]);
+    await current.clear();
+  });
 
   it("stops one session's agent; it stays listed, not live, and the other keeps running", async () => {
     const { current, listed, s } = await host();

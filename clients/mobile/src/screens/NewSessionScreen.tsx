@@ -8,7 +8,7 @@
 // (Browse Mac) or a worktree to start in.
 
 import { useEffect, useState } from "react";
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { randomUUID } from "expo-crypto";
@@ -30,20 +30,13 @@ import {
   type StartPicks,
 } from "../sessions/start";
 import { currentHost } from "../services";
+import { ChoiceList, Field, type Choice } from "../ui/choices";
 import { Button, ScreenHeader, Sheet, T } from "../ui/components";
-import { ChevronRight, Icon } from "../ui/icons";
 import { radius, space, type, useTheme } from "../ui/tokens";
 import { useHostName } from "./HostFrame";
 import { WorkspaceTree } from "./workspaces";
 
 type Picking = "workspace" | "agent" | "model" | "effort" | "mode" | null;
-
-interface Choice {
-  value: string;
-  label: string;
-  detail?: string | null;
-  disabled?: boolean;
-}
 
 export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<RootStack, "NewSession">) {
   const theme = useTheme();
@@ -295,37 +288,14 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
         ) : sheet ? (
           <>
             <T variant="title">{sheet.title}</T>
-            <ScrollView>
-              {sheet.items.map((item) => {
-                const on = item.value === sheet!.current;
-                return (
-                  <Pressable
-                    key={item.value}
-                    accessibilityRole="radio"
-                    accessibilityState={{ checked: on, disabled: item.disabled }}
-                    disabled={item.disabled}
-                    onPress={() => {
-                      sheet!.choose(item.value);
-                      if (!(picking === "mode" && item.value === "unattended")) closeSheet();
-                    }}
-                    style={({ pressed }) => [styles.option, (on || pressed) && { backgroundColor: theme.surface }]}
-                    testID={`pick-${item.value}`}
-                  >
-                    <View style={styles.optionHead}>
-                      <View style={[styles.dot, { backgroundColor: on ? theme.accent : "transparent" }]} />
-                      <T variant="headline" color={item.disabled ? theme.faint : on ? theme.accent : theme.fg} style={styles.flex}>
-                        {item.label}
-                      </T>
-                    </View>
-                    {item.detail ? (
-                      <T variant="callout" color={theme.mut} style={styles.indent}>
-                        {item.detail}
-                      </T>
-                    ) : null}
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
+            <ChoiceList
+              items={sheet.items}
+              current={sheet.current}
+              onChoose={(value) => {
+                sheet!.choose(value);
+                if (!(picking === "mode" && value === "unattended")) closeSheet();
+              }}
+            />
           </>
         ) : null}
       </Sheet>
@@ -333,68 +303,12 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
   );
 }
 
-/** One setting: its name, its value in mono, and › when it can change. */
-function Field({
-  label,
-  value,
-  color,
-  first,
-  onPress,
-  testID,
-}: {
-  label: string;
-  value: string;
-  color?: string;
-  /** The top row, with no separator above it. */
-  first?: boolean;
-  onPress?(): void;
-  testID: string;
-}) {
-  const theme = useTheme();
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`${label}: ${value}`}
-      disabled={!onPress}
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.field,
-        { borderTopColor: theme.line, borderTopWidth: first ? 0 : StyleSheet.hairlineWidth },
-        pressed && { backgroundColor: theme.raised },
-      ]}
-      testID={testID}
-    >
-      <T color={theme.mut} style={styles.fieldLabel}>
-        {label}
-      </T>
-      <T variant="mono" color={color ?? theme.fg} numberOfLines={1} style={styles.fieldValue}>
-        {value}
-      </T>
-      {onPress ? <Icon icon={ChevronRight} color={theme.faint} size={18} /> : null}
-    </Pressable>
-  );
-}
-
 const styles = StyleSheet.create({
   page: { flex: 1 },
-  flex: { flex: 1 },
   content: { padding: space.lg, gap: space.md },
   group: { borderRadius: radius.lg, overflow: "hidden" },
-  field: {
-    minHeight: 52,
-    paddingHorizontal: space.md,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: space.sm,
-  },
-  fieldLabel: { width: 96 },
-  fieldValue: { flex: 1, textAlign: "right" },
   note: { gap: space.sm, alignItems: "flex-start" },
   prompt: { minHeight: 132, borderRadius: radius.md, padding: space.md },
   footer: { paddingHorizontal: space.lg, paddingTop: space.md, gap: space.sm, borderTopWidth: StyleSheet.hairlineWidth },
   confirm: { flexDirection: "row", gap: space.sm, justifyContent: "flex-end" },
-  option: { minHeight: 52, borderRadius: radius.md, paddingHorizontal: space.md, paddingVertical: space.sm, gap: space.xxs, justifyContent: "center" },
-  optionHead: { flexDirection: "row", alignItems: "center", gap: space.sm },
-  dot: { width: 8, height: 8, borderRadius: radius.full },
-  indent: { paddingLeft: space.lg },
 });

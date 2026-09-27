@@ -1390,6 +1390,7 @@ async fn ws_subscribe_snapshot_live_replay_and_epoch() {
             "pending_user_message",
             "status",
             "tool_calls",
+            "turn_usage",
             "usage"
         ]
     );
@@ -1407,6 +1408,11 @@ async fn ws_subscribe_snapshot_live_replay_and_epoch() {
     assert_eq!(ev["event"]["payload"], json!({"text": "hello"}));
     assert_eq!(ev["event"]["session_id"], sid.as_str());
     assert!(ev["event"]["seq"].as_u64().unwrap() > base);
+    // The agent's context report streams live, as reported.
+    h.emit(AcpEvent::UsageUpdate { used: Some(1_500), size: Some(200_000) }).await;
+    let ev = recv(&mut ws).await;
+    assert_eq!(ev["event"]["type"], "session.usage");
+    assert_eq!(ev["event"]["payload"], json!({"used": 1_500, "size": 200_000}));
     ws.close().await;
 
     // Reconnect with a cursor on the same epoch → replay of the gap.
@@ -1421,6 +1427,7 @@ async fn ws_subscribe_snapshot_live_replay_and_epoch() {
         .as_array()
         .unwrap()
         .iter()
+        .filter(|e| e["type"] == "agent.message_delta")
         .map(|e| e["payload"]["text"].clone())
         .collect();
     assert_eq!(texts, [json!("hello"), json!(" world")]);
@@ -1936,6 +1943,25 @@ async fn session_options_live_and_idle() {
     let (status, code, details) = h.err_details("session.start", start("haiku", Some("low"))).await;
     assert_eq!((status, code.as_str()), (StatusCode::UNPROCESSABLE_ENTITY, "option_unavailable"));
     assert_eq!(details, Some(json!({"option": "effort", "value": "low"})));
+
+    // An idle session moved to Haiku drops Opus's effort instead of keeping
+    // it for a model that has none, and gets Opus's own back on Opus.
+    let set = h
+        .ok("session.set_options", json!({"session_id": idle, "model": "opus[1m]", "effort": "low"}))
+        .await;
+    assert_eq!(set["options"]["effort"]["current"], "low");
+    let on_haiku = h.ok("session.set_options", json!({"session_id": idle, "model": "haiku"})).await;
+    assert_eq!(on_haiku["options"]["model"]["current"], "haiku");
+    assert_eq!(on_haiku["options"]["effort"], Value::Null);
+    let preferred = crate::session_options::preferred_values(&h.state.db.conn, &idle).await;
+    assert!(!preferred.contains_key("effort"), "{preferred:?}");
+    assert_eq!(
+        h.err_details("session.set_options", json!({"session_id": idle, "effort": "low"})).await.1,
+        "option_unavailable"
+    );
+    let on_opus = h.ok("session.set_options", json!({"session_id": idle, "model": "opus[1m]"})).await;
+    assert_eq!(on_opus["options"]["effort"]["values"][0]["value"], "low");
+    assert_eq!(h.ok("session.options", json!({"session_id": idle})).await["options"]["model"]["current"], "opus[1m]");
 }
 
 // ─── devices ─────────────────────────────────────────────────────────────

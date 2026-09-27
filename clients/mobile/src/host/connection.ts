@@ -24,6 +24,8 @@ import {
   type OpName,
   type OpParams,
   type OpResult,
+  type OptionsRequest,
+  type SessionOptions,
   type WorkspaceInfo,
 } from "@zwiim/sdk";
 import type { LanAccess, NetworkReachability } from "../platform/capabilities";
@@ -255,6 +257,14 @@ export class HostConnection {
   /** Stop a session's agent (`session.stop`), keeping the session; never retried. */
   async stopSession(session_id: string): Promise<void> {
     await this.#live().stopSession(session_id);
+  }
+
+  /**
+   * Change a session's options between turns (`session.set_options`); never
+   * retried. The store takes the options the host reports back.
+   */
+  async setSessionOptions(session_id: string, request: OptionsRequest): Promise<SessionOptions> {
+    return this.#live().setSessionOptions(session_id, request);
   }
 
   /** Read the host's agents again (`agent.list`) into the store. */

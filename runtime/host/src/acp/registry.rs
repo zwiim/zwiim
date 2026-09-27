@@ -1145,9 +1145,41 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // cards on, so a pending MCP approval now shows the right card
             // instead of flipping to it once the call runs and the streamed
             // frame (which always carried `toolName`) refines it.
+            //
+            // 0.79.0 → 0.81.2 (0.80.0, 0.81.0, 0.81.1, 0.81.2) is taken for the
+            // model list. `@anthropic-ai/claude-agent-sdk` moves 0.3.274 →
+            // 0.3.280, i.e. CLI 2.1.274 → 2.1.280, and the model picker is the
+            // CLI's own table (`initializationResult.models`), so the CLI version
+            // decides which models a user can pick. 2.1.274 has no
+            // `claude-opus-5-5` anywhere in the binary and labels `opus[1m]`
+            // "Opus 5"; 2.1.280 resolves the same `opus[1m]` value to Opus 5.5.
+            // Verified live over stdio against both builds: the advertised
+            // values are unchanged (`default`, `opus[1m]`,
+            // `claude-fable-5-1[1m]`, `sonnet`, `haiku`), only the Opus label
+            // and what it runs move. `engines.node` stays ">=22".
+            //
+            // Nothing in the delta costs Zwiim code:
+            //
+            // (w) Plan approval offers Auto AND bypass (#1164), and the adapter
+            // publishes the mode it switched to (#1163). `mode_after_plan_exit`
+            // still maps every `exit-plan-*` id and `sync_plan_exit` skips when
+            // the advertised mode already matches, so it stays for an older
+            // adapter on PATH and is a no-op on this one.
+            //
+            // (x) `session.notices` (#1155) is gated on a client capability
+            // Zwiim doesn't advertise; without it the adapter keeps the
+            // bold-label `agent_message_chunk` it sent before.
+            //
+            // (y) `usage_update` gains `_meta._claude/model` (#1032) and keeps
+            // the context figures when quota runs out (#1132). The model key is
+            // not read; the kept figures reach the context ring unchanged.
+            //
+            // (z) `permissions.disableBypassPermissionsMode` is honored (#1165):
+            // bypass drops out of the advertised modes, and
+            // `unattended_available` already reads those.
             distribution: AgentDistribution::Npx {
-                version: "0.79.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.79.0",
+                version: "0.81.2",
+                package: "@agentclientprotocol/claude-agent-acp@0.81.2",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -2815,8 +2847,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.79.0",
-            "@agentclientprotocol/claude-agent-acp@0.79.0",
+            "0.81.2",
+            "@agentclientprotocol/claude-agent-acp@0.81.2",
             Some("22.0.0"),
         );
         assert_npx_version(

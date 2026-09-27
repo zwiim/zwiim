@@ -311,7 +311,10 @@ export function NowAction({
   );
 }
 
-/** The message box: multiline, round accent send. */
+/**
+ * The message box: multiline input over a row of the session's controls and
+ * the round accent send. An amber border marks an unattended session.
+ */
 export function Composer({
   value,
   onChange,
@@ -319,6 +322,9 @@ export function Composer({
   placeholder,
   disabled,
   sending,
+  controls,
+  note,
+  border,
 }: {
   value: string;
   onChange(text: string): void;
@@ -326,11 +332,22 @@ export function Composer({
   placeholder: string;
   disabled?: boolean;
   sending?: boolean;
+  /** Left of send: the session's chips. */
+  controls?: ReactNode;
+  /** One mono line under the input (why the controls are locked). */
+  note?: string | null;
+  border?: string;
 }) {
   const theme = useTheme();
   const can = !disabled && !sending && value.trim().length > 0;
   return (
-    <View style={[styles.composer, { backgroundColor: theme.surface, opacity: disabled ? 0.6 : 1 }]} testID="composer">
+    <View
+      style={[
+        styles.composer,
+        { backgroundColor: theme.surface, borderColor: border ?? "transparent", opacity: disabled ? 0.6 : 1 },
+      ]}
+      testID="composer"
+    >
       <TextInput
         value={value}
         onChangeText={onChange}
@@ -343,23 +360,31 @@ export function Composer({
         accessibilityLabel="Message"
         testID="composer-input"
       />
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Send"
-        accessibilityState={{ disabled: !can, busy: !!sending }}
-        onPress={onSend}
-        disabled={!can}
-        hitSlop={6}
-        style={({ pressed }) => [
-          styles.send,
-          { backgroundColor: can || sending ? theme.accent : theme.raised, opacity: pressed ? 0.8 : 1 },
-        ]}
-        testID="composer-send"
-      >
-        {sending ? <ActivityIndicator size="small" color={theme.accentInk} /> : (
-          <Icon icon={ArrowUp} color={can ? theme.accentInk : theme.faint} size={20} />
-        )}
-      </Pressable>
+      {note ? (
+        <T variant="monoSm" color={theme.faint} numberOfLines={1} style={styles.composerNote} testID="composer-note">
+          {note}
+        </T>
+      ) : null}
+      <View style={styles.composerRow}>
+        <View style={styles.composerControls}>{controls}</View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Send"
+          accessibilityState={{ disabled: !can, busy: !!sending }}
+          onPress={onSend}
+          disabled={!can}
+          hitSlop={6}
+          style={({ pressed }) => [
+            styles.send,
+            { backgroundColor: can || sending ? theme.accent : theme.raised, opacity: pressed ? 0.8 : 1 },
+          ]}
+          testID="composer-send"
+        >
+          {sending ? <ActivityIndicator size="small" color={theme.accentInk} /> : (
+            <Icon icon={ArrowUp} color={can ? theme.accentInk : theme.faint} size={20} />
+          )}
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -406,13 +431,16 @@ const styles = StyleSheet.create({
     marginHorizontal: space.md,
     marginTop: space.sm,
     borderRadius: radius.xl,
-    flexDirection: "row",
-    alignItems: "flex-end",
+    borderWidth: 1,
     paddingLeft: space.md,
     paddingRight: space.xs + 2,
-    paddingVertical: space.xs + 2,
-    gap: space.sm,
+    paddingTop: space.xs,
+    paddingBottom: space.xs + 2,
+    gap: space.xs,
   },
-  input: { flex: 1, minHeight: 40, maxHeight: 140, paddingTop: 9, paddingBottom: 9, fontFamily: fonts.sans },
+  input: { minHeight: 40, maxHeight: 140, paddingTop: 9, paddingBottom: 4, paddingRight: space.sm, fontFamily: fonts.sans },
+  composerNote: { paddingBottom: space.xxs },
+  composerRow: { flexDirection: "row", alignItems: "center", gap: space.sm },
+  composerControls: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs },
   send: { width: 36, height: 36, borderRadius: radius.full, alignItems: "center", justifyContent: "center" },
 });

@@ -180,8 +180,19 @@ pub struct SessionLastError {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UsageInfo {
-    pub used: u64,
-    pub size: u64,
+    pub used: Option<u64>,
+    pub size: Option<u64>,
+}
+
+/// The token counts the agent reported for the session's last finished turn.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TurnUsageInfo {
+    pub total_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub thought_tokens: Option<u64>,
+    pub cached_read_tokens: Option<u64>,
+    pub cached_write_tokens: Option<u64>,
 }
 
 /// Snapshot-recoverable record of an IN-FLIGHT (running) sub-agent delegation,
@@ -385,6 +396,7 @@ pub struct SessionState {
     pub fork_supported: bool,
     pub available_commands: Vec<AvailableCommandInfo>,
     pub usage: Option<UsageInfo>,
+    pub turn_usage: Option<TurnUsageInfo>,
     /// True once the agent's initial selectors handshake (modes +
     /// config_options) has finished and `SelectorsReady` has fired. Persisted
     /// on the snapshot so a frontend that reconnects after refresh can see
@@ -684,6 +696,7 @@ impl SessionState {
             fork_supported: false,
             available_commands: Vec::new(),
             usage: None,
+            turn_usage: None,
             selectors_ready: false,
             last_error: None,
             session_started_tx: None,
@@ -846,6 +859,23 @@ impl SessionState {
                 self.usage = Some(UsageInfo {
                     used: *used,
                     size: *size,
+                });
+            }
+            AcpEvent::TurnUsage {
+                total_tokens,
+                input_tokens,
+                output_tokens,
+                thought_tokens,
+                cached_read_tokens,
+                cached_write_tokens,
+            } => {
+                self.turn_usage = Some(TurnUsageInfo {
+                    total_tokens: *total_tokens,
+                    input_tokens: *input_tokens,
+                    output_tokens: *output_tokens,
+                    thought_tokens: *thought_tokens,
+                    cached_read_tokens: *cached_read_tokens,
+                    cached_write_tokens: *cached_write_tokens,
                 });
             }
             AcpEvent::ContentDelta {
@@ -1865,6 +1895,7 @@ impl SessionState {
             config_options: self.config_options.clone(),
             prompt_capabilities: self.prompt_capabilities.clone(),
             usage: self.usage.clone(),
+            turn_usage: self.turn_usage.clone(),
             fork_supported: self.fork_supported,
             available_commands: self.available_commands.clone(),
             selectors_ready: self.selectors_ready,
@@ -1964,6 +1995,8 @@ pub struct LiveSessionSnapshot {
     pub config_options: Option<Vec<SessionConfigOptionInfo>>,
     pub prompt_capabilities: Option<PromptCapabilitiesInfo>,
     pub usage: Option<UsageInfo>,
+    #[serde(default)]
+    pub turn_usage: Option<TurnUsageInfo>,
     pub fork_supported: bool,
     pub available_commands: Vec<AvailableCommandInfo>,
     pub selectors_ready: bool,
@@ -4061,8 +4094,8 @@ mod tests {
             }],
         });
         s.apply_event(&AcpEvent::UsageUpdate {
-            used: 1234,
-            size: 200_000,
+            used: Some(1234),
+            size: Some(200_000),
         });
         // Two raw_input fragments; the second is a complete JSON object
         // and should overwrite `entry.input` with the parsed value.
@@ -4100,8 +4133,8 @@ mod tests {
         assert_eq!(
             snapshot.usage,
             Some(UsageInfo {
-                used: 1234,
-                size: 200_000,
+                used: Some(1234),
+                size: Some(200_000),
             })
         );
         assert!(snapshot.prompt_capabilities.is_some());
@@ -4165,8 +4198,8 @@ mod tests {
                 parent_tool_use_id: None,
             },
             AcpEvent::UsageUpdate {
-                used: 1234,
-                size: 200_000,
+                used: Some(1234),
+                size: Some(200_000),
             },
         ]
     }

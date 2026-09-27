@@ -5,7 +5,9 @@
 // screen is the host's: a message shows once the host echoes it, and Stop
 // holds until the host ends the turn. Stop agent (in the header) ends the
 // agent and its background work, keeping the session. The session strip under
-// the header switches between the sessions of its worktree in place.
+// the header switches between the sessions of its worktree in place. Chips over
+// the composer (and the header's `⋯`) open Session options: the model, effort
+// and mode the Host reports, changed between turns, and the agent's context.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Keyboard, KeyboardAvoidingView, Platform, Pressable, StyleSheet, View } from "react-native";
@@ -29,9 +31,10 @@ import {
   type TranscriptRow,
 } from "../sessions/transcript";
 import { stopAgentError } from "../host/removal";
+import { agentName, lockedNote } from "../sessions/controls";
 import { currentHost } from "../services";
 import { Button, EmptyState, Sheet, SkeletonRows, T } from "../ui/components";
-import { ChevronLeft, Icon } from "../ui/icons";
+import { ChevronLeft, Ellipsis, Icon } from "../ui/icons";
 import { Markdown } from "../ui/markdown";
 import {
   Caret,
@@ -49,6 +52,7 @@ import {
 import { space, useTheme } from "../ui/tokens";
 import { useHostName } from "./HostFrame";
 import { RequestCard, RequestSheet } from "./requests";
+import { ComposerChips, SessionOptionsSheet } from "./SessionControls";
 import { SessionStrip } from "./SessionStrip";
 
 /** When this phone first saw each running turn; the protocol carries no times. */
@@ -76,6 +80,8 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
   const waiting = !item && started && listed.current !== session_id;
   const connected = connection?.status === "live";
   const [stopAgent, setStopAgent] = useState(false);
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const agent = agentName(state.agents, item?.agent);
   const back = () => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Host"));
 
   // On screen: stream the session and load its transcript until it's left.
@@ -93,6 +99,7 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
   // Tabs swap the session in place; a worktree with none opens New session there.
   const open = (id: string) => {
     setStopAgent(false);
+    setOptionsOpen(false);
     navigation.setParams({ session_id: id, started: undefined });
   };
   const startIn = (workspace_id: string) => navigation.navigate("NewSession", { workspace_id });
@@ -117,7 +124,19 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
         action={<Button kind="secondary" label="Back to Sessions" onPress={back} />}
       />
     );
-  } else body = <Live key={session_id} item={item} view={view} rows={rows} hostName={name} connected={connected} />;
+  } else {
+    body = (
+      <Live
+        key={session_id}
+        item={item}
+        view={view}
+        rows={rows}
+        hostName={name}
+        connected={connected}
+        onOptions={() => setOptionsOpen(true)}
+      />
+    );
+  }
 
   return (
     <View style={[styles.page, { backgroundColor: theme.bg, paddingTop: insets.top }]}>
@@ -130,7 +149,7 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
             {item?.title ?? (waiting ? "Starting…" : "Session")}
           </T>
           <T variant="monoSm" color={theme.mut} numberOfLines={1} testID="session-subtitle">
-            {[item?.agent, item?.workspace, `${name} ${text.pill}`].filter(Boolean).join(" · ")}
+            {[agent, item?.workspace, `${name} ${text.pill}`].filter(Boolean).join(" · ")}
           </T>
         </View>
         {item?.live ? (
@@ -141,6 +160,17 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
             onPress={() => setStopAgent(true)}
             testID="session-stop-agent"
           />
+        ) : null}
+        {item ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Session options"
+            onPress={() => setOptionsOpen(true)}
+            style={styles.more}
+            testID="session-options"
+          >
+            <Icon icon={Ellipsis} color={theme.fg} size={22} />
+          </Pressable>
         ) : null}
       </View>
       {worktree && item ? (
@@ -159,6 +189,17 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
         session_id={session_id}
         hostName={name}
         onClose={() => setStopAgent(false)}
+      />
+      <SessionOptionsSheet
+        key={`options-${session_id}`}
+        visible={optionsOpen && !!item}
+        onClose={() => setOptionsOpen(false)}
+        session_id={session_id}
+        agent={agent}
+        view={view}
+        connected={connected}
+        running={turnRunning(view)}
+        hostName={name}
       />
     </View>
   );
@@ -254,12 +295,14 @@ function Live({
   rows,
   hostName,
   connected,
+  onOptions,
 }: {
   item: SessionItem;
   view: SessionView | undefined;
   rows: TranscriptRow[];
   hostName: string;
   connected: boolean;
+  onOptions(): void;
 }) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
@@ -445,6 +488,9 @@ function Live({
           placeholder={agentAway ? "Send to restart the agent" : "Reply or steer…"}
           disabled={!connected}
           sending={sending}
+          controls={<ComposerChips view={view} locked={running} onOpen={onOptions} />}
+          note={lockedNote(view?.options ?? null, running)}
+          border={view?.options?.mode?.current === "unattended" ? theme.need : undefined}
         />
       </View>
       <ToolSheet tool={tool} onClose={() => setTool(null)} />
@@ -487,10 +533,11 @@ const styles = StyleSheet.create({
     minHeight: 56,
     flexDirection: "row",
     alignItems: "center",
-    paddingRight: space.lg,
+    paddingRight: space.xs,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   back: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  more: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   headerText: { flex: 1, gap: space.xxs },
   dim: { opacity: 0.6 },
   list: { paddingHorizontal: space.lg },

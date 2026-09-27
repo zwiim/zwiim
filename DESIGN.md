@@ -349,14 +349,46 @@ Top to bottom:
     (and the sheet auto-presents once when the request arrives while the screen is open)
   - reconnecting: `Reconnecting… retry in 3s` (from `ConnectionState.retryInMs`)
   - idle / completed: bar hidden.
-- **Composer** (`surface`, radius 16): multiline input "Reply or steer…",
-  chips for model and mode (shield glyph for `normal`/ask), round accent send.
+- **Composer** (`surface`, radius 16): multiline input "Reply or steer…"
+  over one row: the session's chips, then round accent send (the Desktop
+  composer's shape). Chips are 28pt, radius 6, `raised` on the composer,
+  `monoSm` `mut`: mode (shield Ask, list-check Plan; Unattended is a solid
+  `need` chip in `need-ink`, and the whole composer takes a 1pt `need` border),
+  then the model with its effort and `⌄` (`Opus 5 · High`; effort only while
+  the model offers one), and at the right, beside send, a 20pt ring with the
+  share of the context window in use (`accent` arc on a `faint` track, `23%`;
+  a dashed `faint` ring and `—` until the agent reports both figures). While a
+  turn runs, a `monoSm` `faint` line under the input reads "Options change when
+  the turn ends" and the model chip dims. Every chip opens **Session options**
+  (R8.15).
   While a turn runs, send stays available only if the agent accepts it;
   on `turn_in_progress` show "The agent is still working. Stop it or wait."
   Slash commands: typing `/` opens a sheet of `SessionCommand`s.
   Unsent text is kept per session (in memory on the phone, never on the Host),
   so switching tabs or worktrees keeps each draft; a send the Host takes clears
   only that session's draft, and a failed send keeps it (R8.12).
+
+**Session options sheet** (header `⋯` or any composer chip; R8.15): title and
+the agent's name in mono, then each option picked in place, only as the agent
+offers it: **Mode** as a segmented control (Ask / Plan / Unattended with their
+icons; Unattended's label turns `need` when chosen), **Model** as grouped radio
+rows (label, the agent's description in `mut`, current in `accent`), and
+**Effort** (only while the current model offers one) as a segmented control, or
+radio rows past five values. A pick is sent alone (`session.set_options` with
+that one option), and the controls then show what the Host reports, so a new
+model brings its own effort (or none) and never the old one. Unattended asks
+first ("Turn off approvals?"). While a turn runs, offline, or before the agent
+reports its options, the controls are read-only with the reason in `mut` under
+the title; refusals (`turn_in_progress`, `option_unavailable`) show in `err`. In
+Unattended an amber note carries **Ask first again**. Below, **Context**: a 6pt
+accent bar (only with both figures) and one mono line, `37,738 of 1,000,000`
+with `962,262 left` at the right (a missing figure is named: `window not
+reported`, in `faint`). After a finished turn, a fold **Last turn · 87,352
+tokens ⌄** opens rows Input, Output, Cache read, Cache write, Reasoning, Total,
+values in mono with tabular numbers. A figure the agent didn't report reads
+`not reported` in `faint`; nothing is estimated, and Left is only `Window − In
+use` when both were reported. Footnote: "As ⟨agent⟩ reports them. Nothing here
+is estimated."
 
 **Request sheet** (shared by list and session): title from the request;
 - permission: command block or diff list (file header rows, unified diff in `code`,
@@ -590,6 +622,10 @@ glyph, a title, one line, one action.
   then the families differ in type only.
 - Amber-for-needs-you and the status mapping should be adopted by Desktop when
   it is next touched, so a waiting agent looks the same on both.
+- Desktop's composer carries the same context ring beside send (R8.15). Hover
+  shows the window and last turn's tokens; a click pins them until Escape or a
+  click elsewhere. Same rule as the phone: only reported figures, a missing one
+  reads "not reported".
 
 ## Decisions Log
 
@@ -613,3 +649,5 @@ glyph, a title, one line, one action.
 | 2026-09-27 | A session strip under the Session header, not a filtered Sessions tab (R8.11) | A worktree holds many tasks; tabs of its sessions switch in one tap and `+` starts another there, as on Desktop, while the Sessions tab stays Host-wide so nothing needing you hides. Where a session starts never moves Files |
 | 2026-09-27 | Stop agent is its own header action; worktree removal shows what blocks it (R8.13) | Stop turn leaves the agent and its background work alive, which keeps a worktree busy; a separate, confirmed Stop agent ends both without losing the session. Removal lists the Host's own blockers and stops only those, so the Host stays the authority and `workspace_busy` is never bypassed |
 | 2026-09-27 | New session's Effort follows the picked model (R8.14) | Effort is the model's, not the agent's: Claude has none on Haiku, so an Effort row there was silently dropped by the agent. The Host learns each model's levels from its sessions; the row shows the picked model's, and the Host refuses an effort a known model doesn't offer |
+| 2026-09-27 | Session controls on the composer, context only as reported (R8.15) | The mode (above all Unattended) and model were invisible once a session started on the phone; chips keep them in the thumb zone and one sheet changes them the way Desktop does, one option per request so a new model never carries the old model's effort. Context and token figures come from the agent through the Host unchanged; a missing one says so, because an estimate would read as fact |
+| 2026-09-27 | Controls inside the composer, options picked in place (R8.15, design-shotgun A) | Chosen over a status line and a mode button: chips beside send match Desktop's composer, the ring keeps context in view without a row of its own, and an amber border plus solid chip make Unattended unmissable. The sheet sets Mode and Effort with one tap instead of a list per row, and folds the token breakdown so the window reads first |
