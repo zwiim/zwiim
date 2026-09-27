@@ -210,8 +210,8 @@ describe("worktree removal", () => {
   });
 
   it("phrases busy counts", () => {
-    expect(busyMessage({ live_sessions: 1, terminals: 0 })).toBe("1 agent running — stop it to remove.");
-    expect(busyMessage({ live_sessions: 0, terminals: 2 })).toBe("2 terminals open — stop them to remove.");
+    expect(busyMessage({ live_sessions: 1, terminals: 0, session_ids: ["s1"] })).toBe("1 agent running — stop it to remove.");
+    expect(busyMessage({ live_sessions: 0, terminals: 2, session_ids: [] })).toBe("2 terminals open — stop them to remove.");
   });
 });
 

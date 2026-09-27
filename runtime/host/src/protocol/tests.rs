@@ -51,6 +51,7 @@ const OPS: &[&str] = &[
     "session.start",
     "session.send",
     "session.cancel",
+    "session.stop",
     "session.delete",
     "session.respond",
     "session.options",
@@ -990,6 +991,77 @@ async fn session_operations_over_http() {
     assert_eq!(h.err("session.history", json!({"session_id": idle})).await.1, "not_found");
 }
 
+#[tokio::test]
+async fn session_stop_over_http() {
+    let h = host(false).await;
+    let wid = h.workspace_id.clone();
+
+    // A session with no agent is already stopped.
+    let idle_conv = seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
+    let idle = session_id_of(&h.state, idle_conv).await;
+    assert_eq!(h.ok("session.stop", json!({"session_id": idle})).await, json!({}));
+    assert_eq!(h.err("session.stop", json!({"session_id": "nope"})).await.1, "not_found");
+
+    // Mid-turn, a permission waiting: the agent is told to cancel, ends its
+    // turn, and is then disconnected.
+    let (sid, mut rx) = h.live_session().await;
+    h.ok("session.send", json!({"session_id": sid, "blocks": [{"type": "text", "text": "hi"}]}))
+        .await;
+    assert!(matches!(rx.recv().await, Some(ConnectionCommand::Prompt { .. })));
+    h.emit(AcpEvent::PermissionRequest {
+        request_id: "perm-1".into(),
+        tool_call: json!({"toolCallId": "tc-1", "title": "Run ls"}),
+        options: vec![],
+        queued: 0,
+    })
+    .await;
+    let (state, emitter) = h.state.connection_manager.get_state_and_emitter(CONN).await.unwrap();
+    let agent = tokio::spawn(async move {
+        let mut seen = Vec::new();
+        while let Some(cmd) = rx.recv().await {
+            match cmd {
+                ConnectionCommand::Cancel => {
+                    seen.push("cancel");
+                    emit_with_state(
+                        &state,
+                        &emitter,
+                        AcpEvent::TurnComplete {
+                            session_id: "native".into(),
+                            stop_reason: "cancelled".into(),
+                            agent_type: "claude_code".into(),
+                        },
+                    )
+                    .await;
+                }
+                ConnectionCommand::Disconnect => {
+                    seen.push("disconnect");
+                    return seen;
+                }
+                _ => seen.push("other"),
+            }
+        }
+        seen
+    });
+    h.ok("session.stop", json!({"session_id": sid})).await;
+    assert_eq!(agent.await.unwrap(), ["cancel", "disconnect"]);
+
+    // The session and its transcript stay; it is no longer live.
+    let list = h.ok("session.list", json!({"workspace_id": wid})).await;
+    let row = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["session_id"] == sid.as_str())
+        .expect("kept");
+    assert_eq!(row["live"], false);
+    let history = h.ok("session.history", json!({"session_id": sid})).await;
+    assert!(history["turns"].is_array());
+    assert_eq!(
+        h.err("session.respond", json!({"session_id": sid, "request_id": "perm-1", "kind": "permission", "answer": {"option_id": "allow"}})).await.1,
+        "session_not_live"
+    );
+}
+
 fn keys(v: &Value) -> Vec<String> {
     let mut k: Vec<_> = v.as_object().unwrap().keys().cloned().collect();
     k.sort();
@@ -1173,6 +1245,8 @@ async fn worktree_create_diff_and_guarded_removal() {
             h.state.emitter.clone(),
         )
         .await;
+    h.state.connection_manager.get_state(CONN).await.unwrap().write().await.conversation_id =
+        Some(conv);
     let tid = h
         .ok(
             "terminal.spawn",
@@ -1190,13 +1264,23 @@ async fn worktree_create_diff_and_guarded_removal() {
             (
                 StatusCode::CONFLICT,
                 "workspace_busy".into(),
-                Some(json!({"live_sessions": 1, "terminals": 1}))
+                Some(json!({"live_sessions": 1, "terminals": 1, "session_ids": [sid]}))
             ),
             "force={force}"
         );
     }
+    // Stopping the named session's agent leaves the terminal blocking.
+    h.ok("session.stop", json!({"session_id": sid})).await;
+    assert_eq!(
+        h.err_details(
+            "workspace.remove_worktree",
+            json!({"workspace_id": wt_id, "force": true})
+        )
+        .await
+        .2,
+        Some(json!({"live_sessions": 0, "terminals": 1, "session_ids": []}))
+    );
     h.ok("terminal.kill", json!({"terminal_id": tid})).await;
-    h.state.connection_manager.disconnect(CONN).await.unwrap();
 
     // Dirty: refused without force, discarded with it; the branch stays.
     assert_eq!(
@@ -1728,6 +1812,7 @@ async fn agent_list_reports_availability_only() {
         assert!(a["name"].is_string());
         assert!(a["options"].is_null(), "no catalog before any session: {a}");
         assert!(a["commands"].is_null(), "no commands before any session: {a}");
+        assert_eq!(a["effort_by_model"], json!({}), "no model has run yet: {a}");
     }
     assert!(agents.iter().any(|a| a["agent"] == "claude_code"));
 }
@@ -1824,6 +1909,33 @@ async fn session_options_live_and_idle() {
         .unwrap()
         .clone();
     assert_eq!(claude["options"]["mode"]["current"], "normal");
+
+    // Effort belongs to the model: once Opus (with effort) and Haiku (without)
+    // have run here, New Session sees each model's own, and the Host refuses
+    // Haiku with an effort instead of letting the agent drop it.
+    let opus_effort = claude_options("default", "opus[1m]").into_iter().find(|o| o.id == "effort");
+    crate::db::service::app_metadata_service::upsert_value(
+        &h.state.db.conn,
+        "zwiim.agent_model_effort:claude_code",
+        &serde_json::to_string(&json!({"opus[1m]": opus_effort, "haiku": null})).unwrap(),
+    )
+    .await
+    .unwrap();
+    let listed = h.ok("agent.list", json!({})).await;
+    let claude = listed.as_array().unwrap().iter().find(|a| a["agent"] == "claude_code").unwrap().clone();
+    assert_eq!(claude["effort_by_model"]["haiku"], Value::Null);
+    assert_eq!(claude["effort_by_model"]["opus[1m]"]["values"][1]["value"], "high");
+    assert!(claude["options"]["effort"].is_object(), "the agent-wide effort stays");
+    let start = |model: &str, effort: Option<&str>| {
+        let mut options = json!({"model": model});
+        if let Some(e) = effort {
+            options["effort"] = json!(e);
+        }
+        json!({"workspace_id": h.workspace_id, "agent": "claude_code", "blocks": [{"type": "text", "text": "hi"}], "options": options})
+    };
+    let (status, code, details) = h.err_details("session.start", start("haiku", Some("low"))).await;
+    assert_eq!((status, code.as_str()), (StatusCode::UNPROCESSABLE_ENTITY, "option_unavailable"));
+    assert_eq!(details, Some(json!({"option": "effort", "value": "low"})));
 }
 
 // ─── devices ─────────────────────────────────────────────────────────────

@@ -157,20 +157,40 @@ describe("worktree operations", () => {
     const t = setup();
     t.transport.handlers["workspace.remove_worktree"] = (p) => {
       throw p.force
-        ? hostError("workspace_busy", { live_sessions: 2, terminals: 1 })
+        ? hostError("workspace_busy", { live_sessions: 2, terminals: 1, session_ids: ["s1", "s2"] })
         : hostError("workspace_dirty", { changes: 3 });
     };
     const dirty = await t.controller.removeWorktree("a").catch((e: ZwiimClientError) => e);
     expect(dirtyDetails(dirty)).toEqual({ changes: 3 });
     expect(busyDetails(dirty)).toBeNull();
     const busy = await t.controller.removeWorktree("a", { force: true }).catch((e: ZwiimClientError) => e);
-    expect(busyDetails(busy)).toEqual({ live_sessions: 2, terminals: 1 });
+    expect(busyDetails(busy)).toEqual({ live_sessions: 2, terminals: 1, session_ids: ["s1", "s2"] });
     expect(t.transport.requests.map((r) => r.params)).toEqual([
       { workspace_id: "a" },
       { workspace_id: "a", force: true },
     ]);
     expect(t.transport.requests.every((r) => r.options?.mutating)).toBe(true);
     expect(t.transport.count("workspace.list")).toBe(0);
+  });
+
+  it("stops a session's agent once, as a mutation, and never retries an unknown outcome", async () => {
+    const t = setup();
+    t.transport.handlers["session.stop"] = () => ({});
+    await t.controller.stopSession("s1");
+    expect(t.transport.requests.at(-1)).toEqual({
+      op: "session.stop",
+      params: { session_id: "s1" },
+      options: { mutating: true },
+    });
+    t.transport.handlers["session.stop"] = () => {
+      throw new ZwiimClientError("unknown_outcome", "response lost");
+    };
+    await expect(t.controller.stopSession("s2")).rejects.toMatchObject({ code: "unknown_outcome" });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(t.transport.requests.filter((r) => r.op === "session.stop").map((r) => r.params)).toEqual([
+      { session_id: "s1" },
+      { session_id: "s2" },
+    ]);
   });
 
   it("follows removal through the feed: a worktree with sessions stays, removed", async () => {
@@ -286,7 +306,12 @@ describe("LocalTransport error details", () => {
         (e: ZwiimClientError) => e,
       );
     const e = (await fail(t))!;
-    expect([e.code, e.status, busyDetails(e)]).toEqual(["workspace_busy", 409, { live_sessions: 2, terminals: 1 }]);
+    // A host that names no sessions reads as none named.
+    expect([e.code, e.status, busyDetails(e)]).toEqual([
+      "workspace_busy",
+      409,
+      { live_sessions: 2, terminals: 1, session_ids: [] },
+    ]);
     t = new LocalTransport({ url: "http://h", token: "t", fetch: reply([1]) });
     const e2 = (await fail(t))!;
     expect(e2.details).toBeUndefined();

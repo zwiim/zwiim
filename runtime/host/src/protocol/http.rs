@@ -234,6 +234,10 @@ pub struct AgentSummary {
     /// What a new session can choose, from what the agent last advertised
     /// here; `null` before its first session on this host.
     pub options: Option<crate::session_options::SessionOptions>,
+    /// The effort a new session can choose on each model that has run here,
+    /// by model value; `null` for a model that offers none. A model not
+    /// listed has not run here yet: `options.effort` is the best guess.
+    pub effort_by_model: std::collections::BTreeMap<String, Option<crate::session_options::ChoiceOption>>,
     /// The slash commands it offered in its last session here; `null`
     /// before its first.
     pub commands: Option<Vec<crate::session_commands::SessionCommand>>,
@@ -264,12 +268,13 @@ pub async fn agent_list(Extension(state): Extension<Arc<AppState>>) -> ZResult<V
             Ok(()) if !enabled => Some("disabled"),
             Ok(()) => None,
         };
-        let (options, commands) = match crate::session_options::agent_name(agent) {
+        let (options, effort_by_model, commands) = match crate::session_options::agent_name(agent) {
             Some(name) => (
                 crate::session_options::for_new_session(&state.db.conn, &name).await,
+                crate::session_options::effort_by_model(&state.db.conn, &name).await,
                 crate::session_commands::for_new_session(&state.db.conn, &name).await,
             ),
-            None => (None, None),
+            None => (None, Default::default(), None),
         };
         out.push(AgentSummary {
             agent,
@@ -277,6 +282,7 @@ pub async fn agent_list(Extension(state): Extension<Arc<AppState>>) -> ZResult<V
             available: reason.is_none(),
             reason,
             options,
+            effort_by_model,
             commands,
         });
     }
@@ -966,6 +972,14 @@ pub async fn session_cancel(
     ZJson(p): ZJson<SessionParams>,
 ) -> ZResult<Value> {
     session::cancel(&state.db, &state.connection_manager, &p.session_id).await?;
+    ok()
+}
+
+pub async fn session_stop(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<SessionParams>,
+) -> ZResult<Value> {
+    session::stop(&state.db, &state.connection_manager, &p.session_id).await?;
     ok()
 }
 

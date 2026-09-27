@@ -6,6 +6,7 @@ import {
   defaultAgent,
   modeChoosable,
   modeValue,
+  startChoices,
   startError,
   startOptions,
   startParams,
@@ -57,6 +58,7 @@ const agent = (id: string, over: Partial<AgentSummary> = {}): AgentSummary => ({
   available: true,
   reason: null,
   options: null,
+  effort_by_model: {},
   commands: null,
   ...over,
 });
@@ -121,6 +123,23 @@ describe("the session.start request", () => {
     // A pick the agent no longer offers falls back to its own.
     expect(startOptions(OPTIONS, { model: "gone" }).model).toBe("sonnet");
     expect(startOptions({ ...OPTIONS, mode: { ...OPTIONS.mode!, available: ["normal"] } }, { mode: "plan" }).mode).toBeUndefined();
+  });
+
+  it("offers and sends the effort of the model picked, none on a model without one", () => {
+    const low_high = { current: "low", values: ["low", "high"].map((v) => ({ value: v, label: v, description: null })) };
+    const claude = agent("claude_code", { options: OPTIONS, effort_by_model: { sonnet: low_high, opus: null } });
+    // Sonnet (the agent's model) has run here: its own levels, not the agent-wide ones.
+    expect(startChoices(claude, {})?.effort).toEqual(low_high);
+    expect(startOptions(startChoices(claude, {}), {})).toEqual({ model: "sonnet", effort: "low" });
+    // Opus offers none: no Effort row, and none is sent even if one was picked.
+    const opus = { model: "opus", effort: "high" };
+    expect(startChoices(claude, opus)?.effort).toBeNull();
+    const params = startParams({ target: ready("zwiim"), agent: claude, picks: opus, prompt: "hi", client_message_id: "m" });
+    expect(params?.options).toEqual({ model: "opus" });
+    // Back on Sonnet the pick holds while that model offers it.
+    expect(startOptions(startChoices(claude, { ...opus, model: "sonnet" }), { ...opus, model: "sonnet" })).toEqual({ model: "sonnet", effort: "high" });
+    // A model that hasn't run here yet keeps the agent-wide effort.
+    expect(startChoices(agent("claude_code", { options: OPTIONS }), { model: "opus" })?.effort).toEqual(OPTIONS.effort);
   });
 
   it("sends no options for an agent that hasn't advertised any", () => {

@@ -986,6 +986,26 @@ Host (`runtime/host/`):
 | `src/protocol/http.rs`, `src/protocol/mod.rs` | `workspace.create_folder { path, name }` route, returning the new folder's browse entry. |
 | `src/workspace.rs` | `WorkspaceInfo.is_git_repo`: `.git` in the workspace's own folder (the test `create_worktree` applies); the branch is only read for a repository. Plain folders stay full workspaces; nothing initializes Git. |
 
+## Session Agent Stop R8.13 — `session.stop`, worktree cleanup
+
+Host (`runtime/host/`):
+
+| Path | Change |
+|---|---|
+| `src/acp/manager.rs` | `count_live_in_folder` → `live_in_folder`: same match (bound folder or working dir under any path spelling), returns each live connection's bound conversation id (`None` while unbound) instead of a count. |
+| `src/session.rs` (Zwiim-owned) | `session::stop` under the session lock: a busy connection (turn in flight or a pending permission/question/plan approval) gets `Cancel`, then up to 5 s for `turn_in_flight` to clear; then `ConnectionManager::disconnect` (process tree and background work end). Row and agent-native transcript kept; no live agent is success. |
+| `src/protocol/http.rs`, `src/protocol/mod.rs` | `session.stop { session_id }` route. |
+| `src/workspace.rs`, `src/protocol/error.rs` | `workspace_busy` details add `session_ids` (the sessions whose agents run in the worktree). Counts and the guard unchanged; `force` still never bypasses it. |
+
+## Model-scoped Effort R8.14 — `agent.list` `effort_by_model`
+
+Host (`runtime/host/`), no Codeg-derived code changed:
+
+| Path | Change |
+|---|---|
+| `src/session_options.rs` (Zwiim-owned) | Each session report also records the effort its current model offers (`zwiim.agent_model_effort:{agent}` in `app_metadata`; `None` for a model without one). `preferred_for_start` checks a requested effort against the requested model's own once that model has run here (`option_unavailable` instead of the agent silently dropping it); an unseen model keeps the agent-wide check. |
+| `src/protocol/http.rs` | `AgentSummary.effort_by_model` (model value → effort choice or `null`). |
+
 ## License obligations tracked
 
 - [x] Include Apache-2.0 license text (`third_party/codeg/LICENSE`).

@@ -211,6 +211,11 @@ export class HostConnection {
     return this.#live().createWorktree(root_workspace_id);
   }
 
+  /** Remove a worktree (`workspace.remove_worktree`); never retried. The host may refuse it. */
+  async removeWorktree(workspace_id: string, opts: { force?: boolean } = {}): Promise<void> {
+    await this.#live().removeWorktree(workspace_id, opts);
+  }
+
   /** Start a terminal in a workspace (`terminal.spawn`); never retried. */
   async spawnTerminal(workspace_id: string): Promise<string> {
     return this.#live().spawnTerminal(workspace_id);
@@ -245,6 +250,11 @@ export class HostConnection {
    */
   async startSession(params: OpParams<"session.start">): Promise<string> {
     return this.#live().startSession(params);
+  }
+
+  /** Stop a session's agent (`session.stop`), keeping the session; never retried. */
+  async stopSession(session_id: string): Promise<void> {
+    await this.#live().stopSession(session_id);
   }
 
   /** Read the host's agents again (`agent.list`) into the store. */

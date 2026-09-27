@@ -3,8 +3,9 @@
 // writes it, the Now bar on what the agent is doing, and the composer. The
 // request it waits on is answered here as on the Sessions tab. Everything on
 // screen is the host's: a message shows once the host echoes it, and Stop
-// holds until the host ends the turn. The session strip under the header
-// switches between the sessions of its worktree in place.
+// holds until the host ends the turn. Stop agent (in the header) ends the
+// agent and its background work, keeping the session. The session strip under
+// the header switches between the sessions of its worktree in place.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Keyboard, KeyboardAvoidingView, Platform, Pressable, StyleSheet, View } from "react-native";
@@ -27,8 +28,9 @@ import {
   type ToolItem,
   type TranscriptRow,
 } from "../sessions/transcript";
+import { stopAgentError } from "../host/removal";
 import { currentHost } from "../services";
-import { Button, EmptyState, SkeletonRows, T } from "../ui/components";
+import { Button, EmptyState, Sheet, SkeletonRows, T } from "../ui/components";
 import { ChevronLeft, Icon } from "../ui/icons";
 import { Markdown } from "../ui/markdown";
 import {
@@ -73,6 +75,7 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
   if (item) listed.current = session_id;
   const waiting = !item && started && listed.current !== session_id;
   const connected = connection?.status === "live";
+  const [stopAgent, setStopAgent] = useState(false);
   const back = () => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Host"));
 
   // On screen: stream the session and load its transcript until it's left.
@@ -88,7 +91,10 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
   }, [item?.workspace_id, session_id]);
 
   // Tabs swap the session in place; a worktree with none opens New session there.
-  const open = (id: string) => navigation.setParams({ session_id: id, started: undefined });
+  const open = (id: string) => {
+    setStopAgent(false);
+    navigation.setParams({ session_id: id, started: undefined });
+  };
   const startIn = (workspace_id: string) => navigation.navigate("NewSession", { workspace_id });
   const toWorktree = (workspace_id: string) => {
     const there = worktreeSessions(state, workspace_id)?.sessions ?? [];
@@ -127,6 +133,15 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
             {[item?.agent, item?.workspace, `${name} ${text.pill}`].filter(Boolean).join(" · ")}
           </T>
         </View>
+        {item?.live ? (
+          <Button
+            kind="destructive"
+            label="Stop agent"
+            disabled={!connected}
+            onPress={() => setStopAgent(true)}
+            testID="session-stop-agent"
+          />
+        ) : null}
       </View>
       {worktree && item ? (
         <SessionStrip
@@ -138,7 +153,67 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
         />
       ) : null}
       {body}
+      <StopAgentSheet
+        key={session_id}
+        visible={stopAgent && !!item?.live}
+        session_id={session_id}
+        hostName={name}
+        onClose={() => setStopAgent(false)}
+      />
     </View>
+  );
+}
+
+/**
+ * Stop the session's agent, not just its turn: the agent and whatever it runs
+ * in the background end on the host; the session and its transcript stay.
+ * Closes once the host has stopped it; never retried.
+ */
+function StopAgentSheet({
+  visible,
+  session_id,
+  hostName,
+  onClose,
+}: {
+  visible: boolean;
+  session_id: string;
+  hostName: string;
+  onClose(): void;
+}) {
+  const theme = useTheme();
+  const [stopping, setStopping] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const close = () => {
+    setError(null);
+    onClose();
+  };
+  const stop = async () => {
+    setStopping(true);
+    setError(null);
+    try {
+      await currentHost.stopSession(session_id);
+      close();
+    } catch (e) {
+      setError(stopAgentError(e, hostName));
+    } finally {
+      setStopping(false);
+    }
+  };
+  return (
+    <Sheet visible={visible} onClose={close}>
+      <T variant="title">Stop the agent?</T>
+      <T color={theme.mut} testID="stop-agent-body">
+        The agent stops on {hostName}, and so does any work it left running in the background. This session and its
+        transcript stay. Your next message starts the agent again.
+      </T>
+      {error ? (
+        <T color={theme.err} testID="stop-agent-error">
+          {error}
+        </T>
+      ) : null}
+      <Button tall kind="destructive" label="Stop agent" loading={stopping} onPress={() => void stop()} testID="stop-agent-confirm" />
+      <Button tall kind="secondary" label="Cancel" onPress={close} />
+    </Sheet>
   );
 }
 
@@ -201,7 +276,12 @@ function Live({
   if (key && !turnStarts.has(key)) turnStarts.set(key, Date.now());
   const started = key ? turnStarts.get(key)! : null;
 
-  const [draft, setDraft] = useState("");
+  // Kept per session by the host's controller, so switching tabs never loses it.
+  const [draft, setDraftState] = useState(() => currentHost.draft(session_id));
+  const setDraft = (text: string) => {
+    currentHost.setDraft(session_id, text);
+    setDraftState(text);
+  };
   const [sending, setSending] = useState(false);
   const [unsure, setUnsure] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
@@ -245,7 +325,7 @@ function Live({
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
       await currentHost.send(session_id, text, id);
-      setDraft("");
+      setDraftState(currentHost.draft(session_id));
     } catch (e) {
       if (isClientError(e, "unknown_outcome")) setUnsure(id);
       setNotice(sendError(e, hostName));

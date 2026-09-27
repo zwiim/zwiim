@@ -3761,14 +3761,15 @@ impl ConnectionManager {
         None
     }
 
-    /// How many live connections belong to the folder `folder_id` — either
+    /// The live connections that belong to the folder `folder_id` — either
     /// bound to it or running with a working directory inside any of `dirs`
-    /// (the folder's path spellings). Each connection counts once. Feeds the
+    /// (the folder's path spellings) — as the conversation each is bound to
+    /// (`None` while not bound yet). Each connection is listed once. Feeds the
     /// workspace removal guard: a worktree with a running agent is never
     /// removed out from under it.
-    pub async fn count_live_in_folder(&self, folder_id: i32, dirs: &[&std::path::Path]) -> usize {
+    pub async fn live_in_folder(&self, folder_id: i32, dirs: &[&std::path::Path]) -> Vec<Option<i32>> {
         let connections = self.connections.lock().await;
-        let mut live = 0;
+        let mut live = Vec::new();
         for conn in connections.values() {
             let state = conn.state.read().await;
             let in_folder = state.folder_id == Some(folder_id)
@@ -3777,7 +3778,7 @@ impl ConnectionManager {
                     .as_deref()
                     .is_some_and(|wd| dirs.iter().any(|dir| wd.starts_with(dir)));
             if in_folder {
-                live += 1;
+                live.push(state.conversation_id);
             }
         }
         live

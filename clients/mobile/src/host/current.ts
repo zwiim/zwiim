@@ -53,6 +53,8 @@ export class CurrentHost {
   readonly #listeners = new Set<() => void>();
   /** The session last on screen in each worktree of this host (in memory, as Desktop keeps it). */
   readonly #lastSession = new Map<string, string>();
+  /** What's typed and not yet sent in each session of this host (in memory; never sent to the host). */
+  readonly #drafts = new Map<string, string>();
 
   constructor(deps: CurrentHostDeps) {
     this.#deps = deps;
@@ -79,7 +81,10 @@ export class CurrentHost {
 
   /** Control `host` over a new connection, read again from the store (after pairing). */
   async open(host: HostEntry): Promise<void> {
-    if (this.#state.host?.host_id !== host.host_id) this.#lastSession.clear();
+    if (this.#state.host?.host_id !== host.host_id) {
+      this.#lastSession.clear();
+      this.#drafts.clear();
+    }
     this.#drop();
     const run = ++this.#run;
     this.#set({ ...EMPTY, host });
@@ -146,11 +151,27 @@ export class CurrentHost {
     return this.#lastSession.get(workspace_id) ?? null;
   }
 
-  /** Send a message to a session. The host echoes it on the session's stream. */
+  /** What's typed in a session's composer and not yet sent; "" when nothing is. */
+  draft(session_id: string): string {
+    return this.#drafts.get(session_id) ?? "";
+  }
+
+  /** Keep what's typed in one session's composer, apart from every other session's. */
+  setDraft(session_id: string, text: string): void {
+    if (text) this.#drafts.set(session_id, text);
+    else this.#drafts.delete(session_id);
+  }
+
+  /**
+   * Send a message to a session. The host echoes it on the session's stream.
+   * Once the host takes it, that session's draft is cleared (unless more was
+   * typed since); a failed send keeps it.
+   */
   async send(session_id: string, text: string, client_message_id: string): Promise<void> {
     const connection = this.#connection;
     if (!connection) throw new ZwiimClientError("network", "Not connected to the host");
     await connection.send(session_id, text, client_message_id);
+    if (this.draft(session_id).trim() === text) this.setDraft(session_id, "");
   }
 
   /**
@@ -172,6 +193,15 @@ export class CurrentHost {
     const connection = this.#connection;
     if (!connection) throw new ZwiimClientError("network", "Not connected to the host");
     await connection.request("session.cancel", { session_id });
+  }
+
+  /**
+   * Stop a session's agent and its background work. The session and its
+   * transcript stay; the host reports it not live, and the next send starts
+   * the agent again. Never retried.
+   */
+  async stopSession(session_id: string): Promise<void> {
+    await this.#opened().stopSession(session_id);
   }
 
   /** A read of the host (its files, its Git state), over the open connection. */
@@ -204,6 +234,17 @@ export class CurrentHost {
     const workspace = await this.#opened().createWorktree(root_workspace_id);
     if (choose) this.chooseWorkspace(workspace.workspace_id);
     return workspace;
+  }
+
+  /**
+   * Remove a worktree. The host refuses while agents or terminals run there
+   * (`workspace_busy`, even with `force`) and, without `force`, while it has
+   * uncommitted changes. Files moves to the worktree's workspace if it showed it.
+   */
+  async removeWorktree(workspace_id: string, opts: { force?: boolean } = {}): Promise<void> {
+    const parent = this.#state.store?.getState().workspaces?.find((w) => w.workspace_id === workspace_id)?.parent_workspace_id;
+    await this.#opened().removeWorktree(workspace_id, opts);
+    if (this.#state.workspaceId === workspace_id && parent) this.chooseWorkspace(parent);
   }
 
   /** A terminal is on screen: its emulator, streamed until released. None before a connection opens. */

@@ -41,6 +41,8 @@ export interface WireError {
 export interface WorkspaceBusyDetails {
   live_sessions: number;
   terminals: number;
+  /** The sessions whose agents run there (an agent not bound to one yet is only counted). */
+  session_ids: string[];
 }
 
 /** `workspace_dirty` details: uncommitted entries a forced removal discards. */
@@ -363,6 +365,12 @@ export interface AgentSummary {
   reason: AgentUnavailableReason | (string & {}) | null;
   /** What a new session can choose; null before the agent's first session here. */
   options: SessionOptions | null;
+  /**
+   * Effort belongs to the model: the effort a new session can choose on each
+   * model that has run here, by model value; null where that model offers
+   * none. See `effortFor`.
+   */
+  effort_by_model: Record<string, ChoiceOption | null>;
   /** The slash commands it offered in its last session here; null before its first. */
   commands: SessionCommand[] | null;
 }
@@ -693,6 +701,7 @@ export interface Operations {
     { session_id: string },
   ];
   "session.cancel": [{ session_id: string }, Record<string, never>];
+  "session.stop": [{ session_id: string }, Record<string, never>];
   "session.delete": [{ session_id: string }, Record<string, never>];
   "session.options": [{ session_id: string }, { session_id: string; options: SessionOptions }];
   "session.set_options": [
@@ -750,6 +759,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "session.start",
   "session.send",
   "session.cancel",
+  "session.stop",
   "session.delete",
   "session.respond",
   "device.pair",

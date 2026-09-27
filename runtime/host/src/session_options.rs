@@ -444,6 +444,72 @@ async fn agent_catalog(db: &DatabaseConnection, agent: &str) -> Option<Vec<Sessi
     read_json(db, &agent_key(agent)).await
 }
 
+fn model_effort_key(agent: &str) -> String {
+    format!("zwiim.agent_model_effort:{agent}")
+}
+
+/// Effort belongs to the model, not the agent — Claude offers none on Haiku
+/// and its own levels on each other model. Per model value: the native effort
+/// option the agent reported while that model was current, `None` when it
+/// offered none. A model not listed has not run on this host yet.
+type ModelEfforts = BTreeMap<String, Option<SessionConfigOptionInfo>>;
+
+async fn model_efforts(db: &DatabaseConnection, agent: &str) -> ModelEfforts {
+    read_json(db, &model_effort_key(agent)).await.unwrap_or_default()
+}
+
+/// The effort a new session of `agent` can choose on each model that has run
+/// here (`None`: that model offers no effort).
+pub async fn effort_by_model(db: &DatabaseConnection, agent: &str) -> BTreeMap<String, Option<ChoiceOption>> {
+    model_efforts(db, agent)
+        .await
+        .into_iter()
+        .map(|(model, effort)| {
+            let choice = effort
+                .as_ref()
+                .and_then(|o| select_where(std::slice::from_ref(o), |_| true))
+                .map(|s| s.choice());
+            (model, choice)
+        })
+        .collect()
+}
+
+/// `kept` once a session reports `reported`: the effort it reports now is
+/// what its current model offers.
+fn learn_model_effort(mut kept: ModelEfforts, reported: &[SessionConfigOptionInfo]) -> ModelEfforts {
+    let native = Native::of(reported);
+    let Some(model) = native.model.as_ref().map(Select::current).filter(|m| !m.is_empty()) else {
+        return kept;
+    };
+    let effort = native
+        .effort
+        .as_ref()
+        .and_then(|e| reported.iter().find(|o| o.id == e.id))
+        .cloned();
+    kept.insert(model.to_string(), effort);
+    kept
+}
+
+/// `catalog` with its effort replaced by the one a model offers, or without
+/// one when the model offers none.
+fn with_model_effort(
+    mut catalog: Vec<SessionConfigOptionInfo>,
+    effort: Option<SessionConfigOptionInfo>,
+) -> Vec<SessionConfigOptionInfo> {
+    catalog.retain(|o| o.category.as_deref() != Some(EFFORT_CATEGORY));
+    catalog.extend(effort);
+    catalog
+}
+
+/// Keep what a session of `agent` reported: the agent's catalog and what its
+/// current model offers.
+async fn remember_agent_report(db: &DatabaseConnection, agent: &str, reported: &[SessionConfigOptionInfo]) {
+    let catalog = merge_catalog(agent_catalog(db, agent).await, reported);
+    write_json(db, &agent_key(agent), &catalog).await;
+    let efforts = learn_model_effort(model_efforts(db, agent).await, reported);
+    write_json(db, &model_effort_key(agent), &efforts).await;
+}
+
 /// The options a new session of `agent` can choose, from what the agent last
 /// advertised on this host; `None` before its first session. A new session
 /// starts in `normal` mode whatever the last one used.
@@ -652,6 +718,12 @@ pub async fn preferred_for_start(
     let Some(mut catalog) = agent_catalog(db, &name).await else {
         return Ok(None);
     };
+    // Effort is checked against the requested model's own, once it has run here.
+    if let Some(model) = &request.model {
+        if let Some(effort) = model_efforts(db, &name).await.remove(model) {
+            catalog = with_model_effort(catalog, effort);
+        }
+    }
     // A new session starts from the agent's defaults, not from what the last
     // one held: clear every current value so each requested one is applied.
     for option in &mut catalog {
@@ -803,7 +875,7 @@ async fn track(state: &AppState, connection_id: &str) {
     };
     let db = &state.db.conn;
     if let Some(agent) = agent_name(agent_type) {
-        write_json(db, &agent_key(&agent), &options).await;
+        remember_agent_report(db, &agent, &options).await;
     }
     let Some(conversation_id) = conversation_id else {
         return;
@@ -821,6 +893,24 @@ async fn track(state: &AppState, connection_id: &str) {
     stored.values = Native::of(&options).tracked_values();
     remember_normal(&mut stored, &options);
     write_json(db, &session_key(&session_id), &stored).await;
+}
+
+/// The agent's catalog once a session reports `reported`: each reported option
+/// replaces the one kept, and a kept option the report lacks stays. Some
+/// options belong to the session's model, not the agent — Claude offers no
+/// effort on Haiku — so one session on such a model must not take them from
+/// every new session.
+fn merge_catalog(
+    kept: Option<Vec<SessionConfigOptionInfo>>,
+    reported: &[SessionConfigOptionInfo],
+) -> Vec<SessionConfigOptionInfo> {
+    let mut catalog = reported.to_vec();
+    catalog.extend(
+        kept.into_iter()
+            .flatten()
+            .filter(|k| !reported.iter().any(|r| r.id == k.id)),
+    );
+    catalog
 }
 
 #[cfg(test)]
@@ -1090,5 +1180,109 @@ mod tests {
         stored.values = Native::of(&claude("plan")).tracked_values();
         remember_normal(&mut stored, &claude("plan"));
         assert_eq!(stored.normal_mode.as_deref(), Some("acceptEdits"));
+    }
+
+    /// Claude on Haiku as captured live: the model switched, no effort, no fast.
+    fn claude_on_haiku() -> Vec<SessionConfigOptionInfo> {
+        let mut options = claude("default");
+        options.retain(|o| o.id == "mode" || o.id == "model");
+        if let SessionConfigKindInfo::Select(s) = &mut options[1].kind {
+            s.current_value = "haiku".into();
+        }
+        options
+    }
+
+    #[test]
+    fn a_haiku_session_keeps_effort_for_new_sessions() {
+        let catalog = merge_catalog(Some(claude("default")), &claude_on_haiku());
+        // Every supported effort value still starts a new session with it…
+        for effort in ["low", "high"] {
+            let request = OptionsRequest {
+                model: Some("opus[1m]".into()),
+                effort: Some(effort.into()),
+                ..Default::default()
+            };
+            let mut fresh = catalog.clone();
+            for option in &mut fresh {
+                if let SessionConfigKindInfo::Select(s) = &mut option.kind {
+                    s.current_value.clear();
+                }
+            }
+            assert_eq!(
+                resolve(&fresh, &request, None).unwrap(),
+                sets(&[("model", "opus[1m]"), ("effort", effort)])
+            );
+        }
+        // …and New Session still offers it, next to what the last session reported.
+        let p = project(&catalog);
+        assert_eq!(p.effort.unwrap().current, "high");
+        assert_eq!(p.model.unwrap().current, "haiku");
+    }
+
+    #[test]
+    fn a_report_replaces_what_it_names() {
+        let mut low = claude("plan");
+        if let SessionConfigKindInfo::Select(s) = &mut low[2].kind {
+            s.current_value = "low".into();
+        }
+        let catalog = merge_catalog(Some(claude("default")), &low);
+        assert_eq!(catalog.len(), 4);
+        assert_eq!(project(&catalog).effort.unwrap().current, "low");
+        assert_eq!(merge_catalog(None, &claude_on_haiku()).len(), 2);
+    }
+
+    #[test]
+    fn learns_the_effort_each_model_offers() {
+        let efforts = learn_model_effort(ModelEfforts::new(), &claude("default"));
+        let efforts = learn_model_effort(efforts, &claude_on_haiku());
+        assert_eq!(efforts.get("opus[1m]").unwrap().as_ref().unwrap().id, "effort");
+        assert!(efforts.get("haiku").unwrap().is_none());
+        // Another Opus report updates Opus only.
+        let efforts = learn_model_effort(efforts, &claude("plan"));
+        assert_eq!(efforts.len(), 2);
+        assert!(efforts.get("haiku").unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn new_sessions_get_each_models_own_effort() {
+        use crate::db::test_helpers::fresh_in_memory_db;
+        let db = fresh_in_memory_db().await;
+        let claude_code = AgentType::ClaudeCode;
+        let start = |model: &str, effort: Option<&str>| OptionsRequest {
+            model: Some(model.into()),
+            effort: effort.map(str::to_string),
+            ..Default::default()
+        };
+        remember_agent_report(&db.conn, "claude_code", &claude("default")).await;
+        remember_agent_report(&db.conn, "claude_code", &claude_on_haiku()).await;
+
+        let listed = effort_by_model(&db.conn, "claude_code").await;
+        let opus = listed.get("opus[1m]").unwrap().as_ref().unwrap();
+        assert_eq!(opus.values.iter().map(|v| v.value.as_str()).collect::<Vec<_>>(), ["low", "high"]);
+        assert_eq!(listed.get("haiku"), Some(&None));
+        // The agent-wide view keeps effort for the models that have it.
+        assert!(for_new_session(&db.conn, "claude_code").await.unwrap().effort.is_some());
+
+        // Haiku with an effort is refused up front instead of silently dropped…
+        let err = preferred_for_start(&db.conn, claude_code, &start("haiku", Some("low")))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "option_unavailable");
+        assert_eq!(err.details.unwrap()["option"], "effort");
+        // …Haiku alone starts, and a model with effort still gets it.
+        let haiku = preferred_for_start(&db.conn, claude_code, &start("haiku", None)).await.unwrap().unwrap();
+        assert_eq!(haiku.get("model").map(String::as_str), Some("haiku"));
+        assert!(!haiku.contains_key("effort"));
+        let opus = preferred_for_start(&db.conn, claude_code, &start("opus[1m]", Some("low")))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(opus.get("effort").map(String::as_str), Some("low"));
+        // A value the model doesn't offer is refused as before.
+        let err = preferred_for_start(&db.conn, claude_code, &start("opus[1m]", Some("max")))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "option_unavailable");
+        assert!(effort_by_model(&db.conn, "codex").await.is_empty());
     }
 }

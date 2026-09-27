@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, GitBranch, Loader2, Square } from "lucide-react";
 import {
+  effortFor,
   optionUnavailableDetails,
   type AgentSummary,
+  type ChoiceOption,
   type OpParams,
   type OptionsRequest,
   type PromptBlock,
@@ -33,17 +35,18 @@ export function agentLabel(a: AgentSummary): string {
 /**
  * What a new session of an agent starts with: the agent's advertised options,
  * the model/effort this client last chose for it (if still offered), and
- * explicit picks. Mode always starts at the agent's normal, approval-required
- * mode unless picked.
+ * explicit picks. Effort is the chosen model's own (`effortOn`; none on a
+ * model without one). Mode always starts at the agent's normal,
+ * approval-required mode unless picked.
  */
 export function newSessionOptions(
   advertised: SessionOptions,
   remembered: { model: string | null; effort: string | null },
   picks: OptionsRequest,
+  effortOn: (model: string | null) => ChoiceOption | null = () => advertised.effort,
 ): { shown: SessionOptions; request: OptionsRequest } {
   const request: OptionsRequest = {};
-  const choose = (key: "model" | "effort") => {
-    const option = advertised[key];
+  const choose = (key: "model" | "effort", option: ChoiceOption | null) => {
     if (!option) return null;
     // A new session starts from the agent's defaults, so the shown value is
     // always sent — even when it matches what the agent last reported.
@@ -56,10 +59,11 @@ export function newSessionOptions(
   if (mode && picks.mode && picks.mode !== mode.current && mode.available.includes(picks.mode)) {
     request.mode = picks.mode;
   }
+  const model = choose("model", advertised.model);
   return {
     shown: {
-      model: choose("model"),
-      effort: choose("effort"),
+      model,
+      effort: choose("effort", effortOn(model?.current ?? null)),
       mode: mode && request.mode ? { ...mode, current: request.mode, label: "" } : mode,
     },
     request,
@@ -86,9 +90,13 @@ export function useNewSessionAgent() {
   }, [controller]);
   const [chosen, setChosen] = useState<string | null>(null);
   const agent = agents ? defaultAgent(agents, chosen) : null;
-  const advertised = agents?.find((a) => a.agent === agent)?.options ?? null;
+  const summary = agents?.find((a) => a.agent === agent) ?? null;
+  const advertised = summary?.options ?? null;
   const [picks, setPicks] = useState<OptionsRequest>({});
-  const start = advertised && agent ? newSessionOptions(advertised, agentChoices(agent), picks) : null;
+  const start =
+    advertised && summary
+      ? newSessionOptions(advertised, agentChoices(summary.agent), picks, (model) => effortFor(summary, model))
+      : null;
   return {
     agents,
     agent,

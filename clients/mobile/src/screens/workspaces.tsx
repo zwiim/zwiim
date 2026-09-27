@@ -2,8 +2,9 @@
 // two chips naming the workspace and the worktree, each opening one level of
 // the workspace sheet. Level one lists the host's workspaces (search, and New
 // workspace to browse the Mac); level two lists a workspace's root checkout
-// and worktrees (and New worktree). Choosing a row selects it. A plain folder
-// (not a Git repository) has no worktrees: no worktree chip, no level two.
+// and worktrees (and New worktree). Choosing a row selects it; a worktree's
+// Remove asks the Host to remove it (RemoveWorktree). A plain folder (not a
+// Git repository) has no worktrees: no worktree chip, no level two.
 //
 // New session picks where it starts from the same workspaces as one tree
 // (WorkspaceTree): each workspace a tile that opens to its root checkout and
@@ -31,6 +32,7 @@ import { Button, Chip, Sheet, T } from "../ui/components";
 import { ChevronDown, ChevronLeft, ChevronRight, Icon, Plus } from "../ui/icons";
 import { radius, space, type, useTheme } from "../ui/tokens";
 import { useHostName } from "./HostFrame";
+import { RemoveWorktree } from "./RemoveWorktree";
 
 type Level = { kind: "workspaces" } | { kind: "worktrees"; root_id: string; fromList: boolean };
 
@@ -190,9 +192,11 @@ function Worktrees({
   const tree = useTree();
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<WorkspaceInfo | null>(null);
   const choices = worktreeChoices(tree, root_id);
   const root = choices[0]?.workspace;
   if (!root) return null;
+  if (removing) return <RemoveWorktree worktree={removing} onDone={onClose} onCancel={() => setRemoving(null)} />;
   const choose = (id: string) => {
     currentHost.chooseWorkspace(id);
     onClose();
@@ -250,6 +254,19 @@ function Worktrees({
                   <T variant="monoSm" color={theme.mut}>
                     {node.working} working
                   </T>
+                ) : null}
+                {i > 0 ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Remove ${w.branch ?? workspaceLabel(w)}`}
+                    onPress={() => setRemoving(w)}
+                    hitSlop={8}
+                    testID={`worktree-remove-${w.workspace_id}`}
+                  >
+                    <T variant="callout" color={theme.err}>
+                      Remove
+                    </T>
+                  </Pressable>
                 ) : null}
               </View>
               {i > 0 && base ? (

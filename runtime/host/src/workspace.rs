@@ -588,10 +588,26 @@ pub async fn remove_worktree(
     let path = PathBuf::from(&wt.path);
     let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
     let spellings = [path.as_path(), canonical.as_path()];
-    let live_agents = connections.count_live_in_folder(wt.id, &spellings).await;
+    let live_agents = connections.live_in_folder(wt.id, &spellings).await;
     let live_terminals = terminals.count_live_under_dir(&spellings, Some(emitter));
-    if live_agents > 0 || live_terminals > 0 {
-        return Err(ZwiimError::workspace_busy(live_agents, live_terminals));
+    if !live_agents.is_empty() || live_terminals > 0 {
+        // Name the sessions whose agents run there, so a client can offer to
+        // stop them; an agent not bound to a session yet is only counted.
+        let bound: Vec<i32> = live_agents.iter().flatten().copied().collect();
+        let session_ids = conversation::Entity::find()
+            .filter(conversation::Column::Id.is_in(bound))
+            .filter(conversation::Column::SessionId.is_not_null())
+            .all(&db.conn)
+            .await
+            .map_err(db_err)?
+            .into_iter()
+            .filter_map(|c| c.session_id)
+            .collect();
+        return Err(ZwiimError::workspace_busy(
+            live_agents.len(),
+            live_terminals,
+            session_ids,
+        ));
     }
 
     let busy =
@@ -969,7 +985,7 @@ mod tests {
         assert_eq!(err.code, "workspace_busy");
         assert_eq!(
             details(&err),
-            serde_json::json!({ "live_sessions": 2, "terminals": 0 })
+            serde_json::json!({ "live_sessions": 2, "terminals": 0, "session_ids": [] })
         );
         assert!(Path::new(&wt.path).exists());
         assert!(resolve(&db.conn, &wt.workspace_id).await.is_ok());
@@ -990,7 +1006,7 @@ mod tests {
         assert_eq!(err.code, "workspace_busy");
         assert_eq!(
             details(&err),
-            serde_json::json!({ "live_sessions": 0, "terminals": 1 })
+            serde_json::json!({ "live_sessions": 0, "terminals": 1, "session_ids": [] })
         );
         assert!(Path::new(&wt.path).exists());
 
@@ -1005,6 +1021,69 @@ mod tests {
         )
         .await
         .expect("removal once nothing runs there");
+    }
+
+    #[tokio::test]
+    async fn stopping_the_named_sessions_unblocks_removal_and_nothing_else_does() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, _repo, root_wid, worktrees) = root_repo(&db).await;
+        let emitter = EventEmitter::Noop;
+        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
+            .await
+            .unwrap();
+        let folder_id = resolve(&db.conn, &wt.workspace_id).await.unwrap().id;
+        let agents = ConnectionManager::new();
+        let terminals = TerminalManager::new();
+
+        // Two sessions with agents running in the worktree.
+        let mut sessions = Vec::new();
+        for id in ["conn-a", "conn-b"] {
+            let conv = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+            agents
+                .insert_test_connection(
+                    id,
+                    AgentType::ClaudeCode,
+                    Some(PathBuf::from(&wt.path)),
+                    EventEmitter::Noop,
+                )
+                .await;
+            agents.get_state(id).await.unwrap().write().await.conversation_id = Some(conv);
+            let row = conversation::Entity::find_by_id(conv).one(&db.conn).await.unwrap().unwrap();
+            sessions.push(row.session_id.unwrap());
+        }
+        let busy = |e: ZwiimError| {
+            assert_eq!(e.code, "workspace_busy");
+            let d = details(&e);
+            let mut ids: Vec<String> =
+                serde_json::from_value(d["session_ids"].clone()).unwrap();
+            ids.sort();
+            (d["live_sessions"].as_u64().unwrap(), d["terminals"].as_u64().unwrap(), ids)
+        };
+        let remove = |force| remove_worktree(&db, &emitter, &agents, &terminals, &wt.workspace_id, force);
+
+        // The host names both sessions; force changes nothing.
+        let mut both = sessions.clone();
+        both.sort();
+        assert_eq!(busy(remove(true).await.unwrap_err()), (2, 0, both));
+
+        // Stopping one leaves the other blocking, still named.
+        crate::session::stop(&db, &agents, &sessions[0]).await.unwrap();
+        assert_eq!(
+            busy(remove(true).await.unwrap_err()),
+            (1, 0, vec![sessions[1].clone()])
+        );
+
+        // Both stopped, but a terminal still runs there.
+        crate::session::stop(&db, &agents, &sessions[1]).await.unwrap();
+        spawn_terminal(&terminals, "term-left", &wt.path);
+        assert_eq!(busy(remove(true).await.unwrap_err()), (0, 1, vec![]));
+        assert!(Path::new(&wt.path).exists());
+
+        // Nothing left running: removal goes through, sessions kept.
+        terminals.kill("term-left").unwrap();
+        let removed = remove(false).await.expect("removal once all are stopped");
+        assert_eq!(removed.kept_sessions, 2);
+        assert!(!Path::new(&wt.path).exists());
     }
 
     #[tokio::test]

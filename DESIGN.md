@@ -289,6 +289,9 @@ Approved layout (variant A):
   not change Files; its sheet is the workspace tree below), **Agent** (`agent.list`, unavailable agents disabled with
   their reason), then only what the agent advertises: **Model**, **Effort**,
   **Mode** (Ask / Plan / Unattended, the names the Session screen uses).
+  Effort follows the Model row: the levels that model offers, and no Effort
+  row on a model without one (Haiku); an Effort pick comes back with a model
+  that offers it (R8.14).
   Unattended asks first ("Turn off approvals?") and shows in amber. Then
   **First prompt** and a full-width **Start session** in the thumb zone. A
   selected worktree that was removed shows `Workspace removed` in red and Start
@@ -311,7 +314,11 @@ Top to bottom:
 
 - **Nav header:** back, session title (`headline`, one line), mono subtitle
   `agent · workspace · worktree · Host ⌂/☁`. Trailing `⋯` → options sheet (model, effort,
-  mode from `SessionOptions`; only options the agent offers).
+  mode from `SessionOptions`; only options the agent offers). While an agent is
+  attached, a **Stop agent** button (`destructive`) sits at the right: it stops
+  the agent, not only the turn (that is the Now bar's **Stop**). A confirm sheet
+  "Stop the agent?" says its background work stops too and that the session and
+  transcript stay; the next message starts the agent again (R8.13).
 - **Session strip** (48pt, hairline below; R8.11): the sessions of this session's
   worktree, Desktop's tabs made thumb-sized. Leading `⎇ fix-auth ▾` (mono `mut`,
   `· removed` in `faint`) → **Switch worktree** sheet: the workspace tree with no
@@ -347,6 +354,9 @@ Top to bottom:
   While a turn runs, send stays available only if the agent accepts it;
   on `turn_in_progress` show "The agent is still working. Stop it or wait."
   Slash commands: typing `/` opens a sheet of `SessionCommand`s.
+  Unsent text is kept per session (in memory on the phone, never on the Host),
+  so switching tabs or worktrees keeps each draft; a send the Host takes clears
+  only that session's draft, and a failed send keeps it (R8.12).
 
 **Request sheet** (shared by list and session): title from the request;
 - permission: command block or diff list (file header rows, unified diff in `code`,
@@ -397,7 +407,17 @@ view, and everything under the context chips belongs to that worktree.
   `⎇ fix-auth` with mono `from main@3f9e1a2`; last, **New worktree**
   (`secondary`, 48pt): one tap, created from the root's current branch and
   selected. Choosing another base stays a Desktop feature. Tapping a row
-  selects it and closes the sheet.
+  selects it and closes the sheet. Each worktree row has **Remove** (`err`
+  text, right), which turns the sheet into its confirm: "Remove ⎇ fix-auth?"
+  · **Remove worktree** (`destructive`) · **Cancel**. The Host answers:
+  agents or terminals running there → "Still running in ⎇ fix-auth", the
+  sessions it names (dot, title, `agent · agent running`) plus mono
+  `1 terminal running` / `1 agent starting`, a line that stopping an agent stops
+  its background work and keeps its session, and **Stop n agents and remove**
+  (only asks again once every stop succeeded; a remaining terminal keeps it
+  blocked and says to kill it in Terminals, with **Check again**).
+  Uncommitted changes → "Discard n uncommitted changes?" · **Remove anyway**.
+  Removing the worktree Files shows moves Files to its workspace (R8.13).
 - **Empty states:** no workspaces: "No workspaces yet" · "Add a folder on {Host}
   to work in it from here." · **New workspace**. Empty folder: `∅` "This folder
   is empty" · "archive/ has nothing in it on zwiim · fix-auth." · **Up one
@@ -591,3 +611,5 @@ glyph, a title, one line, one action.
 | 2026-09-27 | New session is a pushed screen of rows, not a sheet (R8.10) | Seven settings plus a prompt don't fit a sheet over the keyboard; rows show every choice before Start, and each row's own sheet stays short |
 | 2026-09-27 | New session picks where it runs from one workspace tree | A flat list repeated `todo ·` on every worktree and couldn't tell two `test` folders apart; tiles group worktrees under their workspace, keep the sheet short, and carry New workspace / New worktree so a session can start somewhere that doesn't exist yet |
 | 2026-09-27 | A session strip under the Session header, not a filtered Sessions tab (R8.11) | A worktree holds many tasks; tabs of its sessions switch in one tap and `+` starts another there, as on Desktop, while the Sessions tab stays Host-wide so nothing needing you hides. Where a session starts never moves Files |
+| 2026-09-27 | Stop agent is its own header action; worktree removal shows what blocks it (R8.13) | Stop turn leaves the agent and its background work alive, which keeps a worktree busy; a separate, confirmed Stop agent ends both without losing the session. Removal lists the Host's own blockers and stops only those, so the Host stays the authority and `workspace_busy` is never bypassed |
+| 2026-09-27 | New session's Effort follows the picked model (R8.14) | Effort is the model's, not the agent's: Claude has none on Haiku, so an Effort row there was silently dropped by the agent. The Host learns each model's levels from its sessions; the row shows the picked model's, and the Host refuses an effort a known model doesn't offer |

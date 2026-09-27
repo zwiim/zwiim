@@ -9,11 +9,13 @@
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
 use serde::{Deserialize, Serialize};
 
+use crate::acp::error::AcpError;
 use crate::acp::manager::ConnectionManager;
 use crate::acp::plan_approval::{PlanApprovalAnswer, PlanApprovalDecision};
 use crate::acp::question::{QuestionAnswer, QuestionAnswerItem};
@@ -422,6 +424,53 @@ pub async fn cancel(
     match live_connection_id(&db.conn, connections, session_id).await? {
         Some(connection_id) => Ok(connections.cancel(&db.conn, &connection_id).await?),
         None => Ok(()),
+    }
+}
+
+/// How long `stop` waits for a cancelled turn to end before disconnecting.
+const STOP_TURN_WAIT: Duration = if cfg!(test) {
+    Duration::from_millis(300)
+} else {
+    Duration::from_secs(5)
+};
+
+/// Stop session `session_id`'s agent, keeping the session. A running turn is
+/// cancelled (declining any request waiting on the user) and given
+/// `STOP_TURN_WAIT` to end; then the agent is disconnected, which ends its
+/// process tree and any background work with it. The row and the
+/// agent-native transcript stay, the session reports `live: false`, and the
+/// next `send` resumes it. A session with no live agent is already stopped:
+/// success.
+pub async fn stop(
+    db: &AppDatabase,
+    connections: &ConnectionManager,
+    session_id: &str,
+) -> Result<(), ZwiimError> {
+    let row = resolve(&db.conn, session_id).await?;
+    let lock = session_lock(session_id);
+    let _guard = lock.lock().await;
+    let Some(connection_id) = connection_for(connections, &row).await else {
+        return Ok(());
+    };
+    if let Some(state) = connections.get_state(&connection_id).await {
+        let busy = |s: &crate::acp::SessionState| {
+            s.turn_in_flight
+                || s.pending_permission.is_some()
+                || s.pending_question.is_some()
+                || s.pending_plan_approval.is_some()
+        };
+        if busy(&*state.read().await) {
+            // Best effort: the disconnect below ends the turn regardless.
+            let _ = connections.cancel(&db.conn, &connection_id).await;
+            let deadline = tokio::time::Instant::now() + STOP_TURN_WAIT;
+            while state.read().await.turn_in_flight && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
+    match connections.disconnect(&connection_id).await {
+        Ok(()) | Err(AcpError::ConnectionNotFound(_)) => Ok(()),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -1223,6 +1272,154 @@ pub(crate) mod orchestration_tests {
             1,
             "cancel never resumes"
         );
+    }
+
+    /// Like an agent, end the turn once it is told to cancel.
+    fn ends_turn_on_cancel(mgr: &ConnectionManager, launcher: &FakeLauncher, conn: &'static str) {
+        let mgr = mgr.clone_ref();
+        let log = launcher.commands.clone();
+        tokio::spawn(async move {
+            while !log.lock().unwrap().contains(&(conn.to_string(), "cancel")) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            finish_turn(&mgr, conn).await;
+        });
+    }
+
+    async fn started(db: &AppDatabase, mgr: &ConnectionManager, launcher: &FakeLauncher, wid: &str) -> String {
+        start(db, mgr, launcher, wid, AgentType::ClaudeCode, text("hi"), None, &Default::default())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn stop_ends_the_turn_then_disconnects_and_send_resumes_the_same_session() {
+        let db = fresh_in_memory_db().await;
+        let wid = workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = started(&db, &mgr, &launcher, &wid).await;
+        let before = resolve(&db.conn, &sid).await.unwrap();
+
+        // Mid-turn: cancelled, awaited, then disconnected — well within the bound.
+        ends_turn_on_cancel(&mgr, &launcher, "fake-conn-1");
+        let at = std::time::Instant::now();
+        stop(&db, &mgr, &sid).await.unwrap();
+        assert!(at.elapsed() < STOP_TURN_WAIT, "returned once the turn ended");
+        settle().await;
+        assert_eq!(
+            launcher.commands_for("fake-conn-1"),
+            ["prompt", "cancel", "disconnect"]
+        );
+        assert!(mgr.get_state("fake-conn-1").await.is_none(), "agent gone");
+
+        // The session stays, not live, with its transcript link.
+        let after = resolve(&db.conn, &sid).await.unwrap();
+        assert_eq!((after.id, after.external_id.clone()), (before.id, before.external_id.clone()));
+        let listed = list_for_workspace(&db.conn, &mgr, &wid).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(!listed[0].attached);
+
+        // Stopping a stopped session is fine and never resumes it.
+        stop(&db, &mgr, &sid).await.unwrap();
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 1);
+
+        // The next send resumes the agent-native session under the same id.
+        send(&db, &mgr, &launcher, &sid, text("back"), None).await.unwrap();
+        settle().await;
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 2);
+        assert_eq!(launcher.resumed.lock().unwrap()[1], before.external_id);
+        assert_eq!(launcher.commands_for("fake-conn-2"), ["prompt"]);
+        assert_eq!(
+            live_connection_id(&db.conn, &mgr, &sid).await.unwrap().as_deref(),
+            Some("fake-conn-2")
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_cancels_a_waiting_permission_and_is_bounded() {
+        let db = fresh_in_memory_db().await;
+        let wid = workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = started(&db, &mgr, &launcher, &wid).await;
+        let (state, emitter) = mgr.get_state_and_emitter("fake-conn-1").await.unwrap();
+        emit_with_state(
+            &state,
+            &emitter,
+            AcpEvent::PermissionRequest {
+                request_id: "perm-1".into(),
+                tool_call: serde_json::json!({"toolCallId": "tc-1", "title": "Run ls"}),
+                options: vec![],
+                queued: 0,
+            },
+        )
+        .await;
+        assert!(state.read().await.pending_permission.is_some());
+
+        // The agent never ends its turn: stop still disconnects after the bound.
+        let at = std::time::Instant::now();
+        stop(&db, &mgr, &sid).await.unwrap();
+        assert!(at.elapsed() >= STOP_TURN_WAIT);
+        settle().await;
+        assert_eq!(
+            launcher.commands_for("fake-conn-1"),
+            ["prompt", "cancel", "disconnect"],
+            "the request is cancelled, never answered"
+        );
+        assert!(mgr.get_state("fake-conn-1").await.is_none());
+        assert!(resolve(&db.conn, &sid).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn stop_ends_an_idle_agent_that_has_background_work() {
+        let db = fresh_in_memory_db().await;
+        let wid = workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = started(&db, &mgr, &launcher, &wid).await;
+        finish_turn(&mgr, "fake-conn-1").await;
+        {
+            let state = mgr.get_state("fake-conn-1").await.unwrap();
+            let mut s = state.write().await;
+            s.background_outstanding = 1;
+            s.background_activity_at = Some(Utc::now());
+            assert!(s.has_active_background_work(Utc::now()), "the idle sweep keeps it");
+        }
+
+        stop(&db, &mgr, &sid).await.unwrap();
+        settle().await;
+        // Idle: nothing to cancel; the disconnect ends the agent's process tree.
+        assert_eq!(launcher.commands_for("fake-conn-1"), ["prompt", "disconnect"]);
+        assert!(mgr.get_state("fake-conn-1").await.is_none());
+        assert!(resolve(&db.conn, &sid).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn stopping_one_session_leaves_another_in_the_same_workspace_live() {
+        let db = fresh_in_memory_db().await;
+        let wid = workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let first = started(&db, &mgr, &launcher, &wid).await;
+        let second = started(&db, &mgr, &launcher, &wid).await;
+        finish_turn(&mgr, "fake-conn-1").await;
+
+        stop(&db, &mgr, &first).await.unwrap();
+        settle().await;
+        assert!(live_connection_id(&db.conn, &mgr, &first).await.unwrap().is_none());
+        assert_eq!(
+            live_connection_id(&db.conn, &mgr, &second).await.unwrap().as_deref(),
+            Some("fake-conn-2")
+        );
+        assert_eq!(launcher.commands_for("fake-conn-2"), ["prompt"], "untouched mid-turn");
+        let live: Vec<_> = list_for_workspace(&db.conn, &mgr, &wid)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.session_id, s.attached))
+            .collect();
+        assert!(live.contains(&(first, false)) && live.contains(&(second, true)));
     }
 
     #[tokio::test]

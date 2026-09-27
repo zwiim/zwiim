@@ -23,6 +23,7 @@ import {
   defaultAgent,
   modeChoosable,
   modeValue,
+  startChoices,
   startError,
   startParams,
   startTarget,
@@ -77,7 +78,7 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
   const target = startTarget(state.workspaces, targetId ?? workspaceId);
   const agents = state.agents;
   const agent = agents?.find((a) => a.agent === (agentId ?? defaultAgent(agents))) ?? null;
-  const options = agent?.options ?? null;
+  const options = startChoices(agent, picks);
   const mode = modeValue(options, picks.mode);
   const params = startParams({ target, agent, picks, prompt, client_message_id: "" });
 

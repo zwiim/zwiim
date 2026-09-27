@@ -113,6 +113,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/session.start", post(http::session_start))
         .route("/session.send", post(http::session_send))
         .route("/session.cancel", post(http::session_cancel))
+        .route("/session.stop", post(http::session_stop))
         .route("/session.delete", post(http::session_delete))
         .route("/session.options", post(http::session_options))
         .route("/session.set_options", post(http::session_set_options))

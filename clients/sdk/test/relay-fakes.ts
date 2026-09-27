@@ -119,7 +119,7 @@ class HostTunnel {
                 t: "res",
                 id,
                 status: err.status ?? 400,
-                body: { error: { code: err.code, message: err.message } },
+                body: { error: { code: err.code, message: err.message, ...(err.details ? { details: err.details } : {}) } },
               });
             },
           );

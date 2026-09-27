@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostController } from "../src/client/controller";
 import { hostOwnedDetails, optionUnavailableDetails, ZwiimClientError } from "../src/client/errors";
 import { HostClient } from "../src/client/host-client";
+import { effortFor } from "../src/state/options";
 import { initialSessionView, reduceSession } from "../src/state/session";
 import type { AgentSummary, SessionOptions, SessionSnapshot } from "../src/types/protocol";
 import { FakeTransport, flush } from "./fakes";
@@ -75,6 +76,31 @@ describe("session commands state", () => {
   });
 });
 
+describe("effort for a model", () => {
+  const levels = (...values: string[]) => ({ current: values[0]!, values: values.map((value) => ({ value, label: value, description: null })) });
+  const claude: AgentSummary = {
+    agent: "claude_code",
+    name: "Claude Code",
+    available: true,
+    reason: null,
+    options: { ...opts("normal"), effort: levels("low", "high", "max") },
+    effort_by_model: { sonnet: levels("low", "high"), haiku: null },
+    commands: null,
+  };
+
+  it("is the model's own once it has run on the Host", () => {
+    expect(effortFor(claude, "sonnet")?.values.map((v) => v.value)).toEqual(["low", "high"]);
+    expect(effortFor(claude, "haiku")).toBeNull();
+  });
+
+  it("is the agent-wide effort for a model not run yet, or no model", () => {
+    expect(effortFor(claude, "opus")?.values).toHaveLength(3);
+    expect(effortFor(claude, null)?.values).toHaveLength(3);
+    expect(effortFor(claude, "constructor")?.values).toHaveLength(3);
+    expect(effortFor({ ...claude, options: null, effort_by_model: {} }, "opus")).toBeNull();
+  });
+});
+
 describe("controller: agents, options, ownership", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
@@ -92,8 +118,8 @@ describe("controller: agents, options, ownership", () => {
 
   it("loads agents on connect", async () => {
     const agents: AgentSummary[] = [
-      { agent: "claude_code", name: "Claude Code", available: true, reason: null, options: opts("normal"), commands: null },
-      { agent: "codex", name: "Codex", available: false, reason: "not_installed", options: null, commands: null },
+      { agent: "claude_code", name: "Claude Code", available: true, reason: null, options: opts("normal"), effort_by_model: {}, commands: null },
+      { agent: "codex", name: "Codex", available: false, reason: "not_installed", options: null, effort_by_model: {}, commands: null },
     ];
     const transport = new FakeTransport();
     transport.handlers["agent.list"] = () => agents;
@@ -147,6 +173,20 @@ describe("controller: agents, options, ownership", () => {
     expect(req.params).toEqual({ session_id: "s1", mode: "unattended" });
     expect(req.options?.mutating).toBe(true);
     expect(t.store.getState().sessions.s1?.options?.mode?.current).toBe("unattended");
+  });
+
+  it("starts a session with every effort as picked, unchanged", async () => {
+    const t = await live();
+    t.transport.handlers["session.start"] = () => ({ session_id: "s1" });
+    const efforts = ["low", "medium", "high", "xhigh", "max"];
+    const starts = efforts.map((effort) => ({
+      workspace_id: "w",
+      agent: "claude_code" as const,
+      blocks: [],
+      options: { model: "sonnet", effort, mode: "plan" as const },
+    }));
+    for (const params of starts) await t.controller.startSession(params);
+    expect(t.transport.requests.filter((r) => r.op === "session.start").map((r) => r.params)).toEqual(starts);
   });
 
   it("surfaces an unavailable option with its details and changes nothing", async () => {

@@ -85,6 +85,8 @@ export interface SessionItem {
   /** The workspace's (or worktree's) name. */
   workspace: string | null;
   state: SessionState;
+  /** An agent is attached to it on the host (per the host's list). */
+  live: boolean;
   /** The request it waits on, in NEEDS YOU. */
   request: AgentRequest | null;
   /** While working: the latest tool call's title. */
@@ -136,6 +138,7 @@ export function toItem(
     workspace_id: s.workspace_id,
     workspace: s.workspace_id ? (names.get(s.workspace_id) ?? null) : null,
     state: st,
+    live: s.live,
     request,
     activity: st === "working" ? latestActivity(view) : null,
     createdAt: Date.parse(s.created_at) || 0,

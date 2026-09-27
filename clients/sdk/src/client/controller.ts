@@ -197,6 +197,16 @@ export class HostController {
   }
 
   /**
+   * Stop a session's agent: its turn is cancelled, then the agent and its
+   * background work end. The session and its transcript stay; the feed reports
+   * it not live, and the next send starts the agent again. Never retried: a
+   * dropped connection leaves the outcome `unknown_outcome`.
+   */
+  async stopSession(session_id: string): Promise<void> {
+    await this.client.request("session.stop", { session_id });
+  }
+
+  /**
    * Delete a session. The host refuses with `turn_in_progress` while its agent
    * is working; `session.removed` on the feed drops it from every client.
    */

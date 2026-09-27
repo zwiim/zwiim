@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { HostEntry } from "../src/account/hosts";
 import type { HostConnectionView } from "../src/host/connection";
 import { CurrentHost, type CurrentHostState } from "../src/host/current";
+import { otherBlockers, removeWorktree, stopAgentError, stopThenRemove } from "../src/host/removal";
 import { connectionText, hostProblem, hostRowState } from "../src/host/status";
 import { MemorySecureStore } from "../src/platform/memory-store";
 import { VaultPreferences } from "../src/platform/vault-store";
@@ -369,7 +370,7 @@ describe("starting a session", () => {
     await waitFor(() => current.state.store?.getState().agents != null);
     const before = s.w.host.backend.count("agent.list");
     s.w.host.backend.handlers["agent.list"] = () => [
-      { agent: "claude_code", name: "Claude Code", available: true, reason: null, options: null, commands: null },
+      { agent: "claude_code", name: "Claude Code", available: true, reason: null, options: null, effort_by_model: {}, commands: null },
     ];
     await current.refreshAgents();
     expect(s.w.host.backend.count("agent.list")).toBe(before + 1);
@@ -551,5 +552,212 @@ describe("several sessions in one worktree (R8.11)", () => {
     expect(startTarget(state().workspaces, "fix")).toEqual({ kind: "removed", label: "todo · fix-auth" });
     expect(current.state.workspaceId).toBe("ui");
     await current.clear();
+  });
+});
+
+describe("unsent drafts (R8.12)", () => {
+  async function live() {
+    const s = setup();
+    const sent: { session_id: string; text: string }[] = [];
+    let fail: ZwiimClientError | null = null;
+    s.w.host.backend.handlers["session.send"] = (p: { session_id: string; blocks: { text: string }[] }) => {
+      if (fail) throw fail;
+      sent.push({ session_id: p.session_id, text: p.blocks[0]!.text });
+      return {};
+    };
+    await pin(s);
+    const current = s.launch();
+    await current.open(s.entry);
+    await waitFor(() => current.state.view?.status === "live");
+    return { s, current, sent, failWith: (e: ZwiimClientError | null) => (fail = e) };
+  }
+
+  it("keeps each session's draft apart across switching A → B → A and worktrees", async () => {
+    const { current } = await live();
+    current.chooseWorkspace("ui");
+    current.setDraft("a", "fix the login bug");
+    current.rememberSession("fix", "a");
+    // Switch to B (same worktree) and type there.
+    current.setDraft("b", "add tests");
+    current.rememberSession("fix", "b");
+    // To another worktree's session, and back.
+    current.setDraft("u1", "refactor");
+    current.rememberSession("ui", "u1");
+    current.rememberSession("fix", "a");
+    expect([current.draft("a"), current.draft("b"), current.draft("u1")]).toEqual(["fix the login bug", "add tests", "refactor"]);
+    expect(current.draft("never-typed")).toBe("");
+    // Switching never touches Files.
+    expect(current.state.workspaceId).toBe("ui");
+    await current.clear();
+  });
+
+  it("sending clears only that session's draft", async () => {
+    const { current, sent } = await live();
+    current.setDraft("a", "  fix it \n");
+    current.setDraft("b", "add tests");
+    await current.send("a", "fix it", "m-1");
+    expect(sent).toEqual([{ session_id: "a", text: "fix it" }]);
+    expect(current.draft("a")).toBe("");
+    expect(current.draft("b")).toBe("add tests");
+    await current.clear();
+  });
+
+  it("keeps the draft when a send fails or its outcome is unknown", async () => {
+    const { current, failWith } = await live();
+    current.setDraft("a", "fix it");
+    failWith(new ZwiimClientError("turn_in_progress", "busy", 409));
+    await expect(current.send("a", "fix it", "m-1")).rejects.toMatchObject({ code: "turn_in_progress" });
+    expect(current.draft("a")).toBe("fix it");
+    failWith(new ZwiimClientError("unknown_outcome", "lost", 0));
+    await expect(current.send("a", "fix it", "m-2")).rejects.toMatchObject({ code: "unknown_outcome" });
+    expect(current.draft("a")).toBe("fix it");
+    await current.clear();
+  });
+
+  it("keeps what was typed after the send began", async () => {
+    const { current } = await live();
+    current.setDraft("a", "fix it");
+    const sending = current.send("a", "fix it", "m-1");
+    current.setDraft("a", "and also the logout");
+    await sending;
+    expect(current.draft("a")).toBe("and also the logout");
+    await current.clear();
+  });
+
+  it("drops drafts when another host opens, keeps them reopening the same one", async () => {
+    const { s, current } = await live();
+    current.setDraft("a", "fix it");
+    await current.open(s.entry);
+    expect(current.draft("a")).toBe("fix it");
+    await current.select({ ...s.entry, host_id: "host-other", name: "Office Mac" });
+    expect(current.draft("a")).toBe("");
+    await current.clear();
+  });
+});
+
+describe("stopping agents and removing worktrees (R8.13)", () => {
+  const info = (id: string, over: object = {}) => ({
+    workspace_id: id,
+    name: id,
+    alias: null,
+    kind: "root",
+    parent_workspace_id: null,
+    branch: "main",
+    is_git_repo: true,
+    base_branch: null,
+    base_commit: null,
+    removed: false,
+    display_path: null,
+    ...over,
+  });
+  const FIX = info("fix", { kind: "worktree", parent_workspace_id: "todo", branch: "fix-auth", base_branch: "main" });
+
+  /** A host with worktree fix-auth where sessions a and b run agents, and Files on fix-auth. */
+  async function host() {
+    const s = setup();
+    const live: Record<string, boolean> = { a: true, b: true };
+    let terminals = 0;
+    let stopFails: ZwiimClientError | null = null;
+    const summary = (session_id: string) => ({
+      session_id,
+      workspace_id: "fix",
+      title: `Session ${session_id}`,
+      agent: "claude_code" as const,
+      status: "completed" as const,
+      live: live[session_id]!,
+      created_at: new Date(1_700_000_000_000).toISOString(),
+      updated_at: new Date(1_700_000_000_000).toISOString(),
+    });
+    const b = s.w.host.backend;
+    b.handlers["workspace.list"] = () => [info("todo"), FIX];
+    b.handlers["session.list"] = (p: { workspace_id: string }) => (p.workspace_id === "fix" ? ["a", "b"].map(summary) : []);
+    b.handlers["session.stop"] = (p: { session_id: string }) => {
+      if (stopFails) throw stopFails;
+      live[p.session_id] = false;
+      setTimeout(() => b.feedEvent("session.changed", { session: summary(p.session_id) }), 0);
+      return {};
+    };
+    // The host's guard: running agents or terminals refuse removal, force or not.
+    b.handlers["workspace.remove_worktree"] = (p: { workspace_id: string }) => {
+      const ids = Object.keys(live).filter((id) => live[id]);
+      if (ids.length || terminals) {
+        throw new ZwiimClientError("workspace_busy", "busy", 409, { live_sessions: ids.length, terminals, session_ids: ids });
+      }
+      setTimeout(() => b.feedEvent("workspace.changed", { workspace: { ...FIX, removed: true } as never }), 0);
+      return { workspace_id: p.workspace_id, parent_workspace_id: "todo", kept_sessions: 2 };
+    };
+    await pin(s);
+    const current = s.launch();
+    await current.open(s.entry);
+    await waitFor(() => (current.state.store?.getState().sessionsByWorkspace.fix?.length ?? 0) === 2);
+    current.chooseWorkspace("fix");
+    const listed = (id: string) => current.state.store!.getState().sessionsByWorkspace.fix?.find((x) => x.session_id === id);
+    const calls = () => b.requests.filter((r) => r.op === "session.stop" || r.op === "workspace.remove_worktree").map((r) => [r.op, r.params]);
+    return {
+      s,
+      current,
+      live,
+      listed,
+      calls,
+      setTerminals: (n: number) => (terminals = n),
+      failStops: (e: ZwiimClientError | null) => (stopFails = e),
+    };
+  }
+
+  it("stops one session's agent; it stays listed, not live, and the other keeps running", async () => {
+    const { current, listed, s } = await host();
+    await current.stopSession("a");
+    await waitFor(() => listed("a")?.live === false);
+    expect(listed("a")).toMatchObject({ session_id: "a", title: "Session a" });
+    expect(listed("b")?.live).toBe(true);
+    expect(s.w.host.backend.count("session.stop")).toBe(1);
+    await current.clear();
+  });
+
+  it("names the blocking sessions, stops them, then removes; Files moves to the workspace", async () => {
+    const { current, calls } = await host();
+    const first = await removeWorktree(current, "fix");
+    expect(first).toEqual({ step: "busy", busy: { live_sessions: 2, terminals: 0, session_ids: ["a", "b"] } });
+    if (first.step !== "busy") throw new Error("busy");
+    expect(await stopThenRemove(current, "fix", first.busy.session_ids)).toEqual({ step: "removed" });
+    expect(calls()).toEqual([
+      ["workspace.remove_worktree", { workspace_id: "fix" }],
+      ["session.stop", { session_id: "a" }],
+      ["session.stop", { session_id: "b" }],
+      ["workspace.remove_worktree", { workspace_id: "fix" }],
+    ]);
+    expect(current.state.workspaceId).toBe("todo");
+    await current.clear();
+  });
+
+  it("stays blocked while a terminal remains, even forced: the host decides", async () => {
+    const { current, setTerminals, calls } = await host();
+    setTerminals(1);
+    const after = await stopThenRemove(current, "fix", ["a", "b"]);
+    expect(after).toEqual({ step: "busy", busy: { live_sessions: 0, terminals: 1, session_ids: [] } });
+    if (after.step !== "busy") throw new Error("busy");
+    expect(otherBlockers(after.busy)).toBe("1 terminal running");
+    expect(await removeWorktree(current, "fix", true)).toMatchObject({ step: "busy" });
+    expect(calls().at(-1)).toEqual(["workspace.remove_worktree", { workspace_id: "fix", force: true }]);
+    expect(current.state.workspaceId).toBe("fix");
+    setTerminals(0);
+    expect(await removeWorktree(current, "fix")).toEqual({ step: "removed" });
+    await current.clear();
+  });
+
+  it("never asks for removal after a stop that failed or may not have happened", async () => {
+    const { current, failStops, calls } = await host();
+    failStops(new ZwiimClientError("unknown_outcome", "lost", 0));
+    await expect(stopThenRemove(current, "fix", ["a", "b"])).rejects.toMatchObject({ code: "unknown_outcome" });
+    expect(calls()).toEqual([["session.stop", { session_id: "a" }]]);
+    expect(stopAgentError(new ZwiimClientError("unknown_outcome", "lost", 0), "Studio Mac")).toBe(
+      "Not sure the agent stopped. Check it on Studio Mac before trying again.",
+    );
+    await current.clear();
+  });
+
+  it("reads an agent not bound to a session yet as starting", () => {
+    expect(otherBlockers({ live_sessions: 3, terminals: 2, session_ids: ["a"] })).toBe("2 agents starting · 2 terminals running");
+    expect(otherBlockers({ live_sessions: 1, terminals: 0, session_ids: ["a"] })).toBeNull();
   });
 });

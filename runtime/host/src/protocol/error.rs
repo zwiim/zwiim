@@ -107,7 +107,8 @@ impl ZwiimError {
     }
 
     /// Removal refused: agents or terminals are still running in the worktree.
-    pub fn workspace_busy(live_sessions: usize, terminals: usize) -> Self {
+    /// `session_ids` names the sessions whose agents run there.
+    pub fn workspace_busy(live_sessions: usize, terminals: usize, session_ids: Vec<String>) -> Self {
         let mut e = Self::new(
             StatusCode::CONFLICT,
             "workspace_busy",
@@ -116,6 +117,7 @@ impl ZwiimError {
         e.details = Some(serde_json::json!({
             "live_sessions": live_sessions,
             "terminals": terminals,
+            "session_ids": session_ids,
         }));
         e
     }

@@ -125,6 +125,16 @@ describe("new session options", () => {
     expect(newSessionOptions(opts("normal", ["normal"]), { model: null, effort: null }, { mode: "unattended" }).request.mode).toBeUndefined();
   });
 
+  it("offers the chosen model's own effort, and none on a model without one", () => {
+    const high = { current: "high", values: [{ value: "high", label: "High", description: null }] };
+    const effortOn = (model: string | null) => (model === "opus" ? null : high);
+    const opus = newSessionOptions(opts(), { model: "opus", effort: "low" }, {}, effortOn);
+    expect(opus.shown.effort).toBeNull();
+    expect(opus.request).toEqual({ model: "opus" });
+    const sonnet = newSessionOptions(opts(), { model: "opus", effort: "low" }, { model: "sonnet" }, effortOn);
+    expect(sonnet.request).toEqual({ model: "sonnet", effort: "high" });
+  });
+
   it("sends the chosen options with the first message", async () => {
     rememberAgentChoices("claude_code", { model: "opus" });
     const t = new FakeTransport();

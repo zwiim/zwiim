@@ -5,6 +5,7 @@
 // worktree that was removed asks for another choice instead.
 
 import {
+  effortFor,
   isClientError,
   type AgentSummary,
   type ChoiceOption,
@@ -102,6 +103,17 @@ export function startOptions(options: SessionOptions | null, picks: StartPicks):
   return request;
 }
 
+/**
+ * What a new session of `agent` can choose with these picks: the agent's
+ * options, with the effort of the model picked (none on a model without one).
+ */
+export function startChoices(agent: AgentSummary | null, picks: StartPicks): SessionOptions | null {
+  const options = agent?.options ?? null;
+  if (!agent || !options) return options;
+  const model = options.model ? choiceValue(options.model, picks.model) : null;
+  return { ...options, effort: effortFor(agent, model) };
+}
+
 export interface StartInput {
   target: StartTarget;
   agent: AgentSummary | null;
@@ -114,7 +126,7 @@ export interface StartInput {
 export function startParams({ target, agent, picks, prompt, client_message_id }: StartInput): OpParams<"session.start"> | null {
   const text = prompt.trim();
   if (target.kind !== "ready" || !agent?.available || !text) return null;
-  const options = startOptions(agent.options, picks);
+  const options = startOptions(startChoices(agent, picks), picks);
   return {
     workspace_id: target.workspace.workspace_id,
     agent: agent.agent,
