@@ -1239,6 +1239,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_start_runs_the_agent_in_the_chosen_worktree() {
+        use crate::session::orchestration_tests::{text, FakeLauncher};
+
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
+        let emitter = EventEmitter::Noop;
+        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
+            .await
+            .unwrap();
+        assert_ne!(wt.path, repo);
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+
+        let in_worktree = crate::session::start(
+            &db,
+            &mgr,
+            &launcher,
+            &wt.workspace_id,
+            AgentType::ClaudeCode,
+            text("in the worktree"),
+            None,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+        let in_root = crate::session::start(
+            &db,
+            &mgr,
+            &launcher,
+            &root_wid,
+            AgentType::ClaudeCode,
+            text("in the root"),
+            None,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+
+        // Each agent runs in its own workspace's checkout, never the root's by default.
+        assert_eq!(
+            *launcher.working_dirs.lock().unwrap(),
+            vec![wt.path.clone(), repo.clone()]
+        );
+        // And each session is listed under the workspace it was started in.
+        let listed = |wid: String| {
+            let (db, mgr) = (&db, &mgr);
+            async move {
+                crate::session::list_for_workspace(&db.conn, mgr, &wid)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|s| s.session_id)
+                    .collect::<Vec<_>>()
+            }
+        };
+        assert_eq!(listed(wt.workspace_id.clone()).await, vec![in_worktree]);
+        assert_eq!(listed(root_wid.clone()).await, vec![in_root]);
+    }
+
+    #[tokio::test]
     async fn removed_worktree_session_never_resumes_anywhere() {
         use crate::session::orchestration_tests::{finish_turn, text, FakeLauncher};
         use std::sync::atomic::Ordering;

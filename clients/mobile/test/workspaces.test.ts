@@ -4,6 +4,9 @@ import {
   contextLabel,
   contextText,
   hasWorktreeLevel,
+  openTile,
+  workspaceCounts,
+  worktreeBase,
   terminalsIn,
   terminalSummary,
   worktreeChoices,
@@ -92,11 +95,35 @@ describe("the workspace picker", () => {
   });
 });
 
+describe("the workspace tree", () => {
+  it("opens on the workspace holding the choice, else the first", () => {
+    expect(openTile(tree(), "fix")).toBe("zwiim");
+    expect(openTile(tree(), "notes")).toBe("notes");
+    expect(openTile(tree(), "old")).toBe("zwiim");
+    expect(openTile(tree(), null)).toBe("zwiim");
+    expect(openTile([], null)).toBeNull();
+  });
+
+  it("says what a workspace holds and where a worktree came from", () => {
+    const [zwiim, api, notes] = workspaceRoots(tree(), "");
+    expect(workspaceCounts(zwiim!)).toEqual(["2 worktrees"]);
+    expect(workspaceCounts(api!)).toEqual([]);
+    expect(workspaceCounts(notes!)).toEqual(["no Git"]);
+    expect(worktreeBase(wt("x", "zwiim", { base_commit: "1a2b3c4d5e" }))).toBe("main@1a2b3c4");
+    expect(worktreeBase(ws("zwiim"))).toBeNull();
+  });
+});
+
 describe("new worktree errors", () => {
   const root = ws("zwiim");
   it("names a folder that isn't a repository", () => {
     expect(worktreeError(new ZwiimClientError("not_a_git_repository", "x"), root, "Studio Mac")).toBe(
       "zwiim isn't a Git repository, so it can't have worktrees.",
+    );
+  });
+  it("says a repository with no commits has nothing to branch from", () => {
+    expect(worktreeError(new ZwiimClientError("invalid_input", "The root workspace has no commits yet"), root, "Studio Mac")).toBe(
+      "zwiim has no commits yet. Commit once on Studio Mac, then try again.",
     );
   });
   it("says when the host is away", () => {

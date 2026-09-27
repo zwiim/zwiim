@@ -239,6 +239,19 @@ export class HostConnection {
     await this.#live().client.request("terminal.kill", { terminal_id });
   }
 
+  /**
+   * Start a session (`session.start`); never retried. The controller opens
+   * it at once, so its first prompt and the agent's reply stream in.
+   */
+  async startSession(params: OpParams<"session.start">): Promise<string> {
+    return this.#live().startSession(params);
+  }
+
+  /** Read the host's agents again (`agent.list`) into the store. */
+  async refreshAgents(): Promise<void> {
+    await this.#live().refreshAgents();
+  }
+
   /** Send a prompt to a session (`session.send`); never retried. */
   async send(session_id: string, text: string, client_message_id: string): Promise<void> {
     await this.#live().sendMessage({ session_id, blocks: [{ type: "text", text }], client_message_id });

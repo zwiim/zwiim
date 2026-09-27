@@ -9,9 +9,11 @@ Zwiim Cloud relay, and the app never picks a transport itself.
 App.tsx         fonts, splash and navigation: sign in → Hosts → pairing / the Host shell
 src/app/        route types, the signed-in account, shared hooks
 src/screens/    SignIn, Hosts, Pairing (QR scan), the Host shell (tabs, Host bar), the Sessions
-                tab with Needs you, the request sheets and a live session, per DESIGN.md
+                tab with Needs you, the request sheets and a live session with its
+                worktree's session strip, per DESIGN.md
 src/sessions/   following every live session's stream, the Sessions tab's model, and a
-                session's transcript and Now bar from the SDK's SessionView (plus the
+                session's transcript and Now bar from the SDK's SessionView, a worktree's
+                sessions for the strip (plus the
                 Markdown parser)
 src/files/      the Files tab's model: breadcrumbs, folder rows with change marks, file
                 search, Changes rows, the patch parser, syntax spans and
@@ -102,7 +104,9 @@ npx expo prebuild && (cd android && ./gradlew assembleDebug)   # or: npx expo ru
 - A relaunch opens the Sessions tab, not the session that was on screen.
 - How long a request has waited counts from when this phone first saw it
   (a request carries no time), so it starts again after a relaunch.
-- Workspace filters and New session on the Sessions tab.
+- Workspace filters on the Sessions tab (the list stays Host-wide).
+- New session: image attachments, and remembering the last model and effort
+  per agent the way Desktop does.
 - A plan reads as plain text, not Markdown.
 - The Host tab's Devices and Appearance sections.
 - A wrong host key over the relay reads as reconnecting, not "Couldn't

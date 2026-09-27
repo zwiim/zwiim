@@ -80,6 +80,8 @@ export interface SessionItem {
   session_id: string;
   title: string;
   agent: string | null;
+  /** The worktree it runs in, for good: a session never moves. */
+  workspace_id: string | null;
   /** The workspace's (or worktree's) name. */
   workspace: string | null;
   state: SessionState;
@@ -87,6 +89,8 @@ export interface SessionItem {
   request: AgentRequest | null;
   /** While working: the latest tool call's title. */
   activity: string | null;
+  /** When the session was started (ms). */
+  createdAt: number;
   /** When the session last changed on the host (ms). */
   updatedAt: number;
   /** In NEEDS YOU: since when this phone has seen the request (ms). */
@@ -116,7 +120,7 @@ function latestActivity(view: SessionView | undefined): string | null {
   return null;
 }
 
-function toItem(
+export function toItem(
   s: SessionSummary,
   view: SessionView | undefined,
   names: ReadonlyMap<string, string>,
@@ -129,17 +133,19 @@ function toItem(
     session_id: s.session_id,
     title: s.title?.trim() || "Untitled session",
     agent: s.agent,
+    workspace_id: s.workspace_id,
     workspace: s.workspace_id ? (names.get(s.workspace_id) ?? null) : null,
     state: st,
     request,
     activity: st === "working" ? latestActivity(view) : null,
+    createdAt: Date.parse(s.created_at) || 0,
     updatedAt,
     waitingSince: request ? (seenAt(request.request_id) ?? updatedAt) : null,
   };
 }
 
 /** Where each session lives, as "workspace · worktree". */
-const workspaceNames = (workspaces: readonly WorkspaceInfo[] | null) =>
+export const workspaceNames = (workspaces: readonly WorkspaceInfo[] | null) =>
   new Map((workspaces ?? []).map((w) => [w.workspace_id, contextText(contextLabel(workspaces, w.workspace_id))!]));
 
 /** One session as the list shows it; null when the host doesn't list it. */

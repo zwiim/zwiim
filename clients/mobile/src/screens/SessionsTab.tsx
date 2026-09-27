@@ -1,17 +1,19 @@
 // The Sessions tab (DESIGN.md, Screen 4): every session of the host, what
 // waits for the user first. NEEDS YOU cards answer a command's permission in
-// place or open the request sheet; WORKING and RECENT rows open the session.
+// place or open the request sheet; WORKING and RECENT rows open the session;
+// `+` starts a new one.
 // Everything follows the host's feed and each live session's stream, so it
 // updates without a refresh and rebuilds itself after a reconnect.
 
 import { useMemo } from "react";
-import { StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import type { AgentRequest } from "@zwiim/sdk";
 import { useHostState, useNow } from "../app/hooks";
 import { useRootNavigation } from "../app/navigation";
 import { elapsed, sessionLook, sessionSections, type SessionItem } from "../sessions/model";
 import { currentHost } from "../services";
-import { EmptyState, SectionHeader, SessionRow, SkeletonRows, T } from "../ui/components";
+import { Button, EmptyState, SectionHeader, SessionRow, SkeletonRows, T } from "../ui/components";
+import { Icon, Plus } from "../ui/icons";
 import { space, useTheme } from "../ui/tokens";
 import { HostFrame, useHostName } from "./HostFrame";
 import { RequestCard } from "./requests";
@@ -38,6 +40,7 @@ export function SessionsTab() {
   );
   const now = useNow(sections.needsYou.length > 0 || sections.working.length > 0);
   const open = (item: SessionItem) => nav.navigate("Session", { session_id: item.session_id });
+  const create = () => nav.navigate("NewSession");
 
   const row = (item: SessionItem, time: string) => (
     <SessionRow
@@ -55,7 +58,12 @@ export function SessionsTab() {
   if (!sections.loaded) body = <SkeletonRows />;
   else if (!sections.needsYou.length && !sections.working.length && !sections.recent.length) {
     body = (
-      <EmptyState glyph="●" title="No sessions yet" body={`Sessions you start in Zwiim on ${name} show up here.`} />
+      <EmptyState
+        glyph="●"
+        title="No sessions yet"
+        body={`Sessions you start in Zwiim on ${name} show up here.`}
+        action={<Button label="New session" onPress={create} testID="sessions-new-empty" />}
+      />
     );
   } else {
     body = (
@@ -93,9 +101,19 @@ export function SessionsTab() {
       </>
     );
   }
-  return <HostFrame title="Sessions">{body}</HostFrame>;
+  const accessory = (
+    <Pressable accessibilityRole="button" accessibilityLabel="New session" onPress={create} style={styles.add} testID="sessions-new">
+      <Icon icon={Plus} color={theme.fg} size={24} />
+    </Pressable>
+  );
+  return (
+    <HostFrame title="Sessions" accessory={accessory}>
+      {body}
+    </HostFrame>
+  );
 }
 
 const styles = StyleSheet.create({
   more: { paddingHorizontal: space.lg, paddingTop: space.sm },
+  add: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
 });

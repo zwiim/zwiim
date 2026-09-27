@@ -3,7 +3,8 @@
 // writes it, the Now bar on what the agent is doing, and the composer. The
 // request it waits on is answered here as on the Sessions tab. Everything on
 // screen is the host's: a message shows once the host echoes it, and Stop
-// holds until the host ends the turn.
+// holds until the host ends the turn. The session strip under the header
+// switches between the sessions of its worktree in place.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Keyboard, KeyboardAvoidingView, Platform, Pressable, StyleSheet, View } from "react-native";
@@ -16,6 +17,7 @@ import { useCurrentHost, useHostState, useNow } from "../app/hooks";
 import type { RootStack } from "../app/navigation";
 import { connectionText } from "../host/status";
 import { requestTitle, sessionItem, type SessionItem } from "../sessions/model";
+import { sessionToOpen, worktreeSessions } from "../sessions/worktree";
 import {
   clock,
   nowState,
@@ -45,6 +47,7 @@ import {
 import { space, useTheme } from "../ui/tokens";
 import { useHostName } from "./HostFrame";
 import { RequestCard, RequestSheet } from "./requests";
+import { SessionStrip } from "./SessionStrip";
 
 /** When this phone first saw each running turn; the protocol carries no times. */
 const turnStarts = new Map<string, number>();
@@ -52,7 +55,7 @@ const turnStarts = new Map<string, number>();
 export function SessionScreen({ route, navigation }: NativeStackScreenProps<RootStack, "Session">) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
-  const { session_id } = route.params;
+  const { session_id, started } = route.params;
   const name = useHostName();
   const { view: connection, store } = useCurrentHost();
   const state = useHostState();
@@ -60,7 +63,15 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
     () => sessionItem(state, session_id, currentHost.requestSeenAt),
     [state.workspaces, state.sessionsByWorkspace, state.sessions, session_id],
   );
+  const worktree = useMemo(
+    () => (item?.workspace_id ? worktreeSessions(state, item.workspace_id, currentHost.requestSeenAt) : null),
+    [state.workspaces, state.sessionsByWorkspace, state.sessions, item?.workspace_id],
+  );
   const view = state.sessions[session_id];
+  // Just started here: the host lists it on its feed shortly. Once listed, a missing session is gone.
+  const listed = useRef<string | null>(null);
+  if (item) listed.current = session_id;
+  const waiting = !item && started && listed.current !== session_id;
   const connected = connection?.status === "live";
   const back = () => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Host"));
 
@@ -71,11 +82,26 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
     return () => currentHost.hideSession(session_id);
   }, [store, session_id]);
 
+  // Switching back to this worktree reopens this session.
+  useEffect(() => {
+    if (item?.workspace_id) currentHost.rememberSession(item.workspace_id, session_id);
+  }, [item?.workspace_id, session_id]);
+
+  // Tabs swap the session in place; a worktree with none opens New session there.
+  const open = (id: string) => navigation.setParams({ session_id: id, started: undefined });
+  const startIn = (workspace_id: string) => navigation.navigate("NewSession", { workspace_id });
+  const toWorktree = (workspace_id: string) => {
+    const there = worktreeSessions(state, workspace_id)?.sessions ?? [];
+    const id = sessionToOpen(there, currentHost.lastSession(workspace_id));
+    if (id) open(id);
+    else startIn(workspace_id);
+  };
+
   const rows = useMemo(() => transcriptRows(view), [view]);
   const text = connectionText(connection);
 
   let body;
-  if (state.workspaces === null) body = <SkeletonRows />;
+  if (state.workspaces === null || waiting) body = <SkeletonRows />;
   else if (!item) {
     body = (
       <EmptyState
@@ -85,7 +111,7 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
         action={<Button kind="secondary" label="Back to Sessions" onPress={back} />}
       />
     );
-  } else body = <Live item={item} view={view} rows={rows} hostName={name} connected={connected} />;
+  } else body = <Live key={session_id} item={item} view={view} rows={rows} hostName={name} connected={connected} />;
 
   return (
     <View style={[styles.page, { backgroundColor: theme.bg, paddingTop: insets.top }]}>
@@ -95,13 +121,22 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
         </Pressable>
         <View style={styles.headerText}>
           <T variant="headline" numberOfLines={1} testID="session-title">
-            {item?.title ?? "Session"}
+            {item?.title ?? (waiting ? "Starting…" : "Session")}
           </T>
           <T variant="monoSm" color={theme.mut} numberOfLines={1} testID="session-subtitle">
             {[item?.agent, item?.workspace, `${name} ${text.pill}`].filter(Boolean).join(" · ")}
           </T>
         </View>
       </View>
+      {worktree && item ? (
+        <SessionStrip
+          worktree={worktree}
+          session_id={session_id}
+          onOpen={open}
+          onNew={() => startIn(worktree.workspace_id)}
+          onWorktree={toWorktree}
+        />
+      ) : null}
       {body}
     </View>
   );

@@ -69,6 +69,31 @@ export function worktreeChoices(tree: readonly WorkspaceNode[], root_id: string)
   return [root, ...root.worktrees.filter((n) => !n.workspace.removed)];
 }
 
+/** What a workspace row says after its name: "no Git", "2 worktrees", "1 working". */
+export function workspaceCounts(node: WorkspaceNode): string[] {
+  const w = node.workspace;
+  const worktrees = node.worktrees.filter((n) => !n.workspace.removed).length;
+  const working = node.working + node.worktrees.reduce((n, t) => n + t.working, 0);
+  return [
+    w.is_git_repo ? null : "no Git",
+    worktrees ? `${worktrees} ${worktrees === 1 ? "worktree" : "worktrees"}` : null,
+    working ? `${working} working` : null,
+  ].filter((s): s is string => s !== null);
+}
+
+/** Where a worktree branched from: "main@1a2b3c4", or null for a root. */
+export function worktreeBase(w: WorkspaceInfo): string | null {
+  if (w.base_branch && w.base_commit) return `${w.base_branch}@${w.base_commit.slice(0, 7)}`;
+  return w.base_branch ?? w.base_commit?.slice(0, 7) ?? null;
+}
+
+/** The workspace tile open when the tree opens: the one holding `selected` while it's live, else the first. */
+export function openTile(tree: readonly WorkspaceNode[], selected: string | null): string | null {
+  const roots = workspaceRoots(tree, "");
+  const holds = roots.find((n) => worktreeChoices(tree, n.workspace.workspace_id).some((c) => c.workspace.workspace_id === selected));
+  return (holds ?? roots[0])?.workspace.workspace_id ?? null;
+}
+
 /** A worktree's terminals; the others stay running on the host, listed again on switching back. */
 export function terminalsIn(terminals: Readonly<Record<string, TerminalMeta>>, workspace_id: string): TerminalMeta[] {
   return Object.values(terminals).filter((t) => t.workspace_id === workspace_id);
@@ -83,6 +108,8 @@ export function terminalSummary(list: readonly TerminalMeta[], scope: string): s
 /** Why New worktree didn't work, in words. */
 export function worktreeError(e: unknown, root: WorkspaceInfo, hostName: string): string {
   if (isClientError(e, "not_a_git_repository")) return `${workspaceLabel(root)} isn't a Git repository, so it can't have worktrees.`;
+  // From a root with no base given, the host's only other refusal: nothing committed to branch from.
+  if (isClientError(e, "invalid_input")) return `${workspaceLabel(root)} has no commits yet. Commit once on ${hostName}, then try again.`;
   if (isClientError(e, "network") || isClientError(e, "timeout")) return `Not connected to ${hostName}. Try again when it's back.`;
   if (isClientError(e, "unknown_outcome")) return "Not sure that went through. Refreshed from your Mac.";
   return "Couldn't create a worktree. Try again.";

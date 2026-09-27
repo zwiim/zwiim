@@ -51,6 +51,8 @@ export class CurrentHost {
   /** `host.hello` was asked on this live connection. */
   #asked = false;
   readonly #listeners = new Set<() => void>();
+  /** The session last on screen in each worktree of this host (in memory, as Desktop keeps it). */
+  readonly #lastSession = new Map<string, string>();
 
   constructor(deps: CurrentHostDeps) {
     this.#deps = deps;
@@ -77,6 +79,7 @@ export class CurrentHost {
 
   /** Control `host` over a new connection, read again from the store (after pairing). */
   async open(host: HostEntry): Promise<void> {
+    if (this.#state.host?.host_id !== host.host_id) this.#lastSession.clear();
     this.#drop();
     const run = ++this.#run;
     this.#set({ ...EMPTY, host });
@@ -133,11 +136,35 @@ export class CurrentHost {
     this.#connection?.hideSession(session_id);
   }
 
+  /** `session_id` is the one on screen in `workspace_id`: switching back to that worktree opens it. */
+  rememberSession(workspace_id: string, session_id: string): void {
+    this.#lastSession.set(workspace_id, session_id);
+  }
+
+  /** The session last on screen in a worktree, if any. */
+  lastSession(workspace_id: string): string | null {
+    return this.#lastSession.get(workspace_id) ?? null;
+  }
+
   /** Send a message to a session. The host echoes it on the session's stream. */
   async send(session_id: string, text: string, client_message_id: string): Promise<void> {
     const connection = this.#connection;
     if (!connection) throw new ZwiimClientError("network", "Not connected to the host");
     await connection.send(session_id, text, client_message_id);
+  }
+
+  /**
+   * Start a session where `params.workspace_id` says, never elsewhere. The
+   * worktree chosen in Files stays as it is; nothing is listed until the
+   * host reports the session on its feed.
+   */
+  async startSession(params: OpParams<"session.start">): Promise<string> {
+    return this.#opened().startSession(params);
+  }
+
+  /** Read which agents the host can run again. */
+  async refreshAgents(): Promise<void> {
+    await this.#opened().refreshAgents();
   }
 
   /** Stop the session's current turn. The host ends it on the session's stream. */
@@ -159,17 +186,23 @@ export class CurrentHost {
     if (host) void this.#deps.prefs.setWorkspace(host.host_id, workspace_id).catch(() => {});
   }
 
-  /** Add a folder under the host's home as a workspace, and show it. */
-  async addWorkspaceAt(home_path: string[]): Promise<WorkspaceInfo> {
+  /**
+   * Add a folder under the host's home as a workspace, and show it in Files.
+   * `choose: false` (New session) adds it without touching Files.
+   */
+  async addWorkspaceAt(home_path: string[], { choose = true }: { choose?: boolean } = {}): Promise<WorkspaceInfo> {
     const workspace = await this.#opened().addWorkspaceAt(home_path);
-    this.chooseWorkspace(workspace.workspace_id);
+    if (choose) this.chooseWorkspace(workspace.workspace_id);
     return workspace;
   }
 
-  /** Create a worktree of a root workspace from its current branch, and show it. */
-  async createWorktree(root_workspace_id: string): Promise<WorkspaceInfo> {
+  /**
+   * Create a worktree of a root workspace from its current branch, and show it
+   * in Files. `choose: false` (New session) creates it without touching Files.
+   */
+  async createWorktree(root_workspace_id: string, { choose = true }: { choose?: boolean } = {}): Promise<WorkspaceInfo> {
     const workspace = await this.#opened().createWorktree(root_workspace_id);
-    this.chooseWorkspace(workspace.workspace_id);
+    if (choose) this.chooseWorkspace(workspace.workspace_id);
     return workspace;
   }
 

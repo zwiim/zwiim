@@ -26,6 +26,7 @@ import { ChangesScreen, DiffScreen, FileScreen } from "./src/screens/FilesScreen
 import { HostShell } from "./src/screens/HostShell";
 import { HostsScreen } from "./src/screens/HostsScreen";
 import { PairingScreen } from "./src/screens/PairingScreen";
+import { NewSessionScreen } from "./src/screens/NewSessionScreen";
 import { SessionScreen } from "./src/screens/SessionScreen";
 import { SignInScreen } from "./src/screens/SignInScreen";
 import { TerminalScreenView } from "./src/screens/TerminalScreens";
@@ -158,6 +159,7 @@ export default function App() {
                   <Stack.Screen name="Hosts" component={HostsScreen} />
                   <Stack.Screen name="Host" component={HostShell} />
                   <Stack.Screen name="Session" component={SessionScreen} />
+                  <Stack.Screen name="NewSession" component={NewSessionScreen} />
                   <Stack.Screen name="Changes" component={ChangesScreen} />
                   <Stack.Screen name="File" component={FileScreen} />
                   <Stack.Screen name="Diff" component={DiffScreen} />

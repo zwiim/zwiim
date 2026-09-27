@@ -3,7 +3,9 @@
 // (`workspace.add { home_path }`). New folder makes one folder where you are
 // (`workspace.create_folder`) and opens it, ready to add. Folders are named by
 // segments under `~`; the host resolves them and never lets the phone above
-// home. Leaving without Add registers nothing.
+// home. Leaving without Add registers nothing. Opened from New session, Add
+// returns there with the new workspace as where the session starts, and
+// Files stays where it was.
 
 import { useCallback, useState } from "react";
 import { BackHandler, Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
@@ -29,7 +31,7 @@ import { Banner, Button, EmptyState, ScreenHeader, Sheet, SkeletonRows, T } from
 import { radius, space, type, useTheme } from "../ui/tokens";
 import { useHostName } from "./HostFrame";
 
-export function BrowseMacScreen({ navigation }: NativeStackScreenProps<RootStack, "BrowseMac">) {
+export function BrowseMacScreen({ navigation, route }: NativeStackScreenProps<RootStack, "BrowseMac">) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const hostName = useHostName();
@@ -63,9 +65,15 @@ export function BrowseMacScreen({ navigation }: NativeStackScreenProps<RootStack
     setAdding(true);
     setError(null);
     try {
-      await currentHost.addWorkspaceAt(path);
-      // Back to the Host underneath, not a second one on top of Browse Mac.
-      navigation.popTo("Host", { screen: "Files" });
+      // Back to the screen underneath, not a second one on top of Browse Mac.
+      // For New session it is where the session starts; Files keeps its own selection.
+      if (route.params?.then === "NewSession") {
+        const workspace = await currentHost.addWorkspaceAt(path, { choose: false });
+        navigation.popTo("NewSession", { workspace_id: workspace.workspace_id });
+      } else {
+        await currentHost.addWorkspaceAt(path);
+        navigation.popTo("Host", { screen: "Files" });
+      }
     } catch (e) {
       setError(addProblem(e, path, hostName));
     } finally {

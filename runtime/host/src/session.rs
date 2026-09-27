@@ -825,6 +825,8 @@ pub(crate) mod orchestration_tests {
         pub connections: ConnectionManager,
         pub launches: AtomicUsize,
         pub resumed: std::sync::Mutex<Vec<Option<String>>>,
+        /// The directory each agent was launched in, in launch order.
+        pub working_dirs: std::sync::Mutex<Vec<String>>,
         pub commands: Arc<std::sync::Mutex<Vec<(String, &'static str)>>>,
         pub delay: Duration,
     }
@@ -835,6 +837,7 @@ pub(crate) mod orchestration_tests {
                 connections,
                 launches: AtomicUsize::new(0),
                 resumed: Default::default(),
+                working_dirs: Default::default(),
                 commands: Default::default(),
                 delay: Duration::ZERO,
             }
@@ -862,6 +865,7 @@ pub(crate) mod orchestration_tests {
             tokio::time::sleep(self.delay).await;
             let n = self.launches.fetch_add(1, Ordering::SeqCst) + 1;
             let id = format!("fake-conn-{n}");
+            self.working_dirs.lock().unwrap().push(working_dir.clone());
             let mut rx = self
                 .connections
                 .insert_test_connection_live(

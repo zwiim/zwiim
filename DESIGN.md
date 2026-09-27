@@ -282,9 +282,28 @@ Approved layout (variant A):
 - **RECENT**: completed/idle sessions, most recent first, relative time right.
 - Tap any row → Session. Long-press → session actions sheet (Open, Stop turn if
   working, Delete).
-- **New session:** `+` in the top-right of the title row → sheet: workspace
-  picker, agent picker (`agent.list`, unavailable agents shown disabled with
-  their reason), first prompt, Start.
+- **New session:** `+` in the top-right of the title row (and **New session**
+  on the empty list) → a pushed screen: one grouped card of rows, name left,
+  mono value right, `›` to a picker sheet. Rows: **Workspace** (`todo · master`,
+  `todo · zwiim/0cbbb1e4`; defaults to the Files selection, picking here does
+  not change Files; its sheet is the workspace tree below), **Agent** (`agent.list`, unavailable agents disabled with
+  their reason), then only what the agent advertises: **Model**, **Effort**,
+  **Mode** (Ask / Plan / Unattended, the names the Session screen uses).
+  Unattended asks first ("Turn off approvals?") and shows in amber. Then
+  **First prompt** and a full-width **Start session** in the thumb zone. A
+  selected worktree that was removed shows `Workspace removed` in red and Start
+  stays disabled until another is picked; it never falls back to the root.
+  Start opens the new session; a failure keeps the prompt and says why.
+- **Workspace tree** (New session's Workspace sheet): the Files sheet's look
+  with both levels in one list. Head: **Workspace** · **New workspace** (Browse
+  Mac, which comes back to New session with the added folder chosen), then
+  search. Each Git workspace is a tile, `›` closed / `⌄` open, name (accent
+  when it holds the choice), counts in mono, `~/…` path under it. Open, it
+  hangs its rows on a hairline under the chevron: **Root** `· ⎇ master`, each
+  live worktree `⎇ zwiim/0cbbb1e4` with `from master@da336a4`, then
+  `+ New worktree` in accent (creates it and chooses it). The tile holding the
+  choice starts open (else the first); others open on tap, several at once. A
+  plain folder has no tile: it is chosen directly, with a dot.
 
 ### 5. Session (the most important screen)
 
@@ -293,6 +312,17 @@ Top to bottom:
 - **Nav header:** back, session title (`headline`, one line), mono subtitle
   `agent · workspace · worktree · Host ⌂/☁`. Trailing `⋯` → options sheet (model, effort,
   mode from `SessionOptions`; only options the agent offers).
+- **Session strip** (48pt, hairline below; R8.11): the sessions of this session's
+  worktree, Desktop's tabs made thumb-sized. Leading `⎇ fix-auth ▾` (mono `mut`,
+  `· removed` in `faint`) → **Switch worktree** sheet: the workspace tree with no
+  create rows; picking one opens its last session on screen, else its newest,
+  else New session there. Then a hairline and a horizontal scroll of pill tabs
+  (32pt, max 176, one-line title), oldest first: the open one `surface` with an
+  accent border, the rest `mut` text; `need` / breathing `work` dot only while a
+  tab needs you or works. The open tab scrolls into view. Tapping a tab swaps the
+  session in place (no screen pushed); `+` pinned at the right → New session defaulting to
+  this worktree, and after Start the strip shows the new tab. A removed
+  worktree has no `+`. Files' selection never changes from here.
 - **Transcript** (inverted `FlatList`, newest at the bottom):
   - user messages: right-aligned `surface` block, radius 16/16/4/16.
   - agent messages: full-width prose, no bubble, markdown rendered; inline code
@@ -558,3 +588,6 @@ glyph, a title, one line, one action.
 | 2026-09-27 | New workspace browses `~` only, by folder names | The phone never sends or sees a Host path; home is where projects live and the jail is simple |
 | 2026-09-27 | Browse Mac can make one folder; Git stays optional | Starting a project from the phone needs a folder, not a filesystem API; a plain folder is a full workspace, and only Git features step aside |
 | 2026-09-27 | Files drops its segmented control: browse is the page (R8.9) | The chips set the scope and everything under them belongs to it; Changes is one row with the count, terminals a dock that says what runs, so nothing hides behind a segment |
+| 2026-09-27 | New session is a pushed screen of rows, not a sheet (R8.10) | Seven settings plus a prompt don't fit a sheet over the keyboard; rows show every choice before Start, and each row's own sheet stays short |
+| 2026-09-27 | New session picks where it runs from one workspace tree | A flat list repeated `todo ·` on every worktree and couldn't tell two `test` folders apart; tiles group worktrees under their workspace, keep the sheet short, and carry New workspace / New worktree so a session can start somewhere that doesn't exist yet |
+| 2026-09-27 | A session strip under the Session header, not a filtered Sessions tab (R8.11) | A worktree holds many tasks; tabs of its sessions switch in one tap and `+` starts another there, as on Desktop, while the Sessions tab stays Host-wide so nothing needing you hides. Where a session starts never moves Files |

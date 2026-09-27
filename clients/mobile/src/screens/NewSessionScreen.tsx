@@ -1,0 +1,399 @@
+// New session (DESIGN.md, Screen 4), pushed from the Sessions tab's `+` or a
+// session strip's `+`: where it runs (that strip's worktree, else the one
+// chosen in Files, shown before Start; choosing here never changes Files), the agent, the
+// options that agent offers (model, effort, mode), and the first prompt. One
+// `session.start`, as Desktop sends it; on success the new session replaces
+// this screen, on failure nothing is listed and the prompt stays. Where it
+// runs is picked from the workspace tree, which can also add a workspace
+// (Browse Mac) or a worktree to start in.
+
+import { useEffect, useState } from "react";
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { randomUUID } from "expo-crypto";
+import type { SessionMode } from "@zwiim/sdk";
+import { useCurrentHost, useHostState } from "../app/hooks";
+import type { RootStack } from "../app/navigation";
+import {
+  MODE_LABELS,
+  agentNote,
+  choiceLabel,
+  choiceValue,
+  defaultAgent,
+  modeChoosable,
+  modeValue,
+  startError,
+  startParams,
+  startTarget,
+  type StartPicks,
+} from "../sessions/start";
+import { currentHost } from "../services";
+import { Button, ScreenHeader, Sheet, T } from "../ui/components";
+import { ChevronRight, Icon } from "../ui/icons";
+import { radius, space, type, useTheme } from "../ui/tokens";
+import { useHostName } from "./HostFrame";
+import { WorkspaceTree } from "./workspaces";
+
+type Picking = "workspace" | "agent" | "model" | "effort" | "mode" | null;
+
+interface Choice {
+  value: string;
+  label: string;
+  detail?: string | null;
+  disabled?: boolean;
+}
+
+export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<RootStack, "NewSession">) {
+  const theme = useTheme();
+  const insets = useSafeAreaInsets();
+  const name = useHostName();
+  const { view, workspaceId } = useCurrentHost();
+  const state = useHostState();
+  const live = view?.status === "live";
+
+  // The target starts as the worktree chosen in Files; choosing here doesn't change Files.
+  const [targetId, setTargetId] = useState<string | null>(null);
+  const [agentId, setAgentId] = useState<string | null>(null);
+  const [picks, setPicks] = useState<StartPicks>({});
+  const [prompt, setPrompt] = useState("");
+  const [picking, setPicking] = useState<Picking>(null);
+  const [confirmUnattended, setConfirmUnattended] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  // Agents as the host has them now (one may have been installed since connecting).
+  useEffect(() => {
+    if (live) void currentHost.refreshAgents().catch(() => {});
+  }, [live]);
+
+  // A workspace just added from the tree (Browse Mac came back here with it).
+  const added = route.params?.workspace_id;
+  useEffect(() => {
+    if (added) setTargetId(added);
+  }, [added]);
+
+  const target = startTarget(state.workspaces, targetId ?? workspaceId);
+  const agents = state.agents;
+  const agent = agents?.find((a) => a.agent === (agentId ?? defaultAgent(agents))) ?? null;
+  const options = agent?.options ?? null;
+  const mode = modeValue(options, picks.mode);
+  const params = startParams({ target, agent, picks, prompt, client_message_id: "" });
+
+  const close = () => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Host"));
+
+  const start = async () => {
+    const request = startParams({ target, agent, picks, prompt, client_message_id: randomUUID() });
+    if (!request || starting) return;
+    setStarting(true);
+    setError(null);
+    try {
+      const session_id = await currentHost.startSession(request);
+      // From a session's `+`: back to it, now showing the new one (one Session deep).
+      if (navigation.getState().routes.some((r) => r.name === "Session")) navigation.popTo("Session", { session_id, started: true });
+      else navigation.replace("Session", { session_id, started: true });
+    } catch (e) {
+      setError(startError(e, name, agent?.name ?? null));
+      setStarting(false);
+    }
+  };
+
+  const checkAgents = async () => {
+    setChecking(true);
+    try {
+      await currentHost.refreshAgents();
+    } catch {
+      // The field keeps saying what it knows.
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  let where: { text: string; color: string };
+  if (target.kind === "ready") where = { text: target.label, color: theme.fg };
+  else if (target.kind === "removed")
+    where = { text: target.label ? `${target.label} was removed` : "Workspace removed", color: theme.err };
+  else if (target.kind === "none") where = { text: "No workspaces yet", color: theme.mut };
+  else where = { text: "Loading…", color: theme.mut };
+
+  const noAgent = agents !== null && defaultAgent(agents) === null;
+
+  // The sheet's list for what's being picked.
+  let sheet: { title: string; current: string | null; items: Choice[]; choose(value: string): void } | null = null;
+  if (picking === "agent" && agents) {
+    sheet = {
+      title: "Agent",
+      current: agent?.agent ?? null,
+      items: agents.map((a) => ({ value: a.agent, label: a.name, detail: agentNote(a), disabled: !a.available })),
+      choose: (v) => {
+        if (v !== agent?.agent) setPicks({});
+        setAgentId(v);
+      },
+    };
+  } else if ((picking === "model" || picking === "effort") && options?.[picking]) {
+    const option = options[picking]!;
+    sheet = {
+      title: picking === "model" ? "Model" : "Effort",
+      current: choiceValue(option, picks[picking]),
+      items: option.values.map((v) => ({ value: v.value, label: v.label, detail: v.description })),
+      choose: (v) => setPicks((p) => ({ ...p, [picking]: v })),
+    };
+  } else if (picking === "mode" && options?.mode) {
+    sheet = {
+      title: "Mode",
+      current: mode,
+      items: options.mode.available.map((m) => ({ value: m, label: MODE_LABELS[m].label, detail: MODE_LABELS[m].hint })),
+      choose: (v) => {
+        if (v === "unattended") setConfirmUnattended(true);
+        else setPicks((p) => ({ ...p, mode: v as SessionMode }));
+      },
+    };
+  }
+  const closeSheet = () => {
+    setPicking(null);
+    setConfirmUnattended(false);
+  };
+
+  return (
+    <View style={[styles.page, { backgroundColor: theme.bg, paddingTop: insets.top }]}>
+      <ScreenHeader testID="new-session" title="New session" subtitle={`on ${name}`} onBack={close} close />
+      <KeyboardAvoidingView style={styles.page} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+          <View style={[styles.group, { backgroundColor: theme.surface }]}>
+            <Field
+              first
+              label="Workspace"
+              value={where.text}
+              color={where.color}
+              onPress={state.workspaces !== null ? () => setPicking("workspace") : undefined}
+              testID="new-session-workspace"
+            />
+            <Field
+              label="Agent"
+              value={agents === null ? "Loading…" : agent ? agent.name + (agentNote(agent) ? ` · ${agentNote(agent)}` : "") : "None available"}
+              color={agent?.available ? theme.fg : theme.mut}
+              onPress={agents?.length ? () => setPicking("agent") : undefined}
+              testID="new-session-agent"
+            />
+            {options?.model ? (
+              <Field
+                label="Model"
+                value={choiceLabel(options.model, choiceValue(options.model, picks.model))}
+                onPress={() => setPicking("model")}
+                testID="new-session-model"
+              />
+            ) : null}
+            {options?.effort ? (
+              <Field
+                label="Effort"
+                value={choiceLabel(options.effort, choiceValue(options.effort, picks.effort))}
+                onPress={() => setPicking("effort")}
+                testID="new-session-effort"
+              />
+            ) : null}
+            {mode && modeChoosable(options) ? (
+              <Field
+                label="Mode"
+                value={MODE_LABELS[mode].label}
+                color={mode === "unattended" ? theme.need : theme.fg}
+                onPress={() => setPicking("mode")}
+                testID="new-session-mode"
+              />
+            ) : null}
+          </View>
+
+          {target.kind === "removed" ? (
+            <T color={theme.mut} testID="new-session-removed">
+              The worktree chosen in Files was removed. Choose where this session runs.
+            </T>
+          ) : null}
+          {noAgent ? (
+            <View style={styles.note} testID="new-session-no-agent">
+              <T color={theme.mut}>
+                No agent is available on {name}. Install one on the host (for example Claude Code), then check again.
+              </T>
+              <Button kind="secondary" label="Check again" loading={checking} onPress={() => void checkAgents()} />
+            </View>
+          ) : null}
+          {agent?.available && !options ? (
+            <T variant="callout" color={theme.faint}>
+              Model and mode show here after the first {agent.name} session on {name}.
+            </T>
+          ) : null}
+          {mode === "unattended" ? (
+            <T variant="callout" color={theme.need} testID="new-session-unattended">
+              Unattended: the agent runs commands and edits files without asking.
+            </T>
+          ) : null}
+
+          <T variant="callout" color={theme.mut}>
+            First prompt
+          </T>
+          <TextInput
+            value={prompt}
+            onChangeText={setPrompt}
+            placeholder="What do you want to work on?"
+            placeholderTextColor={theme.faint}
+            multiline
+            textAlignVertical="top"
+            style={[type.body, styles.prompt, { color: theme.fg, backgroundColor: theme.surface }]}
+            accessibilityLabel="First prompt"
+            testID="new-session-prompt"
+          />
+        </ScrollView>
+        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, space.lg), borderTopColor: theme.line }]}>
+          {error ? (
+            <T color={theme.err} testID="new-session-error">
+              {error}
+            </T>
+          ) : !live ? (
+            <T color={theme.mut}>Not connected to {name}. Start when it's back.</T>
+          ) : null}
+          <Button
+            tall
+            label="Start session"
+            loading={starting}
+            disabled={!params || !live}
+            onPress={() => void start()}
+            testID="new-session-start"
+          />
+        </View>
+      </KeyboardAvoidingView>
+
+      <Sheet visible={sheet !== null || picking === "workspace"} onClose={closeSheet}>
+        {picking === "workspace" ? (
+          <WorkspaceTree
+            selected={target.kind === "ready" ? target.workspace.workspace_id : null}
+            onChoose={(id) => {
+              setTargetId(id);
+              closeSheet();
+            }}
+            onNewWorkspace={() => {
+              closeSheet();
+              navigation.navigate("BrowseMac", { then: "NewSession" });
+            }}
+          />
+        ) : confirmUnattended ? (
+          <>
+            <T variant="title">Turn off approvals?</T>
+            <T color={theme.mut}>The agent will run commands and edit files in this workspace without asking you first.</T>
+            <View style={styles.confirm}>
+              <Button kind="secondary" label="Keep asking" onPress={closeSheet} />
+              <Button
+                kind="destructive"
+                label="Run unattended"
+                onPress={() => {
+                  setPicks((p) => ({ ...p, mode: "unattended" }));
+                  closeSheet();
+                }}
+                testID="new-session-unattended-confirm"
+              />
+            </View>
+          </>
+        ) : sheet ? (
+          <>
+            <T variant="title">{sheet.title}</T>
+            <ScrollView>
+              {sheet.items.map((item) => {
+                const on = item.value === sheet!.current;
+                return (
+                  <Pressable
+                    key={item.value}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: on, disabled: item.disabled }}
+                    disabled={item.disabled}
+                    onPress={() => {
+                      sheet!.choose(item.value);
+                      if (!(picking === "mode" && item.value === "unattended")) closeSheet();
+                    }}
+                    style={({ pressed }) => [styles.option, (on || pressed) && { backgroundColor: theme.surface }]}
+                    testID={`pick-${item.value}`}
+                  >
+                    <View style={styles.optionHead}>
+                      <View style={[styles.dot, { backgroundColor: on ? theme.accent : "transparent" }]} />
+                      <T variant="headline" color={item.disabled ? theme.faint : on ? theme.accent : theme.fg} style={styles.flex}>
+                        {item.label}
+                      </T>
+                    </View>
+                    {item.detail ? (
+                      <T variant="callout" color={theme.mut} style={styles.indent}>
+                        {item.detail}
+                      </T>
+                    ) : null}
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </>
+        ) : null}
+      </Sheet>
+    </View>
+  );
+}
+
+/** One setting: its name, its value in mono, and › when it can change. */
+function Field({
+  label,
+  value,
+  color,
+  first,
+  onPress,
+  testID,
+}: {
+  label: string;
+  value: string;
+  color?: string;
+  /** The top row, with no separator above it. */
+  first?: boolean;
+  onPress?(): void;
+  testID: string;
+}) {
+  const theme = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${label}: ${value}`}
+      disabled={!onPress}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.field,
+        { borderTopColor: theme.line, borderTopWidth: first ? 0 : StyleSheet.hairlineWidth },
+        pressed && { backgroundColor: theme.raised },
+      ]}
+      testID={testID}
+    >
+      <T color={theme.mut} style={styles.fieldLabel}>
+        {label}
+      </T>
+      <T variant="mono" color={color ?? theme.fg} numberOfLines={1} style={styles.fieldValue}>
+        {value}
+      </T>
+      {onPress ? <Icon icon={ChevronRight} color={theme.faint} size={18} /> : null}
+    </Pressable>
+  );
+}
+
+const styles = StyleSheet.create({
+  page: { flex: 1 },
+  flex: { flex: 1 },
+  content: { padding: space.lg, gap: space.md },
+  group: { borderRadius: radius.lg, overflow: "hidden" },
+  field: {
+    minHeight: 52,
+    paddingHorizontal: space.md,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+  },
+  fieldLabel: { width: 96 },
+  fieldValue: { flex: 1, textAlign: "right" },
+  note: { gap: space.sm, alignItems: "flex-start" },
+  prompt: { minHeight: 132, borderRadius: radius.md, padding: space.md },
+  footer: { paddingHorizontal: space.lg, paddingTop: space.md, gap: space.sm, borderTopWidth: StyleSheet.hairlineWidth },
+  confirm: { flexDirection: "row", gap: space.sm, justifyContent: "flex-end" },
+  option: { minHeight: 52, borderRadius: radius.md, paddingHorizontal: space.md, paddingVertical: space.sm, gap: space.xxs, justifyContent: "center" },
+  optionHead: { flexDirection: "row", alignItems: "center", gap: space.sm },
+  dot: { width: 8, height: 8, borderRadius: radius.full },
+  indent: { paddingLeft: space.lg },
+});

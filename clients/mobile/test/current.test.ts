@@ -6,6 +6,9 @@ import { CurrentHost, type CurrentHostState } from "../src/host/current";
 import { connectionText, hostProblem, hostRowState } from "../src/host/status";
 import { MemorySecureStore } from "../src/platform/memory-store";
 import { VaultPreferences } from "../src/platform/vault-store";
+import { sessionSections } from "../src/sessions/model";
+import { startTarget } from "../src/sessions/start";
+import { sessionToOpen, worktreeSessions } from "../src/sessions/worktree";
 import { MapVault, waitFor, world } from "./support";
 
 function setup(opts: Parameters<typeof world>[0] = {}) {
@@ -283,5 +286,270 @@ describe("how the connection reads", () => {
       meta: "online · paired",
       dot: "done",
     });
+  });
+});
+
+describe("starting a session", () => {
+  const started = (s: ReturnType<typeof setup>, session_id: string) =>
+    s.w.host.backend.requests.some((r) => r.op === "session.history" && (r.params as { session_id: string }).session_id === session_id);
+
+  async function live(s: ReturnType<typeof setup>) {
+    await pin(s);
+    const current = s.launch();
+    await current.open(s.entry);
+    await waitFor(() => current.state.view?.status === "live");
+    return current;
+  }
+
+  it("starts exactly where asked, follows it, and keeps the worktree chosen in Files", async () => {
+    const s = setup();
+    const asked: unknown[] = [];
+    s.w.host.backend.handlers["session.start"] = (p: unknown) => (asked.push(p), { session_id: "s-new" });
+    const current = await live(s);
+    current.chooseWorkspace("wt-fix");
+
+    const params = {
+      workspace_id: "wt-fix",
+      agent: "claude_code",
+      blocks: [{ type: "text" as const, text: "fix the login bug" }],
+      client_message_id: "msg-1",
+      options: { model: "opus", effort: "high", mode: "plan" as const },
+    };
+    expect(await current.startSession(params)).toBe("s-new");
+    // Sent as given: the worktree, never its root; every option through.
+    expect(asked).toEqual([params]);
+    // Followed at once: its transcript is read and its stream attached.
+    await waitFor(() => started(s, "s-new"));
+    expect(current.state.workspaceId).toBe("wt-fix");
+    await current.clear();
+  });
+
+  it("a failed start creates nothing and leaves the selection", async () => {
+    const s = setup();
+    s.w.host.backend.handlers["session.start"] = () => {
+      throw new ZwiimClientError("workspace_removed", "The workspace was removed", 410);
+    };
+    const current = await live(s);
+    current.chooseWorkspace("wt-old");
+
+    await expect(
+      current.startSession({ workspace_id: "wt-old", agent: "claude_code", blocks: [{ type: "text", text: "hi" }] }),
+    ).rejects.toMatchObject({ code: "workspace_removed" });
+    expect(s.w.host.backend.count("session.start")).toBe(1);
+    expect(s.w.host.backend.count("session.history")).toBe(0);
+    expect(current.state.store?.getState().sessions).toEqual({});
+    expect(current.state.workspaceId).toBe("wt-old");
+    await current.clear();
+  });
+
+  it("can't start before the host is connected", async () => {
+    const s = setup();
+    const current = s.launch();
+    await expect(
+      current.startSession({ workspace_id: "a", agent: "claude_code", blocks: [{ type: "text", text: "hi" }] }),
+    ).rejects.toMatchObject({ code: "network" });
+  });
+
+  it("opening an existing session leaves the worktree chosen in Files", async () => {
+    const s = setup();
+    const current = await live(s);
+    current.chooseWorkspace("wt-fix");
+    current.showSession("s-old");
+    await waitFor(() => started(s, "s-old"));
+    expect(current.state.workspaceId).toBe("wt-fix");
+    current.hideSession("s-old");
+    expect(current.state.workspaceId).toBe("wt-fix");
+    await current.clear();
+  });
+
+  it("reads the host's agents again on demand", async () => {
+    const s = setup();
+    const current = await live(s);
+    // The connection's own first read lands before counting.
+    await waitFor(() => current.state.store?.getState().agents != null);
+    const before = s.w.host.backend.count("agent.list");
+    s.w.host.backend.handlers["agent.list"] = () => [
+      { agent: "claude_code", name: "Claude Code", available: true, reason: null, options: null, commands: null },
+    ];
+    await current.refreshAgents();
+    expect(s.w.host.backend.count("agent.list")).toBe(before + 1);
+    expect(current.state.store?.getState().agents?.map((a) => a.agent)).toEqual(["claude_code"]);
+    await current.clear();
+  });
+});
+
+describe("several sessions in one worktree (R8.11)", () => {
+  const info = (id: string, over: object = {}) => ({
+    workspace_id: id,
+    name: id,
+    alias: null,
+    kind: "root",
+    parent_workspace_id: null,
+    branch: "main",
+    is_git_repo: true,
+    base_branch: null,
+    base_commit: null,
+    removed: false,
+    display_path: null,
+    ...over,
+  });
+  const tree = (id: string, branch: string, over: object = {}) =>
+    info(id, { kind: "worktree", parent_workspace_id: "todo", branch, base_branch: "main", ...over });
+  const summary = (session_id: string, workspace_id: string, at: number, title: string) => ({
+    session_id,
+    workspace_id,
+    title,
+    agent: "claude_code" as const,
+    status: "completed" as const,
+    live: false,
+    created_at: new Date(1_700_000_000_000 + at * 1000).toISOString(),
+    updated_at: new Date(1_700_000_000_000 + at * 1000).toISOString(),
+  });
+
+  /** A host with todo, its worktrees fix-auth and feature-ui (one session there), and Files on feature-ui. */
+  async function host() {
+    const s = setup();
+    const WORKSPACES = [info("todo"), tree("fix", "fix-auth"), tree("ui", "feature-ui")];
+    s.w.host.backend.handlers["workspace.list"] = () => WORKSPACES;
+    s.w.host.backend.handlers["session.list"] = (p: { workspace_id: string }) =>
+      p.workspace_id === "ui" ? [summary("u1", "ui", 1, "Refactor UI")] : [];
+    // Each start is a new session, announced on the feed as the host does.
+    const asked: { workspace_id: string }[] = [];
+    let n = 0;
+    s.w.host.backend.handlers["session.start"] = (p: { workspace_id: string; blocks: { text: string }[] }) => {
+      asked.push(p);
+      const session = summary(`s-${++n}`, p.workspace_id, 10 + n, p.blocks[0]!.text);
+      setTimeout(() => s.w.host.backend.feedEvent("session.changed", { session }), 0);
+      return { session_id: session.session_id };
+    };
+    await pin(s);
+    const current = s.launch();
+    await current.open(s.entry);
+    await waitFor(() => current.state.store?.getState().workspaces != null);
+    current.chooseWorkspace("ui");
+    await waitFor(() => chosenIn(s) === "ui");
+    const state = () => current.state.store!.getState();
+    const start = (workspace_id: string, text: string) =>
+      current.startSession({ workspace_id, agent: "claude_code", blocks: [{ type: "text", text }] });
+    const ids = (workspace_id: string) => worktreeSessions(state(), workspace_id)?.sessions.map((i) => i.session_id);
+    return { s, current, asked, state, start, ids };
+  }
+
+  it("starts a new session in the same worktree every time, never reusing one", async () => {
+    const { s, current, asked, state, start, ids } = await host();
+    const a = await start("fix", "Fix authentication");
+    await waitFor(() => ids("fix")?.length === 1);
+    const b = await start("fix", "Add tests");
+    await waitFor(() => ids("fix")?.length === 2);
+
+    expect(a).not.toBe(b);
+    expect(asked.map((p) => p.workspace_id)).toEqual(["fix", "fix"]);
+    const fix = worktreeSessions(state(), "fix")!;
+    expect(fix.sessions.map((i) => [i.session_id, i.workspace_id, i.title])).toEqual([
+      [a, "fix", "Fix authentication"],
+      [b, "fix", "Add tests"],
+    ]);
+    expect(fix.label).toBe("⎇ fix-auth");
+
+    // A third joins them, oldest first; none is replaced.
+    const c = await start("fix", "Investigate API error");
+    await waitFor(() => ids("fix")?.length === 3);
+    expect(ids("fix")).toEqual([a, b, c]);
+    expect(s.w.host.backend.count("session.start")).toBe(3);
+    await current.clear();
+  });
+
+  it("switches A → B → A, and each worktree reopens on its last session", async () => {
+    const { current, start, ids } = await host();
+    const a = await start("fix", "Fix authentication");
+    const b = await start("fix", "Add tests");
+    await waitFor(() => ids("fix")?.length === 2);
+
+    // Tabs: each switch shows that session and is remembered for the worktree.
+    for (const id of [a, b, a]) {
+      current.showSession(id);
+      current.rememberSession("fix", id);
+      current.hideSession(id);
+    }
+    expect(current.lastSession("fix")).toBe(a);
+
+    // Another worktree shows its own sessions; fix's are untouched.
+    expect(ids("ui")).toEqual(["u1"]);
+    expect(sessionToOpen(worktreeSessions(current.state.store!.getState(), "ui")!.sessions, current.lastSession("ui"))).toBe("u1");
+    current.rememberSession("ui", "u1");
+
+    // Back to fix: A and B still there, and A (last on screen) reopens.
+    expect(ids("fix")).toEqual([a, b]);
+    expect(sessionToOpen(worktreeSessions(current.state.store!.getState(), "fix")!.sessions, current.lastSession("fix"))).toBe(a);
+    // Never remembered: the newest.
+    expect(sessionToOpen(worktreeSessions(current.state.store!.getState(), "fix")!.sessions, null)).toBe(b);
+    // A worktree with none opens nothing (New session there instead).
+    expect(sessionToOpen(worktreeSessions(current.state.store!.getState(), "todo")!.sessions, null)).toBeNull();
+    await current.clear();
+  });
+
+  it("forgets the sessions last on screen when another host opens", async () => {
+    const { s, current } = await host();
+    current.rememberSession("fix", "s-9");
+    await current.open(s.entry);
+    expect(current.lastSession("fix")).toBe("s-9");
+    await current.select({ ...s.entry, host_id: "host-other", name: "Office Mac" });
+    expect(current.lastSession("fix")).toBeNull();
+    await current.clear();
+  });
+
+  it("never moves Files: opening, starting and switching sessions elsewhere", async () => {
+    const { s, current, start, ids } = await host();
+    // New Session targets fix-auth while Files shows feature-ui.
+    expect(startTarget(current.state.store!.getState().workspaces, "fix")).toMatchObject({ kind: "ready", label: "todo · fix-auth" });
+    const a = await start("fix", "Fix authentication");
+    await waitFor(() => ids("fix")?.length === 1);
+    current.showSession(a);
+    current.rememberSession("fix", a);
+    current.hideSession(a);
+    current.showSession("u1");
+    current.hideSession("u1");
+    expect(current.state.workspaceId).toBe("ui");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(chosenIn(s)).toBe("ui");
+    await current.clear();
+  });
+
+  it("creating a workspace or worktree for New Session leaves Files where it was", async () => {
+    const { s, current } = await host();
+    s.w.host.backend.handlers["workspace.add"] = () => info("notes", { is_git_repo: false, branch: null });
+    s.w.host.backend.handlers["workspace.create_worktree"] = () => tree("new-tree", "zwiim/1a2b3c4d");
+
+    const added = await current.addWorkspaceAt(["Projects", "notes"], { choose: false });
+    const made = await current.createWorktree("todo", { choose: false });
+    expect([added.workspace_id, made.workspace_id]).toEqual(["notes", "new-tree"]);
+    expect(current.state.workspaceId).toBe("ui");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(chosenIn(s)).toBe("ui");
+    await current.clear();
+  });
+
+  it("keeps every session on the Sessions tab, whichever worktree is on screen", async () => {
+    const { current, start, state, ids } = await host();
+    const a = await start("fix", "Fix authentication");
+    const b = await start("fix", "Add tests");
+    await waitFor(() => ids("fix")?.length === 2);
+    current.rememberSession("fix", b);
+    const listed = sessionSections(state()).recent.map((i) => i.session_id);
+    expect(listed.sort()).toEqual([a, b, "u1"].sort());
+    await current.clear();
+  });
+
+  it("a removed worktree keeps its sessions readable, and nothing new starts there", async () => {
+    const { s, current, start, state, ids } = await host();
+    const a = await start("fix", "Fix authentication");
+    const b = await start("fix", "Add tests");
+    await waitFor(() => ids("fix")?.length === 2);
+    s.w.host.backend.feedEvent("workspace.changed", { workspace: tree("fix", "fix-auth", { removed: true }) as never });
+    await waitFor(() => worktreeSessions(state(), "fix")?.removed === true);
+    expect(ids("fix")).toEqual([a, b]);
+    expect(startTarget(state().workspaces, "fix")).toEqual({ kind: "removed", label: "todo · fix-auth" });
+    expect(current.state.workspaceId).toBe("ui");
+    await current.clear();
   });
 });
