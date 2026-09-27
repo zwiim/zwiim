@@ -1,6 +1,7 @@
 // What the Files tab shows (DESIGN.md, Screen 6), from the host's answers:
-// a folder's entries and the path above it, the workspace's changes, a
-// file's patch as numbered lines, and a file's text. Pure; screens render it.
+// a folder's entries and the path above it, the files a search finds, the
+// workspace's changes and where they sit in the tree, a file's patch as
+// numbered lines, and a file's text in color. Pure; screens render it.
 
 import { isClientError, type DiffFile, type FileTreeNode, type GitStatusEntry, type WorkspaceDiff, type WorkspaceInfo } from "@zwiim/sdk";
 
@@ -24,6 +25,59 @@ export function folderEntries(nodes: readonly FileTreeNode[]): FileTreeNode[] {
   return [...nodes.filter((n) => n.kind === "dir"), ...nodes.filter((n) => n.kind === "file")];
 }
 
+/** A folder's entry as Browse lists it: what is under a folder, and what changed. */
+export interface BrowseRow {
+  node: FileTreeNode;
+  /** Folders: how many entries are inside ("3 items", "empty"); null when the host didn't say. */
+  meta: string | null;
+  /** Files: the change's letter. */
+  letter: string | null;
+  /** Folders: something under it changed. */
+  changed: boolean;
+}
+
+/** One folder's rows, folders first; `changes` marks what differs from the last commit. */
+export function browseRows(nodes: readonly FileTreeNode[], changes: readonly ChangeItem[]): BrowseRow[] {
+  const letters = new Map(changes.map((c) => [c.path, c.letter]));
+  return folderEntries(nodes).map((node) => {
+    if (node.kind === "file") return { node, meta: null, letter: letters.get(node.path) ?? null, changed: false };
+    // A symlinked folder is listed unexpanded: its count isn't known.
+    const count = node.symlink ? null : node.children.length;
+    const dir = `${node.path}/`;
+    return {
+      node,
+      meta: count === null ? null : count === 0 ? "empty" : `${count} ${count === 1 ? "item" : "items"}`,
+      letter: null,
+      changed: changes.some((c) => c.path.startsWith(dir)),
+    };
+  });
+}
+
+export interface FoundFile {
+  path: string;
+  name: string;
+  /** The folder it is in, `src/auth/`, or `./` at the top. */
+  folder: string;
+}
+
+/** Files anywhere in `tree` whose name contains `query`, ignoring case; nothing for an empty query. */
+export function findFiles(tree: readonly FileTreeNode[], query: string): FoundFile[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const found: FoundFile[] = [];
+  const walk = (nodes: readonly FileTreeNode[]) => {
+    for (const n of nodes) {
+      if (n.kind === "dir") walk(n.children);
+      else if (n.name.toLowerCase().includes(q)) {
+        const folder = parentPath(n.path);
+        found.push({ path: n.path, name: n.name, folder: folder ? `${folder}/` : "./" });
+      }
+    }
+  };
+  walk(tree);
+  return found;
+}
+
 export interface ChangeItem {
   path: string;
   /** Git's letter: M, A, D, ? (untracked), R, U… */
@@ -40,7 +94,8 @@ function statusLetter(status: string): string {
   return s === "??" ? "?" : (s[0] ?? "M");
 }
 
-function changeLetter(f: DiffFile): string {
+/** A diff entry's letter when `git.status` doesn't list it. */
+export function changeLetter(f: DiffFile): string {
   if (f.untracked) return "?";
   return f.change === "added" ? "A" : f.change === "deleted" ? "D" : "M";
 }
@@ -56,6 +111,27 @@ export function changeItems(status: readonly GitStatusEntry[], diff: WorkspaceDi
     binary: f.binary,
     tooLarge: f.too_large,
   }));
+}
+
+/** A change's letter in words. */
+export function changeName(letter: string): string {
+  return (
+    { M: "Modified", A: "Added", D: "Deleted", "?": "Untracked", R: "Renamed", C: "Copied", U: "Conflicted", T: "Type changed" }[letter] ??
+    "Changed"
+  );
+}
+
+/** The workspace's `+n −n`, over the files that have counts. */
+export function changeTotals(items: readonly ChangeItem[]): { additions: number; deletions: number } {
+  return items.reduce(
+    (t, c) => ({ additions: t.additions + (c.additions ?? 0), deletions: t.deletions + (c.deletions ?? 0) }),
+    { additions: 0, deletions: 0 },
+  );
+}
+
+/** "4 changed files". */
+export function changedFilesText(n: number): string {
+  return `${n} changed ${n === 1 ? "file" : "files"}`;
 }
 
 export interface DiffLine {
@@ -112,6 +188,16 @@ export function parsePatch(patch: string): DiffHunk[] {
     }
   }
   return hunks;
+}
+
+/** A hunk's header as a place in the file: "line 14 · createSession()". */
+export function hunkLabel(header: string): string {
+  const m = /^@@ -(\d+(?:,\d+)?) \+(\d+)(?:,\d+)? @@ ?(.*)$/.exec(header);
+  if (!m) return header;
+  if (m[1] === "0,0") return "new file";
+  if (/ \+0,0 @@/.test(header)) return "deleted file";
+  const where = `line ${m[2]}`;
+  return m[3]?.trim() ? `${where} · ${m[3].trim()}` : where;
 }
 
 /** Lines past this are not shown; the file is for reading on a phone. */
@@ -176,4 +262,41 @@ export function fileProblem(e: unknown, hostName: string, what: "file" | "folder
     return { title: "Not a file", body: "It can't be opened here." };
   }
   return { title: `Couldn't load this ${what === "changes" ? "diff" : what}`, body: "Try again." };
+}
+
+export type SyntaxKind = "plain" | "keyword" | "string" | "number" | "comment" | "heading";
+
+export interface SyntaxSpan {
+  text: string;
+  kind: SyntaxKind;
+}
+
+/** The extension a file is colored by: `ts`, `md`, or the name of a dotfile (`gitignore`). */
+export function syntaxOf(path: string): string {
+  const name = baseName(path);
+  const dot = name.lastIndexOf(".");
+  return dot < 0 ? "" : name.slice(dot + 1).toLowerCase();
+}
+
+const HASH_COMMENTS = new Set(["sh", "bash", "zsh", "py", "rb", "toml", "yaml", "yml", "gitignore", "env", "dockerignore"]);
+const MARKDOWN = new Set(["md", "markdown", "mdx"]);
+const TOKEN =
+  /(\/\/.*$|'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`|\b(?:import|from|export|default|const|let|var|return|if|else|for|while|function|fn|async|await|new|interface|type|enum|struct|impl|pub|use|mod|match|throw|try|catch|class|extends|private|public|readonly|constructor|super|this|self|true|false|null|undefined|def|echo|cd|set)\b|\b\d[\d_.]*\b)/g;
+
+/** One line in a muted, keyword-level syntax color; a guess by extension, never a parser. */
+export function highlight(line: string, ext: string): SyntaxSpan[] {
+  if (!line) return [];
+  if (MARKDOWN.has(ext)) return [{ text: line, kind: /^#/.test(line) ? "heading" : "plain" }];
+  if (HASH_COMMENTS.has(ext) && /^\s*#/.test(line)) return [{ text: line, kind: "comment" }];
+  const spans: SyntaxSpan[] = [];
+  let last = 0;
+  for (const m of line.matchAll(TOKEN)) {
+    const at = m.index ?? 0;
+    if (at > last) spans.push({ text: line.slice(last, at), kind: "plain" });
+    const s = m[0];
+    spans.push({ text: s, kind: s.startsWith("//") ? "comment" : /^['"`]/.test(s) ? "string" : /^\d/.test(s) ? "number" : "keyword" });
+    last = at + s.length;
+  }
+  if (last < line.length) spans.push({ text: line.slice(last), kind: "plain" });
+  return spans;
 }

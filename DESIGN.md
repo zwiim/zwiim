@@ -159,10 +159,10 @@ Launch
 └─ Signed in ──→ Hosts                         (root, remembers last Host)
                   ├─ Pair (full-screen modal flow)
                   └─ Host shell  ─ bottom tabs ─┬─ Sessions   (default)
-                     └─ Host bar (switch sheet) ├─ Files      (Changes | Browse | Terminals)
+                     └─ Host bar (switch sheet) ├─ Files      (browse + Changes row + Terminals dock)
                                                 └─ Host
                         Session (stack push, hides tabs)
-                        File preview / Diff     (stack push)
+                        Changes / File / Diff   (stack push)
                         Terminal view           (stack push)
                         Browse Mac              (stack push, from New workspace)
                         Request sheet           (modal sheet, from list or session)
@@ -180,7 +180,8 @@ Launch
 - The Sessions tab icon carries a `need` badge with the count of pending requests
   across the Host.
 - Sheets for contextual actions (switch host, connection mode, request review,
-  session options, workspace and worktree). Never a full screen for a single decision.
+  session options, workspace and worktree, terminals). Never a full screen for a
+  single decision.
 
 ### Workspace context
 
@@ -328,16 +329,33 @@ Top to bottom:
 
 ### 6. Files tab
 
-Inspection, not editing.
+Inspection, not editing. The filesystem is the page: Browse is the only root
+view, and everything under the context chips belongs to that worktree.
 
-- Title row: large title "Files", **New workspace** (`secondary`) on the right.
-- **Context bar** under the title: two chips, `[ zwiim ▾ ]  [ ⎇ fix-auth ▾ ]`.
-  The workspace chip opens the workspace sheet; the worktree chip opens the
-  worktree sheet for the current workspace. A plain folder shows the workspace
-  chip only.
-- Segmented control: **Changes** | **Browse** | **Terminals**, all scoped to
-  the selected worktree. Default: Changes when the worktree has uncommitted
-  changes, otherwise Browse. A chosen segment stays chosen across worktrees.
+- No large title. Under the Host bar, the **context bar**: two 44pt mono chips,
+  `[ zwiim ▾ ]  [ ⎇ fix-auth ▾ ]`. The workspace chip opens the workspace sheet;
+  the worktree chip opens the worktree sheet for the current workspace. A plain
+  folder shows the workspace chip only. **New workspace** lives in the workspace
+  sheet.
+- **Changes row** above the tree (Git only): a `surface` card, "4 changed files"
+  (`sans` medium) and mono `+12 −4`, `›`. It pushes **Changes**. Clean: a mono
+  line `✓ No changes on fix-auth`. A plain folder: `⎇ Not a Git repository ·
+  plain folder` (Git is never asked).
+- **Path bar** (48pt, hairlines above and below): `‹` up one folder (below the
+  top), the mono path `zwiim / src / auth` (the current folder in `fg`, the
+  rest `mut`; tap a segment to jump up), and a search button on the right.
+  Search swaps the bar for a field ("Find a file in fix-auth") and **Cancel**;
+  it matches file names anywhere in the worktree (the Host skips build and
+  dependency folders). Results show the name and its folder, `./` at the top.
+- **Tree** (`workspace.tree`, two levels per folder): one folder per screen,
+  folders first, then files. Rows are 52pt mono names with a hairline: a folder
+  ends in a `faint` `/`, says `3 items` / `empty` in `faint`, and has `›`; a
+  changed file carries its letter (M `fg`, A/? `done`, D `err`); a folder with
+  changes under it carries a small dot. No nested indentation.
+- **Terminals dock** above the tab bar: `>_ Terminals`, a mono summary of what
+  runs (`dev running · tests exited`, or `none in fix-auth`), a dot per
+  terminal (`accent` running, `faint` exited), `▲`. It opens the Terminals
+  sheet (Screen 7), which follows the selected worktree.
 - **Workspace sheet (level 1):** title "Workspaces" with **New workspace**
   beside it, a search field (name, alias, `~/…` path), then one row per
   workspace: accent dot when selected, `alias ?? name` (`headline`), mono
@@ -350,22 +368,33 @@ Inspection, not editing.
   (`secondary`, 48pt): one tap, created from the root's current branch and
   selected. Choosing another base stays a Desktop feature. Tapping a row
   selects it and closes the sheet.
-- **No workspaces:** "No workspaces yet" · "Add a folder on {Host} to work in it
-  from here." · **New workspace**.
-- **Changes** for a plain folder: "Not a Git repository" · "{name} is a plain
-  folder, so there are no changes to show. Files, terminals and sessions work as
-  usual." · **Browse files**. Default segment is Browse.
-- **Changes** (`git.status`): rows of mono paths with a status letter (M/A/D/?)
-  and `+n −n`; tap → full-screen diff (`git.diff`), unified, per-hunk, horizontal
-  scroll for long lines, line numbers in `faint`.
-- **Browse** (`workspace.tree`): drill-down, one folder per screen, breadcrumb
-  as a mono path at the top (tap a segment to jump up). Folders first, then files.
-  No nested indentation.
-- **File preview** (`files.read`): read-only, mono, line numbers, syntax color in
-  a muted palette, soft wrap toggle, share/copy path in `⋯`. Binary or oversized
-  files show a clear message instead of garbage.
-- Branch and recent commits (`git.branches`, `git.log`) live in a small header
-  card on Changes: `⎇ r8-mobile · 3 ahead` → tap for a log sheet.
+- **Empty states:** no workspaces: "No workspaces yet" · "Add a folder on {Host}
+  to work in it from here." · **New workspace**. Empty folder: `∅` "This folder
+  is empty" · "archive/ has nothing in it on zwiim · fix-auth." · **Up one
+  folder**. No search results: `∅` "No files named “router”" · "Searched every
+  folder in zwiim · fix-auth." Before typing: mono "Type part of a file name".
+
+**Pushed screens.** Changes, File, Diff and Terminal are stack pushes with
+mono `workspace · worktree` as the subtitle (a file adds its folder first:
+`src/auth/ · zwiim · fix-auth`). Back always goes up one level.
+
+- **Changes** (`git.status`, `git.diff`): a mono branch line `⎇ fix-auth` with
+  the totals, then one 60pt row per file: its letter in a 24pt `surface` tile,
+  the mono name (struck through when deleted), mono `src/auth/ · modified`,
+  `+n −n`, `›`. Tap → Diff. Clean: `✓` "No uncommitted changes" · "fix-auth
+  matches its last commit." · **Browse files**.
+- **File** (`files.read`): read-only, mono, line numbers in `faint`, keyword-level
+  syntax color in a muted palette on `code`, a `wrap` toggle (on by default). A
+  changed file shows a `surface` strip under the header, `M Modified on fix-auth
+  +9 −3 Diff ›`, which opens its diff. Binary: "Can't preview logo.png" · "Binary
+  file. Open it on {Host} to view it." Empty: "This file is empty".
+- **Diff** (`git.diff`): a strip with the status badge (`M · Modified`) and
+  `+n −n`; unified hunks on `code`, each introduced by a mono place
+  `line 14 · createSession()`, one line number in `faint`, a `+`/`−` column,
+  green/red tinted rows, horizontal scroll for long lines. **View file** in the
+  header (not for a deleted file); a bottom bar steps through the worktree's
+  changed files: `‹ Prev` · `2 of 4` · `Next ›`. File ⇄ Diff of the same file
+  swaps instead of stacking.
 
 **Browse Mac** (stack push from New workspace): the Host user's home folder,
 one level per screen, to add a workspace.
@@ -386,28 +415,32 @@ one level per screen, to add a workspace.
   Files; a folder that is already a workspace selects that one.
 - Android back climbs one folder before leaving.
 
-### 7. Terminals (a Files segment)
+### 7. Terminals (the Files dock)
 
 A watching surface first, an input surface second.
 
-- List of the selected worktree's terminals: mono title, a two-line live preview
-  of the last output, running/exited state. **New terminal** (`secondary`) above
-  the list starts one in the selected worktree and opens it. Switching worktree
-  swaps the list; the other worktree's terminals keep running on the Host.
-- Empty: "No terminals in {worktree}" · "Start one to run commands on {Host}." ·
-  **New terminal**.
+- **Terminals sheet** (from the dock): title "Terminals", mono `zwiim · fix-auth
+  · on {Host}`; one row per terminal of the selected worktree: a dot (`accent`
+  running, `faint` exited), the mono title and `running`/`exited`, the last two
+  lines of output live, `›`. **New terminal** (`primary`, 48pt) at the bottom
+  starts one in the selected worktree and opens it. Switching worktree swaps
+  the list; the other worktree's terminals keep running on the Host.
+- Empty: `>_` "No terminals in {worktree}" · "Start one to run commands on
+  {Host}." · **New terminal**.
 - **Terminal view:** full-bleed `code` background, `term` type, output follows
   the tail; scrolling up pauses follow and shows a `↓ Live` pill to resume.
-  Default is **watch mode** (no keyboard). A bottom bar holds:
-  a single-line command field ("Run a command…", sends line + Enter) and a keys
-  row: `Esc` `Tab` `Ctrl-C` `↑` `↓` `←` `→` `⏎`. Tapping the field is the only
-  thing that raises the keyboard.
+  Default is **watch mode** (no keyboard). A bottom bar holds a single-line
+  command field ("Run a command…", sends line + Enter) with a round `accent`
+  send button, and under it a keys row: `Esc` `Tab` `Ctrl-C` `↑` `↓` `←` `→`
+  `⏎`. Tapping the field is the only thing that raises the keyboard.
 - Rendering: parse ANSI into styled native text rows (or a WebView xterm if
   performance demands). Do **not** call `terminal.resize` on open: the PTY is
   shared with Desktop, and resizing reflows it there too. Render at the Host's
   column count with horizontal scroll; a pinch or `⋯ → Fit to phone` may resize
   explicitly.
-- Exited terminals show exit code in the header and a **Kill/Close** action.
+- A running terminal has **Kill** (confirmed in a sheet). An exited terminal
+  shows "Exited · output kept on {Host}" in place of the input bar and a
+  **Close** action.
 
 ### 8. Host tab
 
@@ -524,3 +557,4 @@ glyph, a title, one line, one action.
 | 2026-09-27 | Sessions stay Host-wide, rows name `workspace · worktree` | Filtering by the selection would hide a blocked agent in another worktree |
 | 2026-09-27 | New workspace browses `~` only, by folder names | The phone never sends or sees a Host path; home is where projects live and the jail is simple |
 | 2026-09-27 | Browse Mac can make one folder; Git stays optional | Starting a project from the phone needs a folder, not a filesystem API; a plain folder is a full workspace, and only Git features step aside |
+| 2026-09-27 | Files drops its segmented control: browse is the page (R8.9) | The chips set the scope and everything under them belongs to it; Changes is one row with the count, terminals a dock that says what runs, so nothing hides behind a segment |

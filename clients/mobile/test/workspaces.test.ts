@@ -5,6 +5,7 @@ import {
   contextText,
   hasWorktreeLevel,
   terminalsIn,
+  terminalSummary,
   worktreeChoices,
   worktreeError,
   workspaceRoots,
@@ -115,5 +116,12 @@ describe("terminals by worktree", () => {
     expect(terminalsIn(terminals, "fix").map((t) => t.terminal_id)).toEqual(["b"]);
     expect(terminalsIn(terminals, "zwiim").map((t) => t.terminal_id)).toEqual(["a", "c"]);
     expect(terminalsIn(terminals, "mobile")).toEqual([]);
+  });
+
+  it("sums them up for the dock", () => {
+    const dev = { ...term("d", "fix"), title: "dev" };
+    const tests = { ...term("t", "fix"), title: "tests", alive: false };
+    expect(terminalSummary([dev, tests], "fix-auth")).toBe("dev running · tests exited");
+    expect(terminalSummary([], "fix-auth")).toBe("none in fix-auth");
   });
 });

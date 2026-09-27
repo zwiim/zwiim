@@ -1,4 +1,4 @@
-// The app's control icons: tabs, back, close, disclosure and send. Lucide
+// The app's control icons: tabs, back, close, disclosure, search and send. Lucide
 // line icons at one stroke weight. Glyphs that are machine text (✓ ✕ ⌂ ☁ ⎇ in
 // rows, pills and empty states) stay mono text, per DESIGN.md.
 
@@ -8,9 +8,12 @@ export {
   ArrowUp,
   ChevronDown,
   ChevronLeft,
+  ChevronRight,
+  ChevronUp,
   Folder,
   Laptop,
   MessagesSquare,
+  Search,
   X,
 } from "lucide-react-native";
 

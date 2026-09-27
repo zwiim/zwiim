@@ -74,6 +74,12 @@ export function terminalsIn(terminals: Readonly<Record<string, TerminalMeta>>, w
   return Object.values(terminals).filter((t) => t.workspace_id === workspace_id);
 }
 
+/** What the Terminals dock says of a worktree's terminals: "dev running · tests exited", or "none in fix-auth". */
+export function terminalSummary(list: readonly TerminalMeta[], scope: string): string {
+  if (!list.length) return `none in ${scope}`;
+  return list.map((t) => `${t.title ?? "terminal"} ${t.alive ? "running" : "exited"}`).join(" · ");
+}
+
 /** Why New worktree didn't work, in words. */
 export function worktreeError(e: unknown, root: WorkspaceInfo, hostName: string): string {
   if (isClientError(e, "not_a_git_repository")) return `${workspaceLabel(root)} isn't a Git repository, so it can't have worktrees.`;

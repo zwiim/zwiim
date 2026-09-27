@@ -13,8 +13,9 @@ src/screens/    SignIn, Hosts, Pairing (QR scan), the Host shell (tabs, Host bar
 src/sessions/   following every live session's stream, the Sessions tab's model, and a
                 session's transcript and Now bar from the SDK's SessionView (plus the
                 Markdown parser)
-src/files/      the Files tab's model: breadcrumbs, folder entries, Changes rows, the
-                patch parser and file-problem messages
+src/files/      the Files tab's model: breadcrumbs, folder rows with change marks, file
+                search, Changes rows, the patch parser, syntax spans and
+                file-problem messages
 src/terminal/   a Host terminal's screen: the xterm headless emulator fed from the SDK's
                 terminal output, and the keys row's sequences
 src/ui/         design tokens and the few shared components (plus code, diff and terminal views)

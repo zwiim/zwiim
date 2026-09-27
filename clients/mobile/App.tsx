@@ -22,7 +22,7 @@ import { AccountScope, useAccount, type AccountContext } from "./src/app/account
 import type { RootStack } from "./src/app/navigation";
 import { preferences, secureStore } from "./src/platform/native";
 import { BrowseMacScreen } from "./src/screens/BrowseMacScreen";
-import { DiffScreen, FileScreen } from "./src/screens/FilesScreens";
+import { ChangesScreen, DiffScreen, FileScreen } from "./src/screens/FilesScreens";
 import { HostShell } from "./src/screens/HostShell";
 import { HostsScreen } from "./src/screens/HostsScreen";
 import { PairingScreen } from "./src/screens/PairingScreen";
@@ -158,6 +158,7 @@ export default function App() {
                   <Stack.Screen name="Hosts" component={HostsScreen} />
                   <Stack.Screen name="Host" component={HostShell} />
                   <Stack.Screen name="Session" component={SessionScreen} />
+                  <Stack.Screen name="Changes" component={ChangesScreen} />
                   <Stack.Screen name="File" component={FileScreen} />
                   <Stack.Screen name="Diff" component={DiffScreen} />
                   <Stack.Screen name="TerminalView" component={TerminalScreenView} />

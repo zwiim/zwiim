@@ -20,6 +20,8 @@ export interface Palette {
   err: string;
   /** The terminal's 16 ANSI colors, muted to sit on `code`. */
   ansi: readonly string[];
+  /** File previews' syntax colors, muted to sit on `code`. */
+  syntax: { keyword: string; string: string; number: string };
 }
 
 export const dark: Palette = {
@@ -41,6 +43,7 @@ export const dark: Palette = {
     "#3A3A3E", "#FF6467", "#4CC38A", "#F5B544", "#7AA2F7", "#C597F0", "#5BC8D6", "#D6D6DA",
     "#5E5E63", "#FF8587", "#6FD8A3", "#F8C86B", "#9BB8FA", "#D5B0F5", "#7FD8E3", "#EEEEF0",
   ],
+  syntax: { keyword: "#B4AFF7", string: "#9FD3B5", number: "#E3BFA0" },
 };
 
 export const light: Palette = {
@@ -62,6 +65,7 @@ export const light: Palette = {
     "#0A0A0B", "#D93B3B", "#1F8A5B", "#B7791F", "#2F5FD0", "#8A3FC4", "#0F7F8C", "#6E6E73",
     "#A1A1A6", "#E0524F", "#23A06A", "#C98A24", "#4574E0", "#9C55D4", "#1596A5", "#2B2B2E",
   ],
+  syntax: { keyword: "#5B47C9", string: "#1F7A52", number: "#A1621B" },
 };
 
 const CUBE = [0, 95, 135, 175, 215, 255];

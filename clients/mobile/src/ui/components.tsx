@@ -388,52 +388,36 @@ export function ScreenHeader({
   );
 }
 
-/** One of a few views of the same thing (Changes | Browse). */
-export function Segmented<K extends string>({
-  options,
-  value,
-  onChange,
+/** A mono choice that opens a sheet (`zwiim ▾`); `glyph` leads it in `mut` (`⎇`). `large`: the 44pt context chips. */
+export function Chip({
+  label,
+  glyph,
+  large,
+  onPress,
+  testID,
 }: {
-  options: { key: K; label: string }[];
-  value: K;
-  onChange(key: K): void;
+  label: string;
+  glyph?: string;
+  large?: boolean;
+  onPress(): void;
+  testID?: string;
 }) {
-  const theme = useTheme();
-  return (
-    <View style={[styles.segmented, { backgroundColor: theme.surface }]} accessibilityRole="tablist">
-      {options.map((o) => {
-        const on = o.key === value;
-        return (
-          <Pressable
-            key={o.key}
-            accessibilityRole="tab"
-            accessibilityState={{ selected: on }}
-            onPress={() => onChange(o.key)}
-            style={[styles.segment, on && { backgroundColor: theme.raised }]}
-            testID={`segment-${o.key}`}
-          >
-            <T variant="callout" color={on ? theme.fg : theme.mut}>
-              {o.label}
-            </T>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-}
-
-/** A small mono choice in a title row that opens a sheet (`site ▾`). */
-export function Chip({ label, onPress, testID }: { label: string; onPress(): void; testID?: string }) {
   const theme = useTheme();
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={glyph ? `${glyph} ${label}` : label}
       onPress={onPress}
-      hitSlop={6}
-      style={({ pressed }) => [styles.chip, { backgroundColor: pressed ? theme.raised : theme.surface }]}
+      hitSlop={large ? undefined : 6}
+      style={({ pressed }) => [styles.chip, large && styles.chipLarge, { backgroundColor: pressed ? theme.raised : theme.surface }]}
       testID={testID}
     >
-      <T variant="mono" numberOfLines={1} style={styles.shrink}>
+      {glyph ? (
+        <T variant="mono" color={theme.mut} style={large ? styles.chipLargeText : undefined}>
+          {glyph}
+        </T>
+      ) : null}
+      <T variant="mono" numberOfLines={1} style={large ? [styles.shrink, styles.chipLargeText] : styles.shrink}>
         {label}
       </T>
       <Icon icon={ChevronDown} color={theme.mut} size={14} />
@@ -525,8 +509,6 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   back: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
-  segmented: { flexDirection: "row", borderRadius: radius.md, padding: space.xxs },
-  segment: { flex: 1, height: 40, borderRadius: radius.sm + 2, alignItems: "center", justifyContent: "center" },
   chip: {
     height: 32,
     maxWidth: 200,
@@ -536,5 +518,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
     paddingHorizontal: space.sm,
   },
+  chipLarge: { height: 44, maxWidth: 220, gap: space.sm, paddingLeft: space.md + 2, paddingRight: space.md },
+  chipLargeText: { fontSize: 14, lineHeight: 20 },
   emptyAction: { marginTop: space.md, alignItems: "flex-start" },
 });

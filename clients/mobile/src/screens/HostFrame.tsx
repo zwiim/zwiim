@@ -18,17 +18,20 @@ import { space, useTheme } from "../ui/tokens";
 /**
  * A tab's frame: the Host bar, the connection's banner, then the tab. The
  * tab shows only while live (dimmed while reconnecting, hidden while the host
- * is offline) unless `always`. `accessory` sits in the title row.
+ * is offline) unless `always`. `accessory` sits in the title row. `fill`: no
+ * title, and the tab fills the rest of the screen and scrolls itself.
  */
 export function HostFrame({
   title,
   always,
   accessory,
+  fill,
   children,
 }: {
-  title: string;
+  title?: string;
   always?: boolean;
   accessory?: ReactNode;
+  fill?: boolean;
   children: ReactNode;
 }) {
   const theme = useTheme();
@@ -49,7 +52,7 @@ export function HostFrame({
   else if (status === "reconnecting" && view?.error?.code !== "host_offline") {
     // Last-known state, not actionable, under any banner but "offline".
     content = (
-      <View style={styles.dim} pointerEvents="none">
+      <View style={[styles.dim, fill && styles.page]} pointerEvents="none">
         {children}
       </View>
     );
@@ -73,15 +76,19 @@ export function HostFrame({
           }
         />
       ) : null}
-      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-        <View style={styles.titleRow}>
-          <T variant="display" style={styles.title}>
-            {title}
-          </T>
-          {accessory && status === "live" ? accessory : null}
-        </View>
-        {content}
-      </ScrollView>
+      {fill ? (
+        <View style={styles.page}>{content}</View>
+      ) : (
+        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+          <View style={styles.titleRow}>
+            <T variant="display" style={styles.title}>
+              {title}
+            </T>
+            {accessory && status === "live" ? accessory : null}
+          </View>
+          {content}
+        </ScrollView>
+      )}
       <HostSwitcher visible={switching} onClose={() => setSwitching(false)} />
     </View>
   );

@@ -1,8 +1,16 @@
 import { ZwiimClientError, type WorkspaceDiff, type WorkspaceInfo } from "@zwiim/sdk";
 import { describe, expect, it } from "vitest";
 import {
+  browseRows,
+  changedFilesText,
   changeItems,
+  changeName,
+  changeTotals,
   crumbs,
+  findFiles,
+  highlight,
+  hunkLabel,
+  syntaxOf,
   fileProblem,
   notGitProblem,
   folderEntries,
@@ -33,6 +41,102 @@ describe("browsing", () => {
       { kind: "dir", name: "docs", path: "docs", children: [] },
     ]);
     expect(entries.map((e) => e.name)).toEqual(["src", "docs", "README.md", "a.ts"]);
+  });
+});
+
+describe("the tree and its changes", () => {
+  const change = (path: string, letter: string, additions = 1, deletions = 0) => ({
+    path,
+    letter,
+    additions,
+    deletions,
+    binary: false,
+    tooLarge: false,
+  });
+
+  it("says what each folder holds and marks what changed", () => {
+    const rows = browseRows(
+      [
+        { kind: "file", name: "session.ts", path: "src/session.ts" },
+        { kind: "dir", name: "auth", path: "src/auth", children: [{ kind: "file", name: "token.ts", path: "src/auth/token.ts" }] },
+        { kind: "dir", name: "archive", path: "src/archive", children: [] },
+        { kind: "dir", name: "linked", path: "src/linked", children: [], symlink: true },
+        { kind: "dir", name: "host", path: "src/host", children: [
+          { kind: "file", name: "a.ts", path: "src/host/a.ts" },
+          { kind: "file", name: "b.ts", path: "src/host/b.ts" },
+        ] },
+      ],
+      [change("src/session.ts", "M"), change("src/auth/token.ts", "A"), change("src/hostile.ts", "M")],
+    );
+    expect(rows.map((r) => [r.node.name, r.meta, r.letter, r.changed])).toEqual([
+      ["auth", "1 item", null, true],
+      ["archive", "empty", null, false],
+      ["linked", null, null, false],
+      // A sibling's name starting with "host" isn't inside host/.
+      ["host", "2 items", null, false],
+      ["session.ts", null, "M", false],
+    ]);
+  });
+
+  it("finds files by part of their name, anywhere, ignoring case", () => {
+    const tree = [
+      { kind: "file" as const, name: "README.md", path: "README.md" },
+      { kind: "dir" as const, name: "src", path: "src", children: [
+        { kind: "dir" as const, name: "auth", path: "src/auth", children: [
+          { kind: "file" as const, name: "session.ts", path: "src/auth/session.ts" },
+        ] },
+      ] },
+      { kind: "file" as const, name: "session.test.ts", path: "session.test.ts" },
+    ];
+    expect(findFiles(tree, " Session ")).toEqual([
+      { path: "src/auth/session.ts", name: "session.ts", folder: "src/auth/" },
+      { path: "session.test.ts", name: "session.test.ts", folder: "./" },
+    ]);
+    // Folders aren't results.
+    expect(findFiles(tree, "auth")).toEqual([]);
+    expect(findFiles(tree, "  ")).toEqual([]);
+  });
+
+  it("totals the changes for the Changes row", () => {
+    const items = [change("a", "M", 3, 1), { ...change("b.png", "A"), additions: null, deletions: null, binary: true }, change("c", "D", 0, 9)];
+    expect(changeTotals(items)).toEqual({ additions: 3, deletions: 10 });
+    expect(changedFilesText(1)).toBe("1 changed file");
+    expect(changedFilesText(4)).toBe("4 changed files");
+    expect(changeName("M")).toBe("Modified");
+    expect(changeName("?")).toBe("Untracked");
+    expect(changeName("X")).toBe("Changed");
+  });
+
+  it("places a hunk by line", () => {
+    expect(hunkLabel("@@ -13,4 +14,7 @@ createSession()")).toBe("line 14 · createSession()");
+    expect(hunkLabel("@@ -10 +10,2 @@")).toBe("line 10");
+    expect(hunkLabel("@@ -0,0 +1 @@")).toBe("new file");
+    expect(hunkLabel("@@ -1,3 +0,0 @@")).toBe("deleted file");
+    expect(hunkLabel("not a hunk")).toBe("not a hunk");
+  });
+});
+
+describe("coloring a file", () => {
+  it("picks the language by extension", () => {
+    expect(syntaxOf("src/auth/session.ts")).toBe("ts");
+    expect(syntaxOf(".gitignore")).toBe("gitignore");
+    expect(syntaxOf("Makefile")).toBe("");
+  });
+
+  it("colors keywords, strings, numbers and comments", () => {
+    expect(highlight("const ttl = 15 * 60; // minutes", "ts")).toEqual([
+      { text: "const", kind: "keyword" },
+      { text: " ttl = ", kind: "plain" },
+      { text: "15", kind: "number" },
+      { text: " * ", kind: "plain" },
+      { text: "60", kind: "number" },
+      { text: "; ", kind: "plain" },
+      { text: "// minutes", kind: "comment" },
+    ]);
+    expect(highlight("import x from './x';", "ts").map((s) => s.kind)).toEqual(["keyword", "plain", "keyword", "plain", "string", "plain"]);
+    expect(highlight("# Title", "md")).toEqual([{ text: "# Title", kind: "heading" }]);
+    expect(highlight("# nightly backup", "sh")).toEqual([{ text: "# nightly backup", kind: "comment" }]);
+    expect(highlight("", "ts")).toEqual([]);
   });
 });
 

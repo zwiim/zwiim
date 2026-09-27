@@ -37,10 +37,12 @@ export function ContextBar() {
   const root_id = rootIdOf(current);
   return (
     <View style={styles.bar}>
-      <Chip label={label?.workspace ?? workspaceLabel(current)} onPress={() => setLevel({ kind: "workspaces" })} testID="workspace-chip" />
+      <Chip large label={label?.workspace ?? workspaceLabel(current)} onPress={() => setLevel({ kind: "workspaces" })} testID="workspace-chip" />
       {label?.worktree != null ? (
         <Chip
-          label={`⎇ ${label.worktree}`}
+          large
+          glyph="⎇"
+          label={label.worktree}
           onPress={() => setLevel({ kind: "worktrees", root_id, fromList: false })}
           testID="worktree-chip"
         />
@@ -276,7 +278,7 @@ function Worktrees({
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-  bar: { flexDirection: "row", flexWrap: "wrap", gap: space.sm, paddingHorizontal: space.lg, paddingBottom: space.sm },
+  bar: { flexDirection: "row", flexWrap: "wrap", gap: space.sm, paddingHorizontal: space.lg, paddingTop: space.md, paddingBottom: space.sm },
   head: { flexDirection: "row", alignItems: "center", gap: space.sm },
   search: { height: 44, borderRadius: radius.md, paddingHorizontal: space.md },
   none: { paddingVertical: space.md },
