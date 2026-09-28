@@ -9,7 +9,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",
-    "bundle": "node scripts/sidecars.mjs && tauri build --config src-tauri/tauri.bundle.json"
+    "bundle": "node scripts/sidecars.mjs && tauri build --config src-tauri/tauri.bundle.json",
+    "bundle:release": "node scripts/sidecars.mjs && tauri build --config src-tauri/tauri.bundle.json --config src-tauri/tauri.release.json"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

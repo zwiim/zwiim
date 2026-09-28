@@ -3,6 +3,8 @@
 //   EXPO_PUBLIC_ZWIIM_CLOUD_URL           the Zwiim Cloud (https; http on loopback only)
 //   EXPO_PUBLIC_ZWIIM_SUPABASE_URL        the Supabase project for sign-in
 //   EXPO_PUBLIC_ZWIIM_SUPABASE_ANON_KEY   its anon key (public by design)
+//   EXPO_PUBLIC_ZWIIM_RELEASE_URL         where releases are published (optional;
+//                                         the project's GitHub Releases by default)
 //
 // None is a secret. Without them, sign-in is unavailable and the app says so.
 
@@ -31,3 +33,6 @@ export const config = appConfig({
   EXPO_PUBLIC_ZWIIM_SUPABASE_URL: process.env.EXPO_PUBLIC_ZWIIM_SUPABASE_URL,
   EXPO_PUBLIC_ZWIIM_SUPABASE_ANON_KEY: process.env.EXPO_PUBLIC_ZWIIM_SUPABASE_ANON_KEY,
 });
+
+/** Where `release.json` is read from, to find the store build a Host needs. */
+export const releasesUrl: string | undefined = process.env.EXPO_PUBLIC_ZWIIM_RELEASE_URL || undefined;

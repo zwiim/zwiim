@@ -35,6 +35,12 @@ import type {
  * - `host_identity_mismatch`: a host on this network advertises the
  *   selected host's id with a key other than the pinned one (terminal).
  *
+ * Compatibility (`evaluateCompatibility`) adds:
+ *
+ * - `update_required`: this client or the Host is too old for the other.
+ *   The connection is `incompatible` and operations are refused until the
+ *   named side is updated (re-checked on a slow timer).
+ *
  * Pairing a device with a host's QR (`parsePairingInvitation`,
  * `pairThroughCloud`) adds:
  *
@@ -59,6 +65,7 @@ export type ClientErrorCode =
   | "pairing_invalid"
   | "pairing_expired"
   | "pairing_rejected"
+  | "update_required"
   | (string & {});
 
 export class ZwiimClientError extends Error {

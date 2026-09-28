@@ -1,8 +1,12 @@
+import type { Compatibility } from "./compat";
+
 // Connection lifecycle of one host:
 //
 //   disconnected → connecting → handshaking → live
 //   live → reconnecting → handshaking → live
 //   (any) → unauthenticated | error        terminal; `start()` again to retry
+//   connecting → incompatible              `host.hello` says one side needs an
+//                                          update; re-checked on a slow timer
 //
 // `connecting`/`reconnecting` cover discovery + `host.hello`; `handshaking`
 // is the event socket opening; `live` means the socket is open and every
@@ -15,10 +19,16 @@ export type ConnectionStatus =
   | "live"
   | "reconnecting"
   | "unauthenticated"
+  | "incompatible"
   | "error";
 
 export interface ConnectionState {
   status: ConnectionStatus;
+  /**
+   * The last `host.hello`'s compatibility verdict; null before the first
+   * hello. `incompatible` always carries an `update_required` verdict.
+   */
+  compat: Compatibility | null;
   /** Consecutive failed attempts since the last `live`. */
   attempt: number;
   hostId: string | null;

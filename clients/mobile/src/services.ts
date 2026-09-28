@@ -3,10 +3,12 @@
 // store until a call needs them.
 
 import * as WebBrowser from "expo-web-browser";
+import { Platform } from "react-native";
 import { AccountAuth } from "./account/auth";
 import { config } from "./config";
 import { CurrentHost } from "./host/current";
 import { cloudFor, openHostConnection } from "./host/open";
+import { appInfo } from "./platform/app-info";
 import { lanDial, preferences, secureStore } from "./platform/native";
 
 export const auth = config
@@ -33,6 +35,6 @@ export const currentHost = new CurrentHost({
     openHostConnection(
       secureStore,
       { hostId, cloudUrl: config?.cloudUrl ?? null, lanEndpoint: null },
-      { mode, dial: lanDial, accessToken },
+      { mode, dial: lanDial, accessToken, client: appInfo(Platform.OS) },
     ),
 });

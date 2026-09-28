@@ -1819,16 +1819,21 @@ async fn build_agent(
             for (k, v) in &merged_env {
                 parts.push(format!("{k}={v}"));
             }
-            parts.push(
-                crate::commands::acp::resolve_npx_command(cmd)
-                    .await
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| {
-                        crate::process::normalized_program(cmd)
-                            .to_string_lossy()
-                            .to_string()
-                    }),
-            );
+            // Claude and Codex launch only from their managed install (see
+            // `crate::adapters`); never from PATH or a global npm prefix.
+            match crate::adapters::launch(agent_type) {
+                Some(launch) => parts.extend(launch?.argv()),
+                None => parts.push(
+                    crate::commands::acp::resolve_npx_command(cmd)
+                        .await
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| {
+                            crate::process::normalized_program(cmd)
+                                .to_string_lossy()
+                                .to_string()
+                        }),
+                ),
+            }
             // Grok's root-level launch flags go BEFORE its `agent stdio`
             // subcommand (which rejects them):
             //  - `--no-auto-update`: Zwiim owns the pinned version, so suppress the

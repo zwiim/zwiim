@@ -10,7 +10,7 @@ import { concatBytes, respond, type CipherState } from "../src/remote/noise";
 import { decodeEnvelope, tunnelPrologue, type ByteChannel, type Envelope } from "../src/remote/tunnel";
 import type { EventChannel } from "../src/transport/transport";
 import type { ClientMessage, KeyPairingInvitation, OpName } from "../src/types/protocol";
-import { FakeTransport } from "./fakes";
+import { FakeTransport, hello } from "./fakes";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -194,12 +194,7 @@ export class FakeHost {
   private nextCode = 0;
 
   constructor(readonly hostId = "host-1") {
-    this.backend.handlers["host.hello"] = () => ({
-      host_id: this.hostId,
-      protocol: "zwiim/1",
-      version: "0.0.0",
-      owner: null,
-    });
+    this.backend.handlers["host.hello"] = () => hello({ host_id: this.hostId });
   }
 
   /** `device.pair_invite`: a v2 QR payload. */

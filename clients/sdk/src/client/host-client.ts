@@ -33,6 +33,7 @@ import {
   type ConnectionState,
   type ConnectionStatus,
 } from "./connection";
+import { evaluateCompatibility, helloClient, type ClientInfo, type Compatibility } from "./compat";
 import { isClientError, ZwiimClientError } from "./errors";
 
 export type TransportSource = Transport | (() => Transport | Promise<Transport>);
@@ -51,6 +52,21 @@ const TERMINAL: Readonly<Record<string, "unauthenticated" | "error">> = {
   host_identity_mismatch: "error",
 };
 
+/**
+ * Operations a client may still run while `incompatible`: enough to show the
+ * Host's versions and diagnostics, and to ask an old Host to update itself.
+ */
+const ALLOWED_WHEN_INCOMPATIBLE: ReadonlySet<string> = new Set([
+  "host.hello",
+  "host.update.status",
+  "host.update.check",
+  "host.update.apply",
+  "host.diagnostics",
+]);
+
+/** How often an incompatible Host is asked again (it may have been updated). */
+const DEFAULT_INCOMPATIBLE_RETRY_MS = 60_000;
+
 export interface HostClientOptions {
   /**
    * The transport, or a factory called before every connection attempt (so
@@ -59,6 +75,13 @@ export interface HostClientOptions {
   transport: TransportSource;
   /** Refuse a host whose `host_id` differs (from discovery). */
   expectedHostId?: string;
+  /**
+   * This app, introduced in `host.hello`. Without it the Host gives no
+   * verdict of its own; the SDK still decides compatibility.
+   */
+  client?: ClientInfo;
+  /** Delay between compatibility re-checks while `incompatible`. */
+  incompatibleRetryMs?: number;
   pingIntervalMs?: number;
   pongTimeoutMs?: number;
   backoff?: BackoffOptions;
@@ -95,6 +118,8 @@ interface TerminalSub {
 export class HostClient {
   private readonly source: TransportSource;
   private readonly expectedHostId: string | undefined;
+  private readonly client: ClientInfo | undefined;
+  private readonly incompatibleRetryMs: number;
   private readonly pingIntervalMs: number;
   private readonly pongTimeoutMs: number;
   private readonly backoff: BackoffOptions;
@@ -104,6 +129,7 @@ export class HostClient {
   private channel: EventChannel | null = null;
   private stateValue: ConnectionState = {
     status: "disconnected",
+    compat: null,
     attempt: 0,
     hostId: null,
     error: null,
@@ -126,6 +152,8 @@ export class HostClient {
   constructor(options: HostClientOptions) {
     this.source = options.transport;
     this.expectedHostId = options.expectedHostId;
+    this.client = options.client;
+    this.incompatibleRetryMs = options.incompatibleRetryMs ?? DEFAULT_INCOMPATIBLE_RETRY_MS;
     this.pingIntervalMs = options.pingIntervalMs ?? 20_000;
     this.pongTimeoutMs = options.pongTimeoutMs ?? 10_000;
     this.backoff = options.backoff ?? DEFAULT_BACKOFF;
@@ -146,7 +174,7 @@ export class HostClient {
   /** Connect (or retry after `unauthenticated`/`error`). No-op while active. */
   start(): void {
     const s = this.stateValue.status;
-    if (s !== "disconnected" && s !== "unauthenticated" && s !== "error") return;
+    if (s !== "disconnected" && s !== "unauthenticated" && s !== "error" && s !== "incompatible") return;
     this.run++;
     this.stateValue = { ...this.stateValue, attempt: 0, error: null };
     void this.attempt("connecting");
@@ -162,7 +190,8 @@ export class HostClient {
 
   /** Skip the remaining backoff delay. */
   retryNow(): void {
-    if (this.stateValue.status !== "reconnecting" || this.retryTimer === null) return;
+    const s = this.stateValue.status;
+    if ((s !== "reconnecting" && s !== "incompatible") || this.retryTimer === null) return;
     clearTimeout(this.retryTimer);
     this.retryTimer = null;
     void this.attempt("reconnecting");
@@ -177,7 +206,10 @@ export class HostClient {
       this.transport = typeof this.source === "function" ? await this.source() : this.source;
       if (previous && previous !== this.transport) previous.close?.();
       if (run !== this.run) return;
-      hello = (await this.transport.request("host.hello", {})) as HostHello;
+      hello = (await this.transport.request(
+        "host.hello",
+        this.client ? { client: helloClient(this.client) } : {},
+      )) as HostHello;
     } catch (e) {
       if (run === this.run) this.fail(e);
       return;
@@ -188,9 +220,40 @@ export class HostClient {
       this.fail(new ZwiimClientError("host_mismatch", "A different host is running at this address"));
       return;
     }
-    this.setState({ status: "handshaking", hostId: hello.host_id });
+    const compat = evaluateCompatibility(hello);
+    if (compat.status === "update_required") {
+      this.emit((l) => l.hello?.(hello));
+      this.becomeIncompatible(compat, hello.host_id);
+      return;
+    }
+    this.setState({ status: "handshaking", hostId: hello.host_id, compat });
     this.emit((l) => l.hello?.(hello));
     this.openChannel(run);
+  }
+
+  /**
+   * One side needs an update. Hold no event socket, refuse operations, and
+   * ask again on a slow timer: an updated Host clears this by itself.
+   */
+  private becomeIncompatible(compat: Compatibility, hostId: string): void {
+    this.teardown();
+    const message =
+      compat.status === "update_required" && compat.update === "host"
+        ? "This Host needs an update"
+        : "Update Zwiim to use this Host";
+    this.setState({
+      status: "incompatible",
+      hostId,
+      compat,
+      attempt: 0,
+      error: { code: "update_required", message },
+      retryInMs: this.incompatibleRetryMs,
+    });
+    const run = this.run;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      if (run === this.run) void this.attempt("reconnecting");
+    }, this.incompatibleRetryMs);
   }
 
   private openChannel(run: number): void {
@@ -299,6 +362,12 @@ export class HostClient {
    * caller should refresh host state rather than resend.
    */
   async request<O extends OpName>(op: O, params: OpParams<O>): Promise<OpResult<O>> {
+    if (this.stateValue.status === "incompatible" && !ALLOWED_WHEN_INCOMPATIBLE.has(op)) {
+      throw new ZwiimClientError(
+        "update_required",
+        this.stateValue.error?.message ?? "An update is required to use this Host",
+      );
+    }
     const transport =
       this.transport ?? (typeof this.source === "function" ? await this.source() : this.source);
     this.transport = transport;

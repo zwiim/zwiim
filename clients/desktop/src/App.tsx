@@ -5,6 +5,7 @@ import {
   FileDiff,
   FileText,
   GitBranch,
+  Info,
   Loader2,
   MessageSquare,
   PanelLeftClose,
@@ -51,6 +52,7 @@ import {
   type HostChoice,
 } from "@/lib/prefs";
 import { connectRemote } from "@/lib/remote";
+import { AboutDialog, useUpdateHint } from "@/panels/About";
 import { AccountPanel, Welcome } from "@/panels/Account";
 import { cn } from "@/lib/utils";
 import { ConnectionStatus, type RemoteLink } from "@/panels/ConnectionStatus";
@@ -255,6 +257,8 @@ export function Workbench({
   const remote = choice.kind === "remote";
   const refusedCode = useHost((s) => (s.connection.status === "live" ? null : (s.connection.error?.code ?? null)));
   const [showDevices, setShowDevices] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
+  const updateHint = useUpdateHint(bridge);
   /** A remote host's folder path being asked for, and where the answer goes. */
   const [askPath, setAskPath] = useState<((path: string | null) => void) | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
@@ -387,6 +391,14 @@ export function Workbench({
               <Smartphone className="size-3.5" /> Devices
             </button>
           )}
+          <button
+            className="text-muted-foreground hover:text-foreground flex items-center gap-1.5 self-start text-xs"
+            onClick={() => setShowAbout(true)}
+            data-testid="about-button"
+          >
+            <Info className="size-3.5" /> About & updates
+            {updateHint && <span className="bg-primary size-1.5 rounded-full" aria-label="Update available" />}
+          </button>
         </div>
         <Sidebar
           workspaceId={workspaceId}
@@ -401,6 +413,7 @@ export function Workbench({
         />
       </SidebarFrame>
       {showDevices && <DevicesDialog bridge={bridge} onClose={() => setShowDevices(false)} />}
+      {showAbout && <AboutDialog bridge={bridge} remote={remote} onClose={() => setShowAbout(false)} />}
       {askPath && (
         <HostPathDialog
           onDone={(path) => {
@@ -950,7 +963,9 @@ function OfflineBanner() {
   const status = useHost((s) => s.connection.status);
   if (status === "live") return null;
   const text =
-    status === "unauthenticated"
+    status === "incompatible"
+      ? "An update is required before this app can use the host. Changes are disabled."
+      : status === "unauthenticated"
       ? "This app is not authorized by the host. Changes are disabled."
       : status === "error"
         ? "Not connected to the host. Changes are disabled."

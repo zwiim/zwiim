@@ -22,6 +22,59 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // Release tooling: what this build is, and whether it accepts a signed
+    // release manifest (proves the shipped Host trusts the release key).
+    if args.iter().any(|a| a == "--release-info") {
+        println!("{}", zwiim_host::update::service::release_info());
+        return ExitCode::SUCCESS;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--verify-release") {
+        let (Some(manifest), Some(sig)) = (args.get(i + 1), args.get(i + 2)) else {
+            eprintln!("usage: zwiim-host --verify-release <release.json> <release.json.sig>");
+            return ExitCode::from(2);
+        };
+        return match zwiim_host::update::service::verify_release_files(manifest.as_ref(), sig.as_ref()) {
+            Ok(version) => {
+                println!("release {version}: signature and manifest verified");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("release rejected: {e}");
+                ExitCode::from(1)
+            }
+        };
+    }
+
+    // Resolve and pin `ZWIIM_DATA_DIR` first: the supervisor starts the
+    // installed Host version from it, and its worker inherits it (see the
+    // longer note below).
+    let resolved_data_dir = std::env::var("ZWIIM_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| default_data_dir());
+    let resolved_data_dir = zwiim_host::git_credential::absolutize(&resolved_data_dir);
+    std::env::set_var("ZWIIM_DATA_DIR", &resolved_data_dir);
+
+    // `--seed`: Desktop offers the Host it bundles to the installer at every
+    // launch, so a Desktop update never downloads the Host a second time.
+    if args.iter().any(|a| a == "--seed") {
+        if !zwiim_host::update::install::versioned_installs() {
+            println!("unchanged");
+            return ExitCode::SUCCESS;
+        }
+        let root = zwiim_host::update::install::root(&resolved_data_dir);
+        let exe = zwiim_host::update::runtime::self_exe();
+        return match zwiim_host::update::install::seed(&root, &exe, env!("CARGO_PKG_VERSION")) {
+            Ok(outcome) => {
+                println!("{outcome:?}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("seed failed: {e}");
+                ExitCode::from(1)
+            }
+        };
+    }
+
     // `--supervise`: run as the process supervisor that owns the worker's
     // lifecycle (PID 1 in Docker). It spawns `zwiim-host` without this
     // flag and relaunches it after an in-place upgrade. Never returns.
@@ -78,11 +131,8 @@ fn main() -> ExitCode {
     // `std::env::set_var` is not thread-safe (unsafe in Rust edition
     // 2024); doing this before the tokio runtime is built guarantees we
     // are still single-threaded.
-    let resolved_data_dir = std::env::var("ZWIIM_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| default_data_dir());
-    let resolved_data_dir = zwiim_host::git_credential::absolutize(&resolved_data_dir);
-    std::env::set_var("ZWIIM_DATA_DIR", &resolved_data_dir);
+    // (Resolved above, before `--supervise`, so the supervisor and its
+    // worker agree on the data directory.)
 
     // Install the logging subscriber now that ZWIIM_DATA_DIR is pinned (the logs
     // dir resolves from it). Doing it here — before the first server diagnostic
@@ -122,16 +172,87 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    // `main` returns the worker's exit code so `_log_guard` drops here — after
-    // the runtime finishes — flushing any buffered file logs on a clean exit.
-    tokio::runtime::Builder::new_multi_thread()
+    // One Host per data directory, decided before anything opens the
+    // database: a second Host exits here, leaving the database, its
+    // migrations and the discovery file to the one already running.
+    let instance_lock = match zwiim_host::host_lifecycle::InstanceLock::acquire(&resolved_data_dir) {
+        Ok(lock) => lock,
+        Err(zwiim_host::host_lifecycle::LockError::Held { pid }) => {
+            let holder = pid.map(|p| format!(" (pid {p})")).unwrap_or_default();
+            tracing::info!(
+                "[SERVER] Another Host{holder} is already running for {}; exiting.",
+                resolved_data_dir.display()
+            );
+            eprintln!("[SERVER] Another Host{holder} is already running for this data directory.");
+            return ExitCode::from(zwiim_host::host_lifecycle::EXIT_ALREADY_RUNNING);
+        }
+        Err(zwiim_host::host_lifecycle::LockError::Io(e)) => {
+            tracing::error!("[SERVER] Could not lock the data directory: {e}; aborting startup.");
+            return ExitCode::from(1);
+        }
+    };
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .expect("Failed to build tokio runtime")
-        .block_on(async_main())
+        .expect("Failed to build tokio runtime");
+    let exit = runtime.block_on(async_main());
+    // Don't wait on blocking threads a drain has already ended the work of
+    // (a PTY reader blocked in `read`, say).
+    runtime.shutdown_timeout(std::time::Duration::from_secs(2));
+
+    // `main` returns the worker's exit code so `_log_guard` drops here — after
+    // the runtime finishes — flushing any buffered file logs on a clean exit.
+    match exit {
+        Exit::Code(code) => code,
+        Exit::Restart if zwiim_host::update::runtime::is_supervised() => {
+            // An update restart switches `current` before the supervisor
+            // starts it.
+            zwiim_host::update::service::activate_if_armed();
+            tracing::info!("[SERVER] Restarting through the supervisor");
+            ExitCode::from(zwiim_host::update::runtime::EXIT_RESTART as u8)
+        }
+        Exit::Restart => {
+            tracing::info!("[SERVER] Restarting in place");
+            drop(instance_lock);
+            drop(_log_guard);
+            reexec()
+        }
+    }
 }
 
-async fn async_main() -> ExitCode {
+/// How the worker ends.
+enum Exit {
+    Code(ExitCode),
+    /// Drained for a restart: relaunch this binary.
+    Restart,
+}
+
+/// Replace this process with a fresh run of the same executable and
+/// arguments (an unsupervised Host restarting). Returns only on failure.
+#[cfg(unix)]
+fn reexec() -> ExitCode {
+    use std::os::unix::process::CommandExt;
+    let err = std::process::Command::new(zwiim_host::update::runtime::self_exe())
+        .args(std::env::args_os().skip(1))
+        .exec();
+    eprintln!("[SERVER] Restart failed: {err}");
+    ExitCode::from(1)
+}
+
+#[cfg(not(unix))]
+fn reexec() -> ExitCode {
+    let exe = zwiim_host::update::runtime::self_exe();
+    match std::process::Command::new(exe).args(std::env::args_os().skip(1)).spawn() {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("[SERVER] Restart failed: {err}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+async fn async_main() -> Exit {
     // Sweep stale ACP binary cache trash (rename-aside fallback artifacts).
     // Detached OS thread: cannot block startup, panics are caught and dropped,
     // errors are silenced, no subprocesses spawned.
@@ -162,42 +283,24 @@ async fn async_main() -> ExitCode {
     let static_dir = find_static_dir_standalone(static_dir_env.as_deref());
     let app_version = env!("CARGO_PKG_VERSION");
 
-    // Staged-upgrade marker lifecycle. The marker is a proof token: it stays on
-    // disk for the whole trial window so a second self-update is refused while
-    // this freshly-swapped version is still unproven (re-swapping would clobber
-    // the only good `.bak` and make a trial-failure rollback restore the
-    // unproven version).
-    if zwiim_host::update::runtime::is_supervised() {
-        // Supervised trial: if this launch is the trial of a freshly-swapped
-        // version (marker present), keep the marker until we have stayed up
-        // past the trial window — at which point the upgrade is proven and the
-        // marker is cleared so future updates are allowed again. The supervisor
-        // only peeks at the marker to set probation; clearing is the worker's
-        // job. If this version can't survive the window the supervisor rolls it
-        // back first (which clears the marker), so this task never fires.
-        if zwiim_host::update::install::upgrade_staged() {
-            let trial = zwiim_host::update::runtime::upgrade_trial_secs();
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(trial)).await;
-                let _ = zwiim_host::update::install::take_upgrade_staged();
-            });
-        }
-    } else {
-        // Standalone (non-supervised) self-update re-execs this binary in place,
-        // with no supervisor and thus no trial/rollback. Clear the marker on
-        // startup so a re-exec'd upgrade doesn't leave it behind and block every
-        // future update with "already staged".
-        let _ = zwiim_host::update::install::take_upgrade_staged();
-    }
-
     tracing::info!("[SERVER] zwiim-host v{}", app_version);
     tracing::info!("[SERVER] Data directory: {}", data_dir.display());
     tracing::info!("[SERVER] Static directory: {}", static_dir.display());
 
     // Initialize database
-    let db = zwiim_host::db::init_database(&data_dir, app_version)
-        .await
-        .expect("Failed to initialize database");
+    let db = match zwiim_host::db::init_database(&data_dir, app_version).await {
+        Ok(db) => db,
+        Err(e @ zwiim_host::db::error::DbError::NewerSchema(_)) => {
+            // Never run on (or downgrade) data this version cannot read.
+            tracing::error!("[SERVER] {e}. Install that version of Zwiim or newer; the data was not changed.");
+            eprintln!("[SERVER] This data was written by a newer version of Zwiim. Install that version or newer; nothing was changed.");
+            return Exit::Code(ExitCode::from(zwiim_host::host_lifecycle::EXIT_DATA_TOO_NEW));
+        }
+        Err(e) => {
+            tracing::error!("[SERVER] Failed to initialize database: {e}");
+            return Exit::Code(ExitCode::from(1));
+        }
+    };
 
     // Logging phase 2: override the default level from the persisted
     // `logging.level` now that the DB is open. Phase 3 (wiring the emitter)
@@ -264,6 +367,10 @@ async fn async_main() -> ExitCode {
         });
     }
 
+    // Install or confirm the managed Claude/Codex adapters from this build's
+    // lock, in the background; offline, installed adapters keep working.
+    zwiim_host::adapters::provision_at_start();
+
     // Create shared broadcaster + internal ACP event bus.
     let broadcaster = Arc::new(WebEventBroadcaster::new());
     let event_bus_metrics = Arc::new(zwiim_host::acp::EventBusMetrics::default());
@@ -317,6 +424,7 @@ async fn async_main() -> ExitCode {
         device_revocations: Default::default(),
         cloud: Arc::new(zwiim_host::cloud::CloudLink::from_env()),
         lan: Arc::new(zwiim_host::lan::LanLink::from_env()),
+        lifecycle: Default::default(),
     });
 
     // Load (first boot: mint) the host's identity keys off the startup path.
@@ -563,7 +671,7 @@ async fn async_main() -> ExitCode {
             Ok(addr) => addr,
             Err(e) => {
                 tracing::error!("[SERVER] Invalid ZWIIM_TUNNEL_TEST_ADDR {addr:?}: {e}");
-                return ExitCode::from(1);
+                return Exit::Code(ExitCode::from(1));
             }
         };
         let tunnel_router =
@@ -602,7 +710,7 @@ async fn async_main() -> ExitCode {
         Ok(listener) => listener,
         Err(e) => {
             tracing::error!("[SERVER] Failed to bind {}: {}", addr, e);
-            return ExitCode::from(1);
+            return Exit::Code(ExitCode::from(1));
         }
     };
 
@@ -650,12 +758,63 @@ async fn async_main() -> ExitCode {
         tracing::info!("  {}", addr);
     }
 
-    // Start serving
-    if let Err(e) = axum::serve(listener, router).await {
-        tracing::error!("[SERVER] Server error: {}", e);
-        return ExitCode::from(1);
+    // A stop signal drains like a restart does, then exits.
+    {
+        let lifecycle = state.lifecycle.clone();
+        tokio::spawn(async move {
+            zwiim_host::host_lifecycle::stop_signal().await;
+            tracing::info!("[SERVER] Stop requested; draining");
+            lifecycle.request(zwiim_host::host_lifecycle::ShutdownKind::Stop);
+        });
     }
-    ExitCode::SUCCESS
+
+    // Start serving; stop accepting once the drain has told clients to go.
+    let shutdown = shutdown_signal.clone();
+    let mut server = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async move { shutdown.wait().await })
+            .await
+    });
+    // A version on trial proves its health over the API it just bound.
+    zwiim_host::update::service::run_trial(
+        zwiim_host::local_host::loopback_url(&advertised_host, actual_port),
+        token.clone(),
+        state.lifecycle.clone(),
+    );
+    zwiim_host::update::service::start_background_checks();
+
+    let kind = tokio::select! {
+        kind = state.lifecycle.wait_for_request() => kind,
+        result = &mut server => {
+            // The server stopped on its own: nothing was drained.
+            match result {
+                Ok(Err(e)) => tracing::error!("[SERVER] Server error: {}", e),
+                Err(e) => tracing::error!("[SERVER] Server task failed: {}", e),
+                Ok(Ok(())) => tracing::error!("[SERVER] Server stopped unexpectedly"),
+            }
+            return Exit::Code(ExitCode::from(1));
+        }
+    };
+    zwiim_host::host_lifecycle::drain(&state).await;
+    // Let connections close; a client that won't is cut off.
+    if tokio::time::timeout(std::time::Duration::from_secs(5), &mut server)
+        .await
+        .is_err()
+    {
+        tracing::warn!("[SERVER] Connections still open after the drain; closing them");
+        server.abort();
+    }
+    zwiim_host::host_lifecycle::persist(&state).await;
+    // A stop that arrived during a restart's drain wins.
+    let kind = state.lifecycle.requested().unwrap_or(kind);
+    if kind == zwiim_host::host_lifecycle::ShutdownKind::Stop {
+        // A stopped Host is not there to be found; a restarting one rewrites
+        // the file when it is back.
+        let _ = std::fs::remove_file(zwiim_host::local_host::path(&discovery_dir));
+        tracing::info!("[SERVER] Stopped");
+        return Exit::Code(ExitCode::SUCCESS);
+    }
+    Exit::Restart
 }
 
 fn default_data_dir() -> PathBuf {

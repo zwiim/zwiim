@@ -28,7 +28,7 @@ export async function openHostConnection(
     mode: ConnectionMode;
     dial: LanDial | null;
     accessToken: () => Promise<string>;
-  } & Pick<HostConnectionConfig, "reachability" | "tuning">,
+  } & Pick<HostConnectionConfig, "reachability" | "tuning" | "client">,
 ): Promise<HostConnection> {
   const pinned = await store.pinnedHost(target.hostId);
   const identity = await store.deviceIdentity();
@@ -47,5 +47,6 @@ export async function openHostConnection(
     mode: options.mode,
     reachability: options.reachability,
     tuning: options.tuning,
+    client: options.client,
   });
 }

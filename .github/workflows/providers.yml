@@ -1,0 +1,55 @@
+# Supported providers (Claude, Codex) against the real vendors, through a real
+# Host and its managed adapters. Uses dedicated CI-only credentials stored as
+# repository secrets; they are never committed and never personal accounts.
+# A provider whose secret is missing is reported as not run, and a release
+# must not be cut on it (release.yml requires this workflow to pass).
+name: Providers
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      ZWIIM_CI_ANTHROPIC_API_KEY:
+        required: false
+      ZWIIM_CI_OPENAI_API_KEY:
+        required: false
+  schedule:
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    name: ${{ matrix.provider }}
+    runs-on: macos-14
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - provider: claude
+            test: claude_live
+          - provider: codex
+            test: codex_live
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Credentials present
+        env:
+          ANTHROPIC: ${{ secrets.ZWIIM_CI_ANTHROPIC_API_KEY }}
+          OPENAI: ${{ secrets.ZWIIM_CI_OPENAI_API_KEY }}
+        run: |
+          case "${{ matrix.provider }}" in
+            claude) test -n "$ANTHROPIC" || { echo "::error::ZWIIM_CI_ANTHROPIC_API_KEY is not configured; Claude was not tested"; exit 1; } ;;
+            codex)  test -n "$OPENAI"    || { echo "::error::ZWIIM_CI_OPENAI_API_KEY is not configured; Codex was not tested"; exit 1; } ;;
+          esac
+      - name: Live provider check
+        env:
+          ZWIIM_LIVE_PROVIDERS: ${{ matrix.provider }}
+          ANTHROPIC_API_KEY: ${{ matrix.provider == 'claude' && secrets.ZWIIM_CI_ANTHROPIC_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ matrix.provider == 'codex' && secrets.ZWIIM_CI_OPENAI_API_KEY || '' }}
+          ZWIIM_LIVE_EXPECTED_MODELS_CLAUDE: ${{ vars.ZWIIM_LIVE_EXPECTED_MODELS_CLAUDE }}
+          ZWIIM_LIVE_EXPECTED_MODELS_CODEX: ${{ vars.ZWIIM_LIVE_EXPECTED_MODELS_CODEX }}
+        run: cargo test -p zwiim-host --test provider_live ${{ matrix.test }} -- --ignored --nocapture --test-threads=1

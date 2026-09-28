@@ -10,3 +10,6 @@ clients/desktop/src-tauri/binaries/
 
 # Local deployment configuration (may hold secrets)
 /deploy/dev/cloud.env
+
+# Release builds (scripts/release)
+/dist/

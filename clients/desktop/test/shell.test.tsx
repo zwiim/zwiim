@@ -1,13 +1,15 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HostClient, HostController, ZwiimClientError, type WorkspaceInfo } from "@zwiim/sdk";
+import { CLIENT_REVISION, HostClient, HostController, ZwiimClientError, type WorkspaceInfo } from "@zwiim/sdk";
 import { Workbench } from "@/App";
 import { bootHost, type BootPhase } from "@/lib/boot";
 import type { DiscoveredHost, NativeBridge } from "@/lib/bridge";
 import { HostProvider } from "@/lib/host-context";
 import { rememberSelection } from "@/lib/prefs";
-import { SessionPanel } from "@/panels/SessionPanel";
-import { FakeTransport, tick } from "./fakes";
+import { SessionPanel, agentLabel, defaultAgent } from "@/panels/SessionPanel";
+import { ConnectionStatus } from "@/panels/ConnectionStatus";
+import pkg from "../package.json";
+import { FakeTransport, hostHello, tick } from "./fakes";
 
 afterEach(cleanup);
 
@@ -49,6 +51,47 @@ async function mount(t: FakeTransport, ui: React.ReactNode) {
   await tick();
   return controller;
 }
+
+describe("compatibility", () => {
+  it("introduces this app, and blocks a host that needs a newer one", async () => {
+    const t = new FakeTransport();
+    const hellos: unknown[] = [];
+    t.handlers["host.hello"] = (p: unknown) => {
+      hellos.push(p);
+      return hostHello({ revision: CLIENT_REVISION + 1, min_client_revision: CLIENT_REVISION + 1 });
+    };
+    const c = (await bootHost(bridge(), () => {}, { makeTransport: () => t }))!;
+    await tick();
+    expect(hellos.at(-1)).toMatchObject({ client: { app: "desktop", version: pkg.version, revision: CLIENT_REVISION } });
+    expect(c.client.state).toMatchObject({ status: "incompatible", compat: { update: "client" } });
+    render(
+      <HostProvider value={c}>
+        <ConnectionStatus />
+      </HostProvider>,
+    );
+    expect(screen.getByText("Update required")).toBeTruthy();
+    expect(screen.getByTestId("update-required").textContent).toBe(
+      "This host needs a newer version of Zwiim. Update this app to continue.",
+    );
+    expect(screen.getByText("Check again")).toBeTruthy();
+    await expect(c.client.request("workspace.list", {})).rejects.toMatchObject({ code: "update_required" });
+    c.dispose();
+  });
+
+  it("names an older local host as the side to restart", async () => {
+    const t = new FakeTransport();
+    t.handlers["host.hello"] = () => hostHello({ revision: 0 });
+    const c = (await bootHost(bridge(), () => {}, { makeTransport: () => t }))!;
+    await tick();
+    render(
+      <HostProvider value={c}>
+        <ConnectionStatus />
+      </HostProvider>,
+    );
+    expect(screen.getByTestId("update-required").textContent).toContain("older than this app");
+    c.dispose();
+  });
+});
 
 describe("boot with a corrupt discovery file", () => {
   it("fails with the problem instead of waiting forever", async () => {
@@ -342,5 +385,20 @@ describe("workbench", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("agents Zwiim does not support yet", () => {
+  const agent = (id: string, support: string, available = true, reason: string | null = null) =>
+    ({ agent: id, name: id, available, reason, support, adapter: null, options: null, effort_by_model: {}, commands: null }) as const;
+
+  it("are labelled experimental and never preselected over a supported agent", () => {
+    const list = [agent("gemini", "experimental"), agent("codex", "supported", false, "not_installed"), agent("claude_code", "supported")];
+    expect(agentLabel(list[0])).toBe("gemini — experimental");
+    expect(agentLabel(list[1])).toBe("codex — not installed");
+    expect(agentLabel(list[2])).toBe("claude_code");
+    expect(defaultAgent([...list], null)).toBe("claude_code");
+    expect(defaultAgent([...list], "gemini")).toBe("gemini");
+    expect(defaultAgent([list[0]], null)).toBe("gemini");
   });
 });

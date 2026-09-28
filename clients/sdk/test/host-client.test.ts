@@ -5,7 +5,7 @@ import { HostClient, type HostFeedUpdate } from "../src/client/host-client";
 import type { SessionFrame } from "../src/state/session";
 import type { TerminalOutput } from "../src/state/terminal";
 import type { SessionEvent } from "../src/types/protocol";
-import { FakeTransport, flush } from "./fakes";
+import { FakeTransport, flush, hello } from "./fakes";
 
 const snapshot = {
   status: "prompting" as const,
@@ -96,7 +96,7 @@ describe("connection lifecycle", () => {
     let fail = true;
     t.transport.handlers["host.hello"] = () => {
       if (fail) throw new ZwiimClientError("network", "unreachable");
-      return { host_id: "host-1", protocol: "zwiim/1", version: "x" };
+      return hello({ version: "x" });
     };
     t.client.start();
     await flush();

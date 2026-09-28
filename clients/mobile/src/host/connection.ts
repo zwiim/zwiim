@@ -16,6 +16,8 @@ import {
   ZwiimClientError,
   type ActiveConnection,
   type BackoffOptions,
+  type ClientInfo,
+  type Compatibility,
   type CloudClient,
   type ConnectionMode,
   type ConnectionStatus,
@@ -50,6 +52,8 @@ export interface HostConnectionConfig {
   lanEndpoint?: LanEndpointRecord;
   mode?: ConnectionMode;
   reachability?: NetworkReachability | null;
+  /** This app, as it introduces itself in `host.hello`. */
+  client?: ClientInfo;
   /** Tests: faster timings. */
   tuning?: { backoff?: BackoffOptions; timeoutMs?: number; lanRetry?: BackoffOptions };
 }
@@ -80,6 +84,8 @@ export interface HostConnectionView {
   retryAt: number | null;
   /** Whether this phone knows where to dial the host directly. */
   lanKnown: boolean;
+  /** The SDK's verdict on this app and the host; null before the handshake. */
+  compat: Compatibility | null;
 }
 
 /** A view's hold on a terminal's emulator; let go when the view goes. */
@@ -280,7 +286,9 @@ export class HostConnection {
   /** A request to the host, over the open connection only. */
   async request<O extends OpName>(op: O, params: OpParams<O>): Promise<OpResult<O>> {
     const client = this.#client;
-    if (!client || client.state.status !== "live") {
+    const status = client?.state.status;
+    // Incompatible: the SDK refuses with `update_required`, which says why.
+    if (!client || (status !== "live" && status !== "incompatible")) {
       throw new ZwiimClientError("network", "Not connected to the host");
     }
     return client.request(op, params);
@@ -327,7 +335,12 @@ export class HostConnection {
       timeoutMs: tuning?.timeoutMs,
       lanRetry: tuning?.lanRetry,
     });
-    const client = new HostClient({ transport: manager, expectedHostId: this.#config.hostId, backoff: tuning?.backoff });
+    const client = new HostClient({
+      transport: manager,
+      expectedHostId: this.#config.hostId,
+      backoff: tuning?.backoff,
+      client: this.#config.client,
+    });
     this.#unsubscribe = [
       client.subscribe({
         connection: (state) => {
@@ -395,6 +408,7 @@ export class HostConnection {
       events: this.#events,
       retryAt: this.#client ? this.#retryAt : null,
       lanKnown: !!this.#config.lan && (this.#config.lanEndpoint ? this.#config.lanEndpoint.known !== null : true),
+      compat: state?.compat ?? null,
     };
   }
 

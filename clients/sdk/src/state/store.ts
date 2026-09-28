@@ -60,7 +60,7 @@ export type HostAction =
 
 export function initialHostState(): HostState {
   return {
-    connection: { status: "disconnected", attempt: 0, hostId: null, error: null, retryInMs: null },
+    connection: { status: "disconnected", compat: null, attempt: 0, hostId: null, error: null, retryInMs: null },
     host: null,
     agents: null,
     workspaces: null,
@@ -211,6 +211,9 @@ function reduceFeedEvent(state: HostState, event: HostFeedEvent): HostState {
       const { [id]: _, ...rest } = state.terminals;
       return { ...state, terminals: rest };
     }
+    default:
+      // An event from a newer Host: ignore it, keep the state.
+      return state;
   }
 }
 

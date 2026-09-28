@@ -122,6 +122,23 @@ impl ZwiimError {
         e
     }
 
+    /// The Host is draining to stop or restart; retry once it is back.
+    pub fn host_restarting() -> Self {
+        let mut e = Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "host_restarting",
+            "The host is restarting",
+        );
+        e.details = Some(serde_json::json!({ "retry_after_ms": 3000 }));
+        e
+    }
+
+    /// No update can be applied now: nothing is staged, or this Host does
+    /// not run under its supervisor.
+    pub fn update_unavailable(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, "update_unavailable", message)
+    }
+
     /// Removal refused without `force`: the worktree has uncommitted changes.
     pub fn workspace_dirty(changes: usize) -> Self {
         let mut e = Self::new(
@@ -296,12 +313,25 @@ where
     }
 }
 
+/// The field name in serde's "unknown field `x`, expected …" message.
+fn unknown_field(serde_message: &str) -> Option<&str> {
+    let rest = serde_message.split_once("unknown field `")?.1;
+    rest.split_once('`').map(|(name, _)| name)
+}
+
 fn json_rejection(rejection: JsonRejection) -> ZwiimError {
     let message = match &rejection {
         JsonRejection::JsonDataError(e) => {
             // "Failed to deserialize the JSON body into the target type: <serde>"
             let text = e.body_text();
             let serde_part = text.split_once(": ").map_or(text.as_str(), |(_, s)| s);
+            // A field this Host does not know usually means a newer client:
+            // name it so the SDK can say "this Host needs an update".
+            if let Some(field) = unknown_field(serde_part) {
+                let mut err = ZwiimError::invalid_request(format!("Invalid request: {serde_part}"));
+                err.details = Some(serde_json::json!({"reason": "unknown_field", "field": field}));
+                return err;
+            }
             format!("Invalid request: {serde_part}")
         }
         JsonRejection::JsonSyntaxError(_) => "Request body is not valid JSON".to_string(),
@@ -328,6 +358,15 @@ mod tests {
             "Path must be relative"
         );
         assert_eq!(scrub_paths(r"bad C:\work\x"), "bad <path>");
+    }
+
+    #[test]
+    fn names_unknown_fields() {
+        assert_eq!(
+            unknown_field("unknown field `since`, expected one of `a`, `b` at line 1 column 9"),
+            Some("since")
+        );
+        assert_eq!(unknown_field("missing field `session_id`"), None);
     }
 
     #[test]

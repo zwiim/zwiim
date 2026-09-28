@@ -1,3 +1,4 @@
+import { CLIENT_CAPABILITIES, CLIENT_REVISION } from "../src/client/compat";
 import type {
   EventChannel,
   EventChannelHandlers,
@@ -7,6 +8,7 @@ import type {
 import type {
   ClientMessage,
   HostFeedEvent,
+  HostHello,
   HostSnapshot,
   OpName,
   ServerFrame,
@@ -47,6 +49,20 @@ export class FakeChannel implements EventChannel {
   }
 }
 
+/** A current Host's `host.hello`: same revision, every capability. */
+export function hello(overrides: Partial<HostHello> = {}): HostHello {
+  return {
+    host_id: "host-1",
+    protocol: "zwiim/1",
+    version: "0.0.0",
+    owner: null,
+    revision: CLIENT_REVISION,
+    min_client_revision: CLIENT_REVISION,
+    capabilities: [...CLIENT_CAPABILITIES],
+    ...overrides,
+  };
+}
+
 type Handler = (params: any, options?: RequestOptions) => unknown | Promise<unknown>;
 
 /** Scriptable transport: per-op handlers, recorded requests and channels. */
@@ -54,7 +70,7 @@ export class FakeTransport implements Transport {
   requests: RecordedRequest[] = [];
   channels: FakeChannel[] = [];
   handlers: Partial<Record<OpName, Handler>> = {
-    "host.hello": () => ({ host_id: "host-1", protocol: "zwiim/1", version: "0.0.0", owner: null }),
+    "host.hello": () => hello(),
     "agent.list": () => [],
     "workspace.list": () => [],
     "terminal.list": () => [],

@@ -1,13 +1,29 @@
 import { act } from "@testing-library/react";
+import { CLIENT_CAPABILITIES, CLIENT_REVISION } from "@zwiim/sdk";
 import type {
   ClientMessage,
   EventChannel,
   EventChannelHandlers,
   HostFeedEvent,
+  HostHello,
   OpName,
   ServerFrame,
   Transport,
 } from "@zwiim/sdk";
+
+/** A current Host's `host.hello`: same protocol revision, every capability. */
+export function hostHello(overrides: Partial<HostHello> = {}): HostHello {
+  return {
+    host_id: "h1",
+    protocol: "zwiim/1",
+    version: "0",
+    owner: null,
+    revision: CLIENT_REVISION,
+    min_client_revision: CLIENT_REVISION,
+    capabilities: [...CLIENT_CAPABILITIES],
+    ...overrides,
+  };
+}
 
 export const tick = () =>
   act(async () => {
@@ -17,10 +33,10 @@ export const tick = () =>
 export class FakeTransport implements Transport {
   calls: { op: OpName; params: any }[] = [];
   handlers: Partial<Record<OpName, (p: any) => unknown>> = {
-    "host.hello": () => ({ host_id: "h1", protocol: "zwiim/1", version: "0", owner: null }),
+    "host.hello": () => hostHello(),
     "agent.list": () => [
-      { agent: "claude_code", name: "Claude Code", available: true, reason: null, options: null },
-      { agent: "codex", name: "Codex", available: false, reason: "not_installed", options: null },
+      { agent: "claude_code", name: "Claude Code", available: true, reason: null, support: "supported", options: null },
+      { agent: "codex", name: "Codex", available: false, reason: "not_installed", support: "supported", options: null },
     ],
     "session.options": (p) => ({ session_id: p.session_id, options: null }),
     "workspace.list": () => [],

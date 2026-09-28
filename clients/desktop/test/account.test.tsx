@@ -5,7 +5,7 @@ import { Workbench } from "@/App";
 import type { Account, NativeBridge } from "@/lib/bridge";
 import { HostProvider } from "@/lib/host-context";
 import { welcomed } from "@/lib/prefs";
-import { FakeTransport, tick } from "./fakes";
+import { FakeTransport, hostHello, tick } from "./fakes";
 
 afterEach(cleanup);
 beforeEach(() => window.localStorage.clear());
@@ -78,12 +78,7 @@ describe("account", () => {
 
   it("never takes over a host another account owns", async () => {
     const t = new FakeTransport();
-    t.handlers["host.hello"] = () => ({
-      host_id: "h1",
-      protocol: "zwiim/1",
-      version: "0",
-      owner: { user_id: "u-other", email: "other@example.com" },
-    });
+    t.handlers["host.hello"] = () => hostHello({ owner: { user_id: "u-other", email: "other@example.com" } });
     const c = await mount(t, bridge(me));
     expect(screen.getByTestId("owner-mismatch").textContent).toContain("other@example.com");
     expect(claims(t)).toEqual([]);
@@ -103,7 +98,7 @@ describe("account", () => {
 
   it("signs out without touching the host", async () => {
     const t = new FakeTransport();
-    t.handlers["host.hello"] = () => ({ host_id: "h1", protocol: "zwiim/1", version: "0", owner: me });
+    t.handlers["host.hello"] = () => hostHello({ owner: me });
     const b = bridge(me);
     const c = await mount(t, b);
     expect(screen.getByText("me@example.com")).toBeTruthy();

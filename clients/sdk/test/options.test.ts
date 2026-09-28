@@ -83,6 +83,8 @@ describe("effort for a model", () => {
     name: "Claude Code",
     available: true,
     reason: null,
+    support: "supported",
+    adapter: null,
     options: { ...opts("normal"), effort: levels("low", "high", "max") },
     effort_by_model: { sonnet: levels("low", "high"), haiku: null },
     commands: null,
@@ -118,8 +120,8 @@ describe("controller: agents, options, ownership", () => {
 
   it("loads agents on connect", async () => {
     const agents: AgentSummary[] = [
-      { agent: "claude_code", name: "Claude Code", available: true, reason: null, options: opts("normal"), effort_by_model: {}, commands: null },
-      { agent: "codex", name: "Codex", available: false, reason: "not_installed", options: null, effort_by_model: {}, commands: null },
+      { agent: "claude_code", name: "Claude Code", available: true, reason: null, support: "supported", adapter: null, options: opts("normal"), effort_by_model: {}, commands: null },
+      { agent: "codex", name: "Codex", available: false, reason: "not_installed", support: "supported", adapter: null, options: null, effort_by_model: {}, commands: null },
     ];
     const transport = new FakeTransport();
     transport.handlers["agent.list"] = () => agents;

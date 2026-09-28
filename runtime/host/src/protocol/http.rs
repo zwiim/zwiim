@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use super::compat;
 use super::error::{ZJson, ZwiimError};
 use crate::acp::types::PromptInputBlock;
 use crate::app_error::AppCommandError;
@@ -54,18 +55,29 @@ fn db_error(e: crate::db::error::DbError) -> ZwiimError {
     ZwiimError::from(AppCommandError::from(e))
 }
 
-pub async fn host_hello(Extension(state): Extension<Arc<AppState>>) -> ZResult<Value> {
+/// `host.hello`: identity plus the compatibility handshake. The body is
+/// optional and read leniently (see `compat`); a client that sends nothing
+/// still gets every field.
+pub async fn host_hello(
+    Extension(state): Extension<Arc<AppState>>,
+    body: axum::body::Bytes,
+) -> ZResult<Value> {
     let host_id = crate::identity::host::ensure_host_id(&state.db.conn)
         .await
         .map_err(db_error)?;
     let owner = crate::identity::host::owner(&state.db.conn)
         .await
         .map_err(db_error)?;
+    let client = compat::parse_hello_client(&body);
     Ok(Json(json!({
         "host_id": host_id,
         "protocol": PROTOCOL_VERSION,
         "version": env!("CARGO_PKG_VERSION"),
         "owner": owner,
+        "revision": compat::PROTOCOL_REVISION,
+        "min_client_revision": compat::MIN_CLIENT_REVISION,
+        "capabilities": compat::CAPABILITIES,
+        "compat": compat::client_verdict(client.as_ref()),
     })))
 }
 
@@ -144,6 +156,150 @@ pub struct LanSetParams {
 
 pub async fn lan_status(Extension(state): Extension<Arc<AppState>>) -> ZResult<Value> {
     Ok(Json(crate::lan::status(&state).await?))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct HostRestartParams {
+    #[serde(default)]
+    pub mode: RestartMode,
+}
+
+#[derive(Deserialize, Default, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum RestartMode {
+    /// Once no turn runs, no request waits on the user and no terminal is
+    /// open.
+    #[default]
+    WhenIdle,
+    /// At once: running turns are cancelled, waiting requests declined and
+    /// terminals closed; sessions and workspaces are kept.
+    Now,
+}
+
+/// `host.restart`: restart the Host process (local authority only).
+pub async fn host_restart(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<HostRestartParams>,
+) -> ZResult<Value> {
+    use crate::host_lifecycle;
+    let (restart, blockers) = match p.mode {
+        RestartMode::WhenIdle => host_lifecycle::restart_when_idle(&state).await,
+        RestartMode::Now => host_lifecycle::restart_now(&state).await,
+    };
+    Ok(Json(json!({ "state": restart, "blockers": blockers })))
+}
+
+/// `host.update.status`: versions, what is available or staged, and how the
+/// last update went. Any paired device may ask.
+pub async fn host_update_status() -> ZResult<Value> {
+    Ok(Json(crate::update::service::status()))
+}
+
+/// `host.diagnostics`: what support needs to know about this Host — its
+/// versions, protocol, adapters, update and rollback state, and database
+/// migrations. Facts only: never credentials, tokens, keys or paths.
+pub async fn host_diagnostics(Extension(state): Extension<Arc<AppState>>) -> ZResult<Value> {
+    use crate::adapters::ManagedAdapter;
+    use crate::db::schema_guard::{self, SchemaState};
+    let settings = crate::db::service::agent_setting_service::list_map_by_agent_type(
+        &state.db.conn,
+    )
+    .await
+    .map_err(db_error)?;
+    let adapters: serde_json::Map<String, Value> = ManagedAdapter::ALL
+        .iter()
+        .map(|m| {
+            let agent = m.agent();
+            let env = crate::commands::acp::build_runtime_env_from_setting(
+                agent,
+                settings.get(&agent),
+                None,
+            );
+            let s = crate::adapters::status(*m, &env);
+            (
+                m.id().to_string(),
+                json!({
+                    "version": s.version,
+                    "locked_version": s.locked_version,
+                    "installed": s.installed,
+                    "healthy": s.healthy,
+                    "authenticated": s.authenticated,
+                    "setup": s.setup,
+                    "source": s.source,
+                }),
+            )
+        })
+        .collect();
+    let schema = match schema_guard::inspect::<crate::db::migration::Migrator>(&state.db.conn)
+        .await
+        .map_err(db_error)?
+    {
+        SchemaState::Fresh => json!({ "state": "fresh" }),
+        SchemaState::Current => json!({ "state": "current" }),
+        SchemaState::Pending(p) => json!({ "state": "pending", "migrations": p }),
+        SchemaState::Newer(n) => json!({ "state": "newer", "migrations": n }),
+    };
+    let startup = crate::db::startup_migration();
+    let update = crate::update::service::status();
+    let info = crate::update::service::release_info();
+    Ok(Json(json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "target": info["target"],
+        "channel": update["channel"],
+        "protocol": info["protocol"],
+        "release_signing": {
+            "release_key": info["release_key"],
+            "platform_signature": update["platform_signature"],
+        },
+        "adapters": adapters,
+        "update": {
+            "supported": update["supported"],
+            "unsupported_reason": update["unsupported_reason"],
+            "activity": update["activity"],
+            "available": update["available"].get("version"),
+            "staged": update["staged"],
+            "trial": update["trial"],
+            "previous": update["previous"],
+            "last_result": update["last_result"],
+            "last_checked": update["last_checked"],
+            "bundled_with_desktop": update["bundled_with_desktop"],
+        },
+        "database": {
+            "schema": schema,
+            "migrations_known": <crate::db::migration::Migrator as sea_orm_migration::MigratorTrait>::migrations().len(),
+            "applied_at_start": startup.map(|m| m.applied.len()).unwrap_or(0),
+            "snapshot_at_start": startup.is_some_and(|m| m.snapshot.is_some()),
+            "snapshots": schema_guard::snapshots(&state.data_dir).len(),
+        },
+    })))
+}
+
+/// `host.update.check`: look for a newer release now and stage it.
+pub async fn host_update_check() -> ZResult<Value> {
+    Ok(Json(crate::update::service::check().await))
+}
+
+/// `host.update.apply`: restart into the staged version, through the same
+/// drain as `host.restart`. The owner's paired devices may ask: the Host
+/// fetched and verified the update itself, so no client handles binaries.
+pub async fn host_update_apply(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<HostRestartParams>,
+) -> ZResult<Value> {
+    use crate::host_lifecycle;
+    use crate::update::service::{arm_apply, ApplyError};
+    let version = arm_apply().map_err(|e| match e {
+        ApplyError::Unsupervised => ZwiimError::update_unavailable(
+            "This Host was not started by its supervisor, so it cannot switch versions",
+        ),
+        ApplyError::NothingStaged => ZwiimError::update_unavailable("No update is ready to apply"),
+    })?;
+    let (restart, blockers) = match p.mode {
+        RestartMode::WhenIdle => host_lifecycle::restart_when_idle(&state).await,
+        RestartMode::Now => host_lifecycle::restart_now(&state).await,
+    };
+    Ok(Json(json!({ "version": version, "state": restart, "blockers": blockers })))
 }
 
 /// Any paired device may ask: it is already connected, and learns only the
@@ -229,8 +385,16 @@ pub struct AgentSummary {
     pub name: String,
     /// Whether a session can be started with this agent on this host.
     pub available: bool,
-    /// Why not: `not_installed`, `unsupported_platform` or `disabled`.
+    /// Why not: `not_installed`, `unsupported_platform` or `disabled`; for a
+    /// host-managed adapter also `installing`, `needs_network` or
+    /// `setup_failed`.
     pub reason: Option<&'static str>,
+    /// `supported` (Claude Code, Codex) or `experimental` (every other agent:
+    /// available as-is, without release guarantees).
+    pub support: &'static str,
+    /// The host-managed adapter's state; `null` for agents the host does not
+    /// manage.
+    pub adapter: Option<crate::adapters::AdapterStatus>,
     /// What a new session can choose, from what the agent last advertised
     /// here; `null` before its first session on this host.
     pub options: Option<crate::session_options::SessionOptions>,
@@ -262,9 +426,23 @@ pub async fn agent_list(Extension(state): Extension<Arc<AppState>>) -> ZResult<V
     let mut out = Vec::with_capacity(agents.len());
     for (agent, check) in agents.into_iter().zip(checks) {
         let enabled = settings.get(&agent).map(|s| s.enabled).unwrap_or(true);
+        let managed = crate::adapters::ManagedAdapter::for_agent(agent);
+        let adapter = managed.map(|m| {
+            let env = crate::commands::acp::build_runtime_env_from_setting(
+                agent,
+                settings.get(&agent),
+                None,
+            );
+            crate::adapters::status(m, &env)
+        });
         let reason = match check {
             Err(AcpError::PlatformNotSupported(_)) => Some("unsupported_platform"),
-            Err(_) => Some("not_installed"),
+            Err(_) => match adapter.as_ref().map(|a| &a.setup) {
+                Some(crate::adapters::Setup::Installing) => Some("installing"),
+                Some(crate::adapters::Setup::NeedsNetwork { .. }) => Some("needs_network"),
+                Some(crate::adapters::Setup::Failed { .. }) => Some("setup_failed"),
+                _ => Some("not_installed"),
+            },
             Ok(()) if !enabled => Some("disabled"),
             Ok(()) => None,
         };
@@ -281,12 +459,46 @@ pub async fn agent_list(Extension(state): Extension<Arc<AppState>>) -> ZResult<V
             name: crate::acp::registry::get_agent_meta(agent).name.to_string(),
             available: reason.is_none(),
             reason,
+            support: if managed.is_some() { "supported" } else { "experimental" },
+            adapter,
             options,
             effort_by_model,
             commands,
         });
     }
     Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSetupParams {
+    pub agent: AgentType,
+}
+
+/// `agent.setup`: install (or repair) a host-managed adapter from this
+/// build's lock, in the background. Safe to repeat: a setup already running
+/// is not started twice. Answers with the adapter's state; `agent.list`
+/// follows it (local authority only).
+pub async fn agent_setup(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(params): ZJson<AgentSetupParams>,
+) -> ZResult<crate::adapters::AdapterStatus> {
+    let Some(adapter) = crate::adapters::ManagedAdapter::for_agent(params.agent) else {
+        return Err(ZwiimError::invalid_request(
+            "only Claude Code and Codex are set up by the host",
+        ));
+    };
+    crate::adapters::setup_in_background(adapter);
+    let setting = crate::db::service::agent_setting_service::get_by_agent_type(
+        &state.db.conn,
+        params.agent,
+    )
+    .await
+    .ok()
+    .flatten();
+    let env =
+        crate::commands::acp::build_runtime_env_from_setting(params.agent, setting.as_ref(), None);
+    Ok(Json(crate::adapters::status(adapter, &env)))
 }
 
 // ─── workspace ───────────────────────────────────────────────────────────

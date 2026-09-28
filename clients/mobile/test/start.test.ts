@@ -57,12 +57,14 @@ const agent = (id: string, over: Partial<AgentSummary> = {}): AgentSummary => ({
   name: id,
   available: true,
   reason: null,
+  support: "experimental",
+  adapter: null,
   options: null,
   effort_by_model: {},
   commands: null,
   ...over,
 });
-const CLAUDE = agent("claude_code", { name: "Claude Code", options: OPTIONS });
+const CLAUDE = agent("claude_code", { name: "Claude Code", support: "supported", options: OPTIONS });
 
 const ready = (id: string): StartTarget => startTarget(LIST, id);
 
@@ -157,14 +159,25 @@ describe("the session.start request", () => {
 
 describe("the choices", () => {
   it("defaults to the first available agent and names why others can't run", () => {
-    const list = [agent("gemini", { available: false, reason: "not_installed" }), agent("codex"), CLAUDE];
+    const list = [agent("gemini", { available: false, reason: "not_installed" }), agent("codex", { support: "supported" }), CLAUDE];
     expect(defaultAgent(list)).toBe("codex");
     expect(defaultAgent([list[0]!])).toBeNull();
     expect(defaultAgent(null)).toBeNull();
     expect(agentNote(list[0]!)).toBe("not installed");
     expect(agentNote(agent("x", { available: false, reason: "unsupported_platform" }))).toBe("not supported here");
     expect(agentNote(agent("x", { available: false, reason: "disabled" }))).toBe("disabled");
+    expect(agentNote(agent("x", { available: false, reason: "installing" }))).toBe("setting up");
+    expect(agentNote(agent("x", { available: false, reason: "needs_network" }))).toBe("setup needs network");
+    expect(agentNote(agent("x", { available: false, reason: "setup_failed" }))).toBe("setup failed");
     expect(agentNote(CLAUDE)).toBeNull();
+  });
+
+  it("labels agents Zwiim does not support yet, and prefers a supported one", () => {
+    const list = [agent("gemini"), agent("opencode", { available: false, reason: "not_installed" }), CLAUDE];
+    expect(agentNote(list[0]!)).toBe("experimental");
+    expect(agentNote(list[1]!)).toBe("not installed");
+    expect(defaultAgent(list)).toBe("claude_code");
+    expect(defaultAgent([list[0]!])).toBe("gemini");
   });
 
   it("shows the pick while offered, else the agent's current", () => {

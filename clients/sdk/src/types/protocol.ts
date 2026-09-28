@@ -28,6 +28,8 @@ export type HostErrorCode =
   | "workspace_removed"
   | "identity_unavailable"
   | "cloud_unavailable"
+  | "host_restarting"
+  | "update_unavailable"
   | "internal";
 
 export interface WireError {
@@ -43,6 +45,12 @@ export interface WorkspaceBusyDetails {
   terminals: number;
   /** The sessions whose agents run there (an agent not bound to one yet is only counted). */
   session_ids: string[];
+}
+
+/** `host_restarting` details: the Host is draining to stop or restart. */
+export interface HostRestartingDetails {
+  /** When to try again; the connection itself reconnects on its own. */
+  retry_after_ms: number;
 }
 
 /** `workspace_dirty` details: uncommitted entries a forced removal discards. */
@@ -137,10 +145,32 @@ export interface HostOwner {
 
 export interface HostHello {
   host_id: string;
+  /** `zwiim/<major>`. */
   protocol: string;
+  /** The Host's product version. Display only: compatibility uses `revision`. */
   version: string;
   /** Null until an account claims the host. */
   owner: HostOwner | null;
+  /** Protocol revision the Host speaks. Absent on Hosts older than the handshake. */
+  revision?: number;
+  /** Oldest client revision the Host serves. */
+  min_client_revision?: number;
+  /** Optional features the Host offers. Unknown names are ignored. */
+  capabilities?: string[];
+  /** The Host's own verdict for the client that introduced itself; null if it did not. */
+  compat?: "compatible" | "update_required" | null;
+}
+
+/** The `client` a `host.hello` body carries (see `helloClient`). */
+export interface HostHelloParams {
+  client?: {
+    app: string;
+    version: string;
+    build?: string;
+    platform?: string;
+    revision: number;
+    capabilities: readonly string[];
+  };
 }
 
 // ─── workspace / files / git ─────────────────────────────────────────────
@@ -355,7 +385,41 @@ export interface SessionCommand {
   hint: string | null;
 }
 
-export type AgentUnavailableReason = "not_installed" | "unsupported_platform" | "disabled";
+export type AgentUnavailableReason =
+  | "not_installed"
+  | "unsupported_platform"
+  | "disabled"
+  /** Host-managed adapters (Claude Code, Codex) only. */
+  | "installing"
+  | "needs_network"
+  | "setup_failed";
+
+/** `supported`: Claude Code and Codex. `experimental`: every other agent, as-is. */
+export type AgentSupport = "supported" | "experimental";
+
+export type AdapterSetup =
+  | { state: "idle" }
+  | { state: "installing" }
+  | { state: "needs_network"; message: string }
+  | { state: "failed"; message: string };
+
+/** A host-managed adapter: installed from the host build's lock, never from PATH. */
+export interface AdapterStatus {
+  /** The version that launches, if any. */
+  version: string | null;
+  /** The version this host build pins. */
+  locked_version: string | null;
+  installed: boolean;
+  /** Answered the health probe; null until probed since the host started. */
+  healthy: boolean | null;
+  /** Vendor credentials were found (the agent itself is the final judge). */
+  authenticated: boolean;
+  /** Installed, healthy and authenticated. */
+  usable: boolean;
+  setup: AdapterSetup;
+  /** `dev_path` only on a development host. */
+  source: "managed" | "dev_path" | null;
+}
 
 export interface AgentSummary {
   agent: AgentType;
@@ -363,6 +427,9 @@ export interface AgentSummary {
   /** Whether a session can be started with this agent on this host. */
   available: boolean;
   reason: AgentUnavailableReason | (string & {}) | null;
+  support: AgentSupport | (string & {});
+  /** Null for agents the host does not manage. */
+  adapter: AdapterStatus | null;
   /** What a new session can choose; null before the agent's first session here. */
   options: SessionOptions | null;
   /**
@@ -669,15 +736,125 @@ export type ServerFrame =
   | { type: "pong" }
   | { type: "error"; subscription_id: string | null; error: WireError };
 
+// ─── host updates ────────────────────────────────────────────────────────
+
+/** Why a Host cannot update itself. */
+export type HostUpdateUnsupportedReason =
+  | "unsigned_build"
+  | "invalid_release_key"
+  | "unsupported_platform"
+  | "unsupervised"
+  | (string & {});
+
+export type HostUpdateActivity =
+  | { state: "idle" }
+  | { state: "checking" }
+  | { state: "downloading"; version: string }
+  | { state: "failed"; reason: string; message: string };
+
+/** How the last update ended. */
+export interface HostUpdateResult {
+  outcome: "applied" | "rolled_back";
+  version: string;
+  from: string;
+  reason: string | null;
+  at: string;
+}
+
+/** `host.update.status`: the Host's own account of its updates. */
+export interface HostUpdateStatus {
+  version: string;
+  channel: "stable" | "beta";
+  supported: boolean;
+  unsupported_reason: HostUpdateUnsupportedReason | null;
+  activity: HostUpdateActivity;
+  /** A newer verified release. */
+  available: { version: string; released_at: string; notes: string } | null;
+  /** Verified and installed next to the running version; a restart applies it. */
+  staged: { version: string; source: "download" | "bundle" } | null;
+  restart_required: boolean;
+  /** The version on trial after an update, until it proves healthy. */
+  trial: { version: string; from: string } | null;
+  /** The version a failed update returns to. */
+  previous: string | null;
+  last_result: HostUpdateResult | null;
+  last_checked: string | null;
+  platform_signature: "enforced" | "not_enforced";
+  /** The Host came with the Desktop app, whose update brings the next one. */
+  bundled_with_desktop: boolean;
+}
+
+export type HostRestartMode = "when_idle" | "now";
+
+/** `host.diagnostics`: facts for support. Never credentials, keys or paths. */
+export interface HostDiagnostics {
+  version: string;
+  target: string | null;
+  channel: "stable" | "beta";
+  protocol: { major: number; revision: number; min_client_revision: number; capabilities: string[] };
+  release_signing: { release_key: boolean | null; platform_signature: "enforced" | "not_enforced" };
+  adapters: Record<
+    string,
+    {
+      version: string | null;
+      locked_version: string | null;
+      installed: boolean;
+      healthy: boolean | null;
+      authenticated: boolean;
+      setup: AdapterSetup;
+      source: string | null;
+    }
+  >;
+  update: Pick<
+    HostUpdateStatus,
+    | "supported"
+    | "unsupported_reason"
+    | "activity"
+    | "staged"
+    | "trial"
+    | "previous"
+    | "last_result"
+    | "last_checked"
+    | "bundled_with_desktop"
+  > & { available: string | null };
+  database: {
+    schema: { state: "fresh" | "current" | "pending" | "newer"; migrations?: string[] };
+    migrations_known: number;
+    applied_at_start: number;
+    snapshot_at_start: boolean;
+    snapshots: number;
+  };
+}
+
+/** `host.update.apply`: the switch happens on the restart it starts or schedules. */
+export interface HostUpdateApply {
+  version: string;
+  state: "restarting" | "restart_pending";
+  blockers: {
+    live_turns: number;
+    pending_requests: number;
+    terminals: number;
+    session_ids: string[];
+  };
+}
+
 // ─── operations ──────────────────────────────────────────────────────────
 
 /** Request/response shape of every V1 operation the SDK exposes. */
 export interface Operations {
-  "host.hello": [Record<string, never>, HostHello];
+  "host.hello": [HostHelloParams, HostHello];
   /** `null` while the host's LAN access is off. */
   "host.lan_endpoint": [Record<string, never>, { endpoint: HostLanEndpoint | null }];
   "host.claim": [{ user_id: string; email?: string }, { owner: HostOwner }];
+  "host.update.status": [Record<string, never>, HostUpdateStatus];
+  /** Look for a newer release now; a Host that can update also downloads and stages it. */
+  "host.update.check": [Record<string, never>, HostUpdateStatus];
+  /** `update_unavailable` when nothing is staged or the Host cannot switch versions. */
+  "host.update.apply": [{ mode?: HostRestartMode }, HostUpdateApply];
+  "host.diagnostics": [Record<string, never>, HostDiagnostics];
   "agent.list": [Record<string, never>, AgentSummary[]];
+  /** Install or repair a host-managed adapter in the background (local authority). */
+  "agent.setup": [{ agent: AgentType }, AdapterStatus];
   "workspace.list": [Record<string, never>, WorkspaceInfo[]];
   /** `path` needs local host authority; paired devices use `home_path` (folder names under home). */
   "workspace.add": [{ path: string } | { home_path: string[] }, WorkspaceInfo];
@@ -767,6 +944,7 @@ export type OpResult<O extends OpName> = Operations[O][1];
  */
 export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "host.claim",
+  "host.update.apply",
   "git.commit",
   "session.set_options",
   "workspace.add",

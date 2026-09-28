@@ -8,6 +8,7 @@
 #![recursion_limit = "256"]
 
 pub mod acp;
+pub mod adapters;
 pub mod acp_transcript;
 pub use acp::{
     idle_sweep_task, idle_timeout_from_env, lifecycle_subscriber_task, SWEEP_INTERVAL_SECS,
@@ -26,6 +27,7 @@ pub mod folder_links;
 pub mod git_credential;
 pub mod git_repo;
 pub mod host_feed;
+pub mod host_lifecycle;
 pub mod identity;
 pub mod intern;
 pub mod lan;

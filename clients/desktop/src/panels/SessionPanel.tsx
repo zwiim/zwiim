@@ -26,11 +26,15 @@ const UNAVAILABLE: Record<string, string> = {
   not_installed: "not installed",
   unsupported_platform: "not supported here",
   disabled: "disabled",
+  installing: "setting up",
+  needs_network: "setup needs network",
+  setup_failed: "setup failed",
 };
 
-/** "Codex — not installed" */
+/** "Codex — not installed"; "Gemini CLI — experimental" for agents Zwiim does not support yet. */
 export function agentLabel(a: AgentSummary): string {
-  return a.available ? a.name : `${a.name} — ${UNAVAILABLE[a.reason ?? ""] ?? "unavailable"}`;
+  if (!a.available) return `${a.name} — ${UNAVAILABLE[a.reason ?? ""] ?? "unavailable"}`;
+  return a.support === "experimental" ? `${a.name} — experimental` : a.name;
 }
 
 /**
@@ -71,10 +75,17 @@ export function newSessionOptions(
   };
 }
 
-/** The agent to preselect: the last one used if still usable, else the first usable one. */
+/**
+ * The agent to preselect: the last one used if still usable, else the first
+ * usable supported one, else the first usable one.
+ */
 export function defaultAgent(agents: AgentSummary[], preferred: string | null): string | null {
   const usable = agents.filter((a) => a.available);
-  return (usable.find((a) => a.agent === preferred) ?? usable[0])?.agent ?? null;
+  return (
+    usable.find((a) => a.agent === preferred) ??
+    usable.find((a) => a.support === "supported") ??
+    usable[0]
+  )?.agent ?? null;
 }
 
 /**

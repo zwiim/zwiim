@@ -19,6 +19,8 @@ pub mod account;
 pub mod cloud;
 pub mod device;
 pub mod lan;
+pub mod login;
+pub mod update;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -86,18 +88,46 @@ fn pid_running(_pid: u32) -> bool {
     true
 }
 
-/// The host binary: `ZWIIM_HOST_BIN`, else `zwiim-host` next to this
-/// executable, else `zwiim-host` on `PATH`.
+/// The host binary: `ZWIIM_HOST_BIN`, else the `zwiim-host` bundled next to
+/// this executable. Development builds also fall back to `PATH`; a release
+/// build never runs a Host it did not ship with.
 fn host_binary() -> PathBuf {
     if let Some(bin) = std::env::var_os("ZWIIM_HOST_BIN") {
         return PathBuf::from(bin);
     }
     let name = if cfg!(windows) { "zwiim-host.exe" } else { "zwiim-host" };
-    std::env::current_exe()
+    let bundled = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
-        .filter(|p| p.is_file())
-        .unwrap_or_else(|| PathBuf::from(name))
+        .and_then(|exe| exe.parent().map(|dir| dir.join(name)));
+    match bundled {
+        Some(p) if p.is_file() || !cfg!(debug_assertions) => p,
+        _ => PathBuf::from(name),
+    }
+}
+
+/// Held while the bundled Host is offered to the Host's installer, so a Host
+/// started meanwhile sees the result.
+static SEEDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Offer the Host this app bundles to the Host's installer: installed on
+/// first run, staged when newer than the installed Host (the running Host
+/// then reports that a restart finishes the update), ignored otherwise.
+/// A Desktop update therefore never downloads the Host a second time.
+fn seed_host() {
+    let _held = SEEDING.lock().unwrap_or_else(|p| p.into_inner());
+    let bin = host_binary();
+    match Command::new(&bin)
+        .arg("--seed")
+        .stdin(Stdio::null())
+        .output()
+    {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => eprintln!(
+            "zwiim: offering the bundled host failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+        Err(e) => eprintln!("zwiim: cannot run {} --seed: {e}", bin.display()),
+    }
 }
 
 #[tauri::command]
@@ -110,11 +140,15 @@ fn discover_host() -> Result<Option<DiscoveredHost>, String> {
 
 /// Start the host as an independent process: its own process group, no
 /// inherited stdio, never killed by the desktop. It outlives the window.
+/// It runs under its supervisor, which restarts it, applies Host updates and
+/// rolls back one that fails its trial.
 #[tauri::command]
 fn start_host() -> Result<(), String> {
+    drop(SEEDING.lock().unwrap_or_else(|p| p.into_inner()));
     let bin = host_binary();
     let mut cmd = Command::new(&bin);
-    cmd.stdin(Stdio::null())
+    cmd.arg("--supervise")
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     #[cfg(unix)]
@@ -264,7 +298,14 @@ async fn lan_close(links: tauri::State<'_, lan::Links>, id: u32) -> Result<(), S
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(update::plugin())
+        .setup(|app| {
+            std::thread::spawn(seed_host);
+            login::sync_at_launch(app.handle());
+            Ok(())
+        })
         .manage(SignIn::default())
+        .manage(update::DesktopUpdate::default())
         .manage(lan::Discovery::default())
         .manage(lan::Links::default())
         .invoke_handler(tauri::generate_handler![
@@ -282,7 +323,13 @@ pub fn run() {
             lan_discover,
             lan_connect,
             lan_send,
-            lan_close
+            lan_close,
+            update::desktop_update_status,
+            update::desktop_update_check,
+            update::desktop_update_install,
+            update::desktop_update_restart,
+            login::host_login_status,
+            login::host_login_set
         ])
         .run(tauri::generate_context!())
         .expect("error while running Zwiim Desktop");

@@ -10,6 +10,7 @@
 //! authority (`web::auth::require_local_authority`); `device.pair` is the one
 //! unauthenticated operation, authorized by its one-time pairing code.
 
+pub mod compat;
 pub mod error;
 pub mod events;
 pub mod http;
@@ -56,6 +57,32 @@ async fn normalize_rejections(req: axum::extract::Request, next: Next) -> Respon
     }
 }
 
+/// Operations a draining Host still answers: the handshake, so a client can
+/// tell the Host is there, and the restart request itself (a drain waits for
+/// admitted operations, and must not wait for the one that started it).
+const ANSWERED_WHILE_DRAINING: [&str; 4] =
+    ["host.hello", "host.restart", "host.update.apply", "host.update.status"];
+
+/// Refuse new operations once the Host drains, and count the admitted ones
+/// so the drain can wait for them.
+async fn drain_gate(req: axum::extract::Request, next: Next) -> Response {
+    let Some(state) = req
+        .extensions()
+        .get::<std::sync::Arc<crate::app_state::AppState>>()
+        .cloned()
+    else {
+        return next.run(req).await;
+    };
+    let op = req.uri().path().rsplit('/').next().unwrap_or_default();
+    if ANSWERED_WHILE_DRAINING.contains(&op) {
+        return next.run(req).await;
+    }
+    match state.lifecycle.begin_request() {
+        Some(_admitted) => next.run(req).await,
+        None => ZwiimError::host_restarting().into_response(),
+    }
+}
+
 async fn unknown_operation() -> ZwiimError {
     ZwiimError::unknown_operation()
 }
@@ -73,11 +100,17 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/cloud.status", post(http::cloud_status))
         .route("/lan.status", post(http::lan_status))
         .route("/lan.set", post(http::lan_set))
+        .route("/host.restart", post(http::host_restart))
+        .route("/agent.setup", post(http::agent_setup))
         .route_layer(middleware::from_fn(auth::require_local_authority));
 
     let authenticated = Router::new()
         .route("/host.hello", post(http::host_hello))
         .route("/host.lan_endpoint", post(http::host_lan_endpoint))
+        .route("/host.update.status", post(http::host_update_status))
+        .route("/host.diagnostics", post(http::host_diagnostics))
+        .route("/host.update.check", post(http::host_update_check))
+        .route("/host.update.apply", post(http::host_update_apply))
         .route("/agent.list", post(http::agent_list))
         .route("/workspace.list", post(http::workspace_list))
         .route("/workspace.add", post(http::workspace_add))
@@ -132,5 +165,6 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
     Router::new()
         .route("/device.pair", post(http::device_pair))
         .merge(authenticated)
+        .layer(middleware::from_fn(drain_gate))
         .layer(middleware::from_fn(normalize_rejections))
 }

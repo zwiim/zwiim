@@ -11,7 +11,7 @@ import { App } from "@/App";
 import type { NativeBridge, PairedHost } from "@/lib/bridge";
 import { FakeLan } from "../../sdk/test/lan-fakes";
 import { FakeCloud, FakeHost } from "../../sdk/test/relay-fakes";
-import { FakeTransport } from "./fakes";
+import { FakeTransport, hostHello } from "./fakes";
 
 const ws = (id: string): WorkspaceInfo => ({
   workspace_id: id,
@@ -50,7 +50,7 @@ function world({ lan: onLan = false } = {}) {
   cloud.setOnline("host-attic", false);
 
   const local = new FakeTransport();
-  local.handlers["host.hello"] = () => ({ host_id: "h-local", protocol: "zwiim/1", version: "0", owner: null });
+  local.handlers["host.hello"] = () => hostHello({ host_id: "h-local" });
   local.handlers["workspace.list"] = () => [ws("w-local")];
   local.handlers["workspace.tree"] = () => [];
   local.handlers["host.claim"] = (p) => ({ owner: { user_id: p.user_id, email: p.email ?? null } });

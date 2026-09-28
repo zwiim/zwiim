@@ -1,6 +1,7 @@
 pub mod entities;
 pub mod error;
 pub mod migration;
+pub mod schema_guard;
 pub mod service;
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -12,13 +13,20 @@ use std::time::Duration;
 use sea_orm::{
     ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement,
 };
-use sea_orm_migration::MigratorTrait;
 
 use error::DbError;
 use migration::Migrator;
 
 pub struct AppDatabase {
     pub conn: DatabaseConnection,
+}
+
+/// What migrating did when this process opened the database, for diagnostics.
+static STARTUP_MIGRATION: std::sync::OnceLock<schema_guard::MigrationOutcome> =
+    std::sync::OnceLock::new();
+
+pub fn startup_migration() -> Option<&'static schema_guard::MigrationOutcome> {
+    STARTUP_MIGRATION.get()
 }
 
 pub(crate) fn database_file_name() -> &'static str {
@@ -98,10 +106,16 @@ pub async fn init_database(
         .sqlx_logging(false);
     let migrate_conn = Database::connect(migrate_opts).await?;
     apply_sqlite_pragmas(&migrate_conn).await?;
-    Migrator::up(&migrate_conn, None)
-        .await
-        .map_err(|e| DbError::Migration(e.to_string()))?;
+    // Refuses a newer schema untouched; snapshots, then migrates all or
+    // nothing (see `schema_guard`).
+    let migrated = schema_guard::migrate::<Migrator>(&migrate_conn, app_data_dir).await;
     migrate_conn.close().await?;
+    let migrated = migrated?;
+    crate::update::install::note_database_start(&migrated);
+    let _ = STARTUP_MIGRATION.set(migrated.clone());
+    if !migrated.applied.is_empty() {
+        tracing::info!("[db] applied {} migration(s)", migrated.applied.len());
+    }
 
     // Runtime connection pool. Migrations are already applied above, so the
     // schema is stable and spreading queries across pooled connections is safe.

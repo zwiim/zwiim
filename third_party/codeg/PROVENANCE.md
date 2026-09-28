@@ -71,7 +71,7 @@ dormant" rule; the runtime subsystem that drove them is gone.
 | File | Change |
 |---|---|
 | `runtime/host/src/web/router.rs` | Reduced to a core-only router: the ~200 product `.route()` entries removed, keeping health/auth/ACP/terminal/files/git/events/WS. Zwiim-owned. |
-| `runtime/host/src/update/mod.rs` + `update/install.rs` | Zwiim stub replacing Codeg's minisign updater: `upgrade_staged`/`take_upgrade_staged`/`rollback_available` → false, `rollback` → `DependencyMissing`. `update/runtime.rs` is retained Codeg exec/supervise infra. |
+| `runtime/host/src/update/mod.rs` + `update/install.rs` | Originally a Zwiim stub replacing Codeg's minisign updater; since R9 the Zwiim updater (signed manifest, versioned installs, trial, rollback — see the R9 section below). `update/runtime.rs` is retained Codeg exec/supervise infra. |
 | `runtime/host/src/acp/work_task_tools.rs` | Added `NoWorkTaskTools` no-op impl of `WorkTaskToolAccess` (replaces the deleted engine-backed `EngineWorkTaskTools`); MCP reporting surface stays wired but rejects. |
 | `runtime/host/src/commands/chat_authoring.rs` | `create_automation` / `create_work_task` write-paths neutered to soft-reject ("not available in this build") since their engines are removed; obsolete success-path tests deleted. |
 | `runtime/host/src/commands/conversations.rs`, `acp/{manager,lifecycle}.rs`, `app_state.rs` | chat_channel severance: removed the `ChatChannelManager` AppState field + install/accessor, dropped chat-channel title-sync helpers and their args from `list_all/get_folder_conversation/import/scan`, deleted chat-channel test harness + tests. |
@@ -1018,6 +1018,41 @@ Host (`runtime/host/`):
 | `src/protocol/events.rs` (Zwiim-owned) | `session.usage { used, size }` and `session.turn_usage { … }` events; snapshot adds `turn_usage`. Unreported fields are `null`. |
 | `src/session_options.rs` (Zwiim-owned) | A session without a live agent reads and changes its options against the effort of the model it will run (`idle_view`), and a model change drops a kept effort the new model doesn't offer, so it is never replayed on respawn. |
 
+## Production Release & Update System R9 — compatibility, lifecycle, migrations, managed adapters, signed releases, Host updater
+
+Zwiim-owned (new): `protocol/compat.rs`, `host_lifecycle.rs` (+ tests),
+`db/schema_guard.rs` (+ tests), `adapters.rs` + `adapters/*` (managed Claude
+and Codex installs from a committed lock), `update/manifest.rs`,
+`update/service.rs`, `update/tests.rs`, `update/install.rs` (the stub is
+replaced by the Zwiim installer: versioned installs, trial, rollback), and the
+SDK `compat.ts`.
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `runtime/host/src/update/signature.rs` | `src-tauri/src/update/verify.rs` | Kept the Tauri-form minisign parsing and the `minisign-verify` call. Removed the embedded upstream key; the Zwiim release key is compiled in from `ZWIIM_RELEASE_PUBKEY`, and a build without it verifies nothing. |
+| `acp/connection.rs` | same | `build_agent` launches Claude and Codex from their managed install (`crate::adapters::launch`) instead of `npx`/PATH; other agents unchanged. |
+| `commands/acp.rs` | same | `verify_agent_installed` and `acp_prepare_npx_agent_core` route Claude and Codex to the managed installer (version override refused); `codex_home_dir` is `pub(crate)`. |
+| `db/mod.rs`, `db/error.rs` | same | `init_database` migrates through `schema_guard` (refuses a newer schema, snapshots, one transaction) and tells the installer a trial migrated; new `DbError::NewerSchema`. |
+| `supervise.rs` | same | Runs the installed current version, seeds the bundled Host, rolls back through `update::install` while a trial is open, and kills a trial worker that never commits. |
+| `session.rs` | same | The busy check in `stop` is the shared `is_busy` (used by the drain). |
+| `app_state.rs` | same | New `lifecycle` field. |
+| `bin/zwiim_host.rs` | `src-tauri/src/bin/codeg_server.rs` | Instance lock, drain/restart exits, update trial and background checks; `--release-info`, `--verify-release`, `--seed`. |
+| `Cargo.toml` | same | tokio `signal`/`time`; `ring` for npm registry signatures. |
+| `protocol/http.rs`, `protocol/mod.rs`, `db/mod.rs` | (Zwiim-owned) | `host.diagnostics`: versions, protocol, adapters, update/rollback state and migration facts, never credentials or paths; `db::startup_migration()` records what this start migrated. |
+| `clients/desktop/src-tauri/src/update.rs` | `src-tauri/src/commands/app_update.rs` | Same shape (download driven from Rust, UI reads a snapshot). Key and endpoint are Zwiim's, compiled in by the release build; a build without the key never updates. The bundled Host is handed to the Host installer (`zwiim-host --seed`) on next launch. |
+| `clients/desktop/src-tauri/{Cargo.toml,tauri.conf.json,tauri.release.json,src/lib.rs}` | (Zwiim-owned) | `tauri-plugin-updater` with `requireSignedVersion`; release bundle config (app + dmg, updater artifacts, hardened runtime); update and login commands registered. |
+| `clients/desktop/src-tauri/src/login.rs` | (Zwiim-owned) | Optional LaunchAgent that starts the bundled Host at login. |
+
+Also Zwiim-owned (R9): SDK `compat.ts`, `host.diagnostics` / `host.update.*`
+types, Desktop About (updates, diagnostics, login start), Mobile compatibility
+and store-update prompts, `clients/mobile/eas.json` and
+`scripts/check-production.mjs`, release scripts under `scripts/release/`
+(version, notes, package-host, manifest, publish, rehearse), `release/mobile.json`,
+`CHANGELOG.md`, `VERSION`, and the CI / providers / release workflows under
+`.github/workflows/`.
+
 ## License obligations tracked
 
 - [x] Include Apache-2.0 license text (`third_party/codeg/LICENSE`).
@@ -1026,5 +1061,6 @@ Host (`runtime/host/`):
 - [ ] Run `cargo license` on the Zwiim tree before first ship (deferred; long
       transitive tail unverified — see codeg-audit.md §11).
 - [ ] Ship the SIL OFL-1.1 text with the mobile app (Geist fonts).
-- [ ] Re-key / replace the minisign updater keys (updater replaced with a stub;
-      no keys shipped — revisit when a Zwiim updater lands).
+- [x] Re-key / replace the minisign updater keys: the Zwiim updater (R9)
+      trusts only the key compiled in from `ZWIIM_RELEASE_PUBKEY`; no upstream
+      key ships. The private key lives only in the release CI secret.

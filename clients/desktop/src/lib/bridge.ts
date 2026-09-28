@@ -74,6 +74,34 @@ export interface RemoteBridge {
   lan?: LanBridge;
 }
 
+/** This app's own update (`tauri-plugin-updater`, driven from the shell). */
+export type DesktopUpdateActivity =
+  | { state: "idle" }
+  | { state: "checking" }
+  | { state: "up_to_date" }
+  | { state: "available"; version: string; notes: string | null }
+  | { state: "downloading"; version: string; downloaded: number; total: number | null }
+  | { state: "ready"; version: string }
+  | { state: "failed"; message: string };
+
+export interface DesktopUpdateStatus {
+  version: string;
+  /** False in a build made outside the release pipeline: it never updates. */
+  supported: boolean;
+  unsupported_reason: "unsigned_build" | null;
+  activity: DesktopUpdateActivity;
+}
+
+export interface DesktopUpdates {
+  status(): Promise<DesktopUpdateStatus>;
+  /** Look for a newer Desktop; never downloads. */
+  check(): Promise<DesktopUpdateStatus>;
+  /** Download, verify and install; progress shows in `status`. */
+  install(): Promise<DesktopUpdateStatus>;
+  /** Relaunch into the installed update. The host keeps running. */
+  restart(): Promise<void>;
+}
+
 export interface NativeBridge {
   discover(): Promise<DiscoveredHost | null>;
   startHost(): Promise<void>;
@@ -87,6 +115,22 @@ export interface NativeBridge {
   /** Forget the account here. Never touches the host. */
   signOut(): Promise<void>;
   remote?: RemoteBridge;
+  /** Only in the desktop app. */
+  updates?: DesktopUpdates;
+  /** Only in the desktop app: whether the host starts when the user logs in. */
+  hostLogin?: HostLogin;
+}
+
+export interface HostLoginStatus {
+  /** False where there is no installed host to start (development builds). */
+  supported: boolean;
+  enabled: boolean;
+}
+
+export interface HostLogin {
+  status(): Promise<HostLoginStatus>;
+  /** Affects the next login only; the running host is left alone. */
+  set(enabled: boolean): Promise<HostLoginStatus>;
 }
 
 /** Bytes as standard base64, and back: how the shell's pipe carries them. */
@@ -181,6 +225,34 @@ export function tauriBridge(): NativeBridge {
     async signOut() {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("account_sign_out");
+    },
+    updates: {
+      async status() {
+        const { invoke } = await import("@tauri-apps/api/core");
+        return invoke<DesktopUpdateStatus>("desktop_update_status");
+      },
+      async check() {
+        const { invoke } = await import("@tauri-apps/api/core");
+        return invoke<DesktopUpdateStatus>("desktop_update_check");
+      },
+      async install() {
+        const { invoke } = await import("@tauri-apps/api/core");
+        return invoke<DesktopUpdateStatus>("desktop_update_install");
+      },
+      async restart() {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("desktop_update_restart");
+      },
+    },
+    hostLogin: {
+      async status() {
+        const { invoke } = await import("@tauri-apps/api/core");
+        return invoke<HostLoginStatus>("host_login_status");
+      },
+      async set(enabled) {
+        const { invoke } = await import("@tauri-apps/api/core");
+        return invoke<HostLoginStatus>("host_login_set", { enabled });
+      },
     },
     remote: {
       async cloudRequest(method, path) {

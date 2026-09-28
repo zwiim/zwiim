@@ -1,0 +1,5 @@
+{
+  "//": "The Mobile store builds live when the next release is made (see scripts/release/manifest.mjs). Update after a store build goes live; null until one exists.",
+  "ios": null,
+  "android": null
+}

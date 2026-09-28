@@ -21,6 +21,7 @@ import {
   type CloudHost,
   type ConnectionMode,
 } from "@zwiim/sdk";
+import { DESKTOP_CLIENT } from "./app-info";
 import type { PairedHost, RemoteBridge } from "./bridge";
 
 /**
@@ -80,7 +81,7 @@ export async function connectRemote(
     lan: remote.lan ?? null,
     cloud: cloudUrl ? cloudClient(remote, cloudUrl) : null,
   });
-  const client = new HostClient({ expectedHostId: hostId, transport: manager });
+  const client = new HostClient({ expectedHostId: hostId, transport: manager, client: DESKTOP_CLIENT });
   const controller = new HostController(client);
   client.start();
   return { controller, manager };

@@ -45,17 +45,24 @@ function targetLabel(workspaces: readonly WorkspaceInfo[], w: WorkspaceInfo): st
   return contextText(contextLabel(workspaces, w.workspace_id)) ?? workspaceLabel(w);
 }
 
-/** The first agent the host can run, in the host's order. */
+/** The first supported agent the host can run, else the first it can run, in the host's order. */
 export function defaultAgent(agents: readonly AgentSummary[] | null): string | null {
-  return agents?.find((a) => a.available)?.agent ?? null;
+  const usable = agents?.filter((a) => a.available) ?? [];
+  return (usable.find((a) => a.support === "supported") ?? usable[0])?.agent ?? null;
 }
 
-/** Why an agent can't start a session here, in Desktop's words; null when it can. */
+/**
+ * Why an agent can't start a session here, in Desktop's words, or that Zwiim
+ * does not support it yet; null for a supported agent that can start.
+ */
 export function agentNote(agent: AgentSummary): string | null {
-  if (agent.available) return null;
+  if (agent.available) return agent.support === "experimental" ? "experimental" : null;
   if (agent.reason === "not_installed") return "not installed";
   if (agent.reason === "unsupported_platform") return "not supported here";
   if (agent.reason === "disabled") return "disabled";
+  if (agent.reason === "installing") return "setting up";
+  if (agent.reason === "needs_network") return "setup needs network";
+  if (agent.reason === "setup_failed") return "setup failed";
   return "unavailable";
 }
 

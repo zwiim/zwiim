@@ -176,7 +176,7 @@ function applySnapshot(
     // `session.options` event follows.
     options: s.options ?? view.options,
     // Likewise its commands, announced shortly after it starts.
-    commands: s.commands.length > 0 ? s.commands : view.commands,
+    commands: s.commands && s.commands.length > 0 ? s.commands : view.commands,
     historyStale: true,
   };
 }

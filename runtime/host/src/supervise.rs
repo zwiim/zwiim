@@ -1,24 +1,28 @@
 //! `zwiim-host --supervise` — a minimal process supervisor that owns the
-//! lifecycle of the real worker so an in-place upgrade can swap the binary
-//! and have the *new* version relaunched deterministically.
+//! lifecycle of the real worker, so an update can switch versions and have
+//! the *new* version relaunched deterministically.
 //!
-//! In Docker this process is PID 1, so it also has to behave like an init:
-//! forward `SIGTERM`/`SIGINT` to the worker for graceful container stop, and
-//! reap reparented orphan children so they don't pile up as zombies.
+//! It also behaves like an init (PID 1 in Docker): it forwards
+//! `SIGTERM`/`SIGINT` to the worker for a graceful stop, and reaps
+//! reparented orphan children so they don't pile up as zombies.
 //!
-//! Relaunch contract: the worker performs the file swap and then exits with
-//! [`crate::update::runtime::EXIT_RESTART`]. We wait `ZWIIM_RESTART_DELAY_MS`
-//! and respawn from the (now replaced) executable path.
+//! Which binary runs: `versions/<current>/zwiim-host` from the Zwiim
+//! installer (`update::install`), read again before every spawn; this
+//! executable only when nothing is installed. On start the supervisor first
+//! offers the Host it was shipped with to the installer (`install::seed`):
+//! the first install runs it, a newer one is staged without a download.
 //!
-//! Failed-upgrade self-heal: a worker we just relaunched *because of* an
-//! upgrade is on probation. If it exits abnormally within
-//! `ZWIIM_UPGRADE_TRIAL_SECS` (the new binary can't even boot), we restore
-//! the previous bundle from its `.bak` artifacts and relaunch that — once.
-//! This is the one recovery path that does **not** depend on the (now dead)
-//! HTTP rollback endpoint. Any other exit is propagated as-is — a fatal
-//! config error or a crash after the trial window should stop the process
-//! (and, under a container restart policy, fall back to the image) rather
-//! than hot-loop.
+//! Relaunch contract: the worker exits with
+//! [`crate::update::runtime::EXIT_RESTART`] (after switching `current` when
+//! it applies an update). We wait `ZWIIM_RESTART_DELAY_MS` and respawn.
+//!
+//! Failed-update self-heal: a version whose trial is still open is on
+//! probation. If it exits before committing its trial, or does not commit
+//! within its deadline (it is then killed), the installer rolls it back
+//! (database snapshot, previous version, blocked) and the previous version is
+//! relaunched — once. Any other exit is propagated as-is — a fatal config
+//! error or a crash after the trial should stop the process rather than
+//! hot-loop.
 
 use crate::update::runtime;
 
@@ -30,14 +34,11 @@ fn worker_args() -> Vec<String> {
         .collect()
 }
 
-/// Restore the previous bundle from its `.bak` artifacts after a freshly
-/// upgraded worker failed to stay up. Returns `true` if a rollback was
+/// Roll back an unproven version. Returns `true` if a rollback was
 /// performed (caller should relaunch the restored, previous version).
-/// Best-effort: a missing `.bak` (nothing to revert to) returns `false` and
-/// the caller propagates the original failure.
 fn attempt_rollback(reason: &str) -> bool {
     tracing::info!("[supervise] {reason}; rolling back to the previous version");
-    match crate::update::install::rollback() {
+    match crate::update::install::rollback_current(reason) {
         Ok(()) => {
             tracing::info!("[supervise] rollback complete; relaunching previous version");
             true
@@ -48,6 +49,46 @@ fn attempt_rollback(reason: &str) -> bool {
         }
     }
 }
+
+/// The binary to start now: the installed current version, else this one.
+fn worker_exe() -> std::path::PathBuf {
+    if !crate::update::install::versioned_installs() {
+        return runtime::self_exe();
+    }
+    std::env::var_os("ZWIIM_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .and_then(|d| crate::update::install::worker_exe(&crate::update::install::root(&d)))
+        .unwrap_or_else(runtime::self_exe)
+}
+
+/// Offer the Host this supervisor was shipped with to the installer.
+fn seed_bundled() {
+    if !crate::update::install::versioned_installs() {
+        return;
+    }
+    let Some(data_dir) = std::env::var_os("ZWIIM_DATA_DIR").map(std::path::PathBuf::from) else {
+        return;
+    };
+    let root = crate::update::install::root(&data_dir);
+    match crate::update::install::seed(&root, &runtime::self_exe(), env!("CARGO_PKG_VERSION")) {
+        Ok(crate::update::install::Seeded::Installed(v)) => {
+            tracing::info!("[supervise] installed Host {v}")
+        }
+        Ok(crate::update::install::Seeded::Staged(v)) => {
+            tracing::info!("[supervise] Host {v} from this app is staged; it applies on the next update restart")
+        }
+        Ok(crate::update::install::Seeded::Unchanged) => {}
+        Err(e) => tracing::warn!("[supervise] could not install the bundled Host: {e}"),
+    }
+}
+
+/// How long a version on trial may take to commit before it is killed and
+/// rolled back: its trial window plus time to start.
+fn trial_deadline() -> std::time::Duration {
+    std::time::Duration::from_secs(runtime::upgrade_trial_secs() + TRIAL_START_GRACE_SECS)
+}
+
+const TRIAL_START_GRACE_SECS: u64 = 90;
 
 #[cfg(unix)]
 pub fn run() -> ! {
@@ -80,14 +121,17 @@ pub fn run() -> ! {
         );
     }
 
-    let exe = runtime::self_exe();
+    seed_bundled();
     let args = worker_args();
     let delay = runtime::restart_delay_ms();
-    let trial = std::time::Duration::from_secs(runtime::upgrade_trial_secs());
 
     let spawn_worker = || -> std::io::Result<std::process::Child> {
+        let exe = worker_exe();
+        tracing::info!("[supervise] starting {}", exe.display());
+        let bundled = crate::update::install::in_app_bundle(&runtime::self_exe());
         std::process::Command::new(&exe)
             .args(&args)
+            .env(crate::update::install::ENV_BUNDLED, if bundled { "1" } else { "0" })
             .env(runtime::ENV_SUPERVISED, "1")
             .env(runtime::ENV_RESTART_DELAY_MS, delay.to_string())
             .spawn()
@@ -100,6 +144,19 @@ pub fn run() -> ! {
         let child = spawn_worker()?;
         let pid = child.id() as i32;
         WORKER_PID.store(pid, Ordering::SeqCst);
+        if crate::update::install::upgrade_staged() {
+            // A version on trial that neither commits nor exits (hung) is
+            // killed at its deadline; the exit then rolls it back.
+            std::thread::spawn(move || {
+                std::thread::sleep(trial_deadline());
+                if WORKER_PID.load(Ordering::SeqCst) == pid && crate::update::install::upgrade_staged() {
+                    tracing::error!("[supervise] new version did not prove itself in time; stopping it");
+                    unsafe {
+                        libc::kill(pid, libc::SIGKILL);
+                    }
+                }
+            });
+        }
         if TERMINATING.load(Ordering::SeqCst) {
             // SAFETY: `kill` is async-signal-safe; `pid` is our just-spawned child.
             unsafe {
@@ -226,8 +283,13 @@ pub fn run() -> ! {
             // A freshly-upgraded worker that dies fast can't boot — restore
             // the previous version and relaunch it (once; the restored worker
             // is no longer on_trial, so a second failure propagates).
+            // Another Host owns the data directory: not a broken upgrade,
+            // so never a reason to roll back.
+            let already_running =
+                code == i32::from(crate::host_lifecycle::EXIT_ALREADY_RUNNING);
             if on_trial
-                && elapsed < trial
+                && !already_running
+                && crate::update::install::upgrade_staged()
                 && attempt_rollback(&format!(
                     "new version exited (code {code}) after {:.1}s",
                     elapsed.as_secs_f64()
@@ -252,7 +314,7 @@ pub fn run() -> ! {
         if libc::WIFSIGNALED(status) {
             let sig = libc::WTERMSIG(status);
             if on_trial
-                && elapsed < trial
+                && crate::update::install::upgrade_staged()
                 && attempt_rollback(&format!(
                     "new version was killed by signal {sig} after {:.1}s",
                     elapsed.as_secs_f64()
@@ -295,8 +357,10 @@ pub fn run() -> ! {
 
     loop {
         let spawned_at = std::time::Instant::now();
-        let mut child = std::process::Command::new(&exe)
+        let bundled = crate::update::install::in_app_bundle(&runtime::self_exe());
+        let mut child = std::process::Command::new(worker_exe())
             .args(&args)
+            .env(crate::update::install::ENV_BUNDLED, if bundled { "1" } else { "0" })
             .env(runtime::ENV_SUPERVISED, "1")
             .env(runtime::ENV_RESTART_DELAY_MS, delay.to_string())
             .spawn()
@@ -323,7 +387,8 @@ pub fn run() -> ! {
                 // A freshly-upgraded worker that dies fast can't boot —
                 // restore the previous version and relaunch it once.
                 if on_trial
-                    && elapsed < trial
+                    && code != i32::from(crate::host_lifecycle::EXIT_ALREADY_RUNNING)
+                    && crate::update::install::upgrade_staged()
                     && attempt_rollback(&format!(
                         "new version exited (code {code}) after {:.1}s",
                         elapsed.as_secs_f64()
@@ -337,7 +402,7 @@ pub fn run() -> ! {
             }
             None => {
                 if on_trial
-                    && elapsed < trial
+                    && crate::update::install::upgrade_staged()
                     && attempt_rollback("new version terminated abnormally")
                 {
                     on_trial = false;

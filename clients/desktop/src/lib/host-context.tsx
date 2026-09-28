@@ -1,5 +1,5 @@
 import { createContext, useContext, useSyncExternalStore } from "react";
-import type { HostController, HostState } from "@zwiim/sdk";
+import { isHostOutdated, type Compatibility, type HostController, type HostState } from "@zwiim/sdk";
 
 const HostContext = createContext<HostController | null>(null);
 
@@ -43,6 +43,7 @@ const FRIENDLY: Record<string, string> = {
   host_mismatch: "A different host is now answering at this address. Restart the app to connect to it.",
   host_offline: "The host is offline. It reconnects when the host is back.",
   cloud_unavailable: "Zwiim Cloud cannot be reached. This computer's host keeps working.",
+  host_restarting: "The host is restarting. Try again in a moment.",
   host_unknown: "That host is not in your account.",
   device_refused: "The host no longer trusts this computer. Pair it again from the host.",
   handshake_failed: "The host did not prove the identity this computer paired with. Pair it again.",
@@ -50,12 +51,23 @@ const FRIENDLY: Record<string, string> = {
     "The host cannot be reached on this network. Check that both computers are on the same network and that the host allows local connections.",
   host_identity_mismatch:
     "A computer on this network claims to be this host with a different identity. It was not connected to.",
+  update_required: "This app and the host need matching updates before they can work together.",
 };
 
 export function errorMessage(e: unknown): string {
+  if (isHostOutdated(e)) return "The host is older than this app and cannot do that yet. Update the host to continue.";
   const code = e && typeof e === "object" && "code" in e ? String((e as { code: unknown }).code) : null;
   if (code && code in FRIENDLY) return FRIENDLY[code]!;
   const message = e instanceof Error ? e.message : String(e);
   if (code === "internal") return `Something went wrong on the host: ${message}`;
   return message;
+}
+
+/** What an `update_required` verdict asks of the user, for this computer's host or a remote one. */
+export function updateRequiredMessage(compat: Compatibility | null, remote: boolean): string {
+  if (compat?.status !== "update_required") return "An update is required before this app can use the host.";
+  if (compat.update === "client") return "This host needs a newer version of Zwiim. Update this app to continue.";
+  return remote
+    ? "This host runs an older version of Zwiim. Update Zwiim on that computer to continue."
+    : "The host running on this computer is older than this app. Restart it to run the version that came with this app.";
 }

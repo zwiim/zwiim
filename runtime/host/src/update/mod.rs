@@ -7,11 +7,17 @@
 //! `--supervise` process supervisor both depend on. It is exec-lifecycle
 //! infrastructure, not the updater.
 //!
-//! `install` is a Zwiim-owned STUB that replaces the upstream minisign in-place
-//! self-updater. Per CLAUDE.md the upstream updater is discarded and a Zwiim
-//! updater is a later slice; until then this build ships no self-update path:
-//! no upgrade is ever staged and there is nothing to roll back. Keeping the
-//! seam (rather than deleting it) lets the supervisor and bootstrap compile
-//! and behave correctly (plain restart, never auto-rollback).
+//! Zwiim-owned, replacing the upstream minisign in-place self-updater
+//! (discarded per CLAUDE.md):
+//!
+//! - `manifest` + `signature`: the signed release manifest (R9.5).
+//! - `install`: versioned Host installs, staging, trial and rollback.
+//! - `service`: discover → verify → download → stage → apply → trial.
 pub mod install;
+pub mod manifest;
 pub mod runtime;
+pub mod service;
+pub mod signature;
+
+#[cfg(test)]
+mod tests;

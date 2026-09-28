@@ -1,4 +1,5 @@
-import { ZwiimClientError } from "@zwiim/sdk";
+import { CLIENT_REVISION, ZwiimClientError } from "@zwiim/sdk";
+import { hello } from "../../sdk/test/fakes";
 import { describe, expect, it, vi } from "vitest";
 import { errorInfo, type HostConnectionView } from "../src/host/connection";
 import type { HostLanEndpoint } from "@zwiim/sdk";
@@ -20,10 +21,36 @@ describe("HostConnection", () => {
       events: 0,
       retryAt: null,
       lanKnown: true,
+      compat: null,
     });
     await new Promise((r) => setTimeout(r, 10));
     expect(w.cloud.http).toEqual([]);
     expect(w.lan.discoveries).toBe(0);
+    c.close();
+  });
+
+  it("introduces this app, and an old app against a Host needing a newer one is blocked", async () => {
+    const w = world();
+    const required = CLIENT_REVISION + 1;
+    const introductions: unknown[] = [];
+    w.host.backend.handlers["host.hello"] = (params) => {
+      introductions.push(params);
+      return hello({ revision: required, min_client_revision: required });
+    };
+    const c = w.connect({ client: { app: "mobile", version: "0.1.0", build: "1", platform: "ios" } });
+    c.connect();
+    await waitFor(() => c.view.status === "incompatible");
+    expect(introductions[0]).toMatchObject({
+      client: { app: "mobile", version: "0.1.0", build: "1", platform: "ios", revision: CLIENT_REVISION },
+    });
+    expect(c.view).toMatchObject({
+      error: { code: "update_required" },
+      compat: { status: "update_required", update: "client", requiredClientRevision: required },
+    });
+    // Host operations are refused before they reach the Host; the Host stays healthy.
+    const before = w.host.backend.requests.length;
+    await expect(c.request("workspace.list", {})).rejects.toMatchObject({ code: "update_required" });
+    expect(w.host.backend.requests.length).toBe(before);
     c.close();
   });
 

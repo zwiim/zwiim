@@ -1,0 +1,166 @@
+# A release, from a version tag: build, sign, notarize, write the signed
+# manifest, and publish to GitHub Releases. Nothing is published unless CI and
+# the live provider checks pass, and a published version is never replaced.
+#
+# Repository secrets (never committed):
+#   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+#       the release minisign key: signs release.json and the Desktop update
+#   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD
+#       Developer ID Application certificate (.p12, base64) and its password
+#   APPLE_ID, APPLE_PASSWORD
+#       notarization: Apple ID and an app-specific password
+#   ZWIIM_CI_ANTHROPIC_API_KEY, ZWIIM_CI_OPENAI_API_KEY
+#       dedicated CI-only provider credentials (providers.yml)
+# Repository variables (public values):
+#   ZWIIM_RELEASE_PUBKEY    the release key's public half (compiled in)
+#   ZWIIM_APPLE_TEAM_ID     the permanent Apple Team ID (compiled in)
+#   APPLE_SIGNING_IDENTITY  "Developer ID Application: <name> (<team id>)"
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  providers:
+    uses: ./.github/workflows/providers.yml
+    secrets:
+      ZWIIM_CI_ANTHROPIC_API_KEY: ${{ secrets.ZWIIM_CI_ANTHROPIC_API_KEY }}
+      ZWIIM_CI_OPENAI_API_KEY: ${{ secrets.ZWIIM_CI_OPENAI_API_KEY }}
+
+  build:
+    name: Build, sign, publish (macOS Apple Silicon)
+    needs: [ci, providers]
+    runs-on: macos-14
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      ZWIIM_RELEASE_PUBKEY: ${{ vars.ZWIIM_RELEASE_PUBKEY }}
+      ZWIIM_APPLE_TEAM_ID: ${{ vars.ZWIIM_APPLE_TEAM_ID }}
+      APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+      APPLE_TEAM_ID: ${{ vars.ZWIIM_APPLE_TEAM_ID }}
+      TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag is the product version
+        run: |
+          test "$GITHUB_REF_NAME" = "v$(cat VERSION)" || { echo "::error::tag $GITHUB_REF_NAME != v$(cat VERSION)"; exit 1; }
+          node scripts/release/version.mjs check
+          node scripts/release/notes.mjs "$(cat VERSION)" > /dev/null
+      - name: Release configuration is present
+        run: |
+          for v in ZWIIM_RELEASE_PUBKEY ZWIIM_APPLE_TEAM_ID APPLE_SIGNING_IDENTITY; do
+            test -n "${!v}" || { echo "::error::repository variable $v is not set"; exit 1; }
+          done
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Import the Developer ID certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/release.keychain-db"
+          PASS="$(openssl rand -hex 16)"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$PASS" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$PASS" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Build the Host
+        run: cargo build --release --locked -p zwiim-host --bin zwiim-host --bin zwiim-mcp
+      - name: The Host carries the release key and Team ID
+        run: |
+          target/release/zwiim-host --release-info | tee "$RUNNER_TEMP/release-info.json"
+          node -e 'const i=require(process.argv[1]); if(i.release_key!==true||i.team_id!==process.env.ZWIIM_APPLE_TEAM_ID||i.version!==require("fs").readFileSync("VERSION","utf8").trim()) process.exit(1)' "$RUNNER_TEMP/release-info.json"
+      - name: Sign and notarize the Host
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        run: |
+          for b in zwiim-host zwiim-mcp; do
+            codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "target/release/$b"
+            codesign --verify --strict --verbose=2 "target/release/$b"
+          done
+          (cd target/release && zip -q "$RUNNER_TEMP/host-notarize.zip" zwiim-host zwiim-mcp)
+          xcrun notarytool submit "$RUNNER_TEMP/host-notarize.zip" \
+            --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+      - name: Package the Host
+        run: node scripts/release/package-host.mjs --bin-dir target/release --target "$TARGET" --out dist
+
+      - name: Build, sign and notarize Desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        run: npm run bundle:release --workspace clients/desktop
+      - name: Verify Desktop's signature, notarization and Gatekeeper
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        run: |
+          APP=target/release/bundle/macos/Zwiim.app
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign -dv "$APP" 2>&1 | grep -q "TeamIdentifier=$APPLE_TEAM_ID"
+          xcrun stapler validate "$APP"
+          spctl --assess --type execute --verbose=2 "$APP"
+          DMG=$(ls target/release/bundle/dmg/*.dmg)
+          # The app inside is notarized by the bundler; the disk image itself too.
+          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$DMG"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+      - name: Collect Desktop artifacts
+        run: |
+          V=$(cat VERSION)
+          cp target/release/bundle/macos/Zwiim.app.tar.gz "dist/Zwiim_${V}_aarch64.app.tar.gz"
+          cp target/release/bundle/macos/Zwiim.app.tar.gz.sig "dist/Zwiim_${V}_aarch64.app.tar.gz.sig"
+          cp target/release/bundle/dmg/*.dmg "dist/Zwiim_${V}_aarch64.dmg"
+
+      - name: Signed manifest (verified by the Host just built)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          V=$(cat VERSION)
+          node scripts/release/manifest.mjs \
+            --host-bin target/release/zwiim-host \
+            --host "$TARGET=dist/zwiim-host-${V}-${TARGET}.tar.gz" \
+            --desktop "darwin-aarch64=dist/Zwiim_${V}_aarch64.app.tar.gz" \
+            --asset "dist/Zwiim_${V}_aarch64.dmg" \
+            --out dist
+          cat dist/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: dist/
+          retention-days: 30
+
+      - name: Publish (refuses an existing version)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ZWIIM_RELEASE_REPOSITORY: ${{ github.repository }}
+        run: node scripts/release/publish.mjs --dir dist
+
+      - name: Remove the signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/release.keychain-db" || true

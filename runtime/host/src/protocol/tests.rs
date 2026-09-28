@@ -25,7 +25,13 @@ const OPS: &[&str] = &[
     "host.hello",
     "host.lan_endpoint",
     "host.claim",
+    "host.restart",
+    "host.update.status",
+    "host.update.check",
+    "host.update.apply",
+    "host.diagnostics",
     "agent.list",
+    "agent.setup",
     "workspace.list",
     "workspace.add",
     "workspace.browse",
@@ -159,7 +165,11 @@ impl Host {
 
     async fn err(&self, op: &str, body: Value) -> (StatusCode, String) {
         let (status, code, details) = self.err_details(op, body).await;
-        assert!(details.is_none(), "{op}: unexpected details {details:?}");
+        // A field the Host does not know is always named (R9.1).
+        let named_field = details
+            .as_ref()
+            .is_some_and(|d| d["reason"] == "unknown_field" && d["field"].is_string());
+        assert!(details.is_none() || named_field, "{op}: unexpected details {details:?}");
         (status, code)
     }
 
@@ -1825,6 +1835,63 @@ async fn agent_list_reports_availability_only() {
 }
 
 #[tokio::test]
+async fn agent_list_marks_claude_and_codex_supported_and_host_managed() {
+    let h = host(false).await;
+    let list = h.ok("agent.list", json!({})).await;
+    for a in list.as_array().unwrap() {
+        let managed = a["agent"] == "claude_code" || a["agent"] == "codex";
+        if managed {
+            assert_eq!(a["support"], "supported", "{a}");
+            let adapter = &a["adapter"];
+            assert!(adapter["locked_version"].is_string(), "{a}");
+            for key in ["installed", "authenticated", "usable"] {
+                assert!(adapter[key].is_boolean(), "{key}: {a}");
+            }
+            assert!(adapter["setup"]["state"].is_string(), "{a}");
+            // Installed or not, availability and the adapter agree.
+            if !adapter["installed"].as_bool().unwrap() {
+                assert_eq!(a["available"], false, "{a}");
+            }
+        } else {
+            assert_eq!(a["support"], "experimental", "{a}");
+            assert!(a["adapter"].is_null(), "{a}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn agent_setup_only_sets_up_host_managed_adapters() {
+    let h = host(false).await;
+    let (status, code) = h.err("agent.setup", json!({"agent": "gemini"})).await;
+    assert_eq!((status, code.as_str()), (StatusCode::BAD_REQUEST, "invalid_request"));
+    let (status, code) = h.err("agent.setup", json!({"agent": "claude_code", "version": "9.9.9"})).await;
+    assert_eq!((status, code.as_str()), (StatusCode::BAD_REQUEST, "invalid_request"));
+}
+
+#[tokio::test]
+async fn an_unsigned_unsupervised_host_reports_that_it_cannot_update() {
+    let h = host(false).await;
+    let status = h.ok("host.update.status", json!({})).await;
+    assert_eq!(status["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(status["channel"], "stable");
+    assert_eq!(status["supported"], false, "{status}");
+    // Test builds carry no release key.
+    assert_eq!(status["unsupported_reason"], "unsigned_build", "{status}");
+    assert_eq!(status["restart_required"], false);
+    assert_eq!(status["activity"]["state"], "idle");
+    // Checking never reaches the network without a release key.
+    let checked = h.ok("host.update.check", json!({})).await;
+    assert_eq!(checked["supported"], false);
+    assert!(checked["last_checked"].is_null(), "{checked}");
+    let (status, code) = h.err("host.update.apply", json!({})).await;
+    assert_eq!((status, code.as_str()), (StatusCode::CONFLICT, "update_unavailable"));
+    let (status, code) = h.err("host.update.apply", json!({"mode": "later"})).await;
+    assert_eq!((status, code.as_str()), (StatusCode::BAD_REQUEST, "invalid_request"));
+    let hello = h.ok("host.hello", json!({})).await;
+    assert!(hello["capabilities"].as_array().unwrap().contains(&json!("host.update")));
+}
+
+#[tokio::test]
 async fn session_options_live_and_idle() {
     let h = host(false).await;
     let (sid, mut rx) = h.live_session().await;
@@ -2094,6 +2161,8 @@ async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
         ("device.list", json!({})),
         ("device.revoke", json!({"device_id": "dev-1"})),
         ("host.claim", json!({"user_id": "u-mallory"})),
+        ("host.restart", json!({"mode": "now"})),
+        ("agent.setup", json!({"agent": "claude_code"})),
     ] {
         let (status, body) = h.call_as(&credential, op, body).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{op}");
@@ -2104,6 +2173,7 @@ async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
         );
     }
     // Nothing changed.
+    assert_eq!(h.state.lifecycle.requested(), None);
     assert_eq!(h.ok("device.list", json!({})).await["devices"][0]["status"], "trusted");
     assert_eq!(h.ok("host.hello", json!({})).await["owner"], Value::Null);
 
@@ -2206,4 +2276,77 @@ async fn pairing_invites_wait_for_the_host_identity() {
         .await;
     assert_eq!(res.status_code(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(res.json::<Value>()["error"]["code"], "identity_unavailable");
+}
+
+#[tokio::test]
+async fn hello_carries_the_compatibility_handshake() {
+    let h = host(false).await;
+
+    // An older client says nothing: every field is still served, no verdict.
+    let hello = h.ok("host.hello", json!({})).await;
+    assert_eq!(hello["protocol"], "zwiim/1");
+    assert_eq!(hello["revision"], super::compat::PROTOCOL_REVISION);
+    assert_eq!(hello["min_client_revision"], super::compat::MIN_CLIENT_REVISION);
+    assert!(hello["capabilities"]
+        .as_array()
+        .is_some_and(|c| c.iter().any(|v| v == "session.usage")));
+    assert_eq!(hello["compat"], Value::Null);
+
+    // A client introduces itself; unknown fields never fail the handshake.
+    let hello = h
+        .ok(
+            "host.hello",
+            json!({"client": {"app": "mobile", "version": "9.9.9", "revision": 99,
+                   "capabilities": ["from.the.future"], "brand_new": {"x": 1}},
+                   "top_level_new": true}),
+        )
+        .await;
+    assert_eq!(hello["compat"], "compatible");
+
+    // No body at all is the same as `{}`.
+    let res = h
+        .server
+        .post("/zwiim/v1/host.hello")
+        .authorization_bearer(HOST_TOKEN)
+        .await;
+    assert_eq!(res.status_code(), StatusCode::OK);
+    assert_eq!(res.json::<Value>()["revision"], super::compat::PROTOCOL_REVISION);
+}
+
+#[tokio::test]
+async fn unknown_request_fields_are_named() {
+    let h = host(false).await;
+    let (status, code, details) = h
+        .err_details(
+            "workspace.open",
+            json!({"workspace_id": h.workspace_id, "from_a_newer_client": 1}),
+        )
+        .await;
+    assert_eq!((status, code.as_str()), (StatusCode::BAD_REQUEST, "invalid_request"));
+    assert_eq!(
+        details,
+        Some(json!({"reason": "unknown_field", "field": "from_a_newer_client"}))
+    );
+}
+
+#[tokio::test]
+async fn diagnostics_report_versions_and_state_without_secrets() {
+    let h = host(false).await;
+    let d = h.ok("host.diagnostics", json!({})).await;
+    assert_eq!(d["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(d["channel"], "stable");
+    assert_eq!(d["protocol"]["revision"], crate::protocol::compat::PROTOCOL_REVISION);
+    assert_eq!(d["update"]["supported"], false, "{d}");
+    assert_eq!(d["update"]["unsupported_reason"], "unsigned_build");
+    assert_eq!(d["database"]["schema"]["state"], "current", "{d}");
+    for adapter in ["claude", "codex"] {
+        let a = &d["adapters"][adapter];
+        assert!(a["locked_version"].is_string(), "{d}");
+        assert!(a["authenticated"].is_boolean(), "{d}");
+    }
+    let text = d.to_string();
+    for secret in [HOST_TOKEN, CONN, "sk-", "token\":", "api_key", "password"] {
+        assert!(!text.contains(secret), "{secret} in diagnostics: {text}");
+    }
+    assert!(!text.contains(&h.state.data_dir.to_string_lossy().to_string()), "paths leak: {text}");
 }

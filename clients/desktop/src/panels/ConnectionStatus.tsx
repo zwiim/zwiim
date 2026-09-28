@@ -3,7 +3,7 @@ import { ZwiimClientError, type ClientErrorCode, type ConnectionMode, type Conne
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { HOST_NOT_RUNNING } from "@/lib/boot";
-import { errorMessage, useController, useHost } from "@/lib/host-context";
+import { errorMessage, updateRequiredMessage, useController, useHost } from "@/lib/host-context";
 
 const LABELS: Record<string, string> = {
   disconnected: "Disconnected",
@@ -12,6 +12,7 @@ const LABELS: Record<string, string> = {
   live: "Connected",
   reconnecting: "Reconnecting",
   unauthenticated: "Not authorized",
+  incompatible: "Update required",
   error: "Error",
 };
 
@@ -83,12 +84,14 @@ export function ConnectionStatus({
   const variant =
     conn.status === "live"
       ? "success"
-      : conn.status === "unauthenticated" || conn.status === "error"
+      : conn.status === "unauthenticated" || conn.status === "error" || conn.status === "incompatible"
         ? "destructive"
         : "warning";
   const hostDown = !remote && conn.status === "reconnecting" && conn.error?.code === HOST_NOT_RUNNING;
   const code = conn.status !== "live" ? (conn.error?.code ?? null) : null;
-  const remoteLabel = remote && code ? REMOTE_LABELS[code] : undefined;
+  const incompatible = conn.status === "incompatible";
+  const hostOutdated = !remote && incompatible && conn.compat?.status === "update_required" && conn.compat.update === "host";
+  const remoteLabel = remote && code && !incompatible ? REMOTE_LABELS[code] : undefined;
   const signInNeeded = remote && conn.status === "unauthenticated" && code === "unauthenticated";
   const refused = remote && code === "device_refused";
   const pathLabel = conn.status === "live" && link?.path ? PATH_LABELS[link.path] : undefined;
@@ -124,8 +127,10 @@ export function ConnectionStatus({
         </label>
       )}
       {conn.status !== "live" && conn.error && (
-        <p className="text-muted-foreground text-xs break-words">
-          {remote
+        <p className="text-muted-foreground text-xs break-words" data-testid={incompatible ? "update-required" : undefined}>
+          {incompatible
+            ? updateRequiredMessage(conn.compat, Boolean(remote))
+            : remote
             ? signInNeeded
               ? "Your sign-in has lapsed. Sign in again to reach this host; it keeps running meanwhile."
               : errorMessage(new ZwiimClientError(conn.error.code as ClientErrorCode, conn.error.message))
@@ -138,13 +143,39 @@ export function ConnectionStatus({
       )}
       {startError && (
         <p className="text-destructive text-xs break-words" role="alert">
-          Could not start the host: {startError}
+          {hostOutdated ? "Could not restart the host" : "Could not start the host"}: {startError}
         </p>
       )}
       <div className="flex gap-1.5">
         {conn.status === "reconnecting" && (
           <Button size="xs" variant="outline" onClick={() => controller.client.retryNow()}>
             Retry now
+          </Button>
+        )}
+        {incompatible && (
+          <Button size="xs" variant="outline" onClick={() => controller.client.retryNow()}>
+            Check again
+          </Button>
+        )}
+        {hostOutdated && (
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={starting}
+            onClick={async () => {
+              setStarting(true);
+              setStartError(null);
+              try {
+                // The host switches to the version this app installed for it.
+                await controller.client.request("host.update.apply", { mode: "when_idle" });
+              } catch (e) {
+                setStartError(errorMessage(e));
+              } finally {
+                setStarting(false);
+              }
+            }}
+          >
+            {starting ? "Restarting…" : "Restart host"}
           </Button>
         )}
         {signInNeeded && (

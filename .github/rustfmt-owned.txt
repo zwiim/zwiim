@@ -1,0 +1,24 @@
+# Rust files CI holds to rustfmt: Zwiim-owned release/update code. Upstream-derived
+# files keep their original formatting (no unrelated reformatting).
+clients/desktop/src-tauri/src/update.rs
+runtime/host/src/adapters.rs
+runtime/host/src/adapters/install.rs
+runtime/host/src/adapters/lock.rs
+runtime/host/src/adapters/probe.rs
+runtime/host/src/adapters/tests.rs
+runtime/host/src/adapters/verify.rs
+runtime/host/src/db/schema_guard.rs
+runtime/host/src/db/schema_guard/tests.rs
+runtime/host/src/host_lifecycle.rs
+runtime/host/src/host_lifecycle/tests.rs
+runtime/host/src/protocol/compat.rs
+runtime/host/src/update/install.rs
+runtime/host/src/update/manifest.rs
+runtime/host/src/update/mod.rs
+runtime/host/src/update/runtime.rs
+runtime/host/src/update/service.rs
+runtime/host/src/update/signature.rs
+runtime/host/src/update/tests.rs
+runtime/host/tests/host_lifecycle.rs
+runtime/host/tests/provider_live.rs
+clients/desktop/src-tauri/src/login.rs

@@ -33,6 +33,11 @@ export function connectionText(
 export type HostProblem =
   /** Replaces the Host shell: only pairing again fixes it. */
   | { kind: "screen"; title: string; body: string }
+  /**
+   * Replaces the Host shell: this app or the Host is too old for the other.
+   * Nothing runs against the Host until the named side is updated.
+   */
+  | { kind: "update"; update: "app" | "host"; title: string; body: string }
   /** Under the Host bar, with its next step. */
   | { kind: "banner"; text: string; action: "retry" | "switch" | "sign_in" };
 
@@ -47,6 +52,21 @@ export function hostProblem(
       : { kind: "banner", text: `Couldn't open ${name}. Try again.`, action: "retry" };
   }
   if (!view || view.status === "live") return null;
+  if (view.status === "incompatible") {
+    return view.compat?.status === "update_required" && view.compat.update === "host"
+      ? {
+          kind: "update",
+          update: "host",
+          title: `${name} needs an update`,
+          body: `Update Zwiim on ${name}, then come back. This phone reconnects by itself.`,
+        }
+      : {
+          kind: "update",
+          update: "app",
+          title: "Update Zwiim",
+          body: `${name} needs a newer version of this app.`,
+        };
+  }
   switch (view.error?.code) {
     case undefined:
       return null;

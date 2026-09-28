@@ -6,6 +6,10 @@ pub enum DbError {
     Database(#[from] sea_orm::DbErr),
     #[error("migration error: {0}")]
     Migration(String),
+    /// The database was written by a newer Zwiim: it records migrations this
+    /// binary does not know. Left untouched.
+    #[error("the database was written by a newer version of Zwiim (unknown migrations: {})", .0.join(", "))]
+    NewerSchema(Vec<String>),
     #[error("not found: {0}")]
     NotFound(String),
     #[error("validation error: {0}")]

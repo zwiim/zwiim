@@ -6,8 +6,10 @@ import {
   HostController,
   LocalTransport,
   ZwiimClientError,
+  type ClientInfo,
   type Transport,
 } from "@zwiim/sdk";
+import { DESKTOP_CLIENT } from "./app-info";
 import type { DiscoveredHost, NativeBridge } from "./bridge";
 
 export type BootPhase =
@@ -20,6 +22,8 @@ export interface BootOptions {
   startTimeoutMs?: number;
   pollMs?: number;
   makeTransport?: (host: DiscoveredHost) => Transport;
+  /** How this app introduces itself in `host.hello`. */
+  client?: ClientInfo;
 }
 
 /** Connection error code: no local host to connect to (it can be started). */
@@ -60,7 +64,7 @@ export async function bootHost(
   onPhase: (p: BootPhase) => void,
   options: BootOptions = {},
 ): Promise<HostController | null> {
-  const { startTimeoutMs = 20_000, pollMs = 250, makeTransport } = options;
+  const { startTimeoutMs = 20_000, pollMs = 250, makeTransport, client: info = DESKTOP_CLIENT } = options;
   onPhase({ phase: "discovering" });
   let { host } = await discover(bridge);
   if (!(await reachable(host, makeTransport))) {
@@ -93,6 +97,7 @@ export async function bootHost(
 
   const client = new HostClient({
     expectedHostId: host!.host_id || undefined,
+    client: info,
     // Re-read discovery before every (re)connect: a restarted host may
     // come back on a new port.
     transport: async () => {

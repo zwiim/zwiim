@@ -228,6 +228,7 @@ describe("how the connection reads", () => {
     events: 0,
     retryAt: null,
     lanKnown: true,
+    compat: null,
     ...over,
   });
 
@@ -240,6 +241,38 @@ describe("how the connection reads", () => {
     expect(connectionText(retrying, 10_000).pill).toBe("reconnecting");
     expect(connectionText(view({ status: "error", active: "offline" }))).toEqual({ status: "Offline", pill: "offline", dot: "idle" });
     expect(connectionText(null).pill).toBe("offline");
+  });
+
+  it("names which side needs an update, and blocks the Host shell", () => {
+    const blocked = (update: "client" | "host") =>
+      hostProblem(
+        view({
+          status: "incompatible",
+          active: "offline",
+          error: { code: "update_required", message: "m" },
+          compat: {
+            status: "update_required",
+            update,
+            reason: update === "client" ? "client_revision" : "host_revision",
+            hostRevision: 2,
+            requiredClientRevision: update === "client" ? 2 : null,
+            requiredHostRevision: update === "host" ? 2 : null,
+          },
+        }),
+        null,
+        "Mac",
+      );
+    expect(blocked("client")).toEqual({
+      kind: "update",
+      update: "app",
+      title: "Update Zwiim",
+      body: "Mac needs a newer version of this app.",
+    });
+    expect(blocked("host")).toMatchObject({ kind: "update", update: "host", title: "Mac needs an update" });
+    // Limited is still live: no problem to show.
+    expect(
+      hostProblem(view({ compat: { status: "limited", hostRevision: 1, capabilities: [], missing: ["terminal"] } }), null, "Mac"),
+    ).toBeNull();
   });
 
   it("names every failure and its next step", () => {

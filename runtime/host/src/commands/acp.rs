@@ -592,6 +592,9 @@ fn is_npm_command_candidate(path: &Path) -> bool {
 /// For Binary agents: checks platform support and that the binary is
 /// already cached locally.
 pub(crate) async fn verify_agent_installed(agent_type: AgentType) -> Result<(), AcpError> {
+    if let Some(launch) = crate::adapters::launch(agent_type) {
+        return launch.map(|_| ());
+    }
     let meta = registry::get_agent_meta(agent_type);
     match meta.distribution {
         registry::AgentDistribution::Npx { cmd, .. } => {
@@ -2644,7 +2647,7 @@ fn home_dir_or_default() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn codex_home_dir() -> PathBuf {
+pub(crate) fn codex_home_dir() -> PathBuf {
     let configured = std::env::var("CODEX_HOME").ok().and_then(|raw| {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -12612,6 +12615,33 @@ pub async fn acp_detect_agent_local_version(
     acp_detect_agent_local_version_core(agent_type, &db.conn, &emitter).await
 }
 
+/// Claude and Codex install from the committed lock into the Host's data
+/// directory (see `crate::adapters`), never with `npm -g`, and always at the
+/// version this build pins.
+async fn prepare_managed_adapter(
+    adapter: crate::adapters::ManagedAdapter,
+    version_override: Option<&str>,
+    task_id: &str,
+    emitter: &EventEmitter,
+) -> Result<String, AcpError> {
+    if version_override.is_some_and(|v| !v.trim().is_empty()) {
+        return Err(AcpError::protocol(
+            "this adapter's version is pinned by the Zwiim build",
+        ));
+    }
+    emit_agent_install_event(
+        emitter,
+        task_id,
+        AgentInstallEventKind::Log,
+        "Installing the managed adapter...",
+    );
+    crate::adapters::setup(adapter)
+        .await
+        .map_err(|e| AcpError::DownloadFailed(e.to_string()))?;
+    emit_acp_agents_updated(emitter, "npx_prepared", Some(adapter.agent()));
+    Ok(adapter.locked_version().unwrap_or_default().to_string())
+}
+
 pub(crate) async fn acp_prepare_npx_agent_core(
     agent_type: AgentType,
     registry_version: Option<String>,
@@ -12624,7 +12654,17 @@ pub(crate) async fn acp_prepare_npx_agent_core(
     emit_agent_install_event(emitter, &task_id, AgentInstallEventKind::Started, "");
 
     let meta = registry::get_agent_meta(agent_type);
+    let managed = crate::adapters::ManagedAdapter::for_agent(agent_type);
     let result = match meta.distribution {
+        registry::AgentDistribution::Npx { .. } if managed.is_some() => {
+            prepare_managed_adapter(
+                managed.expect("guarded"),
+                version_override.as_deref(),
+                &task_id,
+                emitter,
+            )
+            .await
+        }
         registry::AgentDistribution::Npx { package, cmd, .. } => {
             let default = agent_setting_service::AgentDefaultInput {
                 agent_type,

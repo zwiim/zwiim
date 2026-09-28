@@ -1,0 +1,135 @@
+# Every push and pull request: the whole product builds and its tests pass.
+# No secrets are used here; release signing lives in release.yml and live
+# provider checks in providers.yml.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-metadata:
+    name: Versions, changelog, release scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: One product version everywhere
+        run: node scripts/release/version.mjs check
+      - name: Release notes for this version are complete
+        run: node scripts/release/notes.mjs "$(cat VERSION)" > /dev/null
+      - name: Release script tests
+        run: node --test scripts/release/*.test.mjs
+
+  rust:
+    name: Host, Cloud, Desktop shell (Rust)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # The Desktop shell embeds the built UI, so it must exist to compile.
+      - run: npm run build --workspace clients/desktop
+      - name: rustfmt (Zwiim-owned files)
+        run: grep -v '^#' .github/rustfmt-owned.txt | xargs rustfmt --edition 2021 --check
+      - name: clippy
+        run: cargo clippy -p zwiim-host -p zwiim-cloud -p zwiim-desktop --all-targets -- -D clippy::correctness -D clippy::suspicious
+      - name: Host unit + protocol + compatibility + update tests
+        run: cargo test -p zwiim-host --lib
+      - name: Host integration (lifecycle, restart, migrations)
+        run: cargo test -p zwiim-host --tests
+      - name: Cloud
+        run: cargo test -p zwiim-cloud
+      - name: Desktop shell
+        run: cargo test -p zwiim-desktop
+
+  sdk-desktop:
+    name: SDK and Desktop UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck --workspace clients/sdk
+      - run: npm test --workspace clients/sdk
+      - run: npm run typecheck --workspace clients/desktop
+      - run: npm test --workspace clients/desktop
+      - run: npm run build --workspace clients/desktop
+
+  mobile:
+    name: Mobile
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            clients/mobile/package-lock.json
+      # The app compiles the SDK from source; the SDK's dependencies
+      # (@noble/*) are installed at the repository root (see metro.config.js).
+      - name: npm ci (repository root, for the SDK)
+        run: npm ci
+        working-directory: .
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Expo config resolves
+        run: npx expo config --type public > /dev/null
+
+  # The update system end to end: three real Host builds, a signed release
+  # served on loopback with a key generated for the run, clean install,
+  # upgrade, tampered releases, a failed upgrade rolled back with its
+  # database, no downgrade, an old client, an agent that cannot run, two
+  # Hosts. Slow (three builds), so on master and releases, not every PR.
+  rehearsal:
+    name: Release rehearsal (update, rollback, compatibility)
+    if: github.event_name == 'push'
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/release/rehearse.mjs --work "$RUNNER_TEMP/rehearsal"
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rehearsal-logs
+          path: |
+            ${{ runner.temp }}/rehearsal/results.json
+            ${{ runner.temp }}/rehearsal/host-*/host.log
+            ${{ runner.temp }}/rehearsal/host-*/data/logs/

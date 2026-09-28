@@ -427,6 +427,14 @@ pub async fn cancel(
     }
 }
 
+/// Whether an agent is working: a turn runs, or a request waits on the user.
+pub(crate) fn is_busy(s: &crate::acp::SessionState) -> bool {
+    s.turn_in_flight
+        || s.pending_permission.is_some()
+        || s.pending_question.is_some()
+        || s.pending_plan_approval.is_some()
+}
+
 /// How long `stop` waits for a cancelled turn to end before disconnecting.
 const STOP_TURN_WAIT: Duration = if cfg!(test) {
     Duration::from_millis(300)
@@ -453,13 +461,7 @@ pub async fn stop(
         return Ok(());
     };
     if let Some(state) = connections.get_state(&connection_id).await {
-        let busy = |s: &crate::acp::SessionState| {
-            s.turn_in_flight
-                || s.pending_permission.is_some()
-                || s.pending_question.is_some()
-                || s.pending_plan_approval.is_some()
-        };
-        if busy(&*state.read().await) {
+        if is_busy(&*state.read().await) {
             // Best effort: the disconnect below ends the turn regardless.
             let _ = connections.cancel(&db.conn, &connection_id).await;
             let deadline = tokio::time::Instant::now() + STOP_TURN_WAIT;

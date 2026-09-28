@@ -93,6 +93,8 @@ pub struct AppState {
     /// Direct LAN access for paired devices (off unless the operator turns
     /// it on).
     pub lan: Arc<crate::lan::LanLink>,
+    /// Drain and restart state for this process (see `host_lifecycle`).
+    pub lifecycle: Arc<crate::host_lifecycle::Lifecycle>,
 }
 
 pub fn default_system_op_lock() -> Arc<tokio::sync::Mutex<()>> {
@@ -280,6 +282,7 @@ impl AppState {
             device_revocations: Default::default(),
             cloud: Default::default(),
             lan: Default::default(),
+            lifecycle: Default::default(),
         }
     }
 }
