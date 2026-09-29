@@ -149,3 +149,15 @@ export function connectionMode(): ConnectionMode {
 export function rememberConnectionMode(mode: ConnectionMode): void {
   write("connection_mode", mode);
 }
+
+/** The window's look: the system's, or always light or dark. */
+export type Theme = "system" | "light" | "dark";
+
+export function theme(): Theme {
+  const v = read<unknown>("theme", "system");
+  return v === "light" || v === "dark" ? v : "system";
+}
+
+export function rememberTheme(value: Theme): void {
+  write("theme", value);
+}

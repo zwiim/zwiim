@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { HostClient, HostController, type HostUpdateStatus } from "@zwiim/sdk";
 import type { DesktopUpdateStatus, DesktopUpdates, NativeBridge } from "@/lib/bridge";
 import { HostProvider } from "@/lib/host-context";
-import { AboutDialog } from "@/panels/About";
+import { AboutUpdates, HostLoginToggle } from "@/panels/About";
+import { UpdateCard, useUpdates } from "@/panels/UpdateCard";
 import { FakeTransport, hostHello, tick } from "./fakes";
 
 afterEach(cleanup);
@@ -65,7 +66,8 @@ async function mount(t: FakeTransport, b: NativeBridge, remote = false) {
   await tick();
   render(
     <HostProvider value={controller}>
-      <AboutDialog bridge={b} remote={remote} onClose={() => {}} />
+      <AboutUpdates bridge={b} remote={remote} />
+      {!remote && <HostLoginToggle bridge={b} />}
     </HostProvider>,
   );
   await tick();
@@ -160,25 +162,122 @@ describe("About & updates", () => {
   });
 });
 
-describe("an older host on this computer", () => {
-  it("offers to restart it into the version this app installed", async () => {
-    const { ConnectionStatus } = await import("@/panels/ConnectionStatus");
+async function connect(t: FakeTransport) {
+  const client = new HostClient({ transport: t, random: () => 0.5 });
+  const controller = new HostController(client);
+  client.start();
+  await tick();
+  return controller;
+}
+
+/** The sidebar's update card, fed by the same hook the app uses. */
+function Card({ b, onSeeChanges = () => {} }: { b: NativeBridge; onSeeChanges?: () => void }) {
+  const updates = useUpdates(b);
+  return <UpdateCard bridge={b} updates={updates} remote={false} onSeeChanges={onSeeChanges} />;
+}
+
+const applies = (t: FakeTransport) => t.calls.filter((x) => x.op === "host.update.apply").map((x) => x.params);
+
+describe("update card", () => {
+  it("offers to restart an older host on this computer, when idle or now", async () => {
     const t = new FakeTransport();
     t.handlers["host.hello"] = () => hostHello({ revision: 0 });
-    t.handlers["host.update.apply"] = () => ({ version: "0.3.0", state: "restarting", blockers: {} });
-    const client = new HostClient({ transport: t, random: () => 0.5 });
-    const controller = new HostController(client);
-    client.start();
-    await tick();
+    t.handlers["host.update.apply"] = () => ({
+      version: "0.3.0",
+      state: "restart_pending",
+      blockers: { live_turns: 1, pending_requests: 0, terminals: 0, session_ids: ["s1"] },
+    });
+    const controller = await connect(t);
     render(
       <HostProvider value={controller}>
-        <ConnectionStatus onStartHost={async () => {}} />
+        <Card b={bridge()} />
       </HostProvider>,
     );
-    expect(screen.getByTestId("update-required").textContent).toMatch(/older than this app/);
-    fireEvent.click(screen.getByText("Restart host"));
+    const card = screen.getByTestId("update-card");
+    expect(card.textContent).toMatch(/older than this app/);
+    expect(screen.queryByLabelText("Dismiss")).toBeNull();
+    fireEvent.click(screen.getByText("Restart when idle"));
     await tick();
-    expect(t.calls.filter((x) => x.op === "host.update.apply").map((x) => x.params)).toEqual([{ mode: "when_idle" }]);
+    expect(card.textContent).toContain("The host restarts when 1 running turn finishes.");
+    fireEvent.click(screen.getByText("Restart now"));
+    await tick();
+    expect(applies(t)).toEqual([{ mode: "when_idle" }, { mode: "now" }]);
+    controller.dispose();
+  });
+
+  it("shows a host update ready to use, its changes, and can be dismissed", async () => {
+    const t = new FakeTransport();
+    t.handlers["host.update.status"] = () =>
+      hostStatus({ staged: { version: "0.3.0", source: "download" }, restart_required: true });
+    t.handlers["host.update.apply"] = () => ({ version: "0.3.0", state: "restarting", blockers: {} });
+    const controller = await connect(t);
+    const seen = vi.fn();
+    render(
+      <HostProvider value={controller}>
+        <Card b={bridge()} onSeeChanges={seen} />
+      </HostProvider>,
+    );
+    await tick();
+    const card = screen.getByTestId("update-card");
+    expect(card.textContent).toContain("New update available");
+    expect(card.textContent).toContain("Zwiim Host 0.3.0");
+    fireEvent.click(screen.getByText("See changes"));
+    expect(seen).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByText("Restart"));
+    await tick();
+    expect(applies(t)).toEqual([{ mode: "now" }]);
+    expect(card.textContent).toContain("Restarting the host…");
+    fireEvent.click(screen.getByLabelText("Dismiss"));
+    expect(screen.queryByTestId("update-card")).toBeNull();
+    controller.dispose();
+  });
+
+  it("installs this app's update, then restarts into it", async () => {
+    const t = new FakeTransport();
+    t.handlers["host.update.status"] = () => hostStatus();
+    const controller = await connect(t);
+    const u = desktopUpdates({
+      version: "0.2.0",
+      supported: true,
+      unsupported_reason: null,
+      activity: { state: "available", version: "0.3.0", notes: null },
+    });
+    const b = bridge(u);
+    const setDesktop = vi.fn();
+    const view = (desktop: DesktopUpdateStatus) => (
+      <HostProvider value={controller}>
+        <UpdateCard
+          bridge={b}
+          updates={{ desktop, host: null, setDesktop, hint: true, checks: 0, check: async () => true }}
+          remote={false}
+          onSeeChanges={() => {}}
+        />
+      </HostProvider>
+    );
+    const { rerender } = render(view(u.current));
+    expect(screen.getByTestId("update-card").textContent).toContain("Zwiim Desktop 0.3.0");
+    fireEvent.click(screen.getByText("Update"));
+    await tick();
+    expect(u.install).toHaveBeenCalledTimes(1);
+    expect(setDesktop).toHaveBeenCalledWith(u.current);
+    rerender(view({ ...u.current, activity: { state: "ready", version: "0.3.0" } }));
+    fireEvent.click(screen.getByText("Restart"));
+    await tick();
+    expect(u.restart).toHaveBeenCalledTimes(1);
+    controller.dispose();
+  });
+
+  it("stays away when nothing wants an update", async () => {
+    const t = new FakeTransport();
+    t.handlers["host.update.status"] = () => hostStatus();
+    const controller = await connect(t);
+    render(
+      <HostProvider value={controller}>
+        <Card b={bridge()} />
+      </HostProvider>,
+    );
+    await tick();
+    expect(screen.queryByTestId("update-card")).toBeNull();
     controller.dispose();
   });
 });

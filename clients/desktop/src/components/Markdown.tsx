@@ -1,12 +1,28 @@
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { isOpenableLink, openLink } from "@/lib/bridge";
 import { cn } from "@/lib/utils";
 
 // Agent text is untrusted: raw HTML is never rendered (react-markdown's
-// default), remote images are not fetched, and links open outside the app.
+// default), remote images are not fetched, and only web and mail links open,
+// in the default browser.
 const components: Components = {
   a: ({ href, children }) => (
-    <a className="text-primary underline underline-offset-2" href={href} target="_blank" rel="noreferrer noopener">
+    <a
+      className={cn(
+        "underline underline-offset-2",
+        isOpenableLink(href) ? "text-brand hover:decoration-2" : "text-muted-foreground cursor-default",
+      )}
+      href={href}
+      title={href}
+      target="_blank"
+      rel="noreferrer noopener"
+      onClick={(e) => {
+        // The webview would navigate the app itself or drop the click.
+        e.preventDefault();
+        if (isOpenableLink(href)) void openLink(href).catch(() => {});
+      }}
+    >
       {children}
     </a>
   ),

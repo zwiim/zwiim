@@ -6,6 +6,7 @@ import type { Account, NativeBridge } from "@/lib/bridge";
 import { HostProvider } from "@/lib/host-context";
 import { welcomed } from "@/lib/prefs";
 import { FakeTransport, hostHello, tick } from "./fakes";
+import { openMenu, openSettings } from "./ui";
 
 afterEach(cleanup);
 beforeEach(() => window.localStorage.clear());
@@ -57,7 +58,7 @@ describe("account", () => {
     const t = new FakeTransport();
     const c = await mount(t, bridge(null, false));
     expect(screen.queryByTestId("welcome")).toBeNull();
-    expect(screen.queryByText("Sign in")).toBeNull();
+    expect(openMenu().queryByText("Sign in")).toBeNull();
     expect(screen.getByText("Local mode")).toBeTruthy();
     c.dispose();
   });
@@ -71,7 +72,7 @@ describe("account", () => {
     await tick();
     expect(b.signIn).toHaveBeenCalledTimes(1);
     expect(claims(t)).toEqual([{ user_id: "u-me", email: "me@example.com" }]);
-    expect(screen.getByText("This host is yours")).toBeTruthy();
+    expect(openSettings("Account").getByText("This host is yours")).toBeTruthy();
     expect(screen.queryByTestId("welcome")).toBeNull();
     c.dispose();
   });
@@ -80,7 +81,8 @@ describe("account", () => {
     const t = new FakeTransport();
     t.handlers["host.hello"] = () => hostHello({ owner: { user_id: "u-other", email: "other@example.com" } });
     const c = await mount(t, bridge(me));
-    expect(screen.getByTestId("owner-mismatch").textContent).toContain("other@example.com");
+    expect(screen.getByLabelText("This host belongs to another account")).toBeTruthy();
+    expect(openSettings("Account").getByTestId("owner-mismatch").textContent).toContain("other@example.com");
     expect(claims(t)).toEqual([]);
     c.dispose();
   });
@@ -92,7 +94,8 @@ describe("account", () => {
     };
     const c = await mount(t, bridge(me));
     expect(claims(t)).toHaveLength(1);
-    expect(screen.getByTestId("owner-mismatch").textContent).toContain("other@example.com");
+    expect(screen.getByLabelText("This host belongs to another account")).toBeTruthy();
+    expect(openSettings("Account").getByTestId("owner-mismatch").textContent).toContain("other@example.com");
     c.dispose();
   });
 
@@ -103,12 +106,12 @@ describe("account", () => {
     const c = await mount(t, b);
     expect(screen.getByText("me@example.com")).toBeTruthy();
     const before = t.calls.length;
-    fireEvent.click(screen.getByText("Sign out"));
+    fireEvent.click(openMenu().getByText("Sign out"));
     await tick();
     expect(b.signOut).toHaveBeenCalledTimes(1);
     expect(t.calls.slice(before)).toEqual([]);
     expect(screen.getByText("Local mode")).toBeTruthy();
-    expect(screen.getByTestId("host-owner").textContent).toBe("Host owner: me@example.com");
+    expect(openSettings("Account").getByTestId("host-owner").textContent).toBe("Host owner: me@example.com");
     expect(screen.queryByTestId("welcome")).toBeNull();
     c.dispose();
   });

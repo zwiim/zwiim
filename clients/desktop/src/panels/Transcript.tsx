@@ -1,11 +1,45 @@
-import { Check, ChevronRight, CircleDashed, Loader2, X } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import {
+  ArrowRightLeft,
+  Bot,
+  Brain,
+  ChevronRight,
+  FileCode2,
+  FilePen,
+  FilePlus2,
+  FileText,
+  FolderOpen,
+  Globe,
+  Image,
+  Keyboard,
+  ListCollapse,
+  ListTodo,
+  Loader2,
+  MessageCircleQuestion,
+  Search,
+  Terminal,
+  Trash2,
+  Wrench,
+  X,
+} from "lucide-react";
 import type { HistoryBlock, HistoryTurn, LiveTurn, ToolCall, ToolCallStatus } from "@zwiim/sdk";
 import { Markdown } from "@/components/Markdown";
+import { basename, parseUnifiedDiff, type FileDiff } from "@/lib/diff";
+import { historyTool, liveTool, type ToolSummary } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 
-export function UserBubble({ children }: { children: React.ReactNode }) {
+/** How an item that just arrived comes in (DESIGN.md, Motion: medium, ease-out). */
+const ENTER = "animate-enter motion-reduce:animate-none";
+
+export function UserBubble({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className="bg-muted max-w-[85%] self-end rounded-2xl rounded-br-md px-4 py-2.5 leading-relaxed whitespace-pre-wrap">
+    <div
+      className={cn(
+        "bg-muted max-w-[85%] self-end rounded-2xl rounded-br-md px-4 py-2.5 leading-relaxed whitespace-pre-wrap",
+        className,
+      )}
+    >
       {children}
     </div>
   );
@@ -18,18 +52,78 @@ const STATUS_LABEL: Record<string, string> = {
   failed: "failed",
 };
 
-function StatusIcon({ status }: { status: ToolCallStatus | null }) {
-  if (status === "completed") return <Check className="size-3.5 text-emerald-500" />;
-  if (status === "failed") return <X className="text-destructive size-3.5" />;
-  if (status === "in_progress") return <Loader2 className="text-muted-foreground size-3.5 animate-spin" />;
-  return <CircleDashed className="text-muted-foreground size-3.5" />;
+const VERB_ICONS: Record<string, typeof Terminal> = {
+  Run: Terminal,
+  Read: FileText,
+  Edit: FilePen,
+  Write: FilePlus2,
+  Delete: Trash2,
+  Move: ArrowRightLeft,
+  Search: Search,
+  Fetch: Globe,
+  Think: Brain,
+  Agent: Bot,
+  Todos: ListTodo,
+  "Chat compacted": ListCollapse,
+  List: FolderOpen,
+  View: Image,
+  Input: Keyboard,
+  Script: FileCode2,
+  Ask: MessageCircleQuestion,
+};
+
+/** A row that opens to show more, easing its height open and shut. */
+function Disclosure({
+  summary,
+  children,
+  label,
+}: {
+  /** The row; given whether it is open when it shows something else then. */
+  summary: React.ReactNode | ((open: boolean) => React.ReactNode);
+  children?: React.ReactNode;
+  label?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const expandable = Boolean(children);
+  const content = typeof summary === "function" ? summary(open) : summary;
+  const rowClass = "-mx-2 flex w-[calc(100%+1rem)] min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left";
+  // Nothing to open: a plain row, so what is inside it can be its own control.
+  if (!expandable) return <div className={rowClass}>{content}</div>;
+  return (
+    <>
+      <button
+        type="button"
+        className={cn("group/row hover:bg-muted/60 cursor-pointer", rowClass)}
+        aria-expanded={open}
+        aria-controls={id}
+        aria-label={label}
+        onClick={() => setOpen((o) => !o)}
+      >
+        {content}
+        <ChevronRight
+          className={cn(
+            "text-muted-foreground ml-auto size-3 shrink-0 opacity-0 transition-[rotate,opacity] duration-180 ease-in-out group-hover/row:opacity-100",
+            open && "rotate-90 opacity-100",
+          )}
+        />
+      </button>
+      <div
+        id={id}
+        className={cn(
+          // What opens is bigger than a row: the medium duration (DESIGN.md, Motion).
+          "grid transition-[grid-template-rows,opacity] duration-280 ease-in-out motion-reduce:transition-none",
+          open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
+        )}
+        inert={!open}
+      >
+        <div className="min-h-0 overflow-hidden">{children}</div>
+      </div>
+    </>
+  );
 }
 
-/** A unified diff (`--- a` / `+++ b` / ±lines), as the host sends edits. */
-const looksLikeDiff = (text: string) => text.startsWith("--- ") && text.includes("\n+++ ");
-
 function Output({ text, error }: { text: string; error?: boolean }) {
-  const diff = !error && looksLikeDiff(text);
   return (
     <pre
       className={cn(
@@ -37,74 +131,346 @@ function Output({ text, error }: { text: string; error?: boolean }) {
         error ? "text-destructive bg-destructive/5" : "bg-code",
       )}
     >
-      {diff
-        ? text.split("\n").map((line, i) => (
-            <div
-              key={i}
-              className={cn(
-                line.startsWith("+") && !line.startsWith("+++") && "bg-emerald-500/10 text-emerald-800 dark:text-emerald-300",
-                line.startsWith("-") && !line.startsWith("---") && "bg-red-500/10 text-red-800 dark:text-red-300",
-              )}
-            >
-              {line || " "}
-            </div>
-          ))
-        : text}
+      {text}
     </pre>
   );
 }
 
-/** One tool call: status and title; its input and output on expand. */
-export function ToolCallView(props: {
-  title: string | null;
-  kind?: string | null;
-  status: ToolCallStatus | null;
-  input?: string | null;
-  output?: string | null;
-  isError?: boolean;
-}) {
-  const failed = props.status === "failed" || props.isError;
-  const hasDetails = Boolean(props.input || props.output);
+/** A command and what it printed, as a terminal shows them. */
+function CommandCard({ command, output, error }: { command: string; output: string | null; error?: boolean }) {
   return (
-    <details className="group text-xs" data-testid="tool-call" data-status={props.status ?? ""}>
-      <summary
-        className={cn(
-          "text-muted-foreground -mx-2 flex list-none items-center gap-2 rounded-md px-2 py-1 select-none",
-          hasDetails ? "hover:bg-muted/60 hover:text-foreground cursor-pointer" : "cursor-default",
-        )}
-        onClick={(e) => !hasDetails && e.preventDefault()}
-      >
-        <ChevronRight
-          className={cn("size-3 shrink-0 transition-transform group-open:rotate-90", !hasDetails && "invisible")}
-        />
-        <StatusIcon status={failed ? "failed" : props.status} />
-        <span className="text-foreground/90 truncate font-mono">{props.title || "Tool call"}</span>
-        {props.kind && props.kind !== "other" && <span className="shrink-0">{props.kind}</span>}
-        {props.status && (
-          <span className={cn("ml-auto shrink-0", failed && "text-destructive")}>
-            {failed ? "failed" : (STATUS_LABEL[props.status] ?? props.status)}
-          </span>
-        )}
-      </summary>
-      {hasDetails && (
-        <div className="mt-1 mb-2 ml-5 flex flex-col gap-2">
-          {props.input && <Output text={props.input} />}
-          {props.output && <Output text={props.output} error={failed} />}
-        </div>
+    <div className="border-border bg-code overflow-hidden rounded-lg border font-mono text-xs leading-5">
+      <pre className="px-3 py-2 break-all whitespace-pre-wrap">
+        <span className="text-muted-foreground select-none">$ </span>
+        {command}
+      </pre>
+      {output && (
+        <pre
+          className={cn(
+            "border-border max-h-72 overflow-auto border-t px-3 py-2 break-all whitespace-pre-wrap",
+            error ? "text-destructive" : "text-muted-foreground",
+          )}
+        >
+          {output}
+        </pre>
       )}
-    </details>
+    </div>
   );
 }
 
-export function Thought({ text }: { text: string }) {
+function Counts({ diffs }: { diffs: FileDiff[] }) {
+  const added = diffs.reduce((n, d) => n + d.added, 0);
+  const removed = diffs.reduce((n, d) => n + d.removed, 0);
   return (
-    <details className="group text-muted-foreground text-xs" data-testid="thought">
-      <summary className="hover:text-foreground flex w-fit cursor-pointer list-none items-center gap-1.5 select-none">
-        <ChevronRight className="size-3 transition-transform group-open:rotate-90" />
-        <span className="italic">Thinking</span>
-      </summary>
-      <div className="border-border mt-1.5 ml-1.5 border-l-2 pl-3 leading-relaxed whitespace-pre-wrap">{text}</div>
-    </details>
+    <span className="flex shrink-0 gap-1 font-mono text-xs" data-testid="diff-counts">
+      <span className="text-emerald-700 dark:text-emerald-400">+{added}</span>
+      <span className="text-red-700 dark:text-red-400">−{removed}</span>
+    </span>
+  );
+}
+
+/** One file's change: its path, then its lines with their numbers when known. */
+function DiffCard({ diff }: { diff: FileDiff }) {
+  const numbered = diff.lines.some((l) => l.old !== undefined || l.new !== undefined);
+  const gutter = "text-muted-foreground/70 w-9 shrink-0 pr-2 text-right select-none";
+  return (
+    <div className="font-mono text-xs" data-testid="diff">
+      {diff.path && (
+        <div
+          className="bg-card border-border sticky top-0 z-10 flex items-center gap-2 border-b px-3 py-2"
+          title={diff.path}
+        >
+          <FileText className="text-muted-foreground size-3.5 shrink-0" />
+          <span className="min-w-0 truncate">{diff.path}</span>
+          <span className="ml-auto">
+            <Counts diffs={[diff]} />
+          </span>
+        </div>
+      )}
+      <div className="bg-code py-1 leading-5">
+        {diff.lines.map((l, i) =>
+          l.kind === "hunk" ? (
+            <div key={i} className="text-muted-foreground bg-muted/50 my-1 truncate px-3 select-none">
+              ⋯ {l.text}
+            </div>
+          ) : (
+            <div
+              key={i}
+              className={cn(
+                "flex",
+                l.kind === "add" && "bg-emerald-500/10 text-emerald-800 dark:text-emerald-300",
+                l.kind === "del" && "bg-red-500/10 text-red-800 dark:text-red-300",
+              )}
+              data-kind={l.kind}
+            >
+              {numbered && (
+                <>
+                  <span className={gutter}>{l.old ?? ""}</span>
+                  <span className={gutter}>{l.new ?? ""}</span>
+                </>
+              )}
+              <span className="w-5 shrink-0 text-center select-none">
+                {l.kind === "add" ? "+" : l.kind === "del" ? "-" : ""}
+              </span>
+              <span className="min-w-0 flex-1 pr-3 break-all whitespace-pre-wrap">{l.text || " "}</span>
+            </div>
+          ),
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** How long a pointer rests before the card shows, and leaves before it hides. */
+const HOVER_OPEN_MS = 150;
+const HOVER_CLOSE_MS = 120;
+const CARD_WIDTH = 640;
+const CARD_MAX_HEIGHT = 440;
+const EDGE = 12;
+
+/**
+ * A card over the transcript while the pointer rests on its row (or the row
+ * has focus, or was clicked). It sits above or below the row, where there is
+ * more room, and scrolls on its own; the pointer can move into it.
+ */
+function HoverCard({
+  card,
+  children,
+  className,
+  title,
+}: {
+  card: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+  title?: string;
+}) {
+  const anchor = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const [rect, setRect] = useState<DOMRect | null>(null);
+  const id = useId();
+
+  const later = (f: () => void, ms: number) => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(f, ms);
+  };
+  const show = () => {
+    clearTimeout(timer.current);
+    if (anchor.current) setRect(anchor.current.getBoundingClientRect());
+  };
+  const hide = () => {
+    clearTimeout(timer.current);
+    setRect(null);
+  };
+  // Over the file or the card: a blur from clicking inside it does not close it.
+  const pointer = useRef(false);
+  const enter = () => {
+    pointer.current = true;
+    later(show, HOVER_OPEN_MS);
+  };
+  const leave = () => {
+    pointer.current = false;
+    later(hide, HOVER_CLOSE_MS);
+  };
+
+  useEffect(() => () => clearTimeout(timer.current), []);
+  // The card is placed once; when the transcript moves it goes.
+  useEffect(() => {
+    if (!rect) return;
+    const onScroll = (e: Event) => {
+      if (!(e.target instanceof Node && panel.current?.contains(e.target))) hide();
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && hide();
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", hide);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", hide);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [rect]);
+
+  let style: React.CSSProperties | undefined;
+  if (rect) {
+    const width = Math.min(CARD_WIDTH, window.innerWidth - 2 * EDGE);
+    const left = Math.max(EDGE, Math.min(rect.left, window.innerWidth - width - EDGE));
+    const below = window.innerHeight - rect.bottom - EDGE;
+    const above = rect.top - EDGE;
+    style =
+      below >= Math.min(CARD_MAX_HEIGHT, 240) || below >= above
+        ? {
+            left,
+            width,
+            top: rect.bottom + 4,
+            maxHeight: Math.min(CARD_MAX_HEIGHT, below - 4),
+          }
+        : {
+            left,
+            width,
+            bottom: window.innerHeight - rect.top + 4,
+            maxHeight: Math.min(CARD_MAX_HEIGHT, above - 4),
+          };
+  }
+
+  return (
+    <button
+      type="button"
+      ref={anchor}
+      className={className}
+      title={title}
+      aria-expanded={Boolean(rect)}
+      onMouseEnter={enter}
+      onMouseLeave={leave}
+      // Focus from the keyboard opens it; a click's focus is the click's to decide.
+      onFocus={(e) => e.target.matches(":focus-visible") && show()}
+      onBlur={() => !pointer.current && hide()}
+      onClick={() => (rect ? hide() : show())}
+      aria-describedby={rect ? id : undefined}
+    >
+      {children}
+      {rect &&
+        createPortal(
+          <div
+            ref={panel}
+            id={id}
+            role="tooltip"
+            className="bg-card text-card-foreground border-border animate-enter fixed z-50 flex flex-col divide-y overflow-auto rounded-lg border text-xs shadow-lg motion-reduce:animate-none"
+            style={style}
+            onMouseEnter={() => {
+              pointer.current = true;
+              clearTimeout(timer.current);
+            }}
+            onMouseLeave={leave}
+            data-testid="hover-card"
+          >
+            {card}
+          </div>,
+          document.body,
+        )}
+    </button>
+  );
+}
+
+/**
+ * One tool call: what it does and on what. It opens to a command and its
+ * output, an edit's change to its file, or a tool's input and output.
+ */
+export function ToolCallView(props: {
+  tool: ToolSummary;
+  status: ToolCallStatus | null;
+  output?: string | null;
+  isError?: boolean;
+  className?: string;
+}) {
+  const { verb, target } = props.tool;
+  const failed = props.status === "failed" || props.isError;
+  const running = props.status === "in_progress" || props.status === "pending";
+  // A live command's output lives in a terminal the agent does not share.
+  const output = props.output?.trim() === "[Terminal]" ? null : (props.output ?? null);
+  const diffs = (!failed && output ? parseUnifiedDiff(output) : null) ?? props.tool.changes ?? null;
+  const path = diffs?.[0]?.path ?? props.tool.path ?? null;
+  const command = verb === "Run" ? props.tool.input || target || null : null;
+  // A one-line input already reads in full on the row.
+  const input = props.tool.input?.trim() === target ? null : props.tool.input;
+  const Icon = VERB_ICONS[verb] ?? Wrench;
+  const label = diffs && diffs.length > 1 ? `${diffs.length} files` : path ? basename(path) : target;
+  const title = diffs && diffs.length > 1 ? diffs.map((d) => d.path).join("\n") : (path ?? target);
+
+  let details: React.ReactNode = null;
+  if (command) details = <CommandCard command={command} output={output} error={failed} />;
+  else if (input || output)
+    details = (
+      <>
+        {input && <Output text={input} />}
+        {output && <Output text={output} error={failed} />}
+      </>
+    );
+
+  const chip = "bg-muted text-muted-foreground min-w-0 truncate rounded-md px-1.5 py-0.5 font-mono text-xs";
+  const row = (
+    <Disclosure
+      summary={
+        <>
+          <Icon className="text-muted-foreground size-3.5 shrink-0" />
+          <span className="text-foreground/90 shrink-0">{verb}</span>
+          {label &&
+            (diffs ? (
+              // The file shows its change over the transcript while the pointer rests on it.
+              <HoverCard
+                className={cn(chip, "hover:bg-accent hover:text-foreground cursor-pointer transition-colors")}
+                title={title}
+                card={
+                  <>
+                    {diffs.map((d, i) => (
+                      <DiffCard key={i} diff={d} />
+                    ))}
+                    {failed && output && <Output text={output} error />}
+                  </>
+                }
+              >
+                <code>{label}</code>
+              </HoverCard>
+            ) : (
+              <code className={chip} title={title}>
+                {label}
+              </code>
+            ))}
+          {diffs && <Counts diffs={diffs} />}
+          {running && <Loader2 className="text-muted-foreground size-3 shrink-0 animate-spin" />}
+          {failed && (
+            <span className="text-destructive flex shrink-0 items-center gap-0.5 text-xs">
+              <X className="size-3" /> failed
+            </span>
+          )}
+          {props.status && !failed && <span className="sr-only">{STATUS_LABEL[props.status] ?? props.status}</span>}
+        </>
+      }
+    >
+      {!diffs && details && <div className="mt-1 mb-2 ml-5 flex flex-col gap-2 text-xs">{details}</div>}
+    </Disclosure>
+  );
+  return (
+    <div
+      className={cn("relative text-[13px]", props.className)}
+      data-testid="tool-call"
+      data-status={props.status ?? ""}
+    >
+      {row}
+    </div>
+  );
+}
+
+/** Thinking: its first line on the row, all of it on expand. */
+export function Thought({ text, className }: { text: string; className?: string }) {
+  const body = text.trim();
+  // Thinking often opens with a bold heading; the row shows its words.
+  const preview = body
+    .split("\n")[0]!
+    .replace(/^#+\s*|\*\*|__/g, "")
+    .trim();
+  return (
+    <div className={cn("relative text-[13px]", className)} data-testid="thought">
+      <Disclosure
+        summary={(open) => (
+          <>
+            <Brain className="text-muted-foreground size-3.5 shrink-0" />
+            <span className="text-foreground/90 shrink-0">Thinking</span>
+            {preview && !open && (
+              <span className="text-muted-foreground min-w-0 truncate text-xs" data-testid="thought-preview">
+                {preview}
+              </span>
+            )}
+          </>
+        )}
+      >
+        {body && (
+          <div className="text-muted-foreground border-border mt-1 mb-2 ml-1.5 border-l-2 pl-3 leading-relaxed">
+            <Markdown text={body} />
+          </div>
+        )}
+      </Disclosure>
+    </div>
   );
 }
 
@@ -138,10 +504,9 @@ export function HistoryTurnView({ turn }: { turn: HistoryTurn }) {
             return (
               <ToolCallView
                 key={i}
-                title={b.title}
+                tool={historyTool(b.title, b.input_preview)}
                 // Agents' transcripts often omit the status; a result means it ran.
                 status={r?.is_error ? "failed" : (b.status ?? (r ? "completed" : null))}
-                input={b.input_preview}
                 output={r?.output_preview}
                 isError={r?.is_error}
               />
@@ -162,29 +527,34 @@ export function HistoryTurnView({ turn }: { turn: HistoryTurn }) {
   );
 }
 
-export function LiveTurnView({ turn, streaming }: { turn: LiveTurn; streaming?: boolean }) {
+/**
+ * The turn in progress (or one just finished). With `animate`, what arrives
+ * eases in; a finished turn shows without it, so it does not arrive twice.
+ */
+export function LiveTurnView({ turn, streaming, animate }: { turn: LiveTurn; streaming?: boolean; animate?: boolean }) {
   const text = turn.userMessage ? userText(turn.userMessage.blocks) : "";
   const toolCall = (id: string): ToolCall | undefined => turn.toolCalls[id];
+  const enter = animate ? ENTER : undefined;
   if (!turn.userMessage && !turn.message && !streaming) return null;
   return (
     <div className="flex flex-col gap-2.5 leading-relaxed" data-testid="live-turn">
-      {text && <UserBubble>{text}</UserBubble>}
+      {text && <UserBubble className={enter}>{text}</UserBubble>}
       {turn.message?.content.map((b, i) => {
-        if (b.type === "text") return <Markdown key={i} text={b.text} />;
-        if (b.type === "thought") return <Thought key={i} text={b.text} />;
+        if (b.type === "text") return <Markdown key={i} className={enter} text={b.text} />;
+        if (b.type === "thought") return <Thought key={i} className={enter} text={b.text} />;
         const tc = toolCall(b.tool_call_id);
         return (
           <ToolCallView
             key={i}
-            title={tc?.title ?? null}
-            kind={tc?.kind}
+            className={enter}
+            tool={liveTool(tc?.title ?? null, tc?.kind)}
             status={tc?.status ?? null}
             output={typeof tc?.content === "string" ? tc.content : null}
           />
         );
       })}
       {streaming && (
-        <span className="text-muted-foreground flex items-center gap-2 text-xs">
+        <span className={cn("text-muted-foreground flex items-center gap-2 text-xs", enter)}>
           <Loader2 className="size-3.5 animate-spin" /> Working…
         </span>
       )}

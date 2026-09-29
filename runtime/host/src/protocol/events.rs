@@ -19,7 +19,7 @@ use crate::acp::plan_approval::PendingPlanApprovalState;
 use crate::acp::question::{PendingQuestionState, QuestionSpec};
 use crate::acp::session_state::{
     LiveContentBlock, LiveSessionSnapshot, PendingPermissionState, PendingUserMessage,
-    ToolCallState,
+    ToolCallOutput, ToolCallState,
 };
 use crate::acp::types::{AcpEvent, EventEnvelope, PermissionOptionInfo, UserMessageBlock};
 use crate::models::message::{ContentBlock, MessageTurn};
@@ -130,6 +130,7 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
             kind,
             status,
             content,
+            raw_output,
             ..
         } => (
             "agent.tool_call",
@@ -138,7 +139,8 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
                 "title": rel(title),
                 "kind": kind,
                 "status": status,
-                "content": content_opt(content),
+                "content": content_opt(content)
+                    .or_else(|| command_output(raw_output.as_deref(), root)),
             }),
         ),
         AcpEvent::ToolCallUpdate {
@@ -146,6 +148,7 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
             title,
             status,
             content,
+            raw_output,
             ..
         } => (
             "agent.tool_call_update",
@@ -153,7 +156,8 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
                 "tool_call_id": tool_call_id,
                 "title": rel_opt(title),
                 "status": status,
-                "content": content_opt(content),
+                "content": content_opt(content)
+                    .or_else(|| command_output(raw_output.as_deref(), root)),
             }),
         ),
         AcpEvent::PermissionRequest {
@@ -428,13 +432,32 @@ fn live_block(block: &LiveContentBlock) -> Option<Value> {
 }
 
 fn tool_call(t: &ToolCallState, root: Option<&str>) -> Value {
+    let output = match &t.output {
+        Some(ToolCallOutput::Json { value }) => {
+            formatted_output(value).map(|text| tool_content(text, root))
+        }
+        _ => None,
+    };
     json!({
         "tool_call_id": t.id,
         "title": relativize(&t.label, root),
         "kind": to_value(&t.kind),
         "status": to_value(&t.status),
-        "content": t.content.as_deref().map(|c| tool_content(c, root)),
+        "content": t.content.as_deref().map(|c| tool_content(c, root)).or(output),
     })
+}
+
+/// A command's output where the agent reports it only as its raw result:
+/// codex-acp's `{"formatted_output": …, "exit_code": …}`, whose content is just
+/// the terminal the command ran in. Only the text crosses; the rest of the raw
+/// result stays inside.
+fn command_output(raw_output: Option<&str>, root: Option<&str>) -> Option<String> {
+    let value = serde_json::from_str::<Value>(raw_output?).ok()?;
+    formatted_output(&value).map(|text| tool_content(text, root))
+}
+
+fn formatted_output(value: &Value) -> Option<&str> {
+    value.get("formatted_output")?.as_str()
 }
 
 fn pending_request(
@@ -486,8 +509,9 @@ pub fn project_terminal(channel: &str, payload: &Value) -> Option<TerminalEvent>
 /// Transcript turns → `session.history` turns. Block vocabulary matches the
 /// live stream (`text`, `image`, `thought`, `tool_call`, `tool_result`);
 /// delegation meta, execution stats, image URIs and agent-native message ids
-/// stay on the host.
-pub fn project_history(turns: &[MessageTurn]) -> Value {
+/// stay on the host. Tool calls read workspace-relative, as live ones do;
+/// `root` is the session's workspace directory.
+pub fn project_history(turns: &[MessageTurn], root: Option<&str>) -> Value {
     Value::Array(
         turns
             .iter()
@@ -495,7 +519,7 @@ pub fn project_history(turns: &[MessageTurn]) -> Value {
                 json!({
                     "turn_id": t.id,
                     "role": to_value(&t.role),
-                    "blocks": t.blocks.iter().map(history_block).collect::<Vec<_>>(),
+                    "blocks": t.blocks.iter().map(|b| history_block(b, root)).collect::<Vec<_>>(),
                     "timestamp": t.timestamp,
                     "completed_at": t.completed_at,
                     "duration_ms": t.duration_ms,
@@ -512,9 +536,19 @@ pub fn project_history(turns: &[MessageTurn]) -> Value {
     )
 }
 
-fn history_block(block: &ContentBlock) -> Value {
+/// Codex's transcript wraps a plan in `<proposed_plan>` tags that its live
+/// stream leaves out; the plan reads the same either way.
+fn without_plan_tags(text: &str) -> String {
+    if !text.contains("<proposed_plan>") {
+        return text.to_string();
+    }
+    text.replace("<proposed_plan>", "").replace("</proposed_plan>", "").trim().to_string()
+}
+
+fn history_block(block: &ContentBlock, root: Option<&str>) -> Value {
+    let rel_opt = |text: &Option<String>| text.as_deref().map(|t| relativize(t, root));
     match block {
-        ContentBlock::Text { text } => json!({ "type": "text", "text": text }),
+        ContentBlock::Text { text } => json!({ "type": "text", "text": without_plan_tags(text) }),
         ContentBlock::Image {
             data, mime_type, ..
         } => json!({ "type": "image", "data": data, "mime_type": mime_type }),
@@ -536,7 +570,7 @@ fn history_block(block: &ContentBlock) -> Value {
             "type": "tool_call",
             "tool_call_id": tool_use_id,
             "title": tool_name,
-            "input_preview": input_preview,
+            "input_preview": rel_opt(input_preview),
             "status": status,
         }),
         ContentBlock::ToolResult {
@@ -547,7 +581,7 @@ fn history_block(block: &ContentBlock) -> Value {
         } => json!({
             "type": "tool_result",
             "tool_call_id": tool_use_id,
-            "output_preview": output_preview,
+            "output_preview": output_preview.as_deref().map(|t| tool_content(t, root)),
             "is_error": is_error,
         }),
         ContentBlock::Thinking { text } => json!({ "type": "thought", "text": text }),
@@ -597,6 +631,55 @@ pub(crate) mod tests {
             "ran [Terminal] in src"
         );
         assert_eq!(tool_content("[Terminal: open", None), "[Terminal: open");
+    }
+
+    #[test]
+    fn a_command_reported_only_in_its_raw_result_keeps_its_output() {
+        // codex-acp: the call's content is the terminal, the update carries
+        // only `rawOutput`.
+        let update = |content: Option<&str>, raw_output: Option<&str>| {
+            AcpEvent::ToolCallUpdate {
+                tool_call_id: "t1".into(),
+                title: None,
+                status: Some("completed".into()),
+                content: content.map(str::to_string),
+                raw_input: None,
+                raw_output: raw_output.map(str::to_string),
+                raw_output_append: None,
+                locations: None,
+                meta: None,
+                images: None,
+            }
+        };
+        let raw = r#"{"formatted_output":"/w/p/a.rs\nok\n","exit_code":0}"#;
+        let (_, payload) = project_event(&update(None, Some(raw)), Some("/w/p")).unwrap();
+        assert_eq!(payload["content"], "a.rs\nok\n");
+        assert_no_internal_keys(&payload);
+
+        // The agent's own content wins; any other raw result stays inside.
+        let (_, payload) = project_event(&update(Some("shown"), Some(raw)), None).unwrap();
+        assert_eq!(payload["content"], "shown");
+        let other = update(None, Some(r#"{"result":"x"}"#));
+        let (_, payload) = project_event(&other, None).unwrap();
+        assert_eq!(payload["content"], Value::Null);
+
+        // Snapshot: from the parsed output.
+        let mut state = SessionState::new("c".into(), AgentType::Codex, None, "w".into(), None);
+        state.apply_event(&AcpEvent::ToolCall {
+            tool_call_id: "t1".into(),
+            title: "ls".into(),
+            kind: "execute".into(),
+            status: "in_progress".into(),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            locations: None,
+            meta: None,
+            images: None,
+        });
+        state.apply_event(&update(None, Some(raw)));
+        let snap = tool_call(state.active_tool_calls.get("t1").unwrap(), Some("/w/p"));
+        assert_eq!(snap["content"], "a.rs\nok\n");
     }
 
     #[test]
@@ -665,7 +748,7 @@ pub(crate) mod tests {
                 agent_message_id: None,
             },
         ];
-        let v = project_history(&turns);
+        let v = project_history(&turns, None);
         assert_no_internal_keys(&v);
         let text = v.to_string();
         for leaked in [
@@ -701,6 +784,60 @@ pub(crate) mod tests {
         assert_eq!(v[1]["blocks"][1]["tool_call_id"], "toolu_1");
         assert_eq!(v[1]["blocks"][2]["tool_call_id"], "toolu_1");
         assert_eq!(v[1]["usage"]["output_tokens"], 2);
+    }
+
+    #[test]
+    fn history_tool_calls_read_workspace_relative() {
+        use crate::models::message::TurnRole;
+        let turns = vec![MessageTurn {
+            id: "turn-0".into(),
+            role: TurnRole::Assistant,
+            blocks: vec![
+                ContentBlock::ToolUse {
+                    tool_use_id: Some("toolu_1".into()),
+                    tool_name: "Edit".into(),
+                    input_preview: Some(r#"{"file_path":"/ws/repo/src/a.rs"}"#.into()),
+                    status: Some("completed".into()),
+                    meta: None,
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: Some("toolu_1".into()),
+                    output_preview: Some("updated /ws/repo/src/a.rs".into()),
+                    is_error: false,
+                    agent_stats: None,
+                    images: vec![],
+                },
+            ],
+            timestamp: chrono::Utc::now(),
+            usage: None,
+            duration_ms: None,
+            model: None,
+            completed_at: None,
+            agent_message_id: None,
+        }];
+        let v = project_history(&turns, Some("/ws/repo"));
+        assert_eq!(v[0]["blocks"][0]["input_preview"], r#"{"file_path":"src/a.rs"}"#);
+        assert_eq!(v[0]["blocks"][1]["output_preview"], "updated src/a.rs");
+    }
+
+    #[test]
+    fn a_codex_plan_reads_without_its_tags() {
+        use crate::models::message::TurnRole;
+        let turns = vec![MessageTurn {
+            id: "turn-0".into(),
+            role: TurnRole::Assistant,
+            blocks: vec![ContentBlock::Text {
+                text: "Here it is.\n\n<proposed_plan>\n**Create `hi.txt`**\n</proposed_plan>".into(),
+            }],
+            timestamp: chrono::Utc::now(),
+            usage: None,
+            duration_ms: None,
+            model: None,
+            completed_at: None,
+            agent_message_id: None,
+        }];
+        let v = project_history(&turns, None);
+        assert_eq!(v[0]["blocks"][0]["text"], "Here it is.\n\n\n**Create `hi.txt`**");
     }
 
     fn env(payload: AcpEvent) -> EventEnvelope {

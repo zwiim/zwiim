@@ -4471,6 +4471,14 @@ pub(crate) fn codex_launch_initial_agent_mode() -> Option<String> {
     codex_initial_agent_mode(&settings).map(str::to_string)
 }
 
+/// Whether `~/.codex/config.toml` chooses its own `model_reasoning_summary`,
+/// which Zwiim's launch default then leaves alone.
+pub(crate) fn codex_config_sets_reasoning_summary() -> bool {
+    load_codex_config_toml_raw()
+        .and_then(|raw| raw.parse::<toml::Table>().ok())
+        .is_some_and(|table| table.contains_key("model_reasoning_summary"))
+}
+
 /// Merge the Grok panel's structured control values into the raw config.toml
 /// text, format-preservingly (comments/layout of unmanaged keys are kept). Each
 /// `Some(value)` sets its documented key; each `None` removes it. Returns the

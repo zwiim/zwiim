@@ -62,6 +62,8 @@ const TOOL_VERBS: Record<string, string> = {
   glob: "Search",
   websearch: "Search",
   webfetch: "Fetch",
+  // Claude titles it so live.
+  exitplanmode: "Exited Plan Mode",
 };
 const TARGET_KEYS = ["command", "cmd", "file_path", "path", "notebook_path", "pattern", "query", "url", "description"];
 

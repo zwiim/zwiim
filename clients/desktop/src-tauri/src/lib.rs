@@ -208,6 +208,23 @@ async fn account_sign_out() -> Result<(), String> {
     account::sign_out(account::AuthConfig::configured().as_ref(), &account::Keychain).await
 }
 
+/// Open a link from the conversation in the default browser. Agent text is
+/// untrusted, so only web and mail links open; anything else (`file:`, app
+/// schemes) could start a program.
+#[tauri::command]
+fn open_link(url: String) -> Result<(), String> {
+    if !is_openable_link(&url) {
+        return Err("Only web and mail links can be opened".into());
+    }
+    account::open_in_browser(&url)
+}
+
+fn is_openable_link(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    ["https://", "http://", "mailto:"].iter().any(|s| lower.starts_with(s))
+        && !url.chars().any(|c| c.is_control() || c.is_whitespace())
+}
+
 /// An allowed Zwiim Cloud call, with the account's token added here.
 #[tauri::command]
 async fn cloud_request(method: String, path: String) -> Result<cloud::CloudReply, String> {
@@ -315,6 +332,7 @@ pub fn run() {
             account_sign_in,
             account_cancel_sign_in,
             account_sign_out,
+            open_link,
             cloud_request,
             device_identity,
             device_paired_hosts,
@@ -338,6 +356,18 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opens_only_web_and_mail_links() {
+        assert!(is_openable_link("https://example.com/a?b=c"));
+        assert!(is_openable_link("HTTP://example.com"));
+        assert!(is_openable_link("mailto:me@example.com"));
+        assert!(!is_openable_link("file:///etc/passwd"));
+        assert!(!is_openable_link("vscode://open"));
+        assert!(!is_openable_link("-a Calculator"));
+        assert!(!is_openable_link("https://x.com -a Terminal"));
+        assert!(!is_openable_link("https://x.com\n"));
+    }
 
     #[test]
     fn missing_discovery_file_is_none() {

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   HostClient,
@@ -75,25 +75,32 @@ describe("transcript", () => {
     controller.dispose();
   });
 
-  it("shows a tool call with its status, input and output", async () => {
+  it("shows a tool call as what it does and on what, its input and output on expand", async () => {
     const t = new FakeTransport();
     t.handlers["session.history"] = (p) => ({
       session_id: p.session_id,
       turns: [
         turn("t1", "assistant", [
-          { type: "tool_call", tool_call_id: "c1", title: "Bash", input_preview: "ls src", status: null },
+          { type: "tool_call", tool_call_id: "c1", title: "Bash", input_preview: '{"command":"ls src","description":"List"}', status: null },
           { type: "tool_result", tool_call_id: "c1", output_preview: "main.rs", is_error: false },
           { type: "tool_call", tool_call_id: "c2", title: "Read", input_preview: "x.txt", status: "completed" },
           { type: "tool_result", tool_call_id: "c2", output_preview: "no such file", is_error: true },
+          { type: "tool_call", tool_call_id: "c3", title: "ExitPlanMode", input_preview: '{"plan":"# Plan"}', status: null },
         ]),
       ],
     });
     const { controller } = await openSession(t);
     const calls = screen.getAllByTestId("tool-call");
-    expect(calls).toHaveLength(2);
-    expect(calls[0]!.textContent).toContain("Bash");
+    expect(calls).toHaveLength(3);
+    // Named as Claude titles it live.
+    expect(calls[2]!.textContent).toContain("Exited Plan Mode");
+    const row = within(calls[0]!).getByRole("button");
+    expect(row.textContent).toContain("Run");
+    expect(row.querySelector("code")?.textContent).toBe("ls src");
     expect(calls[0]!.textContent).toContain("done");
-    expect(calls[0]!.textContent).toContain("ls src");
+    expect(row.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(row);
+    expect(row.getAttribute("aria-expanded")).toBe("true");
     expect(calls[0]!.textContent).toContain("main.rs");
     expect(calls[1]!.getAttribute("data-status")).toBe("failed");
     // The result is shown with its call, not again on its own.
@@ -110,13 +117,272 @@ describe("transcript", () => {
       event: { session_id: "s1", seq: 2, type: "agent.tool_call", payload: { tool_call_id: "k", title: "Edit a.txt", kind: "edit", status: "in_progress", content: null } },
     });
     expect(screen.getByTestId("tool-call").textContent).toContain("running");
+    // The verb in the title reads once, the file as what it works on.
+    expect(screen.getByTestId("tool-call").textContent).toBe("Edita.txtrunning");
     await frame({
       type: "event",
       event: { session_id: "s1", seq: 3, type: "agent.tool_call_update", payload: { tool_call_id: "k", title: null, status: "completed", content: "--- a.txt\n+++ a.txt\n-old\n+new\n" } },
     });
     const call = screen.getByTestId("tool-call");
     expect(call.textContent).toContain("done");
-    expect([...call.querySelectorAll("pre div")].map((d) => d.textContent)).toContain("+new");
+    expect(within(call).getByTestId("diff-counts").textContent).toBe("+1−1");
+    // Nothing opens inside the transcript; the file shows its change in a card over it.
+    expect(call.querySelector("[data-kind]")).toBeNull();
+    fireEvent.click(within(call).getByRole("button", { name: "a.txt" }));
+    const lines = [...screen.getByTestId("hover-card").querySelectorAll("[data-kind]")].map((d) => [d.getAttribute("data-kind"), d.textContent]);
+    expect(lines).toEqual([
+      ["del", "-old"],
+      ["add", "+new"],
+    ]);
+    controller.dispose();
+  });
+
+  it("shows a command and its output in one card", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        turn("t1", "assistant", [
+          { type: "tool_call", tool_call_id: "c1", title: "Bash", input_preview: '{"command":"cd src && ls\\nwc -l a.rs","description":"List"}', status: null },
+          { type: "tool_result", tool_call_id: "c1", output_preview: "a.rs\n3 a.rs", is_error: false },
+        ]),
+      ],
+    });
+    const { controller } = await openSession(t);
+    const call = screen.getByTestId("tool-call");
+    fireEvent.click(within(call).getByRole("button"));
+    const pres = [...call.querySelectorAll("pre")].map((p) => p.textContent);
+    expect(pres).toEqual(["$ cd src && ls\nwc -l a.rs", "a.rs\n3 a.rs"]);
+    // No raw JSON.
+    expect(call.textContent).not.toContain('"command"');
+    controller.dispose();
+  });
+
+  it("shows an edit as its file and a numbered diff, not its JSON input", async () => {
+    const t = new FakeTransport();
+    const input = JSON.stringify({ file_path: "/w/src/app.ts", old_string: "a\nb", new_string: "a\nc", replace_all: false });
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        turn("t1", "assistant", [
+          { type: "tool_call", tool_call_id: "c1", title: "Edit", input_preview: input, status: null },
+          {
+            type: "tool_result",
+            tool_call_id: "c1",
+            output_preview: "--- a//w/src/app.ts\n+++ b//w/src/app.ts\n@@ -9,2 +9,2 @@\n a\n-b\n+c\n",
+            is_error: false,
+          },
+          { type: "tool_call", tool_call_id: "c2", title: "Write", input_preview: JSON.stringify({ file_path: "/w/new.md", content: "x\ny\n" }), status: null },
+          { type: "tool_result", tool_call_id: "c2", output_preview: "File created", is_error: false },
+        ]),
+      ],
+    });
+    const { controller } = await openSession(t);
+    const [edit, write] = screen.getAllByTestId("tool-call");
+    // Only the file opens the change; the row itself opens nothing.
+    const file = within(edit!).getByRole("button");
+    expect(file.textContent).toBe("app.ts");
+    expect(file.getAttribute("title")).toBe("/w/src/app.ts");
+    expect(within(edit!).getByTestId("diff-counts").textContent).toBe("+1−1");
+    expect(file.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(file);
+    expect(file.getAttribute("aria-expanded")).toBe("true");
+    const diff = within(screen.getByTestId("hover-card")).getByTestId("diff");
+    expect(diff.textContent).toContain("/w/src/app.ts");
+    expect([...diff.querySelectorAll("[data-kind]")].map((d) => d.textContent)).toEqual(["99a", "10-b", "10+c"]);
+    expect(edit!.textContent).not.toContain("old_string");
+    // Without a diff from the agent, the change is read from the input.
+    expect(within(write!).getByTestId("diff-counts").textContent).toBe("+2−0");
+    fireEvent.click(file);
+    expect(screen.queryByTestId("hover-card")).toBeNull();
+    fireEvent.click(within(write!).getByRole("button"));
+    expect([...screen.getByTestId("hover-card").querySelectorAll("[data-kind]")].map((d) => d.textContent)).toEqual(["+x", "+y"]);
+    expect(write!.textContent).not.toContain("File created");
+    controller.dispose();
+  });
+
+  it("shows an edit's change while the pointer rests on its file", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        turn("t1", "assistant", [
+          { type: "tool_call", tool_call_id: "c1", title: "Edit", input_preview: JSON.stringify({ file_path: "/w/a.ts", old_string: "a", new_string: "b" }), status: null },
+        ]),
+      ],
+    });
+    const { controller } = await openSession(t);
+    const call = screen.getByTestId("tool-call");
+    const file = within(call).getByRole("button", { name: "a.ts" });
+    vi.useFakeTimers();
+    try {
+      // The rest of the row does nothing.
+      fireEvent.mouseEnter(within(call).getByText("Edit"));
+      act(() => void vi.advanceTimersByTime(200));
+      expect(screen.queryByTestId("hover-card")).toBeNull();
+      fireEvent.mouseEnter(file);
+      expect(screen.queryByTestId("hover-card")).toBeNull();
+      act(() => void vi.advanceTimersByTime(200));
+      const card = screen.getByTestId("hover-card");
+      expect(card.getAttribute("role")).toBe("tooltip");
+      // The pointer can move from the file into the card.
+      fireEvent.mouseLeave(file);
+      fireEvent.mouseEnter(card);
+      act(() => void vi.advanceTimersByTime(200));
+      expect(screen.getByTestId("hover-card")).toBeTruthy();
+      fireEvent.mouseLeave(card);
+      act(() => void vi.advanceTimersByTime(200));
+      expect(screen.queryByTestId("hover-card")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+    controller.dispose();
+  });
+
+  it("previews thinking on its row and shows all of it on expand", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        turn("t1", "assistant", [
+          { type: "thought", text: "**Planning the fix**\n\nFirst read the file, then edit it." },
+          { type: "thought", text: "" },
+        ]),
+      ],
+    });
+    const { controller } = await openSession(t);
+    const [full, empty] = screen.getAllByTestId("thought");
+    const row = within(full!).getByRole("button");
+    expect(within(full!).getByTestId("thought-preview").textContent).toBe("Planning the fix");
+    fireEvent.click(row);
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    expect(within(full!).queryByTestId("thought-preview")).toBeNull();
+    expect(full!.querySelector("strong")?.textContent).toBe("Planning the fix");
+    expect(full!.textContent).toContain("First read the file, then edit it.");
+    // Redacted thinking has nothing to open.
+    expect(within(empty!).queryByRole("button")).toBeNull();
+    controller.dispose();
+  });
+
+  it("reads a Codex transcript's tools the same way", async () => {
+    const t = new FakeTransport();
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: /w/src/app.ts",
+      "@@ export function main",
+      " a",
+      "-b",
+      "+c",
+      "*** Add File: /w/src/new.ts",
+      "+x",
+      "+y",
+      "*** End Patch",
+    ].join("\n");
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        turn("t1", "assistant", [
+          { type: "tool_call", tool_call_id: "c1", title: "exec_command", input_preview: "cd src && ls\nwc -l a.rs", status: null },
+          { type: "tool_result", tool_call_id: "c1", output_preview: "a.rs", is_error: false },
+          { type: "tool_call", tool_call_id: "c2", title: "apply_patch", input_preview: patch, status: null },
+          { type: "tool_result", tool_call_id: "c2", output_preview: "{}", is_error: false },
+          {
+            type: "tool_call",
+            tool_call_id: "c3",
+            title: "apply_patch",
+            input_preview: "*** Begin Patch\n*** Add File: /w/b.md\n+hi\n*** End Patch",
+            status: null,
+          },
+          {
+            type: "tool_call",
+            tool_call_id: "c4",
+            title: "write_stdin",
+            input_preview: JSON.stringify({ chars: "q", session_command: "npm run dev", session_id: 4 }),
+            status: null,
+          },
+          {
+            type: "tool_call",
+            tool_call_id: "c5",
+            title: "request_user_input",
+            input_preview: JSON.stringify({ questions: [{ id: "a", header: "Mode", question: "Which mode?" }] }),
+            status: null,
+          },
+          {
+            type: "tool_call",
+            tool_call_id: "c6",
+            title: "codex_script",
+            input_preview: JSON.stringify({ call_count: 2, source: "const a = 1;\nreturn a;" }),
+            status: null,
+          },
+        ]),
+      ],
+    });
+    const { controller } = await openSession(t);
+    const [run, edit, write, input, ask, script] = screen.getAllByTestId("tool-call");
+    const row = (el: HTMLElement) => [...el.querySelectorAll("span, code, button")].map((e) => e.textContent).join("|");
+
+    fireEvent.click(within(run!).getByRole("button"));
+    expect([...run!.querySelectorAll("pre")].map((p) => p.textContent)).toEqual(["$ cd src && ls\nwc -l a.rs", "a.rs"]);
+
+    // A patch reads as its files and their changes.
+    expect(edit!.textContent).toContain("Edit");
+    const files = within(edit!).getByRole("button");
+    expect(files.textContent).toBe("2 files");
+    expect(files.getAttribute("title")).toBe("/w/src/app.ts\n/w/src/new.ts");
+    expect(within(edit!).getByTestId("diff-counts").textContent).toBe("+3−1");
+    fireEvent.click(files);
+    const diffs = within(screen.getByTestId("hover-card")).getAllByTestId("diff");
+    expect(diffs.map((d) => [...d.querySelectorAll("[data-kind]")].map((l) => l.textContent))).toEqual([
+      ["a", "-b", "+c"],
+      ["+x", "+y"],
+    ]);
+    expect(edit!.textContent).not.toContain("*** Begin Patch");
+    fireEvent.click(files);
+
+    expect(write!.textContent).toContain("Write");
+    expect(within(write!).getByRole("button").textContent).toBe("b.md");
+    expect(row(input!)).toContain("Input|npm run dev");
+    expect(row(ask!)).toContain("Ask|Which mode?");
+    expect(row(script!)).toContain("Script|const a = 1;");
+    fireEvent.click(within(script!).getByRole("button"));
+    expect(script!.querySelector("pre")?.textContent).toBe("const a = 1;\nreturn a;\n\ncall_count: 2");
+    controller.dispose();
+  });
+
+  it("reads Codex's live tool calls the same way", async () => {
+    const t = new FakeTransport();
+    const { controller, frame } = await openSession(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+    const call = (seq: number, tool_call_id: string, title: string, kind: string, content: string | null = null) =>
+      frame({
+        type: "event",
+        event: { session_id: "s1", seq, type: "agent.tool_call", payload: { tool_call_id, title, kind, status: "in_progress", content } },
+      });
+    await call(2, "k1", "ls -la && cat notes.txt", "execute", "[Terminal]");
+    await call(3, "k2", "Editing files", "edit", "--- hello.txt\n+++ hello.txt\n+hi\n\n--- notes.txt\n+++ notes.txt\n-alpha\n-beta\n+alpha\n+BETA");
+    await call(4, "k3", "Read file 'src/a.ts'", "read");
+    await call(5, "k4", "Search for 'todo' in src", "search");
+    await call(6, "k5", "List files in 'src'", "read");
+    await call(7, "k6", "mcp.zwiim.session_info", "execute");
+    await call(8, "k7", `"sed -n '1,9p' a.jsx && echo \\"hi\\""`, "execute");
+    await frame({
+      type: "event",
+      event: { session_id: "s1", seq: 9, type: "agent.tool_call_update", payload: { tool_call_id: "k1", title: null, status: "completed", content: "notes.txt\nalpha" } },
+    });
+    const [run, edit, read, search, list, mcp, quoted] = screen.getAllByTestId("tool-call");
+    fireEvent.click(within(run!).getByRole("button"));
+    expect([...run!.querySelectorAll("pre")].map((p) => p.textContent)).toEqual(["$ ls -la && cat notes.txt", "notes.txt\nalpha"]);
+    expect(edit!.textContent).toContain("Edit");
+    expect(edit!.textContent).not.toContain("Editing files");
+    expect(within(edit!).getByRole("button").textContent).toBe("2 files");
+    expect(within(edit!).getByTestId("diff-counts").textContent).toBe("+2−1");
+    expect(read!.textContent).toBe("Reada.tsrunning");
+    expect(read!.querySelector("code")?.getAttribute("title")).toBe("src/a.ts");
+    expect(search!.textContent).toBe("Search'todo' in srcrunning");
+    expect(list!.textContent).toBe("Listsrcrunning");
+    expect(mcp!.textContent).toBe("session_infozwiimrunning");
+    // `zsh -lc "…"`: the script, not the shell word.
+    expect(quoted!.querySelector("code")?.textContent).toBe(`sed -n '1,9p' a.jsx && echo "hi"`);
     controller.dispose();
   });
 
@@ -169,9 +435,36 @@ describe("transcript", () => {
     Object.defineProperty(el, "clientHeight", { configurable: true, value: 300 });
     el.scrollTop = 100;
     fireEvent.scroll(el);
+    // Positioned, so nothing absolutely placed inside (screen-reader labels)
+    // escapes it and scrolls the whole window.
+    expect(el.className).toContain("relative");
     fireEvent.click(screen.getByText("Jump to latest"));
-    expect(el.scrollTop).toBe(1000);
+    // It glides down rather than jumping.
+    expect(el.scrollTop).toBe(100);
+    await vi.waitFor(() => expect(el.scrollTop).toBe(700), { timeout: 3000 });
     expect(screen.queryByText("Jump to latest")).toBeNull();
+    controller.dispose();
+  });
+});
+
+describe("links", () => {
+  it("opens web links in the browser and keeps the app where it is", async () => {
+    const opened = vi.spyOn(window, "open").mockReturnValue(null);
+    const t = new FakeTransport();
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [turn("t1", "assistant", [{ type: "text", text: "See https://example.com/docs and [this](file:///etc/passwd)." }])],
+    });
+    const { controller } = await openSession(t);
+    const web = screen.getByRole("link", { name: "https://example.com/docs" });
+    const file = screen.getByText("this");
+    expect(fireEvent.click(web!)).toBe(false);
+    await tick();
+    expect(opened).toHaveBeenCalledWith("https://example.com/docs", "_blank", "noopener,noreferrer");
+    expect(fireEvent.click(file!)).toBe(false);
+    await tick();
+    expect(opened).toHaveBeenCalledTimes(1);
+    opened.mockRestore();
     controller.dispose();
   });
 });
@@ -198,6 +491,22 @@ describe("request cards", () => {
     expect(tool.textContent).toContain("src/a.rs");
     expect(tool.textContent).toContain("-a");
     expect(tool.textContent).toContain("+b");
+  });
+
+  it("asks about a plan the transcript already shows without repeating it", () => {
+    const request: AgentRequest = {
+      kind: "permission",
+      request_id: "r",
+      title: "Implement this plan?",
+      tool: { tool_call_id: "plan-review:p1", kind: "switch_mode", text: null, command: null, diffs: [] },
+      plan_markdown: null,
+      options: [{ option_id: "y", name: "Yes, implement this plan", kind: "allow_once" }],
+    };
+    render(<RequestCard request={request} onAnswer={vi.fn(async () => {})} />);
+    const card = screen.getByTestId("request-card");
+    expect(card.textContent).toContain("The agent has a plan");
+    expect(card.textContent).toContain("Implement this plan?");
+    expect(screen.queryByTestId("plan")).toBeNull();
   });
 
   it("renders a plan as markdown with the agent's own choices", async () => {

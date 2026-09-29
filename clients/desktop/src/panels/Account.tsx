@@ -2,55 +2,63 @@ import { Loader2, ShieldAlert, UserRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { AccountState } from "@/lib/account";
 import { useHost } from "@/lib/host-context";
+import { cn } from "@/lib/utils";
 
-/** Sidebar: who is signed in here, and whose host this is. */
+/** Settings › Account: who is signed in here, and whose host this is. */
 export function AccountPanel({ state }: { state: AccountState }) {
   const owner = useHost((s) => s.host?.owner ?? null);
   const { account, ownership, pending, error, status } = state;
   if (!status) return null;
   return (
-    <div className="flex flex-col gap-1 text-xs" data-testid="account">
-      {account ? (
-        <div className="flex items-center gap-1.5">
-          <UserRound className="text-muted-foreground size-3.5 shrink-0" />
-          <span className="truncate" title={account.email ?? account.user_id}>
-            {account.email ?? "Signed in"}
+    <div className="flex flex-col gap-3" data-testid="account">
+      <div className="flex items-center gap-3">
+        <Avatar email={account?.email ?? null} size="lg" />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <span className="truncate text-[13px] font-medium" title={account ? (account.email ?? account.user_id) : undefined}>
+            {account ? (account.email ?? "Signed in") : "Not signed in"}
           </span>
-          <button
-            className="text-muted-foreground ml-auto shrink-0 underline"
+          <span className="text-muted-foreground text-xs">
+            {account
+              ? "Signed in with Google"
+              : status.available
+                ? "Everything runs on this computer. Sign in to reach it from your other devices."
+                : "Everything runs on this computer."}
+          </span>
+        </div>
+        {account ? (
+          <Button
+            size="sm"
+            variant="outline"
             title="Forget this account on this computer. The host, its agents and sessions keep running."
             onClick={() => void state.signOut()}
           >
             Sign out
-          </button>
-        </div>
-      ) : (
-        <div className="flex items-center gap-1.5">
-          <span className="text-muted-foreground">Local mode</span>
-          {status.available &&
-            (pending ? (
-              <span className="text-muted-foreground ml-auto flex items-center gap-1">
-                <Loader2 className="size-3 animate-spin" /> In browser…
-                <button className="underline" onClick={() => void state.cancelSignIn()}>
-                  Cancel
-                </button>
-              </span>
-            ) : (
-              <button className="ml-auto underline" onClick={() => void state.signIn()}>
-                Sign in
-              </button>
-            ))}
-        </div>
-      )}
-      {ownership.kind === "owner" && <span className="text-muted-foreground">This host is yours</span>}
+          </Button>
+        ) : (
+          status.available &&
+          (pending ? (
+            <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
+              <Loader2 className="size-3.5 animate-spin" /> In browser…
+              <Button size="sm" variant="ghost" onClick={() => void state.cancelSignIn()}>
+                Cancel
+              </Button>
+            </span>
+          ) : (
+            <Button size="sm" onClick={() => void state.signIn()}>
+              Sign in
+            </Button>
+          ))
+        )}
+      </div>
+      {ownership.kind === "owner" && <p className="text-muted-foreground text-xs">This host is yours</p>}
       {ownership.kind === "local" && owner && (
-        <span className="text-muted-foreground truncate" data-testid="host-owner">
+        <p className="text-muted-foreground truncate text-xs" data-testid="host-owner">
           Host owner: {owner.email ?? "another account"}
-        </span>
+        </p>
       )}
       {ownership.kind === "mismatch" && (
         <div
-          className="flex gap-1.5 rounded-md border border-amber-500/50 bg-amber-500/10 p-2 text-amber-800 dark:text-amber-300"
+          className="flex gap-1.5 rounded-md border border-amber-500/50 bg-amber-500/10 p-2 text-xs text-amber-800 dark:text-amber-300"
           role="status"
           data-testid="owner-mismatch"
         >
@@ -62,11 +70,28 @@ export function AccountPanel({ state }: { state: AccountState }) {
         </div>
       )}
       {error && (
-        <span className="text-destructive" role="alert">
+        <span className="text-destructive text-xs" role="alert">
           {error}
         </span>
       )}
     </div>
+  );
+}
+
+/** The account's initial, or a person when no one is signed in. */
+export function Avatar({ email, size = "sm" }: { email: string | null; size?: "sm" | "lg" }) {
+  const initial = email?.trim()[0]?.toUpperCase();
+  return (
+    <span
+      className={cn(
+        "bg-brand text-brand-foreground grid shrink-0 place-items-center rounded-full font-semibold",
+        size === "lg" ? "size-9 text-sm" : "size-7 text-xs",
+        !initial && "bg-muted text-muted-foreground",
+      )}
+      aria-hidden
+    >
+      {initial ?? <UserRound className={size === "lg" ? "size-4" : "size-3.5"} />}
+    </span>
   );
 }
 

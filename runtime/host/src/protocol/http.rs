@@ -454,6 +454,11 @@ pub async fn agent_list(Extension(state): Extension<Arc<AppState>>) -> ZResult<V
             ),
             None => (None, Default::default(), None),
         };
+        // A supported agent that has not run here yet: learn its options so a
+        // first session can choose them too.
+        if reason.is_none() && managed.is_some() && options.is_none() {
+            crate::session_options::learn_in_background(state.clone(), agent);
+        }
         out.push(AgentSummary {
             agent,
             name: crate::acp::registry::get_agent_meta(agent).name.to_string(),
@@ -1252,9 +1257,10 @@ pub async fn session_history(
     ZJson(p): ZJson<SessionParams>,
 ) -> ZResult<Value> {
     let turns = session::history(&state, &p.session_id).await?;
+    let root = session::workspace_dir(&state.db.conn, &p.session_id).await;
     Ok(Json(json!({
         "session_id": p.session_id,
-        "turns": super::events::project_history(&turns),
+        "turns": super::events::project_history(&turns, root.as_deref()),
     })))
 }
 

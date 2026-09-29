@@ -161,6 +161,45 @@ describe("new session options", () => {
     expect(t.calls.find((c) => c.op === "session.start")!.params.options).toEqual({ model: "opus", effort: "low", mode: "plan" });
     controller.dispose();
   });
+
+  it("shows an agent's options once the host has learned them", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      let learned = false;
+      const t = new FakeTransport();
+      t.handlers["agent.list"] = () => [
+        {
+          agent: "codex",
+          name: "Codex",
+          available: true,
+          reason: null,
+          support: "supported",
+          options: learned ? opts() : null,
+        },
+      ];
+      const client = new HostClient({ transport: t });
+      const controller = new HostController(client);
+      client.start();
+      await tick();
+      render(
+        <HostProvider value={controller}>
+          <SessionPanel workspaceId="w1" sessionId={null} onSessionStarted={() => {}} />
+        </HostProvider>,
+      );
+      await tick();
+      expect(screen.queryByLabelText("Model")).toBeNull();
+      learned = true;
+      await act(async () => vi.advanceTimersByTime(2000));
+      await tick();
+      expect((screen.getByLabelText("Model") as HTMLSelectElement).value).toBe("sonnet");
+      const polls = t.calls.filter((c) => c.op === "agent.list").length;
+      await act(async () => vi.advanceTimersByTime(10_000));
+      expect(t.calls.filter((c) => c.op === "agent.list").length).toBe(polls);
+      controller.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("open session options", () => {

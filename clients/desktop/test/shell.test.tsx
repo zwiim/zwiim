@@ -8,8 +8,11 @@ import { HostProvider } from "@/lib/host-context";
 import { rememberSelection } from "@/lib/prefs";
 import { SessionPanel, agentLabel, defaultAgent } from "@/panels/SessionPanel";
 import { ConnectionStatus } from "@/panels/ConnectionStatus";
+import { UpdateCard } from "@/panels/UpdateCard";
 import pkg from "../package.json";
 import { FakeTransport, hostHello, tick } from "./fakes";
+
+const NO_UPDATES = { desktop: null, host: null, setDesktop: () => {}, hint: false, checks: 0, check: async () => false };
 
 afterEach(cleanup);
 
@@ -67,13 +70,15 @@ describe("compatibility", () => {
     render(
       <HostProvider value={c}>
         <ConnectionStatus />
+        <UpdateCard bridge={bridge()} updates={NO_UPDATES} remote={false} onSeeChanges={() => {}} />
       </HostProvider>,
     );
-    expect(screen.getByText("Update required")).toBeTruthy();
-    expect(screen.getByTestId("update-required").textContent).toBe(
+    // The sidebar's status stays quiet; the update card says what to update.
+    expect(screen.queryByTestId("connection-status")).toBeNull();
+    expect(screen.getByTestId("update-card").textContent).toContain("App update required");
+    expect(screen.getByTestId("update-detail").textContent).toBe(
       "This host needs a newer version of Zwiim. Update this app to continue.",
     );
-    expect(screen.getByText("Check again")).toBeTruthy();
     await expect(c.client.request("workspace.list", {})).rejects.toMatchObject({ code: "update_required" });
     c.dispose();
   });
@@ -86,9 +91,12 @@ describe("compatibility", () => {
     render(
       <HostProvider value={c}>
         <ConnectionStatus />
+        <UpdateCard bridge={bridge()} updates={NO_UPDATES} remote={false} onSeeChanges={() => {}} />
       </HostProvider>,
     );
-    expect(screen.getByTestId("update-required").textContent).toContain("older than this app");
+    expect(screen.queryByTestId("connection-status")).toBeNull();
+    expect(screen.getByTestId("update-card").textContent).toContain("Host update required");
+    expect(screen.getByTestId("update-card").textContent).toContain("older than this app");
     c.dispose();
   });
 });

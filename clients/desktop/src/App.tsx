@@ -5,7 +5,6 @@ import {
   FileDiff,
   FileText,
   GitBranch,
-  Info,
   Loader2,
   MessageSquare,
   PanelLeftClose,
@@ -13,7 +12,6 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Plus,
-  Smartphone,
   WifiOff,
   X,
 } from "lucide-react";
@@ -52,18 +50,19 @@ import {
   type HostChoice,
 } from "@/lib/prefs";
 import { connectRemote } from "@/lib/remote";
-import { AboutDialog, useUpdateHint } from "@/panels/About";
-import { AccountPanel, Welcome } from "@/panels/Account";
+import { Welcome } from "@/panels/Account";
 import { cn } from "@/lib/utils";
 import { ConnectionStatus, type RemoteLink } from "@/panels/ConnectionStatus";
-import { DevicesDialog } from "@/panels/Devices";
+import { ControlCenter } from "@/panels/ControlCenter";
 import { DiffPanel, DiffView } from "@/panels/DiffPanel";
 import { FilesPanel, FileView } from "@/panels/FilesPanel";
 import { GitPanel } from "@/panels/GitPanel";
 import { HostPathDialog, HostPicker, PairDialog, type PairTarget } from "@/panels/Hosts";
 import { SessionPanel } from "@/panels/SessionPanel";
+import { SettingsDialog, type SettingsTab } from "@/panels/Settings";
 import { Sidebar } from "@/panels/Sidebar";
 import { TerminalPanel } from "@/panels/TerminalPanel";
+import { UpdateCard, useUpdates } from "@/panels/UpdateCard";
 
 const LOCAL: HostChoice = { kind: "local" };
 const sameChoice = (a: HostChoice, b: HostChoice) =>
@@ -256,9 +255,9 @@ export function Workbench({
   const hostId = useHost((s) => s.host?.host_id ?? null);
   const remote = choice.kind === "remote";
   const refusedCode = useHost((s) => (s.connection.status === "live" ? null : (s.connection.error?.code ?? null)));
-  const [showDevices, setShowDevices] = useState(false);
-  const [showAbout, setShowAbout] = useState(false);
-  const updateHint = useUpdateHint(bridge);
+  /** The settings tab showing; null when settings are closed. */
+  const [settings, setSettings] = useState<SettingsTab | null>(null);
+  const updates = useUpdates(bridge);
   /** A remote host's folder path being asked for, and where the answer goes. */
   const [askPath, setAskPath] = useState<((path: string | null) => void) | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
@@ -277,6 +276,18 @@ export function Workbench({
   }, [remote, direct, onChoose]);
   const account = useAccount(bridge, { remote, onSignedOut });
   const remoteHostId = choice.kind === "remote" ? choice.hostId : null;
+
+  // ⌘, opens settings, as in any Mac app.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        e.preventDefault();
+        setSettings((t) => t ?? "general");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // The host no longer trusts this device (revoked): its pairing is void.
   useEffect(() => {
@@ -361,7 +372,22 @@ export function Workbench({
           }}
         />
       )}
-      <SidebarFrame>
+      <SidebarFrame
+        footer={
+          <>
+            <UpdateCard bridge={bridge} updates={updates} remote={remote} onSeeChanges={() => setSettings("about")} />
+            <div className="border-sidebar-border -mx-1.5 border-t px-1.5 pt-2">
+              <ControlCenter
+                account={account}
+                remote={remote}
+                updateHint={updates.hint}
+                onSettings={setSettings}
+                onCheckUpdates={updates.check}
+              />
+            </div>
+          </>
+        }
+      >
         <div className="flex flex-col gap-2 px-1">
           <span className="text-[15px] font-semibold tracking-tight">Zwiim</span>
           {bridge.remote && onChoose && (
@@ -382,23 +408,6 @@ export function Workbench({
             }
             link={remote ? link : undefined}
           />
-          <AccountPanel state={account} />
-          {!remote && (
-            <button
-              className="text-muted-foreground hover:text-foreground flex items-center gap-1.5 self-start text-xs"
-              onClick={() => setShowDevices(true)}
-            >
-              <Smartphone className="size-3.5" /> Devices
-            </button>
-          )}
-          <button
-            className="text-muted-foreground hover:text-foreground flex items-center gap-1.5 self-start text-xs"
-            onClick={() => setShowAbout(true)}
-            data-testid="about-button"
-          >
-            <Info className="size-3.5" /> About & updates
-            {updateHint && <span className="bg-primary size-1.5 rounded-full" aria-label="Update available" />}
-          </button>
         </div>
         <Sidebar
           workspaceId={workspaceId}
@@ -412,8 +421,18 @@ export function Workbench({
           }
         />
       </SidebarFrame>
-      {showDevices && <DevicesDialog bridge={bridge} onClose={() => setShowDevices(false)} />}
-      {showAbout && <AboutDialog bridge={bridge} remote={remote} onClose={() => setShowAbout(false)} />}
+      {settings && (
+        <SettingsDialog
+          bridge={bridge}
+          remote={remote}
+          account={account}
+          link={remote ? link : undefined}
+          updateHint={updates.hint}
+          tab={settings}
+          onTab={setSettings}
+          onClose={() => setSettings(null)}
+        />
+      )}
       {askPath && (
         <HostPathDialog
           onDone={(path) => {
@@ -899,7 +918,7 @@ function TabPane({ active, children }: { active: boolean; children: React.ReactN
 }
 
 /** Resizable, collapsible sidebar; its layout is a client preference. */
-function SidebarFrame({ children }: { children: React.ReactNode }) {
+function SidebarFrame({ children, footer }: { children: React.ReactNode; footer: React.ReactNode }) {
   const [layout, setLayout] = useState(sidebarLayout);
   const drag = useRef<{ x: number; width: number } | null>(null);
 
@@ -935,6 +954,7 @@ function SidebarFrame({ children }: { children: React.ReactNode }) {
         <PanelLeftClose />
       </Button>
       {children}
+      <div className="-mx-2.5 -mb-1 flex flex-col px-1.5">{footer}</div>
       <div
         className="hover:bg-sidebar-border absolute top-0 -right-1 h-full w-2 cursor-col-resize"
         role="separator"

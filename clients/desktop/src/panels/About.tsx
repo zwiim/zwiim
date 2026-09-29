@@ -4,9 +4,8 @@ import { Button } from "@/components/ui/button";
 import { DESKTOP_CLIENT } from "@/lib/app-info";
 import type { DesktopUpdateStatus, HostLoginStatus, NativeBridge } from "@/lib/bridge";
 import { errorMessage, updateRequiredMessage, useController, useHost } from "@/lib/host-context";
-import { Modal } from "@/panels/Hosts";
 
-/** While the dialog is open, how often the host's update state is read. */
+/** While the pane is open, how often the host's update state is read. */
 const POLL_MS = 3000;
 
 const COMPAT: Record<Compatibility["status"], string> = {
@@ -29,7 +28,7 @@ const REFUSED: Record<string, string> = {
   unsupported_platform: "No build of this release exists for this host's platform.",
 };
 
-function blockersText(b: HostUpdateApply["blockers"]): string {
+export function blockersText(b: HostUpdateApply["blockers"]): string {
   const parts = [
     b.live_turns && `${b.live_turns} running turn${b.live_turns === 1 ? "" : "s"}`,
     b.pending_requests && `${b.pending_requests} waiting request${b.pending_requests === 1 ? "" : "s"}`,
@@ -47,22 +46,13 @@ function mb(bytes: number) {
  * host's (the host updates itself; this only reads its state and asks it to
  * switch). The host's answers are the truth shown here.
  */
-export function AboutDialog({
-  bridge,
-  remote,
-  onClose,
-}: {
-  bridge: NativeBridge;
-  remote: boolean;
-  onClose(): void;
-}) {
+export function AboutUpdates({ bridge, remote }: { bridge: NativeBridge; remote: boolean }) {
   return (
-    <Modal label="About Zwiim" onClose={onClose}>
+    <>
       <DesktopSection bridge={bridge} />
       <HostSection remote={remote} />
-      {!remote && <HostLoginToggle bridge={bridge} />}
       <DiagnosticsSection bridge={bridge} />
-    </Modal>
+    </>
   );
 }
 
@@ -257,6 +247,11 @@ function HostSection({ remote }: { remote: boolean }) {
           )}
         </div>
       )}
+      {(s?.staged || s?.available) && s.available?.notes && (
+        <p className="text-muted-foreground line-clamp-6 whitespace-pre-wrap" data-testid="host-update-notes">
+          {s.available.notes}
+        </p>
+      )}
       {failed && (
         <p className="text-muted-foreground break-words">
           {REFUSED[failed.reason] ?? "The last update check failed."} <span className="font-mono">{failed.message}</span>
@@ -285,7 +280,7 @@ function HostSection({ remote }: { remote: boolean }) {
 }
 
 /** Whether the host on this computer starts at login. Hidden where it cannot. */
-function HostLoginToggle({ bridge }: { bridge: NativeBridge }) {
+export function HostLoginToggle({ bridge }: { bridge: NativeBridge }) {
   const login = bridge.hostLogin;
   const [status, setStatus] = useState<HostLoginStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -414,39 +409,4 @@ function DiagnosticsSection({ bridge }: { bridge: NativeBridge }) {
       )}
     </section>
   );
-}
-
-/**
- * Whether anything about versions wants attention: an update ready or
- * available for this app, or one staged on the host. Checks this app's
- * update once shortly after launch.
- */
-export function useUpdateHint(bridge: NativeBridge): boolean {
-  const controller = useController();
-  const live = useHost((s) => s.connection.status === "live");
-  const [desktop, setDesktop] = useState(false);
-  const [host, setHost] = useState(false);
-  useEffect(() => {
-    const updates = bridge.updates;
-    if (!updates) return;
-    const t = setTimeout(() => {
-      updates.check().then(
-        (s) => setDesktop(s.activity.state === "available" || s.activity.state === "ready"),
-        () => {},
-      );
-    }, 10_000);
-    return () => clearTimeout(t);
-  }, [bridge]);
-  useEffect(() => {
-    if (!live) return;
-    const read = () =>
-      controller.client.request("host.update.status", {}).then(
-        (s) => setHost(s.restart_required),
-        () => {},
-      );
-    void read();
-    const t = setInterval(() => void read(), 10 * 60_000);
-    return () => clearInterval(t);
-  }, [controller, live]);
-  return desktop || host;
 }

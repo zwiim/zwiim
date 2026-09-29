@@ -322,6 +322,24 @@ function devBrowserBridge(): NativeBridge {
   };
 }
 
+/** Web and mail links; anything else a conversation links to stays shut. */
+export const isOpenableLink = (href: string | undefined): href is string =>
+  !!href && /^(https?:\/\/|mailto:)/i.test(href) && !/[\s\u0000-\u001f]/.test(href);
+
+/**
+ * Open a link from a conversation in the default browser. The app's own
+ * window never navigates away, and a native window never opens a new one.
+ */
+export async function openLink(href: string): Promise<void> {
+  if (!isOpenableLink(href)) return;
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("open_link", { url: href });
+  } else {
+    window.open(href, "_blank", "noopener,noreferrer");
+  }
+}
+
 export function defaultBridge(): NativeBridge {
   if (isTauri()) return tauriBridge();
   if (import.meta.env.DEV) return devBrowserBridge();

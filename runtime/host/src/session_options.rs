@@ -522,6 +522,152 @@ pub async fn for_new_session(db: &DatabaseConnection, agent: &str) -> Option<Ses
     Some(options)
 }
 
+/// How long after trying to learn an agent's options it is tried again.
+const LEARN_RETRY: Duration = Duration::from_secs(300);
+
+/// When each agent's options were last tried, so repeated `agent.list` calls
+/// do not open a session each.
+static LEARN_TRIED: std::sync::LazyLock<std::sync::Mutex<BTreeMap<AgentType, std::time::Instant>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// How long a throwaway session may take to advertise its options, and to
+/// switch to another model.
+const LEARN_WAIT: Duration = Duration::from_secs(60);
+const SWITCH_WAIT: Duration = Duration::from_secs(5);
+/// Lets updates the agent sends right after another land before reading.
+const LEARN_GRACE: Duration = Duration::from_millis(500);
+
+/// Learn what a new session of `agent_type` can choose before its first
+/// session here, in the background: open a throwaway session in an empty
+/// directory, keep the options and slash commands it advertises, switch it
+/// through each model to learn the effort each offers, and close it. Nothing
+/// is prompted. The next `agent.list` reports them.
+pub fn learn_in_background(state: Arc<AppState>, agent_type: AgentType) {
+    let Some(agent) = agent_name(agent_type) else {
+        return;
+    };
+    {
+        let mut tried = LEARN_TRIED.lock().unwrap_or_else(|e| e.into_inner());
+        if tried.get(&agent_type).is_some_and(|at| at.elapsed() < LEARN_RETRY) {
+            return;
+        }
+        tried.insert(agent_type, std::time::Instant::now());
+    }
+    tokio::spawn(async move {
+        let dir = state.data_dir.join("probe");
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            tracing::warn!(agent, error = %e, "[zwiim] no directory to learn agent options in");
+            return;
+        }
+        if let Err(e) = learn(&state, agent_type, &agent, dir.to_string_lossy().into_owned()).await {
+            tracing::warn!(agent, error = %e, "[zwiim] could not learn agent options");
+        }
+    });
+}
+
+async fn learn(
+    state: &AppState,
+    agent_type: AgentType,
+    agent: &str,
+    dir: String,
+) -> Result<(), crate::acp::error::AcpError> {
+    use crate::acp::error::AcpError;
+    crate::commands::acp::verify_agent_installed(agent_type).await?;
+    let env =
+        crate::commands::acp::build_session_runtime_env(&state.db, agent_type, None, &state.data_dir).await?;
+    let manager = &state.connection_manager;
+    let conn_id = manager
+        .spawn_agent(
+            agent_type,
+            Some(dir),
+            None,
+            env,
+            "zwiim-options".to_string(),
+            crate::web::event_bridge::EventEmitter::Noop,
+            None,
+            BTreeMap::new(),
+        )
+        .await?;
+    let learned = match manager.get_state(&conn_id).await {
+        Some(session) => learn_from(state, &conn_id, &session, agent).await,
+        None => Err(AcpError::ConnectionNotFound(conn_id.clone())),
+    };
+    let _ = manager.disconnect(&conn_id).await;
+    learned
+}
+
+async fn learn_from(
+    state: &AppState,
+    conn_id: &str,
+    session: &tokio::sync::RwLock<crate::acp::SessionState>,
+    agent: &str,
+) -> Result<(), crate::acp::error::AcpError> {
+    let db = &state.db.conn;
+    wait_until(session, LEARN_WAIT, |s| s.selectors_ready.then_some(()))
+        .await
+        .ok_or(crate::acp::error::AcpError::ProbeTimedOut)?;
+    tokio::time::sleep(LEARN_GRACE).await;
+    let (reported, commands) = {
+        let s = session.read().await;
+        (s.config_options.clone().unwrap_or_default(), s.available_commands.clone())
+    };
+    if !commands.is_empty() {
+        crate::session_commands::remember(db, agent, &commands).await;
+    }
+    if reported.is_empty() {
+        return Ok(());
+    }
+    remember_agent_report(db, agent, &reported).await;
+    // Effort belongs to the model: switch to each other model to learn its own.
+    let Some(model) = Native::of(&reported).model else {
+        return Ok(());
+    };
+    let (model_id, current) = (model.id.to_string(), model.current().to_string());
+    let others: Vec<String> = model
+        .values()
+        .map(|v| v.value.clone())
+        .filter(|v| *v != current)
+        .collect();
+    for value in others {
+        state
+            .connection_manager
+            .set_config_option(conn_id, model_id.clone(), value.clone())
+            .await?;
+        let switched = wait_until(session, SWITCH_WAIT, |s| {
+            let options = s.config_options.as_deref()?;
+            let now = Native::of(options).model?.current() == value;
+            now.then_some(())
+        })
+        .await;
+        if switched.is_none() {
+            continue;
+        }
+        tokio::time::sleep(LEARN_GRACE).await;
+        let now = session.read().await.config_options.clone().unwrap_or_default();
+        let efforts = learn_model_effort(model_efforts(db, agent).await, &now);
+        write_json(db, &model_effort_key(agent), &efforts).await;
+    }
+    Ok(())
+}
+
+/// Poll `session` until `ready` answers, or `None` after `timeout`.
+async fn wait_until<T>(
+    session: &tokio::sync::RwLock<crate::acp::SessionState>,
+    timeout: Duration,
+    ready: impl Fn(&crate::acp::SessionState) -> Option<T>,
+) -> Option<T> {
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(value) = ready(&*session.read().await) {
+            return Some(value);
+        }
+        if start.elapsed() >= timeout {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 // ─── Session operations ──────────────────────────────────────────────────
 
 /// Session `row`'s options: live from its agent when one is attached, else

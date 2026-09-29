@@ -618,6 +618,18 @@ impl CodexParser {
                                         }
                                     }
 
+                                    // codex's own post-approval prompt, where no
+                                    // `user_message` event carries it (0.154+).
+                                    // Peeked, not consumed: the event, when the
+                                    // rollout has one, still spends the arm.
+                                    if is_user
+                                        && plan_approval_expected
+                                        && plan_counted
+                                        && text == CODEX_PLAN_APPROVAL_PROMPT
+                                    {
+                                        continue;
+                                    }
+
                                     let promotable = if text.trim().is_empty() {
                                         true
                                     } else if is_user {
@@ -2106,6 +2118,11 @@ fn infer_output_text_is_error(text: &str) -> bool {
             .map(|v| infer_output_value_is_error(&v, 0))
             .unwrap_or(false)
     {
+        return true;
+    }
+
+    // A patch codex could not apply says so, and nothing else does.
+    if trimmed.starts_with("apply_patch verification failed") {
         return true;
     }
 
@@ -4641,6 +4658,18 @@ impl CodexParser {
                                     }
                                 }
 
+                                // codex's own post-approval prompt, where no
+                                // `user_message` event carries it (0.154+).
+                                // Peeked, not consumed: the event, when the
+                                // rollout has one, still spends the arm.
+                                if is_user
+                                    && plan_approval_expected
+                                    && plan_rendered
+                                    && text == CODEX_PLAN_APPROVAL_PROMPT
+                                {
+                                    continue;
+                                }
+
                                 let promotable = if text.trim().is_empty() {
                                     true
                                 } else if is_user {
@@ -5351,7 +5380,35 @@ fn is_agents_instruction_message(input: &str) -> bool {
 
 fn is_environment_context_message(input: &str) -> bool {
     let trimmed = input.trim();
-    trimmed.starts_with("<environment_context>") && trimmed.ends_with("</environment_context>")
+    (trimmed.starts_with("<environment_context>") && trimmed.ends_with("</environment_context>"))
+        || is_context_blocks_message(trimmed)
+}
+
+/// Whether `input` is nothing but codex context blocks, one after another:
+/// `<recommended_plugins>…</recommended_plugins>` then
+/// `<environment_context>…</environment_context>` in one record, say. codex
+/// adds new ones over time, so any `snake_case` tag counts — the underscore
+/// keeps an HTML snippet someone typed from matching.
+fn is_context_blocks_message(input: &str) -> bool {
+    let mut rest = input.trim();
+    if rest.is_empty() {
+        return false;
+    }
+    while !rest.is_empty() {
+        let Some(tag) = rest.strip_prefix('<').and_then(|r| {
+            let end = r.find(|c: char| !(c.is_ascii_lowercase() || c == '_'))?;
+            let tag = &r[..end];
+            (tag.contains('_') && r[end..].starts_with('>')).then_some(tag)
+        }) else {
+            return false;
+        };
+        let close = format!("</{tag}>");
+        let Some(at) = rest.find(&close) else {
+            return false;
+        };
+        rest = rest[at + close.len()..].trim_start();
+    }
+    true
 }
 
 /// codex re-injects `<codex_internal_context source="goal">Continue working …`
@@ -6888,6 +6945,18 @@ mod tests {
         let input = "<environment_context>\n  <cwd>/tmp/demo</cwd>\n</environment_context>";
         let got = extract_codex_title_candidate(input, true);
         assert!(got.is_none());
+    }
+
+    #[test]
+    fn skips_a_record_of_several_context_blocks() {
+        // codex 0.154 writes both blocks into one user record.
+        let input = "<recommended_plugins>\nHere is a list of plugins.\n</recommended_plugins>\n\
+                     <environment_context>\n  <cwd>/tmp/demo</cwd>\n</environment_context>";
+        assert!(extract_codex_title_candidate(input, true).is_none());
+        assert!(!super::is_promotable_user_text(input));
+        // A prompt that only mentions a tag, or is HTML, is still a prompt.
+        assert!(super::is_promotable_user_text("<div>hi</div>"));
+        assert!(super::is_promotable_user_text("<plan_notes>x</plan_notes> then fix it"));
     }
 
     #[test]
@@ -12046,6 +12115,46 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
+    #[test]
+    fn a_patch_codex_could_not_apply_marks_the_result_as_an_error() {
+        let lines = vec![
+            rollout_line(
+                "2026-07-20T08:40:00Z",
+                "event_msg",
+                serde_json::json!({"type": "user_message", "message": "go"}),
+            ),
+            rollout_line(
+                "2026-07-20T08:40:01Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "custom_tool_call",
+                    "name": "apply_patch",
+                    "call_id": "call_1",
+                    "input": "*** Begin Patch\n*** Update File: /w/a.ts\n@@\n-a\n+b\n*** End Patch",
+                }),
+            ),
+            rollout_line(
+                "2026-07-20T08:40:02Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_1",
+                    "output": "apply_patch verification failed: Failed to find expected lines in /w/a.ts:\na",
+                }),
+            ),
+        ];
+        let path = write_temp_rollout("apply-patch-failed", &lines);
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, "apply-patch-failed")
+            .expect("parse ok");
+
+        let results = tool_results(&detail);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].2, "a rejected patch must not read as applied");
+
+        let _ = fs::remove_file(path);
+    }
+
     /// An interrupted turn never writes the output record; the script card must
     /// stay where it was rather than vanish or jump to the end.
     #[test]
@@ -13398,6 +13507,51 @@ mod tests {
 
     fn approved_plan_rollout(prompt: &str, flip_out_of_plan: bool) -> String {
         approved_plan_rollout_with(prompt, flip_out_of_plan, false)
+    }
+
+    #[test]
+    fn hides_the_approval_prompt_when_only_a_record_carries_it() {
+        // codex 0.154 writes each prompt only as a `response_item` user
+        // record — no `user_message` event — so the approval prompt reaches
+        // the transcript through promotion, never through the event arm.
+        let user = |ts: &str, text: &str| {
+            format!(
+                "{{\"timestamp\":\"{ts}\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":{}}}]}}}}\n",
+                serde_json::to_string(text).expect("encode")
+            )
+        };
+        let assistant = |ts: &str, text: &str| {
+            format!(
+                "{{\"timestamp\":\"{ts}\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":{}}}]}}}}\n",
+                serde_json::to_string(text).expect("encode")
+            )
+        };
+        let turn = |ts: &str, mode: &str| {
+            format!(
+                "{{\"timestamp\":\"{ts}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\"}}}}\n\
+                 {{\"timestamp\":\"{ts}\",\"type\":\"turn_context\",\"payload\":{{\"model\":\"gpt-5-codex\",\"collaboration_mode\":{{\"mode\":\"{mode}\"}}}}}}\n"
+            )
+        };
+        let mut content = String::from(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"plan-1\",\"cwd\":\"/tmp/demo\"}}\n",
+        );
+        content.push_str(&turn("2026-03-01T10:00:01Z", "plan"));
+        content.push_str(&user("2026-03-01T10:00:02Z", "Plan a footer"));
+        content.push_str(&assistant(
+            "2026-03-01T10:00:03Z",
+            "<proposed_plan>\n# Plan\n\n- step one\n</proposed_plan>",
+        ));
+        content.push_str(&turn("2026-03-01T10:00:05Z", "default"));
+        content.push_str(&user("2026-03-01T10:00:06Z", CODEX_PLAN_APPROVAL_PROMPT));
+        content.push_str(&assistant("2026-03-01T10:00:07Z", "Done."));
+
+        let detail = parse_rollout("plan-approved-records", &content, "plan-1");
+        let users: Vec<Option<String>> = turn_texts(&detail)
+            .into_iter()
+            .filter(|(role, _)| *role == "user")
+            .map(|(_, text)| text)
+            .collect();
+        assert_eq!(users, [Some("Plan a footer".to_string())]);
     }
 
     #[test]

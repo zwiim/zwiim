@@ -3,7 +3,7 @@ import { ZwiimClientError, type ClientErrorCode, type ConnectionMode, type Conne
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { HOST_NOT_RUNNING } from "@/lib/boot";
-import { errorMessage, updateRequiredMessage, useController, useHost } from "@/lib/host-context";
+import { errorMessage, useController, useHost } from "@/lib/host-context";
 
 const LABELS: Record<string, string> = {
   disconnected: "Disconnected",
@@ -12,7 +12,6 @@ const LABELS: Record<string, string> = {
   live: "Connected",
   reconnecting: "Reconnecting",
   unauthenticated: "Not authorized",
-  incompatible: "Update required",
   error: "Error",
 };
 
@@ -34,10 +33,10 @@ const PATH_LABELS: Record<ConnectionPath, string> = {
   relay: "Connected through Zwiim Cloud",
 };
 
-const MODES: { mode: ConnectionMode; label: string }[] = [
-  { mode: "auto", label: "Automatic" },
-  { mode: "local", label: "Local only" },
-  { mode: "cloud", label: "Cloud only" },
+const MODES: { mode: ConnectionMode; label: string; detail: string }[] = [
+  { mode: "auto", label: "Automatic", detail: "Direct on the same network, Zwiim Cloud everywhere else." },
+  { mode: "local", label: "Local only", detail: "Only when this computer is on the host's network. Never uses the Cloud." },
+  { mode: "cloud", label: "Cloud only", detail: "Always through Zwiim Cloud." },
 ];
 
 /** How a remote host is reached: the user's mode, and the path taken now. */
@@ -84,17 +83,18 @@ export function ConnectionStatus({
   const variant =
     conn.status === "live"
       ? "success"
-      : conn.status === "unauthenticated" || conn.status === "error" || conn.status === "incompatible"
+      : conn.status === "unauthenticated" || conn.status === "error"
         ? "destructive"
         : "warning";
   const hostDown = !remote && conn.status === "reconnecting" && conn.error?.code === HOST_NOT_RUNNING;
   const code = conn.status !== "live" ? (conn.error?.code ?? null) : null;
-  const incompatible = conn.status === "incompatible";
-  const hostOutdated = !remote && incompatible && conn.compat?.status === "update_required" && conn.compat.update === "host";
-  const remoteLabel = remote && code && !incompatible ? REMOTE_LABELS[code] : undefined;
+  const remoteLabel = remote && code ? REMOTE_LABELS[code] : undefined;
   const signInNeeded = remote && conn.status === "unauthenticated" && code === "unauthenticated";
   const refused = remote && code === "device_refused";
   const pathLabel = conn.status === "live" && link?.path ? PATH_LABELS[link.path] : undefined;
+
+  // An update is required: the sidebar's update card says which and offers it.
+  if (conn.status === "incompatible") return null;
 
   return (
     <div className="flex flex-col gap-1.5" data-testid="connection-status">
@@ -109,28 +109,9 @@ export function ConnectionStatus({
           </span>
         )}
       </div>
-      {link && (
-        <label className="text-muted-foreground flex items-center gap-1.5 text-xs">
-          Connect
-          <select
-            className="bg-background text-foreground rounded border px-1 py-0.5 text-xs"
-            aria-label="Connection mode"
-            value={link.mode}
-            onChange={(e) => link.onMode(e.target.value as ConnectionMode)}
-          >
-            {MODES.map((m) => (
-              <option key={m.mode} value={m.mode}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
       {conn.status !== "live" && conn.error && (
-        <p className="text-muted-foreground text-xs break-words" data-testid={incompatible ? "update-required" : undefined}>
-          {incompatible
-            ? updateRequiredMessage(conn.compat, Boolean(remote))
-            : remote
+        <p className="text-muted-foreground text-xs break-words">
+          {remote
             ? signInNeeded
               ? "Your sign-in has lapsed. Sign in again to reach this host; it keeps running meanwhile."
               : errorMessage(new ZwiimClientError(conn.error.code as ClientErrorCode, conn.error.message))
@@ -143,39 +124,13 @@ export function ConnectionStatus({
       )}
       {startError && (
         <p className="text-destructive text-xs break-words" role="alert">
-          {hostOutdated ? "Could not restart the host" : "Could not start the host"}: {startError}
+          Could not start the host: {startError}
         </p>
       )}
       <div className="flex gap-1.5">
         {conn.status === "reconnecting" && (
           <Button size="xs" variant="outline" onClick={() => controller.client.retryNow()}>
             Retry now
-          </Button>
-        )}
-        {incompatible && (
-          <Button size="xs" variant="outline" onClick={() => controller.client.retryNow()}>
-            Check again
-          </Button>
-        )}
-        {hostOutdated && (
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={starting}
-            onClick={async () => {
-              setStarting(true);
-              setStartError(null);
-              try {
-                // The host switches to the version this app installed for it.
-                await controller.client.request("host.update.apply", { mode: "when_idle" });
-              } catch (e) {
-                setStartError(errorMessage(e));
-              } finally {
-                setStarting(false);
-              }
-            }}
-          >
-            {starting ? "Restarting…" : "Restart host"}
           </Button>
         )}
         {signInNeeded && (
@@ -223,5 +178,32 @@ export function ConnectionStatus({
         )}
       </div>
     </div>
+  );
+}
+
+/** How a remote host is reached, one option per row with what it means. */
+export function ConnectionModeChooser({ link }: { link: RemoteLink }) {
+  return (
+    <fieldset className="flex flex-col gap-1" aria-label="Connection mode">
+      {MODES.map((m) => (
+        <label
+          key={m.mode}
+          className="hover:bg-muted/60 has-checked:bg-muted flex cursor-pointer items-start gap-2.5 rounded-md px-2.5 py-2"
+        >
+          <input
+            className="accent-brand mt-0.5"
+            type="radio"
+            name="connection-mode"
+            value={m.mode}
+            checked={link.mode === m.mode}
+            onChange={() => link.onMode(m.mode)}
+          />
+          <span className="flex flex-col gap-0.5">
+            <span className="text-[13px] font-medium">{m.label}</span>
+            <span className="text-muted-foreground text-xs">{m.detail}</span>
+          </span>
+        </label>
+      ))}
+    </fieldset>
   );
 }

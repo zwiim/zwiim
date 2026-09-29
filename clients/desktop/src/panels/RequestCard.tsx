@@ -22,6 +22,7 @@ export function RequestCard({
   const [sending, setBusy] = useState(false);
   const busy = sending || disabled;
   const [error, setError] = useState<string | null>(null);
+  const isPlan = request.kind === "permission" && (!!request.plan_markdown || request.tool?.kind === "switch_mode");
 
   async function submit(answer: RequestAnswer) {
     setBusy(true);
@@ -42,9 +43,10 @@ export function RequestCard({
     >
       {request.kind === "permission" && (
         <>
-          <p className="font-medium">{request.plan_markdown ? "The agent has a plan" : "Permission requested"}</p>
+          <p className="font-medium">{isPlan ? "The agent has a plan" : "Permission requested"}</p>
+          {/* A plan already in the transcript is only asked about here. */}
           {request.title && !request.plan_markdown && (
-            <p className="text-muted-foreground font-mono text-xs break-all">{request.title}</p>
+            <p className={cn("text-muted-foreground text-xs", !isPlan && "font-mono break-all")}>{request.title}</p>
           )}
           {request.plan_markdown ? (
             <PlanText text={request.plan_markdown} />

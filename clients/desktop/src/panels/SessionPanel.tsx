@@ -88,6 +88,10 @@ export function defaultAgent(agents: AgentSummary[], preferred: string | null): 
   )?.agent ?? null;
 }
 
+/** How often, and how many times, to look for an agent's options being learned. */
+const LEARN_POLL_MS = 2000;
+const LEARN_POLLS = 30;
+
 /**
  * The agent a new session starts with and its options: the agent picked here
  * (else the first usable one), and the model/effort/mode picks for it.
@@ -104,6 +108,18 @@ export function useNewSessionAgent() {
   const agent = agents ? defaultAgent(agents, chosen) : null;
   const summary = agents?.find((a) => a.agent === agent) ?? null;
   const advertised = summary?.options ?? null;
+  // A supported agent that has not run on this host yet: the host learns its
+  // options in the background, so read the agents again until they arrive.
+  const learning = !!summary?.available && summary.support === "supported" && !advertised;
+  useEffect(() => {
+    if (!learning) return;
+    let polls = 0;
+    const timer = window.setInterval(() => {
+      if (++polls > LEARN_POLLS) window.clearInterval(timer);
+      else void controller.refreshAgents().catch(() => {});
+    }, LEARN_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [controller, learning, agent]);
   const [picks, setPicks] = useState<OptionsRequest>({});
   const start =
     advertised && summary
@@ -269,8 +285,8 @@ function OpenSession({
   const {
     ref: scroller,
     atBottom,
-    onScroll,
     jump,
+    scrollProps,
   } = useStickToBottom([view?.history, view?.live, view?.settled, view?.pendingRequest, view?.lastError]);
 
   useEffect(() => {
@@ -334,7 +350,12 @@ function OpenSession({
         <SessionStatus view={view} />
       </header>
       <div className="relative flex min-h-0 flex-1 flex-col">
-        <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto" data-testid="transcript">
+        <div
+          ref={scroller}
+          {...scrollProps}
+          className="relative min-h-0 flex-1 overflow-y-auto"
+          data-testid="transcript"
+        >
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-6 pt-4 pb-6">
             {view?.history === null && (
               <p className="text-muted-foreground flex items-center gap-1.5 text-xs">
@@ -346,7 +367,7 @@ function OpenSession({
               <HistoryTurnView key={t.turn_id} turn={t} />
             ))}
             {view?.settled && <LiveTurnView turn={view.settled} />}
-            {view && <LiveTurnView turn={view.live} streaming={running} />}
+            {view && <LiveTurnView turn={view.live} streaming={running} animate />}
             {stopped && (
               <p className="text-muted-foreground text-xs" data-testid="stop-reason">
                 {stopped}
@@ -509,37 +530,100 @@ function SessionStatus({ view }: { view: SessionView | undefined }) {
 }
 
 /**
- * Follow new content while the reader is at the bottom; once they scroll up,
- * stay put and offer a jump back.
+ * Follow new content while the reader is at the bottom, gliding down to what
+ * arrives; once they scroll up, stay put and offer a jump back.
  */
+/**
+ * How quickly the transcript follows what arrives: each frame it closes this
+ * much of the distance left per 16ms, so a burst of updates is one steady
+ * ease-out instead of a scroll restarted for each of them.
+ */
+const FOLLOW_RATE = 0.16;
+
 function useStickToBottom(deps: unknown[]) {
   const ref = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+  // Our own glide is under way: its scrolls are not the reader leaving.
+  const gliding = useRef(false);
+  const frame = useRef(0);
   const [atBottom, setAtBottom] = useState(true);
+
+  const stop = useCallback(() => {
+    cancelAnimationFrame(frame.current);
+    frame.current = 0;
+    gliding.current = false;
+  }, []);
+
+  const glide = useCallback(
+    (el: HTMLDivElement, smooth: boolean) => {
+      const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      if (!smooth || reduce || typeof requestAnimationFrame !== "function") {
+        stop();
+        el.scrollTop = el.scrollHeight;
+        return;
+      }
+      gliding.current = true;
+      // One glide at a time; a running one already heads for the new bottom.
+      if (frame.current) return;
+      let last = performance.now();
+      const step = (now: number) => {
+        const target = el.scrollHeight - el.clientHeight;
+        const left = target - el.scrollTop;
+        if (left <= 1 || !gliding.current) {
+          if (left <= 1) el.scrollTop = target;
+          frame.current = 0;
+          gliding.current = false;
+          return;
+        }
+        const t = 1 - Math.pow(1 - FOLLOW_RATE, (now - last) / 16);
+        last = now;
+        el.scrollTop += Math.max(1, left * t);
+        frame.current = requestAnimationFrame(step);
+      };
+      frame.current = requestAnimationFrame(step);
+    },
+    [stop],
+  );
+
+  useEffect(() => stop, [stop]);
 
   const onScroll = useCallback(() => {
     const el = ref.current;
     if (!el) return;
+    if (gliding.current) return;
     const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
     pinned.current = bottom;
     setAtBottom(bottom);
   }, []);
 
+  // The reader takes over: the glide stops where it is.
+  const onIntent = useCallback(() => {
+    if (gliding.current) stop();
+  }, [stop]);
+
   const jump = useCallback(() => {
     const el = ref.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    glide(el, true);
     pinned.current = true;
     setAtBottom(true);
-  }, []);
+  }, [glide]);
 
   useLayoutEffect(() => {
     const el = ref.current;
-    if (el && pinned.current) el.scrollTop = el.scrollHeight;
+    if (!el || !pinned.current) return;
+    // A little more to show glides; a conversation just loaded is shown at once.
+    const behind = el.scrollHeight - el.scrollTop - el.clientHeight;
+    glide(el, behind < el.clientHeight);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
-  return { ref, atBottom, onScroll, jump };
+  return {
+    ref,
+    atBottom,
+    jump,
+    scrollProps: { onScroll, onWheel: onIntent, onTouchMove: onIntent, onPointerDown: onIntent, onKeyDown: onIntent },
+  };
 }
 
 const COMPOSER_MAX_PX = 240;

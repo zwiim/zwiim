@@ -1025,6 +1025,42 @@ fn apply_codex_env_policy(
     }
 }
 
+/// Codex thinking text. Every codex model defaults `default_reasoning_summary`
+/// to `none`, so a session's reasoning streams and is saved without a word of
+/// it and the transcript's Thinking rows come up empty. codex-acp sends the
+/// `CODEX_CONFIG` JSON as config overrides on every thread start, resume and
+/// fork, so `model_reasoning_summary = "auto"` goes there. A summary the user
+/// chose (in `~/.codex/config.toml`, `user_summary`, or in their own
+/// `CODEX_CONFIG`) wins, and a `CODEX_CONFIG` that is not a JSON object is left
+/// as it is rather than replaced.
+fn apply_codex_thinking_policy(
+    agent_type: AgentType,
+    merged: &mut Vec<(String, String)>,
+    user_summary: bool,
+) {
+    const KEY: &str = "CODEX_CONFIG";
+    const SUMMARY: &str = "model_reasoning_summary";
+    if agent_type != AgentType::Codex || user_summary {
+        return;
+    }
+    let mut config = match merged.iter().rev().find(|(k, _)| k == KEY) {
+        Some((_, raw)) => match serde_json::from_str::<serde_json::Value>(raw) {
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => return,
+        },
+        None => serde_json::Map::new(),
+    };
+    if config.contains_key(SUMMARY) {
+        return;
+    }
+    config.insert(SUMMARY.to_string(), serde_json::json!("auto"));
+    merged.retain(|(k, _)| k != KEY);
+    merged.push((
+        KEY.to_string(),
+        serde_json::Value::Object(config).to_string(),
+    ));
+}
+
 /// Prepend `dir` to the PATH entry of `env`, seeding from `fallback_path` when
 /// `env` has no PATH key of its own. Removes any pre-existing PATH key first
 /// (case-insensitively when `windows`, since Windows env keys are
@@ -1802,6 +1838,12 @@ async fn build_agent(
                 None
             };
             apply_codex_env_policy(agent_type, &mut merged_env, codex_initial_mode.as_deref());
+            apply_codex_thinking_policy(
+                agent_type,
+                &mut merged_env,
+                agent_type == AgentType::Codex
+                    && crate::commands::acp::codex_config_sets_reasoning_summary(),
+            );
             // codex-acp 1.0.0 honors APP_SERVER_LOGS as a directory for its
             // adapter-side logs. Surface it only under ZWIIM_ACP_DEBUG so
             // default runs are unchanged; a directory-creation failure silently
@@ -4138,6 +4180,15 @@ fn resolve_working_dir(working_dir: Option<&str>) -> PathBuf {
     }
 }
 
+/// `_meta.claudeCode` for Claude's session/new, load and resume.
+///
+/// `options.extraArgs` reaches the Claude Code CLI as flags (the adapter
+/// spreads `claudeCode.options` into its SDK query options).
+/// `--thinking-display summarized` asks the API for thinking summaries:
+/// without it Claude Code stores and streams every thinking block with empty
+/// text (only its signature), so the transcript's "Thinking" rows are blank.
+/// The `showThinkingSummaries` setting does not reach a non-interactive
+/// (SDK) run; only the flag does (verified against CLI 2.1.280).
 fn claude_raw_sdk_session_meta(
     agent_type: AgentType,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
@@ -4149,6 +4200,10 @@ fn claude_raw_sdk_session_meta(
     claude_code.insert(
         "emitRawSDKMessages".to_string(),
         serde_json::Value::Bool(true),
+    );
+    claude_code.insert(
+        "options".to_string(),
+        serde_json::json!({ "extraArgs": { "thinking-display": "summarized" } }),
     );
 
     let mut meta = serde_json::Map::new();
@@ -7281,6 +7336,11 @@ async fn handle_permission_request(
     }
 
     hoist_request_permission_meta(&mut tool_call_value, req.meta.as_ref());
+    // Zwiim: the plan codex asks about is already in the transcript, so the
+    // card asks only the question rather than repeating it.
+    if is_codex_plan_review(agent_type, req.meta.as_ref()) {
+        drop_plan_copy(&mut tool_call_value);
+    }
 
     admit_permission(
         perms,
@@ -12277,6 +12337,15 @@ fn is_codex_plan_review(
 /// only `claudeCode` (nothing at all since 0.73.0). An existing
 /// `_meta.permission` is therefore never
 /// overwritten: the insert is skipped if the key is already present.
+/// Zwiim: removes `rawInput.plan` from a permission's tool call.
+fn drop_plan_copy(tool_call: &mut serde_json::Value) {
+    for key in ["rawInput", "raw_input"] {
+        if let Some(input) = tool_call.get_mut(key).and_then(|v| v.as_object_mut()) {
+            input.remove("plan");
+        }
+    }
+}
+
 fn hoist_request_permission_meta(
     tool_call: &mut serde_json::Value,
     request_meta: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -16375,6 +16444,19 @@ mod tests {
     }
 
     #[test]
+    fn a_codex_plan_review_card_does_not_repeat_the_plan() {
+        let mut tool_call = serde_json::json!({
+            "toolCallId": "plan-review:p1",
+            "title": "Implement this plan?",
+            "kind": "switch_mode",
+            "rawInput": { "plan": "# Plan" }
+        });
+        drop_plan_copy(&mut tool_call);
+        assert_eq!(tool_call["rawInput"], serde_json::json!({}));
+        assert_eq!(tool_call["title"], serde_json::json!("Implement this plan?"));
+    }
+
+    #[test]
     fn hoist_request_permission_meta_is_a_noop_without_a_permission_block() {
         // Every agent but codex ≥1.7.0 sends no request-level `permission`, and
         // codex's own plan-review request sends `codex` instead. Neither may
@@ -17543,6 +17625,53 @@ mod tests {
     }
 
     #[test]
+    fn codex_thinking_policy_asks_for_reasoning_summaries() {
+        let config = |env: &[(String, String)]| -> Vec<String> {
+            env.iter()
+                .filter(|(k, _)| k == "CODEX_CONFIG")
+                .map(|(_, v)| v.clone())
+                .collect()
+        };
+
+        let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
+        apply_codex_thinking_policy(AgentType::Codex, &mut env, false);
+        assert_eq!(config(&env), [r#"{"model_reasoning_summary":"auto"}"#]);
+
+        // Merged into the user's own overrides, not in place of them.
+        let mut theirs = vec![(
+            "CODEX_CONFIG".to_string(),
+            r#"{"model":"x"}"#.to_string(),
+        )];
+        apply_codex_thinking_policy(AgentType::Codex, &mut theirs, false);
+        let merged: serde_json::Value = serde_json::from_str(&config(&theirs)[0]).unwrap();
+        assert_eq!(
+            merged,
+            serde_json::json!({"model": "x", "model_reasoning_summary": "auto"})
+        );
+        assert_eq!(config(&theirs).len(), 1, "no duplicate key");
+
+        // The user's own choice wins, wherever it is made.
+        let own = r#"{"model_reasoning_summary":"none"}"#;
+        let mut chosen = vec![("CODEX_CONFIG".to_string(), own.to_string())];
+        apply_codex_thinking_policy(AgentType::Codex, &mut chosen, false);
+        assert_eq!(config(&chosen), [own]);
+        let mut in_toml = vec![("PATH".to_string(), "/usr/bin".to_string())];
+        apply_codex_thinking_policy(AgentType::Codex, &mut in_toml, true);
+        assert!(config(&in_toml).is_empty());
+
+        // Not JSON: left as it is.
+        let mut odd = vec![("CODEX_CONFIG".to_string(), "not json".to_string())];
+        apply_codex_thinking_policy(AgentType::Codex, &mut odd, false);
+        assert_eq!(config(&odd), ["not json"]);
+
+        for agent in [AgentType::ClaudeCode, AgentType::Grok, AgentType::Gemini] {
+            let mut other = vec![("PATH".to_string(), "/usr/bin".to_string())];
+            apply_codex_thinking_policy(agent, &mut other, false);
+            assert!(config(&other).is_empty(), "{agent:?} is not codex");
+        }
+    }
+
+    #[test]
     fn synthesize_edit_single_diff_makes_canonical_edit() {
         let content = vec![diff_content("/a.rs", Some("old line\n"), "new line\n")];
         let json = synthesize_edit_input_from_diffs(&content).expect("one diff -> canonical edit");
@@ -17868,6 +17997,13 @@ mod tests {
                 .and_then(|v| v.get("emitRawSDKMessages"))
                 .and_then(|v| v.as_bool()),
             Some(true)
+        );
+        assert_eq!(
+            claude_meta
+                .get("claudeCode")
+                .and_then(|v| v.pointer("/options/extraArgs/thinking-display"))
+                .and_then(|v| v.as_str()),
+            Some("summarized")
         );
 
         assert!(claude_raw_sdk_session_meta(AgentType::Codex).is_none());

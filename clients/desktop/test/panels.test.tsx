@@ -196,4 +196,34 @@ describe("files panel", () => {
     await tick();
     expect(screen.getByRole("alert").textContent).toBe("Permission denied");
   });
+
+  it("re-lists the tree and rereads the open file when the workspace's files change", async () => {
+    const t = new FakeTransport();
+    let files = [{ name: "a.txt", path: "a.txt", kind: "file" }];
+    let content = "one\n";
+    t.handlers["workspace.tree"] = () => files;
+    t.handlers["files.read"] = () => ({
+      path: "a.txt",
+      content,
+      etag: "e",
+      mtime_ms: null,
+      readonly: false,
+      line_ending: "lf",
+    });
+    await mount(
+      t,
+      <>
+        <FilesPanel workspaceId="w1" selected={null} onOpen={() => {}} />
+        <FileView workspaceId="w1" path="a.txt" />
+      </>,
+    );
+    expect(screen.queryByText("b.txt")).toBeNull();
+    files = [...files, { name: "b.txt", path: "b.txt", kind: "file" }];
+    content = "one\ntwo\n";
+    await t.feedEvent("workspace.diff_changed", { workspace_id: "w1" });
+    await tick();
+    expect(screen.getByText("b.txt")).toBeTruthy();
+    const rows = screen.getByTestId("file-content").querySelectorAll("tr");
+    expect([...rows].map((r) => r.textContent)).toEqual(["1one", "2two"]);
+  });
 });

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, File, Folder, Loader2, RefreshCw } from "lucide-react";
 import type { FileContent, FileTreeNode } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
-import { errorMessage, useController } from "@/lib/host-context";
+import { errorMessage, useController, useHost } from "@/lib/host-context";
 import { cn } from "@/lib/utils";
 
 /** A directory listing: loaded, or why it could not be. */
@@ -49,6 +49,18 @@ export function FilesPanel({
   }, [load]);
 
   useEffect(() => reset(), [reset]);
+
+  // The workspace's files changed: re-list what is showing, in place.
+  const revision = useHost((s) => s.diffRevision[workspaceId] ?? 0);
+  const shown = useRef({ open, listings });
+  shown.current = { open, listings };
+  const seen = useRef(revision);
+  useEffect(() => {
+    if (seen.current === revision) return;
+    seen.current = revision;
+    const { open, listings } = shown.current;
+    for (const path of ["", ...open]) if (listings[path]) void load(path);
+  }, [revision, load]);
 
   function toggle(node: FileTreeNode) {
     if (node.kind === "dir") {
@@ -156,9 +168,11 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
     }
   }, [controller, workspaceId, path]);
 
+  // Again when the workspace's files change.
+  const revision = useHost((s) => s.diffRevision[workspaceId] ?? 0);
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, revision]);
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="file-view">

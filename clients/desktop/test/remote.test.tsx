@@ -12,6 +12,7 @@ import type { NativeBridge, PairedHost } from "@/lib/bridge";
 import { FakeLan } from "../../sdk/test/lan-fakes";
 import { FakeCloud, FakeHost } from "../../sdk/test/relay-fakes";
 import { FakeTransport, hostHello } from "./fakes";
+import { closeMenu, openMenu, openSettings } from "./ui";
 
 const ws = (id: string): WorkspaceInfo => ({
   workspace_id: id,
@@ -140,8 +141,12 @@ async function pairStudio(env: World, path = RELAY) {
   await waitFor(() => expect(badge()).toBe(path), WAIT);
 }
 
-const chooseMode = (mode: string) =>
-  fireEvent.change(screen.getByLabelText("Connection mode"), { target: { value: mode } });
+const MODE_LABELS: Record<string, string> = { auto: "Automatic", local: "Local only", cloud: "Cloud only" };
+
+const modeOption = (mode: string) =>
+  openSettings("Connection").getByLabelText(new RegExp(`^${MODE_LABELS[mode]}`)) as HTMLInputElement;
+
+const chooseMode = (mode: string) => fireEvent.click(modeOption(mode));
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -394,7 +399,7 @@ describe("local network", () => {
     fireEvent.click(screen.getByText("Git"));
     await waitFor(() => expect(env.studio.backend.requests.map((r) => r.op)).toContain("git.status"), WAIT);
     expect(env.cloud.relayed.length).toBe(relayed);
-    expect((screen.getByLabelText("Connection mode") as HTMLSelectElement).value).toBe("auto");
+    expect(modeOption("auto").checked).toBe(true);
   });
 
   it("uses the Cloud when the host is not on this network, without showing it offline", async () => {
@@ -439,7 +444,7 @@ describe("local network", () => {
     mount(env);
     await screen.findByText("repo-w-remote", {}, WAIT);
     await waitFor(() => expect(badge()).toBe(RELAY), WAIT);
-    expect((screen.getByLabelText("Connection mode") as HTMLSelectElement).value).toBe("cloud");
+    expect(modeOption("cloud").checked).toBe(true);
     expect(env.lan.discoveries).toBe(discoveries);
     expect(env.lan.openLinks).toHaveLength(0);
   });
@@ -488,7 +493,7 @@ describe("local network", () => {
     env.lan.advertise(env.studio);
     await screen.findByText("repo-w-local");
     await pairStudio(env, LAN);
-    fireEvent.click(screen.getByText("Sign out"));
+    fireEvent.click(openMenu().getByText("Sign out"));
     await waitFor(() => expect(env.token).toBeNull(), WAIT);
     await new Promise((r) => setTimeout(r, 50));
     expect(currentHost()).toBe("Studio");
@@ -526,7 +531,7 @@ describe("account", () => {
     await screen.findByText("repo-w-local");
     await pairStudio(env);
     const before = env.local.calls.length;
-    fireEvent.click(screen.getByText("Sign out"));
+    fireEvent.click(openMenu().getByText("Sign out"));
     await screen.findByText("repo-w-local", {}, WAIT);
     expect(currentHost()).toBe("This computer");
     // Nothing was asked of either host but reads; the pairing is kept.
@@ -593,8 +598,8 @@ describe("devices", () => {
     vi.stubGlobal("WebSocket", env.cloud.WebSocket);
     mount(env);
     await screen.findByText("repo-w-local");
-    fireEvent.click(screen.getByText("Devices"));
-    const dialog = within(await screen.findByRole("dialog", { name: "Devices" }));
+    fireEvent.click(openMenu().getByText("Devices"));
+    const dialog = within(await screen.findByRole("dialog", { name: "Settings" }));
     expect(await dialog.findByText("Phone")).toBeTruthy();
     fireEvent.click(dialog.getByText("Revoke"));
     expect(await dialog.findByText(/^Revoked /)).toBeTruthy();
@@ -615,8 +620,8 @@ describe("devices", () => {
     vi.stubGlobal("WebSocket", env.cloud.WebSocket);
     mount(env);
     await screen.findByText("repo-w-local");
-    fireEvent.click(screen.getByText("Devices"));
-    const dialog = within(await screen.findByRole("dialog", { name: "Devices" }));
+    fireEvent.click(openMenu().getByText("Devices"));
+    const dialog = within(await screen.findByRole("dialog", { name: "Settings" }));
     fireEvent.click(await dialog.findByText("Enable"));
     expect(await dialog.findByText("Connecting")).toBeTruthy();
     expect(env.local.calls.filter((c) => c.op === "cloud.enroll").map((c) => c.params)).toEqual([
@@ -639,8 +644,8 @@ describe("devices", () => {
     vi.stubGlobal("WebSocket", env.cloud.WebSocket);
     mount(env);
     await screen.findByText("repo-w-local");
-    fireEvent.click(screen.getByText("Devices"));
-    const dialog = within(await screen.findByRole("dialog", { name: "Devices" }));
+    fireEvent.click(openMenu().getByText("Devices"));
+    const dialog = within(await screen.findByRole("dialog", { name: "Settings" }));
     expect(await dialog.findByText(/Enabled on https:\/\/old-tunnel\.example/)).toBeTruthy();
     fireEvent.click(dialog.getByText("Move to this Cloud"));
     expect(await dialog.findByText("Connecting")).toBeTruthy();
@@ -664,8 +669,8 @@ describe("devices", () => {
     vi.stubGlobal("WebSocket", env.cloud.WebSocket);
     mount(env);
     await screen.findByText("repo-w-local");
-    fireEvent.click(screen.getByText("Devices"));
-    const dialog = within(await screen.findByRole("dialog", { name: "Devices" }));
+    fireEvent.click(openMenu().getByText("Devices"));
+    const dialog = within(await screen.findByRole("dialog", { name: "Settings" }));
     const section = within(await dialog.findByTestId("lan-access"));
     expect(section.getByText("Off")).toBeTruthy();
     fireEvent.click(section.getByText("Turn on"));
@@ -681,8 +686,9 @@ describe("devices", () => {
   it("is not offered for a remote host", async () => {
     const env = setup();
     await screen.findByText("repo-w-local");
-    expect(screen.getByText("Devices")).toBeTruthy();
+    expect(openMenu().getByText("Devices")).toBeTruthy();
+    closeMenu();
     await pairStudio(env);
-    expect(screen.queryByText("Devices")).toBeNull();
+    expect(openMenu().queryByText("Devices")).toBeNull();
   });
 });

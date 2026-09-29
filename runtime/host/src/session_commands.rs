@@ -80,7 +80,7 @@ async fn track(state: &AppState, connection_id: &str, commands: &[AvailableComma
     remember(&state.db.conn, &agent, commands).await;
 }
 
-async fn remember(db: &DatabaseConnection, agent: &str, commands: &[AvailableCommandInfo]) {
+pub(crate) async fn remember(db: &DatabaseConnection, agent: &str, commands: &[AvailableCommandInfo]) {
     let Ok(raw) = serde_json::to_string(&project(commands)) else {
         return;
     };

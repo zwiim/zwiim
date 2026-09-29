@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import type { NativeBridge } from "@/lib/bridge";
 import { errorMessage, useController, useOnline } from "@/lib/host-context";
 import { cloudClient } from "@/lib/remote";
-import { Modal } from "@/panels/Hosts";
 
 /** While a pairing code shows, how often to look for the device it paired. */
 const POLL_MS = 2000;
@@ -17,7 +16,7 @@ const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "ne
  * This computer's host: the devices it trusts, pairing another one, its link
  * to Zwiim Cloud and its local network access. Local authority only — a remote window never shows it.
  */
-export function DevicesDialog({ bridge, onClose }: { bridge: NativeBridge; onClose(): void }) {
+export function DevicesSettings({ bridge }: { bridge: NativeBridge }) {
   const controller = useController();
   const online = useOnline();
   const [devices, setDevices] = useState<DeviceInfo[] | null>(null);
@@ -81,7 +80,7 @@ export function DevicesDialog({ bridge, onClose }: { bridge: NativeBridge; onClo
     });
 
   return (
-    <Modal label="Devices" busy={busy !== null} onClose={onClose}>
+    <>
       <RemoteAccess bridge={bridge} />
       <LanAccess />
       <div className="flex items-center">
@@ -128,7 +127,7 @@ export function DevicesDialog({ bridge, onClose }: { bridge: NativeBridge; onClo
           {error}
         </p>
       )}
-    </Modal>
+    </>
   );
 }
 
