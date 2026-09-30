@@ -423,8 +423,57 @@ async fn branch_commit(repo: &str, base: &str) -> Result<String, AppCommandError
     )
 }
 
+/// Whether `repo` has an `origin` remote.
+async fn has_origin(repo: &str) -> bool {
+    crate::process::tokio_command("git")
+        .args(["config", "--get", "remote.origin.url"])
+        .current_dir(repo)
+        .output()
+        .await
+        .is_ok_and(|o| o.status.success())
+}
+
+/// The origin's default branch as a remote-tracking name (`origin/main`):
+/// `origin/HEAD`, else `origin/main`, else `origin/master` — whichever
+/// remote-tracking branch exists locally. No fetch.
+pub async fn origin_default_branch(repo: &str) -> Option<String> {
+    let origin_head = crate::process::tokio_command("git")
+        .args([
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ])
+        .current_dir(repo)
+        .output()
+        .await
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let candidates = origin_head
+        .into_iter()
+        .chain(["origin/main".to_string(), "origin/master".to_string()]);
+    for branch in candidates {
+        let exists = crate::process::tokio_command("git")
+            .args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/remotes/{branch}^{{commit}}"),
+            ])
+            .current_dir(repo)
+            .output()
+            .await
+            .is_ok_and(|o| o.status.success());
+        if exists {
+            return Some(branch);
+        }
+    }
+    None
+}
+
 /// The branches a worktree of `repo` can start from, and the one to suggest:
-/// the remote's default branch (`origin/HEAD`), else the checked-out branch.
+/// the origin's default branch, else the checked-out branch.
 #[derive(Debug, Serialize)]
 pub struct WorktreeBases {
     pub local: Vec<String>,
@@ -434,16 +483,7 @@ pub struct WorktreeBases {
 
 pub async fn worktree_bases(repo: &str) -> Result<WorktreeBases, AppCommandError> {
     let list = folders::git_list_all_branches(repo.to_string()).await?;
-    let origin_head = crate::process::tokio_command("git")
-        .args(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
-        .current_dir(repo)
-        .output()
-        .await
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|b| list.remote.contains(b));
-    let default = match origin_head {
+    let default = match origin_default_branch(repo).await {
         Some(b) => Some(b),
         None => folders::resolve_git_head(repo)
             .await
@@ -461,9 +501,11 @@ pub async fn worktree_bases(repo: &str) -> Result<WorktreeBases, AppCommandError
 ///
 /// The host chooses both the branch (`zwiim/<suffix>`) and the directory
 /// (`<worktrees_dir>/<repo>/<suffix>`); the client supplies
-/// neither. The branch starts at branch `base` when given, else at the root's
-/// current local HEAD (no fetch either way); that commit and branch are
-/// recorded as the worktree's base. The
+/// neither. The branch starts at branch `base` when given, else at the
+/// origin's default branch (`origin/main` or `origin/master`, never a local
+/// `master`); only a repo with no `origin` remote starts at its local HEAD. No
+/// fetch either way. That commit and branch are recorded as the worktree's
+/// base. The
 /// checkout is made with the existing `git worktree add` and registered through
 /// the existing worktree-folder path, so the new Folder row gets its own fresh
 /// `workspace_id`.
@@ -487,13 +529,21 @@ pub async fn create_worktree(
             branch_commit(&root.path, base).await?,
             Some(base.to_string()),
         ),
-        None => (
-            head_commit(&root.path).await?,
-            folders::resolve_git_head(&root.path)
-                .await
-                .ok()
-                .and_then(|h| h.branch),
-        ),
+        None => match origin_default_branch(&root.path).await {
+            Some(default) => (branch_commit(&root.path, &default).await?, Some(default)),
+            None if has_origin(&root.path).await => {
+                return Err(AppCommandError::invalid_input(
+                    "The origin remote has no default branch here; fetch origin or choose a branch to start from",
+                ));
+            }
+            None => (
+                head_commit(&root.path).await?,
+                folders::resolve_git_head(&root.path)
+                    .await
+                    .ok()
+                    .and_then(|h| h.branch),
+            ),
+        },
     };
 
     let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
@@ -902,6 +952,57 @@ mod tests {
             let err = create(bad).await.expect_err(bad);
             assert!(matches!(err.code, AppErrorCode::InvalidInput), "{bad}");
         }
+    }
+
+    #[tokio::test]
+    async fn worktree_defaults_to_the_origin_default_branch_never_local_master() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
+        let r = Path::new(&repo);
+        let pushed = git(r, &["rev-parse", "HEAD"]);
+        git(r, &["remote", "add", "origin", &repo]);
+        git(r, &["fetch", "-q", "origin"]);
+        // Local branches move on; the origin's do not.
+        git(r, &["commit", "-q", "--allow-empty", "-m", "local only"]);
+        git(r, &["branch", "master"]);
+        let create = || create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None);
+
+        // No origin/HEAD: origin/main.
+        let wt = create().await.expect("origin/main");
+        assert_eq!(wt.base_branch.as_deref(), Some("origin/main"));
+        assert_eq!(wt.base_commit.as_deref(), Some(pushed.as_str()));
+        assert_eq!(git(Path::new(&wt.path), &["rev-parse", "HEAD"]), pushed);
+
+        // No origin/main: origin/master, not the local master.
+        git(r, &["update-ref", "refs/remotes/origin/master", &pushed]);
+        git(r, &["update-ref", "-d", "refs/remotes/origin/main"]);
+        let wt = create().await.expect("origin/master");
+        assert_eq!(wt.base_branch.as_deref(), Some("origin/master"));
+        assert_eq!(wt.base_commit.as_deref(), Some(pushed.as_str()));
+
+        // origin/HEAD names the default when it is set.
+        git(r, &["update-ref", "refs/remotes/origin/trunk", &pushed]);
+        git(
+            r,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/trunk",
+            ],
+        );
+        let wt = create().await.expect("origin/HEAD");
+        assert_eq!(wt.base_branch.as_deref(), Some("origin/trunk"));
+        assert_eq!(
+            worktree_bases(&repo).await.unwrap().default.as_deref(),
+            Some("origin/trunk")
+        );
+
+        // An origin with no default branch is refused, not replaced by a local one.
+        git(r, &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"]);
+        git(r, &["update-ref", "-d", "refs/remotes/origin/master"]);
+        git(r, &["update-ref", "-d", "refs/remotes/origin/trunk"]);
+        let err = create().await.expect_err("no origin default");
+        assert!(matches!(err.code, AppErrorCode::InvalidInput));
     }
 
     #[tokio::test]

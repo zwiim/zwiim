@@ -422,6 +422,7 @@ async function main() {
   check("changed artifact bytes: nothing left in versions/", !fs.existsSync(path.join(one.data, "runtime/versions", B)));
 
   // 3. Normal upgrade A → B.
+  const tokenA = one.info()?.token;
   const up = await upgrade(one, B);
   must("normal upgrade: B verified and staged", up.checked.staged?.version === B, JSON.stringify(up.checked.activity));
   check("normal upgrade: restart requested", up.applied?.state === "restarting", JSON.stringify(up.applied));
@@ -432,6 +433,15 @@ async function main() {
   check("normal upgrade: workspaces kept", wsAfter.some((w) => w.workspace_id === ws.workspace_id));
   const helloB = await one.ok("host.hello");
   check("normal upgrade: same Host identity", helloB.host_id === hello.host_id);
+  // The token lives in the Host's key store (here the file fallback), not SQLite.
+  const tokenFile = path.join(one.data, "host-token");
+  check(
+    "normal upgrade: same Host token, from its private key store",
+    !!tokenA &&
+      one.info()?.token === tokenA &&
+      fs.readFileSync(tokenFile, "utf8").trim() === tokenA &&
+      (fs.statSync(tokenFile).mode & 0o777) === 0o600,
+  );
 
   // 4. Failed upgrade B → C, rollback with the database restored.
   latest = C;

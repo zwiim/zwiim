@@ -63,6 +63,11 @@ jobs:
           for v in ZWIIM_RELEASE_PUBKEY ZWIIM_APPLE_TEAM_ID APPLE_SIGNING_IDENTITY; do
             test -n "${!v}" || { echo "::error::repository variable $v is not set"; exit 1; }
           done
+          # One team signs every release: the Keychain ties the Host's items to it.
+          case "$APPLE_SIGNING_IDENTITY" in
+            "Developer ID Application: "*"($ZWIIM_APPLE_TEAM_ID)") ;;
+            *) echo "::error::APPLE_SIGNING_IDENTITY is not a Developer ID of team ZWIIM_APPLE_TEAM_ID"; exit 1 ;;
+          esac
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
@@ -97,10 +102,15 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
         run: |
+          # The Host's identifier is fixed (dev.zwiim.host, also embedded in the
+          # binary): with the Team ID it is what the Keychain ties the Host's items to.
+          codesign --force --options runtime --timestamp --identifier dev.zwiim.host \
+            --sign "$APPLE_SIGNING_IDENTITY" target/release/zwiim-host
+          codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" target/release/zwiim-mcp
           for b in zwiim-host zwiim-mcp; do
-            codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "target/release/$b"
             codesign --verify --strict --verbose=2 "target/release/$b"
           done
+          scripts/release/check-host-signature.sh target/release/zwiim-host
           (cd target/release && zip -q "$RUNNER_TEMP/host-notarize.zip" zwiim-host zwiim-mcp)
           xcrun notarytool submit "$RUNNER_TEMP/host-notarize.zip" \
             --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
@@ -122,6 +132,8 @@ jobs:
           APP=target/release/bundle/macos/Zwiim.app
           codesign --verify --deep --strict --verbose=2 "$APP"
           codesign -dv "$APP" 2>&1 | grep -q "TeamIdentifier=$APPLE_TEAM_ID"
+          # The bundler re-signs its sidecars; the Host must come out as dev.zwiim.host.
+          scripts/release/check-host-signature.sh "$APP/Contents/MacOS/zwiim-host"
           xcrun stapler validate "$APP"
           spctl --assess --type execute --verbose=2 "$APP"
           DMG=$(ls target/release/bundle/dmg/*.dmg)

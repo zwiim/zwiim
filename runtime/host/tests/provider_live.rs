@@ -182,7 +182,7 @@ impl Host {
             .json(&body)
             .send()
             .await
-            .map_err(|e| json!({"code": "network", "message": e.to_string()}))?;
+            .map_err(|e| json!({"error": {"code": "network", "message": e.to_string()}}))?;
         let ok = res.status().is_success();
         let body: Value = res.json().await.unwrap_or(Value::Null);
         if ok {
@@ -423,7 +423,7 @@ async fn run(p: &Provider) {
         )
         .await
         .expect_err("an unknown model was accepted");
-    assert_eq!(refused["code"], "option_unavailable", "{refused}");
+    assert_eq!(refused["error"]["code"], "option_unavailable", "{refused}");
 
     // Cancel a turn once it is streaming.
     host.ok(

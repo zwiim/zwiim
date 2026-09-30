@@ -5,7 +5,7 @@ import type { CloudStatus, DeviceInfo, KeyPairingInvitation, LanStatus } from "@
 import { Button } from "@/components/ui/button";
 import type { NativeBridge } from "@/lib/bridge";
 import { errorMessage, useController, useOnline } from "@/lib/host-context";
-import { cloudClient } from "@/lib/remote";
+import { enableRemoteAccess } from "@/lib/remote";
 
 /** While a pairing code shows, how often to look for the device it paired. */
 const POLL_MS = 2000;
@@ -157,8 +157,8 @@ function PairingCode({ invite, onExpired }: { invite: KeyPairingInvitation; onEx
         dangerouslySetInnerHTML={{ __html: renderSVG(text, { border: 1 }) }}
       />
       <p className="text-muted-foreground text-center">
-        On the other device choose Pair with a host, then scan this or paste the text below. Expires in{" "}
-        {Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")}.
+        On your phone, open Zwiim and tap Scan pairing code. On another computer, choose Pair with a host and paste the
+        text below. Expires in {Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")}.
       </p>
       <div className="flex w-full items-center gap-1.5">
         <code className="bg-muted min-w-0 flex-1 truncate rounded px-1.5 py-1 text-[10px]" data-testid="pairing-text">
@@ -199,11 +199,7 @@ function RemoteAccess({ bridge }: { bridge: NativeBridge }) {
     setPending(true);
     setError(null);
     try {
-      // A single-use token from the account; the host redeems it itself.
-      const { enrollment_token } = await cloudClient(remote, account.cloudUrl).enrollmentToken();
-      setStatus(
-        await controller.client.request("cloud.enroll", { cloud_url: account.cloudUrl, enrollment_token }),
-      );
+      setStatus(await enableRemoteAccess(remote, account.cloudUrl, controller.client));
     } catch (e) {
       setError(errorMessage(e));
     } finally {

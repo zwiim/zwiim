@@ -1,6 +1,7 @@
 pub mod entities;
 pub mod error;
 pub mod migration;
+pub mod plaintext_secrets;
 pub mod schema_guard;
 pub mod service;
 

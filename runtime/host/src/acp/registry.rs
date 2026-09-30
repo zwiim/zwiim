@@ -1665,9 +1665,20 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `features.cwd_relative_turn_diffs = false` in the merged config so
             // turn-diff paths are git-root relative — Zwiim writes no such key
             // (repo grep: zero hits) and reads no turn diff.
+            //
+            // 1.13.1 (Zwiim V1 release validation, 2026-09-29): `@openai/codex`
+            // ^0.154.0 → ^0.156.1. The provider serves its model list by client
+            // version, and 0.154.0 never sees `gpt-6-luna`, the provider's
+            // current default; 0.156.1 does. The adapter's new features (notices,
+            // compaction, terminal output deltas) sit behind capabilities Zwiim
+            // does not advertise, and permission handling is unchanged. The
+            // catalog gains `supports_reasoning_effort_updates` (a strict bool,
+            // now in `BOOL_FIELDS`) and `default_service_tier`. 2.0.0 is NOT
+            // taken: it drops `formatted_output` and moves mode, goal and
+            // permission metadata under the AIR extension Zwiim advertises.
             distribution: AgentDistribution::Npx {
-                version: "1.12.0",
-                package: "@agentclientprotocol/codex-acp@1.12.0",
+                version: "1.13.1",
+                package: "@agentclientprotocol/codex-acp@1.13.1",
                 cmd: "codex-acp",
                 args: &[],
                 env: &[],
@@ -2889,8 +2900,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Codex,
-            "1.12.0",
-            "@agentclientprotocol/codex-acp@1.12.0",
+            "1.13.1",
+            "@agentclientprotocol/codex-acp@1.13.1",
             Some("20.0.0"),
         );
         assert_npx_version(AgentType::Pi, "0.0.33", "pi-acp@0.0.33", Some("22.0.0"));

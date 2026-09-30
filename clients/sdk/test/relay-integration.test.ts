@@ -103,6 +103,8 @@ describe.skipIf(!enabled)("integration: SDK → Cloud relay → Noise → real h
         ZWIIM_HOST: "127.0.0.1",
         ZWIIM_TOKEN: TOKEN,
         ZWIIM_HOST_KEY_STORE: "file",
+        // The mock agent is on PATH, not a managed install.
+        ZWIIM_ADAPTER_SOURCE: "path",
         RUST_LOG: "info",
       },
       "host.log",

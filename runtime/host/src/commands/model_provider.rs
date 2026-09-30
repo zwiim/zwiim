@@ -409,8 +409,13 @@ mod tests {
     /// and then panicked, after which every `list_model_providers` call
     /// panicked on that row — breaking the settings list and the agent
     /// management provider dropdown until the row was removed.
+    ///
+    /// New keys are refused (`db::plaintext_secrets`), so the row is seeded
+    /// the way an older install left it: written straight to the table.
     #[tokio::test]
     async fn create_and_list_tolerate_multibyte_api_key() {
+        use sea_orm::{ConnectionTrait, Statement};
+
         let db = fresh_in_memory_db().await;
 
         let created = create_model_provider_core(
@@ -422,11 +427,26 @@ mod tests {
             None,
         )
         .await;
-        assert!(
-            created.is_ok(),
-            "create panicked/failed: {:?}",
-            created.err()
-        );
+        assert!(created.is_err(), "a new api_key must be refused");
+        assert!(list_model_providers_core(&db).await.unwrap().is_empty());
+
+        let row = create_model_provider_core(
+            &db,
+            "Provider".to_string(),
+            "https://api.example.com".to_string(),
+            String::new(),
+            "codex".to_string(),
+            None,
+        )
+        .await
+        .expect("create without a key");
+        db.conn
+            .execute(Statement::from_string(
+                db.conn.get_database_backend(),
+                format!("UPDATE model_provider SET api_key = 'sk-密钥abcd1234' WHERE id = {}", row.id),
+            ))
+            .await
+            .expect("seed legacy row");
 
         let rows = list_model_providers_core(&db)
             .await
@@ -482,7 +502,7 @@ mod tests {
     /// also reads native config files, but only ever reads them and only between
     /// DB mutations, so that component stays constant across the comparisons.
     #[tokio::test]
-    async fn provider_credential_change_shifts_bound_agent_fingerprint() {
+    async fn provider_endpoint_change_shifts_bound_agent_fingerprint() {
         use crate::db::entities::agent_setting;
         use crate::models::agent::AgentType;
         use sea_orm::{ActiveModelTrait, NotSet, Set};
@@ -494,7 +514,7 @@ mod tests {
             &db,
             "Prov".to_string(),
             "https://api.example.com".to_string(),
-            "sk-old-key".to_string(),
+            String::new(),
             "codex".to_string(),
             None,
         )
@@ -523,27 +543,27 @@ mod tests {
             .await
             .expect("fingerprint before");
 
-        // Changing the api_key (DB-only) must shift the bound agent's fingerprint:
-        // `apply_model_provider_env` injects the provider's key into the env.
+        // Changing the api_url (DB-only) must shift the bound agent's fingerprint:
+        // `apply_model_provider_env` injects the provider's endpoint into the env.
         model_provider_service::update(
             &db.conn,
             provider.id,
             None,
+            Some("https://api.other.example.com".to_string()),
             None,
-            Some("sk-new-key".to_string()),
             None,
             None,
         )
         .await
-        .expect("update provider key");
+        .expect("update provider endpoint");
 
         let fp_after_key =
             acp::compute_session_config_fingerprint(&db, AgentType::Codex, &data_dir)
                 .await
-                .expect("fingerprint after key change");
+                .expect("fingerprint after endpoint change");
         assert_ne!(
             fp_before, fp_after_key,
-            "changing the bound provider's api_key must shift the agent fingerprint"
+            "changing the bound provider's api_url must shift the agent fingerprint"
         );
 
         // A non-runtime change (display name only) must NOT shift it.

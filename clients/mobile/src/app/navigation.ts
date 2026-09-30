@@ -28,7 +28,8 @@ export type RootStack = {
   TerminalView: { terminal_id: string };
   /** `then`: where to go once a folder is added (Files unless New session asked). */
   BrowseMac: { then?: "NewSession" } | undefined;
-  Pair: { host: HostEntry };
+  /** `host`: the one chosen to pair; without it, any of `hosts` the scanned code is for. */
+  Pair: { host?: HostEntry; hosts?: HostEntry[] };
 };
 
 export const useRootNavigation = () => useNavigation<NativeStackNavigationProp<RootStack>>();

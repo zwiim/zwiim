@@ -17,7 +17,7 @@ export function connectionText(
     case "lan":
       return { status: "Connected locally", pill: "⌂ local", dot: "done" };
     case "relay":
-      return { status: "Connected through Zwiim Cloud", pill: "☁ cloud", dot: "done" };
+      return { status: "Connected through Zwiim Cloud", pill: "☁\uFE0E cloud", dot: "done" };
     case "connecting":
       return { status: "Connecting…", pill: "connecting…", dot: "work" };
     case "reconnecting": {

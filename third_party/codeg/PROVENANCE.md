@@ -1053,6 +1053,45 @@ and store-update prompts, `clients/mobile/eas.json` and
 `CHANGELOG.md`, `VERSION`, and the CI / providers / release workflows under
 `.github/workflows/`.
 
+## V1 Release Candidate validation — defect fixes and Codex adapter 1.13.1
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `acp/connection.rs` | `src-tauri/src/acp/connection.rs` | A cancelled turn's prompt response is kept (not spawned away) until the agent answers it; prose chunks that arrive before then are dropped, so a cancelled turn no longer leaks deltas into the next one. Tool calls still pass. |
+| `acp/types.rs`, `acp/session_state.rs` | `src-tauri/src/acp/{types,session_state}.rs` | `SessionFailureRecord::as_error`: a terminal (`error`) provider failure becomes the session's `last_error` (`provider_<category>`). |
+| `protocol/events.rs` | (Zwiim-owned) | A terminal provider failure is projected as `agent.error`, message scrubbed. |
+| `commands/folders.rs` | `src-tauri/src/commands/folders.rs` | `git_log` puts `--end-of-options` before a client-named branch, so it can never be read as a git option. |
+| `acp/registry.rs`, `acp/preflight.rs`, `acp/codex_model_catalog.rs`, `resources/codex/bundled-catalog.json`, `resources/adapters/adapters.lock.json` | `src-tauri/src/acp/{registry,preflight,codex_model_catalog}.rs` | Codex adapter pinned to 1.13.1 (`@openai/codex` 0.156.1); bundled catalog refreshed from that CLI; `supports_reasoning_effort_updates` read as a bool. |
+
+## V1 Secret Storage Hardening — Host token out of SQLite, no plaintext credentials, signing identifier
+
+Zwiim-owned: `db/plaintext_secrets.rs` (the credential refusal every write to the three legacy tables goes through), `resources/macos/host-Info.plist` and its embedding in `build.rs` (code-signing identifier `dev.zwiim.host`), `scripts/release/check-host-signature.sh`, `docs/release/keychain-acceptance.md`.
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `web/mod.rs` | `src-tauri/src/web/mod.rs` | The server token is no longer persisted in `app_metadata`: `resolve_persisted_server_token` keeps it in the Host key store (`identity::host_keys`, Keychain or the `ZWIIM_HOST_KEY_STORE=file` fallback), moves a legacy database token there and deletes it from the database. `load_web_service_config` never returns a token; `update_web_service_config` ignores one. |
+| `web/handlers/web_server.rs` | `src-tauri/src/web/handlers/web_server.rs` | `get_web_server_status` / `start_web_server` return the status without the token. |
+| `bin/zwiim_host.rs` | `src-tauri/src/bin/codeg_server.rs` | Passes the Host's token store to the token resolution; the token is no longer printed to stderr (the notice names the owner-only `local-host.json`). |
+| `db/entities/{model_provider,remote_workspace_connection,agent_setting}.rs` | `src-tauri/src/db/entities/*` | `before_save` refuses a non-empty `api_key` / `token` and credential-named `env_json` values. Columns unchanged. |
+| `db/service/app_metadata_service.rs` | `src-tauri/src/db/service/app_metadata_service.rs` | `delete_value` (hard delete). |
+| `commands/acp.rs` | `src-tauri/src/commands/acp.rs` | `redact_secret` uses the shared credential-name rule. |
+| `db/service/remote_workspace_connection_service.rs`, `commands/model_provider.rs`, `commands/config_sync/snapshot.rs` | `src-tauri/src/...` | Tests only: seed rows without credentials; assert the refusal. |
+| `identity/host_keys.rs`, `update/service.rs`, `update/tests.rs`, `tests/host_lifecycle.rs`, `scripts/release/rehearse.mjs` | (Zwiim-owned) | Token entry `host-token:<host_id>` / `<data>/host-token` (0600) beside the host identity; an update's Host must be signed as `dev.zwiim.host` by the Team ID; token lifecycle, restart, update and no-leak tests. |
+
+## V1 Session Instructions — system prompt for Claude and Codex, worktrees from the origin default branch
+
+Zwiim-owned: `agent_instructions.rs` (the session instructions, built per connection from its working directory: worktree, branch, the origin's default branch); `workspace.rs` (`origin_default_branch`; a worktree created without a base starts at `origin/HEAD`, else `origin/main`, else `origin/master`, and is refused rather than based on a local branch when `origin` has none).
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `acp/connection.rs` | `src-tauri/src/acp/connection.rs` | `session_instructions`; Claude session new/load/resume requests carry them as `_meta.systemPrompt: { append }` (the Claude Code preset is kept); Codex gets them as `developer_instructions` in `CODEX_CONFIG` (`apply_codex_instructions_policy`; the user's own value wins). Neither is a conversation message, so no transcript shows them. |
+
 ## License obligations tracked
 
 - [x] Include Apache-2.0 license text (`third_party/codeg/LICENSE`).

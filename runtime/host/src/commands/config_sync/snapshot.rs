@@ -347,7 +347,7 @@ fn env_device_name() -> Option<String> {
 /// it does, so the buffer is over-sized (POSIX caps `HOST_NAME_MAX` far below
 /// this) and the result is read up to the first NUL rather than assuming one.
 #[cfg(unix)]
-fn unix_hostname() -> Option<String> {
+pub(crate) fn unix_hostname() -> Option<String> {
     let mut buffer = vec![0u8; 256];
     // SAFETY: `gethostname` writes at most `len` bytes into `buffer`, which
     // owns that many.
@@ -532,7 +532,8 @@ mod tests {
             id: NotSet,
             name: Set("DeepSeek".to_string()),
             api_url: Set("https://api.deepseek.com".to_string()),
-            api_key: Set("sk-secret".to_string()),
+            // Credentials are never stored in the database (`db::plaintext_secrets`).
+            api_key: Set(String::new()),
             agent_types_json: Set("[\"deepseek\"]".to_string()),
             agent_type: Set("deepseek".to_string()),
             model: Set(Some("deepseek-chat".to_string())),
@@ -599,7 +600,8 @@ mod tests {
             .await
             .expect("providers");
         assert_eq!(providers.len(), 1);
-        assert_eq!(providers[0].api_key, "sk-secret");
+        assert_eq!(providers[0].api_url, "https://api.deepseek.com");
+        assert_eq!(providers[0].api_key, "");
 
         let settings = agent_setting::Entity::find()
             .all(&target.conn)
@@ -624,6 +626,25 @@ mod tests {
                 .expect("pref"),
             Some("dark".to_string())
         );
+    }
+
+    /// A snapshot carrying a provider API key cannot land it in plaintext
+    /// SQLite: the whole apply is refused and nothing is written.
+    #[tokio::test]
+    async fn a_snapshot_carrying_a_credential_is_refused() {
+        let source = fresh_in_memory_db().await;
+        seed_source(&source.conn).await;
+        let mut snapshot = collect_snapshot_core(&source.conn).await.expect("collect");
+        let providers = snapshot.domains.get_mut("modelProviders").expect("providers");
+        providers[0]["apiKey"] = serde_json::json!("sk-secret");
+
+        let target = fresh_in_memory_db().await;
+        assert!(apply_snapshot_core(&target.conn, &snapshot).await.is_err());
+        assert!(model_provider::Entity::find()
+            .all(&target.conn)
+            .await
+            .expect("providers")
+            .is_empty());
     }
 
     #[tokio::test]

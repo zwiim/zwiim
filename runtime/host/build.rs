@@ -1,9 +1,29 @@
 fn main() {
+    embed_host_signing_identifier();
     #[cfg(feature = "tauri-runtime")]
     {
         ensure_sidecar_placeholder();
         tauri_build::build();
     }
+}
+
+/// Zwiim-owned: embed `resources/macos/host-Info.plist` in the Host
+/// executable. `codesign` takes the identifier from an embedded Info.plist
+/// when none is passed, so every signer (the release workflow, the Desktop
+/// bundler re-signing its sidecar) signs the Host as `dev.zwiim.host`, never
+/// as a name derived from the file. The Keychain ties the Host's items to
+/// that identifier and the Team ID.
+fn embed_host_signing_identifier() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return;
+    }
+    let plist = std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap())
+        .join("resources/macos/host-Info.plist");
+    println!("cargo:rerun-if-changed={}", plist.display());
+    println!(
+        "cargo:rustc-link-arg-bin=zwiim-host=-Wl,-sectcreate,__TEXT,__info_plist,{}",
+        plist.display()
+    );
 }
 
 /// Tauri's bundler validates that every `bundle.externalBin` path resolves

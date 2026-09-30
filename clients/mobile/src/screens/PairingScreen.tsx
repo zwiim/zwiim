@@ -1,6 +1,7 @@
 // Pairing (DESIGN.md, Screen 3), a full-screen modal route: explain → scan
-// the host's QR → confirm → pair through Zwiim Cloud → done. The steps are
-// `pairingStep`'s.
+// the host's QR → confirm → pair through Zwiim Cloud → connected. Opened from
+// Connect your Mac, no host is chosen: it starts at the camera and the code
+// says which Mac. The steps are `pairingStep`'s.
 
 import { useEffect, useReducer, useState } from "react";
 import { Linking, StyleSheet, TextInput, View } from "react-native";
@@ -9,10 +10,20 @@ import * as Device from "expo-device";
 import * as Haptics from "expo-haptics";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { hostName, type HostEntry } from "../account/hosts";
-import { pairDevice, pairingStep, problemCopy, type PairingEvent, type PairingState } from "../pairing/pairing";
+import { useCurrentHost } from "../app/hooks";
+import { hostRowState } from "../host/status";
+import {
+  invitedHost,
+  pairDevice,
+  pairingStep,
+  problemCopy,
+  type PairingEvent,
+  type PairingState,
+} from "../pairing/pairing";
 import { secureStore } from "../platform/native";
 import { cloud } from "../services";
-import { Button, Sheet, T } from "../ui/components";
+import { Button, Sheet, StatusDot, T } from "../ui/components";
+import { CircleCheckBig, Folder, Icon, MessagesSquare, Shield } from "../ui/icons";
 import { fonts, radius, space, useTheme } from "../ui/tokens";
 
 const RETICLE = 240;
@@ -20,15 +31,19 @@ const TICK = 14;
 
 export function PairingScreen({
   host,
+  hosts,
   onClose,
   onPaired,
   onOpen,
   onSignIn,
 }: {
-  host: HostEntry;
+  /** The host chosen to pair, or null to take the one the code is for. */
+  host: HostEntry | null;
+  /** The account's hosts, to name the one a code is for. */
+  hosts: HostEntry[];
   onClose(): void;
   /** Paired: this phone now holds the host's key. */
-  onPaired(): void;
+  onPaired(host: HostEntry): void;
   /** Done: show the host. */
   onOpen(): void;
   /** The account needs signing in again. */
@@ -36,12 +51,19 @@ export function PairingScreen({
 }) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
-  const name = hostName(host);
-  const pairingHost = { host_id: host.host_id, static_pubkey: host.static_pubkey };
+  const pairingHost = host && { host_id: host.host_id, static_pubkey: host.static_pubkey };
   const [state, dispatch] = useReducer(
     (s: PairingState, e: PairingEvent) => pairingStep(s, e, pairingHost),
-    { step: "explain" } as PairingState,
+    (host ? { step: "explain" } : { step: "scan" }) as PairingState,
   );
+  const invitation = "invitation" in state ? state.invitation : null;
+  // The host the scanned code is for, kept once pairing is done.
+  const [scanned, setScanned] = useState<HostEntry | null>(null);
+  useEffect(() => {
+    if (!host && invitation) setScanned(invitedHost(invitation, hosts));
+  }, [host, hosts, invitation]);
+  const target = host ?? scanned;
+  const name = target ? hostName(target) : "your Mac";
   const [deviceName, setDeviceName] = useState(Device.deviceName ?? Device.modelName ?? "Phone");
 
   useEffect(() => {
@@ -51,7 +73,7 @@ export function PairingScreen({
       () => {
         if (!live) return;
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        onPaired();
+        onPaired(host ?? invitedHost(state.invitation, hosts));
         dispatch({ type: "paired" });
       },
       (error: unknown) => live && dispatch({ type: "error", error }),
@@ -89,7 +111,11 @@ export function PairingScreen({
     case "pairing":
       body = (
         <>
-          <Scanner name={name} onCode={(text) => dispatch({ type: "scanned", text })} onCancel={onClose} />
+          <Scanner
+            title={host ? name : "Scan the code on your Mac"}
+            onCode={(text) => dispatch({ type: "scanned", text })}
+            onCancel={onClose}
+          />
           <Sheet visible={state.step !== "scan"} onClose={() => state.step === "confirm" && onClose()}>
             {state.step === "pairing" ? (
               <View style={styles.progress}>
@@ -99,7 +125,7 @@ export function PairingScreen({
               <>
                 <T variant="title">Pair with {name}?</T>
                 <T variant="mono" color={theme.mut}>
-                  host {host.host_id.slice(0, 12)}
+                  host {(target?.host_id ?? "").slice(0, 12)}
                 </T>
                 <T variant="callout" color={theme.mut}>
                   This phone's name on your Mac
@@ -119,19 +145,7 @@ export function PairingScreen({
       );
       break;
     case "done":
-      body = (
-        <View style={page}>
-          <View style={styles.top}>
-            <T variant="display" color={theme.done}>
-              ✓
-            </T>
-            <T variant="title">This phone can now control {name}.</T>
-          </View>
-          <View style={styles.actions}>
-            <Button testID="pair-open" tall label={`Open ${name}`} onPress={onOpen} />
-          </View>
-        </View>
-      );
+      body = target ? <Connected host={target} onOpen={onOpen} /> : null;
       break;
     case "failed": {
       const copy = problemCopy(state.problem, name);
@@ -168,8 +182,57 @@ export function PairingScreen({
   return <View style={[styles.fill, { backgroundColor: theme.bg }]}>{body}</View>;
 }
 
+/** Paired: the Mac, live as this phone connects to it, and what the phone can do with it now. */
+function Connected({ host, onOpen }: { host: HostEntry; onOpen(): void }) {
+  const theme = useTheme();
+  const insets = useSafeAreaInsets();
+  const current = useCurrentHost();
+  const name = hostName(host);
+  const row = hostRowState({ ...host, paired: true }, current, undefined, Math.floor(Date.now() / 1000));
+  const can = [
+    { icon: Shield, text: "Approve what your agents ask" },
+    { icon: MessagesSquare, text: "Start and steer sessions" },
+    { icon: Folder, text: "Browse files and changes" },
+  ];
+  return (
+    <View
+      style={[
+        styles.page,
+        { backgroundColor: theme.bg, paddingTop: insets.top + space.xxl, paddingBottom: insets.bottom + space.xl },
+      ]}
+    >
+      <View style={styles.top}>
+        <Icon icon={CircleCheckBig} color={theme.done} size={34} />
+        <T variant="display">Connected to {name}</T>
+        <View style={[styles.hostCard, { backgroundColor: theme.surface }]}>
+          <StatusDot state={row.dot} />
+          <View style={styles.hostText}>
+            <T variant="headline" numberOfLines={1}>
+              {name}
+            </T>
+            <T variant="monoSm" color={theme.mut} numberOfLines={1} testID="pair-host-meta">
+              {row.meta}
+            </T>
+          </View>
+        </View>
+        <View style={styles.can}>
+          {can.map((c) => (
+            <View key={c.text} style={styles.canRow}>
+              <Icon icon={c.icon} color={theme.mut} size={18} />
+              <T>{c.text}</T>
+            </View>
+          ))}
+        </View>
+      </View>
+      <View style={styles.actions}>
+        <Button testID="pair-open" tall label={`Open ${name}`} onPress={onOpen} />
+      </View>
+    </View>
+  );
+}
+
 /** The camera, reading QR codes only, with a reticle, torch and Cancel. */
-function Scanner({ name, onCode, onCancel }: { name: string; onCode(text: string): void; onCancel(): void }) {
+function Scanner({ title, onCode, onCancel }: { title: string; onCode(text: string): void; onCancel(): void }) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const [permission, requestPermission] = useCameraPermissions();
@@ -210,7 +273,7 @@ function Scanner({ name, onCode, onCancel }: { name: string; onCode(text: string
       />
       <View style={[styles.overlay, { paddingTop: insets.top + space.xl, paddingBottom: insets.bottom + space.lg }]}>
         <T variant="headline" color="#FFFFFF">
-          {name}
+          {title}
         </T>
         <View style={styles.reticle}>
           <View style={[styles.tick, { top: 0, left: 0, borderTopWidth: 3, borderLeftWidth: 3 }]} />
@@ -238,5 +301,16 @@ const styles = StyleSheet.create({
   tick: { position: "absolute", width: TICK, height: TICK, borderColor: "#FFFFFF" },
   cameraBar: { alignSelf: "stretch", flexDirection: "row", justifyContent: "space-between" },
   progress: { paddingVertical: space.lg },
+  hostCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.md,
+    borderRadius: radius.lg,
+    padding: 14,
+    marginTop: space.sm,
+  },
+  hostText: { flex: 1, gap: 2 },
+  can: { gap: 14, marginTop: space.md },
+  canRow: { flexDirection: "row", alignItems: "center", gap: space.md },
   input: { height: 44, borderRadius: radius.md, paddingHorizontal: space.md, fontFamily: fonts.sans, fontSize: 15 },
 });

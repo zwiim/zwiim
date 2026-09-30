@@ -21,4 +21,16 @@ pub struct Model {
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {}
 
-impl ActiveModelBehavior for ActiveModel {}
+/// Credentials never land in this table in plaintext (`db::plaintext_secrets`).
+#[async_trait::async_trait]
+impl ActiveModelBehavior for ActiveModel {
+    async fn before_save<C>(self, _db: &C, _insert: bool) -> Result<Self, DbErr>
+    where
+        C: ConnectionTrait,
+    {
+        if let sea_orm::ActiveValue::Set(token) = &self.token {
+            crate::db::plaintext_secrets::refuse_credential("remote_workspace_connection.token", token)?;
+        }
+        Ok(self)
+    }
+}

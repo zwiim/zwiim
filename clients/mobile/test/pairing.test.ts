@@ -5,6 +5,7 @@ import { accountHosts } from "../src/account/hosts";
 import { openHostConnection } from "../src/host/open";
 import {
   ensureIdentity,
+  invitedHost,
   pairDevice,
   pairingProblem,
   pairingStep,
@@ -55,6 +56,28 @@ describe("reading a pairing QR", () => {
     // The chosen host's id with another key: not the host the account enrolled.
     const forged = { ...host.invite(), host_static_pubkey: other.publicKey };
     expect(readPairingCode(JSON.stringify(forged), chosen)).toEqual({ problem: "wrong_host" });
+  });
+});
+
+describe("scanning without choosing a host", () => {
+  it("accepts any current code, and names its host from the account's list", async () => {
+    const { host, client } = pairingWorld();
+    const invite = host.invite();
+    expect(pairingStep({ step: "scan" }, { type: "scanned", text: JSON.stringify(invite) }, null)).toEqual({
+      step: "confirm",
+      invitation: invite,
+    });
+    const hosts = await accountHosts(client, new MemorySecureStore(), async () => {});
+    expect(invitedHost(invite, hosts).name).toBe("Studio Mac");
+    // Not listed yet: it goes by its id and the code's key.
+    expect(invitedHost(invite, [])).toEqual({
+      host_id: host.hostId,
+      name: null,
+      static_pubkey: host.publicKey,
+      online: false,
+      last_seen_at: null,
+      paired: false,
+    });
   });
 });
 

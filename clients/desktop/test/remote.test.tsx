@@ -629,6 +629,42 @@ describe("devices", () => {
     ]);
   });
 
+  it("turns remote access on when you sign in on this computer, once", async () => {
+    const env = world();
+    withDevices(env);
+    env.token = null;
+    vi.stubGlobal("WebSocket", env.cloud.WebSocket);
+    mount(env);
+    await screen.findByText("repo-w-local");
+    fireEvent.click(openMenu().getByText("Sign in"));
+    const enrolls = () => env.local.calls.filter((c) => c.op === "cloud.enroll").map((c) => c.params);
+    await waitFor(() => expect(enrolls()).toEqual([{ cloud_url: env.cloud.origin, enrollment_token: "enroll-1" }]));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(enrolls()).toHaveLength(1);
+  });
+
+  it("leaves remote access alone on sign-in when it is on already", async () => {
+    const env = world();
+    withDevices(env);
+    env.local.handlers["cloud.status"] = () => ({
+      enrolled: true,
+      cloud_url: env.cloud.origin,
+      user_id: "u1",
+      enrolled_at: "then",
+      connection: "online",
+      connected_since: "then",
+      last_error: null,
+    });
+    env.token = null;
+    vi.stubGlobal("WebSocket", env.cloud.WebSocket);
+    mount(env);
+    await screen.findByText("repo-w-local");
+    fireEvent.click(openMenu().getByText("Sign in"));
+    await waitFor(() => expect(env.local.calls.some((c) => c.op === "cloud.status")).toBe(true));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(env.local.calls.filter((c) => c.op === "cloud.enroll")).toEqual([]);
+  });
+
   it("moves remote access to the Cloud this app uses when the host's differs", async () => {
     const env = world();
     withDevices(env);

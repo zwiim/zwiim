@@ -144,8 +144,10 @@ uses a hairline instead of tone, status colors are darkened for 4.5:1 on white.
 - **Durations:** micro 80ms (press), short 180ms (row state change), medium 280ms
   (sheet, push), long 450ms (first connect transition).
 - **Signature:** the working dot breathes (opacity .55↔1, 1.6s loop). The streaming
-  caret blinks (1s). Nothing else animates on its own.
-- **Reduce Motion:** breathing and caret go static; sheets cross-fade.
+  caret blinks (1s). Nothing else animates on its own, except the Sign in orbit
+  (Screen 1): the one screen with nothing live to show, so it shows what Zwiim does.
+- **Reduce Motion:** breathing, caret and the Sign in orbit go static; sheets
+  cross-fade.
 - **Haptics (`expo-haptics`):** light impact on Allow/Send; warning notification
   when a request arrives while the session is open; success on pairing.
 
@@ -206,19 +208,27 @@ initializes Git; running `git init` there turns it into a repository live.
 
 ### 1. Sign in
 
-- Top half: the Zwiim wordmark (Geist 600), one line:
-  "Control your Zwiim Hosts from anywhere."
-- Three short mono-free lines on what sign-in enables: see your Hosts, connect
-  from any network, pair this phone securely.
-- Bottom: **Continue with Google** (full-width, `fg` on `bg` inverse button,
-  Google mark). Below it in `mut` `callout`: "Your code stays on your Mac."
+- Centered. Top: the orbit. A 112pt `surface` disc holds a Laptop icon (`fg`) and
+  `your Mac` (mono, `mut`). A 276pt hairline ring (`line`) carries three `raised`
+  pill chips, mono labels with a 13pt Lucide icon: `agents` (Bot), `sessions`
+  (MessagesSquare), `workspaces` (Folder). The ring turns once every 31s; the
+  chips counter-turn so they stay upright.
+- The chip icons carry status color on a 7s loop: `agents` breathes in `accent`;
+  `sessions` is `need` then `accent`; `workspaces` is `accent` then `done`.
+- Under the orbit: "Zwiim" (`display`) and two lines in `mut` `body`:
+  "Run coding agents on your Mac. / Steer them from anywhere."
+- Bottom: **Continue with Google** (full-width, 48pt, `fg` on `bg` inverse button,
+  four-color Google G).
+- Generic nouns only: never name a vendor agent (Claude, Codex) on this screen.
 - States: in-progress (button shows spinner, disabled); cancelled (silent
   return); failed ("Couldn't sign in. Try again." inline under the button).
 
 ### 2. Hosts (home)
 
 - Large title "Hosts". Host bar is absent here (no host selected yet).
-- One row per `CloudHost`, 64pt: dot, **name** (`headline`), and a mono meta line:
+- The hosts sit in one `surface` card (radius `lg`, hairline dividers). One row per
+  `CloudHost`, 64pt: a 40pt `raised` disc with a Laptop icon, **name** (`headline`),
+  then the status dot and a mono meta line, and a `faint` chevron:
   - online + seen on this network: `⌂ same network · paired`
   - online, remote: `☁ via Zwiim Cloud · paired`
   - offline: `offline · last seen 2h ago` (from `last_seen_at`)
@@ -228,6 +238,9 @@ initializes Git; running `git init` there turns it into a repository live.
 - Sort: last used first, then online, then offline.
 - Mobile is never a Host, so there is no "This computer" row. The equivalent
   signal is `⌂ same network`.
+- Account sits in its own `surface` card pinned to the bottom: `ACCOUNT` caption,
+  the email in mono, and a secondary **Sign out** (pairings stay, so it isn't red).
+- Glyphs like ☁ carry U+FE0E so Android draws them as text, not color emoji.
 - Connecting to a row: the row's dot breathes and the meta line reads
   `connecting…`; on success push the Host shell (long transition).
 
@@ -651,3 +664,5 @@ glyph, a title, one line, one action.
 | 2026-09-27 | New session's Effort follows the picked model (R8.14) | Effort is the model's, not the agent's: Claude has none on Haiku, so an Effort row there was silently dropped by the agent. The Host learns each model's levels from its sessions; the row shows the picked model's, and the Host refuses an effort a known model doesn't offer |
 | 2026-09-27 | Session controls on the composer, context only as reported (R8.15) | The mode (above all Unattended) and model were invisible once a session started on the phone; chips keep them in the thumb zone and one sheet changes them the way Desktop does, one option per request so a new model never carries the old model's effort. Context and token figures come from the agent through the Host unchanged; a missing one says so, because an estimate would read as fact |
 | 2026-09-27 | Controls inside the composer, options picked in place (R8.15, design-shotgun A) | Chosen over a status line and a mode button: chips beside send match Desktop's composer, the ring keeps context in view without a row of its own, and an amber border plus solid chip make Unattended unmissable. The sheet sets Mode and Effort with one tap instead of a list per row, and folds the token breakdown so the window reads first |
+| 2026-09-29 | Sign in becomes a motion orbit (design-shotgun K4) | The text-first screen read as plain. Agents, sessions and workspaces orbiting "your Mac", with status color on their icons, says in one look that agents run on the Mac and are steered from here; copy cut to the name, two lines and the button. Generic nouns, because vendor names aren't ours to show |
+| 2026-09-29 | Hosts in cards, matching Sign in | The bare list read unfinished after the Sign in orbit; the Laptop disc repeats "your Mac" from Sign in, and the account card keeps Sign out in reach without the red of a destructive action |

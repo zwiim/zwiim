@@ -319,23 +319,30 @@ async fn async_main() -> Exit {
         }
     };
 
-    // Resolve the access token *after* the DB is up so a generated token can be
-    // persisted and reused across restarts (a self-update restart must not
-    // rotate it). An empty/whitespace ZWIIM_TOKEN is treated as unset.
+    // Resolve the access token *after* the host identity is known so a
+    // generated token is kept, in the host's key store beside its keys, and
+    // reused across restarts (a self-update restart must not rotate it). An
+    // empty/whitespace ZWIIM_TOKEN is treated as unset.
+    let token_store = host_id.as_deref().and_then(|host_id| {
+        zwiim_host::identity::host_keys::KeyStore::token_from_env(&data_dir, host_id)
+            .map_err(|e| tracing::error!("[SERVER] Host token store unavailable: {e}"))
+            .ok()
+    });
     let mut token_generated = false;
     let token = resolve_persisted_server_token(
         &db.conn,
+        token_store.as_ref(),
         std::env::var("ZWIIM_TOKEN").ok(),
         &mut token_generated,
     )
     .await;
     if token_generated {
-        // Operator-facing startup notice on stderr ONLY: the access token is a
-        // bearer credential and must never enter the durable log files or the
-        // in-app log viewer. `eprintln!` bypasses the tracing sinks (file +
-        // ring buffer); only the local terminal / Docker stderr sees it.
+        // The access token is a bearer credential: it is never printed, since
+        // stderr is itself a log under a service manager (journald, Docker).
+        // A local client reads it from the owner-only discovery file.
         eprintln!(
-            "[SERVER] No ZWIIM_TOKEN set; generated an access token (persisted): {token}"
+            "[SERVER] No ZWIIM_TOKEN set; generated an access token (in {}).",
+            zwiim_host::local_host::path(&discovery_dir).display()
         );
         eprintln!("[SERVER] Pin your own by setting the ZWIIM_TOKEN environment variable.");
     }
@@ -748,10 +755,6 @@ async fn async_main() -> Exit {
             tracing::warn!("[SERVER][WARN] could not write local host discovery file: {e}");
         }
     }
-
-    // Token on stderr ONLY (bearer credential — keep it out of the log files
-    // and the in-app viewer); the bind addresses are safe to log normally.
-    eprintln!("[SERVER] Token: {}", token);
 
     tracing::info!("[SERVER] Listening on:");
     for addr in &addresses {

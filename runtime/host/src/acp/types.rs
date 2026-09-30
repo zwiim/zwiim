@@ -97,6 +97,22 @@ pub struct SessionFailureRecord {
     pub resolved: bool,
 }
 
+impl SessionFailureRecord {
+    /// The Zwiim error a terminal failure surfaces as: `(code, message)`, or
+    /// `None` for a retry warning, which recovers on its own.
+    pub fn as_error(&self) -> Option<(String, String)> {
+        if self.severity != "error" {
+            return None;
+        }
+        let message = if self.title.trim().is_empty() {
+            "The agent's provider failed this turn.".to_string()
+        } else {
+            self.title.clone()
+        };
+        Some((format!("provider_{}", self.category), message))
+    }
+}
+
 /// Cumulative cost of one async task, as the adapter last reported it
 /// (`async_task_progress.usage`). All three fields are required upstream — the
 /// adapter drops a partial `usage` object rather than publishing one — so this

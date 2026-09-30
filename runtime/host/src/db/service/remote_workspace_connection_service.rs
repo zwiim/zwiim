@@ -293,6 +293,36 @@ mod tests {
         }
     }
 
+    /// `create` requires a token and the table refuses one
+    /// (`db::plaintext_secrets`), so rows are seeded the way an older install
+    /// left them once its token was cleared.
+    async fn seed(
+        conn: &DatabaseConnection,
+        name: &str,
+        sort_order: i32,
+        headers: &[RemoteWorkspaceHeader],
+    ) -> RemoteWorkspaceConnectionInfo {
+        let now = Utc::now();
+        let model = remote_workspace_connection::ActiveModel {
+            id: NotSet,
+            name: Set(name.to_string()),
+            base_url: Set(format!("http://127.0.0.1:{}", 3080 + sort_order)),
+            token: Set(String::new()),
+            headers: Set(serialize_headers(headers).unwrap()),
+            sort_order: Set(sort_order),
+            created_at: Set(now),
+            updated_at: Set(now),
+        }
+        .insert(conn)
+        .await
+        .unwrap();
+        to_info(model)
+    }
+
+    fn refused(err: &AppCommandError) -> bool {
+        format!("{err:?}").contains("does not store credentials")
+    }
+
     #[test]
     fn validate_headers_trims_and_drops_empty_rows() {
         let actual = validate_headers(&[
@@ -364,9 +394,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_list_update_delete_roundtrip() {
+    async fn create_and_update_refuse_a_token_and_the_rest_still_works() {
         let db = fresh_in_memory_db().await;
-        let created = create(
+        let err = create(
             &db.conn,
             "Local 3080",
             "http://127.0.0.1:3080/",
@@ -374,22 +404,24 @@ mod tests {
             &[header("CF-Access-Client-Id", "abc123")],
         )
         .await
-        .unwrap();
-        assert_eq!(created.name, "Local 3080");
-        assert_eq!(created.base_url, "http://127.0.0.1:3080");
-        assert_eq!(created.token, "secret-token");
-        assert_eq!(
-            created.headers,
-            vec![header("CF-Access-Client-Id", "abc123")]
-        );
-        assert_eq!(created.sort_order, 0);
+        .unwrap_err();
+        assert!(refused(&err), "{err:?}");
+        assert!(list(&db.conn).await.unwrap().is_empty());
 
+        let created = seed(
+            &db.conn,
+            "Local 3080",
+            0,
+            &[header("CF-Access-Client-Id", "abc123")],
+        )
+        .await;
         let listed = list(&db.conn).await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, created.id);
+        assert_eq!(listed[0].token, "");
         assert_eq!(listed[0].headers, created.headers);
 
-        let updated = update(
+        let err = update(
             &db.conn,
             created.id,
             "Server A",
@@ -398,10 +430,11 @@ mod tests {
             &[],
         )
         .await
-        .unwrap();
-        assert_eq!(updated.name, "Server A");
-        assert_eq!(updated.base_url, "https://zwiim.example.com");
-        assert!(updated.headers.is_empty());
+        .unwrap_err();
+        assert!(refused(&err), "{err:?}");
+        let unchanged = get(&db.conn, created.id).await.unwrap().unwrap();
+        assert_eq!(unchanged.name, "Local 3080");
+        assert_eq!(unchanged.token, "");
 
         delete(&db.conn, created.id).await.unwrap();
         assert!(list(&db.conn).await.unwrap().is_empty());
@@ -417,11 +450,9 @@ mod tests {
         use sea_orm::{ConnectionTrait, DbBackend, Statement};
 
         let db = fresh_in_memory_db().await;
-        // Seeded through `create` so the legacy row can copy its timestamps
+        // Seeded through the entity so the legacy row can copy its timestamps
         // verbatim, rather than guessing SeaORM's SQLite datetime encoding.
-        let seed = create(&db.conn, "Seed", "http://127.0.0.1:3080", "token", &[])
-            .await
-            .unwrap();
+        seed(&db.conn, "Seed", 0, &[]).await;
         db.conn
             .execute(Statement::from_string(
                 DbBackend::Sqlite,
@@ -442,26 +473,20 @@ mod tests {
         assert!(listed[1].headers.is_empty());
 
         // `create` re-reads every column to find the max sort order, so the
-        // legacy row has to survive that read too.
-        let next = create(&db.conn, "Next", "http://127.0.0.1:3081", "token", &[])
+        // legacy row has to survive that read too: it gets as far as the
+        // credential refusal, not a decode error.
+        let err = create(&db.conn, "Next", "http://127.0.0.1:3081", "token", &[])
             .await
-            .unwrap();
-        assert_eq!(next.sort_order, 2);
-        assert_ne!(next.id, seed.id);
+            .unwrap_err();
+        assert!(refused(&err), "{err:?}");
     }
 
     #[tokio::test]
     async fn reorder_updates_list_order() {
         let db = fresh_in_memory_db().await;
-        let first = create(&db.conn, "First", "http://127.0.0.1:3080", "token-a", &[])
-            .await
-            .unwrap();
-        let second = create(&db.conn, "Second", "http://127.0.0.1:3081", "token-b", &[])
-            .await
-            .unwrap();
-        let third = create(&db.conn, "Third", "http://127.0.0.1:3082", "token-c", &[])
-            .await
-            .unwrap();
+        let first = seed(&db.conn, "First", 0, &[]).await;
+        let second = seed(&db.conn, "Second", 1, &[]).await;
+        let third = seed(&db.conn, "Third", 2, &[]).await;
 
         reorder(&db.conn, vec![third.id, first.id, second.id])
             .await
@@ -484,12 +509,8 @@ mod tests {
     #[tokio::test]
     async fn reorder_rejects_partial_or_duplicate_ids() {
         let db = fresh_in_memory_db().await;
-        let first = create(&db.conn, "First", "http://127.0.0.1:3080", "token-a", &[])
-            .await
-            .unwrap();
-        let second = create(&db.conn, "Second", "http://127.0.0.1:3081", "token-b", &[])
-            .await
-            .unwrap();
+        let first = seed(&db.conn, "First", 0, &[]).await;
+        let second = seed(&db.conn, "Second", 1, &[]).await;
 
         let duplicate = reorder(&db.conn, vec![first.id, first.id])
             .await

@@ -237,6 +237,8 @@ async fn enrollment_registers_the_host_and_keeps_it_present() {
     assert_eq!(hosts[0].host_id, hello["host_id"].as_str().unwrap());
     assert_eq!(hosts[0].static_pubkey, h.state.host_keys.get().unwrap().static_pubkey());
     assert!(hosts[0].online);
+    // Enrolled without a name: it goes by the computer's.
+    assert!(hosts[0].name.as_deref().is_some_and(|n| !n.is_empty()), "{:?}", hosts[0].name);
     // …which heartbeats keep alive well past the Cloud's presence timeout.
     tokio::time::sleep(cloud_timing().presence_timeout * 3).await;
     assert!(alice.hosts().await.unwrap()[0].online);

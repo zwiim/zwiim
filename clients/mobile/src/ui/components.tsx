@@ -18,7 +18,8 @@ import {
   type TextStyle,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { ChevronDown, ChevronLeft, Icon, X } from "./icons";
+import type { LucideIcon } from "lucide-react-native";
+import { ChevronDown, ChevronLeft, ChevronRight, Icon, Laptop, X } from "./icons";
 import { fonts, MONO_MAX_SCALE, radius, space, type, useTheme } from "./tokens";
 
 type Variant = keyof typeof type;
@@ -102,11 +103,17 @@ export function Button({
   loading,
   tall,
   color,
+  icon,
+  leading,
   testID,
 }: {
   label: string;
   onPress(): void;
   kind?: ButtonKind;
+  /** A leading icon, as on Scan pairing code. */
+  icon?: LucideIcon;
+  /** A leading mark that isn't a line icon, as the Google G on Sign in. */
+  leading?: ReactNode;
   disabled?: boolean;
   loading?: boolean;
   /** 48pt, as in sheets and bottom actions. */
@@ -139,9 +146,12 @@ export function Button({
       ]}
     >
       {loading ? <ActivityIndicator color={look.fg} /> : (
-        <T variant="callout" color={color ?? look.fg} style={styles.buttonText}>
-          {label}
-        </T>
+        <View style={styles.buttonRow}>
+          {icon ? <Icon icon={icon} color={color ?? look.fg} size={20} /> : leading}
+          <T variant="callout" color={color ?? look.fg} style={styles.buttonText}>
+            {label}
+          </T>
+        </View>
       )}
     </Pressable>
   );
@@ -223,18 +233,23 @@ export function HostRow({
       testID={testID}
       accessibilityRole="button"
       onPress={onPress}
-      style={({ pressed }) => [styles.hostRow, pressed && { backgroundColor: theme.surface }]}
+      style={({ pressed }) => [styles.hostRow, pressed && { backgroundColor: theme.raised }]}
     >
-      <StatusDot state={dot} />
+      <View style={[styles.hostDisc, { backgroundColor: theme.raised }]}>
+        <Icon icon={Laptop} color={theme.fg} size={20} />
+      </View>
       <View style={styles.hostRowText}>
         <T variant="headline" numberOfLines={1}>
           {name}
         </T>
-        <T variant="monoSm" color={theme.mut} numberOfLines={1}>
-          {meta}
-        </T>
+        <View style={styles.hostMeta}>
+          <StatusDot state={dot} />
+          <T variant="monoSm" color={theme.mut} numberOfLines={1} style={styles.flex}>
+            {meta}
+          </T>
+        </View>
       </View>
-      {trailing}
+      {trailing ?? <Icon icon={ChevronRight} color={theme.faint} size={18} />}
     </Pressable>
   );
 }
@@ -464,6 +479,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  buttonRow: { flexDirection: "row", alignItems: "center", gap: space.sm },
   buttonText: { fontSize: 15 },
   flex: { flex: 1 },
   scrim: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)" },
@@ -485,6 +501,8 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   hostRow: { minHeight: 64, paddingHorizontal: space.lg, flexDirection: "row", alignItems: "center", gap: space.md },
+  hostDisc: { width: 40, height: 40, borderRadius: radius.full, alignItems: "center", justifyContent: "center" },
+  hostMeta: { flexDirection: "row", alignItems: "center", gap: space.sm },
   hostRowText: { flex: 1, gap: space.xxs },
   banner: {
     marginHorizontal: space.md,

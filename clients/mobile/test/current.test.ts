@@ -234,7 +234,7 @@ describe("how the connection reads", () => {
 
   it("shows the path as a pill, never a color, and counts down a reconnect", () => {
     expect(connectionText(view({ active: "lan" }))).toEqual({ status: "Connected locally", pill: "⌂ local", dot: "done" });
-    expect(connectionText(view({}))).toEqual({ status: "Connected through Zwiim Cloud", pill: "☁ cloud", dot: "done" });
+    expect(connectionText(view({}))).toEqual({ status: "Connected through Zwiim Cloud", pill: "☁\uFE0E cloud", dot: "done" });
     expect(connectionText(view({ status: "connecting", active: "connecting" })).pill).toBe("connecting…");
     const retrying = view({ status: "reconnecting", active: "reconnecting", retryAt: 10_000 });
     expect(connectionText(retrying, 7_200)).toEqual({ status: "Reconnecting…", pill: "reconnecting · 3s", dot: "work" });

@@ -338,6 +338,31 @@ fn an_empty_build_setting_is_unset() {
     assert_eq!(build_setting(Some("ABCDE12345")), Some("ABCDE12345"));
 }
 
+#[test]
+fn an_update_keeps_the_hosts_team_and_identifier() {
+    // What the Keychain checks: an updated Host must carry the same Team ID and
+    // identifier or it loses the Host's items. A dev/ad-hoc build has neither.
+    use super::service::{signed_by, HOST_SIGNING_IDENTIFIER as ID};
+    let team = "ABCDE12345";
+    let release =
+        "Identifier=dev.zwiim.host\nFormat=Mach-O thin (arm64)\nTeamIdentifier=ABCDE12345\n";
+    assert!(signed_by(release, team, Some(ID)).is_ok());
+    // The MCP binary is held to the Team ID only.
+    assert!(signed_by(
+        "Identifier=zwiim-mcp\nTeamIdentifier=ABCDE12345\n",
+        team,
+        None
+    )
+    .is_ok());
+
+    let from_filename = "Identifier=zwiim-host\nTeamIdentifier=ABCDE12345\n";
+    assert!(signed_by(from_filename, team, Some(ID)).is_err());
+    let other_team = "Identifier=dev.zwiim.host\nTeamIdentifier=ZZZZZ99999\n";
+    assert!(signed_by(other_team, team, Some(ID)).is_err());
+    let adhoc = "Identifier=zwiim_host-34e1d47d56e834a1\nSignature=adhoc\nTeamIdentifier=not set\n";
+    assert!(signed_by(adhoc, team, Some(ID)).is_err());
+}
+
 // ─── Installer: versioned installs, trial, rollback ──────────────────────
 
 #[cfg(unix)]

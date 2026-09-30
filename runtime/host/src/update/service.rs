@@ -53,6 +53,12 @@ fn team_id() -> Option<&'static str> {
     build_setting(TEAM_ID)
 }
 
+/// The Host's macOS code-signing identifier, embedded in the executable by
+/// `build.rs` so every signer produces it. The Keychain ties the Host's
+/// items to this identifier and the Team ID: an update that changed either
+/// could no longer read them without prompting.
+pub const HOST_SIGNING_IDENTIFIER: &str = "dev.zwiim.host";
+
 const FIRST_CHECK_DELAY: Duration = Duration::from_secs(120);
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -362,7 +368,8 @@ async fn check_inner(download: bool) -> Result<(), CheckError> {
 }
 
 /// The platform signature check: on macOS, a valid code signature from the
-/// Zwiim Team ID, when this build names one.
+/// Zwiim Team ID, when this build names one, and for the Host, its
+/// identifier.
 pub struct Codesign;
 
 impl PlatformCheck for Codesign {
@@ -389,14 +396,20 @@ impl PlatformCheck for Codesign {
             .output()
             .map_err(|e| e.to_string())?;
         let text = String::from_utf8_lossy(&info.stderr);
-        if text
-            .lines()
-            .any(|l| l.trim() == format!("TeamIdentifier={team}"))
-        {
-            Ok(())
-        } else {
-            Err(format!("not signed by Team ID {team}"))
-        }
+        let is_host = binary.file_name() == Some(std::ffi::OsStr::new(install::HOST_BIN));
+        signed_by(&text, team, is_host.then_some(HOST_SIGNING_IDENTIFIER))
+    }
+}
+
+/// Whether `codesign -dv` output names `team` and, when given, `identifier`.
+pub(super) fn signed_by(details: &str, team: &str, identifier: Option<&str>) -> Result<(), String> {
+    let has = |want: String| details.lines().any(|l| l.trim() == want);
+    if !has(format!("TeamIdentifier={team}")) {
+        return Err(format!("not signed by Team ID {team}"));
+    }
+    match identifier {
+        Some(id) if !has(format!("Identifier={id}")) => Err(format!("not signed as {id}")),
+        _ => Ok(()),
     }
 }
 

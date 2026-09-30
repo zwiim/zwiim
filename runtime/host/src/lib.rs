@@ -9,6 +9,7 @@
 
 pub mod acp;
 pub mod adapters;
+pub mod agent_instructions;
 pub mod acp_transcript;
 pub use acp::{
     idle_sweep_task, idle_timeout_from_env, lifecycle_subscriber_task, SWEEP_INTERVAL_SECS,

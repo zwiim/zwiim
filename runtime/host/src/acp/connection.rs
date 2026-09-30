@@ -1061,6 +1061,40 @@ fn apply_codex_thinking_policy(
     ));
 }
 
+/// Zwiim's session instructions for Codex. codex-acp sends `CODEX_CONFIG` as
+/// config overrides on every thread start, resume and fork, and
+/// `developer_instructions` reaches the model as developer instructions, which
+/// the transcript parser never shows. `developer_instructions` the user set in
+/// their own `CODEX_CONFIG` win, and a `CODEX_CONFIG` that is not a JSON object
+/// is left as it is.
+fn apply_codex_instructions_policy(
+    agent_type: AgentType,
+    merged: &mut Vec<(String, String)>,
+    instructions: Option<&str>,
+) {
+    const KEY: &str = "CODEX_CONFIG";
+    const INSTRUCTIONS: &str = "developer_instructions";
+    let Some(instructions) = instructions.filter(|_| agent_type == AgentType::Codex) else {
+        return;
+    };
+    let mut config = match merged.iter().rev().find(|(k, _)| k == KEY) {
+        Some((_, raw)) => match serde_json::from_str::<serde_json::Value>(raw) {
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => return,
+        },
+        None => serde_json::Map::new(),
+    };
+    if config.contains_key(INSTRUCTIONS) {
+        return;
+    }
+    config.insert(INSTRUCTIONS.to_string(), serde_json::json!(instructions));
+    merged.retain(|(k, _)| k != KEY);
+    merged.push((
+        KEY.to_string(),
+        serde_json::Value::Object(config).to_string(),
+    ));
+}
+
 /// Prepend `dir` to the PATH entry of `env`, seeding from `fallback_path` when
 /// `env` has no PATH key of its own. Removes any pre-existing PATH key first
 /// (case-insensitively when `windows`, since Windows env keys are
@@ -1843,6 +1877,16 @@ async fn build_agent(
                 &mut merged_env,
                 agent_type == AgentType::Codex
                     && crate::commands::acp::codex_config_sets_reasoning_summary(),
+            );
+            let codex_instructions = if agent_type == AgentType::Codex {
+                session_instructions(agent_type, cwd).await
+            } else {
+                None
+            };
+            apply_codex_instructions_policy(
+                agent_type,
+                &mut merged_env,
+                codex_instructions.as_deref(),
             );
             // codex-acp 1.0.0 honors APP_SERVER_LOGS as a directory for its
             // adapter-side logs. Surface it only under ZWIIM_ACP_DEBUG so
@@ -4189,8 +4233,13 @@ fn resolve_working_dir(working_dir: Option<&str>) -> PathBuf {
 /// text (only its signature), so the transcript's "Thinking" rows are blank.
 /// The `showThinkingSummaries` setting does not reach a non-interactive
 /// (SDK) run; only the flag does (verified against CLI 2.1.280).
+///
+/// `instructions` (Zwiim's session instructions, see [`session_instructions`])
+/// go in as `systemPrompt: { append }`: the adapter keeps the Claude Code
+/// preset and appends them, on new, load and resume alike.
 fn claude_raw_sdk_session_meta(
     agent_type: AgentType,
+    instructions: Option<&str>,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
     if agent_type != AgentType::ClaudeCode {
         return None;
@@ -4211,7 +4260,25 @@ fn claude_raw_sdk_session_meta(
         "claudeCode".to_string(),
         serde_json::Value::Object(claude_code),
     );
+    if let Some(instructions) = instructions {
+        meta.insert(
+            "systemPrompt".to_string(),
+            serde_json::json!({ "append": instructions }),
+        );
+    }
     Some(meta)
+}
+
+/// Zwiim's session instructions for the agents that take them through a
+/// system-prompt channel: Claude (`_meta.systemPrompt`) and Codex
+/// (`developer_instructions`). Other agents get none.
+async fn session_instructions(agent_type: AgentType, cwd: &Path) -> Option<String> {
+    match agent_type {
+        AgentType::ClaudeCode | AgentType::Codex => {
+            Some(crate::agent_instructions::for_dir(cwd).await)
+        }
+        _ => None,
+    }
 }
 
 /// The client capabilities Zwiim advertises on Initialize, with per-agent
@@ -4493,9 +4560,10 @@ fn build_new_session_request(
     agent_type: AgentType,
     cwd: &Path,
     mcp_servers: Vec<McpServer>,
+    instructions: Option<&str>,
 ) -> NewSessionRequest {
     let mut req = NewSessionRequest::new(cwd.to_path_buf());
-    if let Some(meta) = claude_raw_sdk_session_meta(agent_type) {
+    if let Some(meta) = claude_raw_sdk_session_meta(agent_type, instructions) {
         req = req.meta(meta);
     }
     if !mcp_servers.is_empty() {
@@ -4509,9 +4577,10 @@ fn build_load_session_request(
     session_id: SessionId,
     cwd: &Path,
     mcp_servers: Vec<McpServer>,
+    instructions: Option<&str>,
 ) -> LoadSessionRequest {
     let mut req = LoadSessionRequest::new(session_id, cwd.to_path_buf());
-    if let Some(meta) = claude_raw_sdk_session_meta(agent_type) {
+    if let Some(meta) = claude_raw_sdk_session_meta(agent_type, instructions) {
         req = req.meta(meta);
     }
     if !mcp_servers.is_empty() {
@@ -4530,9 +4599,10 @@ fn build_resume_session_request(
     session_id: SessionId,
     cwd: &Path,
     mcp_servers: Vec<McpServer>,
+    instructions: Option<&str>,
 ) -> ResumeSessionRequest {
     let mut req = ResumeSessionRequest::new(session_id, cwd.to_path_buf());
-    if let Some(meta) = claude_raw_sdk_session_meta(agent_type) {
+    if let Some(meta) = claude_raw_sdk_session_meta(agent_type, instructions) {
         req = req.meta(meta);
     }
     if !mcp_servers.is_empty() {
@@ -5281,6 +5351,7 @@ async fn run_connection(
     // keys upstream — see `spawn_agent_connection` for the rationale and
     // why we don't forward the full agent runtime_env here.
     let cwd = resolve_working_dir(working_dir.as_deref());
+    let instructions = session_instructions(agent_type, &cwd).await;
     // Default terminals to the session working directory so an agent that calls
     // `terminal/create` without a `cwd` (e.g. CodeBuddy) runs in the folder the
     // conversation runs in rather than Zwiim's own process cwd.
@@ -5923,6 +5994,7 @@ async fn run_connection(
                         SessionId::new(sid.clone()),
                         &cwd,
                         mcp_servers.clone(),
+                        instructions.as_deref(),
                     );
                     match send_resume_session(&cx, resume_req).await {
                         Ok((resume_resp, grok_models_raw)) => {
@@ -6056,6 +6128,7 @@ async fn run_connection(
                         SessionId::new(sid.clone()),
                         &cwd,
                         mcp_servers.clone(),
+                        instructions.as_deref(),
                     );
                     send_load_session(&cx, load_req).await
                 } else {
@@ -6348,7 +6421,12 @@ async fn run_connection(
                         let (new_resp, grok_models_raw) = send_new_session_capturing_models(
                             &cx,
                             agent_type,
-                            build_new_session_request(agent_type, &cwd, mcp_servers.clone()),
+                            build_new_session_request(
+                            agent_type,
+                            &cwd,
+                            mcp_servers.clone(),
+                            instructions.as_deref(),
+                        ),
                         )
                         .await
                         .map_err(|e| tag_mcp_suspect(e, agent_type, &mcp_servers))?;
@@ -6448,7 +6526,12 @@ async fn run_connection(
                 let (new_resp, grok_models_raw) = send_new_session_capturing_models(
                     &cx,
                     agent_type,
-                    build_new_session_request(agent_type, &cwd, mcp_servers.clone()),
+                    build_new_session_request(
+                            agent_type,
+                            &cwd,
+                            mcp_servers.clone(),
+                            instructions.as_deref(),
+                        ),
                 )
                 .await
                 .map_err(|e| tag_mcp_suspect(e, agent_type, &mcp_servers))?;
@@ -8790,6 +8873,7 @@ async fn handle_fork_or_exit(
             SessionId::new(new_sid.clone()),
             cwd,
             mcp_servers.to_vec(),
+            session_instructions(agent_type, cwd).await.as_deref(),
         );
         match send_resume_session(&cx, resume_req).await {
             Ok(pair) => Some(pair),
@@ -9059,6 +9143,26 @@ fn is_agent_output_update(agent_type: AgentType, update: &SessionUpdate) -> bool
             | SessionUpdate::ToolCall(_)
             | SessionUpdate::ToolCallUpdate(_)
     )
+}
+
+/// A cancelled turn's prompt request, still owed the agent's response.
+type CancelledPrompt = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+
+/// Whether `update` is prose from a turn the user cancelled.
+///
+/// Cancel emits `TurnComplete` without waiting for the agent, which can keep
+/// streaming for seconds before it answers the cancelled prompt. Its message
+/// and thought chunks would land after the turn ended, or inside the next one.
+/// ACP has the agent send every update before its response, so once that
+/// response is in, nothing later belongs to the cancelled turn. Tool calls
+/// still pass: their final status settles cards already on screen.
+fn is_cancelled_turn_prose(cancelled: &mut Option<CancelledPrompt>, update: &SessionUpdate) -> bool {
+    use futures::FutureExt;
+    if cancelled.as_mut().is_some_and(|prompt| prompt.as_mut().now_or_never().is_some()) {
+        *cancelled = None;
+    }
+    cancelled.is_some()
+        && matches!(update, SessionUpdate::AgentMessageChunk(_) | SessionUpdate::AgentThoughtChunk(_))
 }
 
 /// Handle one typed `SessionNotification` inside an active turn.
@@ -9513,6 +9617,9 @@ async fn run_conversation_loop<'a>(
     // drained immediately after the select, still inside the idle loop (the
     // OUTER loop only advances on a command, which may never come).
     let mut config_drift_to_reassert: Vec<(String, String)> = Vec::new();
+    // Set on Cancel until the agent answers the cancelled prompt; see
+    // `is_cancelled_turn_prose`.
+    let mut cancelled_prompt: Option<CancelledPrompt> = None;
     loop {
         // Wait for either a user command or a session update (e.g. available_commands_update)
         let cmd = loop {
@@ -9536,6 +9643,9 @@ async fn run_conversation_loop<'a>(
                             let _ = MatchDispatch::new(dispatch)
                                 .if_notification(
                                     async |notif: SessionNotification| {
+                                        if is_cancelled_turn_prose(&mut cancelled_prompt, &notif.update) {
+                                            return Ok(());
+                                        }
                                         // BEFORE the emit: it overwrites the very
                                         // state the comparison reads.
                                         if let SessionUpdate::ConfigOptionUpdate(update) = &notif.update {
@@ -9861,6 +9971,9 @@ async fn run_conversation_loop<'a>(
                                     } else if let Err(e) = MatchDispatch::new(dispatch)
                                         .if_notification(
                                             async |notif: SessionNotification| {
+                                                if is_cancelled_turn_prose(&mut cancelled_prompt, &notif.update) {
+                                                    return Ok(());
+                                                }
                                                 // Body lives in a named `-> ()`
                                                 // function so this closure is
                                                 // infallible by construction —
@@ -9993,6 +10106,9 @@ async fn run_conversation_loop<'a>(
                             }
                         }
                         prompt_result = &mut prompt_response => {
+                            // A later prompt answered: the cancelled one was
+                            // answered first, or never will be.
+                            cancelled_prompt = None;
                             // ACP defines the `authRequired` rejection as the
                             // signal that the CLIENT should run its auth flow
                             // and come back — the session survives it, so this
@@ -10459,12 +10575,13 @@ async fn run_conversation_loop<'a>(
                                             .cancel_plan_approvals_by_parent(conn_id)
                                             .await;
                                     }
-                                    // Drain the prompt response in the background so
-                                    // the SACP library doesn't log "receiver dropped"
-                                    // errors when the agent eventually responds.
-                                    tokio::spawn(async move {
+                                    // Keep the prompt response (so the SACP library
+                                    // doesn't log "receiver dropped" when the agent
+                                    // eventually responds): until it arrives, the
+                                    // agent's prose is this cancelled turn's tail.
+                                    cancelled_prompt = Some(Box::pin(async move {
                                         let _ = prompt_response.await;
-                                    });
+                                    }));
                                     break;
                                 }
                                 Some(ConnectionCommand::Disconnect) | None => {
@@ -17989,8 +18106,9 @@ mod tests {
 
     #[test]
     fn claude_raw_sdk_meta_enabled_only_for_claude() {
-        let claude_meta = claude_raw_sdk_session_meta(AgentType::ClaudeCode)
+        let claude_meta = claude_raw_sdk_session_meta(AgentType::ClaudeCode, None)
             .expect("Claude must have raw SDK meta");
+        assert!(claude_meta.get("systemPrompt").is_none());
         assert_eq!(
             claude_meta
                 .get("claudeCode")
@@ -18006,7 +18124,90 @@ mod tests {
             Some("summarized")
         );
 
-        assert!(claude_raw_sdk_session_meta(AgentType::Codex).is_none());
+        assert!(claude_raw_sdk_session_meta(AgentType::Codex, Some("x")).is_none());
+    }
+
+    #[test]
+    fn claude_session_requests_append_the_instructions_to_the_preset() {
+        let cwd = PathBuf::from("/tmp/zwiim-instructions");
+        let sid = || SessionId::new("s".to_string());
+        let metas = [
+            serde_json::to_value(build_new_session_request(
+                AgentType::ClaudeCode,
+                &cwd,
+                Vec::new(),
+                Some("be kind"),
+            ))
+            .unwrap(),
+            serde_json::to_value(build_load_session_request(
+                AgentType::ClaudeCode,
+                sid(),
+                &cwd,
+                Vec::new(),
+                Some("be kind"),
+            ))
+            .unwrap(),
+            serde_json::to_value(build_resume_session_request(
+                AgentType::ClaudeCode,
+                sid(),
+                &cwd,
+                Vec::new(),
+                Some("be kind"),
+            ))
+            .unwrap(),
+        ];
+        for req in metas {
+            // An object, not a string: a string would replace Claude Code's own prompt.
+            assert_eq!(
+                req.pointer("/_meta/systemPrompt"),
+                Some(&serde_json::json!({ "append": "be kind" })),
+                "{req}"
+            );
+            assert_eq!(
+                req.pointer("/_meta/claudeCode/emitRawSDKMessages"),
+                Some(&serde_json::json!(true))
+            );
+        }
+    }
+
+    #[test]
+    fn codex_instructions_policy_sets_developer_instructions() {
+        let config = |env: &[(String, String)]| -> Vec<String> {
+            env.iter()
+                .filter(|(k, _)| k == "CODEX_CONFIG")
+                .map(|(_, v)| v.clone())
+                .collect()
+        };
+
+        let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
+        apply_codex_thinking_policy(AgentType::Codex, &mut env, false);
+        apply_codex_instructions_policy(AgentType::Codex, &mut env, Some("be kind"));
+        let merged: serde_json::Value = serde_json::from_str(&config(&env)[0]).unwrap();
+        assert_eq!(
+            merged,
+            serde_json::json!({"model_reasoning_summary": "auto", "developer_instructions": "be kind"})
+        );
+        assert_eq!(config(&env).len(), 1, "no duplicate key");
+
+        // The user's own instructions win.
+        let own = r#"{"developer_instructions":"mine"}"#;
+        let mut chosen = vec![("CODEX_CONFIG".to_string(), own.to_string())];
+        apply_codex_instructions_policy(AgentType::Codex, &mut chosen, Some("be kind"));
+        assert_eq!(config(&chosen), [own]);
+
+        // Not JSON: left as it is.
+        let mut odd = vec![("CODEX_CONFIG".to_string(), "not json".to_string())];
+        apply_codex_instructions_policy(AgentType::Codex, &mut odd, Some("be kind"));
+        assert_eq!(config(&odd), ["not json"]);
+
+        let mut none = vec![("PATH".to_string(), "/usr/bin".to_string())];
+        apply_codex_instructions_policy(AgentType::Codex, &mut none, None);
+        assert!(config(&none).is_empty());
+        for agent in [AgentType::ClaudeCode, AgentType::Grok] {
+            let mut other = vec![("PATH".to_string(), "/usr/bin".to_string())];
+            apply_codex_instructions_policy(agent, &mut other, Some("be kind"));
+            assert!(config(&other).is_empty(), "{agent:?} is not codex");
+        }
     }
 
     #[test]
@@ -19511,7 +19712,7 @@ mod tests {
     #[test]
     fn build_new_session_request_sets_claude_raw_meta() {
         let cwd = std::path::PathBuf::from("/tmp/zwiim");
-        let req = build_new_session_request(AgentType::ClaudeCode, &cwd, Vec::new());
+        let req = build_new_session_request(AgentType::ClaudeCode, &cwd, Vec::new(), None);
 
         assert_eq!(
             req.meta
@@ -19737,6 +19938,7 @@ mod tests {
             SessionId::new("abc".to_string()),
             &cwd,
             Vec::new(),
+            None,
         );
 
         assert!(req.meta.is_none());
@@ -19755,7 +19957,7 @@ mod tests {
     fn openclaw_session_requests_carry_no_mcp_servers() {
         let cwd = std::path::PathBuf::from("/tmp/zwiim");
 
-        let new_req = build_new_session_request(AgentType::OpenClaw, &cwd, Vec::new());
+        let new_req = build_new_session_request(AgentType::OpenClaw, &cwd, Vec::new(), None);
         assert!(
             new_req.mcp_servers.is_empty(),
             "OpenClaw session/new must carry no MCP servers"
@@ -19772,6 +19974,7 @@ mod tests {
             SessionId::new("openclaw-session".to_string()),
             &cwd,
             Vec::new(),
+            None,
         );
         assert!(
             load_req.mcp_servers.is_empty(),
@@ -19866,6 +20069,7 @@ mod tests {
             SessionId::new("abc".to_string()),
             &cwd,
             Vec::new(),
+            None,
         );
 
         assert_eq!(
@@ -19886,6 +20090,7 @@ mod tests {
             SessionId::new("abc".to_string()),
             &cwd,
             Vec::new(),
+            None,
         );
 
         assert!(req.meta.is_none());
@@ -19907,6 +20112,7 @@ mod tests {
             SessionId::new("openclaw-session".to_string()),
             &cwd,
             Vec::new(),
+            None,
         );
         assert!(
             req.mcp_servers.is_empty(),
@@ -22253,6 +22459,33 @@ mod tests {
         assert!(is_agent_output_update(AgentType::ClaudeCode, &retry));
     }
 
+    /// After Cancel, the agent's prose is dropped until it answers the
+    /// cancelled prompt, then flows again. Tool calls always pass.
+    #[tokio::test]
+    async fn cancelled_turn_prose_is_dropped_until_the_prompt_is_answered() {
+        let message = SessionUpdate::AgentMessageChunk(ContentChunk::new("53".into()));
+        let thought = SessionUpdate::AgentThoughtChunk(ContentChunk::new("hm".into()));
+        let tool = SessionUpdate::ToolCallUpdate(sacp::schema::ToolCallUpdate::new(
+            "toolu_01",
+            sacp::schema::ToolCallUpdateFields::new().status(sacp::schema::ToolCallStatus::Failed),
+        ));
+
+        let mut none: Option<CancelledPrompt> = None;
+        assert!(!is_cancelled_turn_prose(&mut none, &message), "no cancel: prose flows");
+
+        let (answer, answered) = tokio::sync::oneshot::channel::<()>();
+        let mut cancelled: Option<CancelledPrompt> = Some(Box::pin(async move {
+            let _ = answered.await;
+        }));
+        assert!(is_cancelled_turn_prose(&mut cancelled, &message));
+        assert!(is_cancelled_turn_prose(&mut cancelled, &thought));
+        assert!(!is_cancelled_turn_prose(&mut cancelled, &tool), "tool status still settles cards");
+
+        answer.send(()).unwrap();
+        assert!(!is_cancelled_turn_prose(&mut cancelled, &message), "answered: prose flows again");
+        assert!(cancelled.is_none());
+    }
+
     /// The frames below are a VERBATIM capture from a real `pi-acp@0.0.33`,
     /// driven against a stub `pi --mode rpc` via the supported `PI_ACP_PI_COMMAND`
     /// override, so this test asserts against the wire rather than against my
@@ -24079,7 +24312,7 @@ mod tests {
     #[test]
     fn untyped_new_session_carries_the_typed_request_payload() {
         let cwd = std::path::PathBuf::from("/tmp/zwiim");
-        let req = build_new_session_request(AgentType::Cline, &cwd, Vec::new());
+        let req = build_new_session_request(AgentType::Cline, &cwd, Vec::new(), None);
         let expected = serde_json::to_value(&req).unwrap();
 
         let untyped = UntypedMessage::new("session/new", req).expect("builds");

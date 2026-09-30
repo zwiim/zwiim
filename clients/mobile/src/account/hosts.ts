@@ -83,12 +83,22 @@ export function hostMeta(
     case "lan":
       return "⌂ same network · paired";
     case "relay":
-      return "☁ via Zwiim Cloud · paired";
+      return "☁\uFE0E via Zwiim Cloud · paired";
     case "connecting":
       return "connecting…";
     case "reconnecting":
       return "reconnecting…";
   }
-  if (host.online) return mode === "local" ? "online · paired" : "☁ via Zwiim Cloud · paired";
+  if (host.online) return mode === "local" ? "online · paired" : "☁\uFE0E via Zwiim Cloud · paired";
   return host.last_seen_at ? `offline · last seen ${ago(host.last_seen_at, now)}` : "offline";
+}
+
+/**
+ * Setting this phone up, while it is paired with none of the account's
+ * hosts: the Mac to pair (online first), or null while no Mac has turned on
+ * remote access yet. Undefined once a host is paired: the list takes over.
+ */
+export function macToPair(hosts: HostEntry[]): HostEntry | null | undefined {
+  if (hosts.some((h) => h.paired)) return undefined;
+  return hosts.find((h) => h.online) ?? hosts[0] ?? null;
 }

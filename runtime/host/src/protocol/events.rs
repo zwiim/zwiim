@@ -197,6 +197,12 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
             "agent.error",
             json!({ "message": scrub(message), "code": code }),
         ),
+        // The provider's terminal failure (a model the account can't use, a
+        // usage limit): the turn ends with no reply, so this is the reason.
+        AcpEvent::SessionFailure { record } => {
+            let (code, message) = record.as_error()?;
+            ("agent.error", json!({ "message": scrub(&message), "code": code }))
+        }
         AcpEvent::ConversationStatusChanged { status, .. } => {
             ("session.status", json!({ "status": to_value(status) }))
         }
@@ -838,6 +844,33 @@ pub(crate) mod tests {
         }];
         let v = project_history(&turns, None);
         assert_eq!(v[0]["blocks"][0]["text"], "Here it is.\n\n\n**Create `hi.txt`**");
+    }
+
+    /// A provider's terminal failure reaches clients as `agent.error`, with the
+    /// provider's words and paths scrubbed; a retry warning does not.
+    #[test]
+    fn a_terminal_provider_failure_is_an_agent_error() {
+        let failure = |severity: &str| {
+            env(AcpEvent::SessionFailure {
+                record: crate::acp::types::SessionFailureRecord {
+                    id: "f-1".into(),
+                    revision: 1,
+                    category: "access".into(),
+                    severity: severity.into(),
+                    title: "The model `gpt-5.5` does not exist, see /Users/me/.codex/log".into(),
+                    details: None,
+                    actions: vec![],
+                    resolved: false,
+                },
+            })
+        };
+        let v = project_envelope("s", None, &failure("error")).expect("projected");
+        assert_eq!(v.kind, "agent.error");
+        assert_eq!(v.payload["code"], "provider_access");
+        let message = v.payload["message"].as_str().unwrap();
+        assert!(message.contains("gpt-5.5") && !message.contains("/Users/me"), "{message}");
+
+        assert!(project_envelope("s", None, &failure("warning")).is_none());
     }
 
     fn env(payload: AcpEvent) -> EventEnvelope {

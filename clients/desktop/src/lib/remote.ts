@@ -19,6 +19,7 @@ import {
   parsePairingInvitation,
   ZwiimClientError,
   type CloudHost,
+  type CloudStatus,
   type ConnectionMode,
 } from "@zwiim/sdk";
 import { DESKTOP_CLIENT } from "./app-info";
@@ -49,6 +50,19 @@ export function cloudClient(remote: RemoteBridge, url: string): CloudClient {
 /** The account's hosts, with presence. */
 export function listCloudHosts(remote: RemoteBridge, url: string): Promise<CloudHost[]> {
   return cloudClient(remote, url).hosts();
+}
+
+/**
+ * Turn on remote access for this computer's host: a single-use token from the
+ * account, redeemed by the host itself. The host names itself after the computer.
+ */
+export async function enableRemoteAccess(
+  remote: RemoteBridge,
+  cloudUrl: string,
+  host: HostClient,
+): Promise<CloudStatus> {
+  const { enrollment_token } = await cloudClient(remote, cloudUrl).enrollmentToken();
+  return host.request("cloud.enroll", { cloud_url: cloudUrl, enrollment_token });
 }
 
 /** A connection to a host on another computer. */

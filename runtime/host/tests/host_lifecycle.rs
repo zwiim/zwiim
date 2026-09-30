@@ -288,3 +288,163 @@ async fn data_from_a_newer_zwiim_is_refused_untouched() {
         "no snapshot of data it cannot read"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_token_lives_in_the_key_store_not_sqlite_and_survives_restarts() {
+    use std::os::unix::fs::PermissionsExt;
+    use zwiim_host::db::service::app_metadata_service;
+    let s = sandbox();
+    // An install from before this change kept its token in SQLite.
+    let legacy = "legacy0token0kept0across0the0move";
+    let db = zwiim_host::db::init_database(&s.data, "test")
+        .await
+        .unwrap();
+    app_metadata_service::upsert_value(&db.conn, "web_service_token", legacy)
+        .await
+        .unwrap();
+    db.conn.close().await.unwrap();
+
+    let mut child = host_command(&s).spawn().unwrap();
+    let first = wait_ready(&s.data, &mut child).await;
+    assert_eq!(first.token, legacy, "an existing install keeps its token");
+    let hello_first = hello(&first).await.unwrap();
+
+    // Neither the handshake nor diagnostics hand the token back.
+    let diagnostics: Value = reqwest::Client::new()
+        .post(format!("{}/zwiim/v1/host.diagnostics", first.url))
+        .bearer_auth(&first.token)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    for body in [&hello_first, &diagnostics] {
+        assert!(!body.to_string().contains(legacy), "{body}");
+    }
+    let status: Value = reqwest::Client::new()
+        .post(format!("{}/api/get_web_server_status", first.url))
+        .bearer_auth(&first.token)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!status.to_string().contains(legacy), "{status}");
+
+    terminate(&child);
+    assert_eq!(
+        wait_exit(&mut child, Duration::from_secs(30)).and_then(|s| s.code()),
+        Some(0)
+    );
+
+    // The token moved into the private key-store file and out of SQLite.
+    let file = s.data.join("host-token");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), legacy);
+    assert_eq!(
+        std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let db = zwiim_host::db::init_database(&s.data, "test")
+        .await
+        .unwrap();
+    assert_eq!(
+        app_metadata_service::get_value(&db.conn, "web_service_token")
+            .await
+            .unwrap(),
+        None
+    );
+    db.conn.close().await.unwrap();
+
+    // A fresh process on the same data (a restart, or an updated Host) reads
+    // the same token and identity back; nothing is regenerated.
+    let mut child = host_command(&s).spawn().unwrap();
+    let second = wait_ready(&s.data, &mut child).await;
+    assert_eq!(second.token, legacy);
+    assert_eq!(
+        hello(&second).await.unwrap()["host_id"],
+        hello_first["host_id"]
+    );
+    terminate(&child);
+    assert_eq!(
+        wait_exit(&mut child, Duration::from_secs(30)).and_then(|s| s.code()),
+        Some(0)
+    );
+
+    // The token never reached the Host's log files.
+    for entry in std::fs::read_dir(s.data.join("logs"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let text = std::fs::read_to_string(entry.path()).unwrap_or_default();
+        assert!(!text.contains(legacy), "{}", entry.path().display());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_host_mints_one_token_and_keeps_it() {
+    let s = sandbox();
+    // stderr is a log too under a service manager: the token never reaches it.
+    let stderr = s.home.join("stderr.log");
+    let mut child = host_command(&s)
+        .stderr(std::fs::File::create(&stderr).unwrap())
+        .spawn()
+        .unwrap();
+    let first = wait_ready(&s.data, &mut child).await;
+    terminate(&child);
+    assert_eq!(
+        wait_exit(&mut child, Duration::from_secs(30)).and_then(|s| s.code()),
+        Some(0)
+    );
+    assert_eq!(
+        std::fs::read_to_string(s.data.join("host-token")).unwrap(),
+        first.token
+    );
+    let printed = std::fs::read_to_string(&stderr).unwrap();
+    assert!(printed.contains("generated an access token"), "{printed}");
+    assert!(!printed.contains(&first.token));
+
+    let mut child = host_command(&s).spawn().unwrap();
+    let second = wait_ready(&s.data, &mut child).await;
+    assert_eq!(
+        second.token, first.token,
+        "a restart does not rotate the token"
+    );
+    terminate(&child);
+    assert_eq!(
+        wait_exit(&mut child, Duration::from_secs(30)).and_then(|s| s.code()),
+        Some(0)
+    );
+}
+
+/// Whoever signs the Host (the release workflow, the Desktop bundler
+/// re-signing its sidecar) signs it as `dev.zwiim.host`, whatever the file
+/// is called: the identifier is embedded, not derived from the filename.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_re_signed_host_keeps_its_identifier_under_any_filename() {
+    let dir = tempfile::tempdir().unwrap();
+    let copy = dir.path().join("renamed-binary");
+    std::fs::copy(env!("CARGO_BIN_EXE_zwiim-host"), &copy).unwrap();
+    let signed = Command::new("/usr/bin/codesign")
+        .args(["--force", "--sign", "-"])
+        .arg(&copy)
+        .status()
+        .unwrap();
+    assert!(signed.success());
+    let details = Command::new("/usr/bin/codesign")
+        .arg("-dv")
+        .arg(&copy)
+        .output()
+        .unwrap();
+    let details = String::from_utf8_lossy(&details.stderr);
+    let want = format!(
+        "Identifier={}",
+        zwiim_host::update::service::HOST_SIGNING_IDENTIFIER
+    );
+    assert!(details.lines().any(|l| l == want), "{details}");
+}

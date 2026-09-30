@@ -3,6 +3,7 @@ import { hostOwnedDetails } from "@zwiim/sdk";
 import type { Account, AccountStatus, NativeBridge } from "@/lib/bridge";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { rememberWelcomed } from "@/lib/prefs";
+import { enableRemoteAccess } from "@/lib/remote";
 
 /** How the signed-in account relates to the connected host. */
 export type Ownership =
@@ -50,6 +51,8 @@ export function useAccount(
   const [refused, setRefused] = useState<{ hostId: string; userId: string; ownerEmail: string | null } | null>(null);
   /** The host+account pair a claim was sent for on this connection. */
   const claimed = useRef<string | null>(null);
+  /** Just signed in on this computer: turn on remote access once the host is the account's. */
+  const enableRemote = useRef(false);
 
   useEffect(() => {
     bridge.accountStatus().then(setStatus, (e) => {
@@ -75,6 +78,20 @@ export function useAccount(
     });
   }, [remote, account, host, owner, online, controller]);
 
+  // Signed in here: the phone should find this Mac without a trip to Devices.
+  // Best effort — Devices still offers Enable if this fails.
+  useEffect(() => {
+    const cloudUrl = status?.cloud_url;
+    if (!enableRemote.current || remote || !account || owner?.user_id !== account.user_id || !online) return;
+    enableRemote.current = false;
+    if (!bridge.remote || !cloudUrl) return;
+    const remoteBridge = bridge.remote;
+    controller.client
+      .request("cloud.status", {})
+      .then((s) => (s.enrolled ? null : enableRemoteAccess(remoteBridge, cloudUrl, controller.client)))
+      .catch(() => {});
+  }, [remote, account, owner, online, status, bridge, controller]);
+
   let ownership: Ownership;
   if (remote) ownership = { kind: "remote" };
   else if (!account) ownership = { kind: "local" };
@@ -91,6 +108,7 @@ export function useAccount(
     try {
       const next = await bridge.signIn();
       claimed.current = null;
+      enableRemote.current = true;
       setStatus((s) => ({ ...s, available: s?.available ?? true, account: next }));
       rememberWelcomed();
     } catch (e) {

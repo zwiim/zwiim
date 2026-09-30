@@ -786,11 +786,7 @@ const DIAG_SAFE_ENV_KEYS: &[&str] = &[
 /// returned verbatim. Multibyte-safe (masks by `char`, mirroring the approach in
 /// `models::model_provider::mask_api_key`) so it never panics on a UTF-8 value.
 fn redact_secret(key: &str, value: &str) -> String {
-    let lower = key.to_ascii_lowercase();
-    let secretish = ["key", "token", "secret", "password", "passwd", "auth", "credential"]
-        .iter()
-        .any(|needle| lower.contains(needle));
-    if !secretish {
+    if !crate::db::plaintext_secrets::is_secret_env_name(key) {
         return value.to_string();
     }
     let chars: Vec<char> = value.chars().collect();

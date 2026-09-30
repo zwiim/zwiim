@@ -7,10 +7,13 @@ import type { LucideIcon } from "lucide-react-native";
 
 export {
   ArrowUp,
+  Bot,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  CircleCheckBig,
   Ellipsis,
   Folder,
   Gauge,
@@ -18,6 +21,7 @@ export {
   ListChecks,
   MessagesSquare,
   Plus,
+  ScanLine,
   Search,
   Shield,
   ShieldOff,

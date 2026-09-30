@@ -5833,6 +5833,9 @@ pub async fn git_log(
     if all_branches {
         args.push("--all".to_string());
     } else if let Some(ref b) = branch {
+        // A client names the branch: never let it read as an option
+        // (`--output=<path>` would write a file anywhere).
+        args.push("--end-of-options".to_string());
         args.push(b.clone());
     }
     let output = crate::process::tokio_command("git")
@@ -7075,6 +7078,29 @@ mod tests {
                 .collect::<Vec<_>>(),
             "the HEAD rev must read exactly like the branch it points at"
         );
+    }
+
+    #[tokio::test]
+    async fn git_log_branch_is_never_an_option() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git_run(p, &["init", "-q", "-b", "main"]);
+        git_run(p, &["commit", "-q", "--allow-empty", "-m", "c1"]);
+        let target = dir.path().join("written-by-git-log");
+
+        let _ = git_log(
+            p.to_string_lossy().to_string(),
+            None,
+            Some(format!("--output={}", target.display())),
+            None,
+            None,
+            None,
+            Some(false),
+            Some(false),
+        )
+        .await;
+
+        assert!(!target.exists(), "the branch was read as git's --output option");
     }
 
     // A detached HEAD has no branch, so push status is genuinely unknown — the

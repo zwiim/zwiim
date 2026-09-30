@@ -62,6 +62,15 @@ pub async fn insert_if_absent<C: ConnectionTrait>(
     Ok(())
 }
 
+/// Remove `key` outright (not a soft delete: the value must not stay on disk).
+pub async fn delete_value<C: ConnectionTrait>(conn: &C, key: &str) -> Result<(), DbError> {
+    app_metadata::Entity::delete_many()
+        .filter(app_metadata::Column::Key.eq(key))
+        .exec(conn)
+        .await?;
+    Ok(())
+}
+
 pub async fn get_value(conn: &DatabaseConnection, key: &str) -> Result<Option<String>, DbError> {
     get_value_conn(conn, key).await
 }

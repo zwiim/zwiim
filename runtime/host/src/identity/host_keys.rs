@@ -29,6 +29,8 @@ use crate::db::service::app_metadata_service;
 pub const KEY_STORE_ENV: &str = "ZWIIM_HOST_KEY_STORE";
 const KEYCHAIN_SERVICE: &str = "zwiim";
 const KEY_FILE: &str = "host-keys.json";
+/// The host's access token, beside its keys in the file store.
+const TOKEN_FILE: &str = "host-token";
 const SIGN_PUBKEY_KEY: &str = "host_sign_pubkey";
 const STATIC_PUBKEY_KEY: &str = "host_static_pubkey";
 const STORED_VERSION: u32 = 1;
@@ -148,9 +150,22 @@ pub enum KeyStore {
 impl KeyStore {
     /// The store `ZWIIM_HOST_KEY_STORE` selects for host `host_id`.
     pub fn from_env(data_dir: &Path, host_id: &str) -> Result<Self, HostKeyError> {
+        Self::select(Self::keychain(host_id), data_dir.join(KEY_FILE))
+    }
+
+    /// The same store, holding host `host_id`'s access token instead of its
+    /// keys: its own keychain entry, or `<data_dir>/host-token` (mode `0600`).
+    pub fn token_from_env(data_dir: &Path, host_id: &str) -> Result<Self, HostKeyError> {
+        let keychain = Self::Keychain {
+            account: format!("host-token:{host_id}"),
+        };
+        Self::select(keychain, data_dir.join(TOKEN_FILE))
+    }
+
+    fn select(keychain: Self, file: PathBuf) -> Result<Self, HostKeyError> {
         match std::env::var(KEY_STORE_ENV).ok().as_deref().map(str::trim) {
-            None | Some("") | Some("keychain") => Ok(Self::keychain(host_id)),
-            Some("file") => Ok(Self::File(data_dir.join(KEY_FILE))),
+            None | Some("") | Some("keychain") => Ok(keychain),
+            Some("file") => Ok(Self::File(file)),
             Some(other) => Err(HostKeyError::Store(format!(
                 "unknown {KEY_STORE_ENV} value `{other}` (expected `keychain` or `file`)"
             ))),
@@ -215,6 +230,19 @@ async fn blocking<T: Send + 'static>(
     tokio::task::spawn_blocking(move || f(&store))
         .await
         .map_err(|e| HostKeyError::Store(e.to_string()))?
+}
+
+/// The access token kept in `store`, if any.
+pub async fn load_token(store: &KeyStore) -> Result<Option<Zeroizing<String>>, HostKeyError> {
+    Ok(blocking(store, KeyStore::load)
+        .await?
+        .filter(|token| !token.trim().is_empty()))
+}
+
+/// Keep `token` in `store`.
+pub async fn save_token(store: &KeyStore, token: &str) -> Result<(), HostKeyError> {
+    let token = Zeroizing::new(token.to_string());
+    blocking(store, move |s| s.save(&token)).await
 }
 
 /// Load this host's keys from `store`, minting and persisting them on first
@@ -382,6 +410,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_token_has_its_own_entry_in_the_same_store() {
+        let dir = Path::new("/data");
+        temp_env::with_var(KEY_STORE_ENV, None::<&str>, || {
+            match KeyStore::token_from_env(dir, "h1").unwrap() {
+                // Its own entry: the identity blob a rollback reads is untouched.
+                KeyStore::Keychain { account } => assert_eq!(account, "host-token:h1"),
+                other => panic!("{other:?}"),
+            }
+        });
+        temp_env::with_var(KEY_STORE_ENV, Some("file"), || {
+            match KeyStore::token_from_env(dir, "h1").unwrap() {
+                KeyStore::File(path) => assert_eq!(path, dir.join(TOKEN_FILE)),
+                other => panic!("{other:?}"),
+            }
+        });
+        temp_env::with_var(KEY_STORE_ENV, Some("vault"), || {
+            assert!(KeyStore::token_from_env(dir, "h1").is_err());
+        });
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn token_file_is_private_and_round_trips() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let store = KeyStore::File(dir.path().join(TOKEN_FILE));
+        assert!(load_token(&store).await.unwrap().is_none());
+        save_token(&store, "t0k3n").await.unwrap();
+        assert_eq!(load_token(&store).await.unwrap().as_deref().map(String::as_str), Some("t0k3n"));
+        let mode = std::fs::metadata(dir.path().join(TOKEN_FILE)).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
     /// Exercises the real OS keychain; run by hand (`--ignored`), since it
     /// writes to the user's login keychain.
     #[tokio::test]
@@ -395,5 +457,21 @@ mod tests {
         if let KeyStore::Keychain { account } = &store {
             keychain_entry(account).unwrap().delete_credential().unwrap();
         }
+    }
+
+    /// Exercises the real OS keychain; run by hand (`--ignored`).
+    #[tokio::test]
+    #[ignore]
+    async fn keychain_token_round_trips() {
+        let host_id = format!("test-{}", uuid::Uuid::new_v4());
+        temp_env::async_with_vars([(KEY_STORE_ENV, None::<&str>)], async {
+            let store = KeyStore::token_from_env(Path::new("/unused"), &host_id).unwrap();
+            save_token(&store, "t0k3n").await.unwrap();
+            assert_eq!(load_token(&store).await.unwrap().as_deref().map(String::as_str), Some("t0k3n"));
+            if let KeyStore::Keychain { account } = &store {
+                keychain_entry(account).unwrap().delete_credential().unwrap();
+            }
+        })
+        .await;
     }
 }

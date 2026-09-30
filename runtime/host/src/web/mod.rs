@@ -107,46 +107,35 @@ pub fn generate_random_token() -> String {
     uuid::Uuid::new_v4().to_string().replace('-', "")
 }
 
-/// Resolve the token to use when starting the Web server:
-/// 1. use the explicit override if non-empty;
-/// 2. fall back to the persisted value in `AppMetadata`;
-/// 3. otherwise generate a fresh random token.
-async fn resolve_web_service_token(
-    conn: &DatabaseConnection,
-    override_token: Option<String>,
-) -> Result<String, AppCommandError> {
-    let trimmed_override = override_token
+/// Resolve the token to use when starting the Web server: the explicit
+/// override if non-empty, else a fresh random token. SQLite is never a
+/// source for it.
+fn resolve_web_service_token(override_token: Option<String>) -> String {
+    override_token
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-
-    if let Some(value) = trimmed_override {
-        return Ok(value);
-    }
-
-    match app_metadata_service::get_value(conn, WEB_SERVICE_TOKEN_KEY)
-        .await
-        .map_err(AppCommandError::from)?
-    {
-        Some(saved) if !saved.trim().is_empty() => Ok(saved),
-        _ => Ok(generate_random_token()),
-    }
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(generate_random_token)
 }
 
-/// Resolve the access token for the **standalone** server, persisting a
+/// Resolve the access token for the **standalone** server, keeping a
 /// generated one so it survives restarts. This matters for self-update: the
 /// upgrade restarts the process, and if the token rotated, the already
 /// authenticated frontend would start getting 401s and could no longer tell a
-/// successful upgrade from an auto-rollback. Resolution mirrors the desktop web
-/// service — a non-empty `ZWIIM_TOKEN` override wins; otherwise reuse the value
-/// persisted in `AppMetadata`; otherwise generate one and persist it. An empty
-/// or whitespace override is treated as unset (never accepted as a real token).
-/// `*generated` is set when a fresh token was created, so the caller can show
-/// it to the operator.
+/// successful upgrade from an auto-rollback. A non-empty `ZWIIM_TOKEN`
+/// override wins (never stored); otherwise the token lives in the host's key
+/// store (`store`: the keychain, or the private file fallback), never in
+/// SQLite. A token an older build left in `app_metadata` moves into the store
+/// once and is deleted from the database. Without a usable store the token
+/// lasts only for this run. An empty or whitespace override is treated as
+/// unset. `*generated` is set when a fresh token was created, so the caller
+/// can show it to the operator.
 pub async fn resolve_persisted_server_token(
     conn: &DatabaseConnection,
+    store: Option<&crate::identity::host_keys::KeyStore>,
     override_token: Option<String>,
     generated: &mut bool,
 ) -> String {
+    use crate::identity::host_keys::{load_token, save_token};
     *generated = false;
 
     if let Some(value) = override_token
@@ -156,19 +145,53 @@ pub async fn resolve_persisted_server_token(
         return value;
     }
 
-    if let Ok(Some(saved)) = app_metadata_service::get_value(conn, WEB_SERVICE_TOKEN_KEY).await {
-        if !saved.trim().is_empty() {
-            return saved;
+    let Some(store) = store else {
+        tracing::warn!(
+            "[SERVER][WARN] no host key store; the access token will rotate on restart — set \
+             ZWIIM_TOKEN to pin it"
+        );
+        *generated = true;
+        return generate_random_token();
+    };
+
+    let legacy = app_metadata_service::get_value(conn, WEB_SERVICE_TOKEN_KEY)
+        .await
+        .ok()
+        .flatten()
+        .filter(|saved| !saved.trim().is_empty());
+    let stored = match load_token(store).await {
+        Ok(stored) => stored,
+        Err(e) => {
+            tracing::warn!(
+                "[SERVER][WARN] could not read the access token from the {} store ({e}); it \
+                 will rotate on restart — set ZWIIM_TOKEN to pin it",
+                store.name()
+            );
+            *generated = true;
+            return generate_random_token();
+        }
+    };
+    let (token, unsaved) = match (stored, legacy) {
+        (Some(stored), _) => (stored.to_string(), false),
+        (None, Some(legacy)) => (legacy, true),
+        (None, None) => {
+            *generated = true;
+            (generate_random_token(), true)
+        }
+    };
+    if unsaved {
+        if let Err(e) = save_token(store, &token).await {
+            tracing::warn!(
+                "[SERVER][WARN] could not keep the access token in the {} store ({e}); it will \
+                 rotate on restart — set ZWIIM_TOKEN to pin it",
+                store.name()
+            );
+            return token;
         }
     }
-
-    let token = generate_random_token();
-    *generated = true;
-    if let Err(e) = app_metadata_service::upsert_value(conn, WEB_SERVICE_TOKEN_KEY, &token).await {
-        tracing::warn!(
-            "[SERVER][WARN] could not persist the generated access token ({e}); it will rotate on \
-             restart and self-update success detection may be unreliable — set ZWIIM_TOKEN to pin it"
-        );
+    // Stored: SQLite is no longer a source for it.
+    if let Err(e) = app_metadata_service::delete_value(conn, WEB_SERVICE_TOKEN_KEY).await {
+        tracing::warn!("[SERVER][WARN] could not remove the legacy access token from the database: {e}");
     }
     token
 }
@@ -190,19 +213,18 @@ async fn resolve_web_service_port(
     Ok(port)
 }
 
-/// Persist token and port atomically so a partial failure cannot leave
-/// `app_metadata` in a mixed old/new state.
+/// Persist the port, and drop any token an older build stored, atomically so
+/// a partial failure cannot leave `app_metadata` in a mixed old/new state.
+/// The token itself is never written to SQLite.
 async fn persist_web_service_config(
     conn: &DatabaseConnection,
-    token: &str,
     port: u16,
 ) -> Result<(), AppCommandError> {
     // Own the values so the inner future is 'static (required by transaction).
-    let token_owned = token.to_string();
     let port_str = port.to_string();
     conn.transaction::<_, (), AppCommandError>(move |txn| {
         Box::pin(async move {
-            app_metadata_service::upsert_value(txn, WEB_SERVICE_TOKEN_KEY, &token_owned)
+            app_metadata_service::delete_value(txn, WEB_SERVICE_TOKEN_KEY)
                 .await
                 .map_err(AppCommandError::from)?;
             app_metadata_service::upsert_value(txn, WEB_SERVICE_PORT_KEY, &port_str)
@@ -239,9 +261,6 @@ pub struct WebServiceConfig {
 pub async fn load_web_service_config(
     conn: &DatabaseConnection,
 ) -> Result<WebServiceConfig, AppCommandError> {
-    let token = app_metadata_service::get_value(conn, WEB_SERVICE_TOKEN_KEY)
-        .await
-        .map_err(AppCommandError::from)?;
     let port = app_metadata_service::get_value(conn, WEB_SERVICE_PORT_KEY)
         .await
         .map_err(AppCommandError::from)?
@@ -252,8 +271,9 @@ pub async fn load_web_service_config(
             .await
             .map_err(AppCommandError::from)?,
     );
+    // The token is a credential: never stored here, never handed back.
     Ok(WebServiceConfig {
-        token: token.filter(|value| !value.trim().is_empty()),
+        token: None,
         port,
         auto_start,
     })
@@ -263,14 +283,14 @@ pub async fn update_web_service_config_core(
     conn: &DatabaseConnection,
     config: WebServiceConfig,
 ) -> Result<WebServiceConfig, AppCommandError> {
-    let token = config.token.unwrap_or_default().trim().to_string();
+    // `config.token` is ignored: the token is never written to SQLite.
     let port = config.port.unwrap_or(DEFAULT_WEB_SERVICE_PORT);
     let auto_start = if config.auto_start { "true" } else { "false" }.to_string();
     let port_str = port.to_string();
 
     conn.transaction::<_, (), AppCommandError>(move |txn| {
         Box::pin(async move {
-            app_metadata_service::upsert_value(txn, WEB_SERVICE_TOKEN_KEY, &token)
+            app_metadata_service::delete_value(txn, WEB_SERVICE_TOKEN_KEY)
                 .await
                 .map_err(AppCommandError::from)?;
             app_metadata_service::upsert_value(txn, WEB_SERVICE_PORT_KEY, &port_str)
@@ -537,7 +557,7 @@ pub(crate) async fn do_start_web_server_with_state(
 
     let port = resolve_web_service_port(&app_state.db.conn, port).await?;
     let host = host.unwrap_or_else(|| "0.0.0.0".to_string());
-    let token = resolve_web_service_token(&app_state.db.conn, token).await?;
+    let token = resolve_web_service_token(token);
 
     // Validate the upload-quota strict-mode posture before any I/O. A
     // misconfigured env var must surface as a clean `AppCommandError`
@@ -578,7 +598,7 @@ pub(crate) async fn do_start_web_server_with_state(
     // mode check, so a misconfiguration doesn't overwrite saved state
     // and lock the desktop into a permanent "Web service won't start"
     // loop.
-    persist_web_service_config(&app_state.db.conn, &token, port).await?;
+    persist_web_service_config(&app_state.db.conn, port).await?;
 
     // Reset before any handler subscribes, so a leftover signal from the
     // previous cycle cannot make a new handler exit immediately.
@@ -748,7 +768,7 @@ pub(crate) async fn do_start_web_server_tauri(
     let db = app.state::<crate::db::AppDatabase>();
     let port_val = resolve_web_service_port(&db.conn, port).await?;
     let host_val = host.unwrap_or_else(|| "0.0.0.0".to_string());
-    let token = resolve_web_service_token(&db.conn, token).await?;
+    let token = resolve_web_service_token(token);
 
     // Same strict-mode validation as `do_start_web_server_with_state`:
     // run before any I/O so a misconfiguration cleanly fails the toggle
@@ -782,7 +802,7 @@ pub(crate) async fn do_start_web_server_tauri(
     // Persist only after a successful bind AND strict-mode validation,
     // so a misconfiguration doesn't lock the desktop into a permanent
     // "Web service won't start" loop.
-    persist_web_service_config(&db.conn, &token, port_val).await?;
+    persist_web_service_config(&db.conn, port_val).await?;
 
     let static_dir = find_static_dir_tauri(&app);
 

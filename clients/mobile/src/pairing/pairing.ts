@@ -12,6 +12,7 @@ import {
   type CloudClient,
   type KeyPairingInvitation,
 } from "@zwiim/sdk";
+import type { HostEntry } from "../account/hosts";
 import type { DeviceIdentity, SecureStore } from "../platform/capabilities";
 
 /** This device's identity, made and kept on first use. */
@@ -65,6 +66,23 @@ export function readPairingCode(
     return { problem: "wrong_host" };
   }
   return { invitation };
+}
+
+/**
+ * The account's host a code scanned without choosing one is for. A Mac the
+ * list has not caught up with yet goes by its id; the Cloud still checks it.
+ */
+export function invitedHost(invitation: KeyPairingInvitation, hosts: HostEntry[]): HostEntry {
+  return (
+    hosts.find((h) => h.host_id === invitation.host_id) ?? {
+      host_id: invitation.host_id,
+      name: null,
+      static_pubkey: invitation.host_static_pubkey,
+      online: false,
+      last_seen_at: null,
+      paired: false,
+    }
+  );
 }
 
 export interface PairDeviceOptions {

@@ -178,14 +178,15 @@ export default function App() {
 }
 
 function PairRoute({ route, navigation }: NativeStackScreenProps<RootStack, "Pair">) {
-  const { host } = route.params;
+  const { host, hosts } = route.params;
   const { signOut } = useAccount();
   return (
     <PairingScreen
-      host={host}
+      host={host ?? null}
+      hosts={hosts ?? []}
       onClose={() => navigation.goBack()}
       // Connect at once, while the done screen shows.
-      onPaired={() => void currentHost.open({ ...host, paired: true })}
+      onPaired={(paired) => void currentHost.open({ ...paired, paired: true })}
       onOpen={() => navigation.popTo("Host")}
       onSignIn={() => void signOut()}
     />

@@ -105,6 +105,7 @@ describe("transcript", () => {
           { type: "tool_result", tool_call_id: "t1", output_preview: "ok", is_error: false },
           { type: "tool_call", tool_call_id: "t2", title: "Read", input_preview: '{"file_path":"src/lib.rs"}', status: null },
           { type: "tool_call", tool_call_id: "t3", title: "TodoWrite", input_preview: '{"todos":[]}', status: null },
+          { type: "tool_call", tool_call_id: "t4", title: "ExitPlanMode", input_preview: '{"plan":"Do it"}', status: null },
         ]),
       ]),
     );
@@ -113,6 +114,8 @@ describe("transcript", () => {
       ["Run", "cargo test", "done", "cargo test"],
       ["Read", "src/lib.rs", "idle", '{\n  "file_path": "src/lib.rs"\n}'],
       [null, "TodoWrite", "idle", '{\n  "todos": []\n}'],
+      // Its verb says it all, as it reads live.
+      [null, "Exited Plan Mode", "idle", '{\n  "plan": "Do it"\n}'],
     ]);
   });
 

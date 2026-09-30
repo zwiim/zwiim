@@ -14,7 +14,16 @@ use crate::web::{
 pub async fn get_web_server_status(
     Extension(state): Extension<Arc<AppState>>,
 ) -> Result<Json<Option<WebServerInfo>>, AppCommandError> {
-    Ok(Json(do_get_web_server_status(&state.web_server_state)))
+    Ok(Json(status_without_token(&state.web_server_state)))
+}
+
+/// The running server's status. The caller already holds a credential; the
+/// host's token is never handed back.
+fn status_without_token(ws: &crate::web::WebServerState) -> Option<WebServerInfo> {
+    do_get_web_server_status(ws).map(|info| WebServerInfo {
+        token: String::new(),
+        ..info
+    })
 }
 
 pub async fn get_web_service_config(
@@ -54,7 +63,7 @@ pub async fn start_web_server(
     // This endpoint is mainly useful in Tauri mode. Return current status as a noop.
     let ws = &state.web_server_state;
     if ws.running.load(std::sync::atomic::Ordering::Relaxed) {
-        if let Some(info) = do_get_web_server_status(ws) {
+        if let Some(info) = status_without_token(ws) {
             return Ok(Json(info));
         }
     }

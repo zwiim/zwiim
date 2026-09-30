@@ -231,6 +231,33 @@ pub async fn status(state: &AppState) -> Result<serde_json::Value, ZwiimError> {
     }))
 }
 
+/// What the account's other devices call this host when enrollment names
+/// none: the computer's name as the OS shows it ("Ashish’s MacBook Air" on
+/// macOS), else its hostname.
+fn machine_name() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    if let Ok(out) = std::process::Command::new("/usr/sbin/scutil").args(["--get", "ComputerName"]).output() {
+        let name = String::from_utf8_lossy(&out.stdout);
+        if let Some(name) = out.status.success().then(|| clean_name(&name)).flatten() {
+            return Some(name);
+        }
+    }
+    #[cfg(unix)]
+    return crate::commands::config_sync::snapshot::unix_hostname()
+        .and_then(|n| clean_name(n.trim_end_matches(".local")));
+    #[cfg(not(unix))]
+    std::env::var("COMPUTERNAME").ok().and_then(|n| clean_name(&n))
+}
+
+/// A name the Cloud accepts: trimmed, no control characters, at most 128 bytes.
+fn clean_name(name: &str) -> Option<String> {
+    let mut name: String = name.trim().chars().filter(|c| !c.is_control()).collect();
+    while name.len() > 128 {
+        name.pop();
+    }
+    (!name.is_empty()).then_some(name)
+}
+
 /// `cloud.enroll`: register this host with the Cloud at `cloud_url` into the
 /// account that minted `enrollment_token`, then connect.
 pub async fn enroll(
@@ -240,6 +267,7 @@ pub async fn enroll(
     name: Option<String>,
 ) -> Result<serde_json::Value, ZwiimError> {
     let origin = proto::normalize_cloud_url(cloud_url).map_err(|e| ZwiimError::invalid_input(e.to_string()))?;
+    let name = name.or_else(machine_name);
     let token = enrollment_token.trim();
     if token.is_empty() || token.len() > 256 {
         return Err(ZwiimError::invalid_input("enrollment_token must be 1-256 characters"));

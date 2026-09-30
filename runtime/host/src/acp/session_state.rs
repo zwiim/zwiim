@@ -1402,6 +1402,15 @@ impl SessionState {
                 if accept {
                     self.session_failures
                         .insert(record.id.clone(), record.clone());
+                    // A terminal failure ends the turn with no reply; a
+                    // client attaching later must still see why.
+                    if let Some((code, message)) = record.as_error() {
+                        self.last_error = Some(SessionLastError {
+                            message,
+                            code: Some(code),
+                            details: record.details.clone(),
+                        });
+                    }
                 }
             }
             AcpEvent::AsyncTask { delta } => {
@@ -2203,6 +2212,39 @@ mod tests {
         });
         assert!(s.pending_plan_approval.is_none());
         assert!(s.to_snapshot().pending_plan_approval.is_none());
+    }
+
+    /// A provider's terminal failure ends the turn blank; the snapshot must
+    /// say why. A retry warning is not an error.
+    #[test]
+    fn terminal_session_failure_becomes_the_last_error() {
+        fn failure(id: &str, severity: &str) -> AcpEvent {
+            AcpEvent::SessionFailure {
+                record: SessionFailureRecord {
+                    id: id.into(),
+                    revision: 1,
+                    category: "access".into(),
+                    severity: severity.into(),
+                    title: "The model `gpt-5.5` does not exist or you do not have access to it.".into(),
+                    details: None,
+                    actions: vec![],
+                    resolved: false,
+                },
+            }
+        }
+        let mut s = fresh_state();
+        s.apply_event(&failure("f-1", "warning"));
+        assert!(s.to_snapshot().last_error.is_none(), "a retry warning recovers on its own");
+
+        s.apply_event(&failure("f-2", "error"));
+        assert_eq!(
+            s.to_snapshot().last_error,
+            Some(SessionLastError {
+                message: "The model `gpt-5.5` does not exist or you do not have access to it.".into(),
+                code: Some("provider_access".into()),
+                details: None,
+            })
+        );
     }
 
     #[test]

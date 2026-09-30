@@ -2,7 +2,7 @@ import { CloudClient, encodeKey, isClientError } from "@zwiim/sdk";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { describe, expect, it } from "vitest";
 import { AccountAuth, AUTH_REDIRECT, authConfig, SignInCancelled, tokenExpiry } from "../src/account/auth";
-import { accountHosts, byLastUsed, hostMeta, hostName, type HostEntry } from "../src/account/hosts";
+import { accountHosts, byLastUsed, hostMeta, hostName, macToPair, type HostEntry } from "../src/account/hosts";
 import { appConfig } from "../src/config";
 import { MemorySecureStore } from "../src/platform/memory-store";
 import { FakeCloud, FakeHost } from "../../sdk/test/relay-fakes";
@@ -214,11 +214,11 @@ describe("the account's hosts", () => {
     expect(hostMeta(h({ paired: false }), now)).toBe("not paired on this phone");
     expect(hostMeta(h({ paired: false }), now, { active: "lan" })).toBe("not paired on this phone");
     // Online by the Cloud's presence: reached through it, unless Local only.
-    expect(hostMeta(h({}), now)).toBe("☁ via Zwiim Cloud · paired");
+    expect(hostMeta(h({}), now)).toBe("☁\uFE0E via Zwiim Cloud · paired");
     expect(hostMeta(h({}), now, { mode: "local" })).toBe("online · paired");
     // Only this phone's own live LAN connection says "same network".
     expect(hostMeta(h({}), now, { active: "lan" })).toBe("⌂ same network · paired");
-    expect(hostMeta(h({}), now, { mode: "cloud", active: "relay" })).toBe("☁ via Zwiim Cloud · paired");
+    expect(hostMeta(h({}), now, { mode: "cloud", active: "relay" })).toBe("☁\uFE0E via Zwiim Cloud · paired");
     expect(hostMeta(h({}), now, { active: "connecting" })).toBe("connecting…");
     expect(hostMeta(h({}), now, { active: "reconnecting" })).toBe("reconnecting…");
     expect(hostMeta(h({ online: false, last_seen_at: now - 7300 }), now)).toBe("offline · last seen 2h ago");
@@ -226,6 +226,25 @@ describe("the account's hosts", () => {
       "offline · last seen 2h ago",
     );
     expect(hostMeta(h({ online: false, last_seen_at: null }), now)).toBe("offline");
+  });
+
+  it("finds the Mac to pair while none is paired", () => {
+    const h = (host_id: string, over: Partial<HostEntry> = {}): HostEntry => ({
+      host_id,
+      name: null,
+      static_pubkey: "pk",
+      online: false,
+      last_seen_at: 1,
+      paired: false,
+      ...over,
+    });
+    // No Mac has turned on remote access yet.
+    expect(macToPair([])).toBeNull();
+    // Online first, else the first listed.
+    expect(macToPair([h("a"), h("b", { online: true })])?.host_id).toBe("b");
+    expect(macToPair([h("a"), h("b")])?.host_id).toBe("a");
+    // Paired with one: setup is over.
+    expect(macToPair([h("a"), h("b", { paired: true })])).toBeUndefined();
   });
 
   it("puts the last host opened first", () => {

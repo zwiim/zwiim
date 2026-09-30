@@ -104,6 +104,9 @@ fn enum_spec_for(key: &str) -> Option<EnumSpec> {
 /// `supports_experimental_context = "yes"` earns `invalid type: string "yes",
 /// expected a boolean` and takes the WHOLE catalog down with it — probed
 /// against the 0.154.0 binary, same as the rest of this list.
+///
+/// `supports_reasoning_effort_updates` arrives with 0.156.1 (codex-acp 1.13.1),
+/// a bool on every model in its bundled catalog.
 const BOOL_FIELDS: &[&str] = &[
     "use_responses_lite",
     "supported_in_api",
@@ -113,6 +116,7 @@ const BOOL_FIELDS: &[&str] = &[
     "supports_image_detail_original",
     "supports_reasoning_summary_parameter",
     "supports_experimental_context",
+    "supports_reasoning_effort_updates",
     "include_apps_usage_instructions",
     "include_plugin_usage_instructions",
     "include_skills_usage_instructions",
@@ -632,9 +636,10 @@ mod tests {
         assert_eq!(
             models.len(),
             11,
-            "snapshot should carry codex 0.154.0's catalog"
+            "snapshot should carry codex 0.156.1's catalog"
         );
         assert!(models.iter().any(|m| slug_of(m) == Some("gpt-6-astra")));
+        assert!(models.iter().any(|m| slug_of(m) == Some("gpt-6-luna")));
         assert!(models.iter().any(|m| slug_of(m) == Some("gpt-5.6-sol")));
         assert!(models.iter().any(|m| slug_of(m) == Some("gpt-5.5")));
         // codex-auto-review ships hidden.
@@ -715,10 +720,10 @@ mod tests {
 
     #[test]
     fn expand_excludes_removed_officials_and_empty_is_off() {
-        let config = excluding(&["gpt-5.2"]);
+        let config = excluding(&["gpt-5.5"]);
         let cat = expand_to_catalog(&config, &snap());
         let s = slugs(&cat);
-        assert!(!s.iter().any(|x| x == "gpt-5.2"));
+        assert!(!s.iter().any(|x| x == "gpt-5.5"));
         assert!(s.iter().any(|x| x == "gpt-5.6-sol"));
         // Empty config = feature off.
         assert!(is_effectively_empty(&CodexModelConfig::default(), &snap()));
@@ -731,18 +736,19 @@ mod tests {
     #[test]
     fn expand_keeps_hidden_officials_even_when_excluded() {
         let s = snap();
-        // gpt-5.4 / gpt-5.4-mini are hidden in 0.147; codex-auto-review always is.
-        for slug in ["gpt-5.4", "gpt-5.4-mini", "codex-auto-review"] {
+        // gpt-5.4 is hidden since 0.147 (0.156.1 drops gpt-5.4-mini);
+        // codex-auto-review always is.
+        for slug in ["gpt-5.4", "codex-auto-review"] {
             let hidden = s
                 .iter()
                 .find(|m| slug_of(m) == Some(slug))
                 .expect("in snapshot");
             assert_eq!(hidden.get("visibility").unwrap(), "hide", "{slug}");
         }
-        let cat = expand_to_catalog(&excluding(&["gpt-5.4", "gpt-5.4-mini"]), &s);
+        let cat = expand_to_catalog(&excluding(&["gpt-5.4", "codex-auto-review"]), &s);
         let out = slugs(&cat);
         assert!(out.iter().any(|x| x == "gpt-5.4"));
-        assert!(out.iter().any(|x| x == "gpt-5.4-mini"));
+        assert!(out.iter().any(|x| x == "codex-auto-review"));
         assert_eq!(out.len(), s.len(), "nothing dropped");
     }
 
@@ -751,13 +757,13 @@ mod tests {
         let s = snap();
         // Only stale removals of now-hidden officials → hand control back.
         assert!(is_effectively_empty(
-            &excluding(&["gpt-5.4", "gpt-5.4-mini"]),
+            &excluding(&["gpt-5.4", "codex-auto-review"]),
             &s
         ));
         // A removal that still applies keeps the takeover.
-        assert!(!is_effectively_empty(&excluding(&["gpt-5.2"]), &s));
+        assert!(!is_effectively_empty(&excluding(&["gpt-5.5"]), &s));
         // Mixed: the live one wins.
-        assert!(!is_effectively_empty(&excluding(&["gpt-5.4", "gpt-5.2"]), &s));
+        assert!(!is_effectively_empty(&excluding(&["gpt-5.4", "gpt-5.5"]), &s));
         // A custom always counts.
         let with_custom = CodexModelConfig {
             customs: vec![CodexCustomEntry {

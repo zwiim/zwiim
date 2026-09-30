@@ -83,6 +83,8 @@ function historyTool(name: string, input: string | null): { verb: string | null;
   const target = key ? value(key)!.trim().split("\n")[0]! : null;
   const verb = TOOL_VERBS[name.toLowerCase()] ?? (target ? name : null);
   const shown = value("command") ?? value("cmd") ?? (args ? JSON.stringify(args, null, 2) : input);
+  // A verb that names the whole call (Exited Plan Mode) reads as live: alone.
+  if (!target && verb) return { verb: null, target: verb, input: shown };
   return { verb, target: target ?? name, input: shown };
 }
 
