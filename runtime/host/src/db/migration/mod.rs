@@ -49,6 +49,7 @@ mod m20260923_000001_trusted_devices;
 mod m20260923_000002_workspace_session_ids;
 mod m20260924_000001_worktree_base;
 mod m20260926_000001_device_keys;
+mod m20261001_000001_clear_plaintext_credentials;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -104,6 +105,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260923_000002_workspace_session_ids::Migration),
             Box::new(m20260924_000001_worktree_base::Migration),
             Box::new(m20260926_000001_device_keys::Migration),
+            Box::new(m20261001_000001_clear_plaintext_credentials::Migration),
         ]
     }
 }

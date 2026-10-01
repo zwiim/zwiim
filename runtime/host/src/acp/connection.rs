@@ -1065,8 +1065,9 @@ fn apply_codex_thinking_policy(
 /// config overrides on every thread start, resume and fork, and
 /// `developer_instructions` reaches the model as developer instructions, which
 /// the transcript parser never shows. `developer_instructions` the user set in
-/// their own `CODEX_CONFIG` win, and a `CODEX_CONFIG` that is not a JSON object
-/// is left as it is.
+/// their own `CODEX_CONFIG` win (and the caller passes `None` when their
+/// `~/.codex/config.toml` sets them), and a `CODEX_CONFIG` that is not a JSON
+/// object is left as it is.
 fn apply_codex_instructions_policy(
     agent_type: AgentType,
     merged: &mut Vec<(String, String)>,
@@ -1876,10 +1877,14 @@ async fn build_agent(
                 agent_type,
                 &mut merged_env,
                 agent_type == AgentType::Codex
-                    && crate::commands::acp::codex_config_sets_reasoning_summary(),
+                    && crate::commands::acp::codex_config_sets("model_reasoning_summary"),
             );
-            let codex_instructions = if agent_type == AgentType::Codex {
-                session_instructions(agent_type, cwd).await
+            // Codex takes Zwiim's instructions here, through `CODEX_CONFIG`,
+            // unless the user's own config.toml sets developer instructions.
+            let codex_instructions = if agent_type == AgentType::Codex
+                && !crate::commands::acp::codex_config_sets("developer_instructions")
+            {
+                Some(crate::agent_instructions::for_dir(cwd).await)
             } else {
                 None
             };
@@ -4269,14 +4274,12 @@ fn claude_raw_sdk_session_meta(
     Some(meta)
 }
 
-/// Zwiim's session instructions for the agents that take them through a
-/// system-prompt channel: Claude (`_meta.systemPrompt`) and Codex
-/// (`developer_instructions`). Other agents get none.
+/// Zwiim's session instructions for the session requests: Claude takes them
+/// as `_meta.systemPrompt`. Codex takes them at launch instead
+/// (`apply_codex_instructions_policy`), and other agents get none.
 async fn session_instructions(agent_type: AgentType, cwd: &Path) -> Option<String> {
     match agent_type {
-        AgentType::ClaudeCode | AgentType::Codex => {
-            Some(crate::agent_instructions::for_dir(cwd).await)
-        }
+        AgentType::ClaudeCode => Some(crate::agent_instructions::for_dir(cwd).await),
         _ => None,
     }
 }
@@ -9146,7 +9149,49 @@ fn is_agent_output_update(agent_type: AgentType, update: &SessionUpdate) -> bool
 }
 
 /// A cancelled turn's prompt request, still owed the agent's response.
+/// Emit a session failure unless this session already holds it (same id, same
+/// or newer revision): an agent can deliver one record on both the update
+/// channel and the prompt response, and each emit would reach clients as
+/// another `agent.error`.
+async fn emit_session_failure(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    record: crate::acp::types::SessionFailureRecord,
+) {
+    let gate = record.clone();
+    emit_with_state_gated(
+        state,
+        emitter,
+        AcpEvent::SessionFailure { record },
+        move |s| s.accepts_session_failure(&gate),
+    )
+    .await;
+}
+
 type CancelledPrompt = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+
+/// How long a cancelled turn's prose is held back waiting for the agent to
+/// answer the cancelled prompt. An agent that never answers would otherwise
+/// swallow the next turn's text too.
+const CANCELLED_TAIL_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Track a cancelled prompt's `response` for [`is_cancelled_turn_prose`]: done
+/// when the agent answers it or after [`CANCELLED_TAIL_LIMIT`]. A late answer
+/// is still awaited in the background, so the SACP library doesn't log
+/// "receiver dropped" when it arrives.
+fn track_cancelled_prompt(
+    response: impl std::future::Future<Output = ()> + Send + 'static,
+) -> CancelledPrompt {
+    Box::pin(async move {
+        let mut response = Box::pin(response);
+        if tokio::time::timeout(CANCELLED_TAIL_LIMIT, &mut response)
+            .await
+            .is_err()
+        {
+            tokio::spawn(response);
+        }
+    })
+}
 
 /// Whether `update` is prose from a turn the user cancelled.
 ///
@@ -10224,12 +10269,7 @@ async fn run_conversation_loop<'a>(
                             let terminal_failure =
                                 response_session_failure(response.meta.as_ref());
                             if let Some(record) = &terminal_failure {
-                                emit_with_state(
-                                    state,
-                                    emitter,
-                                    AcpEvent::SessionFailure { record: record.clone() },
-                                )
-                                .await;
+                                emit_session_failure(state, emitter, record.clone()).await;
                             }
                             // The turn's token counts, when the agent reports
                             // them (claude-agent-acp, codex-acp).
@@ -10579,7 +10619,7 @@ async fn run_conversation_loop<'a>(
                                     // doesn't log "receiver dropped" when the agent
                                     // eventually responds): until it arrives, the
                                     // agent's prose is this cancelled turn's tail.
-                                    cancelled_prompt = Some(Box::pin(async move {
+                                    cancelled_prompt = Some(track_cancelled_prompt(async move {
                                         let _ = prompt_response.await;
                                     }));
                                     break;
@@ -14958,10 +14998,7 @@ async fn emit_conversation_update(
             // A record without usable identity cannot merge and is dropped.
             if let Some(raw) = air_session_failure(info.meta.as_ref()) {
                 match parse_session_failure_record(raw) {
-                    Some(record) => {
-                        emit_with_state(state, emitter, AcpEvent::SessionFailure { record })
-                            .await;
-                    }
+                    Some(record) => emit_session_failure(state, emitter, record).await,
                     None => tracing::debug!(
                         "[ACP] dropped AIR sessionFailure without usable id/revision: {raw:?}"
                     ),
@@ -15758,6 +15795,30 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// One failure record delivered twice (the update channel, then the prompt
+    /// response) is emitted once; a higher revision of it is emitted again.
+    #[tokio::test]
+    async fn a_redelivered_session_failure_is_emitted_once() {
+        let state = title_test_state(None);
+        let record = |revision: u64| SessionFailureRecord {
+            id: "f-1".into(),
+            revision,
+            category: "access".into(),
+            severity: "error".into(),
+            title: "The model does not exist".into(),
+            details: None,
+            actions: vec![],
+            resolved: false,
+        };
+        let seq = || async { state.read().await.event_seq };
+        let start = seq().await;
+        emit_session_failure(&state, &EventEmitter::Noop, record(1)).await;
+        emit_session_failure(&state, &EventEmitter::Noop, record(1)).await;
+        assert_eq!(seq().await, start + 1);
+        emit_session_failure(&state, &EventEmitter::Noop, record(2)).await;
+        assert_eq!(seq().await, start + 2);
     }
 
     fn title_test_state(conversation_id: Option<i32>) -> Arc<RwLock<SessionState>> {
@@ -22483,6 +22544,18 @@ mod tests {
 
         answer.send(()).unwrap();
         assert!(!is_cancelled_turn_prose(&mut cancelled, &message), "answered: prose flows again");
+        assert!(cancelled.is_none());
+    }
+
+    /// An agent that never answers the cancelled prompt holds prose back only
+    /// for [`CANCELLED_TAIL_LIMIT`], not for the rest of the session.
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_cancel_stops_holding_prose_back() {
+        let message = SessionUpdate::AgentMessageChunk(ContentChunk::new("next".into()));
+        let mut cancelled = Some(track_cancelled_prompt(std::future::pending()));
+        assert!(is_cancelled_turn_prose(&mut cancelled, &message));
+        tokio::time::advance(CANCELLED_TAIL_LIMIT).await;
+        assert!(!is_cancelled_turn_prose(&mut cancelled, &message));
         assert!(cancelled.is_none());
     }
 

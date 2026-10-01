@@ -2,24 +2,48 @@
 //! SQLite refuse one. Every write to them goes through their entity's
 //! `before_save`, so one check here covers every route (the legacy `/api`
 //! commands, config import, and the Host's own code) without changing the
-//! schema. Values already on disk are left alone; only new ones are refused.
+//! schema. Values an older build left on disk are cleared once by the
+//! `m20261001_000001_clear_plaintext_credentials` migration.
 
 use sea_orm::DbErr;
 
 /// Whether an environment variable's *name* marks it as a credential.
+///
+/// Judged on whole name segments (`ANTHROPIC_API_KEY` → `anthropic`, `api`,
+/// `key`), not substrings, so settings that merely mention a credential word
+/// (`MAX_THINKING_TOKENS`, `CURSOR_AUTH_MODE`, `GIT_AUTHOR_NAME`) are not
+/// taken for one.
 pub fn is_secret_env_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    [
-        "key",
-        "token",
+    let segments: Vec<&str> = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect();
+    // A segment that is a credential wherever it appears.
+    const ANYWHERE: &[&str] = &[
         "secret",
+        "secrets",
         "password",
         "passwd",
-        "auth",
         "credential",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
+        "credentials",
+        "apikey",
+        "authtoken",
+        "accesstoken",
+        "privatekey",
+    ];
+    // A pair that is a credential wherever it appears.
+    const PAIRS: &[(&str, &str)] = &[
+        ("api", "key"),
+        ("auth", "token"),
+        ("access", "token"),
+        ("private", "key"),
+    ];
+    // A segment that is a credential when it ends the name.
+    const LAST: &[&str] = &["key", "token", "pat"];
+    segments.iter().any(|s| ANYWHERE.contains(s))
+        || segments.windows(2).any(|w| PAIRS.contains(&(w[0], w[1])))
+        || segments.last().is_some_and(|s| LAST.contains(s))
 }
 
 fn refused(field: &str) -> DbErr {
@@ -77,6 +101,13 @@ mod tests {
             "OPENAI_SECRET",
             "DB_PASSWORD",
             "GH_CREDENTIALS",
+            "AWS_SECRET_ACCESS_KEY",
+            "SECRET_KEY_BASE",
+            "OPENAI_API_KEY_2",
+            "NPM_TOKEN",
+            "GITHUB_PAT",
+            "apiKey",
+            "authToken",
         ] {
             assert!(is_secret_env_name(name), "{name}");
         }
@@ -85,6 +116,15 @@ mod tests {
             "ANTHROPIC_MODEL",
             "HTTPS_PROXY",
             "NODE_OPTIONS",
+            "MAX_THINKING_TOKENS",
+            "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+            "CURSOR_AUTH_MODE",
+            "GROK_AUTH_MODE",
+            "AGY_AUTH_METHOD",
+            "QODER_EXPOSE_TOKEN_USAGE",
+            "GIT_AUTHOR_NAME",
+            "SSH_AUTH_SOCK",
+            "MONKEY",
         ] {
             assert!(!is_secret_env_name(name), "{name}");
         }
@@ -212,5 +252,57 @@ mod tests {
         for s in agent_setting::Entity::find().all(&db.conn).await.unwrap() {
             assert!(refuse_secret_env("env", s.env_json.as_deref()).is_ok());
         }
+    }
+
+    /// An update that leaves the environment alone is not judged on it: a
+    /// credential already on disk does not block changing anything else.
+    #[tokio::test]
+    async fn an_unchanged_environment_does_not_block_an_update() {
+        use crate::db::service::agent_setting_service::{
+            self, AgentDefaultInput, AgentSettingsUpdate,
+        };
+        use crate::models::agent::AgentType;
+        use sea_orm::{ConnectionTrait, DbBackend, Statement};
+
+        let db = fresh_in_memory_db().await;
+        let defaults = [AgentDefaultInput {
+            agent_type: AgentType::ClaudeCode,
+            registry_id: "claude".into(),
+            default_sort_order: 0,
+        }];
+        agent_setting_service::ensure_defaults(&db.conn, &defaults)
+            .await
+            .unwrap();
+        let legacy = r#"{"ANTHROPIC_API_KEY":"sk-ant-1"}"#;
+        // Written the way an older build left it, past `before_save`.
+        db.conn
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Sqlite,
+                "UPDATE agent_setting SET env_json = ? WHERE agent_type = ?",
+                [legacy.into(), "\"claude_code\"".into()],
+            ))
+            .await
+            .unwrap();
+
+        let patch = |env_json: &str| AgentSettingsUpdate {
+            enabled: false,
+            env_json: Some(env_json.to_string()),
+            model_provider_id: None,
+        };
+        agent_setting_service::update(&db.conn, AgentType::ClaudeCode, patch(legacy))
+            .await
+            .unwrap();
+        let row = agent_setting_service::get_by_agent_type(&db.conn, AgentType::ClaudeCode)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!row.enabled);
+
+        let changed = r#"{"ANTHROPIC_API_KEY":"sk-ant-2"}"#;
+        assert!(
+            agent_setting_service::update(&db.conn, AgentType::ClaudeCode, patch(changed))
+                .await
+                .is_err()
+        );
     }
 }

@@ -125,8 +125,10 @@ fn resolve_web_service_token(override_token: Option<String>) -> String {
 /// override wins (never stored); otherwise the token lives in the host's key
 /// store (`store`: the keychain, or the private file fallback), never in
 /// SQLite. A token an older build left in `app_metadata` moves into the store
-/// once and is deleted from the database. Without a usable store the token
-/// lasts only for this run. An empty or whitespace override is treated as
+/// once and is deleted from the database. If the store cannot be read, that
+/// legacy token is used as is and left where it is, so a store error never
+/// rotates it. Without a usable store and no legacy token, the token lasts
+/// only for this run. An empty or whitespace override is treated as
 /// unset. `*generated` is set when a fresh token was created, so the caller
 /// can show it to the operator.
 pub async fn resolve_persisted_server_token(
@@ -162,11 +164,16 @@ pub async fn resolve_persisted_server_token(
     let stored = match load_token(store).await {
         Ok(stored) => stored,
         Err(e) => {
-            tracing::warn!(
-                "[SERVER][WARN] could not read the access token from the {} store ({e}); it \
-                 will rotate on restart — set ZWIIM_TOKEN to pin it",
+            tracing::error!(
+                "[SERVER] could not read the access token from the {} store ({e}); set \
+                 ZWIIM_TOKEN to pin it",
                 store.name()
             );
+            // The store may hold a token we cannot see, so nothing is saved
+            // over it and the legacy one stays in SQLite.
+            if let Some(legacy) = legacy {
+                return legacy;
+            }
             *generated = true;
             return generate_random_token();
         }
@@ -1127,5 +1134,38 @@ mod local_address_tests {
             assert!(addr.ends_with(&format!(":{port}")), "bad port: {addr}");
             assert!(seen.insert(addr.clone()), "duplicate address: {addr}");
         }
+    }
+}
+
+#[cfg(test)]
+mod server_token_tests {
+    use super::{resolve_persisted_server_token, WEB_SERVICE_TOKEN_KEY};
+    use crate::db::service::app_metadata_service;
+    use crate::db::test_helpers::fresh_in_memory_db;
+    use crate::identity::host_keys::KeyStore;
+
+    /// An unreadable store neither rotates the token nor loses the legacy one.
+    #[tokio::test]
+    async fn an_unreadable_store_keeps_the_legacy_token() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        // A directory where the token file should be: reading it fails.
+        let store = KeyStore::File(dir.path().to_path_buf());
+        app_metadata_service::upsert_value(&db.conn, WEB_SERVICE_TOKEN_KEY, "legacy-token")
+            .await
+            .unwrap();
+
+        let mut generated = false;
+        let token =
+            resolve_persisted_server_token(&db.conn, Some(&store), None, &mut generated).await;
+        assert_eq!(token, "legacy-token");
+        assert!(!generated);
+        assert_eq!(
+            app_metadata_service::get_value(&db.conn, WEB_SERVICE_TOKEN_KEY)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("legacy-token")
+        );
     }
 }

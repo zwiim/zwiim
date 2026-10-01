@@ -768,6 +768,16 @@ impl SessionState {
 
     /// 单一分发器：把一个 AcpEvent 应用到 self。注意此方法**不**自增 event_seq——
     /// seq 由 emit_with_state 在外层管理（这样 apply_event 可独立单元测试）。
+    /// Whether `record` is news to this session: an id it has not seen, or a
+    /// higher revision of one it has. The merge in [`Self::apply_event`] keeps
+    /// only these, and the emit sites use it to skip a re-delivered record, so
+    /// a client is not told about the same failure twice.
+    pub fn accepts_session_failure(&self, record: &SessionFailureRecord) -> bool {
+        self.session_failures
+            .get(&record.id)
+            .is_none_or(|existing| record.revision > existing.revision)
+    }
+
     pub fn apply_event(&mut self, payload: &AcpEvent) {
         match payload {
             AcpEvent::SessionStarted { session_id } => {
@@ -1395,11 +1405,7 @@ impl SessionState {
                 // legitimately revised in place. A fresh (higher-revision)
                 // upsert re-arms `resolved = false` — id reuse is how codex
                 // escalates a retry warning into the turn's terminal error.
-                let accept = self
-                    .session_failures
-                    .get(&record.id)
-                    .is_none_or(|existing| record.revision > existing.revision);
-                if accept {
+                if self.accepts_session_failure(record) {
                     self.session_failures
                         .insert(record.id.clone(), record.clone());
                     // A terminal failure ends the turn with no reply; a

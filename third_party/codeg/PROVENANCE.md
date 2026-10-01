@@ -1092,6 +1092,19 @@ Upstream-derived:
 |---|---|---|
 | `acp/connection.rs` | `src-tauri/src/acp/connection.rs` | `session_instructions`; Claude session new/load/resume requests carry them as `_meta.systemPrompt: { append }` (the Claude Code preset is kept); Codex gets them as `developer_instructions` in `CODEX_CONFIG` (`apply_codex_instructions_policy`; the user's own value wins). Neither is a conversation message, so no transcript shows them. |
 
+## V1 RC review fixes — credential names, legacy credentials, token store errors, cancelled turns, failure dedupe
+
+Zwiim-owned: `db/plaintext_secrets.rs` (credential names are matched on whole name segments, not substrings); migration `m20261001_000001_clear_plaintext_credentials` (clears provider API keys, remote connection tokens and credential-named agent environment variables an older build left in SQLite); `web/mod.rs` `resolve_persisted_server_token` (a key store read error keeps the legacy database token instead of minting a new one).
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `db/service/agent_setting_service.rs` | `src-tauri/src/db/service/agent_setting_service.rs` | `update` writes `env_json` only when it changed. |
+| `acp/connection.rs` | `src-tauri/src/acp/connection.rs` | `session_instructions` is Claude-only; Codex builds its instructions once at launch and skips them when `~/.codex/config.toml` sets `developer_instructions`. `track_cancelled_prompt` holds a cancelled turn's prose back for at most 10 s. `emit_session_failure` skips a failure record the session already holds. |
+| `acp/session_state.rs` | `src-tauri/src/acp/session_state.rs` | `accepts_session_failure` (the existing monotonic merge rule, shared with the emit sites). |
+| `commands/acp.rs` | `src-tauri/src/commands/acp.rs` | `codex_config_sets(key)` replaces `codex_config_sets_reasoning_summary`. |
+
 ## License obligations tracked
 
 - [x] Include Apache-2.0 license text (`third_party/codeg/LICENSE`).

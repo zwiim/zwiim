@@ -143,9 +143,14 @@ pub async fn update(
         .await?
         .ok_or_else(|| DbError::Migration(format!("agent setting not found: {agent_type_str}")))?;
 
+    // An unchanged environment is not rewritten, so the credential check on
+    // `env_json` only judges an environment the caller actually changed.
+    let env_changed = model.env_json != patch.env_json;
     let mut active = model.into_active_model();
     active.enabled = Set(patch.enabled);
-    active.env_json = Set(patch.env_json);
+    if env_changed {
+        active.env_json = Set(patch.env_json);
+    }
     active.model_provider_id = Set(patch.model_provider_id);
     active.updated_at = Set(Utc::now());
     active.update(conn).await?;
