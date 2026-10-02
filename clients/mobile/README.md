@@ -85,6 +85,12 @@ ports it prints.
 npx expo prebuild && (cd android && ./gradlew assembleDebug)   # or: npx expo run:android
 ```
 
+A release build is signed with Zwiim's Android release key when the
+`ZWIIM_ANDROID_KEYSTORE*` Gradle properties are set
+(`plugins/with-release-signing.js`), and with the public debug key
+otherwise: fine on your own phone, never published. The release APK is
+built by `scripts/release/build-android.mjs`, which refuses any other key.
+
 ## Not yet
 
 - mDNS discovery. Instead the Host tells a connected phone where it

@@ -56,7 +56,8 @@
           "barcodeScannerEnabled": true
         }
       ],
-      "./plugins/with-notices"
+      "./plugins/with-notices",
+      "./plugins/with-release-signing"
     ]
   }
 }

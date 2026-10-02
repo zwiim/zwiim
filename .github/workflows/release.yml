@@ -12,6 +12,9 @@
 #       notarization: Apple ID and an app-specific password
 #   ZWIIM_CI_ANTHROPIC_API_KEY, ZWIIM_CI_OPENAI_API_KEY
 #       dedicated CI-only provider credentials (providers.yml)
+#   ZWIIM_ANDROID_KEYSTORE_BASE64, ZWIIM_ANDROID_KEYSTORE_PASSWORD
+#       the Android release key (PKCS12 keystore, base64; alias "zwiim") and
+#       its password: signs the APK
 #   ZWIIM_RELEASES_TOKEN
 #       fine-grained token with Contents read/write on the public releases
 #       repository (scripts/release/lib.mjs REPOSITORY), where it publishes
@@ -21,7 +24,10 @@
 #   APPLE_SIGNING_IDENTITY  "Developer ID Application: <name> (<team id>)"
 #   ZWIIM_CLOUD_URL         the production Zwiim Cloud (compiled into Desktop)
 #   ZWIIM_SUPABASE_URL, ZWIIM_SUPABASE_ANON_KEY
-#                           the production Supabase project (compiled into Desktop)
+#                           the production Supabase project (compiled into
+#                           Desktop and the Android app)
+#   ZWIIM_ANDROID_CERT_SHA256
+#                           the Android release key's certificate digest
 name: Release
 
 on:
@@ -60,6 +66,7 @@ jobs:
       ZWIIM_CLOUD_URL: ${{ vars.ZWIIM_CLOUD_URL }}
       ZWIIM_SUPABASE_URL: ${{ vars.ZWIIM_SUPABASE_URL }}
       ZWIIM_SUPABASE_ANON_KEY: ${{ vars.ZWIIM_SUPABASE_ANON_KEY }}
+      ZWIIM_ANDROID_CERT_SHA256: ${{ vars.ZWIIM_ANDROID_CERT_SHA256 }}
       TARGET: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
@@ -71,7 +78,7 @@ jobs:
       - name: Release configuration is present
         run: |
           for v in ZWIIM_RELEASE_PUBKEY ZWIIM_APPLE_TEAM_ID APPLE_SIGNING_IDENTITY \
-                   ZWIIM_CLOUD_URL ZWIIM_SUPABASE_URL ZWIIM_SUPABASE_ANON_KEY; do
+                   ZWIIM_CLOUD_URL ZWIIM_SUPABASE_URL ZWIIM_SUPABASE_ANON_KEY ZWIIM_ANDROID_CERT_SHA256; do
             test -n "${!v}" || { echo "::error::repository variable $v is not set"; exit 1; }
           done
           # One team signs every release: the Keychain ties the Host's items to it.
@@ -161,6 +168,25 @@ jobs:
           cp target/release/bundle/macos/Zwiim.app.tar.gz.sig "dist/Zwiim_${V}_aarch64.app.tar.gz.sig"
           cp target/release/bundle/dmg/*.dmg "dist/Zwiim_${V}_aarch64.dmg"
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: 17
+      - name: Build and sign the Android app
+        env:
+          ZWIIM_ANDROID_KEYSTORE_BASE64: ${{ secrets.ZWIIM_ANDROID_KEYSTORE_BASE64 }}
+          ZWIIM_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ZWIIM_ANDROID_KEYSTORE_PASSWORD }}
+          ZWIIM_ANDROID_KEY_ALIAS: zwiim
+          EXPO_PUBLIC_ZWIIM_CLOUD_URL: ${{ vars.ZWIIM_CLOUD_URL }}
+          EXPO_PUBLIC_ZWIIM_SUPABASE_URL: ${{ vars.ZWIIM_SUPABASE_URL }}
+          EXPO_PUBLIC_ZWIIM_SUPABASE_ANON_KEY: ${{ vars.ZWIIM_SUPABASE_ANON_KEY }}
+        run: |
+          export ZWIIM_ANDROID_KEYSTORE="$RUNNER_TEMP/android-release.p12"
+          echo "$ZWIIM_ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ZWIIM_ANDROID_KEYSTORE"
+          (cd clients/mobile && npm ci)
+          node scripts/release/build-android.mjs --out dist
+          rm "$ZWIIM_ANDROID_KEYSTORE"
+
       - name: Signed manifest (verified by the Host just built)
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -172,6 +198,7 @@ jobs:
             --host "$TARGET=dist/zwiim-host-${V}-${TARGET}.tar.gz" \
             --desktop "darwin-aarch64=dist/Zwiim_${V}_aarch64.app.tar.gz" \
             --asset "dist/Zwiim_${V}_aarch64.dmg" \
+            --asset "dist/Zwiim_${V}_android.apk" \
             --out dist
           cat dist/SHA256SUMS
       - uses: actions/upload-artifact@v4

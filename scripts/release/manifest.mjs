@@ -7,7 +7,7 @@
 //     --host-bin target/release/zwiim-host \
 //     --host aarch64-apple-darwin=dist/zwiim-host-0.2.0-aarch64-apple-darwin.tar.gz \
 //     --desktop darwin-aarch64=dist/Zwiim.app.tar.gz \
-//     [--asset dist/Zwiim_0.2.0_aarch64.dmg] \
+//     [--asset dist/Zwiim_0.2.0_aarch64.dmg] [--asset dist/Zwiim_0.2.0_android.apk] \
 //     [--min-upgrade-from 0.1.0] [--base-url https://…/download/v0.2.0] --out dist
 //
 // Signing uses `tauri signer sign` with TAURI_SIGNING_PRIVATE_KEY (and
@@ -133,7 +133,7 @@ function main() {
     releaseJson,
     `${releaseJson}.sig`,
     ...(latest ? [path.join(out, "latest.json")] : []),
-    // Published alongside for people, not read by any updater (the DMG).
+    // Published alongside for people, not read by any updater (the DMG, the APK).
     ...list(args.asset).map((f) => path.resolve(f)),
   ];
   for (const f of files) if (path.dirname(f) !== out) fail(`${f} must be in ${out} to be published from it`);

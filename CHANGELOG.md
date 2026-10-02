@@ -8,6 +8,12 @@ have their own versions and are listed under Compatibility.
 
 ## [Unreleased]
 
+### Added
+- The Android app is published with each release (`Zwiim_<version>_android.apk`), listed in `SHA256SUMS`.
+
+### Security
+- The Android app is signed with Zwiim's own release key, not the public debug key, so no one else can sign an update to it. An APK signed with the old key must be uninstalled before installing this one.
+
 ## [0.1.0-rc.1] - 2026-10-02
 
 ### Added

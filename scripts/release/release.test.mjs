@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { buildLatest, buildManifest } from "./manifest.mjs";
 import { releaseNotes, SECTIONS } from "./notes.mjs";
 import { channelOf } from "./lib.mjs";
+import { DEBUG_CERT_SHA256, normalizeDigest, signerDigests, signerProblem } from "./build-android.mjs";
 
 const section = (version, headings = SECTIONS) =>
   `## [${version}] - 2026-09-28\n\n` + headings.map((h) => `### ${h}\n- None.\n`).join("\n");
@@ -57,4 +58,16 @@ test("the manifest records every artifact's hash and the build's own facts", () 
     "darwin-aarch64": { signature: "c2lnbmF0dXJl", url: "https://example.com/download/v0.2.0/Zwiim.app.tar.gz" },
   });
   assert.throws(() => buildManifest({ ...{ info: { ...info, version: "0.1.0" } }, version: "0.2.0" }), /reports 0.1.0/);
+});
+
+test("only an APK signed by Zwiim's pinned key is published", () => {
+  const ours = "AB:CD:" + "00".repeat(30);
+  const report = (...digests) =>
+    `Verifies\n` + digests.map((d, i) => `Signer #${i + 1} certificate SHA-256 digest: ${d}\n`).join("");
+  const pinned = normalizeDigest(ours);
+  assert.equal(signerProblem(signerDigests(report(pinned)), ours), null);
+  assert.match(signerProblem(signerDigests(report(DEBUG_CERT_SHA256)), ours), /public debug key/);
+  assert.match(signerProblem(signerDigests(report("ff".repeat(32))), ours), /not ZWIIM_ANDROID_CERT_SHA256/);
+  assert.match(signerProblem(signerDigests(report(pinned, "ff".repeat(32))), ours), /one signer, found 2/);
+  assert.match(signerProblem(signerDigests("DOES NOT VERIFY\n"), ours), /found 0/);
 });
