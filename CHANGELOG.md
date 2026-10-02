@@ -8,11 +8,37 @@ have their own versions and are listed under Compatibility.
 
 ## [Unreleased]
 
+## [0.1.0-rc.2] - 2026-10-02
+
 ### Added
 - The Android app is published with each release (`Zwiim_<version>_android.apk`), listed in `SHA256SUMS`.
 
+### Changed
+- None.
+
+### Fixed
+- None.
+
 ### Security
-- The Android app is signed with Zwiim's own release key, not the public debug key, so no one else can sign an update to it. An APK signed with the old key must be uninstalled before installing this one.
+- The Android app is signed with Zwiim's own release key, not the public debug key, so no one else can sign an update to it.
+
+### Compatibility
+- Protocol `zwiim/1`, revision 1; clients from revision 1.
+- Mobile: Android app 0.1.0 (version code 1), installed from the APK; no store build yet.
+
+### Provider changes
+- None. Claude adapter 0.81.2, Codex adapter 1.13.1.
+
+### Migration notes
+- An Android app installed from an earlier APK is signed with a different key: uninstall it before installing this one (on a phone with several profiles, from every profile). Pair the phone again afterwards.
+
+### Known limitations
+- macOS on Apple Silicon only.
+- Only the stable channel is offered as an update.
+- Updates apply when you restart the Host (Desktop → About & updates, or Update Host on Mobile).
+- The Android app is not updated automatically: install each new APK by hand.
+- Keeping the Mac awake cannot stop sleep when a MacBook's lid is closed, unless it is on power with an external display.
+- Agent sign-in and API keys are managed on the Mac running the Host; a remote Desktop shows their status only.
 
 ## [0.1.0-rc.1] - 2026-10-02
 
