@@ -55,7 +55,8 @@
           "recordAudioAndroid": false,
           "barcodeScannerEnabled": true
         }
-      ]
+      ],
+      "./plugins/with-notices"
     ]
   }
 }

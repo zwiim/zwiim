@@ -1,0 +1,28 @@
+# cargo-about: the Rust crates Zwiim ships on Apple Silicon Macs. Licenses
+# not listed here fail the notices script (scripts/licenses/notices.mjs).
+# Zwiim is closed source: only permissive licenses are accepted.
+targets = ["aarch64-apple-darwin"]
+ignore-dev-dependencies = true
+ignore-build-dependencies = true
+private = { ignore = true }
+accepted = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Unlicense",
+    "CDLA-Permissive-2.0",
+    # File-level copyleft: fine unmodified in a closed app; the notices
+    # point at the crate's published source (Tauri's cssparser/selectors,
+    # dirs' option-ext).
+    "MPL-2.0",
+]
