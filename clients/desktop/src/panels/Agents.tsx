@@ -91,6 +91,8 @@ export function AgentsSettings({ remote }: { remote: boolean }) {
     });
 
   const disabled = !online || busy !== null;
+  // Signed in with the account already: nothing to sign in to.
+  const accountSignedIn = status?.connected === true && status.method === "account" && status.sign_in !== "running";
   return (
     <>
       <div className="flex items-center gap-2">
@@ -136,22 +138,26 @@ export function AgentsSettings({ remote }: { remote: boolean }) {
               <div className="flex flex-col gap-1.5 rounded-md border p-2.5" data-testid="agent-account">
                 <div className="flex items-center gap-2">
                   <span className="font-medium">Account</span>
-                  <Button
-                    className="ml-auto"
-                    size="xs"
-                    variant="outline"
-                    disabled={disabled}
-                    onClick={() => void signIn()}
-                  >
-                    {status.sign_in === "running" ? "Start over" : "Sign in"}
-                  </Button>
+                  {!accountSignedIn && (
+                    <Button
+                      className="ml-auto"
+                      size="xs"
+                      variant="outline"
+                      disabled={disabled}
+                      onClick={() => void signIn()}
+                    >
+                      {status.sign_in === "running" ? "Start over" : "Sign in"}
+                    </Button>
+                  )}
                 </div>
                 <p className="text-muted-foreground">
-                  {status.sign_in === "running"
-                    ? `Finish signing in to your ${info.account} in the browser.`
-                    : status.sign_in === "failed"
-                      ? "The last sign-in did not finish. Try again."
-                      : `Sign in with your ${info.account}. The browser on this Mac opens.`}
+                  {accountSignedIn
+                    ? `Signed in with your ${info.account}.`
+                    : status.sign_in === "running"
+                      ? `Finish signing in to your ${info.account} in the browser.`
+                      : status.sign_in === "failed"
+                        ? "The last sign-in did not finish. Try again."
+                        : `Sign in with your ${info.account}. The browser on this Mac opens.`}
                 </p>
               </div>
 

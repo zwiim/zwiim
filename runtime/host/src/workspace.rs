@@ -423,6 +423,59 @@ async fn branch_commit(repo: &str, base: &str) -> Result<String, AppCommandError
     )
 }
 
+/// How long a new worktree waits for its base branch to be brought up to date.
+const BASE_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Bring remote-tracking branch `base` (`origin/main`) up to date before a
+/// worktree starts from it, so the worktree starts from the remote's latest.
+/// Best effort: offline, a refused sign-in or a slow remote leaves the local
+/// copy as it was. A local branch is left alone.
+async fn refresh_remote_base(repo: &str, base: &str) {
+    let Some((remote, branch)) = base.split_once('/') else {
+        return;
+    };
+    if remote.starts_with('-')
+        || branch_exists(repo, &format!("refs/heads/{base}")).await
+        || !branch_exists(repo, &format!("refs/remotes/{base}")).await
+    {
+        return;
+    }
+    let mut cmd = crate::process::tokio_command("git");
+    cmd.args([
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        remote,
+        &format!("+refs/heads/{branch}:refs/remotes/{remote}/{branch}"),
+    ])
+    .current_dir(repo)
+    .env("GIT_TERMINAL_PROMPT", "0")
+    .stdin(std::process::Stdio::null())
+    .kill_on_drop(true);
+    if std::env::var_os("GIT_SSH_COMMAND").is_none() {
+        cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    }
+    // Only the outcome is logged: git's message can carry the remote URL.
+    match tokio::time::timeout(BASE_FETCH_TIMEOUT, cmd.output()).await {
+        Ok(Ok(out)) if out.status.success() => {}
+        Ok(Ok(out)) => tracing::warn!(
+            "[worktree] fetching {base} failed ({}); starting from the local copy",
+            out.status
+        ),
+        Ok(Err(e)) => tracing::warn!("[worktree] fetching {base} failed ({e}); starting from the local copy"),
+        Err(_) => tracing::warn!("[worktree] fetching {base} timed out; starting from the local copy"),
+    }
+}
+
+async fn branch_exists(repo: &str, reference: &str) -> bool {
+    crate::process::tokio_command("git")
+        .args(["rev-parse", "--verify", "--quiet", &format!("{reference}^{{commit}}")])
+        .current_dir(repo)
+        .output()
+        .await
+        .is_ok_and(|o| o.status.success())
+}
+
 /// Whether `repo` has an `origin` remote.
 async fn has_origin(repo: &str) -> bool {
     crate::process::tokio_command("git")
@@ -503,9 +556,10 @@ pub async fn worktree_bases(repo: &str) -> Result<WorktreeBases, AppCommandError
 /// (`<worktrees_dir>/<repo>/<suffix>`); the client supplies
 /// neither. The branch starts at branch `base` when given, else at the
 /// origin's default branch (`origin/main` or `origin/master`, never a local
-/// `master`); only a repo with no `origin` remote starts at its local HEAD. No
-/// fetch either way. That commit and branch are recorded as the worktree's
-/// base. The
+/// `master`); only a repo with no `origin` remote starts at its local HEAD. A
+/// remote-tracking base is fetched first (best effort, see
+/// [`refresh_remote_base`]). That commit and branch are recorded as the
+/// worktree's base. The
 /// checkout is made with the existing `git worktree add` and registered through
 /// the existing worktree-folder path, so the new Folder row gets its own fresh
 /// `workspace_id`.
@@ -525,12 +579,18 @@ pub async fn create_worktree(
     }
     crate::git_repo::ensure_git_repo(&root.path)?;
     let (base_commit, base_branch) = match base {
-        Some(base) => (
-            branch_commit(&root.path, base).await?,
-            Some(base.to_string()),
-        ),
+        Some(base) => {
+            refresh_remote_base(&root.path, base).await;
+            (
+                branch_commit(&root.path, base).await?,
+                Some(base.to_string()),
+            )
+        }
         None => match origin_default_branch(&root.path).await {
-            Some(default) => (branch_commit(&root.path, &default).await?, Some(default)),
+            Some(default) => {
+                refresh_remote_base(&root.path, &default).await;
+                (branch_commit(&root.path, &default).await?, Some(default))
+            }
             None if has_origin(&root.path).await => {
                 return Err(AppCommandError::invalid_input(
                     "The origin remote has no default branch here; fetch origin or choose a branch to start from",
@@ -957,10 +1017,14 @@ mod tests {
     #[tokio::test]
     async fn worktree_defaults_to_the_origin_default_branch_never_local_master() {
         let db = fresh_in_memory_db().await;
-        let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
+        let (dir, repo, root_wid, worktrees) = root_repo(&db).await;
         let r = Path::new(&repo);
         let pushed = git(r, &["rev-parse", "HEAD"]);
-        git(r, &["remote", "add", "origin", &repo]);
+        let origin = dir.path().join("origin.git");
+        let origin = origin.to_str().unwrap();
+        git(r, &["init", "-q", "--bare", origin]);
+        git(r, &["remote", "add", "origin", origin]);
+        git(r, &["push", "-q", "origin", "main"]);
         git(r, &["fetch", "-q", "origin"]);
         // Local branches move on; the origin's do not.
         git(r, &["commit", "-q", "--allow-empty", "-m", "local only"]);
@@ -1003,6 +1067,46 @@ mod tests {
         git(r, &["update-ref", "-d", "refs/remotes/origin/trunk"]);
         let err = create().await.expect_err("no origin default");
         assert!(matches!(err.code, AppErrorCode::InvalidInput));
+    }
+
+    #[tokio::test]
+    async fn worktree_starts_from_the_origin_latest_and_works_offline() {
+        let db = fresh_in_memory_db().await;
+        let (dir, repo, root_wid, worktrees) = root_repo(&db).await;
+        let r = Path::new(&repo);
+        let origin = dir.path().join("origin.git");
+        let origin = origin.to_str().unwrap();
+        git(r, &["init", "-q", "--bare", origin]);
+        git(r, &["remote", "add", "origin", origin]);
+        git(r, &["push", "-q", "origin", "main"]);
+        git(r, &["fetch", "-q", "origin"]);
+        // Someone else pushes; this repo has not fetched since.
+        let push_elsewhere = |message: &str| {
+            let tip = git(r, &["--git-dir", origin, "rev-parse", "main"]);
+            let commit = git(r, &["commit-tree", "HEAD^{tree}", "-p", &tip, "-m", message]);
+            git(r, &["push", "-q", origin, &format!("{commit}:refs/heads/main")]);
+            commit
+        };
+        let create = |base: Option<&'static str>| {
+            create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, base)
+        };
+
+        let latest = push_elsewhere("pushed by someone else");
+        let wt = create(None).await.expect("default");
+        assert_eq!(wt.base_branch.as_deref(), Some("origin/main"));
+        assert_eq!(wt.base_commit.as_deref(), Some(latest.as_str()));
+        assert_eq!(git(Path::new(&wt.path), &["rev-parse", "HEAD"]), latest);
+
+        // A chosen remote branch is brought up to date too.
+        let newer = push_elsewhere("pushed again");
+        let wt = create(Some("origin/main")).await.expect("origin/main");
+        assert_eq!(wt.base_commit.as_deref(), Some(newer.as_str()));
+
+        // Unreachable origin: the local copy is used.
+        git(r, &["remote", "set-url", "origin", "/nonexistent/origin.git"]);
+        push_elsewhere("not reachable");
+        let wt = create(None).await.expect("offline");
+        assert_eq!(wt.base_commit.as_deref(), Some(newer.as_str()));
     }
 
     #[tokio::test]

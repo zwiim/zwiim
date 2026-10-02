@@ -84,6 +84,10 @@ describe("agent sign-in", () => {
     expect(status.textContent).toContain("Connected");
     expect(status.textContent).toContain("Claude subscription");
     expect(status.textContent).toContain("me@example.com · Claude Max");
+    // Already signed in with the account: no sign-in to offer.
+    const account = dialog.getByTestId("agent-account");
+    expect(account.textContent).toContain("Signed in with your Claude subscription.");
+    expect(within(account).queryByRole("button", { name: "Sign in" })).toBeNull();
 
     fireEvent.click(dialog.getByRole("tab", { name: "Codex" }));
     expect(dialog.getByTestId("agent-status").textContent).toContain("Not signed in");
@@ -140,6 +144,7 @@ describe("agent sign-in", () => {
       await tick();
       expect(dialog.getByTestId("agent-status").textContent).toContain("ChatGPT Plus");
       expect(dialog.getByTestId("agent-account").textContent).not.toContain("in the browser");
+      expect(dialog.queryByRole("button", { name: "Sign in" })).toBeNull();
       c.dispose();
     } finally {
       vi.useRealTimers();
