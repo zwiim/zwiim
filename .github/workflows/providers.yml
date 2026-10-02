@@ -3,6 +3,9 @@
 # repository secrets; they are never committed and never personal accounts.
 # A provider whose secret is missing is reported as not run, and a release
 # must not be cut on it (release.yml requires this workflow to pass).
+# Unless a dispatch names another, each provider runs its cheapest model at
+# low effort: Claude on Haiku, Codex on gpt-5.6-luna. That covers releases
+# and the daily run.
 name: Providers
 
 on:
@@ -14,11 +17,11 @@ on:
         options: [both, claude, codex]
         default: both
       model:
-        description: Model for the session (e.g. haiku); empty keeps the agent's default
+        description: Model for the session (e.g. sonnet); empty runs the cheapest (haiku, gpt-5.6-luna)
         type: string
         default: ""
       effort:
-        description: Effort for the session (e.g. low); empty keeps the default
+        description: Effort for the session (e.g. medium); empty runs low
         type: string
         default: ""
   workflow_call:
@@ -58,8 +61,8 @@ jobs:
       - name: Live provider check
         env:
           ZWIIM_LIVE_PROVIDERS: ${{ matrix.provider }}
-          ZWIIM_LIVE_MODEL: ${{ inputs.model }}
-          ZWIIM_LIVE_EFFORT: ${{ inputs.effort }}
+          ZWIIM_LIVE_MODEL: ${{ inputs.model || (matrix.provider == 'claude' && 'haiku' || 'gpt-5.6-luna') }}
+          ZWIIM_LIVE_EFFORT: ${{ inputs.effort || 'low' }}
           ANTHROPIC_API_KEY: ${{ matrix.provider == 'claude' && secrets.ZWIIM_CI_ANTHROPIC_API_KEY || '' }}
           OPENAI_API_KEY: ${{ matrix.provider == 'codex' && secrets.ZWIIM_CI_OPENAI_API_KEY || '' }}
           ZWIIM_LIVE_EXPECTED_MODELS_CLAUDE: ${{ vars.ZWIIM_LIVE_EXPECTED_MODELS_CLAUDE }}

@@ -8,7 +8,7 @@ have their own versions and are listed under Compatibility.
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-10-02
+## [0.1.0-rc.1] - 2026-10-02
 
 ### Added
 - Zwiim Host Runtime: workspaces, worktrees, sessions, terminals, files and Git on your Mac, with the Zwiim Protocol V1 for clients.
