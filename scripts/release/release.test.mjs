@@ -7,7 +7,8 @@ import { test } from "node:test";
 import { buildLatest, buildManifest } from "./manifest.mjs";
 import { releaseNotes, SECTIONS } from "./notes.mjs";
 import { channelOf } from "./lib.mjs";
-import { DEBUG_CERT_SHA256, normalizeDigest, signerDigests, signerProblem } from "./build-android.mjs";
+import { DEBUG_CERT_SHA256, RELEASE_CERT_SHA256, normalizeDigest, signerDigests, signerProblem } from "./build-android.mjs";
+import { configProblems, tauriConfig } from "./local.mjs";
 
 const section = (version, headings = SECTIONS) =>
   `## [${version}] - 2026-09-28\n\n` + headings.map((h) => `### ${h}\n- None.\n`).join("\n");
@@ -67,7 +68,28 @@ test("only an APK signed by Zwiim's pinned key is published", () => {
   const pinned = normalizeDigest(ours);
   assert.equal(signerProblem(signerDigests(report(pinned)), ours), null);
   assert.match(signerProblem(signerDigests(report(DEBUG_CERT_SHA256)), ours), /public debug key/);
-  assert.match(signerProblem(signerDigests(report("ff".repeat(32))), ours), /not ZWIIM_ANDROID_CERT_SHA256/);
+  assert.match(signerProblem(signerDigests(report("ff".repeat(32))), ours), /not Zwiim's release key/);
   assert.match(signerProblem(signerDigests(report(pinned, "ff".repeat(32))), ours), /one signer, found 2/);
   assert.match(signerProblem(signerDigests("DOES NOT VERIFY\n"), ours), /found 0/);
+});
+
+test("the pinned Android certificate is the one in use", () => {
+  const report = `Signer #1 certificate SHA-256 digest: ${RELEASE_CERT_SHA256}\n`;
+  assert.equal(signerProblem(signerDigests(report)), null);
+});
+
+test("a local release needs the same configuration as release.yml", () => {
+  const vars = {
+    ZWIIM_RELEASE_PUBKEY: "k",
+    ZWIIM_APPLE_TEAM_ID: "TEAM123",
+    APPLE_SIGNING_IDENTITY: "Developer ID Application: Someone (TEAM123)",
+    ZWIIM_CLOUD_URL: "https://cloud.example.com",
+    ZWIIM_SUPABASE_URL: "https://ref.supabase.co",
+    ZWIIM_SUPABASE_ANON_KEY: "anon",
+  };
+  assert.deepEqual(configProblems(vars), []);
+  assert.deepEqual(configProblems({ ...vars, ZWIIM_RELEASE_PUBKEY: "" }), ["repository variable ZWIIM_RELEASE_PUBKEY is not set"]);
+  assert.match(configProblems({ ...vars, APPLE_SIGNING_IDENTITY: "Developer ID Application: Someone (OTHER)" })[0], /not a Developer ID of team/);
+  assert.match(configProblems({ ...vars, ZWIIM_CLOUD_URL: "http://cloud.example.com" })[0], /must be https/);
+  assert.deepEqual(JSON.parse(tauriConfig("k")), { plugins: { updater: { pubkey: "k" } } });
 });

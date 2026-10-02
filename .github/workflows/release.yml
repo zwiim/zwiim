@@ -3,6 +3,10 @@
 # Nothing is published unless CI and the live provider checks pass, and a
 # published version is never replaced.
 #
+# Releases are currently built on a Mac with scripts/release/local.mjs, which
+# runs these same steps with the credentials in that Mac's Keychain; keep the
+# two in step.
+#
 # Repository secrets (never committed):
 #   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 #       the release minisign key: signs release.json and the Desktop update
@@ -26,8 +30,6 @@
 #   ZWIIM_SUPABASE_URL, ZWIIM_SUPABASE_ANON_KEY
 #                           the production Supabase project (compiled into
 #                           Desktop and the Android app)
-#   ZWIIM_ANDROID_CERT_SHA256
-#                           the Android release key's certificate digest
 name: Release
 
 on:
@@ -66,7 +68,6 @@ jobs:
       ZWIIM_CLOUD_URL: ${{ vars.ZWIIM_CLOUD_URL }}
       ZWIIM_SUPABASE_URL: ${{ vars.ZWIIM_SUPABASE_URL }}
       ZWIIM_SUPABASE_ANON_KEY: ${{ vars.ZWIIM_SUPABASE_ANON_KEY }}
-      ZWIIM_ANDROID_CERT_SHA256: ${{ vars.ZWIIM_ANDROID_CERT_SHA256 }}
       TARGET: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
@@ -78,7 +79,7 @@ jobs:
       - name: Release configuration is present
         run: |
           for v in ZWIIM_RELEASE_PUBKEY ZWIIM_APPLE_TEAM_ID APPLE_SIGNING_IDENTITY \
-                   ZWIIM_CLOUD_URL ZWIIM_SUPABASE_URL ZWIIM_SUPABASE_ANON_KEY ZWIIM_ANDROID_CERT_SHA256; do
+                   ZWIIM_CLOUD_URL ZWIIM_SUPABASE_URL ZWIIM_SUPABASE_ANON_KEY; do
             test -n "${!v}" || { echo "::error::repository variable $v is not set"; exit 1; }
           done
           # One team signs every release: the Keychain ties the Host's items to it.
@@ -143,7 +144,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-        run: npm run bundle:release --workspace clients/desktop
+        # tauri build checks the updater signature against the configured key.
+        run: |
+          npm run bundle:release --workspace clients/desktop -- \
+            --config "{\"plugins\":{\"updater\":{\"pubkey\":\"$ZWIIM_RELEASE_PUBKEY\"}}}"
       - name: Verify Desktop's signature, notarization and Gatekeeper
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}

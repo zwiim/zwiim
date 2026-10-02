@@ -9,8 +9,6 @@
 //   ZWIIM_ANDROID_KEYSTORE           path to the PKCS12 keystore
 //   ZWIIM_ANDROID_KEYSTORE_PASSWORD  its password (also the key's)
 //   ZWIIM_ANDROID_KEY_ALIAS          the key's alias
-//   ZWIIM_ANDROID_CERT_SHA256        the key's certificate digest (public);
-//                                    the APK must be signed by exactly it
 //   EXPO_PUBLIC_ZWIIM_*              production services, checked by
 //                                    clients/mobile/scripts/check-production.mjs
 //   ANDROID_HOME                     the Android SDK (for apksigner)
@@ -24,6 +22,9 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { ROOT, fail, parseArgs, readVersion } from "./lib.mjs";
 
+// Zwiim's Android release certificate: an APK signed by anything else is
+// refused. A new key means a new pin here, and every install reinstalled.
+export const RELEASE_CERT_SHA256 = "42fd909cc3fa53ac447f9897b3b9105efbefd9bbbe61188cde96d099bf044c1f";
 // The React Native template's debug key: public, in every project.
 export const DEBUG_CERT_SHA256 = "fac61745dc0903786fb9ede62a962b399f7348f0bb6f899b8332667591033b9c";
 
@@ -35,10 +36,10 @@ export function signerDigests(output) {
 }
 
 /** Why an APK signed by `digests` must not be published, or null. */
-export function signerProblem(digests, pinned) {
+export function signerProblem(digests, pinned = RELEASE_CERT_SHA256) {
   if (digests.includes(DEBUG_CERT_SHA256)) return "the APK is signed with the public debug key";
   if (digests.length !== 1) return `expected one signer, found ${digests.length}`;
-  if (digests[0] !== normalizeDigest(pinned)) return `the APK is signed by ${digests[0]}, not ZWIIM_ANDROID_CERT_SHA256`;
+  if (digests[0] !== normalizeDigest(pinned)) return `the APK is signed by ${digests[0]}, not Zwiim's release key`;
   return null;
 }
 
@@ -55,7 +56,7 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   const out = path.resolve(args.out ?? "dist");
   const version = readVersion();
-  for (const v of ["ZWIIM_ANDROID_KEYSTORE", "ZWIIM_ANDROID_KEYSTORE_PASSWORD", "ZWIIM_ANDROID_KEY_ALIAS", "ZWIIM_ANDROID_CERT_SHA256"]) {
+  for (const v of ["ZWIIM_ANDROID_KEYSTORE", "ZWIIM_ANDROID_KEYSTORE_PASSWORD", "ZWIIM_ANDROID_KEY_ALIAS"]) {
     if (!process.env[v]) fail(`${v} is not set`);
   }
   const keystore = path.resolve(process.env.ZWIIM_ANDROID_KEYSTORE);
@@ -80,7 +81,7 @@ function main() {
   fs.copyFileSync(path.join(mobile, "android/app/build/outputs/apk/release/app-release.apk"), apk);
 
   const report = execFileSync(apksigner(), ["verify", "--print-certs", apk], { encoding: "utf8" });
-  const problem = signerProblem(signerDigests(report), process.env.ZWIIM_ANDROID_CERT_SHA256);
+  const problem = signerProblem(signerDigests(report));
   if (problem) {
     fs.rmSync(apk);
     fail(problem);
