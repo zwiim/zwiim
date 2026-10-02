@@ -7,7 +7,7 @@
 // runs is picked from the workspace tree, which can also add a workspace
 // (Browse Mac) or a worktree to start in.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -23,6 +23,7 @@ import {
   defaultAgent,
   modeChoosable,
   modeValue,
+  offeredAgents,
   startChoices,
   startError,
   startParams,
@@ -69,7 +70,7 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
   }, [added]);
 
   const target = startTarget(state.workspaces, targetId ?? workspaceId);
-  const agents = state.agents;
+  const agents = useMemo(() => offeredAgents(state.agents), [state.agents]);
   const agent = agents?.find((a) => a.agent === (agentId ?? defaultAgent(agents))) ?? null;
   const options = startChoices(agent, picks);
   const mode = modeValue(options, picks.mode);

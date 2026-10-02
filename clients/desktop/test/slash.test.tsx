@@ -112,7 +112,7 @@ describe("slash menu", () => {
   it("offers a new session the agent's commands from its last session", async () => {
     const t = new FakeTransport();
     t.handlers["agent.list"] = () => [
-      { agent: "claude_code", name: "Claude Code", available: true, reason: null, options: null, commands },
+      { agent: "claude_code", name: "Claude Code", available: true, reason: null, support: "supported", options: null, commands },
     ];
     const client = new HostClient({ transport: t });
     const controller = new HostController(client);

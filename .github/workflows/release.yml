@@ -1,6 +1,7 @@
 # A release, from a version tag: build, sign, notarize, write the signed
-# manifest, and publish to GitHub Releases. Nothing is published unless CI and
-# the live provider checks pass, and a published version is never replaced.
+# manifest, and publish to GitHub Releases of the public releases repository.
+# Nothing is published unless CI and the live provider checks pass, and a
+# published version is never replaced.
 #
 # Repository secrets (never committed):
 #   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
@@ -11,10 +12,16 @@
 #       notarization: Apple ID and an app-specific password
 #   ZWIIM_CI_ANTHROPIC_API_KEY, ZWIIM_CI_OPENAI_API_KEY
 #       dedicated CI-only provider credentials (providers.yml)
+#   ZWIIM_RELEASES_TOKEN
+#       fine-grained token with Contents read/write on the public releases
+#       repository (scripts/release/lib.mjs REPOSITORY), where it publishes
 # Repository variables (public values):
 #   ZWIIM_RELEASE_PUBKEY    the release key's public half (compiled in)
 #   ZWIIM_APPLE_TEAM_ID     the permanent Apple Team ID (compiled in)
 #   APPLE_SIGNING_IDENTITY  "Developer ID Application: <name> (<team id>)"
+#   ZWIIM_CLOUD_URL         the production Zwiim Cloud (compiled into Desktop)
+#   ZWIIM_SUPABASE_URL, ZWIIM_SUPABASE_ANON_KEY
+#                           the production Supabase project (compiled into Desktop)
 name: Release
 
 on:
@@ -50,6 +57,9 @@ jobs:
       ZWIIM_APPLE_TEAM_ID: ${{ vars.ZWIIM_APPLE_TEAM_ID }}
       APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
       APPLE_TEAM_ID: ${{ vars.ZWIIM_APPLE_TEAM_ID }}
+      ZWIIM_CLOUD_URL: ${{ vars.ZWIIM_CLOUD_URL }}
+      ZWIIM_SUPABASE_URL: ${{ vars.ZWIIM_SUPABASE_URL }}
+      ZWIIM_SUPABASE_ANON_KEY: ${{ vars.ZWIIM_SUPABASE_ANON_KEY }}
       TARGET: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
@@ -60,7 +70,8 @@ jobs:
           node scripts/release/notes.mjs "$(cat VERSION)" > /dev/null
       - name: Release configuration is present
         run: |
-          for v in ZWIIM_RELEASE_PUBKEY ZWIIM_APPLE_TEAM_ID APPLE_SIGNING_IDENTITY; do
+          for v in ZWIIM_RELEASE_PUBKEY ZWIIM_APPLE_TEAM_ID APPLE_SIGNING_IDENTITY \
+                   ZWIIM_CLOUD_URL ZWIIM_SUPABASE_URL ZWIIM_SUPABASE_ANON_KEY; do
             test -n "${!v}" || { echo "::error::repository variable $v is not set"; exit 1; }
           done
           # One team signs every release: the Keychain ties the Host's items to it.
@@ -68,6 +79,8 @@ jobs:
             "Developer ID Application: "*"($ZWIIM_APPLE_TEAM_ID)") ;;
             *) echo "::error::APPLE_SIGNING_IDENTITY is not a Developer ID of team ZWIIM_APPLE_TEAM_ID"; exit 1 ;;
           esac
+          case "$ZWIIM_CLOUD_URL" in https://*) ;; *) echo "::error::ZWIIM_CLOUD_URL must be https"; exit 1 ;; esac
+          test -n "${{ secrets.ZWIIM_RELEASES_TOKEN != '' && 'set' || '' }}" || { echo "::error::secret ZWIIM_RELEASES_TOKEN is not set"; exit 1; }
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
@@ -169,8 +182,7 @@ jobs:
 
       - name: Publish (refuses an existing version)
         env:
-          GH_TOKEN: ${{ github.token }}
-          ZWIIM_RELEASE_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.ZWIIM_RELEASES_TOKEN }}
         run: node scripts/release/publish.mjs --dir dist
 
       - name: Remove the signing keychain

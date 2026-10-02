@@ -372,51 +372,99 @@ pub fn setup_in_background(adapter: ManagedAdapter) {
 
 // ─── credentials ────────────────────────────────────────────────────────
 
+/// The API-key variables Codex signs in with, in the adapter's own order.
+pub(crate) const CODEX_API_KEY_VARS: &[&str] = &["CODEX_API_KEY", "OPENAI_API_KEY"];
+
+/// Whether the agent's environment carries a non-empty `key`. The agent's
+/// configured `env` is laid over the Host's own environment at launch, so a
+/// value there wins, even an empty one that blanks an inherited key.
+pub(crate) fn credential_set(
+    env: &BTreeMap<String, String>,
+    inherited: &dyn Fn(&str) -> Option<String>,
+    key: &str,
+) -> bool {
+    env.get(key)
+        .cloned()
+        .or_else(|| inherited(key))
+        .is_some_and(|v| !v.trim().is_empty())
+}
+
+/// Whether Codex has an API key to sign in with (see `acp::connection`, which
+/// signs it in with the key when it reports no other sign-in).
+pub(crate) fn codex_api_key_present(
+    env: &BTreeMap<String, String>,
+    inherited: &dyn Fn(&str) -> Option<String>,
+) -> bool {
+    CODEX_API_KEY_VARS
+        .iter()
+        .any(|k| credential_set(env, inherited, k))
+}
+
+pub(crate) fn inherited_env(key: &str) -> Option<String> {
+    std::env::var(key).ok()
+}
+
 /// Whether vendor credentials are present, without reading them: an
 /// environment variable the agent honors, the vendor's credentials file, or
 /// (Claude on macOS) its keychain item.
 fn authenticated(adapter: ManagedAdapter, env: &BTreeMap<String, String>) -> bool {
-    let set = |key: &str| {
-        env.get(key).is_some_and(|v| !v.trim().is_empty())
-            || std::env::var(key).is_ok_and(|v| !v.trim().is_empty())
-    };
     match adapter {
-        ManagedAdapter::Claude => {
-            const KEYS: &[&str] = &[
-                "ANTHROPIC_API_KEY",
-                "ANTHROPIC_AUTH_TOKEN",
-                "CLAUDE_CODE_OAUTH_TOKEN",
-                "CLAUDE_CODE_USE_BEDROCK",
-                "CLAUDE_CODE_USE_VERTEX",
-                "CLAUDE_CODE_USE_FOUNDRY",
-            ];
-            KEYS.iter().any(|k| set(k))
-                || claude_config_dir().join(".credentials.json").is_file()
-                || claude_keychain_item()
-        }
+        ManagedAdapter::Claude => claude_signed_in(
+            env,
+            &inherited_env,
+            &claude_config_dir(),
+            &claude_keychain_item,
+        ),
         ManagedAdapter::Codex => {
-            set("OPENAI_API_KEY")
-                || set("CODEX_API_KEY")
-                || crate::commands::acp::codex_home_dir()
-                    .join("auth.json")
-                    .is_file()
+            codex_signed_in(env, &inherited_env, &crate::commands::acp::codex_home_dir())
         }
     }
 }
 
-fn claude_config_dir() -> PathBuf {
+pub(crate) fn claude_signed_in(
+    env: &BTreeMap<String, String>,
+    inherited: &dyn Fn(&str) -> Option<String>,
+    config_dir: &Path,
+    keychain_item: &dyn Fn() -> bool,
+) -> bool {
+    const KEYS: &[&str] = &[
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+    ];
+    KEYS.iter().any(|k| credential_set(env, inherited, k))
+        || config_dir.join(".credentials.json").is_file()
+        || keychain_item()
+}
+
+/// A ChatGPT login (`auth.json`) or an API key — which Zwiim now signs Codex
+/// in with, so it counts.
+fn codex_signed_in(
+    env: &BTreeMap<String, String>,
+    inherited: &dyn Fn(&str) -> Option<String>,
+    codex_home: &Path,
+) -> bool {
+    codex_api_key_present(env, inherited) || codex_home.join("auth.json").is_file()
+}
+
+pub(crate) fn claude_config_dir() -> PathBuf {
     std::env::var_os("CLAUDE_CONFIG_DIR")
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude"))
 }
 
+#[cfg(target_os = "macos")]
+static CLAUDE_KEYCHAIN_ITEM: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+
 /// Claude Code keeps its login in the macOS keychain. Asks only whether the
 /// item exists (never for its secret); cached briefly.
 #[cfg(target_os = "macos")]
-fn claude_keychain_item() -> bool {
-    static CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
-    if let Some((at, found)) = *CACHE.lock().unwrap() {
+pub(crate) fn claude_keychain_item() -> bool {
+    if let Some((at, found)) = *CLAUDE_KEYCHAIN_ITEM.lock().unwrap() {
         if at.elapsed() < Duration::from_secs(30) {
             return found;
         }
@@ -427,13 +475,21 @@ fn claude_keychain_item() -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|s| s.success());
-    *CACHE.lock().unwrap() = Some((Instant::now(), found));
+    *CLAUDE_KEYCHAIN_ITEM.lock().unwrap() = Some((Instant::now(), found));
     found
 }
 
 #[cfg(not(target_os = "macos"))]
-fn claude_keychain_item() -> bool {
+pub(crate) fn claude_keychain_item() -> bool {
     false
+}
+
+/// Ask the keychain again next time: a sign-in or sign-out just changed it.
+pub(crate) fn forget_claude_keychain_item() {
+    #[cfg(target_os = "macos")]
+    {
+        *CLAUDE_KEYCHAIN_ITEM.lock().unwrap() = None;
+    }
 }
 
 // ─── downloads ──────────────────────────────────────────────────────────

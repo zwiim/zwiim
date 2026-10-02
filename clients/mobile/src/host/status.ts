@@ -2,7 +2,7 @@
 // semantics and Global States): the Host bar's dot and path pill, the status
 // line, and the banner or full-screen state a failure calls for.
 
-import type { ActiveConnection, ConnectionMode } from "@zwiim/sdk";
+import type { ActiveConnection, AgentAuthStatus, ConnectionMode } from "@zwiim/sdk";
 import { hostMeta, type HostEntry } from "../account/hosts";
 import type { DotState } from "../ui/components";
 import type { ErrorInfo, HostConnectionView } from "./connection";
@@ -130,4 +130,33 @@ export function hostRowState(
   const dot: DotState =
     active === "connecting" || active === "reconnecting" ? "work" : active || host.online ? "done" : "idle";
   return { meta: hostMeta(host, now, { mode, active }), dot };
+}
+
+const AGENT_NAMES: Record<string, { name: string; account: string }> = {
+  claude_code: { name: "Claude", account: "Claude subscription" },
+  codex: { name: "Codex", account: "ChatGPT account" },
+};
+
+/**
+ * An agent's sign-in on the host as its row reads: name, how it is signed in,
+ * and the account's email and plan. Read only — signing in happens on the Mac.
+ */
+export function agentSignInRow(status: AgentAuthStatus): {
+  name: string;
+  state: string;
+  detail: string | null;
+  dot: DotState;
+} {
+  const known = AGENT_NAMES[status.agent] ?? { name: status.agent, account: "Account" };
+  const method =
+    status.method === "account"
+      ? known.account
+      : status.method === "api_key"
+        ? "API key"
+        : status.method === "cloud"
+          ? "Cloud provider"
+          : null;
+  const state = status.sign_in === "running" ? "Signing in…" : status.connected ? (method ?? "Signed in") : "Not signed in";
+  const detail = [status.email, status.plan].filter(Boolean).join(" · ") || null;
+  return { name: known.name, state, detail, dot: status.sign_in === "running" ? "work" : status.connected ? "done" : "idle" };
 }

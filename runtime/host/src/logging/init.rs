@@ -26,6 +26,7 @@ use crate::logging::budget::{self, BudgetedWriter};
 use crate::logging::hub::LogHub;
 use crate::logging::layer::BufferEmitLayer;
 use crate::logging::{LogLevel, LogSettings, LOGGING_LEVEL_KEY};
+use crate::redact::Scrubbing;
 
 /// Reload handle stored in [`LogHub`]. The wrapped `EnvFilter` is applied as a
 /// global filter on the registry, so swapping it changes the level for all
@@ -517,9 +518,9 @@ fn build_subscriber(
                 // A second global filter: an event must clear BOTH, so this one
                 // cannot be argued with by any `EnvFilter` directive.
                 .with(filter_fn(|meta| !is_credential_dump_target(meta.target())))
-                .with(fmt::layer().with_writer(std::io::stderr))
+                .with(fmt::layer().with_writer(Scrubbing(std::io::stderr)))
                 .with(BufferEmitLayer)
-                .with(fmt::layer().json().with_writer(non_blocking))
+                .with(fmt::layer().json().with_writer(Scrubbing(non_blocking)))
                 .init();
             Some(guard)
         }
@@ -529,7 +530,7 @@ fn build_subscriber(
                 // A second global filter: an event must clear BOTH, so this one
                 // cannot be argued with by any `EnvFilter` directive.
                 .with(filter_fn(|meta| !is_credential_dump_target(meta.target())))
-                .with(fmt::layer().with_writer(std::io::stderr))
+                .with(fmt::layer().with_writer(Scrubbing(std::io::stderr)))
                 .with(BufferEmitLayer)
                 .init();
             None

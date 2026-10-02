@@ -32,6 +32,11 @@ const OPS: &[&str] = &[
     "host.diagnostics",
     "agent.list",
     "agent.setup",
+    "agent.auth_status",
+    "agent.sign_in",
+    "agent.save_key",
+    "agent.remove_key",
+    "agent.sign_out",
     "workspace.list",
     "workspace.add",
     "workspace.browse",
@@ -1869,6 +1874,55 @@ async fn agent_setup_only_sets_up_host_managed_adapters() {
 }
 
 #[tokio::test]
+async fn agent_sign_in_status_reaches_every_client_and_never_a_key() {
+    let h = host(false).await;
+    let codex_home = tempfile::tempdir().unwrap();
+    // Saving clears a plaintext key Codex wrote to its own home: a temp one.
+    temp_env::async_with_vars([("CODEX_HOME", Some(codex_home.path()))], async {
+        let key = "sk-test-protocol-0001";
+        let saved = h.ok("agent.save_key", json!({"agent": "codex", "key": key})).await;
+        assert_eq!(saved["agent"], "codex");
+        assert_eq!(saved["saved_key"], true, "{saved}");
+        assert!(!saved.to_string().contains(key), "{saved}");
+
+        let all = h.ok("agent.auth_status", json!({})).await;
+        let agents: Vec<_> = all.as_array().unwrap().iter().map(|s| s["agent"].clone()).collect();
+        assert_eq!(agents, [json!("claude_code"), json!("codex")]);
+        assert!(!all.to_string().contains(key), "{all}");
+        let mut fields: Vec<_> = all[1].as_object().unwrap().keys().cloned().collect();
+        fields.sort();
+        assert_eq!(fields, ["agent", "connected", "email", "method", "plan", "saved_key", "sign_in"]);
+
+        // A paired device reads the status too.
+        let credential = bearer_device(&h, "dev-1").await;
+        let (status, body) = h.call_as(&credential, "agent.auth_status", json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body[1]["saved_key"], true);
+
+        let removed = h.ok("agent.remove_key", json!({"agent": "codex"})).await;
+        assert_eq!(removed["saved_key"], false, "{removed}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_rejected_key_is_never_echoed() {
+    let h = host(false).await;
+    let (status, value) = h
+        .call("agent.save_key", json!({"agent": "claude_code", "key": "sk-proj-not-anthropic"}))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(value["error"]["code"], "invalid_input");
+    assert!(!value.to_string().contains("not-anthropic"), "{value}");
+    // A key of the wrong type is a schema error that does not quote it either.
+    let (status, value) = h.call("agent.save_key", json!({"agent": "codex", "key": ["sk-test-in-array"]})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(!value.to_string().contains("sk-test-in-array"), "{value}");
+    let (status, code) = h.err("agent.sign_in", json!({"agent": "gemini"})).await;
+    assert_eq!((status, code.as_str()), (StatusCode::BAD_REQUEST, "invalid_request"));
+}
+
+#[tokio::test]
 async fn an_unsigned_unsupervised_host_reports_that_it_cannot_update() {
     let h = host(false).await;
     let status = h.ok("host.update.status", json!({})).await;
@@ -2163,6 +2217,10 @@ async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
         ("host.claim", json!({"user_id": "u-mallory"})),
         ("host.restart", json!({"mode": "now"})),
         ("agent.setup", json!({"agent": "claude_code"})),
+        ("agent.sign_in", json!({"agent": "codex"})),
+        ("agent.save_key", json!({"agent": "codex", "key": "sk-test-device-0001"})),
+        ("agent.remove_key", json!({"agent": "codex"})),
+        ("agent.sign_out", json!({"agent": "codex"})),
     ] {
         let (status, body) = h.call_as(&credential, op, body).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{op}");

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, GitBranch, Loader2, Square } from "lucide-react";
 import {
   effortFor,
@@ -35,6 +35,11 @@ const UNAVAILABLE: Record<string, string> = {
 export function agentLabel(a: AgentSummary): string {
   if (!a.available) return `${a.name} — ${UNAVAILABLE[a.reason ?? ""] ?? "unavailable"}`;
   return a.support === "experimental" ? `${a.name} — experimental` : a.name;
+}
+
+/** The agents a new session offers: the supported ones (Claude Code, Codex). */
+export function offeredAgents(agents: readonly AgentSummary[]): AgentSummary[] {
+  return agents.filter((a) => a.support === "supported");
 }
 
 /**
@@ -98,7 +103,8 @@ const LEARN_POLLS = 30;
  */
 export function useNewSessionAgent() {
   const controller = useController();
-  const agents = useHost((s) => s.agents);
+  const listed = useHost((s) => s.agents);
+  const agents = useMemo(() => listed && offeredAgents(listed), [listed]);
   // An agent's defaults move with its last session (a model without effort,
   // say), so a new session starts from what the host reports now.
   useEffect(() => {

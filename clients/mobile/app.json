@@ -23,7 +23,7 @@
       "permissions": ["android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE"],
       "blockedPermissions": ["android.permission.RECORD_AUDIO"],
       "adaptiveIcon": {
-        "backgroundColor": "#131314",
+        "backgroundColor": "#0C0C0D",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },

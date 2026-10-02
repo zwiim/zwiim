@@ -333,6 +333,7 @@ describe("sessions and removed worktrees", () => {
         name: "Claude Code",
         available: true,
         reason: null,
+        support: "supported",
         options: {
           model: { current: "sonnet", values: [{ value: "sonnet", label: "Sonnet", description: null }] },
           effort: null,
@@ -394,6 +395,7 @@ describe("sessions and removed worktrees", () => {
         name: "Claude Code",
         available: true,
         reason: null,
+        support: "supported",
         options: null,
         commands: [{ name: "review", description: "Review a pull request", hint: null }],
       },

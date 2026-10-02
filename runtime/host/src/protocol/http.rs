@@ -506,6 +506,142 @@ pub async fn agent_setup(
     Ok(Json(crate::adapters::status(adapter, &env)))
 }
 
+// ─── agent sign-in ───────────────────────────────────────────────────────
+//
+// Status goes to every client; signing in, keys and sign-out are the local
+// operator's alone. A key comes in with `agent.save_key` and never goes out:
+// no response, event, log line or error carries it.
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentAuthParams {
+    pub agent: AgentType,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSaveKeyParams {
+    pub agent: AgentType,
+    pub key: String,
+}
+
+fn auth_adapter(agent: AgentType) -> Result<crate::adapters::ManagedAdapter, ZwiimError> {
+    crate::adapters::ManagedAdapter::for_agent(agent).ok_or_else(|| {
+        ZwiimError::invalid_request("only Claude Code and Codex sign in on the host")
+    })
+}
+
+fn auth_error(e: crate::agent_auth::AuthError) -> ZwiimError {
+    use crate::agent_auth::AuthError;
+    match e {
+        AuthError::InvalidKey(message) => ZwiimError::invalid_input(message),
+        AuthError::NotInstalled => ZwiimError::agent_not_installed(),
+        AuthError::Store(_) | AuthError::SignOut(_) => {
+            tracing::warn!("[agent-auth] {e}");
+            ZwiimError::agent_auth_failed()
+        }
+    }
+}
+
+async fn auth_status_of(
+    state: &AppState,
+    adapter: crate::adapters::ManagedAdapter,
+) -> crate::agent_auth::AgentAuthStatus {
+    let agent = adapter.agent();
+    let setting = crate::db::service::agent_setting_service::get_by_agent_type(&state.db.conn, agent)
+        .await
+        .ok()
+        .flatten();
+    let env = crate::commands::acp::build_runtime_env_from_setting(agent, setting.as_ref(), None);
+    crate::agent_auth::status(agent, &env).expect("a managed agent has a sign-in status")
+}
+
+/// `agent.auth_status`: how Claude Code and Codex are signed in on this host.
+/// Read fresh on every call.
+pub async fn agent_auth_status(
+    Extension(state): Extension<Arc<AppState>>,
+) -> ZResult<Vec<crate::agent_auth::AgentAuthStatus>> {
+    let mut out = Vec::new();
+    for adapter in crate::adapters::ManagedAdapter::ALL {
+        out.push(auth_status_of(&state, adapter).await);
+    }
+    Ok(Json(out))
+}
+
+/// `agent.sign_in`: open the provider's sign-in page in the browser on the
+/// host's Mac; `sign_in` reads `running` until it finishes. Asking again
+/// starts over (local authority only).
+pub async fn agent_sign_in(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(params): ZJson<AgentAuthParams>,
+) -> ZResult<crate::agent_auth::AgentAuthStatus> {
+    let adapter = auth_adapter(params.agent)?;
+    crate::agent_auth::start_sign_in(adapter).map_err(auth_error)?;
+    Ok(Json(auth_status_of(&state, adapter).await))
+}
+
+/// `agent.save_key`: keep an API key for the agent in the host's Keychain. It
+/// is used while the agent has no account sign-in; running sessions pick it
+/// up when restarted (local authority only).
+pub async fn agent_save_key(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(params): ZJson<AgentSaveKeyParams>,
+) -> ZResult<crate::agent_auth::AgentAuthStatus> {
+    let AgentSaveKeyParams { agent, key } = params;
+    let key = zeroize::Zeroizing::new(key);
+    let adapter = auth_adapter(agent)?;
+    crate::agent_auth::save_key(adapter, &key).await.map_err(auth_error)?;
+    mark_sessions_stale(&state, agent).await;
+    Ok(Json(auth_status_of(&state, adapter).await))
+}
+
+/// `agent.remove_key`: delete the agent's saved API key (local authority
+/// only).
+pub async fn agent_remove_key(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(params): ZJson<AgentAuthParams>,
+) -> ZResult<crate::agent_auth::AgentAuthStatus> {
+    let adapter = auth_adapter(params.agent)?;
+    crate::agent_auth::remove_key(adapter).await.map_err(auth_error)?;
+    mark_sessions_stale(&state, params.agent).await;
+    Ok(Json(auth_status_of(&state, adapter).await))
+}
+
+/// `agent.sign_out`: delete the saved key, sign the provider account out and
+/// end the agent's running sessions, so none keeps using the old sign-in
+/// (local authority only).
+pub async fn agent_sign_out(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(params): ZJson<AgentAuthParams>,
+) -> ZResult<crate::agent_auth::AgentAuthStatus> {
+    let adapter = auth_adapter(params.agent)?;
+    // Sessions end first, so none can sign the agent back in meanwhile.
+    let ended = state
+        .connection_manager
+        .disconnect_by_agent_type(params.agent)
+        .await;
+    if ended > 0 {
+        tracing::info!("[agent-auth] ended {ended} {} session(s) at sign-out", adapter.id());
+    }
+    crate::agent_auth::sign_out(adapter)
+        .await
+        .map_err(auth_error)?;
+    Ok(Json(auth_status_of(&state, adapter).await))
+}
+
+/// Running sessions of `agent` started with the old key: flag them for a
+/// restart.
+async fn mark_sessions_stale(state: &AppState, agent: AgentType) {
+    crate::commands::acp::refresh_config_staleness(
+        &state.connection_manager,
+        &state.db,
+        &state.data_dir,
+        &[agent],
+        crate::acp::types::ConfigStaleKind::AgentConfig,
+    )
+    .await;
+}
+
 // ─── workspace ───────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]

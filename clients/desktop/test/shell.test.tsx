@@ -6,7 +6,7 @@ import { bootHost, type BootPhase } from "@/lib/boot";
 import type { DiscoveredHost, NativeBridge } from "@/lib/bridge";
 import { HostProvider } from "@/lib/host-context";
 import { rememberSelection } from "@/lib/prefs";
-import { SessionPanel, agentLabel, defaultAgent } from "@/panels/SessionPanel";
+import { SessionPanel, agentLabel, defaultAgent, offeredAgents } from "@/panels/SessionPanel";
 import { ConnectionStatus } from "@/panels/ConnectionStatus";
 import { UpdateCard } from "@/panels/UpdateCard";
 import pkg from "../package.json";
@@ -408,5 +408,10 @@ describe("agents Zwiim does not support yet", () => {
     expect(defaultAgent([...list], null)).toBe("claude_code");
     expect(defaultAgent([...list], "gemini")).toBe("gemini");
     expect(defaultAgent([list[0]], null)).toBe("gemini");
+  });
+
+  it("are not offered for a new session: only Claude Code and Codex are", () => {
+    const list = [agent("gemini", "experimental"), agent("codex", "supported", false, "not_installed"), agent("claude_code", "supported")];
+    expect(offeredAgents(list).map((a) => a.agent)).toEqual(["codex", "claude_code"]);
   });
 });

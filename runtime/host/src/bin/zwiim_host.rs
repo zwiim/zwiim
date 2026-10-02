@@ -374,6 +374,9 @@ async fn async_main() -> Exit {
         });
     }
 
+    // API keys saved for the agents, read before any agent launches.
+    zwiim_host::agent_auth::init(&data_dir).await;
+
     // Install or confirm the managed Claude/Codex adapters from this build's
     // lock, in the background; offline, installed adapters keep working.
     zwiim_host::adapters::provision_at_start();

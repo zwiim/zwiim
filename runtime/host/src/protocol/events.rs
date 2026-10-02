@@ -54,9 +54,10 @@ fn to_value<T: Serialize>(v: &T) -> Value {
     serde_json::to_value(v).unwrap_or(Value::Null)
 }
 
-/// Agent-supplied free text can quote host paths; strip them like errors do.
+/// Agent-supplied free text can quote host paths or a refused API key; strip
+/// them like errors do.
 fn scrub(text: &str) -> String {
-    super::error::scrub_paths(text)
+    super::error::scrub_paths(&crate::redact::scrub_secrets(text))
 }
 
 /// Paths under `root` (the session's workspace directory) become relative to
@@ -871,6 +872,20 @@ pub(crate) mod tests {
         assert!(message.contains("gpt-5.5") && !message.contains("/Users/me"), "{message}");
 
         assert!(project_envelope("s", None, &failure("warning")).is_none());
+    }
+
+    #[test]
+    fn agent_errors_never_carry_an_api_key() {
+        let refused = env(AcpEvent::Error {
+            message: "401 Incorrect API key provided: sk-proj-**wxyz. See your key sk-proj-Abc123".into(),
+            agent_type: "codex".into(),
+            code: None,
+            details: None,
+            terminal: true,
+        });
+        let v = project_envelope("s", None, &refused).expect("projected");
+        let message = v.payload["message"].as_str().unwrap();
+        assert!(message.contains("Incorrect API key") && !message.contains("sk-"), "{message}");
     }
 
     fn env(payload: AcpEvent) -> EventEnvelope {

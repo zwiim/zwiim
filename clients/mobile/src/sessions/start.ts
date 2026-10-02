@@ -45,6 +45,11 @@ function targetLabel(workspaces: readonly WorkspaceInfo[], w: WorkspaceInfo): st
   return contextText(contextLabel(workspaces, w.workspace_id)) ?? workspaceLabel(w);
 }
 
+/** The agents a new session offers: the supported ones (Claude Code, Codex). */
+export function offeredAgents(agents: readonly AgentSummary[] | null): AgentSummary[] | null {
+  return agents && agents.filter((a) => a.support === "supported");
+}
+
 /** The first supported agent the host can run, else the first it can run, in the host's order. */
 export function defaultAgent(agents: readonly AgentSummary[] | null): string | null {
   const usable = agents?.filter((a) => a.available) ?? [];

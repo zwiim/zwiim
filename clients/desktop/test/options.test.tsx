@@ -139,7 +139,7 @@ describe("new session options", () => {
     rememberAgentChoices("claude_code", { model: "opus" });
     const t = new FakeTransport();
     t.handlers["agent.list"] = () => [
-      { agent: "claude_code", name: "Claude Code", available: true, reason: null, options: opts() },
+      { agent: "claude_code", name: "Claude Code", available: true, reason: null, support: "supported", options: opts() },
     ];
     t.handlers["session.start"] = () => ({ session_id: "s1" });
     const client = new HostClient({ transport: t });

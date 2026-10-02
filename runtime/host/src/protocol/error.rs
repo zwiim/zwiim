@@ -202,6 +202,16 @@ impl ZwiimError {
         )
     }
 
+    /// Signing an agent in or out did not finish on the host (its Keychain or
+    /// the provider's sign-out). The host log says which.
+    pub fn agent_auth_failed() -> Self {
+        Self::new(
+            StatusCode::BAD_GATEWAY,
+            "agent_auth_failed",
+            "The agent's sign-in could not be changed on the host",
+        )
+    }
+
     pub fn internal() -> Self {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -224,7 +234,7 @@ impl IntoResponse for ZwiimError {
 
 impl From<AppCommandError> for ZwiimError {
     fn from(e: AppCommandError) -> Self {
-        let message = scrub_paths(&e.message);
+        let message = scrub_paths(&crate::redact::scrub_secrets(&e.message));
         match e.code {
             AppErrorCode::InvalidInput => Self::invalid_input(message),
             AppErrorCode::NotFound => Self::not_found(message),

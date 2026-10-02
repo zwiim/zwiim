@@ -1105,6 +1105,20 @@ Upstream-derived:
 | `acp/session_state.rs` | `src-tauri/src/acp/session_state.rs` | `accepts_session_failure` (the existing monotonic merge rule, shared with the emit sites). |
 | `commands/acp.rs` | `src-tauri/src/commands/acp.rs` | `codex_config_sets(key)` replaces `codex_config_sets_reasoning_summary`. |
 
+## V1 agent authentication — Codex API key, Desktop agent sign-in
+
+Zwiim-owned: `agent_auth.rs` (sign-in status for Claude Code and Codex; API keys in the macOS Keychain, or an owner-only file under `ZWIIM_HOST_KEY_STORE=file`, never SQLite; a saved key is handed to the agent at launch only when it has no account sign-in or key of its own; Codex runs through an in-memory credential launcher so it never writes the key to `auth.json`, and without the key in its environment so its shells, shell snapshots and the agent's commands never see it; account sign-in and sign-out through the vendors' own CLIs); `redact.rs` (API-key-shaped text replaced in client errors, history, logs and diagnostics); protocol ops `agent.auth_status`, `agent.sign_in`, `agent.save_key`, `agent.remove_key`, `agent.sign_out` and capability `agent.auth`.
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `acp/connection.rs` | `src-tauri/src/acp/connection.rs` | Codex with an API key and no other sign-in is signed in with ACP `authenticate` (`api-key`) after `initialize`; a refused key is `AcpError::CodexSignInFailed`. The agent's `_auth/status_update` is recorded for sign-in status. Codex launches through the in-memory credential launcher when its key is a saved one. |
+| `acp/error.rs` | `src-tauri/src/acp/error.rs` | `CodexSignInFailed`. |
+| `commands/acp.rs` | `src-tauri/src/commands/acp.rs` | `build_runtime_env_from_setting` adds the saved API key (`agent_auth::apply_saved_key`). |
+| `logging/init.rs` | `src-tauri/src/logging/init.rs` | stderr and file log writers scrub API keys (`redact::Scrubbing`). |
+| `logging/layer.rs` | `src-tauri/src/logging/layer.rs` | Field values bound for the diagnostics buffer are scrubbed. |
+
 ## License obligations tracked
 
 - [x] Include Apache-2.0 license text (`third_party/codeg/LICENSE`).

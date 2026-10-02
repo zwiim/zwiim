@@ -65,6 +65,10 @@ pub enum AcpError {
     /// message and the frontend renders the suggestion alongside it.
     #[error("{0}")]
     McpRejectedByAgent(String),
+    /// Codex refused the API key Zwiim signed it in with. Carries no
+    /// agent text: the vendor's answer may echo the credential.
+    #[error("Codex sign-in failed. Check the API key, or sign in to Codex.")]
+    CodexSignInFailed,
 }
 
 impl AcpError {
@@ -111,6 +115,7 @@ impl AcpError {
             Self::DownloadFailed(_) => Some("download_failed"),
             Self::ConnectionNotFound(_) => Some("connection_not_found"),
             Self::McpRejectedByAgent(_) => Some("mcp_rejected_by_agent"),
+            Self::CodexSignInFailed => Some("agent_sign_in_failed"),
             Self::Protocol(_) => None,
         }
     }

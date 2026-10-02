@@ -4,13 +4,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use sacp::schema::{
-    BlobResourceContents, CancelNotification, ClientCapabilities, ContentBlock, ContentChunk,
-    CreateTerminalRequest, CreateTerminalResponse, ElicitationCapabilities,
-    ElicitationFormCapabilities, EmbeddedResource, EmbeddedResourceResource,
-    FileSystemCapabilities, ImageContent, InitializeRequest, KillTerminalRequest,
-    KillTerminalResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
-    NewSessionResponse, PermissionOptionKind, Plan, PlanEntryPriority, PlanEntryStatus,
-    PromptRequest, ProtocolVersion, ReadTextFileRequest, ReadTextFileResponse,
+    AuthenticateRequest, BlobResourceContents, CancelNotification, ClientCapabilities,
+    ContentBlock, ContentChunk, CreateTerminalRequest, CreateTerminalResponse,
+    ElicitationCapabilities, ElicitationFormCapabilities, EmbeddedResource,
+    EmbeddedResourceResource, FileSystemCapabilities, ImageContent, InitializeRequest,
+    KillTerminalRequest, KillTerminalResponse, LoadSessionRequest, LoadSessionResponse,
+    NewSessionRequest, NewSessionResponse, PermissionOptionKind, Plan, PlanEntryPriority,
+    PlanEntryStatus, PromptRequest, ProtocolVersion, ReadTextFileRequest, ReadTextFileResponse,
     ReleaseTerminalRequest, ReleaseTerminalResponse, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, ResourceLink, ResumeSessionRequest,
     ResumeSessionResponse, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
@@ -1308,6 +1308,31 @@ pub enum ConnectionCommand {
 /// by the outer `.map_err(...)` in `run_connection`.
 const INIT_TIMEOUT_SENTINEL: &str = "__zwiim_init_timeout__";
 
+/// Sentinel for a refused API-key sign-in, converted back to
+/// `AcpError::CodexSignInFailed` like [`INIT_TIMEOUT_SENTINEL`].
+const SIGN_IN_FAILED_SENTINEL: &str = "__zwiim_sign_in_failed__";
+
+/// codex-acp's ACP auth method that signs in with `CODEX_API_KEY` or
+/// `OPENAI_API_KEY` from its environment.
+const CODEX_API_KEY_METHOD: &str = "api-key";
+
+/// How long to wait for the agent's first `_auth/status_update` after
+/// `initialize` (codex-acp sends it at once).
+const AUTH_STATUS_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Whether to sign Codex in with its API key, given the sign-in it reported
+/// after `initialize` (`None`: it reported none in time).
+///
+/// codex-acp reads the key only when the client sends `authenticate` with
+/// `api-key`; without it a key-only Codex refuses every session. Codex keeps
+/// the key it signed in with, so an earlier API-key sign-in is renewed (the
+/// configured key may have changed). A ChatGPT account, a gateway or any other
+/// sign-in is never replaced, and an agent that did not say is left alone
+/// rather than risk overwriting a login.
+fn codex_api_key_sign_in(reported_kind: Option<&str>) -> bool {
+    matches!(reported_kind, Some("none" | "api_key"))
+}
+
 /// Sentinel appended to a `session/new` failure when Zwiim had just forwarded
 /// MCP servers to a *custom* agent, so the outer `.map_err(...)` can raise
 /// `AcpError::McpRejectedByAgent` and point the user at the `supports_mcp`
@@ -2348,6 +2373,12 @@ pub async fn spawn_agent_connection(
     // `None` (isolation off, or the directory could not be created) means the
     // child inherits the ambient temp dir exactly as it did before.
     let scratch = crate::acp::scratch_dir::create();
+    // Zwiim: a Codex signed in with an API key keeps it in memory, never in
+    // its `auth.json`.
+    let mut runtime_env = runtime_env;
+    if agent_type == AgentType::Codex {
+        crate::agent_auth::keep_codex_key_in_memory(&mut runtime_env);
+    }
     let agent = match build_agent(
         agent_type,
         &runtime_env,
@@ -2416,6 +2447,11 @@ pub async fn spawn_agent_connection(
     // Resolved here for the same reason as `fs_policy`: it reads the full
     // per-agent `runtime_env`, which does not survive into `run_connection`.
     let host_tools = HostToolsPolicy::from_env(&runtime_env);
+
+    // Whether Codex has an API key to sign in with; read here for the same
+    // reason as `host_tools` (see `codex_api_key_sign_in`).
+    let codex_api_key = agent_type == AgentType::Codex
+        && crate::adapters::codex_api_key_present(&runtime_env, &|k| std::env::var(k).ok());
 
     // Forward only the Zwiim git credential helper keys into the terminal
     // runtime — not the agent's API tokens or model provider credentials.
@@ -2509,6 +2545,7 @@ pub async fn spawn_agent_connection(
             delegation_injection,
             fs_policy,
             host_tools,
+            codex_api_key,
             stderr_tail,
         )
         .await;
@@ -5343,6 +5380,8 @@ async fn run_connection(
     delegation_injection: Option<DelegationInjection>,
     fs_policy: FsAccessPolicy,
     host_tools: HostToolsPolicy,
+    // Codex has an API key to sign in with (see `codex_api_key_sign_in`).
+    codex_api_key: bool,
     // Connection-scoped agent stderr buffer, shared with the `with_debug`
     // callback installed by `build_agent`. Read only when a turn ends without
     // agent output, to attach evidence to the synthesized error.
@@ -5399,6 +5438,8 @@ async fn run_connection(
     let emitter_clone = emitter.clone();
     let perms = pending_perms.clone();
     let state_outer = Arc::clone(&state);
+    // The sign-in kind the agent last reported over `_auth/status_update`.
+    let (auth_kind_tx, mut auth_kind_rx) = tokio::sync::watch::channel(None::<String>);
 
     // Shared question access + feature toggle (both live on the delegation
     // injection) for the agents that ask NATIVELY, over a blocking request of
@@ -5713,7 +5754,7 @@ async fn run_connection(
         )
         .on_receive_notification(
             async move |notif: AuthStatusUpdateNotification, _cx: ConnectionTo<Agent>| {
-                handle_auth_status_update(agent_type, notif);
+                handle_auth_status_update(agent_type, notif, &auth_kind_tx);
                 Ok(())
             },
             on_receive_notification!(),
@@ -5777,6 +5818,40 @@ async fn run_connection(
                 agent_type,
             )
             .await;
+
+            if codex_api_key
+                && init_resp
+                    .auth_methods
+                    .iter()
+                    .any(|m| m.id().0.as_ref() == CODEX_API_KEY_METHOD)
+            {
+                // codex-acp reports its sign-in right after `initialize`; an
+                // agent that stays silent is left as it is.
+                let reported = tokio::time::timeout(
+                    AUTH_STATUS_WAIT,
+                    auth_kind_rx.wait_for(Option::is_some),
+                )
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .and_then(|kind| kind.clone());
+                if codex_api_key_sign_in(reported.as_deref()) {
+                    tracing::info!("[ACP][{agent_name_for_log}] signing in with the API key");
+                    let signed_in = cx
+                        .send_request_to(Agent, AuthenticateRequest::new(CODEX_API_KEY_METHOD))
+                        .block_task()
+                        .await;
+                    if let Err(e) = signed_in {
+                        // The agent's answer is not logged or passed on: it
+                        // may echo the key.
+                        tracing::warn!(
+                            "[ACP][{agent_name_for_log}] API-key sign-in failed (code {})",
+                            e.code
+                        );
+                        return Err(sacp::util::internal_error(SIGN_IN_FAILED_SENTINEL));
+                    }
+                }
+            }
 
             let supports_fork = init_resp
                 .agent_capabilities
@@ -6615,18 +6690,23 @@ async fn run_connection(
             }
         })
         .await
-        .map_err(|e| {
-            let raw = e.to_string();
-            if raw.contains(INIT_TIMEOUT_SENTINEL) {
-                AcpError::InitializeTimeout
-            } else if raw.contains(MCP_SUSPECT_SENTINEL) {
-                // Strip the marker so the user sees the agent's own words, then
-                // let the frontend append the `supports_mcp` suggestion.
-                AcpError::mcp_rejected(raw.replace(MCP_SUSPECT_SENTINEL, ""))
-            } else {
-                AcpError::protocol(raw)
-            }
-        })
+        .map_err(|e| connection_error(e.to_string()))
+}
+
+/// Turn the connection's error text back into the `AcpError` its sentinel
+/// stands for.
+fn connection_error(raw: String) -> AcpError {
+    if raw.contains(INIT_TIMEOUT_SENTINEL) {
+        AcpError::InitializeTimeout
+    } else if raw.contains(SIGN_IN_FAILED_SENTINEL) {
+        AcpError::CodexSignInFailed
+    } else if raw.contains(MCP_SUSPECT_SENTINEL) {
+        // Strip the marker so the user sees the agent's own words, then
+        // let the frontend append the `supports_mcp` suggestion.
+        AcpError::mcp_rejected(raw.replace(MCP_SUSPECT_SENTINEL, ""))
+    } else {
+        AcpError::protocol(raw)
+    }
 }
 
 /// Store the permission responder and emit event to frontend.
@@ -13862,13 +13942,12 @@ struct AuthStatusUpdateNotification {
 /// an agent that never asked a question. Claiming the frame here is what keeps
 /// the bump from introducing that.
 ///
-/// Nothing consumes the payload yet, and that is a deliberate stop: the status
-/// describes the AGENT-owned login only (on codex, routing Zwiim itself
-/// configured through `providers/set` is explicitly excluded upstream), and on
-/// both agents every failure it could warn about already arrives as an AIR
-/// `sessionFailure` carrying an actionable `login` — claude 0.74.0 additionally
-/// rejects the prompt with `authRequired`. The shape is recorded here so a
-/// future consumer does not have to re-derive it:
+/// Only `kind` is consumed: the connection keeps the last one, which decides
+/// whether Codex is signed in with its API key after `initialize` (see
+/// [`codex_api_key_sign_in`]). The status describes the AGENT-owned login only
+/// (on codex, routing Zwiim itself configured through `providers/set` is
+/// explicitly excluded upstream). The shape is recorded here so a future
+/// consumer does not have to re-derive it:
 ///
 ///   {"authStatus": {"kind": "account" | "api_key" | "external" | "gateway"
 ///                           | "none",
@@ -13890,7 +13969,11 @@ struct AuthStatusUpdateNotification {
 /// "OpenAI API key", "Custom model gateway", "Not logged in" on codex; "Claude
 /// Max", "Anthropic API key", "AWS Bedrock", "Not logged in" on claude) plus,
 /// for a gateway, the provider id the user configured locally.
-fn handle_auth_status_update(agent_type: AgentType, notif: AuthStatusUpdateNotification) {
+fn handle_auth_status_update(
+    agent_type: AgentType,
+    notif: AuthStatusUpdateNotification,
+    kind_tx: &tokio::sync::watch::Sender<Option<String>>,
+) {
     let field = |key: &str| {
         notif
             .auth_status
@@ -13903,8 +13986,10 @@ fn handle_auth_status_update(agent_type: AgentType, notif: AuthStatusUpdateNotif
         agent = %agent_type,
         kind = %field("kind"),
         label = %field("label"),
-        "[ACP] agent reported its auth status (no consumer)"
+        "[ACP] agent reported its auth status"
     );
+    crate::agent_auth::record_reported(agent_type, &notif.auth_status);
+    kind_tx.send_replace(Some(field("kind")));
 }
 
 /// Whether Zwiim has a mapper for this ext-notification method.
@@ -15051,6 +15136,40 @@ async fn emit_conversation_update(
 mod tests {
     use super::*;
     use sacp::schema::{Diff, SessionConfigId};
+
+    #[test]
+    fn codex_signs_in_with_the_api_key_only_without_another_login() {
+        // No sign-in yet, or an earlier API-key one to renew: use the key.
+        assert!(codex_api_key_sign_in(Some("none")));
+        assert!(codex_api_key_sign_in(Some("api_key")));
+        // A ChatGPT login (or any other) always wins over the key.
+        assert!(!codex_api_key_sign_in(Some("account")));
+        assert!(!codex_api_key_sign_in(Some("gateway")));
+        assert!(!codex_api_key_sign_in(Some("external")));
+        // Codex said nothing: leave its sign-in alone.
+        assert!(!codex_api_key_sign_in(None));
+    }
+
+    #[test]
+    fn a_refused_api_key_reaches_clients_as_a_stable_error() {
+        // The agent's own words may echo the key; none of them get through.
+        let raw = format!("Internal error: {SIGN_IN_FAILED_SENTINEL}: invalid key sk-secret");
+        let err = connection_error(raw);
+        assert!(matches!(err, AcpError::CodexSignInFailed));
+        assert_eq!(err.code(), Some("agent_sign_in_failed"));
+        let shown = err.to_string();
+        assert!(shown.starts_with("Codex sign-in failed"), "{shown}");
+        assert!(!shown.contains("sk-secret") && !shown.contains(SIGN_IN_FAILED_SENTINEL));
+        // Other failures keep their mapping.
+        assert!(matches!(
+            connection_error(format!("x {INIT_TIMEOUT_SENTINEL}")),
+            AcpError::InitializeTimeout
+        ));
+        assert!(matches!(
+            connection_error("Authentication required".into()),
+            AcpError::Protocol(_)
+        ));
+    }
 
     #[test]
     fn usage_nulls_reach_zwiim_as_not_reported() {

@@ -7,6 +7,20 @@ name: Providers
 
 on:
   workflow_dispatch:
+    inputs:
+      provider:
+        description: Which provider to check
+        type: choice
+        options: [both, claude, codex]
+        default: both
+      model:
+        description: Model for the session (e.g. haiku); empty keeps the agent's default
+        type: string
+        default: ""
+      effort:
+        description: Effort for the session (e.g. low); empty keeps the default
+        type: string
+        default: ""
   workflow_call:
     secrets:
       ZWIIM_CI_ANTHROPIC_API_KEY:
@@ -27,11 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - provider: claude
-            test: claude_live
-          - provider: codex
-            test: codex_live
+        provider: ${{ fromJSON((inputs.provider && inputs.provider != 'both') && format('["{0}"]', inputs.provider) || '["claude","codex"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -48,8 +58,10 @@ jobs:
       - name: Live provider check
         env:
           ZWIIM_LIVE_PROVIDERS: ${{ matrix.provider }}
+          ZWIIM_LIVE_MODEL: ${{ inputs.model }}
+          ZWIIM_LIVE_EFFORT: ${{ inputs.effort }}
           ANTHROPIC_API_KEY: ${{ matrix.provider == 'claude' && secrets.ZWIIM_CI_ANTHROPIC_API_KEY || '' }}
           OPENAI_API_KEY: ${{ matrix.provider == 'codex' && secrets.ZWIIM_CI_OPENAI_API_KEY || '' }}
           ZWIIM_LIVE_EXPECTED_MODELS_CLAUDE: ${{ vars.ZWIIM_LIVE_EXPECTED_MODELS_CLAUDE }}
           ZWIIM_LIVE_EXPECTED_MODELS_CODEX: ${{ vars.ZWIIM_LIVE_EXPECTED_MODELS_CODEX }}
-        run: cargo test -p zwiim-host --test provider_live ${{ matrix.test }} -- --ignored --nocapture --test-threads=1
+        run: cargo test -p zwiim-host --test provider_live ${{ matrix.provider }}_live -- --ignored --nocapture --test-threads=1

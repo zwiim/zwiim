@@ -2,7 +2,9 @@
 //! the real vendor. Each test checks, over the Zwiim protocol only, that the
 //! agent advertises its models, starts a session, streams a reply, changes
 //! effort, cancels a turn, reports errors, resumes after a reconnect and after
-//! a Host restart.
+//! a Host restart. The key reaches the Host the way a user's does: saved
+//! through `agent.save_key`, never in the Host's environment, and never
+//! written anywhere but the Host's key store.
 //!
 //! Ignored by default. Run with dedicated CI-only credentials, never personal
 //! ones and never committed:
@@ -11,6 +13,7 @@
 //! ZWIIM_LIVE_PROVIDERS=claude,codex \
 //! ANTHROPIC_API_KEY=… OPENAI_API_KEY=… \
 //! [ZWIIM_LIVE_EXPECTED_MODELS_CLAUDE=a,b] [ZWIIM_LIVE_EXPECTED_MODELS_CODEX=c,d] \
+//! [ZWIIM_LIVE_MODEL=haiku] [ZWIIM_LIVE_EFFORT=low] \
 //! cargo test -p zwiim-host --test provider_live -- --ignored --nocapture --test-threads=1
 //! ```
 //!
@@ -81,6 +84,11 @@ fn sandbox() -> Sandbox {
     let data = dir.path().join("data");
     let repo = home.join("project");
     std::fs::create_dir_all(&repo).unwrap();
+    // The vendors' config directories exist, as on a real machine: Codex
+    // refuses to start with a CODEX_HOME that does not.
+    for vendor in [".claude", ".codex"] {
+        std::fs::create_dir_all(home.join(vendor)).unwrap();
+    }
     std::fs::write(repo.join("README.md"), "# Live provider check\n").unwrap();
     for args in [
         &["init", "-q", "-b", "main"][..],
@@ -126,6 +134,11 @@ fn start_host(s: &Sandbox) -> Child {
         .env("ZWIIM_HOST", "127.0.0.1")
         .env("ZWIIM_HOST_KEY_STORE", "file")
         .env("ZWIIM_WORKTREES_DIR", s.home.join("worktrees"))
+        // The key is saved through the protocol, not inherited.
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("ANTHROPIC_AUTH_TOKEN")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("CODEX_API_KEY")
         .env_remove("ZWIIM_ADAPTER_SOURCE")
         .env_remove("ZWIIM_ADAPTER_SETUP")
         .env_remove("ZWIIM_HOME")
@@ -237,7 +250,8 @@ impl Events {
             msg["epoch"] = json!(epoch);
         }
         self.ws.send(Message::text(msg.to_string())).await.unwrap();
-        // The first frame is the snapshot or the replay.
+        // The first frame is the snapshot or the replay, or `detached` when the
+        // session's agent is not running.
         loop {
             let frame = self.next(Duration::from_secs(30)).await;
             match frame["type"].as_str() {
@@ -249,6 +263,7 @@ impl Events {
                     self.last_seq = frame["high_water_seq"].as_u64().unwrap_or(0);
                     return frame;
                 }
+                Some("detached") => return frame,
                 Some("error") => panic!("subscribe failed: {frame}"),
                 _ => {}
             }
@@ -278,7 +293,7 @@ impl Events {
             assert!(!left.is_zero(), "turn did not complete: {turn:?}");
             let frame = self.next(left).await;
             if frame["type"] == "detached" {
-                panic!("detached mid-turn: {frame}");
+                panic!("detached mid-turn: {frame}; so far {turn:?}");
             }
             if frame["type"] != "event" {
                 continue;
@@ -341,27 +356,86 @@ async fn wait_available(host: &Host, p: &Provider) -> Value {
     }
 }
 
+/// This provider's sign-in, as `agent.auth_status` reports it.
+async fn sign_in(host: &Host, p: &Provider) -> Value {
+    let all = host.ok("agent.auth_status", json!({})).await;
+    all.as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["agent"] == p.agent)
+        .unwrap_or_else(|| panic!("no sign-in status for {}: {all}", p.agent))
+        .clone()
+}
+
+/// Files under `dir` holding `key`, but for the Host's own key store.
+fn files_holding(dir: &Path, key: &str) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.file_name().is_some_and(|n| n != "agent-keys.json")
+                && std::fs::read(&path)
+                    .is_ok_and(|b| b.windows(key.len()).any(|w| w == key.as_bytes()))
+            {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
 async fn run(p: &Provider) {
+    let key = std::env::var(p.credential).unwrap();
+    let key = key.trim();
     let s = sandbox();
     let mut child = start_host(&s);
     let host = Host::wait(&s.data, &mut child, None).await;
     wait_available(&host, p).await;
+
+    // Sign in with an API key, as Settings → Agents does.
+    let before = sign_in(&host, p).await;
+    assert_eq!(before["connected"], false, "{before}");
+    let saved = host
+        .ok("agent.save_key", json!({"agent": p.agent, "key": key}))
+        .await;
+    assert!(!saved.to_string().contains(key), "the key came back");
+    assert_eq!(saved["connected"], true, "{saved}");
+    assert_eq!(saved["method"], "api_key", "{saved}");
+    assert_eq!(saved["saved_key"], true, "{saved}");
     let workspace = host
         .ok("workspace.add", json!({"path": s.repo.to_string_lossy()}))
         .await;
     let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
 
-    // Session start and streaming.
+    // Session start and streaming, on the model and effort asked for (the
+    // cheapest that works), else the agent's defaults.
+    let mut options = serde_json::Map::new();
+    for (name, var) in [
+        ("model", "ZWIIM_LIVE_MODEL"),
+        ("effort", "ZWIIM_LIVE_EFFORT"),
+    ] {
+        if let Some(v) = std::env::var(var).ok().filter(|v| !v.trim().is_empty()) {
+            options.insert(name.into(), v.trim().into());
+        }
+    }
+    eprintln!("{}: session options {options:?}", p.name);
     let mut events = host.events().await;
     let started = host
         .ok(
             "session.start",
-            json!({"workspace_id": workspace_id, "agent": p.agent,
+            json!({"workspace_id": workspace_id, "agent": p.agent, "options": options,
                    "blocks": text("Reply with exactly one word: pong. Do not use tools.")}),
         )
         .await;
     let session_id = started["session_id"].as_str().unwrap().to_string();
     let snapshot = events.subscribe(&session_id, None).await;
+    assert_eq!(snapshot["type"], "snapshot", "{snapshot}");
     let epoch = snapshot["epoch"].as_str().unwrap_or_default().to_string();
     let first = events.turn(None::<std::future::Ready<()>>).await;
     eprintln!("{}: first turn {first:?}", p.name);
@@ -478,16 +552,44 @@ async fn run(p: &Provider) {
     let turns = history["turns"].as_array().map(Vec::len).unwrap_or(0);
     assert!(turns >= 3, "history lost across the restart: {history}");
     wait_available(&host, p).await;
+    let kept = sign_in(&host, p).await;
+    assert_eq!(
+        kept["method"], "api_key",
+        "key lost across the restart: {kept}"
+    );
+    // Its agent is not running until the next message, which brings it back.
     let mut events = host.events().await;
-    events.subscribe(&session_id, None).await;
+    let idle = events.subscribe(&session_id, None).await;
+    assert_eq!(idle["type"], "detached", "{idle}");
+    assert_eq!(idle["reason"], "session_not_live", "{idle}");
     host.ok(
         "session.send",
         json!({"session_id": session_id, "blocks": text("Reply with exactly one word: back.")}),
     )
     .await;
+    let live = events.subscribe(&session_id, None).await;
+    assert_eq!(live["type"], "snapshot", "{live}");
     let back = events.turn(None::<std::future::Ready<()>>).await;
     assert!(back.errors.is_empty(), "{back:?}");
     assert!(back.text.to_lowercase().contains("back"), "{back:?}");
+    drop(events);
+
+    // The key went nowhere but the key store: not SQLite, logs, diagnostics,
+    // history, or a credentials file of the vendor's.
+    let diagnostics = host.ok("host.diagnostics", json!({})).await;
+    assert!(!diagnostics.to_string().contains(key), "key in diagnostics");
+    assert!(!history.to_string().contains(key), "key in history");
+    let leaked = files_holding(&s.data, key);
+    assert!(leaked.is_empty(), "key written to {leaked:?}");
+    if p.name == "codex" {
+        let leaked = files_holding(&s.home.join(".codex"), key);
+        assert!(leaked.is_empty(), "key written to {leaked:?}");
+    }
+
+    // Sign out: the key is gone and its sessions end.
+    let out = host.ok("agent.sign_out", json!({"agent": p.agent})).await;
+    assert_eq!(out["connected"], false, "{out}");
+    assert_eq!(out["saved_key"], false, "{out}");
 
     // SAFETY: signalling our own child process.
     unsafe {

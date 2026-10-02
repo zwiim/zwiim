@@ -9,6 +9,7 @@
 
 pub mod acp;
 pub mod adapters;
+pub mod agent_auth;
 pub mod agent_instructions;
 pub mod acp_transcript;
 pub use acp::{
@@ -43,6 +44,7 @@ pub mod paths;
 pub mod preferences;
 pub mod process;
 pub mod protocol;
+pub mod redact;
 pub mod session;
 pub mod session_commands;
 pub mod session_options;

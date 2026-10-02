@@ -22,3 +22,6 @@ runtime/host/src/update/tests.rs
 runtime/host/tests/host_lifecycle.rs
 runtime/host/tests/provider_live.rs
 clients/desktop/src-tauri/src/login.rs
+runtime/host/src/agent_auth.rs
+runtime/host/src/agent_auth/tests.rs
+runtime/host/src/redact.rs

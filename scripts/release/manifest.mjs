@@ -21,7 +21,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { REPOSITORY, ROOT, channelOf, fail, list, parseArgs, readVersion, sh, sha256File } from "./lib.mjs";
+import { REPOSITORY, ROOT, SOURCE_REPOSITORY, channelOf, fail, list, parseArgs, readVersion, sh, sha256File } from "./lib.mjs";
 import { releaseNotes } from "./notes.mjs";
 
 /** `release.json`, from what the build reports about itself. */
@@ -39,7 +39,7 @@ export function buildManifest({ version, commit, releasedAt, info, hosts, deskto
     version,
     channel: channelOf(version),
     released_at: releasedAt,
-    source: { repository: `https://github.com/${REPOSITORY}`, tag: `v${version}`, commit },
+    source: { repository: `https://github.com/${SOURCE_REPOSITORY}`, tag: `v${version}`, commit },
     protocol: info.protocol,
     host: {
       version,

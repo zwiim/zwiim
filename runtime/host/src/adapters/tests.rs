@@ -758,3 +758,92 @@ fn every_committed_package_carries_a_valid_registry_signature() {
     }
     assert!(checked > 100, "{checked}");
 }
+
+// ─── credentials ────────────────────────────────────────────────────────
+
+fn env_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+fn nothing_inherited(_: &str) -> Option<String> {
+    None
+}
+
+#[test]
+fn codex_api_key_comes_from_the_agent_env_or_the_host() {
+    let host_key = |k: &str| (k == "OPENAI_API_KEY").then(|| "sk-host".to_string());
+    assert!(codex_api_key_present(
+        &env_of(&[("CODEX_API_KEY", "sk-a")]),
+        &nothing_inherited
+    ));
+    assert!(codex_api_key_present(
+        &env_of(&[("OPENAI_API_KEY", "sk-a")]),
+        &nothing_inherited
+    ));
+    assert!(codex_api_key_present(&env_of(&[]), &host_key));
+    // The agent's env blanks an inherited key; whitespace is no key.
+    assert!(!codex_api_key_present(
+        &env_of(&[("OPENAI_API_KEY", "")]),
+        &host_key
+    ));
+    assert!(!codex_api_key_present(
+        &env_of(&[("CODEX_API_KEY", "  ")]),
+        &nothing_inherited
+    ));
+    assert!(!codex_api_key_present(&env_of(&[]), &nothing_inherited));
+}
+
+#[test]
+fn codex_counts_as_signed_in_with_a_chatgpt_login_or_an_api_key() {
+    let home = tempfile::tempdir().unwrap();
+    let none = env_of(&[]);
+    assert!(
+        !codex_signed_in(&none, &nothing_inherited, home.path()),
+        "no credentials"
+    );
+    assert!(codex_signed_in(
+        &env_of(&[("OPENAI_API_KEY", "sk-a")]),
+        &nothing_inherited,
+        home.path()
+    ));
+    std::fs::write(home.path().join("auth.json"), "{}").unwrap();
+    assert!(
+        codex_signed_in(&none, &nothing_inherited, home.path()),
+        "ChatGPT login"
+    );
+}
+
+#[test]
+fn claude_counts_as_signed_in_with_a_key_credentials_file_or_keychain_item() {
+    let dir = tempfile::tempdir().unwrap();
+    let none = env_of(&[]);
+    let no_item = || false;
+    assert!(
+        !claude_signed_in(&none, &nothing_inherited, dir.path(), &no_item),
+        "no credentials"
+    );
+    assert!(claude_signed_in(
+        &env_of(&[("ANTHROPIC_API_KEY", "sk-ant")]),
+        &nothing_inherited,
+        dir.path(),
+        &no_item
+    ));
+    assert!(!claude_signed_in(
+        &env_of(&[("ANTHROPIC_API_KEY", "")]),
+        &|k: &str| (k == "ANTHROPIC_API_KEY").then(|| "sk-host".into()),
+        dir.path(),
+        &no_item
+    ));
+    assert!(
+        claude_signed_in(&none, &nothing_inherited, dir.path(), &|| true),
+        "keychain"
+    );
+    std::fs::write(dir.path().join(".credentials.json"), "{}").unwrap();
+    assert!(
+        claude_signed_in(&none, &nothing_inherited, dir.path(), &no_item),
+        "file"
+    );
+}

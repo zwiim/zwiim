@@ -1,14 +1,15 @@
 #!/usr/bin/env node
-// Publish a built release to GitHub Releases. A published version never
-// changes: an existing tag or release for this version is refused, never
-// overwritten. Needs `gh` authenticated with contents:write.
+// Publish a built release to GitHub Releases of the public releases
+// repository (lib.mjs REPOSITORY). A published version never changes: an
+// existing tag or release for this version is refused, never overwritten.
+// Needs `gh` authenticated with contents:write on that repository.
 //
 //   node scripts/release/publish.mjs --dir dist [--draft]
 
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { REPOSITORY, channelOf, fail, parseArgs, readVersion, sha256File } from "./lib.mjs";
+import { REPOSITORY, SOURCE_REPOSITORY, channelOf, fail, parseArgs, readVersion, sha256File } from "./lib.mjs";
 
 const args = parseArgs(process.argv.slice(2));
 const dir = path.resolve(args.dir ?? "dist");
@@ -46,7 +47,9 @@ const create = spawnSync(
     `Zwiim ${version}`,
     "--notes-file",
     path.join(dir, "notes.md"),
-    "--verify-tag",
+    // The version tag is pushed to the source repository; in a separate
+    // releases repository the release creates it on its default branch.
+    ...(REPOSITORY === SOURCE_REPOSITORY ? ["--verify-tag"] : []),
     ...(channelOf(version) === "beta" ? ["--prerelease"] : ["--latest"]),
     ...(args.draft ? ["--draft"] : []),
   ],

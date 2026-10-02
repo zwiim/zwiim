@@ -71,6 +71,11 @@ struct FieldVisitor {
 
 impl FieldVisitor {
     fn put(&mut self, field: &Field, value: String) {
+        // The buffer feeds diagnostics: no API key gets in.
+        let value = match crate::redact::scrub_secrets(&value) {
+            std::borrow::Cow::Owned(clean) => clean,
+            std::borrow::Cow::Borrowed(_) => value,
+        };
         if field.name() == "message" {
             self.message = Some(value);
         } else {

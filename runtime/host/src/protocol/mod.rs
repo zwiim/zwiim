@@ -102,6 +102,10 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/lan.set", post(http::lan_set))
         .route("/host.restart", post(http::host_restart))
         .route("/agent.setup", post(http::agent_setup))
+        .route("/agent.sign_in", post(http::agent_sign_in))
+        .route("/agent.save_key", post(http::agent_save_key))
+        .route("/agent.remove_key", post(http::agent_remove_key))
+        .route("/agent.sign_out", post(http::agent_sign_out))
         .route_layer(middleware::from_fn(auth::require_local_authority));
 
     let authenticated = Router::new()
@@ -112,6 +116,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/host.update.check", post(http::host_update_check))
         .route("/host.update.apply", post(http::host_update_apply))
         .route("/agent.list", post(http::agent_list))
+        .route("/agent.auth_status", post(http::agent_auth_status))
         .route("/workspace.list", post(http::workspace_list))
         .route("/workspace.add", post(http::workspace_add))
         .route("/workspace.browse", post(http::workspace_browse))

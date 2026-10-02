@@ -838,6 +838,24 @@ export interface HostUpdateApply {
   };
 }
 
+/** How an agent is signed in on the Host. */
+export type AgentAuthMethod = "account" | "api_key" | "cloud";
+
+/** `agent.auth_status`: an agent's sign-in on the Host. Never a key or a path. */
+export interface AgentAuthStatus {
+  agent: AgentType;
+  connected: boolean;
+  /** `null` when not signed in. */
+  method: AgentAuthMethod | null;
+  /** An API key is saved on the Host; unused while an account is signed in. */
+  saved_key: boolean;
+  /** `running` while the provider's sign-in page is open on the Host's Mac. */
+  sign_in: "idle" | "running" | "failed";
+  /** The signed-in account's, when the method is `account`. */
+  email: string | null;
+  plan: string | null;
+}
+
 // ─── operations ──────────────────────────────────────────────────────────
 
 /** Request/response shape of every V1 operation the SDK exposes. */
@@ -855,6 +873,15 @@ export interface Operations {
   "agent.list": [Record<string, never>, AgentSummary[]];
   /** Install or repair a host-managed adapter in the background (local authority). */
   "agent.setup": [{ agent: AgentType }, AdapterStatus];
+  /** Claude Code's and Codex's sign-ins on the Host, read fresh. */
+  "agent.auth_status": [Record<string, never>, AgentAuthStatus[]];
+  /** Open the provider's sign-in page on the Host's Mac; asking again starts over (local authority). */
+  "agent.sign_in": [{ agent: AgentType }, AgentAuthStatus];
+  /** Keep an API key in the Host's Keychain; never returned (local authority). */
+  "agent.save_key": [{ agent: AgentType; key: string }, AgentAuthStatus];
+  "agent.remove_key": [{ agent: AgentType }, AgentAuthStatus];
+  /** Delete the saved key, sign the account out, end the agent's running sessions (local authority). */
+  "agent.sign_out": [{ agent: AgentType }, AgentAuthStatus];
   "workspace.list": [Record<string, never>, WorkspaceInfo[]];
   /** `path` needs local host authority; paired devices use `home_path` (folder names under home). */
   "workspace.add": [{ path: string } | { home_path: string[] }, WorkspaceInfo];

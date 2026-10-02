@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 298 298">
+  <g transform="translate(0 24)">
+    <!-- antenna -->
+    <rect x="144" y="14" width="6" height="20" rx="3" fill="#EEEEF0"/>
+    <circle cx="147" cy="10" r="8" fill="#EEEEF0"/>
+    <!-- head: white frame with a rounded visor; its base sits behind the Z -->
+    <path fill="#EEEEF0" fill-rule="evenodd" d="M126 31 H168 A20 20 0 0 1 188 51 V84 H106 V51 A20 20 0 0 1 126 31 Z M130 43 H164 A13 13 0 0 1 177 56 V64.5 A13 13 0 0 1 164 77.5 H130 A13 13 0 0 1 117 64.5 V56 A13 13 0 0 1 130 43 Z"/>
+    <!-- eyes -->
+    <rect x="129" y="51" width="11" height="17" rx="5.5" fill="#9C96F8"/>
+    <rect x="154" y="51" width="11" height="17" rx="5.5" fill="#9C96F8"/>
+    <!-- Z -->
+    <polyline points="96.5,93.5 199,93.5 95,230.5 201.5,230.5" fill="none" stroke="#9C96F8" stroke-width="35" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- knuckles and hands gripping the Z -->
+    <circle cx="111.5" cy="78" r="6" fill="#EEEEF0"/>
+    <circle cx="182.5" cy="78" r="6" fill="#EEEEF0"/>
+    <circle cx="96.5" cy="78" r="6" fill="#EEEEF0"/>
+    <circle cx="197.5" cy="78" r="6" fill="#EEEEF0"/>
+  </g>
+</svg>

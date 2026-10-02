@@ -6,6 +6,7 @@ import {
   defaultAgent,
   modeChoosable,
   modeValue,
+  offeredAgents,
   startChoices,
   startError,
   startOptions,
@@ -170,6 +171,12 @@ describe("the choices", () => {
     expect(agentNote(agent("x", { available: false, reason: "needs_network" }))).toBe("setup needs network");
     expect(agentNote(agent("x", { available: false, reason: "setup_failed" }))).toBe("setup failed");
     expect(agentNote(CLAUDE)).toBeNull();
+  });
+
+  it("offers only Claude Code and Codex for a new session", () => {
+    const list = [agent("gemini", { support: "experimental" }), agent("codex", { support: "supported" }), CLAUDE];
+    expect(offeredAgents(list)?.map((a) => a.agent)).toEqual(["codex", CLAUDE.agent]);
+    expect(offeredAgents(null)).toBeNull();
   });
 
   it("labels agents Zwiim does not support yet, and prefers a supported one", () => {

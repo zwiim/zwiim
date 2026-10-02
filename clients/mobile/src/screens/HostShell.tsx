@@ -8,7 +8,7 @@ import { useEffect, useState } from "react";
 import { Linking, Platform, Pressable, StyleSheet, View } from "react-native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { ConnectionMode } from "@zwiim/sdk";
+import type { AgentAuthStatus, ConnectionMode } from "@zwiim/sdk";
 import type { LucideIcon } from "lucide-react-native";
 import { accountHosts, hostName, type HostEntry } from "../account/hosts";
 import { useAccount } from "../app/account";
@@ -24,12 +24,12 @@ import {
   type MobilePlatform,
   type MobileRelease,
 } from "../host/release";
-import { connectionText, hostProblem } from "../host/status";
+import { agentSignInRow, connectionText, hostProblem } from "../host/status";
 import { appInfo } from "../platform/app-info";
 import { secureStore } from "../platform/native";
 import { releasesUrl } from "../config";
 import { auth, cloud, currentHost } from "../services";
-import { Button, PathPill, Sheet, T } from "../ui/components";
+import { Button, PathPill, Sheet, StatusDot, T } from "../ui/components";
 import { Folder, Icon, Laptop, MessagesSquare } from "../ui/icons";
 import { fonts, radius, space, useTheme } from "../ui/tokens";
 import { FilesTab } from "./FilesTab";
@@ -379,6 +379,8 @@ function HostTab() {
           ) : null}
         </View>
 
+        <AgentsGroup live={view?.active === "lan" || view?.active === "relay"} />
+
         <T variant="caption" color={theme.mut}>
           Account
         </T>
@@ -429,6 +431,65 @@ function HostTab() {
         ))}
       </Sheet>
     </HostFrame>
+  );
+}
+
+/**
+ * How the host's agents are signed in. Read only: keys and sign-in stay on
+ * the Mac running the host, and no key is ever entered here.
+ */
+function AgentsGroup({ live }: { live: boolean }) {
+  const theme = useTheme();
+  const [statuses, setStatuses] = useState<AgentAuthStatus[] | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const read = () => {
+    setLoading(true);
+    return currentHost.request("agent.auth_status", {}).then(
+      (s) => setStatuses(s),
+      () => {},
+    ).finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    if (live) void read();
+  }, [live]);
+
+  if (!statuses) return null;
+  return (
+    <>
+      <T variant="caption" color={theme.mut}>
+        Agents
+      </T>
+      <View style={[styles.group, { backgroundColor: theme.surface }]} testID="agents">
+        {statuses.map((status) => {
+          const row = agentSignInRow(status);
+          return (
+            <View key={status.agent}>
+              <View style={styles.groupRow} testID={`agent-${status.agent}`}>
+                <StatusDot state={row.dot} />
+                <View style={styles.flex}>
+                  <T>{row.name}</T>
+                  {row.detail ? (
+                    <T variant="mono" color={theme.mut} numberOfLines={1}>
+                      {row.detail}
+                    </T>
+                  ) : null}
+                </View>
+                <T color={theme.mut}>{row.state}</T>
+              </View>
+              <View style={[styles.divider, { backgroundColor: theme.line }]} />
+            </View>
+          );
+        })}
+        <Pressable accessibilityRole="button" disabled={loading || !live} onPress={() => void read()} style={styles.groupRow} testID="agents-refresh">
+          <T color={theme.mut} style={styles.flex}>
+            Sign in on the Mac running Zwiim.
+          </T>
+          <T color={live ? theme.accent : theme.faint}>{loading ? "Refreshing…" : "Refresh"}</T>
+        </Pressable>
+      </View>
+    </>
   );
 }
 

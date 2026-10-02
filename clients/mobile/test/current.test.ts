@@ -5,7 +5,7 @@ import type { HostConnectionView } from "../src/host/connection";
 import { CurrentHost, type CurrentHostState } from "../src/host/current";
 import { otherBlockers, removeWorktree, stopAgentError, stopThenRemove } from "../src/host/removal";
 import { changeRequest } from "../src/sessions/controls";
-import { connectionText, hostProblem, hostRowState } from "../src/host/status";
+import { agentSignInRow, connectionText, hostProblem, hostRowState } from "../src/host/status";
 import { MemorySecureStore } from "../src/platform/memory-store";
 import { VaultPreferences } from "../src/platform/vault-store";
 import { sessionSections } from "../src/sessions/model";
@@ -321,6 +321,27 @@ describe("how the connection reads", () => {
       meta: "online · paired",
       dot: "done",
     });
+  });
+});
+
+describe("how an agent's sign-in reads (read only)", () => {
+  const base = { connected: false, method: null, saved_key: false, sign_in: "idle", email: null, plan: null } as const;
+
+  it("names the account, its email and plan", () => {
+    expect(
+      agentSignInRow({ ...base, agent: "codex", connected: true, method: "account", email: "me@example.com", plan: "ChatGPT Plus" }),
+    ).toEqual({ name: "Codex", state: "ChatGPT account", detail: "me@example.com · ChatGPT Plus", dot: "done" });
+  });
+
+  it("tells a key, a sign-in in progress and no sign-in apart", () => {
+    expect(agentSignInRow({ ...base, agent: "claude_code", connected: true, method: "api_key", saved_key: true })).toEqual({
+      name: "Claude",
+      state: "API key",
+      detail: null,
+      dot: "done",
+    });
+    expect(agentSignInRow({ ...base, agent: "codex", sign_in: "running" }).state).toBe("Signing in…");
+    expect(agentSignInRow({ ...base, agent: "codex" })).toMatchObject({ state: "Not signed in", dot: "idle" });
   });
 });
 

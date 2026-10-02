@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Info, Monitor, Moon, Network, Settings2, Smartphone, Sun, UserRound, X } from "lucide-react";
+import { Bot, Info, Monitor, Moon, Network, Settings2, Smartphone, Sun, UserRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { AccountState } from "@/lib/account";
 import type { NativeBridge } from "@/lib/bridge";
@@ -8,10 +8,11 @@ import { applyTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { AboutUpdates, HostLoginToggle } from "@/panels/About";
 import { AccountPanel } from "@/panels/Account";
+import { AgentsSettings } from "@/panels/Agents";
 import { ConnectionModeChooser, type RemoteLink } from "@/panels/ConnectionStatus";
 import { DevicesSettings } from "@/panels/Devices";
 
-export type SettingsTab = "general" | "account" | "connection" | "devices" | "about";
+export type SettingsTab = "general" | "account" | "agents" | "connection" | "devices" | "about";
 
 interface TabInfo {
   id: SettingsTab;
@@ -48,6 +49,7 @@ export function SettingsDialog({
   const tabs: TabInfo[] = [
     { id: "general", label: "General", icon: Settings2, group: "Settings" },
     { id: "account", label: "Account", icon: UserRound, group: "Settings" },
+    { id: "agents", label: "Agents", icon: Bot, group: "Host" },
     ...(remote && link ? [{ id: "connection", label: "Connection", icon: Network, group: "Host" } as const] : []),
     ...(!remote ? [{ id: "devices", label: "Devices", icon: Smartphone, group: "Host" } as const] : []),
     { id: "about", label: "About & updates", icon: Info, group: "Host" },
@@ -111,6 +113,7 @@ export function SettingsDialog({
             <h2 className="mb-1 text-base font-semibold tracking-tight">{current.label}</h2>
             {current.id === "general" && <General bridge={bridge} remote={remote} />}
             {current.id === "account" && <AccountPanel state={account} />}
+            {current.id === "agents" && <AgentsSettings remote={remote} />}
             {current.id === "connection" && link && (
               <>
                 <p className="text-muted-foreground">How this computer reaches the host.</p>

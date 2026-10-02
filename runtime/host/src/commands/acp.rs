@@ -9813,6 +9813,18 @@ pub(crate) fn build_runtime_env_from_setting(
     setting: Option<&crate::db::entities::agent_setting::Model>,
     local_config_json: Option<&str>,
 ) -> BTreeMap<String, String> {
+    let mut env = merge_runtime_env_from_setting(agent_type, setting, local_config_json);
+    // Zwiim: the API key saved on this Host, when the agent has no sign-in of
+    // its own.
+    crate::agent_auth::apply_saved_key(agent_type, &mut env);
+    env
+}
+
+fn merge_runtime_env_from_setting(
+    agent_type: AgentType,
+    setting: Option<&crate::db::entities::agent_setting::Model>,
+    local_config_json: Option<&str>,
+) -> BTreeMap<String, String> {
     let mut merged = setting
         .and_then(|model| model.env_json.as_deref())
         .and_then(|raw| serde_json::from_str::<BTreeMap<String, String>>(raw).ok())
