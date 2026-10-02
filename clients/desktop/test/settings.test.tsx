@@ -140,3 +140,35 @@ describe("theme", () => {
     c.dispose();
   });
 });
+
+describe("keeping the Mac awake", () => {
+  it("is on in General until turned off, and the host remembers the choice", async () => {
+    const t = new FakeTransport();
+    let enabled = true;
+    t.handlers["host.keep_awake.status"] = () => ({ supported: true, enabled, active: false });
+    t.handlers["host.keep_awake.set"] = (p) => {
+      enabled = (p as { enabled: boolean }).enabled;
+      return { supported: true, enabled, active: false };
+    };
+    const c = await mount(t);
+    openSettings("General");
+    await tick();
+    const box = screen.getByTestId("keep-awake") as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    fireEvent.click(box);
+    await tick();
+    expect(t.calls.filter((x) => x.op === "host.keep_awake.set").map((x) => x.params)).toEqual([{ enabled: false }]);
+    expect((screen.getByTestId("keep-awake") as HTMLInputElement).checked).toBe(false);
+    c.dispose();
+  });
+
+  it("is not offered where the host cannot keep the computer awake", async () => {
+    const t = new FakeTransport();
+    t.handlers["host.keep_awake.status"] = () => ({ supported: false, enabled: true, active: false });
+    const c = await mount(t);
+    openSettings("General");
+    await tick();
+    expect(screen.queryByTestId("keep-awake")).toBeNull();
+    c.dispose();
+  });
+});

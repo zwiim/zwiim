@@ -1119,6 +1119,10 @@ Upstream-derived:
 | `logging/init.rs` | `src-tauri/src/logging/init.rs` | stderr and file log writers scrub API keys (`redact::Scrubbing`). |
 | `logging/layer.rs` | `src-tauri/src/logging/layer.rs` | Field values bound for the diagnostics buffer are scrubbed. |
 
+## V1 keep awake while agents work
+
+Zwiim-owned, no Codeg code copied: `runtime/host/src/keep_awake.rs`. While any session has a turn in flight, the Host holds `/usr/bin/caffeinate -i -s -w <host pid>` (macOS only), and releases it when every turn has ended, when the setting is off, or on battery below 10% (`pmset -g batt`). On by default; stored in `app_metadata` (`keep_awake`). Protocol ops `host.keep_awake.status` and `host.keep_awake.set` (local host authority only); Desktop Settings > General toggle.
+
 ## License obligations tracked
 
 - [x] Include Apache-2.0 license text (`third_party/codeg/LICENSE`).

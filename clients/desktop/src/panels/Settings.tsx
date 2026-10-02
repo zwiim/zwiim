@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { Bot, Info, Monitor, Moon, Network, Settings2, Smartphone, Sun, UserRound, X } from "lucide-react";
+import type { KeepAwakeStatus } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import type { AccountState } from "@/lib/account";
 import type { NativeBridge } from "@/lib/bridge";
+import { errorMessage, useController } from "@/lib/host-context";
 import { rememberTheme, theme, type Theme } from "@/lib/prefs";
 import { applyTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
@@ -165,6 +167,44 @@ function General({ bridge, remote }: { bridge: NativeBridge; remote: boolean }) 
         </div>
       </div>
       {!remote && <HostLoginToggle bridge={bridge} />}
+      {!remote && <KeepAwakeToggle />}
     </>
+  );
+}
+
+/** This computer's host keeps the Mac awake while an agent works. */
+function KeepAwakeToggle() {
+  const controller = useController();
+  const [status, setStatus] = useState<KeepAwakeStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    controller.client.request("host.keep_awake.status", {}).then(setStatus, () => {});
+  }, [controller]);
+  if (!status?.supported) return null;
+  return (
+    <section className="flex flex-col gap-1 rounded-md border p-2.5">
+      <label className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          data-testid="keep-awake"
+          checked={status.enabled}
+          onChange={(e) => {
+            setError(null);
+            controller.client
+              .request("host.keep_awake.set", { enabled: e.target.checked })
+              .then(setStatus, (err) => setError(errorMessage(err)));
+          }}
+        />
+        <span className="font-medium">Keep this Mac awake while agents work</span>
+      </label>
+      <p className="text-muted-foreground">
+        So long tasks finish while you are away. The screen can still turn off. Stops on battery below 10%.
+      </p>
+      {error && (
+        <p className="text-destructive" role="alert">
+          {error}
+        </p>
+      )}
+    </section>
   );
 }

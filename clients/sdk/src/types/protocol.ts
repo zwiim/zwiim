@@ -109,6 +109,20 @@ export interface CloudStatus {
   last_error: string | null;
 }
 
+// ─── keep awake ──────────────────────────────────────────────────────────
+
+/**
+ * Whether the host's Mac stays awake while an agent works. On by default;
+ * lets go on battery below 10%.
+ */
+export interface KeepAwakeStatus {
+  /** False where the host cannot keep the computer awake (not a Mac). */
+  supported: boolean;
+  enabled: boolean;
+  /** The Mac is being kept awake right now. */
+  active: boolean;
+}
+
 // ─── lan ─────────────────────────────────────────────────────────────────
 
 /**
@@ -959,6 +973,10 @@ export interface Operations {
   "lan.status": [Record<string, never>, LanStatus];
   /** Local host authority only. Idempotent: sets, never toggles. */
   "lan.set": [{ enabled: boolean }, LanStatus];
+  /** Local host authority only. */
+  "host.keep_awake.status": [Record<string, never>, KeepAwakeStatus];
+  /** Local host authority only. Idempotent: sets, never toggles. */
+  "host.keep_awake.set": [{ enabled: boolean }, KeepAwakeStatus];
 }
 
 export type OpName = keyof Operations;

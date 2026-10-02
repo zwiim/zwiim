@@ -101,6 +101,8 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/lan.status", post(http::lan_status))
         .route("/lan.set", post(http::lan_set))
         .route("/host.restart", post(http::host_restart))
+        .route("/host.keep_awake.status", post(http::host_keep_awake_status))
+        .route("/host.keep_awake.set", post(http::host_keep_awake_set))
         .route("/agent.setup", post(http::agent_setup))
         .route("/agent.sign_in", post(http::agent_sign_in))
         .route("/agent.save_key", post(http::agent_save_key))

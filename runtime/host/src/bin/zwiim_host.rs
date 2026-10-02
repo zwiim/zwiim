@@ -466,6 +466,8 @@ async fn async_main() -> Exit {
     zwiim_host::session_options::spawn_tracker(state.clone());
     // Keep each agent's slash commands for its next new session.
     zwiim_host::session_commands::spawn_tracker(state.clone());
+    // Keep the Mac awake while an agent works.
+    zwiim_host::keep_awake::spawn(state.clone());
 
     // Logging phase 3: wire the emitter so the Logs viewer's live tail
     // (`logs://appended`) reaches WS clients.

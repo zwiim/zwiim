@@ -76,6 +76,8 @@ const OPS: &[&str] = &[
     "cloud.status",
     "lan.status",
     "lan.set",
+    "host.keep_awake.status",
+    "host.keep_awake.set",
 ];
 
 pub(crate) fn git(dir: &std::path::Path, args: &[&str]) {
