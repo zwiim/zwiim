@@ -8,7 +8,7 @@ have their own versions and are listed under Compatibility.
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-09-28
+## [0.1.0] - 2026-10-02
 
 ### Added
 - Zwiim Host Runtime: workspaces, worktrees, sessions, terminals, files and Git on your Mac, with the Zwiim Protocol V1 for clients.
@@ -18,7 +18,14 @@ have their own versions and are listed under Compatibility.
 - Managed Claude and Codex adapters, pinned per release and installed from the npm registry with signature checks.
 - Protocol compatibility: clients and Hosts agree on a protocol revision in `host.hello`; an app that is too old or too new says which side to update.
 - Claude and Codex sessions get Zwiim's instructions (workspace, worktree and default branch, Git and safety rules) through each agent's system prompt; they never appear in the conversation. Codex developer instructions you set yourself (`~/.codex/config.toml` or `CODEX_CONFIG`) are kept.
-- A new worktree starts from the origin's default branch (`origin/main` or `origin/master`) unless a base is chosen, never from a local branch.
+- A new worktree starts from the origin's default branch (`origin/main` or `origin/master`) unless a base is chosen, never from a local branch. The Host fetches that branch just before creating the worktree; offline, or after 15 seconds, it uses the local copy.
+- Agent sign-in from Desktop (Settings → Agents): sign Claude or Codex in with its own account in the browser, or save an API key. The status shows how each agent is signed in, and Sign out removes its saved key and stops its sessions.
+- Codex runs with an OpenAI API key as well as a ChatGPT account.
+- Keep this Mac awake while agents work (Settings → General, on by default): the Mac does not idle-sleep while a turn runs, and is let go when every turn has ended or on battery below 10%. The display can still turn off.
+- Settings (⌘,): General (theme, starting the Host at login, keeping the Mac awake), Account, Agents, Connection, Devices, and About & updates in one place, with a control center at the foot of the sidebar.
+- Transcript: thinking previews its first line and expands; a command shows with its output; an edit shows its file with +/− counts, and its diff on hover. Codex tools read like Claude's.
+- Thinking is shown for Claude and Codex: Claude sessions ask for summarized thinking, and Codex defaults its reasoning summary to `auto` unless you set it yourself.
+- Third-party notices ship inside the app (`Zwiim.app/Contents/Resources/THIRD_PARTY_NOTICES.txt`).
 
 ### Changed
 - None.
@@ -32,6 +39,8 @@ have their own versions and are listed under Compatibility.
 - The Host's access token is kept in its Keychain item (or, where there is no keychain, an owner-only file), never in the database, and is not printed, logged or returned by any API.
 - The Host database refuses credentials: provider API keys, remote connection tokens and credential-named agent environment variables (`*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*PASSWORD*`, …) are not stored there. Settings that only mention such a word, like `MAX_THINKING_TOKENS`, are kept.
 - The Host is signed as `dev.zwiim.host` by the Zwiim team, and a Host update must be signed the same way, so it keeps access to the Host's Keychain items.
+- Agent API keys saved in Zwiim are kept in the Mac's Keychain, never in the database, and are never sent back to any app. A saved Codex key is never written to `~/.codex/auth.json`, and the agent's shells and commands never see it.
+- API-key-shaped text is redacted from errors, history, logs and diagnostics.
 
 ### Compatibility
 - Protocol `zwiim/1`, revision 1; clients from revision 1.
@@ -51,3 +60,5 @@ have their own versions and are listed under Compatibility.
 - macOS on Apple Silicon only.
 - Only the stable channel is offered as an update.
 - Updates apply when you restart the Host (Desktop → About & updates, or Update Host on Mobile).
+- Keeping the Mac awake cannot stop sleep when a MacBook's lid is closed, unless it is on power with an external display.
+- Agent sign-in and API keys are managed on the Mac running the Host; a remote Desktop shows their status only.
