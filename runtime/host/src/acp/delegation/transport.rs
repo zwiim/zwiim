@@ -331,6 +331,17 @@ pub struct BrokerBrowserTabOpRequest {
     pub op: crate::acp::browser_tools::BrowserTabOp,
 }
 
+/// Run one Git Harness operation in the caller's workspace. Backs the
+/// `git_*` MCP tools: the companion has already mapped the tool arguments into
+/// `op`; the listener resolves the workspace from the token's parent
+/// connection (never from anything the companion sends) and replies with
+/// [`crate::acp::git_tools::reply`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerGitRequest {
+    pub token: String,
+    pub op: crate::git_harness::GitOp,
+}
+
 /// Tagged top-level message dispatched by the listener. Adding new variants
 /// is the wire-stable way to grow the broker protocol without touching the
 /// frame layer.
@@ -357,6 +368,7 @@ pub enum BrokerMessage {
     BrowserCapture(BrokerBrowserCaptureRequest),
     BrowserEval(BrokerBrowserEvalRequest),
     BrowserTabOp(BrokerBrowserTabOpRequest),
+    Git(BrokerGitRequest),
     /// Liveness probe. Unlike every other variant this one is NOT sent by a
     /// companion — it comes from Zwiim's own service-status check
     /// (`acp::delegation::service`), which is why it carries no `token`: a
@@ -522,6 +534,15 @@ pub async fn client_session_round_trip(
     req: &BrokerSessionRequest,
 ) -> io::Result<BrokerResponse> {
     message_round_trip(socket_path, &BrokerMessage::SessionInfo(req.clone())).await
+}
+
+/// Dispatch a `git_*` tool call and read back its `{ ok, result | error }`
+/// reply. Bounded by the Harness's own per-operation time limits.
+pub async fn client_git_round_trip(
+    socket_path: &str,
+    req: &BrokerGitRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::Git(req.clone())).await
 }
 
 /// Dispatch a `task_progress` report and read back the `{ recorded }` ack.

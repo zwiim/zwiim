@@ -51,14 +51,16 @@ use crate::acp::delegation::transport::{
     client_browser_tabs_round_trip,
     client_cancel, client_cancel_task_round_trip, client_commit_feedback,
     client_create_automation_round_trip, client_create_work_task_round_trip,
-    client_feedback_round_trip, client_resume_task_round_trip, client_round_trip,
+    client_feedback_round_trip, client_git_round_trip, client_resume_task_round_trip,
+    client_round_trip,
     client_session_round_trip, client_status_round_trip, client_task_complete_round_trip,
     client_task_progress_round_trip, BrokerAskRequest, BrokerBrowserActRequest, BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest,
     BrokerBrowserEvalRequest, BrokerBrowserSnapshotRequest, BrokerBrowserTabOpRequest,
     BrokerBrowserTabsRequest,
     BrokerCancelRequest,
     BrokerCancelTaskRequest, BrokerCommitFeedbackRequest, BrokerCreateAutomationRequest,
-    BrokerCreateWorkTaskRequest, BrokerFeedbackRequest, BrokerRequest, BrokerResponse,
+    BrokerCreateWorkTaskRequest, BrokerFeedbackRequest, BrokerGitRequest, BrokerRequest,
+    BrokerResponse,
     BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
     BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
 };
@@ -181,6 +183,11 @@ pub struct CompanionFeatures {
     /// tab can picture, and this is not one of them. Never on with `browser`
     /// off; the parent will not emit it, and `allows_tool` requires both.
     pub browser_eval: bool,
+    /// The Git tools (`git_status` … `git_pr_merge`): routine Git and GitHub
+    /// work run by the Host's Git Harness in the session's workspace. Withheld
+    /// when the agent runs under its own sandbox (`ZWIIM_ACP_HOST_TOOLS=agent`),
+    /// because the Harness runs on the user's machine outside it.
+    pub git: bool,
 }
 
 impl CompanionFeatures {
@@ -202,6 +209,7 @@ impl CompanionFeatures {
                 taskboard: false,
                 browser: false,
                 browser_eval: false,
+                git: false,
             };
         };
         let mut f = Self {
@@ -214,6 +222,7 @@ impl CompanionFeatures {
             taskboard: false,
             browser: false,
             browser_eval: false,
+            git: false,
         };
         for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
             match tok {
@@ -226,6 +235,7 @@ impl CompanionFeatures {
                 "taskboard" => f.taskboard = true,
                 "browser" => f.browser = true,
                 "browser_eval" => f.browser_eval = true,
+                "git" => f.git = true,
                 _ => {}
             }
         }
@@ -251,6 +261,7 @@ impl CompanionFeatures {
             "browser_eval" => self.browser && self.browser_eval,
             "delegate_to_agent" | "get_delegation_status" | "cancel_delegation"
             | "resume_delegation" => self.delegation,
+            _ if crate::acp::git_tools::kind_of_tool(name).is_some() => self.git,
             _ => false,
         }
     }
@@ -935,6 +946,32 @@ async fn build_tools_call_spawn(
             let round_trip =
                 Box::pin(async move { client_create_work_task_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_authoring_result).await
+        }
+        tool if crate::acp::git_tools::kind_of_tool(tool).is_some() => {
+            // Map the arguments into the typed operation here, so a malformed
+            // call is refused before anything reaches the Host. The workspace
+            // is not an argument: the listener resolves it from the token.
+            let op = match crate::acp::git_tools::op_from_tool_call(tool, &arguments) {
+                Ok(op) => op,
+                Err(msg) => {
+                    return LineAction::Respond(err(id, -32602, format!("invalid_input: {msg}")));
+                }
+            };
+            let req = BrokerGitRequest {
+                token: ctx.token.clone(),
+                op,
+            };
+            // No external_handle: the operation runs to its end Host-side, and
+            // canceling only suppresses the response.
+            let round_trip = Box::pin(async move { client_git_round_trip(&socket, &req).await });
+            register_and_spawn(
+                inflight,
+                id,
+                None,
+                round_trip,
+                crate::acp::git_tools::render_result,
+            )
+            .await
         }
         other => LineAction::Respond(err(id, -32602, format!("unknown tool: {other}"))),
     }
@@ -2587,6 +2624,7 @@ mod tests {
             taskboard: false,
             browser: false,
             browser_eval: false,
+            git: false,
         })
     }
 
@@ -3180,6 +3218,7 @@ mod tests {
         taskboard: false,
         browser: false,
     browser_eval: false,
+    git: false,
     };
     const BOTH: CompanionFeatures = CompanionFeatures {
         delegation: true,
@@ -3191,6 +3230,7 @@ mod tests {
         taskboard: false,
         browser: false,
     browser_eval: false,
+    git: false,
     };
     const ASK_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -3202,6 +3242,7 @@ mod tests {
         taskboard: false,
         browser: false,
     browser_eval: false,
+    git: false,
     };
     const SESSIONS_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -3213,6 +3254,7 @@ mod tests {
         taskboard: false,
         browser: false,
     browser_eval: false,
+    git: false,
     };
 
     fn list_tool_names(action: LineAction) -> Vec<String> {
@@ -3553,6 +3595,7 @@ mod tests {
         taskboard: false,
         browser: false,
     browser_eval: false,
+    git: false,
     };
     const TASKBOARD_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -3564,6 +3607,7 @@ mod tests {
         taskboard: true,
         browser: false,
     browser_eval: false,
+    git: false,
     };
 
     /// The two authoring groups gate independently: enabling one must not
@@ -4087,6 +4131,7 @@ mod tests {
         taskboard: false,
         browser: true,
         browser_eval: false,
+        git: false,
     };
 
     /// The browser group with `browser_eval` on top, which is the only way
@@ -4875,4 +4920,156 @@ mod tests {
         assert_eq!(refused["isError"], false);
     }
 
+
+    // ── git tools ──────────────────────────────────────────────────────────
+
+    const GIT_ONLY: CompanionFeatures = CompanionFeatures {
+        delegation: false,
+        feedback: false,
+        ask: false,
+        sessions: false,
+        tasks: false,
+        automations: false,
+        taskboard: false,
+        browser: false,
+        browser_eval: false,
+        git: true,
+    };
+
+    fn git_call(name: &str, arguments: Value) -> String {
+        json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": { "name": name, "arguments": arguments },
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn git_feature_gates_exactly_the_git_tools() {
+        assert!(CompanionFeatures::parse(Some("git")).git);
+        assert!(!CompanionFeatures::parse(Some("delegation,feedback")).git);
+        assert!(!CompanionFeatures::parse(None).git);
+        for kind in crate::acp::git_tools::KINDS {
+            let name = crate::acp::git_tools::tool_name(kind);
+            assert!(GIT_ONLY.allows_tool(&name), "{name}");
+            assert!(!FEEDBACK_ONLY.allows_tool(&name), "{name}");
+        }
+        assert!(!GIT_ONLY.allows_tool("git_reset"));
+        assert!(!GIT_ONLY.allows_tool("delegate_to_agent"));
+    }
+
+    #[tokio::test]
+    async fn tools_list_carries_the_git_tools_only_when_enabled() {
+        let names = list_tool_names(
+            dispatch_with_features(GIT_ONLY, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)
+                .await,
+        );
+        let expected: Vec<String> = crate::acp::git_tools::KINDS
+            .into_iter()
+            .map(crate::acp::git_tools::tool_name)
+            .collect();
+        assert_eq!(names, expected);
+
+        let names = list_tool_names(
+            dispatch_for_test(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await,
+        );
+        assert!(!names.iter().any(|n| n.starts_with("git_")));
+    }
+
+    #[tokio::test]
+    async fn a_git_tool_with_the_group_off_is_unknown() {
+        let resp = unwrap_respond(dispatch_for_test(&git_call("git_status", json!({}))).await);
+        let e = resp.error.expect("error");
+        assert_eq!(e.code, -32602);
+        assert_eq!(e.message, "unknown tool: git_status");
+    }
+
+    #[tokio::test]
+    async fn malformed_git_arguments_are_invalid_input_before_any_round_trip() {
+        for (name, args) in [
+            ("git_push", json!({"args": ["--force"]})),
+            ("git_status", json!({"verbose": true})),
+            ("git_commit", json!({})),
+            ("git_log", json!({"limit": "ten"})),
+            ("git_pr_merge", json!({"method": "admin"})),
+            ("git_switch", json!({"branch": "main", "op": "push"})),
+        ] {
+            // The socket does not exist: answering at all proves no round trip.
+            let resp = unwrap_respond(dispatch_with_features(GIT_ONLY, &git_call(name, args)).await);
+            let e = resp.error.expect("error");
+            assert_eq!(e.code, -32602, "{name}");
+            assert!(e.message.starts_with("invalid_input: "), "{name}: {}", e.message);
+        }
+    }
+
+    /// The companion sends the typed operation with its token and nothing
+    /// else, and renders the Host's reply: an outcome as its JSON, a Harness
+    /// error as `isError` with its code.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_git_call_sends_the_typed_op_and_renders_the_reply() {
+        use crate::acp::delegation::transport::{read_frame, write_frame, BrokerMessage};
+        use crate::git_harness::{GitError, GitErrorCode, GitOp};
+        use tokio::net::UnixListener;
+
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let sock = dir.path().join("git.sock").to_string_lossy().to_string();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let server = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for reply in [
+                crate::acp::git_tools::reply(Ok(json!({"op": "log", "entries": []}))),
+                crate::acp::git_tools::reply(Err(GitError::new(
+                    GitErrorCode::NotAGitRepository,
+                    "not a Git repository",
+                )
+                .into())),
+            ] {
+                let (mut c, _) = listener.accept().await.unwrap();
+                match read_frame::<_, BrokerMessage>(&mut c).await.unwrap() {
+                    BrokerMessage::Git(req) => seen.push((req.token, req.op)),
+                    other => panic!("expected Git, got {other:?}"),
+                }
+                write_frame(&mut c, &BrokerResponse { outcome: reply })
+                    .await
+                    .unwrap();
+            }
+            seen
+        });
+
+        let ctx = CompanionContext {
+            socket_path: sock,
+            ..ctx_with(GIT_ONLY)
+        };
+        let mut results = Vec::new();
+        for line in [
+            git_call("git_log", json!({"limit": 3})),
+            git_call("git_status", Value::Null),
+        ] {
+            let LineAction::Spawn(call) =
+                dispatch_line(&ctx, Arc::new(InflightCalls::new()), &line).await
+            else {
+                panic!("expected Spawn")
+            };
+            let resp = call.future.await.response.expect("response");
+            results.push(resp.result.expect("result"));
+        }
+
+        assert_eq!(
+            server.await.unwrap(),
+            vec![
+                ("tok".to_string(), GitOp::Log { limit: Some(3) }),
+                ("tok".to_string(), GitOp::Status),
+            ]
+        );
+        assert_eq!(results[0]["isError"], false);
+        assert_eq!(results[0]["structuredContent"]["op"], "log");
+        assert_eq!(results[1]["isError"], true);
+        assert_eq!(
+            results[1]["content"][0]["text"],
+            "not_a_git_repository: not a Git repository"
+        );
+    }
 }

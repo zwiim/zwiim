@@ -655,5 +655,272 @@
         }
       }
     }
+  },
+  {
+    "name": "git_status",
+    "description": "The workspace's Git status: current branch, HEAD commit, upstream with ahead/behind counts, and every changed file with its porcelain status code (`??` untracked, `M` modified, …). Read-only. Runs in this session's workspace, which Zwiim resolves for you. A failure comes back as an error whose text starts with a code (for example `no_workspace`, `not_a_git_repository`, `invalid_path`, `invalid_input`, `not_found`, `conflict`, `non_fast_forward`, `auth_failed`, `gh_unauthenticated`, `timeout`); read the code before retrying.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "git_diff",
+    "description": "What changed in the workspace against its base, as per-file summaries; with `file`, that one file's patch. Read-only. Runs in this session's workspace, which Zwiim resolves for you. A failure comes back as an error whose text starts with a code (for example `no_workspace`, `not_a_git_repository`, `invalid_path`, `invalid_input`, `not_found`, `conflict`, `non_fast_forward`, `auth_failed`, `gh_unauthenticated`, `timeout`); read the code before retrying.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "A path relative to the workspace root. Omit for the summary of every changed file."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "git_log",
+    "description": "Recent commits on the current branch, newest first. Read-only. Runs in this session's workspace, which Zwiim resolves for you. A failure comes back as an error whose text starts with a code (for example `no_workspace`, `not_a_git_repository`, `invalid_path`, `invalid_input`, `not_found`, `conflict`, `non_fast_forward`, `auth_failed`, `gh_unauthenticated`, `timeout`); read the code before retrying.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "description": "How many commits (default 20, at most 200)."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "git_branch_create",
+    "description": "Create a branch and switch to it. Refuses a name that already exists. Changes the repository, so it is refused with `plan_mode` while this session is in plan mode. Runs in this session's workspace, which Zwiim resolves for you. A failure comes back as an error whose text starts with a code (for example `no_workspace`, `not_a_git_repository`, `invalid_path`, `invalid_input`, `not_found`, `conflict`, `non_fast_forward`, `auth_failed`, `gh_unauthenticated`, `timeout`); read the code before retrying.",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The new branch's name."
+        },
+        "from": {
+          "type": "string",
+          "description": "The branch, tag or commit to start from. Omit to start from HEAD."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "git_switch",
+    "description": "Switch to an existing branch. Refuses with `conflict` when local changes would be overwritten; nothing is discarded. Changes the repository, so it is refused with `plan_mode` while this session is in plan mode. Runs in this session's workspace, which Zwiim resolves for you. A failure comes back as an error whose text starts with a code (for example `no_workspace`, `not_a_git_repository`, `invalid_path`, `invalid_input`, `not_found`, `conflict`, `non_fast_forward`, `auth_failed`, `gh_unauthenticated`, `timeout`); read the code before retrying.",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "branch"
+      ],
+      "properties": {
+        "branch": {
+          "type": "string",
+          "description": "The branch to switch to."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "git_stage",
+    "description": "Stage paths, including their deletions. Paths are relative to the workspace root and taken literally (no globs). Changes the repository, so it is refused with `plan_mode` while this session is in plan mode. Runs in this session's workspace, which Zwiim resolves for you. A failure comes back as an error whose text starts with a code (for example `no_workspace`, `not_a_git_repository`, `invalid_path`, `invalid_input`, `not_found`, `conflict`, `non_fast_forward`, `auth_failed`, `gh_unauthenticated`, `timeout`); read the code before retrying.",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "paths"
+      ],
+      "properties": {
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "The paths to stage."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "git_commit",
+    "description": "Commit with the user's Git identity. With `paths`, commits exactly those paths (staging them first) and nothing else that is staged; without, commits everything staged. `nothing_to_commit` when there is nothing to commit. Changes the repository, so it is refused with `plan_mode` while this session is in plan mode. Runs in this session's workspace, which Zwiim resolves for you. A failure comes back as an error whose text starts with a code (for example `no_workspace`, `not_a_git_repository`, `invalid_path`, `invalid_input`, `not_found`, `conflict`, `non_fast_forward`, `auth_failed`, `gh_unauthenticated`, `timeout`); read the code before retrying.",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "message"
+      ],
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "The commit message."
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "Commit exactly these paths, relative to the workspace root. Omit to commit what is staged."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "git_fetch",
+    "description": "Fetch from a remote, updating remote-tracking branches; the working tree is untouched. Uses the user's own Git credentials. Changes the repository, so it is refused with `plan_mode` while this session is in plan mode. Runs in this session's workspace, which Zwiim resolves for you. A failure comes back as an error whose text starts with a code (for example `no_workspace`, `not_a_git_repository`, `invalid_path`, `invalid_input`, `not_found`, `conflict`, `non_fast_forward`, `auth_failed`, `gh_unauthenticated`, `timeout`); read the code before retrying.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "remote": {
+          "type": "string",
+          "description": "The remote to fetch. Omit for `origin` (or the only remote)."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "git_pull",
+    "description": "Bring the current branch up to date with its upstream. By default only a fast-forward (`non_fast_forward` when the branches have diverged); `merge` merges the upstream in, leaving any conflicts in place for you to resolve (`conflict`). `no_upstream` when the branch tracks nothing. Changes the repository, so it is refused with `plan_mode` while this session is in plan mode. Runs in this session's workspace, which Zwiim resolves for you. A failure comes back as an error whose text starts with a code (for example `no_workspace`, `not_a_git_repository`, `invalid_path`, `invalid_input`, `not_found`, `conflict`, `non_fast_forward`, `auth_failed`, `gh_unauthenticated`, `timeout`); read the code before retrying.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "fast_forward_only",
+            "merge"
+          ],
+          "description": "`fast_forward_only` (default) or `merge`."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "git_push",
+    "description": "Push the current branch to the same-named branch on the remote, setting its upstream on the first push. Never forces: a remote that has moved on is `non_fast_forward`. Uses the user's own Git credentials. Changes the repository, so it is refused with `plan_mode` while this session is in plan mode. Runs in this session's workspace, which Zwiim resolves for you. A failure comes back as an error whose text starts with a code (for example `no_workspace`, `not_a_git_repository`, `invalid_path`, `invalid_input`, `not_found`, `conflict`, `non_fast_forward`, `auth_failed`, `gh_unauthenticated`, `timeout`); read the code before retrying.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "remote": {
+          "type": "string",
+          "description": "The remote to push to. Omit for the branch's upstream remote, else `origin` (or the only remote)."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "git_pr_create",
+    "description": "Open a GitHub pull request for the current branch, which must already be pushed. Uses the user's installed and logged-in GitHub CLI (`gh_unavailable` / `gh_unauthenticated` otherwise). Returns the pull request's number and URL. Changes the repository, so it is refused with `plan_mode` while this session is in plan mode. Runs in this session's workspace, which Zwiim resolves for you. A failure comes back as an error whose text starts with a code (for example `no_workspace`, `not_a_git_repository`, `invalid_path`, `invalid_input`, `not_found`, `conflict`, `non_fast_forward`, `auth_failed`, `gh_unauthenticated`, `timeout`); read the code before retrying.",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "title"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "The pull request title."
+        },
+        "body": {
+          "type": "string",
+          "description": "The pull request description (Markdown)."
+        },
+        "base": {
+          "type": "string",
+          "description": "The branch to merge into. Omit for the repository's default branch."
+        },
+        "draft": {
+          "type": "boolean",
+          "description": "Open it as a draft."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "git_pr_view",
+    "description": "A GitHub pull request: state, title, body, branches, mergeability, review decision, URL. Read-only. Runs in this session's workspace, which Zwiim resolves for you. A failure comes back as an error whose text starts with a code (for example `no_workspace`, `not_a_git_repository`, `invalid_path`, `invalid_input`, `not_found`, `conflict`, `non_fast_forward`, `auth_failed`, `gh_unauthenticated`, `timeout`); read the code before retrying.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The pull request number. Omit for the pull request of the current branch."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "git_pr_checks",
+    "description": "A GitHub pull request's CI checks with their state and links. An empty list means no checks are reported. Read-only. Runs in this session's workspace, which Zwiim resolves for you. A failure comes back as an error whose text starts with a code (for example `no_workspace`, `not_a_git_repository`, `invalid_path`, `invalid_input`, `not_found`, `conflict`, `non_fast_forward`, `auth_failed`, `gh_unauthenticated`, `timeout`); read the code before retrying.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The pull request number. Omit for the pull request of the current branch."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "git_pr_comments",
+    "description": "A GitHub pull request's conversation: comments, reviews, and review comments on the code. Read-only. Runs in this session's workspace, which Zwiim resolves for you. A failure comes back as an error whose text starts with a code (for example `no_workspace`, `not_a_git_repository`, `invalid_path`, `invalid_input`, `not_found`, `conflict`, `non_fast_forward`, `auth_failed`, `gh_unauthenticated`, `timeout`); read the code before retrying.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The pull request number. Omit for the pull request of the current branch."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "git_pr_merge",
+    "description": "Merge a GitHub pull request now. Keeps the head branch; never bypasses branch protection (`not_mergeable` when it cannot be merged as it stands). Changes the repository, so it is refused with `plan_mode` while this session is in plan mode. Runs in this session's workspace, which Zwiim resolves for you. A failure comes back as an error whose text starts with a code (for example `no_workspace`, `not_a_git_repository`, `invalid_path`, `invalid_input`, `not_found`, `conflict`, `non_fast_forward`, `auth_failed`, `gh_unauthenticated`, `timeout`); read the code before retrying.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The pull request number. Omit for the pull request of the current branch."
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "merge",
+            "squash",
+            "rebase"
+          ],
+          "description": "`merge` (default), `squash` or `rebase`."
+        }
+      },
+      "additionalProperties": false
+    }
   }
 ]

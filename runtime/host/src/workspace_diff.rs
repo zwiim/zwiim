@@ -67,7 +67,10 @@ fn git(dir: &str) -> tokio::process::Command {
     let mut cmd = crate::process::tokio_command("git");
     cmd.arg("--no-optional-locks")
         .args(["-c", "core.quotePath=false"])
-        .current_dir(dir);
+        .current_dir(dir)
+        // A dropped diff (the Git Harness's time limit, a cancelled call)
+        // takes its git with it.
+        .kill_on_drop(true);
     cmd
 }
 

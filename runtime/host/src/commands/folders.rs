@@ -2509,6 +2509,7 @@ pub async fn git_status(
         .args(["-c", "core.quotePath=false"])
         .args(["status", "--porcelain=v1", untracked_mode])
         .current_dir(&path)
+        .kill_on_drop(true)
         .output()
         .await
         .map_err(AppCommandError::io)?;
@@ -5842,6 +5843,7 @@ pub async fn git_log(
         .args(["-c", "core.quotePath=false"])
         .args(&args)
         .current_dir(&path)
+        .kill_on_drop(true)
         .output()
         .await
         .map_err(AppCommandError::io)?;

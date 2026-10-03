@@ -8,6 +8,41 @@ have their own versions and are listed under Compatibility.
 
 ## [Unreleased]
 
+## [0.1.0-rc.3] - 2026-10-03
+
+### Added
+- Agents get Git tools from Zwiim: status, diff, log, create and switch branches, stage, commit, fetch, pull, push, and pull requests (create, view, checks, comments, merge). They run in the session's own workspace or worktree, never ask for a password, time out instead of hanging, and return structured results and errors. Pull requests use your installed `gh` and its login.
+- In plan mode, the Git tools only read: a commit, push, merge or other change is refused until the session leaves plan mode.
+
+### Changed
+- An agent asks before using a Git tool, like any other tool, unless you have allowed it in the agent.
+- Zwiim's session instructions no longer name the current branch, which went stale once the agent switched branches; they still name the origin's default branch.
+
+### Fixed
+- A cancelled Git status, log or diff no longer leaves its `git` process running.
+
+### Security
+- The Git tools cannot force-push, reset, clean, delete branches or run arbitrary Git commands, and a pull request merge never bypasses branch protection.
+
+### Compatibility
+- Protocol `zwiim/1`, revision 1; clients from revision 1.
+- Mobile: Android app 0.1.0 (version code 1), installed from the APK; no store build yet.
+
+### Provider changes
+- None. Claude adapter 0.81.2, Codex adapter 1.13.1.
+
+### Migration notes
+- None.
+
+### Known limitations
+- macOS on Apple Silicon only.
+- Only the stable channel is offered as an update.
+- Updates apply when you restart the Host (Desktop → About & updates, or Update Host on Mobile).
+- The Android app is not updated automatically: install each new APK by hand.
+- Keeping the Mac awake cannot stop sleep when a MacBook's lid is closed, unless it is on power with an external display.
+- Agent sign-in and API keys are managed on the Mac running the Host; a remote Desktop shows their status only.
+- Pull request tools need the GitHub CLI (`gh`) installed and signed in on the Mac running the Host.
+
 ## [0.1.0-rc.2] - 2026-10-02
 
 ### Added

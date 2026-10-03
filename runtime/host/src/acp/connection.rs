@@ -1836,6 +1836,7 @@ async fn build_agent(
     agent_type: AgentType,
     runtime_env: &BTreeMap<String, String>,
     cwd: &Path,
+    instructions: Option<&str>,
     stderr_tail: &Arc<StderrTail>,
     scratch: Option<&Path>,
 ) -> Result<AcpAgent, AcpError> {
@@ -1904,20 +1905,8 @@ async fn build_agent(
                 agent_type == AgentType::Codex
                     && crate::commands::acp::codex_config_sets("model_reasoning_summary"),
             );
-            // Codex takes Zwiim's instructions here, through `CODEX_CONFIG`,
-            // unless the user's own config.toml sets developer instructions.
-            let codex_instructions = if agent_type == AgentType::Codex
-                && !crate::commands::acp::codex_config_sets("developer_instructions")
-            {
-                Some(crate::agent_instructions::for_dir(cwd).await)
-            } else {
-                None
-            };
-            apply_codex_instructions_policy(
-                agent_type,
-                &mut merged_env,
-                codex_instructions.as_deref(),
-            );
+            // Codex takes Zwiim's instructions here, through `CODEX_CONFIG`.
+            apply_codex_instructions_policy(agent_type, &mut merged_env, instructions);
             // codex-acp 1.0.0 honors APP_SERVER_LOGS as a directory for its
             // adapter-side logs. Surface it only under ZWIIM_ACP_DEBUG so
             // default runs are unchanged; a directory-creation failure silently
@@ -2379,10 +2368,14 @@ pub async fn spawn_agent_connection(
     if agent_type == AgentType::Codex {
         crate::agent_auth::keep_codex_key_in_memory(&mut runtime_env);
     }
+    // The harness's instructions for this connection, built once and shared
+    // by every way its session opens (new, load, resume, fork).
+    let instructions = connection_instructions(&connection_id, agent_type, &launch_cwd).await;
     let agent = match build_agent(
         agent_type,
         &runtime_env,
         &launch_cwd,
+        instructions.as_deref(),
         &stderr_tail,
         scratch.as_ref().map(|s| s.path()),
     )
@@ -2547,6 +2540,7 @@ pub async fn spawn_agent_connection(
             host_tools,
             codex_api_key,
             stderr_tail,
+            instructions,
         )
         .await;
 
@@ -4276,7 +4270,7 @@ fn resolve_working_dir(working_dir: Option<&str>) -> PathBuf {
 /// The `showThinkingSummaries` setting does not reach a non-interactive
 /// (SDK) run; only the flag does (verified against CLI 2.1.280).
 ///
-/// `instructions` (Zwiim's session instructions, see [`session_instructions`])
+/// `instructions` (Zwiim's session instructions, see [`connection_instructions`])
 /// go in as `systemPrompt: { append }`: the adapter keeps the Claude Code
 /// preset and appends them, on new, load and resume alike.
 fn claude_raw_sdk_session_meta(
@@ -4311,14 +4305,42 @@ fn claude_raw_sdk_session_meta(
     Some(meta)
 }
 
-/// Zwiim's session instructions for the session requests: Claude takes them
-/// as `_meta.systemPrompt`. Codex takes them at launch instead
-/// (`apply_codex_instructions_policy`), and other agents get none.
-async fn session_instructions(agent_type: AgentType, cwd: &Path) -> Option<String> {
+/// Whether this launch delivers Zwiim's session instructions. Claude takes
+/// them in its session requests (`_meta.systemPrompt`), Codex at launch
+/// (`apply_codex_instructions_policy`). A user whose `~/.codex/config.toml`
+/// sets `developer_instructions` keeps them, and Codex then gets none of
+/// Zwiim's: a known limitation until project instructions decide precedence.
+/// Other agents have no channel for them.
+fn delivers_session_instructions(agent_type: AgentType, codex_user_instructions: bool) -> bool {
     match agent_type {
-        AgentType::ClaudeCode => Some(crate::agent_instructions::for_dir(cwd).await),
-        _ => None,
+        AgentType::ClaudeCode => true,
+        AgentType::Codex => !codex_user_instructions,
+        _ => false,
     }
+}
+
+/// The harness's session instructions for connection `connection_id`,
+/// working in `cwd`, when its agent takes them. Every new, loaded, resumed
+/// and forked session on the connection runs with this text.
+async fn connection_instructions(
+    connection_id: &str,
+    agent_type: AgentType,
+    cwd: &Path,
+) -> Option<String> {
+    let codex_user_instructions = agent_type == AgentType::Codex
+        && crate::commands::acp::codex_config_sets("developer_instructions");
+    if !delivers_session_instructions(agent_type, codex_user_instructions) {
+        return None;
+    }
+    let instructions = crate::harness::instruct(&crate::harness::gather(cwd).await);
+    tracing::info!(
+        connection_id,
+        agent = ?agent_type,
+        version = instructions.version,
+        digest = %instructions.digest,
+        "[Harness] session instructions attached"
+    );
+    Some(instructions.text)
 }
 
 /// The client capabilities Zwiim advertises on Initialize, with per-agent
@@ -5021,6 +5043,9 @@ struct CompanionFeatureFlags {
     /// flag so that turning it on or off does not disturb the rest of the
     /// group, and so that the group being on never implies it.
     browser_eval: bool,
+    /// The Git tools, run by the Host's Git Harness. On unless the agent runs
+    /// under its own sandbox (`HostToolsPolicy::Agent`).
+    git: bool,
 }
 
 /// The `--features` value for a companion launch, or `None` when no group is
@@ -5059,6 +5084,9 @@ fn companion_features_arg(flags: CompanionFeatureFlags) -> Option<String> {
     // config that reads as if it granted something.
     if flags.browser && flags.browser_eval {
         features.push("browser_eval");
+    }
+    if flags.git {
+        features.push("git");
     }
     if features.is_empty() {
         return None;
@@ -5165,6 +5193,10 @@ where
         browser: cfg!(feature = "tauri-runtime") && injection.browser.is_enabled().await,
         browser_eval: cfg!(feature = "tauri-runtime")
             && injection.browser.is_eval_enabled().await,
+        // The Git Harness runs git and gh on the user's machine, outside an
+        // agent's own sandbox, so `agent` withholds it for the same reason it
+        // withholds delegation.
+        git: host_tools.hosts_channels(),
     };
     // `None` (no feature enabled) short-circuits BEFORE the binary lookup, the
     // token registration and the server append: there is no companion to launch,
@@ -5386,6 +5418,8 @@ async fn run_connection(
     // callback installed by `build_agent`. Read only when a turn ends without
     // agent output, to attach evidence to the synthesized error.
     stderr_tail: Arc<StderrTail>,
+    // The connection's session instructions (`connection_instructions`).
+    instructions: Option<String>,
 ) -> Result<(), AcpError> {
     let pending_perms: PendingPermissions =
         Arc::new(tokio::sync::Mutex::new(PermissionQueue::default()));
@@ -5393,7 +5427,6 @@ async fn run_connection(
     // keys upstream — see `spawn_agent_connection` for the rationale and
     // why we don't forward the full agent runtime_env here.
     let cwd = resolve_working_dir(working_dir.as_deref());
-    let instructions = session_instructions(agent_type, &cwd).await;
     // Default terminals to the session working directory so an agent that calls
     // `terminal/create` without a `cwd` (e.g. CodeBuddy) runs in the folder the
     // conversation runs in rather than Zwiim's own process cwd.
@@ -6157,6 +6190,7 @@ async fn run_connection(
                                 &cwd_string,
                                 supports_resume,
                                 &mcp_servers,
+                                instructions.as_deref(),
                                 &prompt_ledger,
                                 delegation_injection.as_ref(),
                                 &stderr_tail,
@@ -6397,6 +6431,7 @@ async fn run_connection(
                             &cwd_string,
                             supports_resume,
                             &mcp_servers,
+                            instructions.as_deref(),
                             &prompt_ledger,
                             delegation_injection.as_ref(),
                             &stderr_tail,
@@ -6592,6 +6627,7 @@ async fn run_connection(
                             &cwd_string,
                             supports_resume,
                             &mcp_servers,
+                            instructions.as_deref(),
                             &prompt_ledger,
                             delegation_injection.as_ref(),
                             &stderr_tail,
@@ -6682,6 +6718,7 @@ async fn run_connection(
                     &cwd_string,
                     supports_resume,
                     &mcp_servers,
+                    instructions.as_deref(),
                     &prompt_ledger,
                     delegation_injection.as_ref(),
                     &stderr_tail,
@@ -8783,9 +8820,10 @@ fn map_prompt_blocks(blocks: Vec<PromptInputBlock>) -> Vec<ContentBlock> {
 /// + the delegation feature being on).
 fn prepare_agent_bound_prompt(
     agent_type: AgentType,
-    mut blocks: Vec<PromptInputBlock>,
+    blocks: Vec<PromptInputBlock>,
     delegation_enabled: bool,
 ) -> Vec<ContentBlock> {
+    let mut blocks = crate::harness::compose_turn(blocks);
     append_agent_routes(&mut blocks, delegation_enabled);
     if agent_type == AgentType::Grok {
         blocks = normalize_grok_image_blocks(blocks);
@@ -8851,6 +8889,8 @@ async fn handle_fork_or_exit(
     // needs to make the forked session real on the agent.
     supports_resume: bool,
     mcp_servers: &[McpServer],
+    // The connection's session instructions: the fork resumes with them.
+    instructions: Option<&str>,
     // Threaded through from run_connection: the connection-scoped prompt
     // ledger (the forked session's loop keeps fingerprinting into the SAME
     // ledger the still-running watcher consumes from).
@@ -8956,7 +8996,7 @@ async fn handle_fork_or_exit(
             SessionId::new(new_sid.clone()),
             cwd,
             mcp_servers.to_vec(),
-            session_instructions(agent_type, cwd).await.as_deref(),
+            instructions,
         );
         match send_resume_session(&cx, resume_req).await {
             Ok(pair) => Some(pair),
@@ -9074,6 +9114,7 @@ async fn handle_fork_or_exit(
         cwd_string,
         supports_resume,
         mcp_servers,
+        instructions,
         prompt_ledger,
         delegation_injection,
         stderr_tail,
@@ -18391,6 +18432,117 @@ mod tests {
     }
 
     #[test]
+    fn claude_and_codex_get_the_harness_instructions() {
+        assert!(delivers_session_instructions(AgentType::ClaudeCode, false));
+        assert!(delivers_session_instructions(AgentType::Codex, false));
+        // Known limitation: a user's own Codex `developer_instructions` win,
+        // and Codex then runs without Zwiim's.
+        assert!(!delivers_session_instructions(AgentType::Codex, true));
+        for agent in [AgentType::Grok, AgentType::OpenClaw] {
+            assert!(!delivers_session_instructions(agent, false), "{agent:?}");
+        }
+
+        let cwd = PathBuf::from("/w/repo/abc");
+        let text = crate::harness::instruct(&crate::harness::HarnessInput {
+            cwd: cwd.clone(),
+            git: Some(crate::harness::GitFacts {
+                worktree: true,
+                default_branch: Some("origin/main".into()),
+            }),
+        })
+        .text;
+
+        let req = serde_json::to_value(build_new_session_request(
+            AgentType::ClaudeCode,
+            &cwd,
+            Vec::new(),
+            Some(&text),
+        ))
+        .unwrap();
+        assert_eq!(
+            req.pointer("/_meta/systemPrompt/append"),
+            Some(&serde_json::json!(text))
+        );
+
+        let mut env = Vec::new();
+        apply_codex_instructions_policy(AgentType::Codex, &mut env, Some(&text));
+        let config: serde_json::Value = serde_json::from_str(&env[0].1).unwrap();
+        assert_eq!(env[0].0, "CODEX_CONFIG");
+        assert_eq!(config["developer_instructions"], serde_json::json!(text));
+    }
+
+    #[tokio::test]
+    async fn connection_instructions_come_from_the_harness() {
+        let dir = tempfile::tempdir().unwrap();
+        let expected = crate::harness::instruct(&crate::harness::gather(dir.path()).await).text;
+        assert_eq!(
+            connection_instructions("c", AgentType::ClaudeCode, dir.path()).await,
+            Some(expected)
+        );
+        assert_eq!(
+            connection_instructions("c", AgentType::Grok, dir.path()).await,
+            None
+        );
+    }
+
+    /// Every agent connection is made by `spawn_agent_connection`, which asks
+    /// the harness once; each new, load, resume and fork request on it then
+    /// carries that text.
+    #[test]
+    fn every_session_open_runs_with_the_connection_instructions() {
+        let source = include_str!("connection.rs");
+        let code = source.split("#[cfg(test)]\nmod tests {").next().unwrap();
+        assert_eq!(code.matches("crate::harness::instruct(").count(), 1);
+        assert_eq!(code.matches("connection_instructions(&connection_id").count(), 1);
+        let spawn = code.split("pub async fn spawn_agent_connection(").nth(1).unwrap();
+        let spawn = spawn.split("\n}\n").next().unwrap();
+        assert!(spawn.contains("connection_instructions(&connection_id"));
+        assert!(spawn.contains("build_agent("));
+        assert!(spawn.contains("run_connection("));
+
+        let mut opens = 0;
+        for builder in [
+            "build_new_session_request(",
+            "build_load_session_request(",
+            "build_resume_session_request(",
+        ] {
+            for call in code.split(builder).skip(1) {
+                let mut depth = 1;
+                let end = call
+                    .find(|c| {
+                        depth += match c {
+                            '(' => 1,
+                            ')' => -1,
+                            _ => 0,
+                        };
+                        depth == 0
+                    })
+                    .unwrap();
+                let args = &call[..end];
+                if args.contains("agent_type: AgentType") {
+                    continue; // the definition
+                }
+                assert!(args.contains("instructions"), "{builder}{args}");
+                opens += 1;
+            }
+        }
+        // new ×2, load, resume, and the fork's resume.
+        assert_eq!(opens, 5);
+    }
+
+    #[test]
+    fn zwiim_adds_nothing_to_a_plain_turn() {
+        let blocks = vec![PromptInputBlock::Text {
+            text: "hello".into(),
+        }];
+        let sent = prepare_agent_bound_prompt(AgentType::ClaudeCode, blocks.clone(), false);
+        assert_eq!(
+            serde_json::to_value(sent).unwrap(),
+            serde_json::to_value(map_prompt_blocks(blocks)).unwrap()
+        );
+    }
+
+    #[test]
     fn map_claude_sdk_ext_notification_maps_valid_payload() {
         let raw = UntypedMessage::new(
             "_claude/sdkMessage",
@@ -24331,12 +24483,15 @@ mod tests {
                 taskboard: true,
                 browser: true,
                 browser_eval: true,
+                git: true,
             }),
             Some(
-                "delegation,feedback,ask,sessions,tasks,automations,taskboard,browser,browser_eval"
+                "delegation,feedback,ask,sessions,tasks,automations,taskboard,browser,browser_eval,git"
                     .to_string()
             )
         );
+        // Git alone injects the companion too.
+        assert_eq!(only(|f| f.git = true), Some("git".to_string()));
         // `browser_eval` never travels on its own: the companion requires both
         // tokens, and a lone one in an agent's MCP config would read as if it
         // granted something.

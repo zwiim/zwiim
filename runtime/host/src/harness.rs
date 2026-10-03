@@ -1,0 +1,262 @@
+//! The Agent Harness: what Zwiim tells an agent. Provider-neutral. How each
+//! agent receives it is provider delivery's job, in the agent connection
+//! (`acp::connection`): Claude through its session requests' system prompt,
+//! Codex through its developer instructions.
+//!
+//! Every agent connection, whoever opens it (a Zwiim session, Desktop, a
+//! delegated child) and however its session opens (new, load, resume, fork),
+//! passes through the same stages:
+//!
+//! 1. [`gather`]: the Host facts the instructions need, read once per
+//!    connection.
+//! 2. [`instruct`]: the session's [`SessionInstructions`], immutable for the
+//!    connection's life.
+//! 3. [`compose_turn`]: what Zwiim adds to each user turn on its way to the
+//!    agent. Nothing yet.
+//! 4. `observe`: reserved for reacting to turn outcomes. Not built yet.
+//!
+//! Instructions only guide the agent. What the Host enforces (the working
+//! directory and filesystem write roots, permission requests reaching the
+//! user, one turn at a time, cancel and stop, secrets kept out of SQLite and
+//! logs) is enforced in Host code, so no instruction layer can relax it.
+
+mod system_prompt;
+
+use std::path::{Path, PathBuf};
+
+use sha2::{Digest, Sha256};
+
+use crate::acp::types::PromptInputBlock;
+
+pub use system_prompt::{Authority, Layer};
+
+/// The version of the instruction text. Bump it whenever the text rendered
+/// for the same facts changes.
+pub const INSTRUCTIONS_VERSION: &str = "zwiim-instructions/1";
+
+/// Git facts about a session's working directory. The current branch is
+/// left out on purpose: the agent can switch branches mid-session, so it
+/// asks Git instead.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitFacts {
+    /// The working directory is a linked worktree, not a main checkout.
+    pub worktree: bool,
+    /// The origin's default branch, e.g. `origin/main`.
+    pub default_branch: Option<String>,
+}
+
+/// What the harness knows about a session when it opens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HarnessInput {
+    pub cwd: PathBuf,
+    /// `None` outside a Git checkout.
+    pub git: Option<GitFacts>,
+}
+
+/// The instructions an agent session runs with, and their identity for logs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionInstructions {
+    pub text: String,
+    pub version: &'static str,
+    /// Short SHA-256 of `text`.
+    pub digest: String,
+}
+
+/// Stage 1: read the Host facts for a session working in `cwd`.
+pub async fn gather(cwd: &Path) -> HarnessInput {
+    HarnessInput {
+        cwd: cwd.to_path_buf(),
+        git: git_facts(cwd).await,
+    }
+}
+
+async fn git_facts(cwd: &Path) -> Option<GitFacts> {
+    let out = crate::process::tokio_command("git")
+        .args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-dir",
+            "--git-common-dir",
+        ])
+        .current_dir(cwd)
+        .output()
+        .await
+        .ok()
+        .filter(|out| out.status.success())?;
+    let dirs = String::from_utf8_lossy(&out.stdout);
+    let mut dirs = dirs.lines();
+    let worktree = matches!((dirs.next(), dirs.next()), (Some(a), Some(b)) if a != b);
+    let default_branch = crate::workspace::origin_default_branch(&cwd.to_string_lossy()).await;
+    Some(GitFacts {
+        worktree,
+        default_branch,
+    })
+}
+
+/// Stage 2: the session's instructions.
+pub fn instruct(input: &HarnessInput) -> SessionInstructions {
+    let text = system_prompt::render(input);
+    SessionInstructions {
+        digest: digest(&text),
+        version: INSTRUCTIONS_VERSION,
+        text,
+    }
+}
+
+fn digest(text: &str) -> String {
+    Sha256::digest(text.as_bytes())[..6]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Stage 3: the user's turn as the agent receives it. Passes it through
+/// unchanged for now.
+pub fn compose_turn(blocks: Vec<PromptInputBlock>) -> Vec<PromptInputBlock> {
+    blocks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn worktree() -> HarnessInput {
+        HarnessInput {
+            cwd: "/w/repo/abc".into(),
+            git: Some(GitFacts {
+                worktree: true,
+                default_branch: Some("origin/main".into()),
+            }),
+        }
+    }
+
+    #[test]
+    fn instructions_carry_their_version_and_digest() {
+        let made = instruct(&worktree());
+        assert_eq!(made.version, INSTRUCTIONS_VERSION);
+        assert_eq!(made.text, system_prompt::render(&worktree()));
+        assert_eq!(made, instruct(&worktree()), "deterministic");
+        assert_eq!(made.digest.len(), 12);
+        assert!(made.digest.bytes().all(|b| b.is_ascii_hexdigit()));
+        let other = instruct(&HarnessInput {
+            cwd: "/w/repo/def".into(),
+            ..worktree()
+        });
+        assert_ne!(made.digest, other.digest);
+    }
+
+    /// Pins the text for one input. If this fails because the text changed
+    /// on purpose, bump `INSTRUCTIONS_VERSION` and update the digest.
+    #[test]
+    fn the_version_names_the_text() {
+        assert_eq!(
+            (
+                instruct(&worktree()).version,
+                instruct(&worktree()).digest.as_str()
+            ),
+            ("zwiim-instructions/1", "a7780aed4189")
+        );
+    }
+
+    #[test]
+    fn compose_turn_passes_the_turn_through() {
+        let blocks = vec![
+            PromptInputBlock::Text {
+                text: "hello".into(),
+            },
+            PromptInputBlock::Image {
+                data: "AAAA".into(),
+                mime_type: "image/png".into(),
+                uri: None,
+            },
+        ];
+        assert_eq!(compose_turn(blocks.clone()), blocks);
+        assert!(compose_turn(Vec::new()).is_empty());
+    }
+
+    /// The harness decides what to say, never how a provider receives it.
+    #[test]
+    fn no_provider_or_transport_types_in_the_harness() {
+        let sources = [
+            include_str!("harness.rs"),
+            include_str!("harness/system_prompt.rs"),
+        ];
+        for source in sources {
+            let code = source.split("#[cfg(test)]").next().unwrap();
+            for banned in [
+                "sacp",
+                "ContentBlock",
+                "AgentType",
+                "crate::acp::connection",
+                "CODEX_CONFIG",
+                "_meta",
+            ] {
+                assert!(!code.contains(banned), "harness mentions {banned}");
+            }
+        }
+    }
+
+    fn run(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    #[tokio::test]
+    async fn gather_reads_the_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        run(&repo, &["init", "-q", "-b", "main"]);
+        run(&repo, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        let plain = dir.path().join("plain");
+        std::fs::create_dir(&plain).unwrap();
+
+        let outside = gather(&plain).await;
+        assert_eq!(outside.cwd, plain);
+        assert_eq!(outside.git, None);
+        assert_eq!(
+            gather(&repo).await.git,
+            Some(GitFacts {
+                worktree: false,
+                default_branch: None,
+            })
+        );
+
+        let repo_str = repo.to_string_lossy().into_owned();
+        run(&repo, &["remote", "add", "origin", &repo_str]);
+        run(&repo, &["fetch", "-q", "origin"]);
+        let wt = dir.path().join("wt");
+        run(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "zwiim/abc",
+                wt.to_str().unwrap(),
+            ],
+        );
+        let input = gather(&wt).await;
+        assert_eq!(
+            input.git,
+            Some(GitFacts {
+                worktree: true,
+                default_branch: Some("origin/main".into()),
+            })
+        );
+        // The branch the worktree is on is a Git fact the agent asks for.
+        assert!(!instruct(&input).text.contains("zwiim/abc"));
+    }
+}

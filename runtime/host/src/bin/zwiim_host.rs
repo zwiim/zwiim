@@ -559,6 +559,13 @@ async fn async_main() -> Exit {
             // "browser tab" is an iframe their own browser renders, which
             // nothing here can reach.
             Arc::new(zwiim_host::acp::browser_tools::NoBrowserTabs),
+            Arc::new(zwiim_host::acp::git_tools::HostGitTools {
+                manager: Arc::new(state.connection_manager.clone_ref()),
+                db: Arc::new(zwiim_host::db::AppDatabase {
+                    conn: state.db.conn.clone(),
+                }),
+                data_dir: state.data_dir.clone(),
+            }),
         );
         // Bind through the service handle rather than a bare `listener.run`
         // spawn: it keeps the bind error and the accept-loop handle around, so

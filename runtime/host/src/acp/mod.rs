@@ -16,6 +16,7 @@ pub mod event_stream;
 pub mod feedback;
 pub mod file_system_runtime;
 pub mod fork;
+pub mod git_tools;
 pub mod host_tools_policy;
 pub mod idle_sweep;
 pub mod internal_bus;

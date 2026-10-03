@@ -26,3 +26,15 @@ runtime/host/src/agent_auth.rs
 runtime/host/src/agent_auth/tests.rs
 runtime/host/src/redact.rs
 runtime/host/src/keep_awake.rs
+runtime/host/src/harness.rs
+runtime/host/src/harness/system_prompt.rs
+runtime/host/src/git_harness.rs
+runtime/host/src/git_harness/op.rs
+runtime/host/src/git_harness/error.rs
+runtime/host/src/git_harness/run.rs
+runtime/host/src/git_harness/local.rs
+runtime/host/src/git_harness/remote.rs
+runtime/host/src/git_harness/github.rs
+runtime/host/src/git_harness/tests.rs
+runtime/host/src/acp/git_tools.rs
+runtime/host/src/acp/git_tools/tests.rs

@@ -10,7 +10,6 @@
 pub mod acp;
 pub mod adapters;
 pub mod agent_auth;
-pub mod agent_instructions;
 pub mod acp_transcript;
 pub use acp::{
     idle_sweep_task, idle_timeout_from_env, lifecycle_subscriber_task, SWEEP_INTERVAL_SECS,
@@ -27,7 +26,9 @@ pub mod cloud;
 pub mod db;
 pub mod folder_links;
 pub mod git_credential;
+pub mod git_harness;
 pub mod git_repo;
+pub mod harness;
 pub mod host_feed;
 pub mod host_lifecycle;
 pub mod identity;
@@ -1071,6 +1072,13 @@ mod tauri_app {
                                 browser_tools_config.clone(),
                             ),
                         ),
+                        std::sync::Arc::new(crate::acp::git_tools::HostGitTools {
+                            manager: std::sync::Arc::new(cm_state.clone_ref()),
+                            db: std::sync::Arc::new(db::AppDatabase {
+                                conn: db_conn.clone(),
+                            }),
+                            data_dir: effective_data_dir.clone(),
+                        }),
                     );
                     // Bind through the service handle rather than a bare
                     // `listener.run` spawn: it keeps the bind error and the

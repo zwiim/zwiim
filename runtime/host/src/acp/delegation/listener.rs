@@ -27,7 +27,7 @@ use crate::acp::delegation::transport::{
     BrokerBrowserSnapshotRequest, BrokerBrowserTabOpRequest, BrokerBrowserTabsRequest,
     BrokerCancelRequest, BrokerCancelTaskRequest,
     BrokerCommitFeedbackRequest, BrokerFeedbackRequest, BrokerMessage, BrokerRequest,
-    BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerResponse,
+    BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerGitRequest, BrokerResponse,
     BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
     BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
 };
@@ -35,6 +35,7 @@ use crate::acp::delegation::types::{
     DelegationRequest, DelegationTaskReport, ResumeDelegationRequest, TaskStatus,
 };
 use crate::acp::feedback::{PendingFeedback, SessionFeedbackAccess};
+use crate::acp::git_tools::GitToolAccess;
 use crate::acp::question::{QuestionOutcome, SessionQuestionAccess};
 #[cfg(unix)]
 use crate::acp::scratch_dir::SUN_PATH_CAP;
@@ -161,6 +162,11 @@ pub struct DelegationListener {
     /// exists only in the desktop build, because a browser tab is a native
     /// webview — server mode gets `NoBrowserTabs`.
     pub browser: Arc<dyn BrowserToolAccess>,
+    /// Runs the `git_*` tools through the Git Harness, in the workspace of the
+    /// conversation the token's parent connection is in. Parent-scoped like
+    /// the delegation arms: the workspace comes from the connection, never
+    /// from the companion.
+    pub git: Arc<dyn GitToolAccess>,
 }
 
 impl DelegationListener {
@@ -175,6 +181,7 @@ impl DelegationListener {
         tasks: Arc<dyn WorkTaskToolAccess>,
         authoring: Arc<dyn ChatAuthoringAccess>,
         browser: Arc<dyn BrowserToolAccess>,
+        git: Arc<dyn GitToolAccess>,
     ) -> Arc<Self> {
         Arc::new(Self {
             broker,
@@ -186,6 +193,7 @@ impl DelegationListener {
             tasks,
             authoring,
             browser,
+            git,
         })
     }
 
@@ -611,6 +619,15 @@ impl DelegationListener {
                 // (or a page navigated) with nothing on the strip to say so.
                 browser_tab_op_response(self.process_browser_tab_op(req).await)?
             }
+            BrokerMessage::Git(req) => {
+                // Bounded by the Harness's own per-operation time limits. No
+                // peer-close race: a canceled call would otherwise kill a push
+                // or commit partway; it runs to its end and the answer is
+                // simply dropped.
+                BrokerResponse {
+                    outcome: crate::acp::git_tools::reply(self.process_git(req).await),
+                }
+            }
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
                 // Empty ack — the companion only uses this to detect the
@@ -958,6 +975,19 @@ impl DelegationListener {
             );
         }
         self.browser.tab_op(req.op).await
+    }
+
+    /// Validate the token and run one Git tool call for its parent connection.
+    /// An invalid token is `no_workspace`: the same answer a session with no
+    /// workspace gets, so it reveals nothing.
+    async fn process_git(
+        &self,
+        req: BrokerGitRequest,
+    ) -> Result<Value, crate::acp::git_tools::GitToolError> {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
+            return Err(crate::acp::git_tools::no_workspace());
+        };
+        self.git.run(&entry.parent_connection_id, req.op).await
     }
 
     /// Validate the token and hand the progress report to the task engine,
@@ -1537,6 +1567,28 @@ mod tests {
         }
     }
 
+    /// In-memory Git tool stub. Records every `(parent_connection_id, op)` it
+    /// was asked to run and answers with the operation's name.
+    #[derive(Default)]
+    struct StubGit {
+        calls: tokio::sync::Mutex<Vec<(String, crate::git_harness::GitOp)>>,
+    }
+    #[async_trait]
+    impl GitToolAccess for StubGit {
+        async fn run(
+            &self,
+            parent_connection_id: &str,
+            op: crate::git_harness::GitOp,
+        ) -> Result<Value, crate::acp::git_tools::GitToolError> {
+            let kind = op.kind().as_str();
+            self.calls
+                .lock()
+                .await
+                .push((parent_connection_id.to_string(), op));
+            Ok(json!({ "op": kind }))
+        }
+    }
+
     /// In-memory session-info stub. Records every `(session_id, max_messages)` it
     /// was asked to resolve and returns a seeded outcome — `found` sessions echo
     /// their id, unknown ids return `not_found`. Default knows about no sessions.
@@ -1755,6 +1807,7 @@ mod tests {
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
             Arc::new(NoBrowserTabs),
+            Arc::new(StubGit::default()),
         )
     }
 
@@ -1778,6 +1831,7 @@ mod tests {
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
             Arc::new(NoBrowserTabs),
+            Arc::new(StubGit::default()),
         )
     }
 
@@ -1802,6 +1856,7 @@ mod tests {
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
             Arc::new(NoBrowserTabs),
+            Arc::new(StubGit::default()),
         )
     }
 
@@ -1825,6 +1880,26 @@ mod tests {
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
             Arc::new(NoBrowserTabs),
+            Arc::new(StubGit::default()),
+        )
+    }
+
+    fn make_git_listener(tokens: Arc<TokenRegistry>, git: Arc<StubGit>) -> Arc<DelegationListener> {
+        let broker = Arc::new(DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            Arc::new(AlwaysRootLookup) as Arc<dyn ConversationDepthLookup>,
+        ));
+        DelegationListener::new(
+            broker,
+            tokens,
+            Arc::new(StaticParentLookup(Some(1))),
+            Arc::new(StubFeedback::default()),
+            Arc::new(StubQuestion::default()),
+            Arc::new(StubSessionInfo::default()),
+            Arc::new(StubTaskTools),
+            Arc::new(StubAuthoring::default()),
+            Arc::new(NoBrowserTabs),
+            git,
         )
     }
 
@@ -1850,6 +1925,7 @@ mod tests {
             Arc::new(StubTaskTools),
             authoring,
             Arc::new(NoBrowserTabs),
+            Arc::new(StubGit::default()),
         )
     }
 
@@ -1874,6 +1950,7 @@ mod tests {
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
             browser,
+            Arc::new(StubGit::default()),
         )
     }
 
@@ -3549,5 +3626,204 @@ mod tests {
             path.as_os_str().len(),
             dialed.err()
         );
+    }
+
+    async fn git_round_trip(listener: Arc<DelegationListener>, token: &str, op: crate::git_harness::GitOp) -> BrokerResponse {
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let msg = BrokerMessage::Git(BrokerGitRequest {
+            token: token.into(),
+            op,
+        });
+        write_frame(&mut client, &msg).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+        resp
+    }
+
+    /// A Git call runs for the token's parent connection — the identity the
+    /// adapter resolves the workspace from — with the operation unchanged.
+    #[tokio::test]
+    async fn git_runs_the_op_for_the_tokens_parent_connection() {
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let git = Arc::new(StubGit::default());
+        let listener = make_git_listener(tokens, git.clone());
+
+        let op = crate::git_harness::GitOp::Log { limit: Some(5) };
+        let resp = git_round_trip(listener, "tok", op.clone()).await;
+
+        assert_eq!(resp.outcome, json!({ "ok": true, "result": { "op": "log" } }));
+        assert_eq!(
+            git.calls.lock().await.as_slice(),
+            &[("parent-conn".to_string(), op)]
+        );
+    }
+
+    /// An unknown token is `no_workspace` and nothing runs.
+    #[tokio::test]
+    async fn git_with_an_invalid_token_is_no_workspace() {
+        let git = Arc::new(StubGit::default());
+        let listener = make_git_listener(Arc::new(TokenRegistry::default()), git.clone());
+
+        let resp = git_round_trip(listener, "forged", crate::git_harness::GitOp::Status).await;
+
+        assert_eq!(resp.outcome["ok"], false);
+        assert_eq!(resp.outcome["error"]["code"], "no_workspace");
+        assert!(git.calls.lock().await.is_empty());
+    }
+
+    /// Git access over a real database and repository, for one conversation:
+    /// everything `HostGitTools` does except reading the live connection.
+    struct DbGit {
+        db: crate::db::AppDatabase,
+        data: PathBuf,
+        ctx: crate::acp::git_tools::AgentContext,
+    }
+    #[async_trait]
+    impl GitToolAccess for DbGit {
+        async fn run(
+            &self,
+            _parent_connection_id: &str,
+            op: crate::git_harness::GitOp,
+        ) -> Result<Value, crate::acp::git_tools::GitToolError> {
+            let host = crate::git_harness::GitHost::new(&self.db.conn, &self.data);
+            crate::acp::git_tools::run_for(&self.db.conn, &host, self.ctx, op).await
+        }
+    }
+
+    /// One agent Git call end to end: the companion maps `git_status` to its
+    /// operation, the listener resolves the token, the adapter resolves the
+    /// conversation's workspace, the Harness runs `git` there, and the
+    /// companion renders the outcome. Then a commit in plan mode is refused.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_git_tool_call_runs_through_the_companion_listener_and_harness() {
+        use crate::acp::delegation::companion::{
+            dispatch_line, CompanionContext, CompanionFeatures, InflightCalls, LineAction,
+        };
+        use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
+
+        let tmp = tempfile::tempdir_in("/tmp").unwrap();
+        let root = tmp.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        for args in [
+            &["init", "-q", "-b", "trunk"][..],
+            &["-c", "user.name=F", "-c", "user.email=f@example.com", "-c", "commit.gpgsign=false",
+              "commit", "-q", "--allow-empty", "-m", "init"][..],
+        ] {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        }
+        std::fs::write(root.join("todo.txt"), "x\n").unwrap();
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, root.to_str().unwrap()).await;
+        let conversation_id =
+            seed_conversation(&db, folder_id, crate::models::AgentType::Codex).await;
+
+        let sock = tmp.path().join("b.sock");
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/elsewhere"),
+                },
+            )
+            .await;
+        let serve = |planning: bool, db: crate::db::AppDatabase| {
+            let tokens = tokens.clone();
+            let sock = sock.clone();
+            let data = tmp.path().join("data");
+            async move {
+                let _ = std::fs::remove_file(&sock);
+                let broker = Arc::new(DelegationBroker::new(
+                    Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+                    Arc::new(AlwaysRootLookup) as Arc<dyn ConversationDepthLookup>,
+                ));
+                let listener = DelegationListener::new(
+                    broker,
+                    tokens,
+                    Arc::new(StaticParentLookup(Some(1))),
+                    Arc::new(StubFeedback::default()),
+                    Arc::new(StubQuestion::default()),
+                    Arc::new(StubSessionInfo::default()),
+                    Arc::new(StubTaskTools),
+                    Arc::new(StubAuthoring::default()),
+                    Arc::new(NoBrowserTabs),
+                    Arc::new(DbGit {
+                        db,
+                        data,
+                        ctx: crate::acp::git_tools::AgentContext {
+                            conversation_id: Some(conversation_id),
+                            planning,
+                        },
+                    }),
+                );
+                let bound = DelegationListener::bind(&sock).await.unwrap();
+                tokio::spawn(listener.accept_loop(bound, sock)).abort_handle()
+            }
+        };
+        let call = |name: &str, args: serde_json::Value| {
+            let ctx = CompanionContext {
+                parent_connection_id: "parent-conn".into(),
+                socket_path: sock.to_string_lossy().into_owned(),
+                token: "tok".into(),
+                features: CompanionFeatures::parse(Some("git")),
+                custom_agents: Vec::new(),
+                disabled_agents: Vec::new(),
+            };
+            let line = json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": name, "arguments": args },
+            })
+            .to_string();
+            async move {
+                let LineAction::Spawn(spawned) =
+                    dispatch_line(&ctx, Arc::new(InflightCalls::new()), &line).await
+                else {
+                    panic!("expected Spawn")
+                };
+                spawned.future.await.response.unwrap().result.unwrap()
+            }
+        };
+
+        let server = serve(false, crate::db::AppDatabase { conn: db.conn.clone() }).await;
+        let status = call("git_status", json!({})).await;
+        server.abort();
+        assert_eq!(status["isError"], false, "{status}");
+        assert_eq!(status["structuredContent"]["branch"], "trunk");
+        assert_eq!(status["structuredContent"]["entries"][0]["path"], "todo.txt");
+        let text = status["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("\"branch\": \"trunk\""), "{text}");
+
+        // Plan mode, same session: the commit never reaches the Harness.
+        let server = serve(true, db).await;
+        let refused = call("git_commit", json!({"message": "m", "paths": ["todo.txt"]})).await;
+        let still = call("git_status", json!({})).await;
+        server.abort();
+        assert_eq!(refused["isError"], true);
+        assert!(
+            refused["content"][0]["text"].as_str().unwrap().starts_with("plan_mode: "),
+            "{refused}"
+        );
+        assert_eq!(still["structuredContent"]["entries"][0]["status"], "??");
     }
 }

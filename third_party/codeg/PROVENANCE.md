@@ -1123,6 +1123,44 @@ Upstream-derived:
 
 Zwiim-owned, no Codeg code copied: `runtime/host/src/keep_awake.rs`. While any session has a turn in flight, the Host holds `/usr/bin/caffeinate -i -s -w <host pid>` (macOS only), and releases it when every turn has ended, when the setting is off, or on battery below 10% (`pmset -g batt`). On by default; stored in `app_metadata` (`keep_awake`). Protocol ops `host.keep_awake.status` and `host.keep_awake.set` (local host authority only); Desktop Settings > General toggle.
 
+## V2.1 Agent Harness Foundation — session instructions as harness layers
+
+Zwiim-owned, no Codeg code copied: `harness.rs` (the provider-neutral Agent Harness: `gather` reads the working directory's Git facts, `instruct` renders the session instructions with a version and a short SHA-256 digest, `compose_turn` passes each user turn through unchanged; `observe` is reserved); `harness/system_prompt.rs` (replaces `agent_instructions.rs`: the instructions as ordered layers Runtime, Rules, Workspace, Git, and the reserved, empty Project Instructions and Skills; each layer is Host fact or guidance; the current branch is no longer named, the origin's default branch is).
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `acp/connection.rs` | `src-tauri/src/acp/connection.rs` | `connection_instructions` asks the harness once per connection in `spawn_agent_connection` and logs the instructions' version and digest; that one text goes to Codex at launch (`build_agent`) and to Claude's new, load, resume and fork-resume requests (`run_connection`, `handle_fork_or_exit`), replacing `session_instructions`. `prepare_agent_bound_prompt` passes the turn through `harness::compose_turn`. |
+
+## V2.2 Git Harness — Host core
+
+Zwiim-owned, no Codeg code copied: `git_harness.rs` and `git_harness/{op,error,run,local,remote,github,tests}.rs`. `git_harness::execute(host, caller, op)` runs typed, workspace-scoped Git and GitHub operations (status, diff, log, branch create, switch, stage, commit, fetch, pull, push, and pull request create/view/checks/comments/merge) and returns a typed outcome or a structured error. The workspace comes from `workspace::resolve`; every subprocess is non-interactive, time-limited, and killed with its process group on timeout or cancellation. It reuses the Host's `git_status`, `git_log`, `workspace_diff::diff`, `git_credential` injection and commit author, and `classify_remote_git_error`. It has no agent-integration dependency and no approval logic. `workspace_diff.rs` (Zwiim-owned) kills its `git` when a diff is dropped.
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `commands/folders.rs` | `src-tauri/src/commands/folders.rs` | `git_status` and `git_log`'s log query set `kill_on_drop`, so a dropped call does not leave its `git` running. |
+
+### V2.2 Git Harness — ACP/MCP integration
+
+Zwiim-owned, no Codeg code copied: `acp/git_tools.rs` and `acp/git_tools/tests.rs`. These are the ACP-side adapter. They map a `git_<op>` tool call's arguments straight into a `GitOp` and reject unknown, missing or mistyped fields. They resolve the calling connection's conversation → folder → `workspace_id` (Harness scope) and the conversation's `session_id` (attribution), and refuse a mutating op (`GitOp::mutates`) while the session's mode is `plan`. Then they call `git_harness::execute` and render the outcome or error as an MCP tool result. The Harness itself is unchanged.
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `acp/delegation/tool_schema.json` | `src-tauri/src/acp/delegation/tool_schema.json` | Fifteen `git_*` tools (status, diff, log, branch_create, switch, stage, commit, fetch, pull, push, pr_create, pr_view, pr_checks, pr_comments, pr_merge). Each takes only its operation's own fields, with `additionalProperties: false`. |
+| `acp/delegation/companion.rs` | `src-tauri/src/acp/delegation/companion.rs` | `git` feature group (`CompanionFeatures.git`, `--features git`) gating the `git_*` tools. A `tools/call` arm maps the arguments to a `GitOp`; malformed ones are `-32602 invalid_input` before any round trip. Otherwise it sends `BrokerMessage::Git` and renders the reply. |
+| `acp/delegation/transport.rs` | `src-tauri/src/acp/delegation/transport.rs` | `BrokerGitRequest { token, op }`, the `BrokerMessage::Git` variant, and `client_git_round_trip`. |
+| `acp/delegation/listener.rs` | `src-tauri/src/acp/delegation/listener.rs` | `git: Arc<dyn GitToolAccess>` field and constructor parameter. The `BrokerMessage::Git` arm resolves the token to its parent connection (an invalid token gets `no_workspace`) and runs the op through `GitToolAccess`. Tests include a companion → socket → listener → Harness end-to-end run. |
+| `acp/delegation/service.rs` | `src-tauri/src/acp/delegation/service.rs` | Test stub implements `GitToolAccess`. |
+| `acp/connection.rs` | `src-tauri/src/acp/connection.rs` | `CompanionFeatureFlags.git` (appended to `--features` as `git`), on wherever the Host hosts channels (`HostToolsPolicy::hosts_channels`). |
+| `acp/mod.rs` | `src-tauri/src/acp/mod.rs` | `pub mod git_tools`. |
+| `bin/zwiim_host.rs` | `src-tauri/src/bin/codeg_server.rs` | Passes `HostGitTools` (connection manager, database, data dir) to the delegation listener. |
+| `lib.rs` | `src-tauri/src/lib.rs` | Same for the desktop listener path. |
+
 ## License obligations tracked
 
 - [x] Include Apache-2.0 license text (`third_party/codeg/LICENSE`).
