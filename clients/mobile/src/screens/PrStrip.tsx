@@ -8,7 +8,7 @@ import { useEffect, useState } from "react";
 import { Linking, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import * as Haptics from "expo-haptics";
 import type { CheckState, PrCheckItem, PrEntry, PrState } from "@zwiim/sdk";
-import { mergeError, prErrorText, prLook, shortSha, type PrTone } from "../host/pr";
+import { mergeError, prErrorText, prLabel, prLook, shortSha, type PrTone } from "../host/pr";
 import { currentHost } from "../services";
 import { Button, Sheet, T } from "../ui/components";
 import { ChevronRight, GitMerge, GitPullRequest, Icon } from "../ui/icons";
@@ -67,7 +67,7 @@ export function PrStrip({
     <>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`Pull request #${pr.number}, ${look.status}. ${look.checks}`}
+        accessibilityLabel={prLabel(pr.number, look)}
         onPress={() => setSheet(true)}
         style={({ pressed }) => [styles.strip, { borderBottomColor: theme.line }, pressed && { backgroundColor: theme.surface }]}
         testID="pr-strip"

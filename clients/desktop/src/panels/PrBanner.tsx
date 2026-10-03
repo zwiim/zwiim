@@ -57,8 +57,8 @@ export function mergeErrorText(e: unknown): string {
 
 /** The one-word state a PR is in: Merged, Closed, Draft, or how its checks stand. */
 export function prStatus(pr: PrState): { label: string; tone: "done" | "err" | "work" | "mut" } {
-  if (pr.state === "merged") return { label: `Merged #${pr.number}`, tone: "done" };
-  if (pr.state === "closed") return { label: `Closed #${pr.number}`, tone: "mut" };
+  if (pr.state === "merged") return { label: "Merged", tone: "done" };
+  if (pr.state === "closed") return { label: "Closed", tone: "mut" };
   if (pr.state === "draft") return { label: "Draft", tone: "mut" };
   const { failed, pending, passed } = pr.checks;
   if (failed > 0) return { label: "Checks failed", tone: "err" };

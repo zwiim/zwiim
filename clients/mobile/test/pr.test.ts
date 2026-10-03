@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ZwiimClientError, type PrState } from "@zwiim/sdk";
-import { checksLine, mergeError, prBadge, prErrorText, prLook, shortSha } from "../src/host/pr";
+import { checksLine, mergeError, prBadge, prErrorText, prLabel, prLook, shortSha } from "../src/host/pr";
 
 const pr = (extra: Partial<PrState> = {}): PrState => ({
   number: 12,
@@ -35,8 +35,8 @@ describe("pull request look", () => {
   });
 
   it("is settled once merged or closed: nothing to merge, no reason", () => {
-    expect(prLook(pr({ state: "merged" }), true)).toMatchObject({ status: "Merged #12", tone: "done", settled: true, canMerge: false, reason: null });
-    expect(prLook(pr({ state: "closed" }), false)).toMatchObject({ status: "Closed #12", tone: "mut", settled: true, canMerge: false, reason: null });
+    expect(prLook(pr({ state: "merged" }), true)).toMatchObject({ status: "Merged", tone: "done", settled: true, canMerge: false, reason: null });
+    expect(prLook(pr({ state: "closed" }), false)).toMatchObject({ status: "Closed", tone: "mut", settled: true, canMerge: false, reason: null });
   });
 
   it("keeps Merge off with GitHub's reason, or because the Host is out of reach", () => {
@@ -44,6 +44,13 @@ describe("pull request look", () => {
     expect(prLook(blocked, true)).toMatchObject({ canMerge: false, reason: "Waiting for required checks or review" });
     expect(prLook(pr(), false)).toMatchObject({ canMerge: false, reason: "Not connected to the Host" });
     expect(prLook(pr({ merge: { ...pr().merge, method: null, methods: [] } }), true).method).toBeNull();
+  });
+
+  it("reads the strip aloud without stale counts once merged", () => {
+    const running = pr({ checks: checks({ pending: 2, passed: 0 }) });
+    expect(prLabel(12, prLook(running, true))).toBe("Pull request #12, Checks running. 2 running");
+    expect(prLabel(12, prLook({ ...running, state: "merged" }, true))).toBe("Pull request #12, Merged");
+    expect(prLabel(12, prLook({ ...running, state: "closed" }, true))).toBe("Pull request #12, Closed");
   });
 
   it("counts checks failed first", () => {

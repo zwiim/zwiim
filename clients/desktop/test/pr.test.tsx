@@ -93,13 +93,13 @@ describe("pull request banner", () => {
       method: "squash",
     });
     // Merged as soon as the Host says so, before the feed catches up.
-    expect(screen.getByTestId("pr-status").textContent).toBe("Merged #12");
+    expect(screen.getByTestId("pr-status").textContent).toBe("Merged");
     await t.feedEvent("workspace.pr_changed", {
       workspace_id: "a",
       pr: pr({ state: "merged", merged_at: "2026-10-03T00:00:00Z" }),
       error: null,
     });
-    expect(screen.getByTestId("pr-status").textContent).toBe("Merged #12");
+    expect(screen.getByTestId("pr-status").textContent).toBe("Merged");
     expect(screen.queryByRole("button", { name: /^Merge/ })).toBeNull();
 
     await act(async () => {
@@ -123,7 +123,7 @@ describe("pull request banner", () => {
     expect(screen.getByTestId("pr-reason").textContent).toBe("Waiting for required checks or review");
 
     await t.feedEvent("workspace.pr_changed", { workspace_id: "a", pr: pr({ state: "closed" }), error: null });
-    expect(screen.getByTestId("pr-status").textContent).toBe("Closed #12");
+    expect(screen.getByTestId("pr-status").textContent).toBe("Closed");
     await t.feedEvent("workspace.pr_changed", { workspace_id: "a", pr: null, error: null });
     expect(screen.queryByTestId("pr-banner")).toBeNull();
   });

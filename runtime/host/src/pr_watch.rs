@@ -12,7 +12,8 @@
 //!
 //! Polling happens only while a pull request is open: [`PrPolicy::pending`]
 //! while checks run or GitHub is still working out mergeability,
-//! [`PrPolicy::settled`] after. A merged or closed pull request, a branch
+//! [`PrPolicy::settled`] after. A head with no checks yet counts as pending
+//! for [`PrPolicy::fresh`], since CI takes a few seconds to register its runs. A merged or closed pull request, a branch
 //! without one, and a `gh` that is missing or logged out are not polled; the
 //! next trigger looks again. Network failures keep the last state and back
 //! off up to [`PrPolicy::max_backoff`].
@@ -41,6 +42,8 @@ pub struct PrPolicy {
     pub pending: Duration,
     /// Once every check has finished.
     pub settled: Duration,
+    /// How long a new head without checks is still polled as pending.
+    pub fresh: Duration,
     /// The longest wait after repeated network failures.
     pub max_backoff: Duration,
 }
@@ -50,6 +53,7 @@ impl Default for PrPolicy {
         Self {
             pending: Duration::from_secs(15),
             settled: Duration::from_secs(60),
+            fresh: Duration::from_secs(120),
             max_backoff: Duration::from_secs(300),
         }
     }
@@ -57,16 +61,22 @@ impl Default for PrPolicy {
 
 impl PrPolicy {
     /// When to look again after a lookup that ended in `outcome`, having
-    /// been polling every `polling` (`None`: not polling). `None`: wait for
-    /// a trigger.
+    /// been polling every `polling` (`None`: not polling), with `fresh` true
+    /// while the head is newer than [`PrPolicy::fresh`]. `None`: wait for a
+    /// trigger.
     pub(crate) fn next_poll(
         &self,
         outcome: Result<Option<&PrState>, GitErrorCode>,
         polling: Option<Duration>,
+        fresh: bool,
     ) -> Option<Duration> {
         match outcome {
             Ok(Some(pr)) if pr.state.is_final() => None,
-            Ok(Some(pr)) if pr.checks.pending > 0 || pr.merge.status == MergeStatus::Unknown => {
+            Ok(Some(pr))
+                if pr.checks.pending > 0
+                    || pr.merge.status == MergeStatus::Unknown
+                    || (fresh && no_checks(pr)) =>
+            {
                 Some(self.pending)
             }
             Ok(Some(_)) => Some(self.settled),
@@ -83,6 +93,11 @@ impl PrPolicy {
     fn backoff(&self, interval: Duration) -> Duration {
         (interval * 2).min(self.max_backoff)
     }
+}
+
+fn no_checks(pr: &PrState) -> bool {
+    let c = &pr.checks;
+    c.passed + c.failed + c.pending + c.skipped == 0
 }
 
 /// What the Host knows about a workspace's pull request.
@@ -168,6 +183,8 @@ struct Tracked {
     due: Option<Instant>,
     /// The poll interval in force; `None` when not polling.
     polling: Option<Duration>,
+    /// The pull request's head and when the watcher first saw it.
+    head: Option<(String, Instant)>,
     running: bool,
     /// A trigger arrived while a lookup ran.
     again: bool,
@@ -182,6 +199,7 @@ impl Tracked {
             eligible: None,
             due: Some(Instant::now()),
             polling: None,
+            head: None,
             running: false,
             again: false,
             waiters: Vec::new(),
@@ -374,8 +392,17 @@ impl Watcher {
             }
             Lookup::Done(result) => {
                 t.eligible = Some(true);
+                if let Ok(Some(pr)) = &result {
+                    if t.head.as_ref().is_none_or(|(sha, _)| *sha != pr.head_sha) {
+                        t.head = Some((pr.head_sha.clone(), Instant::now()));
+                    }
+                }
+                let fresh = t
+                    .head
+                    .as_ref()
+                    .is_some_and(|(_, seen)| seen.elapsed() < self.policy.fresh);
                 let outcome = result.as_ref().map(Option::as_ref).map_err(|e| e.code);
-                t.polling = self.policy.next_poll(outcome, t.polling);
+                t.polling = self.policy.next_poll(outcome, t.polling, fresh);
                 t.due = t.polling.map(|p| Instant::now() + p);
                 let entry = match &result {
                     Ok(pr) => Some(PrEntry {
@@ -495,21 +522,52 @@ mod tests {
         let unknown = pr(PrLifecycle::Open, 0, MergeStatus::Unknown);
         let settled = pr(PrLifecycle::Open, 0, MergeStatus::Clean);
         let draft = pr(PrLifecycle::Draft, 0, MergeStatus::Draft);
-        assert_eq!(p.next_poll(Ok(Some(&running)), None), Some(s(15)));
-        assert_eq!(p.next_poll(Ok(Some(&unknown)), Some(s(60))), Some(s(15)));
-        assert_eq!(p.next_poll(Ok(Some(&settled)), Some(s(15))), Some(s(60)));
-        assert_eq!(p.next_poll(Ok(Some(&draft)), None), Some(s(60)));
+        assert_eq!(p.next_poll(Ok(Some(&running)), None, false), Some(s(15)));
+        assert_eq!(
+            p.next_poll(Ok(Some(&unknown)), Some(s(60)), false),
+            Some(s(15))
+        );
+        assert_eq!(
+            p.next_poll(Ok(Some(&settled)), Some(s(15)), false),
+            Some(s(60))
+        );
+        assert_eq!(p.next_poll(Ok(Some(&draft)), None, false), Some(s(60)));
         // Settled for good, or nothing to follow: wait for a trigger.
         for done in [PrLifecycle::Merged, PrLifecycle::Closed] {
             assert_eq!(
-                p.next_poll(Ok(Some(&pr(done, 1, MergeStatus::Unknown))), Some(s(15))),
+                p.next_poll(
+                    Ok(Some(&pr(done, 1, MergeStatus::Unknown))),
+                    Some(s(15)),
+                    true
+                ),
                 None
             );
         }
-        assert_eq!(p.next_poll(Ok(None), Some(s(15))), None);
+        assert_eq!(p.next_poll(Ok(None), Some(s(15)), false), None);
         for code in [GitErrorCode::GhUnavailable, GitErrorCode::GhUnauthenticated] {
-            assert_eq!(p.next_poll(Err(code), Some(s(15))), None);
+            assert_eq!(p.next_poll(Err(code), Some(s(15)), false), None);
         }
+    }
+
+    #[test]
+    fn a_new_head_without_checks_is_polled_as_pending() {
+        let p = PrPolicy::default();
+        let s = Duration::from_secs;
+        // Just opened or pushed: CI has not registered its runs yet.
+        let bare = pr(PrLifecycle::Open, 0, MergeStatus::Clean);
+        assert_eq!(p.next_poll(Ok(Some(&bare)), None, true), Some(s(15)));
+        // Past the window, a repository without CI settles.
+        assert_eq!(
+            p.next_poll(Ok(Some(&bare)), Some(s(15)), false),
+            Some(s(60))
+        );
+        // Finished checks settle at once, fresh or not.
+        let mut passed = bare.clone();
+        passed.checks.passed = 2;
+        assert_eq!(
+            p.next_poll(Ok(Some(&passed)), Some(s(15)), true),
+            Some(s(60))
+        );
     }
 
     #[test]
@@ -518,26 +576,30 @@ mod tests {
         let mut polling = Some(Duration::from_secs(15));
         let mut seen = vec![];
         for _ in 0..6 {
-            polling = p.next_poll(Err(GitErrorCode::Network), polling);
+            polling = p.next_poll(Err(GitErrorCode::Network), polling, false);
             seen.push(polling.unwrap().as_secs());
         }
         assert_eq!(seen, [30, 60, 120, 240, 300, 300]);
         assert_eq!(
-            p.next_poll(Err(GitErrorCode::Timeout), None),
+            p.next_poll(Err(GitErrorCode::Timeout), None, false),
             Some(Duration::from_secs(30))
         );
         // Success resets the interval.
         let settled = pr(PrLifecycle::Open, 0, MergeStatus::Clean);
         assert_eq!(
-            p.next_poll(Ok(Some(&settled)), polling),
+            p.next_poll(Ok(Some(&settled)), polling, false),
             Some(Duration::from_secs(60))
         );
         // Other failures keep following an open pull request, and start
         // nothing new.
         assert_eq!(
-            p.next_poll(Err(GitErrorCode::Failed), Some(Duration::from_secs(60))),
+            p.next_poll(
+                Err(GitErrorCode::Failed),
+                Some(Duration::from_secs(60)),
+                false
+            ),
             Some(Duration::from_secs(120))
         );
-        assert_eq!(p.next_poll(Err(GitErrorCode::Failed), None), None);
+        assert_eq!(p.next_poll(Err(GitErrorCode::Failed), None, false), None);
     }
 }

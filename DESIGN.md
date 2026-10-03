@@ -347,9 +347,9 @@ Top to bottom:
 - **PR strip** (40pt, hairline below; V2.3), only while the worktree's branch has
   a pull request: a GitPullRequest icon (GitMerge once merged) in the status
   tone, mono `#12`, the status in `callout` (`Checks running` `accent`,
-  `Checks passed` `done`, `Checks failed` `err`, `Draft` / `Open` / `Closed #12`
-  `mut`, `Merged #12` `done`), mono `1 running · 2 passed` in `mut` while open,
-  `›`. The Host follows the PR on GitHub and the strip only renders its feed;
+  `Checks passed` `done`, `Checks failed` `err`, `Draft` / `Open` / `Closed`
+  `mut`, `Merged` `done`), mono `1 running · 2 passed` in `mut` while open,
+  `›`; its spoken label drops the counts once merged or closed. The Host follows the PR on GitHub and the strip only renders its feed;
   the phone never asks GitHub. When the Host's GitHub CLI is missing or signed
   out, the strip is one `mut` mono line saying so and what to run on the Mac.
   Tapping opens the **PR sheet**: title, mono `#12 · main ← fix-auth`, the
@@ -364,7 +364,7 @@ Top to bottom:
   **Merge** (`done`) and **Cancel**. The Host merges at that head or refuses: a
   push since then reads "The pull request changed since you looked", a block
   reads GitHub's reason, both in `err` in the sheet. A success haptic, then the
-  strip reads `Merged #12` at once.
+  strip reads `#12 Merged` at once.
 - **Transcript** (inverted `FlatList`, newest at the bottom):
   - user messages: right-aligned `surface` block, radius 16/16/4/16.
   - agent messages: full-width prose, no bubble, markdown rendered; inline code
@@ -666,7 +666,8 @@ glyph, a title, one line, one action.
   mono `#12` and the title (opens the PR), a `done` **Merge** button (tooltip
   names the method, or GitHub's reason when disabled), then the status and check
   counts, which expand inline into the checks (each opens its run). Merged or
-  closed, the button gives way to `Merged #12` / `Closed #12`. Desktop merges on
+  closed, the button gives way to `Merged` / `Closed`
+  after the `#12` and title. Desktop merges on
   one click without a confirm: the button sits where the pointer already is
   and the Host still refuses a head that moved.
 

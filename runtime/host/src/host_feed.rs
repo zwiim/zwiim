@@ -1653,6 +1653,7 @@ esac
             policy: pr_watch::PrPolicy {
                 pending: Duration::from_millis(200),
                 settled: Duration::from_millis(400),
+                fresh: Duration::ZERO,
                 max_backoff: Duration::from_secs(2),
             },
         }
@@ -1727,6 +1728,33 @@ esac
         // Back on the default branch: the pull request is gone.
         git(Path::new(&f.root), &["checkout", "-q", "main"]);
         feed.until("cleared", pr_is(f.root_id.clone(), |p| p["pr"].is_null())).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_new_pull_request_is_polled_until_its_checks_show_up() {
+        let gh_dir = tempfile::tempdir().unwrap();
+        let gh_dir = gh_dir.path().to_path_buf();
+        let mut config = quick_prs(fake_gh(&gh_dir));
+        // As live: a settled pull request waits much longer than a pending one.
+        config.policy.settled = Duration::from_secs(60);
+        config.policy.fresh = Duration::from_secs(60);
+        let f = fixture_with(config).await;
+        add_origin(&f);
+        git(Path::new(&f.root), &["checkout", "-q", "-b", "feature"]);
+        let (_, mut feed) = f.subscribe().await;
+        settle_views(&gh_dir, 1).await;
+
+        // Just opened: GitHub reports it clean, with no checks yet.
+        set_pr(&gh_dir, "OPEN", "CLEAN", &[]);
+        f.state.host_feed.pr(&f.state, &f.root_id, true).await.unwrap();
+        feed.until("opened", pr_is(f.root_id.clone(), |p| p["pr"]["state"] == "open")).await;
+
+        // CI registers its runs: seen at the pending pace, not a minute later.
+        set_pr(&gh_dir, "OPEN", "UNSTABLE", &[("IN_PROGRESS", "")]);
+        let running = feed
+            .until("checks", pr_is(f.root_id.clone(), |p| p["pr"]["checks"]["pending"] == 1))
+            .await;
+        assert_eq!(running.payload["pr"]["checks"]["pending"], 1);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

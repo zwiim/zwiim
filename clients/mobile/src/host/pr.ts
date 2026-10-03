@@ -16,7 +16,7 @@ export const METHOD_LABELS: Record<MergeMethod, string> = {
 };
 
 export interface PrLook {
-  /** `Checks running`, `Merged #12`… */
+  /** `Checks running`, `Merged`… (the strip puts `#12` before it). */
   status: string;
   tone: PrTone;
   /** `1 failed · 1 running · 2 passed`, or `No checks`. */
@@ -47,9 +47,9 @@ export function prLook(pr: PrState, connected: boolean): PrLook {
   const { failed, pending, passed } = pr.checks;
   const [status, tone]: [string, PrTone] =
     pr.state === "merged"
-      ? [`Merged #${pr.number}`, "done"]
+      ? ["Merged", "done"]
       : pr.state === "closed"
-        ? [`Closed #${pr.number}`, "mut"]
+        ? ["Closed", "mut"]
         : pr.state === "draft"
           ? ["Draft", "mut"]
           : failed > 0
@@ -70,6 +70,12 @@ export function prLook(pr: PrState, connected: boolean): PrLook {
     reason,
     method: pr.merge.method ? METHOD_LABELS[pr.merge.method] : null,
   };
+}
+
+/** What a screen reader says for the strip: the counts only while open. */
+export function prLabel(number: number, look: PrLook): string {
+  const label = `Pull request #${number}, ${look.status}`;
+  return look.settled ? label : `${label}. ${look.checks}`;
 }
 
 /** The branch chip's badge: `#12` in the PR's tone; null without a PR. */
