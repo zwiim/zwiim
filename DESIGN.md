@@ -670,6 +670,52 @@ glyph, a title, one line, one action.
   after the `#12` and title. Desktop merges on
   one click without a confirm: the button sits where the pointer already is
   and the Host still refuses a head that moved.
+- Desktop's sidebar (UI refresh, design-shotgun A) stays uncolored. A
+  **Workspaces** header folds the whole list and carries `+` to add a folder; a
+  chevron on a repository folds its worktrees, and a folded repository still
+  shows its worktrees' working dot and selection. Removed worktrees fold under
+  one `N removed` row, opened automatically when one is selected. Worktree rows
+  are one line (branch in mono, base in the tooltip); the repository name keeps
+  its room and the branch beside it truncates first. Working is a pulsing
+  `brand` dot, not amber. Folds are remembered on the device.
+- Desktop's Files tree marks files by type with Lucide icons in muted hues
+  (code, docs, config, images, archives, keys; lockfiles muted with a lock), uses
+  an open-folder icon when expanded, and opens a folder whose only entry is a
+  folder (not a link) straight through, on one row: `dist / 0.1.0-rc.3`.
+- Desktop's chat links: a bare web address reads without its scheme
+  (`github.com/…`), in `brand` with no underline until hover and an
+  arrow-up-right; the full address is the tooltip.
+  A link to a file in the session's workspace (relative, or an absolute path
+  inside the workspace's folder) reads the same, without the arrow, and opens
+  the file as a tab beside the conversation; the tooltip is its workspace path.
+  Files outside the workspace, or in a removed worktree, stay muted and inert.
+- Desktop's connection line follows the host-dot rule: connected is a `done`
+  dot and a muted label, no pill; connecting / reconnecting a breathing `brand`
+  dot; only a failure (not authorized, error) is a red badge. Amber is not used.
+- Desktop's empty terminal dock sits on the panel surface (the `code` black is
+  for a running terminal) with a **New terminal** button. A workspace whose
+  folder is gone says so in Files ("This folder is no longer on the host") with
+  the way back, instead of the host's red "Directory not found".
+- Desktop's slash menu (composer, `/name` opening the message) is named in the
+  placeholder ("Describe the task, or type / for commands", "Send a message, or
+  type / for commands") while it has anything to offer. It splits on the
+  agent's own list. What it lists (skills, plugins, prompts) goes into the
+  message, as before. A listed command whose screen is the CLI's (`/mcp`,
+  `/model`, `/config`, `/status`) runs in the CLI from its own row, marked with
+  a terminal icon and "Embedded terminal". A `/name` no listed command starts
+  with gets one more row after the matches: a terminal icon, "Run `/name` in
+  the embedded terminal" and the agent's name, muted. Both open a card over the
+  composer (`card`, `2xl` radius, `code` black body, `h-72`) with the agent's
+  CLI already running the command and focus inside it; the header says
+  "Complete `/name` below, then click Done", or "`/name` has finished" once the
+  CLI exits. **Done** ends the CLI and closes the card. A new command replaces
+  the card and ends the previous CLI; the terminal never shows in the dock.
+  Claude Code takes the command as its first prompt; Codex gets it pasted once
+  it takes pastes (bracketed paste on) and its output settles, and Enter only
+  when the command shows on screen, so a trust, update or sign-in prompt is
+  never answered for the user. Offered only
+  for agents the Host manages (Claude Code, Codex); the CLI uses its own
+  sign-in.
 
 ## Decisions Log
 
@@ -698,3 +744,6 @@ glyph, a title, one line, one action.
 | 2026-09-29 | Sign in becomes a motion orbit (design-shotgun K4) | The text-first screen read as plain. Agents, sessions and workspaces orbiting "your Mac", with status color on their icons, says in one look that agents run on the Mac and are steered from here; copy cut to the name, two lines and the button. Generic nouns, because vendor names aren't ours to show |
 | 2026-09-29 | Hosts in cards, matching Sign in | The bare list read unfinished after the Sign in orbit; the Laptop disc repeats "your Mac" from Sign in, and the account card keeps Sign out in reach without the red of a destructive action |
 | 2026-10-03 | PR strip, sheet and a green Merge button (V2.3) | User-approved exception: Merge uses `done` green (with `done-ink`), as GitHub's and Conductor's do, so it reads as the PR's finish line rather than another accent action; it appears nowhere else. The phone confirms before merging because a tap from a pocket shouldn't merge, and the confirm names method, base and head so the Host can refuse a moved head |
+| 2026-10-03 | Desktop refresh: folding sidebar, typed Files icons, quiet links (design-shotgun A) | The sidebar grew with every worktree and removed ones dominated it; folding at the header, the repository and the removed group keeps it short without hiding work. Color stays out of the sidebar (user call); file-type color goes in Files, where it helps scan a tree, as Conductor does. Raw underlined URLs read as noise; the scheme adds nothing and the arrow says it leaves the app |
+| 2026-10-03 | Desktop file links open in the workspace; quiet healthy connection | A file the agent names is one click from its contents, like a web link; the host never shares its paths, so an absolute link resolves only past the workspace's own folder and anything else stays inert. A green "Connected" pill and amber "Connecting" broke the status rules: healthy is not news, amber means needs-you |
+| 2026-10-04 | Slash commands can run in the agent's CLI, embedded over the composer | Many CLI commands (`/mcp`, `/status`, `/login`, plugin commands) do nothing over ACP; Conductor runs them in a terminal over its composer and the gap read as broken. The agent's ACP list decides (user call): what it lists runs over ACP, what it does not only the CLI runs; ACP strips Claude's `builtin` flag, so the listed ones whose screen is the CLI's are named. A terminal in the dock with the command typed made the user move focus and press Enter there (user call: follow Conductor); the card runs it in place. Codex gets Enter only when the command shows, so a prompt the CLI asks first is never answered for the user |

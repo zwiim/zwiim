@@ -196,7 +196,7 @@ describe("workbench", () => {
     const t = workbenchHost();
     const c = await mount(t, <Workbench bridge={bridge()} />);
     const panel = screen.getByTestId("workspace-panel");
-    expect(screen.getByPlaceholderText("Describe the task…")).toBeTruthy();
+    expect(screen.getByPlaceholderText(/^Describe the task/)).toBeTruthy();
     expect(panel.querySelector('[aria-label="Terminals"]')).toBeTruthy();
     expect(screen.getByTestId("file-tree")).toBeTruthy();
     c.dispose();
@@ -253,7 +253,35 @@ describe("workbench", () => {
     fireEvent.click(screen.getByLabelText("Close a.txt"));
     expect(screen.queryByTestId("diff-view")).toBeNull();
     expect(screen.getByRole("navigation", { name: "Open tabs" }).textContent).not.toContain("a.txt");
-    expect(screen.getByPlaceholderText("Describe the task…")).toBeTruthy();
+    expect(screen.getByPlaceholderText(/^Describe the task/)).toBeTruthy();
+    c.dispose();
+  });
+
+  it("opens a file linked in the conversation as a tab beside it", async () => {
+    const t = workbenchHost();
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        {
+          turn_id: "t1",
+          role: "assistant",
+          blocks: [{ type: "text", text: "Wrote [a.txt](a.txt)." }],
+          timestamp: "",
+          completed_at: null,
+          duration_ms: null,
+          model: null,
+          usage: null,
+        },
+      ],
+    });
+    const c = await mount(t, <Workbench bridge={bridge()} />);
+    fireEvent.click(screen.getByText("repo-w2"));
+    await tick();
+    fireEvent.click(screen.getByRole("link", { name: "a.txt" }));
+    await tick();
+    expect(screen.getByRole("navigation", { name: "Open tabs" }).textContent).toContain("a.txt");
+    expect(screen.getByText("hello from a")).toBeTruthy();
+    expect(t.calls.find((x) => x.op === "files.read")?.params).toEqual({ workspace_id: "w2", path: "a.txt" });
     c.dispose();
   });
 
@@ -267,10 +295,10 @@ describe("workbench", () => {
     expect(within(tabs()).getByRole("button", { name: "old task" }).getAttribute("aria-current")).toBe("page");
     expect(t.sent).toContainEqual(expect.objectContaining({ op: "session.subscribe", session_id: "s9" }));
     fireEvent.click(within(tabs()).getByRole("button", { name: "New session" }));
-    expect(screen.getByPlaceholderText("Describe the task…")).toBeTruthy();
+    expect(screen.getByPlaceholderText(/^Describe the task/)).toBeTruthy();
     expect(tabs().textContent).toContain("old task");
     fireEvent.click(within(tabs()).getByRole("button", { name: "old task" }));
-    expect(screen.queryByPlaceholderText("Describe the task…")).toBeNull();
+    expect(screen.queryByPlaceholderText(/^Describe the task/)).toBeNull();
     // Another workspace has its own tabs; coming back returns to the session shown.
     fireEvent.click(screen.getByText("repo-w1"));
     expect(tabs().textContent).not.toContain("old task");
@@ -382,7 +410,7 @@ describe("workbench", () => {
       const t = workbenchHost();
       const c = await mount(t, <Workbench bridge={bridge()} />);
       expect(screen.queryByTestId("offline-banner")).toBeNull();
-      const send = () => screen.getByPlaceholderText("Describe the task…") as HTMLTextAreaElement;
+      const send = () => screen.getByPlaceholderText(/^Describe the task/) as HTMLTextAreaElement;
       expect(send().disabled).toBe(false);
       await act(async () => t.handlersForEvents!.onClose({ code: 1006, reason: "" }));
       await tick();

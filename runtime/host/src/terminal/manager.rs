@@ -56,6 +56,13 @@ impl Scrollback {
     fn read(&self) -> (String, u64) {
         (self.chunks.iter().cloned().collect(), self.seq)
     }
+
+    /// The chunks recorded after `seq` that are still held.
+    fn since(&self, seq: u64) -> String {
+        let newer = usize::try_from(self.seq.saturating_sub(seq)).unwrap_or(usize::MAX);
+        let skip = self.chunks.len().saturating_sub(newer);
+        self.chunks.iter().skip(skip).map(String::as_str).collect()
+    }
 }
 
 struct TerminalInstance {
@@ -472,6 +479,22 @@ impl TerminalManager {
         }
     }
 
+    /// Seq of a live terminal's last output chunk (0 before any); `None` when
+    /// it is not live. The cheap check for whether output is still arriving.
+    pub fn output_seq(&self, terminal_id: &str) -> Option<u64> {
+        let buffer = self.terminals.lock().unwrap().get(terminal_id)?.scrollback.clone();
+        let seq = buffer.lock().map(|s| s.seq).unwrap_or(0);
+        Some(seq)
+    }
+
+    /// Output of a live terminal after `seq` (what scrollback still holds);
+    /// `None` when it is not live.
+    pub fn output_since(&self, terminal_id: &str, seq: u64) -> Option<String> {
+        let buffer = self.terminals.lock().unwrap().get(terminal_id)?.scrollback.clone();
+        let data = buffer.lock().map(|s| s.since(seq)).unwrap_or_default();
+        Some(data)
+    }
+
     pub fn kill(&self, terminal_id: &str) -> Result<(), TerminalError> {
         let mut instance = self
             .terminals
@@ -764,6 +787,18 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     use super::{Arc, EventEmitter, SpawnOptions, TerminalManager};
     use super::{thread_name_prefix, Scrollback, SCROLLBACK_MAX_CHARS};
+
+    #[test]
+    fn scrollback_since_returns_only_newer_chunks() {
+        let mut buffer = Scrollback::default();
+        buffer.append("a");
+        let seq = buffer.append("b");
+        buffer.append("c");
+        buffer.append("d");
+        assert_eq!(buffer.since(seq), "cd");
+        assert_eq!(buffer.since(0), "abcd");
+        assert_eq!(buffer.since(buffer.seq), "");
+    }
 
     #[test]
     fn scrollback_seq_counts_every_chunk_and_never_rewinds() {

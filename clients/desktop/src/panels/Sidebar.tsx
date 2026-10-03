@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Folder, FolderGit2, GitBranch, GitBranchPlus, Plus, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ChevronDown, ChevronRight, Folder, FolderGit2, GitBranch, GitBranchPlus, Plus, Trash2 } from "lucide-react";
 import {
   busyDetails,
   dirtyDetails,
@@ -10,6 +10,7 @@ import {
 } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
+import { rememberSidebarFolds, sidebarFolds, type SidebarFolds } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
 import { NewWorktree } from "./NewWorktree";
 
@@ -54,6 +55,18 @@ export function Sidebar(props: SidebarProps) {
   const loaded = useHost((s) => s.workspaces !== null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [folds, setFolds] = useState(sidebarFolds);
+
+  function fold(next: SidebarFolds) {
+    setFolds(next);
+    rememberSidebarFolds(next);
+  }
+
+  function foldRepository(id: string, folded: boolean) {
+    if (folds.repositories.includes(id) === folded) return;
+    const repositories = folds.repositories.filter((r) => r !== id);
+    fold({ ...folds, repositories: folded ? [...repositories, id] : repositories });
+  }
 
   async function addWorkspace() {
     setError(null);
@@ -62,6 +75,8 @@ export function Sidebar(props: SidebarProps) {
     setAdding(true);
     try {
       const ws = await controller.addWorkspace(path);
+      // The new workspace shows even if the list was folded away.
+      if (folds.workspaces) fold({ ...folds, workspaces: false });
       props.onSelectWorkspace(ws.workspace_id);
     } catch (e) {
       setError(errorMessage(e));
@@ -72,48 +87,96 @@ export function Sidebar(props: SidebarProps) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-1.5">
-      <span className="text-muted-foreground px-2 text-[11px] font-medium tracking-wider uppercase">Workspaces</span>
-      {error && <p className="text-destructive px-2 text-xs">{error}</p>}
-      <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-1" data-testid="workspace-tree">
-        {!loaded && <p className="text-muted-foreground px-2 text-xs">Loading…</p>}
-        {loaded && tree.length === 0 && (
-          <p className="text-muted-foreground px-2 text-xs">No workspaces yet. Add a folder to begin.</p>
-        )}
-        {tree.map((node) => (
-          <WorkspaceRow key={node.workspace.workspace_id} node={node} {...props} onError={setError} />
-        ))}
+      <div className="flex items-center pr-1">
         <button
-          className="text-muted-foreground hover:text-foreground hover:bg-sidebar-accent mt-2 flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] disabled:opacity-50"
+          className="text-muted-foreground hover:text-foreground flex items-center gap-1 px-2 text-[11px] font-medium tracking-wider uppercase"
+          aria-expanded={!folds.workspaces}
+          onClick={() => fold({ ...folds, workspaces: !folds.workspaces })}
+        >
+          Workspaces
+          <ChevronDown className={cn("size-3", folds.workspaces && "-rotate-90")} />
+        </button>
+        <Button
+          className="text-muted-foreground ml-auto"
+          size="icon-sm"
+          variant="ghost"
           title="Add workspace"
           onClick={addWorkspace}
           disabled={adding || !online}
         >
-          <Plus className="size-4" /> Add workspace
-        </button>
+          <Plus />
+        </Button>
       </div>
+      {error && <p className="text-destructive px-2 text-xs">{error}</p>}
+      {!folds.workspaces && (
+        <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-1" data-testid="workspace-tree">
+          {!loaded && <p className="text-muted-foreground px-2 text-xs">Loading…</p>}
+          {loaded && tree.length === 0 && (
+            <p className="text-muted-foreground px-2 text-xs">No workspaces yet. Add a folder with +.</p>
+          )}
+          {tree.map((node) => (
+            <WorkspaceRow
+              key={node.workspace.workspace_id}
+              node={node}
+              {...props}
+              folded={folds.repositories}
+              onFold={foldRepository}
+              onError={setError}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function WorkspaceRow(props: SidebarProps & { node: WorkspaceNode; onError(message: string | null): void }) {
+type RowProps = SidebarProps & {
+  node: WorkspaceNode;
+  /** Repositories whose worktrees are folded away. */
+  folded: readonly string[];
+  onFold(id: string, folded: boolean): void;
+  onError(message: string | null): void;
+};
+
+function WorkspaceRow(props: RowProps) {
   const online = useOnline();
-  const { workspace: w, working, worktrees } = props.node;
+  const { workspace: w, worktrees } = props.node;
   const isRoot = w.parent_workspace_id === null;
   const selected = props.workspaceId === w.workspace_id;
   const [creating, setCreating] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const folded = props.folded.includes(w.workspace_id);
+  // Folded away, worktrees still show their working agents and selection on the repository.
+  const hidden = folded ? worktrees : [];
+  const working = props.node.working + hidden.reduce((n, c) => n + c.working, 0);
+  const holdsSelected = hidden.some((n) => n.workspace.workspace_id === props.workspaceId);
+  const base = baseLabel(w);
 
   return (
     <div data-testid={`workspace-${w.workspace_id}`}>
       <div
         className={cn(
-          "group hover:bg-sidebar-accent flex items-center gap-0.5 rounded-md pr-1",
-          selected && "bg-sidebar-accent",
+          "group hover:bg-sidebar-accent flex items-center rounded-md pr-1",
+          (selected || holdsSelected) && "bg-sidebar-accent",
         )}
       >
+        {isRoot &&
+          (worktrees.length > 0 ? (
+            <button
+              className="text-muted-foreground hover:text-foreground flex h-7 w-5 shrink-0 items-center justify-center"
+              title={folded ? "Show worktrees" : "Hide worktrees"}
+              aria-expanded={!folded}
+              onClick={() => props.onFold(w.workspace_id, !folded)}
+            >
+              {folded ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+            </button>
+          ) : (
+            <span className="w-5 shrink-0" />
+          ))}
         <button
-          className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-[13px]"
+          className={cn("flex min-w-0 flex-1 items-center gap-2 py-1.5 pr-1 text-left text-[13px]", !isRoot && "pl-2")}
           aria-current={selected || undefined}
+          title={base ?? undefined}
           onClick={() => props.onSelectWorkspace(w.workspace_id)}
         >
           {isRoot && !w.is_git_repo ? (
@@ -123,25 +186,28 @@ function WorkspaceRow(props: SidebarProps & { node: WorkspaceNode; onError(messa
           ) : (
             <GitBranch className="text-muted-foreground size-3.5 shrink-0" />
           )}
-          <span className="flex min-w-0 flex-col">
-            <span
-              className={cn("truncate", isRoot && "font-medium", w.removed && "text-muted-foreground line-through")}
-            >
-              {isRoot ? (w.alias ?? w.name) : worktreeLabel(w)}
-            </span>
-            {!isRoot && baseLabel(w) && (
-              <span className="text-muted-foreground truncate font-mono text-[10px] font-normal">{baseLabel(w)}</span>
+          <span
+            className={cn(
+              "truncate",
+              // The name keeps its room; the branch beside it gives way first.
+              isRoot && w.branch ? "max-w-[70%] shrink-0" : "min-w-0",
+              isRoot ? "font-medium" : "font-mono text-xs",
+              w.removed && "text-muted-foreground line-through",
             )}
+          >
+            {isRoot ? (w.alias ?? w.name) : worktreeLabel(w)}
           </span>
-          <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[11px] font-normal">
+          <span className="ml-auto flex min-w-0 items-center gap-1.5 text-[11px] font-normal">
+            {isRoot && w.branch && <span className="text-muted-foreground min-w-0 truncate font-mono">{w.branch}</span>}
             {working > 0 && (
-              <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400" title="Agents working">
-                <span className="size-1.5 animate-pulse rounded-full bg-amber-500" />
-                {working} working
+              <span
+                className="flex size-3 shrink-0 items-center justify-center"
+                title={`${plural(working, "agent", "agents")} working`}
+              >
+                <span className="bg-brand ring-brand/25 size-1.5 animate-pulse rounded-full ring-[3px]" />
+                <span className="sr-only">{working} working</span>
               </span>
             )}
-            {isRoot && w.branch && <span className="text-muted-foreground font-mono">{w.branch}</span>}
-            {w.removed && <span className="text-muted-foreground">removed</span>}
           </span>
         </button>
         {isRoot && w.is_git_repo && (
@@ -176,19 +242,48 @@ function WorkspaceRow(props: SidebarProps & { node: WorkspaceNode; onError(messa
         <NewWorktree
           rootId={w.workspace_id}
           onClose={() => setCreating(false)}
-          onCreated={props.onSelectWorkspace}
+          onCreated={(id) => {
+            props.onFold(w.workspace_id, false);
+            props.onSelectWorkspace(id);
+          }}
           onStarted={props.onSessionStarted}
         />
       )}
       {removing && <RemoveWorktree workspace={w} onClose={() => setRemoving(false)} />}
-      {worktrees.length > 0 && (
-        <div className="border-sidebar-border ml-[15px] flex flex-col gap-px border-l py-0.5 pl-1.5">
-          {worktrees.map((n) => (
-            <WorkspaceRow key={n.workspace.workspace_id} {...props} node={n} />
-          ))}
+      {worktrees.length > 0 && !folded && (
+        <div className="border-sidebar-border ml-[27px] flex flex-col gap-px border-l py-0.5 pl-1.5">
+          {worktrees
+            .filter((n) => !n.workspace.removed)
+            .map((n) => (
+              <WorkspaceRow key={n.workspace.workspace_id} {...props} node={n} />
+            ))}
+          <RemovedWorktrees {...props} nodes={worktrees.filter((n) => n.workspace.removed)} />
         </div>
       )}
     </div>
+  );
+}
+
+/** Removed worktrees keep their sessions' history, folded under one row. */
+function RemovedWorktrees({ nodes, ...row }: RowProps & { nodes: WorkspaceNode[] }) {
+  const holdsSelected = nodes.some((n) => n.workspace.workspace_id === row.workspaceId);
+  const [open, setOpen] = useState(holdsSelected);
+  useEffect(() => {
+    if (holdsSelected) setOpen(true);
+  }, [holdsSelected]);
+  if (nodes.length === 0) return null;
+  return (
+    <>
+      <button
+        className="text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex items-center gap-2 rounded-md px-2 py-1 text-left text-xs"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
+        {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        {nodes.length} removed
+      </button>
+      {open && nodes.map((n) => <WorkspaceRow key={n.workspace.workspace_id} {...row} node={n} />)}
+    </>
   );
 }
 

@@ -332,6 +332,26 @@ fn the_in_memory_codex_launcher_runs_codex_with_ephemeral_credentials() {
     let node = Path::new("/opt/node it's/bin/node");
     let codex = Path::new("/a/codex.js");
     let script = codex_launcher_script(node, codex);
+    // The CLI a terminal runs: Claude Code under the adapter's `--cli`, and
+    // neither offering to update the install the Host keeps locked. A
+    // prompt is one quoted argument, whatever it holds.
+    assert_eq!(
+        cli_line(ManagedAdapter::Claude, node, Path::new("/a/index.js"), None),
+        r"DISABLE_AUTOUPDATER=1 '/opt/node it'\''s/bin/node' '/a/index.js' --cli"
+    );
+    assert_eq!(
+        cli_line(
+            ManagedAdapter::Claude,
+            node,
+            Path::new("/a/index.js"),
+            Some("/mcp it's $(x)")
+        ),
+        r"DISABLE_AUTOUPDATER=1 '/opt/node it'\''s/bin/node' '/a/index.js' --cli '/mcp it'\''s $(x)'"
+    );
+    assert_eq!(
+        cli_line(ManagedAdapter::Codex, node, codex, None),
+        r"'/opt/node it'\''s/bin/node' '/a/codex.js' -c check_for_update_on_startup=false"
+    );
     // The key reached codex-acp; Codex and what it runs never see it.
     assert!(script.contains("\nunset CODEX_API_KEY OPENAI_API_KEY\n"));
     assert_eq!(

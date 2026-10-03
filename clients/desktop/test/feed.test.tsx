@@ -143,8 +143,10 @@ describe("workspace tree on the host feed", () => {
     // Removed with sessions: stays, marked removed. Without: disappears.
     await t.feedEvent("workspace.changed", { workspace: worktree("a1b2c3d4", { removed: true, branch: null }) });
     await t.feedEvent("workspace.removed", { workspace_id: "b2c3d4e5" });
+    expect(screen.queryByTestId("workspace-a1b2c3d4")).toBeNull();
+    fireEvent.click(screen.getByText("1 removed"));
     const gone = screen.getByTestId("workspace-a1b2c3d4");
-    expect(gone.textContent).toContain("removed");
+    expect(gone.textContent).toContain("repo-a1b2c3d4");
     expect(gone.querySelector('[title="Remove worktree"]')).toBeNull();
     expect(screen.queryByTestId("workspace-b2c3d4e5")).toBeNull();
   });
@@ -219,7 +221,8 @@ describe("terminals on the host feed", () => {
     const t = new FakeTransport();
     t.handlers["terminal.snapshot"] = (p) => ({ terminal_id: p.terminal_id, alive: true, data: "", seq: 0 });
     await mount(t, <TerminalPanel workspaceId="w1" />);
-    expect(screen.getByText("No terminals in this workspace. Open one with +.")).toBeTruthy();
+    expect(screen.getByText("No terminals in this workspace.")).toBeTruthy();
+    expect(screen.getByText("New terminal").tagName).toBe("BUTTON");
 
     await t.feedEvent("terminal.changed", { terminal: { terminal_id: "t1", title: "zsh", workspace_id: "w1" } });
     await t.feedEvent("terminal.changed", { terminal: { terminal_id: "t2", title: "bash", workspace_id: "w1" } });
@@ -239,6 +242,16 @@ describe("terminals on the host feed", () => {
     await tick();
     expect(screen.queryByRole("tab", { name: /zsh/ })).toBeNull();
     expect(t.calls.filter((c) => LIST_OPS.includes(c.op))).toEqual([]);
+  });
+
+  it("leaves out terminals shown elsewhere", async () => {
+    const t = new FakeTransport();
+    t.handlers["terminal.snapshot"] = (p) => ({ terminal_id: p.terminal_id, alive: true, data: "", seq: 0 });
+    await mount(t, <TerminalPanel workspaceId="w1" hidden={new Set(["t2"])} />);
+    await t.feedEvent("terminal.changed", { terminal: { terminal_id: "t1", title: "zsh", workspace_id: "w1" } });
+    await t.feedEvent("terminal.changed", { terminal: { terminal_id: "t2", title: "codex", workspace_id: "w1" } });
+    await tick();
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["zsh"]);
   });
 
   it("kills a terminal only after confirming", async () => {

@@ -31,6 +31,7 @@ pub const CAPABILITIES: &[&str] = &[
     "git",
     "git.pr",
     "terminal",
+    "terminal.agent",
     "session.options",
     "session.effort_by_model",
     "session.usage",

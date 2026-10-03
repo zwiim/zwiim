@@ -1664,6 +1664,91 @@ async fn ws_terminal_output_and_exit() {
     assert!(exited, "terminal.exit not delivered");
 }
 
+#[tokio::test]
+async fn terminal_spawn_agent_params_are_checked() {
+    let h = host(true).await;
+    let w = h.workspace_id.clone();
+    for (body, code) in [
+        (json!({"workspace_id": w, "agent": "codex", "shell": "/bin/sh"}), "invalid_request"),
+        (json!({"workspace_id": w, "agent": "codex", "initial_command": "ls"}), "invalid_request"),
+        (json!({"workspace_id": w, "command": "/mcp"}), "invalid_request"),
+        (json!({"workspace_id": w, "agent": "gemini", "command": "/mcp"}), "invalid_request"),
+        (json!({"workspace_id": w, "agent": "codex", "command": "mcp"}), "invalid_input"),
+        (json!({"workspace_id": w, "agent": "codex", "command": "/"}), "invalid_input"),
+        (json!({"workspace_id": w, "agent": "codex", "command": "/mcp\r"}), "invalid_input"),
+        (json!({"workspace_id": w, "agent": "codex", "command": "/x\u{1b}[A"}), "invalid_input"),
+        (json!({"workspace_id": w, "agent": "codex", "command": format!("/{}", "a".repeat(200))}), "invalid_input"),
+    ] {
+        assert_eq!(
+            h.err("terminal.spawn", body.clone()).await,
+            (StatusCode::BAD_REQUEST, code.to_string()),
+            "{body}"
+        );
+    }
+}
+
+/// A terminal running `script` under `/bin/sh`, and the Host's manager.
+async fn sh_terminal(h: &Host, script: &str) -> (crate::terminal::manager::TerminalManager, String) {
+    let tid = h
+        .ok(
+            "terminal.spawn",
+            json!({"workspace_id": h.workspace_id, "shell": "/bin/sh", "initial_command": script}),
+        )
+        .await["terminal_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (h.state.terminal_manager.clone_ref(), tid)
+}
+
+#[tokio::test]
+async fn agent_command_is_pasted_once_output_settles_then_entered_when_shown() {
+    let h = host(true).await;
+    // The terminal echoes what it is given; `cat` repeats a line once entered.
+    let (terminals, tid) = sh_terminal(&h, r"printf '\033[?2004hready'; cat").await;
+    super::http::run_when_settled(terminals.clone_ref(), tid.clone(), "/zw-run".into());
+    let mut seen = String::new();
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        seen = terminals.snapshot(&tid).data;
+        if seen.matches("/zw-run").count() >= 2 {
+            break;
+        }
+    }
+    let at = seen.find("/zw-run").unwrap_or_else(|| panic!("not pasted: {seen:?}"));
+    assert!(seen.find("ready").is_some_and(|r| r < at), "{seen:?}");
+    assert!(seen.contains("\x1b[200~/zw-run\x1b[201~"), "pasted, bracketed: {seen:?}");
+    assert_eq!(seen.matches("/zw-run").count(), 2, "entered once: {seen:?}");
+    h.ok("terminal.kill", json!({"terminal_id": tid})).await;
+}
+
+#[tokio::test]
+async fn agent_command_gets_no_enter_when_the_program_does_not_show_it() {
+    let h = host(true).await;
+    // Like a CLI asking a question of its own: input is taken, nothing shown.
+    let (terminals, tid) = sh_terminal(&h, r"stty -echo; printf '\033[?2004hready'; cat").await;
+    super::http::run_when_settled(terminals.clone_ref(), tid.clone(), "/zw-run".into());
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let seen = terminals.snapshot(&tid).data;
+    assert!(seen.contains("ready"), "{seen:?}");
+    // Entered, `cat` would have printed the line.
+    assert!(!seen.contains("/zw-run"), "{seen:?}");
+    h.ok("terminal.kill", json!({"terminal_id": tid})).await;
+}
+
+#[tokio::test]
+async fn agent_command_is_not_pasted_until_the_program_takes_pastes() {
+    let h = host(true).await;
+    // Output went quiet, but no CLI is reading yet: the tty would echo it.
+    let (terminals, tid) = sh_terminal(&h, "printf ready; cat").await;
+    super::http::run_when_settled(terminals.clone_ref(), tid.clone(), "/zw-run".into());
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let seen = terminals.snapshot(&tid).data;
+    assert!(seen.contains("ready"), "{seen:?}");
+    assert!(!seen.contains("/zw-run"), "{seen:?}");
+    h.ok("terminal.kill", json!({"terminal_id": tid})).await;
+}
+
 // ─── host state feed ─────────────────────────────────────────────────────
 
 impl Host {

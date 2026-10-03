@@ -8,6 +8,7 @@ import {
   type HistoryTurn,
   type SessionSnapshot,
 } from "@zwiim/sdk";
+import { FileLinksContext, linkText, Markdown, workspaceFile } from "@/components/Markdown";
 import { errorMessage, HostProvider } from "@/lib/host-context";
 import { RequestCard } from "@/panels/RequestCard";
 import { SessionPanel } from "@/panels/SessionPanel";
@@ -420,7 +421,7 @@ describe("transcript", () => {
     t.handlers["session.send"] = (p) => ({ session_id: p.session_id });
     const { controller, frame } = await openSession(t);
     await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot() });
-    const box = screen.getByPlaceholderText("Send a message");
+    const box = screen.getByPlaceholderText(/^Send a message/);
     fireEvent.change(box, { target: { value: "hello" } });
     fireEvent.keyDown(box, { key: "Enter" });
     await tick();
@@ -451,6 +452,13 @@ describe("transcript", () => {
 });
 
 describe("links", () => {
+  it("shortens bare web addresses only", () => {
+    expect(linkText("https://github.com/a/b/", "https://github.com/a/b/")).toBe("github.com/a/b");
+    expect(linkText("https://github.com/a/b", ["https://github.com/a/b"])).toBe("github.com/a/b");
+    expect(linkText("https://github.com/a/b", "the PR")).toBe("the PR");
+    expect(linkText("mailto:a@b.c", "mailto:a@b.c")).toBe("mailto:a@b.c");
+  });
+
   it("opens web links in the browser and keeps the app where it is", async () => {
     const opened = vi.spyOn(window, "open").mockReturnValue(null);
     const t = new FakeTransport();
@@ -459,8 +467,12 @@ describe("links", () => {
       turns: [turn("t1", "assistant", [{ type: "text", text: "See https://example.com/docs and [this](file:///etc/passwd)." }])],
     });
     const { controller } = await openSession(t);
-    const web = screen.getByRole("link", { name: "https://example.com/docs" });
+    // A bare URL reads without its scheme; the full address stays in the tooltip.
+    const web = screen.getByRole("link", { name: "example.com/docs" });
+    expect(web.getAttribute("title")).toBe("https://example.com/docs");
+    expect(web.querySelector("svg")).not.toBeNull();
     const file = screen.getByText("this");
+    expect(file.closest("a")!.querySelector("svg")).toBeNull();
     expect(fireEvent.click(web!)).toBe(false);
     await tick();
     expect(opened).toHaveBeenCalledWith("https://example.com/docs", "_blank", "noopener,noreferrer");
@@ -469,6 +481,62 @@ describe("links", () => {
     expect(opened).toHaveBeenCalledTimes(1);
     opened.mockRestore();
     controller.dispose();
+  });
+});
+
+describe("file links", () => {
+  const worktree = {
+    workspace_id: "w1",
+    name: "a9b70af5",
+    alias: null,
+    kind: "worktree",
+    parent_workspace_id: "root",
+    is_git_repo: true,
+    branch: "zwiim/a9b70af5",
+    base_branch: "main",
+    base_commit: null,
+    removed: false,
+    display_path: null,
+  } as const;
+  const root = { ...worktree, name: "zwiim", kind: "root", parent_workspace_id: null, display_path: "~/Developer/zwiim" } as const;
+
+  it("resolves a link to a file in the workspace, and nothing outside it", () => {
+    expect(workspaceFile("docs/x.md", worktree)).toBe("docs/x.md");
+    expect(workspaceFile("./src/a.ts:12", worktree)).toBe("src/a.ts");
+    expect(workspaceFile("src/a.ts#L12", worktree)).toBe("src/a.ts");
+    expect(workspaceFile("/Users/me/zwiim/worktrees/zwiim/a9b70af5/docs/x.md", worktree)).toBe("docs/x.md");
+    expect(workspaceFile("file:///Users/me/zwiim/worktrees/zwiim/a9b70af5/my%20notes.md", worktree)).toBe("my notes.md");
+    // A root is found by its home-relative path, not a folder of the same name inside it.
+    expect(workspaceFile("/Users/me/Developer/zwiim/clients/zwiim/a.ts", root)).toBe("clients/zwiim/a.ts");
+    expect(workspaceFile("~/Developer/zwiim/README.md", root)).toBe("README.md");
+    expect(workspaceFile("/Users/me/other/README.md", root)).toBeNull();
+    expect(workspaceFile("/Users/me/zwiim/worktrees/zwiim/b5a7d5b8/x.md", worktree)).toBeNull();
+    expect(workspaceFile("../secrets.txt", worktree)).toBeNull();
+    expect(workspaceFile("https://example.com/a.md", worktree)).toBeNull();
+    expect(workspaceFile("mailto:a@b.c", worktree)).toBeNull();
+    expect(workspaceFile("#heading", worktree)).toBeNull();
+  });
+
+  it("opens a workspace file beside the conversation; other files stay inert", () => {
+    const open = vi.fn();
+    render(
+      <FileLinksContext.Provider value={{ workspace: worktree, open }}>
+        <Markdown
+          text={"[x.md](/Users/me/zwiim/worktrees/zwiim/a9b70af5/docs/x.md) and [y](/etc/passwd)"}
+        />
+      </FileLinksContext.Provider>,
+    );
+    const file = screen.getByRole("link", { name: "x.md" });
+    expect(file.getAttribute("title")).toBe("docs/x.md");
+    expect(fireEvent.click(file)).toBe(false);
+    expect(open).toHaveBeenCalledWith("docs/x.md");
+    fireEvent.click(screen.getByRole("link", { name: "y" }));
+    expect(open).toHaveBeenCalledTimes(1);
+    cleanup();
+
+    // Without a workspace to open in (a removed worktree), file links stay inert.
+    render(<Markdown text="[x.md](docs/x.md)" />);
+    expect(screen.getByRole("link", { name: "x.md" }).className).toContain("cursor-default");
   });
 });
 

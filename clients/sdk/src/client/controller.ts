@@ -8,6 +8,7 @@ import type { TerminalOutput } from "../state/terminal";
 import { historyCovers, type SessionFrame } from "../state/session";
 import type {
   AgentSummary,
+  AgentType,
   HostOwner,
   MergeMethod,
   OpParams,
@@ -352,8 +353,9 @@ export class HostController {
 
   // ─── terminals ─────────────────────────────────────────────────────────
 
-  async spawnTerminal(workspace_id: string): Promise<string> {
-    const { terminal_id } = await this.client.request("terminal.spawn", { workspace_id });
+  /** A shell, or with `agent` that agent's CLI running `command`. */
+  async spawnTerminal(workspace_id: string, agent?: { agent: AgentType; command?: string }): Promise<string> {
+    const { terminal_id } = await this.client.request("terminal.spawn", { workspace_id, ...agent });
     this.store.dispatch({ type: "terminal", terminal_id, patch: { alive: true, workspace_id } });
     return terminal_id;
   }

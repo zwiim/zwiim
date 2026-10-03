@@ -1,31 +1,86 @@
+import { createContext, useContext } from "react";
+import { ArrowUpRight } from "lucide-react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import type { WorkspaceInfo } from "@zwiim/sdk";
 import { isOpenableLink, openLink } from "@/lib/bridge";
 import { cn } from "@/lib/utils";
 
+/** A bare URL reads without its scheme; the full address stays in the tooltip. */
+export function linkText(href: string | undefined, children: React.ReactNode): React.ReactNode {
+  const text = typeof children === "string" ? children : Array.isArray(children) && children.length === 1 ? children[0] : null;
+  if (!href || text !== href || !/^https?:\/\//i.test(href)) return children;
+  return href.replace(/^https?:\/\//i, "").replace(/\/$/, "");
+}
+
+/** Where a conversation's file links open: its workspace's files, beside it. */
+export interface FileLinks {
+  workspace: WorkspaceInfo;
+  open(path: string): void;
+}
+
+export const FileLinksContext = createContext<FileLinks | null>(null);
+
+/**
+ * The workspace file a link points at, relative to the workspace, or null.
+ * Agents link files relative to the workspace or by their absolute path; the
+ * host never shares its paths, so an absolute one resolves only past the
+ * workspace's own folder (a root's home-relative path when known, else its
+ * folder name). A line suffix (`:12`, `#L12`) is dropped.
+ */
+export function workspaceFile(href: string | undefined, workspace: WorkspaceInfo): string | null {
+  if (!href || (/^[a-z][a-z0-9+.-]*:/i.test(href) && !/^file:/i.test(href))) return null;
+  let path: string;
+  try {
+    path = decodeURIComponent(href.replace(/^file:\/\//i, ""));
+  } catch {
+    return null;
+  }
+  path = path.replace(/#.*$/, "").replace(/(:\d+)+$/, "");
+  const segments = path.split("/").filter((s) => s !== "" && s !== ".");
+  if (segments.includes("..")) return null;
+  let rest = segments;
+  if (path.startsWith("/") || path.startsWith("~")) {
+    const home = workspace.display_path?.split("/").slice(1) ?? [];
+    const anchor = home.length > 0 ? home : [workspace.name];
+    const at = segments.findIndex((_, i) => anchor.every((a, j) => segments[i + j] === a));
+    if (at < 0) return null;
+    rest = segments.slice(at + anchor.length);
+  }
+  return rest.length > 0 ? rest.join("/") : null;
+}
+
 // Agent text is untrusted: raw HTML is never rendered (react-markdown's
-// default), remote images are not fetched, and only web and mail links open,
-// in the default browser.
+// default), remote images are not fetched, web and mail links open in the
+// default browser, and file links only inside the session's workspace.
 const components: Components = {
-  a: ({ href, children }) => (
-    <a
-      className={cn(
-        "underline underline-offset-2",
-        isOpenableLink(href) ? "text-brand hover:decoration-2" : "text-muted-foreground cursor-default",
-      )}
-      href={href}
-      title={href}
-      target="_blank"
-      rel="noreferrer noopener"
-      onClick={(e) => {
-        // The webview would navigate the app itself or drop the click.
-        e.preventDefault();
-        if (isOpenableLink(href)) void openLink(href).catch(() => {});
-      }}
-    >
-      {children}
-    </a>
-  ),
+  a: ({ href, children }) => {
+    const files = useContext(FileLinksContext);
+    const file = files && workspaceFile(href, files.workspace);
+    const web = isOpenableLink(href) && /^https?:/i.test(href);
+    return (
+      <a
+        className={
+          isOpenableLink(href) || file
+            ? "text-brand underline-offset-2 hover:underline"
+            : "text-muted-foreground cursor-default underline underline-offset-2"
+        }
+        href={href}
+        title={file ?? href}
+        target="_blank"
+        rel="noreferrer noopener"
+        onClick={(e) => {
+          // The webview would navigate the app itself or drop the click.
+          e.preventDefault();
+          if (file) files.open(file);
+          else if (isOpenableLink(href)) void openLink(href).catch(() => {});
+        }}
+      >
+        {linkText(href, children)}
+        {web && <ArrowUpRight className="ml-0.5 inline size-3 align-[-1px]" aria-hidden />}
+      </a>
+    );
+  },
   img: ({ alt }) => <span className="text-muted-foreground">[image{alt ? `: ${alt}` : ""}]</span>,
   p: ({ children }) => <p className="my-2.5 first:mt-0 last:mb-0">{children}</p>,
   ul: ({ children }) => <ul className="my-2 list-disc pl-5">{children}</ul>,

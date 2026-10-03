@@ -711,6 +711,35 @@ fn vendor_command(
     Ok(cmd)
 }
 
+/// The vendor CLI of this Host's install as a shell command line, for a
+/// terminal that runs it in place of a shell, with `prompt` as its first
+/// input. The CLI uses its own sign-in; the Host's saved key is not handed
+/// to a terminal. The Host keeps the install at its locked version, so the
+/// CLI does not update itself.
+pub fn vendor_cli_line(adapter: ManagedAdapter, prompt: Option<&str>) -> Result<String, AuthError> {
+    let installed = adapters::install::active(&adapters::root(), adapter.id())
+        .ok_or(AuthError::NotInstalled)?;
+    Ok(match adapter {
+        ManagedAdapter::Claude => cli_line(adapter, &installed.node, &installed.entry, prompt),
+        ManagedAdapter::Codex => cli_line(adapter, &installed.node, &codex_cli(&installed), prompt),
+    })
+}
+
+fn cli_line(adapter: ManagedAdapter, node: &Path, cli: &Path, prompt: Option<&str>) -> String {
+    let (node, cli) = (
+        shell_quote(&node.to_string_lossy()),
+        shell_quote(&cli.to_string_lossy()),
+    );
+    let line = match adapter {
+        ManagedAdapter::Claude => format!("DISABLE_AUTOUPDATER=1 {node} {cli} --cli"),
+        ManagedAdapter::Codex => format!("{node} {cli} -c check_for_update_on_startup=false"),
+    };
+    match prompt {
+        Some(prompt) => format!("{line} {}", shell_quote(prompt)),
+        None => line,
+    }
+}
+
 fn sign_in_args(adapter: ManagedAdapter) -> &'static [&'static str] {
     match adapter {
         ManagedAdapter::Claude => &["auth", "login", "--claudeai"],

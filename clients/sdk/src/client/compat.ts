@@ -37,6 +37,7 @@ export const CLIENT_CAPABILITIES: readonly string[] = [
   "git",
   "git.pr",
   "terminal",
+  "terminal.agent",
   "session.options",
   "session.effort_by_model",
   "session.usage",

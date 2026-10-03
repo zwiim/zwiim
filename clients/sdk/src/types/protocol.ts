@@ -1019,7 +1019,16 @@ export interface Operations {
   /** `base`: a branch from `git.branches`; the root's HEAD when absent. */
   "workspace.create_worktree": [{ workspace_id: string; base?: string }, WorkspaceInfo];
   "workspace.remove_worktree": [{ workspace_id: string; force?: boolean }, WorktreeRemoved];
-  "terminal.spawn": [{ workspace_id: string; shell?: string }, { terminal_id: string }];
+  /**
+   * `agent` runs that agent's CLI in place of a shell (Claude Code and Codex;
+   * capability `terminal.agent`). `command`, a slash command, runs in it;
+   * one the CLI does not show back (it is asking something first) is not
+   * entered.
+   */
+  "terminal.spawn": [
+    { workspace_id: string; shell?: string; agent?: AgentType; command?: string },
+    { terminal_id: string },
+  ];
   "terminal.write": [{ terminal_id: string; data: string }, Record<string, never>];
   "terminal.resize": [{ terminal_id: string; cols: number; rows: number }, Record<string, never>];
   "terminal.kill": [{ terminal_id: string }, Record<string, never>];

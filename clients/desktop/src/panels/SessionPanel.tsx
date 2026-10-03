@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, GitBranch, Loader2, Square } from "lucide-react";
 import {
   effortFor,
+  hasCapability,
   optionUnavailableDetails,
   type AgentSummary,
+  type AgentType,
   type ChoiceOption,
   type OpParams,
   type OptionsRequest,
@@ -20,6 +22,7 @@ import { ContextRing } from "./ContextRing";
 import { ControlSelect, OptionsBar, UnattendedBanner } from "./OptionsBar";
 import { RequestCard } from "./RequestCard";
 import { useSlashMenu } from "./SlashCommands";
+import { AgentTerminalCard, AgentTerminalsContext } from "./AgentTerminal";
 import { HistoryTurnView, LiveTurnView, stopReasonText } from "./Transcript";
 
 const UNAVAILABLE: Record<string, string> = {
@@ -191,6 +194,40 @@ export function startParams(
   };
 }
 
+/** Running a slash command in the agent's CLI, over the composer. */
+interface AgentTerminal {
+  agentName: string;
+  run(command: string): Promise<void>;
+}
+
+/**
+ * Where the composer runs a slash command the agent does not run itself
+ * (`/mcp`, `/login`): the agent's own CLI, in a terminal of the workspace
+ * shown over the composer. Only for an agent the host installed, so its CLI
+ * is there. A new command replaces the workspace's last one.
+ */
+function useAgentTerminal(workspaceId: string, agent: AgentType | null | undefined): AgentTerminal | null {
+  const controller = useController();
+  const terminals = useContext(AgentTerminalsContext);
+  const summary = useHost((s) => s.agents?.find((a) => a.agent === agent) ?? null);
+  const offered = useHost((s) => hasCapability(s.connection.compat, "terminal.agent"));
+  if (!terminals || !offered || !summary?.adapter?.installed || summary.adapter.source !== "managed") return null;
+  return {
+    agentName: summary.name,
+    async run(command) {
+      const last = terminals.runs[workspaceId];
+      const terminalId = await controller.spawnTerminal(workspaceId, { agent: summary.agent, command });
+      terminals.open(workspaceId, { terminalId, command });
+      if (last) {
+        // Not ended, it shows in the dock, where the user can end it.
+        controller.client
+          .request("terminal.kill", { terminal_id: last.terminalId })
+          .catch(() => terminals.release(last.terminalId));
+      }
+    },
+  };
+}
+
 export function SessionPanel(props: {
   workspaceId: string;
   sessionId: string | null;
@@ -218,6 +255,7 @@ function NewSession({ workspaceId, onStarted }: { workspaceId: string; onStarted
   const workspace = useHost((s) => s.workspaces?.find((w) => w.workspace_id === workspaceId) ?? null);
   const picker = useNewSessionAgent();
   const { agents, agent, start } = picker;
+  const terminal = useAgentTerminal(workspaceId, agent);
   return (
     <div className="flex h-full flex-col">
       <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
@@ -237,12 +275,14 @@ function NewSession({ workspaceId, onStarted }: { workspaceId: string; onStarted
         {agents !== null && agent === null && <NoAgents />}
       </div>
       <Composer
-        placeholder="Describe the task…"
+        placeholder="Describe the task"
         disabled={!online || agent === null}
         unattended={start?.shown.mode?.current === "unattended"}
         banner={start && <UnattendedBanner options={start.shown} disabled={!online} onChange={picker.pick} />}
         controls={<NewSessionControls picker={picker} disabled={!online} />}
         commands={picker.commands}
+        terminal={terminal}
+        notice={<AgentTerminalCard workspaceId={workspaceId} />}
         onSend={async (blocks, client_message_id) => {
           const params = startParams(picker, workspaceId, blocks, client_message_id);
           if (params) onStarted(await controller.startSession(params));
@@ -285,6 +325,7 @@ function OpenSession({
   // Before its agent announces them (or while it is away), the commands it
   // offered last.
   const agentCommands = useHost((s) => s.agents?.find((a) => a.agent === summary?.agent)?.commands ?? null);
+  const terminal = useAgentTerminal(workspaceId, removed ? null : summary?.agent);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -421,8 +462,10 @@ function OpenSession({
         disabled={running || removed || !online}
         unattended={options?.mode?.current === "unattended"}
         commands={view?.commands ?? agentCommands}
+        terminal={terminal}
         notice={
           <>
+            <AgentTerminalCard workspaceId={workspaceId} />
             {optionsError && (
               <p className="text-destructive text-xs" role="alert" data-testid="options-error">
                 {optionsError}
@@ -653,13 +696,34 @@ function Composer(props: {
   action?: React.ReactNode;
   /** The agent's slash commands, offered when a word starts with `/`. */
   commands?: readonly SessionCommand[] | null;
+  /** Where a command the agent does not run itself runs. */
+  terminal?: AgentTerminal | null;
   onSend(blocks: PromptBlock[], clientMessageId: string): Promise<void>;
 }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const area = useRef<HTMLTextAreaElement>(null);
-  const slash = useSlashMenu({ text, setText, area, commands: props.commands });
+  const agentTerminal = props.terminal;
+  const slash = useSlashMenu({
+    text,
+    setText,
+    area,
+    commands: props.commands,
+    terminal: agentTerminal && {
+      agentName: agentTerminal.agentName,
+      run(command) {
+        setError(null);
+        agentTerminal.run(command).catch((e) => setError(errorMessage(e)));
+      },
+    },
+  });
+
+  // Says `/` opens the menu while it has anything to offer.
+  const placeholder =
+    !props.disabled && (agentTerminal || props.commands?.length)
+      ? `${props.placeholder}, or type / for commands`
+      : props.placeholder;
 
   // Grow with the text up to a limit, then scroll.
   useLayoutEffect(() => {
@@ -710,7 +774,7 @@ function Composer(props: {
           <textarea
             ref={area}
             className="placeholder:text-muted-foreground block max-h-60 min-h-12 w-full resize-none bg-transparent px-4 pt-3.5 pb-1 leading-relaxed outline-none disabled:cursor-not-allowed"
-            placeholder={props.placeholder}
+            placeholder={placeholder}
             value={text}
             rows={1}
             disabled={props.disabled || sending}

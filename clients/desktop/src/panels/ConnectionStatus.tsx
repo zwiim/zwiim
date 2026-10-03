@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { HOST_NOT_RUNNING } from "@/lib/boot";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
+import { cn } from "@/lib/utils";
 
 const LABELS: Record<string, string> = {
   disconnected: "Disconnected",
@@ -80,12 +81,7 @@ export function ConnectionStatus({
     return () => clearInterval(t);
   }, [retryAt]);
 
-  const variant =
-    conn.status === "live"
-      ? "success"
-      : conn.status === "unauthenticated" || conn.status === "error"
-        ? "destructive"
-        : "warning";
+  const failed = conn.status === "unauthenticated" || conn.status === "error";
   const hostDown = !remote && conn.status === "reconnecting" && conn.error?.code === HOST_NOT_RUNNING;
   const code = conn.status !== "live" ? (conn.error?.code ?? null) : null;
   const remoteLabel = remote && code ? REMOTE_LABELS[code] : undefined;
@@ -99,10 +95,27 @@ export function ConnectionStatus({
   return (
     <div className="flex flex-col gap-1.5" data-testid="connection-status">
       <div className="flex items-center gap-2">
-        <Badge variant={variant}>
-          <span className="size-1.5 rounded-full bg-current" />
-          {remoteLabel ?? pathLabel ?? LABELS[conn.status] ?? conn.status}
-        </Badge>
+        {failed ? (
+          <Badge variant="destructive">
+            <span className="size-1.5 rounded-full bg-current" />
+            {remoteLabel ?? LABELS[conn.status] ?? conn.status}
+          </Badge>
+        ) : (
+          // Healthy is not news (DESIGN.md): a quiet dot, color on the dot only.
+          <span className="text-muted-foreground flex items-center gap-1.5 px-0.5 text-xs">
+            <span
+              className={cn(
+                "size-1.5 rounded-full",
+                conn.status === "live"
+                  ? "bg-done"
+                  : conn.status === "disconnected"
+                    ? "ring-muted-foreground ring-1"
+                    : "bg-brand animate-pulse",
+              )}
+            />
+            {remoteLabel ?? pathLabel ?? LABELS[conn.status] ?? conn.status}
+          </span>
+        )}
         {retryAt !== null && conn.status === "reconnecting" && (
           <span className="text-muted-foreground text-xs">
             retry in {Math.max(0, Math.ceil((retryAt - now) / 1000))}s

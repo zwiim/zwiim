@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { HostClient, HostController, ZwiimClientError, type WorkspaceInfo } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
 import { DiffPanel, numberPatch } from "@/panels/DiffPanel";
-import { FilesPanel, FileView } from "@/panels/FilesPanel";
+import { File, FileCodeCorner, GitBranch, Lock } from "lucide-react";
+import { fileIcon, FilesPanel, FileView } from "@/panels/FilesPanel";
 import { GitPanel, relativeTime, statusLabel } from "@/panels/GitPanel";
 import { FakeTransport, tick } from "./fakes";
 
@@ -197,6 +198,17 @@ describe("files panel", () => {
     expect(screen.getByRole("alert").textContent).toBe("Permission denied");
   });
 
+  it("explains a workspace whose folder is gone instead of showing the host's error", async () => {
+    const t = new FakeTransport();
+    t.handlers["workspace.tree"] = () => {
+      throw new ZwiimClientError("not_found", "Directory not found", 404);
+    };
+    await mount(t, <FilesPanel workspaceId="w1" selected={null} onOpen={() => {}} />);
+    expect(screen.getByRole("status").textContent).toContain("This folder is no longer on the host");
+    expect(screen.queryByText("Directory not found")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("re-lists the tree and rereads the open file when the workspace's files change", async () => {
     const t = new FakeTransport();
     let files = [{ name: "a.txt", path: "a.txt", kind: "file" }];
@@ -225,5 +237,48 @@ describe("files panel", () => {
     expect(screen.getByText("b.txt")).toBeTruthy();
     const rows = screen.getByTestId("file-content").querySelectorAll("tr");
     expect([...rows].map((r) => r.textContent)).toEqual(["1one", "2two"]);
+  });
+
+  it("opens a folder holding only a folder straight through, on one row", async () => {
+    const t = new FakeTransport();
+    const dirs: Record<string, object[]> = {
+      "": [{ name: "dist", path: "dist", kind: "dir" }],
+      dist: [{ name: "0.1.0-rc.3", path: "dist/0.1.0-rc.3", kind: "dir" }],
+      "dist/0.1.0-rc.3": [{ name: "app.dmg", path: "dist/0.1.0-rc.3/app.dmg", kind: "file" }],
+    };
+    t.handlers["workspace.tree"] = (p) => dirs[p.path ?? ""];
+    await mount(t, <FilesPanel workspaceId="w1" selected={null} onOpen={() => {}} />);
+    fireEvent.click(screen.getByText("dist"));
+    await tick();
+    await tick();
+    expect(screen.getByText("dist / 0.1.0-rc.3")).toBeTruthy();
+    expect(screen.getByText("app.dmg")).toBeTruthy();
+    fireEvent.click(screen.getByText("dist / 0.1.0-rc.3"));
+    expect(screen.queryByText("app.dmg")).toBeNull();
+    expect(screen.getByText("dist")).toBeTruthy();
+  });
+
+  it("does not open through a linked folder", async () => {
+    const t = new FakeTransport();
+    // `a/up` links back to `a`: opening through it would never end.
+    t.handlers["workspace.tree"] = (p) =>
+      p.path ? [{ name: "up", path: `${p.path}/up`, kind: "dir", symlink: true }] : [{ name: "a", path: "a", kind: "dir" }];
+    await mount(t, <FilesPanel workspaceId="w1" selected={null} onOpen={() => {}} />);
+    fireEvent.click(screen.getByText("a"));
+    await tick();
+    await tick();
+    expect(screen.getByText("up")).toBeTruthy();
+    expect(t.calls.filter((c) => c.op === "workspace.tree").map((c) => c.params.path ?? "")).toEqual(["", "a"]);
+  });
+
+  it("marks files by type", () => {
+    expect(fileIcon("main.tsx")).toEqual({ icon: FileCodeCorner, color: expect.stringContaining("blue") });
+    expect(fileIcon("lib.RS").color).toContain("orange");
+    expect(fileIcon("pnpm-lock.yaml").icon).toBe(Lock);
+    expect(fileIcon("Cargo.lock").icon).toBe(Lock);
+    expect(fileIcon(".gitignore").icon).toBe(GitBranch);
+    expect(fileIcon(".env.local")).toEqual(fileIcon("config.toml"));
+    expect(fileIcon("Makefile").icon).toBe(File);
+    expect(fileIcon(".bashrc").icon).toBe(File);
   });
 });

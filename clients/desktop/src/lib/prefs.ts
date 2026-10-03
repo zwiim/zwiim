@@ -41,6 +41,24 @@ export function rememberSelection(hostId: string, selection: LastSelection): voi
   write(`last.${hostId}`, selection);
 }
 
+/** What the sidebar folds away: every workspace, and repositories whose worktrees are hidden. */
+export interface SidebarFolds {
+  workspaces: boolean;
+  repositories: string[];
+}
+
+export function sidebarFolds(): SidebarFolds {
+  const v = read<Partial<SidebarFolds>>("folds", {});
+  return {
+    workspaces: v.workspaces === true,
+    repositories: Array.isArray(v.repositories) ? v.repositories.filter((id) => typeof id === "string") : [],
+  };
+}
+
+export function rememberSidebarFolds(folds: SidebarFolds): void {
+  write("folds", folds);
+}
+
 export const SIDEBAR_MIN = 200;
 export const SIDEBAR_MAX = 480;
 const SIDEBAR_DEFAULT = 256;

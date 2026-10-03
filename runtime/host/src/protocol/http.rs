@@ -1170,12 +1170,62 @@ pub struct TerminalSpawnParams {
     pub shell: Option<String>,
     #[serde(default)]
     pub initial_command: Option<String>,
+    /// Run this agent's CLI in place of a shell.
+    #[serde(default)]
+    pub agent: Option<AgentType>,
+    /// A slash command for the agent's CLI to run.
+    #[serde(default)]
+    pub command: Option<String>,
+}
+
+/// The longest slash command run in an agent's CLI.
+const AGENT_COMMAND_MAX_CHARS: usize = 200;
+
+/// `/name [args]` on one line, with nothing a terminal would act on.
+fn valid_agent_command(command: &str) -> bool {
+    command.len() > 1
+        && command.chars().count() <= AGENT_COMMAND_MAX_CHARS
+        && command.starts_with('/')
+        && !command.chars().any(char::is_control)
 }
 
 pub async fn terminal_spawn(
     Extension(state): Extension<Arc<AppState>>,
     ZJson(p): ZJson<TerminalSpawnParams>,
 ) -> ZResult<Value> {
+    if p.agent.is_some() && (p.shell.is_some() || p.initial_command.is_some()) {
+        return Err(ZwiimError::invalid_request(
+            "agent cannot be combined with shell or initial_command",
+        ));
+    }
+    if let Some(command) = &p.command {
+        if p.agent.is_none() {
+            return Err(ZwiimError::invalid_request("command needs an agent"));
+        }
+        if !valid_agent_command(command) {
+            return Err(ZwiimError::invalid_input(
+                "command must be one line starting with / (at most 200 characters)",
+            ));
+        }
+    }
+    let (initial_command, paste) = match p.agent {
+        Some(agent) => {
+            use crate::adapters::ManagedAdapter;
+            let adapter = ManagedAdapter::for_agent(agent).ok_or_else(|| {
+                ZwiimError::invalid_request("only Claude Code and Codex run in a terminal")
+            })?;
+            // Claude Code runs a slash command given as its first prompt;
+            // Codex would send it to the model, so it is pasted in instead.
+            let (prompt, paste) = match adapter {
+                ManagedAdapter::Claude => (p.command, None),
+                ManagedAdapter::Codex => (None, p.command),
+            };
+            let line = crate::agent_auth::vendor_cli_line(adapter, prompt.as_deref())
+                .map_err(auth_error)?;
+            (Some(line), paste)
+        }
+        None => (p.initial_command, None),
+    };
     // Held until the terminal is registered, so a concurrent worktree removal
     // either sees it or has already removed the workspace.
     let (folder, _launching) =
@@ -1189,14 +1239,95 @@ pub async fn terminal_spawn(
                 working_dir: root,
                 owner_window_label: "zwiim".to_string(),
                 shell: p.shell,
-                initial_command: p.initial_command,
+                initial_command,
                 extra_env: prepare_credential_env(&state.data_dir),
                 temp_files: vec![],
             },
             state.emitter.clone(),
         )
         .map_err(terminal_err)?;
+    if let Some(command) = paste {
+        run_when_settled(state.terminal_manager.clone_ref(), terminal_id.clone(), command);
+    }
     Ok(Json(json!({ "terminal_id": terminal_id })))
+}
+
+const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(150);
+/// Output quiet this long: the CLI has drawn its screen.
+const SETTLE_QUIET: std::time::Duration = std::time::Duration::from_millis(600);
+/// A CLI still drawing after this long gets nothing pasted.
+const SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(20);
+/// A CLI that has not shown the pasted command by then gets no Enter.
+const ECHO_LIMIT: std::time::Duration = std::time::Duration::from_secs(3);
+/// A program turns on bracketed paste once it reads its own input (a CLI's
+/// screen is up); until then a paste would land in the shell or the tty.
+const BRACKETED_PASTE_ON: &str = "\x1b[?2004h";
+
+/// Run `command` in a terminal's program once it takes pastes and its
+/// output has gone quiet. It is pasted (bracketed, so a question on screen
+/// takes none of its letters as answers), and Enter follows only once the
+/// program shows the command back: one still asking something of its own (a
+/// sign-in, trusting the folder) shows nothing, and Enter would answer it for
+/// the user.
+pub(super) fn run_when_settled(
+    terminals: crate::terminal::manager::TerminalManager,
+    terminal_id: String,
+    command: String,
+) {
+    tokio::spawn(async move {
+        let deadline = tokio::time::Instant::now() + SETTLE_LIMIT;
+        let (mut seen, mut quiet, mut takes_paste) = (0, std::time::Duration::ZERO, false);
+        while tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(SETTLE_POLL).await;
+            let Some(seq) = terminals.output_seq(&terminal_id) else {
+                return;
+            };
+            if seq != seen {
+                // From one chunk back, in case the switch spans two.
+                takes_paste = takes_paste
+                    || terminals
+                        .output_since(&terminal_id, seen.saturating_sub(1))
+                        .is_some_and(|out| out.contains(BRACKETED_PASTE_ON));
+                (seen, quiet) = (seq, std::time::Duration::ZERO);
+                continue;
+            }
+            if takes_paste {
+                quiet += SETTLE_POLL;
+                if quiet >= SETTLE_QUIET {
+                    paste_and_enter(&terminals, &terminal_id, &command, seq).await;
+                    return;
+                }
+            }
+        }
+        tracing::info!("[zwiim] agent CLI never settled to take a paste; command not pasted");
+    });
+}
+
+async fn paste_and_enter(
+    terminals: &crate::terminal::manager::TerminalManager,
+    terminal_id: &str,
+    command: &str,
+    seq: u64,
+) {
+    let paste = format!("\x1b[200~{command}\x1b[201~");
+    if let Err(e) = terminals.write(terminal_id, paste.as_bytes()) {
+        tracing::warn!(error = %e, "[zwiim] agent command not pasted");
+        return;
+    }
+    let deadline = tokio::time::Instant::now() + ECHO_LIMIT;
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(SETTLE_POLL).await;
+        let Some(output) = terminals.output_since(terminal_id, seq) else {
+            return;
+        };
+        if crate::browser::service_url::strip_ansi(&output).contains(command) {
+            if let Err(e) = terminals.write(terminal_id, b"\r") {
+                tracing::warn!(error = %e, "[zwiim] agent command not entered");
+            }
+            return;
+        }
+    }
+    tracing::info!("[zwiim] agent CLI did not show the command; Enter not pressed");
 }
 
 #[derive(Deserialize)]

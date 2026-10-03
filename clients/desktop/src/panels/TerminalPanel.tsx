@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, X } from "lucide-react";
+import { Plus, SquareTerminal, X } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { HostController } from "@zwiim/sdk";
@@ -45,10 +45,13 @@ export class InputQueue {
 export function TerminalPanel({
   workspaceId,
   leading,
+  hidden,
 }: {
   workspaceId: string;
   /** Rendered before the terminal tabs (e.g. a collapse toggle). */
   leading?: React.ReactNode;
+  /** Terminals shown elsewhere (a slash command over the composer). */
+  hidden?: ReadonlySet<string>;
 }) {
   const controller = useController();
   const online = useOnline();
@@ -61,8 +64,8 @@ export function TerminalPanel({
   const [error, setError] = useState<string | null>(null);
   // Only this workspace's terminals; others belong to their own workspaces.
   const list = useMemo(
-    () => Object.values(terminals).filter((t) => t.workspace_id === workspaceId),
-    [terminals, workspaceId],
+    () => Object.values(terminals).filter((t) => t.workspace_id === workspaceId && !hidden?.has(t.terminal_id)),
+    [terminals, workspaceId, hidden],
   );
 
   useEffect(() => {
@@ -160,7 +163,7 @@ export function TerminalPanel({
           </Button>
         </div>
       )}
-      <div className="min-h-0 flex-1 bg-[#0c0c0c] p-1">
+      <div className={cn("min-h-0 flex-1 p-1", active && "bg-[#0c0c0c]")}>
         {active ? (
           <TerminalView
             key={active}
@@ -171,14 +174,20 @@ export function TerminalPanel({
             onError={setError}
           />
         ) : (
-          <p className="text-muted-foreground p-4 text-xs">No terminals in this workspace. Open one with +.</p>
+          <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2 text-xs">
+            <SquareTerminal className="size-5" />
+            <p>No terminals in this workspace.</p>
+            <Button size="xs" variant="outline" onClick={spawn} disabled={!online}>
+              New terminal
+            </Button>
+          </div>
         )}
       </div>
     </div>
   );
 }
 
-function TerminalView({
+export function TerminalView({
   controller,
   terminalId,
   alive,

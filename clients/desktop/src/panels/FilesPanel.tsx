@@ -1,12 +1,31 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, File, Folder, Loader2, RefreshCw } from "lucide-react";
-import type { FileContent, FileTreeNode } from "@zwiim/sdk";
+import {
+  Braces,
+  ChevronDown,
+  ChevronRight,
+  File,
+  FileArchive,
+  FileCodeCorner,
+  FileCog,
+  FileImage,
+  FileKey,
+  FileText as FileTextIcon,
+  Folder,
+  FolderOpen,
+  GitBranch,
+  Loader2,
+  Lock,
+  RefreshCw,
+  SquareTerminal,
+  type LucideIcon,
+} from "lucide-react";
+import { ZwiimClientError, type FileContent, type FileTreeNode } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
 import { cn } from "@/lib/utils";
 
 /** A directory listing: loaded, or why it could not be. */
-type Listing = { nodes: FileTreeNode[] } | { error: string };
+type Listing = { nodes: FileTreeNode[] } | { error: string; missing?: boolean };
 
 /**
  * Read-only workspace browser; the tree comes from the host. Opening a file
@@ -35,8 +54,12 @@ export function FilesPanel({
           max_depth: 1,
         });
         setListings((c) => ({ ...c, [path]: { nodes } }));
+        return nodes;
       } catch (e) {
-        setListings((c) => ({ ...c, [path]: { error: errorMessage(e) } }));
+        // The workspace's own folder is gone: not an error to read, a state to explain.
+        const missing = !path && e instanceof ZwiimClientError && e.code === "not_found";
+        setListings((c) => ({ ...c, [path]: { error: errorMessage(e), missing } }));
+        return null;
       }
     },
     [controller, workspaceId],
@@ -62,31 +85,57 @@ export function FilesPanel({
     for (const path of ["", ...open]) if (listings[path]) void load(path);
   }, [revision, load]);
 
-  function toggle(node: FileTreeNode) {
-    if (node.kind === "dir") {
-      const next = new Set(open);
-      if (next.has(node.path)) next.delete(node.path);
-      else {
-        next.add(node.path);
-        if (!listings[node.path] || "error" in listings[node.path]!) {
-          setListings(({ [node.path]: _, ...rest }) => rest);
-          void load(node.path);
-        }
-      }
-      setOpen(next);
-      return;
+  function expand(path: string) {
+    setOpen((o) => new Set(o).add(path));
+    const listing = shown.current.listings[path];
+    if (listing && !("error" in listing)) return;
+    setListings(({ [path]: _, ...rest }) => rest);
+    // A folder holding only a folder opens straight through to it, but not
+    // through a link: one to a folder above would open forever.
+    void load(path).then((nodes) => {
+      const only = nodes?.length === 1 ? nodes[0]! : null;
+      if (only?.kind === "dir" && !only.symlink) expand(only.path);
+    });
+  }
+
+  function close(path: string) {
+    setOpen((o) => {
+      const next = new Set(o);
+      next.delete(path);
+      return next;
+    });
+  }
+
+  /** An open folder whose only entry is a folder (not a link) shares its row: `a / b`. */
+  function chainOf(node: FileTreeNode): FileTreeNode[] {
+    const chain = [node];
+    for (let at = node; open.has(at.path); ) {
+      const listing = listings[at.path];
+      const only = listing && !("error" in listing) && listing.nodes.length === 1 ? listing.nodes[0]! : null;
+      if (only?.kind !== "dir" || only.symlink) break;
+      at = only;
+      chain.push(at);
     }
-    onOpen(node.path);
+    return chain;
   }
 
   const renderListing = (path: string, depth: number): React.ReactNode => {
     const listing = listings[path];
-    const pad = { paddingLeft: depth * 12 + 20 };
+    // Level with the file icons beside it.
+    const pad = { paddingLeft: depth * 14 + 24 };
     if (!listing) {
       return (
         <p className="text-muted-foreground flex items-center gap-1 py-0.5 text-xs" style={pad}>
           <Loader2 className="size-3 animate-spin" /> Loading…
         </p>
+      );
+    }
+    if ("error" in listing && listing.missing) {
+      return (
+        <div className="text-muted-foreground flex flex-col gap-1 px-3 py-2 text-xs" role="status">
+          <p className="text-foreground font-medium">This folder is no longer on the host</p>
+          <p>It was moved, renamed or deleted. Put it back, or add it again from its new place with + in the sidebar.</p>
+        </div>
       );
     }
     if ("error" in listing) {
@@ -103,29 +152,49 @@ export function FilesPanel({
         </p>
       );
     }
-    return listing.nodes.map((n) => (
-      <div key={n.path}>
-        <button
-          className={cn(
-            "hover:bg-muted flex w-full items-center gap-1 rounded px-1 py-0.5 text-left text-xs",
-            selected === n.path && "bg-muted font-medium",
-          )}
-          style={{ paddingLeft: depth * 12 + 4 }}
-          onClick={() => toggle(n)}
-        >
-          {n.kind === "dir" ? (
-            <>
-              {open.has(n.path) ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
-              <Folder className="text-muted-foreground size-3.5" />
-            </>
-          ) : (
-            <File className="text-muted-foreground ml-4 size-3.5" />
-          )}
-          <span className="truncate">{n.name}</span>
-        </button>
-        {n.kind === "dir" && open.has(n.path) && renderListing(n.path, depth + 1)}
-      </div>
-    ));
+    return listing.nodes.map((n) => {
+      const row = "hover:bg-muted flex w-full items-center gap-1.5 rounded-md px-1 py-[3px] text-left text-[13px]";
+      const indent = { paddingLeft: depth * 14 + 4 };
+      if (n.kind !== "dir") {
+        const { icon: Icon, color } = fileIcon(n.name);
+        return (
+          <button
+            key={n.path}
+            className={cn(row, selected === n.path && "bg-muted font-medium")}
+            style={indent}
+            onClick={() => onOpen(n.path)}
+          >
+            <Icon className={cn("ml-5 size-4 shrink-0", color)} />
+            <span className="truncate">{n.name}</span>
+          </button>
+        );
+      }
+      const chain = chainOf(n);
+      const last = chain[chain.length - 1]!;
+      const expanded = open.has(last.path);
+      return (
+        <div key={n.path}>
+          <button
+            className={row}
+            style={indent}
+            onClick={() => (expanded ? close(n.path) : expand(last.path))}
+          >
+            {expanded ? (
+              <ChevronDown className="text-muted-foreground size-3.5 shrink-0" />
+            ) : (
+              <ChevronRight className="text-muted-foreground size-3.5 shrink-0" />
+            )}
+            {expanded ? (
+              <FolderOpen className="text-muted-foreground size-4 shrink-0" />
+            ) : (
+              <Folder className="text-muted-foreground size-4 shrink-0" />
+            )}
+            <span className="truncate">{chain.map((c) => c.name).join(" / ")}</span>
+          </button>
+          {expanded && renderListing(last.path, depth + 1)}
+        </div>
+      );
+    });
   };
 
   return (
@@ -141,6 +210,34 @@ export function FilesPanel({
       </div>
     </div>
   );
+}
+
+const BY_EXTENSION: Record<string, { icon: LucideIcon; color: string }> = {};
+const kind = (icon: LucideIcon, color: string, extensions: string) => {
+  for (const ext of extensions.split(" ")) BY_EXTENSION[ext] = { icon, color };
+};
+kind(Braces, "text-yellow-600 dark:text-yellow-300", "json jsonc json5");
+kind(FileTextIcon, "text-sky-600 dark:text-sky-400", "md mdx markdown txt rst");
+kind(FileCodeCorner, "text-blue-600 dark:text-blue-400", "ts tsx mts cts");
+kind(FileCodeCorner, "text-yellow-600 dark:text-yellow-400", "js jsx mjs cjs");
+kind(FileCodeCorner, "text-orange-600 dark:text-orange-400", "rs swift html");
+kind(FileCodeCorner, "text-teal-600 dark:text-teal-400", "py go rb");
+kind(FileCodeCorner, "text-violet-600 dark:text-violet-400", "kt kts java scala");
+kind(FileCodeCorner, "text-pink-600 dark:text-pink-400", "css scss sass less");
+kind(SquareTerminal, "text-emerald-600 dark:text-emerald-400", "sh bash zsh fish ps1");
+kind(FileCog, "text-rose-600 dark:text-rose-400", "yml yaml toml ini conf cfg xml plist");
+kind(FileImage, "text-emerald-600 dark:text-emerald-400", "png jpg jpeg gif svg webp ico icns avif");
+kind(FileArchive, "text-amber-600 dark:text-amber-400", "zip tar gz tgz xz dmg apk aab");
+kind(FileKey, "text-red-600 dark:text-red-400", "sig pem key pub crt minisig");
+
+/** A file's type at a glance: icon and color by name, as an editor's tree shows them. */
+export function fileIcon(name: string): { icon: LucideIcon; color: string } {
+  const lower = name.toLowerCase();
+  if (/(\.lockb?|-lock\.(json|yaml))$/.test(lower)) return { icon: Lock, color: "text-muted-foreground" };
+  if (lower.startsWith(".git")) return { icon: GitBranch, color: "text-orange-600 dark:text-orange-400" };
+  if (lower.startsWith(".env")) return BY_EXTENSION.toml!;
+  const dot = lower.lastIndexOf(".");
+  return (dot > 0 && BY_EXTENSION[lower.slice(dot + 1)]) || { icon: File, color: "text-muted-foreground" };
 }
 
 /** One file's contents, read-only, in its own tab. */

@@ -23,6 +23,7 @@ import {
   type SessionSummary,
   type WorkspaceInfo,
 } from "@zwiim/sdk";
+import { FileLinksContext } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
 import { useAccount } from "@/lib/account";
 import { bootHost, type BootOptions, type BootPhase } from "@/lib/boot";
@@ -63,6 +64,7 @@ import { SessionPanel } from "@/panels/SessionPanel";
 import { SettingsDialog, type SettingsTab } from "@/panels/Settings";
 import { Sidebar } from "@/panels/Sidebar";
 import { TerminalPanel } from "@/panels/TerminalPanel";
+import { AgentTerminalsContext, useAgentTerminalsState } from "@/panels/AgentTerminal";
 import { UpdateCard, useUpdates } from "@/panels/UpdateCard";
 
 const LOCAL: HostChoice = { kind: "local" };
@@ -266,6 +268,8 @@ export function Workbench({
   const [docs, setDocs] = useState<OpenDoc[]>([]);
   /** The open file showing in the middle; null shows the session. */
   const [activeDoc, setActiveDoc] = useState<string | null>(null);
+  /** Slash commands running in an agent's CLI, over each workspace's composer. */
+  const agentTerminals = useAgentTerminalsState();
   /** Each workspace's session last shown here (null: a new one), to return to it. */
   const lastSession = useRef<Record<string, string | null>>({});
   const restored = useRef(false);
@@ -467,7 +471,18 @@ export function Workbench({
             />
             <div className="relative min-h-0 flex-1">
               <TabPane active={current === null}>
-                <SessionPanel workspaceId={workspaceId} sessionId={sessionId} onSessionStarted={setSessionId} />
+                {/* A removed worktree has no files to open. */}
+                <FileLinksContext.Provider
+                  value={
+                    workspace && !removed
+                      ? { workspace, open: (path) => openDoc({ kind: "file", workspaceId: workspace.workspace_id, path }) }
+                      : null
+                  }
+                >
+                  <AgentTerminalsContext.Provider value={agentTerminals}>
+                    <SessionPanel workspaceId={workspaceId} sessionId={sessionId} onSessionStarted={setSessionId} />
+                  </AgentTerminalsContext.Provider>
+                </FileLinksContext.Provider>
               </TabPane>
               {workspace &&
                 shownDocs.map((d) => (
@@ -491,6 +506,7 @@ export function Workbench({
       {workspace && !removed && (
         <WorkspacePanel
           workspace={workspace}
+          hiddenTerminals={agentTerminals.ids}
           showing={current}
           onOpen={(kind, path) => openDoc({ kind, workspaceId: workspace.workspace_id, path })}
         />
@@ -745,10 +761,13 @@ function DeleteSession({
  */
 function WorkspacePanel({
   workspace,
+  hiddenTerminals,
   showing,
   onOpen,
 }: {
   workspace: WorkspaceInfo;
+  /** Terminals shown over the composer, left out of the dock. */
+  hiddenTerminals: ReadonlySet<string>;
   /** The file showing in the middle, to mark it in its list. */
   showing: OpenDoc | null;
   onOpen(kind: OpenDoc["kind"], path: string): void;
@@ -892,6 +911,7 @@ function WorkspacePanel({
           >
             <TerminalPanel
               workspaceId={workspaceId}
+              hidden={hiddenTerminals}
               leading={
                 <Button
                   size="icon-sm"

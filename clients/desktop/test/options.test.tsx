@@ -154,7 +154,7 @@ describe("new session options", () => {
     await tick();
     expect((screen.getByLabelText("Model") as HTMLSelectElement).value).toBe("opus");
     fireEvent.click(modeItem("Plan")!);
-    const box = screen.getByPlaceholderText("Describe the task…");
+    const box = screen.getByPlaceholderText(/^Describe the task/);
     fireEvent.change(box, { target: { value: "go" } });
     fireEvent.keyDown(box, { key: "Enter" });
     await tick();

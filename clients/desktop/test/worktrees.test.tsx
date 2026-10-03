@@ -101,16 +101,18 @@ describe("workspace tree", () => {
     expect(tree).toContain("main");
     const wt = screen.getByTestId("workspace-a1b2c3d4").textContent!;
     expect(wt).toContain("zwiim/a1b2c3d4");
-    expect(wt).toContain("base main@3f9e1a2");
+    expect(screen.getByTitle("base main@3f9e1a2").textContent).toContain("zwiim/a1b2c3d4");
     expect(wt).toContain("1 working");
     // Sessions are tabs beside the conversation, not sidebar rows.
     expect(wt).not.toContain("task s1");
     expect(screen.queryByText("New session")).toBeNull();
     // Nested under the root, not beside it.
     expect(screen.getByTestId("workspace-root").contains(screen.getByTestId("workspace-a1b2c3d4"))).toBe(true);
+    // Removed worktrees fold under one row until asked for.
+    expect(screen.queryByTestId("workspace-gone0000")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "1 removed" }));
     const gone = screen.getByTestId("workspace-gone0000");
     expect(gone.textContent).toContain("repo-gone0000");
-    expect(gone.textContent).toContain("removed");
     expect(gone.querySelector('[title="Remove worktree"]')).toBeNull();
     expect(screen.getAllByTitle("Remove worktree")).toHaveLength(1);
   });
@@ -161,6 +163,51 @@ describe("workspace tree", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.getByTestId("workspace-9f8e7d6c").textContent).toContain("zwiim/9f8e7d6c");
     expect(t.calls.some((c) => c.op === "session.start")).toBe(false);
+  });
+});
+
+describe("folding", () => {
+  it("folds every workspace under the header, and adds one with +", async () => {
+    const { t } = treeHost();
+    t.handlers["workspace.add"] = () => ({ ...root, workspace_id: "new", name: "new" });
+    const props = sidebarProps({ pickFolder: vi.fn(async () => "/tmp/new") });
+    await mount(t, () => <Sidebar {...props} />);
+    const header = screen.getByRole("button", { name: "Workspaces" });
+    expect(header.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(header);
+    expect(screen.queryByTestId("workspace-tree")).toBeNull();
+    expect(JSON.parse(window.localStorage.getItem("zwiim.desktop.folds")!).workspaces).toBe(true);
+    expect(screen.queryByText("Add workspace")).toBeNull();
+    // Adding unfolds, so the new workspace shows.
+    fireEvent.click(screen.getByTitle("Add workspace"));
+    await tick();
+    expect(props.onSelectWorkspace).toHaveBeenCalledWith("new");
+    expect(screen.getByTestId("workspace-tree")).toBeTruthy();
+  });
+
+  it("folds a repository's worktrees, keeping their work and selection on its row", async () => {
+    const { t } = treeHost();
+    await mount(t, () => <Sidebar {...sidebarProps({ workspaceId: "a1b2c3d4" })} />);
+    fireEvent.click(screen.getByTitle("Hide worktrees"));
+    expect(screen.queryByTestId("workspace-a1b2c3d4")).toBeNull();
+    const row = screen.getByTestId("workspace-root");
+    expect(row.textContent).toContain("1 working");
+    expect(row.firstElementChild!.className).toContain("bg-sidebar-accent");
+    expect(JSON.parse(window.localStorage.getItem("zwiim.desktop.folds")!).repositories).toEqual(["root"]);
+    cleanup();
+
+    // Remembered across launches.
+    await mount(t, () => <Sidebar {...sidebarProps()} />);
+    expect(screen.queryByTestId("workspace-a1b2c3d4")).toBeNull();
+    fireEvent.click(screen.getByTitle("Show worktrees"));
+    expect(screen.getByTestId("workspace-a1b2c3d4")).toBeTruthy();
+  });
+
+  it("opens the removed worktrees when one of them is selected", async () => {
+    const { t } = treeHost();
+    await mount(t, () => <Sidebar {...sidebarProps({ workspaceId: "gone0000" })} />);
+    expect(screen.getByTestId("workspace-gone0000")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "1 removed" }).getAttribute("aria-expanded")).toBe("true");
   });
 });
 
@@ -478,7 +525,7 @@ describe("sessions and removed worktrees", () => {
 
     await mount(t, () => <SessionPanel workspaceId="gone0000" sessionId={null} onSessionStarted={() => {}} />);
     expect(screen.getByText(/no new work can start here/)).toBeTruthy();
-    expect(screen.queryByPlaceholderText("Describe the task…")).toBeNull();
+    expect(screen.queryByPlaceholderText(/^Describe the task/)).toBeNull();
   });
 
   it("shows a send rejected with workspace_removed", async () => {
@@ -488,7 +535,7 @@ describe("sessions and removed worktrees", () => {
       throw new ZwiimClientError("workspace_removed", "The workspace was removed", 410);
     };
     await mount(t, () => <SessionPanel workspaceId="a1b2c3d4" sessionId="s1" onSessionStarted={() => {}} />);
-    fireEvent.change(screen.getByPlaceholderText("Send a message"), { target: { value: "more" } });
+    fireEvent.change(screen.getByPlaceholderText(/^Send a message/), { target: { value: "more" } });
     fireEvent.click(screen.getByTitle("Send"));
     await tick();
     expect(screen.getByRole("alert").textContent).toBe("The workspace was removed");
