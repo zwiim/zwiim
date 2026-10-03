@@ -5,7 +5,8 @@
 // screen is the host's: a message shows once the host echoes it, and Stop
 // holds until the host ends the turn. Stop agent (in the header) ends the
 // agent and its background work, keeping the session. The session strip under
-// the header switches between the sessions of its worktree in place. Chips over
+// the header switches between the sessions of its worktree in place, and the
+// PR strip under it follows the worktree branch's pull request. Chips over
 // the composer (and the header's `⋯`) open Session options: the model, effort
 // and mode the Host reports, changed between turns, and the agent's context.
 
@@ -53,6 +54,7 @@ import { space, useTheme } from "../ui/tokens";
 import { useHostName } from "./HostFrame";
 import { RequestCard, RequestSheet } from "./requests";
 import { ComposerChips, SessionOptionsSheet } from "./SessionControls";
+import { PrStrip } from "./PrStrip";
 import { SessionStrip } from "./SessionStrip";
 
 /** When this phone first saw each running turn; the protocol carries no times. */
@@ -180,6 +182,14 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
           onOpen={open}
           onNew={() => startIn(worktree.workspace_id)}
           onWorktree={toWorktree}
+        />
+      ) : null}
+      {worktree && item ? (
+        <PrStrip
+          workspace_id={worktree.workspace_id}
+          entry={state.prs[worktree.workspace_id]}
+          connected={connected}
+          hostName={name}
         />
       ) : null}
       {body}

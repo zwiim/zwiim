@@ -21,7 +21,9 @@ use crate::commands::folders::{self as folder_commands, FileTreeNode};
 use crate::commands::terminal::prepare_credential_env;
 use crate::db::entities::conversation::ConversationStatus;
 use crate::db::service::folder_service;
+use crate::git_harness::{self, GitCaller, GitHost, MergeMethod, PrMerged};
 use crate::models::agent::AgentType;
+use crate::pr_watch::PrEntry;
 use crate::session::{self, RequestAnswer, RuntimeLauncher};
 use crate::terminal::error::TerminalError;
 use crate::terminal::manager::SpawnOptions;
@@ -1092,6 +1094,70 @@ pub async fn git_diff(
     Ok(Json(
         workspace_diff::diff(&folder, p.file.as_deref()).await?,
     ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitPrParams {
+    pub workspace_id: String,
+    /// Ask GitHub now instead of answering with what the Host knows.
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+/// The pull request of the workspace's branch, as the Host follows it.
+pub async fn git_pr(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<GitPrParams>,
+) -> ZResult<PrEntry> {
+    workspace::resolve_readable(&state.db.conn, &p.workspace_id).await?;
+    Ok(Json(
+        state
+            .host_feed
+            .pr(&state, &p.workspace_id, p.refresh)
+            .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitPrMergeParams {
+    pub workspace_id: String,
+    pub number: u64,
+    /// The head commit the user saw; a pull request that moved since is
+    /// `pr_changed`.
+    pub head_sha: String,
+    /// Defaults to the repository's preferred method.
+    #[serde(default)]
+    pub method: Option<MergeMethod>,
+}
+
+/// Merge the workspace's pull request now. Never queues an automatic merge,
+/// bypasses branch protection or deletes the branch.
+pub async fn git_pr_merge(
+    Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+    ZJson(p): ZJson<GitPrMergeParams>,
+) -> ZResult<PrMerged> {
+    workspace::resolve(&state.db.conn, &p.workspace_id).await?;
+    let caller = GitCaller::new(Some(p.workspace_id.clone()), None)?;
+    let host = GitHost::new(&state.db.conn, &state.data_dir);
+    let result = git_harness::merge_pr(&host, &caller, p.number, &p.head_sha, p.method).await;
+    let by = match principal.as_deref() {
+        Some(Principal::Device(id)) => id.as_str(),
+        Some(Principal::Host) => "host",
+        None => "unknown",
+    };
+    tracing::info!(
+        workspace_id = %p.workspace_id,
+        number = p.number,
+        by,
+        outcome = result.as_ref().err().map_or("merged", |e| e.code.as_str()),
+        "[git] pull request merge"
+    );
+    // Whatever happened, the pull request may look different now.
+    state.host_feed.nudge_pr(&p.workspace_id);
+    Ok(Json(result?))
 }
 
 // ─── terminal ────────────────────────────────────────────────────────────

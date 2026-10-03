@@ -190,6 +190,7 @@ fn host_snapshot_frame(snapshot: HostSnapshot) -> Value {
         "workspaces": snapshot.workspaces,
         "sessions": snapshot.sessions,
         "terminals": snapshot.terminals,
+        "prs": snapshot.prs,
     })
 }
 

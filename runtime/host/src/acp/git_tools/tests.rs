@@ -767,3 +767,46 @@ fn the_harness_does_not_know_this_adapter() {
         }
     }
 }
+
+#[test]
+fn every_git_tool_has_a_readable_title_in_every_agent_spelling() {
+    let mut seen = std::collections::HashSet::new();
+    for kind in KINDS {
+        let title = display_title(kind);
+        assert!(seen.insert(title), "{title} is used twice");
+        assert!(
+            !title.contains('_') && !title.to_lowercase().contains("mcp"),
+            "{title}"
+        );
+        for prefix in AGENT_TOOL_PREFIXES {
+            let raw = format!("{prefix}{}", tool_name(kind));
+            assert_eq!(kind_of_title(&raw), Some(kind), "{raw}");
+            assert_eq!(
+                readable_tool_names(&format!("Tool: {raw}")),
+                format!("Tool: {title}")
+            );
+        }
+    }
+    for (kind, title) in [
+        (GitOpKind::Status, "Git status"),
+        (GitOpKind::Commit, "Commit"),
+        (GitOpKind::Push, "Push branch"),
+        (GitOpKind::PrCreate, "Create pull request"),
+        (GitOpKind::PrMerge, "Merge pull request"),
+        (GitOpKind::PrChecks, "Check PR status"),
+    ] {
+        assert_eq!(display_title(kind), title);
+    }
+    assert_eq!(kind_of_title("git_status"), None, "only zwiim-mcp's tools");
+    assert_eq!(kind_of_title("mcp__zwiim-mcp__git_unknown"), None);
+    assert_eq!(kind_of_title("mcp__zwiim-mcp__git_pushy"), None);
+    assert_eq!(
+        display_result(r#"{"op":"pr_create","number":null,"url":"u"}"#).as_deref(),
+        Some("Opened u")
+    );
+    assert_eq!(
+        display_result(r#"{"op":"pr_merge","number":4}"#).as_deref(),
+        Some("Merged #4")
+    );
+    assert_eq!(display_result("not json"), None);
+}

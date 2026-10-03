@@ -29,6 +29,7 @@ pub const CAPABILITIES: &[&str] = &[
     "workspace.worktrees",
     "files.write",
     "git",
+    "git.pr",
     "terminal",
     "session.options",
     "session.effort_by_model",

@@ -69,6 +69,92 @@ pub fn kind_of_tool(name: &str) -> Option<GitOpKind> {
     KINDS.into_iter().find(|k| k.as_str() == op)
 }
 
+/// The step a Git tool shows as in a session, in the user's words.
+pub fn display_title(kind: GitOpKind) -> &'static str {
+    match kind {
+        GitOpKind::Status => "Git status",
+        GitOpKind::Diff => "Git diff",
+        GitOpKind::Log => "Git log",
+        GitOpKind::BranchCreate => "Create branch",
+        GitOpKind::Switch => "Switch branch",
+        GitOpKind::Stage => "Stage changes",
+        GitOpKind::Commit => "Commit",
+        GitOpKind::Fetch => "Fetch",
+        GitOpKind::Pull => "Pull",
+        GitOpKind::Push => "Push branch",
+        GitOpKind::PrCreate => "Create pull request",
+        GitOpKind::PrView => "View pull request",
+        GitOpKind::PrChecks => "Check PR status",
+        GitOpKind::PrComments => "Read PR comments",
+        GitOpKind::PrMerge => "Merge pull request",
+    }
+}
+
+/// How agents name `zwiim-mcp`'s tools in their tool-call titles: Claude
+/// `mcp__zwiim-mcp__git_x`, Codex `mcp.zwiim-mcp.git_x` live and
+/// `mcp__zwiim_mcp__git_x` in its transcripts.
+const AGENT_TOOL_PREFIXES: [&str; 4] = [
+    "mcp__zwiim-mcp__",
+    "mcp__zwiim_mcp__",
+    "mcp.zwiim-mcp.",
+    "mcp.zwiim_mcp.",
+];
+
+/// The Git tool an agent's tool-call title names, and where the name ends.
+fn find_tool_in(title: &str) -> Option<(usize, usize, GitOpKind)> {
+    AGENT_TOOL_PREFIXES.iter().find_map(|prefix| {
+        let start = title.find(prefix)?;
+        let rest = &title[start + prefix.len()..];
+        let len = rest
+            .find(|c: char| !(c.is_ascii_lowercase() || c == '_'))
+            .unwrap_or(rest.len());
+        let kind = kind_of_tool(&rest[..len])?;
+        Some((start, start + prefix.len() + len, kind))
+    })
+}
+
+/// The Git tool an agent's tool-call title is, if it is one.
+pub fn kind_of_title(title: &str) -> Option<GitOpKind> {
+    find_tool_in(title.trim())
+        .filter(|(start, _, _)| *start == 0)
+        .map(|(_, _, kind)| kind)
+}
+
+/// `text` with every agent-side Git tool name replaced by its readable title.
+pub fn readable_tool_names(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some((start, end, kind)) = find_tool_in(rest) {
+        out.push_str(&rest[..start]);
+        out.push_str(display_title(kind));
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A one-line result for the Git tools whose outcome the user cares about,
+/// from the tool result text the agent reports (the serialized outcome).
+pub fn display_result(text: &str) -> Option<String> {
+    let outcome: Value = serde_json::from_str(text.trim()).ok()?;
+    let number = outcome.get("number").and_then(Value::as_u64);
+    match outcome.get("op").and_then(Value::as_str)? {
+        "pr_create" => {
+            let url = outcome
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            Some(match number {
+                Some(n) if url.is_empty() => format!("Opened #{n}"),
+                Some(n) => format!("Opened #{n} · {url}"),
+                None => format!("Opened {url}"),
+            })
+        }
+        "pr_merge" => number.map(|n| format!("Merged #{n}")),
+        _ => None,
+    }
+}
+
 /// Map a `git_<op>` tool call's arguments into its [`GitOp`]. The arguments
 /// are the operation's own fields, nothing more: an unknown field, a missing
 /// required one, or a wrong type is refused here, before anything runs.

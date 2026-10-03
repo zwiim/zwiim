@@ -18,6 +18,7 @@ use serde::de::DeserializeOwned;
 
 use crate::acp::error::AcpError;
 use crate::app_error::{AppCommandError, AppErrorCode};
+use crate::git_harness::{GitError, GitErrorCode};
 
 #[derive(Debug, Clone)]
 pub struct ZwiimError {
@@ -255,6 +256,54 @@ impl From<AppCommandError> for ZwiimError {
                     message = %e.message,
                     detail = ?e.detail,
                     "[zwiim] internal error translated to `internal`"
+                );
+                Self::internal()
+            }
+        }
+    }
+}
+
+impl From<GitError> for ZwiimError {
+    fn from(e: GitError) -> Self {
+        // Harness messages are Zwiim's own words; `gh`'s raw text stays in
+        // `detail`, which never leaves the Host.
+        let message = scrub_paths(&crate::redact::scrub_secrets(&e.message));
+        match e.code {
+            GitErrorCode::NoWorkspace => Self::not_found("No such workspace"),
+            GitErrorCode::WorkspaceRemoved => Self::workspace_removed(),
+            GitErrorCode::NotAGitRepository => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "not_a_git_repository",
+                "The workspace is not a git repository",
+            ),
+            GitErrorCode::InvalidInput => Self::invalid_input(message),
+            GitErrorCode::NotFound => Self::not_found(message),
+            GitErrorCode::NotMergeable => {
+                let mut err = Self::new(StatusCode::CONFLICT, "not_mergeable", message.clone());
+                err.details = Some(serde_json::json!({ "reason": message }));
+                err
+            }
+            GitErrorCode::PrChanged => Self::new(StatusCode::CONFLICT, "pr_changed", message),
+            GitErrorCode::GhUnavailable => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "gh_unavailable",
+                "GitHub CLI is not installed on the Host",
+            ),
+            GitErrorCode::GhUnauthenticated | GitErrorCode::AuthFailed => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "gh_unauthenticated",
+                "GitHub CLI on the Host is not logged in",
+            ),
+            GitErrorCode::Network | GitErrorCode::Timeout => Self::new(
+                StatusCode::BAD_GATEWAY,
+                "github_unreachable",
+                "GitHub could not be reached",
+            ),
+            _ => {
+                tracing::warn!(
+                    code = e.code.as_str(),
+                    message = %e.message,
+                    "[zwiim] git error translated to `internal`"
                 );
                 Self::internal()
             }

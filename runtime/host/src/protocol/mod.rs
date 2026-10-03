@@ -144,6 +144,8 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/git.branches", post(http::git_branches))
         .route("/git.commit", post(http::git_commit))
         .route("/git.diff", post(http::git_diff))
+        .route("/git.pr", post(http::git_pr))
+        .route("/git.pr_merge", post(http::git_pr_merge))
         .route("/terminal.spawn", post(http::terminal_spawn))
         .route("/terminal.write", post(http::terminal_write))
         .route("/terminal.resize", post(http::terminal_resize))

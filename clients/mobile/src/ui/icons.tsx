@@ -17,6 +17,8 @@ export {
   Ellipsis,
   Folder,
   Gauge,
+  GitMerge,
+  GitPullRequest,
   Laptop,
   ListChecks,
   MessagesSquare,

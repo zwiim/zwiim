@@ -10,6 +10,7 @@ import type {
   HostHello,
   HostOwner,
   HostSnapshot,
+  PrEntry,
   SessionSummary,
   TerminalInfo,
   WorkspaceInfo,
@@ -40,6 +41,11 @@ export interface HostState {
    * diff refetches when its number moves. Diffs themselves are not stored.
    */
   diffRevision: Record<string, number>;
+  /**
+   * Each workspace's pull request as the Host follows it on GitHub. A
+   * workspace without an entry has no pull request (or no named branch).
+   */
+  prs: Record<string, PrEntry>;
 }
 
 export type HostAction =
@@ -68,6 +74,7 @@ export function initialHostState(): HostState {
     sessions: {},
     terminals: {},
     diffRevision: {},
+    prs: {},
   };
 }
 
@@ -143,6 +150,7 @@ export function reduceHost(state: HostState, action: HostAction): HostState {
         sessionsByWorkspace,
         terminals: listTerminals(state.terminals, terminals),
         diffRevision,
+        prs: action.snapshot.prs ?? {},
       };
     }
     case "host_event":
@@ -167,11 +175,19 @@ function reduceFeedEvent(state: HostState, event: HostFeedEvent): HostState {
     case "workspace.removed": {
       const id = event.payload.workspace_id;
       const { [id]: _, ...sessionsByWorkspace } = state.sessionsByWorkspace;
+      const { [id]: __, ...prs } = state.prs;
       return {
         ...state,
         workspaces: (state.workspaces ?? []).filter((w) => w.workspace_id !== id),
         sessionsByWorkspace,
+        prs,
       };
+    }
+    case "workspace.pr_changed": {
+      const { workspace_id, pr, error } = event.payload;
+      const { [workspace_id]: _, ...prs } = state.prs;
+      if (pr === null && error === null) return { ...state, prs };
+      return { ...state, prs: { ...prs, [workspace_id]: { pr, error } } };
     }
     case "workspace.diff_changed": {
       const id = event.payload.workspace_id;

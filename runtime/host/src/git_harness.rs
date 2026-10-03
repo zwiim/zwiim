@@ -30,10 +30,12 @@ mod error;
 mod github;
 mod local;
 mod op;
+mod pr_state;
 mod remote;
 mod run;
 
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use sea_orm::DatabaseConnection;
@@ -46,6 +48,9 @@ pub use op::{
     BranchOutcome, CommitOutcome, FetchOutcome, GitOp, GitOpKind, GitOutcome, MergeMethod, PrCheck,
     PrComment, PrComments, PrCreated, PrMerged, PrReview, PrReviewComment, PrSummary, PullMode,
     PullOutcome, PushOutcome, StageOutcome, StatusEntry, StatusReport,
+};
+pub use pr_state::{
+    CheckState, MergeStatus, PrCheckItem, PrChecksSummary, PrLifecycle, PrMergeInfo, PrState,
 };
 
 /// The Host services the Harness runs against.
@@ -102,25 +107,109 @@ pub async fn execute(
     op: GitOp,
 ) -> Result<GitOutcome, GitError> {
     let kind = op.kind();
+    let mutates = op.mutates();
     let started = Instant::now();
     let result = run_op(host, caller, op).await;
+    log_result(kind.as_str(), caller, started, result.as_ref().err());
+    if result.is_ok() && mutates {
+        announce(&caller.workspace_id, kind);
+    }
+    result
+}
+
+fn log_result(op: &str, caller: &GitCaller, started: Instant, error: Option<&GitError>) {
     let elapsed_ms = started.elapsed().as_millis();
-    match &result {
-        Ok(_) => tracing::info!(
-            op = kind.as_str(),
+    match error {
+        None => tracing::info!(
+            op,
             workspace_id = %caller.workspace_id,
             session_id = ?caller.session_id,
             elapsed_ms,
             "[git-harness] ok"
         ),
-        Err(e) => tracing::info!(
-            op = kind.as_str(),
+        Some(e) => tracing::info!(
+            op,
             workspace_id = %caller.workspace_id,
             session_id = ?caller.session_id,
             elapsed_ms,
             code = e.code.as_str(),
             "[git-harness] failed"
         ),
+    }
+}
+
+/// A change the Harness made: `kind` succeeded in `workspace_id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitChange {
+    pub workspace_id: String,
+    pub kind: GitOpKind,
+}
+
+fn changes() -> &'static tokio::sync::broadcast::Sender<GitChange> {
+    static CHANGES: OnceLock<tokio::sync::broadcast::Sender<GitChange>> = OnceLock::new();
+    CHANGES.get_or_init(|| tokio::sync::broadcast::channel(256).0)
+}
+
+/// Every change the Harness makes from now on, whoever asked for it. Lets
+/// Host state that depends on the repository or GitHub (a pull request's
+/// status) re-read it right away instead of waiting to notice.
+pub fn subscribe_changes() -> tokio::sync::broadcast::Receiver<GitChange> {
+    changes().subscribe()
+}
+
+fn announce(workspace_id: &str, kind: GitOpKind) {
+    let _ = changes().send(GitChange {
+        workspace_id: workspace_id.to_string(),
+        kind,
+    });
+}
+
+/// The pull request for `branch` in the caller's workspace — open, merged or
+/// closed — or `None` when the branch has none.
+pub async fn pr_state(
+    host: &GitHost<'_>,
+    caller: &GitCaller,
+    branch: &str,
+) -> Result<Option<PrState>, GitError> {
+    let started = Instant::now();
+    let result = async {
+        let row = resolve_workspace(host.db, &caller.workspace_id).await?;
+        crate::git_repo::ensure_git_repo(&row.path).map_err(GitError::from_app)?;
+        github::pr_state(host, &row.path, branch).await
+    }
+    .await;
+    if let Err(e) = &result {
+        log_result("pr_state", caller, started, Some(e));
+    }
+    result
+}
+
+/// Merge pull request `number` for the user, but only if its head is still
+/// `head_sha` — the commit they saw — and GitHub would merge it now. `method`
+/// defaults to the repository's preferred one.
+pub async fn merge_pr(
+    host: &GitHost<'_>,
+    caller: &GitCaller,
+    number: u64,
+    head_sha: &str,
+    method: Option<MergeMethod>,
+) -> Result<PrMerged, GitError> {
+    let started = Instant::now();
+    let result = async {
+        if head_sha.trim().is_empty() {
+            return Err(GitError::new(
+                GitErrorCode::InvalidInput,
+                "A merge needs the head commit it was reviewed at",
+            ));
+        }
+        let row = resolve_workspace(host.db, &caller.workspace_id).await?;
+        crate::git_repo::ensure_git_repo(&row.path).map_err(GitError::from_app)?;
+        github::pr_merge(host, &row.path, Some(number), method, Some(head_sha)).await
+    }
+    .await;
+    log_result("pr_merge", caller, started, result.as_ref().err());
+    if result.is_ok() {
+        announce(&caller.workspace_id, GitOpKind::PrMerge);
     }
     result
 }
@@ -169,9 +258,11 @@ async fn run_op(host: &GitHost<'_>, caller: &GitCaller, op: GitOp) -> Result<Git
         GitOp::PrComments { number } => github::pr_comments(host, root, number)
             .await
             .map(GitOutcome::PrComments),
-        GitOp::PrMerge { number, method } => github::pr_merge(host, root, number, method)
-            .await
-            .map(GitOutcome::PrMerge),
+        GitOp::PrMerge { number, method } => {
+            github::pr_merge(host, root, number, Some(method), None)
+                .await
+                .map(GitOutcome::PrMerge)
+        }
     }
 }
 

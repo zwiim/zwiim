@@ -87,7 +87,8 @@ reserved for "needs you".
 | `accent-ink` | `#17152B` | `#FFFFFF` | Text on accent |
 | `need` | `#F5B544` | `#B7791F` | **Needs you**: requests, badges, the primary action on a request |
 | `need-ink` | `#2A1E05` | `#FFFFFF` | Text on need |
-| `done` | `#4CC38A` | `#1F8A5B` | Completed, online host, `+` diff lines, passed checks |
+| `done` | `#4CC38A` | `#1F8A5B` | Completed, online host, `+` diff lines, passed checks, the Merge button |
+| `done-ink` | `#0B2A1B` | `#FFFFFF` | Text on done (Merge only) |
 | `err` | `#FF6467` | `#D93B3B` | Error, revoked, destructive, `−` diff lines |
 
 Values derive from the Desktop Graphite tokens in
@@ -343,6 +344,27 @@ Top to bottom:
   session in place (no screen pushed); `+` pinned at the right → New session defaulting to
   this worktree, and after Start the strip shows the new tab. A removed
   worktree has no `+`. Files' selection never changes from here.
+- **PR strip** (40pt, hairline below; V2.3), only while the worktree's branch has
+  a pull request: a GitPullRequest icon (GitMerge once merged) in the status
+  tone, mono `#12`, the status in `callout` (`Checks running` `accent`,
+  `Checks passed` `done`, `Checks failed` `err`, `Draft` / `Open` / `Closed #12`
+  `mut`, `Merged #12` `done`), mono `1 running · 2 passed` in `mut` while open,
+  `›`. The Host follows the PR on GitHub and the strip only renders its feed;
+  the phone never asks GitHub. When the Host's GitHub CLI is missing or signed
+  out, the strip is one `mut` mono line saying so and what to run on the Mac.
+  Tapping opens the **PR sheet**: title, mono `#12 · main ← fix-auth`, the
+  status and counts, a scroll of checks (glyph `✓` `done` / `✕` `err` / `●`
+  `accent` / `–` `faint`, mono `workflow / name`, `›` opens its run), then the
+  merge line (`Squash and merge into main`, or GitHub's reason in `mut` when it
+  won't merge, or "Not connected to the Host"), a 48pt **Merge** button in
+  `done` / `done-ink` (disabled with the reason above it), and **Open on
+  GitHub**. Merge never fires from the sheet itself: it turns the sheet into its
+  confirm, "Merge #12?" and "Squash and merge into main at abc1234. GitHub
+  merges it now, and only if nothing changed since; the branch stays.", with
+  **Merge** (`done`) and **Cancel**. The Host merges at that head or refuses: a
+  push since then reads "The pull request changed since you looked", a block
+  reads GitHub's reason, both in `err` in the sheet. A success haptic, then the
+  strip reads `Merged #12` at once.
 - **Transcript** (inverted `FlatList`, newest at the bottom):
   - user messages: right-aligned `surface` block, radius 16/16/4/16.
   - agent messages: full-width prose, no bubble, markdown rendered; inline code
@@ -421,7 +443,8 @@ view, and everything under the context chips belongs to that worktree.
   `[ zwiim ▾ ]  [ ⎇ fix-auth ▾ ]`. The workspace chip opens the workspace sheet;
   the worktree chip opens the worktree sheet for the current workspace. A plain
   folder shows the workspace chip only. **New workspace** lives in the workspace
-  sheet.
+  sheet. While the worktree's branch has a pull request, the worktree chip ends
+  in a mono `#12` in the PR's status tone (V2.3).
 - **Changes row** above the tree (Git only): a `surface` card, "4 changed files"
   (`sans` medium) and mono `+12 −4`, `›`. It pushes **Changes**. Clean: a mono
   line `✓ No changes on fix-auth`. A plain folder: `⎇ Not a Git repository ·
@@ -570,7 +593,7 @@ Build these once in `clients/mobile/src/ui/`; screens compose them.
 - `SessionRow`, `HostRow`, `DeviceRow`, `FileRow`, `ChangeRow`
 - `CommandBlock`, `DiffView`, `ToolRow`, `ToolGroup`, `SinceDivider`
 - `NowBar`, `Composer`, `Chip`
-- `Button` (`primary` accent | `need` | `secondary` raised | `ghost` | `destructive`), 40pt default, 48pt in sheets
+- `Button` (`primary` accent | `need` | `done` (Merge only) | `secondary` raised | `ghost` | `destructive`), 40pt default, 48pt in sheets
 - `Sheet` (`@gorhom/bottom-sheet`), `Segmented`, `EmptyState`, `Banner`
 - Theme: a `tokens.ts` exporting both palettes + type scale; a `useTheme()` hook.
   No inline hex values in screens.
@@ -639,6 +662,13 @@ glyph, a title, one line, one action.
   shows the window and last turn's tokens; a click pins them until Escape or a
   click elsewhere. Same rule as the phone: only reported figures, a missing one
   reads "not reported".
+- Desktop's PR banner (V2.3) sits above the Files / Diff / Git views: PR icon,
+  mono `#12` and the title (opens the PR), a `done` **Merge** button (tooltip
+  names the method, or GitHub's reason when disabled), then the status and check
+  counts, which expand inline into the checks (each opens its run). Merged or
+  closed, the button gives way to `Merged #12` / `Closed #12`. Desktop merges on
+  one click without a confirm: the button sits where the pointer already is
+  and the Host still refuses a head that moved.
 
 ## Decisions Log
 
@@ -666,3 +696,4 @@ glyph, a title, one line, one action.
 | 2026-09-27 | Controls inside the composer, options picked in place (R8.15, design-shotgun A) | Chosen over a status line and a mode button: chips beside send match Desktop's composer, the ring keeps context in view without a row of its own, and an amber border plus solid chip make Unattended unmissable. The sheet sets Mode and Effort with one tap instead of a list per row, and folds the token breakdown so the window reads first |
 | 2026-09-29 | Sign in becomes a motion orbit (design-shotgun K4) | The text-first screen read as plain. Agents, sessions and workspaces orbiting "your Mac", with status color on their icons, says in one look that agents run on the Mac and are steered from here; copy cut to the name, two lines and the button. Generic nouns, because vendor names aren't ours to show |
 | 2026-09-29 | Hosts in cards, matching Sign in | The bare list read unfinished after the Sign in orbit; the Laptop disc repeats "your Mac" from Sign in, and the account card keeps Sign out in reach without the red of a destructive action |
+| 2026-10-03 | PR strip, sheet and a green Merge button (V2.3) | User-approved exception: Merge uses `done` green (with `done-ink`), as GitHub's and Conductor's do, so it reads as the PR's finish line rather than another accent action; it appears nowhere else. The phone confirms before merging because a tap from a pocket shouldn't merge, and the confirm names method, base and head so the Host can refuse a moved head |

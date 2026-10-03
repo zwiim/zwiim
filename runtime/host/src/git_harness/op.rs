@@ -386,6 +386,7 @@ pub struct PrReviewComment {
 pub struct PrMerged {
     pub number: u64,
     pub method: MergeMethod,
+    pub merged_at: Option<String>,
 }
 
 /// `{"login": "…"}` → `Some("…")`; GitHub sends `null` for deleted users.

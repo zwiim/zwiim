@@ -8,6 +8,7 @@ use axum_test::{TestServer, TestWebSocket};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Value};
 
+use super::error::ZwiimError;
 use super::events::tests::assert_no_internal_keys;
 use crate::acp::connection::ConnectionCommand;
 use crate::acp::types::{AcpEvent, PermissionOptionInfo};
@@ -53,6 +54,8 @@ const OPS: &[&str] = &[
     "git.branches",
     "git.commit",
     "git.diff",
+    "git.pr",
+    "git.pr_merge",
     "terminal.spawn",
     "terminal.write",
     "terminal.resize",
@@ -664,6 +667,10 @@ async fn a_plain_folder_is_a_full_workspace_without_git() {
         ("git.status", json!({"workspace_id": wid})),
         ("git.diff", json!({"workspace_id": wid})),
         ("git.log", json!({"workspace_id": wid, "limit": 5})),
+        (
+            "git.pr_merge",
+            json!({"workspace_id": wid, "number": 1, "head_sha": "abc"}),
+        ),
     ] {
         assert_eq!(
             h.err(op, body).await,
@@ -857,6 +864,76 @@ async fn workspace_files_git_resolve_workspace_id_only() {
         .await
         .1,
         "not_found"
+    );
+}
+
+#[tokio::test]
+async fn pull_request_ops_answer_in_zwiim_shape() {
+    let h = host(false).await;
+    let wid = h.workspace_id.clone();
+    // The default branch has no pull request to follow.
+    assert_eq!(
+        h.ok("git.pr", json!({"workspace_id": wid})).await,
+        json!({"pr": null, "error": null})
+    );
+    assert_eq!(
+        h.ok("git.pr", json!({"workspace_id": wid, "refresh": true})).await,
+        json!({"pr": null, "error": null})
+    );
+    assert_eq!(
+        h.err("git.pr", json!({"workspace_id": "nope"})).await.1,
+        "not_found"
+    );
+    // A merge names the head it was reviewed at.
+    assert_eq!(
+        h.err("git.pr_merge", json!({"workspace_id": wid, "number": 1})).await,
+        (StatusCode::BAD_REQUEST, "invalid_request".into())
+    );
+    assert_eq!(
+        h.err(
+            "git.pr_merge",
+            json!({"workspace_id": wid, "number": 1, "head_sha": " "})
+        )
+        .await,
+        (StatusCode::BAD_REQUEST, "invalid_input".into())
+    );
+    assert_eq!(
+        h.err(
+            "git.pr_merge",
+            json!({"workspace_id": wid, "number": 1, "head_sha": "a", "method": "fast_forward"})
+        )
+        .await,
+        (StatusCode::BAD_REQUEST, "invalid_request".into())
+    );
+}
+
+#[test]
+fn git_errors_keep_their_codes_and_never_gh_s_words() {
+    use crate::git_harness::{GitError, GitErrorCode::*};
+    let cases = [
+        (NotMergeable, StatusCode::CONFLICT, "not_mergeable"),
+        (PrChanged, StatusCode::CONFLICT, "pr_changed"),
+        (GhUnavailable, StatusCode::UNPROCESSABLE_ENTITY, "gh_unavailable"),
+        (GhUnauthenticated, StatusCode::UNPROCESSABLE_ENTITY, "gh_unauthenticated"),
+        (Network, StatusCode::BAD_GATEWAY, "github_unreachable"),
+        (Timeout, StatusCode::BAD_GATEWAY, "github_unreachable"),
+        (NotFound, StatusCode::NOT_FOUND, "not_found"),
+        (NoWorkspace, StatusCode::NOT_FOUND, "not_found"),
+        (WorkspaceRemoved, StatusCode::GONE, "workspace_removed"),
+        (Failed, StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+    ];
+    for (code, status, wire) in cases {
+        let err = ZwiimError::from(
+            GitError::new(code, "Pull request #3 cannot be merged: Merge conflicts")
+                .with_detail("gh: secret ghp_abc123 at /Users/me/repo"),
+        );
+        assert_eq!((err.status, err.code), (status, wire), "{code:?}");
+        assert!(!err.message.contains("ghp_") && !err.message.contains("/Users"));
+    }
+    let err = ZwiimError::from(GitError::new(NotMergeable, "Pull request #3 cannot be merged: Merge conflicts"));
+    assert_eq!(
+        err.details,
+        Some(json!({"reason": "Pull request #3 cannot be merged: Merge conflicts"}))
     );
 }
 
@@ -1665,6 +1742,8 @@ async fn host_feed_snapshot_equals_the_list_operations() {
     assert_eq!(snapshot["sessions"].as_array().unwrap().len(), 1);
     assert_eq!(snapshot["terminals"], h.ok("terminal.list", json!({})).await);
     assert_eq!(snapshot["terminals"][0]["terminal_id"], tid);
+    // No remote, so no pull requests; the map is still there for a late joiner.
+    assert_eq!(snapshot["prs"], json!({}));
     assert!(snapshot["workspaces"]
         .as_array()
         .unwrap()

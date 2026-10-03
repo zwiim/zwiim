@@ -17,6 +17,8 @@ export interface Palette {
   need: string;
   needInk: string;
   done: string;
+  /** Text on `done`: the Merge button. */
+  doneInk: string;
   err: string;
   /** The terminal's 16 ANSI colors, muted to sit on `code`. */
   ansi: readonly string[];
@@ -38,6 +40,7 @@ export const dark: Palette = {
   need: "#F5B544",
   needInk: "#2A1E05",
   done: "#4CC38A",
+  doneInk: "#0B2A1B",
   err: "#FF6467",
   ansi: [
     "#3A3A3E", "#FF6467", "#4CC38A", "#F5B544", "#7AA2F7", "#C597F0", "#5BC8D6", "#D6D6DA",
@@ -60,6 +63,7 @@ export const light: Palette = {
   need: "#B7791F",
   needInk: "#FFFFFF",
   done: "#1F8A5B",
+  doneInk: "#FFFFFF",
   err: "#D93B3B",
   ansi: [
     "#0A0A0B", "#D93B3B", "#1F8A5B", "#B7791F", "#2F5FD0", "#8A3FC4", "#0F7F8C", "#6E6E73",

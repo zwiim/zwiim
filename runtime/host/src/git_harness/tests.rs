@@ -381,6 +381,7 @@ fn error_codes_serialize_as_their_names() {
         GhUnavailable,
         GhUnauthenticated,
         NotMergeable,
+        PrChanged,
         Timeout,
         Failed,
     ] {
@@ -511,6 +512,27 @@ fn gh_failures_map_to_structured_codes() {
             NotMergeable,
         ),
         (Some(1), "error connecting to api.github.com", Network),
+        (
+            Some(1),
+            "Post \"https://api.github.com/graphql\": dial tcp: i/o timeout",
+            Network,
+        ),
+        (Some(1), "net/http: TLS handshake timeout", Network),
+        (
+            Some(1),
+            "read tcp 10.0.0.2:5->1.2.3.4:443: read: connection reset by peer",
+            Network,
+        ),
+        (
+            Some(1),
+            "context deadline exceeded (Client.Timeout exceeded while awaiting headers)",
+            Network,
+        ),
+        (
+            Some(1),
+            "GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)",
+            PrChanged,
+        ),
         (Some(1), "something unexpected", Failed),
     ];
     for (exit, stderr, want) in cases {
@@ -1164,6 +1186,28 @@ fn fake_gh(dir: &Path, body: &str) -> (PathBuf, PathBuf) {
     (script, calls)
 }
 
+const REPO_JSON: &str = r#"{"squashMergeAllowed":true,"mergeCommitAllowed":true,"rebaseMergeAllowed":false,"viewerDefaultMergeMethod":"MERGE"}"#;
+
+/// `gh pr view --json` for the PR-state fields, escaped for a `format!`ed
+/// fake `gh` body.
+fn pr_state_json(number: u64, state: &str, merge: &str, head: &str, auto: bool) -> String {
+    json!({
+        "number": number,
+        "title": "T",
+        "state": state,
+        "url": format!("https://github.com/o/r/pull/{number}"),
+        "isDraft": false,
+        "baseRefName": "main",
+        "headRefName": "feat",
+        "headRefOid": head,
+        "mergeStateStatus": merge,
+        "statusCheckRollup": [],
+        "mergedAt": if state == "MERGED" { json!("2026-10-03T00:00:00Z") } else { json!(null) },
+        "autoMergeRequest": if auto { json!({"mergeMethod": "SQUASH"}) } else { json!(null) },
+    })
+    .to_string()
+}
+
 const PR_JSON: &str = r#"{"number":7,"title":"T","state":"OPEN","url":"https://github.com/o/r/pull/7","isDraft":false,"baseRefName":"main","headRefName":"feat","mergeable":"MERGEABLE","reviewDecision":"","author":{"login":"me"},"body":"b"}"#;
 
 #[tokio::test]
@@ -1198,17 +1242,23 @@ async fn gh_must_be_installed_and_logged_in() {
 async fn pull_requests_are_created_viewed_and_followed() {
     let fx = workspace(true).await;
     git(&fx.root, &["switch", "-q", "-c", "feat"]);
+    let merged_flag = fx.tmp.path().join("merged");
+    let open = pr_state_json(7, "OPEN", "CLEAN", "abc123", false);
+    let merged = pr_state_json(7, "MERGED", "UNKNOWN", "abc123", false);
     let (gh, calls) = fake_gh(
         fx.tmp.path(),
         &format!(
             r#"
 "pr create"*) echo 'Creating pull request'; echo 'https://github.com/o/r/pull/7' ;;
+"pr view"*autoMergeRequest*) if [ -f '{flag}' ]; then echo '{merged}'; else echo '{open}'; fi ;;
 "pr view"*comments*) echo '{{"number":7,"comments":[{{"author":{{"login":"rev"}},"body":"nit","createdAt":"t","url":"u"}}],"reviews":[{{"author":{{"login":"rev"}},"state":"CHANGES_REQUESTED","body":"fix","submittedAt":"t"}}]}}' ;;
 "pr view"*) echo '{PR_JSON}' ;;
 "pr checks"*) echo '[{{"name":"ci","state":"IN_PROGRESS","bucket":"pending","link":"l","workflow":"w"}}]'; exit 8 ;;
 api*) echo '[{{"user":{{"login":"rev"}},"path":"a.rs","line":null,"original_line":3,"body":"here","created_at":"t","html_url":"h"}}]' ;;
-"pr merge"*) echo merged ;;
-*) echo "unexpected: $*" >&2; exit 1 ;;"#
+"repo view"*) echo '{REPO_JSON}' ;;
+"pr merge"*) touch '{flag}'; echo merged ;;
+*) echo "unexpected: $*" >&2; exit 1 ;;"#,
+            flag = merged_flag.display(),
         ),
     );
 
@@ -1290,9 +1340,15 @@ api*) echo '[{{"user":{{"login":"rev"}},"path":"a.rs","line":null,"original_line
     assert!(lines
         .iter()
         .any(|l| l.starts_with("api repos/{owner}/{repo}/pulls/7/comments")));
-    // The merge pins the number it reports and asks for nothing more.
+    // The merge pins the number and the head it checked, and asks for
+    // nothing more.
     let merge = lines.iter().find(|l| l.starts_with("pr merge")).unwrap();
-    assert!(merge.starts_with("pr merge 7 --squash |"), "{merge}");
+    assert!(
+        merge.starts_with("pr merge 7 --squash --match-head-commit abc123 |"),
+        "{merge}"
+    );
+    assert!(!log.contains("--admin") && !log.contains("--auto") && !log.contains("-d "));
+    assert_eq!(merged.method, MergeMethod::Squash);
 }
 
 #[tokio::test]
@@ -1300,10 +1356,15 @@ async fn gh_failures_are_structured() {
     let fx = workspace(true).await;
     let (gh, _) = fake_gh(
         fx.tmp.path(),
-        r#"
+        &format!(
+            r#"
+"pr view 3 "*) echo '{open}' ;;
 "pr view"*) echo 'no pull requests found for branch "main"' >&2; exit 1 ;;
 "pr checks"*) echo "no checks reported on the 'main' branch" >&2; exit 1 ;;
+"repo view"*) echo '{REPO_JSON}' ;;
 "pr merge"*) echo 'X Pull request o/r#3 is not mergeable: the merge commit cannot be cleanly created.' >&2; exit 1 ;;"#,
+            open = pr_state_json(3, "OPEN", "CLEAN", "abc", false),
+        ),
     );
     assert_eq!(
         code(fx.run_gh(&gh, GitOp::PrView { number: None }).await),
@@ -1347,6 +1408,282 @@ async fn gh_failures_are_structured() {
         ),
         GitErrorCode::DetachedHead
     );
+}
+
+/// A fake `gh` whose `pr view` answers `view` before any merge and `after`
+/// once `pr merge` ran.
+fn merge_gh(fx: &Fixture, view: &str, after: &str) -> (PathBuf, PathBuf) {
+    let flag = fx.tmp.path().join("merge-ran");
+    let _ = std::fs::remove_file(&flag);
+    let _ = std::fs::remove_file(fx.tmp.path().join("gh-calls"));
+    fake_gh(
+        fx.tmp.path(),
+        &format!(
+            r#"
+"pr view"*) if [ -f '{flag}' ]; then echo '{after}'; else echo '{view}'; fi ;;
+"repo view"*) echo '{REPO_JSON}' ;;
+"pr merge"*--disable-auto*) echo off ;;
+"pr merge"*) touch '{flag}' ;;
+*) echo "unexpected: $*" >&2; exit 1 ;;"#,
+            flag = flag.display(),
+        ),
+    )
+}
+
+async fn merge_with(fx: &Fixture, gh: &Path, head: &str) -> Result<PrMerged, GitError> {
+    let host = GitHost {
+        gh: Some(gh),
+        ..fx.host()
+    };
+    merge_pr(&host, &fx.caller, 5, head, None).await
+}
+
+#[tokio::test]
+async fn a_merge_is_pinned_to_the_head_the_user_saw() {
+    let fx = workspace(true).await;
+    let open = pr_state_json(5, "OPEN", "CLEAN", "new-head", false);
+    let (gh, calls) = merge_gh(&fx, &open, &open);
+    let err = merge_with(&fx, &gh, "old-head").await.unwrap_err();
+    assert_eq!(err.code, GitErrorCode::PrChanged);
+    let log = std::fs::read_to_string(&calls).unwrap();
+    assert!(!log.contains("pr merge"), "{log}");
+
+    // An empty head is refused before GitHub is asked anything.
+    let err = merge_with(&fx, &gh, " ").await.unwrap_err();
+    assert_eq!(err.code, GitErrorCode::InvalidInput);
+}
+
+#[tokio::test]
+async fn a_merge_github_would_not_do_now_is_refused_before_gh_runs() {
+    let fx = workspace(true).await;
+    for (status, state, why) in [
+        ("BLOCKED", "OPEN", "Waiting for required checks or review"),
+        ("BEHIND", "OPEN", "Branch is behind main"),
+        ("DIRTY", "OPEN", "Merge conflicts"),
+        ("CLEAN", "MERGED", "already merged"),
+        ("CLEAN", "CLOSED", "closed"),
+    ] {
+        let view = pr_state_json(5, state, status, "h", false);
+        let (gh, calls) = merge_gh(&fx, &view, &view);
+        let err = merge_with(&fx, &gh, "h").await.unwrap_err();
+        assert_eq!(err.code, GitErrorCode::NotMergeable, "{status} {state}");
+        assert!(err.message.contains(why), "{}", err.message);
+        let log = std::fs::read_to_string(&calls).unwrap();
+        assert!(!log.contains("pr merge"), "{log}");
+    }
+}
+
+#[tokio::test]
+async fn a_merge_runs_now_with_the_preferred_method_and_head() {
+    let fx = workspace(true).await;
+    let (gh, calls) = merge_gh(
+        &fx,
+        &pr_state_json(5, "OPEN", "UNSTABLE", "h1", false),
+        &pr_state_json(5, "MERGED", "UNKNOWN", "h1", false),
+    );
+    let merged = merge_with(&fx, &gh, "h1").await.unwrap();
+    // The repository's github.com default (merge commit) wins over squash.
+    assert_eq!(merged.method, MergeMethod::Merge);
+    assert_eq!(merged.merged_at.as_deref(), Some("2026-10-03T00:00:00Z"));
+    let log = std::fs::read_to_string(&calls).unwrap();
+    let merge: Vec<&str> = log.lines().filter(|l| l.starts_with("pr merge")).collect();
+    assert_eq!(merge.len(), 1, "{log}");
+    assert!(
+        merge[0].starts_with("pr merge 5 --merge --match-head-commit h1 |"),
+        "{log}"
+    );
+}
+
+#[tokio::test]
+async fn a_merge_queued_for_later_is_turned_off_and_refused() {
+    let fx = workspace(true).await;
+    let (gh, calls) = merge_gh(
+        &fx,
+        &pr_state_json(5, "OPEN", "CLEAN", "h1", false),
+        &pr_state_json(5, "OPEN", "BLOCKED", "h1", true),
+    );
+    let err = merge_with(&fx, &gh, "h1").await.unwrap_err();
+    assert_eq!(err.code, GitErrorCode::NotMergeable);
+    assert!(err.message.contains("queued"), "{}", err.message);
+    let log = std::fs::read_to_string(&calls).unwrap();
+    assert!(log.contains("pr merge 5 --disable-auto"), "{log}");
+
+    // The agent tool takes the same guard.
+    let (gh, calls) = merge_gh(
+        &fx,
+        &pr_state_json(5, "OPEN", "CLEAN", "h1", false),
+        &pr_state_json(5, "OPEN", "BLOCKED", "h1", true),
+    );
+    let err = fx
+        .run_gh(
+            &gh,
+            GitOp::PrMerge {
+                number: Some(5),
+                method: MergeMethod::Squash,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, GitErrorCode::NotMergeable);
+    let log = std::fs::read_to_string(&calls).unwrap();
+    assert!(log.contains("--match-head-commit h1"), "{log}");
+    assert!(log.contains("pr merge 5 --disable-auto"), "{log}");
+}
+
+#[tokio::test]
+async fn pr_state_follows_the_branch_and_no_pr_is_none() {
+    let fx = workspace(true).await;
+    let (gh, _) = fake_gh(
+        fx.tmp.path(),
+        &format!(
+            r#"
+"pr view feat "*) echo '{open}' ;;
+"pr view"*) echo 'no pull requests found for branch "other"' >&2; exit 1 ;;
+"repo view"*) echo '{REPO_JSON}' ;;"#,
+            open = pr_state_json(9, "OPEN", "BLOCKED", "h", false),
+        ),
+    );
+    let host = GitHost {
+        gh: Some(&gh),
+        ..fx.host()
+    };
+    let pr = pr_state(&host, &fx.caller, "feat").await.unwrap().unwrap();
+    assert_eq!(
+        (pr.number, pr.state, pr.head_sha.as_str()),
+        (9, PrLifecycle::Open, "h")
+    );
+    assert!(!pr.merge.allowed);
+    assert_eq!(
+        pr.merge.methods,
+        vec![MergeMethod::Merge, MergeMethod::Squash]
+    );
+    assert_eq!(pr_state(&host, &fx.caller, "other").await.unwrap(), None);
+    assert_eq!(
+        pr_state(&host, &fx.caller, "--web").await.unwrap_err().code,
+        GitErrorCode::InvalidInput
+    );
+}
+
+// ── PR state mapping ────────────────────────────────────────────────────
+
+fn raw_pr(
+    state: &str,
+    merge: &str,
+    draft: bool,
+    rollup: serde_json::Value,
+) -> super::pr_state::RawPr {
+    serde_json::from_value(json!({
+        "number": 1, "state": state, "isDraft": draft, "baseRefName": "main",
+        "headRefName": "feat", "headRefOid": "h", "mergeStateStatus": merge,
+        "statusCheckRollup": rollup,
+    }))
+    .unwrap()
+}
+
+#[test]
+fn merge_state_maps_to_allowed_and_a_reason() {
+    let methods = || vec![MergeMethod::Squash];
+    let cases = [
+        ("CLEAN", true, None),
+        ("UNSTABLE", true, None),
+        ("HAS_HOOKS", true, None),
+        (
+            "BLOCKED",
+            false,
+            Some("Waiting for required checks or review"),
+        ),
+        ("BEHIND", false, Some("Branch is behind main")),
+        ("DIRTY", false, Some("Merge conflicts")),
+        ("DRAFT", false, Some("Draft PR")),
+        ("UNKNOWN", false, Some("Checking…")),
+        ("SOMETHING_NEW", false, Some("Checking…")),
+    ];
+    for (status, allowed, reason) in cases {
+        let pr = raw_pr("OPEN", status, false, json!([])).into_state(methods());
+        assert_eq!(pr.merge.allowed, allowed, "{status}");
+        assert_eq!(pr.merge.reason.as_deref(), reason, "{status}");
+        assert_eq!(pr.merge.method, Some(MergeMethod::Squash));
+    }
+    let wire =
+        serde_json::to_value(raw_pr("OPEN", "HAS_HOOKS", false, json!([])).into_state(methods()))
+            .unwrap();
+    assert_eq!(wire["merge"]["status"], "has_hooks");
+    assert_eq!(wire["merge"]["method"], "squash");
+    assert_eq!(wire["state"], "open");
+
+    // Settled pull requests are never mergeable and need no reason.
+    for state in ["MERGED", "CLOSED"] {
+        let pr = raw_pr(state, "CLEAN", false, json!([])).into_state(methods());
+        assert!(!pr.merge.allowed && pr.merge.reason.is_none(), "{state}");
+        assert!(pr.state.is_final());
+    }
+    let draft = raw_pr("OPEN", "DRAFT", true, json!([])).into_state(methods());
+    assert_eq!(draft.state, PrLifecycle::Draft);
+    let none = raw_pr("OPEN", "CLEAN", false, json!([])).into_state(vec![]);
+    assert!(!none.merge.allowed);
+    assert_eq!(
+        none.merge.reason.as_deref(),
+        Some("The repository allows no merge method")
+    );
+}
+
+#[test]
+fn the_rollup_maps_check_runs_and_status_contexts() {
+    let rollup = json!([
+        {"__typename": "CheckRun", "name": "build", "workflowName": "CI", "status": "COMPLETED", "conclusion": "SUCCESS", "detailsUrl": "https://ci/1"},
+        {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"},
+        {"__typename": "CheckRun", "name": "e2e", "status": "IN_PROGRESS", "conclusion": ""},
+        {"__typename": "CheckRun", "name": "queued", "status": "QUEUED"},
+        {"__typename": "CheckRun", "name": "docs", "status": "COMPLETED", "conclusion": "SKIPPED"},
+        {"__typename": "CheckRun", "name": "neutral", "status": "COMPLETED", "conclusion": "NEUTRAL"},
+        {"__typename": "CheckRun", "name": "cancel", "status": "COMPLETED", "conclusion": "CANCELLED"},
+        {"__typename": "CheckRun", "name": "timeout", "status": "COMPLETED", "conclusion": "TIMED_OUT"},
+        {"__typename": "StatusContext", "context": "ci/legacy", "state": "SUCCESS", "targetUrl": "https://legacy"},
+        {"__typename": "StatusContext", "context": "deploy", "state": "PENDING"},
+        {"__typename": "StatusContext", "context": "sec", "state": "ERROR"},
+    ]);
+    let checks = raw_pr("OPEN", "UNSTABLE", false, rollup)
+        .into_state(vec![])
+        .checks;
+    assert_eq!(
+        (checks.passed, checks.failed, checks.pending, checks.skipped),
+        (3, 4, 3, 1)
+    );
+    assert_eq!(checks.items[0].workflow.as_deref(), Some("CI"));
+    assert_eq!(checks.items[0].link.as_deref(), Some("https://ci/1"));
+    assert_eq!(checks.items[8].name, "ci/legacy");
+    assert_eq!(checks.items[8].link.as_deref(), Some("https://legacy"));
+    assert_eq!(checks.items[2].state, CheckState::Pending);
+    // No rollup at all is no checks.
+    let pr: super::pr_state::RawPr =
+        serde_json::from_value(json!({"number": 2, "statusCheckRollup": null})).unwrap();
+    assert_eq!(pr.into_state(vec![]).checks.items.len(), 0);
+}
+
+#[test]
+fn merge_methods_prefer_the_user_s_default() {
+    use super::pr_state::RepoMergeSettings;
+    let settings = |sq, mc, rb, def: Option<&str>| RepoMergeSettings {
+        squash_merge_allowed: sq,
+        merge_commit_allowed: mc,
+        rebase_merge_allowed: rb,
+        viewer_default_merge_method: def.map(str::to_string),
+    };
+    use MergeMethod::*;
+    assert_eq!(
+        settings(true, true, true, None).methods(),
+        vec![Squash, Merge, Rebase]
+    );
+    assert_eq!(
+        settings(true, true, true, Some("REBASE")).methods(),
+        vec![Rebase, Squash, Merge]
+    );
+    // A default the repository no longer allows is skipped.
+    assert_eq!(
+        settings(true, false, false, Some("MERGE")).methods(),
+        vec![Squash]
+    );
+    assert!(settings(false, false, false, None).methods().is_empty());
 }
 
 // ── time limits and cancellation ────────────────────────────────────────
@@ -1464,6 +1801,7 @@ fn the_harness_knows_nothing_about_agent_integrations() {
         ("local.rs", include_str!("local.rs")),
         ("remote.rs", include_str!("remote.rs")),
         ("github.rs", include_str!("github.rs")),
+        ("pr_state.rs", include_str!("pr_state.rs")),
     ];
     for (name, source) in sources {
         let code = source.split("#[cfg(test)]").next().unwrap().to_lowercase();

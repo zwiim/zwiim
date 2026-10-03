@@ -44,6 +44,8 @@ pub enum GitErrorCode {
     GhUnauthenticated,
     /// The pull request cannot be merged as it stands.
     NotMergeable,
+    /// The pull request's head moved since the caller looked at it.
+    PrChanged,
     /// The operation ran past its time limit and was stopped.
     Timeout,
     /// Anything else Git or `gh` refused; see `detail`.
@@ -70,6 +72,7 @@ impl GitErrorCode {
             Self::GhUnavailable => "gh_unavailable",
             Self::GhUnauthenticated => "gh_unauthenticated",
             Self::NotMergeable => "not_mergeable",
+            Self::PrChanged => "pr_changed",
             Self::Timeout => "timeout",
             Self::Failed => "failed",
         }
@@ -218,6 +221,8 @@ pub(super) fn classify_gh(op: &str, exit: Option<i32>, stderr: &str) -> GitError
         GitErrorCode::NotFound
     } else if lower.contains("already exists") {
         GitErrorCode::AlreadyExists
+    } else if lower.contains("head branch was modified") {
+        GitErrorCode::PrChanged
     } else if lower.contains("not mergeable")
         || lower.contains("merge conflict")
         || lower.contains("is not mergeable")
@@ -229,6 +234,11 @@ pub(super) fn classify_gh(op: &str, exit: Option<i32>, stderr: &str) -> GitError
         || lower.contains("connection refused")
         || lower.contains("network is unreachable")
         || lower.contains("error connecting to")
+        || lower.contains("timeout")
+        || lower.contains("timed out")
+        || lower.contains("tls handshake")
+        || lower.contains("connection reset")
+        || lower.contains("unexpected eof")
     {
         GitErrorCode::Network
     } else if lower.contains("none of the git remotes")
@@ -261,6 +271,7 @@ fn describe(code: GitErrorCode) -> &'static str {
         GitErrorCode::GhUnavailable => "the GitHub CLI (gh) is not installed",
         GitErrorCode::GhUnauthenticated => "the GitHub CLI is not logged in; run `gh auth login`",
         GitErrorCode::NotMergeable => "the pull request cannot be merged",
+        GitErrorCode::PrChanged => "the pull request changed; review the new commits",
         GitErrorCode::Timeout => "timed out",
         GitErrorCode::Failed => "failed",
     }

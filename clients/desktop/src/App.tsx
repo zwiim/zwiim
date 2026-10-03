@@ -58,6 +58,7 @@ import { DiffPanel, DiffView } from "@/panels/DiffPanel";
 import { FilesPanel, FileView } from "@/panels/FilesPanel";
 import { GitPanel } from "@/panels/GitPanel";
 import { HostPathDialog, HostPicker, PairDialog, type PairTarget } from "@/panels/Hosts";
+import { PrBanner } from "@/panels/PrBanner";
 import { SessionPanel } from "@/panels/SessionPanel";
 import { SettingsDialog, type SettingsTab } from "@/panels/Settings";
 import { Sidebar } from "@/panels/Sidebar";
@@ -811,6 +812,7 @@ function WorkspacePanel({
             drag.current = null;
           }}
         />
+        <PrBanner workspaceId={workspaceId} />
         <nav className="flex h-11 shrink-0 items-center gap-1 border-b px-2" aria-label="Views">
           {TABS.map((t) => (
             <button

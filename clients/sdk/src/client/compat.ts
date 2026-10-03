@@ -35,6 +35,7 @@ export const CLIENT_CAPABILITIES: readonly string[] = [
   "workspace.worktrees",
   "files.write",
   "git",
+  "git.pr",
   "terminal",
   "session.options",
   "session.effort_by_model",

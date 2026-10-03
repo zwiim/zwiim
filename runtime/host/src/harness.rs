@@ -32,7 +32,7 @@ pub use system_prompt::{Authority, Layer};
 
 /// The version of the instruction text. Bump it whenever the text rendered
 /// for the same facts changes.
-pub const INSTRUCTIONS_VERSION: &str = "zwiim-instructions/1";
+pub const INSTRUCTIONS_VERSION: &str = "zwiim-instructions/2";
 
 /// Git facts about a session's working directory. The current branch is
 /// left out on purpose: the agent can switch branches mid-session, so it
@@ -154,7 +154,7 @@ mod tests {
                 instruct(&worktree()).version,
                 instruct(&worktree()).digest.as_str()
             ),
-            ("zwiim-instructions/1", "a7780aed4189")
+            ("zwiim-instructions/2", "db97642758fe")
         );
     }
 

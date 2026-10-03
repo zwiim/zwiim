@@ -38,3 +38,5 @@ runtime/host/src/git_harness/github.rs
 runtime/host/src/git_harness/tests.rs
 runtime/host/src/acp/git_tools.rs
 runtime/host/src/acp/git_tools/tests.rs
+runtime/host/src/git_harness/pr_state.rs
+runtime/host/src/pr_watch.rs

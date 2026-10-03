@@ -30,6 +30,12 @@ export type HostErrorCode =
   | "cloud_unavailable"
   | "host_restarting"
   | "update_unavailable"
+  | "not_mergeable"
+  | "pr_changed"
+  | "gh_unavailable"
+  | "gh_unauthenticated"
+  /** GitHub could not be reached from the Host (not this client's connection). */
+  | "github_unreachable"
   | "internal";
 
 export interface WireError {
@@ -51,6 +57,11 @@ export interface WorkspaceBusyDetails {
 export interface HostRestartingDetails {
   /** When to try again; the connection itself reconnects on its own. */
   retry_after_ms: number;
+}
+
+/** `not_mergeable` details: why GitHub would not merge it now, in words for the user. */
+export interface NotMergeableDetails {
+  reason: string;
 }
 
 /** `workspace_dirty` details: uncommitted entries a forced removal discards. */
@@ -680,6 +691,82 @@ export interface SessionHistory {
   turns: HistoryTurn[];
 }
 
+// ─── pull requests ───────────────────────────────────────────────────────
+
+export type PrLifecycle = "open" | "draft" | "merged" | "closed";
+export type CheckState = "passed" | "failed" | "pending" | "skipped";
+export type MergeMethod = "merge" | "squash" | "rebase";
+/** GitHub's `mergeStateStatus`. */
+export type MergeStatus =
+  | "clean"
+  | "unstable"
+  | "has_hooks"
+  | "blocked"
+  | "behind"
+  | "dirty"
+  | "draft"
+  | "unknown";
+
+export interface PrCheckItem {
+  name: string;
+  workflow: string | null;
+  state: CheckState;
+  /** The check's page on GitHub. */
+  link: string | null;
+}
+
+export interface PrChecksSummary {
+  passed: number;
+  failed: number;
+  pending: number;
+  skipped: number;
+  items: PrCheckItem[];
+}
+
+export interface PrMergeInfo {
+  /** GitHub would merge it now. */
+  allowed: boolean;
+  status: MergeStatus;
+  /** Why not, in words for the user; null when allowed or settled. */
+  reason: string | null;
+  /** The method a merge uses unless told otherwise. */
+  method: MergeMethod | null;
+  methods: MergeMethod[];
+}
+
+/** A workspace branch's pull request as the Host last saw it on GitHub. */
+export interface PrState {
+  number: number;
+  url: string;
+  title: string;
+  state: PrLifecycle;
+  base: string;
+  head: string;
+  /** The head commit a merge is pinned to. */
+  head_sha: string;
+  merged_at: string | null;
+  checks: PrChecksSummary;
+  merge: PrMergeInfo;
+}
+
+/** Why the Host cannot see pull requests: `gh_unavailable` | `gh_unauthenticated`. */
+export interface PrError {
+  code: string;
+  message: string;
+}
+
+/** A workspace's pull request: `pr` null when its branch has none. */
+export interface PrEntry {
+  pr: PrState | null;
+  error: PrError | null;
+}
+
+export interface PrMerged {
+  number: number;
+  method: MergeMethod;
+  merged_at: string | null;
+}
+
 // ─── host state feed ─────────────────────────────────────────────────────
 
 /**
@@ -694,6 +781,7 @@ export type HostFeedEvent = { seq: number } & (
   | { type: "session.removed"; payload: { session_id: string; workspace_id: string } }
   | { type: "terminal.changed"; payload: { terminal: TerminalInfo } }
   | { type: "terminal.removed"; payload: { terminal_id: string } }
+  | { type: "workspace.pr_changed"; payload: { workspace_id: string } & PrEntry }
 );
 
 /** The feed's baseline: what `workspace.list`, `session.list` and `terminal.list` return. */
@@ -705,6 +793,8 @@ export interface HostSnapshot {
   workspaces: WorkspaceInfo[];
   sessions: SessionSummary[];
   terminals: TerminalInfo[];
+  /** Workspaces whose branch has a pull request (or whose PR lookup failed). */
+  prs?: Record<string, PrEntry>;
 }
 
 // ─── event socket ────────────────────────────────────────────────────────
@@ -916,6 +1006,16 @@ export interface Operations {
   ];
   "git.diff": [{ workspace_id: string; file?: string }, WorkspaceDiff];
   "git.branches": [{ workspace_id: string }, WorktreeBases];
+  /** The Host's view of the branch's pull request; `refresh` asks GitHub now. */
+  "git.pr": [{ workspace_id: string; refresh?: boolean }, PrEntry];
+  /**
+   * Merge now, pinned to `head_sha`: `pr_changed` if the PR moved,
+   * `not_mergeable` (details.reason) if GitHub would not merge it now.
+   */
+  "git.pr_merge": [
+    { workspace_id: string; number: number; head_sha: string; method?: MergeMethod },
+    PrMerged,
+  ];
   /** `base`: a branch from `git.branches`; the root's HEAD when absent. */
   "workspace.create_worktree": [{ workspace_id: string; base?: string }, WorkspaceInfo];
   "workspace.remove_worktree": [{ workspace_id: string; force?: boolean }, WorktreeRemoved];
@@ -991,6 +1091,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "host.claim",
   "host.update.apply",
   "git.commit",
+  "git.pr_merge",
   "session.set_options",
   "workspace.add",
   "workspace.create_folder",

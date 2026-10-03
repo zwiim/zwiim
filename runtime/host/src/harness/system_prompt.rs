@@ -138,15 +138,29 @@ fn git(input: &HarnessInput) -> Option<String> {
                 "New Zwiim worktrees are based on {default} and its resolved base commit, not the local master branch. Never silently fall back to a local master."
             ));
         }
+        // GitHub names the base as a branch (`main`), not the remote-tracking ref (`origin/main`).
+        let base = default
+            .split_once('/')
+            .map_or(default, |(_, branch)| branch);
         lines.push(format!(
-            "Pull requests: first `git fetch`, then check the diff against {default}. Push the branch, then open the PR against {default} with `gh pr create` if it is available. Give it a short title and a body that says what changed and how it was tested. Report the PR URL."
+            "Raising or opening a PR: commit pending changes if there are any, push with the `git_push` tool, then open the PR with the `git_pr_create` tool, base `{base}`. Give it a short title and a body that says what changed and how it was tested. Report the PR URL. Don't wait for CI; Zwiim shows the checks to the user."
         ));
         lines.push(format!(
             "Updating a branch: merge {default} into it. Don't rebase a branch that is already pushed unless the user asks."
         ));
     }
+    if git.default_branch.is_none() {
+        lines.push(
+            "Raising or opening a PR: commit pending changes if there are any, push with the `git_push` tool, then open the PR with the `git_pr_create` tool. Report the PR URL. Don't wait for CI; Zwiim shows the checks to the user."
+                .into(),
+        );
+    }
     lines.push(
-        "Merging a PR: only when asked. Check that CI and reviews pass first, and follow the repo's merge style."
+        "Use the Zwiim Git tools (`git_status`, `git_commit`, `git_push`, `git_pr_create`, …) for Git and GitHub work; run `git` or `gh` directly only when those tools are unavailable."
+            .into(),
+    );
+    lines.push(
+        "Merging a PR: only when asked. Check that CI and reviews pass first, follow the repo's merge style, and merge with the `git_pr_merge` tool."
             .into(),
     );
     lines.push(
@@ -193,7 +207,10 @@ mod tests {
         assert!(text.contains(
             "- New Zwiim worktrees are based on origin/main and its resolved base commit"
         ));
-        assert!(text.contains("check the diff against origin/main. Push the branch, then open the PR against origin/main"));
+        assert!(text.contains("- Raising or opening a PR: commit pending changes if there are any, push with the `git_push` tool, then open the PR with the `git_pr_create` tool, base `main`."));
+        assert!(text.contains("Report the PR URL. Don't wait for CI"));
+        assert!(!text.contains("gh pr create"));
+        assert!(text.contains("run `git` or `gh` directly only when those tools are unavailable"));
         assert!(text.contains("- Updating a branch: merge origin/main into it."));
         assert!(text.contains("\nRuntime\n- Zwiim Host is the source of truth"));
         assert!(text.contains("\nRules\n- Inspect before changing."));
@@ -258,6 +275,7 @@ mod tests {
         });
         assert!(text.contains("- Default branch: origin/master."));
         assert!(text.contains("merge origin/master into it"));
+        assert!(text.contains("the `git_pr_create` tool, base `master`."));
         assert!(!text.contains("origin/main"));
     }
 
@@ -285,7 +303,8 @@ mod tests {
             ..worktree()
         });
         assert!(!text.contains("Default branch"));
-        assert!(!text.contains("Pull requests:"));
+        assert!(!text.contains("against origin/main"));
+        assert!(text.contains("- Raising or opening a PR: commit pending changes if there are any, push with the `git_push` tool, then open the PR with the `git_pr_create` tool."));
         assert!(!text.contains("Updating a branch:"));
         assert!(!text.contains("New Zwiim worktrees"));
         assert!(text.contains("- Merging a PR: only when asked."));

@@ -1,7 +1,9 @@
 //! Pull requests through the user's installed GitHub CLI and its own login.
 //! The Host never bundles `gh` and never hands it a token.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 use serde::Deserialize;
 
@@ -10,6 +12,9 @@ use super::local::{not_an_option, require_branch};
 use super::op::{
     MergeMethod, PrCheck, PrComment, PrComments, PrCreated, PrMerged, PrReview, PrReviewComment,
     PrSummary,
+};
+use super::pr_state::{
+    MergeStatus, PrLifecycle, PrState, RawPr, RepoMergeSettings, PR_STATE_FIELDS, REPO_MERGE_FIELDS,
 };
 use super::run::{self, Output, GITHUB};
 use super::GitHost;
@@ -166,28 +171,170 @@ pub(super) async fn pr_comments(
     })
 }
 
-/// Merge the pull request now with `method`. Keeps the head branch; never
-/// bypasses branch protection or queues an automatic merge.
+/// The pull request for `branch`, merged and closed ones included; `None`
+/// when the branch has none.
+pub(super) async fn pr_state(
+    host: &GitHost<'_>,
+    root: &str,
+    branch: &str,
+) -> Result<Option<PrState>, GitError> {
+    not_an_option("branch", branch)?;
+    let raw = match view_raw(host, root, branch).await {
+        Ok(raw) => raw,
+        Err(e) if e.code == GitErrorCode::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let methods = merge_methods(host, root).await?;
+    Ok(Some(raw.into_state(methods)))
+}
+
+/// Merge pull request `number` (else the current branch's) now with `method`
+/// (else the repository's preferred one). With `expected_head`, only if its
+/// head is still that commit.
+///
+/// Merges only what GitHub would merge right now: a pull request it reports
+/// not mergeable is refused before `gh` runs, the merge is pinned to the head
+/// it was checked at, and a merge `gh` queued for later instead (auto-merge)
+/// is turned off again and reported as `not_mergeable`. Keeps the head branch;
+/// never bypasses branch protection.
 pub(super) async fn pr_merge(
     host: &GitHost<'_>,
     root: &str,
     number: Option<u64>,
-    method: MergeMethod,
+    method: Option<MergeMethod>,
+    expected_head: Option<&str>,
 ) -> Result<PrMerged, GitError> {
     // Pin the number first so the merge acts on exactly the pull request
     // reported back.
-    let number = match number {
-        Some(n) => n,
-        None => pr_view(host, root, None).await?.number,
+    let target = match number {
+        Some(n) => n.to_string(),
+        None => pr_view(host, root, None).await?.number.to_string(),
     };
-    let args = [
+    let mut pr = view_raw(host, root, &target).await?;
+    // GitHub works mergeability out lazily; the first read after a push is
+    // often UNKNOWN.
+    for _ in 0..UNKNOWN_RETRIES {
+        if pr.merge_status() != MergeStatus::Unknown || pr.lifecycle().is_final() {
+            break;
+        }
+        tokio::time::sleep(UNKNOWN_RETRY_DELAY).await;
+        pr = view_raw(host, root, &target).await?;
+    }
+    let number = pr.number;
+    if let Some(expected) = expected_head {
+        if pr.head_ref_oid != expected {
+            return Err(GitError::new(
+                GitErrorCode::PrChanged,
+                format!("Pull request #{number} has new commits; review them and merge again"),
+            ));
+        }
+    }
+    let methods = merge_methods(host, root).await?;
+    let method = method
+        .or_else(|| methods.first().copied())
+        .unwrap_or_default();
+    let head = pr.head_ref_oid.clone();
+    let state = pr.into_state(methods);
+    if !state.merge.allowed {
+        let why = match state.state {
+            PrLifecycle::Merged => "it is already merged".to_string(),
+            PrLifecycle::Closed => "it is closed".to_string(),
+            _ => state
+                .merge
+                .reason
+                .clone()
+                .unwrap_or_else(|| "GitHub will not merge it now".to_string()),
+        };
+        return Err(GitError::new(
+            GitErrorCode::NotMergeable,
+            format!("Pull request #{number} cannot be merged: {why}"),
+        ));
+    }
+    let mut args = vec![
         "pr".to_string(),
         "merge".to_string(),
         number.to_string(),
         method.flag().to_string(),
     ];
+    if !head.is_empty() {
+        args.extend(["--match-head-commit".to_string(), head]);
+    }
     gh(host, root, "pr merge", &args).await?;
-    Ok(PrMerged { number, method })
+
+    let after = view_raw(host, root, &number.to_string()).await?;
+    if after.lifecycle() == PrLifecycle::Merged {
+        return Ok(PrMerged {
+            number,
+            method,
+            merged_at: after.merged_at,
+        });
+    }
+    if after.auto_merge_request.is_some() {
+        let disable = [
+            "pr".to_string(),
+            "merge".to_string(),
+            number.to_string(),
+            "--disable-auto".to_string(),
+        ];
+        if let Err(e) = gh(host, root, "pr merge --disable-auto", &disable).await {
+            tracing::warn!(
+                number,
+                code = e.code.as_str(),
+                "[git-harness] could not turn auto-merge off"
+            );
+        }
+        return Err(GitError::new(
+            GitErrorCode::NotMergeable,
+            format!(
+                "Pull request #{number} was queued to merge later instead of merging now; \
+                 the queued merge was turned off"
+            ),
+        ));
+    }
+    Err(GitError::new(
+        GitErrorCode::NotMergeable,
+        format!("GitHub did not merge pull request #{number}"),
+    ))
+}
+
+const UNKNOWN_RETRIES: usize = 3;
+const UNKNOWN_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+
+async fn view_raw(host: &GitHost<'_>, root: &str, target: &str) -> Result<RawPr, GitError> {
+    let args = [
+        "pr".to_string(),
+        "view".to_string(),
+        target.to_string(),
+        "--json".to_string(),
+        PR_STATE_FIELDS.to_string(),
+    ];
+    let out = gh(host, root, "pr view", &args).await?;
+    parse("pr view", &out.stdout)
+}
+
+/// The merge methods `root`'s repository allows, preferred first. Read once
+/// per repository root for the life of the process: repository settings
+/// rarely change, and a merge GitHub refuses says so anyway.
+async fn merge_methods(host: &GitHost<'_>, root: &str) -> Result<Vec<MergeMethod>, GitError> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Vec<MergeMethod>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(methods) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(root) {
+        return Ok(methods.clone());
+    }
+    let args = [
+        "repo".to_string(),
+        "view".to_string(),
+        "--json".to_string(),
+        REPO_MERGE_FIELDS.to_string(),
+    ];
+    let out = gh(host, root, "repo view", &args).await?;
+    let settings: RepoMergeSettings = parse("repo view", &out.stdout)?;
+    let methods = settings.methods();
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(root.to_string(), methods.clone());
+    Ok(methods)
 }
 
 fn pr_args(sub: &str, number: Option<u64>) -> Vec<String> {

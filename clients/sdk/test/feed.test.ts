@@ -6,6 +6,7 @@ import { selectWorkspaceTree } from "../src/state/workspaces";
 import type {
   HostFeedEvent,
   HostSnapshot,
+  PrState,
   SessionSummary,
   TerminalInfo,
   WorkspaceInfo,
@@ -57,6 +58,19 @@ function apply(state: HostState, ...events: Omit<HostFeedEvent, "seq">[]): HostS
 }
 const fromSnapshot = (parts: Partial<HostSnapshot>, base = initialHostState()) =>
   reduceHost(base, { type: "host_snapshot", snapshot: snap(parts) });
+const pr = (number: number, extra: Partial<PrState> = {}): PrState => ({
+  number,
+  url: `https://github.com/o/r/pull/${number}`,
+  title: "Add thing",
+  state: "open",
+  base: "main",
+  head: "zwiim/a",
+  head_sha: "abc123",
+  merged_at: null,
+  checks: { passed: 0, failed: 0, pending: 1, skipped: 0, items: [] },
+  merge: { allowed: true, status: "unstable", reason: null, method: "squash", methods: ["squash"] },
+  ...extra,
+});
 const ids = (list: { session_id: string }[] | undefined) => list?.map((s) => s.session_id);
 
 describe("host feed reducers", () => {
@@ -115,6 +129,42 @@ describe("host feed reducers", () => {
     s = apply(s, { type: "workspace.removed", payload: { workspace_id: "a" } });
     expect(s.workspaces?.map((w) => w.workspace_id)).toEqual(["root"]);
     expect(s.sessionsByWorkspace).toEqual({ root: [] });
+  });
+
+  it("pull requests come from the snapshot and follow workspace.pr_changed", () => {
+    let s = fromSnapshot({
+      workspaces: [ws("root"), ws("a"), ws("b")],
+      prs: { a: { pr: pr(7), error: null } },
+    });
+    expect(s.prs.a?.pr?.number).toBe(7);
+
+    const settled = pr(7, { checks: { passed: 2, failed: 0, pending: 0, skipped: 0, items: [] } });
+    s = apply(
+      s,
+      { type: "workspace.pr_changed", payload: { workspace_id: "a", pr: settled, error: null } },
+      {
+        type: "workspace.pr_changed",
+        payload: { workspace_id: "b", pr: null, error: { code: "gh_unauthenticated", message: "Sign in to gh" } },
+      },
+    );
+    expect(s.prs.a?.pr?.checks.passed).toBe(2);
+    expect(s.prs.b).toEqual({ pr: null, error: { code: "gh_unauthenticated", message: "Sign in to gh" } });
+
+    const merged = pr(7, { state: "merged", merged_at: "2026-10-03T00:00:00Z" });
+    s = apply(s, { type: "workspace.pr_changed", payload: { workspace_id: "a", pr: merged, error: null } });
+    expect(s.prs.a?.pr?.state).toBe("merged");
+
+    // No pull request and no error: the entry goes.
+    s = apply(s, { type: "workspace.pr_changed", payload: { workspace_id: "a", pr: null, error: null } });
+    expect("a" in s.prs).toBe(false);
+    s = apply(s, { type: "workspace.removed", payload: { workspace_id: "b" } });
+    expect(s.prs).toEqual({});
+
+    // A new snapshot replaces them all; a Host without PRs has none.
+    s = fromSnapshot({ workspaces: [ws("root")], prs: { root: { pr: pr(9), error: null } } }, s);
+    expect(Object.keys(s.prs)).toEqual(["root"]);
+    s = fromSnapshot({ workspaces: [ws("root")] }, s);
+    expect(s.prs).toEqual({});
   });
 
   it("workspace.diff_changed invalidates only that workspace's diff", () => {

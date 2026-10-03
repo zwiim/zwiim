@@ -9,8 +9,12 @@ import { historyCovers, type SessionFrame } from "../state/session";
 import type {
   AgentSummary,
   HostOwner,
+  MergeMethod,
   OpParams,
   OptionsRequest,
+  PrEntry,
+  PrMerged,
+  PrState,
   SessionOptions,
   WorkspaceDiff,
   WorkspaceInfo,
@@ -231,6 +235,20 @@ export class HostController {
   /** The workspace's read-only diff; with `file`, that file's patch too. */
   async loadDiff(workspace_id: string, file?: string): Promise<WorkspaceDiff> {
     return this.client.request("git.diff", file === undefined ? { workspace_id } : { workspace_id, file });
+  }
+
+  /**
+   * Merge the workspace's pull request now, pinned to the head the user saw.
+   * Never retried. The feed's `workspace.pr_changed` brings the merged state.
+   */
+  async mergePr(workspace_id: string, pr: PrState, method?: MergeMethod): Promise<PrMerged> {
+    const params = { workspace_id, number: pr.number, head_sha: pr.head_sha };
+    return this.client.request("git.pr_merge", method === undefined ? params : { ...params, method });
+  }
+
+  /** Ask the Host to look the pull request up on GitHub now. */
+  async refreshPr(workspace_id: string): Promise<PrEntry> {
+    return this.client.request("git.pr", { workspace_id, refresh: true });
   }
 
   async refreshSessions(workspace_id: string): Promise<void> {

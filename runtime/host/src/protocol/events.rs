@@ -15,6 +15,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::acp::git_tools;
 use crate::acp::plan_approval::PendingPlanApprovalState;
 use crate::acp::question::{PendingQuestionState, QuestionSpec};
 use crate::acp::session_state::{
@@ -69,9 +70,33 @@ fn relativize(text: &str, root: Option<&str>) -> String {
     }
 }
 
-/// Tool-call content as clients see it: workspace-relative, and without the
-/// agent-side terminal ids the host inlines as `[Terminal: <id>]`.
+/// A tool-call title as clients see it: Zwiim's Git tools by their readable
+/// step names, never the agent's MCP naming.
+fn tool_title(title: &str, root: Option<&str>) -> String {
+    match git_tools::kind_of_title(title) {
+        Some(kind) => git_tools::display_title(kind).to_string(),
+        None => relativize(title, root),
+    }
+}
+
+/// A tool-call kind as clients see it: a Zwiim Git tool is never a shell
+/// command, whatever the agent files it under.
+fn tool_kind<'a>(kind: Option<&'a str>, title: Option<&str>) -> Option<&'a str> {
+    match title.and_then(git_tools::kind_of_title) {
+        Some(_) => Some("other"),
+        None => kind,
+    }
+}
+
+/// Tool-call content as clients see it: workspace-relative, without the
+/// agent-side terminal ids the host inlines as `[Terminal: <id>]`, Git tools
+/// by their readable names and a PR opened or merged as one line.
 fn tool_content(text: &str, root: Option<&str>) -> String {
+    if let Some(line) = git_tools::display_result(text) {
+        return line;
+    }
+    let readable = git_tools::readable_tool_names(text);
+    let text = readable.as_str();
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find("[Terminal: ") {
@@ -108,8 +133,6 @@ pub fn project_envelope(
 }
 
 fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, Value)> {
-    let rel = |text: &str| relativize(text, root);
-    let rel_opt = |text: &Option<String>| text.as_deref().map(rel);
     let content_opt = |text: &Option<String>| text.as_deref().map(|t| tool_content(t, root));
     Some(match event {
         // Sub-agent chunks (`parent_tool_use_id` set) are delegation internals.
@@ -137,8 +160,8 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
             "agent.tool_call",
             json!({
                 "tool_call_id": tool_call_id,
-                "title": rel(title),
-                "kind": kind,
+                "title": tool_title(title, root),
+                "kind": tool_kind(Some(kind.as_str()), Some(title)),
                 "status": status,
                 "content": content_opt(content)
                     .or_else(|| command_output(raw_output.as_deref(), root)),
@@ -155,7 +178,7 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
             "agent.tool_call_update",
             json!({
                 "tool_call_id": tool_call_id,
-                "title": rel_opt(title),
+                "title": title.as_deref().map(|t| tool_title(t, root)),
                 "status": status,
                 "content": content_opt(content)
                     .or_else(|| command_output(raw_output.as_deref(), root)),
@@ -319,7 +342,10 @@ fn permission_tool(tool_call: &Value, root: Option<&str>) -> (Value, Option<Stri
     let plan = plan_of(tool_call, text.as_deref()).map(|p| rel(&capped(&p)));
     let tool = json!({
         "tool_call_id": tool_call.get("toolCallId").and_then(Value::as_str),
-        "kind": tool_call.get("kind").and_then(Value::as_str),
+        "kind": tool_kind(
+            tool_call.get("kind").and_then(Value::as_str),
+            tool_call.get("title").and_then(Value::as_str),
+        ),
         "text": text.map(|t| rel(&capped(&t))),
         "diffs": diffs,
         "command": command.map(|c| rel(&c)),
@@ -340,7 +366,7 @@ fn permission_request(
         "title": tool_call
             .get("title")
             .and_then(Value::as_str)
-            .map(|t| relativize(t, root)),
+            .map(|t| tool_title(t, root)),
         "tool": tool,
         "plan_markdown": plan_markdown,
         "options": options
@@ -447,8 +473,11 @@ fn tool_call(t: &ToolCallState, root: Option<&str>) -> Value {
     };
     json!({
         "tool_call_id": t.id,
-        "title": relativize(&t.label, root),
-        "kind": to_value(&t.kind),
+        "title": tool_title(&t.label, root),
+        "kind": match git_tools::kind_of_title(&t.label) {
+            Some(_) => json!("other"),
+            None => to_value(&t.kind),
+        },
         "status": to_value(&t.status),
         "content": t.content.as_deref().map(|c| tool_content(c, root)).or(output),
     })
@@ -576,7 +605,7 @@ fn history_block(block: &ContentBlock, root: Option<&str>) -> Value {
         } => json!({
             "type": "tool_call",
             "tool_call_id": tool_use_id,
-            "title": tool_name,
+            "title": tool_title(tool_name, root),
             "input_preview": rel_opt(input_preview),
             "status": status,
         }),
@@ -989,6 +1018,102 @@ pub(crate) mod tests {
             .payload["kind"],
             "permission"
         );
+    }
+
+    #[test]
+    fn zwiim_git_tools_show_as_readable_steps() {
+        for (raw, kind) in [
+            ("mcp__zwiim-mcp__git_pr_create", "other"),
+            ("mcp.zwiim-mcp.git_pr_create", "execute"),
+        ] {
+            let call = project_envelope(
+                "s",
+                Some("/w/p"),
+                &env(AcpEvent::ToolCall {
+                    tool_call_id: "t1".into(),
+                    title: raw.into(),
+                    kind: kind.into(),
+                    status: "pending".into(),
+                    content: Some(format!("Tool: {raw}")),
+                    raw_input: None,
+                    raw_output: None,
+                    locations: None,
+                    meta: None,
+                    images: None,
+                }),
+            )
+            .unwrap();
+            assert_eq!(call.payload["title"], "Create pull request");
+            assert_eq!(call.payload["kind"], "other", "never a shell command");
+            assert_eq!(call.payload["content"], "Tool: Create pull request");
+
+            let done = project_envelope(
+                "s",
+                Some("/w/p"),
+                &env(AcpEvent::ToolCallUpdate {
+                    tool_call_id: "t1".into(),
+                    title: Some(raw.into()),
+                    status: Some("completed".into()),
+                    content: Some(
+                        r#"{"number":62,"op":"pr_create","url":"https://github.com/o/r/pull/62"}"#
+                            .into(),
+                    ),
+                    raw_input: None,
+                    raw_output: None,
+                    raw_output_append: None,
+                    locations: None,
+                    meta: None,
+                    images: None,
+                }),
+            )
+            .unwrap();
+            assert_eq!(done.payload["title"], "Create pull request");
+            assert_eq!(
+                done.payload["content"],
+                "Opened #62 · https://github.com/o/r/pull/62"
+            );
+        }
+
+        // The permission card names the step, not the MCP tool.
+        let ask = project_envelope(
+            "s",
+            None,
+            &env(AcpEvent::PermissionRequest {
+                request_id: "r1".into(),
+                tool_call: json!({"title": "mcp__zwiim-mcp__git_pr_merge", "kind": "execute"}),
+                options: vec![],
+                queued: 0,
+            }),
+        )
+        .unwrap();
+        assert_eq!(ask.payload["title"], "Merge pull request");
+        assert_eq!(ask.payload["tool"]["kind"], "other");
+
+        // A merge result, pretty-printed as the MCP result text is.
+        let merged = serde_json::to_string_pretty(
+            &json!({"op": "pr_merge", "number": 7, "method": "squash", "merged_at": null}),
+        )
+        .unwrap();
+        assert_eq!(tool_content(&merged, None), "Merged #7");
+
+        // Transcript history: Codex's spelling too.
+        let block = history_block(
+            &ContentBlock::ToolUse {
+                tool_use_id: Some("call_1".into()),
+                tool_name: "mcp__zwiim_mcp__git_push".into(),
+                input_preview: None,
+                status: Some("completed".into()),
+                meta: None,
+            },
+            None,
+        );
+        assert_eq!(block["title"], "Push branch");
+
+        // Other tools, and lookalikes, are left alone.
+        assert_eq!(tool_title("Run git push", None), "Run git push");
+        assert_eq!(tool_title("mcp__other__git_push", None), "mcp__other__git_push");
+        assert_eq!(tool_title("mcp__zwiim-mcp__browser_open", None), "mcp__zwiim-mcp__browser_open");
+        assert_eq!(tool_content(r#"{"op":"status"}"#, None), r#"{"op":"status"}"#);
     }
 
     #[test]

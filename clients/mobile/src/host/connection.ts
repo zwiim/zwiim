@@ -23,10 +23,13 @@ import {
   type ConnectionStatus,
   type HostLanEndpoint,
   type HostStore,
+  type MergeMethod,
   type OpName,
   type OpParams,
   type OpResult,
   type OptionsRequest,
+  type PrMerged,
+  type PrState,
   type SessionOptions,
   type WorkspaceInfo,
 } from "@zwiim/sdk";
@@ -263,6 +266,11 @@ export class HostConnection {
   /** Stop a session's agent (`session.stop`), keeping the session; never retried. */
   async stopSession(session_id: string): Promise<void> {
     await this.#live().stopSession(session_id);
+  }
+
+  /** Merge the workspace's pull request at the head shown (`git.pr_merge`); never retried. */
+  async mergePr(workspace_id: string, pr: PrState, method?: MergeMethod): Promise<PrMerged> {
+    return this.#live().mergePr(workspace_id, pr, method);
   }
 
   /**

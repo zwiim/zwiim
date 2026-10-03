@@ -369,7 +369,10 @@ describe("transcript", () => {
       type: "event",
       event: { session_id: "s1", seq: 9, type: "agent.tool_call_update", payload: { tool_call_id: "k1", title: null, status: "completed", content: "notes.txt\nalpha" } },
     });
-    const [run, edit, read, search, list, mcp, quoted] = screen.getAllByTestId("tool-call");
+    // The Host titles Zwiim's own Git tools in words, whatever the agent called them.
+    await call(10, "k8", "Create pull request", "other", "Opened #12 · https://github.com/o/r/pull/12");
+    const [run, edit, read, search, list, mcp, quoted, pr] = screen.getAllByTestId("tool-call");
+    expect(pr!.textContent).toBe("Create pull requestrunningOpened #12 · https://github.com/o/r/pull/12");
     fireEvent.click(within(run!).getByRole("button"));
     expect([...run!.querySelectorAll("pre")].map((p) => p.textContent)).toEqual(["$ ls -la && cat notes.txt", "notes.txt\nalpha"]);
     expect(edit!.textContent).toContain("Edit");

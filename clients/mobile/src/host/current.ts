@@ -9,10 +9,13 @@ import {
   type ConnectionMode,
   type HostHello,
   type HostStore,
+  type MergeMethod,
   type OpName,
   type OpParams,
   type OpResult,
   type OptionsRequest,
+  type PrMerged,
+  type PrState,
   type RequestAnswer,
   type SessionOptions,
   type WorkspaceInfo,
@@ -204,6 +207,15 @@ export class CurrentHost {
    */
   async stopSession(session_id: string): Promise<void> {
     await this.#opened().stopSession(session_id);
+  }
+
+  /**
+   * Merge a workspace's pull request now, pinned to the head the phone shows:
+   * the Host refuses a PR that moved since (`pr_changed`) or that GitHub would
+   * not merge now (`not_mergeable`). The feed then reports it merged. Never retried.
+   */
+  async mergePr(workspace_id: string, pr: PrState, method?: MergeMethod): Promise<PrMerged> {
+    return this.#opened().mergePr(workspace_id, pr, method);
   }
 
   /**

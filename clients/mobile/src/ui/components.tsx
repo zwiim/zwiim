@@ -93,7 +93,7 @@ export function StatusDot({ state }: { state: DotState }) {
   return <View style={[styles.halo, { backgroundColor: `${color}33` }]}>{dot}</View>;
 }
 
-export type ButtonKind = "primary" | "need" | "secondary" | "ghost" | "destructive" | "inverse";
+export type ButtonKind = "primary" | "need" | "done" | "secondary" | "ghost" | "destructive" | "inverse";
 
 export function Button({
   label,
@@ -126,6 +126,8 @@ export function Button({
   const look = {
     primary: { bg: theme.accent, fg: theme.accentInk },
     need: { bg: theme.need, fg: theme.needInk },
+    // Merge only (DESIGN.md, PR strip).
+    done: { bg: theme.done, fg: theme.doneInk },
     secondary: { bg: theme.raised, fg: theme.fg },
     ghost: { bg: "transparent", fg: theme.fg },
     destructive: { bg: "transparent", fg: theme.err },
@@ -408,12 +410,15 @@ export function Chip({
   label,
   glyph,
   large,
+  badge,
   onPress,
   testID,
 }: {
   label: string;
   glyph?: string;
   large?: boolean;
+  /** Mono text after the label in its own color: the branch's PR, `#12`. */
+  badge?: { text: string; color: string };
   onPress(): void;
   testID?: string;
 }) {
@@ -421,7 +426,7 @@ export function Chip({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={glyph ? `${glyph} ${label}` : label}
+      accessibilityLabel={[glyph, label, badge && `pull request ${badge.text}`].filter(Boolean).join(" ")}
       onPress={onPress}
       hitSlop={large ? undefined : 6}
       style={({ pressed }) => [styles.chip, large && styles.chipLarge, { backgroundColor: pressed ? theme.raised : theme.surface }]}
@@ -435,6 +440,11 @@ export function Chip({
       <T variant="mono" numberOfLines={1} style={large ? [styles.shrink, styles.chipLargeText] : styles.shrink}>
         {label}
       </T>
+      {badge ? (
+        <T variant="monoSm" color={badge.color} testID={testID ? `${testID}-pr` : undefined}>
+          {badge.text}
+        </T>
+      ) : null}
       <Icon icon={ChevronDown} color={theme.mut} size={14} />
     </Pressable>
   );

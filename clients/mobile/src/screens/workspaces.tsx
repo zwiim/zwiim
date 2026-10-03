@@ -27,11 +27,13 @@ import {
   worktreeChoices,
   worktreeError,
 } from "../host/workspace";
+import { prBadge } from "../host/pr";
 import { currentHost } from "../services";
 import { Button, Chip, Sheet, T } from "../ui/components";
 import { ChevronDown, ChevronLeft, ChevronRight, Icon, Plus } from "../ui/icons";
 import { radius, space, type, useTheme } from "../ui/tokens";
 import { useHostName } from "./HostFrame";
+import { toneColor } from "./PrStrip";
 import { RemoveWorktree } from "./RemoveWorktree";
 
 type Level = { kind: "workspaces" } | { kind: "worktrees"; root_id: string; fromList: boolean };
@@ -39,9 +41,11 @@ type Level = { kind: "workspaces" } | { kind: "worktrees"; root_id: string; from
 /** `[ zwiim ▾ ]  [ ⎇ fix-auth ▾ ]` for the selected worktree. */
 export function ContextBar() {
   const current = useWorkspace();
-  const { workspaces } = useHostState();
+  const { workspaces, prs } = useHostState();
+  const theme = useTheme();
   const [level, setLevel] = useState<Level | null>(null);
   if (!current) return null;
+  const pr = prBadge(prs[current.workspace_id]);
   const label = contextLabel(workspaces, current.workspace_id);
   const root_id = rootIdOf(current);
   return (
@@ -52,6 +56,7 @@ export function ContextBar() {
           large
           glyph="⎇"
           label={label.worktree}
+          badge={pr ? { text: pr.text, color: toneColor(pr.tone, theme) } : undefined}
           onPress={() => setLevel({ kind: "worktrees", root_id, fromList: false })}
           testID="worktree-chip"
         />

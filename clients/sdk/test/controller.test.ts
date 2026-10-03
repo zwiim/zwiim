@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostController } from "../src/client/controller";
 import { HostClient } from "../src/client/host-client";
 import { FakeTransport, flush } from "./fakes";
-import { MUTATING_OPS } from "../src/types/protocol";
+import { MUTATING_OPS, type PrState } from "../src/types/protocol";
 
 const snapshot = {
   status: "prompting" as const,
@@ -235,6 +235,25 @@ describe("HostController", () => {
     expect(t.transport.requests.at(-1)?.params).toEqual({ home_path: ["Projects", "zwiim"] });
     expect(t.transport.requests.at(-1)?.options).toEqual({ mutating: true });
     expect(t.store.getState().workspaces?.[0]?.display_path).toBe("~/Projects/zwiim");
+  });
+
+  it("merges the pull request at the head the user saw, never retried", async () => {
+    expect(MUTATING_OPS.has("git.pr_merge")).toBe(true);
+    expect(MUTATING_OPS.has("git.pr")).toBe(false);
+    const t = setup();
+    t.transport.handlers["git.pr_merge"] = () => ({ number: 7, method: "squash", merged_at: null });
+    t.transport.handlers["git.pr"] = () => ({ pr: null, error: null });
+    const pr = { number: 7, head_sha: "abc123" } as PrState;
+    expect(await t.controller.mergePr("a", pr)).toEqual({ number: 7, method: "squash", merged_at: null });
+    expect(t.transport.requests.at(-1)).toMatchObject({
+      op: "git.pr_merge",
+      params: { workspace_id: "a", number: 7, head_sha: "abc123" },
+      options: { mutating: true },
+    });
+    await t.controller.mergePr("a", pr, "rebase");
+    expect(t.transport.requests.at(-1)?.params).toMatchObject({ method: "rebase" });
+    await t.controller.refreshPr("a");
+    expect(t.transport.requests.at(-1)).toMatchObject({ op: "git.pr", params: { workspace_id: "a", refresh: true } });
   });
 
   it("browses without marking the read as mutating", () => {
