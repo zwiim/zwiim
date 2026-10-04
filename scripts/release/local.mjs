@@ -137,7 +137,7 @@ function main() {
   step("Sign and notarize the Host");
   const sign = (file, extra = []) =>
     run("codesign", ["--force", "--options", "runtime", "--timestamp", ...extra, "--sign", env.APPLE_SIGNING_IDENTITY, file]);
-  sign("target/release/zwiim-host", ["--identifier", "dev.zwiim.host"]);
+  sign("target/release/zwiim-host", ["--identifier", "com.zwiim.host"]);
   sign("target/release/zwiim-mcp");
   for (const b of ["zwiim-host", "zwiim-mcp"]) run("codesign", ["--verify", "--strict", "--verbose=2", `target/release/${b}`]);
   run("scripts/release/check-host-signature.sh", ["target/release/zwiim-host"]);
@@ -153,7 +153,7 @@ function main() {
   // codesign -dv reports on stderr.
   const signed = spawnSync("codesign", ["-dv", app], { cwd: ROOT, encoding: "utf8" }).stderr;
   if (!signed.includes(`TeamIdentifier=${env.APPLE_TEAM_ID}\n`)) fail(`${app} is not signed by team ${env.APPLE_TEAM_ID}`);
-  // The bundler re-signs its sidecars; the Host must come out as dev.zwiim.host.
+  // The bundler re-signs its sidecars; the Host must come out as com.zwiim.host.
   run("scripts/release/check-host-signature.sh", [`${app}/Contents/MacOS/zwiim-host`]);
   run("xcrun", ["stapler", "validate", app]);
   run("spctl", ["--assess", "--type", "execute", "--verbose=2", app]);

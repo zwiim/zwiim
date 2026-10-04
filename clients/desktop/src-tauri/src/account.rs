@@ -30,7 +30,7 @@ use tokio::sync::Notify;
 
 /// How long the browser has to come back before sign-in gives up.
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(300);
-const KEYCHAIN_SERVICE: &str = "dev.zwiim.desktop";
+const KEYCHAIN_SERVICE: &str = "com.zwiim.app";
 const KEYCHAIN_ACCOUNT: &str = "account-session";
 
 #[derive(Clone, Debug)]

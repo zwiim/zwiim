@@ -3,11 +3,11 @@ plugins {
   id 'expo-module-gradle-plugin'
 }
 
-group = 'dev.zwiim.lan'
+group = 'com.zwiim.lan'
 version = '0.1.0'
 
 android {
-  namespace "dev.zwiim.lan"
+  namespace "com.zwiim.lan"
   defaultConfig {
     versionCode 1
     versionName "0.1.0"

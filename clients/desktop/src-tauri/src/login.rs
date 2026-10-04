@@ -3,13 +3,17 @@
 //! for an installed app; the user turns it off in About & updates. Only the
 //! next login is affected: turning it on or off never starts or stops the
 //! running Host. Development builds (no bundled Host) leave it alone.
+//!
+//! The agent names this app in `AssociatedBundleIdentifiers`, so macOS
+//! attributes the background item to Zwiim rather than to the name on the
+//! signing certificate.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
-pub const LABEL: &str = "dev.zwiim.host";
+pub const LABEL: &str = "com.zwiim.host";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct Status {
@@ -42,7 +46,7 @@ fn xml_escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-pub fn plist(host: &Path) -> String {
+pub fn plist(host: &Path, app_id: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -50,6 +54,10 @@ pub fn plist(host: &Path) -> String {
 <dict>
   <key>Label</key>
   <string>{LABEL}</string>
+  <key>AssociatedBundleIdentifiers</key>
+  <array>
+    <string>{}</string>
+  </array>
   <key>ProgramArguments</key>
   <array>
     <string>{}</string>
@@ -66,6 +74,7 @@ pub fn plist(host: &Path) -> String {
 </dict>
 </plist>
 "#,
+        xml_escape(app_id),
         xml_escape(&host.to_string_lossy())
     )
 }
@@ -79,7 +88,7 @@ fn enabled_choice(config_dir: &Path) -> bool {
 
 /// Make the LaunchAgent match the user's choice, pointing at `host` (the app
 /// may have moved since it was written).
-fn sync(home: &Path, config_dir: &Path, host: &Path) -> std::io::Result<Status> {
+fn sync(home: &Path, config_dir: &Path, host: &Path, app_id: &str) -> std::io::Result<Status> {
     if !supported(host) {
         return Ok(Status {
             supported: false,
@@ -89,7 +98,7 @@ fn sync(home: &Path, config_dir: &Path, host: &Path) -> std::io::Result<Status> 
     let enabled = enabled_choice(config_dir);
     let path = agent_path(home);
     if enabled {
-        let want = plist(host);
+        let want = plist(host, app_id);
         if std::fs::read_to_string(&path).ok().as_deref() != Some(want.as_str()) {
             std::fs::create_dir_all(path.parent().unwrap())?;
             let tmp = path.with_extension("plist.part");
@@ -105,13 +114,19 @@ fn sync(home: &Path, config_dir: &Path, host: &Path) -> std::io::Result<Status> 
     })
 }
 
-fn set(home: &Path, config_dir: &Path, host: &Path, enabled: bool) -> std::io::Result<Status> {
+fn set(
+    home: &Path,
+    config_dir: &Path,
+    host: &Path,
+    app_id: &str,
+    enabled: bool,
+) -> std::io::Result<Status> {
     std::fs::create_dir_all(config_dir)?;
     std::fs::write(
         choice_path(config_dir),
         serde_json::to_vec(&Choice { enabled }).unwrap(),
     )?;
-    sync(home, config_dir, host)
+    sync(home, config_dir, host, app_id)
 }
 
 fn dirs_for(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
@@ -120,10 +135,15 @@ fn dirs_for(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
     Ok((home, config))
 }
 
+/// This app's bundle identifier (`identifier` in tauri.conf.json).
+fn app_id(app: &tauri::AppHandle) -> &str {
+    &app.config().identifier
+}
+
 /// At launch: keep the LaunchAgent in line with the choice and this app's path.
 pub fn sync_at_launch(app: &tauri::AppHandle) {
     let result = dirs_for(app).and_then(|(home, config)| {
-        sync(&home, &config, &super::host_binary()).map_err(|e| e.to_string())
+        sync(&home, &config, &super::host_binary(), app_id(app)).map_err(|e| e.to_string())
     });
     if let Err(e) = result {
         eprintln!("zwiim: could not update the login item: {e}");
@@ -133,13 +153,13 @@ pub fn sync_at_launch(app: &tauri::AppHandle) {
 #[tauri::command]
 pub fn host_login_status(app: tauri::AppHandle) -> Result<Status, String> {
     let (home, config) = dirs_for(&app)?;
-    sync(&home, &config, &super::host_binary()).map_err(|e| e.to_string())
+    sync(&home, &config, &super::host_binary(), app_id(&app)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn host_login_set(app: tauri::AppHandle, enabled: bool) -> Result<Status, String> {
     let (home, config) = dirs_for(&app)?;
-    set(&home, &config, &super::host_binary(), enabled).map_err(|e| e.to_string())
+    set(&home, &config, &super::host_binary(), app_id(&app), enabled).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -147,10 +167,11 @@ mod tests {
     use super::*;
 
     const BUNDLED: &str = "/Applications/Zwiim & Co.app/Contents/MacOS/zwiim-host";
+    const APP_ID: &str = "com.zwiim.app";
 
     #[test]
     fn the_agent_runs_the_bundled_host_under_its_supervisor() {
-        let p = plist(Path::new(BUNDLED));
+        let p = plist(Path::new(BUNDLED), APP_ID);
         assert!(p.contains(
             "<string>/Applications/Zwiim &amp; Co.app/Contents/MacOS/zwiim-host</string>"
         ));
@@ -159,12 +180,21 @@ mod tests {
     }
 
     #[test]
+    fn the_agent_is_attributed_to_this_app() {
+        let p = plist(Path::new(BUNDLED), APP_ID);
+        assert!(p.contains(
+            "<key>AssociatedBundleIdentifiers</key>\n  <array>\n    <string>com.zwiim.app</string>\n  </array>"
+        ));
+    }
+
+    #[test]
     fn on_by_default_off_when_chosen_and_never_for_a_development_build() {
         let home = tempfile::tempdir().unwrap();
         let config = tempfile::tempdir().unwrap();
         let agent = agent_path(home.path());
+        assert!(agent.ends_with("Library/LaunchAgents/com.zwiim.host.plist"));
         if cfg!(target_os = "macos") {
-            let s = sync(home.path(), config.path(), Path::new(BUNDLED)).unwrap();
+            let s = sync(home.path(), config.path(), Path::new(BUNDLED), APP_ID).unwrap();
             assert_eq!(
                 s,
                 Status {
@@ -175,7 +205,14 @@ mod tests {
             assert!(std::fs::read_to_string(&agent)
                 .unwrap()
                 .contains("--supervise"));
-            let s = set(home.path(), config.path(), Path::new(BUNDLED), false).unwrap();
+            let s = set(
+                home.path(),
+                config.path(),
+                Path::new(BUNDLED),
+                APP_ID,
+                false,
+            )
+            .unwrap();
             assert_eq!(
                 s,
                 Status {
@@ -185,13 +222,14 @@ mod tests {
             );
             assert!(!agent.exists());
             // The choice outlives the launch.
-            let s = sync(home.path(), config.path(), Path::new(BUNDLED)).unwrap();
+            let s = sync(home.path(), config.path(), Path::new(BUNDLED), APP_ID).unwrap();
             assert!(!s.enabled && !agent.exists());
         }
         let dev = sync(
             home.path(),
             config.path(),
             Path::new("/repo/target/debug/zwiim-host"),
+            APP_ID,
         )
         .unwrap();
         assert_eq!(

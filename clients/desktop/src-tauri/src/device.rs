@@ -14,7 +14,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
-const KEYCHAIN_SERVICE: &str = "dev.zwiim.desktop";
+const KEYCHAIN_SERVICE: &str = "com.zwiim.app";
 const KEYCHAIN_ACCOUNT: &str = "device-identity";
 
 /// A host this device has paired with.

@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>dev.zwiim.host</string>
+	<string>com.zwiim.host</string>
 	<key>CFBundleName</key>
 	<string>zwiim-host</string>
 	<key>CFBundleInfoDictionaryVersion</key>

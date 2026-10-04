@@ -4,6 +4,6 @@
     "modules": ["ZwiimLanModule"]
   },
   "android": {
-    "modules": ["dev.zwiim.lan.ZwiimLanModule"]
+    "modules": ["com.zwiim.lan.ZwiimLanModule"]
   }
 }

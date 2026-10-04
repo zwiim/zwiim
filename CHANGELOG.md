@@ -8,6 +8,17 @@ have their own versions and are listed under Compatibility.
 
 ## [Unreleased]
 
+### Changed
+- macOS names the Host's background item after Zwiim, not the developer's name on the signing certificate.
+- Zwiim's identifiers move to `com.zwiim`: Desktop `com.zwiim.app`, Host `com.zwiim.host`, Mobile `com.zwiim.mobile`.
+
+### Migration notes
+- Start fresh: this release does not carry over anything stored under the old `dev.zwiim` identifiers. Before installing it, quit Zwiim, delete `~/Library/LaunchAgents/dev.zwiim.host.plist`, and remove the old app.
+- A Host from 0.1.0-rc.4 or earlier refuses to update itself to one signed as `com.zwiim.host`: install the new Desktop by hand.
+- Desktop asks you to sign in again and pairs as a new device. On its first start, macOS may ask whether `zwiim-host` can use its Keychain items: choose Always Allow. If that prompt is denied, the Host stops with a Keychain error instead of starting with a new identity; open Zwiim again to be asked again.
+- The start-at-login choice and Desktop's window preferences start over from their defaults.
+- Mobile is a new app: uninstall the old Android app, install the new APK and pair again. iOS needs a new App ID and App Store Connect record for `com.zwiim.mobile`.
+
 ## [0.1.0-rc.4] - 2026-10-04
 
 ### Added

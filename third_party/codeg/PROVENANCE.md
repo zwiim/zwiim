@@ -480,7 +480,7 @@ Desktop native shell (`clients/desktop/src-tauri/`):
   API. Three device calls are allowed, the access token is attached here (it
   never enters the webview), and a refused token is refreshed once.
 - `src/device.rs` (new) — the device's X25519 identity and pinned hosts, in
-  one OS keychain item (`dev.zwiim.desktop` / `device-identity`). The Debug
+  one OS keychain item (`com.zwiim.app` / `device-identity`). The Debug
   output redacts the secret.
 - `src/account.rs` — `access_token` refreshes the Supabase session near expiry;
   a refused refresh signs out. `StoredSession`'s Debug output redacts tokens.
@@ -715,7 +715,7 @@ App (`clients/mobile/`):
   Expo's runtime already supplies `URL`, `TextDecoder` (`fatal`), `fetch`
   and `AbortController`. `runtimeProblem()` checks all of them on the
   device.
-- `app.json`: name Zwiim, scheme `zwiim`, `dev.zwiim.mobile`, the iOS
+- `app.json`: name Zwiim, scheme `zwiim`, `com.zwiim.mobile`, the iOS
   local network usage text and `_zwiim._tcp` Bonjour service, the Android
   network permissions, and `expo-dev-client`.
 - `metro.config.js`: bundles `clients/sdk` from source.
@@ -1067,7 +1067,7 @@ Upstream-derived:
 
 ## V1 Secret Storage Hardening — Host token out of SQLite, no plaintext credentials, signing identifier
 
-Zwiim-owned: `db/plaintext_secrets.rs` (the credential refusal every write to the three legacy tables goes through), `resources/macos/host-Info.plist` and its embedding in `build.rs` (code-signing identifier `dev.zwiim.host`), `scripts/release/check-host-signature.sh`, `docs/release/keychain-acceptance.md`.
+Zwiim-owned: `db/plaintext_secrets.rs` (the credential refusal every write to the three legacy tables goes through), `resources/macos/host-Info.plist` and its embedding in `build.rs` (code-signing identifier `com.zwiim.host`), `scripts/release/check-host-signature.sh`, `docs/release/keychain-acceptance.md`.
 
 Upstream-derived:
 
@@ -1080,7 +1080,7 @@ Upstream-derived:
 | `db/service/app_metadata_service.rs` | `src-tauri/src/db/service/app_metadata_service.rs` | `delete_value` (hard delete). |
 | `commands/acp.rs` | `src-tauri/src/commands/acp.rs` | `redact_secret` uses the shared credential-name rule. |
 | `db/service/remote_workspace_connection_service.rs`, `commands/model_provider.rs`, `commands/config_sync/snapshot.rs` | `src-tauri/src/...` | Tests only: seed rows without credentials; assert the refusal. |
-| `identity/host_keys.rs`, `update/service.rs`, `update/tests.rs`, `tests/host_lifecycle.rs`, `scripts/release/rehearse.mjs` | (Zwiim-owned) | Token entry `host-token:<host_id>` / `<data>/host-token` (0600) beside the host identity; an update's Host must be signed as `dev.zwiim.host` by the Team ID; token lifecycle, restart, update and no-leak tests. |
+| `identity/host_keys.rs`, `update/service.rs`, `update/tests.rs`, `tests/host_lifecycle.rs`, `scripts/release/rehearse.mjs` | (Zwiim-owned) | Token entry `host-token:<host_id>` / `<data>/host-token` (0600) beside the host identity; an update's Host must be signed as `com.zwiim.host` by the Team ID; token lifecycle, restart, update and no-leak tests. |
 
 ## V1 Session Instructions — system prompt for Claude and Codex, worktrees from the origin default branch
 

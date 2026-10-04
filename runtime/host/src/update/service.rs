@@ -57,7 +57,7 @@ fn team_id() -> Option<&'static str> {
 /// `build.rs` so every signer produces it. The Keychain ties the Host's
 /// items to this identifier and the Team ID: an update that changed either
 /// could no longer read them without prompting.
-pub const HOST_SIGNING_IDENTIFIER: &str = "dev.zwiim.host";
+pub const HOST_SIGNING_IDENTIFIER: &str = "com.zwiim.host";
 
 const FIRST_CHECK_DELAY: Duration = Duration::from_secs(120);
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);

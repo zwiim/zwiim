@@ -4,7 +4,7 @@ import Network
 /// TCP connections to a host on the local network (Network.framework).
 /// Every connection is touched only on `queue`.
 public class ZwiimLanModule: Module {
-  private let queue = DispatchQueue(label: "dev.zwiim.lan")
+  private let queue = DispatchQueue(label: "com.zwiim.lan")
   private var connections: [String: NWConnection] = [:]
 
   public func definition() -> ModuleDefinition {

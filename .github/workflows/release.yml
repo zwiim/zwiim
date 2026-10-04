@@ -123,9 +123,9 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
         run: |
-          # The Host's identifier is fixed (dev.zwiim.host, also embedded in the
+          # The Host's identifier is fixed (com.zwiim.host, also embedded in the
           # binary): with the Team ID it is what the Keychain ties the Host's items to.
-          codesign --force --options runtime --timestamp --identifier dev.zwiim.host \
+          codesign --force --options runtime --timestamp --identifier com.zwiim.host \
             --sign "$APPLE_SIGNING_IDENTITY" target/release/zwiim-host
           codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" target/release/zwiim-mcp
           for b in zwiim-host zwiim-mcp; do
@@ -156,7 +156,7 @@ jobs:
           APP=target/release/bundle/macos/Zwiim.app
           codesign --verify --deep --strict --verbose=2 "$APP"
           codesign -dv "$APP" 2>&1 | grep -q "TeamIdentifier=$APPLE_TEAM_ID"
-          # The bundler re-signs its sidecars; the Host must come out as dev.zwiim.host.
+          # The bundler re-signs its sidecars; the Host must come out as com.zwiim.host.
           scripts/release/check-host-signature.sh "$APP/Contents/MacOS/zwiim-host"
           xcrun stapler validate "$APP"
           spctl --assess --type execute --verbose=2 "$APP"

@@ -422,7 +422,7 @@ async fn a_new_host_mints_one_token_and_keeps_it() {
 }
 
 /// Whoever signs the Host (the release workflow, the Desktop bundler
-/// re-signing its sidecar) signs it as `dev.zwiim.host`, whatever the file
+/// re-signing its sidecar) signs it as `com.zwiim.host`, whatever the file
 /// is called: the identifier is embedded, not derived from the filename.
 #[cfg(target_os = "macos")]
 #[test]

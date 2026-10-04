@@ -345,7 +345,7 @@ fn an_update_keeps_the_hosts_team_and_identifier() {
     use super::service::{signed_by, HOST_SIGNING_IDENTIFIER as ID};
     let team = "ABCDE12345";
     let release =
-        "Identifier=dev.zwiim.host\nFormat=Mach-O thin (arm64)\nTeamIdentifier=ABCDE12345\n";
+        "Identifier=com.zwiim.host\nFormat=Mach-O thin (arm64)\nTeamIdentifier=ABCDE12345\n";
     assert!(signed_by(release, team, Some(ID)).is_ok());
     // The MCP binary is held to the Team ID only.
     assert!(signed_by(
@@ -357,7 +357,7 @@ fn an_update_keeps_the_hosts_team_and_identifier() {
 
     let from_filename = "Identifier=zwiim-host\nTeamIdentifier=ABCDE12345\n";
     assert!(signed_by(from_filename, team, Some(ID)).is_err());
-    let other_team = "Identifier=dev.zwiim.host\nTeamIdentifier=ZZZZZ99999\n";
+    let other_team = "Identifier=com.zwiim.host\nTeamIdentifier=ZZZZZ99999\n";
     assert!(signed_by(other_team, team, Some(ID)).is_err());
     let adhoc = "Identifier=zwiim_host-34e1d47d56e834a1\nSignature=adhoc\nTeamIdentifier=not set\n";
     assert!(signed_by(adhoc, team, Some(ID)).is_err());

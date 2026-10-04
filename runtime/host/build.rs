@@ -10,7 +10,7 @@ fn main() {
 /// Zwiim-owned: embed `resources/macos/host-Info.plist` in the Host
 /// executable. `codesign` takes the identifier from an embedded Info.plist
 /// when none is passed, so every signer (the release workflow, the Desktop
-/// bundler re-signing its sidecar) signs the Host as `dev.zwiim.host`, never
+/// bundler re-signing its sidecar) signs the Host as `com.zwiim.host`, never
 /// as a name derived from the file. The Keychain ties the Host's items to
 /// that identifier and the Team ID.
 fn embed_host_signing_identifier() {

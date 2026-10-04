@@ -10,7 +10,7 @@
     "userInterfaceStyle": "automatic",
     "platforms": ["ios", "android"],
     "ios": {
-      "bundleIdentifier": "dev.zwiim.mobile",
+      "bundleIdentifier": "com.zwiim.mobile",
       "supportsTablet": true,
       "infoPlist": {
         "NSLocalNetworkUsageDescription": "Zwiim connects directly to your computers on this network.",
@@ -19,7 +19,7 @@
       "buildNumber": "1"
     },
     "android": {
-      "package": "dev.zwiim.mobile",
+      "package": "com.zwiim.mobile",
       "permissions": ["android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE"],
       "blockedPermissions": ["android.permission.RECORD_AUDIO"],
       "adaptiveIcon": {

@@ -1,4 +1,4 @@
-package dev.zwiim.lan
+package com.zwiim.lan
 
 import android.util.Base64
 import expo.modules.kotlin.Promise
