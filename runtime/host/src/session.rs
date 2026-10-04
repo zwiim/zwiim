@@ -280,10 +280,11 @@ pub async fn start<L: AgentLauncher>(
     let preferred =
         crate::session_options::preferred_for_start(&db.conn, agent_type, options).await?;
     let (folder, launching) = crate::workspace::resolve_for_launch(&db.conn, workspace_id).await?;
+    // `launching` is held through the first prompt, so the new agent's turn
+    // is under way before anything can change the workspace's branch.
     let connection_id = launcher
         .launch(agent_type, folder.path, None, preferred.clone().unwrap_or_default())
         .await?;
-    drop(launching);
     if preferred.is_none() {
         if let Err(e) =
             crate::session_options::apply_on_start(connections, &connection_id, options).await
@@ -303,6 +304,7 @@ pub async fn start<L: AgentLauncher>(
             client_message_id,
         )
         .await;
+    drop(launching);
     match sent {
         Ok(Some(conversation_id)) => {
             let session_id = session_id_of(db, conversation_id).await?;
@@ -323,19 +325,19 @@ pub async fn start<L: AgentLauncher>(
 }
 
 /// The live connection of session `row`, resuming its agent session through
-/// the launcher when none is attached (idle sweep, crash, host restart).
-/// Returns whether this call spawned it. Callers hold the session lock.
+/// the launcher in `folder` when none is attached (idle sweep, crash, host
+/// restart). Returns whether this call spawned it. Callers hold the session
+/// lock and have entered `folder` (`workspace::begin_launch`).
 async fn ensure_live<L: AgentLauncher>(
     db: &AppDatabase,
     connections: &ConnectionManager,
     launcher: &L,
     row: &conversation::Model,
+    folder: &crate::db::entities::folder::Model,
 ) -> Result<(String, bool), ZwiimError> {
     if let Some(connection_id) = connection_for(connections, row).await {
         return Ok((connection_id, false));
     }
-    // Never resume in a removed worktree, nor anywhere else instead of it.
-    let (folder, _launching) = crate::workspace::begin_launch(&db.conn, row.folder_id).await?;
     let agent_type: AgentType =
         serde_json::from_value(serde_json::Value::String(row.agent_type.clone()))
             .map_err(|_| ZwiimError::internal())?;
@@ -344,7 +346,7 @@ async fn ensure_live<L: AgentLauncher>(
         None => BTreeMap::new(),
     };
     let connection_id = launcher
-        .launch(agent_type, folder.path, row.external_id.clone(), preferred)
+        .launch(agent_type, folder.path.clone(), row.external_id.clone(), preferred)
         .await?;
     Ok((connection_id, true))
 }
@@ -365,7 +367,11 @@ pub async fn send<L: AgentLauncher>(
     let row = resolve(&db.conn, session_id).await?;
     let lock = session_lock(session_id);
     let _guard = lock.lock().await;
-    let (connection_id, spawned) = ensure_live(db, connections, launcher, &row).await?;
+    // Held until the turn is under way, so no branch switch (Continue) lands
+    // between its busy check and this turn starting. Never resume in a removed
+    // worktree, nor anywhere else instead of it.
+    let (folder, _entered) = crate::workspace::begin_launch(&db.conn, row.folder_id).await?;
+    let (connection_id, spawned) = ensure_live(db, connections, launcher, &row, &folder).await?;
     // Branch A of `send_prompt_linked`: a freshly resumed connection adopts
     // this row; an already-linked one ignores both ids.
     let sent = connections
@@ -1031,6 +1037,46 @@ pub(crate) mod orchestration_tests {
             .unwrap_err();
         assert_eq!(busy.code, "turn_in_progress");
         assert_eq!(launcher.launches.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_send_waits_while_the_workspace_is_held_exclusively() {
+        let db = fresh_in_memory_db().await;
+        let wid = workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = start(
+            &db,
+            &mgr,
+            &launcher,
+            &wid,
+            AgentType::ClaudeCode,
+            text("hi"),
+            None,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+        finish_turn(&mgr, "fake-conn-1").await;
+        let folder_id = resolve(&db.conn, &sid).await.unwrap().folder_id;
+        let in_flight = || async {
+            mgr.get_state("fake-conn-1").await.unwrap().read().await.turn_in_flight
+        };
+
+        let exclusive = crate::workspace::enter_exclusive(folder_id).await;
+        let sending = send(&db, &mgr, &launcher, &sid, text("again"), None);
+        tokio::pin!(sending);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut sending)
+                .await
+                .is_err(),
+            "the send waits for the workspace"
+        );
+        assert!(!in_flight().await, "no turn starts while the workspace is held");
+
+        drop(exclusive);
+        sending.await.unwrap();
+        assert!(in_flight().await);
     }
 
     #[tokio::test]

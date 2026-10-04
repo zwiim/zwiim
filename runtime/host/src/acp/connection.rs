@@ -1239,6 +1239,9 @@ pub enum ConnectionCommand {
         /// prompt actually being processed. `None` for delegation children,
         /// empty prompts, unbound conversations, and non-linked senders.
         user_message: Option<(String, Vec<UserMessageBlock>)>,
+        /// One-shot Host notices for this turn, taken by the manager when it
+        /// accepted the prompt. Only the agent-bound prompt carries them.
+        notices: Vec<String>,
     },
     SetMode {
         mode_id: String,
@@ -8821,9 +8824,10 @@ fn map_prompt_blocks(blocks: Vec<PromptInputBlock>) -> Vec<ContentBlock> {
 fn prepare_agent_bound_prompt(
     agent_type: AgentType,
     blocks: Vec<PromptInputBlock>,
+    notices: &[String],
     delegation_enabled: bool,
 ) -> Vec<ContentBlock> {
-    let mut blocks = crate::harness::compose_turn(blocks);
+    let mut blocks = crate::harness::compose_turn(blocks, notices);
     append_agent_routes(&mut blocks, delegation_enabled);
     if agent_type == AgentType::Grok {
         blocks = normalize_grok_image_blocks(blocks);
@@ -9862,6 +9866,7 @@ async fn run_conversation_loop<'a>(
             Some(ConnectionCommand::Prompt {
                 blocks,
                 user_message,
+                notices,
             }) => {
                 // Fingerprint the outgoing prompt for the background watcher's
                 // foreground/out-of-turn classifier BEFORE the blocks are
@@ -9895,10 +9900,11 @@ async fn run_conversation_loop<'a>(
                 });
                 // Keep the user's blocks pristine through ledgering, previews,
                 // and cross-client broadcast. Only the final agent-bound prompt
-                // receives the machine routing block derived from agent badges.
+                // receives Host notices and the machine routing block derived
+                // from agent badges.
                 let delegation_enabled = state.read().await.delegation_enabled;
                 let prompt_blocks =
-                    prepare_agent_bound_prompt(agent_type, blocks, delegation_enabled);
+                    prepare_agent_bound_prompt(agent_type, blocks, &notices, delegation_enabled);
                 if prompt_blocks.is_empty() {
                     // Defensive: the manager rejects empty prompts before the
                     // concurrency gate is set / the command is enqueued (see
@@ -18535,7 +18541,7 @@ mod tests {
         let blocks = vec![PromptInputBlock::Text {
             text: "hello".into(),
         }];
-        let sent = prepare_agent_bound_prompt(AgentType::ClaudeCode, blocks.clone(), false);
+        let sent = prepare_agent_bound_prompt(AgentType::ClaudeCode, blocks.clone(), &[], false);
         assert_eq!(
             serde_json::to_value(sent).unwrap(),
             serde_json::to_value(map_prompt_blocks(blocks)).unwrap()
@@ -18763,7 +18769,7 @@ mod tests {
             AgentType::Gemini,
             AgentType::custom("delegating-custom").expect("valid custom id"),
         ] {
-            let prompt = prepare_agent_bound_prompt(parent, blocks.clone(), true);
+            let prompt = prepare_agent_bound_prompt(parent, blocks.clone(), &[], true);
             assert_eq!(prompt.len(), 2, "{parent} must receive the routing block");
             assert!(matches!(
                 &prompt[0],
@@ -18780,7 +18786,7 @@ mod tests {
         // An agent that never received the companion (OpenClaw's
         // supports_mcp=false, pi's wire exclusion) reaches here with delegation
         // off and keeps a pristine prompt.
-        let unrouted = prepare_agent_bound_prompt(AgentType::OpenClaw, blocks, false);
+        let unrouted = prepare_agent_bound_prompt(AgentType::OpenClaw, blocks, &[], false);
         assert_eq!(unrouted.len(), 1);
         assert!(matches!(
             &unrouted[0],

@@ -46,6 +46,7 @@ const OPS: &[&str] = &[
     "workspace.tree",
     "workspace.create_worktree",
     "workspace.remove_worktree",
+    "workspace.continue",
     "files.read",
     "files.write",
     "files.create",
@@ -1449,6 +1450,54 @@ async fn worktree_create_diff_and_guarded_removal() {
         );
     }
     assert!(h.state.connection_manager.get_state(CONN).await.is_none());
+}
+
+#[tokio::test]
+async fn workspace_continue_refuses_before_asking_github() {
+    let h = host(false).await;
+    let wid = h.workspace_id.clone();
+    let wt = h
+        .ok("workspace.create_worktree", json!({"workspace_id": wid}))
+        .await;
+    let wt_id = wt["workspace_id"].as_str().unwrap().to_string();
+
+    // Only a worktree continues; the client names the pull request and
+    // nothing else.
+    assert_eq!(
+        h.err("workspace.continue", json!({"workspace_id": wid, "number": 1}))
+            .await,
+        (StatusCode::BAD_REQUEST, "invalid_input".into())
+    );
+    assert_eq!(
+        h.err(
+            "workspace.continue",
+            json!({"workspace_id": h.folder_id.to_string(), "number": 1})
+        )
+        .await,
+        (StatusCode::NOT_FOUND, "not_found".into())
+    );
+    for body in [
+        json!({"workspace_id": wt_id}),
+        json!({"workspace_id": wt_id, "number": 1, "branch": "main"}),
+    ] {
+        assert_eq!(
+            h.err("workspace.continue", body).await,
+            (StatusCode::BAD_REQUEST, "invalid_request".into())
+        );
+    }
+
+    // Uncommitted work stays where it is.
+    h.ok(
+        "files.create",
+        json!({"workspace_id": wt_id, "path": "", "name": "new.txt", "kind": "file"}),
+    )
+    .await;
+    let (status, code, _) = h
+        .err_details("workspace.continue", json!({"workspace_id": wt_id, "number": 1}))
+        .await;
+    assert_eq!((status, code.as_str()), (StatusCode::CONFLICT, "workspace_dirty"));
+    let after = h.ok("workspace.list", json!({})).await;
+    assert!(after.as_array().unwrap().iter().any(|w| w == &wt));
 }
 
 // ─── WebSocket ───────────────────────────────────────────────────────────

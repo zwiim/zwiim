@@ -58,6 +58,10 @@ pub const KINDS: [GitOpKind; 15] = [
 /// The refusal code for a mutating operation while the session plans.
 pub const PLAN_MODE: &str = "plan_mode";
 
+/// The refusal code for a branch change while another agent in the
+/// workspace is working.
+pub const WORKSPACE_BUSY: &str = "workspace_busy";
+
 /// The tool that runs `kind`.
 pub fn tool_name(kind: GitOpKind) -> String {
     format!("{TOOL_PREFIX}{}", kind.as_str())
@@ -184,7 +188,7 @@ pub fn op_from_tool_call(tool: &str, arguments: &Value) -> Result<GitOp, String>
 }
 
 /// A refused or failed Git tool call, as the agent sees it: a Harness error
-/// code, or [`PLAN_MODE`].
+/// code, [`PLAN_MODE`] or [`WORKSPACE_BUSY`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitToolError {
     pub code: String,
@@ -285,6 +289,14 @@ impl GitToolAccess for HostGitTools {
             }
             None => AgentContext::default(),
         };
+        // A new branch changes the files under every agent in the workspace.
+        let _exclusive = match (&op, ctx.conversation_id) {
+            (GitOp::BranchCreate { .. } | GitOp::Switch { .. }, Some(id)) => {
+                self.enter_for_branch_change(parent_connection_id, id)
+                    .await?
+            }
+            _ => None,
+        };
         run_for(
             &self.db.conn,
             &GitHost::new(&self.db.conn, &self.data_dir),
@@ -292,6 +304,53 @@ impl GitToolAccess for HostGitTools {
             op,
         )
         .await
+    }
+}
+
+impl HostGitTools {
+    /// Hold conversation `conversation_id`'s workspace exclusively for a branch
+    /// change, as Continue does: refused while another agent there is working.
+    /// `None` without a workspace row, which the Harness then names.
+    async fn enter_for_branch_change(
+        &self,
+        parent_connection_id: &str,
+        conversation_id: i32,
+    ) -> Result<Option<crate::workspace::ExclusiveGuard>, GitToolError> {
+        let conn = &self.db.conn;
+        let failed = |what: &str, e: String| -> GitToolError {
+            GitError::new(GitErrorCode::Failed, format!("could not read the {what}"))
+                .with_detail(&e)
+                .into()
+        };
+        let Some(row) = conversation::Entity::find_by_id(conversation_id)
+            .one(conn)
+            .await
+            .map_err(|e| failed("session", e.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let Some(folder) = folder::Entity::find_by_id(row.folder_id)
+            .one(conn)
+            .await
+            .map_err(|e| failed("workspace", e.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let exclusive = crate::workspace::enter_exclusive(folder.id).await;
+        let (busy, _) =
+            crate::workspace::busy_agents(conn, &self.manager, &folder, Some(parent_connection_id))
+                .await
+                .map_err(|e| failed("workspace", e.to_string()))?;
+        if busy > 0 {
+            return Err(GitToolError {
+                code: WORKSPACE_BUSY.into(),
+                message: "Another agent is working in this workspace; switching its branch \
+                          now would change files under it."
+                    .into(),
+                detail: None,
+            });
+        }
+        Ok(Some(exclusive))
     }
 }
 

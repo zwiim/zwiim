@@ -19,7 +19,7 @@ use sea_orm::{
     PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set,
 };
 use serde::Serialize;
-use tokio::sync::{OwnedRwLockReadGuard, RwLock};
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 use crate::acp::manager::ConnectionManager;
 use crate::app_error::{AppCommandError, AppErrorCode};
@@ -28,6 +28,7 @@ use crate::db::entities::conversation;
 use crate::db::entities::folder::{self, FolderKind};
 use crate::db::error::DbError;
 use crate::db::AppDatabase;
+use crate::git_harness::{self, GitCaller, GitError, GitErrorCode, GitHost, GitOp, PrLifecycle};
 use crate::protocol::error::ZwiimError;
 use crate::terminal::manager::TerminalManager;
 use crate::web::event_bridge::EventEmitter;
@@ -185,6 +186,50 @@ pub(crate) async fn begin_launch(
         return Err(removed(row.workspace_id.as_deref().unwrap_or_default()));
     }
     Ok((row, guard))
+}
+
+/// Held while a workspace's checkout itself changes under its agents.
+pub(crate) type ExclusiveGuard = OwnedRwLockWriteGuard<()>;
+
+/// Hold Folder row `folder_id` exclusively: no agent launch, prompt send or
+/// terminal spawn starts there until the guard drops.
+pub(crate) async fn enter_exclusive(folder_id: i32) -> ExclusiveGuard {
+    gate(folder_id).write_owned().await
+}
+
+/// The agents working in `row`'s workspace (a turn runs or a request waits on
+/// the user), leaving out connection `except`: how many, and the sessions they
+/// belong to. An agent not bound to a session yet is only counted.
+pub(crate) async fn busy_agents(
+    conn: &DatabaseConnection,
+    connections: &ConnectionManager,
+    row: &folder::Model,
+    except: Option<&str>,
+) -> Result<(usize, Vec<String>), AppCommandError> {
+    let path = PathBuf::from(&row.path);
+    let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    let spellings = [path.as_path(), canonical.as_path()];
+    let busy = connections.busy_in_folder(row.id, &spellings, except).await;
+    session_ids_of(conn, &busy)
+        .await
+        .map(|ids| (busy.len(), ids))
+}
+
+/// The session ids of the bound conversations among `agents`.
+async fn session_ids_of(
+    conn: &DatabaseConnection,
+    agents: &[Option<i32>],
+) -> Result<Vec<String>, AppCommandError> {
+    let bound: Vec<i32> = agents.iter().flatten().copied().collect();
+    Ok(conversation::Entity::find()
+        .filter(conversation::Column::Id.is_in(bound))
+        .filter(conversation::Column::SessionId.is_not_null())
+        .all(conn)
+        .await
+        .map_err(db_err)?
+        .into_iter()
+        .filter_map(|c| c.session_id)
+        .collect())
 }
 
 /// [`resolve`] + [`begin_launch`] for a client-addressed workspace.
@@ -703,16 +748,7 @@ pub async fn remove_worktree(
     if !live_agents.is_empty() || live_terminals > 0 {
         // Name the sessions whose agents run there, so a client can offer to
         // stop them; an agent not bound to a session yet is only counted.
-        let bound: Vec<i32> = live_agents.iter().flatten().copied().collect();
-        let session_ids = conversation::Entity::find()
-            .filter(conversation::Column::Id.is_in(bound))
-            .filter(conversation::Column::SessionId.is_not_null())
-            .all(&db.conn)
-            .await
-            .map_err(db_err)?
-            .into_iter()
-            .filter_map(|c| c.session_id)
-            .collect();
+        let session_ids = session_ids_of(&db.conn, &live_agents).await?;
         return Err(ZwiimError::workspace_busy(
             live_agents.len(),
             live_terminals,
@@ -753,6 +789,297 @@ pub async fn remove_worktree(
         kept_sessions,
     })
 }
+
+// ─── continue after a merged pull request ────────────────────────────────
+
+/// Continue worktree workspace `workspace_id` after its pull request `number`
+/// merged: the same checkout, `workspace_id` and sessions move to a fresh
+/// `zwiim/*` branch cut from the merged pull request's base as `origin` has
+/// it now, and that becomes the workspace's new base. A name that was the
+/// previous branch becomes the new one.
+///
+/// Holds the workspace's gate exclusively, so no agent prompt, launch or
+/// terminal spawn starts there meanwhile. Refuses — changing nothing — while
+/// any agent there is working (`workspace_busy`), with uncommitted or
+/// untracked changes (`workspace_dirty`), unless GitHub reports the branch's
+/// pull request is `number` (`pr_changed`) and merged (`pr_not_merged`), and
+/// unless the checkout is exactly the head that merged (`head_not_merged`).
+/// The previous branch is kept as it is: never deleted, reset or forced.
+/// Every session in the workspace is told once, on its next prompt.
+pub async fn continue_after_merge(
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+    connections: &ConnectionManager,
+    host: &GitHost<'_>,
+    workspace_id: &str,
+    number: u64,
+) -> Result<WorkspaceInfo, ZwiimError> {
+    let wt = resolve(&db.conn, workspace_id).await?;
+    if wt.parent_id.is_none() {
+        return Err(ZwiimError::invalid_input(
+            "Only worktree workspaces can be continued",
+        ));
+    }
+    let _exclusive = enter_exclusive(wt.id).await;
+    // Re-read under the gate: a removal may have finished first.
+    let wt = resolve(&db.conn, workspace_id).await?;
+
+    let (busy, session_ids) = busy_agents(&db.conn, connections, &wt, None).await?;
+    if busy > 0 {
+        return Err(ZwiimError::workspace_busy(busy, 0, session_ids));
+    }
+    let changes = folders::git_status(wt.path.clone(), None).await?.len();
+    if changes > 0 {
+        return Err(ZwiimError::workspace_dirty(changes));
+    }
+    let previous = current_branch(&wt.path)
+        .await
+        .ok_or_else(|| ZwiimError::invalid_input("The workspace is not on a branch"))?;
+
+    let caller = GitCaller::new(Some(workspace_id.to_string()), None)?;
+    let pr = git_harness::pr_state(host, &caller, &previous)
+        .await?
+        .ok_or_else(|| ZwiimError::not_found("This branch has no pull request"))?;
+    if pr.number != number {
+        return Err(GitError::new(
+            GitErrorCode::PrChanged,
+            format!(
+                "This branch's pull request is now #{}, not #{number}",
+                pr.number
+            ),
+        )
+        .into());
+    }
+    let state = match pr.state {
+        PrLifecycle::Merged => None,
+        PrLifecycle::Open => Some("open"),
+        PrLifecycle::Draft => Some("draft"),
+        PrLifecycle::Closed => Some("closed"),
+    };
+    if let Some(state) = state {
+        return Err(ZwiimError::pr_not_merged(pr.number, state));
+    }
+    ensure_at_merged_head(&wt.path, &pr.head_sha).await?;
+
+    git_harness::execute(
+        host,
+        &caller,
+        GitOp::Fetch {
+            remote: Some("origin".to_string()),
+        },
+    )
+    .await?;
+    let base_branch = format!("origin/{}", pr.base);
+    let base_commit = remote_tracking_commit(&wt.path, &base_branch)
+        .await
+        .ok_or_else(|| {
+            ZwiimError::not_found(format!("{base_branch} was not found after fetching origin"))
+        })?;
+    // Everything needed once the switch is made is read now, while failing
+    // still leaves the workspace as it was.
+    let parent_workspace_id = match wt.parent_id {
+        Some(parent_id) => workspace_id_of(&db.conn, parent_id).await?,
+        None => None,
+    };
+    let conversations = session_conversations(&db.conn, wt.id).await?;
+    // Terminals and editors are not held off by the gate: check again after
+    // the network round trips, just before switching.
+    ensure_at_merged_head(&wt.path, &pr.head_sha).await?;
+
+    let branch = format!("zwiim/{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    if let Err(e) = git_harness::execute(
+        host,
+        &caller,
+        GitOp::BranchCreate {
+            name: branch.clone(),
+            from: Some(base_commit.clone()),
+        },
+    )
+    .await
+    {
+        if current_branch(&wt.path).await.as_deref() != Some(branch.as_str()) {
+            // Nothing switched: the workspace is as it was.
+            return Err(e.into());
+        }
+        tracing::error!(
+            workspace_id,
+            code = e.code.as_str(),
+            "[workspace] continue: creating the branch failed after switching"
+        );
+        return Err(compensate(
+            db,
+            emitter,
+            host,
+            &caller,
+            &wt,
+            &previous,
+            &branch,
+            &base_commit,
+        )
+        .await);
+    }
+
+    let mut active = wt.clone().into_active_model();
+    active.base_branch = Set(Some(base_branch.clone()));
+    active.base_commit = Set(Some(base_commit.clone()));
+    // A worktree's name defaults to its branch: that name follows the
+    // branch, while a name the user chose stays.
+    if wt.alias.as_deref() == Some(previous.as_str()) {
+        active.alias = Set(Some(branch.clone()));
+    }
+    let row = match active.update(&db.conn).await {
+        Ok(row) => row,
+        Err(e) => {
+            tracing::error!(workspace_id, error = %e, "[workspace] continue: saving the new base failed");
+            return Err(compensate(
+                db,
+                emitter,
+                host,
+                &caller,
+                &wt,
+                &previous,
+                &branch,
+                &base_commit,
+            )
+            .await);
+        }
+    };
+
+    // Committed: nothing below fails.
+    let notice = crate::harness::continuation_notice(
+        pr.number,
+        &base_branch,
+        &branch,
+        &previous,
+        &base_commit,
+    );
+    for conversation_id in conversations {
+        connections.queue_notice(conversation_id, notice.clone());
+    }
+    emit_upsert(db, emitter, wt.id).await;
+    tracing::info!(workspace_id, number, %branch, %base_branch, "[workspace] continued after merge");
+    let git = live_git(&row).await;
+    Ok(to_info(row, parent_workspace_id, git))
+}
+
+/// Refuses unless checkout `path` has no uncommitted or untracked changes
+/// (`workspace_dirty`) and is exactly at the merged head `pr_head`
+/// (`head_not_merged`).
+async fn ensure_at_merged_head(path: &str, pr_head: &str) -> Result<(), ZwiimError> {
+    let changes = folders::git_status(path.to_string(), None).await?.len();
+    if changes > 0 {
+        return Err(ZwiimError::workspace_dirty(changes));
+    }
+    let head = head_commit(path).await?;
+    if head != pr_head {
+        return Err(ZwiimError::head_not_merged(&head, pr_head));
+    }
+    Ok(())
+}
+
+/// Undo a switch whose new base could not be saved. Never forces: switching
+/// back refuses to overwrite changes, and the new branch is deleted only
+/// while it still points at the commit it was created at.
+#[allow(clippy::too_many_arguments)]
+async fn compensate(
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+    host: &GitHost<'_>,
+    caller: &GitCaller,
+    wt: &folder::Model,
+    previous: &str,
+    branch: &str,
+    base_commit: &str,
+) -> ZwiimError {
+    let back = git_harness::execute(
+        host,
+        caller,
+        GitOp::Switch {
+            branch: previous.to_string(),
+        },
+    )
+    .await;
+    if back.is_ok() {
+        let deleted = crate::process::tokio_command("git")
+            .args([
+                "update-ref",
+                "-d",
+                &format!("refs/heads/{branch}"),
+                base_commit,
+            ])
+            .current_dir(&wt.path)
+            .output()
+            .await;
+        if !deleted.is_ok_and(|out| out.status.success()) {
+            tracing::warn!(%branch, "[workspace] continue: the new branch moved; kept");
+        }
+    }
+    emit_upsert(db, emitter, wt.id).await;
+    let message = match back {
+        Ok(_) => format!("Continue could not save the new base; the workspace is back on {previous}"),
+        Err(_) => format!(
+            "Continue could not save the new base or switch back; the workspace is on {branch} with its previous base"
+        ),
+    };
+    ZwiimError {
+        message,
+        ..ZwiimError::internal()
+    }
+}
+
+/// The branch checked out in `path`; `None` when detached.
+async fn current_branch(path: &str) -> Option<String> {
+    folders::resolve_git_head(path)
+        .await
+        .ok()
+        .and_then(|head| head.branch)
+}
+
+/// The commit remote-tracking branch `name` (`origin/main`) points at.
+async fn remote_tracking_commit(repo: &str, name: &str) -> Option<String> {
+    let out = crate::process::tokio_command("git")
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/{name}^{{commit}}"),
+        ])
+        .current_dir(repo)
+        .output()
+        .await
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// The conversations behind Folder row `folder_id`'s sessions.
+async fn session_conversations(
+    conn: &DatabaseConnection,
+    folder_id: i32,
+) -> Result<Vec<i32>, AppCommandError> {
+    Ok(conversation::Entity::find()
+        .filter(conversation::Column::FolderId.eq(folder_id))
+        .filter(conversation::Column::SessionId.is_not_null())
+        .filter(conversation::Column::DeletedAt.is_null())
+        .all(conn)
+        .await
+        .map_err(db_err)?
+        .into_iter()
+        .map(|c| c.id)
+        .collect())
+}
+
+/// Tell clients of the legacy folder surface the folder changed; best-effort.
+async fn emit_upsert(db: &AppDatabase, emitter: &EventEmitter, folder_id: i32) {
+    match folders::get_folder_core(db, folder_id).await {
+        Ok(detail) => folders::emit_folder_upsert(emitter, detail),
+        Err(e) => tracing::warn!(folder_id, error = %e, "[workspace] folder upsert not emitted"),
+    }
+}
+
+#[cfg(test)]
+mod continue_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1289,6 +1616,68 @@ mod tests {
         let removed = remove(false).await.expect("removal once all are stopped");
         assert_eq!(removed.kept_sessions, 2);
         assert!(!Path::new(&wt.path).exists());
+    }
+
+    #[tokio::test]
+    async fn busy_agents_counts_only_working_agents() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, _repo, root_wid, worktrees) = root_repo(&db).await;
+        let wt = create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None)
+            .await
+            .unwrap();
+        let folder = resolve(&db.conn, &wt.workspace_id).await.unwrap();
+        let agents = ConnectionManager::new();
+
+        // conn-a mid-turn, conn-b idle, conn-c waiting on a permission.
+        let mut sessions = Vec::new();
+        for id in ["conn-a", "conn-b", "conn-c"] {
+            let conv = seed_conversation(&db, folder.id, AgentType::ClaudeCode).await;
+            agents
+                .insert_test_connection(
+                    id,
+                    AgentType::ClaudeCode,
+                    Some(PathBuf::from(&wt.path)),
+                    EventEmitter::Noop,
+                )
+                .await;
+            let state = agents.get_state(id).await.unwrap();
+            let mut state = state.write().await;
+            state.conversation_id = Some(conv);
+            match id {
+                "conn-a" => state.turn_in_flight = true,
+                "conn-c" => {
+                    state.pending_permission =
+                        Some(crate::acp::session_state::PendingPermissionState {
+                            request_id: "req-1".into(),
+                            tool_call_id: "tc-1".into(),
+                            tool_call: serde_json::json!({ "toolCallId": "tc-1" }),
+                            options: vec![],
+                            created_at: chrono::Utc::now(),
+                            queued: 0,
+                        })
+                }
+                _ => {}
+            }
+            let row = conversation::Entity::find_by_id(conv)
+                .one(&db.conn)
+                .await
+                .unwrap()
+                .unwrap();
+            sessions.push(row.session_id.unwrap());
+        }
+        let sorted = |(n, mut ids): (usize, Vec<String>)| {
+            ids.sort();
+            (n, ids)
+        };
+        let mut a_and_c = vec![sessions[0].clone(), sessions[2].clone()];
+        a_and_c.sort();
+
+        let all = busy_agents(&db.conn, &agents, &folder, None).await.unwrap();
+        assert_eq!(sorted(all), (2, a_and_c));
+        let others = busy_agents(&db.conn, &agents, &folder, Some("conn-a"))
+            .await
+            .unwrap();
+        assert_eq!(sorted(others), (1, vec![sessions[2].clone()]));
     }
 
     #[tokio::test]

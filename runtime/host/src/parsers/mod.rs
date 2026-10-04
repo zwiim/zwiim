@@ -416,11 +416,18 @@ fn sanitize_summary(summary: &mut ConversationSummary) {
 /// frame, so `"prose\n\n<frame>"` comes back as `"prose\n"` — which
 /// `whitespace-pre-wrap` paints as an extra blank line under the message. Text
 /// with no frame in it is never touched.
+///
+/// Host notices (`crate::harness::compose_turn`) ride on the same turn ahead of
+/// any route frame and go first.
 fn sanitize_text(text: &mut String) -> bool {
+    let noticed = crate::harness::strip_notices(text);
     // Single scan short-circuit: history with no frame pays one memchr per
     // string, not a parse attempt.
     if !crate::acp::agent_mentions::contains_internal_agent_routes(text) {
-        return false;
+        if noticed {
+            text.truncate(text.trim_end().len());
+        }
+        return noticed;
     }
     *text = crate::acp::agent_mentions::strip_internal_agent_routes(text);
     text.truncate(text.trim_end().len());
@@ -1638,6 +1645,30 @@ mod route_sanitizer_tests {
             .list_conversations()
             .expect("fixture parses");
         assert_eq!(listed[0].title.as_deref(), Some("hi"));
+    }
+
+    /// A Host notice rides on the user's own text block, before any route
+    /// frame. Reopened history shows the user's words only.
+    #[test]
+    fn history_hides_notices() {
+        let mut text = "hi\n\n\u{1e}[zwiim-notice]\nx\u{1e}".to_string();
+        assert!(super::sanitize_text(&mut text));
+        assert_eq!(text, "hi");
+
+        let frame = routing_frame("codex");
+        let fixture = Fixture {
+            summary: summary(Some("hi"), 1),
+            turns: vec![turn(
+                TurnRole::User,
+                &format!("hi\n\n\u{1e}[zwiim-notice]\nx\u{1e}\n\n{frame}"),
+            )],
+        };
+        let detail = sanitized(fixture);
+        assert!(
+            matches!(&detail.turns[0].blocks[..], [ContentBlock::Text { text }] if text == "hi"),
+            "{:?}",
+            detail.turns[0].blocks
+        );
     }
 
     #[test]

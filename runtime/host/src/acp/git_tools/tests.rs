@@ -13,6 +13,7 @@ use crate::db::service::folder_service;
 use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
 use crate::git_harness::{MergeMethod, PullMode};
 use crate::models::agent::AgentType;
+use crate::web::event_bridge::EventEmitter;
 
 // ── fixtures ────────────────────────────────────────────────────────────
 
@@ -50,7 +51,7 @@ fn init_repo(dir: &Path) {
 
 struct Fixture {
     tmp: tempfile::TempDir,
-    db: AppDatabase,
+    db: Arc<AppDatabase>,
     root: std::path::PathBuf,
     folder_id: i32,
     conversation_id: i32,
@@ -64,7 +65,7 @@ impl Fixture {
         if git_repo {
             init_repo(&root);
         }
-        let db = fresh_in_memory_db().await;
+        let db = Arc::new(fresh_in_memory_db().await);
         let folder_id = seed_folder(&db, root.to_str().unwrap()).await;
         let conversation_id = seed_conversation(&db, folder_id, AgentType::Codex).await;
         Self {
@@ -650,6 +651,103 @@ async fn outside_plan_mode_a_mutating_operation_runs() {
         .unwrap();
     assert_eq!(commit["op"], "commit");
     assert_eq!(commit["files"], json!(["new.txt"]));
+}
+
+// ── branch changes under other agents ───────────────────────────────────
+
+/// The Host's Git tools for `fx`'s session on connection `a`, mid-turn (it is
+/// calling a tool), plus a second session on `b` in the same workspace,
+/// working if `Some(true)`.
+async fn host_tools(fx: &Fixture, b_working: Option<bool>) -> HostGitTools {
+    let manager = Arc::new(ConnectionManager::new());
+    let mut agents = vec![("a", fx.conversation_id, true)];
+    if let Some(working) = b_working {
+        let other = seed_conversation(&fx.db, fx.folder_id, AgentType::Codex).await;
+        agents.push(("b", other, working));
+    }
+    for (id, conversation_id, working) in agents {
+        manager
+            .insert_test_connection(
+                id,
+                AgentType::Codex,
+                Some(fx.root.clone()),
+                EventEmitter::Noop,
+            )
+            .await;
+        let state = manager.get_state(id).await.unwrap();
+        let mut state = state.write().await;
+        state.conversation_id = Some(conversation_id);
+        state.turn_in_flight = working;
+    }
+    HostGitTools {
+        manager,
+        db: fx.db.clone(),
+        data_dir: fx.tmp.path().join("data"),
+    }
+}
+
+fn branch_create(name: &str) -> GitOp {
+    GitOp::BranchCreate {
+        name: name.into(),
+        from: None,
+    }
+}
+
+async fn branch(fx: &Fixture) -> Value {
+    fx.run(fx.in_session(), GitOp::Status).await.unwrap()["branch"].clone()
+}
+
+#[tokio::test]
+async fn a_branch_switch_waits_for_no_one_when_alone() {
+    let fx = Fixture::new(true).await;
+    let tools = host_tools(&fx, None).await;
+    let created = tools.run("a", branch_create("next")).await.unwrap();
+    assert_eq!(created["branch"], "next");
+    assert_eq!(branch(&fx).await, "next");
+}
+
+#[tokio::test]
+async fn a_branch_switch_under_another_working_agent_is_refused() {
+    let fx = Fixture::new(true).await;
+    git(&fx.root, &["branch", "other"]);
+    let tools = host_tools(&fx, Some(true)).await;
+    for op in [
+        branch_create("next"),
+        GitOp::Switch {
+            branch: "other".into(),
+        },
+    ] {
+        let e = tools.run("a", op.clone()).await.unwrap_err();
+        assert_eq!(e.code, "workspace_busy", "{op:?}");
+        assert!(e.message.contains("Another agent"), "{}", e.message);
+    }
+    assert_eq!(branch(&fx).await, "main");
+}
+
+#[tokio::test]
+async fn an_idle_neighbour_does_not_block_a_branch_switch() {
+    let fx = Fixture::new(true).await;
+    let tools = host_tools(&fx, Some(false)).await;
+    tools.run("a", branch_create("next")).await.unwrap();
+    assert_eq!(branch(&fx).await, "next");
+}
+
+#[tokio::test]
+async fn commits_are_not_gated() {
+    let fx = Fixture::new(true).await;
+    std::fs::write(fx.root.join("new.txt"), "x\n").unwrap();
+    let tools = host_tools(&fx, Some(true)).await;
+    let commit = tools
+        .run(
+            "a",
+            GitOp::Commit {
+                message: "add new".into(),
+                paths: Some(vec!["new.txt".into()]),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(commit["op"], "commit");
 }
 
 #[test]

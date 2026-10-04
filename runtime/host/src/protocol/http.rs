@@ -860,6 +860,34 @@ pub async fn workspace_remove_worktree(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct WorkspaceContinueParams {
+    pub workspace_id: String,
+    /// The merged pull request the user saw; any other is `pr_changed`.
+    pub number: u64,
+}
+
+/// Move a worktree whose pull request merged onto a fresh branch from the
+/// pull request's base. Same workspace and sessions; the old branch is kept.
+pub async fn workspace_continue(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<WorkspaceContinueParams>,
+) -> ZResult<WorkspaceInfo> {
+    let host = GitHost::new(&state.db.conn, &state.data_dir);
+    let info = workspace::continue_after_merge(
+        &state.db,
+        &state.emitter,
+        &state.connection_manager,
+        &host,
+        &p.workspace_id,
+        p.number,
+    )
+    .await?;
+    state.host_feed.nudge_pr(&info.workspace_id);
+    Ok(Json(info))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TreeParams {
     pub workspace_id: String,
     /// Relative subdirectory; the workspace root when absent.

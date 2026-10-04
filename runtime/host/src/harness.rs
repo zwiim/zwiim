@@ -12,7 +12,8 @@
 //! 2. [`instruct`]: the session's [`SessionInstructions`], immutable for the
 //!    connection's life.
 //! 3. [`compose_turn`]: what Zwiim adds to each user turn on its way to the
-//!    agent. Nothing yet.
+//!    agent: one-shot Host notices, such as [`continuation_notice`]. History
+//!    readers take them back out with [`strip_notices`].
 //! 4. `observe`: reserved for reacting to turn outcomes. Not built yet.
 //!
 //! Instructions only guide the agent. What the Host enforces (the working
@@ -110,10 +111,87 @@ fn digest(text: &str) -> String {
         .collect()
 }
 
-/// Stage 3: the user's turn as the agent receives it. Passes it through
-/// unchanged for now.
-pub fn compose_turn(blocks: Vec<PromptInputBlock>) -> Vec<PromptInputBlock> {
+/// Opens and closes a notice in a turn. Reserved: it is scrubbed from every
+/// prompt at ingress, so a framed notice in a turn is always Zwiim's.
+const NOTICE_SEPARATOR: char = '\u{1e}';
+const NOTICE_TAG: &str = "[zwiim-notice]";
+
+/// Stage 3: the user's turn as the agent receives it. Host notices queued for
+/// the session ride on the turn's last text block, or on a new one when the
+/// turn has none. Without notices the turn passes through unchanged.
+pub fn compose_turn(
+    mut blocks: Vec<PromptInputBlock>,
+    notices: &[String],
+) -> Vec<PromptInputBlock> {
+    if notices.is_empty() {
+        return blocks;
+    }
+    let framed = notices
+        .iter()
+        .map(|text| format!("{NOTICE_SEPARATOR}{NOTICE_TAG}\n{text}{NOTICE_SEPARATOR}"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let last_text = blocks.iter_mut().rev().find_map(|block| match block {
+        PromptInputBlock::Text { text } => Some(text),
+        _ => None,
+    });
+    match last_text {
+        Some(text) => {
+            text.push_str("\n\n");
+            text.push_str(&framed);
+        }
+        None => blocks.push(PromptInputBlock::Text { text: framed }),
+    }
     blocks
+}
+
+/// Whether a turn may carry notices. A slash command goes to the agent's CLI
+/// as typed, so notices wait for the next turn. Any turn whose first text
+/// starts with `/` counts: deferring a notice costs nothing.
+pub fn takes_notices(blocks: &[PromptInputBlock]) -> bool {
+    let first_text = blocks.iter().find_map(|block| match block {
+        PromptInputBlock::Text { text } => Some(text),
+        _ => None,
+    });
+    !first_text.is_some_and(|text| text.trim_start().starts_with('/'))
+}
+
+/// Remove every notice, and the whitespace before it, from `text` as an agent
+/// recorded it. True if one was removed.
+pub fn strip_notices(text: &mut String) -> bool {
+    if !text.contains(NOTICE_SEPARATOR) {
+        return false;
+    }
+    let open = format!("{NOTICE_SEPARATOR}{NOTICE_TAG}");
+    let mut removed = false;
+    while let Some(start) = text.find(&open) {
+        let body = start + open.len();
+        let Some(len) = text[body..].find(NOTICE_SEPARATOR) else {
+            break;
+        };
+        let end = body + len + NOTICE_SEPARATOR.len_utf8();
+        let from = text[..start].trim_end().len();
+        text.replace_range(from..end, "");
+        removed = true;
+    }
+    removed
+}
+
+/// What an agent is told after its workspace continued past merged pull
+/// request `number` onto `branch`, cut from `base_branch` at `base_commit`.
+pub fn continuation_notice(
+    number: u64,
+    base_branch: &str,
+    branch: &str,
+    previous: &str,
+    base_commit: &str,
+) -> String {
+    let short = base_commit.get(..12).unwrap_or(base_commit);
+    format!(
+        "Zwiim: pull request #{number} was merged. This workspace now works on a new branch \
+         `{branch}`, started from `{base_branch}` at {short}. The previous branch `{previous}` \
+         is kept. Earlier changes are part of the merged pull request; build on the new base."
+    )
 }
 
 #[cfg(test)]
@@ -170,8 +248,97 @@ mod tests {
                 uri: None,
             },
         ];
-        assert_eq!(compose_turn(blocks.clone()), blocks);
-        assert!(compose_turn(Vec::new()).is_empty());
+        assert_eq!(compose_turn(blocks.clone(), &[]), blocks);
+        assert!(compose_turn(Vec::new(), &[]).is_empty());
+    }
+
+    #[test]
+    fn notices_ride_on_the_last_text_block_and_strip_back_out() {
+        let blocks = vec![PromptInputBlock::Text {
+            text: "fix it".into(),
+        }];
+        let notice = continuation_notice(
+            12,
+            "origin/main",
+            "zwiim/abcd1234",
+            "zwiim/old",
+            "0123456789ab",
+        );
+        let sent = compose_turn(blocks.clone(), std::slice::from_ref(&notice));
+        assert_eq!(sent.len(), 1);
+        let PromptInputBlock::Text { text } = &sent[0] else {
+            panic!("a text block");
+        };
+        assert!(text.starts_with("fix it") && text.contains(&notice));
+        let mut back = text.clone();
+        assert!(strip_notices(&mut back));
+        assert_eq!(back.trim_end(), "fix it");
+        let mut plain = "fix it".to_string();
+        assert!(!strip_notices(&mut plain));
+        assert_eq!(compose_turn(blocks.clone(), &[]), blocks);
+
+        // No text block to ride on: the notice becomes its own.
+        let image = vec![PromptInputBlock::Image {
+            data: "AAAA".into(),
+            mime_type: "image/png".into(),
+            uri: None,
+        }];
+        let sent = compose_turn(image.clone(), &["n".into(), "m".into()]);
+        assert_eq!(sent[..1], image[..]);
+        let PromptInputBlock::Text { text } = &sent[1] else {
+            panic!("a text block");
+        };
+        let mut back = text.clone();
+        assert!(strip_notices(&mut back));
+        assert!(back.is_empty(), "both notices go: {back:?}");
+    }
+
+    #[test]
+    fn a_slash_command_turn_takes_no_notice() {
+        assert!(!takes_notices(&[PromptInputBlock::Text {
+            text: " /review".into()
+        }]));
+        assert!(takes_notices(&[PromptInputBlock::Text {
+            text: "review".into()
+        }]));
+    }
+
+    #[test]
+    fn a_slash_command_after_an_image_takes_no_notice() {
+        let image = PromptInputBlock::Image {
+            data: "AAAA".into(),
+            mime_type: "image/png".into(),
+            uri: None,
+        };
+        assert!(!takes_notices(&[
+            image.clone(),
+            PromptInputBlock::Text {
+                text: "/review".into()
+            },
+        ]));
+        assert!(takes_notices(&[image]));
+    }
+
+    #[test]
+    fn the_notice_says_what_happened() {
+        let n = continuation_notice(
+            12,
+            "origin/main",
+            "zwiim/abcd1234",
+            "zwiim/old",
+            "0123456789abcdef",
+        );
+        for part in [
+            "#12",
+            "merged",
+            "origin/main",
+            "zwiim/abcd1234",
+            "zwiim/old",
+            "0123456789ab",
+        ] {
+            assert!(n.contains(part), "{part}");
+        }
+        assert!(!n.contains("0123456789abc"), "short commit only");
     }
 
     /// The harness decides what to say, never how a provider receives it.

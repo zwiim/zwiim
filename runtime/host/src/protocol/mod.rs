@@ -136,6 +136,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
             "/workspace.remove_worktree",
             post(http::workspace_remove_worktree),
         )
+        .route("/workspace.continue", post(http::workspace_continue))
         .route("/files.read", post(http::files_read))
         .route("/files.write", post(http::files_write))
         .route("/files.create", post(http::files_create))

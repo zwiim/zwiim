@@ -467,6 +467,10 @@ pub struct ConnectionManager {
     /// touch the same map. At most one per connection (the agent is blocked in
     /// its `exit_plan_mode` call) — no cap, no cumulative growth.
     pending_plan_approvals: Arc<Mutex<HashMap<String, PendingPlanApprovalEntry>>>,
+    /// One-shot Host notices waiting for a conversation's next accepted turn,
+    /// keyed by conversation row id so they outlive an agent respawn. In
+    /// memory only: a Host restart drops them.
+    notices: Arc<std::sync::Mutex<HashMap<i32, Vec<String>>>>,
 }
 
 /// A parked `ask_user_question` awaiting its answer. The `sender` resolves the
@@ -505,6 +509,7 @@ impl ConnectionManager {
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
+            notices: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -521,6 +526,7 @@ impl ConnectionManager {
             probe_locks: self.probe_locks.clone(),
             pending_questions: self.pending_questions.clone(),
             pending_plan_approvals: self.pending_plan_approvals.clone(),
+            notices: self.notices.clone(),
         }
     }
 
@@ -557,6 +563,7 @@ impl ConnectionManager {
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
+            notices: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -991,7 +998,7 @@ impl ConnectionManager {
             .reserve()
             .await
             .map_err(|_| AcpError::ProcessExited)?;
-        {
+        let notices = {
             let mut s = state_arc.write().await;
             if s.turn_in_flight {
                 // Names the gate, not just the outcome: the linked path checks
@@ -1005,12 +1012,45 @@ impl ConnectionManager {
                 return Err(AcpError::TurnInProgress);
             }
             s.turn_in_flight = true;
-        }
+            // Taken with the gate, before the infallible send: a refused or
+            // cancelled send leaves them queued, and a slash command defers
+            // them to the next turn.
+            if crate::harness::takes_notices(&blocks) {
+                s.conversation_id
+                    .and_then(|id| self.lock_notices().remove(&id))
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        };
         permit.send(ConnectionCommand::Prompt {
             blocks,
             user_message,
+            notices,
         });
         Ok(())
+    }
+
+    /// Queue `text` for conversation `conversation_id`'s next accepted turn.
+    /// It reaches the agent once, appended to that turn; the user's own
+    /// message, its broadcast and history never show it.
+    pub fn queue_notice(&self, conversation_id: i32, text: String) {
+        self.lock_notices()
+            .entry(conversation_id)
+            .or_default()
+            .push(text);
+    }
+
+    fn lock_notices(&self) -> std::sync::MutexGuard<'_, HashMap<i32, Vec<String>>> {
+        self.notices.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_notices(&self, conversation_id: i32) -> Vec<String> {
+        self.lock_notices()
+            .get(&conversation_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Clone the connection's `prompt_lock` under a short connections-map lock.
@@ -3783,6 +3823,33 @@ impl ConnectionManager {
         }
         live
     }
+
+    /// As [`Self::live_in_folder`], but only the connections whose agent is
+    /// working (see `session::is_busy`), leaving out connection `except`.
+    pub async fn busy_in_folder(
+        &self,
+        folder_id: i32,
+        dirs: &[&std::path::Path],
+        except: Option<&str>,
+    ) -> Vec<Option<i32>> {
+        let connections = self.connections.lock().await;
+        let mut busy = Vec::new();
+        for (id, conn) in connections.iter() {
+            if except == Some(id.as_str()) {
+                continue;
+            }
+            let state = conn.state.read().await;
+            let in_folder = state.folder_id == Some(folder_id)
+                || state
+                    .working_dir
+                    .as_deref()
+                    .is_some_and(|wd| dirs.iter().any(|dir| wd.starts_with(dir)));
+            if in_folder && crate::session::is_busy(&state) {
+                busy.push(state.conversation_id);
+            }
+        }
+        busy
+    }
 }
 
 /// Production impl of `ConnectionSpawner` used by `DelegationBroker`.
@@ -5081,6 +5148,7 @@ mod tests {
         let ConnectionCommand::Prompt {
             blocks,
             user_message,
+            ..
         } = command
         else {
             panic!("expected prompt command");
@@ -5808,6 +5876,7 @@ mod tests {
                     text: "filler".into(),
                 }],
                 user_message: None,
+                notices: Vec::new(),
             })
             .await
             .unwrap();
@@ -5835,6 +5904,61 @@ mod tests {
                 .turn_in_flight,
             "the gate must NOT be set while blocked on channel capacity (cancellation-safe)"
         );
+    }
+
+    #[tokio::test]
+    async fn a_queued_notice_reaches_only_the_next_accepted_turn() {
+        use crate::acp::connection::ConnectionCommand;
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-notice";
+        let mut rx = insert_live_connection(&mgr, conn_id, AgentType::Codex, None).await;
+        let state = mgr.get_state(conn_id).await.unwrap();
+        state.write().await.conversation_id = Some(7);
+        mgr.queue_notice(7, "n".into());
+        let turn = || {
+            vec![PromptInputBlock::Text {
+                text: "go".into(),
+            }]
+        };
+
+        // A refused send consumes nothing.
+        state.write().await.turn_in_flight = true;
+        assert!(matches!(
+            mgr.send_prompt_inner(conn_id, turn(), None).await,
+            Err(AcpError::TurnInProgress)
+        ));
+        assert_eq!(mgr.pending_notices(7), vec!["n".to_string()]);
+
+        // Neither does a slash command; it waits for the next real turn.
+        state.write().await.turn_in_flight = false;
+        let slash = vec![PromptInputBlock::Text {
+            text: "/review".into(),
+        }];
+        mgr.send_prompt_inner(conn_id, slash, None).await.unwrap();
+        let Some(ConnectionCommand::Prompt { notices, .. }) = rx.recv().await else {
+            panic!("a prompt");
+        };
+        assert!(notices.is_empty());
+        assert_eq!(mgr.pending_notices(7), vec!["n".to_string()]);
+
+        state.write().await.turn_in_flight = false;
+        mgr.send_prompt_inner(conn_id, turn(), None).await.unwrap();
+        let Some(ConnectionCommand::Prompt {
+            blocks, notices, ..
+        }) = rx.recv().await
+        else {
+            panic!("a prompt");
+        };
+        assert_eq!(blocks, turn(), "the user's blocks stay pristine");
+        assert_eq!(notices, vec!["n".to_string()]);
+        assert!(mgr.pending_notices(7).is_empty());
+
+        state.write().await.turn_in_flight = false;
+        mgr.send_prompt_inner(conn_id, turn(), None).await.unwrap();
+        let Some(ConnectionCommand::Prompt { notices, .. }) = rx.recv().await else {
+            panic!("a prompt");
+        };
+        assert!(notices.is_empty(), "one-shot");
     }
 
     #[tokio::test]

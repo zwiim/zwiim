@@ -151,6 +151,30 @@ impl ZwiimError {
         e
     }
 
+    /// Pull request `number` has not merged (`state`: `open`, `draft` or
+    /// `closed`); only a merged one can be continued from.
+    pub fn pr_not_merged(number: u64, state: &str) -> Self {
+        let mut e = Self::new(
+            StatusCode::CONFLICT,
+            "pr_not_merged",
+            format!("Pull request #{number} has not been merged"),
+        );
+        e.details = Some(serde_json::json!({ "number": number, "state": state }));
+        e
+    }
+
+    /// The workspace's checkout (`head`) is not the merged pull request's
+    /// head (`pr_head`).
+    pub fn head_not_merged(head: &str, pr_head: &str) -> Self {
+        let mut e = Self::new(
+            StatusCode::CONFLICT,
+            "head_not_merged",
+            "The workspace is not at the merged pull request's head",
+        );
+        e.details = Some(serde_json::json!({ "head": head, "pr_head": pr_head }));
+        e
+    }
+
     /// The worktree workspace was removed; nothing may run in it again.
     pub fn workspace_removed() -> Self {
         Self::new(
@@ -417,6 +441,16 @@ mod tests {
             "Path must be relative"
         );
         assert_eq!(scrub_paths(r"bad C:\work\x"), "bad <path>");
+    }
+
+    #[test]
+    fn continue_refusals_name_the_pull_request() {
+        let e = ZwiimError::pr_not_merged(12, "open");
+        assert_eq!((e.status, e.code), (StatusCode::CONFLICT, "pr_not_merged"));
+        assert_eq!(e.details, Some(serde_json::json!({"number": 12, "state": "open"})));
+        let e = ZwiimError::head_not_merged("abc", "def");
+        assert_eq!((e.status, e.code), (StatusCode::CONFLICT, "head_not_merged"));
+        assert_eq!(e.details, Some(serde_json::json!({"head": "abc", "pr_head": "def"})));
     }
 
     #[test]

@@ -528,7 +528,13 @@ impl FeedTask {
         // Diff invalidations, only for live listed workspaces.
         let mut diffs: Vec<String> = Vec::new();
         for w in workspaces.iter().filter(|w| !w.removed) {
-            let changed = if stale.all_diffs {
+            // A new branch or base (Continue) moves the diff with no file event.
+            let moved = old
+                .workspaces
+                .iter()
+                .find(|o| o.workspace_id == w.workspace_id)
+                .is_some_and(|o| o.branch != w.branch || o.base_commit != w.base_commit);
+            let changed = if stale.all_diffs || moved {
                 true
             } else {
                 match stale.watched.get(&w.workspace_id) {
@@ -1805,5 +1811,103 @@ esac
             .until("pushed", pr_is(wt.workspace_id.clone(), |p| p["pr"]["number"] == 12))
             .await;
         assert_eq!(ev.payload["pr"]["checks"]["pending"], 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn continue_publishes_the_workspace_its_pr_and_its_diff() {
+        let gh_dir = tempfile::tempdir().unwrap();
+        let gh_dir = gh_dir.path().to_path_buf();
+        let gh = gh_dir.join("gh");
+        let f = fixture_with(quick_prs(gh.clone())).await;
+        let repo = Path::new(&f.root);
+        // The Harness's git reads the user's config: keep their hooks out.
+        let hooks = f.dir.path().join("hooks");
+        std::fs::create_dir(&hooks).unwrap();
+        git(repo, &["config", "core.hooksPath", hooks.to_str().unwrap()]);
+        add_origin(&f);
+        let wt = f.create_worktree().await;
+        let branch = wt.branch.clone().unwrap();
+        let wt_path = Path::new(&wt.path);
+
+        // The worktree's pull request is pushed, then merged on GitHub.
+        std::fs::write(wt_path.join("feature.txt"), "x").unwrap();
+        git(wt_path, &["add", "feature.txt"]);
+        git(wt_path, &["commit", "-q", "-m", "feature"]);
+        git(wt_path, &["push", "-q", "origin", &branch]);
+        let head = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(wt_path)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        let origin = f.dir.path().join("origin.git");
+        git(f.dir.path(), &["clone", "-q", "-b", "main", origin.to_str().unwrap(), "other"]);
+        let other = f.dir.path().join("other");
+        git(&other, &["merge", "-q", "--no-ff", "-m", "merge", &format!("origin/{branch}")]);
+        git(&other, &["push", "-q", "origin", "main"]);
+        let pr = json!({
+            "number": 12, "title": "Feature", "state": "MERGED",
+            "url": "https://github.com/o/r/pull/12", "isDraft": false,
+            "baseRefName": "main", "headRefName": branch, "headRefOid": head,
+            "mergeStateStatus": "UNKNOWN", "statusCheckRollup": [],
+            "mergedAt": "2026-10-03T00:00:00Z",
+        });
+        std::fs::write(
+            &gh,
+            format!(
+                "#!/bin/sh\ncase \"$*\" in\n\"pr view {branch} \"*) echo '{pr}' ;;\n\"repo view\"*) echo '{{\"squashMergeAllowed\":true,\"mergeCommitAllowed\":false,\"rebaseMergeAllowed\":false}}' ;;\n*) echo 'no pull requests found' >&2; exit 1 ;;\nesac\n"
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let (_, mut feed) = f.subscribe().await;
+        f.state.host_feed.pr(&f.state, &wt.workspace_id, true).await.unwrap();
+        feed.until("merged", pr_is(wt.workspace_id.clone(), |p| p["pr"]["state"] == "merged"))
+            .await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        feed.drain(300).await;
+
+        let host = crate::git_harness::GitHost {
+            db: &f.state.db.conn,
+            data_dir: &f.state.data_dir,
+            gh: Some(&gh),
+        };
+        let info = workspace::continue_after_merge(
+            &f.state.db,
+            &f.state.emitter,
+            &f.state.connection_manager,
+            &host,
+            &wt.workspace_id,
+            12,
+        )
+        .await
+        .unwrap();
+        let (new_branch, base_commit) = (info.branch.unwrap(), info.base_commit.unwrap());
+
+        // The pass that publishes the new baseline also invalidates the diff
+        // and clears the merged pull request.
+        feed.until(
+            "continued",
+            workspace_is(wt.workspace_id.clone(), |w| {
+                w["branch"] == new_branch.as_str()
+                    && w["base_branch"] == "origin/main"
+                    && w["base_commit"] == base_commit.as_str()
+            }),
+        )
+        .await;
+        let diff = feed.next().await;
+        assert!(
+            is("workspace.diff_changed", "workspace_id", wt.workspace_id.clone())(&diff),
+            "{diff:?}"
+        );
+        feed.until("pr cleared", pr_is(wt.workspace_id.clone(), |p| p["pr"].is_null()))
+            .await;
     }
 }
