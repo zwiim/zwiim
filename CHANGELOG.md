@@ -8,6 +8,45 @@ have their own versions and are listed under Compatibility.
 
 ## [Unreleased]
 
+## [0.1.0-rc.4] - 2026-10-04
+
+### Added
+- Pull requests in Zwiim: once an agent opens a pull request for a worktree's branch, Desktop shows a banner and Mobile a strip with its checks as they run, and you can merge it from either one. The Host follows the pull request on GitHub and tells every connected client; the clients never ask GitHub themselves.
+- Ask an agent to "raise a PR" and it commits, pushes the branch and opens the pull request against the repository's default branch.
+- Slash commands that only work in an agent's own CLI (such as `/mcp`, `/model` or `/status`) run in a terminal card over the Desktop composer, which stays until you press Done. Commands the agent lists as skills or prompts still go into the message.
+
+### Changed
+- Desktop sidebar: the Workspaces header and each repository fold, removed worktrees fold under one row, and a working session shows a pulsing dot. Folds are remembered on the device.
+- Desktop files: typed icons, and a folder that holds only a folder opens straight through on one row.
+- Desktop chat: bare links read without `https://`, and links to files inside the workspace open as a tab.
+- A pull request's first checks show within seconds of it opening.
+
+### Fixed
+- A merged or closed pull request reads `#12 Merged`, without the number twice, and its screen-reader label no longer reads out old check counts.
+
+### Security
+- Merge is pinned to the commit the client showed: if the branch moved since, the Host refuses it instead of merging something unseen. Nothing merges without a click, and branch protection still applies.
+
+### Compatibility
+- Protocol `zwiim/1`, revision 1; clients from revision 1. New capabilities: `git.pr`, `git.pr_merge`, `terminal.agent`.
+- Mobile: Android app 0.1.0 (version code 1), installed from the APK; no store build yet.
+
+### Provider changes
+- None. Claude adapter 0.81.2, Codex adapter 1.13.1.
+
+### Migration notes
+- None.
+
+### Known limitations
+- macOS on Apple Silicon only.
+- Only the stable channel is offered as an update.
+- Updates apply when you restart the Host (Desktop → About & updates, or Update Host on Mobile).
+- The Android app is not updated automatically: install each new APK by hand.
+- Keeping the Mac awake cannot stop sleep when a MacBook's lid is closed, unless it is on power with an external display.
+- Agent sign-in and API keys are managed on the Mac running the Host; a remote Desktop shows their status only.
+- Pull requests need the GitHub CLI (`gh`) installed and signed in on the Mac running the Host.
+- Slash commands in a terminal card were checked with Codex; Claude Code's path has not been checked by hand yet.
+
 ## [0.1.0-rc.3] - 2026-10-03
 
 ### Added
