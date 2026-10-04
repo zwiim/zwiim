@@ -6,11 +6,29 @@ its text becomes the release notes and the `notes` of `release.json`
 this order; write "None." under one with nothing to say. Mobile store builds
 have their own versions and are listed under Compatibility.
 
-## [Unreleased]
+## [0.1.0-rc.5] - 2026-10-05
+
+### Added
+- Continue after merge: once a worktree's pull request is merged, Continue (on the Desktop banner, or in the pull request sheet on Mobile) moves the worktree to a new branch made from the freshly fetched base. Sessions and terminals stay, and each session is told the new branch on its next turn.
+- Agents can rename a worktree's branch with a new Git tool, `git_branch_rename`. It refuses in the repository root, on a detached HEAD, once the branch is pushed, and for a name already taken.
 
 ### Changed
+- A new worktree's branch and folder are named after an Indian city (`pune`) instead of `zwiim/<8 hex>`, and a name is never reused in a repository. Until the branch is pushed, the agent is asked to rename it after the work it holds; Continue starts the next branch as `<previous>-v1`, `-v2`, and so on.
 - macOS names the Host's background item after Zwiim, not the developer's name on the signing certificate.
 - Zwiim's identifiers move to `com.zwiim`: Desktop `com.zwiim.app`, Host `com.zwiim.host`, Mobile `com.zwiim.mobile`.
+
+### Fixed
+- None.
+
+### Security
+- Continue refuses the repository root, a workspace where an agent is still working, uncommitted changes, a pull request that is not merged, and a branch that moved past the merged commit, so nothing unmerged is left behind.
+
+### Compatibility
+- Protocol `zwiim/1`, revision 1; clients from revision 1. New capability: `workspace.continue`.
+- Mobile: Android app 0.1.0 (version code 1) as `com.zwiim.mobile`, installed from the APK. iOS 0.1.0 (build 1) for TestFlight testers.
+
+### Provider changes
+- None. Claude adapter 0.81.2, Codex adapter 1.13.1.
 
 ### Migration notes
 - Start fresh: this release does not carry over anything stored under the old `dev.zwiim` identifiers. Before installing it, quit Zwiim, delete `~/Library/LaunchAgents/dev.zwiim.host.plist`, and remove the old app.
@@ -18,6 +36,16 @@ have their own versions and are listed under Compatibility.
 - Desktop asks you to sign in again and pairs as a new device. On its first start, macOS may ask whether `zwiim-host` can use its Keychain items: choose Always Allow. If that prompt is denied, the Host stops with a Keychain error instead of starting with a new identity; open Zwiim again to be asked again.
 - The start-at-login choice and Desktop's window preferences start over from their defaults.
 - Mobile is a new app: uninstall the old Android app, install the new APK and pair again. iOS needs a new App ID and App Store Connect record for `com.zwiim.mobile`.
+
+### Known limitations
+- macOS on Apple Silicon only.
+- Only the stable channel is offered as an update.
+- Updates apply when you restart the Host (Desktop → About & updates, or Update Host on Mobile).
+- The Android app is not updated automatically: install each new APK by hand.
+- Keeping the Mac awake cannot stop sleep when a MacBook's lid is closed, unless it is on power with an external display.
+- Agent sign-in and API keys are managed on the Mac running the Host; a remote Desktop shows their status only.
+- Pull requests and Continue need the GitHub CLI (`gh`) installed and signed in on the Mac running the Host.
+- Slash commands in a terminal card were checked with Codex; Claude Code's path has not been checked by hand yet.
 
 ## [0.1.0-rc.4] - 2026-10-04
 
