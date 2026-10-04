@@ -2,7 +2,7 @@
   "expo": {
     "name": "Zwiim",
     "slug": "zwiim",
-    "description": "Control your Zwiim Hosts from anywhere.",
+    "description": "Run coding agents on your Mac. Steer them from anywhere.",
     "scheme": "zwiim",
     "version": "0.1.0",
     "orientation": "portrait",
@@ -14,7 +14,8 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSLocalNetworkUsageDescription": "Zwiim connects directly to your computers on this network.",
-        "NSBonjourServices": ["_zwiim._tcp"]
+        "NSBonjourServices": ["_zwiim._tcp"],
+        "ITSAppUsesNonExemptEncryption": false
       },
       "buildNumber": "1"
     },
