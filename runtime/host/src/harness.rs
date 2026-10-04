@@ -33,17 +33,21 @@ pub use system_prompt::{Authority, Layer};
 
 /// The version of the instruction text. Bump it whenever the text rendered
 /// for the same facts changes.
-pub const INSTRUCTIONS_VERSION: &str = "zwiim-instructions/2";
+pub const INSTRUCTIONS_VERSION: &str = "zwiim-instructions/3";
 
 /// Git facts about a session's working directory. The current branch is
-/// left out on purpose: the agent can switch branches mid-session, so it
-/// asks Git instead.
+/// left out on purpose, except the placeholder a Host-made worktree starts
+/// on: the agent can switch branches mid-session, so it asks Git instead.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GitFacts {
     /// The working directory is a linked worktree, not a main checkout.
     pub worktree: bool,
     /// The origin's default branch, e.g. `origin/main`.
     pub default_branch: Option<String>,
+    /// The worktree is still on the placeholder branch the Host made it
+    /// with, its folder's name (`pune`); `None` once renamed or pushed, and
+    /// for any other checkout.
+    pub placeholder_branch: Option<String>,
 }
 
 /// What the harness knows about a session when it opens.
@@ -88,10 +92,55 @@ async fn git_facts(cwd: &Path) -> Option<GitFacts> {
     let mut dirs = dirs.lines();
     let worktree = matches!((dirs.next(), dirs.next()), (Some(a), Some(b)) if a != b);
     let default_branch = crate::workspace::origin_default_branch(&cwd.to_string_lossy()).await;
+    let placeholder_branch = if worktree {
+        placeholder_branch(cwd).await
+    } else {
+        None
+    };
     Some(GitFacts {
         worktree,
         default_branch,
+        placeholder_branch,
     })
+}
+
+/// The branch `cwd` is on, when that is the name the Host gave its folder
+/// and it was never pushed.
+async fn placeholder_branch(cwd: &Path) -> Option<String> {
+    let folder = cwd.file_name()?.to_str()?;
+    if !crate::workspace::is_host_worktree_name(folder) {
+        return None;
+    }
+    let out = crate::process::tokio_command("git")
+        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .current_dir(cwd)
+        .output()
+        .await
+        .ok()
+        .filter(|out| out.status.success())?;
+    let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if branch != folder {
+        return None;
+    }
+    // Pushed, as `git_branch_rename` judges it: renaming would orphan the
+    // remote branch and its pull request.
+    let origin_ref = format!("refs/remotes/origin/{branch}");
+    let merge_key = format!("branch.{branch}.merge");
+    for args in [
+        &["show-ref", "--verify", "--quiet", origin_ref.as_str()][..],
+        &["config", "--get", merge_key.as_str()],
+    ] {
+        let found = crate::process::tokio_command("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .await
+            .map_or(true, |out| out.status.success());
+        if found {
+            return None;
+        }
+    }
+    Some(branch)
 }
 
 /// Stage 2: the session's instructions.
@@ -189,7 +238,8 @@ pub fn continuation_notice(
     let short = base_commit.get(..12).unwrap_or(base_commit);
     format!(
         "Zwiim: pull request #{number} was merged. This workspace now works on a new branch \
-         `{branch}`, started from `{base_branch}` at {short}. The previous branch `{previous}` \
+         `{branch}`, started from `{base_branch}` at {short}. `{branch}` is a placeholder: \
+         rename it with `git_branch_rename` before you push. The previous branch `{previous}` \
          is kept. Earlier changes are part of the merged pull request; build on the new base."
     )
 }
@@ -200,10 +250,11 @@ mod tests {
 
     fn worktree() -> HarnessInput {
         HarnessInput {
-            cwd: "/w/repo/abc".into(),
+            cwd: "/w/repo/pune".into(),
             git: Some(GitFacts {
                 worktree: true,
                 default_branch: Some("origin/main".into()),
+                placeholder_branch: Some("pune".into()),
             }),
         }
     }
@@ -232,7 +283,7 @@ mod tests {
                 instruct(&worktree()).version,
                 instruct(&worktree()).digest.as_str()
             ),
-            ("zwiim-instructions/2", "db97642758fe")
+            ("zwiim-instructions/3", "3229a2a01c2d")
         );
     }
 
@@ -335,6 +386,8 @@ mod tests {
             "zwiim/abcd1234",
             "zwiim/old",
             "0123456789ab",
+            "placeholder",
+            "git_branch_rename",
         ] {
             assert!(n.contains(part), "{part}");
         }
@@ -397,6 +450,7 @@ mod tests {
             Some(GitFacts {
                 worktree: false,
                 default_branch: None,
+                placeholder_branch: None,
             })
         );
 
@@ -421,9 +475,78 @@ mod tests {
             Some(GitFacts {
                 worktree: true,
                 default_branch: Some("origin/main".into()),
+                placeholder_branch: None,
             })
         );
         // The branch the worktree is on is a Git fact the agent asks for.
         assert!(!instruct(&input).text.contains("zwiim/abc"));
+
+        // A Host-made worktree, still on the branch its folder was named with.
+        let pune = dir.path().join("pune");
+        run(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "pune",
+                pune.to_str().unwrap(),
+            ],
+        );
+        let input = gather(&pune).await;
+        assert_eq!(
+            input.git.as_ref().unwrap().placeholder_branch.as_deref(),
+            Some("pune")
+        );
+        assert!(instruct(&input).text.contains("placeholder branch `pune`"));
+        // Renamed: no longer a placeholder.
+        run(&pune, &["branch", "-m", "fix-login"]);
+        assert_eq!(gather(&pune).await.git.unwrap().placeholder_branch, None);
+        // A main checkout named and branched after a city is not a worktree.
+        let agra = dir.path().join("agra");
+        std::fs::create_dir(&agra).unwrap();
+        run(&agra, &["init", "-q", "-b", "agra"]);
+        run(&agra, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        assert_eq!(gather(&agra).await.git.unwrap().placeholder_branch, None);
+    }
+
+    #[tokio::test]
+    async fn a_pushed_city_branch_is_no_placeholder() {
+        // Worktrees made before placeholders pushed under their city name;
+        // renaming such a branch would orphan its pull request.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        run(&repo, &["init", "-q", "-b", "main"]);
+        run(&repo, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        for city in ["pune", "surat"] {
+            let path = dir.path().join(city);
+            run(
+                &repo,
+                &["worktree", "add", "-q", "-b", city, path.to_str().unwrap()],
+            );
+        }
+
+        // On the origin.
+        run(&repo, &["update-ref", "refs/remotes/origin/pune", "HEAD"]);
+        assert_eq!(
+            gather(&dir.path().join("pune"))
+                .await
+                .git
+                .unwrap()
+                .placeholder_branch,
+            None
+        );
+        // Tracking a remote branch.
+        run(&repo, &["config", "branch.surat.merge", "refs/heads/surat"]);
+        assert_eq!(
+            gather(&dir.path().join("surat"))
+                .await
+                .git
+                .unwrap()
+                .placeholder_branch,
+            None
+        );
     }
 }

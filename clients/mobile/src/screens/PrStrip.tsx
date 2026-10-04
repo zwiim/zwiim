@@ -2,16 +2,28 @@
 // branch's pull request as the Host follows it on GitHub. One line: `#12`,
 // its status and checks; it opens the PR sheet (title, base ← head, each
 // check, Merge). Merge turns the sheet into its confirm, and the Host merges
-// at the head shown there or refuses. The phone never asks GitHub.
+// at the head shown there or refuses. Once merged, Continue moves the worktree
+// to a new branch from the PR's base, and the strip goes. The phone never asks
+// GitHub.
 
 import { useEffect, useState } from "react";
 import { Linking, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import * as Haptics from "expo-haptics";
-import type { CheckState, PrCheckItem, PrEntry, PrState } from "@zwiim/sdk";
-import { mergeError, prErrorText, prLabel, prLook, shortSha, type PrTone } from "../host/pr";
+import type { CheckState, Compatibility, PrCheckItem, PrEntry, PrState, WorkspaceInfo } from "@zwiim/sdk";
+import {
+  continueError,
+  continueLine,
+  mergeError,
+  offersContinue,
+  prErrorText,
+  prLabel,
+  prLook,
+  shortSha,
+  type PrTone,
+} from "../host/pr";
 import { currentHost } from "../services";
 import { Button, Sheet, T } from "../ui/components";
-import { ChevronRight, GitMerge, GitPullRequest, Icon } from "../ui/icons";
+import { ChevronRight, GitBranchPlus, GitMerge, GitPullRequest, Icon } from "../ui/icons";
 import { space, useTheme, type Palette } from "../ui/tokens";
 
 export const toneColor = (tone: PrTone, theme: Palette) =>
@@ -31,11 +43,15 @@ const open = (url: string | null) => {
 export function PrStrip({
   workspace_id,
   entry,
+  workspace,
+  compat,
   connected,
   hostName,
 }: {
   workspace_id: string;
   entry: PrEntry | undefined;
+  workspace: WorkspaceInfo | undefined;
+  compat: Compatibility | null;
   connected: boolean;
   hostName: string;
 }) {
@@ -43,12 +59,18 @@ export function PrStrip({
   const [sheet, setSheet] = useState(false);
   /** The PR this phone just merged, shown merged until the feed says so too. */
   const [justMerged, setJustMerged] = useState<number | null>(null);
+  /** The PR this phone just continued past, gone until the feed clears it. */
+  const [continued, setContinued] = useState<number | null>(null);
   const feedPr = entry?.pr ?? null;
-  useEffect(() => setJustMerged(null), [workspace_id, feedPr?.number]);
+  useEffect(() => {
+    setJustMerged(null);
+    setContinued(null);
+  }, [workspace_id, feedPr?.number]);
   const pr: PrState | null =
     feedPr && justMerged === feedPr.number && feedPr.state !== "merged" ? { ...feedPr, state: "merged" } : feedPr;
 
   if (!entry) return null;
+  if (feedPr && continued === feedPr.number) return null;
   if (!pr) {
     if (!entry.error) return null;
     return (
@@ -90,7 +112,9 @@ export function PrStrip({
         workspace_id={workspace_id}
         connected={connected}
         hostName={hostName}
+        canContinue={offersContinue(pr, workspace, compat)}
         onMerged={setJustMerged}
+        onContinued={setContinued}
         onClose={() => setSheet(false)}
       />
     </>
@@ -103,7 +127,9 @@ function PrSheet({
   workspace_id,
   connected,
   hostName,
+  canContinue,
   onMerged,
+  onContinued,
   onClose,
 }: {
   visible: boolean;
@@ -111,12 +137,15 @@ function PrSheet({
   workspace_id: string;
   connected: boolean;
   hostName: string;
+  canContinue: boolean;
   onMerged(number: number): void;
+  onContinued(number: number): void;
   onClose(): void;
 }) {
   const theme = useTheme();
   const [confirm, setConfirm] = useState(false);
   const [merging, setMerging] = useState(false);
+  const [continuing, setContinuing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const look = prLook(pr, connected);
   // A new head is a new pull request to judge.
@@ -144,6 +173,22 @@ function PrSheet({
       setConfirm(false);
     } finally {
       setMerging(false);
+    }
+  };
+
+  // No confirm: nothing is lost. Sessions, terminals and the old branch stay.
+  const continueHere = async () => {
+    setContinuing(true);
+    setError(null);
+    try {
+      await currentHost.continueWorkspace(workspace_id, pr.number);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      close();
+      onContinued(pr.number);
+    } catch (e) {
+      setError(continueError(e, pr.number, hostName));
+    } finally {
+      setContinuing(false);
     }
   };
 
@@ -190,7 +235,25 @@ function PrSheet({
           {error}
         </T>
       ) : null}
-      {look.settled ? null : (
+      {look.settled ? (
+        canContinue ? (
+          <>
+            <T variant="callout" color={theme.mut} testID="pr-continue-line">
+              {continueLine(pr)}
+            </T>
+            <Button
+              tall
+              kind="primary"
+              label="Continue"
+              icon={GitBranchPlus}
+              loading={continuing}
+              disabled={!connected}
+              onPress={() => void continueHere()}
+              testID="pr-continue"
+            />
+          </>
+        ) : null
+      ) : (
         <>
           {look.reason ? (
             <T variant="callout" color={theme.mut} testID="pr-merge-reason">

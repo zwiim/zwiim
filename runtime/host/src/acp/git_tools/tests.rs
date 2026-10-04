@@ -264,6 +264,13 @@ fn requests_map_to_the_intended_operation() {
             },
         ),
         (
+            "git_branch_rename",
+            json!({"name": "fix-login"}),
+            GitOp::BranchRename {
+                name: "fix-login".into(),
+            },
+        ),
+        (
             "git_switch",
             json!({"branch": "main"}),
             GitOp::Switch {
@@ -748,6 +755,19 @@ async fn commits_are_not_gated() {
         .await
         .unwrap();
     assert_eq!(commit["op"], "commit");
+}
+
+#[tokio::test]
+async fn branch_renames_are_not_gated() {
+    let fx = Fixture::new(true).await;
+    // Another agent is working: a gated op would be `workspace_busy`.
+    let tools = host_tools(&fx, Some(true)).await;
+    // The op ran and refused on its own terms: this is a root workspace.
+    let e = tools
+        .run("a", GitOp::BranchRename { name: "x".into() })
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, "invalid_input");
 }
 
 #[test]

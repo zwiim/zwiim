@@ -227,6 +227,9 @@ async fn run_op(host: &GitHost<'_>, caller: &GitCaller, op: GitOp) -> Result<Git
         GitOp::BranchCreate { name, from } => local::branch_create(root, &name, from.as_deref())
             .await
             .map(GitOutcome::BranchCreate),
+        GitOp::BranchRename { name } => local::branch_rename(&row, &name)
+            .await
+            .map(GitOutcome::BranchRename),
         GitOp::Switch { branch } => local::switch(root, &branch).await.map(GitOutcome::Switch),
         GitOp::Stage { paths } => local::stage(root, &paths).await.map(GitOutcome::Stage),
         GitOp::Commit { message, paths } => {

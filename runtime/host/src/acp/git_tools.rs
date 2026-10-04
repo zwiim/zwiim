@@ -37,11 +37,12 @@ use crate::session_options::Mode;
 const TOOL_PREFIX: &str = "git_";
 
 /// The operations exposed as tools, in the order the schema lists them.
-pub const KINDS: [GitOpKind; 15] = [
+pub const KINDS: [GitOpKind; 16] = [
     GitOpKind::Status,
     GitOpKind::Diff,
     GitOpKind::Log,
     GitOpKind::BranchCreate,
+    GitOpKind::BranchRename,
     GitOpKind::Switch,
     GitOpKind::Stage,
     GitOpKind::Commit,
@@ -80,6 +81,7 @@ pub fn display_title(kind: GitOpKind) -> &'static str {
         GitOpKind::Diff => "Git diff",
         GitOpKind::Log => "Git log",
         GitOpKind::BranchCreate => "Create branch",
+        GitOpKind::BranchRename => "Rename branch",
         GitOpKind::Switch => "Switch branch",
         GitOpKind::Stage => "Stage changes",
         GitOpKind::Commit => "Commit",

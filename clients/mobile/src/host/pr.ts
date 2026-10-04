@@ -2,9 +2,18 @@
 // Session strip → PR strip): what the strip, the branch chip's badge and the
 // PR sheet say about it, and a refused merge in words. The phone never asks
 // GitHub; the Host's feed keeps `HostState.prs` current, and Merge goes to the
-// Host pinned to the head shown here.
+// Host pinned to the head shown here. Once merged, Continue moves the worktree
+// to a new branch from the PR's base.
 
-import { isClientError, type MergeMethod, type PrEntry, type PrState } from "@zwiim/sdk";
+import {
+  hasCapability,
+  isClientError,
+  type Compatibility,
+  type MergeMethod,
+  type PrEntry,
+  type PrState,
+  type WorkspaceInfo,
+} from "@zwiim/sdk";
 
 export type PrTone = "done" | "err" | "work" | "mut";
 
@@ -106,6 +115,39 @@ export function mergeError(e: unknown, hostName: string): string {
   if (isClientError(e, "unknown_outcome")) return `Not sure that went through. Check the PR on ${hostName} before trying again.`;
   if (isClientError(e, "network") || isClientError(e, "timeout")) return `Not connected to ${hostName}. Try again when it's back.`;
   return "Couldn't merge the pull request. Try again.";
+}
+
+/** Continue is for a merged PR in a worktree still on disk, on a Host that serves it. */
+export function offersContinue(pr: PrState, workspace: WorkspaceInfo | undefined, compat: Compatibility | null): boolean {
+  return (
+    pr.state === "merged" &&
+    workspace?.kind === "worktree" &&
+    !workspace.removed &&
+    hasCapability(compat, "workspace.continue")
+  );
+}
+
+/** What Continue does, above its button. */
+export const continueLine = (pr: PrState) =>
+  `Start a new branch from ${pr.base}, where #${pr.number} landed. Sessions stay; each agent is told on its next turn. The old branch stays.`;
+
+/** A refused or failed Continue: what holds the worktree, or what GitHub says. */
+export function continueError(e: unknown, number: number, hostName: string): string {
+  if (isClientError(e, "workspace_busy")) return "An agent is still working here. Wait for it or stop it, then Continue.";
+  if (isClientError(e, "workspace_dirty")) return "Uncommitted changes here. Commit or discard them first.";
+  if (isClientError(e, "head_not_merged")) return `This branch has commits #${number} didn't merge. Continue would leave them behind.`;
+  if (isClientError(e, "pr_not_merged")) return `#${number} isn't merged on GitHub yet.`;
+  if (isClientError(e, "unknown_outcome")) return `Not sure that went through. Check the branch on ${hostName} before trying again.`;
+  if (
+    isClientError(e, "gh_unauthenticated") ||
+    isClientError(e, "gh_unavailable") ||
+    isClientError(e, "github_unreachable") ||
+    isClientError(e, "network") ||
+    isClientError(e, "timeout")
+  ) {
+    return mergeError(e, hostName);
+  }
+  return "Couldn't continue. Try again.";
 }
 
 /** The head commit as people read it: `abc1234`. */

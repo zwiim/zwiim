@@ -717,6 +717,23 @@
     }
   },
   {
+    "name": "git_branch_rename",
+    "description": "Rename the branch checked out in this worktree workspace, for example from its placeholder to a name for the work. Refuses in a root workspace (`invalid_input`), on a detached HEAD (`detached_head`), once the branch was pushed (`invalid_input`), and for a name that is already a branch, remote branch or tag (`already_exists`). Changes the repository, so it is refused with `plan_mode` while this session is in plan mode. Runs in this session's workspace, which Zwiim resolves for you. A failure comes back as an error whose text starts with a code (for example `no_workspace`, `not_a_git_repository`, `invalid_path`, `invalid_input`, `not_found`, `conflict`, `non_fast_forward`, `auth_failed`, `gh_unauthenticated`, `timeout`); read the code before retrying.",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The branch's new name."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "git_switch",
     "description": "Switch to an existing branch. Refuses with `conflict` when local changes would be overwritten; nothing is discarded. Changes the repository, so it is refused with `plan_mode` while this session is in plan mode. Runs in this session's workspace, which Zwiim resolves for you. A failure comes back as an error whose text starts with a code (for example `no_workspace`, `not_a_git_repository`, `invalid_path`, `invalid_input`, `not_found`, `conflict`, `non_fast_forward`, `auth_failed`, `gh_unauthenticated`, `timeout`); read the code before retrying.",
     "inputSchema": {

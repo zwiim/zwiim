@@ -32,6 +32,10 @@ export type HostErrorCode =
   | "update_unavailable"
   | "not_mergeable"
   | "pr_changed"
+  /** `workspace.continue`: the pull request is not merged on GitHub. */
+  | "pr_not_merged"
+  /** `workspace.continue`: the branch moved past the merged head, so Continue would strand commits. */
+  | "head_not_merged"
   | "gh_unavailable"
   | "gh_unauthenticated"
   /** GitHub could not be reached from the Host (not this client's connection). */
@@ -1020,6 +1024,11 @@ export interface Operations {
   "workspace.create_worktree": [{ workspace_id: string; base?: string }, WorkspaceInfo];
   "workspace.remove_worktree": [{ workspace_id: string; force?: boolean }, WorktreeRemoved];
   /**
+   * After its pull request `number` merged, move the worktree in place to a
+   * new branch from the PR's base (capability `workspace.continue`).
+   */
+  "workspace.continue": [{ workspace_id: string; number: number }, WorkspaceInfo];
+  /**
    * `agent` runs that agent's CLI in place of a shell (Claude Code and Codex;
    * capability `terminal.agent`). `command`, a slash command, runs in it;
    * one the CLI does not show back (it is asking something first) is not
@@ -1106,6 +1115,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "workspace.create_folder",
   "workspace.create_worktree",
   "workspace.remove_worktree",
+  "workspace.continue",
   "terminal.spawn",
   "terminal.write",
   "terminal.resize",

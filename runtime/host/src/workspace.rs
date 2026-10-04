@@ -33,6 +33,8 @@ use crate::protocol::error::ZwiimError;
 use crate::terminal::manager::TerminalManager;
 use crate::web::event_bridge::EventEmitter;
 
+mod names;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceKind {
@@ -531,6 +533,12 @@ async fn has_origin(repo: &str) -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
+/// Whether `dir` is a name the Host gives the worktrees it makes (`pune`,
+/// `pune-3`).
+pub fn is_host_worktree_name(dir: &str) -> bool {
+    names::stem(dir).is_some()
+}
+
 /// The origin's default branch as a remote-tracking name (`origin/main`):
 /// `origin/HEAD`, else `origin/main`, else `origin/master` — whichever
 /// remote-tracking branch exists locally. No fetch.
@@ -595,10 +603,14 @@ pub async fn worktree_bases(repo: &str) -> Result<WorktreeBases, AppCommandError
     })
 }
 
+/// Names [`create_worktree`] and [`continue_after_merge`] try before giving up.
+const NAME_ATTEMPTS: usize = 5;
+
 /// Create a managed git worktree from root workspace `root_workspace_id`.
 ///
-/// The host chooses both the branch (`zwiim/<suffix>`) and the directory
-/// (`<worktrees_dir>/<repo>/<suffix>`); the client supplies
+/// The host chooses both the branch and the directory, one name for both: an
+/// Indian city not yet used in the repo (`pune`, at
+/// `<worktrees_dir>/<repo>/pune`; see [`names`]); the client supplies
 /// neither. The branch starts at branch `base` when given, else at the
 /// origin's default branch (`origin/main` or `origin/master`, never a local
 /// `master`); only a repo with no `origin` remote starts at its local HEAD. A
@@ -651,24 +663,36 @@ pub async fn create_worktree(
         },
     };
 
-    let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
-    let branch = format!("zwiim/{suffix}");
     let repo_name = Path::new(&root.path)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "workspace".to_string());
     let parent_dir = worktrees_dir.join(&repo_name);
     std::fs::create_dir_all(&parent_dir).map_err(AppCommandError::io)?;
-    let worktree_path: PathBuf = parent_dir.join(&suffix);
-    let worktree_path = worktree_path.to_string_lossy().into_owned();
 
-    folders::git_worktree_add(
-        root.path.clone(),
-        branch.clone(),
-        worktree_path.clone(),
-        Some(base_commit.clone()),
-    )
-    .await?;
+    // Another create may take the same name meanwhile, or git refuse one for
+    // a reason the names in use don't show: try another.
+    let mut refused = HashSet::new();
+    let (branch, worktree_path) = loop {
+        let mut taken = names::taken(&db.conn, &root.path, &parent_dir).await?;
+        taken.extend(refused.iter().cloned());
+        let name = names::fresh(&taken);
+        let worktree_path = parent_dir.join(&name).to_string_lossy().into_owned();
+        match folders::git_worktree_add(
+            root.path.clone(),
+            name.clone(),
+            worktree_path.clone(),
+            Some(base_commit.clone()),
+        )
+        .await
+        {
+            Ok(_) => break (name, worktree_path),
+            Err(e) if refused.len() + 1 >= NAME_ATTEMPTS => return Err(e),
+            Err(_) => {
+                refused.insert(name);
+            }
+        }
+    };
 
     let registered = async {
         let detail = folders::open_worktree_folder_core(db, worktree_path.clone(), root.id).await?;
@@ -794,9 +818,11 @@ pub async fn remove_worktree(
 
 /// Continue worktree workspace `workspace_id` after its pull request `number`
 /// merged: the same checkout, `workspace_id` and sessions move to a fresh
-/// `zwiim/*` branch cut from the merged pull request's base as `origin` has
-/// it now, and that becomes the workspace's new base. A name that was the
-/// previous branch becomes the new one.
+/// branch cut from the merged pull request's base as `origin` has it now, and
+/// that becomes the workspace's new base. The branch is a placeholder the
+/// agent renames: the previous branch with a `-v<n>` suffix (`fix-login`
+/// continues as `fix-login-v1`, `fix-login-v1` as `fix-login-v2`). A name
+/// that was the previous branch becomes the new one.
 ///
 /// Holds the workspace's gate exclusively, so no agent prompt, launch or
 /// terminal spawn starts there meanwhile. Refuses — changing nothing — while
@@ -886,38 +912,49 @@ pub async fn continue_after_merge(
     // the network round trips, just before switching.
     ensure_at_merged_head(&wt.path, &pr.head_sha).await?;
 
-    let branch = format!("zwiim/{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
-    if let Err(e) = git_harness::execute(
-        host,
-        &caller,
-        GitOp::BranchCreate {
-            name: branch.clone(),
-            from: Some(base_commit.clone()),
-        },
-    )
-    .await
-    {
-        if current_branch(&wt.path).await.as_deref() != Some(branch.as_str()) {
-            // Nothing switched: the workspace is as it was.
-            return Err(e.into());
-        }
-        tracing::error!(
-            workspace_id,
-            code = e.code.as_str(),
-            "[workspace] continue: creating the branch failed after switching"
-        );
-        return Err(compensate(
-            db,
-            emitter,
+    // Git may refuse a free-looking name (a `fix-v1/x` ref, a race): try the
+    // next one.
+    let mut refused = HashSet::new();
+    let branch = loop {
+        let mut taken = names::refs(&wt.path).await?;
+        taken.extend(refused.iter().cloned());
+        let branch = names::continued(&previous, &taken);
+        let Err(e) = git_harness::execute(
             host,
             &caller,
-            &wt,
-            &previous,
-            &branch,
-            &base_commit,
+            GitOp::BranchCreate {
+                name: branch.clone(),
+                from: Some(base_commit.clone()),
+            },
         )
-        .await);
-    }
+        .await
+        else {
+            break branch;
+        };
+        if current_branch(&wt.path).await.as_deref() == Some(branch.as_str()) {
+            tracing::error!(
+                workspace_id,
+                code = e.code.as_str(),
+                "[workspace] continue: creating the branch failed after switching"
+            );
+            return Err(compensate(
+                db,
+                emitter,
+                host,
+                &caller,
+                &wt,
+                &previous,
+                &branch,
+                &base_commit,
+            )
+            .await);
+        }
+        // Nothing switched: the workspace is as it was.
+        if refused.len() + 1 >= NAME_ATTEMPTS {
+            return Err(e.into());
+        }
+        refused.insert(branch.to_lowercase());
+    };
 
     let mut active = wt.clone().into_active_model();
     active.base_branch = Set(Some(base_branch.clone()));
@@ -1251,12 +1288,11 @@ mod tests {
         assert_ne!(wt.workspace_id, root_wid);
         let branch = git(Path::new(&wt.path), &["rev-parse", "--abbrev-ref", "HEAD"]);
         assert!(
-            branch.starts_with("zwiim/"),
-            "host-chosen branch, got {branch}"
+            names::CITIES.contains(&branch.as_str()),
+            "host-chosen city branch, got {branch}"
         );
-        // Grouped per project, named by the branch's suffix.
-        let suffix = branch.strip_prefix("zwiim/").unwrap();
-        assert_eq!(Path::new(&wt.path), worktrees.join("repo").join(suffix));
+        // Grouped per project, the folder named like its branch.
+        assert_eq!(Path::new(&wt.path), worktrees.join("repo").join(&branch));
         assert_eq!(wt.alias.as_deref(), Some(branch.as_str()));
         assert_eq!(wt.display_path, None, "worktrees carry no display path");
         assert_eq!(wt.branch.as_deref(), Some(branch.as_str()));
@@ -1458,6 +1494,107 @@ mod tests {
         assert!(!Path::new(&repo).join("only-in-a.txt").exists());
         assert_eq!(git(Path::new(&b.path), &["status", "--porcelain"]), "");
         assert_eq!(git(Path::new(&repo), &["status", "--porcelain"]), "");
+    }
+
+    /// Make every city but `free` a branch of `repo`.
+    fn take_cities(repo: &Path, free: &[&str]) {
+        let head = git(repo, &["rev-parse", "HEAD"]);
+        let heads = repo.join(".git").join("refs").join("heads");
+        for city in names::CITIES.iter().filter(|c| !free.contains(c)) {
+            std::fs::write(heads.join(city), format!("{head}\n")).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn worktree_names_skip_every_name_in_use() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
+        let r = Path::new(&repo);
+        let parent = worktrees.join("repo");
+        std::fs::create_dir_all(&parent).unwrap();
+        // Every city but seven is a branch; six of those are held another way.
+        let held = ["agra", "kochi", "leh", "ooty", "pune", "puri"];
+        take_cities(r, &[&held[..], &["surat"]].concat());
+        git(r, &["tag", "agra"]);
+        // A worktree whose folder was deleted by hand is still registered.
+        let ghost = parent.join("kochi");
+        git(
+            r,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "elsewhere",
+                &ghost.to_string_lossy(),
+            ],
+        );
+        std::fs::remove_dir_all(&ghost).unwrap();
+        let head = git(r, &["rev-parse", "HEAD"]);
+        git(r, &["update-ref", "refs/remotes/origin/leh", &head]);
+        git(r, &["branch", "ooty/feature"]);
+        std::fs::create_dir(parent.join("PUNE")).unwrap();
+        // A removed worktree's path would bring its row and sessions back.
+        let removed = seed_folder(&db, &parent.join("puri").to_string_lossy()).await;
+        folder_service::soft_delete_folder(&db.conn, removed)
+            .await
+            .unwrap();
+        let taken = names::taken(&db.conn, &repo, &parent).await.unwrap();
+        for name in held {
+            assert!(taken.contains(name), "{name} is in use");
+        }
+        assert!(!taken.contains("surat"));
+        let create = || create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None);
+
+        let wt = create().await.expect("the one free city");
+        assert_eq!(wt.branch.as_deref(), Some("surat"));
+        assert_eq!(Path::new(&wt.path), parent.join("surat"));
+        assert_ne!(
+            wt.workspace_id,
+            row(&db, removed).await.workspace_id.unwrap()
+        );
+
+        // Every city taken: a city again, numbered.
+        let wt = create().await.expect("a numbered city");
+        let branch = wt.branch.unwrap();
+        assert!(
+            branch.ends_with("-2") && names::stem(&branch).is_some(),
+            "{branch}"
+        );
+        assert_eq!(Path::new(&wt.path), parent.join(&branch));
+    }
+
+    #[tokio::test]
+    async fn a_name_git_refuses_is_skipped() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
+        let r = Path::new(&repo);
+        take_cities(r, &["pune"]);
+        // Left behind by a git that crashed: `pune` can't be created.
+        std::fs::write(r.join(".git/refs/heads/pune.lock"), "").unwrap();
+
+        let wt = create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None)
+            .await
+            .expect("another name");
+        let branch = wt.branch.unwrap();
+        assert!(branch.ends_with("-2"), "{branch}");
+    }
+
+    #[tokio::test]
+    async fn concurrent_worktrees_never_share_a_name() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
+        take_cities(Path::new(&repo), &["pune"]);
+        let emitter = EventEmitter::Noop;
+
+        let (a, b) = tokio::join!(
+            create_worktree(&db, &emitter, &worktrees, &root_wid, None),
+            create_worktree(&db, &emitter, &worktrees, &root_wid, None),
+        );
+        let branches = [a.expect("a").branch.unwrap(), b.expect("b").branch.unwrap()];
+        let (city, numbered): (Vec<_>, Vec<_>) = branches.iter().partition(|b| *b == "pune");
+        assert_eq!(city.len(), 1, "{branches:?}");
+        assert!(numbered[0].ends_with("-2"), "{branches:?}");
     }
 
     fn spawn_terminal(terminals: &TerminalManager, id: &str, dir: &str) {

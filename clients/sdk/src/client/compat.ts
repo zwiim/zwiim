@@ -33,6 +33,7 @@ export const MIN_HOST_REVISION = 1;
 export const CLIENT_CAPABILITIES: readonly string[] = [
   "workspace.browse",
   "workspace.worktrees",
+  "workspace.continue",
   "files.write",
   "git",
   "git.pr",

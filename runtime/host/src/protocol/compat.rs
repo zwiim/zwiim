@@ -27,6 +27,7 @@ pub const MIN_CLIENT_REVISION: u32 = 1;
 pub const CAPABILITIES: &[&str] = &[
     "workspace.browse",
     "workspace.worktrees",
+    "workspace.continue",
     "files.write",
     "git",
     "git.pr",

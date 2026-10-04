@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { ZwiimClientError, type PrState } from "@zwiim/sdk";
-import { checksLine, mergeError, prBadge, prErrorText, prLabel, prLook, shortSha } from "../src/host/pr";
+import { ZwiimClientError, type Compatibility, type PrState, type WorkspaceInfo } from "@zwiim/sdk";
+import {
+  checksLine,
+  continueError,
+  continueLine,
+  mergeError,
+  offersContinue,
+  prBadge,
+  prErrorText,
+  prLabel,
+  prLook,
+  shortSha,
+} from "../src/host/pr";
 
 const pr = (extra: Partial<PrState> = {}): PrState => ({
   number: 12,
@@ -96,5 +107,63 @@ describe("pull request errors in words", () => {
     );
     expect(mergeError(err("network"), "Studio Mac")).toBe("Not connected to Studio Mac. Try again when it's back.");
     expect(mergeError(new Error("boom"), "Studio Mac")).toBe("Couldn't merge the pull request. Try again.");
+  });
+});
+
+describe("continuing after a merge", () => {
+  const worktree = (extra: Partial<WorkspaceInfo> = {}): WorkspaceInfo => ({
+    workspace_id: "w",
+    name: "w",
+    alias: null,
+    kind: "worktree",
+    parent_workspace_id: "r",
+    is_git_repo: true,
+    branch: "zwiim/w",
+    base_branch: "main",
+    base_commit: null,
+    removed: false,
+    display_path: null,
+    ...extra,
+  });
+  const serving = (capabilities: string[]): Compatibility => ({ status: "compatible", hostRevision: 1, capabilities });
+  const host = serving(["git.pr", "workspace.continue"]);
+  const merged = pr({ state: "merged" });
+
+  it("offers Continue only on a merged PR in a live worktree whose Host serves it", () => {
+    expect(offersContinue(merged, worktree(), host)).toBe(true);
+    expect(offersContinue(pr(), worktree(), host)).toBe(false);
+    expect(offersContinue(pr({ state: "closed" }), worktree(), host)).toBe(false);
+    expect(offersContinue(merged, worktree({ kind: "root", parent_workspace_id: null }), host)).toBe(false);
+    expect(offersContinue(merged, worktree({ removed: true }), host)).toBe(false);
+    expect(offersContinue(merged, undefined, host)).toBe(false);
+    expect(offersContinue(merged, worktree(), serving(["git.pr"]))).toBe(false);
+    expect(offersContinue(merged, worktree(), null)).toBe(false);
+  });
+
+  it("says where the new branch starts, and what stays", () => {
+    expect(continueLine(merged)).toBe(
+      "Start a new branch from main, where #12 landed. Sessions stay; each agent is told on its next turn. The old branch stays.",
+    );
+  });
+
+  it("says what holds the worktree, or what GitHub says", () => {
+    const err = (code: string) => new ZwiimClientError(code as never, "m", 409);
+    expect(continueError(err("workspace_busy"), 12, "Studio Mac")).toBe(
+      "An agent is still working here. Wait for it or stop it, then Continue.",
+    );
+    expect(continueError(err("workspace_dirty"), 12, "Studio Mac")).toBe(
+      "Uncommitted changes here. Commit or discard them first.",
+    );
+    expect(continueError(err("head_not_merged"), 12, "Studio Mac")).toBe(
+      "This branch has commits #12 didn't merge. Continue would leave them behind.",
+    );
+    expect(continueError(err("pr_not_merged"), 12, "Studio Mac")).toBe("#12 isn't merged on GitHub yet.");
+    expect(continueError(err("github_unreachable"), 12, "Studio Mac")).toBe("Studio Mac couldn't reach GitHub. Try again.");
+    expect(continueError(err("gh_unauthenticated"), 12, "Studio Mac")).toContain("isn't signed in");
+    expect(continueError(err("unknown_outcome"), 12, "Studio Mac")).toBe(
+      "Not sure that went through. Check the branch on Studio Mac before trying again.",
+    );
+    expect(continueError(err("network"), 12, "Studio Mac")).toBe("Not connected to Studio Mac. Try again when it's back.");
+    expect(continueError(new Error("boom"), 12, "Studio Mac")).toBe("Couldn't continue. Try again.");
   });
 });

@@ -1151,7 +1151,7 @@ Upstream-derived:
 
 | Zwiim path | Upstream path | Modifications |
 |---|---|---|
-| `acp/delegation/tool_schema.json` | `src-tauri/src/acp/delegation/tool_schema.json` | Fifteen `git_*` tools (status, diff, log, branch_create, switch, stage, commit, fetch, pull, push, pr_create, pr_view, pr_checks, pr_comments, pr_merge). Each takes only its operation's own fields, with `additionalProperties: false`. |
+| `acp/delegation/tool_schema.json` | `src-tauri/src/acp/delegation/tool_schema.json` | Sixteen `git_*` tools (status, diff, log, branch_create, branch_rename, switch, stage, commit, fetch, pull, push, pr_create, pr_view, pr_checks, pr_comments, pr_merge). Each takes only its operation's own fields, with `additionalProperties: false`. |
 | `acp/delegation/companion.rs` | `src-tauri/src/acp/delegation/companion.rs` | `git` feature group (`CompanionFeatures.git`, `--features git`) gating the `git_*` tools. A `tools/call` arm maps the arguments to a `GitOp`; malformed ones are `-32602 invalid_input` before any round trip. Otherwise it sends `BrokerMessage::Git` and renders the reply. |
 | `acp/delegation/transport.rs` | `src-tauri/src/acp/delegation/transport.rs` | `BrokerGitRequest { token, op }`, the `BrokerMessage::Git` variant, and `client_git_round_trip`. |
 | `acp/delegation/listener.rs` | `src-tauri/src/acp/delegation/listener.rs` | `git: Arc<dyn GitToolAccess>` field and constructor parameter. The `BrokerMessage::Git` arm resolves the token to its parent connection (an invalid token gets `no_workspace`) and runs the op through `GitToolAccess`. Tests include a companion → socket → listener → Harness end-to-end run. |

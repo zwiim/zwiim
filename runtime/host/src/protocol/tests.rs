@@ -1198,8 +1198,9 @@ async fn worktree_create_diff_and_guarded_removal() {
         (json!("worktree"), json!(false))
     );
     assert_eq!(wt["parent_workspace_id"], wid.as_str());
+    // A city the host chose: one plain word, nothing for clients to parse.
     assert!(
-        branch.strip_prefix("zwiim/").is_some_and(|h| h.len() == 8),
+        !branch.is_empty() && branch.bytes().all(|b| b.is_ascii_lowercase()),
         "{branch}"
     );
     assert_eq!(wt["base_branch"], "main");
@@ -1460,6 +1461,12 @@ async fn workspace_continue_refuses_before_asking_github() {
         .ok("workspace.create_worktree", json!({"workspace_id": wid}))
         .await;
     let wt_id = wt["workspace_id"].as_str().unwrap().to_string();
+
+    // Clients offer Continue only to a Host that serves it.
+    let hello = h.ok("host.hello", json!({})).await;
+    assert!(hello["capabilities"]
+        .as_array()
+        .is_some_and(|c| c.iter().any(|v| v == "workspace.continue")));
 
     // Only a worktree continues; the client names the pull request and
     // nothing else.

@@ -268,6 +268,14 @@ export class HostConnection {
     await this.#live().stopSession(session_id);
   }
 
+  /**
+   * After pull request `number` merged, move the worktree to a new branch from
+   * its base (`workspace.continue`); never retried. The store shows the new branch.
+   */
+  async continueWorkspace(workspace_id: string, number: number): Promise<WorkspaceInfo> {
+    return this.#live().continueWorkspace(workspace_id, number);
+  }
+
   /** Merge the workspace's pull request at the head shown (`git.pr_merge`); never retried. */
   async mergePr(workspace_id: string, pr: PrState, method?: MergeMethod): Promise<PrMerged> {
     return this.#live().mergePr(workspace_id, pr, method);

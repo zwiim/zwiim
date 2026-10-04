@@ -17,6 +17,7 @@ export {
   Ellipsis,
   Folder,
   Gauge,
+  GitBranchPlus,
   GitMerge,
   GitPullRequest,
   Laptop,

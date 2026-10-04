@@ -178,6 +178,10 @@ fn ops_have_a_stable_tagged_json_shape() {
             json!({"op": "branch_create", "name": "feat", "from": "origin/main"}),
         ),
         (
+            GitOp::BranchRename { name: "fix".into() },
+            json!({"op": "branch_rename", "name": "fix"}),
+        ),
+        (
             GitOp::Switch {
                 branch: "main".into(),
             },
@@ -297,6 +301,11 @@ fn kind_and_mutates_are_facts_about_each_op() {
                 from: None,
             },
             GitOpKind::BranchCreate,
+            true,
+        ),
+        (
+            GitOp::BranchRename { name: "b".into() },
+            GitOpKind::BranchRename,
             true,
         ),
         (
@@ -941,6 +950,131 @@ async fn branches_are_created_and_switched() {
         std::fs::read_to_string(fx.root.join("README.md")).unwrap(),
         "uncommitted\n"
     );
+}
+
+/// A Host-style worktree `pune` of `fx`'s repo on branch `pune`, and a
+/// caller in its workspace.
+async fn worktree(fx: &Fixture) -> (PathBuf, GitCaller) {
+    let root_id = seed_folder(&fx.db, fx.root.to_str().unwrap()).await;
+    let wt = fx.tmp.path().join("pune");
+    git(
+        &fx.root,
+        &["worktree", "add", "-q", "-b", "pune", wt.to_str().unwrap()],
+    );
+    let row =
+        folder_service::add_folder_with_parent(&fx.db.conn, wt.to_str().unwrap(), Some(root_id))
+            .await
+            .unwrap();
+    let caller = GitCaller::new(Some(workspace_id(&fx.db, row.id).await), None).unwrap();
+    (wt, caller)
+}
+
+fn rename(name: &str) -> GitOp {
+    GitOp::BranchRename { name: name.into() }
+}
+
+#[tokio::test]
+async fn a_worktree_branch_is_renamed() {
+    let fx = workspace(true).await;
+    let (wt, caller) = worktree(&fx).await;
+
+    let GitOutcome::BranchRename(renamed) = execute(&fx.host(), &caller, rename("fix-login"))
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+
+    assert_eq!(renamed.branch, "fix-login");
+    assert_eq!(renamed.head, git(&wt, &["rev-parse", "HEAD"]));
+    assert_eq!(git(&wt, &["branch", "--show-current"]), "fix-login");
+    assert_eq!(branches(&fx.root, "pune"), "");
+}
+
+/// The local branch named `name`, or nothing.
+fn branches(dir: &Path, name: &str) -> String {
+    git(
+        dir,
+        &["branch", "--list", "--format=%(refname:short)", name],
+    )
+}
+
+#[tokio::test]
+async fn a_root_workspace_branch_is_not_renamed() {
+    let fx = workspace(true).await;
+
+    assert_eq!(
+        code(fx.run(rename("trunk")).await),
+        GitErrorCode::InvalidInput
+    );
+    assert_eq!(git(&fx.root, &["branch", "--show-current"]), "main");
+}
+
+#[tokio::test]
+async fn a_detached_worktree_has_no_branch_to_rename() {
+    let fx = workspace(true).await;
+    let (wt, caller) = worktree(&fx).await;
+    git(&wt, &["switch", "-q", "--detach"]);
+
+    let result = execute(&fx.host(), &caller, rename("fix")).await;
+
+    assert_eq!(code(result), GitErrorCode::DetachedHead);
+    assert_eq!(branches(&fx.root, "pune"), "pune");
+}
+
+#[tokio::test]
+async fn a_pushed_branch_is_not_renamed() {
+    let fx = workspace(true).await;
+    add_origin(&fx);
+    let (wt, caller) = worktree(&fx).await;
+    // With an upstream.
+    git(&wt, &["push", "-q", "-u", "origin", "pune"]);
+    let e = execute(&fx.host(), &caller, rename("fix"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, GitErrorCode::InvalidInput);
+    assert!(e.message.contains("pushed"), "{}", e.message);
+    // `origin/pune` alone, without an upstream, is pushed too.
+    git(&wt, &["branch", "--unset-upstream"]);
+    assert_eq!(
+        code(execute(&fx.host(), &caller, rename("fix")).await),
+        GitErrorCode::InvalidInput
+    );
+    assert_eq!(git(&wt, &["branch", "--show-current"]), "pune");
+}
+
+#[tokio::test]
+async fn a_branch_rename_refuses_an_invalid_name() {
+    let fx = workspace(true).await;
+    let (wt, caller) = worktree(&fx).await;
+    for bad in ["-D", "bad..name", "has space", ""] {
+        assert_eq!(
+            code(execute(&fx.host(), &caller, rename(bad)).await),
+            GitErrorCode::InvalidInput,
+            "{bad}"
+        );
+    }
+    assert_eq!(git(&wt, &["branch", "--show-current"]), "pune");
+}
+
+#[tokio::test]
+async fn a_branch_rename_refuses_a_taken_name() {
+    let fx = workspace(true).await;
+    let (wt, caller) = worktree(&fx).await;
+    git(
+        &fx.root,
+        &["update-ref", "refs/remotes/origin/shipped", "HEAD"],
+    );
+    git(&fx.root, &["tag", "v1"]);
+    // A branch, a remote branch only, a tag, a case-only twin, its own name.
+    for taken in ["main", "shipped", "v1", "Main", "pune"] {
+        assert_eq!(
+            code(execute(&fx.host(), &caller, rename(taken)).await),
+            GitErrorCode::AlreadyExists,
+            "{taken}"
+        );
+    }
+    assert_eq!(git(&wt, &["branch", "--show-current"]), "pune");
 }
 
 // ── remote operations ───────────────────────────────────────────────────

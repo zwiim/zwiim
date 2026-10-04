@@ -18454,6 +18454,7 @@ mod tests {
             git: Some(crate::harness::GitFacts {
                 worktree: true,
                 default_branch: Some("origin/main".into()),
+                placeholder_branch: None,
             }),
         })
         .text;

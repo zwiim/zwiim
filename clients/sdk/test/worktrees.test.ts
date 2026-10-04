@@ -153,6 +153,21 @@ describe("worktree operations", () => {
     expect(t.transport.requests.at(-1)!.params).toEqual({ workspace_id: "root", base: "origin/main" });
   });
 
+  it("continues a worktree after its merged PR, as a mutating request, and shows the new branch at once", async () => {
+    const t = setup();
+    t.store.dispatch({ type: "workspaces", workspaces: [root, wt("a")] });
+    const next = wt("a", { branch: "zwiim/b", base_branch: "origin/main" });
+    t.transport.handlers["workspace.continue"] = () => next;
+    expect(await t.controller.continueWorkspace("a", 71)).toEqual(next);
+    const req = t.transport.requests.at(-1)!;
+    expect([req.op, req.params, req.options]).toEqual([
+      "workspace.continue",
+      { workspace_id: "a", number: 71 },
+      { mutating: true },
+    ]);
+    expect(t.store.getState().workspaces).toEqual([root, next]);
+  });
+
   it("surfaces busy and dirty refusals with their details", async () => {
     const t = setup();
     t.transport.handlers["workspace.remove_worktree"] = (p) => {

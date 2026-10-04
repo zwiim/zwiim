@@ -297,16 +297,9 @@ async fn continues_on_a_fresh_branch_from_the_merged_prs_base() {
 
     let info = fx.run(12).await.expect("continue");
 
+    // `pune` continues as placeholder `pune-v1`.
     let branch = git(&fx.path, &["branch", "--show-current"]);
-    let suffix = branch.strip_prefix("zwiim/").expect("a zwiim/ branch");
-    assert!(
-        suffix.len() == 8
-            && suffix
-                .chars()
-                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
-        "{branch}"
-    );
-    assert_ne!(branch, fx.branch);
+    assert_eq!(branch, format!("{}-v1", fx.branch));
     let head = git(&fx.path, &["rev-parse", "HEAD"]);
     assert_eq!(head, fx.merge_commit);
     assert_eq!(head, git(&fx.path, &["rev-parse", "origin/main"]));
@@ -347,6 +340,52 @@ async fn continues_on_a_fresh_branch_from_the_merged_prs_base() {
         .unwrap()
         .files
         .is_empty());
+}
+
+#[tokio::test]
+async fn a_continued_name_skips_one_in_use() {
+    let fx = merged_pr("main").await;
+    git(&fx.path, &["branch", &format!("{}-v1", fx.branch)]);
+
+    let info = fx.run(12).await.expect("continue");
+
+    assert_eq!(info.branch, Some(format!("{}-v2", fx.branch)));
+}
+
+#[tokio::test]
+async fn a_name_git_refuses_is_skipped_on_continue() {
+    let fx = merged_pr("main").await;
+    // `pune-v1/x` is free-looking to the name check, but blocks `pune-v1`.
+    git(&fx.path, &["branch", &format!("{}-v1/x", fx.branch)]);
+
+    let info = fx.run(12).await.expect("continue");
+
+    assert_eq!(info.branch, Some(format!("{}-v2", fx.branch)));
+}
+
+#[tokio::test]
+async fn the_folders_name_plays_no_part() {
+    let mut fx = merged_pr("main").await;
+    let hex = fx.path.with_file_name("3276b212");
+    git(
+        &fx.tmp.path().join("repo"),
+        &[
+            "worktree",
+            "move",
+            fx.path.to_str().unwrap(),
+            hex.to_str().unwrap(),
+        ],
+    );
+    let mut row = fx.folder().await.into_active_model();
+    row.path = Set(hex.to_string_lossy().into_owned());
+    row.update(&fx.db.conn).await.unwrap();
+    fx.path = hex;
+
+    let info = fx.run(12).await.expect("continue");
+
+    let branch = format!("{}-v1", fx.branch);
+    assert_eq!(info.branch.as_deref(), Some(branch.as_str()));
+    assert_eq!(git(&fx.path, &["branch", "--show-current"]), branch);
 }
 
 #[tokio::test]
@@ -594,6 +633,7 @@ async fn every_session_gets_the_notice_once() {
         let notices = fx.connections.pending_notices(conv);
         assert_eq!(notices.len(), 1, "conversation {conv}: {notices:?}");
         assert!(notices[0].contains("#12"), "{}", notices[0]);
+        assert!(notices[0].contains("git_branch_rename"), "{}", notices[0]);
     }
     assert!(fx.connections.pending_notices(elsewhere).is_empty());
 }

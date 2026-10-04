@@ -1537,6 +1537,13 @@ mod tests {
             workspace_is(wt.workspace_id.clone(), |w| w["branch"] == "renamed"),
         )
         .await;
+        // An agent renaming its branch in a shell, not with the tool.
+        git(wt_path, &["branch", "-m", "named-by-agent"]);
+        feed.until(
+            "worktree rename",
+            workspace_is(wt.workspace_id.clone(), |w| w["branch"] == "named-by-agent"),
+        )
+        .await;
     }
 
     #[tokio::test]

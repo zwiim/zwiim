@@ -1,10 +1,17 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HostClient, HostController, ZwiimClientError, type PrState } from "@zwiim/sdk";
+import {
+  CLIENT_CAPABILITIES,
+  HostClient,
+  HostController,
+  ZwiimClientError,
+  type PrState,
+  type WorkspaceInfo,
+} from "@zwiim/sdk";
 import { openLink } from "@/lib/bridge";
 import { HostProvider } from "@/lib/host-context";
 import { PrBanner } from "@/panels/PrBanner";
-import { FakeTransport, tick } from "./fakes";
+import { FakeTransport, hostHello, tick } from "./fakes";
 
 vi.mock("@/lib/bridge", async (actual) => ({
   ...(await actual<typeof import("@/lib/bridge")>()),
@@ -55,6 +62,34 @@ async function mount(t: FakeTransport) {
 }
 
 const merge = () => screen.getByRole("button", { name: /Merge/ }) as HTMLButtonElement;
+const continueButton = () => screen.queryByRole("button", { name: /Continue/ }) as HTMLButtonElement | null;
+
+const worktree = (extra: Partial<WorkspaceInfo> = {}): WorkspaceInfo => ({
+  workspace_id: "a",
+  name: "repo-a",
+  alias: null,
+  kind: "worktree",
+  parent_workspace_id: "root",
+  branch: "zwiim/a",
+  base_branch: "main",
+  base_commit: "0123456",
+  removed: false,
+  is_git_repo: true,
+  display_path: null,
+  ...extra,
+});
+
+/** A Host whose workspace "a" has a merged pull request. */
+function mergedHost(workspace: WorkspaceInfo = worktree()) {
+  const t = new FakeTransport();
+  t.handlers["workspace.list"] = () => [workspace];
+  const snapshot = t.snapshot.bind(t);
+  t.snapshot = () => ({
+    ...snapshot(),
+    prs: { a: { pr: pr({ state: "merged", merged_at: "2026-10-04T00:00:00Z" }), error: null } },
+  });
+  return t;
+}
 
 describe("pull request banner", () => {
   it("follows the Host's PR from running checks to Merged, and never asks GitHub itself", async () => {
@@ -167,5 +202,94 @@ describe("pull request banner", () => {
     expect(screen.getByTestId("pr-banner").textContent).toBe(
       "GitHub CLI on the Host isn't signed in. Run gh auth login there to follow pull requests.",
     );
+  });
+
+  it("continues a merged PR's worktree on a new branch from its base, and lets the banner go", async () => {
+    const t = mergedHost();
+    t.handlers["workspace.continue"] = () => worktree({ branch: "zwiim/b", base_branch: "origin/main" });
+    await mount(t);
+
+    expect(screen.getByTestId("pr-status").textContent).toBe("Merged");
+    expect(continueButton()!.disabled).toBe(false);
+    expect(continueButton()!.title).toBe(
+      "New branch from origin/main, where #12 landed. Sessions and terminals stay here.",
+    );
+
+    fireEvent.click(continueButton()!);
+    await tick();
+    expect(t.calls.find((c) => c.op === "workspace.continue")!.params).toEqual({ workspace_id: "a", number: 12 });
+    // Gone as soon as the Host answers, before the feed clears the PR.
+    expect(screen.queryByTestId("pr-banner")).toBeNull();
+    await t.feedEvent("workspace.pr_changed", { workspace_id: "a", pr: null, error: null });
+    expect(screen.queryByTestId("pr-banner")).toBeNull();
+    // The new branch's own pull request shows again.
+    await t.feedEvent("workspace.pr_changed", { workspace_id: "a", pr: pr({ number: 13, head: "zwiim/b" }), error: null });
+    expect(screen.getByTestId("pr-banner").textContent).toContain("#13");
+  });
+
+  it("offers Continue only on a merged PR in a live worktree whose Host serves it", async () => {
+    const cases: [string, FakeTransport][] = [];
+    const closed = mergedHost();
+    closed.snapshot = () => ({ ...FakeTransport.prototype.snapshot.call(closed), prs: { a: { pr: pr({ state: "closed" }), error: null } } });
+    cases.push(["closed", closed]);
+    cases.push(["root", mergedHost(worktree({ kind: "root", parent_workspace_id: null, base_branch: null }))]);
+    cases.push(["removed", mergedHost(worktree({ removed: true, branch: null }))]);
+    const older = mergedHost();
+    older.handlers["host.hello"] = () =>
+      hostHello({ capabilities: CLIENT_CAPABILITIES.filter((c) => c !== "workspace.continue") });
+    cases.push(["older Host", older]);
+
+    for (const [name, t] of cases) {
+      await mount(t);
+      expect(screen.getByTestId("pr-banner"), name).toBeTruthy();
+      expect(continueButton(), name).toBeNull();
+      cleanup();
+    }
+  });
+
+  it("disables Continue while the Host is offline", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval"] });
+    const t = mergedHost();
+    await mount(t);
+    expect(continueButton()!.disabled).toBe(false);
+    await act(async () => t.handlersForEvents!.onClose({ code: 1006, reason: "" }));
+    await tick();
+    expect(continueButton()!.disabled).toBe(true);
+    expect(continueButton()!.title).toBe("The Host is offline");
+  });
+
+  it("says why the Host refused to continue", async () => {
+    const t = mergedHost();
+    const refusals: [ZwiimClientError, string][] = [
+      [
+        new ZwiimClientError("workspace_busy", "Workspace is busy", 409, { live_sessions: 1, terminals: 0, session_ids: ["s1"] }),
+        "An agent is still working here. Wait for it or stop it, then Continue.",
+      ],
+      [
+        new ZwiimClientError("workspace_dirty", "Workspace has uncommitted changes", 409, { changes: 2 }),
+        "Uncommitted changes here. Commit or discard them first.",
+      ],
+      [
+        new ZwiimClientError("head_not_merged", "Branch moved", 409, { head: "def", pr_head: "abc" }),
+        "This branch has commits #12 didn't merge. Continue would leave them behind.",
+      ],
+      [
+        new ZwiimClientError("pr_not_merged", "Not merged", 409, { number: 12, state: "open" }),
+        "#12 isn't merged on GitHub yet.",
+      ],
+      [new ZwiimClientError("github_unreachable", "gh failed", 502), "The Host couldn't reach GitHub. Try again."],
+    ];
+    const queue = refusals.map(([e]) => e);
+    t.handlers["workspace.continue"] = () => {
+      throw queue.shift();
+    };
+    await mount(t);
+    for (const [, text] of refusals) {
+      fireEvent.click(continueButton()!);
+      await tick();
+      expect(screen.getByRole("alert").textContent).toBe(text);
+    }
+    // Refused, the banner stays so the user can try again.
+    expect(screen.getByTestId("pr-status").textContent).toBe("Merged");
   });
 });

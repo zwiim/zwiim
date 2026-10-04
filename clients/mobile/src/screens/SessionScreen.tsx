@@ -188,6 +188,8 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
         <PrStrip
           workspace_id={worktree.workspace_id}
           entry={state.prs[worktree.workspace_id]}
+          workspace={state.workspaces?.find((w) => w.workspace_id === worktree.workspace_id)}
+          compat={connection?.compat ?? null}
           connected={connected}
           hostName={name}
         />

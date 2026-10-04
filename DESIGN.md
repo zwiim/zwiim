@@ -299,7 +299,7 @@ Approved layout (variant A):
 - **New session:** `+` in the top-right of the title row (and **New session**
   on the empty list) → a pushed screen: one grouped card of rows, name left,
   mono value right, `›` to a picker sheet. Rows: **Workspace** (`todo · master`,
-  `todo · zwiim/0cbbb1e4`; defaults to the Files selection, picking here does
+  `todo · pune`; defaults to the Files selection, picking here does
   not change Files; its sheet is the workspace tree below), **Agent** (`agent.list`, unavailable agents disabled with
   their reason), then only what the agent advertises: **Model**, **Effort**,
   **Mode** (Ask / Plan / Unattended, the names the Session screen uses).
@@ -317,7 +317,7 @@ Approved layout (variant A):
   search. Each Git workspace is a tile, `›` closed / `⌄` open, name (accent
   when it holds the choice), counts in mono, `~/…` path under it. Open, it
   hangs its rows on a hairline under the chevron: **Root** `· ⎇ master`, each
-  live worktree `⎇ zwiim/0cbbb1e4` with `from master@da336a4`, then
+  live worktree `⎇ pune` with `from master@da336a4`, then
   `+ New worktree` in accent (creates it and chooses it). The tile holding the
   choice starts open (else the first); others open on tap, several at once. A
   plain folder has no tile: it is chosen directly, with a dot.
@@ -364,7 +364,16 @@ Top to bottom:
   **Merge** (`done`) and **Cancel**. The Host merges at that head or refuses: a
   push since then reads "The pull request changed since you looked", a block
   reads GitHub's reason, both in `err` in the sheet. A success haptic, then the
-  strip reads `#12 Merged` at once.
+  strip reads `#12 Merged` at once. Once merged, in a worktree whose Host serves
+  it (V2.4), the merge line becomes "Start a new branch from main, where #12
+  landed. Sessions stay; each agent is told on its next turn. The old branch
+  stays." in `mut` and a 48pt **Continue** button in `accent` (GitBranchPlus),
+  disabled while not connected, with no confirm. A success haptic, the sheet
+  closes and the strip goes. The Host's refusal reads in `err` in the sheet:
+  "An agent is still working here. Wait for it or stop it, then Continue.",
+  "Uncommitted changes here. Commit or discard them first.", "This branch has
+  commits #12 didn't merge. Continue would leave them behind.", "#12 isn't
+  merged on GitHub yet.", or the merge wording for GitHub and the connection.
 - **Transcript** (inverted `FlatList`, newest at the bottom):
   - user messages: right-aligned `surface` block, radius 16/16/4/16.
   - agent messages: full-width prose, no bubble, markdown rendered; inline code
@@ -669,7 +678,12 @@ glyph, a title, one line, one action.
   closed, the button gives way to `Merged` / `Closed`
   after the `#12` and title. Desktop merges on
   one click without a confirm: the button sits where the pointer already is
-  and the Host still refuses a head that moved.
+  and the Host still refuses a head that moved. Once merged, in a worktree
+  whose Host serves it (V2.4), a small `brand` **Continue** (GitBranchPlus)
+  follows `Merged`; its tooltip reads "New branch from origin/main, where #12
+  landed. Sessions and terminals stay here." One click, no confirm, a spinner
+  while the Host works; the banner then goes. The Host's refusal reads in
+  `destructive` under it, in the phone's words.
 - Desktop's sidebar (UI refresh, design-shotgun A) stays uncolored. A
   **Workspaces** header folds the whole list and carries `+` to add a folder; a
   chevron on a repository folds its worktrees, and a folded repository still
@@ -746,4 +760,5 @@ glyph, a title, one line, one action.
 | 2026-10-03 | PR strip, sheet and a green Merge button (V2.3) | User-approved exception: Merge uses `done` green (with `done-ink`), as GitHub's and Conductor's do, so it reads as the PR's finish line rather than another accent action; it appears nowhere else. The phone confirms before merging because a tap from a pocket shouldn't merge, and the confirm names method, base and head so the Host can refuse a moved head |
 | 2026-10-03 | Desktop refresh: folding sidebar, typed Files icons, quiet links (design-shotgun A) | The sidebar grew with every worktree and removed ones dominated it; folding at the header, the repository and the removed group keeps it short without hiding work. Color stays out of the sidebar (user call); file-type color goes in Files, where it helps scan a tree, as Conductor does. Raw underlined URLs read as noise; the scheme adds nothing and the arrow says it leaves the app |
 | 2026-10-03 | Desktop file links open in the workspace; quiet healthy connection | A file the agent names is one click from its contents, like a web link; the host never shares its paths, so an absolute link resolves only past the workspace's own folder and anything else stays inert. A green "Connected" pill and amber "Connecting" broke the status rules: healthy is not news, amber means needs-you |
+| 2026-10-04 | Continue after merge is one tap, no confirm (V2.4) | Continue loses nothing: sessions, terminals and the old branch all stay, so a confirm would only ask the user to read the same line twice. The Host is the guard: it refuses while an agent works, with uncommitted changes, or unless GitHub says it merged this branch's head. Merge keeps its confirm on the phone because a merge can't be taken back |
 | 2026-10-04 | Slash commands can run in the agent's CLI, embedded over the composer | Many CLI commands (`/mcp`, `/status`, `/login`, plugin commands) do nothing over ACP; Conductor runs them in a terminal over its composer and the gap read as broken. The agent's ACP list decides (user call): what it lists runs over ACP, what it does not only the CLI runs; ACP strips Claude's `builtin` flag, so the listed ones whose screen is the CLI's are named. A terminal in the dock with the command typed made the user move focus and press Enter there (user call: follow Conductor); the card runs it in place. Codex gets Enter only when the command shows, so a prompt the CLI asks first is never answered for the user |

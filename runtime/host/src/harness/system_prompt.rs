@@ -123,6 +123,15 @@ fn workspace(input: &HarnessInput) -> String {
                 .into(),
         );
     }
+    if let Some(branch) = input
+        .git
+        .as_ref()
+        .and_then(|git| git.placeholder_branch.as_deref())
+    {
+        lines.push(format!(
+            "This worktree started on placeholder branch `{branch}`. Once you know the task, and before you push, rename it with `git_branch_rename` to a short kebab-case name for the work."
+        ));
+    }
     section("Workspace", &lines)
 }
 
@@ -177,10 +186,11 @@ mod tests {
 
     fn worktree() -> HarnessInput {
         HarnessInput {
-            cwd: "/w/repo/abc".into(),
+            cwd: "/w/repo/pune".into(),
             git: Some(GitFacts {
                 worktree: true,
                 default_branch: Some("origin/main".into()),
+                placeholder_branch: Some("pune".into()),
             }),
         }
     }
@@ -197,9 +207,10 @@ mod tests {
         let text = render(&worktree());
         assert!(text.starts_with("You are running in Zwiim, on the user's machine."));
         assert!(text.contains(
-            "\nWorkspace\n- Working directory: /w/repo/abc. Work only here unless the user asks otherwise.\n"
+            "\nWorkspace\n- Working directory: /w/repo/pune. Work only here unless the user asks otherwise.\n"
         ));
         assert!(text.contains("- This is a Git worktree. Run commands from this directory; don't cd to the main checkout.\n"));
+        assert!(text.contains("- This worktree started on placeholder branch `pune`. Once you know the task, and before you push, rename it with `git_branch_rename` to a short kebab-case name for the work.\n"));
         assert!(text.contains("Never use bare `git stash` / `git stash pop`; prefer a WIP commit."));
         assert!(
             text.contains("\nGit\n- Default branch: origin/main. Compare and open PRs against it")
@@ -270,6 +281,7 @@ mod tests {
             git: Some(GitFacts {
                 worktree: true,
                 default_branch: Some("origin/master".into()),
+                placeholder_branch: None,
             }),
             ..worktree()
         });
@@ -285,6 +297,7 @@ mod tests {
             git: Some(GitFacts {
                 worktree: false,
                 default_branch: Some("origin/main".into()),
+                placeholder_branch: None,
             }),
             ..worktree()
         });
@@ -299,6 +312,7 @@ mod tests {
             git: Some(GitFacts {
                 worktree: true,
                 default_branch: None,
+                placeholder_branch: None,
             }),
             ..worktree()
         });
@@ -321,6 +335,19 @@ mod tests {
         assert!(text.contains("\nRules\n"));
         assert!(!text.contains("Git"), "{text}");
         assert_eq!(sections(&text), ["Runtime", "Rules", "Workspace"]);
+    }
+
+    #[test]
+    fn a_renamed_branch_gets_no_placeholder_line() {
+        let text = render(&HarnessInput {
+            git: Some(GitFacts {
+                placeholder_branch: None,
+                ..worktree().git.unwrap()
+            }),
+            ..worktree()
+        });
+        assert!(!text.contains("placeholder"), "{text}");
+        assert!(!text.contains("git_branch_rename"), "{text}");
     }
 
     #[test]

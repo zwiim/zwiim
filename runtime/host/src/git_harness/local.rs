@@ -115,6 +115,80 @@ pub(super) async fn branch_create(
     })
 }
 
+/// Rename the worktree's checked-out branch to `name`: `git branch -m`,
+/// which changes no files. Refuses where a rename would be wrong or lossy.
+pub(super) async fn branch_rename(
+    row: &folder::Model,
+    name: &str,
+) -> Result<BranchOutcome, GitError> {
+    let root = row.path.as_str();
+    if row.parent_id.is_none() {
+        return Err(GitError::new(
+            GitErrorCode::InvalidInput,
+            "Only a worktree workspace's branch can be renamed",
+        ));
+    }
+    let current = require_branch(root).await?;
+    let mut cmd = run::git(root);
+    cmd.args([
+        "show-ref",
+        "--verify",
+        "--quiet",
+        &format!("refs/remotes/origin/{current}"),
+    ]);
+    let on_origin = run::run(cmd, READ, "git show-ref").await?.status.success();
+    if on_origin
+        || config(root, &format!("branch.{current}.merge"))
+            .await?
+            .is_some()
+    {
+        return Err(GitError::new(
+            GitErrorCode::InvalidInput,
+            format!(
+                "`{current}` was pushed; renaming it would orphan the remote branch and its pull request"
+            ),
+        ));
+    }
+    branch_name(root, name).await?;
+    // Compared lowercased: on a case-insensitive filesystem `Main` is `main`.
+    let mut cmd = run::git(root);
+    cmd.args([
+        "for-each-ref",
+        "--format=%(refname)",
+        "refs/heads",
+        "refs/remotes",
+        "refs/tags",
+    ]);
+    let refs = ok(
+        "for-each-ref",
+        run::run(cmd, READ, "git for-each-ref").await?,
+    )?;
+    let wanted = name.to_lowercase();
+    let taken = refs.stdout.lines().any(|refname| {
+        let short = match refname.strip_prefix("refs/remotes/") {
+            // `refs/remotes/origin/fix`: the branch is what follows the remote.
+            Some(remote_ref) => remote_ref.split_once('/').map(|(_, branch)| branch),
+            None => refname
+                .strip_prefix("refs/heads/")
+                .or_else(|| refname.strip_prefix("refs/tags/")),
+        };
+        short.is_some_and(|short| short.to_lowercase() == wanted)
+    });
+    if taken {
+        return Err(GitError::new(
+            GitErrorCode::AlreadyExists,
+            format!("`{name}` is already a branch, remote branch or tag"),
+        ));
+    }
+    let mut cmd = run::git(root);
+    cmd.args(["branch", "-m", name]);
+    ok("branch", run::run(cmd, WRITE, "git branch").await?)?;
+    Ok(BranchOutcome {
+        branch: name.to_string(),
+        head: head(root).await?,
+    })
+}
+
 pub(super) async fn switch(root: &str, branch: &str) -> Result<BranchOutcome, GitError> {
     not_an_option("branch", branch)?;
     let mut cmd = run::git(root);

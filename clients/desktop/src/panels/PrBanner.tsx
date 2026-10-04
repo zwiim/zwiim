@@ -3,6 +3,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  GitBranchPlus,
   GitMerge,
   GitPullRequest,
   GitPullRequestClosed,
@@ -11,7 +12,7 @@ import {
   Minus,
   X,
 } from "lucide-react";
-import type { CheckState, MergeMethod, PrCheckItem, PrEntry, PrState } from "@zwiim/sdk";
+import { hasCapability, type CheckState, type MergeMethod, type PrCheckItem, type PrEntry, type PrState } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { openLink } from "@/lib/bridge";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
@@ -52,6 +53,23 @@ export function mergeErrorText(e: unknown): string {
       return "The Host couldn't reach GitHub. Try again.";
     default:
       return errorMessage(e);
+  }
+}
+
+/** A refused Continue in words: what holds the worktree, or what GitHub says. */
+export function continueErrorText(e: unknown, number: number): string {
+  const code = e && typeof e === "object" && "code" in e ? String((e as { code: unknown }).code) : null;
+  switch (code) {
+    case "workspace_busy":
+      return "An agent is still working here. Wait for it or stop it, then Continue.";
+    case "workspace_dirty":
+      return "Uncommitted changes here. Commit or discard them first.";
+    case "head_not_merged":
+      return `This branch has commits #${number} didn't merge. Continue would leave them behind.`;
+    case "pr_not_merged":
+      return `#${number} isn't merged on GitHub yet.`;
+    default:
+      return mergeErrorText(e);
   }
 }
 
@@ -128,17 +146,23 @@ function CheckRow({ check }: { check: PrCheckItem }) {
 /**
  * The workspace branch's pull request, as the Host follows it on GitHub:
  * number and title (opens it), status, checks (each opens its run), and Merge.
+ * Once merged, Continue moves the worktree to a new branch from the PR's base.
  * Nothing here asks GitHub; the Host's feed keeps it current.
  */
 export function PrBanner({ workspaceId }: { workspaceId: string }) {
   const entry: PrEntry | undefined = useHost((s) => s.prs[workspaceId]);
+  const workspace = useHost((s) => s.workspaces?.find((w) => w.workspace_id === workspaceId));
+  const continueOffered = useHost((s) => hasCapability(s.connection.compat, "workspace.continue"));
   const controller = useController();
   const online = useOnline();
   const [open, setOpen] = useState(false);
   const [merging, setMerging] = useState(false);
-  const [mergeError, setMergeError] = useState<string | null>(null);
+  const [continuing, setContinuing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   /** The PR this client just merged, shown merged until the feed says so too. */
   const [justMerged, setJustMerged] = useState<number | null>(null);
+  /** The PR this client just continued past, hidden until the feed clears it. */
+  const [continued, setContinued] = useState<number | null>(null);
   const feedPr = entry?.pr ?? null;
   const pr =
     feedPr && justMerged === feedPr.number && feedPr.state !== "merged"
@@ -146,10 +170,14 @@ export function PrBanner({ workspaceId }: { workspaceId: string }) {
       : feedPr;
 
   // A new head is a new pull request to judge; an old refusal no longer applies.
-  useEffect(() => setMergeError(null), [workspaceId, pr?.head_sha, pr?.state]);
-  useEffect(() => setJustMerged(null), [workspaceId, feedPr?.number]);
+  useEffect(() => setError(null), [workspaceId, pr?.head_sha, pr?.state]);
+  useEffect(() => {
+    setJustMerged(null);
+    setContinued(null);
+  }, [workspaceId, feedPr?.number]);
 
   if (!entry) return null;
+  if (feedPr && continued === feedPr.number) return null;
   if (!pr) {
     if (!entry.error) return null;
     return (
@@ -165,18 +193,33 @@ export function PrBanner({ workspaceId }: { workspaceId: string }) {
   const method = pr.merge.method;
   const canMerge = online && !merging && pr.merge.allowed && !settled;
   const reason = !online ? "The Host is offline" : pr.merge.reason;
+  const canContinue =
+    pr.state === "merged" && workspace?.kind === "worktree" && !workspace.removed && continueOffered;
 
   async function merge() {
     setMerging(true);
-    setMergeError(null);
+    setError(null);
     try {
       // Pinned to the head shown here: a push since then is refused, not merged.
       const merged = await controller.mergePr(workspaceId, pr!, method ?? undefined);
       setJustMerged(merged.number);
     } catch (e) {
-      setMergeError(mergeErrorText(e));
+      setError(mergeErrorText(e));
     } finally {
       setMerging(false);
+    }
+  }
+
+  async function continueHere() {
+    setContinuing(true);
+    setError(null);
+    try {
+      await controller.continueWorkspace(workspaceId, pr!.number);
+      setContinued(pr!.number);
+    } catch (e) {
+      setError(continueErrorText(e, pr!.number));
+    } finally {
+      setContinuing(false);
     }
   }
 
@@ -193,9 +236,27 @@ export function PrBanner({ workspaceId }: { workspaceId: string }) {
           <span className="text-muted-foreground font-mono">#{pr.number}</span> {pr.title}
         </button>
         {settled ? (
-          <span className={cn("shrink-0 text-xs font-medium", TONE[status.tone])} data-testid="pr-status">
-            {status.label}
-          </span>
+          <>
+            <span className={cn("shrink-0 text-xs font-medium", TONE[status.tone])} data-testid="pr-status">
+              {status.label}
+            </span>
+            {canContinue && (
+              <Button
+                size="xs"
+                className="bg-brand text-brand-foreground hover:bg-brand/85 shrink-0"
+                disabled={!online || continuing}
+                title={
+                  online
+                    ? `New branch from origin/${pr.base}, where #${pr.number} landed. Sessions and terminals stay here.`
+                    : "The Host is offline"
+                }
+                onClick={() => void continueHere()}
+              >
+                {continuing ? <Loader2 className="animate-spin" /> : <GitBranchPlus />}
+                Continue
+              </Button>
+            )}
+          </>
         ) : (
           <Button
             size="xs"
@@ -234,9 +295,9 @@ export function PrBanner({ workspaceId }: { workspaceId: string }) {
           {reason}
         </p>
       )}
-      {mergeError && (
+      {error && (
         <p className="text-destructive mt-1 pl-6 text-xs" role="alert">
-          {mergeError}
+          {error}
         </p>
       )}
       {open && !settled && (

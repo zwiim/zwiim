@@ -219,6 +219,17 @@ export class CurrentHost {
   }
 
   /**
+   * After pull request `number` merged, move the worktree in place to a new
+   * branch from the PR's base; its sessions and terminals stay, and Files stays
+   * on it. The Host refuses while an agent works there (`workspace_busy`), with
+   * uncommitted changes (`workspace_dirty`), or unless GitHub says it merged
+   * this branch's head. Never retried.
+   */
+  async continueWorkspace(workspace_id: string, number: number): Promise<WorkspaceInfo> {
+    return this.#opened().continueWorkspace(workspace_id, number);
+  }
+
+  /**
    * Change a session's model, effort or mode between turns. The host applies
    * it to the agent (or keeps it for the agent's next start) and reports the
    * options now in effect, which replace the ones shown. Never retried.

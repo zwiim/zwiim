@@ -169,6 +169,39 @@ describe("the current host", () => {
     await current.clear();
   });
 
+  it("continues a merged worktree on a new branch, shown at once, Files staying on it", async () => {
+    const s = setup();
+    await pin(s);
+    const asked: unknown[] = [];
+    s.w.host.backend.handlers["workspace.continue"] = (p: unknown) => (
+      asked.push(p),
+      {
+        workspace_id: "tree",
+        name: "tree",
+        alias: null,
+        kind: "worktree",
+        parent_workspace_id: "root",
+        branch: "zwiim/tree-2",
+        is_git_repo: true,
+        base_branch: "main",
+        base_commit: "abc",
+        removed: false,
+        display_path: null,
+      }
+    );
+    const current = s.launch();
+    await current.open(s.entry);
+    await waitFor(() => current.state.view?.status === "live");
+    current.chooseWorkspace("tree");
+
+    const moved = await current.continueWorkspace("tree", 12);
+    expect(asked).toEqual([{ workspace_id: "tree", number: 12 }]);
+    expect(moved.branch).toBe("zwiim/tree-2");
+    expect(current.state.store?.getState().workspaces?.find((w) => w.workspace_id === "tree")?.branch).toBe("zwiim/tree-2");
+    expect(current.state.workspaceId).toBe("tree");
+    await current.clear();
+  });
+
   it("forgets the pairing a host dropped, and asks to pair again", async () => {
     const s = setup({ trusted: false });
     await pin(s);

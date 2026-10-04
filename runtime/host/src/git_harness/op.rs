@@ -31,6 +31,10 @@ pub enum GitOp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from: Option<String>,
     },
+    /// Rename the branch checked out in a worktree workspace to `name`.
+    /// Refuses in a root workspace, on a detached `HEAD`, once the branch
+    /// was pushed, and for a name a branch, remote branch or tag has.
+    BranchRename { name: String },
     /// Switch to an existing branch. Refuses when local changes would be
     /// overwritten.
     Switch { branch: String },
@@ -101,6 +105,7 @@ pub enum GitOpKind {
     Diff,
     Log,
     BranchCreate,
+    BranchRename,
     Switch,
     Stage,
     Commit,
@@ -121,6 +126,7 @@ impl GitOpKind {
             Self::Diff => "diff",
             Self::Log => "log",
             Self::BranchCreate => "branch_create",
+            Self::BranchRename => "branch_rename",
             Self::Switch => "switch",
             Self::Stage => "stage",
             Self::Commit => "commit",
@@ -143,6 +149,7 @@ impl GitOp {
             Self::Diff { .. } => GitOpKind::Diff,
             Self::Log { .. } => GitOpKind::Log,
             Self::BranchCreate { .. } => GitOpKind::BranchCreate,
+            Self::BranchRename { .. } => GitOpKind::BranchRename,
             Self::Switch { .. } => GitOpKind::Switch,
             Self::Stage { .. } => GitOpKind::Stage,
             Self::Commit { .. } => GitOpKind::Commit,
@@ -212,6 +219,7 @@ pub enum GitOutcome {
     Diff(WorkspaceDiff),
     Log(GitLogResult),
     BranchCreate(BranchOutcome),
+    BranchRename(BranchOutcome),
     Switch(BranchOutcome),
     Stage(StageOutcome),
     Commit(CommitOutcome),

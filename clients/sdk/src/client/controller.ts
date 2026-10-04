@@ -202,6 +202,18 @@ export class HostController {
   }
 
   /**
+   * After pull request `number` merged, move the worktree in place to a new
+   * branch from the PR's base; its sessions and terminals stay. Never
+   * retried. The answer shows the new branch at once; the feed then clears the
+   * PR and the diff.
+   */
+  async continueWorkspace(workspace_id: string, number: number): Promise<WorkspaceInfo> {
+    const workspace = await this.client.request("workspace.continue", { workspace_id, number });
+    this.store.dispatch({ type: "workspace_added", workspace });
+    return workspace;
+  }
+
+  /**
    * Stop a session's agent: its turn is cancelled, then the agent and its
    * background work end. The session and its transcript stay; the feed reports
    * it not live, and the next send starts the agent again. Never retried: a
