@@ -22,6 +22,11 @@ export function upPath(path: readonly string[]): string[] {
   return path.slice(0, -1);
 }
 
+/** Whether two paths name the same folder. */
+export function samePath(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((name, i) => name === b[i]);
+}
+
 /** The folder a path names, in words. */
 export function folderName(path: readonly string[]): string {
   return path[path.length - 1] ?? "your home folder";
@@ -48,6 +53,7 @@ export function addProblem(e: unknown, path: readonly string[], hostName: string
   if (notConnected(e)) return `Not connected to ${hostName}. Try again when it's back.`;
   if (isClientError(e, "permission_denied")) return `Zwiim can't open ${folder} on ${hostName}.`;
   if (isClientError(e, "not_found")) return `${folder} is gone.`;
+  if (isClientError(e, "repository_init_failed")) return `Couldn't make ${folder} a Git repository on ${hostName}.`;
   return `Couldn't add ${folder}. Try again.`;
 }
 

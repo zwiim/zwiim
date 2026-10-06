@@ -158,15 +158,15 @@ export class HostController {
     await Promise.allSettled(ids.map((id) => this.refreshSessions(id)));
   }
 
-  async addWorkspace(path: string): Promise<WorkspaceInfo> {
-    const workspace = await this.client.request("workspace.add", { path });
+  async addWorkspace(path: string, opts: { allowLarge?: boolean } = {}): Promise<WorkspaceInfo> {
+    const workspace = await this.client.request("workspace.add", { path, ...(opts.allowLarge ? { allow_large: true } : {}) });
     this.store.dispatch({ type: "workspace_added", workspace });
     return workspace;
   }
 
   /** Add the folder named by `home_path` (folder names under the host user's home, from `workspace.browse`). */
-  async addWorkspaceAt(home_path: string[]): Promise<WorkspaceInfo> {
-    const workspace = await this.client.request("workspace.add", { home_path });
+  async addWorkspaceAt(home_path: string[], opts: { allowLarge?: boolean } = {}): Promise<WorkspaceInfo> {
+    const workspace = await this.client.request("workspace.add", { home_path, ...(opts.allowLarge ? { allow_large: true } : {}) });
     this.store.dispatch({ type: "workspace_added", workspace });
     return workspace;
   }

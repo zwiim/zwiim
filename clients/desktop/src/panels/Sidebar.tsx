@@ -3,7 +3,10 @@ import { ChevronDown, ChevronRight, Folder, FolderGit2, GitBranch, GitBranchPlus
 import {
   busyDetails,
   dirtyDetails,
+  largeFolderDetails,
+  largeFolderText,
   selectWorkspaceTree,
+  type LargeFolderDetails,
   type WorkspaceBusyDetails,
   type WorkspaceInfo,
   type WorkspaceNode,
@@ -55,6 +58,7 @@ export function Sidebar(props: SidebarProps) {
   const loaded = useHost((s) => s.workspaces !== null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [large, setLarge] = useState<{ path: string; details: LargeFolderDetails } | null>(null);
   const [folds, setFolds] = useState(sidebarFolds);
 
   function fold(next: SidebarFolds) {
@@ -70,16 +74,27 @@ export function Sidebar(props: SidebarProps) {
 
   async function addWorkspace() {
     setError(null);
+    setLarge(null);
     const path = await props.pickFolder();
     if (!path) return;
+    await add(path, false);
+  }
+
+  async function add(path: string, allowLarge: boolean) {
     setAdding(true);
     try {
-      const ws = await controller.addWorkspace(path);
+      const ws = await controller.addWorkspace(path, { allowLarge });
+      setLarge(null);
       // The new workspace shows even if the list was folded away.
       if (folds.workspaces) fold({ ...folds, workspaces: false });
       props.onSelectWorkspace(ws.workspace_id);
     } catch (e) {
-      setError(errorMessage(e));
+      const details = largeFolderDetails(e);
+      if (details) setLarge({ path, details });
+      else {
+        setLarge(null);
+        setError(errorMessage(e));
+      }
     } finally {
       setAdding(false);
     }
@@ -108,6 +123,24 @@ export function Sidebar(props: SidebarProps) {
         </Button>
       </div>
       {error && <p className="text-destructive px-2 text-xs">{error}</p>}
+      {large && (
+        <div className="bg-card mx-1 flex flex-col gap-2 rounded-lg p-2.5 text-xs shadow-sm" role="alertdialog" aria-label="Large folder">
+          <p className="font-medium">Large folder</p>
+          <p>
+            This folder isn't a Git repository yet. Zwiim will commit <strong>{largeFolderText(large.details)}</strong> as
+            "Initial Commit". Add it anyway?
+          </p>
+          <div className="flex justify-end gap-1.5">
+            {/* The Host finishes an add it has started, so Cancel cannot stop it. */}
+            <Button size="xs" variant="ghost" disabled={adding} onClick={() => setLarge(null)}>
+              Cancel
+            </Button>
+            <Button size="xs" disabled={adding || !online} onClick={() => void add(large.path, true)}>
+              Add anyway
+            </Button>
+          </div>
+        </div>
+      )}
       {!folds.workspaces && (
         <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-1" data-testid="workspace-tree">
           {!loaded && <p className="text-muted-foreground px-2 text-xs">Loading…</p>}

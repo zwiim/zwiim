@@ -34,6 +34,7 @@ use crate::terminal::manager::TerminalManager;
 use crate::web::event_bridge::EventEmitter;
 
 mod names;
+mod repo_init;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -396,35 +397,221 @@ pub async fn list(conn: &DatabaseConnection) -> Result<Vec<WorkspaceInfo>, AppCo
 
 /// Register the host directory `path` as a workspace through the existing
 /// open-folder path. Re-adding a known (or previously removed) directory
-/// revives its row, which keeps its original `workspace_id`.
+/// revives its row, which keeps its original `workspace_id`. A folder with no
+/// `.git` is first made a repository with one "Initial Commit"; if that commit
+/// would be large it is refused with `large_folder` unless `allow_large`.
 pub async fn add(
     db: &AppDatabase,
     emitter: &EventEmitter,
     path: &str,
-) -> Result<WorkspaceInfo, AppCommandError> {
+    allow_large: bool,
+) -> Result<WorkspaceInfo, ZwiimError> {
     let requested = Path::new(path);
     if !requested.is_absolute() {
-        return Err(AppCommandError::invalid_input("Path must be absolute"));
+        return Err(AppCommandError::invalid_input("Path must be absolute").into());
     }
     let canonical = requested
         .canonicalize()
         .ok()
         .filter(|p| p.is_dir())
         .ok_or_else(|| AppCommandError::not_found("Directory not found"))?;
-    let detail = folders::open_folder_core(db, canonical.to_string_lossy().into_owned()).await?;
+    let canonical_str = canonical.to_string_lossy().into_owned();
+    // A host-internal scratch folder has no workspace identity: refuse it
+    // before touching it.
+    let known = folder::Entity::find()
+        .filter(folder::Column::Path.eq(canonical_str.as_str()))
+        .one(&db.conn)
+        .await
+        .map_err(db_err)?;
+    if known.is_some_and(|r| r.kind != FolderKind::Regular) {
+        return Err(not_a_workspace().into());
+    }
+
+    // Spawned so that it completes, or rolls back, even if the request is
+    // dropped mid-way.
+    let conn = db.conn.clone();
+    let emitter = emitter.clone();
+    tokio::spawn(async move {
+        let db = AppDatabase { conn };
+        init_and_register(&db, &emitter, canonical, allow_large).await
+    })
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "[workspace] add: the repository task did not finish");
+        ZwiimError::internal()
+    })?
+}
+
+/// Serializes making repositories Host-wide, so two callers never both see
+/// a folder without `.git` and one rolls back the other's repository.
+static REPO_INIT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Held by anything that may make a folder a repository (`add`, the startup
+/// sweep) from its `has_git` check through registration or rollback.
+pub(crate) async fn repo_init_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    REPO_INIT.lock().await
+}
+
+/// Under the repository-init lock: make `canonical` a repository unless it
+/// already has `.git` (refusing a large first commit without `allow_large`;
+/// an init the Host stopped in is undone and redone), then register it,
+/// undoing the init if registering fails.
+async fn init_and_register(
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+    canonical: PathBuf,
+    allow_large: bool,
+) -> Result<WorkspaceInfo, ZwiimError> {
+    let _init = repo_init_lock().await;
+    if repo_init::recover_interrupted(&canonical).await {
+        tracing::info!("[workspace] add: undid an unfinished repository init");
+    }
+    let created = if repo_init::has_git(&canonical) {
+        None
+    } else {
+        let dir = canonical.clone();
+        let size = tokio::task::spawn_blocking(move || repo_init::measure_first_commit(&dir))
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "[workspace] add: measuring did not finish");
+                ZwiimError::internal()
+            })?;
+        if size.is_large() && !allow_large {
+            return Err(ZwiimError::large_folder(
+                size.files,
+                size.bytes,
+                size.at_least,
+            ));
+        }
+        repo_init::init_repository(&canonical).await.map_err(|e| {
+            tracing::warn!("[workspace] making a Git repository failed: {e}");
+            ZwiimError::repository_init_failed()
+        })?
+    };
+
+    match register(db, canonical.to_string_lossy().into_owned()).await {
+        Ok((detail, row)) => {
+            folders::emit_folder_upsert(emitter, detail);
+            Ok(info(&db.conn, row).await?)
+        }
+        Err(e) => {
+            if let Some(created) = created {
+                repo_init::rollback(&canonical, created).await;
+            }
+            Err(e.into())
+        }
+    }
+}
+
+fn not_a_workspace() -> AppCommandError {
+    AppCommandError::invalid_input("Directory cannot be used as a workspace")
+}
+
+/// Register (or revive) the folder row; only a `Regular` row with a
+/// `workspace_id` is a workspace.
+async fn register(
+    db: &AppDatabase,
+    path: String,
+) -> Result<(crate::models::FolderDetail, folder::Model), AppCommandError> {
+    let detail = folders::open_folder_core(db, path).await?;
     let row = folder::Entity::find_by_id(detail.id)
         .one(&db.conn)
         .await
         .map_err(db_err)?
         .ok_or_else(|| AppCommandError::not_found("Workspace not found"))?;
-    // A host-internal scratch folder has no workspace identity.
     if row.kind != FolderKind::Regular || row.workspace_id.is_none() {
-        return Err(AppCommandError::invalid_input(
-            "Directory cannot be used as a workspace",
-        ));
+        return Err(not_a_workspace());
     }
-    folders::emit_folder_upsert(emitter, detail);
-    info(&db.conn, row).await
+    Ok((detail, row))
+}
+
+/// Host start: make every live root that is still a plain folder a
+/// repository, so a worktree can be made from it. A folder whose first commit
+/// would be large is skipped (nobody is there to confirm); a failure is logged
+/// and the sweep moves on. An init the Host stopped in is undone first. Clients learn of each through the folder upsert.
+/// The repository-init lock is held per folder, so a concurrent `add` never
+/// races the sweep on one folder nor waits for the whole sweep.
+pub async fn init_plain_roots(db: &AppDatabase, emitter: &EventEmitter) {
+    let rows = match folder::Entity::find()
+        .filter(folder::Column::Kind.eq(FolderKind::Regular))
+        .filter(folder::Column::DeletedAt.is_null())
+        .filter(folder::Column::ParentId.is_null())
+        .filter(folder::Column::WorkspaceId.is_not_null())
+        .all(&db.conn)
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!("[workspace] listing roots to make repositories failed: {e}");
+            return;
+        }
+    };
+    for row in rows {
+        let path = PathBuf::from(&row.path);
+        {
+            let _init = repo_init_lock().await;
+            if repo_init::recover_interrupted(&path).await {
+                tracing::info!(
+                    "[workspace] host start: undid an unfinished repository init in {}",
+                    row.path
+                );
+            }
+            if !path.is_dir() || repo_init::has_git(&path) || !is_live_root(db, row.id).await {
+                continue;
+            }
+            let dir = path.clone();
+            let size =
+                match tokio::task::spawn_blocking(move || repo_init::measure_first_commit(&dir))
+                    .await
+                {
+                    Ok(size) => size,
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            "[workspace] host start: measuring {} did not finish",
+                            row.path
+                        );
+                        continue;
+                    }
+                };
+            if size.is_large() {
+                tracing::info!(
+                    "[workspace] {} stays a plain folder: its first commit is large ({} files, {} bytes{})",
+                    row.path,
+                    size.files,
+                    size.bytes,
+                    if size.at_least { " or more" } else { "" }
+                );
+                continue;
+            }
+            if let Err(e) = repo_init::init_repository(&path).await {
+                tracing::warn!("[workspace] making {} a Git repository failed: {e}", row.path);
+                continue;
+            }
+        }
+        match folders::get_folder_core(db, row.id).await {
+            Ok(detail) => folders::emit_folder_upsert(emitter, detail),
+            Err(e) => tracing::warn!("[workspace] announcing {} failed: {e}", row.path),
+        }
+    }
+}
+
+/// Row `id` is still a live, `Regular` root workspace. The sweep lists its
+/// rows once, so it re-reads each under the repository-init lock: a root
+/// removed meanwhile is not made a repository.
+async fn is_live_root(db: &AppDatabase, id: i32) -> bool {
+    match folder::Entity::find_by_id(id).one(&db.conn).await {
+        Ok(row) => row.is_some_and(|r| {
+            r.deleted_at.is_none()
+                && r.kind == FolderKind::Regular
+                && r.parent_id.is_none()
+                && r.workspace_id.is_some()
+        }),
+        Err(e) => {
+            tracing::warn!("[workspace] re-reading folder {id} failed: {e}");
+            false
+        }
+    }
 }
 
 // ─── worktrees ───────────────────────────────────────────────────────────
@@ -2221,5 +2408,120 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn host_start_skips_a_root_removed_while_it_waited() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("plain");
+        std::fs::create_dir(&plain).unwrap();
+        let id = seed_folder(&db, plain.to_str().unwrap()).await;
+
+        // The sweep lists the row, then waits on the lock; meanwhile the
+        // root is removed.
+        let held = repo_init_lock().await;
+        let sweep = {
+            let db = AppDatabase {
+                conn: db.conn.clone(),
+            };
+            tokio::spawn(async move { init_plain_roots(&db, &EventEmitter::Noop).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        folder_service::soft_delete_folder(&db.conn, id)
+            .await
+            .unwrap();
+        drop(held);
+        sweep.await.unwrap();
+
+        assert!(!plain.join(".git").exists());
+        assert!(!plain.join(".gitignore").exists());
+    }
+
+    #[tokio::test]
+    async fn host_start_redoes_an_init_the_host_stopped_in() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let half = dir.path().join("half");
+        std::fs::create_dir(&half).unwrap();
+        std::fs::write(half.join("a.txt"), "x").unwrap();
+        // A Host stopped after `git init`, before the commit.
+        std::fs::create_dir(half.join(".git")).unwrap();
+        std::fs::write(half.join(".git/zwiim-init"), "").unwrap();
+        git(&half, &["init", "-q", "-b", "main"]);
+        seed_folder(&db, half.to_str().unwrap()).await;
+
+        init_plain_roots(&db, &EventEmitter::Noop).await;
+
+        assert_eq!(git(&half, &["log", "--format=%s"]), "Initial Commit");
+        assert!(!half.join(".git/zwiim-init").exists());
+    }
+
+    #[tokio::test]
+    async fn only_a_live_regular_root_workspace_is_a_plain_root_to_init() {
+        let db = fresh_in_memory_db().await;
+        let live = seed_folder(&db, "/tmp/zwiim-sweep-live").await;
+        assert!(is_live_root(&db, live).await);
+
+        let removed = seed_folder(&db, "/tmp/zwiim-sweep-removed").await;
+        folder_service::soft_delete_folder(&db.conn, removed)
+            .await
+            .unwrap();
+        assert!(!is_live_root(&db, removed).await);
+
+        let child = seed_folder(&db, "/tmp/zwiim-sweep-child").await;
+        let mut active = row(&db, child).await.into_active_model();
+        active.parent_id = sea_orm::Set(Some(live));
+        active.update(&db.conn).await.unwrap();
+        assert!(!is_live_root(&db, child).await);
+
+        let chat = folder_service::add_chat_folder(&db.conn, "/tmp/zwiim-sweep-chat")
+            .await
+            .unwrap()
+            .id;
+        assert!(!is_live_root(&db, chat).await);
+        assert!(!is_live_root(&db, i32::MAX).await);
+    }
+
+    #[tokio::test]
+    async fn host_start_makes_plain_roots_repositories_and_skips_the_rest() {
+        use std::os::unix::fs::PermissionsExt;
+        // Root writes through 0o555, so the locked init would not fail.
+        let as_root = unsafe { libc::geteuid() } == 0;
+        let db = fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let mk = |name: &str| {
+            let p = dir.path().join(name);
+            std::fs::create_dir(&p).unwrap();
+            p
+        };
+        let plain = mk("plain");
+        std::fs::write(plain.join("a.txt"), "x").unwrap();
+        let locked = mk("locked");
+        let big = mk("big");
+        for i in 0..5_001 {
+            std::fs::write(big.join(format!("f{i}")), "").unwrap();
+        }
+        let repo = mk("repo");
+        git(&repo, &["init", "-q", "-b", "dev"]);
+        for p in [&locked, &plain, &big, &repo] {
+            if as_root && p == &locked {
+                continue;
+            }
+            seed_folder(&db, p.to_str().unwrap()).await;
+        }
+        seed_folder(&db, dir.path().join("gone").to_str().unwrap()).await;
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        init_plain_roots(&db, &EventEmitter::Noop).await;
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // The locked one failed first; the sweep went on to the others.
+        assert!(plain.join(".git").is_dir());
+        assert_eq!(git(&plain, &["log", "--format=%s"]), "Initial Commit");
+        assert!(!locked.join(".git").exists());
+        assert!(!big.join(".git").exists() && !big.join(".gitignore").exists());
+        assert_eq!(git(&repo, &["branch", "--show-current"]), "dev");
+        assert!(!repo.join(".gitignore").exists());
     }
 }

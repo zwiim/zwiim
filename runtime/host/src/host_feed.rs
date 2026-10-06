@@ -1161,9 +1161,14 @@ mod tests {
 
         let other = f.dir.path().join("other");
         std::fs::create_dir(&other).unwrap();
-        let added = workspace::add(&f.state.db, &f.state.emitter, other.to_str().unwrap())
-            .await
-            .unwrap();
+        let added = workspace::add(
+            &f.state.db,
+            &f.state.emitter,
+            other.to_str().unwrap(),
+            false,
+        )
+        .await
+        .unwrap();
         feed.until(
             "added workspace",
             workspace_is(added.workspace_id.clone(), |w| w["removed"] == false),
@@ -1183,9 +1188,14 @@ mod tests {
         .await;
 
         // Re-adding the path revives the same workspace.
-        workspace::add(&f.state.db, &f.state.emitter, other.to_str().unwrap())
-            .await
-            .unwrap();
+        workspace::add(
+            &f.state.db,
+            &f.state.emitter,
+            other.to_str().unwrap(),
+            false,
+        )
+        .await
+        .unwrap();
         feed.until(
             "revived workspace",
             workspace_is(added.workspace_id.clone(), |_| true),

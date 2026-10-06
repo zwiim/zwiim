@@ -527,6 +527,245 @@ async fn workspace_add_takes_one_form_and_host_paths_only_from_the_host() {
     assert_eq!(listed.as_array().unwrap().len(), 1, "nothing added");
 }
 
+fn git_out(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("spawn git");
+    assert!(out.status.success(), "git {args:?}");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[tokio::test]
+async fn workspace_add_makes_a_plain_folder_a_repository() {
+    let h = host(false).await;
+    let dir = h._dir.path().join("app");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/a.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(dir.join(".env"), "KEY=secret\n").unwrap();
+    let path = dir.canonicalize().unwrap().to_string_lossy().into_owned();
+
+    let added = h.ok("workspace.add", json!({"path": path})).await;
+    assert_eq!(
+        (added["is_git_repo"].clone(), added["branch"].clone()),
+        (json!(true), json!("main"))
+    );
+    assert_eq!(git_out(&dir, &["log", "--format=%s"]), "Initial Commit");
+    assert_eq!(
+        git_out(&dir, &["ls-tree", "-r", "--name-only", "HEAD"]),
+        ".gitignore\nsrc/a.rs"
+    );
+    assert!(dir.join(".env").exists());
+
+    // A worktree of it holds the committed files.
+    let wt = h
+        .ok(
+            "workspace.create_worktree",
+            json!({"workspace_id": added["workspace_id"]}),
+        )
+        .await;
+    let tree = h
+        .ok(
+            "workspace.tree",
+            json!({"workspace_id": wt["workspace_id"]}),
+        )
+        .await;
+    assert!(tree.to_string().contains("\"a.rs\""), "{tree}");
+}
+
+#[tokio::test]
+async fn workspace_add_leaves_out_a_nested_repository_without_a_commit() {
+    let h = host(false).await;
+    let dir = h._dir.path().join("with-crate");
+    std::fs::create_dir_all(dir.join("crate")).unwrap();
+    std::fs::write(dir.join("a.txt"), "a").unwrap();
+    git_out(&dir.join("crate"), &["init", "-q"]);
+    let path = dir.canonicalize().unwrap().to_string_lossy().into_owned();
+
+    let added = h.ok("workspace.add", json!({"path": path})).await;
+    assert_eq!(added["is_git_repo"], json!(true));
+    assert_eq!(
+        git_out(&dir, &["ls-tree", "-r", "--name-only", "HEAD"]),
+        ".gitignore\na.txt"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_adds_of_a_plain_folder_make_one_repository() {
+    let h = host(false).await;
+    let dir = h._dir.path().join("twice");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("a.txt"), "a").unwrap();
+    let path = dir.canonicalize().unwrap().to_string_lossy().into_owned();
+
+    let body = json!({"path": path});
+    let (a, b, c) = tokio::join!(
+        h.ok("workspace.add", body.clone()),
+        h.ok("workspace.add", body.clone()),
+        h.ok("workspace.add", body.clone()),
+    );
+    assert_eq!(a["workspace_id"], b["workspace_id"]);
+    assert_eq!(a["workspace_id"], c["workspace_id"]);
+    assert!([&a, &b, &c].iter().all(|w| w["is_git_repo"] == true));
+    assert!(dir.join(".git").is_dir(), "the repository survived");
+    assert_eq!(git_out(&dir, &["log", "--format=%s"]), "Initial Commit");
+    assert_eq!(
+        git_out(&dir, &["ls-tree", "-r", "--name-only", "HEAD"]),
+        ".gitignore\na.txt"
+    );
+    let list = h.ok("workspace.list", json!({})).await;
+    assert_eq!(list.as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_dropped_add_still_finishes_the_repository() {
+    let h = host(false).await;
+    let dir = h._dir.path().join("dropped");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("a.txt"), "a").unwrap();
+    let path = dir.canonicalize().unwrap().to_string_lossy().into_owned();
+
+    // The add waits on the lock; its request is dropped meanwhile.
+    let held = crate::workspace::repo_init_lock().await;
+    let dropped = tokio::time::timeout(
+        Duration::from_millis(500),
+        crate::workspace::add(&h.state.db, &h.state.emitter, &path, false),
+    )
+    .await;
+    assert!(dropped.is_err(), "the add was still waiting");
+    drop(held);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let list = h.ok("workspace.list", json!({})).await;
+        if list.as_array().unwrap().len() == 2 {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "never registered");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(git_out(&dir, &["log", "--format=%s"]), "Initial Commit");
+}
+
+#[tokio::test]
+async fn workspace_add_leaves_an_existing_repository_alone() {
+    let h = host(false).await;
+    let root = std::path::Path::new(&h.root);
+    std::fs::write(root.join("wip.txt"), "x").unwrap();
+    let before = (
+        git_out(root, &["rev-parse", "HEAD"]),
+        git_out(root, &["status", "--porcelain"]),
+    );
+    h.ok("workspace.add", json!({"path": h.root.clone()})).await;
+    let after = (
+        git_out(root, &["rev-parse", "HEAD"]),
+        git_out(root, &["status", "--porcelain"]),
+    );
+    assert_eq!(before, after);
+    assert!(!root.join(".gitignore").exists());
+}
+
+#[tokio::test]
+async fn workspace_add_asks_before_a_large_first_commit() {
+    let h = host(false).await;
+    let dir = h._dir.path().join("big");
+    std::fs::create_dir(&dir).unwrap();
+    for i in 0..5_001 {
+        std::fs::write(dir.join(format!("f{i}")), "").unwrap();
+    }
+    let path = dir.canonicalize().unwrap().to_string_lossy().into_owned();
+
+    let (status, code, details) = h.err_details("workspace.add", json!({"path": path})).await;
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::CONFLICT, "large_folder")
+    );
+    let details = details.expect("details");
+    assert!(details["files"].as_u64().unwrap() > 5_000, "{details}");
+    assert_eq!(details["at_least"], true);
+    assert!(details["bytes"].is_u64());
+    assert!(!dir.join(".git").exists() && !dir.join(".gitignore").exists());
+    let list = h.ok("workspace.list", json!({})).await;
+    assert_eq!(list.as_array().unwrap().len(), 1, "nothing registered");
+
+    let added = h
+        .ok("workspace.add", json!({"path": path, "allow_large": true}))
+        .await;
+    assert_eq!(added["is_git_repo"], true);
+    assert_eq!(git_out(&dir, &["log", "--format=%s"]), "Initial Commit");
+}
+
+#[tokio::test]
+async fn workspace_add_never_asks_for_a_folder_that_has_git() {
+    let h = host(false).await;
+    let dir = h._dir.path().join("bigrepo");
+    std::fs::create_dir(&dir).unwrap();
+    git(&dir, &["init", "-q", "-b", "main"]);
+    for i in 0..5_001 {
+        std::fs::write(dir.join(format!("f{i}")), "").unwrap();
+    }
+    let path = dir.canonicalize().unwrap().to_string_lossy().into_owned();
+    let added = h.ok("workspace.add", json!({"path": path})).await;
+    assert_eq!(added["is_git_repo"], true);
+    assert!(!dir.join(".gitignore").exists());
+}
+
+#[tokio::test]
+async fn workspace_add_redoes_an_init_the_host_stopped_in() {
+    let h = host(false).await;
+    let dir = h._dir.path().join("half");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("a.txt"), "mine").unwrap();
+    // A Host stopped after `git init` and the basic `.gitignore`.
+    std::fs::create_dir(dir.join(".git")).unwrap();
+    std::fs::write(dir.join(".git/zwiim-init"), "gitignore\n").unwrap();
+    git(&dir, &["init", "-q", "-b", "main"]);
+    std::fs::write(dir.join(".gitignore"), ".env\n").unwrap();
+    let path = dir.canonicalize().unwrap().to_string_lossy().into_owned();
+
+    let added = h.ok("workspace.add", json!({"path": path})).await;
+    assert_eq!(added["is_git_repo"], true);
+    assert_eq!(git_out(&dir, &["log", "--format=%s"]), "Initial Commit");
+    assert_eq!(
+        git_out(&dir, &["ls-tree", "-r", "--name-only", "HEAD"]),
+        ".gitignore\na.txt"
+    );
+    assert!(!dir.join(".git/zwiim-init").exists());
+}
+
+#[tokio::test]
+async fn workspace_add_that_cannot_init_registers_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    // Root writes through 0o555, so the init would not fail.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let h = host(false).await;
+    let dir = h._dir.path().join("locked");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("keep.txt"), "mine").unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let path = dir.canonicalize().unwrap().to_string_lossy().into_owned();
+
+    let got = h.err("workspace.add", json!({"path": path})).await;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(
+        got,
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "repository_init_failed".into()
+        )
+    );
+    assert!(!dir.join(".git").exists());
+    assert_eq!(
+        std::fs::read_to_string(dir.join("keep.txt")).unwrap(),
+        "mine"
+    );
+    let list = h.ok("workspace.list", json!({})).await;
+    assert_eq!(list.as_array().unwrap().len(), 1, "nothing registered");
+}
+
 #[tokio::test]
 async fn workspace_browse_refuses_bad_segments() {
     let h = host(false).await;
@@ -591,13 +830,12 @@ async fn a_plain_folder_is_a_full_workspace_without_git() {
     std::fs::create_dir(&plain).unwrap();
     let plain = plain.canonicalize().unwrap().to_string_lossy().into_owned();
 
-    let added = h.ok("workspace.add", json!({"path": plain})).await;
-    let wid = added["workspace_id"].as_str().unwrap().to_string();
-    assert_eq!(
-        (added["is_git_repo"].clone(), added["branch"].clone()),
-        (json!(false), Value::Null)
-    );
-    assert!(!std::path::Path::new(&plain).join(".git").exists(), "no git init");
+    // Registered before repositories were made on add (or skipped as large).
+    let id = crate::db::test_helpers::seed_folder(&h.state.db, &plain).await;
+    let wid = crate::workspace::workspace_id_of(&h.state.db.conn, id)
+        .await
+        .unwrap()
+        .unwrap();
     let list = h.ok("workspace.list", json!({})).await;
     let listed = |id: &str| {
         list.as_array()

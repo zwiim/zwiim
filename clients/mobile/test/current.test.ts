@@ -161,10 +161,15 @@ describe("the current host", () => {
     await waitFor(() => current.state.view?.status === "live");
 
     await current.addWorkspaceAt(["Projects", "added"]);
+    await current.addWorkspaceAt(["Projects", "added"], { allowLarge: true });
     expect(current.state.workspaceId).toBe("added");
     await current.createWorktree("added");
     expect(current.state.workspaceId).toBe("tree");
-    expect(asked).toEqual([{ home_path: ["Projects", "added"] }, { workspace_id: "added" }]);
+    expect(asked).toEqual([
+      { home_path: ["Projects", "added"] },
+      { home_path: ["Projects", "added"], allow_large: true },
+      { workspace_id: "added" },
+    ]);
     await waitFor(() => chosenIn(s) === "tree");
     await current.clear();
   });

@@ -198,12 +198,21 @@ filtered by the selection. Pushed File, Diff and Terminal screens carry the
 same `workspace · worktree` as their subtitle. The phone never shows a Host
 path; a workspace shows its `~/…` path only.
 
-Git is optional. A workspace that isn't a Git repository (a plain folder) is a
-full workspace: Browse, file previews, Terminals and sessions all work. It has
-no worktrees, so it has no worktree chip, no worktree sheet and no New
-worktree, and it reads as just its name (`notes`, never `notes · root`).
-Changes says "Not a Git repository" without asking Git. Adding a folder never
-initializes Git; running `git init` there turns it into a repository live.
+Adding a plain folder makes it a Git repository: `git init` on `main`, a basic
+`.gitignore` written only if the folder has none, and everything committed as
+"Initial Commit". A large folder (more than 5,000 files or 500 MB) asks first:
+"Large folder", with the count, **Cancel** / **Add anyway**. On Desktop it is a
+card in the sidebar; on the phone it takes the place of the Add button in
+Browse Mac's bottom bar. If the init fails, the add fails and nothing is
+registered.
+
+Plain folders can still exist, such as a large folder the start-up sweep
+skipped. A workspace that isn't a Git repository (a plain folder) is a full
+workspace: Browse, file previews, Terminals and sessions all work. It has no
+worktrees, so it has no worktree chip, no worktree sheet and no New worktree,
+and it reads as just its name (`notes`, never `notes · root`). Changes says
+"Not a Git repository" without asking Git. Running `git init` there turns it
+into a repository live.
 
 ## Screens
 
@@ -536,10 +545,14 @@ one level per screen, to add a workspace.
   field, **Create folder** (`primary`, 48pt). Names are one plain folder name:
   no slashes, not starting with a dot (said inline before sending). The Host
   makes exactly that folder; the phone then opens it, so the bottom bar offers
-  **Add ~/Projects/new-app**. Nothing initializes Git.
+  **Add ~/Projects/new-app**, which makes it a Git repository.
 - Bottom bar (hidden at `~`, which can't be a workspace): **Add ~/Projects/zwiim**
   (`primary`, 48pt). Adding selects the new workspace's root and returns to
-  Files; a folder that is already a workspace selects that one.
+  Files; a folder that is already a workspace selects that one. Adding a plain
+  folder makes it a repository with an "Initial Commit". A large one swaps the
+  button for an inline prompt: "Large folder", the count, **Cancel** /
+  **Add anyway** (48pt, side by side). Add anyway keeps its adding state until
+  the add ends.
 - Android back climbs one folder before leaving.
 
 ### 7. Terminals (the Files dock)
@@ -762,3 +775,4 @@ glyph, a title, one line, one action.
 | 2026-10-03 | Desktop file links open in the workspace; quiet healthy connection | A file the agent names is one click from its contents, like a web link; the host never shares its paths, so an absolute link resolves only past the workspace's own folder and anything else stays inert. A green "Connected" pill and amber "Connecting" broke the status rules: healthy is not news, amber means needs-you |
 | 2026-10-04 | Continue after merge is one tap, no confirm (V2.4) | Continue loses nothing: sessions, terminals and the old branch all stay, so a confirm would only ask the user to read the same line twice. The Host is the guard: it refuses while an agent works, with uncommitted changes, or unless GitHub says it merged this branch's head. Merge keeps its confirm on the phone because a merge can't be taken back |
 | 2026-10-04 | Slash commands can run in the agent's CLI, embedded over the composer | Many CLI commands (`/mcp`, `/status`, `/login`, plugin commands) do nothing over ACP; Conductor runs them in a terminal over its composer and the gap read as broken. The agent's ACP list decides (user call): what it lists runs over ACP, what it does not only the CLI runs; ACP strips Claude's `builtin` flag, so the listed ones whose screen is the CLI's are named. A terminal in the dock with the command typed made the user move focus and press Enter there (user call: follow Conductor); the card runs it in place. Codex gets Enter only when the command shows, so a prompt the CLI asks first is never answered for the user |
+| 2026-10-06 | Plain folders become repositories on add; a large folder asks first | Worktrees, Changes and every Git feature need a repository, and a plain folder had none of them. The Host commits the folder as "Initial Commit" with a basic `.gitignore` (written only if none exists) so secrets stay out; over 5,000 files or 500 MB the user confirms the count first, since a huge first commit is slow and easy to regret. A failed init fails the add, so a folder is never half-registered. Supersedes 2026-09-27's "Git stays optional" for new adds |

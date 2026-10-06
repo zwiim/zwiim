@@ -790,6 +790,14 @@ async fn async_main() -> Exit {
             .with_graceful_shutdown(async move { shutdown.wait().await })
             .await
     });
+    // Plain roots from before every workspace was a repository; in the
+    // background so serving never waits on a commit.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            zwiim_host::workspace::init_plain_roots(&state.db, &state.emitter).await;
+        });
+    }
     // A version on trial proves its health over the API it just bound.
     zwiim_host::update::service::run_trial(
         zwiim_host::local_host::loopback_url(&advertised_host, actual_port),

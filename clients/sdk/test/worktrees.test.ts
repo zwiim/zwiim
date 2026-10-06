@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostController } from "../src/client/controller";
-import { busyDetails, dirtyDetails, ZwiimClientError } from "../src/client/errors";
+import { busyDetails, dirtyDetails, largeFolderDetails, largeFolderText, ZwiimClientError } from "../src/client/errors";
 import { HostClient } from "../src/client/host-client";
 import { reduceHost, initialHostState, type HostState } from "../src/state/store";
 import { buildWorkspaceTree, selectWorkspaceTree } from "../src/state/workspaces";
@@ -330,5 +330,37 @@ describe("LocalTransport error details", () => {
     t = new LocalTransport({ url: "http://h", token: "t", fetch: reply([1]) });
     const e2 = (await fail(t))!;
     expect(e2.details).toBeUndefined();
+  });
+});
+
+describe("adding a large folder", () => {
+  it("surfaces large_folder details and re-sends with allow_large only when asked", async () => {
+    const t = setup();
+    await goLive(t);
+    const { controller, transport } = t;
+    transport.handlers["workspace.add"] = (p: Record<string, unknown>) => {
+      if (!p.allow_large) throw new ZwiimClientError("large_folder", "big", 409, { files: 5001, bytes: 10, at_least: true });
+      return root;
+    };
+    const e = await controller.addWorkspace("/tmp/big").catch((x) => x);
+    expect(largeFolderDetails(e)).toEqual({ files: 5001, bytes: 10, at_least: true });
+    await controller.addWorkspace("/tmp/big", { allowLarge: true });
+    await controller.addWorkspaceAt(["big"], { allowLarge: true });
+    transport.handlers["workspace.add"] = () => root;
+    await controller.addWorkspaceAt(["small"]);
+    expect(transport.requests.filter((r) => r.op === "workspace.add").map((r) => r.params)).toEqual([
+      { path: "/tmp/big" },
+      { path: "/tmp/big", allow_large: true },
+      { home_path: ["big"], allow_large: true },
+      { home_path: ["small"] },
+    ]);
+  });
+
+  it("words the size for the prompt", () => {
+    expect(largeFolderText({ files: 5001, bytes: 10, at_least: true })).toBe("more than 5,000 files");
+    expect(largeFolderText({ files: 12, bytes: 600 * 1024 * 1024, at_least: true })).toBe("more than 500 MB");
+    expect(largeFolderText({ files: 12431, bytes: 1932735283, at_least: false })).toBe("12,431 files (1.8 GB)");
+    expect(largeFolderText({ files: 1, bytes: 3 * 1024 * 1024, at_least: false })).toBe("1 file (3 MB)");
+    expect(largeFolderDetails(new ZwiimClientError("workspace_dirty", "x", 409, { changes: 1 }))).toBeNull();
   });
 });

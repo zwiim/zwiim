@@ -1,6 +1,7 @@
 import type {
   HostErrorCode,
   HostOwnedDetails,
+  LargeFolderDetails,
   OptionUnavailableDetails,
   WorkspaceBusyDetails,
   WorkspaceDirtyDetails,
@@ -101,6 +102,27 @@ export function busyDetails(e: unknown): WorkspaceBusyDetails | null {
 export function dirtyDetails(e: unknown): WorkspaceDirtyDetails | null {
   if (!isClientError(e, "workspace_dirty")) return null;
   return { changes: Number(e.details?.changes ?? 0) };
+}
+
+/** What a `large_folder` refusal counted, or null for any other failure. */
+export function largeFolderDetails(e: unknown): LargeFolderDetails | null {
+  if (!isClientError(e, "large_folder")) return null;
+  return {
+    files: Number(e.details?.files ?? 0),
+    bytes: Number(e.details?.bytes ?? 0),
+    at_least: Boolean(e.details?.at_least),
+  };
+}
+
+const LARGE_FOLDER_FILES = 5_000;
+const thousands = (n: number) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+
+/** The first commit's size in words: "12,431 files (1.8 GB)", or the limit it passed. */
+export function largeFolderText(d: LargeFolderDetails): string {
+  if (d.at_least) return d.files > LARGE_FOLDER_FILES ? "more than 5,000 files" : "more than 500 MB";
+  const mb = d.bytes / (1024 * 1024);
+  const size = mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${thousands(Math.max(1, mb))} MB`;
+  return `${thousands(d.files)} ${d.files === 1 ? "file" : "files"} (${size})`;
 }
 
 /** The option and value behind an `option_unavailable` refusal. */

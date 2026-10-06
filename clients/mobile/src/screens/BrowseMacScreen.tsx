@@ -12,7 +12,7 @@ import { BackHandler, Pressable, ScrollView, StyleSheet, TextInput, View } from 
 import { useFocusEffect } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { isClientError, type BrowseEntry } from "@zwiim/sdk";
+import { isClientError, largeFolderDetails, largeFolderText, type BrowseEntry, type LargeFolderDetails } from "@zwiim/sdk";
 import { useCurrentHost, useHostRead } from "../app/hooks";
 import type { RootStack } from "../app/navigation";
 import {
@@ -24,11 +24,12 @@ import {
   createFolderProblem,
   folderNameProblem,
   homeText,
+  samePath,
   upPath,
 } from "../files/browse";
 import { currentHost } from "../services";
 import { Banner, Button, EmptyState, ScreenHeader, Sheet, SkeletonRows, T } from "../ui/components";
-import { radius, space, type, useTheme } from "../ui/tokens";
+import { fonts, radius, space, type, useTheme } from "../ui/tokens";
 import { useHostName } from "./HostFrame";
 
 export function BrowseMacScreen({ navigation, route }: NativeStackScreenProps<RootStack, "BrowseMac">) {
@@ -40,11 +41,15 @@ export function BrowseMacScreen({ navigation, route }: NativeStackScreenProps<Ro
   const [path, setPath] = useState<string[]>([]);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A large_folder refusal, tied to the folder it counted.
+  const [large, setLarge] = useState<{ path: string[]; details: LargeFolderDetails } | null>(null);
+  const counted = large && samePath(large.path, path) ? large : null;
   const [naming, setNaming] = useState(false);
   const listing = useHostRead(homeText(path), () => currentHost.request("workspace.browse", { path }));
   const close = () => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Host", { screen: "Files" }));
   const open = (next: string[]) => {
     setError(null);
+    setLarge(null);
     setPath(next);
   };
 
@@ -54,6 +59,7 @@ export function BrowseMacScreen({ navigation, route }: NativeStackScreenProps<Ro
       if (!path.length) return;
       const sub = BackHandler.addEventListener("hardwareBackPress", () => {
         setError(null);
+        setLarge(null);
         setPath(upPath(path));
         return true;
       });
@@ -61,21 +67,24 @@ export function BrowseMacScreen({ navigation, route }: NativeStackScreenProps<Ro
     }, [path]),
   );
 
-  const add = async () => {
+  const add = async (target: string[], allowLarge = false) => {
     setAdding(true);
     setError(null);
     try {
       // Back to the screen underneath, not a second one on top of Browse Mac.
       // For New session it is where the session starts; Files keeps its own selection.
       if (route.params?.then === "NewSession") {
-        const workspace = await currentHost.addWorkspaceAt(path, { choose: false });
+        const workspace = await currentHost.addWorkspaceAt(target, { choose: false, allowLarge });
         navigation.popTo("NewSession", { workspace_id: workspace.workspace_id });
       } else {
-        await currentHost.addWorkspaceAt(path);
+        await currentHost.addWorkspaceAt(target, { allowLarge });
         navigation.popTo("Host", { screen: "Files" });
       }
+      setLarge(null);
     } catch (e) {
-      setError(addProblem(e, path, hostName));
+      const details = largeFolderDetails(e);
+      setLarge(details ? { path: target, details } : null);
+      if (!details) setError(addProblem(e, target, hostName));
     } finally {
       setAdding(false);
     }
@@ -130,7 +139,28 @@ export function BrowseMacScreen({ navigation, route }: NativeStackScreenProps<Ro
       {error ? <Banner text={error} /> : null}
       {canAdd(path) && !listing.error ? (
         <View style={[styles.bar, { borderTopColor: theme.line, paddingBottom: Math.max(insets.bottom, space.sm) }]}>
-          <Button tall label={addLabel(path)} loading={adding} disabled={!live} onPress={() => void add()} testID="browse-add" />
+          {counted ? (
+            <View style={styles.confirm} testID="browse-large">
+              <T variant="title">Large folder</T>
+              <T color={theme.mut}>
+                This folder isn't a Git repository yet. Zwiim will commit{" "}
+                <T color={theme.mut} style={styles.strong}>
+                  {largeFolderText(counted.details)}
+                </T>{" "}
+                as "Initial Commit". Add it anyway?
+              </T>
+              <View style={styles.actions}>
+                <View style={styles.flex}>
+                  <Button tall kind="secondary" label="Cancel" disabled={adding} onPress={() => setLarge(null)} testID="browse-large-cancel" />
+                </View>
+                <View style={styles.flex}>
+                  <Button tall label="Add anyway" loading={adding} disabled={!live} onPress={() => void add(counted.path, true)} testID="browse-large-add" />
+                </View>
+              </View>
+            </View>
+          ) : (
+            <Button tall label={addLabel(path)} loading={adding} disabled={!live} onPress={() => void add(path)} testID="browse-add" />
+          )}
         </View>
       ) : null}
       <NewFolderSheet
@@ -319,6 +349,7 @@ const styles = StyleSheet.create({
   page: { flex: 1 },
   flex: { flex: 1 },
   dim: { opacity: 0.5 },
+  strong: { fontFamily: fonts.sansSemi },
   list: { paddingVertical: space.sm },
   row: { minHeight: 52, paddingHorizontal: space.lg, flexDirection: "row", alignItems: "center", gap: space.md },
   glyph: { width: 14, textAlign: "center" },
@@ -327,4 +358,6 @@ const styles = StyleSheet.create({
   sheetHead: { gap: space.xxs },
   input: { height: 44, borderRadius: radius.md, paddingHorizontal: space.md },
   bar: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: space.lg, paddingTop: space.sm },
+  confirm: { gap: space.sm },
+  actions: { flexDirection: "row", gap: space.sm },
 });

@@ -151,6 +151,32 @@ impl ZwiimError {
         e
     }
 
+    /// Add refused without `allow_large`: the folder's first commit would be
+    /// large. `at_least`: counting stopped at a limit.
+    pub fn large_folder(files: u64, bytes: u64, at_least: bool) -> Self {
+        let mut e = Self::new(
+            StatusCode::CONFLICT,
+            "large_folder",
+            "This folder is large for a first commit",
+        );
+        e.details = Some(serde_json::json!({
+            "files": files,
+            "bytes": bytes,
+            "at_least": at_least,
+        }));
+        e
+    }
+
+    /// `git init` or the first commit failed; nothing was registered and the
+    /// folder is as it was. Git's own words stay in the Host log.
+    pub fn repository_init_failed() -> Self {
+        Self::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "repository_init_failed",
+            "Could not make this folder a Git repository",
+        )
+    }
+
     /// Pull request `number` has not merged (`state`: `open`, `draft` or
     /// `closed`); only a merged one can be continued from.
     pub fn pr_not_merged(number: u64, state: &str) -> Self {

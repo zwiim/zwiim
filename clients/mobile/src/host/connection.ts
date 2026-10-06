@@ -213,8 +213,8 @@ export class HostConnection {
   }
 
   /** Add the folder named by its folder names under the host's home (`workspace.add`); never retried. */
-  async addWorkspaceAt(home_path: string[]): Promise<WorkspaceInfo> {
-    return this.#live().addWorkspaceAt(home_path);
+  async addWorkspaceAt(home_path: string[], opts: { allowLarge?: boolean } = {}): Promise<WorkspaceInfo> {
+    return this.#live().addWorkspaceAt(home_path, opts);
   }
 
   /** Create a worktree of a root workspace from its current branch; never retried. */

@@ -25,6 +25,8 @@ export type HostErrorCode =
   | "not_a_git_repository"
   | "workspace_busy"
   | "workspace_dirty"
+  | "large_folder"
+  | "repository_init_failed"
   | "workspace_removed"
   | "identity_unavailable"
   | "cloud_unavailable"
@@ -71,6 +73,13 @@ export interface NotMergeableDetails {
 /** `workspace_dirty` details: uncommitted entries a forced removal discards. */
 export interface WorkspaceDirtyDetails {
   changes: number;
+}
+
+/** `large_folder` details: what the folder's first commit would hold. `at_least`: counting stopped at a limit. */
+export interface LargeFolderDetails {
+  files: number;
+  bytes: number;
+  at_least: boolean;
 }
 
 /** `option_unavailable` details: the option and value the agent does not offer. */
@@ -992,7 +1001,7 @@ export interface Operations {
   "agent.sign_out": [{ agent: AgentType }, AgentAuthStatus];
   "workspace.list": [Record<string, never>, WorkspaceInfo[]];
   /** `path` needs local host authority; paired devices use `home_path` (folder names under home). */
-  "workspace.add": [{ path: string } | { home_path: string[] }, WorkspaceInfo];
+  "workspace.add": [({ path: string } | { home_path: string[] }) & { allow_large?: boolean }, WorkspaceInfo];
   "workspace.browse": [{ path: string[] }, BrowseListing];
   /** Make one folder `name` inside the folder `path` (folder names under home); `already_exists` if taken. */
   "workspace.create_folder": [{ path: string[]; name: string }, BrowseEntry];

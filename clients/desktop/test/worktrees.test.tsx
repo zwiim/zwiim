@@ -185,6 +185,65 @@ describe("folding", () => {
     expect(screen.getByTestId("workspace-tree")).toBeTruthy();
   });
 
+  it("asks before adding a large plain folder, and adds it anyway when confirmed", async () => {
+    const { t } = treeHost();
+    t.handlers["workspace.add"] = (p: { allow_large?: boolean }) => {
+      if (!p.allow_large) throw new ZwiimClientError("large_folder", "big", 409, { files: 5001, bytes: 10, at_least: true });
+      return { ...root, workspace_id: "big", name: "big" };
+    };
+    const props = sidebarProps({ pickFolder: vi.fn(async () => "/tmp/big") });
+    await mount(t, () => <Sidebar {...props} />);
+
+    fireEvent.click(screen.getByTitle("Add workspace"));
+    await tick();
+    const card = screen.getByRole("alertdialog");
+    expect(card.textContent).toContain("Large folder");
+    expect(card.textContent).toContain("more than 5,000 files");
+    fireEvent.click(within(card).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(props.onSelectWorkspace).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTitle("Add workspace"));
+    await tick();
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Add anyway" }));
+    await tick();
+    expect(props.onSelectWorkspace).toHaveBeenCalledWith("big");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(t.calls.filter((c) => c.op === "workspace.add").map((c) => c.params)).toEqual([
+      { path: "/tmp/big" },
+      { path: "/tmp/big" },
+      { path: "/tmp/big", allow_large: true },
+    ]);
+  });
+
+  it("keeps the large-folder card while Add anyway is under way", async () => {
+    const { t } = treeHost();
+    let finish!: () => void;
+    t.handlers["workspace.add"] = (p: { allow_large?: boolean }) => {
+      if (!p.allow_large) throw new ZwiimClientError("large_folder", "big", 409, { files: 5001, bytes: 10, at_least: true });
+      return new Promise((resolve) => {
+        finish = () => resolve({ ...root, workspace_id: "big", name: "big" });
+      });
+    };
+    const props = sidebarProps({ pickFolder: vi.fn(async () => "/tmp/big") });
+    await mount(t, () => <Sidebar {...props} />);
+
+    fireEvent.click(screen.getByTitle("Add workspace"));
+    await tick();
+    const card = screen.getByRole("alertdialog");
+    fireEvent.click(within(card).getByRole("button", { name: "Add anyway" }));
+    await tick();
+    const cancel = within(card).getByRole("button", { name: "Cancel" }) as HTMLButtonElement;
+    expect(cancel.disabled).toBe(true);
+    fireEvent.click(cancel);
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+
+    finish();
+    await tick();
+    expect(props.onSelectWorkspace).toHaveBeenCalledWith("big");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
   it("folds a repository's worktrees, keeping their work and selection on its row", async () => {
     const { t } = treeHost();
     await mount(t, () => <Sidebar {...sidebarProps({ workspaceId: "a1b2c3d4" })} />);

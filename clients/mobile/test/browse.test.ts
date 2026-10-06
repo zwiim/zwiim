@@ -10,6 +10,7 @@ import {
   folderName,
   folderNameProblem,
   homeText,
+  samePath,
   upPath,
 } from "../src/files/browse";
 
@@ -34,6 +35,14 @@ describe("browsing the Mac's home folder", () => {
     expect(upPath([])).toEqual([]);
   });
 
+  it("tells the same folder from another", () => {
+    expect(samePath(["Projects", "zwiim"], ["Projects", "zwiim"])).toBe(true);
+    expect(samePath(["Projects", "zwiim"], ["Projects", "other"])).toBe(false);
+    expect(samePath(["Projects", "zwiim"], ["Projects"])).toBe(false);
+    expect(samePath(["Projects"], ["Projects", "zwiim"])).toBe(false);
+    expect(samePath([], [])).toBe(true);
+  });
+
   it("says why a folder didn't open", () => {
     const path = ["Projects", "zwiim"];
     expect(browseProblem(err("permission_denied"), path, "Studio Mac").title).toBe("Zwiim can't open zwiim on Studio Mac.");
@@ -46,6 +55,9 @@ describe("browsing the Mac's home folder", () => {
     expect(addProblem(err("permission_denied"), path, "Studio Mac")).toBe("Zwiim can't open zwiim on Studio Mac.");
     expect(addProblem(err("not_found"), path, "Studio Mac")).toBe("zwiim is gone.");
     expect(addProblem(new Error("x"), path, "Studio Mac")).toBe("Couldn't add zwiim. Try again.");
+    expect(addProblem(err("repository_init_failed"), path, "Studio Mac")).toBe(
+      "Couldn't make zwiim a Git repository on Studio Mac.",
+    );
   });
 });
 

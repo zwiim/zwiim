@@ -253,9 +253,13 @@ export class CurrentHost {
   /**
    * Add a folder under the host's home as a workspace, and show it in Files.
    * `choose: false` (New session) adds it without touching Files.
+   * `allowLarge`: the user confirmed a `large_folder` refusal.
    */
-  async addWorkspaceAt(home_path: string[], { choose = true }: { choose?: boolean } = {}): Promise<WorkspaceInfo> {
-    const workspace = await this.#opened().addWorkspaceAt(home_path);
+  async addWorkspaceAt(
+    home_path: string[],
+    { choose = true, allowLarge = false }: { choose?: boolean; allowLarge?: boolean } = {},
+  ): Promise<WorkspaceInfo> {
+    const workspace = await this.#opened().addWorkspaceAt(home_path, { allowLarge });
     if (choose) this.chooseWorkspace(workspace.workspace_id);
     return workspace;
   }

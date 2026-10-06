@@ -691,6 +691,9 @@ pub struct WorkspaceAddParams {
     /// Folder names under the host user's home directory (`workspace.browse`).
     #[serde(default)]
     pub home_path: Option<Vec<String>>,
+    /// Confirmed by the user after a `large_folder` refusal.
+    #[serde(default)]
+    pub allow_large: bool,
 }
 
 pub async fn workspace_add(
@@ -725,7 +728,9 @@ pub async fn workspace_add(
             ))
         }
     };
-    Ok(Json(workspace::add(&state.db, &state.emitter, &path).await?))
+    Ok(Json(
+        workspace::add(&state.db, &state.emitter, &path, p.allow_large).await?,
+    ))
 }
 
 #[derive(Deserialize)]
