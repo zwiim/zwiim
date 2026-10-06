@@ -6,6 +6,42 @@ its text becomes the release notes and the `notes` of `release.json`
 this order; write "None." under one with nothing to say. Mobile store builds
 have their own versions and are listed under Compatibility.
 
+## [0.1.0-rc.6] - 2026-10-06
+
+### Added
+- Adding a plain folder (not a Git repository) as a workspace turns it into one: the Host runs `git init -b main`, writes a basic `.gitignore` if there is none, and commits everything as "Initial Commit", so every workspace can have branches and worktrees. Folders over 5,000 files or 500 MiB ask first, showing the file count and size. Plain folders added before this release are turned into repositories when the Host starts.
+- File changes in a session open the changed file: the whole current file, with its uncommitted changes marked and unchanged stretches folded. Desktop has Unified and Split views; both apps have Copy and a Markdown preview.
+- Every turn ends with a row showing its duration, the time it finished, and the files it changed.
+
+### Changed
+- Removing a worktree no longer stops at "terminal open": the Host closes the worktree's terminals itself. A running agent still has to be stopped first.
+
+### Fixed
+- None.
+
+### Security
+- None.
+
+### Compatibility
+- Protocol `zwiim/1`, revision 1; clients from revision 1. New error: `large_folder`, answered by retrying `workspace.add` with `allow_large`.
+- Mobile: Android app 0.1.0 (version code 1) as `com.zwiim.mobile`, installed from the APK. iOS 0.1.0 (build 1) for TestFlight testers. The file viewer's Copy needs a mobile build that includes `expo-clipboard`.
+
+### Provider changes
+- None. Claude adapter 0.81.2, Codex adapter 1.13.1.
+
+### Migration notes
+- None. Coming from 0.1.0-rc.4 or earlier, follow the migration notes of 0.1.0-rc.5 first.
+
+### Known limitations
+- macOS on Apple Silicon only.
+- Only the stable channel is offered as an update.
+- Updates apply when you restart the Host (Desktop → About & updates, or Update Host on Mobile).
+- The Android app is not updated automatically: install each new APK by hand.
+- Keeping the Mac awake cannot stop sleep when a MacBook's lid is closed, unless it is on power with an external display.
+- Agent sign-in and API keys are managed on the Mac running the Host; a remote Desktop shows their status only.
+- Pull requests and Continue need the GitHub CLI (`gh`) installed and signed in on the Mac running the Host.
+- Slash commands in a terminal card were checked with Codex; Claude Code's path has not been checked by hand yet.
+
 ## [0.1.0-rc.5] - 2026-10-05
 
 ### Added
