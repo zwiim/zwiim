@@ -915,10 +915,11 @@ pub async fn create_worktree(
 /// Remove managed worktree workspace `workspace_id`.
 ///
 /// Holds the workspace's gate exclusively, so no agent or terminal can start
-/// there meanwhile, and refuses with `workspace_busy` while any agent or
-/// terminal is running in it — `force` never overrides that. Without `force`
-/// a checkout with uncommitted changes is refused with `workspace_dirty`;
-/// with it they are discarded. A to-do task working there also blocks it.
+/// there meanwhile, and refuses with `workspace_busy` while any agent is
+/// running in it — `force` never overrides that. Without `force` a checkout
+/// with uncommitted changes is refused with `workspace_dirty`; with it they
+/// are discarded. A to-do task working there also blocks it. Terminals never
+/// block: once nothing refuses, every terminal running there is killed.
 /// Then the checkout is removed and the folder converges without moving its
 /// sessions: they stay on the (soft-deleted) workspace, readable under the
 /// same `workspace_id`, and can never resume in another checkout. Tabs close,
@@ -955,16 +956,11 @@ pub async fn remove_worktree(
     let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
     let spellings = [path.as_path(), canonical.as_path()];
     let live_agents = connections.live_in_folder(wt.id, &spellings).await;
-    let live_terminals = terminals.count_live_under_dir(&spellings, Some(emitter));
-    if !live_agents.is_empty() || live_terminals > 0 {
+    if !live_agents.is_empty() {
         // Name the sessions whose agents run there, so a client can offer to
         // stop them; an agent not bound to a session yet is only counted.
         let session_ids = session_ids_of(&db.conn, &live_agents).await?;
-        return Err(ZwiimError::workspace_busy(
-            live_agents.len(),
-            live_terminals,
-            session_ids,
-        ));
+        return Err(ZwiimError::workspace_busy(live_agents.len(), 0, session_ids));
     }
 
     let busy =
@@ -984,6 +980,7 @@ pub async fn remove_worktree(
         }
     }
 
+    terminals.kill_under_dir(&spellings);
     folders::remove_worktree_checkout(&root.path, &wt.path, force).await?;
     folders::converge_removed_worktree_folder(db, emitter, wt.id, None, &wt.path).await;
     let kept_sessions = conversation::Entity::find()
@@ -1806,7 +1803,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn running_agent_or_terminal_blocks_removal_even_with_force() {
+    async fn running_agent_blocks_removal_even_with_force_terminals_are_killed() {
         let db = fresh_in_memory_db().await;
         let (_dir, _repo, root_wid, worktrees) = root_repo(&db).await;
         let emitter = EventEmitter::Noop;
@@ -1846,27 +1843,10 @@ mod tests {
         assert!(Path::new(&wt.path).exists());
         assert!(resolve(&db.conn, &wt.workspace_id).await.is_ok());
 
-        // A live terminal started inside the worktree.
+        // A live terminal started inside the worktree never blocks: the
+        // removal kills it.
         let terminals = TerminalManager::new();
         spawn_terminal(&terminals, "term-wt", &wt.path);
-        let err = remove_worktree(
-            &db,
-            &emitter,
-            &idle_agents,
-            &terminals,
-            &wt.workspace_id,
-            true,
-        )
-        .await
-        .expect_err("terminal guard");
-        assert_eq!(err.code, "workspace_busy");
-        assert_eq!(
-            details(&err),
-            serde_json::json!({ "live_sessions": 0, "terminals": 1, "session_ids": [] })
-        );
-        assert!(Path::new(&wt.path).exists());
-
-        terminals.kill("term-wt").unwrap();
         remove_worktree(
             &db,
             &emitter,
@@ -1876,11 +1856,16 @@ mod tests {
             false,
         )
         .await
-        .expect("removal once nothing runs there");
+        .expect("removal kills the terminal");
+        assert!(!Path::new(&wt.path).exists());
+        assert!(matches!(
+            terminals.kill("term-wt"),
+            Err(crate::terminal::error::TerminalError::NotFound(_))
+        ));
     }
 
     #[tokio::test]
-    async fn stopping_the_named_sessions_unblocks_removal_and_nothing_else_does() {
+    async fn stopping_the_named_sessions_unblocks_removal() {
         let db = fresh_in_memory_db().await;
         let (_dir, _repo, root_wid, worktrees) = root_repo(&db).await;
         let emitter = EventEmitter::Noop;
@@ -1929,14 +1914,8 @@ mod tests {
             (1, 0, vec![sessions[1].clone()])
         );
 
-        // Both stopped, but a terminal still runs there.
+        // Both stopped: removal goes through, sessions kept.
         crate::session::stop(&db, &agents, &sessions[1]).await.unwrap();
-        spawn_terminal(&terminals, "term-left", &wt.path);
-        assert_eq!(busy(remove(true).await.unwrap_err()), (0, 1, vec![]));
-        assert!(Path::new(&wt.path).exists());
-
-        // Nothing left running: removal goes through, sessions kept.
-        terminals.kill("term-left").unwrap();
         let removed = remove(false).await.expect("removal once all are stopped");
         assert_eq!(removed.kept_sessions, 2);
         assert!(!Path::new(&wt.path).exists());

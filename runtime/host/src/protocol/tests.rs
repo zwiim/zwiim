@@ -1563,7 +1563,7 @@ async fn worktree_create_diff_and_guarded_removal() {
     );
     assert!(!std::path::Path::new(&h.root).join("new.txt").exists());
 
-    // Busy: a live agent and an open terminal block removal, even forced.
+    // Busy: a live agent blocks removal, even forced; an open terminal never does.
     let row = crate::workspace::resolve(&h.state.db.conn, &wt_id)
         .await
         .unwrap();
@@ -1598,25 +1598,22 @@ async fn worktree_create_diff_and_guarded_removal() {
             (
                 StatusCode::CONFLICT,
                 "workspace_busy".into(),
-                Some(json!({"live_sessions": 1, "terminals": 1, "session_ids": [sid]}))
+                Some(json!({"live_sessions": 1, "terminals": 0, "session_ids": [sid]}))
             ),
             "force={force}"
         );
     }
-    // Stopping the named session's agent leaves the terminal blocking.
     h.ok("session.stop", json!({"session_id": sid})).await;
-    assert_eq!(
-        h.err_details(
-            "workspace.remove_worktree",
-            json!({"workspace_id": wt_id, "force": true})
-        )
-        .await
-        .2,
-        Some(json!({"live_sessions": 0, "terminals": 1, "session_ids": []}))
-    );
-    h.ok("terminal.kill", json!({"terminal_id": tid})).await;
+    let terminal_ids = |list: Value| -> Vec<Value> {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["terminal_id"].clone())
+            .collect()
+    };
 
     // Dirty: refused without force, discarded with it; the branch stays.
+    // A refused removal leaves the terminal running; a removal kills it.
     assert_eq!(
         h.err_details("workspace.remove_worktree", json!({"workspace_id": wt_id}))
             .await,
@@ -1626,6 +1623,7 @@ async fn worktree_create_diff_and_guarded_removal() {
             Some(json!({"changes": 1}))
         )
     );
+    assert!(terminal_ids(h.ok("terminal.list", json!({})).await).contains(&tid));
     let removed = h
         .ok(
             "workspace.remove_worktree",
@@ -1636,6 +1634,7 @@ async fn worktree_create_diff_and_guarded_removal() {
         removed,
         json!({"workspace_id": wt_id, "parent_workspace_id": wid, "kept_sessions": 1})
     );
+    assert!(!terminal_ids(h.ok("terminal.list", json!({})).await).contains(&tid));
     assert!(!std::path::Path::new(&row.path).exists());
     let branches = std::process::Command::new("git")
         .args(["branch", "--list", &branch])

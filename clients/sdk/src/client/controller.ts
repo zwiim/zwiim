@@ -188,9 +188,9 @@ export class HostController {
   }
 
   /**
-   * Remove a worktree. The host refuses with `workspace_busy` while agents or
-   * terminals run in it, and with `workspace_dirty` for uncommitted changes
-   * unless `force`. The host feed then updates the tree: a removed worktree
+   * Remove a worktree. The host refuses with `workspace_busy` while agents run
+   * in it, and with `workspace_dirty` for uncommitted changes unless `force`;
+   * it kills the worktree's terminals itself. The host feed then updates the tree: a removed worktree
    * that keeps sessions stays listed as `removed`.
    */
   async removeWorktree(workspace_id: string, opts: { force?: boolean } = {}): Promise<WorktreeRemoved> {

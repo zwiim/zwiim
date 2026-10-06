@@ -599,35 +599,27 @@ impl TerminalManager {
         live
     }
 
-    /// How many still-running terminals were started inside any of `dirs`
-    /// (one directory's path spellings, itself or any descendant). Each
-    /// terminal counts once. Exited terminals are reaped first, like
-    /// [`Self::count_live_by_owner_window`].
-    pub fn count_live_under_dir(
-        &self,
-        dirs: &[&std::path::Path],
-        emitter: Option<&EventEmitter>,
-    ) -> usize {
-        let mut terminals = self.terminals.lock().unwrap();
-        let exited_terminal_ids = Self::reap_exited(&mut terminals);
-
-        let live = terminals
-            .values()
-            .filter(|instance| {
-                let wd = std::path::Path::new(&instance.working_dir);
-                dirs.iter().any(|dir| wd.starts_with(dir))
-            })
-            .count();
-
-        drop(terminals);
-
-        if let Some(emitter) = emitter {
-            for terminal_id in exited_terminal_ids {
-                emit_terminal_exit_event(emitter, &terminal_id);
-            }
+    /// Kill every terminal started inside any of `dirs` (one directory's path
+    /// spellings, itself or any descendant) and return how many there were.
+    /// Each terminal's reader thread announces its exit once the PTY closes.
+    pub fn kill_under_dir(&self, dirs: &[&std::path::Path]) -> usize {
+        let mut instances: Vec<TerminalInstance> = {
+            let mut terminals = self.terminals.lock().unwrap();
+            let ids: Vec<String> = terminals
+                .iter()
+                .filter(|(_, instance)| {
+                    let wd = std::path::Path::new(&instance.working_dir);
+                    dirs.iter().any(|dir| wd.starts_with(dir))
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.iter().filter_map(|id| terminals.remove(id)).collect()
+        };
+        let killed = instances.len();
+        for instance in &mut instances {
+            terminate_terminal(instance);
         }
-
-        live
+        killed
     }
 
     pub fn kill_by_owner_window(&self, owner_window_label: &str) -> usize {

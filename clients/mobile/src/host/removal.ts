@@ -1,6 +1,6 @@
 // Removing a worktree from the phone. The Host decides whether it is safe:
-// it refuses while agents or terminals run there (`workspace_busy`, naming
-// the sessions whose agents run there; `force` never overrides it) and, unless
+// it refuses while agents run there (`workspace_busy`, naming the sessions
+// whose agents run there; `force` never overrides it; terminals it kills) and, unless
 // forced, while the checkout has uncommitted changes (`workspace_dirty`).
 // Each answer becomes the next step shown; stopping the named agents asks the
 // Host again only once every stop succeeded.
