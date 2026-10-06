@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  clockTime,
   HostClient,
   HostController,
   ZwiimClientError,
@@ -8,7 +9,7 @@ import {
   type HistoryTurn,
   type SessionSnapshot,
 } from "@zwiim/sdk";
-import { FileLinksContext, linkText, Markdown, workspaceFile } from "@/components/Markdown";
+import { FileLinksContext, linkText, Markdown, workspaceFile, type FileLinks } from "@/components/Markdown";
 import { errorMessage, HostProvider } from "@/lib/host-context";
 import { RequestCard } from "@/panels/RequestCard";
 import { SessionPanel } from "@/panels/SessionPanel";
@@ -40,14 +41,15 @@ const snapshot = (extra: Partial<SessionSnapshot> = {}): SessionSnapshot => ({
   ...extra,
 });
 
-async function openSession(t: FakeTransport) {
+async function openSession(t: FakeTransport, links?: FileLinks) {
   const client = new HostClient({ transport: t });
   const controller = new HostController(client);
   client.start();
   await tick();
+  const panel = <SessionPanel workspaceId="w1" sessionId="s1" onSessionStarted={() => {}} />;
   render(
     <HostProvider value={controller}>
-      <SessionPanel workspaceId="w1" sessionId="s1" onSessionStarted={() => {}} />
+      {links ? <FileLinksContext.Provider value={links}>{panel}</FileLinksContext.Provider> : panel}
     </HostProvider>,
   );
   await tick();
@@ -451,6 +453,103 @@ describe("transcript", () => {
   });
 });
 
+describe("changed files", () => {
+  const workspace = {
+    workspace_id: "w1",
+    name: "a9b70af5",
+    alias: null,
+    kind: "worktree",
+    parent_workspace_id: "root",
+    is_git_repo: true,
+    branch: "zwiim/a9b70af5",
+    base_branch: "main",
+    base_commit: null,
+    removed: false,
+    display_path: null,
+  } as const;
+  const links = () => ({ workspace, open: vi.fn(), openDiff: vi.fn() });
+  const edit = (id: string, path: string, old = "a", next = "b"): HistoryTurn["blocks"] => [
+    { type: "tool_call", tool_call_id: id, title: "Edit", input_preview: JSON.stringify({ file_path: path, old_string: old, new_string: next }), status: null },
+  ];
+  const at = (t: HistoryTurn, timestamp: string, completed_at: string | null = null): HistoryTurn => ({ ...t, timestamp, completed_at });
+  const history = (turns: HistoryTurn[]) => (p: { session_id: string }) => ({ session_id: p.session_id, turns });
+
+  it("opens an edited file whole from its chip; a file outside the workspace stays inert", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.history"] = history([
+      turn("t1", "assistant", [
+        ...edit("c1", "/Users/me/zwiim/worktrees/zwiim/a9b70af5/src/a.ts"),
+        ...edit("c2", "/etc/hosts"),
+        { type: "tool_call", tool_call_id: "c3", title: "apply_patch", input_preview: "*** Begin Patch\n*** Update File: src/b.ts\n@@\n-x\n+y\n*** Update File: src/c.ts\n@@\n-x\n+y\n*** End Patch", status: null },
+      ]),
+    ]);
+    const l = links();
+    const { controller } = await openSession(t, l);
+    const [inside, outside, several] = screen.getAllByTestId("tool-call");
+    fireEvent.click(within(inside!).getByRole("button", { name: "a.ts" }));
+    expect(l.openDiff).toHaveBeenCalledWith("src/a.ts");
+    expect(screen.queryByTestId("hover-card")).toBeNull();
+
+    // Outside the workspace the chip only shows the change.
+    fireEvent.click(within(outside!).getByRole("button", { name: "hosts" }));
+    expect(l.openDiff).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("hover-card")).toBeTruthy();
+    fireEvent.click(within(outside!).getByRole("button", { name: "hosts" }));
+
+    // Several files: the chip shows them all, and each one opens.
+    fireEvent.click(within(several!).getByRole("button", { name: /2 files/ }));
+    fireEvent.click(within(screen.getByTestId("hover-card")).getByRole("button", { name: /src\/c\.ts/ }));
+    expect(l.openDiff).toHaveBeenLastCalledWith("src/c.ts");
+    controller.dispose();
+  });
+
+  it("ends each turn with its time and files, two at a time", async () => {
+    const t = new FakeTransport();
+    const files = ["a", "b", "c", "d", "e"].map((n, i) => edit(`c${i}`, `src/${n}.ts`)).flat();
+    t.handlers["session.history"] = history([
+      at(turn("u1", "user", [{ type: "text", text: "go" }]), "2026-10-06T06:32:00Z"),
+      at(turn("a1", "assistant", files), "2026-10-06T06:33:00Z", "2026-10-06T06:41:31Z"),
+      at(turn("u2", "user", [{ type: "text", text: "thanks" }]), "2026-10-06T06:42:00Z"),
+      at(turn("a2", "assistant", [{ type: "text", text: "ok" }]), "2026-10-06T06:42:05Z", "2026-10-06T06:42:12Z"),
+    ]);
+    const l = links();
+    const { controller } = await openSession(t, l);
+    const [first, second] = screen.getAllByTestId("turn-footer");
+    expect(within(first!).getByTestId("turn-time").textContent).toBe(`9m 31s · ${clockTime("2026-10-06T06:41:31Z")}`);
+    const names = () => within(first!).queryAllByTestId("turn-file").map((f) => f.textContent);
+    expect(names()).toEqual(["a.ts+1−1", "b.ts+1−1"]);
+    const more = within(first!).getByRole("button", { name: /\+3 more/ });
+    expect(more.textContent).toBe("+3 more+3−3");
+    fireEvent.click(more);
+    expect(names()).toHaveLength(4);
+    fireEvent.click(within(first!).getByRole("button", { name: /\+1 more/ }));
+    expect(names()).toHaveLength(5);
+    fireEvent.click(within(first!).getByRole("button", { name: "Show less" }));
+    expect(names()).toHaveLength(2);
+    fireEvent.click(within(first!).getAllByTestId("turn-file")[1]!);
+    expect(l.openDiff).toHaveBeenCalledWith("src/b.ts");
+
+    // A turn that changed nothing shows only its time.
+    expect(within(second!).getByTestId("turn-time").textContent).toBe(`12s · ${clockTime("2026-10-06T06:42:12Z")}`);
+    expect(within(second!).queryAllByTestId("turn-file")).toHaveLength(0);
+    expect(within(second!).queryByRole("button")).toBeNull();
+    controller.dispose();
+  });
+
+  it("has no row yet for the turn the agent is still answering", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.history"] = history([
+      at(turn("u1", "user", [{ type: "text", text: "go" }]), "2026-10-06T06:32:00Z"),
+      at(turn("a1", "assistant", edit("c1", "src/a.ts")), "2026-10-06T06:33:00Z", "2026-10-06T06:34:00Z"),
+    ]);
+    const { controller, frame } = await openSession(t, links());
+    expect(screen.getAllByTestId("turn-footer")).toHaveLength(1);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+    expect(screen.queryByTestId("turn-footer")).toBeNull();
+    controller.dispose();
+  });
+});
+
 describe("links", () => {
   it("shortens bare web addresses only", () => {
     expect(linkText("https://github.com/a/b/", "https://github.com/a/b/")).toBe("github.com/a/b");
@@ -520,7 +619,7 @@ describe("file links", () => {
   it("opens a workspace file beside the conversation; other files stay inert", () => {
     const open = vi.fn();
     render(
-      <FileLinksContext.Provider value={{ workspace: worktree, open }}>
+      <FileLinksContext.Provider value={{ workspace: worktree, open, openDiff: vi.fn() }}>
         <Markdown
           text={"[x.md](/Users/me/zwiim/worktrees/zwiim/a9b70af5/docs/x.md) and [y](/etc/passwd)"}
         />

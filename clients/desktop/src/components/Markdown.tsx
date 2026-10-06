@@ -2,7 +2,7 @@ import { createContext, useContext } from "react";
 import { ArrowUpRight } from "lucide-react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { WorkspaceInfo } from "@zwiim/sdk";
+import { workspaceFile, type WorkspaceInfo } from "@zwiim/sdk";
 import { isOpenableLink, openLink } from "@/lib/bridge";
 import { cn } from "@/lib/utils";
 
@@ -17,38 +17,13 @@ export function linkText(href: string | undefined, children: React.ReactNode): R
 export interface FileLinks {
   workspace: WorkspaceInfo;
   open(path: string): void;
+  /** Opens a file with its uncommitted changes marked. */
+  openDiff(path: string): void;
 }
 
 export const FileLinksContext = createContext<FileLinks | null>(null);
 
-/**
- * The workspace file a link points at, relative to the workspace, or null.
- * Agents link files relative to the workspace or by their absolute path; the
- * host never shares its paths, so an absolute one resolves only past the
- * workspace's own folder (a root's home-relative path when known, else its
- * folder name). A line suffix (`:12`, `#L12`) is dropped.
- */
-export function workspaceFile(href: string | undefined, workspace: WorkspaceInfo): string | null {
-  if (!href || (/^[a-z][a-z0-9+.-]*:/i.test(href) && !/^file:/i.test(href))) return null;
-  let path: string;
-  try {
-    path = decodeURIComponent(href.replace(/^file:\/\//i, ""));
-  } catch {
-    return null;
-  }
-  path = path.replace(/#.*$/, "").replace(/(:\d+)+$/, "");
-  const segments = path.split("/").filter((s) => s !== "" && s !== ".");
-  if (segments.includes("..")) return null;
-  let rest = segments;
-  if (path.startsWith("/") || path.startsWith("~")) {
-    const home = workspace.display_path?.split("/").slice(1) ?? [];
-    const anchor = home.length > 0 ? home : [workspace.name];
-    const at = segments.findIndex((_, i) => anchor.every((a, j) => segments[i + j] === a));
-    if (at < 0) return null;
-    rest = segments.slice(at + anchor.length);
-  }
-  return rest.length > 0 ? rest.join("/") : null;
-}
+export { workspaceFile };
 
 // Agent text is untrusted: raw HTML is never rendered (react-markdown's
 // default), remote images are not fetched, web and mail links open in the

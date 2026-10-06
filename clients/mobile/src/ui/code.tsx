@@ -3,9 +3,11 @@
 // line by line, and scroll sideways instead of wrapping unless asked.
 
 import { forwardRef, useState, type ReactElement, type Ref } from "react";
-import { FlatList, ScrollView, StyleSheet, Text, View, type FlatListProps } from "react-native";
-import { highlight, hunkLabel, type DiffHunk, type DiffLine, type SyntaxKind } from "../files/model";
+import { FlatList, Pressable, ScrollView, StyleSheet, Text, View, type FlatListProps } from "react-native";
+import { fileSegments, revealStep, type FileLine } from "@zwiim/sdk";
+import { highlight, type SyntaxKind } from "../files/model";
 import { T } from "./components";
+import { ChevronsUpDown, Icon } from "./icons";
 import { MONO_MAX_SCALE, space, type, useTheme, type Palette } from "./tokens";
 
 type MonoVariant = "mono" | "term";
@@ -108,46 +110,67 @@ export function CodeView({ lines, wrap, ext, footer }: { lines: string[]; wrap: 
   );
 }
 
-type DiffRow = { key: string; hunk: string } | { key: string; line: DiffLine };
+type FileRow = { key: string; fold: { at: number; count: number } } | { key: string; line: FileLine };
 
-/** A file's patch: unified, hunk by hunk, each hunk placed by line, one line number in `faint`. */
-export function DiffView({ hunks, footer }: { hunks: DiffHunk[]; footer?: ReactElement | null }) {
+/**
+ * A whole file with its changes marked, one column: unchanged stretches fold
+ * behind bars that open on tap. `opened` maps a fold's first line to how many
+ * of its lines are shown.
+ */
+export function FileChangeView({
+  lines,
+  opened,
+  onReveal,
+  header,
+}: {
+  lines: readonly FileLine[];
+  opened: Readonly<Record<number, number>>;
+  onReveal(at: number, more: number): void;
+  header?: ReactElement | null;
+}) {
   const theme = useTheme();
   const [cw, probe] = useCharWidth("mono");
-  const rows: DiffRow[] = hunks.flatMap((h, i) => [
-    { key: `h${i}`, hunk: hunkLabel(h.header) },
-    ...h.lines.map((line, j) => ({ key: `h${i}:${j}`, line })),
-  ]);
-  const most = hunks.reduce((n, h) => h.lines.reduce((m, l) => Math.max(m, l.old ?? 0, l.new ?? 0), n), 0);
+  const rows: FileRow[] = fileSegments(lines, opened).flatMap((s): FileRow[] =>
+    s.kind === "fold"
+      ? [{ key: `f${s.at}`, fold: { at: s.at, count: s.count } }]
+      : lines.slice(s.from, s.to).map((line, i) => ({ key: `l${s.from + i}`, line })),
+  );
+  const most = lines.reduce((n, l) => Math.max(n, l.old ?? 0, l.new ?? 0), 0);
   const num = String(most).length * cw + space.md + space.sm;
   const sign = cw * 2;
-  const longest = rows.reduce((n, r) => Math.max(n, "hunk" in r ? r.hunk.length : r.line.text.length), 0);
-  const width = num + sign + longest * cw + space.lg;
+  const longest = lines.reduce((n, l) => Math.max(n, l.text.length), 0);
   const look = {
     add: { color: theme.done, bg: `${theme.done}1C`, sign: "+" },
     del: { color: theme.err, bg: `${theme.err}1C`, sign: "−" },
     ctx: { color: theme.fg, bg: "transparent", sign: "" },
-    note: { color: theme.faint, bg: "transparent", sign: "" },
   };
   return (
-    <View style={[styles.flex, { backgroundColor: theme.code }]} testID="diff-view">
+    <View style={[styles.flex, { backgroundColor: theme.code }]} testID="file-changes">
       {probe}
       <WideList
         data={rows}
-        width={width}
+        width={num + sign + longest * cw + space.lg}
         keyExtractor={(r) => r.key}
         initialNumToRender={60}
         windowSize={9}
         contentContainerStyle={styles.diffContent}
-        ListFooterComponent={footer}
+        ListHeaderComponent={header}
         renderItem={({ item }) => {
-          if ("hunk" in item) {
+          if ("fold" in item) {
+            const { at, count } = item.fold;
             return (
-              <View style={[styles.hunk, { backgroundColor: theme.surface }]}>
-                <T variant="monoSm" color={theme.mut} numberOfLines={1}>
-                  {item.hunk}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Show ${count} unmodified ${count === 1 ? "line" : "lines"}`}
+                onPress={() => onReveal(at, revealStep(count))}
+                style={({ pressed }) => [styles.fold, { backgroundColor: pressed ? theme.raised : theme.surface }]}
+                testID="fold"
+              >
+                <Icon icon={ChevronsUpDown} color={theme.mut} size={14} />
+                <T variant="monoSm" color={theme.mut} style={styles.tabular}>
+                  {count} unmodified {count === 1 ? "line" : "lines"}
                 </T>
-              </View>
+              </Pressable>
             );
           }
           const { line } = item;
@@ -155,14 +178,12 @@ export function DiffView({ hunks, footer }: { hunks: DiffHunk[]; footer?: ReactE
           return (
             <View style={[styles.codeLine, styles.diffLine, { backgroundColor: l.bg }]}>
               <T variant="mono" color={theme.faint} style={[styles.tabular, styles.num, { width: num }]}>
-                {line.kind === "del" ? line.old : line.new ?? ""}
+                {line.kind === "del" ? line.old : line.new}
               </T>
               <T variant="mono" color={l.color} style={[styles.sign, { width: sign }]}>
                 {l.sign}
               </T>
-              <T variant="mono" color={line.kind === "note" ? theme.faint : theme.fg}>
-                {line.text || " "}
-              </T>
+              <T variant="mono">{line.text || " "}</T>
             </View>
           );
         }}
@@ -183,5 +204,5 @@ const styles = StyleSheet.create({
   num: { textAlign: "right", paddingRight: space.sm },
   gutter: { textAlign: "right", paddingRight: space.md },
   sign: { textAlign: "center" },
-  hunk: { paddingVertical: space.sm, paddingHorizontal: space.lg },
+  fold: { minHeight: 36, flexDirection: "row", alignItems: "center", gap: space.sm, paddingHorizontal: space.lg },
 });

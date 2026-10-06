@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useContext, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowRightLeft,
@@ -23,8 +23,19 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import type { HistoryBlock, HistoryTurn, LiveTurn, ToolCall, ToolCallStatus } from "@zwiim/sdk";
-import { Markdown } from "@/components/Markdown";
+import {
+  clockTime,
+  turnDuration,
+  workspaceFile,
+  type ChangedFile,
+  type HistoryBlock,
+  type HistoryTurn,
+  type LiveTurn,
+  type ToolCall,
+  type ToolCallStatus,
+  type TurnGroup,
+} from "@zwiim/sdk";
+import { FileLinksContext, Markdown } from "@/components/Markdown";
 import { basename, parseUnifiedDiff, type FileDiff } from "@/lib/diff";
 import { historyTool, liveTool, type ToolSummary } from "@/lib/tools";
 import { cn } from "@/lib/utils";
@@ -158,35 +169,57 @@ function CommandCard({ command, output, error }: { command: string; output: stri
   );
 }
 
-function Counts({ diffs }: { diffs: FileDiff[] }) {
+function Counts({
+  diffs,
+  testId = "diff-counts",
+}: {
+  diffs: readonly { added: number; removed: number }[];
+  testId?: string;
+}) {
   const added = diffs.reduce((n, d) => n + d.added, 0);
   const removed = diffs.reduce((n, d) => n + d.removed, 0);
   return (
-    <span className="flex shrink-0 gap-1 font-mono text-xs" data-testid="diff-counts">
+    <span className="flex shrink-0 gap-1 font-mono text-xs" data-testid={testId}>
       <span className="text-emerald-700 dark:text-emerald-400">+{added}</span>
       <span className="text-red-700 dark:text-red-400">−{removed}</span>
     </span>
   );
 }
 
-/** One file's change: its path, then its lines with their numbers when known. */
-function DiffCard({ diff }: { diff: FileDiff }) {
+/**
+ * One file's change: its path, then its lines with their numbers when known.
+ * With `onOpen`, the path opens the whole file.
+ */
+function DiffCard({ diff, onOpen }: { diff: FileDiff; onOpen?: () => void }) {
   const numbered = diff.lines.some((l) => l.old !== undefined || l.new !== undefined);
   const gutter = "text-muted-foreground/70 w-9 shrink-0 pr-2 text-right select-none";
+  const header = "bg-card border-border sticky top-0 z-10 flex w-full items-center gap-2 border-b px-3 py-2 text-left";
+  const path = diff.path && (
+    <>
+      <FileText className="text-muted-foreground size-3.5 shrink-0" />
+      <span className="min-w-0 truncate">{diff.path}</span>
+      <span className="ml-auto">
+        <Counts diffs={[diff]} />
+      </span>
+    </>
+  );
   return (
     <div className="font-mono text-xs" data-testid="diff">
-      {diff.path && (
-        <div
-          className="bg-card border-border sticky top-0 z-10 flex items-center gap-2 border-b px-3 py-2"
-          title={diff.path}
-        >
-          <FileText className="text-muted-foreground size-3.5 shrink-0" />
-          <span className="min-w-0 truncate">{diff.path}</span>
-          <span className="ml-auto">
-            <Counts diffs={[diff]} />
-          </span>
-        </div>
-      )}
+      {path &&
+        (onOpen ? (
+          <button
+            type="button"
+            className={cn(header, "hover:bg-muted cursor-pointer transition-colors")}
+            title={`Open ${diff.path}`}
+            onClick={onOpen}
+          >
+            {path}
+          </button>
+        ) : (
+          <div className={header} title={diff.path ?? undefined}>
+            {path}
+          </div>
+        ))}
       <div className="bg-code py-1 leading-5">
         {diff.lines.map((l, i) =>
           l.kind === "hunk" ? (
@@ -238,11 +271,14 @@ function HoverCard({
   children,
   className,
   title,
+  onActivate,
 }: {
   card: React.ReactNode;
   children: React.ReactNode;
   className?: string;
   title?: string;
+  /** What a click does instead of pinning the card open. */
+  onActivate?: () => void;
 }) {
   const anchor = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
@@ -325,7 +361,13 @@ function HoverCard({
       // Focus from the keyboard opens it; a click's focus is the click's to decide.
       onFocus={(e) => e.target.matches(":focus-visible") && show()}
       onBlur={() => !pointer.current && hide()}
-      onClick={() => (rect ? hide() : show())}
+      onClick={() => {
+        if (onActivate) {
+          hide();
+          onActivate();
+        } else if (rect) hide();
+        else show();
+      }}
       aria-describedby={rect ? id : undefined}
     >
       {children}
@@ -375,6 +417,12 @@ export function ToolCallView(props: {
   const input = props.tool.input?.trim() === target ? null : props.tool.input;
   const Icon = VERB_ICONS[verb] ?? Wrench;
   const label = diffs && diffs.length > 1 ? `${diffs.length} files` : path ? basename(path) : target;
+  // A file inside the workspace opens whole; several open from the card.
+  const links = useContext(FileLinksContext);
+  const opener = (p: string | null) => {
+    const file = links && workspaceFile(p, links.workspace);
+    return file ? () => links.openDiff(file) : undefined;
+  };
   const title = diffs && diffs.length > 1 ? diffs.map((d) => d.path).join("\n") : (path ?? target);
 
   let details: React.ReactNode = null;
@@ -400,10 +448,11 @@ export function ToolCallView(props: {
               <HoverCard
                 className={cn(chip, "hover:bg-accent hover:text-foreground cursor-pointer transition-colors")}
                 title={title}
+                onActivate={diffs.length === 1 ? opener(diffs[0]!.path) : undefined}
                 card={
                   <>
                     {diffs.map((d, i) => (
-                      <DiffCard key={i} diff={d} />
+                      <DiffCard key={i} diff={d} onOpen={opener(d.path)} />
                     ))}
                     {failed && output && <Output text={output} error />}
                   </>
@@ -559,6 +608,77 @@ export function LiveTurnView({ turn, streaming, animate }: { turn: LiveTurn; str
         </span>
       )}
     </div>
+  );
+}
+
+/** Files a turn's row shows at first, and how many more each click reveals. */
+const FOOTER_FILES = 2;
+
+/** Under a finished turn: how long it ran, when it ended, and the files it changed. */
+export function TurnFooter({ group }: { group: TurnGroup }) {
+  const [shown, setShown] = useState(FOOTER_FILES);
+  const time = [
+    group.durationMs !== null ? turnDuration(group.durationMs) : "",
+    group.completedAt ? clockTime(group.completedAt) : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const files = group.files;
+  const rest = files.slice(shown);
+  if (!time && files.length === 0) return null;
+  const more = "bg-muted hover:bg-accent hover:text-foreground flex items-center gap-1.5 rounded-md px-1.5 py-0.5 transition-colors";
+  return (
+    <div className="text-muted-foreground -mt-2 flex flex-wrap items-center gap-1.5 font-mono text-xs" data-testid="turn-footer">
+      {time && (
+        <span className="mr-1" data-testid="turn-time">
+          {time}
+        </span>
+      )}
+      {files.slice(0, shown).map((f) => (
+        <FileChip key={f.path} file={f} />
+      ))}
+      {rest.length > 0 ? (
+        <button type="button" className={more} onClick={() => setShown((n) => n + FOOTER_FILES)} title={rest.map((f) => f.path).join("\n")}>
+          +{rest.length} more
+          <Counts diffs={rest} testId="file-counts" />
+        </button>
+      ) : (
+        files.length > FOOTER_FILES && (
+          <button type="button" className={more} onClick={() => setShown(FOOTER_FILES)}>
+            Show less
+          </button>
+        )
+      )}
+    </div>
+  );
+}
+
+/** A file a turn changed; opens it whole when it is inside the workspace. */
+function FileChip({ file }: { file: ChangedFile }) {
+  const links = useContext(FileLinksContext);
+  const path = links && workspaceFile(file.path, links.workspace);
+  const chip = "bg-muted flex max-w-56 min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5";
+  const content = (
+    <>
+      <FileText className="size-3 shrink-0" />
+      <span className="text-foreground/90 min-w-0 truncate">{basename(file.path)}</span>
+      <Counts diffs={[file]} testId="file-counts" />
+    </>
+  );
+  return path ? (
+    <button
+      type="button"
+      className={cn(chip, "hover:bg-accent hover:text-foreground transition-colors")}
+      title={file.path}
+      onClick={() => links.openDiff(path)}
+      data-testid="turn-file"
+    >
+      {content}
+    </button>
+  ) : (
+    <span className={chip} title={file.path} data-testid="turn-file">
+      {content}
+    </span>
   );
 }
 

@@ -2,7 +2,7 @@
 // Edit…) and what it works on (a command, a path, a query). The same reading
 // as the mobile transcript (`clients/mobile/src/sessions/transcript.ts`).
 
-import { parseCodexPatch, textDiff, type FileDiff } from "@/lib/diff";
+import { editChanges, parseCodexPatch, type FileDiff } from "@/lib/diff";
 
 /** What a tool does, from the agent's kind for a live call. */
 const KIND_VERBS: Record<string, string> = {
@@ -90,30 +90,6 @@ const firstLine = (text: string) => text.trim().split("\n")[0]!.trim();
 
 const str = (v: unknown) => (typeof v === "string" ? v : null);
 
-/** What an Edit, MultiEdit or Write does to its file, from its input. */
-function inputChange(name: string, args: Record<string, unknown>): FileDiff | null {
-  const path = str(args.file_path);
-  switch (name.toLowerCase()) {
-    case "edit":
-      return str(args.old_string) !== null && str(args.new_string) !== null
-        ? textDiff(path, [{ old: str(args.old_string)!, new: str(args.new_string)! }])
-        : null;
-    case "multiedit": {
-      const edits = Array.isArray(args.edits) ? (args.edits as Record<string, unknown>[]) : [];
-      const changes = edits.flatMap((e) =>
-        str(e?.old_string) !== null && str(e?.new_string) !== null
-          ? [{ old: str(e.old_string)!, new: str(e.new_string)! }]
-          : [],
-      );
-      return changes.length > 0 ? textDiff(path, changes) : null;
-    }
-    case "write":
-      return str(args.content) !== null ? textDiff(path, [{ old: "", new: str(args.content)! }]) : null;
-    default:
-      return null;
-  }
-}
-
 /** The keys a change already shows. */
 const CHANGE_KEYS = new Set(["old_string", "new_string", "edits", "content", "replace_all"]);
 
@@ -166,8 +142,8 @@ export function historyTool(name: string, input: string | null): ToolSummary {
   const named = codexTarget(name, args);
   const target = firstLine(named ?? (key ? value(key)! : ""));
   const path = key && PATH_KEYS.has(key) ? value(key) : null;
-  const change = inputChange(name, args);
-  const changes = change ? [change] : null;
+  const changes = editChanges(name, input);
+  const change = changes?.[0] ?? null;
   const command = value("command") ?? value("cmd");
   if (command !== null) return { verb, target, input: command, path, changes };
   // A script reads in full; the rest of the input, one argument a line.

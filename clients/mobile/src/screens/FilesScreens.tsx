@@ -1,14 +1,15 @@
 // The screens pushed over the Files tab (DESIGN.md, Screen 6): the worktree's
 // changed files, a file read-only with its line numbers, and a changed file's
-// unified diff, stepping through the others. Each carries `workspace · worktree`
+// whole text with its changes marked, stepping through the others. Each carries `workspace · worktree`
 // under its title; back goes up one level. What the host won't show as text
 // (binary, too large, gone) says so.
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { NativeStackNavigationProp, NativeStackScreenProps } from "@react-navigation/native-stack";
-import { isClientError, type WorkspaceInfo } from "@zwiim/sdk";
+import * as Clipboard from "expo-clipboard";
+import { isClientError, isMarkdown, type WorkspaceInfo } from "@zwiim/sdk";
 import { useCurrentHost, useHostRead, useHostState, type Loaded } from "../app/hooks";
 import type { RootStack } from "../app/navigation";
 import {
@@ -20,16 +21,17 @@ import {
   fileProblem,
   notGitProblem,
   parentPath,
-  parsePatch,
   previewLines,
   syntaxOf,
   type ChangeItem,
 } from "../files/model";
+import { loadViewed, TOO_LARGE } from "../files/viewer";
 import { contextLabel, contextText, workspaceLabel } from "../host/workspace";
 import { currentHost } from "../services";
 import { Button, EmptyState, ScreenHeader, SkeletonRows, T } from "../ui/components";
-import { CodeView, DiffView } from "../ui/code";
-import { ChevronRight, Icon } from "../ui/icons";
+import { CodeView, FileChangeView } from "../ui/code";
+import { Markdown } from "../ui/markdown";
+import { Check, ChevronRight, Copy, Eye, Icon } from "../ui/icons";
 import { fonts, radius, space, useTheme, type Palette } from "../ui/tokens";
 import { useHostName } from "./HostFrame";
 
@@ -331,35 +333,67 @@ export function DiffScreen({ route, navigation }: NativeStackScreenProps<RootSta
   const { workspace, context } = useWorkspaceInfo(workspace_id);
   const back = useBack(navigation);
   const revision = useHostState().diffRevision[workspace_id] ?? 0;
-  const diff = useHostRead(`${workspace_id}:${path}:${revision}`, () =>
-    currentHost.request("git.diff", { workspace_id, file: path }),
+  const viewed = useHostRead(`${workspace_id}:${path}:${revision}`, () =>
+    loadViewed(
+      path,
+      currentHost.request("git.diff", { workspace_id, file: path }),
+      currentHost.request("files.read", { workspace_id, path }),
+    ),
   );
   const changes = useChanges(workspace);
-  const hunks = useMemo(() => (diff.data?.patch ? parsePatch(diff.data.patch) : []), [diff.data]);
-  const entry = diff.data?.files.find((f) => f.path === path) ?? null;
+  const [opened, setOpened] = useState<Record<number, number>>({});
+  const [preview, setPreview] = useState(false);
+  useEffect(() => {
+    setOpened({});
+    setPreview(false);
+  }, [path]);
+  const v = viewed.data;
+  const entry = v && v.kind !== "gone" ? v.file : null;
+  const content = v?.kind === "lines" ? v.content : null;
   const list = changes.data?.items ?? [];
   const index = list.findIndex((c) => c.path === path);
   const letter = list[index]?.letter ?? (entry ? changeLetter(entry) : null);
+  const canPreview = content !== null && isMarkdown(path);
+  const previewing = preview && canPreview;
   const step = (by: number) => {
     const next = list[index + by];
     if (next) navigation.setParams({ path: next.path });
   };
 
   let body;
-  if (diff.error) {
-    const p = fileProblem(diff.error, hostName, "changes");
+  if (viewed.error) {
+    const p = fileProblem(viewed.error, hostName, "changes");
     body = <EmptyState glyph="✕" title={p.title} body={p.body} action={<Button kind="secondary" label="Back" onPress={back} />} />;
-  } else if (!diff.data) body = <SkeletonRows />;
-  else if (entry?.binary) body = <EmptyState glyph="∅" title="Binary file" body="Its changes can't be shown as text." />;
-  else if (entry?.too_large || (entry && diff.data.patch === null)) {
-    body = <EmptyState glyph="∅" title="Too large to show" body={`Open the diff on ${hostName}.`} />;
-  } else if (!entry || hunks.length === 0) {
-    body = <EmptyState glyph="✓" title="No changes" body={`${baseName(path)} matches its last commit.`} />;
-  } else body = <DiffView hunks={hunks} />;
+  } else if (!v) body = <SkeletonRows />;
+  else if (v.kind === "binary") body = <EmptyState glyph="∅" title="Binary file" body="It can't be shown as text." />;
+  else if (v.kind === "too_large") body = <EmptyState glyph="∅" title={TOO_LARGE} body={`Open it on ${hostName}.`} />;
+  else if (v.kind === "gone") body = <EmptyState glyph="∅" title="This file is gone." body={`${baseName(path)} isn't on ${hostName} anymore.`} />;
+  else if (previewing) {
+    body = (
+      <ScrollView contentContainerStyle={styles.preview} testID="diff-preview">
+        <Markdown text={content} />
+      </ScrollView>
+    );
+  } else {
+    body = (
+      <FileChangeView
+        lines={v.lines}
+        opened={opened}
+        onReveal={(at, more) => setOpened((o) => ({ ...o, [at]: (o[at] ?? 0) + more }))}
+        header={
+          v.file ? null : (
+            <T variant="callout" color={theme.mut} style={styles.unchanged}>
+              No uncommitted changes — showing the file as it is now.
+            </T>
+          )
+        }
+      />
+    );
+  }
 
   return (
     <Page
-      surface={hunks.length ? "code" : undefined}
+      surface={v?.kind === "lines" && !previewing ? "code" : undefined}
       header={
         <ScreenHeader
           testID="diff"
@@ -384,18 +418,31 @@ export function DiffScreen({ route, navigation }: NativeStackScreenProps<RootSta
         />
       }
     >
-      {letter && entry ? (
+      {v && v.kind !== "gone" ? (
         <View style={[styles.diffStrip, { backgroundColor: theme.bg, borderBottomColor: theme.line }]}>
-          <View style={[styles.badge, { backgroundColor: theme.surface }]}>
-            <T variant="monoSm" color={letterColor(letter, theme)}>
-              {letter} · {changeName(letter)}
-            </T>
-          </View>
-          {entry.binary || entry.too_large ? null : (
+          {letter && entry ? (
+            <View style={[styles.badge, { backgroundColor: theme.surface }]}>
+              <T variant="monoSm" color={letterColor(letter, theme)}>
+                {letter} · {changeName(letter)}
+              </T>
+            </View>
+          ) : null}
+          {entry && !entry.binary && !entry.too_large ? (
             <View testID="diff-counts">
               <Counts additions={entry.additions ?? 0} deletions={entry.deletions ?? 0} />
             </View>
-          )}
+          ) : null}
+          <View style={styles.flex} />
+          {canPreview ? (
+            <StripButton
+              icon={Eye}
+              label="Preview"
+              active={previewing}
+              onPress={() => setPreview((p) => !p)}
+              testID="diff-preview-toggle"
+            />
+          ) : null}
+          <CopyButton content={content} />
         </View>
       ) : null}
       <View style={styles.flex}>{body}</View>
@@ -409,6 +456,68 @@ export function DiffScreen({ route, navigation }: NativeStackScreenProps<RootSta
         </View>
       ) : null}
     </Page>
+  );
+}
+
+/** Copies the whole file as it is now; nothing to copy when it can't be read. */
+function CopyButton({ content }: { content: string | null }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
+  return (
+    <StripButton
+      icon={copied ? Check : Copy}
+      label={copied ? "Copied" : "Copy"}
+      disabled={content === null}
+      onPress={() => {
+        if (content === null) return;
+        void Clipboard.setStringAsync(content).then(() => setCopied(true));
+      }}
+      testID="diff-copy"
+    />
+  );
+}
+
+function StripButton({
+  icon,
+  label,
+  active,
+  disabled,
+  onPress,
+  testID,
+}: {
+  icon: typeof Copy;
+  label: string;
+  active?: boolean;
+  disabled?: boolean;
+  onPress(): void;
+  testID: string;
+}) {
+  const theme = useTheme();
+  const color = active ? theme.fg : theme.mut;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled: !!disabled, selected: !!active }}
+      disabled={disabled}
+      onPress={onPress}
+      hitSlop={6}
+      style={({ pressed }) => [
+        styles.stripButton,
+        { backgroundColor: active || pressed ? theme.surface : "transparent" },
+        disabled && styles.dim,
+      ]}
+      testID={testID}
+    >
+      <Icon icon={icon} color={color} size={14} />
+      <T variant="monoSm" color={color}>
+        {label}
+      </T>
+    </Pressable>
   );
 }
 
@@ -485,6 +594,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.lg,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
+  stripButton: {
+    height: 28,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.xs,
+    paddingHorizontal: space.sm,
+    borderRadius: radius.sm,
+  },
+  preview: { padding: space.lg },
+  unchanged: { paddingHorizontal: space.lg, paddingVertical: space.md },
   badge: { height: 22, borderRadius: radius.sm, paddingHorizontal: space.sm, justifyContent: "center" },
   stepper: {
     height: 56,

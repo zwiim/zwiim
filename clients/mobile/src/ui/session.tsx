@@ -4,9 +4,10 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
+import { basename, type ChangedFile } from "@zwiim/sdk";
 import type { ToolItem } from "../sessions/transcript";
 import { Button, Sheet, StatusDot, T, useReduceMotion } from "./components";
-import { ArrowUp, Icon } from "./icons";
+import { ArrowUp, FileText, Icon } from "./icons";
 import { fonts, MONO_MAX_SCALE, radius, space, type, useTheme } from "./tokens";
 
 /** The streaming caret: blinks once a second (static under Reduce Motion). */
@@ -91,15 +92,16 @@ function ToolGlyph({ state }: { state: ToolItem["state"] }) {
 }
 
 /** One tool call in one mono row: status, kind, target, diff counts. */
-export function ToolRow({ tool, onPress }: { tool: ToolItem; onPress?(): void }) {
+export function ToolRow({ tool, onPress, opens }: { tool: ToolItem; onPress?(): void; opens?: boolean }) {
   const theme = useTheme();
-  const detail = !!(tool.input || tool.output);
+  const pressable = opens || !!(tool.input || tool.output);
   return (
     <Pressable
-      accessibilityRole={detail ? "button" : undefined}
+      accessibilityRole={pressable ? "button" : undefined}
       accessibilityLabel={`${tool.verb ?? ""} ${tool.target}, ${tool.state}`}
-      onPress={detail ? onPress : undefined}
-      disabled={!detail}
+      accessibilityHint={opens ? "Opens the file" : undefined}
+      onPress={pressable ? onPress : undefined}
+      disabled={!pressable}
       style={({ pressed }) => [styles.monoRow, pressed && { backgroundColor: theme.surface }]}
       testID="tool-row"
     >
@@ -121,7 +123,15 @@ export function ToolRow({ tool, onPress }: { tool: ToolItem; onPress?(): void })
 }
 
 /** Three or more tool calls in a row: `▸ n tool calls`, open to list them. */
-export function ToolGroup({ tools, onOpen }: { tools: ToolItem[]; onOpen(tool: ToolItem): void }) {
+export function ToolGroup({
+  tools,
+  onOpen,
+  opens,
+}: {
+  tools: ToolItem[];
+  onOpen(tool: ToolItem): void;
+  opens?(tool: ToolItem): boolean;
+}) {
   const theme = useTheme();
   const [open, setOpen] = useState(false);
   const running = tools.some((t) => t.state === "running");
@@ -144,7 +154,7 @@ export function ToolGroup({ tools, onOpen }: { tools: ToolItem[]; onOpen(tool: T
         </T>
         {running ? <StatusDot state="work" /> : null}
       </Pressable>
-      {open ? tools.map((t, i) => <ToolRow key={i} tool={t} onPress={() => onOpen(t)} />) : null}
+      {open ? tools.map((t, i) => <ToolRow key={i} tool={t} onPress={() => onOpen(t)} opens={opens?.(t)} />) : null}
     </View>
   );
 }
@@ -219,18 +229,112 @@ export function ErrorRow({ message }: { message: string }) {
   );
 }
 
-/** How the last turn ended, in one mono row. */
-export function FooterRow({ text, stopped }: { text: string; stopped: boolean }) {
+/** Files a turn's row shows before `+N more`, and how many each tap adds. */
+const FILES_SHOWN = 2;
+
+/**
+ * Under each answered prompt: how long the turn took and when it ended (or
+ * that it was stopped), then the files it changed as chips, two at first and
+ * two more per tap on `+N more`. `fileOf` says which ones open.
+ */
+export function FooterRow({
+  text,
+  stopped,
+  files,
+  fileOf,
+  onOpenFile,
+}: {
+  text: string;
+  stopped: boolean;
+  files: ChangedFile[];
+  fileOf(path: string): string | null;
+  onOpenFile(path: string): void;
+}) {
+  const theme = useTheme();
+  const [shown, setShown] = useState(FILES_SHOWN);
+  const rest = files.slice(shown);
+  const sum = (key: "added" | "removed") => rest.reduce((n, f) => n + f[key], 0);
+  return (
+    <View testID="turn-footer">
+      <View style={styles.monoRow}>
+        <T variant="mono" color={stopped ? theme.mut : theme.done} style={styles.glyph}>
+          {stopped ? "■" : "✓"}
+        </T>
+        <T variant="mono" color={theme.mut} style={[styles.shrink, styles.tabular]} testID="turn-time">
+          {text}
+        </T>
+      </View>
+      {files.length ? (
+        <View style={styles.fileChips}>
+          {files.slice(0, shown).map((f) => {
+            const path = fileOf(f.path);
+            return (
+              <FileChip
+                key={f.path}
+                label={basename(f.path)}
+                added={f.added}
+                removed={f.removed}
+                onPress={path ? () => onOpenFile(path) : undefined}
+                a11y={f.path}
+              />
+            );
+          })}
+          {rest.length ? (
+            <FileChip
+              label={`+${rest.length} more`}
+              added={sum("added")}
+              removed={sum("removed")}
+              onPress={() => setShown((n) => n + FILES_SHOWN)}
+              a11y={`${rest.length} more files`}
+              more
+            />
+          ) : files.length > FILES_SHOWN ? (
+            <FileChip label="Show less" onPress={() => setShown(FILES_SHOWN)} a11y="Show fewer files" more />
+          ) : null}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** A changed file, or `+N more`, as a 28pt chip: icon, mono label, `+n −n`. */
+function FileChip({
+  label,
+  added,
+  removed,
+  onPress,
+  a11y,
+  more,
+}: {
+  label: string;
+  added?: number;
+  removed?: number;
+  onPress?(): void;
+  a11y: string;
+  more?: boolean;
+}) {
   const theme = useTheme();
   return (
-    <View style={styles.monoRow} testID="turn-footer">
-      <T variant="mono" color={stopped ? theme.mut : theme.done} style={styles.glyph}>
-        {stopped ? "■" : "✓"}
+    <Pressable
+      accessibilityRole={onPress ? "button" : undefined}
+      accessibilityLabel={a11y}
+      disabled={!onPress}
+      onPress={onPress}
+      hitSlop={6}
+      style={({ pressed }) => [styles.fileChip, { backgroundColor: pressed ? theme.raised : theme.surface }]}
+      testID={more ? "turn-more" : "turn-file"}
+    >
+      {more ? null : <Icon icon={FileText} color={theme.mut} size={13} />}
+      <T variant="monoSm" color={more ? theme.mut : theme.fg} numberOfLines={1} style={styles.shrink}>
+        {label}
       </T>
-      <T variant="mono" color={theme.mut} style={[styles.shrink, styles.tabular]}>
-        {text}
-      </T>
-    </View>
+      {added || removed ? (
+        <T variant="monoSm" style={styles.tabular}>
+          <T variant="monoSm" color={theme.done}>{`+${added ?? 0} `}</T>
+          <T variant="monoSm" color={theme.err}>{`−${removed ?? 0}`}</T>
+        </T>
+      ) : null}
+    </Pressable>
   );
 }
 
@@ -406,6 +510,16 @@ const styles = StyleSheet.create({
   },
   monoRow: { minHeight: 32, flexDirection: "row", alignItems: "center", gap: space.sm, borderRadius: radius.sm },
   glyph: { width: 16, textAlign: "center", alignItems: "center" },
+  fileChips: { flexDirection: "row", flexWrap: "wrap", gap: space.xs, paddingLeft: 16 + space.sm, paddingBottom: space.xs },
+  fileChip: {
+    height: 28,
+    maxWidth: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.xs,
+    paddingHorizontal: space.sm,
+    borderRadius: radius.sm,
+  },
   thought: { borderLeftWidth: 2, paddingLeft: space.md, marginLeft: space.xs },
   output: { borderRadius: radius.md, flexGrow: 0 },
   outputContent: { padding: space.md },

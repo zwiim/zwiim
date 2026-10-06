@@ -1,4 +1,5 @@
 import {
+  clockTime,
   decodeServerFrame,
   initialSessionView,
   reduceSession,
@@ -93,7 +94,7 @@ describe("transcript", () => {
     expect(rows.map((r) => r.type)).toEqual(["user", "thought", "tool", "agent", "footer"]);
     const t = rows[2]!;
     expect(t.type === "tool" && t.tool).toMatchObject({ verb: null, target: "cargo build", state: "failed", output: "error[E0425]" });
-    expect(rows.at(-1)).toMatchObject({ text: "Turn finished · 3m 17s · 1 tool call", stopped: false });
+    expect(rows.at(-1)).toMatchObject({ text: `3m 17s · ${clockTime("2026-09-26T10:03:17Z")}`, stopped: false, files: [] });
   });
 
   it("reads a transcript's tool names and JSON input as a verb and a target", () => {
@@ -153,15 +154,64 @@ describe("transcript", () => {
     expect(edit.type === "tool" && [edit.tool.added, edit.tool.removed]).toEqual([2, 1]);
   });
 
-  it("ends a finished turn with a footer, and a stopped one says so", () => {
+  it("says a stopped turn stopped before the history has it, and keeps saying so after", () => {
     const base = view(user("m1", "Go"), tool("t1", "ls", "execute"), toolDone("t1"), delta("Done."));
-    expect(transcriptRows(play(base, done())).at(-1)).toMatchObject({
-      type: "footer",
-      text: "Turn finished · 1 tool call",
-    });
-    expect(transcriptRows(play(base, done("cancelled"))).at(-1)).toMatchObject({ type: "footer", text: "Stopped", stopped: true });
+    // A finished turn gets its row once the history has it.
+    expect(types(play(base, done()))).not.toContain("footer");
+    const stopped = play(base, done("cancelled"));
+    expect(transcriptRows(stopped).at(-1)).toMatchObject({ type: "footer", text: "Stopped", stopped: true });
     // No footer while it runs or waits on the user.
     expect(types(base)).not.toContain("footer");
+    const after = play(
+      stopped,
+      history([
+        turn("u1", "user", [{ type: "text", text: "Go" }], "2026-09-26T10:00:00Z"),
+        turn("a1", "assistant", [{ type: "text", text: "Done." }], "2026-09-26T10:00:01Z", "2026-09-26T10:00:42Z"),
+      ]),
+    );
+    expect(transcriptRows(after).at(-1)).toMatchObject({ text: `Stopped · 42s · ${clockTime("2026-09-26T10:00:42Z")}`, stopped: true });
+  });
+
+  it("ends every answered prompt with its time and the files it changed", () => {
+    const edit = (id: string, path: string) => ({
+      type: "tool_call" as const,
+      tool_call_id: id,
+      title: "Edit",
+      input_preview: JSON.stringify({ file_path: path, old_string: "a", new_string: "b\nc" }),
+      status: null,
+    });
+    const v = view(
+      history([
+        turn("u1", "user", [{ type: "text", text: "One" }], "2026-09-26T10:00:00Z"),
+        turn("a1", "assistant", [edit("t1", "src/a.ts"), edit("t2", "src/b.ts"), edit("t3", "src/a.ts")], "2026-09-26T10:00:01Z", "2026-09-26T10:09:31Z"),
+        turn("u2", "user", [{ type: "text", text: "Two" }], "2026-09-26T10:10:00Z"),
+        turn("a2", "assistant", [{ type: "text", text: "Nothing to change." }], "2026-09-26T10:10:01Z", "2026-09-26T10:10:05Z"),
+      ]),
+    );
+    const rows = transcriptRows(v);
+    expect(rows.map((r) => r.type)).toEqual(["user", "tools", "footer", "user", "agent", "footer"]);
+    expect(rows[2]).toMatchObject({
+      text: `9m 31s · ${clockTime("2026-09-26T10:09:31Z")}`,
+      files: [
+        { path: "src/a.ts", added: 4, removed: 2 },
+        { path: "src/b.ts", added: 2, removed: 1 },
+      ],
+    });
+    expect(rows[5]).toMatchObject({ text: `5s · ${clockTime("2026-09-26T10:10:05Z")}`, files: [] });
+    // An edit row names its file, to open it.
+    const tools = rows[1]!;
+    expect(tools.type === "tools" && tools.tools.map((t) => t.path)).toEqual(["src/a.ts", "src/b.ts", "src/a.ts"]);
+  });
+
+  it("has no row for the prompt the agent is still answering", () => {
+    const answered = history([
+      turn("u1", "user", [{ type: "text", text: "Go" }], "2026-09-26T10:00:00Z"),
+      turn("a1", "assistant", [{ type: "text", text: "Working on it" }], "2026-09-26T10:00:01Z", "2026-09-26T10:00:05Z"),
+    ]);
+    expect(types(view(answered))).toContain("footer");
+    // Reattached mid-turn: the history holds the running prompt, the live turn has no prompt.
+    const running = reduceSession(reduceSession(initialSessionView("s1"), snapshot("prompting")), answered);
+    expect(types(running)).not.toContain("footer");
   });
 
   it("a tool still marked running after the turn ends is not shown as running", () => {
@@ -183,7 +233,13 @@ describe("transcript", () => {
       delta("Partial and more"),
     );
     const rows = transcriptRows(v);
-    expect(rows.map((r) => ("text" in r ? r.text : r.type))).toEqual(["Earlier", "Earlier answer", "Now", "Partial and more"]);
+    expect(rows.map((r) => ("text" in r ? r.text : r.type))).toEqual([
+      "Earlier",
+      "Earlier answer",
+      `0s · ${clockTime("2026-09-26T10:00:00Z")}`,
+      "Now",
+      "Partial and more",
+    ]);
     expect(historyBefore(v.history!, v)).toHaveLength(2);
   });
 
@@ -215,7 +271,7 @@ describe("transcript", () => {
 
   it("keeps a finished turn until history has it, then shows history alone", () => {
     const v = view(user("m1", "Go"), delta("Done."), done());
-    expect(types(v)).toEqual(["user", "agent", "footer"]);
+    expect(types(v)).toEqual(["user", "agent"]);
     const after = play(
       v,
       history([
@@ -223,7 +279,7 @@ describe("transcript", () => {
         turn("a1", "assistant", [{ type: "text", text: "Done." }], "2026-09-26T10:00:01Z", "2026-09-26T10:00:42Z"),
       ]),
     );
-    expect(transcriptRows(after).map((r) => ("text" in r ? r.text : r.type))).toEqual(["Go", "Done.", "Turn finished · 42s"]);
+    expect(transcriptRows(after).map((r) => ("text" in r ? r.text : r.type))).toEqual(["Go", "Done.", `42s · ${clockTime("2026-09-26T10:00:42Z")}`]);
   });
 
   it("shows the agent's last error", () => {

@@ -5,7 +5,21 @@
 // replayed events by sequence, so rebuilding these after a reconnect never
 // repeats a message or a tool call.
 
-import type { HistoryBlock, HistoryTurn, LiveTurn, SessionView, ToolCall, ToolCallStatus } from "@zwiim/sdk";
+import {
+  clockTime,
+  parseUnifiedDiff,
+  toolChanges,
+  turnDuration,
+  turnGroups,
+  type ChangedFile,
+  type FileDiff,
+  type HistoryBlock,
+  type HistoryTurn,
+  type LiveTurn,
+  type SessionView,
+  type ToolCall,
+  type ToolCallStatus,
+} from "@zwiim/sdk";
 
 export type ToolState = "running" | "done" | "failed" | "idle";
 
@@ -21,6 +35,8 @@ export interface ToolItem {
   /** Lines added and removed, when the output is a diff. */
   added: number;
   removed: number;
+  /** The one file it changed, as the agent names it; opens in the viewer. */
+  path: string | null;
 }
 
 export type TranscriptRow =
@@ -30,7 +46,7 @@ export type TranscriptRow =
   | { type: "tool"; key: string; tool: ToolItem }
   | { type: "tools"; key: string; tools: ToolItem[] }
   | { type: "error"; key: string; message: string }
-  | { type: "footer"; key: string; text: string; stopped: boolean };
+  | { type: "footer"; key: string; text: string; stopped: boolean; files: ChangedFile[] };
 
 /** Consecutive tool calls fold into one row from this many. */
 export const FOLD_AT = 3;
@@ -125,12 +141,15 @@ function toolItem(p: {
   state: ToolState;
   input: string | null;
   output: string | null;
+  changes?: FileDiff[] | null;
 }): ToolItem {
   const title = unquote(p.title ?? "") || "Tool call";
   let verb = p.verb ?? (p.kind ? (VERBS[p.kind] ?? null) : null);
   // The agent's title often starts with the verb already ("Read src/a.ts").
   if (verb && title.toLowerCase().startsWith(verb.toLowerCase() + " ")) verb = null;
-  return { verb, target: title, state: p.state, input: p.input, output: p.output, ...diffStats(p.output) };
+  const changes = p.changes ?? (p.output ? parseUnifiedDiff(p.output) : null);
+  const path = changes?.length === 1 ? changes[0]!.path : null;
+  return { verb, target: title, state: p.state, input: p.input, output: p.output, ...diffStats(p.output), path };
 }
 
 /** A live tool call as a row. */
@@ -150,7 +169,7 @@ const userText = (blocks: readonly { type: string; text?: string }[]) =>
     .join("")
     .trim();
 
-type Piece = Exclude<TranscriptRow, { type: "tools" | "footer" }>;
+type Piece = Exclude<TranscriptRow, { type: "tools" }>;
 
 function historyRows(turn: HistoryTurn): Piece[] {
   if (turn.role === "user") {
@@ -189,6 +208,7 @@ function historyRows(turn: HistoryTurn): Piece[] {
             state: toolState(status, false),
             input: call.input,
             output: r?.output_preview ?? null,
+            changes: toolChanges(b.title, b.input_preview, r?.output_preview ?? null, status === "failed"),
           }),
         });
         return;
@@ -246,13 +266,7 @@ function fold(rows: Piece[]): TranscriptRow[] {
 }
 
 /** "3m 12s", "42s", "1h 5m". */
-export function duration(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${s % 60}s`;
-  return `${Math.floor(m / 60)}h ${m % 60}m`;
-}
+export const duration = turnDuration;
 
 function lastIndex<T>(list: readonly T[], match: (item: T) => boolean): number {
   for (let i = list.length - 1; i >= 0; i--) if (match(list[i]!)) return i;
@@ -266,27 +280,11 @@ const STOPPED: Record<string, string> = {
   refusal: "The agent declined to continue",
 };
 
-/** How the last turn ended: `✓ Turn finished · 3m 12s · 14 tool calls`. */
-function footer(view: SessionView, rows: Piece[]): TranscriptRow | null {
+/** Why the last turn stopped early; null when it simply finished. */
+function stopText(view: SessionView): string | null {
   const reason = view.lastStopReason;
-  if (reason && reason !== "end_turn") {
-    return { type: "footer", key: "footer", text: STOPPED[reason] ?? `Stopped · ${reason.replace(/_/g, " ")}`, stopped: true };
-  }
-  const history = view.history ?? [];
-  const lastUser = lastIndex(history, (t) => t.role === "user");
-  const after = history.slice(lastUser + 1);
-  const answered = view.settled ? view.settled.message !== null : after.some((t) => t.role !== "user");
-  if (!answered || rows.length === 0) return null;
-  const parts = ["Turn finished"];
-  if (!view.settled && lastUser >= 0) {
-    const end = after.at(-1)!;
-    const ms = Date.parse(end.completed_at ?? end.timestamp) - Date.parse(history[lastUser]!.timestamp);
-    if (ms > 0) parts.push(duration(ms));
-  }
-  const lastUserRow = lastIndex(rows, (r) => r.type === "user");
-  const tools = rows.slice(lastUserRow + 1).filter((r) => r.type === "tool").length;
-  if (tools > 0) parts.push(tools === 1 ? "1 tool call" : `${tools} tool calls`);
-  return { type: "footer", key: "footer", text: parts.join(" · "), stopped: false };
+  if (!reason || reason === "end_turn") return null;
+  return STOPPED[reason] ?? `Stopped · ${reason.replace(/_/g, " ")}`;
 }
 
 /**
@@ -309,14 +307,30 @@ export function historyBefore(history: readonly HistoryTurn[], view: Pick<Sessio
 export function transcriptRows(view: SessionView | undefined): TranscriptRow[] {
   if (!view) return [];
   const running = view.agentStatus === "prompting";
+  const busy = running || !!view.pendingRequest;
+  const stopped = busy ? null : stopText(view);
+  const turns = historyBefore(view.history ?? [], view);
+  // Under each answered prompt: how long it ran, when it ended, what it changed.
+  const groups = new Map(turnGroups(turns).map((g) => [g.end, g]));
+  const shownLive = !!view.settled || !!view.live.userMessage || !!view.live.message;
   const pieces: Piece[] = [];
-  for (const turn of historyBefore(view.history ?? [], view)) pieces.push(...historyRows(turn));
+  turns.forEach((turn, i) => {
+    pieces.push(...historyRows(turn));
+    const g = groups.get(i);
+    const last = i === turns.length - 1 && !shownLive;
+    // The agent may still be answering the history's last prompt.
+    if (!g || (last && busy)) return;
+    const time = [g.durationMs !== null ? turnDuration(g.durationMs) : "", g.completedAt ? clockTime(g.completedAt) : ""];
+    const stop = last ? stopped : null;
+    const text = [stop, ...time].filter(Boolean).join(" · ");
+    pieces.push({ type: "footer", key: `footer:${turn.turn_id}`, text, stopped: !!stop, files: g.files });
+  });
   if (view.settled) pieces.push(...liveRows(view.settled, "settled", false));
   pieces.push(...liveRows(view.live, "live", running));
   const rows = fold(pieces);
   if (view.lastError) rows.push({ type: "error", key: "last-error", message: view.lastError.message });
-  const end = running || view.pendingRequest ? null : footer(view, pieces);
-  if (end) rows.push(end);
+  // A turn not yet in the history gets its time once the history has it.
+  if (stopped && shownLive) rows.push({ type: "footer", key: "footer", text: stopped, stopped: true, files: [] });
   return rows;
 }
 

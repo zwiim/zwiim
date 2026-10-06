@@ -1,10 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, RefreshCw } from "lucide-react";
-import { ZwiimClientError, type DiffFile, type WorkspaceDiff, type WorkspaceInfo } from "@zwiim/sdk";
+import { Check, Columns2, Copy, Eye, FileText, Loader2, RefreshCw, Rows2 } from "lucide-react";
+import {
+  fullFile,
+  isMarkdown,
+  ZwiimClientError,
+  type DiffFile,
+  type FileLine,
+  type WorkspaceDiff,
+  type WorkspaceInfo,
+} from "@zwiim/sdk";
+import { Markdown } from "@/components/Markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
+import { diffLayout, rememberDiffLayout, type DiffLayout } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
+import { FileChanges } from "./FileChanges";
 
 const CHANGE_LETTER: Record<DiffFile["change"], string> = { added: "A", modified: "M", deleted: "D" };
 
@@ -126,36 +137,68 @@ function FileBadges({ file }: { file: DiffFile }) {
   );
 }
 
-/** What one file's diff tab shows: its patch, or why there is none. */
-type FilePatch = { file: DiffFile; patch: string | null; baseCommit: string | null } | { gone: true };
+/** What one file's tab shows, from its diff and its current content. */
+type Viewed =
+  | { kind: "lines"; lines: FileLine[]; file: DiffFile | null; baseCommit: string | null; content: string | null }
+  | { kind: "binary"; file: DiffFile; baseCommit: string | null }
+  | { kind: "too_large"; file: DiffFile | null; baseCommit: string | null }
+  | { kind: "gone" };
+
+const TOO_LARGE = "File is too large to open";
+
+/** `files.read` refuses a file too big for the editor; that is not an error here. */
+function isTooLarge(e: unknown): boolean {
+  return e instanceof ZwiimClientError && e.code === "invalid_input" && /too large/i.test(e.message);
+}
 
 /**
- * One changed file's patch, shown in its own tab. Refetched when the host
+ * One file in its own tab: the whole file as it is now, its uncommitted
+ * changes marked and the unchanged stretches folded. Refetched when the host
  * says the workspace's diff may have changed; a file whose changes were
- * committed or reverted says so rather than closing under the reader.
+ * committed or reverted still shows, unmarked.
  */
 export function DiffView({ workspace, path }: { workspace: WorkspaceInfo; path: string }) {
   const controller = useController();
   const workspaceId = workspace.workspace_id;
   const revision = useHost((s) => s.diffRevision[workspaceId] ?? 0);
-  const [shown, setShown] = useState<FilePatch | null>(null);
+  const [viewed, setViewed] = useState<Viewed | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [opened, setOpened] = useState<Record<number, number>>({});
+  const [layout, setLayout] = useState<DiffLayout>(diffLayout);
+  const [preview, setPreview] = useState(false);
   const loads = useRef(0);
 
   const refresh = useCallback(async () => {
     const load = ++loads.current;
     setError(null);
     setLoading(true);
+    const diff = controller.loadDiff(workspaceId, path).catch((e: unknown) => {
+      if (e instanceof ZwiimClientError && e.code === "not_found") return null;
+      throw e;
+    });
+    const read = controller.client
+      .request("files.read", { workspace_id: workspaceId, path })
+      .then((f) => ({ content: f.content as string | null, tooLarge: false }))
+      .catch((e: unknown) => ({ content: null, tooLarge: isTooLarge(e) }));
     try {
-      const one = await controller.loadDiff(workspaceId, path);
-      const file = one.files.find((f) => f.path === path);
+      const [one, now] = await Promise.all([diff, read]);
       if (load !== loads.current) return;
-      setShown(file ? { file, patch: one.patch ?? null, baseCommit: one.base_commit ?? null } : { gone: true });
+      const file = one?.files.find((f) => f.path === path) ?? null;
+      const baseCommit = one?.base_commit ?? null;
+      const patch = one?.patch ?? null;
+      let next: Viewed;
+      if (file?.binary) next = { kind: "binary", file, baseCommit };
+      else if (file?.too_large || (file && patch === null) || now.tooLarge) next = { kind: "too_large", file, baseCommit };
+      else if (file?.change === "deleted") next = { kind: "lines", lines: fullFile(patch, null), file, baseCommit, content: null };
+      else if (file) next = { kind: "lines", lines: fullFile(patch, now.content), file, baseCommit, content: now.content };
+      else if (now.content !== null)
+        next = { kind: "lines", lines: fullFile(null, now.content), file: null, baseCommit, content: now.content };
+      else next = { kind: "gone" };
+      setViewed(next);
+      setOpened({});
     } catch (e) {
-      if (load !== loads.current) return;
-      if (e instanceof ZwiimClientError && e.code === "not_found") setShown({ gone: true });
-      else setError(errorMessage(e));
+      if (load === loads.current) setError(errorMessage(e));
     } finally {
       if (load === loads.current) setLoading(false);
     }
@@ -165,21 +208,54 @@ export function DiffView({ workspace, path }: { workspace: WorkspaceInfo; path: 
     void refresh();
   }, [refresh, revision]);
 
-  const file = shown && "file" in shown ? shown : null;
+  const chooseLayout = (next: DiffLayout) => {
+    setLayout(next);
+    rememberDiffLayout(next);
+  };
+
+  const file = viewed && viewed.kind !== "gone" ? viewed.file : null;
+  const content = viewed?.kind === "lines" ? viewed.content : null;
+  const markdown = isMarkdown(path) && file?.change !== "deleted";
+  const showPreview = preview && markdown && content !== null;
+  const slash = path.lastIndexOf("/");
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="diff-view">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b px-4 text-xs">
-        {file && (
-          <span className="text-muted-foreground w-3 shrink-0 font-mono">{CHANGE_LETTER[file.file.change]}</span>
-        )}
-        <span className="truncate font-mono">{path}</span>
-        {file && <FileBadges file={file.file} />}
-        <span className={cn("text-muted-foreground truncate", !file && "ml-auto")}>
-          {againstLabel(workspace, file?.baseCommit)}
+        <FileText className="text-muted-foreground size-3.5 shrink-0" />
+        <span className="min-w-0 truncate font-mono" title={path}>
+          {slash >= 0 && <span className="text-muted-foreground">{path.slice(0, slash + 1)}</span>}
+          <span className="text-foreground">{path.slice(slash + 1)}</span>
         </span>
-        <Button size="icon-sm" variant="ghost" title="Refresh" onClick={refresh} disabled={loading}>
-          <RefreshCw className={cn(loading && "animate-spin")} />
-        </Button>
+        {file && <span className="text-muted-foreground shrink-0 font-mono">{CHANGE_LETTER[file.change]}</span>}
+        {file && (
+          <span className="flex shrink-0 items-center gap-1 font-mono">
+            {file.additions !== null && <span className="text-emerald-600">+{file.additions}</span>}
+            {file.deletions !== null && <span className="text-red-600">−{file.deletions}</span>}
+          </span>
+        )}
+        {viewed && viewed.kind !== "gone" && (
+          <span className="text-muted-foreground hidden truncate lg:inline">
+            {againstLabel(workspace, viewed.baseCommit)}
+          </span>
+        )}
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          <LayoutToggle layout={layout} onChange={chooseLayout} disabled={showPreview} />
+          {markdown && (
+            <Button
+              size="xs"
+              variant={showPreview ? "secondary" : "ghost"}
+              aria-pressed={showPreview}
+              disabled={content === null}
+              onClick={() => setPreview((p) => !p)}
+            >
+              <Eye /> Preview
+            </Button>
+          )}
+          <CopyButton text={file?.change === "deleted" ? null : content} />
+          <Button size="icon-sm" variant="ghost" title="Refresh" onClick={refresh} disabled={loading}>
+            <RefreshCw className={cn(loading && "animate-spin")} />
+          </Button>
+        </div>
       </div>
       <section className="min-h-0 flex-1 overflow-auto" data-testid="diff-patch">
         {error && (
@@ -187,18 +263,89 @@ export function DiffView({ workspace, path }: { workspace: WorkspaceInfo; path: 
             {error}
           </p>
         )}
-        {shown === null && !error && <Loading />}
-        {shown && "gone" in shown && (
-          <p className="text-muted-foreground p-4 text-xs">This file has no changes anymore.</p>
-        )}
-        {file && file.patch === null && (
-          <p className="text-muted-foreground p-4 text-xs">
-            {file.file.binary ? "Binary file" : "File too large to show"} — content not shown.
+        {viewed === null && !error && <Loading />}
+        {viewed?.kind === "gone" && <Note>This file is gone.</Note>}
+        {viewed?.kind === "binary" && <Note>Binary file — not shown</Note>}
+        {viewed?.kind === "too_large" && <Note>{TOO_LARGE}</Note>}
+        {viewed?.kind === "lines" && viewed.file === null && (
+          <p className="text-muted-foreground border-b px-4 py-2 text-xs">
+            No uncommitted changes — showing the file as it is now.
           </p>
         )}
-        {file && file.patch !== null && <Patch text={file.patch} />}
+        {showPreview && <Markdown text={content} className="max-w-3xl px-6 py-4" />}
+        {viewed?.kind === "lines" && !showPreview && (
+          <FileChanges
+            lines={viewed.lines}
+            layout={layout}
+            opened={opened}
+            onReveal={(at, more) => setOpened((o) => ({ ...o, [at]: (o[at] ?? 0) + more }))}
+          />
+        )}
       </section>
     </div>
+  );
+}
+
+function Note({ children }: { children: React.ReactNode }) {
+  return <p className="text-muted-foreground p-4 text-xs">{children}</p>;
+}
+
+/** Unified or Split, as one segmented control. */
+function LayoutToggle({
+  layout,
+  onChange,
+  disabled,
+}: {
+  layout: DiffLayout;
+  onChange(next: DiffLayout): void;
+  disabled: boolean;
+}) {
+  const options = [
+    { value: "unified", label: "Unified", Icon: Rows2 },
+    { value: "split", label: "Split", Icon: Columns2 },
+  ] as const;
+  return (
+    <div className="bg-muted flex items-center rounded-md p-0.5" role="group" aria-label="Layout">
+      {options.map(({ value, label, Icon }) => (
+        <button
+          key={value}
+          className={cn(
+            "text-muted-foreground flex h-6 items-center gap-1 rounded-sm px-2 text-xs transition-colors disabled:opacity-50",
+            layout === value ? "bg-background text-foreground shadow-xs" : "hover:text-foreground",
+          )}
+          aria-pressed={layout === value}
+          disabled={disabled}
+          onClick={() => onChange(value)}
+        >
+          <Icon className="size-3.5" /> {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Copies the file as it is now; says so for a moment. */
+function CopyButton({ text }: { text: string | null }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
+  return (
+    <Button
+      size="xs"
+      variant="ghost"
+      title="Copy file"
+      disabled={text === null}
+      onClick={() => {
+        if (text === null) return;
+        void navigator.clipboard?.writeText(text);
+        setCopied(true);
+      }}
+    >
+      {copied ? <Check /> : <Copy />} {copied ? "Copied" : "Copy"}
+    </Button>
   );
 }
 
@@ -238,29 +385,4 @@ export function numberPatch(text: string): PatchLine[] {
     if (line.startsWith("-")) return { text: line, kind: "del", old: oldNo++, new: null };
     return { text: line, kind: "context", old: oldNo++, new: newNo++ };
   });
-}
-
-function Patch({ text }: { text: string }) {
-  // A trailing newline is not a line of the file.
-  const lines = numberPatch(text.endsWith("\n") ? text.slice(0, -1) : text);
-  return (
-    <table className="w-full border-collapse font-mono text-xs leading-5">
-      <tbody>
-        {lines.map((l, i) => (
-          <tr
-            key={i}
-            className={cn(
-              l.kind === "add" && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-              l.kind === "del" && "bg-red-500/10 text-red-700 dark:text-red-300",
-              (l.kind === "hunk" || l.kind === "meta") && "text-muted-foreground",
-            )}
-          >
-            <td className="text-muted-foreground w-10 pr-2 text-right align-top select-none">{l.old ?? ""}</td>
-            <td className="text-muted-foreground w-10 border-r pr-2 text-right align-top select-none">{l.new ?? ""}</td>
-            <td className="px-2 whitespace-pre">{l.text || " "}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
 }

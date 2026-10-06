@@ -380,7 +380,7 @@ describe("diff", () => {
     expect(patch).toContain("+more");
     cleanup();
     await mount(t, () => <DiffView workspace={worktree("a1b2c3d4")} path="logo.png" />);
-    expect(screen.getByTestId("diff-patch").textContent).toContain("Binary file — content not shown.");
+    expect(screen.getByTestId("diff-patch").textContent).toContain("Binary file — not shown");
     expect(t.calls.filter((c) => c.op === "git.diff").map((c) => c.params)).toEqual([
       { workspace_id: "a1b2c3d4" },
       { workspace_id: "a1b2c3d4", file: "src/a.rs" },

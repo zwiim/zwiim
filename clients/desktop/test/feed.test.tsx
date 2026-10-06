@@ -172,9 +172,10 @@ describe("diff on the host feed", () => {
           too_large: false,
           untracked: false,
         })),
-        ...(p.file ? { patch: `+v${version}` } : {}),
+        ...(p.file ? { patch: `@@ -1 +1 @@\n-v0\n+v${version}\n` } : {}),
       };
     };
+    t.handlers["files.read"] = (p) => ({ path: p.path, content: `v${version}\n`, etag: "e", mtime_ms: 0, readonly: false, line_ending: "lf" });
     const ws = worktree("a1b2c3d4");
     await mount(
       t,
@@ -206,12 +207,12 @@ describe("diff on the host feed", () => {
     expect(refetched).toContainEqual({ workspace_id: "a1b2c3d4" });
     expect(refetched).toContainEqual({ workspace_id: "a1b2c3d4", file: "a.txt" });
 
-    // The open file was committed away: its tab says so instead of vanishing.
+    // The open file was committed away: its tab shows it unmarked instead of vanishing.
     files = ["b.txt"];
     await t.feedEvent("workspace.diff_changed", { workspace_id: "a1b2c3d4" });
     await tick();
     expect(screen.getByTestId("diff-files").textContent).not.toContain("a.txt");
-    expect(screen.getByTestId("diff-patch").textContent).toContain("no changes anymore");
+    expect(screen.getByTestId("diff-patch").textContent).toContain("No uncommitted changes");
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });

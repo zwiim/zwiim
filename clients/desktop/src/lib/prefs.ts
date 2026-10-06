@@ -179,3 +179,14 @@ export function theme(): Theme {
 export function rememberTheme(value: Theme): void {
   write("theme", value);
 }
+
+/** How a changed file reads: one column, or old and new side by side. */
+export type DiffLayout = "unified" | "split";
+
+export function diffLayout(): DiffLayout {
+  return read<unknown>("diff_layout", "unified") === "split" ? "split" : "unified";
+}
+
+export function rememberDiffLayout(value: DiffLayout): void {
+  write("diff_layout", value);
+}

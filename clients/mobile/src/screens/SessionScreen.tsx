@@ -16,7 +16,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Haptics from "expo-haptics";
 import { randomUUID } from "expo-crypto";
-import { isClientError, type AgentRequest, type SessionView } from "@zwiim/sdk";
+import { isClientError, workspaceFile, type AgentRequest, type SessionView } from "@zwiim/sdk";
 import { useCurrentHost, useHostState, useNow } from "../app/hooks";
 import type { RootStack } from "../app/navigation";
 import { connectionText } from "../host/status";
@@ -85,6 +85,14 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
   const [optionsOpen, setOptionsOpen] = useState(false);
   const agent = agentName(state.agents, item?.agent);
   const back = () => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Host"));
+  // An edited file opens on its own screen while its worktree is still there.
+  const workspace = state.workspaces?.find((w) => w.workspace_id === item?.workspace_id && !w.removed) ?? null;
+  const fileOf = (path: string) => (workspace ? workspaceFile(path, workspace) : null);
+  const openFile = (path: string) => {
+    if (!workspace) return;
+    const { workspace_id } = workspace;
+    navigation.push(workspace.is_git_repo ? "Diff" : "File", { workspace_id, path });
+  };
 
   // On screen: stream the session and load its transcript until it's left.
   useEffect(() => {
@@ -136,6 +144,8 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
         hostName={name}
         connected={connected}
         onOptions={() => setOptionsOpen(true)}
+        fileOf={fileOf}
+        onOpenFile={openFile}
       />
     );
   }
@@ -308,6 +318,8 @@ function Live({
   hostName,
   connected,
   onOptions,
+  fileOf,
+  onOpenFile,
 }: {
   item: SessionItem;
   view: SessionView | undefined;
@@ -315,6 +327,8 @@ function Live({
   hostName: string;
   connected: boolean;
   onOptions(): void;
+  fileOf(path: string): string | null;
+  onOpenFile(path: string): void;
 }) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
@@ -406,13 +420,21 @@ function Live({
   const empty = !loading && rows.length === 0 && !request && !attachError;
   const agentAway = view?.attach === "detached" || view?.agentStatus === "disconnected";
 
+  // An edit to one file in the worktree opens that file; any other tool call its details.
+  const toolFile = (tool: ToolItem) => (tool.path ? fileOf(tool.path) : null);
+  const onTool = (tool: ToolItem) => {
+    const path = toolFile(tool);
+    if (path) onOpenFile(path);
+    else setTool(tool);
+  };
+
   const renderRow = ({ item: row, index }: { item: TranscriptRow; index: number }) => {
     // Inverted: index 0 is the newest, and `newer` the row below this one.
     const newer = index > 0 ? rows[rows.length - index] : undefined;
     const gap = newer && (newer.type === "user" || row.type === "user") ? space.lg : space.sm;
     return (
       <View style={{ marginTop: index === rows.length - 1 ? space.md : 0, marginBottom: index === 0 ? space.md : gap }}>
-        <Row row={row} onTool={setTool} />
+        <Row row={row} onTool={onTool} toolFile={toolFile} fileOf={fileOf} onOpenFile={onOpenFile} />
       </View>
     );
   };
@@ -519,7 +541,20 @@ function Live({
   );
 }
 
-function Row({ row, onTool }: { row: TranscriptRow; onTool(tool: ToolItem): void }) {
+function Row({
+  row,
+  onTool,
+  toolFile,
+  fileOf,
+  onOpenFile,
+}: {
+  row: TranscriptRow;
+  onTool(tool: ToolItem): void;
+  toolFile(tool: ToolItem): string | null;
+  fileOf(path: string): string | null;
+  onOpenFile(path: string): void;
+}) {
+  const opens = (tool: ToolItem) => toolFile(tool) !== null;
   switch (row.type) {
     case "user":
       return <UserMessage text={row.text} />;
@@ -528,13 +563,13 @@ function Row({ row, onTool }: { row: TranscriptRow; onTool(tool: ToolItem): void
     case "thought":
       return <ThoughtRow text={row.text} streaming={row.streaming} />;
     case "tool":
-      return <ToolRow tool={row.tool} onPress={() => onTool(row.tool)} />;
+      return <ToolRow tool={row.tool} onPress={() => onTool(row.tool)} opens={opens(row.tool)} />;
     case "tools":
-      return <ToolGroup tools={row.tools} onOpen={onTool} />;
+      return <ToolGroup tools={row.tools} onOpen={onTool} opens={opens} />;
     case "error":
       return <ErrorRow message={row.message} />;
     case "footer":
-      return <FooterRow text={row.text} stopped={row.stopped} />;
+      return <FooterRow text={row.text} stopped={row.stopped} files={row.files} fileOf={fileOf} onOpenFile={onOpenFile} />;
   }
 }
 

@@ -1,9 +1,10 @@
-import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, GitBranch, Loader2, Square } from "lucide-react";
 import {
   effortFor,
   hasCapability,
   optionUnavailableDetails,
+  turnGroups,
   type AgentSummary,
   type AgentType,
   type ChoiceOption,
@@ -23,7 +24,7 @@ import { ControlSelect, OptionsBar, UnattendedBanner } from "./OptionsBar";
 import { RequestCard } from "./RequestCard";
 import { useSlashMenu } from "./SlashCommands";
 import { AgentTerminalCard, AgentTerminalsContext } from "./AgentTerminal";
-import { HistoryTurnView, LiveTurnView, stopReasonText } from "./Transcript";
+import { HistoryTurnView, LiveTurnView, stopReasonText, TurnFooter } from "./Transcript";
 
 const UNAVAILABLE: Record<string, string> = {
   not_installed: "not installed",
@@ -350,6 +351,10 @@ function OpenSession({
   const stopped = running ? null : stopReasonText(view?.lastStopReason ?? null);
   const [optionsBusy, setOptionsBusy] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
+  const history = view?.history;
+  const footers = useMemo(() => new Map((history ? turnGroups(history) : []).map((g) => [g.end, g])), [history]);
+  // A prompt already in the history while the agent still answers it has no row yet.
+  const runningEnd = running && !view?.live.userMessage && history?.length ? history.length - 1 : -1;
   const empty =
     view?.history?.length === 0 && !view.settled && !view.live.userMessage && !view.live.message && !running;
 
@@ -410,9 +415,15 @@ function OpenSession({
               </p>
             )}
             {empty && <p className="text-muted-foreground py-10 text-center">No messages yet.</p>}
-            {view?.history?.map((t) => (
-              <HistoryTurnView key={t.turn_id} turn={t} />
-            ))}
+            {view?.history?.map((t, i) => {
+              const group = footers.get(i);
+              return (
+                <Fragment key={t.turn_id}>
+                  <HistoryTurnView turn={t} />
+                  {group && i !== runningEnd && <TurnFooter group={group} />}
+                </Fragment>
+              );
+            })}
             {view?.settled && <LiveTurnView turn={view.settled} />}
             {view && <LiveTurnView turn={view.live} streaming={running} animate />}
             {stopped && (

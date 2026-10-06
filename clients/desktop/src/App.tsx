@@ -475,7 +475,17 @@ export function Workbench({
                 <FileLinksContext.Provider
                   value={
                     workspace && !removed
-                      ? { workspace, open: (path) => openDoc({ kind: "file", workspaceId: workspace.workspace_id, path }) }
+                      ? {
+                          workspace,
+                          open: (path) => openDoc({ kind: "file", workspaceId: workspace.workspace_id, path }),
+                          // A plain folder has no changes to mark: the file opens as it is.
+                          openDiff: (path) =>
+                            openDoc({
+                              kind: workspace.is_git_repo ? "diff" : "file",
+                              workspaceId: workspace.workspace_id,
+                              path,
+                            }),
+                        }
                       : null
                   }
                 >
