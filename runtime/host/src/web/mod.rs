@@ -198,7 +198,9 @@ pub async fn resolve_persisted_server_token(
     }
     // Stored: SQLite is no longer a source for it.
     if let Err(e) = app_metadata_service::delete_value(conn, WEB_SERVICE_TOKEN_KEY).await {
-        tracing::warn!("[SERVER][WARN] could not remove the legacy access token from the database: {e}");
+        tracing::warn!(
+            "[SERVER][WARN] could not remove the legacy access token from the database: {e}"
+        );
     }
     token
 }
@@ -674,7 +676,11 @@ pub fn describe_ports(ports: &[u16]) -> String {
     let contiguous = ports.windows(2).all(|w| w[1] == w[0] + 1);
     match (ports.first(), ports.last()) {
         (Some(first), Some(last)) if contiguous && ports.len() > 2 => format!("{first}-{last}"),
-        _ => ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "),
+        _ => ports
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
     }
 }
 
@@ -914,6 +920,7 @@ pub(crate) async fn do_start_web_server_tauri(
             .state::<crate::update::AppUpdateStateHandle>()
             .inner()
             .clone(),
+        gh: None,
     });
 
     // See do_start_web_server_with_state for rationale on the reset.
@@ -1022,9 +1029,7 @@ pub async fn probe_web_service_port(
 
 #[cfg(test)]
 mod local_address_tests {
-    use super::{
-        addresses_for_bind, advertise_host, get_local_addresses, is_advertisable_ipv4,
-    };
+    use super::{addresses_for_bind, advertise_host, get_local_addresses, is_advertisable_ipv4};
     use std::net::{Ipv4Addr, SocketAddr};
 
     #[test]
@@ -1094,7 +1099,10 @@ mod local_address_tests {
         );
         // A wildcard bind stays wildcard, so addresses_for_bind still enumerates.
         assert_eq!(
-            advertise_host(Some("0.0.0.0:3080".parse::<SocketAddr>().unwrap()), "0.0.0.0"),
+            advertise_host(
+                Some("0.0.0.0:3080".parse::<SocketAddr>().unwrap()),
+                "0.0.0.0"
+            ),
             "0.0.0.0"
         );
         // End to end: a `localhost` config advertises only loopback, never LAN.

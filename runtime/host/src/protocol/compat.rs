@@ -42,6 +42,7 @@ pub const CAPABILITIES: &[&str] = &[
     "host.update",
     "host.diagnostics",
     "agent.auth",
+    "workspace.publish",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or

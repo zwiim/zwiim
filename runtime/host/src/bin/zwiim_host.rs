@@ -33,7 +33,10 @@ fn main() -> ExitCode {
             eprintln!("usage: zwiim-host --verify-release <release.json> <release.json.sig>");
             return ExitCode::from(2);
         };
-        return match zwiim_host::update::service::verify_release_files(manifest.as_ref(), sig.as_ref()) {
+        return match zwiim_host::update::service::verify_release_files(
+            manifest.as_ref(),
+            sig.as_ref(),
+        ) {
             Ok(version) => {
                 println!("release {version}: signature and manifest verified");
                 ExitCode::SUCCESS
@@ -175,7 +178,8 @@ fn main() -> ExitCode {
     // One Host per data directory, decided before anything opens the
     // database: a second Host exits here, leaving the database, its
     // migrations and the discovery file to the one already running.
-    let instance_lock = match zwiim_host::host_lifecycle::InstanceLock::acquire(&resolved_data_dir) {
+    let instance_lock = match zwiim_host::host_lifecycle::InstanceLock::acquire(&resolved_data_dir)
+    {
         Ok(lock) => lock,
         Err(zwiim_host::host_lifecycle::LockError::Held { pid }) => {
             let holder = pid.map(|p| format!(" (pid {p})")).unwrap_or_default();
@@ -243,7 +247,10 @@ fn reexec() -> ExitCode {
 #[cfg(not(unix))]
 fn reexec() -> ExitCode {
     let exe = zwiim_host::update::runtime::self_exe();
-    match std::process::Command::new(exe).args(std::env::args_os().skip(1)).spawn() {
+    match std::process::Command::new(exe)
+        .args(std::env::args_os().skip(1))
+        .spawn()
+    {
         Ok(_) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("[SERVER] Restart failed: {err}");
@@ -292,9 +299,13 @@ async fn async_main() -> Exit {
         Ok(db) => db,
         Err(e @ zwiim_host::db::error::DbError::NewerSchema(_)) => {
             // Never run on (or downgrade) data this version cannot read.
-            tracing::error!("[SERVER] {e}. Install that version of Zwiim or newer; the data was not changed.");
+            tracing::error!(
+                "[SERVER] {e}. Install that version of Zwiim or newer; the data was not changed."
+            );
             eprintln!("[SERVER] This data was written by a newer version of Zwiim. Install that version or newer; nothing was changed.");
-            return Exit::Code(ExitCode::from(zwiim_host::host_lifecycle::EXIT_DATA_TOO_NEW));
+            return Exit::Code(ExitCode::from(
+                zwiim_host::host_lifecycle::EXIT_DATA_TOO_NEW,
+            ));
         }
         Err(e) => {
             tracing::error!("[SERVER] Failed to initialize database: {e}");
@@ -435,6 +446,7 @@ async fn async_main() -> Exit {
         cloud: Arc::new(zwiim_host::cloud::CloudLink::from_env()),
         lan: Arc::new(zwiim_host::lan::LanLink::from_env()),
         lifecycle: Default::default(),
+        gh: None,
     });
 
     // Load (first boot: mint) the host's identity keys off the startup path.
@@ -542,11 +554,13 @@ async fn async_main() -> Exit {
             Arc::new(zwiim_host::acp::manager::ConnectionManagerQuestionLookup {
                 manager: Arc::new(state.connection_manager.clone_ref()),
             }),
-            Arc::new(zwiim_host::commands::session_info::DbSessionInfoLookup::new(
-                Arc::new(zwiim_host::db::AppDatabase {
-                    conn: state.db.conn.clone(),
-                }),
-            )),
+            Arc::new(
+                zwiim_host::commands::session_info::DbSessionInfoLookup::new(Arc::new(
+                    zwiim_host::db::AppDatabase {
+                        conn: state.db.conn.clone(),
+                    },
+                )),
+            ),
             Arc::new(zwiim_host::acp::work_task_tools::NoWorkTaskTools),
             Arc::new(zwiim_host::commands::chat_authoring::DbChatAuthoring::new(
                 Arc::new(zwiim_host::db::AppDatabase {
@@ -659,8 +673,8 @@ async fn async_main() -> Exit {
         };
         let emitter = state.emitter.clone();
         tokio::spawn(async move {
-            let n =
-                zwiim_host::commands::folders::backfill_worktree_folder_aliases(&emitter, &db).await;
+            let n = zwiim_host::commands::folders::backfill_worktree_folder_aliases(&emitter, &db)
+                .await;
             if n > 0 {
                 tracing::info!("[folders] labeled {n} worktree folder(s) by branch");
             }
@@ -685,7 +699,10 @@ async fn async_main() -> Exit {
     // Device tunnels on a loopback address, for local verification only
     // (remote devices reach a host through the Cloud relay). Off unless
     // `ZWIIM_TUNNEL_TEST_ADDR` is set.
-    if let Some(addr) = std::env::var("ZWIIM_TUNNEL_TEST_ADDR").ok().filter(|s| !s.is_empty()) {
+    if let Some(addr) = std::env::var("ZWIIM_TUNNEL_TEST_ADDR")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
         let addr: std::net::SocketAddr = match addr.parse() {
             Ok(addr) => addr,
             Err(e) => {
@@ -698,7 +715,8 @@ async fn async_main() -> Exit {
         let (state, shutdown) = (state.clone(), shutdown_signal.clone());
         tokio::spawn(async move {
             if let Err(e) =
-                zwiim_host::tunnel::host::serve_test_listener(addr, state, tunnel_router, shutdown).await
+                zwiim_host::tunnel::host::serve_test_listener(addr, state, tunnel_router, shutdown)
+                    .await
             {
                 tracing::error!("[SERVER] Tunnel test listener on {addr} failed: {e}");
             }
@@ -749,9 +767,11 @@ async fn async_main() -> Exit {
     // Publish runtime state so the settings page (served by us) shows
     // the truth — running on `actual_port` with this token — instead of
     // the placeholder "stopped" that triggers the stale-port banner.
-    state
-        .web_server_state
-        .mark_externally_running(advertised_host.clone(), actual_port, token.clone());
+    state.web_server_state.mark_externally_running(
+        advertised_host.clone(),
+        actual_port,
+        token.clone(),
+    );
     let addresses = addresses_for_bind(&advertised_host, actual_port);
 
     // Local discovery for a desktop client on this machine (owner-only file;

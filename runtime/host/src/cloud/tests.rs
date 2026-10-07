@@ -316,8 +316,8 @@ async fn a_remote_device_uses_the_host_through_the_relay() {
     let history = ok(&h, &c, "session.history", json!({"session_id": sid})).await;
     assert_eq!((200, history), direct(&h, "session.history", json!({"session_id": sid})).await);
 
-    // A terminal, with its output streamed back.
-    let tid = ok(&h, &c, "terminal.spawn", json!({"workspace_id": wid, "shell": "/bin/sh"})).await["terminal_id"]
+    // A terminal, with its output streamed back; terminals never run in the root.
+    let tid = ok(&h, &c, "terminal.spawn", json!({"workspace_id": h.wt_workspace_id, "shell": "/bin/sh"})).await["terminal_id"]
         .as_str()
         .unwrap()
         .to_string();

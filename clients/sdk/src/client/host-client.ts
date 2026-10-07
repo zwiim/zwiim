@@ -360,8 +360,15 @@ export class HostClient {
    * Run one operation. Mutating operations are sent at most once: if the
    * connection drops mid-request the error is `unknown_outcome` and the
    * caller should refresh host state rather than resend.
+   *
+   * `opts.timeoutMs` overrides the transport's default, for calls known to
+   * run long (publishing a new GitHub repository on add).
    */
-  async request<O extends OpName>(op: O, params: OpParams<O>): Promise<OpResult<O>> {
+  async request<O extends OpName>(
+    op: O,
+    params: OpParams<O>,
+    opts?: { timeoutMs?: number },
+  ): Promise<OpResult<O>> {
     if (this.stateValue.status === "incompatible" && !ALLOWED_WHEN_INCOMPATIBLE.has(op)) {
       throw new ZwiimClientError(
         "update_required",
@@ -374,6 +381,7 @@ export class HostClient {
     try {
       const result = (await transport.request(op, params, {
         mutating: MUTATING_OPS.has(op),
+        ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       })) as OpResult<O>;
       return decodeResult(op, result);
     } catch (e) {

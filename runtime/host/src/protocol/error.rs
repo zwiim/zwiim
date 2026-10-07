@@ -178,6 +178,24 @@ impl ZwiimError {
         )
     }
 
+    /// `workspace.add` with `publish`: GitHub refused creating the
+    /// repository, or it was created and the push failed
+    /// (`created_on_github`). The folder is as it was; gh's words stay in
+    /// the Host log.
+    pub fn publish_failed(created_on_github: bool) -> Self {
+        let mut e = Self::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "publish_failed",
+            if created_on_github {
+                "The repository was created on GitHub, but pushing to it failed. Choose another name to try again."
+            } else {
+                "GitHub did not create this repository. Try another owner or name."
+            },
+        );
+        e.details = Some(serde_json::json!({ "created_on_github": created_on_github }));
+        e
+    }
+
     /// Pull request `number` has not merged (`state`: `open`, `draft` or
     /// `closed`); only a merged one can be continued from.
     pub fn pr_not_merged(number: u64, state: &str) -> Self {
@@ -261,6 +279,16 @@ impl ZwiimError {
             StatusCode::BAD_GATEWAY,
             "agent_auth_failed",
             "The agent's sign-in could not be changed on the host",
+        )
+    }
+
+    /// Sessions and terminals run in a worktree; a root workspace (the
+    /// repository folder) is never their working directory.
+    pub fn root_workspace() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            "root_workspace",
+            "Sessions run in a worktree, not in the repository folder",
         )
     }
 

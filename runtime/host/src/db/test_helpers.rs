@@ -64,6 +64,16 @@ pub async fn seed_folder(db: &AppDatabase, path: &str) -> i32 {
         .id
 }
 
+/// A worktree folder row (with a root row `{path}-root` as its parent), for
+/// tests that launch: sessions never run in a root.
+pub async fn seed_worktree_folder(db: &AppDatabase, path: &str) -> i32 {
+    let root = seed_folder(db, &format!("{path}-root")).await;
+    folder_service::add_folder_with_parent(&db.conn, path, Some(root))
+        .await
+        .expect("seed worktree folder")
+        .id
+}
+
 pub async fn seed_conversation(db: &AppDatabase, folder_id: i32, agent_type: AgentType) -> i32 {
     conversation_service::create(&db.conn, folder_id, agent_type, None, None)
         .await

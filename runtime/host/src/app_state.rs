@@ -95,6 +95,9 @@ pub struct AppState {
     pub lan: Arc<crate::lan::LanLink>,
     /// Drain and restart state for this process (see `host_lifecycle`).
     pub lifecycle: Arc<crate::host_lifecycle::Lifecycle>,
+    /// The `gh` the Host runs to read the GitHub account and publish
+    /// repositories; `None` finds the user's installed one.
+    pub gh: Option<PathBuf>,
 }
 
 pub fn default_system_op_lock() -> Arc<tokio::sync::Mutex<()>> {
@@ -156,10 +159,9 @@ pub fn build_delegation_stack(
     }) as Arc<dyn ConnectionSpawner>;
     let depth_lookup =
         Arc::new(DbDepthLookup { db: db_arc.clone() }) as Arc<dyn ConversationDepthLookup>;
-    let agent_availability = Arc::new(crate::acp::connection::DbAgentAvailabilityLookup {
-        db: db_arc.clone(),
-    })
-        as Arc<dyn crate::acp::connection::AgentAvailabilityLookup>;
+    let agent_availability =
+        Arc::new(crate::acp::connection::DbAgentAvailabilityLookup { db: db_arc.clone() })
+            as Arc<dyn crate::acp::connection::AgentAvailabilityLookup>;
     let status_lookup = Arc::new(DbChildStatusLookup { db: db_arc }) as Arc<dyn ChildStatusLookup>;
     let meta_writer = Arc::new(ConnectionManagerMetaWriter {
         manager: cm_arc.clone(),
@@ -207,7 +209,14 @@ pub fn build_delegation_stack(
     });
 
     (
-        broker, tokens, socket_path, feedback, ask, sessions, authoring, browser,
+        broker,
+        tokens,
+        socket_path,
+        feedback,
+        ask,
+        sessions,
+        authoring,
+        browser,
     )
 }
 
@@ -283,6 +292,7 @@ impl AppState {
             cloud: Default::default(),
             lan: Default::default(),
             lifecycle: Default::default(),
+            gh: None,
         }
     }
 }

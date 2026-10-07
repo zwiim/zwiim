@@ -3,7 +3,7 @@ import { HostController } from "../src/client/controller";
 import { busyDetails, dirtyDetails, largeFolderDetails, largeFolderText, ZwiimClientError } from "../src/client/errors";
 import { HostClient } from "../src/client/host-client";
 import { reduceHost, initialHostState, type HostState } from "../src/state/store";
-import { buildWorkspaceTree, selectWorkspaceTree } from "../src/state/workspaces";
+import { buildWorkspaceTree, openTarget, selectWorkspaceTree } from "../src/state/workspaces";
 import { LocalTransport } from "../src/transport/local";
 import type { SessionSummary, WorkspaceInfo } from "../src/types/protocol";
 import { FakeTransport, flush } from "./fakes";
@@ -128,6 +128,38 @@ describe("workspace tree", () => {
     let s = stateWith([root, wt("a")], { root: [], a: [session("s1", "a")] });
     s = reduceHost(s, { type: "workspaces", workspaces: [root] });
     expect(Object.keys(s.sessionsByWorkspace)).toEqual(["root"]);
+  });
+});
+
+describe("openTarget", () => {
+  it("opens the worktree whose newest session was prompted last", () => {
+    const state = stateWith(
+      [root, wt("a"), wt("b"), wt("c")],
+      {
+        a: [session("s1", "a", { updated_at: "2026-10-06T10:00:00Z" }), session("s3", "a", { updated_at: "2026-10-06T11:00:00Z" })],
+        b: [session("s2", "b", { updated_at: "2026-10-06T12:00:00Z" })],
+      },
+    );
+    expect(openTarget(state, "root")?.workspace_id).toBe("b");
+  });
+
+  it("falls back to the last live worktree, skipping removed ones", () => {
+    const state = stateWith([root, wt("a"), wt("b"), wt("c", { removed: true })], {});
+    expect(openTarget(state, "root")?.workspace_id).toBe("b");
+  });
+
+  it("never returns the root or another root's worktree", () => {
+    const other = { ...root, workspace_id: "other" };
+    const state = stateWith([root, other, wt("x", { parent_workspace_id: "other" })], {});
+    expect(openTarget(state, "root")).toBeNull();
+  });
+
+  it("ignores sessions of a removed worktree", () => {
+    const state = stateWith(
+      [root, wt("a"), wt("gone", { removed: true })],
+      { gone: [session("s1", "gone", { updated_at: "2026-10-06T12:00:00Z" })] },
+    );
+    expect(openTarget(state, "root")?.workspace_id).toBe("a");
   });
 });
 

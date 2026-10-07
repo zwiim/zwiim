@@ -24,6 +24,35 @@ target/
 __pycache__/
 ";
 
+/// The author of a repository Zwiim publishes: the signed-in GitHub account
+/// with its no-reply email, so a private email never reaches a commit and
+/// GitHub's email-privacy push check never refuses one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Identity {
+    pub name: String,
+    pub email: String,
+}
+
+impl Identity {
+    pub(crate) fn from_account(account: &crate::git_harness::GithubAccount) -> Self {
+        let name = account
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .unwrap_or(&account.login)
+            .to_string();
+        Self {
+            name,
+            email: format!("{}+{}@users.noreply.github.com", account.id, account.login),
+        }
+    }
+}
+
+/// Never pushed by a published first commit, whatever the folder's own
+/// `.gitignore` says.
+const SECRET_EXCLUDES: &str = ".env\n.env.*\n*.pem\n*.key\n";
+
 /// A first commit over either limit waits for the user to confirm it.
 pub(crate) const LARGE_FOLDER_FILES: u64 = 5_000;
 pub(crate) const LARGE_FOLDER_BYTES: u64 = 500 * 1024 * 1024;
@@ -184,6 +213,11 @@ async fn exclude_unborn_nested(path: &Path, env: &[(&str, &str)]) -> Result<(), 
     if lines.is_empty() {
         return Ok(());
     }
+    append_exclude(path, &lines).await
+}
+
+/// Append `lines` to the repository's `.git/info/exclude`.
+async fn append_exclude(path: &Path, lines: &str) -> Result<(), String> {
     let info = path.join(".git").join("info");
     tokio::fs::create_dir_all(&info)
         .await
@@ -225,13 +259,30 @@ async fn init_repository_with(
     path: &Path,
     env: &[(&str, &str)],
 ) -> Result<Option<Created>, String> {
+    init_repository_as(path, env, None).await
+}
+
+/// [`init_repository`] for a repository about to be published: authored as
+/// `identity` (set in its own config) and with [`SECRET_EXCLUDES`].
+pub(crate) async fn init_published_repository(
+    path: &Path,
+    identity: &Identity,
+) -> Result<Option<Created>, String> {
+    init_repository_as(path, &[], Some(identity)).await
+}
+
+async fn init_repository_as(
+    path: &Path,
+    env: &[(&str, &str)],
+    identity: Option<&Identity>,
+) -> Result<Option<Created>, String> {
     if has_git(path) {
         return Ok(None);
     }
     let mut created = Created {
         wrote_gitignore: false,
     };
-    match first_commit(path, env, &mut created).await {
+    match first_commit(path, env, identity, &mut created).await {
         Ok(()) => Ok(Some(created)),
         Err(e) => {
             rollback(path, created).await;
@@ -243,6 +294,7 @@ async fn init_repository_with(
 async fn first_commit(
     path: &Path,
     env: &[(&str, &str)],
+    identity: Option<&Identity>,
     created: &mut Created,
 ) -> Result<(), String> {
     let gitignore = path.join(".gitignore");
@@ -257,6 +309,21 @@ async fn first_commit(
         .await
         .map_err(|e| format!("writing the init marker: {e}"))?;
     git(path, env, &["init", "-q", "-b", "main"]).await?;
+    if let Some(identity) = identity {
+        git(
+            path,
+            env,
+            &["config", "--local", "user.name", &identity.name],
+        )
+        .await?;
+        git(
+            path,
+            env,
+            &["config", "--local", "user.email", &identity.email],
+        )
+        .await?;
+        append_exclude(path, SECRET_EXCLUDES).await?;
+    }
     if write_gitignore {
         // Marked before writing: nothing was there, so even a partly written
         // file is ours for rollback to remove.
@@ -303,6 +370,45 @@ pub(crate) async fn recover_interrupted(path: &Path) -> bool {
     }
 }
 
+/// Give an existing repository `identity` unless its own config already
+/// names a `user.name` or `user.email`. `true` if this call set it.
+pub(crate) async fn set_identity_if_unset(
+    path: &Path,
+    identity: &Identity,
+) -> Result<bool, String> {
+    for key in ["user.name", "user.email"] {
+        match git(path, &[], &["config", "--local", "--get", key]).await {
+            Ok(value) if !value.trim().is_empty() => return Ok(false),
+            _ => {}
+        }
+    }
+    git(
+        path,
+        &[],
+        &["config", "--local", "user.name", &identity.name],
+    )
+    .await?;
+    git(
+        path,
+        &[],
+        &["config", "--local", "user.email", &identity.email],
+    )
+    .await?;
+    Ok(true)
+}
+
+/// Undo [`set_identity_if_unset`].
+pub(crate) async fn unset_identity(path: &Path) {
+    for key in ["user.name", "user.email"] {
+        let _ = git(path, &[], &["config", "--local", "--unset", key]).await;
+    }
+}
+
+/// An `init_repository` the Host stopped in left `path` half-made.
+pub(crate) fn interrupted(path: &Path) -> bool {
+    path.join(".git").join(IN_PROGRESS).exists()
+}
+
 /// Both `user.name` and `user.email` resolve in the new repository (global,
 /// system or `includeIf` config).
 async fn has_identity(path: &Path, env: &[(&str, &str)]) -> bool {
@@ -320,7 +426,11 @@ async fn has_identity(path: &Path, env: &[(&str, &str)]) -> bool {
 const GIT_STEP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// Run git in `path`; stdout on success, else a log-only message with stderr.
-async fn git(path: &Path, env: &[(&str, &str)], args: &[&str]) -> Result<String, String> {
+pub(super) async fn git(
+    path: &Path,
+    env: &[(&str, &str)],
+    args: &[&str],
+) -> Result<String, String> {
     let mut cmd = crate::process::tokio_command("git");
     cmd.args(args)
         .current_dir(path)
@@ -394,6 +504,17 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
         String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn git_fails(dir: &Path, cfg: &Config, args: &[&str]) -> bool {
+        !std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .envs(cfg.env())
+            .output()
+            .unwrap()
+            .status
+            .success()
     }
 
     fn committed(dir: &Path, cfg: &Config) -> Vec<String> {
@@ -560,6 +681,102 @@ mod tests {
         assert_eq!(
             git(&path, &cfg, &["log", "--format=%an <%ae>"]),
             "t <t@example.com>"
+        );
+    }
+
+    fn octo() -> Identity {
+        Identity::from_account(&crate::git_harness::GithubAccount {
+            login: "octo".into(),
+            id: 42,
+            name: Some("Octo Cat".into()),
+        })
+    }
+
+    #[test]
+    fn identity_is_the_account_with_its_noreply_email() {
+        assert_eq!(octo().name, "Octo Cat");
+        assert_eq!(octo().email, "42+octo@users.noreply.github.com");
+        for name in [None, Some("  ".to_string())] {
+            let id = Identity::from_account(&crate::git_harness::GithubAccount {
+                login: "octo".into(),
+                id: 42,
+                name,
+            });
+            assert_eq!(id.name, "octo");
+        }
+    }
+
+    #[tokio::test]
+    async fn published_first_commit_is_authored_as_the_account() {
+        let cfg = config("");
+        let (_d, path) = folder();
+        std::fs::write(path.join("a.txt"), "a").unwrap();
+        init_repository_as(&path, &cfg.env(), Some(&octo()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            git(&path, &cfg, &["log", "--format=%an <%ae>"]),
+            "Octo Cat <42+octo@users.noreply.github.com>"
+        );
+        assert_eq!(
+            git(&path, &cfg, &["config", "--local", "user.email"]),
+            "42+octo@users.noreply.github.com"
+        );
+    }
+
+    #[tokio::test]
+    async fn published_init_never_commits_secrets_a_gitignore_forgets() {
+        let cfg = config(IDENTITY);
+        let (_d, path) = folder();
+        std::fs::write(path.join(".gitignore"), "target\n").unwrap();
+        for f in [".env", ".env.local", "key.pem", "id.key", "a.txt"] {
+            std::fs::write(path.join(f), "x").unwrap();
+        }
+        init_repository_as(&path, &cfg.env(), Some(&octo()))
+            .await
+            .unwrap()
+            .unwrap();
+        let files = git(&path, &cfg, &["ls-files"]);
+        let files: Vec<&str> = files.lines().collect();
+        assert_eq!(files, [".gitignore", "a.txt"]);
+    }
+
+    #[tokio::test]
+    async fn plain_init_keeps_its_fallback_author_and_no_secret_excludes() {
+        let cfg = config("");
+        let (_d, path) = folder();
+        init_repository_with(&path, &cfg.env())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(git(&path, &cfg, &["log", "--format=%an"]), "Zwiim");
+        let exclude = std::fs::read_to_string(path.join(".git/info/exclude")).unwrap_or_default();
+        assert!(!exclude.contains(".env"), "{exclude}");
+    }
+
+    #[tokio::test]
+    async fn identity_is_set_only_where_the_repository_has_none() {
+        let cfg = config("");
+        let (_d, path) = folder();
+        git(&path, &cfg, &["init", "-q", "-b", "main"]);
+        assert!(set_identity_if_unset(&path, &octo()).await.unwrap());
+        assert_eq!(
+            git(&path, &cfg, &["config", "--local", "user.name"]),
+            "Octo Cat"
+        );
+        unset_identity(&path).await;
+        assert!(git_fails(&path, &cfg, &["config", "--local", "user.name"]));
+
+        git(
+            &path,
+            &cfg,
+            &["config", "--local", "user.email", "me@example.com"],
+        );
+        assert!(!set_identity_if_unset(&path, &octo()).await.unwrap());
+        assert_eq!(
+            git(&path, &cfg, &["config", "--local", "user.email"]),
+            "me@example.com"
         );
     }
 

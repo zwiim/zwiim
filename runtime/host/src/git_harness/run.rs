@@ -19,8 +19,13 @@ pub(super) const READ: Duration = Duration::from_secs(30);
 pub(super) const WRITE: Duration = Duration::from_secs(120);
 /// Talking to a remote, hooks included.
 pub(super) const REMOTE: Duration = Duration::from_secs(180);
-/// One `gh` call.
+/// One `gh` call that creates or changes something (`repo create --push`).
 pub(super) const GITHUB: Duration = Duration::from_secs(60);
+/// A read-only `gh` call (account lookup, orgs, "does this repo exist"):
+/// short, so a packet-dropping network fails fast instead of holding the
+/// caller's own timeout (the SDK client's request timeout is 60s, and
+/// `workspace.inspect` makes two of these in sequence).
+pub(super) const GITHUB_READ: Duration = Duration::from_secs(15);
 
 pub(super) struct Output {
     pub status: ExitStatus,

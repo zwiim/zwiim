@@ -1166,6 +1166,7 @@ mod tests {
             &f.state.emitter,
             other.to_str().unwrap(),
             false,
+            None,
         )
         .await
         .unwrap();
@@ -1193,6 +1194,7 @@ mod tests {
             &f.state.emitter,
             other.to_str().unwrap(),
             false,
+            None,
         )
         .await
         .unwrap();

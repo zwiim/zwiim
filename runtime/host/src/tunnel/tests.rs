@@ -363,7 +363,7 @@ async fn sessions_send_and_history_through_the_tunnel() {
         (200, history),
         direct(&h, "session.history", json!({"session_id": sid})).await
     );
-    let list = ok(&h, &c, "session.list", json!({"workspace_id": h.workspace_id})).await;
+    let list = ok(&h, &c, "session.list", json!({"workspace_id": h.wt_workspace_id})).await;
     assert!(list.as_array().unwrap().iter().any(|s| s["session_id"] == sid.as_str() && s["live"] == true));
 }
 
@@ -377,7 +377,7 @@ async fn terminals_through_the_tunnel() {
         &h,
         &c,
         "terminal.spawn",
-        json!({"workspace_id": h.workspace_id, "shell": "/bin/sh"}),
+        json!({"workspace_id": h.wt_workspace_id, "shell": "/bin/sh"}),
     )
     .await;
     let tid = spawned["terminal_id"].as_str().unwrap().to_string();
@@ -417,7 +417,7 @@ async fn terminals_through_the_tunnel() {
         &h,
         &c,
         "terminal.spawn",
-        json!({"workspace_id": h.workspace_id, "shell": "/bin/sh"}),
+        json!({"workspace_id": h.wt_workspace_id, "shell": "/bin/sh"}),
     )
     .await["terminal_id"]
         .clone();
@@ -456,7 +456,7 @@ async fn the_host_feed_through_the_tunnel_converges_with_local_clients() {
     let tid = h
         .ok(
             "terminal.spawn",
-            json!({"workspace_id": h.workspace_id, "shell": "/bin/sh"}),
+            json!({"workspace_id": wid, "shell": "/bin/sh"}),
         )
         .await["terminal_id"]
         .clone();

@@ -280,6 +280,9 @@ pub async fn start<L: AgentLauncher>(
     let preferred =
         crate::session_options::preferred_for_start(&db.conn, agent_type, options).await?;
     let (folder, launching) = crate::workspace::resolve_for_launch(&db.conn, workspace_id).await?;
+    if folder.parent_id.is_none() {
+        return Err(ZwiimError::root_workspace());
+    }
     // `launching` is held through the first prompt, so the new agent's turn
     // is under way before anything can change the workspace's branch.
     let connection_id = launcher
@@ -371,6 +374,9 @@ pub async fn send<L: AgentLauncher>(
     // between its busy check and this turn starting. Never resume in a removed
     // worktree, nor anywhere else instead of it.
     let (folder, _entered) = crate::workspace::begin_launch(&db.conn, row.folder_id).await?;
+    if folder.parent_id.is_none() {
+        return Err(ZwiimError::root_workspace());
+    }
     let (connection_id, spawned) = ensure_live(db, connections, launcher, &row, &folder).await?;
     // Branch A of `send_prompt_linked`: a freshly resumed connection adopts
     // this row; an already-linked one ignores both ids.
@@ -871,7 +877,7 @@ pub(crate) mod orchestration_tests {
     use crate::acp::connection::ConnectionCommand;
     use crate::acp::question::{QuestionOption, QuestionSpec};
     use crate::acp::types::{AcpEvent, PermissionOptionInfo};
-    use crate::db::test_helpers::{fresh_in_memory_db, seed_folder};
+    use crate::db::test_helpers::{fresh_in_memory_db, seed_worktree_folder};
     use crate::web::event_bridge::{emit_with_state, EventEmitter};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -968,7 +974,7 @@ pub(crate) mod orchestration_tests {
     pub(crate) async fn workspace(db: &AppDatabase) -> String {
         let dir = std::env::temp_dir().join(format!("zwiim-orch-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let folder = seed_folder(db, dir.to_str().unwrap()).await;
+        let folder = seed_worktree_folder(db, dir.to_str().unwrap()).await;
         crate::workspace::workspace_id_of(&db.conn, folder)
             .await
             .unwrap()

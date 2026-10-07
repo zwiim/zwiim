@@ -16,15 +16,20 @@ import type {
   PrEntry,
   PrMerged,
   PrState,
+  PublishTarget,
   SessionOptions,
   WorkspaceDiff,
   WorkspaceInfo,
+  WorkspaceInspection,
   WorktreeRemoved,
 } from "../types/protocol";
 import type { HostClient } from "./host-client";
 
 /** Waits before re-reading a transcript that does not yet hold a finished turn. */
 const HISTORY_SETTLE_DELAYS_MS = [250, 500, 1000, 2000];
+
+/** `workspace.add` with `publish`: creating the GitHub repo and pushing can run long. */
+const PUBLISH_TIMEOUT_MS = 330_000;
 
 /** Frames after which `session.history` may include more turns. */
 function transcriptMayHaveChanged(frame: SessionFrame): boolean {
@@ -54,6 +59,21 @@ function carriesOptions(frame: SessionFrame): boolean {
     default:
       return false;
   }
+}
+
+export interface AddOptions {
+  /** Confirmed after a `large_folder` refusal (or the publish dialog's size line). */
+  allowLarge?: boolean;
+  /** Create this private GitHub repository from the folder. */
+  publish?: PublishTarget;
+}
+
+/** Only the options set, so an older Host's strict params never see a new key. */
+function addParams(opts: AddOptions): { allow_large?: true; publish?: PublishTarget } {
+  return {
+    ...(opts.allowLarge ? { allow_large: true as const } : {}),
+    ...(opts.publish ? { publish: opts.publish } : {}),
+  };
 }
 
 export class HostController {
@@ -158,15 +178,38 @@ export class HostController {
     await Promise.allSettled(ids.map((id) => this.refreshSessions(id)));
   }
 
-  async addWorkspace(path: string, opts: { allowLarge?: boolean } = {}): Promise<WorkspaceInfo> {
-    const workspace = await this.client.request("workspace.add", { path, ...(opts.allowLarge ? { allow_large: true } : {}) });
+  /** What a folder is before adding it: Git state, first-commit size, GitHub owners. Touches nothing. */
+  async inspectWorkspace(path: string): Promise<WorkspaceInspection> {
+    return this.client.request("workspace.inspect", { path });
+  }
+
+  /** `inspectWorkspace`, by folder names under the host user's home (from `workspace.browse`). */
+  async inspectWorkspaceAt(home_path: string[]): Promise<WorkspaceInspection> {
+    return this.client.request("workspace.inspect", { home_path });
+  }
+
+  /** Whether `owner/name` is free on GitHub for the Host's signed-in account. */
+  async repoAvailable(owner: string, name: string): Promise<boolean> {
+    return (await this.client.request("github.repo_available", { owner, name })).available;
+  }
+
+  async addWorkspace(path: string, opts: AddOptions = {}): Promise<WorkspaceInfo> {
+    const workspace = await this.client.request(
+      "workspace.add",
+      { path, ...addParams(opts) },
+      opts.publish ? { timeoutMs: PUBLISH_TIMEOUT_MS } : undefined,
+    );
     this.store.dispatch({ type: "workspace_added", workspace });
     return workspace;
   }
 
   /** Add the folder named by `home_path` (folder names under the host user's home, from `workspace.browse`). */
-  async addWorkspaceAt(home_path: string[], opts: { allowLarge?: boolean } = {}): Promise<WorkspaceInfo> {
-    const workspace = await this.client.request("workspace.add", { home_path, ...(opts.allowLarge ? { allow_large: true } : {}) });
+  async addWorkspaceAt(home_path: string[], opts: AddOptions = {}): Promise<WorkspaceInfo> {
+    const workspace = await this.client.request(
+      "workspace.add",
+      { home_path, ...addParams(opts) },
+      opts.publish ? { timeoutMs: PUBLISH_TIMEOUT_MS } : undefined,
+    );
     this.store.dispatch({ type: "workspace_added", workspace });
     return workspace;
   }

@@ -33,8 +33,13 @@ use crate::protocol::error::ZwiimError;
 use crate::terminal::manager::TerminalManager;
 use crate::web::event_bridge::EventEmitter;
 
+mod env_files;
 mod names;
+mod publish;
 mod repo_init;
+
+pub(crate) use publish::check_target;
+pub use publish::{inspect, GitState, Inspection, Publish};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -395,17 +400,9 @@ pub async fn list(conn: &DatabaseConnection) -> Result<Vec<WorkspaceInfo>, AppCo
         .collect())
 }
 
-/// Register the host directory `path` as a workspace through the existing
-/// open-folder path. Re-adding a known (or previously removed) directory
-/// revives its row, which keeps its original `workspace_id`. A folder with no
-/// `.git` is first made a repository with one "Initial Commit"; if that commit
-/// would be large it is refused with `large_folder` unless `allow_large`.
-pub async fn add(
-    db: &AppDatabase,
-    emitter: &EventEmitter,
-    path: &str,
-    allow_large: bool,
-) -> Result<WorkspaceInfo, ZwiimError> {
+/// `path` as `add` takes it: absolute, an existing directory, canonical, and
+/// not a Host-internal folder.
+pub(crate) async fn canonical_for_add(db: &AppDatabase, path: &str) -> Result<PathBuf, ZwiimError> {
     let requested = Path::new(path);
     if !requested.is_absolute() {
         return Err(AppCommandError::invalid_input("Path must be absolute").into());
@@ -426,6 +423,24 @@ pub async fn add(
     if known.is_some_and(|r| r.kind != FolderKind::Regular) {
         return Err(not_a_workspace().into());
     }
+    Ok(canonical)
+}
+
+/// Register the host directory `path` as a workspace through the existing
+/// open-folder path. Re-adding a known (or previously removed) directory
+/// revives its row, which keeps its original `workspace_id`. A folder with no
+/// `.git` is first made a repository with one "Initial Commit"; if that commit
+/// would be large it is refused with `large_folder` unless `allow_large`.
+/// `publish`: also create a private GitHub repository, set it as `origin`
+/// and push, before registering.
+pub async fn add(
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+    path: &str,
+    allow_large: bool,
+    publish: Option<Publish>,
+) -> Result<WorkspaceInfo, ZwiimError> {
+    let canonical = canonical_for_add(db, path).await?;
 
     // Spawned so that it completes, or rolls back, even if the request is
     // dropped mid-way.
@@ -433,7 +448,7 @@ pub async fn add(
     let emitter = emitter.clone();
     tokio::spawn(async move {
         let db = AppDatabase { conn };
-        init_and_register(&db, &emitter, canonical, allow_large).await
+        init_and_register(&db, &emitter, canonical, allow_large, publish).await
     })
     .await
     .map_err(|e| {
@@ -454,19 +469,35 @@ pub(crate) async fn repo_init_lock() -> tokio::sync::MutexGuard<'static, ()> {
 
 /// Under the repository-init lock: make `canonical` a repository unless it
 /// already has `.git` (refusing a large first commit without `allow_large`;
-/// an init the Host stopped in is undone and redone), then register it,
-/// undoing the init if registering fails.
+/// an init the Host stopped in is undone and redone), publish it when asked,
+/// then register it, undoing the init if registering fails (a repository
+/// `publish` already put on GitHub is never undone).
 async fn init_and_register(
     db: &AppDatabase,
     emitter: &EventEmitter,
     canonical: PathBuf,
     allow_large: bool,
+    publish: Option<Publish>,
 ) -> Result<WorkspaceInfo, ZwiimError> {
     let _init = repo_init_lock().await;
     if repo_init::recover_interrupted(&canonical).await {
         tracing::info!("[workspace] add: undid an unfinished repository init");
     }
-    let created = if repo_init::has_git(&canonical) {
+    let repo = canonical.to_string_lossy().into_owned();
+    let had_git = repo_init::has_git(&canonical);
+    let identity = match &publish {
+        Some(p) => {
+            check_target(&p.owner, &p.name)?;
+            if had_git && has_origin(&repo).await {
+                return Err(ZwiimError::invalid_input(
+                    "This folder already has a GitHub remote",
+                ));
+            }
+            Some(publish::account(p, &repo).await?)
+        }
+        None => None,
+    };
+    let mut created = if had_git {
         None
     } else {
         let dir = canonical.clone();
@@ -483,13 +514,22 @@ async fn init_and_register(
                 size.at_least,
             ));
         }
-        repo_init::init_repository(&canonical).await.map_err(|e| {
+        let made = match &identity {
+            Some(identity) => repo_init::init_published_repository(&canonical, identity).await,
+            None => repo_init::init_repository(&canonical).await,
+        };
+        made.map_err(|e| {
             tracing::warn!("[workspace] making a Git repository failed: {e}");
             ZwiimError::repository_init_failed()
         })?
     };
+    if let (Some(p), Some(identity)) = (&publish, &identity) {
+        publish::publish(&canonical, p, identity, created).await?;
+        // On GitHub now: a registration failure must not delete it.
+        created = None;
+    }
 
-    match register(db, canonical.to_string_lossy().into_owned()).await {
+    match register(db, repo).await {
         Ok((detail, row)) => {
             folders::emit_folder_upsert(emitter, detail);
             Ok(info(&db.conn, row).await?)
@@ -585,7 +625,10 @@ pub async fn init_plain_roots(db: &AppDatabase, emitter: &EventEmitter) {
                 continue;
             }
             if let Err(e) = repo_init::init_repository(&path).await {
-                tracing::warn!("[workspace] making {} a Git repository failed: {e}", row.path);
+                tracing::warn!(
+                    "[workspace] making {} a Git repository failed: {e}",
+                    row.path
+                );
                 continue;
             }
         }
@@ -696,14 +739,23 @@ async fn refresh_remote_base(repo: &str, base: &str) {
             "[worktree] fetching {base} failed ({}); starting from the local copy",
             out.status
         ),
-        Ok(Err(e)) => tracing::warn!("[worktree] fetching {base} failed ({e}); starting from the local copy"),
-        Err(_) => tracing::warn!("[worktree] fetching {base} timed out; starting from the local copy"),
+        Ok(Err(e)) => {
+            tracing::warn!("[worktree] fetching {base} failed ({e}); starting from the local copy")
+        }
+        Err(_) => {
+            tracing::warn!("[worktree] fetching {base} timed out; starting from the local copy")
+        }
     }
 }
 
 async fn branch_exists(repo: &str, reference: &str) -> bool {
     crate::process::tokio_command("git")
-        .args(["rev-parse", "--verify", "--quiet", &format!("{reference}^{{commit}}")])
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{reference}^{{commit}}"),
+        ])
         .current_dir(repo)
         .output()
         .await
@@ -881,6 +933,8 @@ pub async fn create_worktree(
         }
     };
 
+    env_files::copy_env_files(Path::new(&root.path), Path::new(&worktree_path)).await;
+
     let registered = async {
         let detail = folders::open_worktree_folder_core(db, worktree_path.clone(), root.id).await?;
         let row = folder::Entity::find_by_id(detail.id)
@@ -960,7 +1014,11 @@ pub async fn remove_worktree(
         // Name the sessions whose agents run there, so a client can offer to
         // stop them; an agent not bound to a session yet is only counted.
         let session_ids = session_ids_of(&db.conn, &live_agents).await?;
-        return Err(ZwiimError::workspace_busy(live_agents.len(), 0, session_ids));
+        return Err(ZwiimError::workspace_busy(
+            live_agents.len(),
+            0,
+            session_ids,
+        ));
     }
 
     let busy =
@@ -1513,10 +1571,35 @@ mod tests {
             .await
             .expect_err("worktree of a worktree");
         assert!(matches!(err.code, AppErrorCode::InvalidInput));
-        let err = create_worktree(&db, &EventEmitter::Noop, &worktrees, "no-such-workspace", None)
-            .await
-            .expect_err("unknown workspace");
+        let err = create_worktree(
+            &db,
+            &EventEmitter::Noop,
+            &worktrees,
+            "no-such-workspace",
+            None,
+        )
+        .await
+        .expect_err("unknown workspace");
         assert!(matches!(err.code, AppErrorCode::NotFound));
+    }
+
+    #[tokio::test]
+    async fn a_new_worktree_gets_the_repository_env_file() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
+        std::fs::write(Path::new(&repo).join(".gitignore"), ".env\n").unwrap();
+        git(Path::new(&repo), &["add", ".gitignore"]);
+        git(Path::new(&repo), &["commit", "-q", "-m", "ignore"]);
+        std::fs::write(Path::new(&repo).join(".env"), "A=1").unwrap();
+
+        let wt = create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&wt.path).join(".env")).unwrap(),
+            "A=1"
+        );
     }
 
     #[tokio::test]
@@ -1551,7 +1634,9 @@ mod tests {
         let bases = worktree_bases(&repo).await.unwrap();
         assert_eq!(bases.default.as_deref(), Some("origin/main"));
         assert!(bases.remote.contains(&"origin/feature".to_string()));
-        let wt = create("origin/main").await.expect("create from origin/main");
+        let wt = create("origin/main")
+            .await
+            .expect("create from origin/main");
         assert_eq!(wt.base_branch.as_deref(), Some("origin/main"));
 
         // Only branches resolve: not revisions, options, or unknown names.
@@ -1630,8 +1715,14 @@ mod tests {
         // Someone else pushes; this repo has not fetched since.
         let push_elsewhere = |message: &str| {
             let tip = git(r, &["--git-dir", origin, "rev-parse", "main"]);
-            let commit = git(r, &["commit-tree", "HEAD^{tree}", "-p", &tip, "-m", message]);
-            git(r, &["push", "-q", origin, &format!("{commit}:refs/heads/main")]);
+            let commit = git(
+                r,
+                &["commit-tree", "HEAD^{tree}", "-p", &tip, "-m", message],
+            );
+            git(
+                r,
+                &["push", "-q", origin, &format!("{commit}:refs/heads/main")],
+            );
             commit
         };
         let create = |base: Option<&'static str>| {
@@ -1650,7 +1741,10 @@ mod tests {
         assert_eq!(wt.base_commit.as_deref(), Some(newer.as_str()));
 
         // Unreachable origin: the local copy is used.
-        git(r, &["remote", "set-url", "origin", "/nonexistent/origin.git"]);
+        git(
+            r,
+            &["remote", "set-url", "origin", "/nonexistent/origin.git"],
+        );
         push_elsewhere("not reachable");
         let wt = create(None).await.expect("offline");
         assert_eq!(wt.base_commit.as_deref(), Some(newer.as_str()));
@@ -1888,19 +1982,33 @@ mod tests {
                     EventEmitter::Noop,
                 )
                 .await;
-            agents.get_state(id).await.unwrap().write().await.conversation_id = Some(conv);
-            let row = conversation::Entity::find_by_id(conv).one(&db.conn).await.unwrap().unwrap();
+            agents
+                .get_state(id)
+                .await
+                .unwrap()
+                .write()
+                .await
+                .conversation_id = Some(conv);
+            let row = conversation::Entity::find_by_id(conv)
+                .one(&db.conn)
+                .await
+                .unwrap()
+                .unwrap();
             sessions.push(row.session_id.unwrap());
         }
         let busy = |e: ZwiimError| {
             assert_eq!(e.code, "workspace_busy");
             let d = details(&e);
-            let mut ids: Vec<String> =
-                serde_json::from_value(d["session_ids"].clone()).unwrap();
+            let mut ids: Vec<String> = serde_json::from_value(d["session_ids"].clone()).unwrap();
             ids.sort();
-            (d["live_sessions"].as_u64().unwrap(), d["terminals"].as_u64().unwrap(), ids)
+            (
+                d["live_sessions"].as_u64().unwrap(),
+                d["terminals"].as_u64().unwrap(),
+                ids,
+            )
         };
-        let remove = |force| remove_worktree(&db, &emitter, &agents, &terminals, &wt.workspace_id, force);
+        let remove =
+            |force| remove_worktree(&db, &emitter, &agents, &terminals, &wt.workspace_id, force);
 
         // The host names both sessions; force changes nothing.
         let mut both = sessions.clone();
@@ -1908,14 +2016,18 @@ mod tests {
         assert_eq!(busy(remove(true).await.unwrap_err()), (2, 0, both));
 
         // Stopping one leaves the other blocking, still named.
-        crate::session::stop(&db, &agents, &sessions[0]).await.unwrap();
+        crate::session::stop(&db, &agents, &sessions[0])
+            .await
+            .unwrap();
         assert_eq!(
             busy(remove(true).await.unwrap_err()),
             (1, 0, vec![sessions[1].clone()])
         );
 
         // Both stopped: removal goes through, sessions kept.
-        crate::session::stop(&db, &agents, &sessions[1]).await.unwrap();
+        crate::session::stop(&db, &agents, &sessions[1])
+            .await
+            .unwrap();
         let removed = remove(false).await.expect("removal once all are stopped");
         assert_eq!(removed.kept_sessions, 2);
         assert!(!Path::new(&wt.path).exists());
@@ -2251,14 +2363,12 @@ mod tests {
             &Default::default(),
         )
         .await
-        .unwrap();
+        .unwrap_err();
+        assert_eq!(in_root.code, "root_workspace");
 
-        // Each agent runs in its own workspace's checkout, never the root's by default.
-        assert_eq!(
-            *launcher.working_dirs.lock().unwrap(),
-            vec![wt.path.clone(), repo.clone()]
-        );
-        // And each session is listed under the workspace it was started in.
+        // Only the worktree's agent ever ran; the root is refused, never launched.
+        assert_eq!(*launcher.working_dirs.lock().unwrap(), vec![wt.path.clone()]);
+        // And the session is listed under the workspace it was started in.
         let listed = |wid: String| {
             let (db, mgr) = (&db, &mgr);
             async move {
@@ -2271,7 +2381,6 @@ mod tests {
             }
         };
         assert_eq!(listed(wt.workspace_id.clone()).await, vec![in_worktree]);
-        assert_eq!(listed(root_wid.clone()).await, vec![in_root]);
     }
 
     #[tokio::test]

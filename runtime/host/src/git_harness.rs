@@ -26,6 +26,7 @@
 //! This module knows nothing about how an agent reached it. Agent integrations
 //! depend on it; it never depends on them.
 
+mod account;
 mod error;
 mod github;
 mod local;
@@ -43,6 +44,10 @@ use sea_orm::DatabaseConnection;
 use crate::app_error::AppErrorCode;
 use crate::db::entities::folder;
 
+pub use account::{
+    github_account, github_owners, github_repo_create, github_repo_exists, GithubAccount,
+    GithubOwner, GithubOwnerKind,
+};
 pub use error::{GitError, GitErrorCode};
 pub use op::{
     BranchOutcome, CommitOutcome, FetchOutcome, GitOp, GitOpKind, GitOutcome, MergeMethod, PrCheck,
@@ -293,3 +298,25 @@ async fn resolve_workspace(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+/// A stand-in `gh` running `body` (a `case "$*"` arm list), recording each
+/// invocation's arguments in `calls`.
+pub(crate) fn fake_gh(dir: &Path, body: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let script = dir.join("gh");
+    let calls = dir.join("gh-calls");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho \"$* | prompt=$GH_PROMPT_DISABLED\" >> '{}'\ncase \"$*\" in\n{body}\nesac\n",
+            calls.display()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    (script, calls)
+}

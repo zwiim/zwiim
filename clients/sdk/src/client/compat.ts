@@ -44,6 +44,7 @@ export const CLIENT_CAPABILITIES: readonly string[] = [
   "session.usage",
   "session.commands",
   "host.lan_endpoint",
+  "workspace.publish",
 ];
 
 /** What an app says about itself in `host.hello`. */

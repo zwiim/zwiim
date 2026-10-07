@@ -13,6 +13,7 @@ use super::events::tests::assert_no_internal_keys;
 use crate::acp::connection::ConnectionCommand;
 use crate::acp::types::{AcpEvent, PermissionOptionInfo};
 use crate::app_state::AppState;
+use crate::db::service::folder_service;
 use crate::db::test_helpers::{seed_conversation, seed_folder};
 use crate::models::agent::AgentType;
 use crate::web::event_bridge::emit_with_state;
@@ -40,6 +41,7 @@ const OPS: &[&str] = &[
     "agent.sign_out",
     "workspace.list",
     "workspace.add",
+    "workspace.inspect",
     "workspace.browse",
     "workspace.create_folder",
     "workspace.open",
@@ -57,6 +59,7 @@ const OPS: &[&str] = &[
     "git.diff",
     "git.pr",
     "git.pr_merge",
+    "github.repo_available",
     "terminal.spawn",
     "terminal.write",
     "terminal.resize",
@@ -104,11 +107,33 @@ pub(crate) struct Host {
     pub(crate) root: String,
     pub(crate) workspace_id: String,
     pub(crate) folder_id: i32,
+    /// A worktree of `repo`; sessions and terminals run here, never in `root`.
+    pub(crate) wt: String,
+    pub(crate) wt_workspace_id: String,
+    pub(crate) wt_folder_id: i32,
     pub(crate) state: Arc<AppState>,
     pub(crate) server: TestServer,
+    /// A `git init --bare` remote the fake `gh`'s `repo create` pushes to.
+    pub(crate) bare: std::path::PathBuf,
 }
 
 pub(crate) async fn host(http_transport: bool) -> Host {
+    host_with_gh(http_transport, None).await
+}
+
+/// A signed-in `gh` (`octo`, orgs `acme` and `labs`) whose `repo create`
+/// pushes to the fixture's bare remote. `octo/taken` exists.
+pub(crate) const SIGNED_IN_GH: &str = r#"
+"api user") echo '{"login":"octo","id":42,"name":"Octo Cat"}';;
+"api user/orgs"*) printf 'acme\nlabs\n';;
+"api repos/octo/taken"*) echo 1;;
+"api repos/"*) echo 'gh: Not Found (HTTP 404)' >&2; exit 1;;
+"repo create"*) while [ $# -gt 0 ]; do [ "$1" = --source ] && src=$2; shift; done; git -C "$src" remote add origin '{bare}' && git -C "$src" push -q -u origin HEAD;;
+"#;
+
+/// Like [`host`], but with `AppState.gh` set from `body` (a `fake_gh` script
+/// body; `None` points at a missing `gh`, so `gh_unavailable`).
+pub(crate) async fn host_with_gh(http_transport: bool, body: Option<&str>) -> Host {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     std::fs::create_dir(&repo).unwrap();
@@ -119,8 +144,36 @@ pub(crate) async fn host(http_transport: bool) -> Host {
     let db = crate::db::init_database(&data_dir, "test").await.unwrap();
     let root = repo.canonicalize().unwrap().to_string_lossy().into_owned();
     let folder_id = seed_folder(&db, &root).await;
-    let state = Arc::new(AppState::new_for_test(db, data_dir.clone()));
+    let wt_dir = dir.path().join("wt");
+    git(
+        &repo,
+        &["worktree", "add", "-q", "-b", "wt", wt_dir.to_str().unwrap()],
+    );
+    let wt = wt_dir.canonicalize().unwrap().to_string_lossy().into_owned();
+    let wt_folder_id = folder_service::add_folder_with_parent(&db.conn, &wt, Some(folder_id))
+        .await
+        .unwrap()
+        .id;
+    let bare = dir.path().join("remote.git");
+    git(
+        dir.path(),
+        &["init", "-q", "--bare", bare.to_str().unwrap()],
+    );
+    let mut app_state = AppState::new_for_test(db, data_dir.clone());
+    app_state.gh = Some(match body {
+        Some(body) => {
+            let body = body.replace("{bare}", bare.to_str().unwrap());
+            crate::git_harness::fake_gh(dir.path(), &body).0
+        }
+        // Never the developer's own gh: missing, so `gh_unavailable`.
+        None => dir.path().join("no-gh"),
+    });
+    let state = Arc::new(app_state);
     let workspace_id = crate::workspace::workspace_id_of(&state.db.conn, folder_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let wt_workspace_id = crate::workspace::workspace_id_of(&state.db.conn, wt_folder_id)
         .await
         .unwrap()
         .unwrap();
@@ -140,8 +193,12 @@ pub(crate) async fn host(http_transport: bool) -> Host {
         root,
         workspace_id,
         folder_id,
+        wt,
+        wt_workspace_id,
+        wt_folder_id,
         state,
         server,
+        bare,
     }
 }
 
@@ -180,7 +237,10 @@ impl Host {
         let named_field = details
             .as_ref()
             .is_some_and(|d| d["reason"] == "unknown_field" && d["field"].is_string());
-        assert!(details.is_none() || named_field, "{op}: unexpected details {details:?}");
+        assert!(
+            details.is_none() || named_field,
+            "{op}: unexpected details {details:?}"
+        );
         (status, code)
     }
 
@@ -203,15 +263,18 @@ impl Host {
     }
 
     /// A seeded session bound to an in-process live agent connection.
-    pub(crate) async fn live_session(&self) -> (String, tokio::sync::mpsc::Receiver<ConnectionCommand>) {
-        let conv = seed_conversation(&self.state.db, self.folder_id, AgentType::ClaudeCode).await;
+    pub(crate) async fn live_session(
+        &self,
+    ) -> (String, tokio::sync::mpsc::Receiver<ConnectionCommand>) {
+        let conv =
+            seed_conversation(&self.state.db, self.wt_folder_id, AgentType::ClaudeCode).await;
         let rx = self
             .state
             .connection_manager
             .insert_test_connection_live(
                 CONN,
                 AgentType::ClaudeCode,
-                Some(self.root.clone().into()),
+                Some(self.wt.clone().into()),
                 self.state.emitter.clone(),
             )
             .await;
@@ -524,7 +587,359 @@ async fn workspace_add_takes_one_form_and_host_paths_only_from_the_host() {
     let body: Value = res.json();
     assert_eq!(body["error"]["code"], "permission_denied");
     let listed = h.ok("workspace.list", json!({})).await;
-    assert_eq!(listed.as_array().unwrap().len(), 1, "nothing added");
+    assert_eq!(listed.as_array().unwrap().len(), 2, "nothing added");
+}
+
+#[tokio::test]
+async fn inspect_reports_a_plain_folder_and_the_github_owners() {
+    let h = host_with_gh(false, Some(SIGNED_IN_GH)).await;
+    let folder = h._dir.path().join("My App");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(folder.join("a.txt"), "a").unwrap();
+    let v = h.ok("workspace.inspect", json!({ "path": folder })).await;
+    assert_eq!(v["git"], "none");
+    assert_eq!(v["branch"], "main");
+    assert_eq!(v["suggested_name"], "My-App");
+    assert_eq!(v["first_commit"]["files"], 1);
+    assert_eq!(v["first_commit"]["large"], false);
+    assert_eq!(v["github"]["available"], true);
+    assert_eq!(v["github"]["login"], "octo");
+    assert_eq!(
+        v["github"]["owners"],
+        json!([{"login":"octo","kind":"user"},{"login":"acme","kind":"org"},{"login":"labs","kind":"org"}])
+    );
+    assert!(!folder.join(".git").exists(), "inspect touches nothing");
+}
+
+#[tokio::test]
+async fn inspect_reports_a_repository_without_origin_and_its_branch() {
+    let h = host_with_gh(false, Some(SIGNED_IN_GH)).await;
+    let folder = h._dir.path().join("lib");
+    std::fs::create_dir(&folder).unwrap();
+    git(&folder, &["init", "-q", "-b", "trunk"]);
+    git(&folder, &["commit", "-q", "--allow-empty", "-m", "c"]);
+    let v = h.ok("workspace.inspect", json!({ "path": folder })).await;
+    assert_eq!(v["git"], "no_origin");
+    assert_eq!(v["branch"], "trunk");
+    assert_eq!(v["first_commit"], Value::Null);
+    assert_eq!(v["github"]["available"], true);
+}
+
+#[tokio::test]
+async fn inspect_skips_github_for_a_repository_with_origin() {
+    let h = host_with_gh(false, Some(SIGNED_IN_GH)).await;
+    git(
+        std::path::Path::new(&h.root),
+        &["remote", "add", "origin", h.bare.to_str().unwrap()],
+    );
+    let v = h.ok("workspace.inspect", json!({ "path": h.root })).await;
+    assert_eq!(v["git"], "origin");
+    assert_eq!(v["branch"], Value::Null);
+    assert_eq!(v["github"], Value::Null);
+}
+
+#[tokio::test]
+async fn inspect_says_why_github_is_unavailable() {
+    for (body, reason) in [
+        (None, "gh_unavailable"),
+        (
+            Some(
+                "\"api user\") echo 'To get started with GitHub CLI, please run:  gh auth login' >&2; exit 4;;",
+            ),
+            "gh_unauthenticated",
+        ),
+        (
+            Some("\"api user\") echo 'error connecting to api.github.com' >&2; exit 1;;"),
+            "github_unreachable",
+        ),
+    ] {
+        let h = host_with_gh(false, body).await;
+        let v = h.ok("workspace.inspect", json!({ "path": h.root })).await;
+        assert_eq!(
+            v["github"],
+            json!({ "available": false, "reason": reason }),
+            "{body:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn inspect_validates_like_add() {
+    let h = host(false).await;
+    assert_eq!(
+        h.err("workspace.inspect", json!({ "path": "relative" }))
+            .await,
+        (StatusCode::BAD_REQUEST, "invalid_input".into())
+    );
+    assert_eq!(
+        h.err("workspace.inspect", json!({})).await,
+        (StatusCode::BAD_REQUEST, "invalid_input".into())
+    );
+    assert_eq!(
+        h.err("workspace.inspect", json!({ "home_path": [] })).await,
+        (StatusCode::BAD_REQUEST, "invalid_input".into())
+    );
+}
+
+#[tokio::test]
+async fn repo_available_checks_the_name_on_github() {
+    let h = host_with_gh(false, Some(SIGNED_IN_GH)).await;
+    let v = h.ok("github.repo_available", json!({ "owner": "octo", "name": "free" })).await;
+    assert_eq!(v, json!({ "available": true }));
+    let v = h.ok("github.repo_available", json!({ "owner": "octo", "name": "taken" })).await;
+    assert_eq!(v, json!({ "available": false }));
+    assert_eq!(
+        h.err("github.repo_available", json!({ "owner": "octo", "name": "a b" })).await,
+        (StatusCode::BAD_REQUEST, "invalid_input".into())
+    );
+    assert_eq!(
+        h.err("github.repo_available", json!({ "owner": "--x", "name": "a" })).await,
+        (StatusCode::BAD_REQUEST, "invalid_input".into())
+    );
+}
+
+#[tokio::test]
+async fn repo_available_without_gh_is_gh_unavailable() {
+    let h = host(false).await;
+    assert_eq!(
+        h.err("github.repo_available", json!({ "owner": "octo", "name": "a" })).await,
+        (StatusCode::UNPROCESSABLE_ENTITY, "gh_unavailable".into())
+    );
+}
+
+/// A plain folder with something to commit and a secret publishing must
+/// never push.
+fn plain_folder(h: &Host, name: &str) -> std::path::PathBuf {
+    let folder = h._dir.path().join(name);
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(folder.join("a.txt"), "a").unwrap();
+    std::fs::write(folder.join(".gitignore"), "target\n").unwrap();
+    std::fs::write(folder.join(".env"), "SECRET=1").unwrap();
+    folder.canonicalize().unwrap()
+}
+
+/// Git output, without asserting success: some checks (a `user.*` config
+/// nothing set) exit non-zero on no match.
+fn out(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("spawn git");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[tokio::test]
+async fn add_publishes_a_plain_folder_to_a_private_repo() {
+    let h = host_with_gh(false, Some(SIGNED_IN_GH)).await;
+    let folder = plain_folder(&h, "app");
+    let v = h
+        .ok(
+            "workspace.add",
+            json!({ "path": folder, "publish": { "owner": "octo", "name": "app" } }),
+        )
+        .await;
+    assert_eq!(v["kind"], "root");
+    assert_eq!(
+        out(&folder, &["config", "--local", "user.email"]),
+        "42+octo@users.noreply.github.com"
+    );
+    assert_eq!(
+        out(
+            &folder,
+            &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]
+        ),
+        "origin/main"
+    );
+    let pushed = out(&h.bare, &["ls-tree", "-r", "--name-only", "main"]);
+    assert_eq!(pushed.lines().collect::<Vec<_>>(), [".gitignore", "a.txt"]);
+    let calls = std::fs::read_to_string(h._dir.path().join("gh-calls")).unwrap();
+    assert!(
+        calls.contains("repo create octo/app --private --source"),
+        "{calls}"
+    );
+    // Raise PR's precondition: the first worktree branches from origin.
+    let wid = v["workspace_id"].as_str().unwrap();
+    h.ok("workspace.create_worktree", json!({ "workspace_id": wid }))
+        .await;
+}
+
+#[tokio::test]
+async fn add_publishes_a_repository_on_another_branch() {
+    let h = host_with_gh(false, Some(SIGNED_IN_GH)).await;
+    let folder = h._dir.path().join("lib");
+    std::fs::create_dir(&folder).unwrap();
+    git(&folder, &["init", "-q", "-b", "trunk"]);
+    git(&folder, &["commit", "-q", "--allow-empty", "-m", "mine"]);
+    let v = h
+        .ok(
+            "workspace.add",
+            json!({ "path": folder, "publish": { "owner": "acme", "name": "lib" } }),
+        )
+        .await;
+    assert_eq!(
+        out(
+            &folder,
+            &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]
+        ),
+        "origin/trunk"
+    );
+    assert_eq!(out(&h.bare, &["log", "--format=%s", "trunk"]), "mine");
+    // The fixture's git sets an author by env, not config: the repository
+    // had no local identity, so publishing set the account's.
+    assert_eq!(
+        out(&folder, &["config", "--local", "user.name"]),
+        "Octo Cat"
+    );
+    let wid = v["workspace_id"].as_str().unwrap();
+    h.ok("workspace.create_worktree", json!({ "workspace_id": wid }))
+        .await;
+}
+
+#[tokio::test]
+async fn a_failed_publish_leaves_a_plain_folder_as_it_was() {
+    let gh = SIGNED_IN_GH.replace(
+        "\"repo create\"*)",
+        "\"repo create\"*) echo 'GraphQL: Something went wrong' >&2; exit 1;;\n\"never\")",
+    );
+    let h = host_with_gh(false, Some(&gh)).await;
+    let folder = plain_folder(&h, "app");
+    let (_status, code, details) = h
+        .err_details(
+            "workspace.add",
+            json!({ "path": folder, "publish": { "owner": "octo", "name": "app" } }),
+        )
+        .await;
+    assert_eq!(code, "publish_failed");
+    assert_eq!(details, Some(json!({ "created_on_github": false })));
+    assert!(!folder.join(".git").exists());
+    assert_eq!(
+        std::fs::read_to_string(folder.join(".gitignore")).unwrap(),
+        "target\n"
+    );
+    let list = h.ok("workspace.list", json!({})).await;
+    assert!(!list.to_string().contains("\"app\""), "{list}");
+}
+
+#[tokio::test]
+async fn a_failed_publish_keeps_a_repositorys_history() {
+    let gh = SIGNED_IN_GH.replace(
+        "\"repo create\"*)",
+        "\"repo create\"*) git remote add origin https://example.invalid/x.git; echo 'Name already exists on this account' >&2; exit 1;;\n\"never\")",
+    );
+    let h = host_with_gh(false, Some(&gh)).await;
+    let folder = h._dir.path().join("lib");
+    std::fs::create_dir(&folder).unwrap();
+    git(&folder, &["init", "-q", "-b", "main"]);
+    git(&folder, &["commit", "-q", "--allow-empty", "-m", "mine"]);
+    let (_status, code) = h
+        .err(
+            "workspace.add",
+            json!({ "path": folder, "publish": { "owner": "octo", "name": "lib" } }),
+        )
+        .await;
+    assert_eq!(code, "already_exists");
+    assert_eq!(out(&folder, &["log", "--format=%s"]), "mine");
+    assert_eq!(out(&folder, &["remote"]), "");
+    assert_eq!(
+        out(&folder, &["config", "--local", "--get-regexp", "^user\\."]),
+        ""
+    );
+}
+
+#[tokio::test]
+async fn a_network_error_on_create_still_checks_whether_it_landed() {
+    // `repo create` dies of a network error after GitHub actually made the
+    // repository (a dropped response, say); `octo/taken` is the fixture's
+    // stand-in for "exists".
+    let gh = SIGNED_IN_GH.replace(
+        "\"repo create\"*)",
+        "\"repo create\"*) echo 'error connecting to api.github.com' >&2; exit 1;;\n\"never\")",
+    );
+    let h = host_with_gh(false, Some(&gh)).await;
+    let folder = plain_folder(&h, "app");
+    let (_status, code, details) = h
+        .err_details(
+            "workspace.add",
+            json!({ "path": folder, "publish": { "owner": "octo", "name": "taken" } }),
+        )
+        .await;
+    assert_eq!(code, "publish_failed");
+    assert_eq!(details, Some(json!({ "created_on_github": true })));
+}
+
+#[tokio::test]
+async fn a_network_error_on_create_with_no_repository_is_unreachable() {
+    // Offline: no new name fixes this, so it is not `publish_failed`.
+    let gh = SIGNED_IN_GH.replace(
+        "\"repo create\"*)",
+        "\"repo create\"*) echo 'error connecting to api.github.com' >&2; exit 1;;\n\"never\")",
+    );
+    let h = host_with_gh(false, Some(&gh)).await;
+    let folder = plain_folder(&h, "app");
+    let (_status, code) = h
+        .err(
+            "workspace.add",
+            json!({ "path": folder, "publish": { "owner": "octo", "name": "app" } }),
+        )
+        .await;
+    assert_eq!(code, "github_unreachable");
+    assert!(!folder.join(".git").exists());
+}
+
+#[tokio::test]
+async fn a_failed_publish_keeps_a_local_user_name() {
+    let gh = SIGNED_IN_GH.replace(
+        "\"repo create\"*)",
+        "\"repo create\"*) echo 'GraphQL: Something went wrong' >&2; exit 1;;\n\"never\")",
+    );
+    let h = host_with_gh(false, Some(&gh)).await;
+    let folder = h._dir.path().join("lib");
+    std::fs::create_dir(&folder).unwrap();
+    git(&folder, &["init", "-q", "-b", "main"]);
+    git(&folder, &["commit", "-q", "--allow-empty", "-m", "mine"]);
+    git(&folder, &["config", "--local", "user.name", "Mine"]);
+    let (_status, code, _details) = h
+        .err_details(
+            "workspace.add",
+            json!({ "path": folder, "publish": { "owner": "octo", "name": "lib" } }),
+        )
+        .await;
+    assert_eq!(code, "publish_failed");
+    assert_eq!(
+        out(&folder, &["config", "--local", "--get-regexp", "^user\\."]),
+        "user.name Mine"
+    );
+}
+
+#[tokio::test]
+async fn add_with_publish_refuses_a_folder_with_origin() {
+    let h = host_with_gh(false, Some(SIGNED_IN_GH)).await;
+    git(
+        std::path::Path::new(&h.root),
+        &["remote", "add", "origin", h.bare.to_str().unwrap()],
+    );
+    let (_status, code) = h
+        .err(
+            "workspace.add",
+            json!({ "path": h.root, "publish": { "owner": "octo", "name": "x" } }),
+        )
+        .await;
+    assert_eq!(code, "invalid_input");
+}
+
+#[tokio::test]
+async fn add_with_publish_and_no_gh_touches_nothing() {
+    let h = host(false).await;
+    let folder = plain_folder(&h, "app");
+    let (_status, code) = h
+        .err(
+            "workspace.add",
+            json!({ "path": folder, "publish": { "owner": "octo", "name": "app" } }),
+        )
+        .await;
+    assert_eq!(code, "gh_unavailable");
+    assert!(!folder.join(".git").exists());
 }
 
 fn git_out(dir: &std::path::Path, args: &[&str]) -> String {
@@ -615,7 +1030,7 @@ async fn concurrent_adds_of_a_plain_folder_make_one_repository() {
         ".gitignore\na.txt"
     );
     let list = h.ok("workspace.list", json!({})).await;
-    assert_eq!(list.as_array().unwrap().len(), 2);
+    assert_eq!(list.as_array().unwrap().len(), 3);
 }
 
 #[tokio::test]
@@ -630,7 +1045,7 @@ async fn a_dropped_add_still_finishes_the_repository() {
     let held = crate::workspace::repo_init_lock().await;
     let dropped = tokio::time::timeout(
         Duration::from_millis(500),
-        crate::workspace::add(&h.state.db, &h.state.emitter, &path, false),
+        crate::workspace::add(&h.state.db, &h.state.emitter, &path, false, None),
     )
     .await;
     assert!(dropped.is_err(), "the add was still waiting");
@@ -639,7 +1054,7 @@ async fn a_dropped_add_still_finishes_the_repository() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {
         let list = h.ok("workspace.list", json!({})).await;
-        if list.as_array().unwrap().len() == 2 {
+        if list.as_array().unwrap().len() == 3 {
             break;
         }
         assert!(tokio::time::Instant::now() < deadline, "never registered");
@@ -687,7 +1102,7 @@ async fn workspace_add_asks_before_a_large_first_commit() {
     assert!(details["bytes"].is_u64());
     assert!(!dir.join(".git").exists() && !dir.join(".gitignore").exists());
     let list = h.ok("workspace.list", json!({})).await;
-    assert_eq!(list.as_array().unwrap().len(), 1, "nothing registered");
+    assert_eq!(list.as_array().unwrap().len(), 2, "nothing registered");
 
     let added = h
         .ok("workspace.add", json!({"path": path, "allow_large": true}))
@@ -763,7 +1178,7 @@ async fn workspace_add_that_cannot_init_registers_nothing() {
         "mine"
     );
     let list = h.ok("workspace.list", json!({})).await;
-    assert_eq!(list.as_array().unwrap().len(), 1, "nothing registered");
+    assert_eq!(list.as_array().unwrap().len(), 2, "nothing registered");
 }
 
 #[tokio::test]
@@ -856,7 +1271,10 @@ async fn a_plain_folder_is_a_full_workspace_without_git() {
     )
     .await;
     let read = h
-        .ok("files.read", json!({"workspace_id": wid, "path": "notes.md"}))
+        .ok(
+            "files.read",
+            json!({"workspace_id": wid, "path": "notes.md"}),
+        )
         .await;
     h.ok(
         "files.write",
@@ -864,40 +1282,22 @@ async fn a_plain_folder_is_a_full_workspace_without_git() {
     )
     .await;
     assert_eq!(
-        h.ok("files.read", json!({"workspace_id": wid, "path": "notes.md"}))
-            .await["content"],
+        h.ok(
+            "files.read",
+            json!({"workspace_id": wid, "path": "notes.md"})
+        )
+        .await["content"],
         "hi\n"
     );
     let tree = h.ok("workspace.tree", json!({"workspace_id": wid})).await;
     assert!(tree.to_string().contains("\"notes.md\""), "{tree}");
 
-    // A terminal starts in the folder.
-    let tid = h
-        .ok(
-            "terminal.spawn",
-            json!({"workspace_id": wid, "shell": "/bin/sh"}),
-        )
-        .await["terminal_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    // The folder's name only: responses never carry a host path.
-    h.ok(
-        "terminal.write",
-        json!({"terminal_id": tid, "data": "echo \"zw:$(basename \"$PWD\")\"\n"}),
-    )
-    .await;
-    let mut seen = false;
-    for _ in 0..50 {
-        let snap = h.ok("terminal.snapshot", json!({"terminal_id": tid})).await;
-        if snap["data"].as_str().unwrap_or_default().contains("zw:plain") {
-            seen = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    h.ok("terminal.kill", json!({"terminal_id": tid})).await;
-    assert!(seen, "pwd never printed the folder");
+    // A terminal never starts in a root workspace, plain or git.
+    assert_eq!(
+        h.err("terminal.spawn", json!({"workspace_id": wid, "shell": "/bin/sh"}))
+            .await,
+        (StatusCode::CONFLICT, "root_workspace".into())
+    );
 
     // Git features say so, in Zwiim's shape.
     for (op, body) in [
@@ -913,15 +1313,63 @@ async fn a_plain_folder_is_a_full_workspace_without_git() {
     ] {
         assert_eq!(
             h.err(op, body).await,
-            (StatusCode::UNPROCESSABLE_ENTITY, "not_a_git_repository".into()),
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "not_a_git_repository".into()
+            ),
             "{op}"
         );
     }
     assert_eq!(
-        h.ok("workspace.list", json!({})).await.as_array().unwrap().len(),
-        2,
+        h.ok("workspace.list", json!({}))
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+        3,
         "no worktree made"
     );
+}
+
+#[tokio::test]
+async fn a_terminal_starts_in_the_worktree_never_the_root() {
+    let h = host(false).await;
+
+    let tid = h
+        .ok(
+            "terminal.spawn",
+            json!({"workspace_id": h.wt_workspace_id, "shell": "/bin/sh"}),
+        )
+        .await["terminal_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The worktree's folder name only: responses never carry a host path.
+    h.ok(
+        "terminal.write",
+        json!({"terminal_id": tid, "data": "echo \"zw:$(basename \"$PWD\")\"\n"}),
+    )
+    .await;
+    let wt_name = std::path::Path::new(&h.wt)
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let mut seen = false;
+    for _ in 0..50 {
+        let snap = h.ok("terminal.snapshot", json!({"terminal_id": tid})).await;
+        if snap["data"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(&format!("zw:{wt_name}"))
+        {
+            seen = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    h.ok("terminal.kill", json!({"terminal_id": tid})).await;
+    assert!(seen, "pwd never printed the worktree's folder");
 }
 
 #[tokio::test]
@@ -944,7 +1392,12 @@ async fn session_list_and_history_use_public_ids_only() {
 
     // Attaching an agent flips `live`; the session keeps its id.
     let (live_sid, _rx) = h.live_session().await;
-    let list = h.ok("session.list", json!({"workspace_id": wid})).await;
+    let list = h
+        .ok(
+            "session.list",
+            json!({"workspace_id": h.wt_workspace_id.clone()}),
+        )
+        .await;
     let live = list
         .as_array()
         .unwrap()
@@ -973,6 +1426,45 @@ async fn session_list_and_history_use_public_ids_only() {
         )
         .await,
         (StatusCode::BAD_REQUEST, "invalid_request".into())
+    );
+}
+
+#[tokio::test]
+async fn sessions_and_terminals_never_start_in_a_root() {
+    let h = host(false).await;
+    assert_eq!(
+        h.err(
+            "session.start",
+            json!({"workspace_id": h.workspace_id, "agent": "claude_code", "blocks": [{"type": "text", "text": "hi"}]})
+        )
+        .await,
+        (StatusCode::CONFLICT, "root_workspace".into())
+    );
+    assert_eq!(
+        h.err("terminal.spawn", json!({"workspace_id": h.workspace_id}))
+            .await,
+        (StatusCode::CONFLICT, "root_workspace".into())
+    );
+    assert!(h
+        .ok("terminal.list", json!({}))
+        .await
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn a_session_that_ran_in_a_root_cannot_continue_there() {
+    let h = host(false).await;
+    let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    assert_eq!(
+        h.err(
+            "session.send",
+            json!({"session_id": sid, "blocks": [{"type": "text", "text": "hi"}]})
+        )
+        .await,
+        (StatusCode::CONFLICT, "root_workspace".into())
     );
 }
 
@@ -1116,7 +1608,8 @@ async fn pull_request_ops_answer_in_zwiim_shape() {
         json!({"pr": null, "error": null})
     );
     assert_eq!(
-        h.ok("git.pr", json!({"workspace_id": wid, "refresh": true})).await,
+        h.ok("git.pr", json!({"workspace_id": wid, "refresh": true}))
+            .await,
         json!({"pr": null, "error": null})
     );
     assert_eq!(
@@ -1125,7 +1618,8 @@ async fn pull_request_ops_answer_in_zwiim_shape() {
     );
     // A merge names the head it was reviewed at.
     assert_eq!(
-        h.err("git.pr_merge", json!({"workspace_id": wid, "number": 1})).await,
+        h.err("git.pr_merge", json!({"workspace_id": wid, "number": 1}))
+            .await,
         (StatusCode::BAD_REQUEST, "invalid_request".into())
     );
     assert_eq!(
@@ -1152,8 +1646,16 @@ fn git_errors_keep_their_codes_and_never_gh_s_words() {
     let cases = [
         (NotMergeable, StatusCode::CONFLICT, "not_mergeable"),
         (PrChanged, StatusCode::CONFLICT, "pr_changed"),
-        (GhUnavailable, StatusCode::UNPROCESSABLE_ENTITY, "gh_unavailable"),
-        (GhUnauthenticated, StatusCode::UNPROCESSABLE_ENTITY, "gh_unauthenticated"),
+        (
+            GhUnavailable,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "gh_unavailable",
+        ),
+        (
+            GhUnauthenticated,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "gh_unauthenticated",
+        ),
         (Network, StatusCode::BAD_GATEWAY, "github_unreachable"),
         (Timeout, StatusCode::BAD_GATEWAY, "github_unreachable"),
         (NotFound, StatusCode::NOT_FOUND, "not_found"),
@@ -1169,7 +1671,10 @@ fn git_errors_keep_their_codes_and_never_gh_s_words() {
         assert_eq!((err.status, err.code), (status, wire), "{code:?}");
         assert!(!err.message.contains("ghp_") && !err.message.contains("/Users"));
     }
-    let err = ZwiimError::from(GitError::new(NotMergeable, "Pull request #3 cannot be merged: Merge conflicts"));
+    let err = ZwiimError::from(GitError::new(
+        NotMergeable,
+        "Pull request #3 cannot be merged: Merge conflicts",
+    ));
     assert_eq!(
         err.details,
         Some(json!({"reason": "Pull request #3 cannot be merged: Merge conflicts"}))
@@ -1179,7 +1684,7 @@ fn git_errors_keep_their_codes_and_never_gh_s_words() {
 #[tokio::test]
 async fn terminal_operations_are_addressed_by_terminal_id() {
     let h = host(false).await;
-    let wid = h.workspace_id.clone();
+    let wid = h.wt_workspace_id.clone();
     let spawned = h
         .ok(
             "terminal.spawn",
@@ -1233,7 +1738,6 @@ async fn terminal_operations_are_addressed_by_terminal_id() {
 #[tokio::test]
 async fn session_operations_over_http() {
     let h = host(false).await;
-    let wid = h.workspace_id.clone();
 
     assert_eq!(
         h.err("session.start", json!({"workspace_id": "nope", "agent": "claude_code", "blocks": [{"type": "text", "text": "hi"}]})).await.1,
@@ -1317,30 +1821,62 @@ async fn session_operations_over_http() {
         (StatusCode::CONFLICT, "turn_in_progress".into())
     );
     h.ok("session.delete", json!({"session_id": idle})).await;
-    let listed = h.ok("session.list", json!({"workspace_id": wid})).await;
-    assert!(listed.as_array().unwrap().iter().all(|s| s["session_id"] != idle.as_str()));
-    assert!(listed.as_array().unwrap().iter().any(|s| s["session_id"] == sid.as_str()));
-    assert_eq!(h.err("session.delete", json!({"session_id": idle})).await.1, "not_found");
-    assert_eq!(h.err("session.history", json!({"session_id": idle})).await.1, "not_found");
+    let listed = h
+        .ok(
+            "session.list",
+            json!({"workspace_id": h.wt_workspace_id.clone()}),
+        )
+        .await;
+    assert!(listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|s| s["session_id"] != idle.as_str()));
+    assert!(listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["session_id"] == sid.as_str()));
+    assert_eq!(
+        h.err("session.delete", json!({"session_id": idle})).await.1,
+        "not_found"
+    );
+    assert_eq!(
+        h.err("session.history", json!({"session_id": idle}))
+            .await
+            .1,
+        "not_found"
+    );
 }
 
 #[tokio::test]
 async fn session_stop_over_http() {
     let h = host(false).await;
-    let wid = h.workspace_id.clone();
 
     // A session with no agent is already stopped.
     let idle_conv = seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
     let idle = session_id_of(&h.state, idle_conv).await;
-    assert_eq!(h.ok("session.stop", json!({"session_id": idle})).await, json!({}));
-    assert_eq!(h.err("session.stop", json!({"session_id": "nope"})).await.1, "not_found");
+    assert_eq!(
+        h.ok("session.stop", json!({"session_id": idle})).await,
+        json!({})
+    );
+    assert_eq!(
+        h.err("session.stop", json!({"session_id": "nope"})).await.1,
+        "not_found"
+    );
 
     // Mid-turn, a permission waiting: the agent is told to cancel, ends its
     // turn, and is then disconnected.
     let (sid, mut rx) = h.live_session().await;
-    h.ok("session.send", json!({"session_id": sid, "blocks": [{"type": "text", "text": "hi"}]}))
-        .await;
-    assert!(matches!(rx.recv().await, Some(ConnectionCommand::Prompt { .. })));
+    h.ok(
+        "session.send",
+        json!({"session_id": sid, "blocks": [{"type": "text", "text": "hi"}]}),
+    )
+    .await;
+    assert!(matches!(
+        rx.recv().await,
+        Some(ConnectionCommand::Prompt { .. })
+    ));
     h.emit(AcpEvent::PermissionRequest {
         request_id: "perm-1".into(),
         tool_call: json!({"toolCallId": "tc-1", "title": "Run ls"}),
@@ -1348,7 +1884,12 @@ async fn session_stop_over_http() {
         queued: 0,
     })
     .await;
-    let (state, emitter) = h.state.connection_manager.get_state_and_emitter(CONN).await.unwrap();
+    let (state, emitter) = h
+        .state
+        .connection_manager
+        .get_state_and_emitter(CONN)
+        .await
+        .unwrap();
     let agent = tokio::spawn(async move {
         let mut seen = Vec::new();
         while let Some(cmd) = rx.recv().await {
@@ -1379,7 +1920,12 @@ async fn session_stop_over_http() {
     assert_eq!(agent.await.unwrap(), ["cancel", "disconnect"]);
 
     // The session and its transcript stay; it is no longer live.
-    let list = h.ok("session.list", json!({"workspace_id": wid})).await;
+    let list = h
+        .ok(
+            "session.list",
+            json!({"workspace_id": h.wt_workspace_id.clone()}),
+        )
+        .await;
     let row = list
         .as_array()
         .unwrap()
@@ -1579,8 +2125,14 @@ async fn worktree_create_diff_and_guarded_removal() {
             h.state.emitter.clone(),
         )
         .await;
-    h.state.connection_manager.get_state(CONN).await.unwrap().write().await.conversation_id =
-        Some(conv);
+    h.state
+        .connection_manager
+        .get_state(CONN)
+        .await
+        .unwrap()
+        .write()
+        .await
+        .conversation_id = Some(conv);
     let tid = h
         .ok(
             "terminal.spawn",
@@ -1708,8 +2260,11 @@ async fn workspace_continue_refuses_before_asking_github() {
     // Only a worktree continues; the client names the pull request and
     // nothing else.
     assert_eq!(
-        h.err("workspace.continue", json!({"workspace_id": wid, "number": 1}))
-            .await,
+        h.err(
+            "workspace.continue",
+            json!({"workspace_id": wid, "number": 1})
+        )
+        .await,
         (StatusCode::BAD_REQUEST, "invalid_input".into())
     );
     assert_eq!(
@@ -1737,9 +2292,15 @@ async fn workspace_continue_refuses_before_asking_github() {
     )
     .await;
     let (status, code, _) = h
-        .err_details("workspace.continue", json!({"workspace_id": wt_id, "number": 1}))
+        .err_details(
+            "workspace.continue",
+            json!({"workspace_id": wt_id, "number": 1}),
+        )
         .await;
-    assert_eq!((status, code.as_str()), (StatusCode::CONFLICT, "workspace_dirty"));
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::CONFLICT, "workspace_dirty")
+    );
     let after = h.ok("workspace.list", json!({})).await;
     assert!(after.as_array().unwrap().iter().any(|w| w == &wt));
 }
@@ -1796,10 +2357,17 @@ async fn ws_subscribe_snapshot_live_replay_and_epoch() {
     assert_eq!(ev["event"]["session_id"], sid.as_str());
     assert!(ev["event"]["seq"].as_u64().unwrap() > base);
     // The agent's context report streams live, as reported.
-    h.emit(AcpEvent::UsageUpdate { used: Some(1_500), size: Some(200_000) }).await;
+    h.emit(AcpEvent::UsageUpdate {
+        used: Some(1_500),
+        size: Some(200_000),
+    })
+    .await;
     let ev = recv(&mut ws).await;
     assert_eq!(ev["event"]["type"], "session.usage");
-    assert_eq!(ev["event"]["payload"], json!({"used": 1_500, "size": 200_000}));
+    assert_eq!(
+        ev["event"]["payload"],
+        json!({"used": 1_500, "size": 200_000})
+    );
     ws.close().await;
 
     // Reconnect with a cursor on the same epoch → replay of the gap.
@@ -1915,7 +2483,7 @@ async fn ws_terminal_output_and_exit() {
     let spawned = h
         .ok(
             "terminal.spawn",
-            json!({"workspace_id": h.workspace_id, "shell": "/bin/sh"}),
+            json!({"workspace_id": h.wt_workspace_id, "shell": "/bin/sh"}),
         )
         .await;
     let tid = spawned["terminal_id"].as_str().unwrap().to_string();
@@ -1962,15 +2530,42 @@ async fn terminal_spawn_agent_params_are_checked() {
     let h = host(true).await;
     let w = h.workspace_id.clone();
     for (body, code) in [
-        (json!({"workspace_id": w, "agent": "codex", "shell": "/bin/sh"}), "invalid_request"),
-        (json!({"workspace_id": w, "agent": "codex", "initial_command": "ls"}), "invalid_request"),
-        (json!({"workspace_id": w, "command": "/mcp"}), "invalid_request"),
-        (json!({"workspace_id": w, "agent": "gemini", "command": "/mcp"}), "invalid_request"),
-        (json!({"workspace_id": w, "agent": "codex", "command": "mcp"}), "invalid_input"),
-        (json!({"workspace_id": w, "agent": "codex", "command": "/"}), "invalid_input"),
-        (json!({"workspace_id": w, "agent": "codex", "command": "/mcp\r"}), "invalid_input"),
-        (json!({"workspace_id": w, "agent": "codex", "command": "/x\u{1b}[A"}), "invalid_input"),
-        (json!({"workspace_id": w, "agent": "codex", "command": format!("/{}", "a".repeat(200))}), "invalid_input"),
+        (
+            json!({"workspace_id": w, "agent": "codex", "shell": "/bin/sh"}),
+            "invalid_request",
+        ),
+        (
+            json!({"workspace_id": w, "agent": "codex", "initial_command": "ls"}),
+            "invalid_request",
+        ),
+        (
+            json!({"workspace_id": w, "command": "/mcp"}),
+            "invalid_request",
+        ),
+        (
+            json!({"workspace_id": w, "agent": "gemini", "command": "/mcp"}),
+            "invalid_request",
+        ),
+        (
+            json!({"workspace_id": w, "agent": "codex", "command": "mcp"}),
+            "invalid_input",
+        ),
+        (
+            json!({"workspace_id": w, "agent": "codex", "command": "/"}),
+            "invalid_input",
+        ),
+        (
+            json!({"workspace_id": w, "agent": "codex", "command": "/mcp\r"}),
+            "invalid_input",
+        ),
+        (
+            json!({"workspace_id": w, "agent": "codex", "command": "/x\u{1b}[A"}),
+            "invalid_input",
+        ),
+        (
+            json!({"workspace_id": w, "agent": "codex", "command": format!("/{}", "a".repeat(200))}),
+            "invalid_input",
+        ),
     ] {
         assert_eq!(
             h.err("terminal.spawn", body.clone()).await,
@@ -1981,11 +2576,14 @@ async fn terminal_spawn_agent_params_are_checked() {
 }
 
 /// A terminal running `script` under `/bin/sh`, and the Host's manager.
-async fn sh_terminal(h: &Host, script: &str) -> (crate::terminal::manager::TerminalManager, String) {
+async fn sh_terminal(
+    h: &Host,
+    script: &str,
+) -> (crate::terminal::manager::TerminalManager, String) {
     let tid = h
         .ok(
             "terminal.spawn",
-            json!({"workspace_id": h.workspace_id, "shell": "/bin/sh", "initial_command": script}),
+            json!({"workspace_id": h.wt_workspace_id, "shell": "/bin/sh", "initial_command": script}),
         )
         .await["terminal_id"]
         .as_str()
@@ -2008,9 +2606,14 @@ async fn agent_command_is_pasted_once_output_settles_then_entered_when_shown() {
             break;
         }
     }
-    let at = seen.find("/zw-run").unwrap_or_else(|| panic!("not pasted: {seen:?}"));
+    let at = seen
+        .find("/zw-run")
+        .unwrap_or_else(|| panic!("not pasted: {seen:?}"));
     assert!(seen.find("ready").is_some_and(|r| r < at), "{seen:?}");
-    assert!(seen.contains("\x1b[200~/zw-run\x1b[201~"), "pasted, bracketed: {seen:?}");
+    assert!(
+        seen.contains("\x1b[200~/zw-run\x1b[201~"),
+        "pasted, bracketed: {seen:?}"
+    );
     assert_eq!(seen.matches("/zw-run").count(), 2, "entered once: {seen:?}");
     h.ok("terminal.kill", json!({"terminal_id": tid})).await;
 }
@@ -2078,7 +2681,9 @@ impl Host {
             let frame = self.recv_clean(ws).await;
             assert_eq!(frame["type"], "host.event", "{frame}");
             let event = &frame["event"];
-            assert!(event["seq"].is_u64() && event["type"].is_string() && event["payload"].is_object());
+            assert!(
+                event["seq"].is_u64() && event["type"].is_string() && event["payload"].is_object()
+            );
             if pred(event) {
                 return frame;
             }
@@ -2087,7 +2692,10 @@ impl Host {
     }
 }
 
-fn event_is<'a>(kind: &'a str, check: impl Fn(&Value) -> bool + 'a) -> impl Fn(&Value) -> bool + 'a {
+fn event_is<'a>(
+    kind: &'a str,
+    check: impl Fn(&Value) -> bool + 'a,
+) -> impl Fn(&Value) -> bool + 'a {
     move |e| e["type"] == kind && check(&e["payload"])
 }
 
@@ -2095,13 +2703,16 @@ fn event_is<'a>(kind: &'a str, check: impl Fn(&Value) -> bool + 'a) -> impl Fn(&
 async fn host_feed_snapshot_equals_the_list_operations() {
     let h = host(true).await;
     let wt = h
-        .ok("workspace.create_worktree", json!({"workspace_id": h.workspace_id}))
+        .ok(
+            "workspace.create_worktree",
+            json!({"workspace_id": h.workspace_id}),
+        )
         .await;
     seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
     let tid = h
         .ok(
             "terminal.spawn",
-            json!({"workspace_id": h.workspace_id, "shell": "/bin/sh"}),
+            json!({"workspace_id": wt["workspace_id"], "shell": "/bin/sh"}),
         )
         .await["terminal_id"]
         .clone();
@@ -2118,7 +2729,10 @@ async fn host_feed_snapshot_equals_the_list_operations() {
     }
     assert_eq!(snapshot["sessions"], Value::Array(sessions));
     assert_eq!(snapshot["sessions"].as_array().unwrap().len(), 1);
-    assert_eq!(snapshot["terminals"], h.ok("terminal.list", json!({})).await);
+    assert_eq!(
+        snapshot["terminals"],
+        h.ok("terminal.list", json!({})).await
+    );
     assert_eq!(snapshot["terminals"][0]["terminal_id"], tid);
     // No remote, so no pull requests; the map is still there for a late joiner.
     assert_eq!(snapshot["prs"], json!({}));
@@ -2142,10 +2756,15 @@ async fn host_feed_reaches_every_subscribed_socket_only() {
 
     // An HTTP mutation.
     let wt = h
-        .ok("workspace.create_worktree", json!({"workspace_id": h.workspace_id}))
+        .ok(
+            "workspace.create_worktree",
+            json!({"workspace_id": h.workspace_id}),
+        )
         .await;
     let wid = wt["workspace_id"].clone();
-    let created = event_is("workspace.changed", |p| p["workspace"]["workspace_id"] == wid);
+    let created = event_is("workspace.changed", |p| {
+        p["workspace"]["workspace_id"] == wid
+    });
     let fa = h.host_event(&mut a, "worktree on A", &created).await;
     let fb = h.host_event(&mut b, "worktree on B", &created).await;
     assert_eq!(fa, fb, "both sockets receive the same event");
@@ -2156,7 +2775,7 @@ async fn host_feed_reaches_every_subscribed_socket_only() {
     let tid = h
         .ok(
             "terminal.spawn",
-            json!({"workspace_id": h.workspace_id, "shell": "/bin/sh"}),
+            json!({"workspace_id": wid, "shell": "/bin/sh"}),
         )
         .await["terminal_id"]
         .clone();
@@ -2165,8 +2784,10 @@ async fn host_feed_reaches_every_subscribed_socket_only() {
     h.host_event(&mut b, "terminal on B", &spawned).await;
     h.ok("terminal.kill", json!({"terminal_id": tid})).await;
     let removed = event_is("terminal.removed", |p| p["terminal_id"] == tid);
-    h.host_event(&mut a, "terminal removal on A", &removed).await;
-    h.host_event(&mut b, "terminal removal on B", &removed).await;
+    h.host_event(&mut a, "terminal removal on A", &removed)
+        .await;
+    h.host_event(&mut b, "terminal removal on B", &removed)
+        .await;
 
     // A socket that never subscribed hears none of it.
     assert_silent(&mut idle).await;
@@ -2181,12 +2802,17 @@ async fn host_feed_branch_and_diff_changes_reach_both_sockets() {
     let wid = h.workspace_id.clone();
 
     std::fs::write(std::path::Path::new(&h.root).join("new.txt"), "x").unwrap();
-    let diff = event_is("workspace.diff_changed", |p| p["workspace_id"] == wid.as_str());
+    let diff = event_is("workspace.diff_changed", |p| {
+        p["workspace_id"] == wid.as_str()
+    });
     let fa = h.host_event(&mut a, "diff on A", &diff).await;
     assert_eq!(fa["event"]["payload"], json!({"workspace_id": wid}));
     h.host_event(&mut b, "diff on B", &diff).await;
 
-    git(std::path::Path::new(&h.root), &["checkout", "-q", "-b", "feature"]);
+    git(
+        std::path::Path::new(&h.root),
+        &["checkout", "-q", "-b", "feature"],
+    );
     let branch = event_is("workspace.changed", |p| {
         p["workspace"]["workspace_id"] == wid.as_str() && p["workspace"]["branch"] == "feature"
     });
@@ -2214,14 +2840,18 @@ async fn host_feed_carries_legacy_mutations() {
     });
     let fa = h.host_event(&mut a, "rename on A", &renamed).await;
     h.host_event(&mut b, "rename on B", &renamed).await;
-    assert_eq!(fa["event"]["payload"]["session"]["workspace_id"], h.workspace_id.as_str());
+    assert_eq!(
+        fa["event"]["payload"]["session"]["workspace_id"],
+        h.workspace_id.as_str()
+    );
 }
 
 #[tokio::test]
 async fn host_feed_invalid_subscribe_and_resubscribe() {
     let h = host(true).await;
     let mut ws = h.ws().await;
-    ws.send_json(&json!({"op": "host.subscribe", "since_seq": 3})).await;
+    ws.send_json(&json!({"op": "host.subscribe", "since_seq": 3}))
+        .await;
     let err = recv(&mut ws).await;
     assert_eq!(err["type"], "error");
     assert_eq!(err["error"]["code"], "invalid_request");
@@ -2266,9 +2896,15 @@ async fn host_claim_and_owner() {
     let alice = json!({"user_id": "u-alice", "email": "alice@example.com"});
     assert_eq!(h.ok("host.claim", alice.clone()).await["owner"], alice);
     let (status, code, details) = h
-        .err_details("host.claim", json!({"user_id": "u-bob", "email": "bob@example.com"}))
+        .err_details(
+            "host.claim",
+            json!({"user_id": "u-bob", "email": "bob@example.com"}),
+        )
         .await;
-    assert_eq!((status, code.as_str()), (StatusCode::CONFLICT, "host_owned"));
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::CONFLICT, "host_owned")
+    );
     assert_eq!(details.unwrap()["owner_email"], "alice@example.com");
     assert_eq!(h.ok("host.hello", json!({})).await["owner"], alice);
     assert_eq!(
@@ -2276,7 +2912,9 @@ async fn host_claim_and_owner() {
         "invalid_input"
     );
     assert_eq!(
-        h.err("host.claim", json!({"user_id": "u", "access_token": "x"})).await.1,
+        h.err("host.claim", json!({"user_id": "u", "access_token": "x"}))
+            .await
+            .1,
         "invalid_request"
     );
 }
@@ -2292,7 +2930,10 @@ async fn agent_list_reports_availability_only() {
         assert_eq!(available, a["reason"].is_null(), "{a}");
         assert!(a["name"].is_string());
         assert!(a["options"].is_null(), "no catalog before any session: {a}");
-        assert!(a["commands"].is_null(), "no commands before any session: {a}");
+        assert!(
+            a["commands"].is_null(),
+            "no commands before any session: {a}"
+        );
         assert_eq!(a["effort_by_model"], json!({}), "no model has run yet: {a}");
     }
     assert!(agents.iter().any(|a| a["agent"] == "claude_code"));
@@ -2327,9 +2968,20 @@ async fn agent_list_marks_claude_and_codex_supported_and_host_managed() {
 async fn agent_setup_only_sets_up_host_managed_adapters() {
     let h = host(false).await;
     let (status, code) = h.err("agent.setup", json!({"agent": "gemini"})).await;
-    assert_eq!((status, code.as_str()), (StatusCode::BAD_REQUEST, "invalid_request"));
-    let (status, code) = h.err("agent.setup", json!({"agent": "claude_code", "version": "9.9.9"})).await;
-    assert_eq!((status, code.as_str()), (StatusCode::BAD_REQUEST, "invalid_request"));
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::BAD_REQUEST, "invalid_request")
+    );
+    let (status, code) = h
+        .err(
+            "agent.setup",
+            json!({"agent": "claude_code", "version": "9.9.9"}),
+        )
+        .await;
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::BAD_REQUEST, "invalid_request")
+    );
 }
 
 #[tokio::test]
@@ -2339,18 +2991,36 @@ async fn agent_sign_in_status_reaches_every_client_and_never_a_key() {
     // Saving clears a plaintext key Codex wrote to its own home: a temp one.
     temp_env::async_with_vars([("CODEX_HOME", Some(codex_home.path()))], async {
         let key = "sk-test-protocol-0001";
-        let saved = h.ok("agent.save_key", json!({"agent": "codex", "key": key})).await;
+        let saved = h
+            .ok("agent.save_key", json!({"agent": "codex", "key": key}))
+            .await;
         assert_eq!(saved["agent"], "codex");
         assert_eq!(saved["saved_key"], true, "{saved}");
         assert!(!saved.to_string().contains(key), "{saved}");
 
         let all = h.ok("agent.auth_status", json!({})).await;
-        let agents: Vec<_> = all.as_array().unwrap().iter().map(|s| s["agent"].clone()).collect();
+        let agents: Vec<_> = all
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["agent"].clone())
+            .collect();
         assert_eq!(agents, [json!("claude_code"), json!("codex")]);
         assert!(!all.to_string().contains(key), "{all}");
         let mut fields: Vec<_> = all[1].as_object().unwrap().keys().cloned().collect();
         fields.sort();
-        assert_eq!(fields, ["agent", "connected", "email", "method", "plan", "saved_key", "sign_in"]);
+        assert_eq!(
+            fields,
+            [
+                "agent",
+                "connected",
+                "email",
+                "method",
+                "plan",
+                "saved_key",
+                "sign_in"
+            ]
+        );
 
         // A paired device reads the status too.
         let credential = bearer_device(&h, "dev-1").await;
@@ -2368,17 +3038,28 @@ async fn agent_sign_in_status_reaches_every_client_and_never_a_key() {
 async fn a_rejected_key_is_never_echoed() {
     let h = host(false).await;
     let (status, value) = h
-        .call("agent.save_key", json!({"agent": "claude_code", "key": "sk-proj-not-anthropic"}))
+        .call(
+            "agent.save_key",
+            json!({"agent": "claude_code", "key": "sk-proj-not-anthropic"}),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(value["error"]["code"], "invalid_input");
     assert!(!value.to_string().contains("not-anthropic"), "{value}");
     // A key of the wrong type is a schema error that does not quote it either.
-    let (status, value) = h.call("agent.save_key", json!({"agent": "codex", "key": ["sk-test-in-array"]})).await;
+    let (status, value) = h
+        .call(
+            "agent.save_key",
+            json!({"agent": "codex", "key": ["sk-test-in-array"]}),
+        )
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(!value.to_string().contains("sk-test-in-array"), "{value}");
     let (status, code) = h.err("agent.sign_in", json!({"agent": "gemini"})).await;
-    assert_eq!((status, code.as_str()), (StatusCode::BAD_REQUEST, "invalid_request"));
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::BAD_REQUEST, "invalid_request")
+    );
 }
 
 #[tokio::test]
@@ -2397,11 +3078,20 @@ async fn an_unsigned_unsupervised_host_reports_that_it_cannot_update() {
     assert_eq!(checked["supported"], false);
     assert!(checked["last_checked"].is_null(), "{checked}");
     let (status, code) = h.err("host.update.apply", json!({})).await;
-    assert_eq!((status, code.as_str()), (StatusCode::CONFLICT, "update_unavailable"));
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::CONFLICT, "update_unavailable")
+    );
     let (status, code) = h.err("host.update.apply", json!({"mode": "later"})).await;
-    assert_eq!((status, code.as_str()), (StatusCode::BAD_REQUEST, "invalid_request"));
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::BAD_REQUEST, "invalid_request")
+    );
     let hello = h.ok("host.hello", json!({})).await;
-    assert!(hello["capabilities"].as_array().unwrap().contains(&json!("host.update")));
+    assert!(hello["capabilities"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("host.update")));
 }
 
 #[tokio::test]
@@ -2416,14 +3106,23 @@ async fn session_options_live_and_idle() {
     assert_eq!(options["model"]["current"], "opus[1m]");
     assert_eq!(options["effort"]["current"], "high");
     assert_eq!(options["mode"]["current"], "normal");
-    assert_eq!(options["mode"]["available"], json!(["normal", "plan", "unattended"]));
+    assert_eq!(
+        options["mode"]["available"],
+        json!(["normal", "plan", "unattended"])
+    );
     assert!(!read.to_string().contains("bypassPermissions"));
 
     // Unattended is the agent's native full-access mode, applied between turns.
     let apply = async {
         match rx.recv().await {
-            Some(ConnectionCommand::SetConfigOption { config_id, value_id }) => {
-                assert_eq!((config_id.as_str(), value_id.as_str()), ("mode", "bypassPermissions"));
+            Some(ConnectionCommand::SetConfigOption {
+                config_id,
+                value_id,
+            }) => {
+                assert_eq!(
+                    (config_id.as_str(), value_id.as_str()),
+                    ("mode", "bypassPermissions")
+                );
                 st.write().await.config_options =
                     Some(claude_options("bypassPermissions", "opus[1m]"));
             }
@@ -2431,39 +3130,70 @@ async fn session_options_live_and_idle() {
         }
     };
     let (set, ()) = tokio::join!(
-        h.ok("session.set_options", json!({"session_id": sid, "mode": "unattended"})),
+        h.ok(
+            "session.set_options",
+            json!({"session_id": sid, "mode": "unattended"})
+        ),
         apply
     );
     assert_eq!(set["options"]["mode"]["current"], "unattended");
     assert_eq!(set["options"]["mode"]["label"], "Bypass permissions");
 
     let (status, code, details) = h
-        .err_details("session.set_options", json!({"session_id": sid, "model": "bogus"}))
+        .err_details(
+            "session.set_options",
+            json!({"session_id": sid, "model": "bogus"}),
+        )
         .await;
-    assert_eq!((status, code.as_str()), (StatusCode::UNPROCESSABLE_ENTITY, "option_unavailable"));
-    assert_eq!(details.unwrap(), json!({"option": "model", "value": "bogus"}));
     assert_eq!(
-        h.err("session.set_options", json!({"session_id": sid})).await.1,
+        (status, code.as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, "option_unavailable")
+    );
+    assert_eq!(
+        details.unwrap(),
+        json!({"option": "model", "value": "bogus"})
+    );
+    assert_eq!(
+        h.err("session.set_options", json!({"session_id": sid}))
+            .await
+            .1,
         "invalid_input"
     );
     assert_eq!(
-        h.err("session.set_options", json!({"session_id": sid, "mode": "yolo"})).await.1,
+        h.err(
+            "session.set_options",
+            json!({"session_id": sid, "mode": "yolo"})
+        )
+        .await
+        .1,
         "invalid_request"
     );
 
     // Between turns only.
     st.write().await.status = crate::acp::types::ConnectionStatus::Prompting;
     assert_eq!(
-        h.err("session.set_options", json!({"session_id": sid, "effort": "low"})).await,
+        h.err(
+            "session.set_options",
+            json!({"session_id": sid, "effort": "low"})
+        )
+        .await,
         (StatusCode::CONFLICT, "turn_in_progress".into())
     );
 
     // Idle: nothing known about the agent yet.
     let idle_conv = seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
     let idle = session_id_of(&h.state, idle_conv).await;
-    assert_eq!(h.ok("session.options", json!({"session_id": idle})).await["options"], Value::Null);
     assert_eq!(
-        h.err_details("session.set_options", json!({"session_id": idle, "mode": "plan"})).await.1,
+        h.ok("session.options", json!({"session_id": idle})).await["options"],
+        Value::Null
+    );
+    assert_eq!(
+        h.err_details(
+            "session.set_options",
+            json!({"session_id": idle, "mode": "plan"})
+        )
+        .await
+        .1,
         "option_unavailable"
     );
     // Once the agent has advertised its options, an idle session's change is
@@ -2476,7 +3206,10 @@ async fn session_options_live_and_idle() {
     .await
     .unwrap();
     let set = h
-        .ok("session.set_options", json!({"session_id": idle, "mode": "plan", "model": "haiku"}))
+        .ok(
+            "session.set_options",
+            json!({"session_id": idle, "mode": "plan", "model": "haiku"}),
+        )
         .await;
     assert_eq!(set["options"]["mode"]["current"], "plan");
     assert_eq!(set["options"]["model"]["current"], "haiku");
@@ -2484,7 +3217,10 @@ async fn session_options_live_and_idle() {
     assert_eq!(preferred.get("mode").map(String::as_str), Some("plan"));
     assert_eq!(preferred.get("model").map(String::as_str), Some("haiku"));
     let back = h
-        .ok("session.set_options", json!({"session_id": idle, "mode": "normal"}))
+        .ok(
+            "session.set_options",
+            json!({"session_id": idle, "mode": "normal"}),
+        )
         .await;
     assert_eq!(back["options"]["mode"]["current"], "normal");
     let listed = h.ok("agent.list", json!({})).await;
@@ -2500,7 +3236,9 @@ async fn session_options_live_and_idle() {
     // Effort belongs to the model: once Opus (with effort) and Haiku (without)
     // have run here, New Session sees each model's own, and the Host refuses
     // Haiku with an effort instead of letting the agent drop it.
-    let opus_effort = claude_options("default", "opus[1m]").into_iter().find(|o| o.id == "effort");
+    let opus_effort = claude_options("default", "opus[1m]")
+        .into_iter()
+        .find(|o| o.id == "effort");
     crate::db::service::app_metadata_service::upsert_value(
         &h.state.db.conn,
         "zwiim.agent_model_effort:claude_code",
@@ -2509,10 +3247,22 @@ async fn session_options_live_and_idle() {
     .await
     .unwrap();
     let listed = h.ok("agent.list", json!({})).await;
-    let claude = listed.as_array().unwrap().iter().find(|a| a["agent"] == "claude_code").unwrap().clone();
+    let claude = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["agent"] == "claude_code")
+        .unwrap()
+        .clone();
     assert_eq!(claude["effort_by_model"]["haiku"], Value::Null);
-    assert_eq!(claude["effort_by_model"]["opus[1m]"]["values"][1]["value"], "high");
-    assert!(claude["options"]["effort"].is_object(), "the agent-wide effort stays");
+    assert_eq!(
+        claude["effort_by_model"]["opus[1m]"]["values"][1]["value"],
+        "high"
+    );
+    assert!(
+        claude["options"]["effort"].is_object(),
+        "the agent-wide effort stays"
+    );
     let start = |model: &str, effort: Option<&str>| {
         let mut options = json!({"model": model});
         if let Some(e) = effort {
@@ -2520,28 +3270,54 @@ async fn session_options_live_and_idle() {
         }
         json!({"workspace_id": h.workspace_id, "agent": "claude_code", "blocks": [{"type": "text", "text": "hi"}], "options": options})
     };
-    let (status, code, details) = h.err_details("session.start", start("haiku", Some("low"))).await;
-    assert_eq!((status, code.as_str()), (StatusCode::UNPROCESSABLE_ENTITY, "option_unavailable"));
+    let (status, code, details) = h
+        .err_details("session.start", start("haiku", Some("low")))
+        .await;
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, "option_unavailable")
+    );
     assert_eq!(details, Some(json!({"option": "effort", "value": "low"})));
 
     // An idle session moved to Haiku drops Opus's effort instead of keeping
     // it for a model that has none, and gets Opus's own back on Opus.
     let set = h
-        .ok("session.set_options", json!({"session_id": idle, "model": "opus[1m]", "effort": "low"}))
+        .ok(
+            "session.set_options",
+            json!({"session_id": idle, "model": "opus[1m]", "effort": "low"}),
+        )
         .await;
     assert_eq!(set["options"]["effort"]["current"], "low");
-    let on_haiku = h.ok("session.set_options", json!({"session_id": idle, "model": "haiku"})).await;
+    let on_haiku = h
+        .ok(
+            "session.set_options",
+            json!({"session_id": idle, "model": "haiku"}),
+        )
+        .await;
     assert_eq!(on_haiku["options"]["model"]["current"], "haiku");
     assert_eq!(on_haiku["options"]["effort"], Value::Null);
     let preferred = crate::session_options::preferred_values(&h.state.db.conn, &idle).await;
     assert!(!preferred.contains_key("effort"), "{preferred:?}");
     assert_eq!(
-        h.err_details("session.set_options", json!({"session_id": idle, "effort": "low"})).await.1,
+        h.err_details(
+            "session.set_options",
+            json!({"session_id": idle, "effort": "low"})
+        )
+        .await
+        .1,
         "option_unavailable"
     );
-    let on_opus = h.ok("session.set_options", json!({"session_id": idle, "model": "opus[1m]"})).await;
+    let on_opus = h
+        .ok(
+            "session.set_options",
+            json!({"session_id": idle, "model": "opus[1m]"}),
+        )
+        .await;
     assert_eq!(on_opus["options"]["effort"]["values"][0]["value"], "low");
-    assert_eq!(h.ok("session.options", json!({"session_id": idle})).await["options"]["model"]["current"], "opus[1m]");
+    assert_eq!(
+        h.ok("session.options", json!({"session_id": idle})).await["options"]["model"]["current"],
+        "opus[1m]"
+    );
 }
 
 // ─── devices ─────────────────────────────────────────────────────────────
@@ -2582,7 +3358,10 @@ async fn device_pair_invite_list_and_revoke() {
     let invite = h.ok("device.pair_invite", json!({})).await;
     let mut fields: Vec<_> = invite.as_object().unwrap().keys().cloned().collect();
     fields.sort();
-    assert_eq!(fields, ["code", "expires_at", "host_id", "host_static_pubkey", "v"]);
+    assert_eq!(
+        fields,
+        ["code", "expires_at", "host_id", "host_static_pubkey", "v"]
+    );
     assert_eq!(invite["v"], 2);
     assert_eq!(invite["host_id"], host_id);
     assert_eq!(invite["host_static_pubkey"], static_pubkey);
@@ -2598,7 +3377,10 @@ async fn device_pair_invite_list_and_revoke() {
     };
     let res = pair(&invite["code"], "dev-1", 1).await;
     assert_eq!(res.status_code(), StatusCode::OK);
-    assert_eq!(res.json::<Value>(), json!({"host_id": host_id, "device_id": "dev-1"}));
+    assert_eq!(
+        res.json::<Value>(),
+        json!({"host_id": host_id, "device_id": "dev-1"})
+    );
 
     // Reused code.
     let res = pair(&invite["code"], "dev-2", 2).await;
@@ -2624,9 +3406,15 @@ async fn device_pair_invite_list_and_revoke() {
     assert_eq!(d["status"], "trusted");
     assert_eq!(d["device_pubkey"], device_key(1));
     assert!(d["revoked_at"].is_null());
-    assert!(d.get("id").is_none() && d.get("credential_hash").is_none(), "{d}");
+    assert!(
+        d.get("id").is_none() && d.get("credential_hash").is_none(),
+        "{d}"
+    );
 
-    assert_eq!(h.ok("device.revoke", json!({"device_id": "dev-1"})).await, json!({}));
+    assert_eq!(
+        h.ok("device.revoke", json!({"device_id": "dev-1"})).await,
+        json!({})
+    );
     let d = &h.ok("device.list", json!({})).await["devices"][0];
     assert_eq!(d["status"], "revoked");
     assert!(d["revoked_at"].is_string());
@@ -2649,11 +3437,17 @@ async fn device_key_conflicts_and_repairing() {
     assert_eq!(pair_by_key(&h, "dev-1", 1).await.0, StatusCode::OK);
     // One key, one device.
     let (status, body) = pair_by_key(&h, "dev-2", 1).await;
-    assert_eq!((status, body["error"]["code"].as_str()), (StatusCode::CONFLICT, Some("already_exists")));
+    assert_eq!(
+        (status, body["error"]["code"].as_str()),
+        (StatusCode::CONFLICT, Some("already_exists"))
+    );
     // A revoked device is trusted again only by pairing again.
     h.ok("device.revoke", json!({"device_id": "dev-1"})).await;
     assert_eq!(pair_by_key(&h, "dev-1", 1).await.0, StatusCode::OK);
-    assert_eq!(h.ok("device.list", json!({})).await["devices"][0]["status"], "trusted");
+    assert_eq!(
+        h.ok("device.list", json!({})).await["devices"][0]["status"],
+        "trusted"
+    );
 }
 
 #[tokio::test]
@@ -2677,7 +3471,10 @@ async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
         ("host.restart", json!({"mode": "now"})),
         ("agent.setup", json!({"agent": "claude_code"})),
         ("agent.sign_in", json!({"agent": "codex"})),
-        ("agent.save_key", json!({"agent": "codex", "key": "sk-test-device-0001"})),
+        (
+            "agent.save_key",
+            json!({"agent": "codex", "key": "sk-test-device-0001"}),
+        ),
         ("agent.remove_key", json!({"agent": "codex"})),
         ("agent.sign_out", json!({"agent": "codex"})),
     ] {
@@ -2691,11 +3488,18 @@ async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
     }
     // Nothing changed.
     assert_eq!(h.state.lifecycle.requested(), None);
-    assert_eq!(h.ok("device.list", json!({})).await["devices"][0]["status"], "trusted");
+    assert_eq!(
+        h.ok("device.list", json!({})).await["devices"][0]["status"],
+        "trusted"
+    );
     assert_eq!(h.ok("host.hello", json!({})).await["owner"], Value::Null);
 
     // The legacy `/api` device management is host-only too.
-    for route in ["pairing_invitation_create", "trusted_device_list", "trusted_device_revoke"] {
+    for route in [
+        "pairing_invitation_create",
+        "trusted_device_list",
+        "trusted_device_revoke",
+    ] {
         let res = h
             .server
             .post(&format!("/api/{route}"))
@@ -2712,10 +3516,18 @@ async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
     assert_eq!(res.status_code(), StatusCode::OK);
 
     // Unknown and revoked devices do not authenticate at all.
-    assert_eq!(h.call_as("unknown-credential", "workspace.list", json!({})).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        h.call_as("unknown-credential", "workspace.list", json!({}))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
     h.ok("device.revoke", json!({"device_id": "dev-1"})).await;
     let (status, body) = h.call_as(&credential, "workspace.list", json!({})).await;
-    assert_eq!((status, body["error"]["code"].as_str()), (StatusCode::UNAUTHORIZED, Some("unauthenticated")));
+    assert_eq!(
+        (status, body["error"]["code"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("unauthenticated"))
+    );
 }
 
 async fn expect_revoked_close(ws: &mut TestWebSocket) {
@@ -2726,7 +3538,10 @@ async fn expect_revoked_close(ws: &mut TestWebSocket) {
             .expect("close within 5s");
         match msg {
             WsMessage::Close(Some(frame)) => {
-                assert_eq!(u16::from(frame.code), crate::web::auth::WS_CLOSE_DEVICE_REVOKED);
+                assert_eq!(
+                    u16::from(frame.code),
+                    crate::web::auth::WS_CLOSE_DEVICE_REVOKED
+                );
                 assert_eq!(frame.reason.as_str(), "device_revoked");
                 return;
             }
@@ -2767,7 +3582,10 @@ async fn revoking_a_device_closes_its_open_sockets() {
         .get("/zwiim/v1/ws")
         .add_header(
             "sec-websocket-protocol",
-            format!("zwiim-events, zwiim-token.{}", URL_SAFE_NO_PAD.encode(&credential)),
+            format!(
+                "zwiim-events, zwiim-token.{}",
+                URL_SAFE_NO_PAD.encode(&credential)
+            ),
         )
         .await;
     assert_eq!(res.status_code(), StatusCode::UNAUTHORIZED);
@@ -2803,7 +3621,10 @@ async fn hello_carries_the_compatibility_handshake() {
     let hello = h.ok("host.hello", json!({})).await;
     assert_eq!(hello["protocol"], "zwiim/1");
     assert_eq!(hello["revision"], super::compat::PROTOCOL_REVISION);
-    assert_eq!(hello["min_client_revision"], super::compat::MIN_CLIENT_REVISION);
+    assert_eq!(
+        hello["min_client_revision"],
+        super::compat::MIN_CLIENT_REVISION
+    );
     assert!(hello["capabilities"]
         .as_array()
         .is_some_and(|c| c.iter().any(|v| v == "session.usage")));
@@ -2827,7 +3648,10 @@ async fn hello_carries_the_compatibility_handshake() {
         .authorization_bearer(HOST_TOKEN)
         .await;
     assert_eq!(res.status_code(), StatusCode::OK);
-    assert_eq!(res.json::<Value>()["revision"], super::compat::PROTOCOL_REVISION);
+    assert_eq!(
+        res.json::<Value>()["revision"],
+        super::compat::PROTOCOL_REVISION
+    );
 }
 
 #[tokio::test]
@@ -2839,7 +3663,10 @@ async fn unknown_request_fields_are_named() {
             json!({"workspace_id": h.workspace_id, "from_a_newer_client": 1}),
         )
         .await;
-    assert_eq!((status, code.as_str()), (StatusCode::BAD_REQUEST, "invalid_request"));
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::BAD_REQUEST, "invalid_request")
+    );
     assert_eq!(
         details,
         Some(json!({"reason": "unknown_field", "field": "from_a_newer_client"}))
@@ -2852,7 +3679,10 @@ async fn diagnostics_report_versions_and_state_without_secrets() {
     let d = h.ok("host.diagnostics", json!({})).await;
     assert_eq!(d["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(d["channel"], "stable");
-    assert_eq!(d["protocol"]["revision"], crate::protocol::compat::PROTOCOL_REVISION);
+    assert_eq!(
+        d["protocol"]["revision"],
+        crate::protocol::compat::PROTOCOL_REVISION
+    );
     assert_eq!(d["update"]["supported"], false, "{d}");
     assert_eq!(d["update"]["unsupported_reason"], "unsigned_build");
     assert_eq!(d["database"]["schema"]["state"], "current", "{d}");
@@ -2865,5 +3695,8 @@ async fn diagnostics_report_versions_and_state_without_secrets() {
     for secret in [HOST_TOKEN, CONN, "sk-", "token\":", "api_key", "password"] {
         assert!(!text.contains(secret), "{secret} in diagnostics: {text}");
     }
-    assert!(!text.contains(&h.state.data_dir.to_string_lossy().to_string()), "paths leak: {text}");
+    assert!(
+        !text.contains(&h.state.data_dir.to_string_lossy().to_string()),
+        "paths leak: {text}"
+    );
 }

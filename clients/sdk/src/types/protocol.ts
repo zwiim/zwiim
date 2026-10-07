@@ -42,6 +42,10 @@ export type HostErrorCode =
   | "gh_unauthenticated"
   /** GitHub could not be reached from the Host (not this client's connection). */
   | "github_unreachable"
+  /** `session.start` / `session.send` / `terminal.spawn` in a root: sessions run in a worktree. */
+  | "root_workspace"
+  /** `workspace.add` with `publish`: GitHub did not take the repository. Details `{ created_on_github }`. */
+  | "publish_failed"
   | "internal";
 
 export interface WireError {
@@ -263,6 +267,35 @@ export interface BrowseListing {
   entries: BrowseEntry[];
   /** More than 1,000 folders; the first 1,000 are listed. */
   truncated: boolean;
+}
+
+/** A folder's Git state before adding it: no repository, a repository with no `origin`, or one with an `origin`. */
+export type GitState = "none" | "no_origin" | "origin";
+
+/** One GitHub account the Host's signed-in user can publish to. */
+export interface GithubOwner {
+  login: string;
+  kind: "user" | "org";
+}
+
+/** Whether the Host can reach GitHub to publish, and as whom. */
+export type GithubStatus =
+  | { available: true; login: string; owners: GithubOwner[] }
+  | { available: false; reason: "gh_unavailable" | "gh_unauthenticated" | "github_unreachable" };
+
+/** `workspace.inspect`: what a folder is before adding it. */
+export interface WorkspaceInspection {
+  git: GitState;
+  branch: string | null;
+  suggested_name: string;
+  first_commit: { files: number; bytes: number; at_least: boolean; large: boolean } | null;
+  github: GithubStatus | null;
+}
+
+/** A private GitHub repository to create from a folder on `workspace.add`. */
+export interface PublishTarget {
+  owner: string;
+  name: string;
 }
 
 export interface WorktreeRemoved {
@@ -1001,7 +1034,14 @@ export interface Operations {
   "agent.sign_out": [{ agent: AgentType }, AgentAuthStatus];
   "workspace.list": [Record<string, never>, WorkspaceInfo[]];
   /** `path` needs local host authority; paired devices use `home_path` (folder names under home). */
-  "workspace.add": [({ path: string } | { home_path: string[] }) & { allow_large?: boolean }, WorkspaceInfo];
+  "workspace.add": [
+    ({ path: string } | { home_path: string[] }) & { allow_large?: boolean; publish?: PublishTarget },
+    WorkspaceInfo,
+  ];
+  /** What a folder is before adding it: Git state, first-commit size, GitHub owners. Touches nothing. */
+  "workspace.inspect": [{ path: string } | { home_path: string[] }, WorkspaceInspection];
+  /** Whether `owner/name` is free on GitHub for the Host's signed-in account. */
+  "github.repo_available": [PublishTarget, { available: boolean }];
   "workspace.browse": [{ path: string[] }, BrowseListing];
   /** Make one folder `name` inside the folder `path` (folder names under home); `already_exists` if taken. */
   "workspace.create_folder": [{ path: string[]; name: string }, BrowseEntry];

@@ -6,6 +6,7 @@ use serde_json::json;
 use tempfile::TempDir;
 
 use super::error::{classify_gh, classify_git};
+use super::fake_gh;
 use super::run;
 use super::*;
 use crate::db::service::folder_service;
@@ -1299,27 +1300,6 @@ async fn a_repository_without_a_remote_has_nothing_to_push_to() {
 
 // ── GitHub ──────────────────────────────────────────────────────────────
 
-/// A stand-in `gh` running `body` (a `case "$*"` arm list), recording each
-/// invocation's arguments in `calls`.
-fn fake_gh(dir: &Path, body: &str) -> (PathBuf, PathBuf) {
-    let script = dir.join("gh");
-    let calls = dir.join("gh-calls");
-    std::fs::write(
-        &script,
-        format!(
-            "#!/bin/sh\necho \"$* | prompt=$GH_PROMPT_DISABLED\" >> '{}'\ncase \"$*\" in\n{body}\nesac\n",
-            calls.display()
-        ),
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    (script, calls)
-}
-
 const REPO_JSON: &str = r#"{"squashMergeAllowed":true,"mergeCommitAllowed":true,"rebaseMergeAllowed":false,"viewerDefaultMergeMethod":"MERGE"}"#;
 
 /// `gh pr view --json` for the PR-state fields, escaped for a `format!`ed
@@ -1370,6 +1350,109 @@ async fn gh_must_be_installed_and_logged_in() {
             GitErrorCode::GhUnauthenticated
         );
     }
+}
+
+const ACCOUNT_GH: &str = r#"
+"api user") echo '{"login":"octo","id":42,"name":"Octo Cat"}';;
+"api user/orgs"*) printf 'acme\nlabs\n';;
+"api repos/octo/taken"*) echo 1;;
+"api repos/octo/locked"*) echo 'HTTP 401: Bad credentials' >&2; exit 1;;
+"api repos/"*) echo 'gh: Not Found (HTTP 404)' >&2; exit 1;;
+"repo create"*) exit 0;;
+"#;
+
+#[tokio::test]
+async fn github_account_reads_the_signed_in_user() {
+    let dir = TempDir::new().unwrap();
+    let (gh, calls) = fake_gh(dir.path(), ACCOUNT_GH);
+    let cwd = dir.path().to_str().unwrap();
+    let account = github_account(Some(&gh), cwd).await.unwrap();
+    assert_eq!(
+        account,
+        GithubAccount {
+            login: "octo".into(),
+            id: 42,
+            name: Some("Octo Cat".into())
+        }
+    );
+    let owners = github_owners(Some(&gh), cwd, &account).await.unwrap();
+    let listed: Vec<_> = owners.iter().map(|o| (o.login.as_str(), o.kind)).collect();
+    assert_eq!(
+        listed,
+        [
+            ("octo", GithubOwnerKind::User),
+            ("acme", GithubOwnerKind::Org),
+            ("labs", GithubOwnerKind::Org)
+        ]
+    );
+    let log = std::fs::read_to_string(calls).unwrap();
+    assert!(
+        log.contains("api user/orgs --paginate --jq .[].login | prompt=1"),
+        "{log}"
+    );
+}
+
+#[tokio::test]
+async fn github_owners_is_the_login_alone_when_orgs_fail() {
+    let dir = TempDir::new().unwrap();
+    let (gh, _) = fake_gh(
+        dir.path(),
+        "\"api user/orgs\"*) echo 'HTTP 403' >&2; exit 1;;",
+    );
+    let account = GithubAccount {
+        login: "octo".into(),
+        id: 42,
+        name: None,
+    };
+    let owners = github_owners(Some(&gh), dir.path().to_str().unwrap(), &account)
+        .await
+        .unwrap();
+    assert_eq!(owners.len(), 1);
+    assert_eq!(owners[0].login, "octo");
+}
+
+#[tokio::test]
+async fn github_repo_exists_is_false_only_on_not_found() {
+    let dir = TempDir::new().unwrap();
+    let (gh, _) = fake_gh(dir.path(), ACCOUNT_GH);
+    let cwd = dir.path().to_str().unwrap();
+    assert!(github_repo_exists(Some(&gh), cwd, "octo", "taken")
+        .await
+        .unwrap());
+    assert!(!github_repo_exists(Some(&gh), cwd, "octo", "free")
+        .await
+        .unwrap());
+    let err = github_repo_exists(Some(&gh), cwd, "octo", "locked")
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, GitErrorCode::AuthFailed);
+}
+
+#[tokio::test]
+async fn github_repo_create_makes_a_private_repo_from_the_folder() {
+    let dir = TempDir::new().unwrap();
+    let (gh, calls) = fake_gh(dir.path(), ACCOUNT_GH);
+    let path = dir.path().to_str().unwrap();
+    github_repo_create(Some(&gh), path, "acme", "app")
+        .await
+        .unwrap();
+    let log = std::fs::read_to_string(calls).unwrap();
+    assert!(
+        log.contains(&format!(
+            "repo create acme/app --private --source {path} --remote origin --push | prompt=1"
+        )),
+        "{log}"
+    );
+}
+
+#[tokio::test]
+async fn github_account_without_gh_is_gh_unavailable() {
+    let dir = TempDir::new().unwrap();
+    let missing = dir.path().join("no-gh");
+    let err = github_account(Some(&missing), dir.path().to_str().unwrap())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, GitErrorCode::GhUnavailable);
 }
 
 #[tokio::test]

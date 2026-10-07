@@ -60,8 +60,12 @@ async fn normalize_rejections(req: axum::extract::Request, next: Next) -> Respon
 /// Operations a draining Host still answers: the handshake, so a client can
 /// tell the Host is there, and the restart request itself (a drain waits for
 /// admitted operations, and must not wait for the one that started it).
-const ANSWERED_WHILE_DRAINING: [&str; 4] =
-    ["host.hello", "host.restart", "host.update.apply", "host.update.status"];
+const ANSWERED_WHILE_DRAINING: [&str; 4] = [
+    "host.hello",
+    "host.restart",
+    "host.update.apply",
+    "host.update.status",
+];
 
 /// Refuse new operations once the Host drains, and count the admitted ones
 /// so the drain can wait for them.
@@ -101,7 +105,10 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/lan.status", post(http::lan_status))
         .route("/lan.set", post(http::lan_set))
         .route("/host.restart", post(http::host_restart))
-        .route("/host.keep_awake.status", post(http::host_keep_awake_status))
+        .route(
+            "/host.keep_awake.status",
+            post(http::host_keep_awake_status),
+        )
         .route("/host.keep_awake.set", post(http::host_keep_awake_set))
         .route("/agent.setup", post(http::agent_setup))
         .route("/agent.sign_in", post(http::agent_sign_in))
@@ -121,6 +128,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/agent.auth_status", post(http::agent_auth_status))
         .route("/workspace.list", post(http::workspace_list))
         .route("/workspace.add", post(http::workspace_add))
+        .route("/workspace.inspect", post(http::workspace_inspect))
         .route("/workspace.browse", post(http::workspace_browse))
         .route(
             "/workspace.create_folder",
@@ -147,6 +155,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/git.diff", post(http::git_diff))
         .route("/git.pr", post(http::git_pr))
         .route("/git.pr_merge", post(http::git_pr_merge))
+        .route("/github.repo_available", post(http::github_repo_available))
         .route("/terminal.spawn", post(http::terminal_spawn))
         .route("/terminal.write", post(http::terminal_write))
         .route("/terminal.resize", post(http::terminal_resize))

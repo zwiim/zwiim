@@ -237,6 +237,40 @@ describe("HostController", () => {
     expect(t.store.getState().workspaces?.[0]?.display_path).toBe("~/Projects/zwiim");
   });
 
+  it("inspects a folder and checks a repository name", async () => {
+    const t = setup();
+    const inspection = { git: "none", branch: "main", suggested_name: "app", first_commit: null, github: null };
+    t.transport.handlers["workspace.inspect"] = () => inspection;
+    expect(await t.controller.inspectWorkspace("/Users/me/app")).toEqual(inspection);
+    expect(t.transport.requests.at(-1)?.params).toEqual({ path: "/Users/me/app" });
+    await t.controller.inspectWorkspaceAt(["app"]);
+    expect(t.transport.requests.at(-1)?.params).toEqual({ home_path: ["app"] });
+    expect(t.transport.requests.at(-1)?.options?.mutating).toBeFalsy();
+
+    t.transport.handlers["github.repo_available"] = () => ({ available: false });
+    expect(await t.controller.repoAvailable("octo", "app")).toBe(false);
+    expect(t.transport.requests.at(-1)?.params).toEqual({ owner: "octo", name: "app" });
+  });
+
+  it("sends publish and allow_large only when set", async () => {
+    const t = setup();
+    const added = { workspace_id: "new", name: "app", alias: null, kind: "root", parent_workspace_id: null };
+    t.transport.handlers["workspace.add"] = () => added;
+    await t.controller.addWorkspace("/Users/me/app");
+    expect(t.transport.requests.at(-1)?.params).toEqual({ path: "/Users/me/app" });
+    expect(t.transport.requests.at(-1)?.options).toEqual({ mutating: true });
+    await t.controller.addWorkspace("/Users/me/app", { allowLarge: false, publish: undefined });
+    expect(t.transport.requests.at(-1)?.params).toEqual({ path: "/Users/me/app" });
+    expect(t.transport.requests.at(-1)?.options).toEqual({ mutating: true });
+    await t.controller.addWorkspaceAt(["app"], { allowLarge: true, publish: { owner: "octo", name: "app" } });
+    expect(t.transport.requests.at(-1)?.params).toEqual({
+      home_path: ["app"],
+      allow_large: true,
+      publish: { owner: "octo", name: "app" },
+    });
+    expect(t.transport.requests.at(-1)?.options).toEqual({ mutating: true, timeoutMs: 330_000 });
+  });
+
   it("merges the pull request at the head the user saw, never retried", async () => {
     expect(MUTATING_OPS.has("git.pr_merge")).toBe(true);
     expect(MUTATING_OPS.has("git.pr")).toBe(false);

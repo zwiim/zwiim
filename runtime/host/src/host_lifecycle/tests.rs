@@ -198,7 +198,7 @@ async fn an_open_terminal_holds_a_when_idle_restart() {
     let (_, spawned) = post(
         &h,
         "terminal.spawn",
-        json!({"workspace_id": h.workspace_id, "shell": "/bin/sh"}),
+        json!({"workspace_id": h.wt_workspace_id, "shell": "/bin/sh"}),
     )
     .await;
     let tid = spawned["terminal_id"].as_str().unwrap().to_string();
@@ -256,7 +256,7 @@ async fn a_forced_restart_ends_work_visibly_and_keeps_sessions() {
     let (_, spawned) = post(
         &h,
         "terminal.spawn",
-        json!({"workspace_id": h.workspace_id, "shell": "/bin/sh"}),
+        json!({"workspace_id": h.wt_workspace_id, "shell": "/bin/sh"}),
     )
     .await;
     assert!(spawned["terminal_id"].is_string());

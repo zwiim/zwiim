@@ -101,7 +101,9 @@ pub async fn host_claim(
     use crate::identity::host::{claim, Claim, HostOwner};
     let user_id = p.user_id.trim();
     if user_id.is_empty() || user_id.len() > 128 {
-        return Err(ZwiimError::invalid_input("user_id must be 1-128 characters"));
+        return Err(ZwiimError::invalid_input(
+            "user_id must be 1-128 characters",
+        ));
     }
     let email = p.email.filter(|e| !e.trim().is_empty() && e.len() <= 320);
     let claimant = HostOwner {
@@ -134,11 +136,21 @@ pub async fn cloud_enroll(
     Extension(state): Extension<Arc<AppState>>,
     ZJson(p): ZJson<CloudEnrollParams>,
 ) -> ZResult<Value> {
-    let name = p.name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
-    if name.as_ref().is_some_and(|n| n.len() > 128 || n.chars().any(char::is_control)) {
-        return Err(ZwiimError::invalid_input("name must be at most 128 bytes, without control characters"));
+    let name = p
+        .name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty());
+    if name
+        .as_ref()
+        .is_some_and(|n| n.len() > 128 || n.chars().any(char::is_control))
+    {
+        return Err(ZwiimError::invalid_input(
+            "name must be at most 128 bytes, without control characters",
+        ));
     }
-    Ok(Json(crate::cloud::enroll(&state, &p.cloud_url, &p.enrollment_token, name).await?))
+    Ok(Json(
+        crate::cloud::enroll(&state, &p.cloud_url, &p.enrollment_token, name).await?,
+    ))
 }
 
 pub async fn cloud_status(Extension(state): Extension<Arc<AppState>>) -> ZResult<Value> {
@@ -204,11 +216,10 @@ pub async fn host_update_status() -> ZResult<Value> {
 pub async fn host_diagnostics(Extension(state): Extension<Arc<AppState>>) -> ZResult<Value> {
     use crate::adapters::ManagedAdapter;
     use crate::db::schema_guard::{self, SchemaState};
-    let settings = crate::db::service::agent_setting_service::list_map_by_agent_type(
-        &state.db.conn,
-    )
-    .await
-    .map_err(db_error)?;
+    let settings =
+        crate::db::service::agent_setting_service::list_map_by_agent_type(&state.db.conn)
+            .await
+            .map_err(db_error)?;
     let adapters: serde_json::Map<String, Value> = ManagedAdapter::ALL
         .iter()
         .map(|m| {
@@ -301,7 +312,9 @@ pub async fn host_update_apply(
         RestartMode::WhenIdle => host_lifecycle::restart_when_idle(&state).await,
         RestartMode::Now => host_lifecycle::restart_now(&state).await,
     };
-    Ok(Json(json!({ "version": version, "state": restart, "blockers": blockers })))
+    Ok(Json(
+        json!({ "version": version, "state": restart, "blockers": blockers }),
+    ))
 }
 
 /// Any paired device may ask: it is already connected, and learns only the
@@ -310,7 +323,10 @@ pub async fn host_lan_endpoint(Extension(state): Extension<Arc<AppState>>) -> ZR
     Ok(Json(crate::lan::endpoint(&state)))
 }
 
-pub async fn lan_set(Extension(state): Extension<Arc<AppState>>, ZJson(p): ZJson<LanSetParams>) -> ZResult<Value> {
+pub async fn lan_set(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<LanSetParams>,
+) -> ZResult<Value> {
     Ok(Json(crate::lan::set(&state, p.enabled).await?))
 }
 
@@ -333,7 +349,9 @@ pub async fn host_keep_awake_set(
     Extension(state): Extension<Arc<AppState>>,
     ZJson(p): ZJson<KeepAwakeSetParams>,
 ) -> ZResult<Value> {
-    Ok(Json(json!(crate::keep_awake::set(&state, p.enabled).await?)))
+    Ok(Json(json!(
+        crate::keep_awake::set(&state, p.enabled).await?
+    )))
 }
 
 // ─── device ──────────────────────────────────────────────────────────────
@@ -346,7 +364,10 @@ pub async fn host_keep_awake_set(
 pub async fn device_pair_invite(
     Extension(state): Extension<Arc<AppState>>,
 ) -> ZResult<crate::identity::pairing::KeyPairingInvitation> {
-    let host_keys = state.host_keys.get().ok_or_else(ZwiimError::identity_unavailable)?;
+    let host_keys = state
+        .host_keys
+        .get()
+        .ok_or_else(ZwiimError::identity_unavailable)?;
     let host_id = crate::identity::host::ensure_host_id(&state.db.conn)
         .await
         .map_err(db_error)?;
@@ -365,8 +386,13 @@ pub async fn device_pair(
         .await
         .map_err(db_error)?;
     Ok(Json(
-        crate::identity::pairing::pair_device(&state.db.conn, &state.pairing_invitations, host_id, claim)
-            .await?,
+        crate::identity::pairing::pair_device(
+            &state.db.conn,
+            &state.pairing_invitations,
+            host_id,
+            claim,
+        )
+        .await?,
     ))
 }
 
@@ -425,7 +451,8 @@ pub struct AgentSummary {
     /// The effort a new session can choose on each model that has run here,
     /// by model value; `null` for a model that offers none. A model not
     /// listed has not run here yet: `options.effort` is the best guess.
-    pub effort_by_model: std::collections::BTreeMap<String, Option<crate::session_options::ChoiceOption>>,
+    pub effort_by_model:
+        std::collections::BTreeMap<String, Option<crate::session_options::ChoiceOption>>,
     /// The slash commands it offered in its last session here; `null`
     /// before its first.
     pub commands: Option<Vec<crate::session_commands::SessionCommand>>,
@@ -435,11 +462,10 @@ pub struct AgentSummary {
 /// installed.
 pub async fn agent_list(Extension(state): Extension<Arc<AppState>>) -> ZResult<Vec<AgentSummary>> {
     use crate::acp::error::AcpError;
-    let settings = crate::db::service::agent_setting_service::list_map_by_agent_type(
-        &state.db.conn,
-    )
-    .await
-    .map_err(db_error)?;
+    let settings =
+        crate::db::service::agent_setting_service::list_map_by_agent_type(&state.db.conn)
+            .await
+            .map_err(db_error)?;
     let agents = crate::acp::registry::builtin_acp_agents();
     let checks = futures::future::join_all(
         agents
@@ -488,7 +514,11 @@ pub async fn agent_list(Extension(state): Extension<Arc<AppState>>) -> ZResult<V
             name: crate::acp::registry::get_agent_meta(agent).name.to_string(),
             available: reason.is_none(),
             reason,
-            support: if managed.is_some() { "supported" } else { "experimental" },
+            support: if managed.is_some() {
+                "supported"
+            } else {
+                "experimental"
+            },
             adapter,
             options,
             effort_by_model,
@@ -518,13 +548,11 @@ pub async fn agent_setup(
         ));
     };
     crate::adapters::setup_in_background(adapter);
-    let setting = crate::db::service::agent_setting_service::get_by_agent_type(
-        &state.db.conn,
-        params.agent,
-    )
-    .await
-    .ok()
-    .flatten();
+    let setting =
+        crate::db::service::agent_setting_service::get_by_agent_type(&state.db.conn, params.agent)
+            .await
+            .ok()
+            .flatten();
     let env =
         crate::commands::acp::build_runtime_env_from_setting(params.agent, setting.as_ref(), None);
     Ok(Json(crate::adapters::status(adapter, &env)))
@@ -572,10 +600,11 @@ async fn auth_status_of(
     adapter: crate::adapters::ManagedAdapter,
 ) -> crate::agent_auth::AgentAuthStatus {
     let agent = adapter.agent();
-    let setting = crate::db::service::agent_setting_service::get_by_agent_type(&state.db.conn, agent)
-        .await
-        .ok()
-        .flatten();
+    let setting =
+        crate::db::service::agent_setting_service::get_by_agent_type(&state.db.conn, agent)
+            .await
+            .ok()
+            .flatten();
     let env = crate::commands::acp::build_runtime_env_from_setting(agent, setting.as_ref(), None);
     crate::agent_auth::status(agent, &env).expect("a managed agent has a sign-in status")
 }
@@ -614,7 +643,9 @@ pub async fn agent_save_key(
     let AgentSaveKeyParams { agent, key } = params;
     let key = zeroize::Zeroizing::new(key);
     let adapter = auth_adapter(agent)?;
-    crate::agent_auth::save_key(adapter, &key).await.map_err(auth_error)?;
+    crate::agent_auth::save_key(adapter, &key)
+        .await
+        .map_err(auth_error)?;
     mark_sessions_stale(&state, agent).await;
     Ok(Json(auth_status_of(&state, adapter).await))
 }
@@ -626,7 +657,9 @@ pub async fn agent_remove_key(
     ZJson(params): ZJson<AgentAuthParams>,
 ) -> ZResult<crate::agent_auth::AgentAuthStatus> {
     let adapter = auth_adapter(params.agent)?;
-    crate::agent_auth::remove_key(adapter).await.map_err(auth_error)?;
+    crate::agent_auth::remove_key(adapter)
+        .await
+        .map_err(auth_error)?;
     mark_sessions_stale(&state, params.agent).await;
     Ok(Json(auth_status_of(&state, adapter).await))
 }
@@ -645,7 +678,10 @@ pub async fn agent_sign_out(
         .disconnect_by_agent_type(params.agent)
         .await;
     if ended > 0 {
-        tracing::info!("[agent-auth] ended {ended} {} session(s) at sign-out", adapter.id());
+        tracing::info!(
+            "[agent-auth] ended {ended} {} session(s) at sign-out",
+            adapter.id()
+        );
     }
     crate::agent_auth::sign_out(adapter)
         .await
@@ -694,21 +730,35 @@ pub struct WorkspaceAddParams {
     /// Confirmed by the user after a `large_folder` refusal.
     #[serde(default)]
     pub allow_large: bool,
+    /// Create private GitHub repository `owner/name` from the folder, add it
+    /// as `origin` and push. Absent: a local repository only.
+    #[serde(default)]
+    pub publish: Option<PublishParams>,
 }
 
-pub async fn workspace_add(
-    Extension(state): Extension<Arc<AppState>>,
-    principal: Option<Extension<Principal>>,
-    ZJson(p): ZJson<WorkspaceAddParams>,
-) -> ZResult<WorkspaceInfo> {
-    let path = match (p.path, p.home_path) {
+/// `workspace.add`'s `publish`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishParams {
+    pub owner: String,
+    pub name: String,
+}
+
+/// The host folder a `workspace.add` / `workspace.inspect` names: `path`
+/// (Host principal only) or `home_path` (a folder under home, never home).
+fn add_path(
+    principal: Option<&Principal>,
+    path: Option<String>,
+    home_path: Option<Vec<String>>,
+) -> Result<String, ZwiimError> {
+    match (path, home_path) {
         (Some(path), None) => {
-            if !matches!(principal.as_deref(), Some(Principal::Host)) {
+            if !matches!(principal, Some(Principal::Host)) {
                 return Err(ZwiimError::permission_denied(
                     "Paired devices add a folder by home_path",
                 ));
             }
-            path
+            Ok(path)
         }
         (None, Some(segments)) => {
             // An agent over the whole home folder is not a workspace.
@@ -718,18 +768,50 @@ pub async fn workspace_add(
                 ));
             }
             let home = workspace::home_dir().ok_or_else(ZwiimError::internal)?;
-            workspace_browse::resolve_home_path(home, &segments)?
+            Ok(workspace_browse::resolve_home_path(home, &segments)?
                 .to_string_lossy()
-                .into_owned()
+                .into_owned())
         }
-        _ => {
-            return Err(ZwiimError::invalid_input(
-                "Give exactly one of path and home_path",
-            ))
-        }
-    };
+        _ => Err(ZwiimError::invalid_input(
+            "Give exactly one of path and home_path",
+        )),
+    }
+}
+
+pub async fn workspace_add(
+    Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+    ZJson(p): ZJson<WorkspaceAddParams>,
+) -> ZResult<WorkspaceInfo> {
+    let path = add_path(principal.as_deref(), p.path, p.home_path)?;
+    let publish = p.publish.map(|p| workspace::Publish {
+        owner: p.owner,
+        name: p.name,
+        gh: state.gh.clone(),
+    });
     Ok(Json(
-        workspace::add(&state.db, &state.emitter, &path, p.allow_large).await?,
+        workspace::add(&state.db, &state.emitter, &path, p.allow_large, publish).await?,
+    ))
+}
+
+/// Exactly one of `path` and `home_path`, as `workspace.add`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceInspectParams {
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub home_path: Option<Vec<String>>,
+}
+
+pub async fn workspace_inspect(
+    Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+    ZJson(p): ZJson<WorkspaceInspectParams>,
+) -> ZResult<workspace::Inspection> {
+    let path = add_path(principal.as_deref(), p.path, p.home_path)?;
+    Ok(Json(
+        workspace::inspect(&state.db, &path, state.gh.as_deref()).await?,
     ))
 }
 
@@ -1193,6 +1275,39 @@ pub async fn git_pr_merge(
     Ok(Json(result?))
 }
 
+// ─── github ──────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepoAvailableParams {
+    pub owner: String,
+    pub name: String,
+}
+
+#[derive(Serialize)]
+pub struct RepoAvailable {
+    available: bool,
+}
+
+/// Whether `owner/name` is free on GitHub for the signed-in account.
+pub async fn github_repo_available(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<RepoAvailableParams>,
+) -> ZResult<RepoAvailable> {
+    workspace::check_target(&p.owner, &p.name)?;
+    let cwd = workspace::home_dir()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(std::env::temp_dir);
+    let exists = git_harness::github_repo_exists(
+        state.gh.as_deref(),
+        &cwd.to_string_lossy(),
+        &p.owner,
+        &p.name,
+    )
+    .await?;
+    Ok(Json(RepoAvailable { available: !exists }))
+}
+
 // ─── terminal ────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -1263,6 +1378,9 @@ pub async fn terminal_spawn(
     // either sees it or has already removed the workspace.
     let (folder, _launching) =
         workspace::resolve_for_launch(&state.db.conn, &p.workspace_id).await?;
+    if folder.parent_id.is_none() {
+        return Err(ZwiimError::root_workspace());
+    }
     let root = folder.path;
     let terminal_id = state
         .terminal_manager
@@ -1280,7 +1398,11 @@ pub async fn terminal_spawn(
         )
         .map_err(terminal_err)?;
     if let Some(command) = paste {
-        run_when_settled(state.terminal_manager.clone_ref(), terminal_id.clone(), command);
+        run_when_settled(
+            state.terminal_manager.clone_ref(),
+            terminal_id.clone(),
+            command,
+        );
     }
     Ok(Json(json!({ "terminal_id": terminal_id })))
 }
@@ -1538,7 +1660,9 @@ pub async fn session_options(
     ZJson(p): ZJson<SessionParams>,
 ) -> ZResult<Value> {
     let options = session::options(&state.db, &state.connection_manager, &p.session_id).await?;
-    Ok(Json(json!({ "session_id": p.session_id, "options": options })))
+    Ok(Json(
+        json!({ "session_id": p.session_id, "options": options }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1566,10 +1690,16 @@ pub async fn session_set_options(
     if request.is_empty() {
         return Err(ZwiimError::invalid_input("Nothing to change"));
     }
-    let options =
-        session::set_options(&state.db, &state.connection_manager, &p.session_id, &request)
-            .await?;
-    Ok(Json(json!({ "session_id": p.session_id, "options": options })))
+    let options = session::set_options(
+        &state.db,
+        &state.connection_manager,
+        &p.session_id,
+        &request,
+    )
+    .await?;
+    Ok(Json(
+        json!({ "session_id": p.session_id, "options": options }),
+    ))
 }
 
 pub async fn session_cancel(
@@ -1637,7 +1767,9 @@ pub async fn session_list(
     let sessions =
         session::list_for_workspace(&state.db.conn, &state.connection_manager, &p.workspace_id)
             .await?;
-    Ok(Json(sessions.into_iter().map(SessionSummary::from).collect()))
+    Ok(Json(
+        sessions.into_iter().map(SessionSummary::from).collect(),
+    ))
 }
 
 pub async fn session_history(

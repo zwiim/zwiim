@@ -48,6 +48,31 @@ export function buildWorkspaceTree(
   return roots;
 }
 
+/**
+ * Where clicking root `rootId` opens: its live worktree whose newest session
+ * was prompted last, else its last live worktree in host order, else null
+ * (create one). Never the root itself.
+ */
+export function openTarget(
+  state: Pick<HostState, "workspaces" | "sessionsByWorkspace">,
+  rootId: string,
+): WorkspaceInfo | null {
+  const worktrees = (state.workspaces ?? []).filter(
+    (w) => w.parent_workspace_id === rootId && !w.removed,
+  );
+  let best: WorkspaceInfo | null = null;
+  let bestAt = "";
+  for (const w of worktrees) {
+    for (const s of state.sessionsByWorkspace[w.workspace_id] ?? []) {
+      if (s.updated_at > bestAt) {
+        best = w;
+        bestAt = s.updated_at;
+      }
+    }
+  }
+  return best ?? worktrees.at(-1) ?? null;
+}
+
 let memo: { key: unknown[]; tree: WorkspaceNode[] } | null = null;
 
 /** `buildWorkspaceTree`, returning the same array while its inputs are unchanged. */
