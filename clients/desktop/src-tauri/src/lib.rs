@@ -18,6 +18,7 @@
 pub mod account;
 pub mod cloud;
 pub mod device;
+pub mod download;
 pub mod lan;
 pub mod login;
 pub mod update;
@@ -333,6 +334,7 @@ pub fn run() {
             account_cancel_sign_in,
             account_sign_out,
             open_link,
+            download::open_download,
             cloud_request,
             device_identity,
             device_paired_hosts,

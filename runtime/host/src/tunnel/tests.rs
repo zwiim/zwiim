@@ -277,6 +277,37 @@ async fn operations_through_the_tunnel_are_the_hosts_own() {
     }
 }
 
+/// The largest attachment crosses the tunnel both ways: its base64 upload
+/// and download stay under the tunnel's message cap.
+#[tokio::test]
+async fn a_ten_mebibyte_attachment_round_trips_through_the_tunnel() {
+    use base64::engine::general_purpose::STANDARD;
+    let h = host(false).await;
+    let (device, host_id) = paired_device(&h).await;
+    let (c, _served) = connect(&h, &device, &host_id).await;
+    let wid = h.workspace_id.clone();
+    let bytes: Vec<u8> = (0..crate::attachments::ATTACHMENT_MAX_BYTES).map(|i| (i % 251) as u8).collect();
+    let slow = Duration::from_secs(60);
+
+    let (status, up) = tokio::time::timeout(
+        slow,
+        c.request("attachments.upload", json!({"workspace_id": wid, "name": "big.bin", "data": STANDARD.encode(&bytes)})),
+    )
+    .await
+    .expect("upload within 60s")
+    .unwrap();
+    assert_eq!(status, 200, "{up}");
+    assert_eq!(up["size"], bytes.len());
+    let path = format!(".zwiim/attachments/{}/big.bin", up["attachment_id"].as_str().unwrap());
+
+    let (status, down) = tokio::time::timeout(slow, c.request("files.download", json!({"workspace_id": wid, "path": path})))
+        .await
+        .expect("download within 60s")
+        .unwrap();
+    assert_eq!(status, 200);
+    assert!(STANDARD.decode(down["data"].as_str().unwrap()).unwrap() == bytes);
+}
+
 #[tokio::test]
 async fn the_device_is_authorized_as_itself() {
     let h = host(false).await;

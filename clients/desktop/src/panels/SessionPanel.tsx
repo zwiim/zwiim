@@ -1,8 +1,9 @@
 import { Fragment, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, GitBranch, Loader2, Square } from "lucide-react";
+import { ArrowDown, ArrowUp, GitBranch, Loader2, Paperclip, Square } from "lucide-react";
 import {
   effortFor,
   hasCapability,
+  isClientError,
   optionUnavailableDetails,
   turnGroups,
   type AgentSummary,
@@ -15,6 +16,8 @@ import {
   type SessionOptions,
   type SessionView,
 } from "@zwiim/sdk";
+import { PendingAttachments } from "@/attachments/AttachmentChip";
+import { UPLOAD_FAILED_MESSAGE, usePendingAttachments } from "@/attachments/usePendingAttachments";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { agentChoices, rememberAgentChoices } from "@/lib/prefs";
@@ -276,6 +279,7 @@ function NewSession({ workspaceId, onStarted }: { workspaceId: string; onStarted
         {agents !== null && agent === null && <NoAgents />}
       </div>
       <Composer
+        workspaceId={workspaceId}
         placeholder="Describe the task"
         disabled={!online || agent === null}
         unattended={start?.shown.mode?.current === "unattended"}
@@ -463,6 +467,7 @@ function OpenSession({
         )}
       </div>
       <Composer
+        workspaceId={workspaceId}
         placeholder={
           removed
             ? "This worktree was removed — the session is read-only"
@@ -693,6 +698,8 @@ const COMPOSER_MAX_PX = 240;
  * toolbar the agent's options and send (or stop while it works).
  */
 function Composer(props: {
+  /** Where attached files are uploaded. */
+  workspaceId: string;
   placeholder: string;
   disabled?: boolean;
   /** Unattended is on: the frame says so. */
@@ -715,6 +722,9 @@ function Composer(props: {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const area = useRef<HTMLTextAreaElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const attachments = usePendingAttachments();
+  const canAttach = attachments.enabled && !props.disabled;
   const agentTerminal = props.terminal;
   const slash = useSlashMenu({
     text,
@@ -746,19 +756,34 @@ function Composer(props: {
 
   async function send() {
     const trimmed = text.trim();
-    if (!trimmed || sending) return;
+    const attaching = attachments.files.length > 0;
+    if ((!trimmed && !attaching) || sending) return;
     setSending(true);
     setError(null);
     try {
+      // Files go first; one that does not upload holds the message back.
+      const files = attaching ? await attachments.upload(props.workspaceId) : [];
+      if (files === null) {
+        setError(UPLOAD_FAILED_MESSAGE);
+        return;
+      }
       // Sent once, tagged so the host's echo of it can be recognised; on an
       // unknown outcome the text stays for the user to decide.
-      await props.onSend([{ type: "text", text: trimmed }], crypto.randomUUID());
+      await props.onSend([...(trimmed ? [{ type: "text" as const, text: trimmed }] : []), ...files], crypto.randomUUID());
       setText("");
+      attachments.clear();
     } catch (e) {
+      if (isClientError(e, "attachment_not_found")) attachments.forgetUploads();
       setError(errorMessage(e));
     } finally {
       setSending(false);
     }
+  }
+
+  function attach(files: Iterable<File>) {
+    if (!canAttach) return;
+    setError(null);
+    attachments.add(files);
   }
 
   return (
@@ -779,9 +804,24 @@ function Composer(props: {
           onClick={(e) => {
             if (e.target === e.currentTarget) area.current?.focus();
           }}
+          onDragOver={(e) => {
+            if (canAttach && e.dataTransfer.types.includes("Files")) e.preventDefault();
+          }}
+          onDrop={(e) => {
+            if (!canAttach || e.dataTransfer.files.length === 0) return;
+            e.preventDefault();
+            attach(e.dataTransfer.files);
+          }}
         >
           {slash.menu}
           {props.banner}
+          <PendingAttachments
+            className="px-3 pt-3"
+            files={attachments.files}
+            errors={attachments.errors}
+            disabled={sending}
+            onRemove={attachments.remove}
+          />
           <textarea
             ref={area}
             className="placeholder:text-muted-foreground block max-h-60 min-h-12 w-full resize-none bg-transparent px-4 pt-3.5 pb-1 leading-relaxed outline-none disabled:cursor-not-allowed"
@@ -794,15 +834,46 @@ function Composer(props: {
               slash.track(e);
             }}
             onSelect={slash.track}
+            onPaste={(e) => {
+              if (!canAttach || e.clipboardData.files.length === 0) return;
+              e.preventDefault();
+              attach(e.clipboardData.files);
+            }}
             onKeyDown={(e) => {
               if (slash.onKeyDown(e)) return;
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 void send();
+              } else if (canAttach && e.key.toLowerCase() === "u" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                fileInput.current?.click();
               }
             }}
           />
+          <input
+            ref={fileInput}
+            type="file"
+            multiple
+            hidden
+            data-testid="attachment-input"
+            onChange={(e) => {
+              if (e.target.files) attach(e.target.files);
+              e.target.value = "";
+            }}
+          />
           <div className="flex items-center gap-1 px-2 pb-2">
+            {attachments.enabled && (
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                title="Attach files (⌘U)"
+                aria-label="Attach files"
+                disabled={!canAttach || sending}
+                onClick={() => fileInput.current?.click()}
+              >
+                <Paperclip />
+              </Button>
+            )}
             {props.leading}
             <div className="flex min-w-0 flex-1 items-center justify-end gap-0.5">{props.controls}</div>
             {props.action || (
@@ -810,7 +881,7 @@ function Composer(props: {
                 type="button"
                 className="bg-brand text-brand-foreground hover:bg-brand/85 focus-visible:ring-ring/50 disabled:bg-muted disabled:text-muted-foreground grid size-8 shrink-0 place-items-center rounded-full outline-none focus-visible:ring-2"
                 onClick={send}
-                disabled={props.disabled || sending || !text.trim()}
+                disabled={props.disabled || sending || (!text.trim() && attachments.files.length === 0)}
                 title="Send"
                 aria-label="Send"
               >

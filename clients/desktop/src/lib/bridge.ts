@@ -340,6 +340,22 @@ export async function openLink(href: string): Promise<void> {
   }
 }
 
+/**
+ * Open a workspace file's bytes in the default app for its type. Outside the
+ * native app the browser downloads it instead.
+ */
+export async function openDownload(file: { name: string; mime_type: string; data: string }): Promise<void> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("open_download", { name: file.name, data: file.data });
+  } else {
+    const link = document.createElement("a");
+    link.href = `data:${file.mime_type};base64,${file.data}`;
+    link.download = file.name;
+    link.click();
+  }
+}
+
 export function defaultBridge(): NativeBridge {
   if (isTauri()) return tauriBridge();
   if (import.meta.env.DEV) return devBrowserBridge();

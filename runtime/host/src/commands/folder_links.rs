@@ -415,7 +415,7 @@ fn git_exclude_line(toplevel: &Path, root: &Path, name: &str) -> String {
 /// `info/exclude`, not `.gitignore`: it is local-only and never committed, so
 /// we never modify a file the user would have to review or push. Best-effort —
 /// a failure only means a noisier `git status`.
-async fn add_to_git_exclude(root: &Path, name: &str) {
+pub(crate) async fn add_to_git_exclude(root: &Path, name: &str) {
     let Some(git_dir) = resolve_git_common_dir(root).await else {
         return;
     };

@@ -1047,6 +1047,84 @@ pub async fn files_read(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct FileDownloadParams {
+    pub workspace_id: String,
+    pub path: String,
+}
+
+/// Any file in the workspace, whole and base64-encoded, for opening in another
+/// app. Symlinks are followed only while they stay inside the workspace.
+pub async fn files_download(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<FileDownloadParams>,
+) -> ZResult<Value> {
+    use base64::Engine as _;
+    let root = workspace::resolve(&state.db.conn, &p.workspace_id)
+        .await?
+        .path;
+    let root = std::path::Path::new(&root);
+    let joined = folder_commands::resolve_tree_path(root, &p.path)?;
+    let not_found = || ZwiimError::not_found("File not found");
+    let (Ok(root), Ok(target)) = (root.canonicalize(), joined.canonicalize()) else {
+        return Err(not_found());
+    };
+    if !target.starts_with(&root) || !target.is_file() {
+        return Err(not_found());
+    }
+    let size = std::fs::metadata(&target).map_err(|_| not_found())?.len();
+    if size > crate::attachments::ATTACHMENT_MAX_BYTES as u64 {
+        return Err(ZwiimError::file_too_large());
+    }
+    let bytes = tokio::fs::read(&target).await.map_err(|_| not_found())?;
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(Json(json!({
+        "mime_type": crate::attachments::mime_for(&name),
+        "name": name,
+        "size": bytes.len(),
+        "data": base64::engine::general_purpose::STANDARD.encode(&bytes),
+    })))
+}
+
+// ─── attachments ─────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttachmentUploadParams {
+    pub workspace_id: String,
+    pub name: String,
+    /// Standard base64.
+    pub data: String,
+}
+
+pub async fn attachments_upload(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<AttachmentUploadParams>,
+) -> ZResult<Value> {
+    use base64::Engine as _;
+    let root = workspace::resolve(&state.db.conn, &p.workspace_id)
+        .await?
+        .path;
+    // Refuse before decoding: base64 is 4/3 of the decoded size.
+    if p.data.len() / 4 * 3 > crate::attachments::ATTACHMENT_MAX_BYTES + 3 {
+        return Err(ZwiimError::attachment_too_large());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(p.data.as_bytes())
+        .map_err(|_| ZwiimError::invalid_request("data is not valid base64"))?;
+    let stored = crate::attachments::store(std::path::Path::new(&root), &p.name, &bytes).await?;
+    Ok(Json(json!({
+        "attachment_id": stored.attachment_id,
+        "name": stored.name,
+        "size": stored.size,
+        "mime_type": stored.mime_type,
+    })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileWriteParams {
     pub workspace_id: String,
     pub path: String,
@@ -1571,26 +1649,48 @@ pub async fn terminal_snapshot(
 
 // ─── session ─────────────────────────────────────────────────────────────
 
-/// Prompt content accepted from clients: text and inline images only.
+/// Prompt content accepted from clients: text, inline images (older
+/// clients), and attachments uploaded to the session's workspace.
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Block {
     Text { text: String },
     Image { data: String, mime_type: String },
+    Attachment { attachment_id: String },
 }
 
-fn prompt_blocks(blocks: Vec<Block>) -> Vec<PromptInputBlock> {
-    blocks
-        .into_iter()
-        .map(|b| match b {
-            Block::Text { text } => PromptInputBlock::Text { text },
-            Block::Image { data, mime_type } => PromptInputBlock::Image {
+fn has_attachments(blocks: &[Block]) -> bool {
+    blocks.iter().any(|b| matches!(b, Block::Attachment { .. }))
+}
+
+/// Client blocks → agent prompt. Attachments, resolved in workspace `root`,
+/// become one note appended after the other blocks.
+fn prompt_blocks(
+    blocks: Vec<Block>,
+    root: Option<&std::path::Path>,
+) -> Result<Vec<PromptInputBlock>, ZwiimError> {
+    let mut out = Vec::with_capacity(blocks.len() + 1);
+    let mut attached = Vec::new();
+    for b in blocks {
+        match b {
+            Block::Text { text } => out.push(PromptInputBlock::Text { text }),
+            Block::Image { data, mime_type } => out.push(PromptInputBlock::Image {
                 data,
                 mime_type,
                 uri: None,
-            },
-        })
-        .collect()
+            }),
+            Block::Attachment { attachment_id } => {
+                let root = root.ok_or_else(ZwiimError::attachment_not_found)?;
+                attached.push(crate::attachments::resolve(root, &attachment_id)?);
+            }
+        }
+    }
+    if !attached.is_empty() {
+        out.push(PromptInputBlock::Text {
+            text: crate::attachments::note(&attached),
+        });
+    }
+    Ok(out)
 }
 
 #[derive(Deserialize)]
@@ -1610,13 +1710,19 @@ pub async fn session_start(
     Extension(state): Extension<Arc<AppState>>,
     ZJson(p): ZJson<SessionStartParams>,
 ) -> ZResult<Value> {
+    let root = if has_attachments(&p.blocks) {
+        Some(workspace::resolve(&state.db.conn, &p.workspace_id).await?.path)
+    } else {
+        None
+    };
+    let blocks = prompt_blocks(p.blocks, root.as_deref().map(std::path::Path::new))?;
     let session_id = session::start(
         &state.db,
         &state.connection_manager,
         &RuntimeLauncher { state: &state },
         &p.workspace_id,
         p.agent,
-        prompt_blocks(p.blocks),
+        blocks,
         p.client_message_id,
         &p.options,
     )
@@ -1637,12 +1743,19 @@ pub async fn session_send(
     Extension(state): Extension<Arc<AppState>>,
     ZJson(p): ZJson<SessionSendParams>,
 ) -> ZResult<Value> {
+    let root = if has_attachments(&p.blocks) {
+        session::resolve(&state.db.conn, &p.session_id).await?;
+        session::workspace_dir(&state.db.conn, &p.session_id).await
+    } else {
+        None
+    };
+    let blocks = prompt_blocks(p.blocks, root.as_deref().map(std::path::Path::new))?;
     session::send(
         &state.db,
         &state.connection_manager,
         &RuntimeLauncher { state: &state },
         &p.session_id,
-        prompt_blocks(p.blocks),
+        blocks,
         p.client_message_id,
     )
     .await?;

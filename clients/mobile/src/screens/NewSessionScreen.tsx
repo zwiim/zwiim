@@ -12,7 +12,10 @@ import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, TextInput, View
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { randomUUID } from "expo-crypto";
-import type { SessionMode } from "@zwiim/sdk";
+import { isClientError, type PromptBlock, type SessionMode } from "@zwiim/sdk";
+import { pickFiles, pickPhotos } from "../attachments/native";
+import { UPLOAD_FAILED_MESSAGE } from "../attachments/pending";
+import { usePendingAttachments } from "../attachments/usePendingAttachments";
 import { useCurrentHost, useHostState } from "../app/hooks";
 import type { RootStack } from "../app/navigation";
 import {
@@ -33,11 +36,16 @@ import {
 import { currentHost } from "../services";
 import { ChoiceList, Field, type Choice } from "../ui/choices";
 import { Button, ScreenHeader, Sheet, T } from "../ui/components";
+import { Paperclip } from "../ui/icons";
+import { AttachSheet, PendingFiles } from "../ui/session";
 import { radius, space, type, useTheme } from "../ui/tokens";
 import { useHostName } from "./HostFrame";
 import { WorkspaceTree } from "./workspaces";
 
 type Picking = "workspace" | "agent" | "model" | "effort" | "mode" | null;
+
+/** The picker opens once the attach sheet has slid away; iOS shows one modal at a time. */
+const SHEET_CLOSE_MS = 400;
 
 export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<RootStack, "NewSession">) {
   const theme = useTheme();
@@ -57,6 +65,8 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
+  const [attaching, setAttaching] = useState(false);
+  const attachments = usePendingAttachments(name);
 
   // Agents as the host has them now (one may have been installed since connecting).
   useEffect(() => {
@@ -74,24 +84,49 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
   const agent = agents?.find((a) => a.agent === (agentId ?? defaultAgent(agents))) ?? null;
   const options = startChoices(agent, picks);
   const mode = modeValue(options, picks.mode);
-  const params = startParams({ target, agent, picks, prompt, client_message_id: "" });
+  // The chosen files stand in for their uploads: enough to say whether Start can go.
+  const chosen: PromptBlock[] = attachments.enabled
+    ? attachments.files.map((f) => ({ type: "attachment", attachment_id: f.attachment_id ?? f.id }))
+    : [];
+  const params = startParams({ target, agent, picks, prompt, files: chosen, client_message_id: "" });
 
   const close = () => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Host"));
 
   const start = async () => {
-    const request = startParams({ target, agent, picks, prompt, client_message_id: randomUUID() });
-    if (!request || starting) return;
+    if (!params || starting || target.kind !== "ready") return;
     setStarting(true);
     setError(null);
     try {
+      // The files go into the workspace the session runs in, before it starts.
+      const files = chosen.length > 0 ? await attachments.upload(target.workspace.workspace_id) : [];
+      if (files === null) {
+        setError(UPLOAD_FAILED_MESSAGE);
+        setStarting(false);
+        return;
+      }
+      const request = startParams({ target, agent, picks, prompt, files, client_message_id: randomUUID() });
+      if (!request) {
+        setStarting(false);
+        return;
+      }
       const session_id = await currentHost.startSession(request);
       // From a session's `+`: back to it, now showing the new one (one Session deep).
       if (navigation.getState().routes.some((r) => r.name === "Session")) navigation.popTo("Session", { session_id, started: true });
       else navigation.replace("Session", { session_id, started: true });
     } catch (e) {
+      if (isClientError(e, "attachment_not_found")) attachments.forgetUploads();
       setError(startError(e, name, agent?.name ?? null));
       setStarting(false);
     }
+  };
+
+  const pick = (from: "photos" | "files") => {
+    setAttaching(false);
+    setTimeout(() => {
+      (from === "photos" ? pickPhotos() : pickFiles())
+        .then(attachments.add)
+        .catch(() => setError(from === "photos" ? "Couldn't open your photos." : "Couldn't open Files."));
+    }, SHEET_CLOSE_MS);
   };
 
   const checkAgents = async () => {
@@ -236,6 +271,26 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
             accessibilityLabel="First prompt"
             testID="new-session-prompt"
           />
+          {attachments.enabled ? (
+            <>
+              <PendingFiles
+                files={attachments.files}
+                errors={attachments.errors}
+                disabled={starting}
+                onRemove={attachments.remove}
+              />
+              <View style={styles.attach}>
+                <Button
+                  kind="secondary"
+                  icon={Paperclip}
+                  label="Attach files"
+                  disabled={starting}
+                  onPress={() => setAttaching(true)}
+                  testID="new-session-attach"
+                />
+              </View>
+            </>
+          ) : null}
         </ScrollView>
         <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, space.lg), borderTopColor: theme.line }]}>
           {error ? (
@@ -256,6 +311,7 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
         </View>
       </KeyboardAvoidingView>
 
+      <AttachSheet visible={attaching} onClose={() => setAttaching(false)} onPick={pick} />
       <Sheet visible={sheet !== null || picking === "workspace"} onClose={closeSheet}>
         {picking === "workspace" ? (
           <WorkspaceTree
@@ -312,4 +368,5 @@ const styles = StyleSheet.create({
   prompt: { minHeight: 132, borderRadius: radius.md, padding: space.md },
   footer: { paddingHorizontal: space.lg, paddingTop: space.md, gap: space.sm, borderTopWidth: StyleSheet.hairlineWidth },
   confirm: { flexDirection: "row", gap: space.sm, justifyContent: "flex-end" },
+  attach: { alignItems: "flex-start" },
 });

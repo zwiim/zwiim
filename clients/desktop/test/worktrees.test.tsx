@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HostClient, HostController, ZwiimClientError, type SessionSummary, type WorkspaceInfo } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
@@ -425,7 +425,7 @@ describe("sessions and removed worktrees", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("starts from a chosen base branch, in plan mode, with an image attached", async () => {
+  it("starts from a chosen base branch, in plan mode, with files uploaded into the new worktree", async () => {
     const t = new FakeTransport();
     t.handlers["workspace.list"] = () => [root];
     t.handlers["git.branches"] = () => ({
@@ -448,6 +448,12 @@ describe("sessions and removed worktrees", () => {
       },
     ];
     t.handlers["workspace.create_worktree"] = () => worktree("9f8e7d6c");
+    t.handlers["attachments.upload"] = (p) => ({
+      attachment_id: p.name === "shot.png" ? "img00001" : "pdf00001",
+      name: p.name,
+      size: 4,
+      mime_type: "application/octet-stream",
+    });
     t.handlers["session.start"] = () => ({ session_id: "s9" });
     const props = sidebarProps();
     await mount(t, () => <Sidebar {...props} />);
@@ -469,23 +475,31 @@ describe("sessions and removed worktrees", () => {
 
     fireEvent.click(within(dialog).getByTitle("More options"));
     fireEvent.click(within(dialog).getByRole("menuitemcheckbox", { name: /Plan mode/ }));
-    expect(within(dialog).getByTestId("attachments").textContent).toContain("Plan mode");
+    expect(within(dialog).getByTestId("plan-mode").textContent).toContain("Plan mode");
     const png = new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" });
-    fireEvent.change(within(dialog).getByTestId("attachment-input"), { target: { files: [png] } });
-    await within(dialog).findByLabelText("Remove shot.png");
+    const pdf = new File([new Uint8Array([37, 80, 68, 70])], "spec.pdf", { type: "application/pdf" });
+    fireEvent.change(within(dialog).getByTestId("attachment-input"), { target: { files: [png, pdf] } });
+    await within(dialog).findByLabelText("Remove spec.pdf");
+    // Nothing uploads before there is a worktree to hold it.
+    expect(t.calls.some((c) => c.op === "attachments.upload")).toBe(false);
 
     fireEvent.change(within(dialog).getByLabelText("What do you want to work on?"), { target: { value: "plan it" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Create" }));
-    await tick();
+    await waitFor(() => expect(t.calls.some((c) => c.op === "session.start")).toBe(true));
     expect(t.calls.find((c) => c.op === "workspace.create_worktree")?.params).toEqual({
       workspace_id: "root",
       base: "feature",
     });
+    expect(t.calls.filter((c) => c.op === "attachments.upload").map((c) => c.params)).toEqual([
+      { workspace_id: "9f8e7d6c", name: "shot.png", data: "iVBORw==" },
+      { workspace_id: "9f8e7d6c", name: "spec.pdf", data: "JVBERg==" },
+    ]);
     expect(t.calls.find((c) => c.op === "session.start")?.params).toMatchObject({
       workspace_id: "9f8e7d6c",
       blocks: [
         { type: "text", text: "plan it" },
-        { type: "image", mime_type: "image/png", data: "iVBORw==" },
+        { type: "attachment", attachment_id: "img00001" },
+        { type: "attachment", attachment_id: "pdf00001" },
       ],
       options: { model: "sonnet", mode: "plan" },
     });

@@ -228,7 +228,7 @@ fn user_prompt_text_preview(blocks: &[PromptInputBlock]) -> Option<String> {
         .iter()
         .filter_map(|b| match b {
             PromptInputBlock::Text { text } => {
-                let t = text.trim();
+                let t = crate::attachments::cut_title(text).trim();
                 (!t.is_empty()).then_some(t)
             }
             _ => None,
@@ -259,7 +259,7 @@ fn delegation_child_title_seed(blocks: &[PromptInputBlock]) -> Option<String> {
         .iter()
         .filter_map(|b| match b {
             PromptInputBlock::Text { text } => {
-                let t = text.trim();
+                let t = crate::attachments::cut_title(text).trim();
                 (!t.is_empty()).then_some(t)
             }
             _ => None,
@@ -6178,6 +6178,21 @@ mod tests {
             uri: None,
         }];
         assert!(delegation_child_title_seed(&img).is_none());
+    }
+
+    #[test]
+    fn prompt_titles_and_previews_leave_out_the_attachment_note() {
+        let note = PromptInputBlock::Text {
+            text: crate::attachments::note(&["/w/.zwiim/attachments/k3F9a2Qx/a.pdf".into()]),
+        };
+        let text = PromptInputBlock::Text {
+            text: "summarize this".into(),
+        };
+        let both = vec![text, note.clone()];
+        assert_eq!(delegation_child_title_seed(&both).as_deref(), Some("summarize this"));
+        assert_eq!(user_prompt_text_preview(&both).as_deref(), Some("summarize this"));
+        assert!(delegation_child_title_seed(&[note.clone()]).is_none());
+        assert!(user_prompt_text_preview(&[note]).is_none());
     }
 
     #[test]

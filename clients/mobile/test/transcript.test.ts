@@ -466,3 +466,51 @@ describe("showing a session", () => {
     c.close();
   });
 });
+
+describe("files sent with a message", () => {
+  const pdf = {
+    type: "attachment" as const,
+    attachment_id: "att-1",
+    name: "report.pdf",
+    mime_type: "application/pdf",
+    size: 2048,
+    path: ".zwiim/attachments/att-1/report.pdf",
+  };
+  const sheet = { ...pdf, attachment_id: "att-2", name: "q3.xlsx", mime_type: "application/vnd.ms-excel", path: "x/q3.xlsx" };
+
+  it("shows a history message's files, and one carrying only files", () => {
+    const v = view(
+      history([
+        turn("u0", "user", [{ type: "text", text: "Summarize this" }, pdf]),
+        turn("a0", "assistant", [{ type: "text", text: "Done" }]),
+        turn("u1", "user", [{ ...sheet, size: undefined }]),
+      ]),
+    );
+    const users = transcriptRows(v).filter((r) => r.type === "user");
+    expect(users).toEqual([
+      { type: "user", key: "u0", text: "Summarize this", files: [pdf] },
+      { type: "user", key: "u1", text: "", files: [{ ...sheet, size: undefined }] },
+    ]);
+  });
+
+  it("shows a live message's files", () => {
+    const v = view(ev("agent.user_message", { message_id: "m1", blocks: [pdf] }), delta("Reading it"));
+    expect(transcriptRows(v)[0]).toMatchObject({ type: "user", text: "", files: [pdf] });
+    expect(types(v)).toEqual(["user", "agent"]);
+  });
+
+  it("drops the history's copy of a files-only turn shown live, and only that one", () => {
+    const live = view(
+      history([
+        turn("u0", "user", [pdf]),
+        turn("a0", "assistant", [{ type: "text", text: "Earlier" }]),
+        turn("u1", "user", [sheet]),
+      ]),
+      ev("agent.user_message", { message_id: "m1", blocks: [sheet] }),
+    );
+    expect(historyBefore(live.history!, live).map((t) => t.turn_id)).toEqual(["u0", "a0"]);
+    // Different files, same (empty) text: a different message.
+    const other = view(history([turn("u0", "user", [pdf])]), ev("agent.user_message", { message_id: "m1", blocks: [sheet] }));
+    expect(historyBefore(other.history!, other)).toHaveLength(1);
+  });
+});

@@ -23,7 +23,7 @@ use crate::acp::session_state::{
     ToolCallOutput, ToolCallState,
 };
 use crate::acp::types::{AcpEvent, EventEnvelope, PermissionOptionInfo, UserMessageBlock};
-use crate::models::message::{ContentBlock, MessageTurn};
+use crate::models::message::{ContentBlock, MessageTurn, TurnRole};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionEvent {
@@ -146,7 +146,7 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
         } => ("agent.thought_delta", json!({ "text": text })),
         AcpEvent::UserMessage { message_id, blocks } => (
             "agent.user_message",
-            json!({ "message_id": message_id, "blocks": user_blocks(blocks) }),
+            json!({ "message_id": message_id, "blocks": user_blocks(blocks, root) }),
         ),
         AcpEvent::ToolCall {
             tool_call_id,
@@ -263,18 +263,33 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
     })
 }
 
-fn user_blocks(blocks: &[UserMessageBlock]) -> Value {
+fn user_blocks(blocks: &[UserMessageBlock], root: Option<&str>) -> Value {
     Value::Array(
         blocks
             .iter()
-            .map(|b| match b {
-                UserMessageBlock::Text { text } => json!({ "type": "text", "text": text }),
+            .flat_map(|b| match b {
+                UserMessageBlock::Text { text } => user_text(text, root),
                 UserMessageBlock::Image { data, mime_type } => {
-                    json!({ "type": "image", "data": data, "mime_type": mime_type })
+                    vec![json!({ "type": "image", "data": data, "mime_type": mime_type })]
                 }
             })
             .collect(),
     )
+}
+
+/// User text → its blocks: the attachment note becomes `attachment` blocks
+/// after the text (dropped when the user typed nothing), so clients never see
+/// the note or a host path.
+fn user_text(text: &str, root: Option<&str>) -> Vec<Value> {
+    let Some(split) = crate::attachments::split_note(text, root) else {
+        return vec![json!({ "type": "text", "text": text })];
+    };
+    let mut out = Vec::with_capacity(split.attachments.len() + 1);
+    if !split.text.is_empty() {
+        out.push(json!({ "type": "text", "text": split.text }));
+    }
+    out.extend(split.attachments);
+    out
 }
 
 /// Longest text of one diff side or tool output a request carries.
@@ -429,7 +444,7 @@ pub fn project_snapshot(s: &LiveSessionSnapshot, root: Option<&str>) -> Value {
             .config_options
             .as_deref()
             .map(crate::session_options::project),
-        "pending_user_message": s.pending_user_message.as_ref().map(pending_user_message),
+        "pending_user_message": s.pending_user_message.as_ref().map(|m| pending_user_message(m, root)),
         "last_error": s.last_error.as_ref().map(|e| json!({
             "message": scrub(&e.message),
             "code": e.code,
@@ -514,8 +529,8 @@ fn pending_request(
     Value::Null
 }
 
-fn pending_user_message(m: &PendingUserMessage) -> Value {
-    json!({ "message_id": m.message_id, "blocks": user_blocks(&m.blocks) })
+fn pending_user_message(m: &PendingUserMessage, root: Option<&str>) -> Value {
+    json!({ "message_id": m.message_id, "blocks": user_blocks(&m.blocks, root) })
 }
 
 /// A legacy firehose frame → Zwiim terminal event, for `terminal://output/<id>`
@@ -555,7 +570,10 @@ pub fn project_history(turns: &[MessageTurn], root: Option<&str>) -> Value {
                 json!({
                     "turn_id": t.id,
                     "role": to_value(&t.role),
-                    "blocks": t.blocks.iter().map(|b| history_block(b, root)).collect::<Vec<_>>(),
+                    "blocks": t.blocks.iter().flat_map(|b| match (&t.role, b) {
+                        (TurnRole::User, ContentBlock::Text { text }) => user_text(&without_plan_tags(text), root),
+                        _ => vec![history_block(b, root)],
+                    }).collect::<Vec<_>>(),
                     "timestamp": t.timestamp,
                     "completed_at": t.completed_at,
                     "duration_ms": t.duration_ms,
@@ -854,6 +872,88 @@ pub(crate) mod tests {
         let v = project_history(&turns, Some("/ws/repo"));
         assert_eq!(v[0]["blocks"][0]["input_preview"], r#"{"file_path":"src/a.rs"}"#);
         assert_eq!(v[0]["blocks"][1]["output_preview"], "updated src/a.rs");
+    }
+
+    #[test]
+    fn a_live_user_message_shows_attachments_not_the_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let file = dir.path().join(".zwiim/attachments/k3F9a2Qx/Q3 report.pdf");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"12345").unwrap();
+        let event = AcpEvent::UserMessage {
+            message_id: "m1".into(),
+            blocks: vec![
+                UserMessageBlock::Text {
+                    text: "summarize this".into(),
+                },
+                UserMessageBlock::Text {
+                    text: crate::attachments::note(&[file.clone()]),
+                },
+            ],
+        };
+        let (kind, payload) = project_event(&event, Some(root)).unwrap();
+        assert_eq!(kind, "agent.user_message");
+        assert_eq!(
+            payload["blocks"],
+            json!([
+                { "type": "text", "text": "summarize this" },
+                {
+                    "type": "attachment",
+                    "attachment_id": "k3F9a2Qx",
+                    "name": "Q3 report.pdf",
+                    "mime_type": "application/pdf",
+                    "size": 5,
+                    "path": ".zwiim/attachments/k3F9a2Qx/Q3 report.pdf",
+                },
+            ])
+        );
+        let wire = payload.to_string();
+        assert!(!wire.contains("zwiim-attachments") && !wire.contains(root));
+
+        let pending = PendingUserMessage {
+            message_id: "m1".into(),
+            blocks: vec![UserMessageBlock::Text {
+                text: crate::attachments::note(&[file]),
+            }],
+        };
+        let v = pending_user_message(&pending, Some(root));
+        assert_eq!(v["blocks"].as_array().unwrap().len(), 1);
+        assert_eq!(v["blocks"][0]["type"], "attachment");
+    }
+
+    #[test]
+    fn a_history_turn_of_only_attachments_is_kept() {
+        let note = crate::attachments::note(&[
+            "/ws/repo/.zwiim/attachments/k3F9a2Qx/a.xlsx".into(),
+            "/elsewhere/.zwiim/attachments/Zp81QaLm/b.csv".into(),
+        ]);
+        let turns = vec![MessageTurn {
+            id: "turn-0".into(),
+            role: TurnRole::User,
+            blocks: vec![ContentBlock::Text { text: note.clone() }],
+            timestamp: chrono::Utc::now(),
+            usage: None,
+            duration_ms: None,
+            model: None,
+            completed_at: None,
+            agent_message_id: None,
+        }];
+        let v = project_history(&turns, Some("/ws/repo"));
+        let blocks = v[0]["blocks"].as_array().unwrap();
+        // The file outside the session's workspace stays text, never a chip.
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "text");
+        assert!(blocks[0]["text"].as_str().unwrap().contains("b.csv"));
+        assert_eq!(blocks[1]["attachment_id"], "k3F9a2Qx");
+        assert_eq!(blocks[1]["path"], ".zwiim/attachments/k3F9a2Qx/a.xlsx");
+        assert!(blocks[1].get("size").is_none(), "file is gone");
+
+        // An agent turn quoting a note is not the user's attachment.
+        let mut agent = turns;
+        agent[0].role = TurnRole::Assistant;
+        let v = project_history(&agent, Some("/ws/repo"));
+        assert_eq!(v[0]["blocks"][0]["text"], note);
     }
 
     #[test]

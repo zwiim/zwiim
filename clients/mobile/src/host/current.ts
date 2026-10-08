@@ -16,6 +16,7 @@ import {
   type OptionsRequest,
   type PrMerged,
   type PrState,
+  type PromptBlock,
   type RequestAnswer,
   type SessionOptions,
   type WorkspaceInfo,
@@ -168,14 +169,14 @@ export class CurrentHost {
   }
 
   /**
-   * Send a message to a session. The host echoes it on the session's stream.
-   * Once the host takes it, that session's draft is cleared (unless more was
-   * typed since); a failed send keeps it.
+   * Send a message to a session, with any files already uploaded. The host
+   * echoes it on the session's stream. Once the host takes it, that session's
+   * draft is cleared (unless more was typed since); a failed send keeps it.
    */
-  async send(session_id: string, text: string, client_message_id: string): Promise<void> {
+  async send(session_id: string, text: string, client_message_id: string, files: PromptBlock[] = []): Promise<void> {
     const connection = this.#connection;
     if (!connection) throw new ZwiimClientError("network", "Not connected to the host");
-    await connection.send(session_id, text, client_message_id);
+    await connection.send(session_id, text, client_message_id, files);
     if (this.draft(session_id).trim() === text) this.setDraft(session_id, "");
   }
 
@@ -239,8 +240,8 @@ export class CurrentHost {
   }
 
   /** A read of the host (its files, its Git state), over the open connection. */
-  async request<O extends OpName>(op: O, params: OpParams<O>): Promise<OpResult<O>> {
-    return this.#opened().request(op, params);
+  async request<O extends OpName>(op: O, params: OpParams<O>, opts?: { timeoutMs?: number }): Promise<OpResult<O>> {
+    return this.#opened().request(op, params, opts);
   }
 
   /** Show `workspace_id` in Files, now and on later launches. */

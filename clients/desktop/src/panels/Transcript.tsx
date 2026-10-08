@@ -35,6 +35,7 @@ import {
   type ToolCallStatus,
   type TurnGroup,
 } from "@zwiim/sdk";
+import { SentAttachments } from "@/attachments/AttachmentChip";
 import { FileLinksContext, Markdown } from "@/components/Markdown";
 import { basename, parseUnifiedDiff, type FileDiff } from "@/lib/diff";
 import { historyTool, liveTool, type ToolSummary } from "@/lib/tools";
@@ -529,10 +530,22 @@ const userText = (blocks: { type: string; text?: string }[]) =>
     .join("")
     .trim();
 
+/** What the user sent: the files it carried, then its text. */
+function UserMessage({ text, blocks, className }: { text: string; blocks: readonly { type: string }[]; className?: string }) {
+  const files = <SentAttachments blocks={blocks} className={className} />;
+  if (!text) return files;
+  return (
+    <>
+      {files}
+      <UserBubble className={className}>{text}</UserBubble>
+    </>
+  );
+}
+
 export function HistoryTurnView({ turn }: { turn: HistoryTurn }) {
   if (turn.role === "user") {
     const text = userText(turn.blocks);
-    return text ? <UserBubble>{text}</UserBubble> : null;
+    return <UserMessage text={text} blocks={turn.blocks} />;
   }
   // A result is shown with its call; one without a call stands alone.
   const results = new Map<string, Extract<HistoryBlock, { type: "tool_result" }>>();
@@ -587,7 +600,7 @@ export function LiveTurnView({ turn, streaming, animate }: { turn: LiveTurn; str
   if (!turn.userMessage && !turn.message && !streaming) return null;
   return (
     <div className="flex flex-col gap-2.5 leading-relaxed" data-testid="live-turn">
-      {text && <UserBubble className={enter}>{text}</UserBubble>}
+      {turn.userMessage && <UserMessage text={text} blocks={turn.userMessage.blocks} className={enter} />}
       {turn.message?.content.map((b, i) => {
         if (b.type === "text") return <Markdown key={i} className={enter} text={b.text} />;
         if (b.type === "thought") return <Thought key={i} className={enter} text={b.text} />;

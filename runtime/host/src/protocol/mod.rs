@@ -20,6 +20,7 @@ pub mod ws;
 pub(crate) mod tests;
 
 use axum::{
+    extract::DefaultBodyLimit,
     http::StatusCode,
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -87,6 +88,10 @@ async fn drain_gate(req: axum::extract::Request, next: Next) -> Response {
     }
 }
 
+/// `attachments.upload` body limit: a 10 MiB file as base64 plus JSON, under
+/// the tunnel's 16 MiB message cap.
+const UPLOAD_BODY_LIMIT: usize = 14 * 1024 * 1024;
+
 async fn unknown_operation() -> ZwiimError {
     ZwiimError::unknown_operation()
 }
@@ -148,6 +153,11 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/files.read", post(http::files_read))
         .route("/files.write", post(http::files_write))
         .route("/files.create", post(http::files_create))
+        .route("/files.download", post(http::files_download))
+        .route(
+            "/attachments.upload",
+            post(http::attachments_upload).layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT)),
+        )
         .route("/git.status", post(http::git_status))
         .route("/git.log", post(http::git_log))
         .route("/git.branches", post(http::git_branches))

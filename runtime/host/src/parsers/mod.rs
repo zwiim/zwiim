@@ -402,6 +402,8 @@ fn sanitize_summary(summary: &mut ConversationSummary) {
         // straddle the cut and survive `sanitize_text`, which only removes whole
         // frames. Anything from a leftover marker on is truncated frame.
         crate::acp::agent_mentions::cut_at_route_frame_marker(title);
+        let kept = crate::attachments::cut_title(title).len();
+        title.truncate(kept);
         if title.trim().is_empty() {
             summary.title = None;
         }
@@ -1924,6 +1926,22 @@ mod route_sanitizer_tests {
         .list_conversations()
         .expect("fixture lists");
         assert_eq!(listed[0].title, None);
+    }
+
+    #[test]
+    fn a_title_never_shows_the_attachment_note() {
+        let note = crate::attachments::note(&["/w/.zwiim/attachments/k3F9a2Qx/a.pdf".into()]);
+        let detail = sanitized(Fixture {
+            summary: summary(Some(&format!("summarize this\n\n{note}")), 1),
+            turns: vec![turn(TurnRole::Assistant, "hi")],
+        });
+        assert_eq!(detail.summary.title.as_deref(), Some("summarize this"));
+
+        let detail = sanitized(Fixture {
+            summary: summary(Some(&note), 1),
+            turns: vec![turn(TurnRole::Assistant, "hi")],
+        });
+        assert_eq!(detail.summary.title, None);
     }
 }
 

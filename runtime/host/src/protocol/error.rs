@@ -292,6 +292,38 @@ impl ZwiimError {
         )
     }
 
+    /// An uploaded attachment is over `attachments::ATTACHMENT_MAX_BYTES`.
+    pub fn attachment_too_large() -> Self {
+        Self::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "attachment_too_large",
+            "The attachment is larger than 10 MB",
+        )
+    }
+
+    /// A prompt names an attachment its workspace does not hold.
+    pub fn attachment_not_found() -> Self {
+        Self::new(
+            StatusCode::NOT_FOUND,
+            "attachment_not_found",
+            "An attachment is no longer available",
+        )
+    }
+
+    /// A file name is empty once separators and control characters are removed.
+    pub fn invalid_name() -> Self {
+        Self::new(StatusCode::BAD_REQUEST, "invalid_name", "The file name is not valid")
+    }
+
+    /// A file is too big to download through the protocol.
+    pub fn file_too_large() -> Self {
+        Self::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "file_too_large",
+            "The file is larger than 10 MB",
+        )
+    }
+
     pub fn internal() -> Self {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,

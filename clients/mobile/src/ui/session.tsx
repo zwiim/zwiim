@@ -4,10 +4,11 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
-import { basename, type ChangedFile } from "@zwiim/sdk";
+import { basename, formatSize, type AttachmentBlock, type ChangedFile } from "@zwiim/sdk";
+import type { PendingFile } from "../attachments/pending";
 import type { ToolItem } from "../sessions/transcript";
 import { Button, Sheet, StatusDot, T, useReduceMotion } from "./components";
-import { ArrowUp, FileText, Icon } from "./icons";
+import { ArrowUp, CircleAlert, FileText, Icon, Image, Paperclip, X } from "./icons";
 import { fonts, MONO_MAX_SCALE, radius, space, type, useTheme } from "./tokens";
 
 /** The streaming caret: blinks once a second (static under Reduce Motion). */
@@ -31,12 +32,145 @@ export function Caret() {
 }
 
 /** What the user sent: right-aligned, on `surface`. */
-export function UserMessage({ text }: { text: string }) {
+export function UserMessage({
+  text,
+  files = [],
+  onOpenFile,
+}: {
+  text: string;
+  /** The files it carried, above the text. */
+  files?: readonly AttachmentBlock[];
+  onOpenFile?(file: AttachmentBlock): void;
+}) {
   const theme = useTheme();
   return (
-    <View style={[styles.user, { backgroundColor: theme.surface }]} testID="user-message">
-      <T selectable>{text}</T>
+    <View style={styles.rowGap}>
+      {files.length > 0 ? (
+        <View style={styles.sentFiles} testID="sent-attachments">
+          {files.map((f) => (
+            <SentFileChip key={f.attachment_id} file={f} onPress={onOpenFile ? () => onOpenFile(f) : undefined} />
+          ))}
+        </View>
+      ) : null}
+      {text ? (
+        <View style={[styles.user, { backgroundColor: theme.surface }]} testID="user-message">
+          <T selectable>{text}</T>
+        </View>
+      ) : null}
     </View>
+  );
+}
+
+/** A file sent with a message: name and size; tap to open it in another app. "removed" once it is gone. */
+function SentFileChip({ file, onPress }: { file: AttachmentBlock; onPress?(): void }) {
+  const theme = useTheme();
+  const gone = file.size === undefined;
+  const open = onPress && !gone ? onPress : undefined;
+  return (
+    <Pressable
+      accessibilityRole={open ? "button" : undefined}
+      accessibilityLabel={gone ? `${file.name}, removed` : `Open ${file.name}`}
+      disabled={!open}
+      onPress={open}
+      hitSlop={6}
+      style={({ pressed }) => [styles.fileChip, { backgroundColor: pressed ? theme.raised : theme.surface }]}
+      testID="sent-attachment"
+    >
+      <Icon icon={file.mime_type.startsWith("image/") ? Image : FileText} color={theme.mut} size={13} />
+      <T variant="monoSm" color={gone ? theme.mut : theme.fg} numberOfLines={1} style={styles.shrink}>
+        {file.name}
+      </T>
+      <T variant="monoSm" color={theme.faint}>
+        {gone ? "removed" : formatSize(file.size!)}
+      </T>
+    </Pressable>
+  );
+}
+
+/** A file chosen for the next message: uploading, failed, or waiting to send. */
+function PendingFileChip({ file, disabled, onRemove }: { file: PendingFile; disabled?: boolean; onRemove(): void }) {
+  const theme = useTheme();
+  const failed = file.status === "failed";
+  return (
+    <View
+      style={[styles.fileChip, styles.pendingChip, { backgroundColor: theme.raised, borderColor: failed ? theme.err : "transparent" }]}
+      testID="pending-attachment"
+    >
+      {file.status === "uploading" ? (
+        <ActivityIndicator size="small" color={theme.mut} accessibilityLabel="Uploading" />
+      ) : (
+        <Icon icon={failed ? CircleAlert : file.mime_type.startsWith("image/") ? Image : FileText} color={failed ? theme.err : theme.mut} size={13} />
+      )}
+      <T variant="monoSm" numberOfLines={1} style={styles.shrink}>
+        {file.name}
+      </T>
+      <T variant="monoSm" color={failed ? theme.err : theme.faint} numberOfLines={1}>
+        {failed ? "Upload failed" : formatSize(file.size)}
+      </T>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Remove ${file.name}`}
+        disabled={disabled || file.status === "uploading"}
+        onPress={onRemove}
+        hitSlop={8}
+        testID="pending-remove"
+      >
+        <Icon icon={X} color={theme.mut} size={13} />
+      </Pressable>
+    </View>
+  );
+}
+
+/** The files chosen for a message, with why any were refused. */
+export function PendingFiles({
+  files,
+  errors,
+  disabled,
+  onRemove,
+}: {
+  files: readonly PendingFile[];
+  errors: readonly string[];
+  disabled?: boolean;
+  onRemove(id: string): void;
+}) {
+  const theme = useTheme();
+  if (files.length === 0 && errors.length === 0) return null;
+  return (
+    <View style={styles.rowGap}>
+      {files.length > 0 ? (
+        <View style={styles.pendingFiles} testID="pending-attachments">
+          {files.map((f) => (
+            <PendingFileChip key={f.id} file={f} disabled={disabled} onRemove={() => onRemove(f.id)} />
+          ))}
+        </View>
+      ) : null}
+      {errors.map((e) => (
+        <T key={e} variant="monoSm" color={theme.err} accessibilityRole="alert" testID="attachment-error">
+          {e}
+        </T>
+      ))}
+    </View>
+  );
+}
+
+/** Where to attach from: the photo library or Files. */
+export function AttachSheet({
+  visible,
+  onClose,
+  onPick,
+}: {
+  visible: boolean;
+  onClose(): void;
+  onPick(from: "photos" | "files"): void;
+}) {
+  return (
+    <Sheet visible={visible} onClose={onClose}>
+      <View style={styles.sheetBody}>
+        <T variant="title">Attach</T>
+        <Button tall kind="secondary" icon={Image} label="Photos" onPress={() => onPick("photos")} testID="attach-photos" />
+        <Button tall kind="secondary" icon={FileText} label="Files" onPress={() => onPick("files")} testID="attach-files" />
+      </View>
+    </Sheet>
   );
 }
 
@@ -429,6 +563,10 @@ export function Composer({
   controls,
   note,
   border,
+  files = [],
+  fileErrors = [],
+  onAttach,
+  onRemoveFile,
 }: {
   value: string;
   onChange(text: string): void;
@@ -441,9 +579,16 @@ export function Composer({
   /** One mono line under the input (why the controls are locked). */
   note?: string | null;
   border?: string;
+  /** Files chosen for this message, over the input. */
+  files?: readonly PendingFile[];
+  /** Why picked files were refused: too large, too many. */
+  fileErrors?: readonly string[];
+  /** Shows the paperclip; absent when the Host takes no attachments. */
+  onAttach?(): void;
+  onRemoveFile?(id: string): void;
 }) {
   const theme = useTheme();
-  const can = !disabled && !sending && value.trim().length > 0;
+  const can = !disabled && !sending && (value.trim().length > 0 || files.length > 0);
   return (
     <View
       style={[
@@ -452,6 +597,7 @@ export function Composer({
       ]}
       testID="composer"
     >
+      <PendingFiles files={files} errors={fileErrors} disabled={sending} onRemove={(id) => onRemoveFile?.(id)} />
       <TextInput
         value={value}
         onChangeText={onChange}
@@ -470,6 +616,19 @@ export function Composer({
         </T>
       ) : null}
       <View style={styles.composerRow}>
+        {onAttach ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Attach files"
+            onPress={onAttach}
+            disabled={disabled || sending}
+            hitSlop={6}
+            style={({ pressed }) => [styles.attach, { opacity: disabled || sending ? 0.4 : pressed ? 0.6 : 1 }]}
+            testID="composer-attach"
+          >
+            <Icon icon={Paperclip} color={theme.mut} size={18} />
+          </Pressable>
+        ) : null}
         <View style={styles.composerControls}>{controls}</View>
         <Pressable
           accessibilityRole="button"
@@ -557,4 +716,8 @@ const styles = StyleSheet.create({
   composerRow: { flexDirection: "row", alignItems: "center", gap: space.sm },
   composerControls: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs },
   send: { width: 36, height: 36, borderRadius: radius.full, alignItems: "center", justifyContent: "center" },
+  attach: { width: 28, height: 36, alignItems: "center", justifyContent: "center" },
+  sentFiles: { alignSelf: "flex-end", maxWidth: "85%", flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: space.xs },
+  pendingFiles: { flexDirection: "row", flexWrap: "wrap", gap: space.xs, paddingTop: space.xs, paddingRight: space.sm },
+  pendingChip: { borderWidth: 1 },
 });

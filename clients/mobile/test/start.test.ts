@@ -69,6 +69,23 @@ const CLAUDE = agent("claude_code", { name: "Claude Code", support: "supported",
 
 const ready = (id: string): StartTarget => startTarget(LIST, id);
 
+describe("a first prompt with files", () => {
+  const files = [{ type: "attachment" as const, attachment_id: "att-1" }];
+  it("sends the text, then the files, and may carry files alone", () => {
+    const both = startParams({ target: ready("fix"), agent: CLAUDE, picks: {}, prompt: " read this ", files, client_message_id: "m" });
+    expect(both?.blocks).toEqual([{ type: "text", text: "read this" }, ...files]);
+    const only = startParams({ target: ready("fix"), agent: CLAUDE, picks: {}, prompt: "  ", files, client_message_id: "m" });
+    expect(only?.blocks).toEqual(files);
+    expect(startParams({ target: ready("fix"), agent: CLAUDE, picks: {}, prompt: "", files: [], client_message_id: "m" })).toBeNull();
+  });
+
+  it("asks to attach again when the Host lost a file", () => {
+    expect(startError(new ZwiimClientError("attachment_not_found", "gone", 404), "Mac", null)).toBe(
+      "An attachment is no longer available. Attach it again.",
+    );
+  });
+});
+
 describe("where a new session starts", () => {
   it("starts in the root checkout when the root is chosen", () => {
     expect(ready("zwiim")).toMatchObject({ kind: "ready", workspace: { workspace_id: "zwiim" }, label: "zwiim · main" });

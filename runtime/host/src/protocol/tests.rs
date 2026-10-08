@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use super::error::ZwiimError;
 use super::events::tests::assert_no_internal_keys;
 use crate::acp::connection::ConnectionCommand;
-use crate::acp::types::{AcpEvent, PermissionOptionInfo};
+use crate::acp::types::{AcpEvent, PermissionOptionInfo, PromptInputBlock};
 use crate::app_state::AppState;
 use crate::db::service::folder_service;
 use crate::db::test_helpers::{seed_conversation, seed_folder};
@@ -52,6 +52,8 @@ const OPS: &[&str] = &[
     "files.read",
     "files.write",
     "files.create",
+    "files.download",
+    "attachments.upload",
     "git.status",
     "git.log",
     "git.branches",
@@ -3699,4 +3701,192 @@ async fn diagnostics_report_versions_and_state_without_secrets() {
         !text.contains(&h.state.data_dir.to_string_lossy().to_string()),
         "paths leak: {text}"
     );
+}
+
+fn b64(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+#[tokio::test]
+async fn attachments_upload_into_the_workspace_and_download_back() {
+    let h = host(false).await;
+    let wid = h.wt_workspace_id.clone();
+
+    let up = h
+        .ok(
+            "attachments.upload",
+            json!({"workspace_id": wid, "name": "../Q3 report.pdf", "data": b64(b"%PDF-1.7")}),
+        )
+        .await;
+    let id = up["attachment_id"].as_str().unwrap().to_string();
+    assert!(crate::attachments::valid_id(&id));
+    assert_eq!(
+        up,
+        json!({"attachment_id": id, "name": "Q3 report.pdf", "size": 8, "mime_type": "application/pdf"})
+    );
+    let rel = format!(".zwiim/attachments/{id}/Q3 report.pdf");
+    assert_eq!(
+        std::fs::read(std::path::Path::new(&h.wt).join(&rel)).unwrap(),
+        b"%PDF-1.7"
+    );
+
+    let down = h
+        .ok("files.download", json!({"workspace_id": wid, "path": rel}))
+        .await;
+    assert_eq!(
+        down,
+        json!({"name": "Q3 report.pdf", "mime_type": "application/pdf", "size": 8, "data": b64(b"%PDF-1.7")})
+    );
+
+    assert_eq!(
+        h.err("attachments.upload", json!({"workspace_id": wid, "name": "a.txt", "data": "%%%"}))
+            .await
+            .1,
+        "invalid_request"
+    );
+    assert_eq!(
+        h.err("attachments.upload", json!({"workspace_id": wid, "name": "..", "data": b64(b"x")}))
+            .await
+            .1,
+        "invalid_name"
+    );
+    assert_eq!(
+        h.err("attachments.upload", json!({"workspace_id": "nope", "name": "a", "data": b64(b"x")}))
+            .await
+            .1,
+        "not_found"
+    );
+}
+
+#[tokio::test]
+async fn attachments_take_ten_mebibytes_and_refuse_more() {
+    let h = host(false).await;
+    let wid = h.wt_workspace_id.clone();
+    let max = crate::attachments::ATTACHMENT_MAX_BYTES;
+
+    let up = h
+        .ok(
+            "attachments.upload",
+            json!({"workspace_id": wid, "name": "big.bin", "data": b64(&vec![7u8; max])}),
+        )
+        .await;
+    assert_eq!(up["size"], max);
+    assert_eq!(
+        h.err(
+            "attachments.upload",
+            json!({"workspace_id": wid, "name": "big.bin", "data": b64(&vec![7u8; max + 1])})
+        )
+        .await,
+        (StatusCode::PAYLOAD_TOO_LARGE, "attachment_too_large".into())
+    );
+
+    // Downloads share the cap.
+    std::fs::write(std::path::Path::new(&h.wt).join("huge.bin"), vec![0u8; max + 1]).unwrap();
+    assert_eq!(
+        h.err("files.download", json!({"workspace_id": wid, "path": "huge.bin"}))
+            .await
+            .1,
+        "file_too_large"
+    );
+}
+
+#[tokio::test]
+async fn files_download_stays_inside_the_workspace() {
+    let h = host(false).await;
+    let wid = h.wt_workspace_id.clone();
+    let outside = h._dir.path().join("secret.txt");
+    std::fs::write(&outside, "secret").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, std::path::Path::new(&h.wt).join("link.txt")).unwrap();
+
+    for path in ["../secret.txt", outside.to_str().unwrap(), "link.txt", "missing.txt", ""] {
+        let (status, _) = h
+            .err("files.download", json!({"workspace_id": wid, "path": path}))
+            .await;
+        assert!(status.is_client_error(), "{path}: {status}");
+    }
+}
+
+#[tokio::test]
+async fn attachment_blocks_reach_the_agent_as_one_note() {
+    let h = host(false).await;
+    let wid = h.wt_workspace_id.clone();
+    let (sid, mut rx) = h.live_session().await;
+
+    assert_eq!(
+        h.err(
+            "session.send",
+            json!({"session_id": sid, "blocks": [{"type": "attachment", "attachment_id": "k3F9a2Qx"}]})
+        )
+        .await,
+        (StatusCode::NOT_FOUND, "attachment_not_found".into())
+    );
+    assert_eq!(
+        h.err(
+            "session.send",
+            json!({"session_id": sid, "blocks": [{"type": "attachment", "attachment_id": "../../etc"}]})
+        )
+        .await
+        .1,
+        "attachment_not_found"
+    );
+
+    let mut ids = Vec::new();
+    for name in ["a.pdf", "b.xlsx"] {
+        let up = h
+            .ok("attachments.upload", json!({"workspace_id": wid, "name": name, "data": b64(b"x")}))
+            .await;
+        ids.push(up["attachment_id"].as_str().unwrap().to_string());
+    }
+    h.ok(
+        "session.send",
+        json!({"session_id": sid, "blocks": [
+            {"type": "attachment", "attachment_id": ids[0]},
+            {"type": "text", "text": "compare these"},
+            {"type": "attachment", "attachment_id": ids[1]},
+        ]}),
+    )
+    .await;
+    let Some(ConnectionCommand::Prompt { blocks, .. }) = rx.recv().await else {
+        panic!("no prompt");
+    };
+    let texts: Vec<_> = blocks
+        .iter()
+        .map(|b| match b {
+            PromptInputBlock::Text { text } => text.clone(),
+            other => panic!("unexpected block {other:?}"),
+        })
+        .collect();
+    assert_eq!(texts.len(), 2);
+    assert_eq!(texts[0], "compare these");
+    let wt = std::path::Path::new(&h.wt);
+    assert_eq!(
+        texts[1],
+        crate::attachments::note(&[
+            wt.join(format!(".zwiim/attachments/{}/a.pdf", ids[0])),
+            wt.join(format!(".zwiim/attachments/{}/b.xlsx", ids[1])),
+        ])
+    );
+}
+
+#[tokio::test]
+async fn an_attachment_alone_is_a_prompt() {
+    let h = host(false).await;
+    let (sid, mut rx) = h.live_session().await;
+    let up = h
+        .ok(
+            "attachments.upload",
+            json!({"workspace_id": h.wt_workspace_id, "name": "data.csv", "data": b64(b"a,b")}),
+        )
+        .await;
+    h.ok(
+        "session.send",
+        json!({"session_id": sid, "blocks": [{"type": "attachment", "attachment_id": up["attachment_id"]}]}),
+    )
+    .await;
+    let Some(ConnectionCommand::Prompt { blocks, .. }) = rx.recv().await else {
+        panic!("no prompt");
+    };
+    assert!(matches!(&blocks[..], [PromptInputBlock::Text { text }] if text.starts_with(crate::attachments::NOTE_OPEN)));
 }

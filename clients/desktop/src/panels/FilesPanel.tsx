@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Braces,
   ChevronDown,
+  ExternalLink,
   ChevronRight,
   File,
   FileArchive,
@@ -19,8 +20,9 @@ import {
   SquareTerminal,
   type LucideIcon,
 } from "lucide-react";
-import { ZwiimClientError, type FileContent, type FileTreeNode } from "@zwiim/sdk";
+import { attachmentKind, ZwiimClientError, type FileContent, type FileTreeNode } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
+import { openDownload } from "@/lib/bridge";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
 import { cn } from "@/lib/utils";
 
@@ -240,30 +242,56 @@ export function fileIcon(name: string): { icon: LucideIcon; color: string } {
   return (dot > 0 && BY_EXTENSION[lower.slice(dot + 1)]) || { icon: File, color: "text-muted-foreground" };
 }
 
-/** One file's contents, read-only, in its own tab. */
+/** How a file shows in its tab: as text, as an image, or only opened elsewhere. */
+export function previewOf(path: string): "text" | "image" | "none" {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const kind = attachmentKind(name);
+  if (kind === "image") return "image";
+  if (kind === "pdf" || kind === "document" || kind === "archive") return "none";
+  if (kind === "spreadsheet" && !/\.(csv|tsv)$/i.test(name)) return "none";
+  return "text";
+}
+
+type Shown = { text: FileContent } | { image: string } | { none: true };
+
+/** One file's contents, read-only, in its own tab; what has no preview opens in its own app. */
 export function FileView({ workspaceId, path }: { workspaceId: string; path: string }) {
   const controller = useController();
-  const [file, setFile] = useState<FileContent | null>(null);
+  const [shown, setShown] = useState<Shown | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [opening, setOpening] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
   const loads = useRef(0);
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const preview = previewOf(path);
 
   const refresh = useCallback(async () => {
     const load = ++loads.current;
     setError(null);
+    if (preview === "none") {
+      setShown({ none: true });
+      return;
+    }
     setLoading(true);
     try {
-      const content = await controller.client.request("files.read", { workspace_id: workspaceId, path });
-      if (load === loads.current) setFile(content);
+      let next: Shown;
+      if (preview === "image") {
+        const f = await controller.client.request("files.download", { workspace_id: workspaceId, path });
+        next = { image: `data:${f.mime_type};base64,${f.data}` };
+      } else {
+        next = { text: await controller.client.request("files.read", { workspace_id: workspaceId, path }) };
+      }
+      if (load === loads.current) setShown(next);
     } catch (e) {
       if (load === loads.current) {
-        setFile(null);
+        setShown(null);
         setError(errorMessage(e));
       }
     } finally {
       if (load === loads.current) setLoading(false);
     }
-  }, [controller, workspaceId, path]);
+  }, [controller, workspaceId, path, preview]);
 
   // Again when the workspace's files change.
   const revision = useHost((s) => s.diffRevision[workspaceId] ?? 0);
@@ -271,28 +299,68 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
     void refresh();
   }, [refresh, revision]);
 
+  async function openElsewhere() {
+    setOpening(true);
+    setOpenError(null);
+    try {
+      await openDownload(await controller.client.request("files.download", { workspace_id: workspaceId, path }));
+    } catch (e) {
+      setOpenError(errorMessage(e));
+    } finally {
+      setOpening(false);
+    }
+  }
+
+  const openButton = (
+    <Button size="sm" variant="outline" disabled={opening} onClick={() => void openElsewhere()}>
+      {opening ? <Loader2 className="animate-spin" /> : <ExternalLink />} Open in default app
+    </Button>
+  );
+
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="file-view">
       <div className="text-muted-foreground flex h-10 shrink-0 items-center gap-2 border-b px-4 text-xs">
         <span className="text-foreground truncate font-mono">{path}</span>
-        {file && <span className="ml-auto shrink-0">read-only</span>}
+        {shown && "text" in shown && <span className="ml-auto shrink-0">read-only</span>}
         <Button
-          className={cn(!file && "ml-auto")}
+          className={cn(!(shown && "text" in shown) && "ml-auto")}
           size="icon-sm"
           variant="ghost"
-          title="Reload"
-          onClick={refresh}
-          disabled={loading}
+          title="Open in default app"
+          disabled={opening}
+          onClick={() => void openElsewhere()}
         >
+          <ExternalLink />
+        </Button>
+        <Button size="icon-sm" variant="ghost" title="Reload" onClick={refresh} disabled={loading}>
           <RefreshCw className={cn(loading && "animate-spin")} />
         </Button>
       </div>
-      {error ? (
-        <p className="text-destructive p-4 text-xs" role="alert" data-testid="file-error">
-          {error}
+      {openError && (
+        <p className="text-destructive px-4 pt-3 text-xs" role="alert" data-testid="open-error">
+          {openError}
         </p>
-      ) : file ? (
-        <FileText text={file.content} />
+      )}
+      {error ? (
+        <div className="flex flex-col items-start gap-3 p-4">
+          <p className="text-destructive text-xs" role="alert" data-testid="file-error">
+            {error}
+          </p>
+          {openButton}
+        </div>
+      ) : shown && "none" in shown ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center" data-testid="file-no-preview">
+          <p className="text-muted-foreground text-xs">
+            No preview for <span className="text-foreground font-mono">{name}</span> here yet.
+          </p>
+          {openButton}
+        </div>
+      ) : shown && "image" in shown ? (
+        <div className="min-h-0 flex-1 overflow-auto p-4">
+          <img className="max-w-full rounded-md" src={shown.image} alt={name} data-testid="file-image" />
+        </div>
+      ) : shown ? (
+        <FileText text={shown.text.content} />
       ) : (
         <p className="text-muted-foreground flex items-center gap-1.5 p-4 text-xs">
           <Loader2 className="size-3 animate-spin" /> Opening…

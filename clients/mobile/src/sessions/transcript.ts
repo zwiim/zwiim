@@ -11,6 +11,7 @@ import {
   toolChanges,
   turnDuration,
   turnGroups,
+  type AttachmentBlock,
   type ChangedFile,
   type FileDiff,
   type HistoryBlock,
@@ -40,7 +41,7 @@ export interface ToolItem {
 }
 
 export type TranscriptRow =
-  | { type: "user"; key: string; text: string }
+  | { type: "user"; key: string; text: string; files: AttachmentBlock[] }
   | { type: "agent"; key: string; text: string; streaming: boolean }
   | { type: "thought"; key: string; text: string; streaming: boolean }
   | { type: "tool"; key: string; tool: ToolItem }
@@ -169,12 +170,20 @@ const userText = (blocks: readonly { type: string; text?: string }[]) =>
     .join("")
     .trim();
 
+const userFiles = (blocks: readonly { type: string }[]) =>
+  blocks.filter((b): b is AttachmentBlock => b.type === "attachment");
+
+/** What identifies a user message across history and live: its text and the files it carried. */
+const userKey = (blocks: readonly { type: string; text?: string }[]) =>
+  [userText(blocks), ...userFiles(blocks).map((f) => f.attachment_id)].join("\u0000");
+
 type Piece = Exclude<TranscriptRow, { type: "tools" }>;
 
 function historyRows(turn: HistoryTurn): Piece[] {
   if (turn.role === "user") {
     const text = userText(turn.blocks);
-    return text ? [{ type: "user", key: turn.turn_id, text }] : [];
+    const files = userFiles(turn.blocks);
+    return text || files.length > 0 ? [{ type: "user", key: turn.turn_id, text, files }] : [];
   }
   // A result is shown with its call; one without a call stands alone if it failed.
   const results = new Map<string, Extract<HistoryBlock, { type: "tool_result" }>>();
@@ -229,7 +238,8 @@ function liveRows(turn: LiveTurn, prefix: string, running: boolean): Piece[] {
   const rows: Piece[] = [];
   const turnKey = `${prefix}:${turn.userMessage?.message_id ?? turn.message?.message_id ?? "turn"}`;
   const text = turn.userMessage ? userText(turn.userMessage.blocks) : "";
-  if (text) rows.push({ type: "user", key: `${turnKey}:user`, text });
+  const files = turn.userMessage ? userFiles(turn.userMessage.blocks) : [];
+  if (text || files.length > 0) rows.push({ type: "user", key: `${turnKey}:user`, text, files });
   const content = turn.message?.content ?? [];
   content.forEach((b, i) => {
     const key = `${turnKey}:${i}`;
@@ -296,9 +306,9 @@ export function historyBefore(history: readonly HistoryTurn[], view: Pick<Sessio
   let turns = [...history];
   for (const turn of [view.live, view.settled]) {
     if (!turn?.userMessage) continue;
-    const text = userText(turn.userMessage.blocks);
+    const key = userKey(turn.userMessage.blocks);
     const at = lastIndex(turns, (t) => t.role === "user");
-    if (text && at >= 0 && userText(turns[at]!.blocks) === text) turns = turns.slice(0, at);
+    if (key && at >= 0 && userKey(turns[at]!.blocks) === key) turns = turns.slice(0, at);
   }
   return turns;
 }

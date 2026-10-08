@@ -58,7 +58,16 @@
         }
       ],
       "./plugins/with-notices",
-      "./plugins/with-release-signing"
+      "./plugins/with-release-signing",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Zwiim attaches the photos you choose to messages for your agents.",
+          "microphonePermission": false
+        }
+      ],
+      "expo-document-picker",
+      "expo-sharing"
     ]
   }
 }

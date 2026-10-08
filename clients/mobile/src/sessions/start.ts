@@ -5,12 +5,14 @@
 // worktree that was removed asks for another choice instead.
 
 import {
+  ATTACHMENT_GONE_MESSAGE,
   effortFor,
   isClientError,
   type AgentSummary,
   type ChoiceOption,
   type OpParams,
   type OptionsRequest,
+  type PromptBlock,
   type SessionMode,
   type SessionOptions,
   type WorkspaceInfo,
@@ -131,18 +133,20 @@ export interface StartInput {
   agent: AgentSummary | null;
   picks: StartPicks;
   prompt: string;
+  /** The uploaded files, after the text. */
+  files?: readonly PromptBlock[];
   client_message_id: string;
 }
 
-/** The `session.start` request, or null while something is missing (a live target, a runnable agent, a prompt). */
-export function startParams({ target, agent, picks, prompt, client_message_id }: StartInput): OpParams<"session.start"> | null {
+/** The `session.start` request, or null while something is missing (a live target, a runnable agent, a prompt or a file). */
+export function startParams({ target, agent, picks, prompt, files = [], client_message_id }: StartInput): OpParams<"session.start"> | null {
   const text = prompt.trim();
-  if (target.kind !== "ready" || !agent?.available || !text) return null;
+  if (target.kind !== "ready" || !agent?.available || (!text && files.length === 0)) return null;
   const options = startOptions(startChoices(agent, picks), picks);
   return {
     workspace_id: target.workspace.workspace_id,
     agent: agent.agent,
-    blocks: [{ type: "text", text }],
+    blocks: [...(text ? [{ type: "text" as const, text }] : []), ...files],
     client_message_id,
     ...(Object.keys(options).length > 0 ? { options } : {}),
   };
@@ -153,6 +157,7 @@ export function startError(e: unknown, hostName: string, agentName: string | nul
   if (isClientError(e, "workspace_removed")) return "That worktree was removed. Choose another workspace.";
   if (isClientError(e, "not_found")) return `That workspace is gone from ${hostName}. Choose another.`;
   if (isClientError(e, "agent_not_installed")) return `${agentName ?? "That agent"} isn't installed on ${hostName}.`;
+  if (isClientError(e, "attachment_not_found")) return ATTACHMENT_GONE_MESSAGE;
   if (isClientError(e, "option_unavailable")) return "The agent no longer offers that option. Choose again.";
   if (isClientError(e, "unknown_outcome")) return "Not sure the session started. Check Sessions before starting again.";
   if (isClientError(e, "network") || isClientError(e, "timeout")) return `Not connected to ${hostName}. Try again when it's back.`;

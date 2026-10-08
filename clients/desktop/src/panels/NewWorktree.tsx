@@ -12,41 +12,15 @@ import {
   Plus,
   X,
 } from "lucide-react";
-import type { PromptBlock, WorktreeBases } from "@zwiim/sdk";
+import { isClientError, type PromptBlock, type WorktreeBases } from "@zwiim/sdk";
+import { PendingAttachments } from "@/attachments/AttachmentChip";
+import { UPLOAD_FAILED_MESSAGE, usePendingAttachments } from "@/attachments/usePendingAttachments";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { cn } from "@/lib/utils";
 import { ControlSelect } from "./OptionsBar";
 import { NewSessionControls, NoAgents, startParams, useNewSessionAgent } from "./SessionPanel";
 import { useSlashMenu } from "./SlashCommands";
-
-/** Images only: what the agents that take attachments can read. */
-const ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
-
-interface Attachment {
-  id: string;
-  name: string;
-  mime_type: string;
-  /** Base64, without the data-URL prefix. */
-  data: string;
-}
-
-function readImage(file: File): Promise<Attachment> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const url = String(reader.result);
-      resolve({
-        id: crypto.randomUUID(),
-        name: file.name || "Pasted image",
-        mime_type: file.type,
-        data: url.slice(url.indexOf(",") + 1),
-      });
-    };
-    reader.onerror = () => reject(reader.error ?? new Error(`Could not read ${file.name}`));
-    reader.readAsDataURL(file);
-  });
-}
 
 /**
  * A new worktree of a repository, and the task its first session starts on.
@@ -74,18 +48,18 @@ export function NewWorktree({
   const [bases, setBases] = useState<WorktreeBases | null>(null);
   const [base, setBase] = useState<string | null>(null);
   const [text, setText] = useState("");
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [menu, setMenu] = useState(false);
   const [created, setCreated] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const picker = useNewSessionAgent();
   const { agents, agent, advertised, start } = picker;
+  const attachments = usePendingAttachments();
   const fileInput = useRef<HTMLInputElement>(null);
   const area = useRef<HTMLTextAreaElement>(null);
   const slash = useSlashMenu({ text, setText, area, commands: picker.commands, below: true });
   const prompt = text.trim();
-  const task = prompt !== "" || attachments.length > 0;
+  const task = prompt !== "" || attachments.files.length > 0;
   const canPlan = advertised?.mode?.available.includes("plan") ?? false;
   const planning = start?.shown.mode?.current === "plan";
 
@@ -117,18 +91,10 @@ export function NewWorktree({
     return () => document.removeEventListener("keydown", close);
   }, [onClose, pending]);
 
-  async function attach(files: Iterable<File>) {
-    const images = [...files].filter((f) => f.type.startsWith("image/"));
-    const fits = images.filter((f) => f.size <= ATTACHMENT_MAX_BYTES);
-    if (images.length === 0) setError("Only images can be attached.");
-    else if (fits.length < images.length) setError("Images larger than 5 MB were not attached.");
-    else setError(null);
-    try {
-      const read = await Promise.all(fits.map(readImage));
-      setAttachments((a) => [...a, ...read]);
-    } catch (e) {
-      setError(errorMessage(e));
-    }
+  function attach(files: Iterable<File>) {
+    if (!attachments.enabled) return;
+    setError(null);
+    attachments.add(files);
   }
 
   function togglePlan() {
@@ -147,14 +113,18 @@ export function NewWorktree({
         setCreated(target);
         onCreated(target);
       }
-      const blocks: PromptBlock[] = [
-        ...(prompt ? [{ type: "text" as const, text: prompt }] : []),
-        ...attachments.map((a) => ({ type: "image" as const, data: a.data, mime_type: a.mime_type })),
-      ];
+      // The files go into the new worktree, so they upload once it exists.
+      const files = attachments.files.length > 0 ? await attachments.upload(target) : [];
+      if (files === null) {
+        setError(`The worktree was created. ${UPLOAD_FAILED_MESSAGE}`);
+        return;
+      }
+      const blocks: PromptBlock[] = [...(prompt ? [{ type: "text" as const, text: prompt }] : []), ...files];
       const params = task ? startParams(picker, target, blocks, crypto.randomUUID()) : null;
       if (params) onStarted(target, await controller.startSession(params));
       onClose();
     } catch (e) {
+      if (isClientError(e, "attachment_not_found")) attachments.forgetUploads();
       setError(
         target ? `The worktree was created, but the session did not start: ${errorMessage(e)}` : errorMessage(e),
       );
@@ -175,6 +145,14 @@ export function NewWorktree({
         role="dialog"
         aria-modal="true"
         aria-label="New worktree"
+        onDragOver={(e) => {
+          if (attachments.enabled && !pending && e.dataTransfer.types.includes("Files")) e.preventDefault();
+        }}
+        onDrop={(e) => {
+          if (!attachments.enabled || pending || e.dataTransfer.files.length === 0) return;
+          e.preventDefault();
+          attach(e.dataTransfer.files);
+        }}
       >
         <div className="flex items-center gap-1 border-b px-3 py-2">
           <FolderGit2 className="text-muted-foreground ml-1 size-4 shrink-0" />
@@ -207,10 +185,9 @@ export function NewWorktree({
             }}
             onSelect={slash.track}
             onPaste={(e) => {
-              const files = [...e.clipboardData.files];
-              if (files.length === 0) return;
+              if (!attachments.enabled || e.clipboardData.files.length === 0) return;
               e.preventDefault();
-              void attach(files);
+              attach(e.clipboardData.files);
             }}
             onKeyDown={(e) => {
               if (slash.onKeyDown(e)) return;
@@ -220,7 +197,7 @@ export function NewWorktree({
               } else if (e.key === "Tab" && e.shiftKey && canPlan) {
                 e.preventDefault();
                 togglePlan();
-              } else if (e.key.toLowerCase() === "u" && (e.metaKey || e.ctrlKey)) {
+              } else if (attachments.enabled && e.key.toLowerCase() === "u" && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
                 fileInput.current?.click();
               }
@@ -231,44 +208,31 @@ export function NewWorktree({
         <input
           ref={fileInput}
           type="file"
-          accept="image/*"
           multiple
           hidden
           data-testid="attachment-input"
           onChange={(e) => {
-            if (e.target.files) void attach(e.target.files);
+            if (e.target.files) attach(e.target.files);
             e.target.value = "";
           }}
         />
-        {(attachments.length > 0 || planning) && (
-          <div className="flex flex-wrap items-center gap-1.5 px-4 pb-2" data-testid="attachments">
-            {planning && (
-              <span className="flex h-7 items-center gap-1.5 rounded-md bg-sky-500/10 px-2 text-xs text-sky-700 dark:text-sky-300">
-                <ListChecks className="size-3.5" /> Plan mode
-                <button className="hover:text-foreground" aria-label="Leave plan mode" onClick={togglePlan}>
-                  <X className="size-3" />
-                </button>
-              </span>
-            )}
-            {attachments.map((a) => (
-              <span key={a.id} className="bg-muted flex h-7 max-w-48 items-center gap-1.5 rounded-md pr-2 text-xs">
-                <img
-                  className="size-7 shrink-0 rounded-l-md object-cover"
-                  src={`data:${a.mime_type};base64,${a.data}`}
-                  alt=""
-                />
-                <span className="truncate">{a.name}</span>
-                <button
-                  className="text-muted-foreground hover:text-foreground shrink-0"
-                  aria-label={`Remove ${a.name}`}
-                  onClick={() => setAttachments((all) => all.filter((x) => x.id !== a.id))}
-                >
-                  <X className="size-3" />
-                </button>
-              </span>
-            ))}
+        {planning && (
+          <div className="flex flex-wrap items-center gap-1.5 px-4 pb-2" data-testid="plan-mode">
+            <span className="flex h-7 items-center gap-1.5 rounded-md bg-sky-500/10 px-2 text-xs text-sky-700 dark:text-sky-300">
+              <ListChecks className="size-3.5" /> Plan mode
+              <button className="hover:text-foreground" aria-label="Leave plan mode" onClick={togglePlan}>
+                <X className="size-3" />
+              </button>
+            </span>
           </div>
         )}
+        <PendingAttachments
+          className="px-4 pb-2"
+          files={attachments.files}
+          errors={attachments.errors}
+          disabled={pending}
+          onRemove={attachments.remove}
+        />
         {agents !== null && agent === null && (
           <div className="px-4 pb-2">
             <NoAgents />
@@ -302,6 +266,7 @@ export function NewWorktree({
             {menu && (
               <PlusMenu
                 canPlan={canPlan}
+                canAttach={attachments.enabled}
                 planning={planning}
                 onClose={() => {
                   setMenu(false);
@@ -328,15 +293,17 @@ export function NewWorktree({
   );
 }
 
-/** Attach images, or start in plan mode. */
+/** Attach files, or start in plan mode. */
 function PlusMenu({
   canPlan,
+  canAttach,
   planning,
   onClose,
   onAttach,
   onPlan,
 }: {
   canPlan: boolean;
+  canAttach: boolean;
   planning: boolean;
   onClose(): void;
   onAttach(): void;
@@ -370,6 +337,8 @@ function PlusMenu({
       <button
         className={item}
         role="menuitem"
+        disabled={!canAttach}
+        title={canAttach ? undefined : "This host cannot take attachments yet. Update the host."}
         onClick={() => {
           onClose();
           onAttach();

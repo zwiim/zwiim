@@ -16,7 +16,18 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Haptics from "expo-haptics";
 import { randomUUID } from "expo-crypto";
-import { isClientError, workspaceFile, type AgentRequest, type SessionView } from "@zwiim/sdk";
+import {
+  ATTACHMENT_GONE_MESSAGE,
+  isClientError,
+  UPLOAD_TIMEOUT_MS,
+  workspaceFile,
+  type AgentRequest,
+  type AttachmentBlock,
+  type SessionView,
+} from "@zwiim/sdk";
+import { pickFiles, pickPhotos, shareDownload } from "../attachments/native";
+import { UPLOAD_FAILED_MESSAGE } from "../attachments/pending";
+import { usePendingAttachments } from "../attachments/usePendingAttachments";
 import { useCurrentHost, useHostState, useNow } from "../app/hooks";
 import type { RootStack } from "../app/navigation";
 import { connectionText } from "../host/status";
@@ -38,6 +49,7 @@ import { Button, EmptyState, Sheet, SkeletonRows, T } from "../ui/components";
 import { ChevronLeft, Ellipsis, Icon } from "../ui/icons";
 import { Markdown } from "../ui/markdown";
 import {
+  AttachSheet,
   Caret,
   Composer,
   ErrorRow,
@@ -295,11 +307,21 @@ function useKeyboardShown(): boolean {
 }
 
 function sendError(e: unknown, hostName: string): string {
+  if (isClientError(e, "attachment_not_found")) return ATTACHMENT_GONE_MESSAGE;
   if (isClientError(e, "turn_in_progress")) return "The agent is still working. Stop it or wait.";
   if (isClientError(e, "unknown_outcome")) return "Not sure that went through. Refreshed from your Mac.";
   if (isClientError(e, "network") || isClientError(e, "timeout")) return `Not connected to ${hostName}. Try again when it's back.`;
   return "Couldn't send that. Try again.";
 }
+
+function openFileError(e: unknown, hostName: string): string {
+  if (isClientError(e, "not_found") || isClientError(e, "workspace_removed")) return "That file is no longer in the worktree.";
+  if (isClientError(e, "network") || isClientError(e, "timeout")) return `Not connected to ${hostName}. Try again when it's back.`;
+  return "Couldn't open that file.";
+}
+
+/** The picker opens once the attach sheet has slid away; iOS shows one modal at a time. */
+const SHEET_CLOSE_MS = 400;
 
 function stopError(e: unknown, hostName: string): string {
   if (isClientError(e, "unknown_outcome")) return "Not sure that went through. Refreshed from your Mac.";
@@ -357,6 +379,10 @@ function Live({
   const [notice, setNotice] = useState<string | null>(null);
   const [tool, setTool] = useState<ToolItem | null>(null);
   const [reviewing, setReviewing] = useState(false);
+  const [attaching, setAttaching] = useState(false);
+  const attachments = usePendingAttachments(hostName);
+  const workspace_id = item.workspace_id;
+  const canAttach = attachments.enabled && workspace_id !== null;
 
   // Stop holds until the host ends the turn.
   useEffect(() => {
@@ -368,6 +394,7 @@ function Live({
     if (unsure && echoed(view, unsure)) {
       setUnsure(null);
       setDraft("");
+      attachments.clear();
       setNotice(null);
     }
   }, [view, unsure]);
@@ -386,20 +413,54 @@ function Live({
 
   const send = async () => {
     const text = draft.trim();
-    if (!text || sending) return;
+    const withFiles = canAttach && attachments.files.length > 0;
+    if ((!text && !withFiles) || sending) return;
     const id = randomUUID();
     setSending(true);
     setNotice(null);
     setUnsure(null);
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      await currentHost.send(session_id, text, id);
+      // Files first, into this session's worktree; the message names them.
+      const files = withFiles ? await attachments.upload(workspace_id!) : [];
+      if (files === null) {
+        setNotice(UPLOAD_FAILED_MESSAGE);
+        return;
+      }
+      await currentHost.send(session_id, text, id, files);
       setDraftState(currentHost.draft(session_id));
+      attachments.clear();
     } catch (e) {
       if (isClientError(e, "unknown_outcome")) setUnsure(id);
+      if (isClientError(e, "attachment_not_found")) attachments.forgetUploads();
       setNotice(sendError(e, hostName));
     } finally {
       setSending(false);
+    }
+  };
+
+  const pick = (from: "photos" | "files") => {
+    setAttaching(false);
+    setTimeout(() => {
+      (from === "photos" ? pickPhotos() : pickFiles())
+        .then(attachments.add)
+        .catch(() => setNotice(from === "photos" ? "Couldn't open your photos." : "Couldn't open Files."));
+    }, SHEET_CLOSE_MS);
+  };
+
+  // A sent file opens in another app: its bytes come from the Host, then the share sheet.
+  const openSent = async (file: AttachmentBlock) => {
+    if (!workspace_id) return;
+    setNotice(null);
+    try {
+      const download = await currentHost.request(
+        "files.download",
+        { workspace_id, path: file.path },
+        { timeoutMs: UPLOAD_TIMEOUT_MS },
+      );
+      await shareDownload(download);
+    } catch (e) {
+      setNotice(openFileError(e, hostName));
     }
   };
 
@@ -434,7 +495,14 @@ function Live({
     const gap = newer && (newer.type === "user" || row.type === "user") ? space.lg : space.sm;
     return (
       <View style={{ marginTop: index === rows.length - 1 ? space.md : 0, marginBottom: index === 0 ? space.md : gap }}>
-        <Row row={row} onTool={onTool} toolFile={toolFile} fileOf={fileOf} onOpenFile={onOpenFile} />
+        <Row
+          row={row}
+          onTool={onTool}
+          toolFile={toolFile}
+          fileOf={fileOf}
+          onOpenFile={onOpenFile}
+          onOpenSent={workspace_id ? (f) => void openSent(f) : undefined}
+        />
       </View>
     );
   };
@@ -525,8 +593,13 @@ function Live({
           controls={<ComposerChips view={view} locked={running} onOpen={onOptions} />}
           note={lockedNote(view?.options ?? null, running)}
           border={view?.options?.mode?.current === "unattended" ? theme.need : undefined}
+          files={canAttach ? attachments.files : []}
+          fileErrors={canAttach ? attachments.errors : []}
+          onAttach={canAttach ? () => setAttaching(true) : undefined}
+          onRemoveFile={attachments.remove}
         />
       </View>
+      <AttachSheet visible={attaching} onClose={() => setAttaching(false)} onPick={pick} />
       <ToolSheet tool={tool} onClose={() => setTool(null)} />
       {request ? (
         <RequestSheet
@@ -547,17 +620,19 @@ function Row({
   toolFile,
   fileOf,
   onOpenFile,
+  onOpenSent,
 }: {
   row: TranscriptRow;
   onTool(tool: ToolItem): void;
   toolFile(tool: ToolItem): string | null;
   fileOf(path: string): string | null;
   onOpenFile(path: string): void;
+  onOpenSent?(file: AttachmentBlock): void;
 }) {
   const opens = (tool: ToolItem) => toolFile(tool) !== null;
   switch (row.type) {
     case "user":
-      return <UserMessage text={row.text} />;
+      return <UserMessage text={row.text} files={row.files} onOpenFile={onOpenSent} />;
     case "agent":
       return <Markdown text={row.text} caret={row.streaming ? <Caret /> : undefined} />;
     case "thought":

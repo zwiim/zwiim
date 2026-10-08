@@ -30,6 +30,7 @@ import {
   type OptionsRequest,
   type PrMerged,
   type PrState,
+  type PromptBlock,
   type SessionOptions,
   type WorkspaceInfo,
 } from "@zwiim/sdk";
@@ -294,20 +295,21 @@ export class HostConnection {
     await this.#live().refreshAgents();
   }
 
-  /** Send a prompt to a session (`session.send`); never retried. */
-  async send(session_id: string, text: string, client_message_id: string): Promise<void> {
-    await this.#live().sendMessage({ session_id, blocks: [{ type: "text", text }], client_message_id });
+  /** Send a prompt to a session (`session.send`), with any uploaded files after the text; never retried. */
+  async send(session_id: string, text: string, client_message_id: string, files: PromptBlock[] = []): Promise<void> {
+    const blocks: PromptBlock[] = text ? [{ type: "text", text }, ...files] : files;
+    await this.#live().sendMessage({ session_id, blocks, client_message_id });
   }
 
   /** A request to the host, over the open connection only. */
-  async request<O extends OpName>(op: O, params: OpParams<O>): Promise<OpResult<O>> {
+  async request<O extends OpName>(op: O, params: OpParams<O>, opts?: { timeoutMs?: number }): Promise<OpResult<O>> {
     const client = this.#client;
     const status = client?.state.status;
     // Incompatible: the SDK refuses with `update_required`, which says why.
     if (!client || (status !== "live" && status !== "incompatible")) {
       throw new ZwiimClientError("network", "Not connected to the host");
     }
-    return client.request(op, params);
+    return client.request(op, params, opts);
   }
 
   /** Disconnect and stop reporting. */

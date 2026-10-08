@@ -1,5 +1,5 @@
 import { createContext, useContext, useSyncExternalStore } from "react";
-import { isHostOutdated, type Compatibility, type HostController, type HostState } from "@zwiim/sdk";
+import { ATTACHMENT_GONE_MESSAGE, isHostOutdated, type Compatibility, type HostController, type HostState } from "@zwiim/sdk";
 
 const HostContext = createContext<HostController | null>(null);
 
@@ -30,6 +30,7 @@ export function useOnline(): boolean {
  * technical get plain wording; the rest keep the host's message.
  */
 const FRIENDLY: Record<string, string> = {
+  attachment_not_found: ATTACHMENT_GONE_MESSAGE,
   unknown_outcome:
     "The connection dropped before the host answered. The request may or may not have been applied — check the current state before trying again.",
   network: "Cannot reach the host. Check that it is running, then try again.",

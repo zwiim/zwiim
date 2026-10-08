@@ -60,3 +60,4 @@ export * from "./changes/diff";
 export * from "./changes/turns";
 export * from "./changes/fullfile";
 export * from "./changes/paths";
+export * from "./attachments";

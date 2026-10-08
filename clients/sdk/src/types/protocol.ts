@@ -46,6 +46,14 @@ export type HostErrorCode =
   | "root_workspace"
   /** `workspace.add` with `publish`: GitHub did not take the repository. Details `{ created_on_github }`. */
   | "publish_failed"
+  /** `attachments.upload`: the file is larger than 10 MB. */
+  | "attachment_too_large"
+  /** `session.start` / `session.send`: an `attachment` block names a file that is gone. */
+  | "attachment_not_found"
+  /** `attachments.upload`: nothing is left of the file name once cleaned. */
+  | "invalid_name"
+  /** `files.download`: the file is larger than 10 MB. */
+  | "file_too_large"
   | "internal";
 
 export interface WireError {
@@ -323,6 +331,24 @@ export interface FileContent {
   line_ending: string;
 }
 
+/** `files.download`: a workspace file's bytes. */
+export interface FileDownload {
+  name: string;
+  mime_type: string;
+  size: number;
+  /** Standard base64. */
+  data: string;
+}
+
+/** `attachments.upload`: the stored file; send `attachment_id` in a prompt block. */
+export interface UploadedAttachment {
+  attachment_id: string;
+  /** The cleaned file name the Host stored. */
+  name: string;
+  size: number;
+  mime_type: string;
+}
+
 export interface GitStatusEntry {
   status: string;
   file: string;
@@ -532,9 +558,27 @@ export interface SessionSummary {
 
 export type PromptBlock =
   | { type: "text"; text: string }
-  | { type: "image"; data: string; mime_type: string };
+  | { type: "image"; data: string; mime_type: string }
+  /** A file uploaded with `attachments.upload` into the session's workspace. */
+  | { type: "attachment"; attachment_id: string };
 
-export type UserBlock = PromptBlock;
+/**
+ * A file attached to a user message. `path` is workspace-relative (open it with
+ * `files.read` / `files.download`); `size` is absent when the file is gone.
+ */
+export interface AttachmentBlock {
+  type: "attachment";
+  attachment_id: string;
+  name: string;
+  mime_type: string;
+  size?: number;
+  path: string;
+}
+
+export type UserBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mime_type: string }
+  | AttachmentBlock;
 
 /**
  * A tool call's progress, in the SDK's one spelling. The host may send ACP's
@@ -697,6 +741,7 @@ export type HistoryBlock =
   | { type: "text"; text: string }
   | { type: "thought"; text: string }
   | { type: "image"; data: string; mime_type: string }
+  | AttachmentBlock
   | {
       type: "image_generation";
       revised_prompt: string | null;
@@ -1051,6 +1096,10 @@ export interface Operations {
     FileTreeNode[],
   ];
   "files.read": [{ workspace_id: string; path: string }, FileContent];
+  /** Any workspace file up to 10 MB, as base64; `file_too_large` past that. */
+  "files.download": [{ workspace_id: string; path: string }, FileDownload];
+  /** Store a file (base64, up to 10 MB) in the workspace for an `attachment` prompt block. */
+  "attachments.upload": [{ workspace_id: string; name: string; data: string }, UploadedAttachment];
   "git.status": [{ workspace_id: string; show_all_untracked?: boolean }, GitStatusEntry[]];
   "git.log": [{ workspace_id: string; limit?: number; skip?: number }, GitLogResult];
   "git.commit": [
@@ -1163,6 +1212,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "workspace.add",
   "workspace.create_folder",
   "workspace.create_worktree",
+  "attachments.upload",
   "workspace.remove_worktree",
   "workspace.continue",
   "terminal.spawn",

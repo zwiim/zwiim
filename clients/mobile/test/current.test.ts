@@ -695,6 +695,20 @@ describe("unsent drafts (R8.12)", () => {
     await current.clear();
   });
 
+  it("sends the uploaded files after the text, or alone", async () => {
+    const { s, current } = await live();
+    const blocks: unknown[] = [];
+    s.w.host.backend.handlers["session.send"] = (p: { blocks: unknown[] }) => {
+      blocks.push(p.blocks);
+      return {};
+    };
+    const file = { type: "attachment" as const, attachment_id: "att-1" };
+    await current.send("a", "read this", "m-1", [file]);
+    await current.send("a", "", "m-2", [file]);
+    expect(blocks).toEqual([[{ type: "text", text: "read this" }, file], [file]]);
+    await current.clear();
+  });
+
   it("keeps the draft when a send fails or its outcome is unknown", async () => {
     const { current, failWith } = await live();
     current.setDraft("a", "fix it");
