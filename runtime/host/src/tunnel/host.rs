@@ -37,7 +37,7 @@ use crate::app_state::AppState;
 use crate::identity::pairing::{self, KeyPairingClaim};
 use crate::identity::trusted_devices;
 use crate::protocol::error::ZwiimError;
-use crate::web::auth::{device_revoked, Principal, TunnelPeer, WS_CLOSE_DEVICE_REVOKED};
+use crate::web::auth::{device_revoked, ConnectionPath, Principal, TunnelPeer, WS_CLOSE_DEVICE_REVOKED};
 use crate::web::shutdown::ShutdownSignal;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -74,8 +74,13 @@ pub fn router(state: Arc<AppState>, token: String, shutdown: Arc<ShutdownSignal>
 
 /// Serve one tunnel on `io` until either end closes it, the device is
 /// revoked, or the host shuts down.
-pub async fn serve<S>(state: Arc<AppState>, router: Router, shutdown: Arc<ShutdownSignal>, io: S)
-where
+pub async fn serve<S>(
+    state: Arc<AppState>,
+    router: Router,
+    shutdown: Arc<ShutdownSignal>,
+    io: S,
+    path: ConnectionPath,
+) where
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     let Some(keys) = state.host_keys.get() else {
@@ -132,7 +137,9 @@ where
     };
 
     tracing::info!("[tunnel] device {device_id} connected");
-    let router = router.layer(Extension(TunnelPeer { device_id: device_id.clone() }));
+    let router = router
+        .layer(Extension(TunnelPeer { device_id: device_id.clone() }))
+        .layer(Extension(path));
     let revoked = device_revoked(
         Some(Principal::Device(device_id.clone())),
         state.device_revocations.clone(),
@@ -400,7 +407,7 @@ pub async fn serve_test_listener(
             _ = shutdown.wait() => return Ok(()),
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
-                    tokio::spawn(serve(state.clone(), router.clone(), shutdown.clone(), stream));
+                    tokio::spawn(serve(state.clone(), router.clone(), shutdown.clone(), stream, ConnectionPath::Relay));
                 }
                 Err(e) => {
                     tracing::warn!("[tunnel] accept failed: {e}");

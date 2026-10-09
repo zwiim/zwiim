@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "node ../preview/scripts/copy-pdf-assets.mjs public/pdfjs",
     "dev": "vite",
+    "prebuild": "node ../preview/scripts/copy-pdf-assets.mjs public/pdfjs",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
@@ -17,6 +19,7 @@
     "@tauri-apps/plugin-dialog": "^2.7.3",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "@zwiim/preview": "0.1.0",
     "@zwiim/sdk": "0.1.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

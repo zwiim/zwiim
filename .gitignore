@@ -7,9 +7,11 @@ node_modules/
 clients/desktop/dist/
 clients/desktop/src-tauri/gen/
 clients/desktop/src-tauri/binaries/
+clients/desktop/public/pdfjs/
 
 # Local deployment configuration (may hold secrets)
 /deploy/dev/cloud.env
 
 # Release builds (scripts/release)
 /dist/
+clients/mobile/modules/zwiim-preview/android/src/main/assets/zwiim-preview/

@@ -201,9 +201,12 @@ const desktopNpm = npmNotices([
   [root, "clients/desktop"],
   [root, "clients/sdk"],
 ]);
+// The app links the preview package by path, so its renderers' packages
+// (bundled into the Android renderer page) are listed from the workspace.
 const mobileNpm = npmNotices([
   [path.join(root, "clients/mobile"), null],
   [root, "clients/sdk"],
+  [root, "clients/preview"],
 ]);
 gate([...rust, ...desktopNpm, ...mobileNpm]);
 

@@ -54,6 +54,7 @@ export type HostErrorCode =
   | "invalid_name"
   /** `files.download`: the file is larger than 10 MB. */
   | "file_too_large"
+  | "file_too_large_for_remote"
   | "internal";
 
 export interface WireError {
@@ -335,7 +336,10 @@ export interface FileContent {
 export interface FileDownload {
   name: string;
   mime_type: string;
+  /** The whole file's size, also for a range. */
   size: number;
+  /** Where a ranged read started; absent for a whole-file read. */
+  offset?: number;
   /** Standard base64. */
   data: string;
 }
@@ -1099,8 +1103,13 @@ export interface Operations {
     FileTreeNode[],
   ];
   "files.read": [{ workspace_id: string; path: string }, FileContent];
-  /** Any workspace file up to 10 MB, as base64; `file_too_large` past that. */
-  "files.download": [{ workspace_id: string; path: string }, FileDownload];
+  /**
+   * A workspace file as base64. Whole (up to 10 MB, `file_too_large` past it),
+   * or with `offset`/`length` a range of at most 8 MiB (Hosts with
+   * `file_ranges`). Over the Cloud relay files past 10 MB are refused with
+   * `file_too_large_for_remote`.
+   */
+  "files.download": [{ workspace_id: string; path: string; offset?: number; length?: number }, FileDownload];
   /** Store a file (base64, up to 10 MB) in the workspace for an `attachment` prompt block. */
   "attachments.upload": [{ workspace_id: string; name: string; data: string }, UploadedAttachment];
   "git.status": [{ workspace_id: string; show_all_untracked?: boolean }, GitStatusEntry[]];

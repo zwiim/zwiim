@@ -71,6 +71,16 @@ pub struct TunnelPeer {
     pub device_id: String,
 }
 
+/// How a request reached the Host. The tunnel adapter attaches it to the
+/// requests it routes; plain HTTP requests carry none and are `Local`.
+/// Size limits that exist for the Cloud relay's bandwidth key off it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionPath {
+    Local,
+    Lan,
+    Relay,
+}
+
 /// Constant-time token equality. Both sides are hashed first so neither the
 /// comparison nor its length check depends on how much of the token matches.
 fn token_matches(presented: &str, expected: &str) -> bool {

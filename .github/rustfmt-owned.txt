@@ -40,3 +40,4 @@ runtime/host/src/acp/git_tools.rs
 runtime/host/src/acp/git_tools/tests.rs
 runtime/host/src/git_harness/pr_state.rs
 runtime/host/src/pr_watch.rs
+clients/desktop/src-tauri/src/preview.rs

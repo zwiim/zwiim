@@ -304,7 +304,7 @@ async fn run(
                     let _ = stream.set_nodelay(true);
                     let (state, router, stop) = (state.clone(), router.clone(), stop.clone());
                     tokio::spawn(async move {
-                        crate::tunnel::host::serve(state, router, stop, stream).await;
+                        crate::tunnel::host::serve(state, router, stop, stream, crate::web::auth::ConnectionPath::Lan).await;
                         drop(permit);
                     });
                 }

@@ -80,7 +80,7 @@ export function Counts({ additions, deletions, size }: { additions: number; dele
   );
 }
 
-function useWorkspaceInfo(workspace_id: string): { workspace: WorkspaceInfo | null; context: string; worktree: string } {
+export function useWorkspaceInfo(workspace_id: string): { workspace: WorkspaceInfo | null; context: string; worktree: string } {
   const { workspaces } = useHostState();
   const workspace = workspaces?.find((w) => w.workspace_id === workspace_id) ?? null;
   const label = contextLabel(workspaces, workspace_id);
@@ -92,13 +92,13 @@ function useWorkspaceInfo(workspace_id: string): { workspace: WorkspaceInfo | nu
 }
 
 /** "src/auth/ · zwiim · fix-auth": the file's folder, then where it lives. */
-function fileSubtitle(path: string, context: string): string {
+export function fileSubtitle(path: string, context: string): string {
   const folder = parentPath(path);
   return [folder ? `${folder}/` : null, context || null].filter(Boolean).join(" · ");
 }
 
 /** Back to where the user came from, or the Host shell if opened directly. */
-function useBack(navigation: { canGoBack(): boolean; goBack(): void; navigate(name: "Host"): void }) {
+export function useBack(navigation: { canGoBack(): boolean; goBack(): void; navigate(name: "Host"): void }) {
   return () => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Host"));
 }
 
@@ -115,7 +115,7 @@ function swapTo(navigation: NativeStackNavigationProp<RootStack>, to: "File" | "
 }
 
 /** The page under a pushed header, with the reconnecting dim; `surface` is the body's background. */
-function Page({ header, surface, children }: { header: ReactNode; surface?: "code"; children: ReactNode }) {
+export function Page({ header, surface, children }: { header: ReactNode; surface?: "code"; children: ReactNode }) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const { view } = useCurrentHost();

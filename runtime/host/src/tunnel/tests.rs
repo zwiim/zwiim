@@ -20,6 +20,7 @@ use crate::identity::host_keys::HostKeys;
 use crate::identity::pairing::{KeyPairingGrant, KeyPairingInvitation};
 use crate::protocol::events::tests::assert_no_internal_keys;
 use crate::protocol::tests::{delta, host, Host, CONN, HOST_TOKEN};
+use crate::web::auth::ConnectionPath;
 use crate::web::shutdown::ShutdownSignal;
 
 pub(crate) const WAIT: Duration = Duration::from_secs(5);
@@ -73,15 +74,23 @@ impl Served {
 
 /// Serve a tunnel on the host; returns the device's end of the stream.
 fn serve(h: &Host) -> (DuplexStream, Served) {
+    serve_via(h, ConnectionPath::Lan)
+}
+
+fn serve_via(h: &Host, path: ConnectionPath) -> (DuplexStream, Served) {
     let (device_io, host_io) = tokio::io::duplex(1 << 20);
     let shutdown = Arc::new(ShutdownSignal::new());
     let router = super::host::router(h.state.clone(), HOST_TOKEN.to_string(), shutdown.clone());
-    let task = tokio::spawn(super::host::serve(h.state.clone(), router, shutdown.clone(), host_io));
+    let task = tokio::spawn(super::host::serve(h.state.clone(), router, shutdown.clone(), host_io, path));
     (device_io, Served { shutdown, task })
 }
 
 async fn connect(h: &Host, device: &DeviceIdentity, host_id: &str) -> (TunnelClient, Served) {
-    let (io, served) = serve(h);
+    connect_via(h, device, host_id, ConnectionPath::Lan).await
+}
+
+async fn connect_via(h: &Host, device: &DeviceIdentity, host_id: &str, path: ConnectionPath) -> (TunnelClient, Served) {
+    let (io, served) = serve_via(h, path);
     let tunnel = device.connect_tunnel(io, host_id).await.unwrap();
     (TunnelClient::start(tunnel), served)
 }
@@ -829,4 +838,39 @@ async fn the_test_listener_is_loopback_tcp_only() {
     c.close().await;
     shutdown.trigger();
     tokio::time::timeout(WAIT, listener).await.unwrap().unwrap().unwrap();
+}
+
+/// The relay carries at most 10 MiB of any one file; LAN carries any size in ranges.
+#[tokio::test]
+async fn the_relay_refuses_files_over_ten_mebibytes_and_lan_reads_them_in_ranges() {
+    let h = host(false).await;
+    let (device, host_id) = paired_device(&h).await;
+    let wid = h.workspace_id.clone();
+    let max = crate::attachments::ATTACHMENT_MAX_BYTES;
+    let root = std::path::Path::new(&h.root);
+    std::fs::write(root.join("at-cap.bin"), vec![1u8; max]).unwrap();
+    std::fs::write(root.join("over-cap.bin"), vec![2u8; max + 1]).unwrap();
+
+    let (relay, _r) = connect_via(&h, &device, &host_id, ConnectionPath::Relay).await;
+    for body in [
+        json!({"workspace_id": wid, "path": "over-cap.bin"}),
+        json!({"workspace_id": wid, "path": "over-cap.bin", "offset": 0, "length": 4}),
+    ] {
+        let (status, err) = relay.request("files.download", body.clone()).await.unwrap();
+        assert_eq!(status, 413, "{body}");
+        assert_eq!(err["error"]["code"], "file_too_large_for_remote");
+        assert_eq!(err["error"]["details"], json!({"size": max + 1}));
+    }
+    let (status, ok) = relay
+        .request("files.download", json!({"workspace_id": wid, "path": "at-cap.bin", "offset": 0, "length": 4}))
+        .await
+        .unwrap();
+    assert_eq!((status, ok["size"].clone()), (200, json!(max)));
+
+    let (lan, _l) = connect_via(&h, &device, &host_id, ConnectionPath::Lan).await;
+    let (status, ok) = lan
+        .request("files.download", json!({"workspace_id": wid, "path": "over-cap.bin", "offset": max as u64, "length": 4}))
+        .await
+        .unwrap();
+    assert_eq!((status, ok["data"].clone()), (200, json!("Ag==")));
 }

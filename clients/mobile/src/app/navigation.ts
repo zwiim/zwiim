@@ -24,6 +24,8 @@ export type RootStack = {
   NewSession: { workspace_id?: string } | undefined;
   Changes: { workspace_id: string };
   File: { workspace_id: string; path: string };
+  /** A workspace file shown in-app (html, pdf, sheets, Word, images; Share for the rest). */
+  Preview: { workspace_id: string; path: string };
   Diff: { workspace_id: string; path: string };
   TerminalView: { terminal_id: string };
   /** `then`: where to go once a folder is added (Files unless New session asked). */

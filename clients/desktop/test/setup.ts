@@ -16,3 +16,11 @@ if (typeof window !== "undefined") {
   });
 }
 beforeEach(() => storage.clear());
+
+// Node's object URLs refuse jsdom's Blob; previews make them for images and
+// downloads, so tests get stand-ins.
+if (typeof window !== "undefined") {
+  let next = 0;
+  URL.createObjectURL = () => `blob:zwiim-test/${++next}`;
+  URL.revokeObjectURL = () => {};
+}

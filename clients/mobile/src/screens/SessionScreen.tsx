@@ -19,17 +19,17 @@ import { randomUUID } from "expo-crypto";
 import {
   ATTACHMENT_GONE_MESSAGE,
   isClientError,
-  UPLOAD_TIMEOUT_MS,
   workspaceFile,
   type AgentRequest,
   type AttachmentBlock,
   type SessionView,
 } from "@zwiim/sdk";
-import { pickFiles, pickPhotos, shareDownload } from "../attachments/native";
+import { pickFiles, pickPhotos } from "../attachments/native";
 import { UPLOAD_FAILED_MESSAGE } from "../attachments/pending";
 import { usePendingAttachments } from "../attachments/usePendingAttachments";
+import { openTarget } from "../preview/model";
 import { useCurrentHost, useHostState, useNow } from "../app/hooks";
-import type { RootStack } from "../app/navigation";
+import { useRootNavigation, type RootStack } from "../app/navigation";
 import { connectionText } from "../host/status";
 import { requestTitle, sessionItem, type SessionItem } from "../sessions/model";
 import { sessionToOpen, worktreeSessions } from "../sessions/worktree";
@@ -314,12 +314,6 @@ function sendError(e: unknown, hostName: string): string {
   return "Couldn't send that. Try again.";
 }
 
-function openFileError(e: unknown, hostName: string): string {
-  if (isClientError(e, "not_found") || isClientError(e, "workspace_removed")) return "That file is no longer in the worktree.";
-  if (isClientError(e, "network") || isClientError(e, "timeout")) return `Not connected to ${hostName}. Try again when it's back.`;
-  return "Couldn't open that file.";
-}
-
 /** The picker opens once the attach sheet has slid away; iOS shows one modal at a time. */
 const SHEET_CLOSE_MS = 400;
 
@@ -355,6 +349,7 @@ function Live({
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const keyboard = useKeyboardShown();
+  const nav = useRootNavigation();
   const { view: connection } = useCurrentHost();
   const session_id = item.session_id;
   const running = turnRunning(view);
@@ -448,20 +443,11 @@ function Live({
     }, SHEET_CLOSE_MS);
   };
 
-  // A sent file opens in another app: its bytes come from the Host, then the share sheet.
-  const openSent = async (file: AttachmentBlock) => {
+  // A sent file opens in-app: text in the file view, anything else in Preview.
+  const openSent = (file: AttachmentBlock) => {
     if (!workspace_id) return;
     setNotice(null);
-    try {
-      const download = await currentHost.request(
-        "files.download",
-        { workspace_id, path: file.path },
-        { timeoutMs: UPLOAD_TIMEOUT_MS },
-      );
-      await shareDownload(download);
-    } catch (e) {
-      setNotice(openFileError(e, hostName));
-    }
+    nav.navigate(openTarget(file.path), { workspace_id, path: file.path });
   };
 
   const stop = async () => {
@@ -501,7 +487,7 @@ function Live({
           toolFile={toolFile}
           fileOf={fileOf}
           onOpenFile={onOpenFile}
-          onOpenSent={workspace_id ? (f) => void openSent(f) : undefined}
+          onOpenSent={workspace_id ? (f) => openSent(f) : undefined}
         />
       </View>
     );

@@ -5,8 +5,10 @@
 import { describe, expect, it } from "vitest";
 import { HostController } from "../src/client/controller";
 import { HostClient } from "../src/client/host-client";
+import { readFile } from "../src/files";
 import type { TerminalOutput } from "../src/state/terminal";
 import { LocalTransport } from "../src/transport/local";
+import { node } from "./it-support";
 
 // The SDK is typed for browsers; only this Node-run test reads the environment.
 declare const process: { env: Record<string, string | undefined> };
@@ -16,6 +18,9 @@ const token = process.env.ZWIIM_IT_TOKEN ?? "";
 const dir = process.env.ZWIIM_IT_DIR ?? "";
 /** An existing idle session to exercise options on (optional). */
 const sessionId = process.env.ZWIIM_IT_SESSION;
+/** Path, relative to ZWIIM_IT_DIR, of a 60 MB file (optional):
+ *  head -c 62914560 /dev/urandom > big.bin */
+const largeFile = process.env.ZWIIM_LIVE_LARGE_FILE;
 
 async function until(cond: () => boolean, ms = 10_000): Promise<void> {
   const end = Date.now() + ms;
@@ -105,4 +110,18 @@ describe.skipIf(!url)("integration: real host", () => {
     expect(bad.code).toBe("option_unavailable");
     c.dispose();
   }, 90_000);
+
+  it.skipIf(!largeFile)("reads a 60 MB file in ranges, byte for byte", async () => {
+    const client = new HostClient({ transport: () => new LocalTransport({ url: url!, token }) });
+    const c = new HostController(client);
+    client.start();
+    await until(() => c.store.getState().connection.status === "live");
+    const ws = await c.addWorkspace(dir);
+    const fs = await node("node:fs");
+    const expected: Uint8Array = fs.readFileSync(`${dir}/${largeFile}`);
+    const bytes = await readFile(client, ws.workspace_id, largeFile!);
+    expect(bytes.length).toBe(expected.length);
+    expect(bytes.every((b, i) => b === expected[i])).toBe(true);
+    c.dispose();
+  }, 300_000);
 });

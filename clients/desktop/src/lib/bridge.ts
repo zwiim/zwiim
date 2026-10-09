@@ -193,7 +193,7 @@ export function tauriLan(): LanBridge {
   };
 }
 
-const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+export const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 export function tauriBridge(): NativeBridge {
   return {
@@ -341,19 +341,26 @@ export async function openLink(href: string): Promise<void> {
 }
 
 /**
- * Open a workspace file's bytes in the default app for its type. Outside the
- * native app the browser downloads it instead.
+ * Open a workspace file in the default app for its type, written piece by
+ * piece so a large file never sits whole in memory. Outside the native app
+ * the browser downloads it instead.
  */
-export async function openDownload(file: { name: string; mime_type: string; data: string }): Promise<void> {
+export async function openFileBytes(name: string, mime_type: string, chunks: AsyncIterable<Uint8Array>): Promise<void> {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("open_download", { name: file.name, data: file.data });
-  } else {
-    const link = document.createElement("a");
-    link.href = `data:${file.mime_type};base64,${file.data}`;
-    link.download = file.name;
-    link.click();
+    const token = await invoke<string>("download_begin", { name });
+    for await (const bytes of chunks) await invoke("download_append", bytes, { headers: { "x-download": token } });
+    await invoke("download_open", { token });
+    return;
   }
+  const parts: Uint8Array[] = [];
+  for await (const bytes of chunks) parts.push(bytes);
+  const url = URL.createObjectURL(new Blob(parts as BlobPart[], { type: mime_type }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 export function defaultBridge(): NativeBridge {

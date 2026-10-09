@@ -4160,6 +4160,73 @@ async fn files_download_stays_inside_the_workspace() {
 }
 
 #[tokio::test]
+async fn files_download_reads_ranges_past_the_whole_file_cap() {
+    let h = host(false).await;
+    let wid = h.wt_workspace_id.clone();
+    let max = crate::attachments::ATTACHMENT_MAX_BYTES;
+    let range_max = crate::protocol::http::RANGE_MAX_BYTES as usize;
+    let bytes: Vec<u8> = (0..max + 10).map(|i| (i % 251) as u8).collect();
+    std::fs::write(std::path::Path::new(&h.wt).join("big.bin"), &bytes).unwrap();
+    let size = bytes.len() as u64;
+    let range = |offset: Option<u64>, length: Option<u64>| {
+        let mut body = json!({"workspace_id": wid, "path": "big.bin"});
+        if let Some(o) = offset { body["offset"] = json!(o); }
+        if let Some(l) = length { body["length"] = json!(l); }
+        body
+    };
+
+    // The whole file is still refused past 10 MiB.
+    assert_eq!(h.err("files.download", range(None, None)).await.1, "file_too_large");
+
+    // A small range, from the start.
+    let r = h.ok("files.download", range(Some(0), Some(4))).await;
+    assert_eq!(r, json!({"name": "big.bin", "mime_type": "application/octet-stream", "size": size, "offset": 0, "data": b64(&bytes[..4])}));
+
+    // `length` alone starts at 0.
+    let r = h.ok("files.download", range(None, Some(3))).await;
+    assert_eq!((r["offset"].clone(), r["data"].clone()), (json!(0), json!(b64(&bytes[..3]))));
+
+    // No length, or a huge one, is clamped to 8 MiB.
+    for length in [None, Some(u64::MAX)] {
+        let r = h.ok("files.download", range(Some(3), length)).await;
+        assert_eq!(r["data"], json!(b64(&bytes[3..3 + range_max])), "{length:?}");
+    }
+
+    // The tail, the exact end, and past the end.
+    let r = h.ok("files.download", range(Some(size - 2), Some(10))).await;
+    assert_eq!(r["data"], json!(b64(&bytes[bytes.len() - 2..])));
+    let r = h.ok("files.download", range(Some(size), Some(10))).await;
+    assert_eq!((r["data"].clone(), r["size"].clone()), (json!(""), json!(size)));
+    assert_eq!(
+        h.err("files.download", range(Some(size + 1), None)).await,
+        (StatusCode::BAD_REQUEST, "invalid_input".into())
+    );
+}
+
+#[tokio::test]
+async fn ranged_reads_keep_the_workspace_jail() {
+    let h = host(false).await;
+    let wid = h.wt_workspace_id.clone();
+    let outside = h._dir.path().join("secret.txt");
+    std::fs::write(&outside, "secret").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, std::path::Path::new(&h.wt).join("link.txt")).unwrap();
+    for path in ["../secret.txt", outside.to_str().unwrap(), "link.txt", "missing.txt", "", "."] {
+        let (status, _) = h
+            .err("files.download", json!({"workspace_id": wid, "path": path, "offset": 0, "length": 4}))
+            .await;
+        assert!(status.is_client_error(), "{path}: {status}");
+    }
+}
+
+#[tokio::test]
+async fn the_host_offers_file_ranges() {
+    let h = host(false).await;
+    let hello = h.ok("host.hello", json!({})).await;
+    assert!(hello["capabilities"].as_array().is_some_and(|c| c.iter().any(|v| v == "file_ranges")));
+}
+
+#[tokio::test]
 async fn attachment_blocks_reach_the_agent_as_one_note() {
     let h = host(false).await;
     let wid = h.wt_workspace_id.clone();

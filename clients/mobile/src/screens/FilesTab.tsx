@@ -25,6 +25,7 @@ import {
   type FoundFile,
 } from "../files/model";
 import { contextLabel, contextText, workspaceLabel } from "../host/workspace";
+import { openTarget } from "../preview/model";
 import { currentHost } from "../services";
 import { Button, EmptyState, SkeletonRows, T } from "../ui/components";
 import { ChevronLeft, ChevronRight, Icon, Search } from "../ui/icons";
@@ -122,7 +123,7 @@ function Files({ workspace }: { workspace: WorkspaceInfo }) {
   );
 
   const items = changes.data?.items ?? [];
-  const openFile = (file: string) => nav.navigate("File", { workspace_id: id, path: file });
+  const openFile = (file: string) => nav.navigate(openTarget(file), { workspace_id: id, path: file });
 
   return (
     <View style={styles.flex}>

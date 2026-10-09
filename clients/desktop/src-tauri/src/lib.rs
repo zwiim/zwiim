@@ -21,6 +21,7 @@ pub mod device;
 pub mod download;
 pub mod lan;
 pub mod login;
+pub mod preview;
 pub mod update;
 
 use std::path::{Path, PathBuf};
@@ -28,6 +29,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tauri::Manager as _;
 
 /// Mirrors the host's `<data_dir>/local-host.json`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -220,6 +222,17 @@ fn open_link(url: String) -> Result<(), String> {
     account::open_in_browser(&url)
 }
 
+/// Whether an IPC call's `Origin` is the app's own page. Everything else is
+/// refused: preview frames (on Windows they get Tauri's IPC script too, and
+/// Tauri counts registered schemes as local), and calls with no `Origin`
+/// (the postMessage fallback, which the app's CSP never needs).
+fn is_app_origin(origin: Option<&str>) -> bool {
+    matches!(
+        origin,
+        Some("tauri://localhost" | "http://tauri.localhost" | "https://tauri.localhost")
+    ) || (cfg!(debug_assertions) && origin == Some("http://localhost:1420"))
+}
+
 fn is_openable_link(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     ["https://", "http://", "mailto:"].iter().any(|s| lower.starts_with(s))
@@ -314,10 +327,63 @@ async fn lan_close(links: tauri::State<'_, lan::Links>, id: u32) -> Result<(), S
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let commands: fn(tauri::ipc::Invoke) -> bool = tauri::generate_handler![
+        discover_host,
+        start_host,
+        account_status,
+        account_sign_in,
+        account_cancel_sign_in,
+        account_sign_out,
+        open_link,
+        download::download_begin,
+        download::download_append,
+        download::download_open,
+        preview::preview_open,
+        preview::preview_close,
+        preview::preview_reply,
+        cloud_request,
+        device_identity,
+        device_paired_hosts,
+        device_pin_host,
+        device_forget_host,
+        lan_discover,
+        lan_connect,
+        lan_send,
+        lan_close,
+        update::desktop_update_status,
+        update::desktop_update_check,
+        update::desktop_update_install,
+        update::desktop_update_restart,
+        login::host_login_status,
+        login::host_login_set
+    ];
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(update::plugin())
+        .register_asynchronous_uri_scheme_protocol("zwiim-preview", |ctx, request, responder| {
+            let previews = ctx.app_handle().state::<preview::Previews>();
+            previews.ask_with(request.method().as_str(), request.uri(), move |_, res| responder.respond(res));
+        })
         .setup(|app| {
+            // Built here rather than from the config so new windows (a
+            // preview's `target=_blank` links) go to the system browser.
+            let config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|w| w.label == "main")
+                .cloned()
+                .ok_or("no main window config")?;
+            tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
+                .on_new_window(|url, _| {
+                    if is_openable_link(url.as_str()) {
+                        let _ = account::open_in_browser(url.as_str());
+                    }
+                    tauri::webview::NewWindowResponse::Deny
+                })
+                .initialization_script_for_all_frames(preview::LINKS_JS)
+                .build()?;
             std::thread::spawn(seed_host);
             login::sync_at_launch(app.handle());
             Ok(())
@@ -326,31 +392,16 @@ pub fn run() {
         .manage(update::DesktopUpdate::default())
         .manage(lan::Discovery::default())
         .manage(lan::Links::default())
-        .invoke_handler(tauri::generate_handler![
-            discover_host,
-            start_host,
-            account_status,
-            account_sign_in,
-            account_cancel_sign_in,
-            account_sign_out,
-            open_link,
-            download::open_download,
-            cloud_request,
-            device_identity,
-            device_paired_hosts,
-            device_pin_host,
-            device_forget_host,
-            lan_discover,
-            lan_connect,
-            lan_send,
-            lan_close,
-            update::desktop_update_status,
-            update::desktop_update_check,
-            update::desktop_update_install,
-            update::desktop_update_restart,
-            login::host_login_status,
-            login::host_login_set
-        ])
+        .manage(download::Downloads::default())
+        .manage(preview::Previews::default())
+        .invoke_handler(move |invoke| {
+            let origin = invoke.message.headers().get("origin");
+            if !is_app_origin(origin.and_then(|o| o.to_str().ok())) {
+                invoke.resolver.reject("Not allowed");
+                return true;
+            }
+            commands(invoke)
+        })
         .run(tauri::generate_context!())
         .expect("error while running Zwiim Desktop");
 }
@@ -369,6 +420,20 @@ mod tests {
         assert!(!is_openable_link("-a Calculator"));
         assert!(!is_openable_link("https://x.com -a Terminal"));
         assert!(!is_openable_link("https://x.com\n"));
+    }
+
+    #[test]
+    fn takes_commands_only_from_the_app_origin() {
+        assert!(is_app_origin(Some("tauri://localhost")));
+        assert!(is_app_origin(Some("http://tauri.localhost")));
+        assert!(is_app_origin(Some("https://tauri.localhost")));
+        assert_eq!(is_app_origin(Some("http://localhost:1420")), cfg!(debug_assertions));
+        assert!(!is_app_origin(None));
+        assert!(!is_app_origin(Some("null")));
+        assert!(!is_app_origin(Some("zwiim-preview://0123456789abcdef0123456789abcdef")));
+        assert!(!is_app_origin(Some("http://zwiim-preview.0123456789abcdef0123456789abcdef")));
+        assert!(!is_app_origin(Some("tauri://localhost.evil")));
+        assert!(!is_app_origin(Some("https://example.com")));
     }
 
     #[test]

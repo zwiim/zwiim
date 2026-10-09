@@ -27,7 +27,7 @@ use crate::pr_watch::PrEntry;
 use crate::session::{self, RequestAnswer, RuntimeLauncher};
 use crate::terminal::error::TerminalError;
 use crate::terminal::manager::SpawnOptions;
-use crate::web::auth::Principal;
+use crate::web::auth::{ConnectionPath, Principal};
 use crate::workspace::{self, WorkspaceInfo, WorktreeRemoved};
 use crate::workspace_browse::{self, BrowseEntry, BrowseListing};
 use crate::workspace_diff::{self, WorkspaceDiff};
@@ -1072,20 +1072,31 @@ pub async fn files_read(
     ))
 }
 
+/// Most bytes one ranged `files.download` returns.
+pub const RANGE_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileDownloadParams {
     pub workspace_id: String,
     pub path: String,
+    #[serde(default)]
+    pub offset: Option<u64>,
+    #[serde(default)]
+    pub length: Option<u64>,
 }
 
-/// Any file in the workspace, whole and base64-encoded, for opening in another
-/// app. Symlinks are followed only while they stay inside the workspace.
+/// Any file in the workspace as base64: whole (up to 10 MB), or a range of
+/// at most 8 MiB when `offset` or `length` is given. Symlinks are followed
+/// only while they stay inside the workspace. Over the Cloud relay no file
+/// past 10 MB is read at all.
 pub async fn files_download(
     Extension(state): Extension<Arc<AppState>>,
+    path: Option<Extension<ConnectionPath>>,
     ZJson(p): ZJson<FileDownloadParams>,
 ) -> ZResult<Value> {
     use base64::Engine as _;
+    use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
     let root = workspace::resolve(&state.db.conn, &p.workspace_id)
         .await?
         .path;
@@ -1099,19 +1110,46 @@ pub async fn files_download(
         return Err(not_found());
     }
     let size = std::fs::metadata(&target).map_err(|_| not_found())?.len();
-    if size > crate::attachments::ATTACHMENT_MAX_BYTES as u64 {
-        return Err(ZwiimError::file_too_large());
+    let cap = crate::attachments::ATTACHMENT_MAX_BYTES as u64;
+    let via = path.map(|Extension(p)| p).unwrap_or(ConnectionPath::Local);
+    if via == ConnectionPath::Relay && size > cap {
+        return Err(ZwiimError::file_too_large_for_remote(size));
     }
-    let bytes = tokio::fs::read(&target).await.map_err(|_| not_found())?;
     let name = target
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let mime_type = crate::attachments::mime_for(&name);
+    let b64 = base64::engine::general_purpose::STANDARD;
+
+    if p.offset.is_none() && p.length.is_none() {
+        if size > cap {
+            return Err(ZwiimError::file_too_large());
+        }
+        let bytes = tokio::fs::read(&target).await.map_err(|_| not_found())?;
+        return Ok(Json(json!({
+            "mime_type": mime_type,
+            "name": name,
+            "size": bytes.len(),
+            "data": b64.encode(&bytes),
+        })));
+    }
+
+    let offset = p.offset.unwrap_or(0);
+    if offset > size {
+        return Err(ZwiimError::invalid_input("offset is past the end of the file"));
+    }
+    let want = p.length.unwrap_or(RANGE_MAX_BYTES).min(RANGE_MAX_BYTES).min(size - offset);
+    let mut file = tokio::fs::File::open(&target).await.map_err(|_| not_found())?;
+    file.seek(std::io::SeekFrom::Start(offset)).await.map_err(|_| not_found())?;
+    let mut bytes = Vec::with_capacity(want as usize);
+    file.take(want).read_to_end(&mut bytes).await.map_err(|_| not_found())?;
     Ok(Json(json!({
-        "mime_type": crate::attachments::mime_for(&name),
+        "mime_type": mime_type,
         "name": name,
-        "size": bytes.len(),
-        "data": base64::engine::general_purpose::STANDARD.encode(&bytes),
+        "size": size,
+        "offset": offset,
+        "data": b64.encode(&bytes),
     })))
 }
 

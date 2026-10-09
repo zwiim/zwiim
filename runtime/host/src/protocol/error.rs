@@ -2,7 +2,8 @@
 //!
 //! Every failure on the `/zwiim/v1` boundary is `{"error": {"code", "message"}}`
 //! with a stable snake_case `code`, plus a `details` object for the codes that
-//! document one (`workspace_busy`, `workspace_dirty`). Internal errors
+//! document one (`workspace_busy`, `workspace_dirty`,
+//! `file_too_large_for_remote`). Internal errors
 //! (`AppCommandError`, `AcpError`, `DbErr`, IO) are translated here: their raw
 //! text, `detail`, connection ids and host paths never reach the client —
 //! anything not in the stable vocabulary collapses to `internal` and is logged
@@ -322,6 +323,17 @@ impl ZwiimError {
             "file_too_large",
             "The file is larger than 10 MB",
         )
+    }
+
+    /// A relay connection asked for a file over 10 MB; it opens over LAN or locally.
+    pub fn file_too_large_for_remote(size: u64) -> Self {
+        let mut e = Self::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "file_too_large_for_remote",
+            "The file is too large to read over a remote connection",
+        );
+        e.details = Some(serde_json::json!({ "size": size }));
+        e
     }
 
     pub fn internal() -> Self {

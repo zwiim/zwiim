@@ -1,0 +1,26 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.zwiim.preview'
+version = '0.1.0'
+
+android {
+  namespace "com.zwiim.preview"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+  lintOptions {
+    abortOnError false
+  }
+}
+
+// The renderer page is built from clients/preview into this module's assets.
+def rendererOut = new File(projectDir, "src/main/assets/zwiim-preview")
+tasks.register("buildPreviewRenderer", Exec) {
+  workingDir new File(projectDir, "../../../../preview")
+  commandLine "node", "scripts/build-renderer.mjs", rendererOut.absolutePath
+}
+preBuild.dependsOn "buildPreviewRenderer"

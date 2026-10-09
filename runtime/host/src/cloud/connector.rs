@@ -145,7 +145,7 @@ fn dial(state: &Arc<AppState>, router: &Router, shutdown: &Arc<ShutdownSignal>, 
         match relay(&url, rendezvous, token, &tls).await {
             Ok(ws) => {
                 let io = crate::tunnel::relay::stream(ws);
-                crate::tunnel::host::serve(state, router, shutdown, io).await;
+                crate::tunnel::host::serve(state, router, shutdown, io, crate::web::auth::ConnectionPath::Relay).await;
             }
             Err(e) => tracing::info!("[cloud] dial failed: {e}"),
         }

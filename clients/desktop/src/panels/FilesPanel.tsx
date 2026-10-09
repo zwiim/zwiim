@@ -20,11 +20,19 @@ import {
   SquareTerminal,
   type LucideIcon,
 } from "lucide-react";
-import { attachmentKind, ZwiimClientError, type FileContent, type FileTreeNode } from "@zwiim/sdk";
+import { previewErrorMessage, previewKind } from "@zwiim/preview";
+import { readSheet, type Sheet } from "@zwiim/preview/sheet";
+import { renderWord } from "@zwiim/preview/word";
+import { readChunks, readFile, ZwiimClientError, type FileContent, type FileTreeNode } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
-import { openDownload } from "@/lib/bridge";
+import { isTauri, openFileBytes } from "@/lib/bridge";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
 import { cn } from "@/lib/utils";
+import { HtmlView } from "./preview/HtmlView";
+import { PdfView } from "./preview/PdfView";
+import { PreviewFailure, PreviewLoading } from "./preview/PreviewState";
+import { SheetView } from "./preview/SheetView";
+import { WordView } from "./preview/WordView";
 
 /** A directory listing: loaded, or why it could not be. */
 type Listing = { nodes: FileTreeNode[] } | { error: string; missing?: boolean };
@@ -242,43 +250,53 @@ export function fileIcon(name: string): { icon: LucideIcon; color: string } {
   return (dot > 0 && BY_EXTENSION[lower.slice(dot + 1)]) || { icon: File, color: "text-muted-foreground" };
 }
 
-/** How a file shows in its tab: as text, as an image, or only opened elsewhere. */
-export function previewOf(path: string): "text" | "image" | "none" {
-  const name = path.slice(path.lastIndexOf("/") + 1);
-  const kind = attachmentKind(name);
-  if (kind === "image") return "image";
-  if (kind === "pdf" || kind === "document" || kind === "archive") return "none";
-  if (kind === "spreadsheet" && !/\.(csv|tsv)$/i.test(name)) return "none";
-  return "text";
-}
-
-type Shown = { text: FileContent } | { image: string } | { none: true };
+type Shown =
+  | { text: FileContent }
+  | { image: string }
+  | { sheets: Sheet[] }
+  | { word: string }
+  | { pdf: true }
+  | { html: true }
+  | { none: true };
 
 /** One file's contents, read-only, in its own tab; what has no preview opens in its own app. */
 export function FileView({ workspaceId, path }: { workspaceId: string; path: string }) {
   const controller = useController();
   const [shown, setShown] = useState<Shown | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
+  const [reloads, setReloads] = useState(0);
   const loads = useRef(0);
+  const imageUrl = useRef<string | null>(null);
   const name = path.slice(path.lastIndexOf("/") + 1);
-  const preview = previewOf(path);
+  const kind = previewKind(name);
+  // A page renders only in the app, where it gets its own origin.
+  const page = kind === "html" && isTauri();
+  const [mode, setMode] = useState<"rendered" | "source">("rendered");
 
   const refresh = useCallback(async () => {
     const load = ++loads.current;
-    setError(null);
-    if (preview === "none") {
-      setShown({ none: true });
+    setFailure(null);
+    if (kind === "external") return setShown({ none: true });
+    if (kind === "pdf" || (page && mode === "rendered")) {
+      setShown(kind === "pdf" ? { pdf: true } : { html: true });
+      setReloads((n) => n + 1);
       return;
     }
     setLoading(true);
     try {
       let next: Shown;
-      if (preview === "image") {
-        const f = await controller.client.request("files.download", { workspace_id: workspaceId, path });
-        next = { image: `data:${f.mime_type};base64,${f.data}` };
+      if (kind === "image" || kind === "sheet" || kind === "word") {
+        const bytes = await readFile(controller.client, workspaceId, path);
+        if (kind === "sheet") next = { sheets: readSheet(bytes, name).sheets };
+        else if (kind === "word") next = { word: await renderWord(bytes) };
+        else {
+          if (imageUrl.current) URL.revokeObjectURL(imageUrl.current);
+          imageUrl.current = URL.createObjectURL(new Blob([bytes as BlobPart]));
+          next = { image: imageUrl.current };
+        }
       } else {
         next = { text: await controller.client.request("files.read", { workspace_id: workspaceId, path }) };
       }
@@ -286,44 +304,70 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
     } catch (e) {
       if (load === loads.current) {
         setShown(null);
-        setError(errorMessage(e));
+        setFailure(e);
       }
     } finally {
       if (load === loads.current) setLoading(false);
     }
-  }, [controller, workspaceId, path, preview]);
+  }, [controller, workspaceId, path, kind, name, page, mode]);
 
-  // Again when the workspace's files change.
-  const revision = useHost((s) => s.diffRevision[workspaceId] ?? 0);
+  // Once per file; the header's Reload reads it again. Text alone also reloads
+  // when the workspace's files change.
+  const revision = useHost((s) => (kind === "text" ? (s.diffRevision[workspaceId] ?? 0) : 0));
   useEffect(() => {
     void refresh();
   }, [refresh, revision]);
+  useEffect(
+    () => () => {
+      if (imageUrl.current) URL.revokeObjectURL(imageUrl.current);
+    },
+    [],
+  );
+  const onViewError = useCallback((e: unknown) => setFailure(e), []);
 
   async function openElsewhere() {
     setOpening(true);
     setOpenError(null);
     try {
-      await openDownload(await controller.client.request("files.download", { workspace_id: workspaceId, path }));
+      const chunks = readChunks(controller.client, workspaceId, path);
+      const first = await chunks.next();
+      if (first.done) return;
+      async function* bytes() {
+        yield first.value!.bytes;
+        for await (const c of chunks) yield c.bytes;
+      }
+      await openFileBytes(first.value.name, first.value.mime_type, bytes());
     } catch (e) {
-      setOpenError(errorMessage(e));
+      setOpenError(previewErrorMessage(e, name) ?? errorMessage(e));
     } finally {
       setOpening(false);
     }
   }
 
-  const openButton = (
-    <Button size="sm" variant="outline" disabled={opening} onClick={() => void openElsewhere()}>
-      {opening ? <Loader2 className="animate-spin" /> : <ExternalLink />} Open in default app
-    </Button>
-  );
-
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="file-view">
       <div className="text-muted-foreground flex h-10 shrink-0 items-center gap-2 border-b px-4 text-xs">
-        <span className="text-foreground truncate font-mono">{path}</span>
-        {shown && "text" in shown && <span className="ml-auto shrink-0">read-only</span>}
+        <span className="text-foreground min-w-0 flex-1 truncate font-mono">{path}</span>
+        {page && (
+          <div className="bg-muted flex shrink-0 gap-0.5 rounded-lg p-0.5" role="radiogroup" aria-label="Show">
+            {(["rendered", "source"] as const).map((m) => (
+              <button
+                key={m}
+                className={cn(
+                  "h-6 rounded-md px-2 transition-colors",
+                  mode === m ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                )}
+                role="radio"
+                aria-checked={mode === m}
+                onClick={() => setMode(m)}
+              >
+                {m === "rendered" ? "Rendered" : "Source"}
+              </button>
+            ))}
+          </div>
+        )}
+        {shown && "text" in shown && <span className="shrink-0">read-only</span>}
         <Button
-          className={cn(!(shown && "text" in shown) && "ml-auto")}
           size="icon-sm"
           variant="ghost"
           title="Open in default app"
@@ -341,20 +385,25 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
           {openError}
         </p>
       )}
-      {error ? (
-        <div className="flex flex-col items-start gap-3 p-4">
-          <p className="text-destructive text-xs" role="alert" data-testid="file-error">
-            {error}
-          </p>
-          {openButton}
-        </div>
+      {failure ? (
+        <PreviewFailure error={failure} name={name} opening={opening} onOpen={() => void openElsewhere()} />
       ) : shown && "none" in shown ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center" data-testid="file-no-preview">
           <p className="text-muted-foreground text-xs">
             No preview for <span className="text-foreground font-mono">{name}</span> here yet.
           </p>
-          {openButton}
+          <Button size="sm" variant="outline" disabled={opening} onClick={() => void openElsewhere()}>
+            {opening ? <Loader2 className="animate-spin" /> : <ExternalLink />} Open in default app
+          </Button>
         </div>
+      ) : shown && "pdf" in shown ? (
+        <PdfView key={reloads} workspaceId={workspaceId} path={path} onError={onViewError} />
+      ) : shown && "html" in shown ? (
+        <HtmlView workspaceId={workspaceId} path={path} reloadKey={reloads} onError={onViewError} />
+      ) : shown && "sheets" in shown ? (
+        <SheetView sheets={shown.sheets} />
+      ) : shown && "word" in shown ? (
+        <WordView html={shown.word} />
       ) : shown && "image" in shown ? (
         <div className="min-h-0 flex-1 overflow-auto p-4">
           <img className="max-w-full rounded-md" src={shown.image} alt={name} data-testid="file-image" />
@@ -362,9 +411,7 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
       ) : shown ? (
         <FileText text={shown.text.content} />
       ) : (
-        <p className="text-muted-foreground flex items-center gap-1.5 p-4 text-xs">
-          <Loader2 className="size-3 animate-spin" /> Opening…
-        </p>
+        <PreviewLoading />
       )}
     </div>
   );

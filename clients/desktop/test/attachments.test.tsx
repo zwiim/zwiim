@@ -14,14 +14,14 @@ import { EMPTY_PENDING, needsUpload, pendingReducer, type PendingState } from "@
 import { UPLOAD_FAILED_MESSAGE } from "@/attachments/usePendingAttachments";
 import { FileLinksContext, type FileLinks } from "@/components/Markdown";
 import { HostProvider } from "@/lib/host-context";
-import { FileView, previewOf } from "@/panels/FilesPanel";
+import { FileView } from "@/panels/FilesPanel";
 import { SessionPanel } from "@/panels/SessionPanel";
 import { FakeTransport, hostHello, tick } from "./fakes";
 
 const opened = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/bridge", async (original) => ({
   ...(await original<typeof import("@/lib/bridge")>()),
-  openDownload: opened,
+  openFileBytes: opened,
 }));
 
 afterEach(() => {
@@ -253,40 +253,33 @@ async function mountFile(t: FakeTransport, path: string) {
 }
 
 describe("file view", () => {
-  it("sorts files into text, image and opened elsewhere", () => {
-    expect(previewOf("a/notes.md")).toBe("text");
-    expect(previewOf("data.csv")).toBe("text");
-    expect(previewOf("page.html")).toBe("text");
-    expect(previewOf("shot.PNG")).toBe("image");
-    for (const p of ["spec.pdf", "data.xlsx", "old.xls", "memo.docx", "deck.pptx", "bundle.zip"]) {
-      expect(previewOf(p)).toBe("none");
-    }
-  });
-
-  it("opens a PDF in its own app instead of reading it as text", async () => {
+  it("opens a file with no preview in its own app, in ranges", async () => {
     const t = new FakeTransport();
-    t.handlers["files.download"] = () => ({ name: "spec.pdf", mime_type: "application/pdf", size: 4, data: "JVBERg==" });
-    const controller = await mountFile(t, ".zwiim/attachments/a1/spec.pdf");
-    expect(screen.getByTestId("file-no-preview").textContent).toContain("spec.pdf");
-    expect(t.calls.some((c) => c.op === "files.read")).toBe(false);
+    t.handlers["files.download"] = (p) => ({ name: "deck.pptx", mime_type: "application/octet-stream", size: 4, offset: p.offset, data: "UEsDBA==" });
+    const controller = await mountFile(t, ".zwiim/attachments/a1/deck.pptx");
+    expect(screen.getByTestId("file-no-preview").textContent).toContain("deck.pptx");
+    expect(t.calls.some((c) => c.op === "files.read" || c.op === "files.download")).toBe(false);
     fireEvent.click(within(screen.getByTestId("file-no-preview")).getByRole("button", { name: /Open in default app/ }));
     await tick();
     expect(t.calls.find((c) => c.op === "files.download")!.params).toEqual({
-      workspace_id: "w1",
-      path: ".zwiim/attachments/a1/spec.pdf",
+      workspace_id: "w1", path: ".zwiim/attachments/a1/deck.pptx", offset: 0, length: 4 * 1024 * 1024,
     });
-    expect(opened).toHaveBeenCalledWith({ name: "spec.pdf", mime_type: "application/pdf", size: 4, data: "JVBERg==" });
+    const [name, mime, chunks] = opened.mock.calls[0]!;
+    expect([name, mime]).toEqual(["deck.pptx", "application/octet-stream"]);
+    const got: Uint8Array[] = [];
+    for await (const c of chunks) got.push(c);
+    expect(got).toEqual([new Uint8Array([0x50, 0x4b, 0x03, 0x04])]);
     controller.dispose();
   });
 
   it("shows an image, and offers its own app when text cannot be shown", async () => {
     const t = new FakeTransport();
-    t.handlers["files.download"] = () => ({ name: "shot.png", mime_type: "image/png", size: 4, data: "iVBORw==" });
+    t.handlers["files.download"] = (p) => ({ name: "shot.png", mime_type: "image/png", size: 4, offset: p.offset, data: "iVBORw==" });
     t.handlers["files.read"] = () => {
       throw new ZwiimClientError("invalid_request", "Binary files are not supported in preview", 400);
     };
     let controller = await mountFile(t, "shot.png");
-    expect(screen.getByTestId("file-image").getAttribute("src")).toBe("data:image/png;base64,iVBORw==");
+    expect(screen.getByTestId("file-image").getAttribute("src")).toMatch(/^blob:/);
     controller.dispose();
     cleanup();
 

@@ -1,10 +1,10 @@
 //! Open a workspace file in the default app for its type. The Host may be on
-//! another computer, so the Desktop gets the bytes (`files.download`), keeps
-//! them in a temporary folder, and asks the OS to open that copy.
+//! another computer, so the Desktop gets the bytes (`files.download`, in
+//! ranges), writes them piece by piece to a temporary folder, and asks the OS
+//! to open that copy.
 
 use std::path::{Path, PathBuf};
 
-use base64::Engine;
 use rand::{distributions::Alphanumeric, Rng};
 
 /// Documents, media and data the OS hands to a viewer. Anything else, a
@@ -60,18 +60,64 @@ fn open_path(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("Cannot open the file: {e}"))
 }
 
-/// Open `name` (its bytes as standard base64) in the default app for its type.
-#[tauri::command]
-pub fn open_download(name: String, data: String) -> Result<(), String> {
-    let name = clean_name(&name).ok_or("That file name cannot be opened")?;
-    if !is_openable(name) {
-        return Err(format!("Zwiim does not open {name} outside the app, because it could run a program."));
+/// Files being written piece by piece before they open, by token.
+#[derive(Default)]
+pub struct Downloads(std::sync::Mutex<std::collections::HashMap<String, (PathBuf, std::fs::File)>>);
+
+impl Downloads {
+    fn begin_in(&self, dir: &Path, name: &str) -> Result<String, String> {
+        let name = clean_name(name).ok_or("That file name cannot be opened")?;
+        if !is_openable(name) {
+            return Err(format!("Zwiim does not open {name} outside the app, because it could run a program."));
+        }
+        let path = write_copy(dir, name, &[])?;
+        let file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .map_err(|e| format!("Cannot save a copy to open: {e}"))?;
+        let token: String = rand::thread_rng().sample_iter(&Alphanumeric).take(24).map(char::from).collect();
+        self.0.lock().unwrap().insert(token.clone(), (path, file));
+        Ok(token)
     }
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(data.as_bytes())
-        .map_err(|_| "The file's contents were damaged on the way")?;
-    let path = write_copy(&std::env::temp_dir().join("zwiim-downloads"), name, &bytes)?;
-    open_path(&path)
+
+    fn append(&self, token: &str, bytes: &[u8]) -> Result<(), String> {
+        use std::io::Write as _;
+        let mut open = self.0.lock().unwrap();
+        let (_, file) = open.get_mut(token).ok_or("That download has ended")?;
+        file.write_all(bytes).map_err(|e| format!("Cannot save a copy to open: {e}"))
+    }
+
+    fn finish(&self, token: &str) -> Result<PathBuf, String> {
+        let (path, file) = self.0.lock().unwrap().remove(token).ok_or("That download has ended")?;
+        file.sync_all().map_err(|e| format!("Cannot save a copy to open: {e}"))?;
+        Ok(path)
+    }
+}
+
+/// Start writing `name` to a temporary folder; append its bytes, then open it.
+#[tauri::command]
+pub fn download_begin(downloads: tauri::State<'_, Downloads>, name: String) -> Result<String, String> {
+    downloads.begin_in(&std::env::temp_dir().join("zwiim-downloads"), &name)
+}
+
+/// The next bytes of a download: the raw request body, its token in `x-download`.
+#[tauri::command]
+pub fn download_append(downloads: tauri::State<'_, Downloads>, request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let token = request
+        .headers()
+        .get("x-download")
+        .and_then(|v| v.to_str().ok())
+        .ok_or("Missing download token")?;
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("Expected file bytes".into());
+    };
+    downloads.append(token, bytes)
+}
+
+/// Open a finished download in the default app for its type.
+#[tauri::command]
+pub fn download_open(downloads: tauri::State<'_, Downloads>, token: String) -> Result<(), String> {
+    open_path(&downloads.finish(&token)?)
 }
 
 #[cfg(test)]
@@ -109,8 +155,26 @@ mod tests {
     }
 
     #[test]
-    fn refuses_a_script_before_writing_it() {
-        let err = open_download("run.command".into(), "ZWNobw==".into()).unwrap_err();
+    fn a_download_is_written_in_pieces() {
+        let dir = tempfile::tempdir().unwrap();
+        let downloads = Downloads::default();
+        let token = downloads.begin_in(dir.path(), "report.pdf").unwrap();
+        downloads.append(&token, b"%PDF").unwrap();
+        downloads.append(&token, b"-1.7").unwrap();
+        let path = downloads.finish(&token).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"%PDF-1.7");
+        assert_eq!(path.file_name().unwrap(), "report.pdf");
+        assert!(downloads.append(&token, b"x").is_err(), "a finished download takes no more bytes");
+    }
+
+    #[test]
+    fn a_download_refuses_names_it_would_not_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let downloads = Downloads::default();
+        let err = downloads.begin_in(dir.path(), "run.sh").unwrap_err();
         assert!(err.contains("could run a program"), "{err}");
+        assert!(downloads.begin_in(dir.path(), "..").is_err());
+        assert!(downloads.append("nope", b"x").is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "nothing written for a refused name");
     }
 }

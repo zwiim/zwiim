@@ -76,6 +76,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck --workspace clients/sdk
       - run: npm test --workspace clients/sdk
+      - run: npm run typecheck --workspace clients/preview
+      - run: npm test --workspace clients/preview
       - run: npm run typecheck --workspace clients/desktop
       - run: npm test --workspace clients/desktop
       - run: npm run build --workspace clients/desktop
