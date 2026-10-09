@@ -143,6 +143,24 @@ pub async fn resolve_readable(
     }
 }
 
+/// The host path of a live root workspace named by `workspace_id`, for
+/// `workspace.add` / `workspace.inspect` to re-open by id instead of a host
+/// path. A worktree id refuses with `invalid_input` (the Host already knows
+/// its path; publishing applies to the root); an unknown or removed id with
+/// `not_found`.
+pub async fn root_path(
+    conn: &DatabaseConnection,
+    workspace_id: &str,
+) -> Result<String, ZwiimError> {
+    match find(conn, workspace_id).await? {
+        Some(row) if row.deleted_at.is_none() && row.parent_id.is_none() => Ok(row.path),
+        Some(row) if row.deleted_at.is_none() || is_removed_worktree(&row) => Err(
+            ZwiimError::invalid_input("Choose a repository, not a worktree"),
+        ),
+        _ => Err(not_found(workspace_id).into()),
+    }
+}
+
 /// The `workspace_id` of Folder row `folder_id`, if it is a live user-facing
 /// workspace.
 pub async fn workspace_id_of(
@@ -429,8 +447,9 @@ pub(crate) async fn canonical_for_add(db: &AppDatabase, path: &str) -> Result<Pa
 /// Register the host directory `path` as a workspace through the existing
 /// open-folder path. Re-adding a known (or previously removed) directory
 /// revives its row, which keeps its original `workspace_id`. A folder with no
-/// `.git` is first made a repository with one "Initial Commit"; if that commit
-/// would be large it is refused with `large_folder` unless `allow_large`.
+/// `.git` is first made a repository with one "Initial Commit", and a
+/// repository with no commit yet gets that commit; if it would be large it is
+/// refused with `large_folder` unless `allow_large`.
 /// `publish`: also create a private GitHub repository, set it as `origin`
 /// and push, before registering.
 pub async fn add(
@@ -468,10 +487,11 @@ pub(crate) async fn repo_init_lock() -> tokio::sync::MutexGuard<'static, ()> {
 }
 
 /// Under the repository-init lock: make `canonical` a repository unless it
-/// already has `.git` (refusing a large first commit without `allow_large`;
-/// an init the Host stopped in is undone and redone), publish it when asked,
-/// then register it, undoing the init if registering fails (a repository
-/// `publish` already put on GitHub is never undone).
+/// already has `.git`, or give an unborn one its first commit (refusing a
+/// large first commit without `allow_large`; an init the Host stopped in is
+/// undone and redone), publish it when asked, then register it, undoing what
+/// this call made if registering fails (a repository `publish` already put on
+/// GitHub is never undone).
 async fn init_and_register(
     db: &AppDatabase,
     emitter: &EventEmitter,
@@ -497,9 +517,8 @@ async fn init_and_register(
         }
         None => None,
     };
-    let mut created = if had_git {
-        None
-    } else {
+    let unborn = had_git && repo_init::is_unborn(&canonical, &[]).await;
+    if !had_git || unborn {
         let dir = canonical.clone();
         let size = tokio::task::spawn_blocking(move || repo_init::measure_first_commit(&dir))
             .await
@@ -514,19 +533,34 @@ async fn init_and_register(
                 size.at_least,
             ));
         }
-        let made = match &identity {
+    }
+    let mut made = if !had_git {
+        let created = match &identity {
             Some(identity) => repo_init::init_published_repository(&canonical, identity).await,
             None => repo_init::init_repository(&canonical).await,
         };
-        made.map_err(|e| {
-            tracing::warn!("[workspace] making a Git repository failed: {e}");
-            ZwiimError::repository_init_failed()
-        })?
+        created
+            .map_err(|e| {
+                tracing::warn!("[workspace] making a Git repository failed: {e}");
+                ZwiimError::repository_init_failed()
+            })?
+            .map(repo_init::Made::Repository)
+    } else if unborn {
+        Some(repo_init::Made::FirstCommit(
+            repo_init::commit_unborn(&canonical, &[], identity.as_ref())
+                .await
+                .map_err(|e| {
+                    tracing::warn!("[workspace] the first commit failed: {e}");
+                    ZwiimError::repository_init_failed()
+                })?,
+        ))
+    } else {
+        None
     };
     if let (Some(p), Some(identity)) = (&publish, &identity) {
-        publish::publish(&canonical, p, identity, created).await?;
-        // On GitHub now: a registration failure must not delete it.
-        created = None;
+        // On GitHub once this succeeds: a registration failure must not
+        // undo it.
+        publish::publish(&canonical, p, identity, made.take()).await?;
     }
 
     match register(db, repo).await {
@@ -535,8 +569,8 @@ async fn init_and_register(
             Ok(info(&db.conn, row).await?)
         }
         Err(e) => {
-            if let Some(created) = created {
-                repo_init::rollback(&canonical, created).await;
+            if let Some(m) = made {
+                m.undo(&canonical).await;
             }
             Err(e.into())
         }
@@ -2367,7 +2401,10 @@ mod tests {
         assert_eq!(in_root.code, "root_workspace");
 
         // Only the worktree's agent ever ran; the root is refused, never launched.
-        assert_eq!(*launcher.working_dirs.lock().unwrap(), vec![wt.path.clone()]);
+        assert_eq!(
+            *launcher.working_dirs.lock().unwrap(),
+            vec![wt.path.clone()]
+        );
         // And the session is listed under the workspace it was started in.
         let listed = |wid: String| {
             let (db, mgr) = (&db, &mgr);

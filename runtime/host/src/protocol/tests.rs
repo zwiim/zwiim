@@ -149,9 +149,20 @@ pub(crate) async fn host_with_gh(http_transport: bool, body: Option<&str>) -> Ho
     let wt_dir = dir.path().join("wt");
     git(
         &repo,
-        &["worktree", "add", "-q", "-b", "wt", wt_dir.to_str().unwrap()],
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "wt",
+            wt_dir.to_str().unwrap(),
+        ],
     );
-    let wt = wt_dir.canonicalize().unwrap().to_string_lossy().into_owned();
+    let wt = wt_dir
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
     let wt_folder_id = folder_service::add_folder_with_parent(&db.conn, &wt, Some(folder_id))
         .await
         .unwrap()
@@ -683,19 +694,160 @@ async fn inspect_validates_like_add() {
     );
 }
 
+/// A plain folder (no `.git`) already registered as a root workspace, as if
+/// a previous `workspace.list` had already listed it.
+async fn listed_plain_root(h: &Host, name: &str) -> String {
+    let folder = h._dir.path().join(name);
+    std::fs::create_dir(&folder).unwrap();
+    let canonical = folder
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let folder_id = seed_folder(&h.state.db, &canonical).await;
+    crate::workspace::workspace_id_of(&h.state.db.conn, folder_id)
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+/// A repository with no commit yet, already registered as a root workspace.
+async fn listed_unborn_root(h: &Host, name: &str) -> String {
+    let folder = unborn_repository(h, name);
+    let folder_id = seed_folder(&h.state.db, &folder.to_string_lossy()).await;
+    crate::workspace::workspace_id_of(&h.state.db.conn, folder_id)
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn inspect_and_add_by_workspace_id_for_a_listed_plain_root() {
+    let h = host_with_gh(false, Some(SIGNED_IN_GH)).await;
+    let workspace_id = listed_plain_root(&h, "plain").await;
+
+    let v = h
+        .ok("workspace.inspect", json!({ "workspace_id": workspace_id }))
+        .await;
+    assert_eq!(v["git"], "none");
+
+    let added = h
+        .ok(
+            "workspace.add",
+            json!({ "workspace_id": workspace_id, "publish": { "owner": "octo", "name": "plain" } }),
+        )
+        .await;
+    assert_eq!(added["is_git_repo"], true);
+    assert_eq!(added["workspace_id"], workspace_id);
+}
+
+#[tokio::test]
+async fn inspect_and_add_by_workspace_id_for_a_listed_unborn_root() {
+    let h = host_with_gh(false, Some(SIGNED_IN_GH)).await;
+    let workspace_id = listed_unborn_root(&h, "fresh2").await;
+
+    let v = h
+        .ok("workspace.inspect", json!({ "workspace_id": workspace_id }))
+        .await;
+    assert_eq!(v["git"], "no_origin");
+    assert_eq!(v["first_commit"]["files"], 1);
+
+    let added = h
+        .ok("workspace.add", json!({ "workspace_id": workspace_id }))
+        .await;
+    assert_eq!(added["is_git_repo"], true);
+    assert_eq!(added["workspace_id"], workspace_id);
+}
+
+#[tokio::test]
+async fn inspect_and_add_by_workspace_id_refuse_a_worktree() {
+    let h = host(false).await;
+    for op in ["workspace.inspect", "workspace.add"] {
+        assert_eq!(
+            h.err(op, json!({ "workspace_id": h.wt_workspace_id }))
+                .await,
+            (StatusCode::BAD_REQUEST, "invalid_input".into()),
+            "{op}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn inspect_and_add_by_workspace_id_rejects_an_unknown_id() {
+    let h = host(false).await;
+    for op in ["workspace.inspect", "workspace.add"] {
+        assert_eq!(
+            h.err(op, json!({ "workspace_id": "nope" })).await,
+            (StatusCode::NOT_FOUND, "not_found".into()),
+            "{op}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn inspect_and_add_refuse_path_with_workspace_id() {
+    let h = host(false).await;
+    for op in ["workspace.inspect", "workspace.add"] {
+        assert_eq!(
+            h.err(
+                op,
+                json!({ "path": h.root, "workspace_id": h.workspace_id }),
+            )
+            .await,
+            (StatusCode::BAD_REQUEST, "invalid_input".into()),
+            "{op}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn inspect_and_add_by_workspace_id_allowed_for_a_paired_device() {
+    let h = host(false).await;
+    let workspace_id = listed_plain_root(&h, "plain-device").await;
+    let credential = bearer_device(&h, "dev-1").await;
+
+    let res = h
+        .server
+        .post("/zwiim/v1/workspace.inspect")
+        .authorization_bearer(&credential)
+        .json(&json!({ "workspace_id": workspace_id }))
+        .await;
+    assert_eq!(res.status_code(), StatusCode::OK);
+    let body: Value = res.json();
+    assert_eq!(body["git"], "none");
+}
+
 #[tokio::test]
 async fn repo_available_checks_the_name_on_github() {
     let h = host_with_gh(false, Some(SIGNED_IN_GH)).await;
-    let v = h.ok("github.repo_available", json!({ "owner": "octo", "name": "free" })).await;
+    let v = h
+        .ok(
+            "github.repo_available",
+            json!({ "owner": "octo", "name": "free" }),
+        )
+        .await;
     assert_eq!(v, json!({ "available": true }));
-    let v = h.ok("github.repo_available", json!({ "owner": "octo", "name": "taken" })).await;
+    let v = h
+        .ok(
+            "github.repo_available",
+            json!({ "owner": "octo", "name": "taken" }),
+        )
+        .await;
     assert_eq!(v, json!({ "available": false }));
     assert_eq!(
-        h.err("github.repo_available", json!({ "owner": "octo", "name": "a b" })).await,
+        h.err(
+            "github.repo_available",
+            json!({ "owner": "octo", "name": "a b" })
+        )
+        .await,
         (StatusCode::BAD_REQUEST, "invalid_input".into())
     );
     assert_eq!(
-        h.err("github.repo_available", json!({ "owner": "--x", "name": "a" })).await,
+        h.err(
+            "github.repo_available",
+            json!({ "owner": "--x", "name": "a" })
+        )
+        .await,
         (StatusCode::BAD_REQUEST, "invalid_input".into())
     );
 }
@@ -704,7 +856,11 @@ async fn repo_available_checks_the_name_on_github() {
 async fn repo_available_without_gh_is_gh_unavailable() {
     let h = host(false).await;
     assert_eq!(
-        h.err("github.repo_available", json!({ "owner": "octo", "name": "a" })).await,
+        h.err(
+            "github.repo_available",
+            json!({ "owner": "octo", "name": "a" })
+        )
+        .await,
         (StatusCode::UNPROCESSABLE_ENTITY, "gh_unavailable".into())
     );
 }
@@ -793,6 +949,39 @@ async fn add_publishes_a_repository_on_another_branch() {
         out(&folder, &["config", "--local", "user.name"]),
         "Octo Cat"
     );
+    let wid = v["workspace_id"].as_str().unwrap();
+    h.ok("workspace.create_worktree", json!({ "workspace_id": wid }))
+        .await;
+}
+
+#[tokio::test]
+async fn workspace_add_publish_sets_origin_head_without_a_tracking_ref() {
+    // The push lands (so `gh` sees success) but by URL, not through the
+    // `origin` remote with `-u`: no `refs/remotes/origin/main` for `git
+    // remote set-head` to read, so it fails and the fallback must record
+    // the branch itself.
+    let gh = SIGNED_IN_GH.replace(
+        "git -C \"$src\" push -q -u origin HEAD",
+        "git -C \"$src\" push -q '{bare}' HEAD",
+    );
+    let h = host_with_gh(false, Some(&gh)).await;
+    let folder = plain_folder(&h, "app");
+    let v = h
+        .ok(
+            "workspace.add",
+            json!({ "path": folder, "publish": { "owner": "octo", "name": "app" } }),
+        )
+        .await;
+    assert_eq!(
+        out(&folder, &["symbolic-ref", "refs/remotes/origin/HEAD"]),
+        "refs/remotes/origin/main"
+    );
+    assert_eq!(
+        out(&folder, &["rev-parse", "refs/remotes/origin/main"]),
+        out(&folder, &["rev-parse", "HEAD"])
+    );
+    // Raise PR's precondition still holds: the first worktree branches from
+    // origin.
     let wid = v["workspace_id"].as_str().unwrap();
     h.ok("workspace.create_worktree", json!({ "workspace_id": wid }))
         .await;
@@ -1119,6 +1308,8 @@ async fn workspace_add_never_asks_for_a_folder_that_has_git() {
     let dir = h._dir.path().join("bigrepo");
     std::fs::create_dir(&dir).unwrap();
     git(&dir, &["init", "-q", "-b", "main"]);
+    // With a commit: an unborn repository is measured (D12).
+    git(&dir, &["commit", "-q", "--allow-empty", "-m", "mine"]);
     for i in 0..5_001 {
         std::fs::write(dir.join(format!("f{i}")), "").unwrap();
     }
@@ -1126,6 +1317,163 @@ async fn workspace_add_never_asks_for_a_folder_that_has_git() {
     let added = h.ok("workspace.add", json!({"path": path})).await;
     assert_eq!(added["is_git_repo"], true);
     assert!(!dir.join(".gitignore").exists());
+}
+
+/// A repository on `trunk` with no commit yet and one file in it.
+fn unborn_repository(h: &Host, name: &str) -> std::path::PathBuf {
+    let folder = h._dir.path().join(name);
+    std::fs::create_dir(&folder).unwrap();
+    git(&folder, &["init", "-q", "-b", "trunk"]);
+    std::fs::write(folder.join("a.txt"), "a").unwrap();
+    folder.canonicalize().unwrap()
+}
+
+#[tokio::test]
+async fn workspace_inspect_reads_an_unborn_repository() {
+    let h = host_with_gh(false, Some(SIGNED_IN_GH)).await;
+    let folder = unborn_repository(&h, "fresh");
+    let v = h.ok("workspace.inspect", json!({ "path": folder })).await;
+    assert_eq!(v["git"], "no_origin");
+    assert_eq!(v["branch"], "trunk");
+    assert_eq!(v["first_commit"]["files"], 1);
+    assert_eq!(v["first_commit"]["large"], false);
+    assert_eq!(v["github"]["available"], true);
+    assert!(
+        !folder.join(".gitignore").exists(),
+        "inspect touches nothing"
+    );
+}
+
+#[tokio::test]
+async fn workspace_add_measures_an_unborn_repository() {
+    let h = host(false).await;
+    let folder = unborn_repository(&h, "bigfresh");
+    for i in 0..5_001 {
+        std::fs::write(folder.join(format!("f{i}")), "").unwrap();
+    }
+    let (status, code, details) = h
+        .err_details("workspace.add", json!({ "path": folder }))
+        .await;
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::CONFLICT, "large_folder")
+    );
+    assert_eq!(details.expect("details")["at_least"], true);
+    assert!(!folder.join(".gitignore").exists());
+    assert_eq!(out(&folder, &["rev-parse", "-q", "--verify", "HEAD"]), "");
+    let list = h.ok("workspace.list", json!({})).await;
+    assert_eq!(list.as_array().unwrap().len(), 2, "nothing registered");
+}
+
+#[tokio::test]
+async fn workspace_add_commits_an_unborn_repository() {
+    let h = host(false).await;
+    let folder = unborn_repository(&h, "fresh");
+    let added = h.ok("workspace.add", json!({ "path": folder })).await;
+    assert_eq!(added["is_git_repo"], true);
+    assert_eq!(
+        git_out(&folder, &["log", "--format=%s", "trunk"]),
+        "Initial Commit"
+    );
+    assert_eq!(git_out(&folder, &["branch", "--show-current"]), "trunk");
+    assert_eq!(
+        git_out(&folder, &["ls-tree", "-r", "--name-only", "HEAD"]),
+        ".gitignore\na.txt"
+    );
+    assert_eq!(out(&folder, &["remote"]), "");
+    // A worktree can be made from it now.
+    h.ok(
+        "workspace.create_worktree",
+        json!({ "workspace_id": added["workspace_id"] }),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn workspace_add_commits_and_publishes_an_unborn_repository() {
+    let h = host_with_gh(false, Some(SIGNED_IN_GH)).await;
+    let folder = unborn_repository(&h, "fresh");
+    std::fs::write(folder.join(".env"), "SECRET=1").unwrap();
+    h.ok(
+        "workspace.add",
+        json!({ "path": folder, "publish": { "owner": "octo", "name": "fresh" } }),
+    )
+    .await;
+    assert_eq!(
+        git_out(&folder, &["log", "--format=%s", "trunk"]),
+        "Initial Commit"
+    );
+    assert_eq!(out(&folder, &["remote"]), "origin");
+    assert_eq!(
+        out(&folder, &["log", "-1", "--format=%ae"]),
+        "42+octo@users.noreply.github.com"
+    );
+    assert_eq!(
+        out(&h.bare, &["log", "--format=%s", "trunk"]),
+        "Initial Commit"
+    );
+    let pushed = out(&h.bare, &["ls-tree", "-r", "--name-only", "trunk"]);
+    assert_eq!(pushed.lines().collect::<Vec<_>>(), [".gitignore", "a.txt"]);
+}
+
+#[tokio::test]
+async fn workspace_add_failed_publish_restores_an_unborn_repository() {
+    // gh adds `origin` and pushes with `-u` before it fails.
+    let gh = SIGNED_IN_GH.replace(
+        "push -q -u origin HEAD;;",
+        "push -q -u origin HEAD; echo 'GraphQL: Something went wrong' >&2; exit 1;;",
+    );
+    let h = host_with_gh(false, Some(&gh)).await;
+    let folder = unborn_repository(&h, "fresh");
+    git(&folder, &["add", "a.txt"]);
+    std::fs::write(folder.join(".git/zwiim-sentinel"), "mine").unwrap();
+    let exclude = std::fs::read(folder.join(".git/info/exclude")).ok();
+    let (_status, code, _details) = h
+        .err_details(
+            "workspace.add",
+            json!({ "path": folder, "publish": { "owner": "octo", "name": "fresh" } }),
+        )
+        .await;
+    assert_eq!(code, "publish_failed");
+    assert_eq!(out(&folder, &["rev-parse", "-q", "--verify", "HEAD"]), "");
+    assert_eq!(out(&folder, &["symbolic-ref", "HEAD"]), "refs/heads/trunk");
+    assert_eq!(out(&folder, &["diff", "--cached", "--name-only"]), "a.txt");
+    assert_eq!(
+        std::fs::read_to_string(folder.join(".git/zwiim-sentinel")).unwrap(),
+        "mine"
+    );
+    assert!(!folder.join(".gitignore").exists());
+    assert_eq!(out(&folder, &["remote"]), "");
+    assert_eq!(
+        out(
+            &folder,
+            &["config", "--local", "--get-regexp", "^branch\\."]
+        ),
+        ""
+    );
+    assert_eq!(
+        std::fs::read(folder.join(".git/info/exclude")).ok(),
+        exclude
+    );
+    assert_eq!(out(&folder, &["config", "--local", "user.email"]), "");
+    let list = h.ok("workspace.list", json!({})).await;
+    assert!(!list.to_string().contains("\"fresh\""), "{list}");
+}
+
+#[tokio::test]
+async fn workspace_add_registers_an_orphan_branch_without_a_commit() {
+    let h = host(false).await;
+    let folder = h._dir.path().join("pages");
+    std::fs::create_dir(&folder).unwrap();
+    git(&folder, &["init", "-q", "-b", "main"]);
+    git(&folder, &["commit", "-q", "--allow-empty", "-m", "base"]);
+    git(&folder, &["checkout", "-q", "--orphan", "gh-pages"]);
+    std::fs::write(folder.join("a.txt"), "a").unwrap();
+    let added = h.ok("workspace.add", json!({ "path": folder })).await;
+    assert_eq!(added["is_git_repo"], true);
+    assert_eq!(git_out(&folder, &["log", "--all", "--format=%s"]), "base");
+    assert_eq!(out(&folder, &["rev-parse", "-q", "--verify", "HEAD"]), "");
+    assert!(!folder.join(".gitignore").exists());
 }
 
 #[tokio::test]
@@ -1296,8 +1644,11 @@ async fn a_plain_folder_is_a_full_workspace_without_git() {
 
     // A terminal never starts in a root workspace, plain or git.
     assert_eq!(
-        h.err("terminal.spawn", json!({"workspace_id": wid, "shell": "/bin/sh"}))
-            .await,
+        h.err(
+            "terminal.spawn",
+            json!({"workspace_id": wid, "shell": "/bin/sh"})
+        )
+        .await,
         (StatusCode::CONFLICT, "root_workspace".into())
     );
 

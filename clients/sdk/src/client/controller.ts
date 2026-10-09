@@ -214,6 +214,22 @@ export class HostController {
     return workspace;
   }
 
+  /** `inspectWorkspace`, for a root already listed (§3.8): a plain folder left by part 1's sweep (too large to initialize), or an unborn repository. */
+  async inspectRoot(workspace_id: string): Promise<WorkspaceInspection> {
+    return this.client.request("workspace.inspect", { workspace_id });
+  }
+
+  /** `addWorkspace`, for a root already listed (§3.8): revives the same row and returns it. */
+  async addRoot(workspace_id: string, opts: AddOptions = {}): Promise<WorkspaceInfo> {
+    const workspace = await this.client.request(
+      "workspace.add",
+      { workspace_id, ...addParams(opts) },
+      opts.publish ? { timeoutMs: PUBLISH_TIMEOUT_MS } : undefined,
+    );
+    this.store.dispatch({ type: "workspace_added", workspace });
+    return workspace;
+  }
+
   /**
    * Create a worktree of a root workspace, starting from branch `base` (one
    * of `git.branches`) or else the root's HEAD; the host picks branch and path.

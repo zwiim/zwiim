@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CLIENT_REVISION, HostClient, HostController, ZwiimClientError, type WorkspaceInfo } from "@zwiim/sdk";
+import { CLIENT_CAPABILITIES, CLIENT_REVISION, HostClient, HostController, ZwiimClientError, type WorkspaceInfo } from "@zwiim/sdk";
 import { Workbench } from "@/App";
 import { bootHost, type BootPhase } from "@/lib/boot";
 import type { DiscoveredHost, NativeBridge } from "@/lib/bridge";
@@ -162,8 +163,11 @@ describe("agent picker", () => {
 });
 
 describe("workbench", () => {
+  /** Root workspaces a click selects: a Host from before publishing (a root's click opens a worktree since, in publish.test). */
   function workbenchHost() {
     const t = new FakeTransport();
+    t.handlers["host.hello"] = () =>
+      hostHello({ capabilities: CLIENT_CAPABILITIES.filter((c) => c !== "workspace.publish") });
     t.handlers["workspace.list"] = () => [ws("w1"), ws("w2")];
     t.handlers["session.list"] = (p) =>
       p.workspace_id === "w2"
@@ -307,6 +311,19 @@ describe("workbench", () => {
     c.dispose();
   });
 
+  it("keeps a root's sessions writable on a Host from before publishing", async () => {
+    const t = workbenchHost();
+    const c = await mount(t, <Workbench bridge={bridge()} />);
+    fireEvent.click(screen.getByText("repo-w2"));
+    await tick();
+    expect(screen.getByPlaceholderText("Send a message")).toBeTruthy();
+    expect(screen.queryByTestId("root-banner")).toBeNull();
+    expect(screen.queryByText("This session ran in the repository folder.")).toBeNull();
+    expect(screen.getByTestId("sidebar").textContent).not.toContain("earlier session");
+    expect(screen.getByTestId("workspace-panel")).toBeTruthy();
+    c.dispose();
+  });
+
   it("deletes a session from its tab, then shows the tab beside it", async () => {
     const t = workbenchHost();
     const session = (session_id: string, title: string) => ({
@@ -421,6 +438,258 @@ describe("workbench", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("start on a current Host", () => {
+  const worktree = (id: string, root: string): WorkspaceInfo => ({
+    ...ws(id),
+    kind: "worktree",
+    parent_workspace_id: root,
+    branch: `zwiim/${id}`,
+  });
+  const session = (id: string, updated_at: string) => ({
+    session_id: id,
+    workspace_id: null,
+    title: `task ${id}`,
+    agent: "claude_code",
+    status: "pending_review",
+    live: false,
+    created_at: "",
+    updated_at,
+  });
+
+  /**
+   * A Host with publishing (every capability), by default root r1 with no
+   * worktree and root r2 with worktrees t1 and t2 (t2's session prompted last).
+   */
+  function currentHost(workspaces: WorkspaceInfo[] = [ws("r1"), ws("r2"), worktree("t1", "r2"), worktree("t2", "r2")]) {
+    const t = new FakeTransport();
+    t.handlers["workspace.list"] = () => workspaces;
+    t.handlers["session.list"] = (p) =>
+      p.workspace_id === "t1"
+        ? [session("s1", "2026-10-01T00:00:00Z")]
+        : p.workspace_id === "t2"
+          ? [session("s2", "2026-10-02T00:00:00Z")]
+          : p.workspace_id === "r2"
+            ? [session("s0", "2026-10-03T00:00:00Z")]
+            : [];
+    t.handlers["workspace.tree"] = () => [];
+    t.handlers["git.status"] = () => ({ branch: null, upstream: null, ahead: 0, behind: 0, files: [] });
+    return t;
+  }
+
+  const shown = () => JSON.parse(window.localStorage.getItem("zwiim.desktop.last.h1")!);
+  const selected = () => screen.queryAllByRole("button", { current: true }).map((b) => b.textContent);
+  /** Nothing the start does creates a worktree or reads a root to make one. */
+  const created = (t: FakeTransport) =>
+    t.calls.filter((x) => x.op === "workspace.create_worktree" || x.op === "workspace.inspect");
+
+  it("replaces a remembered root by its open target worktree", async () => {
+    rememberSelection("h1", { workspaceId: "r2", sessionId: "s0" });
+    const t = currentHost();
+    const c = await mount(t, <Workbench bridge={bridge()} />);
+    expect(shown()).toEqual({ workspaceId: "t2", sessionId: "s2" });
+    expect(selected()).toEqual(["zwiim/t2"]);
+    expect(created(t)).toEqual([]);
+    c.dispose();
+  });
+
+  it("shows nothing for a remembered root without a worktree", async () => {
+    rememberSelection("h1", { workspaceId: "r1", sessionId: null });
+    const t = currentHost();
+    const c = await mount(t, <Workbench bridge={bridge()} />);
+    expect(shown()).toEqual({ workspaceId: null, sessionId: null });
+    expect(selected()).toEqual([]);
+    expect(screen.getByText("Pick a repository to open a worktree.")).toBeTruthy();
+    expect(screen.queryByText("No workspace yet")).toBeNull();
+    // Another client's change does not pick one either.
+    await t.feedEvent("workspace.changed", { workspace: ws("r3") });
+    expect(selected()).toEqual([]);
+    expect(created(t)).toEqual([]);
+    c.dispose();
+  });
+
+  it("with nothing remembered, opens the first root that has a worktree, never a root", async () => {
+    const t = currentHost();
+    const c = await mount(t, <Workbench bridge={bridge()} />);
+    expect(shown()).toEqual({ workspaceId: "t2", sessionId: "s2" });
+    expect(selected()).toEqual(["zwiim/t2"]);
+    expect(created(t)).toEqual([]);
+    c.dispose();
+  });
+
+  it("restores a remembered worktree and session as before", async () => {
+    rememberSelection("h1", { workspaceId: "t1", sessionId: "s1" });
+    const t = currentHost();
+    const c = await mount(t, <Workbench bridge={bridge()} />);
+    expect(shown()).toEqual({ workspaceId: "t1", sessionId: "s1" });
+    expect(t.sent).toContainEqual(expect.objectContaining({ op: "session.subscribe", session_id: "s1" }));
+    c.dispose();
+  });
+
+  it("shows the empty state when no root has a worktree, creating none", async () => {
+    const t = currentHost([ws("r1"), { ...ws("p1"), is_git_repo: false, branch: null }]);
+    const c = await mount(t, <Workbench bridge={bridge()} />);
+    expect(shown()).toEqual({ workspaceId: null, sessionId: null });
+    expect(selected()).toEqual([]);
+    // DESIGN.md's empty state: a headline, then one line.
+    const body = screen.getByText("Pick a repository to open a worktree.");
+    const headline = screen.getByText("No worktree open");
+    expect(headline.nextElementSibling).toBe(body);
+    expect(headline.className).toContain("font-semibold");
+    expect(created(t)).toEqual([]);
+    c.dispose();
+  });
+
+  it("with no workspaces at all, keeps the add-a-folder empty state", async () => {
+    const t = currentHost([]);
+    const c = await mount(t, <Workbench bridge={bridge()} />);
+    expect(screen.getByText("No workspace yet")).toBeTruthy();
+    expect(screen.queryByText("Pick a repository to open a worktree.")).toBeNull();
+    c.dispose();
+  });
+
+  it("opens the next root's worktree when the shown one leaves the host", async () => {
+    rememberSelection("h1", { workspaceId: "t1", sessionId: "s1" });
+    const t = currentHost();
+    const c = await mount(t, <Workbench bridge={bridge()} />);
+    await t.feedEvent("workspace.removed", { workspace_id: "t1" });
+    await tick();
+    expect(shown()).toEqual({ workspaceId: "t2", sessionId: "s2" });
+    await t.feedEvent("workspace.removed", { workspace_id: "t2" });
+    await tick();
+    expect(shown()).toEqual({ workspaceId: null, sessionId: null });
+    expect(selected()).toEqual([]);
+    expect(screen.getByText("Pick a repository to open a worktree.")).toBeTruthy();
+    c.dispose();
+  });
+
+  describe("sessions that ran in the repository folder", () => {
+    const tabs = () => screen.getByRole("navigation", { name: "Open tabs" });
+    const continueButton = () => screen.getByRole("button", { name: "Continue in a new worktree" });
+    const inspection = (git: "none" | "no_origin" | "origin") => ({
+      git,
+      branch: "main",
+      suggested_name: "repo-r2",
+      first_commit: git === "origin" ? null : { files: 3, bytes: 300, at_least: false, large: false },
+      github: { available: true, login: "me", owners: [{ login: "me", kind: "user" }] },
+    });
+    /** `currentHost`, reading r2 as `git` and creating worktree t3 for it. */
+    function continueHost(git: "none" | "no_origin" | "origin") {
+      const t = currentHost();
+      t.handlers["workspace.inspect"] = () => inspection(git);
+      t.handlers["workspace.create_worktree"] = () => worktree("t3", "r2");
+      t.handlers["github.repo_available"] = () => ({ available: true });
+      t.handlers["workspace.add"] = () => ws("r2");
+      return t;
+    }
+    /** Open r2's earlier sessions from its sidebar row. */
+    async function openEarlier() {
+      fireEvent.click(screen.getByRole("button", { name: "1 earlier session" }));
+      await tick();
+    }
+
+    it("opens read-only at the root's newest session: a banner, no new session, no Files or Terminal", async () => {
+      const t = continueHost("origin");
+      const c = await mount(t, <Workbench bridge={bridge()} />);
+      expect(screen.queryByTestId("root-banner")).toBeNull();
+      await openEarlier();
+      expect(shown()).toEqual({ workspaceId: "r2", sessionId: "s0" });
+      expect(screen.getByTestId("root-banner").textContent).toBe(
+        "These sessions ran in the repository folder — they're read-only.",
+      );
+      expect(within(tabs()).getByRole("button", { name: "task s0" }).getAttribute("aria-current")).toBe("page");
+      expect(within(tabs()).queryByRole("button", { name: "New session" })).toBeNull();
+      expect(screen.queryByTestId("workspace-panel")).toBeNull();
+      expect(screen.getByText("This session ran in the repository folder.")).toBeTruthy();
+      expect(screen.queryByPlaceholderText("Send a message")).toBeNull();
+      // Nothing was read or created just to show them.
+      expect(created(t)).toEqual([]);
+      c.dispose();
+    });
+
+    it("continues in a new worktree beside the existing ones, with an empty composer", async () => {
+      const t = continueHost("origin");
+      const c = await mount(t, <Workbench bridge={bridge()} />);
+      await openEarlier();
+      fireEvent.click(continueButton());
+      await tick();
+      expect(created(t).map((x) => [x.op, x.params])).toEqual([
+        ["workspace.inspect", { workspace_id: "r2" }],
+        ["workspace.create_worktree", { workspace_id: "r2" }],
+      ]);
+      expect(shown()).toEqual({ workspaceId: "t3", sessionId: null });
+      expect(screen.getByPlaceholderText(/^Describe the task/)).toBeTruthy();
+      expect(screen.queryByTestId("root-banner")).toBeNull();
+      expect(screen.getByTestId("workspace-panel")).toBeTruthy();
+      expect(t.calls.some((x) => x.op === "session.start")).toBe(false);
+      c.dispose();
+    });
+
+    it("asks before publishing a plain or unborn repository, then continues in the new worktree", async () => {
+      for (const git of ["none", "no_origin"] as const) {
+        const t = continueHost(git);
+        const c = await mount(t, <Workbench bridge={bridge()} />);
+        await openEarlier();
+        fireEvent.click(continueButton());
+        await tick();
+        expect(screen.getByRole("dialog", { name: "Create a private GitHub repo?" })).toBeTruthy();
+        expect(t.calls.some((x) => x.op === "workspace.create_worktree")).toBe(false);
+        // The name check fires 300 ms after the dialog opens.
+        await act(() => new Promise((resolve) => setTimeout(resolve, 350)));
+        await tick();
+        fireEvent.click(screen.getByRole("button", { name: /create repo/i }));
+        await tick();
+        expect(t.calls.filter((x) => x.op === "workspace.add").map((x) => x.params)).toEqual([
+          { workspace_id: "r2", publish: { owner: "me", name: "repo-r2" } },
+        ]);
+        expect(t.calls.filter((x) => x.op === "workspace.create_worktree").map((x) => x.params)).toEqual([
+          { workspace_id: "r2" },
+        ]);
+        expect(shown()).toEqual({ workspaceId: "t3", sessionId: null });
+        c.dispose();
+        cleanup();
+      }
+    });
+
+    it("shows the sidebar for a Continue made while it was hidden", async () => {
+      const t = continueHost("origin");
+      const c = await mount(t, <Workbench bridge={bridge()} />);
+      await openEarlier();
+      fireEvent.click(screen.getByTitle("Hide sidebar"));
+      fireEvent.click(continueButton());
+      await tick();
+      expect(screen.getByTestId("sidebar")).toBeTruthy();
+      expect(shown()).toEqual({ workspaceId: "t3", sessionId: null });
+      c.dispose();
+    });
+
+    it("makes one worktree per Continue, even with effects run twice", async () => {
+      const t = continueHost("origin");
+      let n = 3;
+      t.handlers["workspace.create_worktree"] = () => worktree(`t${n++}`, "r2");
+      const c = await mount(t, <StrictMode><Workbench bridge={bridge()} /></StrictMode>);
+      const continued = () => created(t).filter((x) => x.params.workspace_id === "r2").map((x) => x.op);
+      await openEarlier();
+      fireEvent.click(continueButton());
+      await tick();
+      expect(continued()).toEqual(["workspace.inspect", "workspace.create_worktree"]);
+      expect(shown()).toEqual({ workspaceId: "t3", sessionId: null });
+      // From a hidden sidebar, which mounts holding the request.
+      await openEarlier();
+      fireEvent.click(screen.getByTitle("Hide sidebar"));
+      fireEvent.click(continueButton());
+      await tick();
+      expect(continued()).toEqual([
+        "workspace.inspect",
+        "workspace.create_worktree",
+        "workspace.inspect",
+        "workspace.create_worktree",
+      ]);
+      expect(shown()).toEqual({ workspaceId: "t4", sessionId: null });
+      c.dispose();
+    });
   });
 });
 

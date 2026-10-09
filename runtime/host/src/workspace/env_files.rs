@@ -10,29 +10,35 @@ const MAX_ENV_FILE_BYTES: u64 = 1024 * 1024;
 /// `worktree`. Ignored directories (`node_modules/`) are not walked; an
 /// existing file is never overwritten; failures are logged and skipped.
 pub(super) async fn copy_env_files(root: &Path, worktree: &Path) {
-    let listed = crate::process::tokio_command("git")
-        .args([
-            "ls-files",
-            "-z",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "--directory",
-        ])
-        .current_dir(root)
-        .output()
-        .await;
+    let mut cmd = crate::process::tokio_command("git");
+    cmd.args([
+        "ls-files",
+        "-z",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "--directory",
+    ])
+    .current_dir(root)
+    .kill_on_drop(true);
+    // The user's Git config applies here too, so a hook could otherwise
+    // hang this indefinitely; time out like the other git steps.
+    let listed = tokio::time::timeout(super::repo_init::GIT_STEP_TIMEOUT, cmd.output()).await;
     let listing = match listed {
-        Ok(out) if out.status.success() => out.stdout,
-        Ok(out) => {
+        Ok(Ok(out)) if out.status.success() => out.stdout,
+        Ok(Ok(out)) => {
             tracing::warn!(
                 "[worktree] listing ignored files failed: {}",
                 String::from_utf8_lossy(&out.stderr).trim()
             );
             return;
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             tracing::warn!("[worktree] listing ignored files failed: {e}");
+            return;
+        }
+        Err(_) => {
+            tracing::warn!("[worktree] listing ignored files timed out");
             return;
         }
     };
@@ -97,14 +103,31 @@ fn copy_listed(root: &Path, worktree: &Path, listing: &[u8]) {
     }
 }
 
-/// Copy `from` to `inside/rel` unless something is there, refusing a parent
-/// that resolves outside `inside` (a tracked symlink).
+/// Copy `from` to `inside/rel` unless something is there. Refuses (skips)
+/// when the nearest existing ancestor of the target's parent, or the parent
+/// once created, resolves outside `inside` (a tracked symlink), so nothing is
+/// ever created through a symlink escaping the worktree.
 fn copy_one(from: &Path, inside: &Path, rel: &Path) -> std::io::Result<()> {
     let to: PathBuf = inside.join(rel);
     if std::fs::symlink_metadata(&to).is_ok() {
         return Ok(());
     }
     let parent = to.parent().unwrap_or(inside);
+    // Walk up to the nearest existing ancestor before creating anything: if
+    // that ancestor is a symlink resolving outside the worktree,
+    // `create_dir_all` would otherwise create directories through it,
+    // escaping the worktree before the existing-parent check below ever
+    // runs.
+    let mut ancestor = parent;
+    while !ancestor.exists() {
+        match ancestor.parent() {
+            Some(p) => ancestor = p,
+            None => return Ok(()),
+        }
+    }
+    if !ancestor.canonicalize()?.starts_with(inside) {
+        return Ok(());
+    }
     std::fs::create_dir_all(parent)?;
     if !parent.canonicalize()?.starts_with(inside) {
         return Ok(());
@@ -197,6 +220,63 @@ mod tests {
         assert!(std::fs::symlink_metadata(wt.join(".env.link")).is_err());
         // `linked/` in the worktree points outside it: nothing written there.
         assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
+    }
+
+    /// A real directory existed where the worktree's `linked/` is, at the
+    /// time `copy_env_files` starts walking it, then gets replaced by a
+    /// symlink escaping the worktree — e.g. a racing process, or a prior
+    /// partial checkout. The root has an ignored, *uncommitted* `linked/`
+    /// directory of its own (never tracked), so a nested `.env` under it is
+    /// reported as ignored by `git ls-files`, two levels deep, so that the
+    /// vulnerable `create_dir_all` has an intermediate parent to create.
+    #[tokio::test]
+    async fn refuses_a_worktree_parent_replaced_by_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join(".gitignore"), ".env*\n").unwrap();
+        std::fs::write(root.join("README"), "").unwrap();
+        git(&root, &["init", "-q", "-b", "main"]);
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-q", "-m", "base"]);
+
+        // `linked/` is never tracked or committed in root; only the nested
+        // `.env` inside it exists on disk, ignored by `.gitignore`.
+        std::fs::create_dir_all(root.join("linked/sub")).unwrap();
+        std::fs::write(root.join("linked/sub/.env"), "LEAK=1").unwrap();
+
+        // Verify git actually reports it as ignored before relying on that.
+        let listed = std::process::Command::new("git")
+            .args(["ls-files", "-o", "-i", "--exclude-standard"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        let listing = String::from_utf8_lossy(&listed.stdout).into_owned();
+        assert!(
+            listing.contains("linked/sub/.env"),
+            "git did not report linked/sub/.env as ignored: {listing:?}"
+        );
+
+        let wt = dir.path().join("wt");
+        git(
+            &root,
+            &["worktree", "add", "-q", "-b", "wt", wt.to_str().unwrap()],
+        );
+        // The worktree never checked out `linked/` (root never committed
+        // it). A real directory briefly exists there, then is replaced by a
+        // symlink escaping the worktree, before `copy_env_files` runs.
+        std::fs::create_dir(wt.join("linked")).unwrap();
+        std::fs::remove_dir(wt.join("linked")).unwrap();
+        std::os::unix::fs::symlink(&outside, wt.join("linked")).unwrap();
+
+        copy_env_files(&root, &wt).await;
+
+        assert!(
+            !outside.join("sub").exists(),
+            "escaped the worktree through a symlinked ancestor"
+        );
     }
 
     #[tokio::test]

@@ -716,7 +716,7 @@ pub async fn workspace_list(
     Ok(Json(workspace::list(&state.db.conn).await?))
 }
 
-/// Exactly one of `path` and `home_path`.
+/// Exactly one of `path`, `home_path` and `workspace_id`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceAddParams {
@@ -727,6 +727,10 @@ pub struct WorkspaceAddParams {
     /// Folder names under the host user's home directory (`workspace.browse`).
     #[serde(default)]
     pub home_path: Option<Vec<String>>,
+    /// An already-registered root workspace, to re-run `add` (e.g. to
+    /// publish it) without the client knowing its host path.
+    #[serde(default)]
+    pub workspace_id: Option<String>,
     /// Confirmed by the user after a `large_folder` refusal.
     #[serde(default)]
     pub allow_large: bool,
@@ -745,14 +749,18 @@ pub struct PublishParams {
 }
 
 /// The host folder a `workspace.add` / `workspace.inspect` names: `path`
-/// (Host principal only) or `home_path` (a folder under home, never home).
-fn add_path(
+/// (Host principal only), `home_path` (a folder under home, never home), or
+/// `workspace_id` (an already-registered root; any principal, since it never
+/// carries a host path).
+async fn add_path(
+    state: &AppState,
     principal: Option<&Principal>,
     path: Option<String>,
     home_path: Option<Vec<String>>,
+    workspace_id: Option<String>,
 ) -> Result<String, ZwiimError> {
-    match (path, home_path) {
-        (Some(path), None) => {
+    match (path, home_path, workspace_id) {
+        (Some(path), None, None) => {
             if !matches!(principal, Some(Principal::Host)) {
                 return Err(ZwiimError::permission_denied(
                     "Paired devices add a folder by home_path",
@@ -760,7 +768,7 @@ fn add_path(
             }
             Ok(path)
         }
-        (None, Some(segments)) => {
+        (None, Some(segments), None) => {
             // An agent over the whole home folder is not a workspace.
             if segments.is_empty() {
                 return Err(ZwiimError::invalid_input(
@@ -772,8 +780,11 @@ fn add_path(
                 .to_string_lossy()
                 .into_owned())
         }
+        (None, None, Some(workspace_id)) => {
+            workspace::root_path(&state.db.conn, &workspace_id).await
+        }
         _ => Err(ZwiimError::invalid_input(
-            "Give exactly one of path and home_path",
+            "Give exactly one of path, home_path and workspace_id",
         )),
     }
 }
@@ -783,7 +794,14 @@ pub async fn workspace_add(
     principal: Option<Extension<Principal>>,
     ZJson(p): ZJson<WorkspaceAddParams>,
 ) -> ZResult<WorkspaceInfo> {
-    let path = add_path(principal.as_deref(), p.path, p.home_path)?;
+    let path = add_path(
+        &state,
+        principal.as_deref(),
+        p.path,
+        p.home_path,
+        p.workspace_id,
+    )
+    .await?;
     let publish = p.publish.map(|p| workspace::Publish {
         owner: p.owner,
         name: p.name,
@@ -794,7 +812,7 @@ pub async fn workspace_add(
     ))
 }
 
-/// Exactly one of `path` and `home_path`, as `workspace.add`.
+/// Exactly one of `path`, `home_path` and `workspace_id`, as `workspace.add`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceInspectParams {
@@ -802,6 +820,8 @@ pub struct WorkspaceInspectParams {
     pub path: Option<String>,
     #[serde(default)]
     pub home_path: Option<Vec<String>>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 pub async fn workspace_inspect(
@@ -809,7 +829,14 @@ pub async fn workspace_inspect(
     principal: Option<Extension<Principal>>,
     ZJson(p): ZJson<WorkspaceInspectParams>,
 ) -> ZResult<workspace::Inspection> {
-    let path = add_path(principal.as_deref(), p.path, p.home_path)?;
+    let path = add_path(
+        &state,
+        principal.as_deref(),
+        p.path,
+        p.home_path,
+        p.workspace_id,
+    )
+    .await?;
     Ok(Json(
         workspace::inspect(&state.db, &path, state.gh.as_deref()).await?,
     ))

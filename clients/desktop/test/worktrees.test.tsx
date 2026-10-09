@@ -1,11 +1,18 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HostClient, HostController, ZwiimClientError, type SessionSummary, type WorkspaceInfo } from "@zwiim/sdk";
+import {
+  CLIENT_CAPABILITIES,
+  HostClient,
+  HostController,
+  ZwiimClientError,
+  type SessionSummary,
+  type WorkspaceInfo,
+} from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
 import { DiffPanel, DiffView } from "@/panels/DiffPanel";
 import { SessionPanel } from "@/panels/SessionPanel";
 import { busyMessage, Sidebar, type SidebarProps } from "@/panels/Sidebar";
-import { FakeTransport, tick } from "./fakes";
+import { FakeTransport, hostHello, tick } from "./fakes";
 
 afterEach(() => {
   cleanup();
@@ -68,8 +75,16 @@ function sidebarProps(overrides: Partial<SidebarProps> = {}): SidebarProps {
     onSelectWorkspace: vi.fn(),
     onSessionStarted: vi.fn(),
     pickFolder: vi.fn(async () => null),
+    remote: false,
     ...overrides,
   };
+}
+
+/** A Host from before publishing: + adds the picked folder as it is (the publish flow is in publish.test). */
+function beforePublishing(t: FakeTransport) {
+  t.handlers["host.hello"] = () =>
+    hostHello({ capabilities: CLIENT_CAPABILITIES.filter((c) => c !== "workspace.publish") });
+  return t;
 }
 
 /** A host with a root, a working worktree, and a removed worktree that kept a session. */
@@ -119,6 +134,8 @@ describe("workspace tree", () => {
 
   it("offers no worktrees for a plain folder, and leaves it out of the repository list", async () => {
     const { t } = treeHost();
+    // Its click selects it as it always did (a root's click opens a worktree since, in publish.test).
+    beforePublishing(t);
     const plain: WorkspaceInfo = { ...root, workspace_id: "plain", name: "notes", is_git_repo: false, branch: null };
     t.handlers["workspace.list"] = () => [root, worktree("a1b2c3d4"), plain];
     const props = sidebarProps();
@@ -169,6 +186,7 @@ describe("workspace tree", () => {
 describe("folding", () => {
   it("folds every workspace under the header, and adds one with +", async () => {
     const { t } = treeHost();
+    beforePublishing(t);
     t.handlers["workspace.add"] = () => ({ ...root, workspace_id: "new", name: "new" });
     const props = sidebarProps({ pickFolder: vi.fn(async () => "/tmp/new") });
     await mount(t, () => <Sidebar {...props} />);
@@ -187,6 +205,7 @@ describe("folding", () => {
 
   it("asks before adding a large plain folder, and adds it anyway when confirmed", async () => {
     const { t } = treeHost();
+    beforePublishing(t);
     t.handlers["workspace.add"] = (p: { allow_large?: boolean }) => {
       if (!p.allow_large) throw new ZwiimClientError("large_folder", "big", 409, { files: 5001, bytes: 10, at_least: true });
       return { ...root, workspace_id: "big", name: "big" };
@@ -218,6 +237,7 @@ describe("folding", () => {
 
   it("keeps the large-folder card while Add anyway is under way", async () => {
     const { t } = treeHost();
+    beforePublishing(t);
     let finish!: () => void;
     t.handlers["workspace.add"] = (p: { allow_large?: boolean }) => {
       if (!p.allow_large) throw new ZwiimClientError("large_folder", "big", 409, { files: 5001, bytes: 10, at_least: true });
@@ -267,6 +287,91 @@ describe("folding", () => {
     await mount(t, () => <Sidebar {...sidebarProps({ workspaceId: "gone0000" })} />);
     expect(screen.getByTestId("workspace-gone0000")).toBeTruthy();
     expect(screen.getByRole("button", { name: "1 removed" }).getAttribute("aria-expanded")).toBe("true");
+  });
+});
+
+describe("earlier sessions in the repository folder", () => {
+  const earlier = (n: string) => screen.queryByRole("button", { name: n });
+
+  it("folds a root's own sessions under one row beneath its worktrees, which selects the root", async () => {
+    const { t, sessions } = treeHost();
+    sessions.root = [session("s0", "claude_code"), session("s9", "codex")];
+    const props = sidebarProps();
+    await mount(t, () => <Sidebar {...props} />);
+    const row = earlier("2 earlier sessions")!;
+    // Nested under the repository, after its worktrees, styled as the removed row.
+    expect(screen.getByTestId("workspace-root").contains(row)).toBe(true);
+    expect(screen.getByTestId("workspace-a1b2c3d4").compareDocumentPosition(row)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(row.className).toBe(screen.getByRole("button", { name: "1 removed" }).className);
+    expect(row.querySelector("svg.lucide-history")).toBeTruthy();
+    fireEvent.click(row);
+    expect(props.onSelectWorkspace).toHaveBeenCalledTimes(1);
+    expect(props.onSelectWorkspace).toHaveBeenCalledWith("root");
+    // Selecting it reads nothing and makes no worktree.
+    expect(t.calls.some((c) => c.op === "workspace.inspect" || c.op === "workspace.create_worktree")).toBe(false);
+  });
+
+  it("marks the row, not the repository, as the selection", async () => {
+    const { t } = treeHost();
+    await mount(t, () => <Sidebar {...sidebarProps({ workspaceId: "root" })} />);
+    expect(earlier("1 earlier session")!.getAttribute("aria-current")).toBe("true");
+    expect(screen.getAllByRole("button", { current: true })).toHaveLength(1);
+  });
+
+  it("shows the row for a root with sessions and no worktree", async () => {
+    const t = new FakeTransport();
+    t.handlers["workspace.list"] = () => [root];
+    t.handlers["session.list"] = (p) => (p.workspace_id === "root" ? [session("s0", "claude_code")] : []);
+    await mount(t, () => <Sidebar {...sidebarProps()} />);
+    expect(screen.getByTestId("workspace-root").contains(earlier("1 earlier session"))).toBe(true);
+  });
+
+  it("shows no row for a root without sessions of its own", async () => {
+    const { t, sessions } = treeHost();
+    sessions.root = [];
+    await mount(t, () => <Sidebar {...sidebarProps()} />);
+    expect(screen.getByTestId("workspace-tree").textContent).not.toContain("earlier session");
+  });
+
+  it("shows no row on a Host from before publishing", async () => {
+    const { t } = treeHost();
+    beforePublishing(t);
+    await mount(t, () => <Sidebar {...sidebarProps({ workspaceId: "root" })} />);
+    expect(screen.getByTestId("workspace-tree").textContent).not.toContain("earlier session");
+  });
+
+  it("replaces a root session's composer with Continue in a new worktree", async () => {
+    const t = new FakeTransport();
+    t.handlers["workspace.list"] = () => [root];
+    t.handlers["session.list"] = (p) => (p.workspace_id === "root" ? [session("s0", "claude_code")] : []);
+    const onContinue = vi.fn();
+    await mount(t, () => (
+      <SessionPanel workspaceId="root" sessionId="s0" onSessionStarted={() => {}} onContinue={onContinue} />
+    ));
+    expect(screen.getByText("This session ran in the repository folder.")).toBeTruthy();
+    expect(screen.queryByPlaceholderText("Send a message")).toBeNull();
+    expect(screen.queryByTitle("Send")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Continue in a new worktree" }));
+    expect(onContinue).toHaveBeenCalledTimes(1);
+    cleanup();
+
+    // With no session open, nothing can be drafted there either.
+    await mount(t, () => (
+      <SessionPanel workspaceId="root" sessionId={null} onSessionStarted={() => {}} onContinue={onContinue} />
+    ));
+    expect(screen.queryByPlaceholderText(/^Describe the task/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Continue in a new worktree" })).toBeTruthy();
+  });
+
+  it("keeps a root session's composer on a Host from before publishing", async () => {
+    const t = beforePublishing(new FakeTransport());
+    t.handlers["workspace.list"] = () => [root];
+    t.handlers["session.list"] = (p) => (p.workspace_id === "root" ? [session("s0", "claude_code")] : []);
+    await mount(t, () => <SessionPanel workspaceId="root" sessionId="s0" onSessionStarted={() => {}} />);
+    expect(screen.getByPlaceholderText("Send a message")).toBeTruthy();
+    expect(screen.queryByText("This session ran in the repository folder.")).toBeNull();
   });
 });
 

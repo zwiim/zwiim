@@ -376,12 +376,26 @@ pub(crate) async fn set_identity_if_unset(
     path: &Path,
     identity: &Identity,
 ) -> Result<bool, String> {
+    if has_local_identity(path).await {
+        return Ok(false);
+    }
+    set_identity(path, identity).await?;
+    Ok(true)
+}
+
+/// The repository's own config names a `user.name` or `user.email`.
+async fn has_local_identity(path: &Path) -> bool {
     for key in ["user.name", "user.email"] {
         match git(path, &[], &["config", "--local", "--get", key]).await {
-            Ok(value) if !value.trim().is_empty() => return Ok(false),
+            Ok(value) if !value.trim().is_empty() => return true,
             _ => {}
         }
     }
+    false
+}
+
+/// Write `identity` to the repository's own config.
+async fn set_identity(path: &Path, identity: &Identity) -> Result<(), String> {
     git(
         path,
         &[],
@@ -394,7 +408,7 @@ pub(crate) async fn set_identity_if_unset(
         &["config", "--local", "user.email", &identity.email],
     )
     .await?;
-    Ok(true)
+    Ok(())
 }
 
 /// Undo [`set_identity_if_unset`].
@@ -423,7 +437,7 @@ async fn has_identity(path: &Path, env: &[(&str, &str)]) -> bool {
 
 /// How long one git step may run. The user's Git config applies, so a
 /// signing prompt or a hook could otherwise hang the first commit forever.
-const GIT_STEP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+pub(super) const GIT_STEP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// Run git in `path`; stdout on success, else a log-only message with stderr.
 pub(super) async fn git(
@@ -455,6 +469,239 @@ pub(crate) async fn rollback(path: &Path, created: Created) {
     let _ = tokio::fs::remove_dir_all(path.join(".git")).await;
     if created.wrote_gitignore {
         let _ = tokio::fs::remove_file(path.join(".gitignore")).await;
+    }
+}
+
+/// `path` is a repository with no commits at all: `HEAD` does not resolve
+/// and no branch exists. An orphan branch in a repository with history is
+/// not one, and neither is a repository git refuses to read (say, dubious
+/// ownership): any git error means "not unborn".
+pub(crate) async fn is_unborn(path: &Path, env: &[(&str, &str)]) -> bool {
+    if !has_git(path) {
+        return false;
+    }
+    // `rev-parse -q --verify` exits 1, silently, only for a ref that does not
+    // resolve; a fatal error is 128.
+    let mut cmd = crate::process::tokio_command("git");
+    cmd.args(["rev-parse", "-q", "--verify", "HEAD"])
+        .current_dir(path)
+        .envs(env.iter().copied())
+        .kill_on_drop(true);
+    let head_unresolved = matches!(
+        tokio::time::timeout(GIT_STEP_TIMEOUT, cmd.output()).await,
+        Ok(Ok(out)) if out.status.code() == Some(1)
+    );
+    head_unresolved
+        && git(path, env, &["for-each-ref", "--count=1", "refs/heads"])
+            .await
+            .is_ok_and(|branches| branches.trim().is_empty())
+}
+
+/// The `.git` files a first commit in an unborn repository changes and its
+/// undo puts back byte for byte (`None`: absent before), besides the
+/// branch's own reflog.
+const UNBORN_SAVED: [&str; 3] = ["index", "info/exclude", "logs/HEAD"];
+
+/// What one `commit_unborn` call did to the user's repository, so its undo
+/// restores exactly what was there.
+#[derive(Debug, Clone)]
+pub(crate) struct Unborn {
+    git_dir: PathBuf,
+    branch_ref: String,
+    /// Paths relative to `git_dir`.
+    saved: Vec<(String, Option<Vec<u8>>)>,
+    wrote_gitignore: bool,
+    set_identity: bool,
+    /// The first commit, once made: the undo deletes the branch only while
+    /// it still names this commit.
+    commit: Option<String>,
+}
+
+/// Make the first commit, "Initial Commit", in the unborn repository at
+/// `path` on the branch `HEAD` names: the basic `.gitignore` when it has
+/// none, nested unborn repositories left out, and with `identity` (a
+/// publish) the secret excludes and that identity unless the repository has
+/// its own. Nothing else in `.git` is touched and no marker is written:
+/// `recover_interrupted` would delete the user's `.git`. `Err`: why, for the
+/// Host log; the repository is already as it was.
+pub(crate) async fn commit_unborn(
+    path: &Path,
+    env: &[(&str, &str)],
+    identity: Option<&Identity>,
+) -> Result<Unborn, String> {
+    let git_dir = path.join(".git");
+    if !tokio::fs::symlink_metadata(&git_dir)
+        .await
+        .is_ok_and(|m| m.is_dir())
+    {
+        return Err("no .git directory".to_string());
+    }
+    // Another git is at work in the repository, or one was stopped there.
+    let index_lock = git_dir.join("index.lock");
+    if tokio::fs::symlink_metadata(&index_lock).await.is_ok() {
+        return Err(".git/index.lock exists".to_string());
+    }
+    let branch_ref = git(path, env, &["symbolic-ref", "-q", "HEAD"])
+        .await
+        .map_err(|e| format!("HEAD names no branch: {e}"))?
+        .trim()
+        .to_string();
+    if !branch_ref.starts_with("refs/heads/") {
+        return Err(format!("HEAD names {branch_ref}, not a branch"));
+    }
+    // The undo deletes this ref: it must not name a commit of the user's.
+    if git(path, env, &["rev-parse", "-q", "--verify", &branch_ref])
+        .await
+        .is_ok()
+    {
+        return Err(format!("{branch_ref} already has a commit"));
+    }
+    let branch_log = format!("logs/{branch_ref}");
+    let mut saved = Vec::with_capacity(UNBORN_SAVED.len() + 1);
+    for rel in UNBORN_SAVED
+        .map(str::to_string)
+        .into_iter()
+        .chain([branch_log])
+    {
+        match tokio::fs::read(git_dir.join(&rel)).await {
+            Ok(bytes) => saved.push((rel, Some(bytes))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => saved.push((rel, None)),
+            Err(e) => return Err(format!("saving .git/{rel}: {e}")),
+        }
+    }
+    let mut u = Unborn {
+        git_dir,
+        branch_ref,
+        saved,
+        wrote_gitignore: false,
+        set_identity: false,
+        commit: None,
+    };
+    let made = async {
+        let gitignore = path.join(".gitignore");
+        if tokio::fs::symlink_metadata(&gitignore).await.is_err() {
+            // Marked before writing: nothing was there, so even a partly
+            // written file is ours for the undo to remove.
+            u.wrote_gitignore = true;
+            tokio::fs::write(&gitignore, BASIC_GITIGNORE)
+                .await
+                .map_err(|e| format!("writing .gitignore: {e}"))?;
+        }
+        exclude_unborn_nested(path, env).await?;
+        if let Some(identity) = identity {
+            append_exclude(path, SECRET_EXCLUDES).await?;
+            if !has_local_identity(path).await {
+                // Marked before writing, so a half-written identity is
+                // unset too: the repository had none of its own.
+                u.set_identity = true;
+                set_identity(path, identity).await?;
+            }
+        }
+        git(path, env, &["add", "-A"]).await?;
+        let mut commit = Vec::new();
+        if !has_identity(path, env).await {
+            commit.extend(["-c", "user.name=Zwiim", "-c", "user.email=zwiim@localhost"]);
+        }
+        commit.extend(["commit", "-q", "--allow-empty", "-m", "Initial Commit"]);
+        git(path, env, &commit).await?;
+        let head = git(path, env, &["rev-parse", "--verify", "HEAD"]).await?;
+        Ok::<_, String>(head.trim().to_string())
+    }
+    .await;
+    match made {
+        Ok(commit) => {
+            u.commit = Some(commit);
+            Ok(u)
+        }
+        Err(e) => {
+            // A git killed mid-step (the timeout) leaves its lock behind;
+            // there was none before.
+            let _ = tokio::fs::remove_file(&index_lock).await;
+            undo_first_commit(path, u).await;
+            Err(e)
+        }
+    }
+}
+
+/// Undo [`commit_unborn`]: the branch goes, the saved `.git` files (the
+/// branch's reflog among them) are restored exactly, so the staged files
+/// are as before, a `.gitignore` it wrote is removed and an identity it set
+/// unset. A branch that has moved on from the first commit (the user
+/// committed since) is left as it is, with everything else. Never touches
+/// `origin` or removes `.git`; the commit object is left for Git's garbage
+/// collection.
+pub(crate) async fn undo_first_commit(path: &Path, u: Unborn) {
+    let mut delete = vec!["update-ref", "-d", u.branch_ref.as_str()];
+    delete.extend(u.commit.as_deref());
+    match git(path, &[], &delete).await {
+        Ok(_) => {}
+        // With no commit made the ref may not exist; with one, a ref that
+        // no longer names it is the user's work and stays.
+        Err(e) if u.commit.is_some() => {
+            tracing::warn!(
+                "[workspace] undoing the first commit: the branch moved on; left as is: {e}"
+            );
+            return;
+        }
+        Err(_) => {}
+    }
+    for (rel, bytes) in &u.saved {
+        if let Err(e) = restore(&u.git_dir.join(rel), bytes.as_deref()).await {
+            tracing::warn!(
+                "[workspace] undoing the first commit: restoring .git/{rel} failed: {e}"
+            );
+        }
+    }
+    if u.wrote_gitignore {
+        let _ = tokio::fs::remove_file(path.join(".gitignore")).await;
+    }
+    if u.set_identity {
+        unset_identity(path).await;
+    }
+}
+
+/// Put `bytes` back at `file` through a temporary file and a rename, so a
+/// failure never leaves it half-written; `None` removes it.
+async fn restore(file: &Path, bytes: Option<&[u8]>) -> std::io::Result<()> {
+    let Some(bytes) = bytes else {
+        return match tokio::fs::remove_file(file).await {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        };
+    };
+    // Deleting a ref can remove its reflog's now-empty directories.
+    if let Some(parent) = file.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let mut tmp = file.as_os_str().to_owned();
+    tmp.push(".zwiim-tmp");
+    let tmp = PathBuf::from(tmp);
+    let written = async {
+        tokio::fs::write(&tmp, bytes).await?;
+        tokio::fs::rename(&tmp, file).await
+    }
+    .await;
+    if written.is_err() {
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
+    written
+}
+
+/// What one add made in the user's folder, undone if a later step fails.
+#[derive(Debug)]
+pub(crate) enum Made {
+    /// `init_repository` made the repository.
+    Repository(Created),
+    /// `commit_unborn` made the first commit in the user's repository.
+    FirstCommit(Unborn),
+}
+
+impl Made {
+    pub(crate) async fn undo(self, path: &Path) {
+        match self {
+            Made::Repository(created) => rollback(path, created).await,
+            Made::FirstCommit(u) => undo_first_commit(path, u).await,
+        }
     }
 }
 
@@ -895,6 +1142,382 @@ mod tests {
         assert!(!recover_interrupted(&path).await);
         assert!(path.join(".git/HEAD").exists());
         assert!(path.join(".gitignore").exists());
+    }
+
+    /// The bytes of `.git/<rel>`, `None` when absent.
+    fn git_file(path: &Path, rel: &str) -> Option<Vec<u8>> {
+        std::fs::read(path.join(".git").join(rel)).ok()
+    }
+
+    #[tokio::test]
+    async fn is_unborn_only_for_a_repository_without_a_commit() {
+        let cfg = config(IDENTITY);
+        let (_d, path) = folder();
+        assert!(!is_unborn(&path, &cfg.env()).await);
+        git(&path, &cfg, &["init", "-q"]);
+        assert!(is_unborn(&path, &cfg.env()).await);
+        git(&path, &cfg, &["commit", "-q", "--allow-empty", "-m", "c"]);
+        assert!(!is_unborn(&path, &cfg.env()).await);
+    }
+
+    #[tokio::test]
+    async fn an_orphan_branch_in_a_repository_with_history_is_not_unborn() {
+        let cfg = config(IDENTITY);
+        let (_d, path) = folder();
+        git(&path, &cfg, &["init", "-q", "-b", "main"]);
+        git(&path, &cfg, &["commit", "-q", "--allow-empty", "-m", "c"]);
+        git(&path, &cfg, &["checkout", "-q", "--orphan", "gh-pages"]);
+        assert!(!is_unborn(&path, &cfg.env()).await);
+    }
+
+    #[tokio::test]
+    async fn commit_unborn_commits_on_the_head_branch() {
+        let cfg = config("");
+        let (_d, path) = folder();
+        git(&path, &cfg, &["init", "-q", "-b", "trunk"]);
+        std::fs::write(path.join("f"), "x").unwrap();
+        commit_unborn(&path, &cfg.env(), None).await.unwrap();
+        assert_eq!(git(&path, &cfg, &["branch", "--show-current"]), "trunk");
+        assert_eq!(git(&path, &cfg, &["log", "--format=%s"]), "Initial Commit");
+        assert_eq!(
+            git(&path, &cfg, &["log", "--format=%an <%ae>"]),
+            "Zwiim <zwiim@localhost>"
+        );
+        assert_eq!(committed(&path, &cfg), [".gitignore", "f"]);
+        assert_eq!(
+            std::fs::read_to_string(path.join(".gitignore")).unwrap(),
+            BASIC_GITIGNORE
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_unborn_with_identity_sets_it_and_excludes_secrets() {
+        let cfg = config("");
+        let (_d, path) = folder();
+        git(&path, &cfg, &["init", "-q", "-b", "main"]);
+        std::fs::write(path.join(".gitignore"), "target\n").unwrap();
+        for f in [".env", "key.pem", "a.txt"] {
+            std::fs::write(path.join(f), "x").unwrap();
+        }
+        let u = commit_unborn(&path, &cfg.env(), Some(&octo()))
+            .await
+            .unwrap();
+        assert!(u.set_identity);
+        assert!(!u.wrote_gitignore);
+        assert_eq!(committed(&path, &cfg), [".gitignore", "a.txt"]);
+        assert_eq!(
+            git(&path, &cfg, &["config", "--local", "user.email"]),
+            "42+octo@users.noreply.github.com"
+        );
+        assert_eq!(
+            git(&path, &cfg, &["log", "--format=%an <%ae>"]),
+            "Octo Cat <42+octo@users.noreply.github.com>"
+        );
+    }
+
+    /// Everything `undo_first_commit` must put back, as it is now.
+    fn unborn_state(path: &Path, cfg: &Config) -> Vec<Option<Vec<u8>>> {
+        // Status first: it may refresh the index's stat data.
+        vec![
+            Some(git(path, cfg, &["status", "--porcelain"]).into_bytes()),
+            git_file(path, "index"),
+            git_file(path, "info/exclude"),
+            git_file(path, "logs/HEAD"),
+            git_file(path, "zwiim-sentinel"),
+            std::fs::read(path.join(".gitignore")).ok(),
+            std::fs::read(path.join("a.txt")).ok(),
+        ]
+    }
+
+    #[tokio::test]
+    async fn undo_first_commit_restores_everything() {
+        for users_gitignore in [false, true] {
+            let cfg = config("");
+            let (_d, path) = folder();
+            git(&path, &cfg, &["init", "-q", "-b", "trunk"]);
+            if users_gitignore {
+                // An orphan branch after history: `logs/HEAD` exists and
+                // the other branch must survive the undo.
+                git(
+                    &path,
+                    &cfg,
+                    &[
+                        "-c",
+                        "user.name=u",
+                        "-c",
+                        "user.email=u@example.com",
+                        "commit",
+                        "-q",
+                        "--allow-empty",
+                        "-m",
+                        "old",
+                    ],
+                );
+                git(&path, &cfg, &["checkout", "-q", "--orphan", "fresh"]);
+                std::fs::write(path.join(".gitignore"), "mine\n").unwrap();
+            }
+            std::fs::write(path.join(".git/info/exclude"), "users-own\n").unwrap();
+            std::fs::write(path.join(".git/zwiim-sentinel"), "keep").unwrap();
+            std::fs::write(path.join("a.txt"), "staged").unwrap();
+            git(&path, &cfg, &["add", "a.txt"]);
+            // Unstaged on top of the staged version.
+            std::fs::write(path.join("a.txt"), "edited").unwrap();
+            std::fs::write(path.join(".env"), "KEY=1\n").unwrap();
+            let before = unborn_state(&path, &cfg);
+            assert_eq!(before[3].is_some(), users_gitignore);
+
+            let u = commit_unborn(&path, &cfg.env(), Some(&octo()))
+                .await
+                .unwrap();
+            assert!(!git_fails(
+                &path,
+                &cfg,
+                &["rev-parse", "-q", "--verify", "HEAD"]
+            ));
+            undo_first_commit(&path, u).await;
+
+            assert!(git_fails(
+                &path,
+                &cfg,
+                &["rev-parse", "-q", "--verify", "HEAD"]
+            ));
+            assert_eq!(
+                git(&path, &cfg, &["diff", "--cached", "--name-only"]),
+                "a.txt"
+            );
+            assert_eq!(unborn_state(&path, &cfg), before, "{users_gitignore}");
+            assert_eq!(path.join(".gitignore").exists(), users_gitignore);
+            assert!(git_fails(&path, &cfg, &["config", "--local", "user.email"]));
+            assert!(git_fails(&path, &cfg, &["config", "--local", "user.name"]));
+            let branch = if users_gitignore { "fresh" } else { "trunk" };
+            assert!(!path.join(".git/logs/refs/heads").join(branch).exists());
+            if users_gitignore {
+                assert_eq!(git(&path, &cfg, &["log", "--format=%s", "trunk"]), "old");
+            }
+            let tmp = file_names_under(&path.join(".git"));
+            assert!(!tmp.iter().any(|n| n.ends_with(".zwiim-tmp")), "{tmp:?}");
+        }
+    }
+
+    /// Every file name under `dir`, at any depth.
+    fn file_names_under(dir: &Path) -> Vec<String> {
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            if entry.file_type().unwrap().is_dir() {
+                names.extend(file_names_under(&entry.path()));
+            } else {
+                names.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+        names
+    }
+
+    #[tokio::test]
+    async fn undo_first_commit_keeps_a_branch_the_user_committed_on() {
+        let cfg = config(IDENTITY);
+        let (_d, path) = folder();
+        git(&path, &cfg, &["init", "-q", "-b", "trunk"]);
+        std::fs::write(path.join("a.txt"), "a").unwrap();
+        let u = commit_unborn(&path, &cfg.env(), None).await.unwrap();
+        std::fs::write(path.join("b.txt"), "b").unwrap();
+        git(&path, &cfg, &["add", "b.txt"]);
+        git(&path, &cfg, &["commit", "-q", "-m", "mine"]);
+        let index = git_file(&path, "index");
+        undo_first_commit(&path, u).await;
+        assert_eq!(
+            git(&path, &cfg, &["log", "--format=%s", "trunk"]),
+            "mine\nInitial Commit"
+        );
+        assert_eq!(git(&path, &cfg, &["branch", "--show-current"]), "trunk");
+        assert_eq!(git_file(&path, "index"), index);
+        assert!(path.join(".git/logs/refs/heads/trunk").exists());
+        assert!(path.join(".gitignore").exists());
+    }
+
+    #[tokio::test]
+    async fn undo_first_commit_restores_the_branchs_own_reflog() {
+        let cfg = config(IDENTITY);
+        let (_d, path) = folder();
+        git(&path, &cfg, &["init", "-q", "-b", "trunk"]);
+        let log = path.join(".git/logs/refs/heads/trunk");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        std::fs::write(&log, "the user's own reflog\n").unwrap();
+        let u = commit_unborn(&path, &cfg.env(), None).await.unwrap();
+        undo_first_commit(&path, u).await;
+        assert!(git_fails(
+            &path,
+            &cfg,
+            &["rev-parse", "-q", "--verify", "HEAD"]
+        ));
+        assert_eq!(std::fs::read(&log).unwrap(), b"the user's own reflog\n");
+    }
+
+    #[tokio::test]
+    async fn commit_unborn_killed_mid_commit_removes_its_index_lock() {
+        // Stands in for the step timeout: git is killed holding its lock.
+        let hooks = tempfile::tempdir().unwrap();
+        let hook = hooks.path().join("pre-commit");
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\n: > .git/index.lock\nkill -9 $PPID\nexit 1\n",
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let cfg = config(&format!(
+            "{IDENTITY}[core]\n\thooksPath = {}\n",
+            hooks.path().display()
+        ));
+        let (_d, path) = folder();
+        git(&path, &cfg, &["init", "-q", "-b", "main"]);
+        std::fs::write(path.join("a.txt"), "staged").unwrap();
+        git(&path, &cfg, &["add", "a.txt"]);
+        let before = unborn_state(&path, &cfg);
+        assert!(commit_unborn(&path, &cfg.env(), None).await.is_err());
+        assert!(!path.join(".git/index.lock").exists());
+        assert!(git_fails(
+            &path,
+            &cfg,
+            &["rev-parse", "-q", "--verify", "HEAD"]
+        ));
+        assert_eq!(unborn_state(&path, &cfg), before);
+    }
+
+    #[tokio::test]
+    async fn commit_unborn_refuses_while_the_index_is_locked() {
+        let cfg = config(IDENTITY);
+        let (_d, path) = folder();
+        git(&path, &cfg, &["init", "-q", "-b", "main"]);
+        std::fs::write(path.join("a.txt"), "a").unwrap();
+        std::fs::write(path.join(".git/index.lock"), "theirs").unwrap();
+        let index = git_file(&path, "index");
+        assert!(commit_unborn(&path, &cfg.env(), None).await.is_err());
+        assert_eq!(
+            std::fs::read(path.join(".git/index.lock")).unwrap(),
+            b"theirs"
+        );
+        assert_eq!(git_file(&path, "index"), index);
+        assert!(!path.join(".gitignore").exists());
+        assert!(git_fails(
+            &path,
+            &cfg,
+            &["rev-parse", "-q", "--verify", "HEAD"]
+        ));
+    }
+
+    #[tokio::test]
+    async fn commit_unborn_failing_hook_restores_state() {
+        let hooks = tempfile::tempdir().unwrap();
+        let hook = hooks.path().join("pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let cfg = config(&format!(
+            "{IDENTITY}[core]\n\thooksPath = {}\n",
+            hooks.path().display()
+        ));
+        let (_d, path) = folder();
+        git(&path, &cfg, &["init", "-q", "-b", "main"]);
+        std::fs::write(path.join(".git/zwiim-sentinel"), "keep").unwrap();
+        std::fs::write(path.join("a.txt"), "staged").unwrap();
+        git(&path, &cfg, &["add", "a.txt"]);
+        let before = unborn_state(&path, &cfg);
+        let err = commit_unborn(&path, &cfg.env(), Some(&octo()))
+            .await
+            .unwrap_err();
+        assert!(err.contains("commit"), "{err}");
+        assert!(git_fails(
+            &path,
+            &cfg,
+            &["rev-parse", "-q", "--verify", "HEAD"]
+        ));
+        assert_eq!(unborn_state(&path, &cfg), before);
+        assert!(!path.join(".gitignore").exists());
+        assert!(git_fails(&path, &cfg, &["config", "--local", "user.email"]));
+    }
+
+    #[tokio::test]
+    async fn commit_unborn_refuses_detached() {
+        let cfg = config(IDENTITY);
+        let (_d, path) = folder();
+        git(&path, &cfg, &["init", "-q", "-b", "main"]);
+        git(&path, &cfg, &["commit", "-q", "--allow-empty", "-m", "c"]);
+        git(&path, &cfg, &["checkout", "-q", "--detach"]);
+        std::fs::write(path.join("a.txt"), "a").unwrap();
+        let head = git(&path, &cfg, &["rev-parse", "HEAD"]);
+        let before = unborn_state(&path, &cfg);
+        assert!(commit_unborn(&path, &cfg.env(), None).await.is_err());
+        assert_eq!(git(&path, &cfg, &["rev-parse", "HEAD"]), head);
+        assert_eq!(unborn_state(&path, &cfg), before);
+        assert!(!path.join(".gitignore").exists());
+    }
+
+    #[tokio::test]
+    async fn commit_unborn_refuses_a_branch_with_a_commit() {
+        // Its undo would delete the user's branch.
+        let cfg = config(IDENTITY);
+        let (_d, path) = folder();
+        git(&path, &cfg, &["init", "-q", "-b", "main"]);
+        git(&path, &cfg, &["commit", "-q", "--allow-empty", "-m", "c"]);
+        std::fs::write(path.join("a.txt"), "a").unwrap();
+        let before = unborn_state(&path, &cfg);
+        assert!(commit_unborn(&path, &cfg.env(), None).await.is_err());
+        assert_eq!(git(&path, &cfg, &["log", "--format=%s"]), "c");
+        assert_eq!(unborn_state(&path, &cfg), before);
+    }
+
+    #[tokio::test]
+    async fn commit_unborn_refuses_a_linked_worktree() {
+        let cfg = config(IDENTITY);
+        let (d, path) = folder();
+        git(&path, &cfg, &["init", "-q", "-b", "main"]);
+        git(&path, &cfg, &["commit", "-q", "--allow-empty", "-m", "c"]);
+        let linked = d.path().join("linked");
+        git(
+            &path,
+            &cfg,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--orphan",
+                "-b",
+                "o",
+                linked.to_str().unwrap(),
+            ],
+        );
+        assert!(commit_unborn(&linked, &cfg.env(), None).await.is_err());
+        assert!(git_fails(
+            &linked,
+            &cfg,
+            &["rev-parse", "-q", "--verify", "HEAD"]
+        ));
+    }
+
+    #[tokio::test]
+    async fn made_undoes_what_it_made() {
+        let cfg = config(IDENTITY);
+        let (_d, path) = folder();
+        std::fs::write(path.join("a.txt"), "a").unwrap();
+        let created = init_repository_with(&path, &cfg.env())
+            .await
+            .unwrap()
+            .unwrap();
+        Made::Repository(created).undo(&path).await;
+        assert!(!has_git(&path));
+        assert!(!path.join(".gitignore").exists());
+
+        git(&path, &cfg, &["init", "-q", "-b", "main"]);
+        let u = commit_unborn(&path, &cfg.env(), None).await.unwrap();
+        Made::FirstCommit(u).undo(&path).await;
+        assert!(has_git(&path));
+        assert!(is_unborn(&path, &cfg.env()).await);
+        assert!(!path.join(".gitignore").exists());
+        assert_eq!(std::fs::read_to_string(path.join("a.txt")).unwrap(), "a");
     }
 
     fn files(dir: &Path, n: u64) {

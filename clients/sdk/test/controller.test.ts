@@ -271,6 +271,29 @@ describe("HostController", () => {
     expect(t.transport.requests.at(-1)?.options).toEqual({ mutating: true, timeoutMs: 330_000 });
   });
 
+  it("inspects and adds a listed root by workspace_id", async () => {
+    const t = setup();
+    const inspection = { git: "none", branch: "main", suggested_name: "app", first_commit: null, github: null };
+    t.transport.handlers["workspace.inspect"] = () => inspection;
+    expect(await t.controller.inspectRoot("w1")).toEqual(inspection);
+    expect(t.transport.requests.at(-1)?.params).toEqual({ workspace_id: "w1" });
+    expect(t.transport.requests.at(-1)?.options?.mutating).toBeFalsy();
+
+    const added = { workspace_id: "w1", name: "app", alias: null, kind: "root", parent_workspace_id: null };
+    t.transport.handlers["workspace.add"] = () => added;
+    expect(await t.controller.addRoot("w1")).toEqual(added);
+    expect(t.transport.requests.at(-1)?.params).toEqual({ workspace_id: "w1" });
+    expect(t.transport.requests.at(-1)?.options).toEqual({ mutating: true });
+    expect(t.store.getState().workspaces?.map((w) => w.workspace_id)).toEqual(["w1"]);
+
+    await t.controller.addRoot("w1", { publish: { owner: "octo", name: "app" } });
+    expect(t.transport.requests.at(-1)?.params).toEqual({
+      workspace_id: "w1",
+      publish: { owner: "octo", name: "app" },
+    });
+    expect(t.transport.requests.at(-1)?.options).toEqual({ mutating: true, timeoutMs: 330_000 });
+  });
+
   it("merges the pull request at the head the user saw, never retried", async () => {
     expect(MUTATING_OPS.has("git.pr_merge")).toBe(true);
     expect(MUTATING_OPS.has("git.pr")).toBe(false);

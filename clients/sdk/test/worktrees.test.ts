@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostController } from "../src/client/controller";
-import { busyDetails, dirtyDetails, largeFolderDetails, largeFolderText, ZwiimClientError } from "../src/client/errors";
+import {
+  busyDetails,
+  dirtyDetails,
+  largeFolderDetails,
+  largeFolderText,
+  publishFailedDetails,
+  ZwiimClientError,
+} from "../src/client/errors";
 import { HostClient } from "../src/client/host-client";
 import { reduceHost, initialHostState, type HostState } from "../src/state/store";
 import { buildWorkspaceTree, openTarget, selectWorkspaceTree } from "../src/state/workspaces";
@@ -394,5 +401,17 @@ describe("adding a large folder", () => {
     expect(largeFolderText({ files: 12431, bytes: 1932735283, at_least: false })).toBe("12,431 files (1.8 GB)");
     expect(largeFolderText({ files: 1, bytes: 3 * 1024 * 1024, at_least: false })).toBe("1 file (3 MB)");
     expect(largeFolderDetails(new ZwiimClientError("workspace_dirty", "x", 409, { changes: 1 }))).toBeNull();
+  });
+});
+
+describe("publishing", () => {
+  it("reads whether a failed publish still created the GitHub repository", () => {
+    expect(publishFailedDetails(new ZwiimClientError("publish_failed", "x", 500, { created_on_github: true }))).toEqual({
+      created_on_github: true,
+    });
+    expect(publishFailedDetails(new ZwiimClientError("publish_failed", "x", 500, { created_on_github: false }))).toEqual(
+      { created_on_github: false },
+    );
+    expect(publishFailedDetails(new ZwiimClientError("workspace_dirty", "x", 409, { changes: 1 }))).toBeNull();
   });
 });

@@ -138,6 +138,12 @@ export function hostOwnedDetails(e: unknown): HostOwnedDetails | null {
   return { owner_email: typeof email === "string" ? email : null };
 }
 
+/** Whether a `publish_failed` refusal still created the GitHub repository. */
+export function publishFailedDetails(e: unknown): { created_on_github: boolean } | null {
+  if (!isClientError(e, "publish_failed")) return null;
+  return { created_on_github: Boolean(e.details?.created_on_github) };
+}
+
 export function isClientError(e: unknown, code?: ClientErrorCode): e is ZwiimClientError {
   return e instanceof ZwiimClientError && (code === undefined || e.code === code);
 }

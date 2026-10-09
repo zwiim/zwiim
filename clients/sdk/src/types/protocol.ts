@@ -1080,11 +1080,14 @@ export interface Operations {
   "workspace.list": [Record<string, never>, WorkspaceInfo[]];
   /** `path` needs local host authority; paired devices use `home_path` (folder names under home). */
   "workspace.add": [
-    ({ path: string } | { home_path: string[] }) & { allow_large?: boolean; publish?: PublishTarget },
+    ({ path: string } | { home_path: string[] } | { workspace_id: string }) & {
+      allow_large?: boolean;
+      publish?: PublishTarget;
+    },
     WorkspaceInfo,
   ];
   /** What a folder is before adding it: Git state, first-commit size, GitHub owners. Touches nothing. */
-  "workspace.inspect": [{ path: string } | { home_path: string[] }, WorkspaceInspection];
+  "workspace.inspect": [{ path: string } | { home_path: string[] } | { workspace_id: string }, WorkspaceInspection];
   /** Whether `owner/name` is free on GitHub for the Host's signed-in account. */
   "github.repo_available": [PublishTarget, { available: boolean }];
   "workspace.browse": [{ path: string[] }, BrowseListing];

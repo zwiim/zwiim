@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use super::repo_init::{self, Created, Identity};
+use super::repo_init::{self, Identity, Made};
 use crate::db::AppDatabase;
 use crate::git_harness::{self, GitError, GitErrorCode, GithubOwner};
 use crate::protocol::error::ZwiimError;
@@ -122,7 +122,11 @@ pub async fn inspect(
         GitState::NoOrigin => current_branch(&canonical).await,
         GitState::Origin => None,
     };
-    let first_commit = if git == GitState::None {
+    // Adding makes the first commit: a plain folder, or a repository with
+    // no commit yet (D12).
+    let makes_first_commit = git == GitState::None
+        || (git == GitState::NoOrigin && repo_init::is_unborn(&canonical, &[]).await);
+    let first_commit = if makes_first_commit {
         let dir = canonical.clone();
         let size = tokio::task::spawn_blocking(move || repo_init::measure_first_commit(&dir))
             .await
@@ -176,18 +180,19 @@ pub(super) async fn account(p: &Publish, repo: &str) -> Result<Identity, ZwiimEr
     Ok(Identity::from_account(&account))
 }
 
-/// Create the GitHub repository from `path` (a repository now: `created` if
-/// this request just made it) and point `origin/HEAD` at its branch. On
-/// failure the folder is as it was before the add, except a repository
-/// GitHub kept.
+/// Create the GitHub repository from `path` (a repository now: `made` is
+/// what this request just made in it, the repository or its first commit)
+/// and point `origin/HEAD` at its branch. On failure the folder is as it was
+/// before the add, except a repository GitHub kept.
 pub(super) async fn publish(
     path: &Path,
     p: &Publish,
     identity: &Identity,
-    created: Option<Created>,
+    made: Option<Made>,
 ) -> Result<(), ZwiimError> {
     let repo = path.to_string_lossy().into_owned();
-    let set_identity = match created {
+    // What this request made already carries the identity.
+    let set_identity = match made {
         Some(_) => false,
         None => repo_init::set_identity_if_unset(path, identity)
             .await
@@ -198,15 +203,20 @@ pub(super) async fn publish(
     };
     if let Err(e) = git_harness::github_repo_create(p.gh.as_deref(), &repo, &p.owner, &p.name).await
     {
-        match created {
-            Some(created) => repo_init::rollback(path, created).await,
+        // Undoing a repository this request made removes `.git`, and
+        // `origin` with it; git must never run in the folder after that.
+        let removes_git = matches!(made, Some(Made::Repository(_)));
+        match made {
+            Some(m) => m.undo(path).await,
             None => {
                 if set_identity {
                     repo_init::unset_identity(path).await;
                 }
-                // There was no `origin` before: any now is gh's.
-                let _ = repo_init::git(path, &[], &["remote", "remove", "origin"]).await;
             }
+        }
+        if !removes_git {
+            // There was no `origin` before: any now is gh's.
+            let _ = repo_init::git(path, &[], &["remote", "remove", "origin"]).await;
         }
         return Err(create_error(p, &repo, e).await);
     }
@@ -216,6 +226,33 @@ pub(super) async fn publish(
                 repo_init::git(path, &[], &["remote", "set-head", "origin", &branch]).await
             {
                 tracing::warn!("[workspace] publish: setting origin/HEAD failed: {e}");
+                // `set-head` needs a remote-tracking ref for the branch; the
+                // push above may not have left one (e.g. no `-u`). Record it
+                // ourselves from the local branch, then retry pointing
+                // `origin/HEAD` at it. Every step here is best-effort: the
+                // add has already succeeded on GitHub.
+                let remote_ref = format!("refs/remotes/origin/{branch}");
+                if repo_init::git(path, &[], &["rev-parse", "-q", "--verify", &remote_ref])
+                    .await
+                    .is_err()
+                {
+                    if let Err(e) =
+                        repo_init::git(path, &[], &["update-ref", &remote_ref, "HEAD"]).await
+                    {
+                        tracing::warn!(
+                            "[workspace] publish: recording origin's branch failed: {e}"
+                        );
+                    }
+                }
+                if let Err(e) = repo_init::git(
+                    path,
+                    &[],
+                    &["symbolic-ref", "refs/remotes/origin/HEAD", &remote_ref],
+                )
+                .await
+                {
+                    tracing::warn!("[workspace] publish: pointing origin/HEAD failed: {e}");
+                }
             }
         }
         None => tracing::warn!("[workspace] publish: detached HEAD; origin/HEAD not set"),

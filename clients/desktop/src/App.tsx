@@ -16,7 +16,9 @@ import {
   X,
 } from "lucide-react";
 import {
+  hasCapability,
   isSessionWorking,
+  openTarget,
   type ConnectionMode,
   type ConnectionPath,
   type HostController,
@@ -62,7 +64,7 @@ import { HostPathDialog, HostPicker, PairDialog, type PairTarget } from "@/panel
 import { PrBanner } from "@/panels/PrBanner";
 import { SessionPanel } from "@/panels/SessionPanel";
 import { SettingsDialog, type SettingsTab } from "@/panels/Settings";
-import { Sidebar } from "@/panels/Sidebar";
+import { Sidebar, type ContinueRequest } from "@/panels/Sidebar";
 import { TerminalPanel } from "@/panels/TerminalPanel";
 import { AgentTerminalsContext, useAgentTerminalsState } from "@/panels/AgentTerminal";
 import { UpdateCard, useUpdates } from "@/panels/UpdateCard";
@@ -256,6 +258,8 @@ export function Workbench({
   const workspaces = useHost((s) => s.workspaces);
   const controller = useController();
   const hostId = useHost((s) => s.host?.host_id ?? null);
+  // A current Host shows a root through a worktree, never as the selection (§5.3).
+  const publishable = useHost((s) => hasCapability(s.connection.compat, "workspace.publish"));
   const remote = choice.kind === "remote";
   const refusedCode = useHost((s) => (s.connection.status === "live" ? null : (s.connection.error?.code ?? null)));
   /** The settings tab showing; null when settings are closed. */
@@ -306,7 +310,13 @@ export function Workbench({
   const workspace = workspaces?.find((w) => w.workspace_id === workspaceId) ?? null;
   // A removed worktree has no checkout: only its sessions' history remains.
   const removed = workspace?.removed ?? false;
-  const shownDocs = workspace && !removed ? docs.filter((d) => d.workspaceId === workspaceId) : [];
+  // On a current Host the repository folder's own sessions are read-only history too (§5.3, D8).
+  const readOnlyRoot = publishable && workspace?.parent_workspace_id === null;
+  const readOnly = removed || readOnlyRoot;
+  /** A read-only root's Continue, until the sidebar takes it; numbered so each click runs once. */
+  const [continueRequest, setContinueRequest] = useState<ContinueRequest | null>(null);
+  const continues = useRef(0);
+  const shownDocs = workspace && !readOnly ? docs.filter((d) => d.workspaceId === workspaceId) : [];
   const current = shownDocs.find((d) => docKey(d) === activeDoc) ?? null;
 
   function selectSession(id: string | null) {
@@ -319,9 +329,10 @@ export function Workbench({
     if (id === workspaceId) return;
     const sessions = controller.store.getState().sessionsByWorkspace[id] ?? [];
     const last = lastSession.current[id];
-    // A removed worktree cannot start a new session, so it opens at its newest.
-    const removed = workspaces?.find((w) => w.workspace_id === id)?.removed ?? false;
-    const keep = last === null ? !removed : sessions.some((x) => x.session_id === last);
+    // A removed worktree or read-only root cannot start a new session, so it opens at its newest.
+    const shown = workspaces?.find((w) => w.workspace_id === id);
+    const readOnly = (shown?.removed ?? false) || (publishable && shown?.parent_workspace_id === null);
+    const keep = last === null ? !readOnly : sessions.some((x) => x.session_id === last);
     setWorkspaceId(id);
     setSessionId(keep ? (last ?? null) : (sessions[0]?.session_id ?? null));
     setActiveDoc(null);
@@ -343,23 +354,40 @@ export function Workbench({
 
   useEffect(() => {
     if (!workspaces || !hostId) return;
+    const state = controller.store.getState();
+    /** Show `root`'s `openTarget` worktree as its click would, else nothing. Never creates one. */
+    const showTarget = (root: WorkspaceInfo | undefined) => {
+      const target = root ? openTarget(state, root.workspace_id) : null;
+      setWorkspaceId(target?.workspace_id ?? null);
+      setSessionId(target ? (state.sessionsByWorkspace[target.workspace_id]?.[0]?.session_id ?? null) : null);
+      setActiveDoc(null);
+    };
+    /** The first root with a worktree to open (§5.3), else nothing: the empty state. */
+    const showFirstTarget = () =>
+      showTarget(workspaces.find((w) => w.parent_workspace_id === null && openTarget(state, w.workspace_id)));
     if (!restored.current) {
       // Once per launch: reopen what this client showed last, if the host still has it.
       restored.current = true;
       const last = lastSelection(hostId);
-      if (last.workspaceId && workspaces.some((w) => w.workspace_id === last.workspaceId)) {
-        const listed = controller.store.getState().sessionsByWorkspace[last.workspaceId] ?? [];
-        setWorkspaceId(last.workspaceId);
+      const remembered = workspaces.find((w) => w.workspace_id === last.workspaceId);
+      // On a current Host a remembered root is replaced by its worktree, else nothing.
+      if (remembered && publishable && remembered.parent_workspace_id === null) return showTarget(remembered);
+      if (remembered) {
+        const listed = state.sessionsByWorkspace[remembered.workspace_id] ?? [];
+        setWorkspaceId(remembered.workspace_id);
         setSessionId(listed.some((x) => x.session_id === last.sessionId) ? last.sessionId : null);
         return;
       }
+      if (publishable) return showFirstTarget();
     }
     if (workspaceId && !workspaces.some((w) => w.workspace_id === workspaceId)) {
+      if (publishable) return showFirstTarget();
       setWorkspaceId(null);
       setSessionId(null);
     }
-    if (!workspaceId && workspaces.length > 0) setWorkspaceId(workspaces[0]!.workspace_id);
-  }, [workspaces, workspaceId, hostId, controller]);
+    // A Host from before publishing shows its first workspace, root or not, as it always did.
+    if (!publishable && !workspaceId && workspaces.length > 0) setWorkspaceId(workspaces[0]!.workspace_id);
+  }, [workspaces, workspaceId, hostId, controller, publishable]);
 
   useEffect(() => {
     if (workspaceId) lastSession.current[workspaceId] = sessionId;
@@ -378,6 +406,8 @@ export function Workbench({
         />
       )}
       <SidebarFrame
+        // A Continue shows the sidebar, where its dialog or "Preparing workspace…" appears.
+        reveal={continueRequest !== null}
         footer={
           <>
             <UpdateCard bridge={bridge} updates={updates} remote={remote} onSeeChanges={() => setSettings("about")} />
@@ -424,6 +454,9 @@ export function Workbench({
           pickFolder={() =>
             remote ? new Promise<string | null>((resolve) => setAskPath(() => resolve)) : bridge.pickFolder()
           }
+          remote={remote}
+          continueRequest={continueRequest}
+          onContinued={() => setContinueRequest(null)}
         />
       </SidebarFrame>
       {settings && (
@@ -459,10 +492,15 @@ export function Workbench({
                 This worktree was removed — its sessions are read-only.
               </p>
             )}
+            {readOnlyRoot && (
+              <p className="text-muted-foreground border-b px-5 py-1.5 text-xs" role="status" data-testid="root-banner">
+                These sessions ran in the repository folder — they're read-only.
+              </p>
+            )}
             <CenterTabs
               workspaceId={workspaceId}
               sessionId={sessionId}
-              removed={removed}
+              removed={readOnly}
               docs={shownDocs}
               active={current && docKey(current)}
               onSelectSession={selectSession}
@@ -471,10 +509,10 @@ export function Workbench({
             />
             <div className="relative min-h-0 flex-1">
               <TabPane active={current === null}>
-                {/* A removed worktree has no files to open. */}
+                {/* A removed worktree has no files to open, nor does a read-only root. */}
                 <FileLinksContext.Provider
                   value={
-                    workspace && !removed
+                    workspace && !readOnly
                       ? {
                           workspace,
                           open: (path) => openDoc({ kind: "file", workspaceId: workspace.workspace_id, path }),
@@ -490,7 +528,16 @@ export function Workbench({
                   }
                 >
                   <AgentTerminalsContext.Provider value={agentTerminals}>
-                    <SessionPanel workspaceId={workspaceId} sessionId={sessionId} onSessionStarted={setSessionId} />
+                    <SessionPanel
+                      workspaceId={workspaceId}
+                      sessionId={sessionId}
+                      onSessionStarted={setSessionId}
+                      onContinue={
+                        readOnlyRoot
+                          ? () => setContinueRequest({ root: workspaceId, nonce: ++continues.current })
+                          : undefined
+                      }
+                    />
                   </AgentTerminalsContext.Provider>
                 </FileLinksContext.Provider>
               </TabPane>
@@ -508,12 +555,21 @@ export function Workbench({
           </>
         ) : (
           <div className="m-auto flex flex-col items-center gap-1.5 text-center">
-            <p className="text-lg font-semibold tracking-tight">No workspace yet</p>
-            <p className="text-muted-foreground">Add a project folder from the sidebar to get started.</p>
+            {publishable && workspaces?.some((w) => w.parent_workspace_id === null) ? (
+              <>
+                <p className="text-lg font-semibold tracking-tight">No worktree open</p>
+                <p className="text-muted-foreground">Pick a repository to open a worktree.</p>
+              </>
+            ) : (
+              <>
+                <p className="text-lg font-semibold tracking-tight">No workspace yet</p>
+                <p className="text-muted-foreground">Add a project folder from the sidebar to get started.</p>
+              </>
+            )}
           </div>
         )}
       </main>
-      {workspace && !removed && (
+      {workspace && !readOnly && (
         <WorkspacePanel
           workspace={workspace}
           hiddenTerminals={agentTerminals.ids}
@@ -950,11 +1006,23 @@ function TabPane({ active, children }: { active: boolean; children: React.ReactN
 }
 
 /** Resizable, collapsible sidebar; its layout is a client preference. */
-function SidebarFrame({ children, footer }: { children: React.ReactNode; footer: React.ReactNode }) {
+function SidebarFrame({
+  children,
+  footer,
+  reveal = false,
+}: {
+  children: React.ReactNode;
+  footer: React.ReactNode;
+  /** Show a collapsed sidebar, for work that happens there. */
+  reveal?: boolean;
+}) {
   const [layout, setLayout] = useState(sidebarLayout);
   const drag = useRef<{ x: number; width: number } | null>(null);
 
   useEffect(() => rememberSidebar(layout), [layout]);
+  useEffect(() => {
+    if (reveal) setLayout((l) => (l.collapsed ? { ...l, collapsed: false } : l));
+  }, [reveal]);
 
   if (layout.collapsed) {
     return (

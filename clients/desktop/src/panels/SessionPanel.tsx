@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, GitBranch, Loader2, Paperclip, Square } from "lucide-react";
+import { ArrowDown, ArrowUp, GitBranch, GitBranchPlus, Loader2, Paperclip, Square } from "lucide-react";
 import {
   effortFor,
   hasCapability,
@@ -236,9 +236,25 @@ export function SessionPanel(props: {
   workspaceId: string;
   sessionId: string | null;
   onSessionStarted(id: string): void;
+  /** A repository-folder session's Continue: a new worktree for its root. */
+  onContinue?(): void;
 }) {
   const removed = useHost((s) => s.workspaces?.find((w) => w.workspace_id === props.workspaceId)?.removed ?? false);
+  // On a current Host a root's own sessions are read-only history (§5.3, D8).
+  const root = useHost(
+    (s) =>
+      hasCapability(s.connection.compat, "workspace.publish") &&
+      s.workspaces?.find((w) => w.workspace_id === props.workspaceId)?.parent_workspace_id === null,
+  );
   if (props.sessionId === null) {
+    if (root) {
+      return (
+        <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+          <p className="text-muted-foreground">Work in this repository continues in a worktree.</p>
+          <ContinueButton onContinue={props.onContinue} />
+        </div>
+      );
+    }
     if (removed) {
       return (
         <p className="text-muted-foreground p-6 text-center">
@@ -249,7 +265,30 @@ export function SessionPanel(props: {
     return <NewSession key={props.workspaceId} workspaceId={props.workspaceId} onStarted={props.onSessionStarted} />;
   }
   return (
-    <OpenSession key={props.sessionId} workspaceId={props.workspaceId} sessionId={props.sessionId} removed={removed} />
+    <OpenSession
+      key={props.sessionId}
+      workspaceId={props.workspaceId}
+      sessionId={props.sessionId}
+      removed={removed}
+      root={root}
+      onContinue={props.onContinue}
+    />
+  );
+}
+
+function ContinueButton({ onContinue }: { onContinue?(): void }) {
+  const online = useOnline();
+  return (
+    <Button
+      size="xs"
+      className="bg-brand text-brand-foreground hover:bg-brand/85 shrink-0"
+      disabled={!online || !onContinue}
+      title={online ? "A new worktree of this repository, with an empty composer" : "The Host is offline"}
+      onClick={onContinue}
+    >
+      <GitBranchPlus />
+      Continue in a new worktree
+    </Button>
   );
 }
 
@@ -316,12 +355,19 @@ export function NoAgents() {
 function OpenSession({
   workspaceId,
   sessionId,
-  removed,
+  removed: gone,
+  root,
+  onContinue,
 }: {
   workspaceId: string;
   sessionId: string;
   removed: boolean;
+  /** It ran in the repository folder: read-only, with Continue in place of the composer. */
+  root: boolean;
+  onContinue?(): void;
 }) {
+  // Neither a removed worktree nor the repository folder takes new work.
+  const removed = gone || root;
   const controller = useController();
   const online = useOnline();
   const view = useHost((s) => s.sessions[sessionId]);
@@ -466,96 +512,109 @@ function OpenSession({
           </Button>
         )}
       </div>
-      <Composer
-        workspaceId={workspaceId}
-        placeholder={
-          removed
-            ? "This worktree was removed — the session is read-only"
-            : running
-              ? "The agent is working…"
-              : "Send a message"
-        }
-        disabled={running || removed || !online}
-        unattended={options?.mode?.current === "unattended"}
-        commands={view?.commands ?? agentCommands}
-        terminal={terminal}
-        notice={
-          <>
-            <AgentTerminalCard workspaceId={workspaceId} />
-            {optionsError && (
-              <p className="text-destructive text-xs" role="alert" data-testid="options-error">
-                {optionsError}
-              </p>
-            )}
-            {cancelError && (
-              <p className="text-destructive text-xs" role="alert">
-                {cancelError}
-              </p>
-            )}
-            {running && !removed && confirmCancel && (
-              <div
-                className="bg-card flex items-center gap-2 rounded-lg px-3 py-2 text-xs shadow-sm"
-                data-testid="confirm-cancel"
-              >
-                <span className="flex-1">Stop the agent's current turn?</span>
-                <Button size="xs" variant="ghost" disabled={cancelling} onClick={() => setConfirmCancel(false)}>
-                  Keep going
-                </Button>
-                <Button size="xs" variant="destructive" disabled={!online || cancelling} onClick={cancel}>
-                  Stop
-                </Button>
-              </div>
-            )}
-          </>
-        }
-        banner={
-          options && (
-            <UnattendedBanner
-              options={options}
-              disabled={optionsDisabled}
-              onChange={(req) => void changeOptions(req)}
-            />
-          )
-        }
-        controls={
-          options && (
+      {root ? (
+        <div className="shrink-0 px-6 pt-1 pb-4">
+          <div
+            // In the composer's place, on the composer's surface.
+            className="bg-card ring-border mx-auto flex w-full max-w-3xl items-center gap-3 rounded-2xl px-4 py-3 text-sm ring-1"
+            data-testid="root-continue"
+          >
+            <span className="text-muted-foreground min-w-0 flex-1">This session ran in the repository folder.</span>
+            <ContinueButton onContinue={onContinue} />
+          </div>
+        </div>
+      ) : (
+        <Composer
+          workspaceId={workspaceId}
+          placeholder={
+            removed
+              ? "This worktree was removed — the session is read-only"
+              : running
+                ? "The agent is working…"
+                : "Send a message"
+          }
+          disabled={running || removed || !online}
+          unattended={options?.mode?.current === "unattended"}
+          commands={view?.commands ?? agentCommands}
+          terminal={terminal}
+          notice={
             <>
-              {(agentName ?? summary?.agent) && (
-                <span className="text-muted-foreground flex min-w-0 items-center gap-1 pl-2 text-xs">
-                  <span className="truncate">{agentName ?? summary?.agent}</span>
-                  <span aria-hidden>·</span>
-                </span>
+              <AgentTerminalCard workspaceId={workspaceId} />
+              {optionsError && (
+                <p className="text-destructive text-xs" role="alert" data-testid="options-error">
+                  {optionsError}
+                </p>
               )}
-              <OptionsBar
+              {cancelError && (
+                <p className="text-destructive text-xs" role="alert">
+                  {cancelError}
+                </p>
+              )}
+              {running && !removed && confirmCancel && (
+                <div
+                  className="bg-card flex items-center gap-2 rounded-lg px-3 py-2 text-xs shadow-sm"
+                  data-testid="confirm-cancel"
+                >
+                  <span className="flex-1">Stop the agent's current turn?</span>
+                  <Button size="xs" variant="ghost" disabled={cancelling} onClick={() => setConfirmCancel(false)}>
+                    Keep going
+                  </Button>
+                  <Button size="xs" variant="destructive" disabled={!online || cancelling} onClick={cancel}>
+                    Stop
+                  </Button>
+                </div>
+              )}
+            </>
+          }
+          banner={
+            options && (
+              <UnattendedBanner
                 options={options}
                 disabled={optionsDisabled}
-                disabledReason={running ? "Options change between turns" : starting ? "The agent is starting…" : null}
                 onChange={(req) => void changeOptions(req)}
               />
-              <ContextRing view={view} agent={agentName ?? summary?.agent ?? null} />
-            </>
-          )
-        }
-        action={
-          running &&
-          !removed && (
-            <button
-              type="button"
-              className="bg-foreground text-background hover:bg-foreground/85 focus-visible:ring-ring/50 grid size-8 shrink-0 place-items-center rounded-full outline-none focus-visible:ring-2 disabled:opacity-50"
-              aria-label="Stop agent"
-              title="Stop the agent's current turn"
-              data-testid="stop-agent"
-              disabled={!online || confirmCancel}
-              onClick={() => setConfirmCancel(true)}
-            >
-              <Square className="size-3 fill-current" />
-            </button>
-          )
-        }
-        onSend={(blocks, client_message_id) =>
-          controller.sendMessage({ session_id: sessionId, blocks, client_message_id })
-        }
-      />
+            )
+          }
+          controls={
+            options && (
+              <>
+                {(agentName ?? summary?.agent) && (
+                  <span className="text-muted-foreground flex min-w-0 items-center gap-1 pl-2 text-xs">
+                    <span className="truncate">{agentName ?? summary?.agent}</span>
+                    <span aria-hidden>·</span>
+                  </span>
+                )}
+                <OptionsBar
+                  options={options}
+                  disabled={optionsDisabled}
+                  disabledReason={running ? "Options change between turns" : starting ? "The agent is starting…" : null}
+                  onChange={(req) => void changeOptions(req)}
+                />
+                <ContextRing view={view} agent={agentName ?? summary?.agent ?? null} />
+              </>
+            )
+          }
+          action={
+            running &&
+            !removed && (
+              <button
+                type="button"
+                className="bg-foreground text-background hover:bg-foreground/85 focus-visible:ring-ring/50 grid size-8 shrink-0 place-items-center rounded-full outline-none focus-visible:ring-2 disabled:opacity-50"
+                aria-label="Stop agent"
+                title="Stop the agent's current turn"
+                data-testid="stop-agent"
+                disabled={!online || confirmCancel}
+                onClick={() => setConfirmCancel(true)}
+              >
+                <Square className="size-3 fill-current" />
+              </button>
+            )
+          }
+          onSend={(blocks, client_message_id) =>
+            controller.sendMessage({ session_id: sessionId, blocks, client_message_id })
+          }
+        />
+      )}
     </div>
   );
 }

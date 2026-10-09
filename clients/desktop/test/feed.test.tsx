@@ -94,6 +94,7 @@ const sidebarProps = (): SidebarProps => ({
   onSelectWorkspace: vi.fn(),
   onSessionStarted: vi.fn(),
   pickFolder: vi.fn(async () => null),
+  remote: false,
 });
 
 describe("workspace tree on the host feed", () => {

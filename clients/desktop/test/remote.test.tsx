@@ -28,6 +28,13 @@ const ws = (id: string): WorkspaceInfo => ({
   display_path: null,
 });
 
+const worktree = (id: string, root: string): WorkspaceInfo => ({
+  ...ws(id),
+  kind: "worktree",
+  parent_workspace_id: root,
+  branch: `zwiim/${id}`,
+});
+
 const me = { user_id: "u1", email: "me@example.com" };
 const WAIT = { timeout: 4000 };
 const RELAY = "Connected through Zwiim Cloud";
@@ -41,7 +48,8 @@ function world({ lan: onLan = false } = {}) {
   const cloud = new FakeCloud();
   const lan = new FakeLan();
   const studio = new FakeHost("host-studio");
-  studio.backend.handlers["workspace.list"] = () => [ws("w-remote")];
+  // A current Host opens a repository at its worktree, never the root.
+  studio.backend.handlers["workspace.list"] = () => [ws("w-remote"), worktree("wt-remote", "w-remote")];
   studio.backend.handlers["workspace.tree"] = () => [];
   const attic = new FakeHost("host-attic");
   const own = new FakeHost("h-local");
@@ -288,14 +296,15 @@ describe("remote host", () => {
   it("runs the same workbench through the tunnel", async () => {
     const env = setup();
     await screen.findByText("repo-w-local");
-    env.studio.backend.handlers["session.list"] = () => [
-      { session_id: "s1", workspace_id: "w-remote", agent: "claude_code", title: "Fix the build", status: "idle" },
-    ];
+    env.studio.backend.handlers["session.list"] = (p: { workspace_id: string }) =>
+      p.workspace_id === "wt-remote"
+        ? [{ session_id: "s1", workspace_id: "wt-remote", agent: "claude_code", title: "Fix the build", status: "idle" }]
+        : [];
     await pairStudio(env);
     const ops = () => env.studio.backend.requests.map((r) => r.op);
     // The tree, and the session's history, were read through the relay.
     await waitFor(() => expect(ops()).toContain("workspace.tree"), WAIT);
-    fireEvent.click(await screen.findByText("Fix the build"));
+    // The worktree opens at its newest session, as a click on the repository would.
     await waitFor(() => expect(ops()).toContain("session.history"), WAIT);
     fireEvent.click(screen.getByText("Git"));
     await waitFor(() => expect(ops()).toEqual(expect.arrayContaining(["git.status", "git.log"])), WAIT);
@@ -335,7 +344,7 @@ describe("remote host", () => {
     expect(sidebar().getAllByText("repo-w-remote")).toHaveLength(1);
 
     // A restart: a new epoch, and the state is read again.
-    env.studio.backend.handlers["workspace.list"] = () => [ws("w-remote"), ws("w-after")];
+    env.studio.backend.handlers["workspace.list"] = () => [ws("w-remote"), worktree("wt-remote", "w-remote"), ws("w-after")];
     env.studio.restart("e2");
     await screen.findByText("repo-w-after", {}, { timeout: 6000 });
     expect(sidebar().getAllByText("repo-w-remote")).toHaveLength(1);

@@ -1,14 +1,27 @@
-import { useEffect, useState } from "react";
-import { ChevronDown, ChevronRight, Folder, FolderGit2, GitBranch, GitBranchPlus, Plus, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Folder,
+  FolderGit2,
+  GitBranch,
+  GitBranchPlus,
+  History,
+  Plus,
+  Trash2,
+} from "lucide-react";
 import {
   busyDetails,
   dirtyDetails,
+  hasCapability,
   largeFolderDetails,
   largeFolderText,
+  openTarget,
   selectWorkspaceTree,
   type LargeFolderDetails,
   type WorkspaceBusyDetails,
   type WorkspaceInfo,
+  type WorkspaceInspection,
   type WorkspaceNode,
 } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
@@ -16,6 +29,7 @@ import { errorMessage, useController, useHost, useOnline } from "@/lib/host-cont
 import { rememberSidebarFolds, sidebarFolds, type SidebarFolds } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
 import { NewWorktree } from "./NewWorktree";
+import { PublishDialog, type PublishSubject } from "./PublishDialog";
 
 export interface SidebarProps {
   workspaceId: string | null;
@@ -23,6 +37,17 @@ export interface SidebarProps {
   /** A new worktree started its first session. */
   onSessionStarted(workspaceId: string, sessionId: string): void;
   pickFolder(): Promise<string | null>;
+  /** Whether the Host is another computer (the publish dialog's "the host") or this one ("this Mac"). */
+  remote: boolean;
+  /** A read-only root session's Continue to a new worktree; each `nonce` is taken once, then `onContinued`. */
+  continueRequest?: ContinueRequest | null;
+  onContinued?(): void;
+}
+
+/** One Continue click: the root to continue, and a number no earlier click used. */
+export interface ContinueRequest {
+  root: string;
+  nonce: number;
 }
 
 /** A worktree's label: its branch, or its folder name once the checkout is gone. */
@@ -56,9 +81,19 @@ export function Sidebar(props: SidebarProps) {
   const online = useOnline();
   const tree = useHost(selectWorkspaceTree);
   const loaded = useHost((s) => s.workspaces !== null);
+  // A Host from before publishing adds a picked folder as it is, as it always did.
+  const publishable = useHost((s) => hasCapability(s.connection.compat, "workspace.publish"));
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [large, setLarge] = useState<{ path: string; details: LargeFolderDetails } | null>(null);
+  // A picked folder or clicked root without an origin, asking before it becomes a GitHub repository.
+  const [publishing, setPublishing] = useState<{ subject: PublishSubject; inspection: WorkspaceInspection } | null>(
+    null,
+  );
+  // The root whose click is reading it or preparing its worktree.
+  const [opening, setOpening] = useState<string | null>(null);
+  // One inspect or dialog at a time, from + or a root's click.
+  const busy = adding || opening !== null || publishing !== null;
   const [folds, setFolds] = useState(sidebarFolds);
 
   function fold(next: SidebarFolds) {
@@ -75,10 +110,94 @@ export function Sidebar(props: SidebarProps) {
   async function addWorkspace() {
     setError(null);
     setLarge(null);
-    const path = await props.pickFolder();
-    if (!path) return;
-    await add(path, false);
+    // Busy from the picker on, so a root's click can't inspect alongside this add.
+    setAdding(true);
+    try {
+      const path = await props.pickFolder();
+      if (!path) return;
+      if (publishable) await addPicked(path);
+      else await add(path, false);
+    } finally {
+      setAdding(false);
+    }
   }
+
+  /**
+   * The folder as `workspace.inspect` reads it: one with an origin is added
+   * at once; any other opens the publish dialog, and only its click adds (D11).
+   */
+  async function addPicked(path: string) {
+    try {
+      const inspection = await controller.inspectWorkspace(path);
+      if (inspection.git === "origin") await openFirstWorktree(await controller.addWorkspace(path));
+      else setPublishing({ subject: { kind: "path", path }, inspection });
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+
+  /**
+   * A repository just added opens in a new worktree, selected with its
+   * composer, never the root. If the worktree fails the repository stays
+   * added and the error shows. Never throws: the dialog's `onAdded` lands here.
+   */
+  async function openFirstWorktree(root: WorkspaceInfo) {
+    try {
+      // The new repository shows even if the list or the repository was folded away.
+      fold({ workspaces: false, repositories: folds.repositories.filter((r) => r !== root.workspace_id) });
+      const worktree = await controller.createWorktree(root.workspace_id);
+      props.onSelectWorkspace(worktree.workspace_id);
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+
+  /**
+   * A root's click (§5.3): its `openTarget` worktree; without one, the root
+   * as `workspace.inspect` reads it — a plain or unborn repository opens the
+   * publish dialog, anything else gets a new worktree. Never selects the root,
+   * except on a Host from before publishing, as it always did.
+   */
+  async function openRoot(root: WorkspaceInfo) {
+    if (!publishable) return props.onSelectWorkspace(root.workspace_id);
+    const target = openTarget(controller.store.getState(), root.workspace_id);
+    if (target) return props.onSelectWorkspace(target.workspace_id);
+    await newWorktree(root);
+  }
+
+  /**
+   * A new worktree for `root` as its click makes one, even beside others: a
+   * plain or unborn repository opens the publish dialog first.
+   */
+  async function newWorktree(root: WorkspaceInfo) {
+    // Offline, an inspect could not be told apart from a lost one; a click that only selects still works.
+    if (busy || !online) return;
+    setError(null);
+    setLarge(null);
+    setOpening(root.workspace_id);
+    try {
+      const inspection = await controller.inspectRoot(root.workspace_id);
+      if (inspection.git === "none" || (inspection.git === "no_origin" && inspection.first_commit)) {
+        setPublishing({ subject: { kind: "root", workspace_id: root.workspace_id }, inspection });
+      } else await openFirstWorktree(root);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setOpening(null);
+    }
+  }
+
+  // A root session's Continue (§5.3, D8): a new worktree, never its open target.
+  // Each click runs once, though StrictMode runs the effect twice, as on a sidebar mounting with a request.
+  const request = props.continueRequest ?? null;
+  const taken = useRef(0);
+  useEffect(() => {
+    if (!request || request.nonce === taken.current) return;
+    taken.current = request.nonce;
+    props.onContinued?.();
+    const root = controller.store.getState().workspaces?.find((w) => w.workspace_id === request.root);
+    if (root) void newWorktree(root);
+  }, [request?.nonce]);
 
   async function add(path: string, allowLarge: boolean) {
     setAdding(true);
@@ -117,12 +236,28 @@ export function Sidebar(props: SidebarProps) {
           variant="ghost"
           title="Add workspace"
           onClick={addWorkspace}
-          disabled={adding || !online}
+          disabled={busy || !online}
         >
           <Plus />
         </Button>
       </div>
       {error && <p className="text-destructive px-2 text-xs">{error}</p>}
+      {publishing && (
+        <PublishDialog
+          // A new folder never inherits an earlier dialog's state.
+          key={publishing.subject.kind === "path" ? publishing.subject.path : publishing.subject.workspace_id}
+          subject={publishing.subject}
+          inspection={publishing.inspection}
+          remote={props.remote}
+          onClose={() => setPublishing(null)}
+          // Shows "Preparing workspace…" until the worktree step ends, either way;
+          // then closes this dialog only, never one opened since.
+          onAdded={(root) => {
+            const shown = publishing;
+            void openFirstWorktree(root).finally(() => setPublishing((p) => (p === shown ? null : p)));
+          }}
+        />
+      )}
       {large && (
         <div className="bg-card mx-1 flex flex-col gap-2 rounded-lg p-2.5 text-xs shadow-sm" role="alertdialog" aria-label="Large folder">
           <p className="font-medium">Large folder</p>
@@ -152,9 +287,12 @@ export function Sidebar(props: SidebarProps) {
               key={node.workspace.workspace_id}
               node={node}
               {...props}
+              publishable={publishable}
               folded={folds.repositories}
               onFold={foldRepository}
               onError={setError}
+              opening={opening}
+              onOpenRoot={openRoot}
             />
           ))}
         </div>
@@ -169,21 +307,32 @@ type RowProps = SidebarProps & {
   folded: readonly string[];
   onFold(id: string, folded: boolean): void;
   onError(message: string | null): void;
+  /** The root whose click is reading it or preparing its worktree. */
+  opening: string | null;
+  onOpenRoot(root: WorkspaceInfo): void;
+  /** A current Host: a root is selected only read-only, through its earlier-sessions row. */
+  publishable: boolean;
 };
 
 function WorkspaceRow(props: RowProps) {
   const online = useOnline();
   const { workspace: w, worktrees } = props.node;
   const isRoot = w.parent_workspace_id === null;
-  const selected = props.workspaceId === w.workspace_id;
+  // On a current Host a root's own sessions are read-only history under one row (§5.3, D8).
+  const earlier = isRoot && props.publishable ? (props.node.sessions?.length ?? 0) : 0;
+  const earlierSelected = earlier > 0 && props.workspaceId === w.workspace_id;
+  const selected = props.workspaceId === w.workspace_id && !earlierSelected;
+  const nested = worktrees.length > 0 || earlier > 0;
   const [creating, setCreating] = useState(false);
   const [removing, setRemoving] = useState(false);
   const folded = props.folded.includes(w.workspace_id);
   // Folded away, worktrees still show their working agents and selection on the repository.
   const hidden = folded ? worktrees : [];
   const working = props.node.working + hidden.reduce((n, c) => n + c.working, 0);
-  const holdsSelected = hidden.some((n) => n.workspace.workspace_id === props.workspaceId);
+  const holdsSelected =
+    hidden.some((n) => n.workspace.workspace_id === props.workspaceId) || (folded && earlierSelected);
   const base = baseLabel(w);
+  const preparing = props.opening === w.workspace_id;
 
   return (
     <div data-testid={`workspace-${w.workspace_id}`}>
@@ -194,7 +343,7 @@ function WorkspaceRow(props: RowProps) {
         )}
       >
         {isRoot &&
-          (worktrees.length > 0 ? (
+          (nested ? (
             <button
               className="text-muted-foreground hover:text-foreground flex h-7 w-5 shrink-0 items-center justify-center"
               title={folded ? "Show worktrees" : "Hide worktrees"}
@@ -210,7 +359,7 @@ function WorkspaceRow(props: RowProps) {
           className={cn("flex min-w-0 flex-1 items-center gap-2 py-1.5 pr-1 text-left text-[13px]", !isRoot && "pl-2")}
           aria-current={selected || undefined}
           title={base ?? undefined}
-          onClick={() => props.onSelectWorkspace(w.workspace_id)}
+          onClick={() => (isRoot ? props.onOpenRoot(w) : props.onSelectWorkspace(w.workspace_id))}
         >
           {isRoot && !w.is_git_repo ? (
             <Folder className="text-muted-foreground size-4 shrink-0" aria-label="Folder, not a Git repository" />
@@ -231,7 +380,11 @@ function WorkspaceRow(props: RowProps) {
             {isRoot ? (w.alias ?? w.name) : worktreeLabel(w)}
           </span>
           <span className="ml-auto flex min-w-0 items-center gap-1.5 text-[11px] font-normal">
-            {isRoot && w.branch && <span className="text-muted-foreground min-w-0 truncate font-mono">{w.branch}</span>}
+            {preparing ? (
+              <span className="text-muted-foreground min-w-0 truncate">Preparing workspace…</span>
+            ) : (
+              isRoot && w.branch && <span className="text-muted-foreground min-w-0 truncate font-mono">{w.branch}</span>
+            )}
             {working > 0 && (
               <span
                 className="flex size-3 shrink-0 items-center justify-center"
@@ -283,7 +436,7 @@ function WorkspaceRow(props: RowProps) {
         />
       )}
       {removing && <RemoveWorktree workspace={w} onClose={() => setRemoving(false)} />}
-      {worktrees.length > 0 && !folded && (
+      {nested && !folded && (
         <div className="border-sidebar-border ml-[27px] flex flex-col gap-px border-l py-0.5 pl-1.5">
           {worktrees
             .filter((n) => !n.workspace.removed)
@@ -291,11 +444,25 @@ function WorkspaceRow(props: RowProps) {
               <WorkspaceRow key={n.workspace.workspace_id} {...props} node={n} />
             ))}
           <RemovedWorktrees {...props} nodes={worktrees.filter((n) => n.workspace.removed)} />
+          {earlier > 0 && (
+            <button
+              className={cn(FOLDED_ROW, earlierSelected && "bg-sidebar-accent text-foreground")}
+              aria-current={earlierSelected || undefined}
+              onClick={() => props.onSelectWorkspace(w.workspace_id)}
+            >
+              <History className="size-3.5" />
+              {plural(earlier, "earlier session", "earlier sessions")}
+            </button>
+          )}
         </div>
       )}
     </div>
   );
 }
+
+/** A muted row standing for history folded beneath a repository. */
+const FOLDED_ROW =
+  "text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex items-center gap-2 rounded-md px-2 py-1 text-left text-xs";
 
 /** Removed worktrees keep their sessions' history, folded under one row. */
 function RemovedWorktrees({ nodes, ...row }: RowProps & { nodes: WorkspaceNode[] }) {
@@ -308,7 +475,7 @@ function RemovedWorktrees({ nodes, ...row }: RowProps & { nodes: WorkspaceNode[]
   return (
     <>
       <button
-        className="text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex items-center gap-2 rounded-md px-2 py-1 text-left text-xs"
+        className={FOLDED_ROW}
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
