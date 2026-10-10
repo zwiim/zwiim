@@ -176,3 +176,119 @@ describe("html preview", () => {
     controller.dispose();
   });
 });
+
+describe("editing csv and tsv", () => {
+  const enc = (text: string) => new TextEncoder().encode(text);
+  function editable(t: FakeTransport, path: string, text: string) {
+    serve(t, { [path]: enc(text) });
+    t.handlers["files.read"] = () => ({ path, content: text, etag: "e1", mtime_ms: null, readonly: false, line_ending: "lf" });
+    t.handlers["files.write"] = () => ({ path, etag: "e2", mtime_ms: null, readonly: false, line_ending: "lf" });
+  }
+  async function edit() {
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    await tick();
+  }
+  function setCell(text: string, value: string) {
+    fireEvent.click(within(screen.getByTestId("sheet-editor")).getByText(text));
+    const box = screen.getByRole("textbox", { name: "Cell" });
+    fireEvent.change(box, { target: { value } });
+    fireEvent.keyDown(box, { key: "Enter" });
+  }
+  const writes = (t: FakeTransport) => t.calls.filter((c) => c.op === "files.write").map((c) => c.params);
+
+  it("saves an edited cell, rewriting only its row, then shows the saved file", async () => {
+    const t = new FakeTransport();
+    editable(t, "data.csv", '"name" ,qty\r\npens,2\r\ncups,3\r\n');
+    const controller = await mount(t, "data.csv");
+    await edit();
+    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
+    setCell("2", "say \"hi\", 9");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await tick();
+    expect(writes(t)).toEqual([
+      { workspace_id: "w1", path: "data.csv", content: '"name" ,qty\r\npens,"say ""hi"", 9"\r\ncups,3\r\n', etag: "e1" },
+    ]);
+    expect(screen.queryByTestId("sheet-editor")).toBeNull();
+    expect(screen.getByTestId("sheet-table")).toBeTruthy();
+    expect(t.calls.filter((c) => c.op === "files.download").length).toBe(2);
+    controller.dispose();
+  });
+
+  it("adds and deletes rows in a tsv", async () => {
+    const t = new FakeTransport();
+    editable(t, "list.tsv", "a\tb\n1\t2\n3\t4\n");
+    const controller = await mount(t, "list.tsv");
+    await edit();
+    fireEvent.click(screen.getByRole("button", { name: "Delete row 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add row" }));
+    const box = screen.getByRole("textbox", { name: "Cell" });
+    fireEvent.change(box, { target: { value: "x,y" } });
+    fireEvent.keyDown(box, { key: "Tab" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Cell" }), { target: { value: "z" } });
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Cell" }), { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await tick();
+    expect(writes(t)[0]!.content).toBe("a\tb\n3\t4\nx,y\tz\n");
+    controller.dispose();
+  });
+
+  it("refuses to overwrite a file that changed, keeping the edits until Reload", async () => {
+    const t = new FakeTransport();
+    editable(t, "data.csv", "a,b\n1,2\n");
+    t.handlers["files.write"] = () => {
+      throw new ZwiimClientError("file_changed", "File has changed on disk. Reload the file before saving.", 409);
+    };
+    const controller = await mount(t, "data.csv");
+    await edit();
+    setCell("2", "7");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await tick();
+    expect(screen.getByRole("alert").textContent).toContain("This file changed on disk");
+    expect(within(screen.getByTestId("sheet-editor")).getByText("7")).toBeTruthy();
+    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Reload" }));
+    await tick();
+    expect(screen.queryByTestId("sheet-editor")).toBeNull();
+    expect(within(screen.getByTestId("sheet-table")).getByText("2")).toBeTruthy();
+    controller.dispose();
+  });
+
+  it("cancels without saving", async () => {
+    const t = new FakeTransport();
+    editable(t, "data.csv", "a,b\n");
+    const controller = await mount(t, "data.csv");
+    await edit();
+    setCell("b", "c");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByTestId("sheet-editor")).toBeNull();
+    expect(within(screen.getByTestId("sheet-table")).getByText("b")).toBeTruthy();
+    expect(writes(t)).toEqual([]);
+    controller.dispose();
+  });
+
+  it("offers Edit only for csv and tsv that fit, on a Host that can save", async () => {
+    const t = new FakeTransport();
+    editable(t, "long.csv", "x\n".repeat(1001));
+    let controller = await mount(t, "long.csv");
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    controller.dispose();
+    cleanup();
+
+    const old = new FakeTransport();
+    old.handlers["host.hello"] = () => hostHello({ capabilities: hostHello().capabilities!.filter((c) => c !== "files.write") });
+    editable(old, "data.csv", "a\n");
+    controller = await mount(old, "data.csv");
+    expect(screen.getByTestId("sheet-table")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    controller.dispose();
+    cleanup();
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["a"]]), "One");
+    const x = new FakeTransport();
+    serve(x, { "b.xlsx": new Uint8Array(XLSX.write(wb, { type: "array", bookType: "xlsx" })) });
+    controller = await mount(x, "b.xlsx");
+    expect(screen.getByTestId("sheet-table")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    controller.dispose();
+  });
+});

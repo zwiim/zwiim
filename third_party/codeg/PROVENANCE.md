@@ -1176,6 +1176,25 @@ Upstream-derived:
 | `commands/folder_links.rs` | `src-tauri/src/commands/folder_links.rs` | The synchronous `append_exclude` split out of `add_to_git_exclude`, for callers that already resolved the repository. |
 | `lib.rs` | `src-tauri/src/lib.rs` | `pub mod agent_images`. |
 
+## Viewed images as result images
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `parsers/codex.rs` | `src-tauri/src/parsers/codex.rs` | A `function_call_output` whose output holds `input_image` items (what `view_image` returns) carries them as the result's images (`output_images`), so they reach clients as workspace image files. |
+| `parsers/codex_code_mode.rs` | `src-tauri/src/parsers/codex_code_mode.rs` | `chunk_text` skips `input_image` items instead of serializing their base64 data URI into the result text. |
+
+## Stale saves as `file_changed`
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `app_error.rs` | `src-tauri/src/app_error.rs` | New `AppErrorCode::FileChanged`. |
+| `commands/folders.rs` | `src-tauri/src/commands/folders.rs` | `save_file_content` refuses a stale etag with `FileChanged` instead of `InvalidInput`, so the Zwiim protocol can answer `file_changed` (409) and editors can offer a reload. |
+| `web/handlers/error.rs` | `src-tauri/src/web/handlers/error.rs` | `FileChanged` maps to 409. |
+
 ## License obligations tracked
 
 - [x] Include Apache-2.0 license text (`third_party/codeg/LICENSE`).

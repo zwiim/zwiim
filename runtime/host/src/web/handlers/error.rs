@@ -10,7 +10,9 @@ fn status_for_app_error_code(code: AppErrorCode) -> StatusCode {
     match code {
         AppErrorCode::InvalidInput => StatusCode::BAD_REQUEST,
         AppErrorCode::NotFound => StatusCode::NOT_FOUND,
-        AppErrorCode::AlreadyExists | AppErrorCode::TurnInProgress => StatusCode::CONFLICT,
+        AppErrorCode::AlreadyExists | AppErrorCode::TurnInProgress | AppErrorCode::FileChanged => {
+            StatusCode::CONFLICT
+        }
         AppErrorCode::PermissionDenied => StatusCode::FORBIDDEN,
         AppErrorCode::WorkspaceRemoved => StatusCode::GONE,
         AppErrorCode::ConfigurationMissing

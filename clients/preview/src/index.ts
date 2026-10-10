@@ -5,6 +5,7 @@ export * from "./kind";
 export * from "./path";
 export * from "./answer";
 export * from "./errors";
+export * from "./delimited";
 
 /** A fresh preview origin id: 128 random bits as 32 lowercase hex chars. */
 export function newPreviewId(): string {

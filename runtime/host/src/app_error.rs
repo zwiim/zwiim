@@ -140,6 +140,9 @@ pub enum AppErrorCode {
     /// Zwiim: the addressed worktree workspace was removed. Its sessions stay
     /// readable but nothing may run in it again. Maps to HTTP 410.
     WorkspaceRemoved,
+    /// Zwiim: a save carried a stale etag — the file changed on disk since the
+    /// caller read it. Maps to HTTP 409 so editors can offer a reload.
+    FileChanged,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]

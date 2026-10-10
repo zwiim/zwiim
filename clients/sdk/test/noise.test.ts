@@ -1,5 +1,5 @@
 import { x25519 } from "@noble/curves/ed25519.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { initiate, respond, concatBytes } from "../src/remote/noise";
 import { decodeKey, devicePublicKey, encodeKey, generateDeviceKeys } from "../src/remote/keys";
 import {
@@ -237,6 +237,28 @@ describe("tunnel", () => {
     const all = new TextDecoder("latin1").decode(concatBytes(...wire));
     expect(all).not.toContain("workspace.list");
     expect(all).not.toContain("xxxxxxxx");
+  });
+
+  it("sends a large message in time slices, keeping later messages in order", async () => {
+    const { tunnel, host, wire } = await open(true, 3);
+    const t = await tunnel;
+    // Each clock read moves 5 ms on, so a send slice ends after a frame or two.
+    let clock = 0;
+    const now = vi.spyOn(Date, "now").mockImplementation(() => (clock += 5));
+    try {
+      const sent = wire.length;
+      const big = "x".repeat(1_000_000);
+      const a = t.request("files.write", { content: big }, { timeoutMs: 5000, mutating: true });
+      const b = t.request("workspace.list", {}, { timeoutMs: 5000, mutating: false });
+      // The upload did not go out in one loop that blocks the JS thread.
+      expect(wire.length - sent).toBeLessThan(Math.ceil(big.length / 65518));
+      const [ra, rb] = await Promise.all([a, b]);
+      expect(ra.body).toEqual({ op: "files.write", size: big.length + 14 });
+      expect(rb.body).toEqual({ op: "workspace.list", size: 2 });
+      expect(host.seen).toEqual(["files.write", "workspace.list"]);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it("refuses to send a message over the limit", async () => {

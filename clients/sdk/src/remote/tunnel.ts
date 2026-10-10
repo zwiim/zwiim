@@ -18,6 +18,8 @@ const MAX_NOISE_MESSAGE = 65535;
 const MAX_CHUNK = MAX_NOISE_MESSAGE - TAG_LEN - 1;
 const CHUNK_MORE = 0;
 const CHUNK_FINAL = 1;
+/** How long one send slice may encrypt before yielding to the event loop. */
+const SEND_SLICE_MS = 8;
 /** Largest tunnel message, after reassembly. */
 export const MAX_MESSAGE_LEN = 16 * 1024 * 1024;
 
@@ -284,6 +286,9 @@ export class Tunnel {
   private readonly pending = new Map<number, Pending>();
   private readonly streams = new Map<number, StreamHandlers & { opened: boolean }>();
   private ended = false;
+  /** Encoded messages whose frames are still to be sent, oldest first. */
+  private outbox: { message: Uint8Array; at: number }[] = [];
+  private draining = false;
   private readonly closeListeners = new Set<(reason: string) => void>();
 
   constructor(
@@ -475,21 +480,40 @@ export class Tunnel {
       }
       return;
     }
-    let at = 0;
-    do {
-      const chunk = message.subarray(at, at + MAX_CHUNK);
-      at += chunk.length;
-      const plain = concatBytes(
-        Uint8Array.of(at < message.length ? CHUNK_MORE : CHUNK_FINAL),
-        chunk,
-      );
-      this.channel.send(frame(this.send.encrypt(EMPTY, plain)));
-    } while (at < message.length);
+    this.outbox.push({ message, at: 0 });
+    if (this.draining) return;
+    this.draining = true;
+    this.drain();
   }
+
+  /**
+   * Encrypts and sends queued frames for one time slice, then yields to the
+   * event loop and carries on. Encrypting a large upload in one go would
+   * hold the JS thread — and the app's UI — for seconds. Messages go out
+   * whole and in order, so their chunks stay contiguous on the wire.
+   */
+  private drain = (): void => {
+    const started = Date.now();
+    while (!this.ended && this.outbox.length) {
+      const next = this.outbox[0]!;
+      const chunk = next.message.subarray(next.at, next.at + MAX_CHUNK);
+      next.at += chunk.length;
+      const last = next.at >= next.message.length;
+      const plain = concatBytes(Uint8Array.of(last ? CHUNK_FINAL : CHUNK_MORE), chunk);
+      this.channel.send(frame(this.send.encrypt(EMPTY, plain)));
+      if (last) this.outbox.shift();
+      if (this.outbox.length && Date.now() - started >= SEND_SLICE_MS) {
+        setTimeout(this.drain, 0);
+        return;
+      }
+    }
+    this.draining = false;
+  };
 
   private end(reason: string, closeChannel = true): void {
     if (this.ended) return;
     this.ended = true;
+    this.outbox = [];
     if (closeChannel) this.channel.close();
     const pending = [...this.pending.values()];
     this.pending.clear();

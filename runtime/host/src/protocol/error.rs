@@ -367,6 +367,7 @@ impl From<AppCommandError> for ZwiimError {
             }
             AppErrorCode::TurnInProgress => Self::turn_in_progress(),
             AppErrorCode::WorkspaceRemoved => Self::workspace_removed(),
+            AppErrorCode::FileChanged => Self::new(StatusCode::CONFLICT, "file_changed", message),
             AppErrorCode::PermissionDenied => Self::permission_denied(message),
             AppErrorCode::NotAGitRepository => Self::new(
                 StatusCode::UNPROCESSABLE_ENTITY,

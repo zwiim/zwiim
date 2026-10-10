@@ -137,6 +137,16 @@ function toolState(status: ToolCallStatus | null, running: boolean): ToolState {
   return "idle";
 }
 
+/** The most of a tool's input or output the transcript shows. More (an
+ * image's base64, a huge log) takes seconds to lay out and is not read. */
+const SHOWN_CHARS = 20_000;
+
+/** A tool's text cut to what the transcript shows, saying how much is left out. */
+export function clipToolText(text: string): string {
+  if (text.length <= SHOWN_CHARS) return text;
+  return `${text.slice(0, SHOWN_CHARS)}\n… ${(text.length - SHOWN_CHARS).toLocaleString("en-US")} more characters`;
+}
+
 function toolItem(p: {
   kind: string | null | undefined;
   verb?: string | null;
@@ -152,7 +162,9 @@ function toolItem(p: {
   if (verb && title.toLowerCase().startsWith(verb.toLowerCase() + " ")) verb = null;
   const changes = p.changes ?? (p.output ? parseUnifiedDiff(p.output) : null);
   const path = changes?.length === 1 ? changes[0]!.path : null;
-  return { verb, target: title, state: p.state, input: p.input, output: p.output, ...diffStats(p.output), path };
+  const input = p.input && clipToolText(p.input);
+  const output = p.output && clipToolText(p.output);
+  return { verb, target: title, state: p.state, input, output, ...diffStats(p.output), path };
 }
 
 /** A live tool call as a row. */

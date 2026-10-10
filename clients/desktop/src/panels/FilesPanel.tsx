@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Braces,
   ChevronDown,
@@ -16,14 +16,24 @@ import {
   GitBranch,
   Loader2,
   Lock,
+  Pencil,
   RefreshCw,
   SquareTerminal,
   type LucideIcon,
 } from "lucide-react";
-import { imageMime, previewErrorMessage, previewKind } from "@zwiim/preview";
+import {
+  delimitedEditable,
+  delimiterFor,
+  imageMime,
+  parseDelimited,
+  previewErrorMessage,
+  previewKind,
+  serializeDelimited,
+  type DelimitedTable,
+} from "@zwiim/preview";
 import { readSheet, type Sheet } from "@zwiim/preview/sheet";
 import { renderWord } from "@zwiim/preview/word";
-import { readChunks, readFile, ZwiimClientError, type FileContent, type FileTreeNode } from "@zwiim/sdk";
+import { hasCapability, readChunks, readFile, ZwiimClientError, type FileContent, type FileTreeNode } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { isTauri, openFileBytes } from "@/lib/bridge";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
@@ -31,6 +41,7 @@ import { cn } from "@/lib/utils";
 import { HtmlView } from "./preview/HtmlView";
 import { PdfView } from "./preview/PdfView";
 import { PreviewFailure, PreviewLoading } from "./preview/PreviewState";
+import { SheetEditor } from "./preview/SheetEditor";
 import { SheetView } from "./preview/SheetView";
 import { WordView } from "./preview/WordView";
 
@@ -275,6 +286,14 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
   // A page renders only in the app, where it gets its own origin.
   const page = kind === "html" && isTauri();
   const [mode, setMode] = useState<"rendered" | "source">("rendered");
+  // A CSV/TSV being edited: the table, and the text and etag it was read at.
+  const [editing, setEditing] = useState<{ table: DelimitedTable; source: string; etag: string } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [stale, setStale] = useState(false);
+  const delimiter = delimiterFor(name);
+  const canWrite = useHost((s) => hasCapability(s.connection.compat, "files.write"));
+  const dirty = useMemo(() => !!editing && serializeDelimited(editing.table) !== editing.source, [editing]);
 
   const refresh = useCallback(async () => {
     const load = ++loads.current;
@@ -344,6 +363,45 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
     }
   }
 
+  async function startEdit() {
+    if (!delimiter) return;
+    setEditError(null);
+    try {
+      const file = await controller.client.request("files.read", { workspace_id: workspaceId, path });
+      const table = parseDelimited(file.content, delimiter);
+      if (!delimitedEditable(table)) return setEditError("Only files up to 1,000 rows and 100 columns can be edited here.");
+      setEditing({ table, source: file.content, etag: file.etag });
+    } catch (e) {
+      setEditError(errorMessage(e));
+    }
+  }
+
+  function stopEdit() {
+    setEditing(null);
+    setEditError(null);
+    setStale(false);
+  }
+
+  async function save() {
+    if (!editing) return;
+    setSaving(true);
+    setEditError(null);
+    try {
+      const content = serializeDelimited(editing.table);
+      await controller.client.request("files.write", { workspace_id: workspaceId, path, content, etag: editing.etag });
+      stopEdit();
+      void refresh();
+    } catch (e) {
+      if (e instanceof ZwiimClientError && e.code === "file_changed") setStale(true);
+      else setEditError(errorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const sheet = shown && "sheets" in shown ? shown.sheets[0] : undefined;
+  const editable = !!delimiter && !!sheet && !sheet.truncated && canWrite;
+
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="file-view">
       <div className="text-muted-foreground flex h-10 shrink-0 items-center gap-2 border-b px-4 text-xs">
@@ -376,10 +434,50 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
         >
           <ExternalLink />
         </Button>
-        <Button size="icon-sm" variant="ghost" title="Reload" onClick={refresh} disabled={loading}>
-          <RefreshCw className={cn(loading && "animate-spin")} />
-        </Button>
+        {editing ? (
+          <>
+            <Button size="xs" variant="ghost" onClick={stopEdit} disabled={saving}>
+              Cancel
+            </Button>
+            <Button size="xs" onClick={() => void save()} disabled={!dirty || saving}>
+              {saving && <Loader2 className="animate-spin" />} Save
+            </Button>
+          </>
+        ) : (
+          <>
+            {editable && (
+              <Button size="xs" variant="ghost" onClick={() => void startEdit()} disabled={loading}>
+                <Pencil /> Edit
+              </Button>
+            )}
+            <Button size="icon-sm" variant="ghost" title="Reload" onClick={refresh} disabled={loading}>
+              <RefreshCw className={cn(loading && "animate-spin")} />
+            </Button>
+          </>
+        )}
       </div>
+      {stale && (
+        <div className="flex items-center gap-3 border-b px-4 py-2 text-xs" role="alert">
+          <p className="text-destructive flex-1">
+            This file changed on disk since you started editing. Reload to see the latest version; your edits will be lost.
+          </p>
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => {
+              stopEdit();
+              void refresh();
+            }}
+          >
+            Reload
+          </Button>
+        </div>
+      )}
+      {editError && (
+        <p className="text-destructive px-4 pt-3 text-xs" role="alert">
+          {editError}
+        </p>
+      )}
       {openError && (
         <p className="text-destructive px-4 pt-3 text-xs" role="alert" data-testid="open-error">
           {openError}
@@ -400,6 +498,8 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
         <PdfView key={reloads} workspaceId={workspaceId} path={path} onError={onViewError} />
       ) : shown && "html" in shown ? (
         <HtmlView workspaceId={workspaceId} path={path} reloadKey={reloads} onError={onViewError} />
+      ) : editing ? (
+        <SheetEditor table={editing.table} onChange={(table) => setEditing((e) => e && { ...e, table })} />
       ) : shown && "sheets" in shown ? (
         <SheetView sheets={shown.sheets} />
       ) : shown && "word" in shown ? (

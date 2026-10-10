@@ -41,7 +41,7 @@ import { AgentImageChip } from "@/attachments/AgentImageChip";
 import { SentAttachments } from "@/attachments/AttachmentChip";
 import { FileLinksContext, Markdown } from "@/components/Markdown";
 import { basename, parseUnifiedDiff, type FileDiff } from "@/lib/diff";
-import { historyTool, liveTool, type ToolSummary } from "@/lib/tools";
+import { clipToolText, historyTool, liveTool, type ToolSummary } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 
 /** How an item that just arrived comes in (DESIGN.md, Motion: medium, ease-out). */
@@ -146,7 +146,7 @@ function Output({ text, error }: { text: string; error?: boolean }) {
         error ? "text-destructive bg-destructive/5" : "bg-code",
       )}
     >
-      {text}
+      {clipToolText(text)}
     </pre>
   );
 }
@@ -166,7 +166,7 @@ function CommandCard({ command, output, error }: { command: string; output: stri
             error ? "text-destructive" : "text-muted-foreground",
           )}
         >
-          {output}
+          {clipToolText(output)}
         </pre>
       )}
     </div>

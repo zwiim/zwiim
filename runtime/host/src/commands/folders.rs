@@ -17,7 +17,7 @@ use walkdir::WalkDir;
 #[cfg(feature = "tauri-runtime")]
 use tauri::Manager;
 
-use crate::app_error::AppCommandError;
+use crate::app_error::{AppCommandError, AppErrorCode};
 use crate::db::error::DbError;
 use crate::db::service::{folder_group_service, folder_service};
 use crate::db::AppDatabase;
@@ -5374,7 +5374,8 @@ pub async fn save_file_content(
         let current_etag = compute_etag(&current_bytes, &before_meta);
         if let Some(expected) = expected_etag {
             if expected != current_etag {
-                return Err(AppCommandError::invalid_input(
+                return Err(AppCommandError::new(
+                    AppErrorCode::FileChanged,
                     "File has changed on disk. Reload the file before saving.",
                 ));
             }

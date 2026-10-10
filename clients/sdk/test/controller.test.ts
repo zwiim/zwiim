@@ -313,6 +313,11 @@ describe("HostController", () => {
     expect(t.transport.requests.at(-1)).toMatchObject({ op: "git.pr", params: { workspace_id: "a", refresh: true } });
   });
 
+  it("never retries saving a file", () => {
+    expect(MUTATING_OPS.has("files.write")).toBe(true);
+    expect(MUTATING_OPS.has("files.read")).toBe(false);
+  });
+
   it("browses without marking the read as mutating", () => {
     expect(MUTATING_OPS.has("workspace.browse")).toBe(false);
     expect(MUTATING_OPS.has("workspace.add")).toBe(true);

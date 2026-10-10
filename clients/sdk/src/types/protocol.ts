@@ -332,6 +332,15 @@ export interface FileContent {
   line_ending: string;
 }
 
+/** `files.write`: the saved file's new `etag`, for the next save. */
+export interface FileSaveResult {
+  path: string;
+  etag: string;
+  mtime_ms: number | null;
+  readonly: boolean;
+  line_ending: string;
+}
+
 /** `files.download`: a workspace file's bytes. */
 export interface FileDownload {
   name: string;
@@ -1117,6 +1126,11 @@ export interface Operations {
   ];
   "files.read": [{ workspace_id: string; path: string }, FileContent];
   /**
+   * Replace a text file's content (Hosts with `files.write`). With `etag` from
+   * the last read, a file changed since is refused with `file_changed`.
+   */
+  "files.write": [{ workspace_id: string; path: string; content: string; etag?: string }, FileSaveResult];
+  /**
    * A workspace file as base64. Whole (up to 10 MB, `file_too_large` past it),
    * or with `offset`/`length` a range of at most 8 MiB (Hosts with
    * `file_ranges`). Over the Cloud relay files past 10 MB are refused with
@@ -1238,6 +1252,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "workspace.create_folder",
   "workspace.create_worktree",
   "attachments.upload",
+  "files.write",
   "workspace.remove_worktree",
   "workspace.continue",
   "terminal.spawn",

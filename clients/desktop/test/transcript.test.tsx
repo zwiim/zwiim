@@ -111,6 +111,29 @@ describe("transcript", () => {
     controller.dispose();
   });
 
+  it("shows a huge tool output cut short, so it cannot stall the transcript", async () => {
+    const t = new FakeTransport();
+    const huge = "x".repeat(1_000_000);
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        turn("t1", "assistant", [
+          { type: "tool_call", tool_call_id: "c1", title: "Read", input_preview: "a.bin", status: "completed" },
+          { type: "tool_result", tool_call_id: "c1", output_preview: huge, is_error: false },
+          { type: "tool_call", tool_call_id: "c2", title: "Bash", input_preview: '{"command":"cat a.bin"}', status: "completed" },
+          { type: "tool_result", tool_call_id: "c2", output_preview: huge, is_error: false },
+        ]),
+      ],
+    });
+    const { controller } = await openSession(t);
+    for (const call of screen.getAllByTestId("tool-call")) {
+      fireEvent.click(within(call).getAllByRole("button")[0]!);
+      expect(call.textContent!.length).toBeLessThan(25_000);
+      expect(call.textContent).toContain("980,000 more characters");
+    }
+    controller.dispose();
+  });
+
   it("shows live tool calls as they run and finish, with edits as a diff", async () => {
     const t = new FakeTransport();
     const { controller, frame } = await openSession(t);

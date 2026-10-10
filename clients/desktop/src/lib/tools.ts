@@ -4,6 +4,16 @@
 
 import { editChanges, parseCodexPatch, type FileDiff } from "@/lib/diff";
 
+/** The most of a tool's input or output the transcript shows. More (an
+ * image's base64, a huge log) takes seconds to lay out and is not read. */
+const SHOWN_CHARS = 20_000;
+
+/** A tool's text cut to what the transcript shows, saying how much is left out. */
+export function clipToolText(text: string): string {
+  if (text.length <= SHOWN_CHARS) return text;
+  return `${text.slice(0, SHOWN_CHARS)}\n… ${(text.length - SHOWN_CHARS).toLocaleString("en-US")} more characters`;
+}
+
 /** What a tool does, from the agent's kind for a live call. */
 const KIND_VERBS: Record<string, string> = {
   read: "Read",

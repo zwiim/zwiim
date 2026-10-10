@@ -1871,6 +1871,8 @@ async fn workspace_files_git_resolve_workspace_id_only() {
         )
         .await;
     assert!(!stale.0.is_success(), "stale etag must be refused");
+    assert_eq!(stale.0, StatusCode::CONFLICT, "{}", stale.1);
+    assert_eq!(stale.1["error"]["code"], "file_changed", "{}", stale.1);
     assert_eq!(
         h.ok(
             "files.read",

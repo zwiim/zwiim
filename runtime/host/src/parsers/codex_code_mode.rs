@@ -1866,6 +1866,12 @@ fn collect_output_chunks(output: Option<&Value>) -> Vec<String> {
 fn chunk_text(value: &Value) -> Option<String> {
     match value {
         Value::Null => None,
+        // An image (`view_image`) is not text: serialized, its base64 data URI
+        // would flood the result panel. The parser lifts it into the result's
+        // images instead.
+        Value::Object(map) if map.get("type").and_then(|t| t.as_str()) == Some("input_image") => {
+            None
+        }
         Value::String(s) => Some(s.clone()),
         Value::Object(map) => match map.get("text").and_then(|t| t.as_str()) {
             Some(text) => Some(text.to_string()),

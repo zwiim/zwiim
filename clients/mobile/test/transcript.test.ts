@@ -97,6 +97,21 @@ describe("transcript", () => {
     expect(rows.at(-1)).toMatchObject({ text: `3m 17s · ${clockTime("2026-09-26T10:03:17Z")}`, stopped: false, files: [] });
   });
 
+  it("cuts a huge tool input and output short, so the sheet cannot freeze the app", () => {
+    const huge = "x".repeat(1_000_000);
+    const v = view(
+      history([
+        turn("a1", "assistant", [
+          { type: "tool_call", tool_call_id: "t1", title: "Write", input_preview: huge, status: null },
+          { type: "tool_result", tool_call_id: "t1", output_preview: huge, is_error: false },
+        ]),
+      ]),
+    );
+    const t = transcriptRows(v).find((r) => r.type === "tool");
+    expect(t?.type === "tool" && t.tool.output).toBe(`${"x".repeat(20_000)}\n… 980,000 more characters`);
+    expect(t?.type === "tool" && t.tool.input?.length).toBeLessThan(21_000);
+  });
+
   it("reads a transcript's tool names and JSON input as a verb and a target", () => {
     const v = view(
       history([

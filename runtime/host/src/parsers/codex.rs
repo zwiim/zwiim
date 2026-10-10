@@ -4534,7 +4534,7 @@ impl CodexParser {
                                             output_preview: output,
                                             is_error,
                                             agent_stats: None,
-                                            images: Vec::new(),
+                                            images: output_images(output_value),
                                         }],
                                         timestamp,
                                         usage: None,
@@ -5657,6 +5657,25 @@ fn parse_input_image_data_uri(item: &serde_json::Value) -> Option<(String, Strin
         })
         .or_else(|| item.get("url").and_then(|v| v.as_str()))?;
     parse_data_uri_image(data_uri)
+}
+
+/// The `input_image` data URIs in a tool's output array — what `view_image`
+/// returns — as result images, so they reach clients as workspace files
+/// rather than as base64 text.
+fn output_images(output: Option<&serde_json::Value>) -> Vec<ImageData> {
+    let Some(items) = output.and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter(|item| item.get("type").and_then(|t| t.as_str()) == Some("input_image"))
+        .filter_map(parse_input_image_data_uri)
+        .map(|(mime_type, data)| ImageData {
+            data,
+            mime_type,
+            uri: None,
+        })
+        .collect()
 }
 
 fn first_text_block(blocks: &[ContentBlock]) -> Option<String> {
@@ -13914,5 +13933,44 @@ mod tests {
             turn_texts(&detail),
             vec![("assistant", Some("still readable".into()))]
         );
+    }
+
+    #[test]
+    fn a_viewed_image_is_a_result_image_not_result_text() {
+        // `view_image` returns an ARRAY holding an `input_image` data URI.
+        // Serialized as text, that is megabytes of base64 shipped to every
+        // client in the result panel — enough to freeze the transcript.
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"vi-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"look\"}]}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"name\":\"view_image\",\"call_id\":\"c1\",\"arguments\":\"{\\\"path\\\":\\\"/tmp/demo/a.png\\\"}\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"c1\",\"output\":[{\"type\":\"input_image\",\"image_url\":\"data:image/png;base64,QUJD\",\"detail\":\"high\"}]}}\n"
+        );
+        let detail = parse_rollout("view-image", content, "vi-1");
+
+        let (preview, images) = detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .find_map(|b| match b {
+                ContentBlock::ToolResult {
+                    output_preview,
+                    images,
+                    is_error,
+                    ..
+                } => {
+                    assert!(!is_error, "an image is not a failure");
+                    Some((output_preview.clone(), images.clone()))
+                }
+                _ => None,
+            })
+            .expect("view_image result");
+        assert!(
+            !preview.as_deref().unwrap_or("").contains("base64"),
+            "no data URI in the result text: {preview:?}"
+        );
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].mime_type, "image/png");
+        assert_eq!(images[0].data, "QUJD");
     }
 }
