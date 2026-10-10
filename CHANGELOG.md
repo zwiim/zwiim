@@ -6,6 +6,47 @@ its text becomes the release notes and the `notes` of `release.json`
 this order; write "None." under one with nothing to say. Mobile store builds
 have their own versions and are listed under Compatibility.
 
+## [0.1.0-rc.7] - 2026-10-10
+
+### Added
+- Attach any file to a prompt on Desktop and mobile: PDF, spreadsheets, Word, HTML, CSV, ZIP and images, up to 10 MB per file and 10 files per message. Files are saved in the worktree under `.zwiim/attachments/` (never in `git status`) and the agent is pointed at them. Desktop attaches by button, drag-and-drop or paste; mobile picks from Photos or Files.
+- Rich in-app previews of PDF, spreadsheets, Word documents, HTML and images, for attachments and workspace files, on Desktop and mobile. HTML renders as a live page at its own origin with no access to the Host; links to other sites open in the browser.
+- Images an agent shows are saved as workspace files under `.zwiim/images/` and appear as chips that open in the preview. Previewable files the agent writes (PDF, HTML, images) open in the preview instead of the diff view.
+- Adding a plain folder, or a repository with no remote, offers to create a private GitHub repository: pick the owner, edit the name (checked live), then Create repo. Add without GitHub is always offered. Needs the GitHub CLI (`gh`) signed in on the Mac running the Host.
+- New worktrees get copies of the repository's ignored `.env` files (regular files up to 1 MiB; existing files are never overwritten).
+
+### Changed
+- Sessions and terminals run only in worktrees. Clicking a repository opens or prepares its worktree, and Desktop restores a worktree on start, never the repository folder itself.
+- Sessions started earlier in a repository folder stay readable under an "earlier sessions" row, with Continue in a new worktree.
+- A repository with no commits gets a first commit when added, so worktrees can branch from it.
+
+### Fixed
+- Images from agents were dropped or shown as inline data that could not be opened.
+
+### Security
+- The HTML preview runs at its own origin: no JS bridge on mobile, and on Desktop the app only takes commands from its own origin. The spreadsheet renderer is SheetJS 0.20.3, not the vulnerable npm `xlsx@0.18.5`; Word output is sanitized with DOMPurify.
+
+### Compatibility
+- Protocol `zwiim/1`, revision 1; clients from revision 1. New capabilities: `workspace.publish`, `attachments`, `file_ranges`. New errors: `root_workspace`, `publish_failed`, `attachment_not_found`, `attachment_too_large`, `file_too_large`, `file_too_large_for_remote`, `invalid_name`.
+- Mobile: Android app 0.1.0 (version code 1) as `com.zwiim.mobile`, installed from the APK. Attachments and previews need this APK: it adds native modules (document and image pickers, file system, sharing, preview views). iOS 0.1.0 (build 1) for TestFlight testers needs a new build for the same reason.
+
+### Provider changes
+- None. Claude adapter 0.81.2, Codex adapter 1.13.1.
+
+### Migration notes
+- None. Coming from 0.1.0-rc.4 or earlier, follow the migration notes of 0.1.0-rc.5 first.
+
+### Known limitations
+- macOS on Apple Silicon only.
+- Only the stable channel is offered as an update.
+- Updates apply when you restart the Host (Desktop → About & updates, or Update Host on Mobile).
+- The Android app is not updated automatically: install each new APK by hand.
+- Keeping the Mac awake cannot stop sleep when a MacBook's lid is closed, unless it is on power with an external display.
+- Agent sign-in and API keys are managed on the Mac running the Host; a remote Desktop shows their status only.
+- Pull requests, Continue and creating GitHub repositories need the GitHub CLI (`gh`) installed and signed in on the Mac running the Host.
+- Over a remote (relay) connection, files above 10 MB cannot be previewed; they open on the same network.
+- Slash commands in a terminal card were checked with Codex; Claude Code's path has not been checked by hand yet.
+
 ## [0.1.0-rc.6] - 2026-10-06
 
 ### Added
