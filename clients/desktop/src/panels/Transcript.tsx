@@ -1,4 +1,4 @@
-import { useContext, useEffect, useId, useRef, useState } from "react";
+import { Fragment, useContext, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowRightLeft,
@@ -27,6 +27,7 @@ import {
   clockTime,
   turnDuration,
   workspaceFile,
+  type AgentImage,
   type ChangedFile,
   type HistoryBlock,
   type HistoryTurn,
@@ -35,6 +36,8 @@ import {
   type ToolCallStatus,
   type TurnGroup,
 } from "@zwiim/sdk";
+import { opensInPreview } from "@zwiim/preview";
+import { AgentImageChip } from "@/attachments/AgentImageChip";
 import { SentAttachments } from "@/attachments/AttachmentChip";
 import { FileLinksContext, Markdown } from "@/components/Markdown";
 import { basename, parseUnifiedDiff, type FileDiff } from "@/lib/diff";
@@ -404,9 +407,12 @@ export function ToolCallView(props: {
   status: ToolCallStatus | null;
   output?: string | null;
   isError?: boolean;
+  images?: AgentImage[];
   className?: string;
 }) {
   const { verb, target } = props.tool;
+  const images = props.images ?? [];
+  const verbLabel = verb === "Read" && images.length > 0 ? "Read image" : verb;
   const failed = props.status === "failed" || props.isError;
   const running = props.status === "in_progress" || props.status === "pending";
   // A live command's output lives in a terminal the agent does not share.
@@ -422,9 +428,13 @@ export function ToolCallView(props: {
   const links = useContext(FileLinksContext);
   const opener = (p: string | null) => {
     const file = links && workspaceFile(p, links.workspace);
-    return file ? () => links.openDiff(file) : undefined;
+    return file ? () => (opensInPreview(file) ? links.open(file) : links.openDiff(file)) : undefined;
   };
   const title = diffs && diffs.length > 1 ? diffs.map((d) => d.path).join("\n") : (path ?? target);
+
+  // The row's file is the image the call returned: its chip opens it.
+  const [image, ...moreImages] = diffs ? [] : images;
+  const rest = diffs ? images : moreImages;
 
   let details: React.ReactNode = null;
   if (command) details = <CommandCard command={command} output={output} error={failed} />;
@@ -442,8 +452,11 @@ export function ToolCallView(props: {
       summary={
         <>
           <Icon className="text-muted-foreground size-3.5 shrink-0" />
-          <span className="text-foreground/90 shrink-0">{verb}</span>
-          {label &&
+          <span className="text-foreground/90 shrink-0">{verbLabel}</span>
+          {image ? (
+            <AgentImageChip path={image.path} name={label || image.name} compact />
+          ) : (
+            label &&
             (diffs ? (
               // The file shows its change over the transcript while the pointer rests on it.
               <HoverCard
@@ -465,7 +478,8 @@ export function ToolCallView(props: {
               <code className={chip} title={title}>
                 {label}
               </code>
-            ))}
+            ))
+          )}
           {diffs && <Counts diffs={diffs} />}
           {running && <Loader2 className="text-muted-foreground size-3 shrink-0 animate-spin" />}
           {failed && (
@@ -477,7 +491,8 @@ export function ToolCallView(props: {
         </>
       }
     >
-      {!diffs && details && <div className="mt-1 mb-2 ml-5 flex flex-col gap-2 text-xs">{details}</div>}
+      {/* The image is the output; the row stays plain so its chip is a control of its own. */}
+      {!diffs && !image && details && <div className="mt-1 mb-2 ml-5 flex flex-col gap-2 text-xs">{details}</div>}
     </Disclosure>
   );
   return (
@@ -487,6 +502,13 @@ export function ToolCallView(props: {
       data-status={props.status ?? ""}
     >
       {row}
+      {rest.length > 0 && (
+        <div className="mt-1 ml-5 flex flex-wrap gap-1.5">
+          {rest.map((img, j) => (
+            <AgentImageChip key={j} path={img.path} name={img.name} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -571,16 +593,29 @@ export function HistoryTurnView({ turn }: { turn: HistoryTurn }) {
                 status={r?.is_error ? "failed" : (b.status ?? (r ? "completed" : null))}
                 output={r?.output_preview}
                 isError={r?.is_error}
+                images={r?.images}
               />
             );
           }
           case "tool_result":
             if (b.tool_call_id && called.has(b.tool_call_id)) return null;
-            return b.is_error && b.output_preview ? <Output key={i} text={b.output_preview} error /> : null;
-          case "image":
+            if (!b.images?.length && !(b.is_error && b.output_preview)) return null;
             return (
-              <img key={i} className="max-w-sm rounded-lg" src={`data:${b.mime_type};base64,${b.data}`} alt="" />
+              <Fragment key={i}>
+                {b.is_error && b.output_preview && <Output text={b.output_preview} error />}
+                {!!b.images?.length && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {b.images.map((img, j) => (
+                      <AgentImageChip key={j} path={img.path} name={img.name} />
+                    ))}
+                  </div>
+                )}
+              </Fragment>
             );
+          case "agent_image":
+            return <AgentImageChip key={i} path={b.path} name={b.name} inline />;
+          case "image":
+            return null; // older Hosts' inline bytes; agent images now arrive as files
           default:
             return null;
         }
@@ -604,6 +639,7 @@ export function LiveTurnView({ turn, streaming, animate }: { turn: LiveTurn; str
       {turn.message?.content.map((b, i) => {
         if (b.type === "text") return <Markdown key={i} className={enter} text={b.text} />;
         if (b.type === "thought") return <Thought key={i} className={enter} text={b.text} />;
+        if (b.type === "agent_image") return <AgentImageChip key={i} path={b.path} name={b.name} inline />;
         const tc = toolCall(b.tool_call_id);
         return (
           <ToolCallView
@@ -612,6 +648,7 @@ export function LiveTurnView({ turn, streaming, animate }: { turn: LiveTurn; str
             tool={liveTool(tc?.title ?? null, tc?.kind)}
             status={tc?.status ?? null}
             output={typeof tc?.content === "string" ? tc.content : null}
+            images={tc?.images}
           />
         );
       })}
@@ -683,7 +720,7 @@ function FileChip({ file }: { file: ChangedFile }) {
       type="button"
       className={cn(chip, "hover:bg-accent hover:text-foreground transition-colors")}
       title={file.path}
-      onClick={() => links.openDiff(path)}
+      onClick={() => (opensInPreview(path) ? links.open(path) : links.openDiff(path))}
       data-testid="turn-file"
     >
       {content}

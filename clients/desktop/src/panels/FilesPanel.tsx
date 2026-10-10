@@ -20,7 +20,7 @@ import {
   SquareTerminal,
   type LucideIcon,
 } from "lucide-react";
-import { previewErrorMessage, previewKind } from "@zwiim/preview";
+import { imageMime, previewErrorMessage, previewKind } from "@zwiim/preview";
 import { readSheet, type Sheet } from "@zwiim/preview/sheet";
 import { renderWord } from "@zwiim/preview/word";
 import { readChunks, readFile, ZwiimClientError, type FileContent, type FileTreeNode } from "@zwiim/sdk";
@@ -294,7 +294,7 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
         else if (kind === "word") next = { word: await renderWord(bytes) };
         else {
           if (imageUrl.current) URL.revokeObjectURL(imageUrl.current);
-          imageUrl.current = URL.createObjectURL(new Blob([bytes as BlobPart]));
+          imageUrl.current = URL.createObjectURL(new Blob([bytes as BlobPart], { type: imageMime(path) }));
           next = { image: imageUrl.current };
         }
       } else {

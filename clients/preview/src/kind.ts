@@ -27,3 +27,20 @@ export function previewKind(name: string): PreviewKind {
   if (kind === "document" || kind === "archive" || kind === "pdf" || kind === "spreadsheet") return "external";
   return "text";
 }
+
+/** Kinds Zwiim renders in its preview; text opens as a file or diff, external not at all. */
+export function opensInPreview(name: string): boolean {
+  const kind = previewKind(name);
+  return kind !== "text" && kind !== "external";
+}
+
+const IMAGE_MIME: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp",
+  svg: "image/svg+xml", bmp: "image/bmp", avif: "image/avif", tif: "image/tiff", tiff: "image/tiff",
+  heic: "image/heic", heif: "image/heif",
+};
+
+/** An image file's MIME type from its extension, "" when unknown. Browsers can't sniff SVG. */
+export function imageMime(name: string): string {
+  return IMAGE_MIME[extensionOf(name)] ?? "";
+}

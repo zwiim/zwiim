@@ -109,7 +109,7 @@ export function attachmentKind(name: string, mime_type?: string): AttachmentKind
   const byExt = KIND_BY_EXTENSION[ext];
   if (byExt) return byExt;
   if (mime_type?.startsWith("image/")) return "image";
-  if (/^(png|jpe?g|gif|webp|heic|heif|bmp|svg|tiff?)$/.test(ext)) return "image";
+  if (/^(png|jpe?g|gif|webp|avif|heic|heif|bmp|svg|tiff?)$/.test(ext)) return "image";
   if (mime_type?.startsWith("text/")) return "text";
   return "file";
 }

@@ -4,7 +4,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
-import { basename, formatSize, type AttachmentBlock, type ChangedFile } from "@zwiim/sdk";
+import { basename, formatSize, type AgentImage, type AttachmentBlock, type ChangedFile } from "@zwiim/sdk";
 import type { PendingFile } from "../attachments/pending";
 import type { ToolItem } from "../sessions/transcript";
 import { Button, Sheet, StatusDot, T, useReduceMotion } from "./components";
@@ -82,6 +82,27 @@ function SentFileChip({ file, onPress }: { file: AttachmentBlock; onPress?(): vo
       </T>
       <T variant="monoSm" color={theme.faint}>
         {gone ? "removed" : formatSize(file.size!)}
+      </T>
+    </Pressable>
+  );
+}
+
+/** An image the agent produced; tap to preview it. */
+export function AgentImageChip({ image, onPress }: { image: AgentImage; onPress?(): void }) {
+  const theme = useTheme();
+  return (
+    <Pressable
+      accessibilityRole={onPress ? "button" : undefined}
+      accessibilityLabel={`Open ${image.name}`}
+      disabled={!onPress}
+      onPress={onPress}
+      hitSlop={6}
+      style={({ pressed }) => [styles.fileChip, { alignSelf: "flex-start", backgroundColor: pressed ? theme.raised : theme.surface }]}
+      testID="agent-image"
+    >
+      <Icon icon={Image} color={theme.mut} size={13} />
+      <T variant="monoSm" color={theme.fg} numberOfLines={1} style={styles.shrink}>
+        {image.name}
       </T>
     </Pressable>
   );

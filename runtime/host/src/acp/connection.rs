@@ -14368,8 +14368,31 @@ async fn emit_conversation_update(
                 }
             }
         }
+        SessionUpdate::AgentMessageChunk(ContentChunk {
+            content: ContentBlock::Image(img),
+            meta,
+            ..
+        }) => {
+            // Sub-agent images belong to the delegation, not the main thread.
+            let in_subagent = should_suppress_subagent_chunk(
+                agent_type,
+                !cb_state.open_subagents.is_empty(),
+                meta.as_ref(),
+            ) || claude_chunk_parent_tool_use_id(agent_type, meta.as_ref()).is_some();
+            if !in_subagent {
+                emit_with_state(
+                    state,
+                    emitter,
+                    AcpEvent::ContentImage {
+                        data: img.data,
+                        mime_type: img.mime_type,
+                    },
+                )
+                .await;
+            }
+        }
         SessionUpdate::AgentMessageChunk(_) => {
-            // Non-text chunks are currently not surfaced in live streaming UI.
+            // Other non-text chunks (audio, resources) are not surfaced.
         }
         SessionUpdate::AgentThoughtChunk(ContentChunk {
             content: ContentBlock::Text(text),
@@ -14940,6 +14963,17 @@ async fn emit_conversation_update(
                 &mut cb_state.open_subagents,
                 &mut cb_state.closed_subagents,
             );
+            // An image result carries no locations of its own (a Read's update);
+            // carry the call's, so the projection can show the file it read.
+            let locations = match (&images, locations) {
+                (Some(_), None) => state
+                    .read()
+                    .await
+                    .active_tool_calls
+                    .get(&tool_call_id)
+                    .and_then(|t| t.locations.clone()),
+                (_, l) => l,
+            };
             emit_with_state(
                 state,
                 emitter,

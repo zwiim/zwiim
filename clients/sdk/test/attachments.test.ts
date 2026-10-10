@@ -53,6 +53,7 @@ describe("attachmentKind", () => {
     ["site.html", undefined, "code"],
     ["bundle.zip", undefined, "archive"],
     ["photo.HEIC", undefined, "image"],
+    ["shot.avif", undefined, "image"],
     ["paste", "image/png", "image"],
     ["README", "text/plain", "text"],
     ["blob", "application/octet-stream", "file"],

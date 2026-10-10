@@ -11,6 +11,11 @@ export function useController(): HostController {
   return c;
 }
 
+/** The controller when inside a HostProvider; null in isolated renders (Markdown previews). */
+export function useOptionalController(): HostController | null {
+  return useContext(HostContext);
+}
+
 /** Subscribe to a slice of host state. Selectors must return stable references. */
 export function useHost<T>(selector: (s: HostState) => T): T {
   const { store } = useController();

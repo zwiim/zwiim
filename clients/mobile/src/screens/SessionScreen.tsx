@@ -27,7 +27,7 @@ import {
 import { pickFiles, pickPhotos } from "../attachments/native";
 import { UPLOAD_FAILED_MESSAGE } from "../attachments/pending";
 import { usePendingAttachments } from "../attachments/usePendingAttachments";
-import { openTarget } from "../preview/model";
+import { fileScreen, openTarget } from "../preview/model";
 import { useCurrentHost, useHostState, useNow } from "../app/hooks";
 import { useRootNavigation, type RootStack } from "../app/navigation";
 import { connectionText } from "../host/status";
@@ -49,6 +49,7 @@ import { Button, EmptyState, Sheet, SkeletonRows, T } from "../ui/components";
 import { ChevronLeft, Ellipsis, Icon } from "../ui/icons";
 import { Markdown } from "../ui/markdown";
 import {
+  AgentImageChip,
   AttachSheet,
   Caret,
   Composer,
@@ -103,7 +104,7 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
   const openFile = (path: string) => {
     if (!workspace) return;
     const { workspace_id } = workspace;
-    navigation.push(workspace.is_git_repo ? "Diff" : "File", { workspace_id, path });
+    navigation.push(fileScreen(path, workspace.is_git_repo), { workspace_id, path });
   };
 
   // On screen: stream the session and load its transcript until it's left.
@@ -450,6 +451,13 @@ function Live({
     nav.navigate(openTarget(file.path), { workspace_id, path: file.path });
   };
 
+  // An image the agent produced, or a file its message links to, opens the same way.
+  const openImage = (path: string) => {
+    if (!workspace_id) return;
+    setNotice(null);
+    nav.navigate(openTarget(path), { workspace_id, path });
+  };
+
   const stop = async () => {
     setStopping(true);
     setNotice(null);
@@ -488,6 +496,7 @@ function Live({
           fileOf={fileOf}
           onOpenFile={onOpenFile}
           onOpenSent={workspace_id ? (f) => openSent(f) : undefined}
+          onOpenImage={workspace_id ? openImage : undefined}
         />
       </View>
     );
@@ -607,6 +616,7 @@ function Row({
   fileOf,
   onOpenFile,
   onOpenSent,
+  onOpenImage,
 }: {
   row: TranscriptRow;
   onTool(tool: ToolItem): void;
@@ -614,19 +624,22 @@ function Row({
   fileOf(path: string): string | null;
   onOpenFile(path: string): void;
   onOpenSent?(file: AttachmentBlock): void;
+  onOpenImage?(path: string): void;
 }) {
   const opens = (tool: ToolItem) => toolFile(tool) !== null;
   switch (row.type) {
     case "user":
       return <UserMessage text={row.text} files={row.files} onOpenFile={onOpenSent} />;
     case "agent":
-      return <Markdown text={row.text} caret={row.streaming ? <Caret /> : undefined} />;
+      return <Markdown text={row.text} caret={row.streaming ? <Caret /> : undefined} fileOf={fileOf} onOpen={onOpenImage} />;
     case "thought":
       return <ThoughtRow text={row.text} streaming={row.streaming} />;
     case "tool":
       return <ToolRow tool={row.tool} onPress={() => onTool(row.tool)} opens={opens(row.tool)} />;
     case "tools":
       return <ToolGroup tools={row.tools} onOpen={onTool} opens={opens} />;
+    case "image":
+      return <AgentImageChip image={row.image} onPress={onOpenImage && (() => onOpenImage(row.image.path))} />;
     case "error":
       return <ErrorRow message={row.message} />;
     case "footer":

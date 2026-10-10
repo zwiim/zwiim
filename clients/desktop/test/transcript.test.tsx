@@ -548,6 +548,83 @@ describe("changed files", () => {
     expect(screen.queryByTestId("turn-footer")).toBeNull();
     controller.dispose();
   });
+
+  it("shows a read image in the card's row: its file chip is the image and opens it", async () => {
+    const t = new FakeTransport();
+    t.handlers["files.download"] = (p) => ({ name: p.path.split("/").pop(), mime_type: "image/png", size: 1, offset: 0, data: "AA==" });
+    t.handlers["session.history"] = history([
+      turn("t1", "assistant", [
+        { type: "tool_call", tool_call_id: "r1", title: "Read", input_preview: JSON.stringify({ file_path: "/tmp/shot.png" }), status: "completed" },
+        { type: "tool_result", tool_call_id: "r1", output_preview: null, is_error: false, images: [{ name: "ab.png", mime_type: "image/png", path: ".zwiim/images/ab.png" }] },
+        { type: "agent_image", name: "cd.png", mime_type: "image/png", path: ".zwiim/images/cd.png", revised_prompt: "a cat" },
+      ]),
+    ]);
+    const l = links();
+    const { controller } = await openSession(t, l);
+    const card = screen.getByTestId("tool-call");
+    expect(card.textContent).toContain("Read image");
+    // One chip in the row, named for the file the agent read; nothing under it.
+    expect(within(card).getAllByTestId("agent-image")).toHaveLength(1);
+    expect(card.querySelector("button button")).toBeNull();
+    // The row's chip shows the image icon, not a thumbnail, and fetches nothing.
+    expect(card.querySelector("img")).toBeNull();
+    expect(t.calls.some((c) => c.op === "files.download" && c.params.path === ".zwiim/images/ab.png")).toBe(false);
+    const chips = screen.getAllByTestId("agent-image");
+    expect(chips.map((c) => c.textContent)).toEqual([expect.stringContaining("shot.png"), expect.stringContaining("cd.png")]);
+    fireEvent.click(within(card).getByRole("button", { name: "Open shot.png" }));
+    expect(l.open).toHaveBeenCalledWith(".zwiim/images/ab.png");
+    controller.dispose();
+  });
+
+  it("shows a live tool call's images", async () => {
+    const t = new FakeTransport();
+    t.handlers["files.download"] = (p) => ({ name: p.path.split("/").pop(), mime_type: "image/png", size: 1, offset: 0, data: "AA==" });
+    const l = links();
+    const { controller, frame } = await openSession(t, l);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+    await frame({ type: "event", event: { session_id: "s1", seq: 2, type: "agent.tool_call", payload: { tool_call_id: "g1", title: "Generate image", kind: "other", status: "completed", content: null, images: [{ name: "ef.png", mime_type: "image/png", path: ".zwiim/images/ef.png" }] } } });
+    expect(screen.getByTestId("agent-image").textContent).toContain("ef.png");
+    controller.dispose();
+  });
+
+  it("opens a written pdf or html in the preview and code in the diff", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.history"] = history([
+      at(turn("u1", "user", [{ type: "text", text: "go" }]), "2026-10-06T06:32:00Z"),
+      at(
+        turn("t1", "assistant", [
+          ...edit("c1", "out/report.pdf"),
+          ...edit("c2", "out/page.html"),
+          ...edit("c3", "src/a.ts"),
+        ]),
+        "2026-10-06T06:33:00Z",
+        "2026-10-06T06:41:31Z",
+      ),
+    ]);
+    const l = links();
+    const { controller } = await openSession(t, l);
+    const [pdf, html, ts] = screen.getAllByTestId("tool-call");
+    fireEvent.click(within(pdf!).getByRole("button", { name: "report.pdf" }));
+    fireEvent.click(within(html!).getByRole("button", { name: "page.html" }));
+    fireEvent.click(within(ts!).getByRole("button", { name: "a.ts" }));
+    expect(l.open.mock.calls).toEqual([["out/report.pdf"], ["out/page.html"]]);
+    expect(l.openDiff.mock.calls).toEqual([["src/a.ts"]]);
+    // The turn footer chips split the same way.
+    const files = screen.getAllByTestId("turn-file");
+    fireEvent.click(files[0]!);
+    expect(l.open).toHaveBeenLastCalledWith("out/report.pdf");
+    controller.dispose();
+  });
+
+  it("shows a live message image inline", async () => {
+    const t = new FakeTransport();
+    t.handlers["files.download"] = (p) => ({ name: p.path.split("/").pop(), mime_type: "image/png", size: 1, offset: 0, data: "AA==" });
+    const { controller, frame } = await openSession(t, links());
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+    await frame({ type: "event", event: { session_id: "s1", seq: 2, type: "agent.message_image", payload: { name: "ab.png", mime_type: "image/png", path: ".zwiim/images/ab.png" } } });
+    expect(screen.getByTestId("agent-image").textContent).toContain("ab.png");
+    controller.dispose();
+  });
 });
 
 describe("links", () => {

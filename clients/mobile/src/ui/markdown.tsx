@@ -2,15 +2,30 @@
 // Markdown agents use, rendered in the two voices. Paragraphs, headings and
 // lists in Geist; inline code and fenced code in Geist Mono, code blocks on
 // the `code` surface. Anything else reads as plain text. A fence still open
-// while the agent streams renders as code so far.
+// while the agent streams renders as code so far. Links to previewable
+// workspace files and workspace images open the preview.
 
 import { Fragment, type ReactNode } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
-import { parseInline, parseMarkdown } from "../sessions/markdown";
+import { opensInPreview, previewKind } from "@zwiim/preview";
+import { parseInline, parseMarkdown, spanText } from "../sessions/markdown";
 import { T } from "./components";
+import { AgentImageChip } from "./session";
 import { fonts, radius, space, useTheme } from "./tokens";
 
-function Inline({ text, color, after }: { text: string; color?: string; after?: ReactNode }) {
+type Files = {
+  /** The workspace path a link points at, or null when it leaves the workspace. */
+  fileOf?: (href: string) => string | null;
+  onOpen?: (path: string) => void;
+};
+
+/** The workspace file a link opens in the preview, if any. */
+function previewTarget(href: string | undefined, fileOf: Files["fileOf"]): string | null {
+  const path = href && fileOf ? fileOf(href) : null;
+  return path && opensInPreview(path) ? path : null;
+}
+
+function Inline({ text, color, after, fileOf, onOpen }: { text: string; color?: string; after?: ReactNode } & Files) {
   const theme = useTheme();
   return (
     <T color={color} selectable>
@@ -24,12 +39,22 @@ function Inline({ text, color, after }: { text: string; color?: string; after?: 
           >
             {s.text}
           </T>
-        ) : s.bold ? (
-          <T key={i} color={color} style={styles.bold}>
+        ) : onOpen && previewTarget(s.href, fileOf) ? (
+          <T
+            key={i}
+            variant="mono"
+            color={theme.accent}
+            onPress={() => onOpen(previewTarget(s.href, fileOf)!)}
+            accessibilityRole="link"
+          >
             {s.text}
           </T>
+        ) : s.bold ? (
+          <T key={i} color={color} style={styles.bold}>
+            {spanText(s)}
+          </T>
         ) : (
-          <Fragment key={i}>{s.text}</Fragment>
+          <Fragment key={i}>{spanText(s)}</Fragment>
         ),
       )}
       {after}
@@ -38,7 +63,7 @@ function Inline({ text, color, after }: { text: string; color?: string; after?: 
 }
 
 /** `caret` ends the text: inline after a closing paragraph, else below. */
-export function Markdown({ text, caret }: { text: string; caret?: ReactNode }) {
+export function Markdown({ text, caret, fileOf, onOpen }: { text: string; caret?: ReactNode } & Files) {
   const theme = useTheme();
   const blocks = parseMarkdown(text);
   const inline = blocks.at(-1)?.type === "p";
@@ -47,7 +72,13 @@ export function Markdown({ text, caret }: { text: string; caret?: ReactNode }) {
       {blocks.map((b, i) => {
         switch (b.type) {
           case "p":
-            return <Inline key={i} text={b.text} after={inline && i === blocks.length - 1 ? caret : undefined} />;
+            return <Inline
+                key={i}
+                text={b.text}
+                after={inline && i === blocks.length - 1 ? caret : undefined}
+                fileOf={fileOf}
+                onOpen={onOpen}
+              />;
           case "h":
             return (
               <T key={i} variant="headline" selectable>
@@ -61,14 +92,14 @@ export function Markdown({ text, caret }: { text: string; caret?: ReactNode }) {
                   {b.marker}
                 </T>
                 <View style={styles.flex}>
-                  <Inline text={b.text} />
+                  <Inline text={b.text} fileOf={fileOf} onOpen={onOpen} />
                 </View>
               </View>
             );
           case "quote":
             return (
               <View key={i} style={[styles.quote, { borderLeftColor: theme.line }]}>
-                <Inline text={b.text} color={theme.mut} />
+                <Inline text={b.text} color={theme.mut} fileOf={fileOf} onOpen={onOpen} />
               </View>
             );
           case "code":
@@ -85,6 +116,16 @@ export function Markdown({ text, caret }: { text: string; caret?: ReactNode }) {
                 </T>
               </ScrollView>
             );
+          case "image": {
+            const path = fileOf?.(b.src) ?? null;
+            // Only workspace images; nothing remote is fetched.
+            if (!path || previewKind(path) !== "image")
+              return <T key={i} color={theme.mut}>{`[image${b.alt ? `: ${b.alt}` : ""}]`}</T>;
+            const name = path.split("/").pop() ?? path;
+            return (
+              <AgentImageChip key={i} image={{ name, mime_type: "image/*", path }} onPress={onOpen && (() => onOpen(path))} />
+            );
+          }
         }
       })}
       {inline ? null : caret}

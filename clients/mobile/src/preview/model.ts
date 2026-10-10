@@ -1,6 +1,6 @@
 // Where a workspace file opens on the phone, and how.
 import { formatSize } from "@zwiim/sdk";
-import { extensionOf, previewKind } from "@zwiim/preview";
+import { extensionOf, opensInPreview, previewKind } from "@zwiim/preview";
 
 export const LARGE_FILE_BYTES = 50 * 1024 * 1024;
 export type Platform = "ios" | "android";
@@ -11,6 +11,12 @@ const IOS_NATIVE_EXTERNAL = new Set(["doc", "ppt", "pptx", "pages", "numbers", "
 
 export function openTarget(name: string): "File" | "Preview" {
   return previewKind(name) === "text" ? "File" : "Preview";
+}
+
+/** Where a file the agent wrote opens: rendered kinds in Preview, the rest as a diff (repos) or the file. */
+export function fileScreen(path: string, isGitRepo: boolean): "Diff" | "File" | "Preview" {
+  if (opensInPreview(path)) return "Preview";
+  return isGitRepo ? "Diff" : "File";
 }
 
 export function viewFor(name: string, platform: Platform): PreviewView {

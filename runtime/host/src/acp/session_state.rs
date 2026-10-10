@@ -34,6 +34,9 @@ pub struct LiveMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LiveContentBlock {
+    /// An image in the agent's message, as base64; the protocol projection
+    /// turns it into a workspace file.
+    Image { data: String, mime_type: String },
     Text {
         text: String,
         /// Subagent attribution (`_meta.claudeCode.parentToolUseId`,
@@ -912,6 +915,13 @@ impl SessionState {
                 if parent_tool_use_id.is_none() || self.status == ConnectionStatus::Prompting {
                     self.append_thinking_delta(text, parent_tool_use_id.as_deref());
                 }
+            }
+            AcpEvent::ContentImage { data, mime_type } => {
+                self.settle_retry_incidents_on_progress();
+                self.ensure_live_message().content.push(LiveContentBlock::Image {
+                    data: data.clone(),
+                    mime_type: mime_type.clone(),
+                });
             }
             AcpEvent::ToolCall {
                 tool_call_id,
@@ -4341,6 +4351,7 @@ mod tests {
                         LiveContentBlock::Plan { entries } => {
                             ("plan", serde_json::to_string(entries).unwrap_or_default())
                         }
+                        LiveContentBlock::Image { mime_type, .. } => ("image", mime_type.clone()),
                     })
                     .collect()
             })

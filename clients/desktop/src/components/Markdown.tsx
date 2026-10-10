@@ -3,6 +3,9 @@ import { ArrowUpRight } from "lucide-react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { workspaceFile, type WorkspaceInfo } from "@zwiim/sdk";
+import { opensInPreview, previewKind } from "@zwiim/preview";
+import { AgentImageChip } from "@/attachments/AgentImageChip";
+import { fileIcon } from "@/panels/FilesPanel";
 import { isOpenableLink, openLink } from "@/lib/bridge";
 import { cn } from "@/lib/utils";
 
@@ -33,6 +36,22 @@ const components: Components = {
     const files = useContext(FileLinksContext);
     const file = files && workspaceFile(href, files.workspace);
     const web = isOpenableLink(href) && /^https?:/i.test(href);
+    if (file && opensInPreview(file)) {
+      const name = file.split("/").pop() ?? file;
+      const { icon: Icon, color } = fileIcon(name);
+      return (
+        <button
+          type="button"
+          className="bg-muted hover:bg-accent hover:text-foreground inline-flex max-w-56 items-center gap-1.5 rounded-md px-1.5 py-0.5 align-middle font-mono text-xs transition-colors"
+          title={file}
+          onClick={() => files.open(file)}
+          data-testid="file-link-chip"
+        >
+          <Icon className={cn("size-3.5 shrink-0", color)} />
+          <span className="min-w-0 truncate">{name}</span>
+        </button>
+      );
+    }
     return (
       <a
         className={
@@ -56,7 +75,13 @@ const components: Components = {
       </a>
     );
   },
-  img: ({ alt }) => <span className="text-muted-foreground">[image{alt ? `: ${alt}` : ""}]</span>,
+  img: ({ src, alt }) => {
+    const files = useContext(FileLinksContext);
+    const file = files && typeof src === "string" ? workspaceFile(src, files.workspace) : null;
+    // Only workspace files show; nothing remote is fetched.
+    if (file && previewKind(file) === "image") return <AgentImageChip path={file} inline />;
+    return <span className="text-muted-foreground">[image{alt ? `: ${alt}` : ""}]</span>;
+  },
   p: ({ children }) => <p className="my-2.5 first:mt-0 last:mb-0">{children}</p>,
   ul: ({ children }) => <ul className="my-2 list-disc pl-5">{children}</ul>,
   ol: ({ children }) => <ol className="my-2 list-decimal pl-5">{children}</ol>,

@@ -231,6 +231,13 @@ export function applyEvent(view: SessionView, ev: SessionEvent): SessionView {
       return { ...next, live: { ...live, message: appendText(live.message, "text", ev.payload.text) } };
     case "agent.thought_delta":
       return { ...next, live: { ...live, message: appendText(live.message, "thought", ev.payload.text) } };
+    case "agent.message_image": {
+      const base: LiveMessage = live.message ?? { message_id: null, role: "assistant", content: [] };
+      return {
+        ...next,
+        live: { ...live, message: { ...base, content: [...base.content, { type: "agent_image", ...ev.payload }] } },
+      };
+    }
     case "agent.user_message": {
       // A new turn starts; an unsettled previous turn stays until history catches up.
       const settled = turnIsEmpty(live) ? view.settled : live;
@@ -260,6 +267,7 @@ export function applyEvent(view: SessionView, ev: SessionEvent): SessionView {
         title: ev.payload.title ?? prev?.title ?? null,
         status: ev.payload.status ?? prev?.status ?? null,
         content: ev.payload.content ?? prev?.content ?? null,
+        images: ev.payload.images ?? prev?.images,
       };
       return {
         ...next,

@@ -422,13 +422,19 @@ pub(crate) async fn add_to_git_exclude(root: &Path, name: &str) {
     let Some(toplevel) = resolve_git_toplevel(root).await else {
         return;
     };
+    append_exclude(&git_dir, &toplevel, root, name);
+}
+
+/// The sync half of `add_to_git_exclude`, for callers that already resolved
+/// the repository (or can't await). Idempotent.
+pub(crate) fn append_exclude(git_dir: &Path, toplevel: &Path, root: &Path, name: &str) {
     let info_dir = git_dir.join("info");
     if std::fs::create_dir_all(&info_dir).is_err() {
         return;
     }
     let exclude_path = info_dir.join("exclude");
     let existing = std::fs::read_to_string(&exclude_path).unwrap_or_default();
-    let line = git_exclude_line(&toplevel, root, name);
+    let line = git_exclude_line(toplevel, root, name);
     if existing.lines().any(|l| l.trim() == line) {
         return;
     }

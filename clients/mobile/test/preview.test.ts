@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { asksBeforeOpening, largeFileMessage, LARGE_FILE_BYTES, openTarget, viewFor } from "../src/preview/model";
+import { asksBeforeOpening, fileScreen, largeFileMessage, LARGE_FILE_BYTES, openTarget, viewFor } from "../src/preview/model";
 
 describe("mobile previews", () => {
   it("routes text to the File screen and everything else to Preview", () => {
@@ -27,5 +27,16 @@ describe("mobile previews", () => {
     expect(asksBeforeOpening("a.pdf", 412 * 1024 * 1024)).toBe(false);
     expect(asksBeforeOpening("a.html", 412 * 1024 * 1024)).toBe(false);
     expect(largeFileMessage(412 * 1024 * 1024)).toBe("Large file (412 MB). Opening it may be slow or close the app.");
+  });
+});
+
+describe("fileScreen", () => {
+  it("previews what renders and diffs or shows the rest", () => {
+    expect(fileScreen("out/report.pdf", true)).toBe("Preview");
+    expect(fileScreen("out/page.html", false)).toBe("Preview");
+    expect(fileScreen(".zwiim/images/a.png", true)).toBe("Preview");
+    expect(fileScreen("src/a.ts", true)).toBe("Diff");
+    expect(fileScreen("src/a.ts", false)).toBe("File");
+    expect(fileScreen("deck.pptx", true)).toBe("Diff");
   });
 });

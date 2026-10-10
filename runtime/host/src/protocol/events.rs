@@ -23,7 +23,7 @@ use crate::acp::session_state::{
     ToolCallOutput, ToolCallState,
 };
 use crate::acp::types::{AcpEvent, EventEnvelope, PermissionOptionInfo, UserMessageBlock};
-use crate::models::message::{ContentBlock, MessageTurn, TurnRole};
+use crate::models::message::{ContentBlock, ImageData, MessageTurn, TurnRole};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionEvent {
@@ -144,6 +144,10 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
             text,
             parent_tool_use_id: None,
         } => ("agent.thought_delta", json!({ "text": text })),
+        AcpEvent::ContentImage { data, mime_type } => (
+            "agent.message_image",
+            crate::agent_images::one(root, data, mime_type, None)?,
+        ),
         AcpEvent::UserMessage { message_id, blocks } => (
             "agent.user_message",
             json!({ "message_id": message_id, "blocks": user_blocks(blocks, root) }),
@@ -155,17 +159,24 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
             status,
             content,
             raw_output,
+            locations,
+            images,
             ..
         } => (
             "agent.tool_call",
-            json!({
-                "tool_call_id": tool_call_id,
-                "title": tool_title(title, root),
-                "kind": tool_kind(Some(kind.as_str()), Some(title)),
-                "status": status,
-                "content": content_opt(content)
-                    .or_else(|| command_output(raw_output.as_deref(), root)),
-            }),
+            with_images(
+                json!({
+                    "tool_call_id": tool_call_id,
+                    "title": tool_title(title, root),
+                    "kind": tool_kind(Some(kind.as_str()), Some(title)),
+                    "status": status,
+                    "content": content_opt(content)
+                        .or_else(|| command_output(raw_output.as_deref(), root)),
+                }),
+                root,
+                images.as_deref(),
+                first_location(locations.as_ref()),
+            ),
         ),
         AcpEvent::ToolCallUpdate {
             tool_call_id,
@@ -173,16 +184,23 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
             status,
             content,
             raw_output,
+            locations,
+            images,
             ..
         } => (
             "agent.tool_call_update",
-            json!({
-                "tool_call_id": tool_call_id,
-                "title": title.as_deref().map(|t| tool_title(t, root)),
-                "status": status,
-                "content": content_opt(content)
-                    .or_else(|| command_output(raw_output.as_deref(), root)),
-            }),
+            with_images(
+                json!({
+                    "tool_call_id": tool_call_id,
+                    "title": title.as_deref().map(|t| tool_title(t, root)),
+                    "status": status,
+                    "content": content_opt(content)
+                        .or_else(|| command_output(raw_output.as_deref(), root)),
+                }),
+                root,
+                images.as_deref(),
+                first_location(locations.as_ref()),
+            ),
         ),
         AcpEvent::PermissionRequest {
             request_id,
@@ -427,7 +445,7 @@ pub fn project_snapshot(s: &LiveSessionSnapshot, root: Option<&str>) -> Value {
         "live_message": s.live_message.as_ref().map(|m| json!({
             "message_id": m.id,
             "role": to_value(&m.role),
-            "content": m.content.iter().filter_map(live_block).collect::<Vec<_>>(),
+            "content": m.content.iter().filter_map(|b| live_block(b, root)).collect::<Vec<_>>(),
         })),
         "tool_calls": s
             .active_tool_calls
@@ -462,7 +480,7 @@ pub fn project_snapshot(s: &LiveSessionSnapshot, root: Option<&str>) -> Value {
     })
 }
 
-fn live_block(block: &LiveContentBlock) -> Option<Value> {
+fn live_block(block: &LiveContentBlock, root: Option<&str>) -> Option<Value> {
     match block {
         LiveContentBlock::Text {
             text,
@@ -475,6 +493,9 @@ fn live_block(block: &LiveContentBlock) -> Option<Value> {
         LiveContentBlock::ToolCallRef { tool_call_id } => {
             Some(json!({ "type": "tool_call", "tool_call_id": tool_call_id }))
         }
+        LiveContentBlock::Image { data, mime_type } => {
+            agent_image(crate::agent_images::one(root, data, mime_type, None), None).pop()
+        }
         _ => None,
     }
 }
@@ -486,16 +507,21 @@ fn tool_call(t: &ToolCallState, root: Option<&str>) -> Value {
         }
         _ => None,
     };
-    json!({
-        "tool_call_id": t.id,
-        "title": tool_title(&t.label, root),
-        "kind": match git_tools::kind_of_title(&t.label) {
-            Some(_) => json!("other"),
-            None => to_value(&t.kind),
-        },
-        "status": to_value(&t.status),
-        "content": t.content.as_deref().map(|c| tool_content(c, root)).or(output),
-    })
+    with_images(
+        json!({
+            "tool_call_id": t.id,
+            "title": tool_title(&t.label, root),
+            "kind": match git_tools::kind_of_title(&t.label) {
+                Some(_) => json!("other"),
+                None => to_value(&t.kind),
+            },
+            "status": to_value(&t.status),
+            "content": t.content.as_deref().map(|c| tool_content(c, root)).or(output),
+        }),
+        root,
+        Some(&t.images),
+        first_location(t.locations.as_ref()),
+    )
 }
 
 /// A command's output where the agent reports it only as its raw result:
@@ -557,8 +583,72 @@ pub fn project_terminal(channel: &str, payload: &Value) -> Option<TerminalEvent>
     })
 }
 
+/// `v` with `images` set when any of `images` could be stored.
+fn with_images(mut v: Value, root: Option<&str>, images: Option<&[ImageData]>, source: Option<&str>) -> Value {
+    let projected = images.map(|i| crate::agent_images::project(root, i, source)).unwrap_or_default();
+    if !projected.is_empty() {
+        v["images"] = Value::Array(projected);
+    }
+    v
+}
+
+/// The first file a tool reported touching (ACP `locations[0].path`).
+fn first_location(locations: Option<&Value>) -> Option<&str> {
+    locations?.get(0)?.get("path")?.as_str()
+}
+
+/// Tool use id → the file its input names (`file_path` / `path`), for
+/// pairing a history result's image with the file it was read from.
+fn input_files(blocks: &[ContentBlock]) -> std::collections::HashMap<&str, String> {
+    blocks
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::ToolUse { tool_use_id: Some(id), input_preview: Some(input), .. } => {
+                let v = serde_json::from_str::<Value>(input).ok()?;
+                let path = v.get("file_path").or_else(|| v.get("path"))?.as_str()?.to_string();
+                Some((id.as_str(), path))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn agent_image(image: Option<Value>, revised_prompt: Option<&str>) -> Vec<Value> {
+    image
+        .map(|mut v| {
+            v["type"] = json!("agent_image");
+            if let Some(p) = revised_prompt {
+                v["revised_prompt"] = json!(p);
+            }
+            vec![v]
+        })
+        .unwrap_or_default()
+}
+
+/// An agent turn's block; images become files (`agent_image`), never bytes.
+fn agent_block(
+    block: &ContentBlock,
+    root: Option<&str>,
+    sources: &std::collections::HashMap<&str, String>,
+) -> Vec<Value> {
+    use crate::agent_images::one;
+    match block {
+        ContentBlock::Image { data, mime_type, .. } => agent_image(one(root, data, mime_type, None), None),
+        ContentBlock::ImageGeneration { revised_prompt, image } => match image {
+            Some(i) => agent_image(one(root, &i.data, &i.mime_type, None), revised_prompt.as_deref()),
+            None => vec![], // still generating
+        },
+        ContentBlock::ToolResult { tool_use_id, images, .. } => {
+            let source = tool_use_id.as_deref().and_then(|id| sources.get(id)).map(String::as_str);
+            vec![with_images(history_block(block, root), root, Some(images), source)]
+        }
+        _ => vec![history_block(block, root)],
+    }
+}
+
 /// Transcript turns → `session.history` turns. Block vocabulary matches the
-/// live stream (`text`, `image`, `thought`, `tool_call`, `tool_result`);
+/// live stream (`text`, `image` (user), `agent_image`, `thought`, `tool_call`,
+/// `tool_result`);
 /// delegation meta, execution stats, image URIs and agent-native message ids
 /// stay on the host. Tool calls read workspace-relative, as live ones do;
 /// `root` is the session's workspace directory.
@@ -567,12 +657,14 @@ pub fn project_history(turns: &[MessageTurn], root: Option<&str>) -> Value {
         turns
             .iter()
             .map(|t| {
+                let sources = input_files(&t.blocks);
                 json!({
                     "turn_id": t.id,
                     "role": to_value(&t.role),
                     "blocks": t.blocks.iter().flat_map(|b| match (&t.role, b) {
                         (TurnRole::User, ContentBlock::Text { text }) => user_text(&without_plan_tags(text), root),
-                        _ => vec![history_block(b, root)],
+                        (TurnRole::User, _) => vec![history_block(b, root)],
+                        _ => agent_block(b, root, &sources),
                     }).collect::<Vec<_>>(),
                     "timestamp": t.timestamp,
                     "completed_at": t.completed_at,
@@ -825,16 +917,7 @@ pub(crate) mod tests {
             .iter()
             .map(|b| b["type"].as_str().unwrap())
             .collect();
-        assert_eq!(
-            types,
-            [
-                "thought",
-                "tool_call",
-                "tool_result",
-                "image_generation",
-                "text"
-            ]
-        );
+        assert_eq!(types, ["thought", "tool_call", "tool_result", "text"]);
         assert_eq!(v[1]["blocks"][1]["tool_call_id"], "toolu_1");
         assert_eq!(v[1]["blocks"][2]["tool_call_id"], "toolu_1");
         assert_eq!(v[1]["usage"]["output_tokens"], 2);
@@ -1452,5 +1535,197 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(exit.kind, "terminal.exit");
         assert!(project_terminal("conversation://changed", &json!({})).is_none());
+    }
+
+    const PNG: &str = "iVBORw0KGgo=";
+
+    fn img() -> crate::models::message::ImageData {
+        crate::models::message::ImageData { data: PNG.into(), mime_type: "image/png".into(), uri: None }
+    }
+
+    #[test]
+    fn tool_call_images_project_as_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let (kind, p) = project_event(
+            &AcpEvent::ToolCallUpdate {
+                tool_call_id: "t1".into(),
+                title: None,
+                status: Some("completed".into()),
+                content: None,
+                raw_input: None,
+                raw_output: None,
+                raw_output_append: None,
+                locations: Some(json!([{ "path": "/tmp/elsewhere/shot.png" }])),
+                meta: None,
+                images: Some(vec![img()]),
+            },
+            Some(root),
+        )
+        .unwrap();
+        assert_eq!(kind, "agent.tool_call_update");
+        assert_no_internal_keys(&p);
+        let path = p["images"][0]["path"].as_str().unwrap();
+        assert!(path.starts_with(".zwiim/images/"), "{p}");
+        assert!(dir.path().join(path).is_file());
+        assert!(!p.to_string().contains(PNG), "no base64 crosses");
+        // No images: no key (replace-on-update keeps the earlier ones).
+        let (_, p) = project_event(
+            &AcpEvent::ToolCallUpdate {
+                tool_call_id: "t1".into(), title: None, status: None, content: None, raw_input: None,
+                raw_output: None, raw_output_append: None, locations: None, meta: None, images: None,
+            },
+            Some(root),
+        )
+        .unwrap();
+        assert!(p.get("images").is_none(), "{p}");
+    }
+
+    #[test]
+    fn corrupt_image_is_omitted_but_event_still_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, p) = project_event(
+            &AcpEvent::ToolCallUpdate {
+                tool_call_id: "t1".into(),
+                title: None,
+                status: Some("completed".into()),
+                content: Some("done".into()),
+                raw_input: None,
+                raw_output: None,
+                raw_output_append: None,
+                locations: None,
+                meta: None,
+                images: Some(vec![crate::models::message::ImageData {
+                    data: "%%%".into(), mime_type: "image/png".into(), uri: None,
+                }]),
+            },
+            dir.path().to_str(),
+        )
+        .unwrap();
+        assert_eq!(p["status"], "completed");
+        assert_eq!(p["content"], "done");
+        assert!(p.get("images").is_none(), "{p}");
+    }
+
+    #[test]
+    fn read_of_a_workspace_image_points_at_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".zwiim/images")).unwrap();
+        std::fs::write(dir.path().join(".zwiim/images/shot.png"), b"x").unwrap();
+        let abs = dir.path().join(".zwiim/images/shot.png");
+        let (_, p) = project_event(
+            &AcpEvent::ToolCallUpdate {
+                tool_call_id: "t1".into(), title: None, status: None, content: None, raw_input: None,
+                raw_output: None, raw_output_append: None,
+                locations: Some(json!([{ "path": abs.to_str().unwrap() }])),
+                meta: None, images: Some(vec![img()]),
+            },
+            dir.path().to_str(),
+        )
+        .unwrap();
+        assert_eq!(p["images"], json!([{ "name": "shot.png", "mime_type": "image/png", "path": ".zwiim/images/shot.png" }]));
+        assert_eq!(std::fs::read_dir(dir.path().join(".zwiim/images")).unwrap().count(), 1, "no copy");
+    }
+
+    #[test]
+    fn snapshot_tool_call_carries_image_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = SessionState::new("conn".into(), AgentType::Codex, Some(dir.path().to_path_buf()), "w".into(), None);
+        state.apply_event(&AcpEvent::ToolCall {
+            tool_call_id: "t1".into(),
+            title: "Generate image".into(),
+            kind: "other".into(),
+            status: "completed".into(),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            locations: None,
+            meta: None,
+            images: Some(vec![img()]),
+        });
+        let v = project_snapshot(&state.to_snapshot(), dir.path().to_str());
+        assert_no_internal_keys(&v);
+        assert!(v["tool_calls"][0]["images"][0]["path"].as_str().unwrap().starts_with(".zwiim/images/"));
+        assert!(!v.to_string().contains(PNG));
+    }
+
+    #[test]
+    fn history_agent_images_project_as_paths() {
+        use crate::models::message::TurnRole;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.png"), b"x").unwrap();
+        let abs = dir.path().join("a.png");
+        let turns = vec![MessageTurn {
+            id: "t".into(),
+            role: TurnRole::Assistant,
+            blocks: vec![
+                ContentBlock::Image { data: PNG.into(), mime_type: "image/png".into(), uri: None },
+                ContentBlock::ImageGeneration { revised_prompt: Some("a cat".into()), image: Some(img()) },
+                ContentBlock::ImageGeneration { revised_prompt: Some("pending".into()), image: None },
+                ContentBlock::ToolUse {
+                    tool_use_id: Some("r1".into()),
+                    tool_name: "Read".into(),
+                    input_preview: Some(json!({ "file_path": abs.to_str().unwrap() }).to_string()),
+                    status: Some("completed".into()),
+                    meta: None,
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: Some("r1".into()),
+                    output_preview: None,
+                    is_error: false,
+                    agent_stats: None,
+                    images: vec![img()],
+                },
+            ],
+            timestamp: chrono::Utc::now(),
+            usage: None,
+            duration_ms: None,
+            model: None,
+            completed_at: None,
+            agent_message_id: None,
+        }];
+        let v = project_history(&turns, dir.path().to_str());
+        assert_no_internal_keys(&v);
+        assert!(!v.to_string().contains(PNG));
+        let blocks = v[0]["blocks"].as_array().unwrap();
+        let types: Vec<_> = blocks.iter().map(|b| b["type"].as_str().unwrap()).collect();
+        assert_eq!(types, ["agent_image", "agent_image", "tool_call", "tool_result"], "in-flight generation omitted");
+        assert!(blocks[0]["path"].as_str().unwrap().starts_with(".zwiim/images/"));
+        assert_eq!(blocks[1]["revised_prompt"], "a cat");
+        assert_eq!(blocks[3]["images"], json!([{ "name": "a.png", "mime_type": "image/png", "path": "a.png" }]));
+    }
+
+    #[test]
+    fn message_image_chunks_project_as_paths_live_and_in_snapshots() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str();
+        let (kind, p) = project_event(
+            &AcpEvent::ContentImage { data: PNG.into(), mime_type: "image/png".into() },
+            root,
+        )
+        .unwrap();
+        assert_eq!(kind, "agent.message_image");
+        assert!(p["path"].as_str().unwrap().starts_with(".zwiim/images/"));
+        assert!(!p.to_string().contains(PNG));
+
+        let mut state = SessionState::new("conn".into(), AgentType::Codex, Some(dir.path().to_path_buf()), "w".into(), None);
+        state.apply_event(&AcpEvent::ContentDelta { text: "look:".into(), parent_tool_use_id: None });
+        state.apply_event(&AcpEvent::ContentImage { data: PNG.into(), mime_type: "image/png".into() });
+        let v = project_snapshot(&state.to_snapshot(), root);
+        let content = &v["live_message"]["content"];
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "agent_image");
+        assert_eq!(content[1]["path"], p["path"]);
+        assert!(!v.to_string().contains(PNG));
+    }
+
+    #[test]
+    fn corrupt_message_image_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(project_event(
+            &AcpEvent::ContentImage { data: "%%%".into(), mime_type: "image/png".into() },
+            dir.path().to_str(),
+        )
+        .is_none());
     }
 }

@@ -292,6 +292,12 @@ pub fn async_task_state_is_terminal(state: &str) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AcpEvent {
+    /// An image the agent put in its message (an ACP `agent_message_chunk`
+    /// with image content). Main thread only; sub-agent images are dropped.
+    ContentImage {
+        data: String,
+        mime_type: String,
+    },
     /// Agent returned text content (streaming delta)
     ContentDelta {
         text: String,

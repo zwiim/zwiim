@@ -22,7 +22,7 @@ pub const NOTE_CLOSE: &str = "</zwiim-attachments>";
 const NOTE_INSTRUCTION: &str = "The user attached these files. Read them before proceeding.";
 
 /// Workspace-relative directory holding every attachment.
-const DIR: &str = ".zwiim/attachments";
+const DIR: &str = crate::workspace::zwiim_dir::ATTACHMENTS;
 const ID_LEN: usize = 8;
 const NAME_MAX_BYTES: usize = 255;
 

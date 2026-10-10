@@ -35,6 +35,7 @@ use crate::web::event_bridge::EventEmitter;
 
 mod env_files;
 mod names;
+pub(crate) mod zwiim_dir;
 mod publish;
 mod repo_init;
 
@@ -968,6 +969,7 @@ pub async fn create_worktree(
     };
 
     env_files::copy_env_files(Path::new(&root.path), Path::new(&worktree_path)).await;
+    zwiim_dir::prepare(Path::new(&worktree_path)).await;
 
     let registered = async {
         let detail = folders::open_worktree_folder_core(db, worktree_path.clone(), root.id).await?;
@@ -1548,6 +1550,31 @@ mod tests {
         assert_eq!(json["kind"], "root");
         assert_eq!(json["removed"], false);
         assert_eq!(json["is_git_repo"], false);
+    }
+
+    #[tokio::test]
+    async fn new_worktree_has_a_visible_git_excluded_zwiim_folder() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
+
+        let wt = create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None)
+            .await
+            .expect("create");
+
+        let wt_path = Path::new(&wt.path);
+        assert!(wt_path.join(".zwiim/attachments").is_dir());
+        assert!(wt_path.join(".zwiim/images").is_dir());
+        // Excluded through the shared common dir, so git never sees it.
+        let exclude = std::fs::read_to_string(Path::new(&repo).join(".git/info/exclude")).unwrap();
+        assert!(exclude.lines().any(|l| l.trim() == "/.zwiim/"), "{exclude}");
+        std::fs::write(wt_path.join(".zwiim/images/a.png"), b"x").unwrap();
+        assert_eq!(git(wt_path, &["status", "--porcelain", "--untracked-files=all"]), "");
+        // The file tree lists it.
+        let tree = folders::get_file_tree(wt.path.clone(), Some(1)).await.unwrap();
+        assert!(
+            tree.iter().any(|n| matches!(n, folders::FileTreeNode::Dir { name, .. } if name == ".zwiim")),
+            "tree lists .zwiim"
+        );
     }
 
     #[tokio::test]

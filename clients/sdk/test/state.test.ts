@@ -170,6 +170,30 @@ describe("session view", () => {
   });
 });
 
+describe("tool call images", () => {
+  it("appends a message image to the live message", () => {
+    const shot = { name: "ab.png", mime_type: "image/png", path: ".zwiim/images/ab.png" };
+    let v = run([{ type: "snapshot", epoch: "e1", seq: 0, snapshot: { ...baseSnapshot, live_message: null, tool_calls: [] } }]);
+    v = reduceSession(v, { type: "event", event: ev(1, "agent.message_delta", { text: "look:" }) });
+    v = reduceSession(v, { type: "event", event: ev(2, "agent.message_image", shot) });
+    v = reduceSession(v, { type: "event", event: ev(3, "agent.message_delta", { text: " done" }) });
+    expect(v.live.message!.content).toEqual([
+      { type: "text", text: "look:" },
+      { type: "agent_image", ...shot },
+      { type: "text", text: " done" },
+    ]);
+  });
+
+  it("keeps a tool call's images across updates that carry none", () => {
+    const shot = { name: "ab.png", mime_type: "image/png", path: ".zwiim/images/ab.png" };
+    let v = run([{ type: "snapshot", epoch: "e1", seq: 0, snapshot: { ...baseSnapshot, tool_calls: [] } }]);
+    v = reduceSession(v, { type: "event", event: ev(1, "agent.tool_call", { tool_call_id: "t1", title: "Read", kind: "read", status: "in_progress", content: null }) });
+    v = reduceSession(v, { type: "event", event: ev(2, "agent.tool_call_update", { tool_call_id: "t1", title: null, status: "in_progress", content: null, images: [shot] }) });
+    v = reduceSession(v, { type: "event", event: ev(3, "agent.tool_call_update", { tool_call_id: "t1", title: null, status: "completed", content: null }) });
+    expect(v.live.toolCalls.t1!.images).toEqual([shot]);
+  });
+});
+
 describe("historyCovers", () => {
   const turn = (role: string, text: string): HistoryTurn =>
     ({ turn_id: role + text, role, blocks: [{ type: "text", text }], timestamp: "", completed_at: null, duration_ms: null, model: null, usage: null });

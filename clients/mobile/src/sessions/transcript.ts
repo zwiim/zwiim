@@ -11,6 +11,7 @@ import {
   toolChanges,
   turnDuration,
   turnGroups,
+  type AgentImage,
   type AttachmentBlock,
   type ChangedFile,
   type FileDiff,
@@ -47,6 +48,7 @@ export type TranscriptRow =
   | { type: "tool"; key: string; tool: ToolItem }
   | { type: "tools"; key: string; tools: ToolItem[] }
   | { type: "error"; key: string; message: string }
+  | { type: "image"; key: string; image: AgentImage }
   | { type: "footer"; key: string; text: string; stopped: boolean; files: ChangedFile[] };
 
 /** Consecutive tool calls fold into one row from this many. */
@@ -179,6 +181,9 @@ const userKey = (blocks: readonly { type: string; text?: string }[]) =>
 
 type Piece = Exclude<TranscriptRow, { type: "tools" }>;
 
+const imageRows = (key: string, images: AgentImage[] | undefined): Piece[] =>
+  (images ?? []).map((image, i) => ({ type: "image", key: `${key}:img${i}`, image }));
+
 function historyRows(turn: HistoryTurn): Piece[] {
   if (turn.role === "user") {
     const text = userText(turn.blocks);
@@ -220,12 +225,16 @@ function historyRows(turn: HistoryTurn): Piece[] {
             changes: toolChanges(b.title, b.input_preview, r?.output_preview ?? null, status === "failed"),
           }),
         });
+        rows.push(...imageRows(key, r?.images));
         return;
       }
       case "tool_result":
-        if (b.is_error && b.output_preview && !(b.tool_call_id && called.has(b.tool_call_id))) {
-          rows.push({ type: "error", key, message: b.output_preview });
-        }
+        if (b.tool_call_id && called.has(b.tool_call_id)) return;
+        rows.push(...imageRows(key, b.images));
+        if (b.is_error && b.output_preview) rows.push({ type: "error", key, message: b.output_preview });
+        return;
+      case "agent_image":
+        rows.push({ type: "image", key, image: b });
         return;
       default:
         return;
@@ -248,8 +257,12 @@ function liveRows(turn: LiveTurn, prefix: string, running: boolean): Piece[] {
       if (b.text.trim() || last) rows.push({ type: "agent", key, text: b.text.trim(), streaming: last });
     } else if (b.type === "thought") {
       if (b.text.trim() || last) rows.push({ type: "thought", key, text: b.text.trim(), streaming: last });
+    } else if (b.type === "agent_image") {
+      rows.push({ type: "image", key, image: b });
     } else {
-      rows.push({ type: "tool", key, tool: liveTool(turn.toolCalls[b.tool_call_id], running) });
+      const tc = turn.toolCalls[b.tool_call_id];
+      rows.push({ type: "tool", key, tool: liveTool(tc, running) });
+      rows.push(...imageRows(key, tc?.images));
     }
   });
   return rows;

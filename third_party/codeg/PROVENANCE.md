@@ -1161,6 +1161,21 @@ Upstream-derived:
 | `bin/zwiim_host.rs` | `src-tauri/src/bin/codeg_server.rs` | Passes `HostGitTools` (connection manager, database, data dir) to the delegation listener. |
 | `lib.rs` | `src-tauri/src/lib.rs` | Same for the desktop listener path. |
 
+## Agent images — images the agent shows, as workspace files
+
+Zwiim-owned, no Codeg code copied: `agent_images.rs` (the protocol projection saves an image from the agent's message or a tool result as `.zwiim/images/<content hash>.<ext>` in the workspace, written atomically and capped at 25 MB, off the async worker; an image read from a file inside the workspace is shown from that file in place); `workspace/zwiim_dir.rs` (creates `.zwiim/` and keeps it out of Git through `.git/info/exclude`); `protocol/events.rs` (history, snapshot and live events carry `{ path, name }` for each image, never base64); `harness/system_prompt.rs` (in a worktree, tells the agent to save images under `.zwiim/images/` and show them as Markdown images; instructions version 4).
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `acp/types.rs` | `src-tauri/src/acp/types.rs` | `AcpEvent::ContentImage { data, mime_type }`. |
+| `acp/connection.rs` | `src-tauri/src/acp/connection.rs` | An image `agent_message_chunk` on the main thread emits `ContentImage` (sub-agent images are dropped). An image tool-call update with no locations of its own carries the call's locations. |
+| `acp/session_state.rs` | `src-tauri/src/acp/session_state.rs` | `LiveContentBlock::Image`; `ContentImage` appends one to the live message. |
+| `acp/event_stream.rs` | `src-tauri/src/acp/event_stream.rs` | Size estimate for `ContentImage`. |
+| `commands/folder_links.rs` | `src-tauri/src/commands/folder_links.rs` | The synchronous `append_exclude` split out of `add_to_git_exclude`, for callers that already resolved the repository. |
+| `lib.rs` | `src-tauri/src/lib.rs` | `pub mod agent_images`. |
+
 ## License obligations tracked
 
 - [x] Include Apache-2.0 license text (`third_party/codeg/LICENSE`).

@@ -354,6 +354,7 @@ fn estimate_envelope_size(envelope: &EventEnvelope) -> usize {
     // UUID-shaped ones production emits. (`ENVELOPE_OVERHEAD` covers its key.)
     let base = ENVELOPE_OVERHEAD + json_str_len(&envelope.connection_id);
     let payload = match &envelope.payload {
+        AcpEvent::ContentImage { data, mime_type } => json_str_len(data) + json_str_len(mime_type),
         AcpEvent::ContentDelta {
             text,
             parent_tool_use_id,

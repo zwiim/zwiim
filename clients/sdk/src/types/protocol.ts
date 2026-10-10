@@ -590,12 +590,21 @@ export type UserBlock =
  */
 export type ToolCallStatus = "pending" | "in_progress" | "completed" | "failed" | (string & {});
 
+/** An image an agent produced, as a file in the session's workspace. */
+export interface AgentImage {
+  name: string;
+  mime_type: string;
+  /** Workspace-relative; open or read it like any workspace file. */
+  path: string;
+}
+
 export interface ToolCall {
   tool_call_id: string;
   title: string | null;
   kind?: string | null;
   status: ToolCallStatus | null;
   content: unknown;
+  images?: AgentImage[];
 }
 
 export interface PermissionOption {
@@ -662,7 +671,8 @@ export type RequestAnswer =
 export type LiveBlock =
   | { type: "text"; text: string }
   | { type: "thought"; text: string }
-  | { type: "tool_call"; tool_call_id: string };
+  | { type: "tool_call"; tool_call_id: string }
+  | ({ type: "agent_image" } & AgentImage);
 
 export interface LiveMessage {
   message_id: string | null;
@@ -728,6 +738,7 @@ interface EventBase<T extends string, P> {
 export type SessionEvent =
   | EventBase<"agent.message_delta", { text: string }>
   | EventBase<"agent.thought_delta", { text: string }>
+  | EventBase<"agent.message_image", AgentImage>
   | EventBase<"agent.user_message", PendingUserMessage>
   | EventBase<"agent.tool_call", ToolCall>
   | EventBase<"agent.tool_call_update", Omit<ToolCall, "kind">>
@@ -746,6 +757,7 @@ export type HistoryBlock =
   | { type: "thought"; text: string }
   | { type: "image"; data: string; mime_type: string }
   | AttachmentBlock
+  | ({ type: "agent_image"; revised_prompt?: string } & AgentImage)
   | {
       type: "image_generation";
       revised_prompt: string | null;
@@ -763,6 +775,7 @@ export type HistoryBlock =
       tool_call_id: string | null;
       output_preview: string | null;
       is_error: boolean;
+      images?: AgentImage[];
     };
 
 export interface HistoryTurn {

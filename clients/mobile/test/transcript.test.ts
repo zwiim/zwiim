@@ -10,7 +10,7 @@ import {
 } from "@zwiim/sdk";
 import { describe, expect, it } from "vitest";
 import type { FakeChannel } from "../../sdk/test/fakes";
-import { parseInline, parseMarkdown } from "../src/sessions/markdown";
+import { parseInline, parseMarkdown, spanText } from "../src/sessions/markdown";
 import { clock, duration, historyBefore, nowState, transcriptRows, turnKey, turnRunning } from "../src/sessions/transcript";
 import { waitFor, world } from "./support";
 
@@ -286,6 +286,32 @@ describe("transcript", () => {
     const v = view(user("m1", "Go"), ev("agent.error", { message: "rate limited", code: 429 }), done("end_turn"));
     expect(types(v)).toContain("error");
   });
+
+  it("shows agent images as rows after their tool call, from history and live", () => {
+    const shot = { name: "ab.png", mime_type: "image/png", path: ".zwiim/images/ab.png" };
+    const v = view(
+      history([
+        turn("a1", "assistant", [
+          { type: "tool_call", tool_call_id: "r1", title: "Read", input_preview: JSON.stringify({ file_path: "/tmp/s.png" }), status: "completed" },
+          { type: "tool_result", tool_call_id: "r1", output_preview: null, is_error: false, images: [shot] },
+          { type: "agent_image", name: "cd.png", mime_type: "image/png", path: ".zwiim/images/cd.png" },
+          { type: "text", text: "done" },
+        ]),
+      ]),
+    );
+    expect(types(v)).toEqual(["tool", "image", "image", "agent"]);
+    const rows = transcriptRows(v);
+    expect(rows[1]).toMatchObject({ type: "image", image: shot });
+
+    const live = play(v, user("m1", "go"), ev("agent.tool_call", { tool_call_id: "g1", title: "Generate image", kind: "other", status: "completed", content: null, images: [shot] }));
+    expect(types(live).slice(-2)).toEqual(["tool", "image"]);
+  });
+
+  it("shows a live message image as an image row between text", () => {
+    const shot = { name: "ab.png", mime_type: "image/png", path: ".zwiim/images/ab.png" };
+    const v = view(user("m1", "go"), delta("look:"), ev("agent.message_image", shot), delta(" done"));
+    expect(types(v)).toEqual(["user", "agent", "image", "agent"]);
+  });
 });
 
 // ─── the Now bar ─────────────────────────────────────────────────────────
@@ -386,6 +412,25 @@ describe("markdown", () => {
       { text: ", ok" },
     ]);
     expect(parseInline("**`resume`** failed")).toEqual([{ text: "resume", code: true, bold: true }, { text: " failed" }]);
+  });
+
+  it("reads a line that is only an image as an image block, and links as spans", () => {
+    expect(parseMarkdown("Here:\n![screen](.zwiim/images/a.png)\nafter")).toEqual([
+      { type: "p", text: "Here:" },
+      { type: "image", alt: "screen", src: ".zwiim/images/a.png" },
+      { type: "p", text: "after" },
+    ]);
+    expect(parseInline("see [the report](out/r.pdf) now")).toEqual([
+      { text: "see " },
+      { text: "the report", href: "out/r.pdf" },
+      { text: " now" },
+    ]);
+  });
+
+  it("keeps the URL of a link that opens nothing in the app", () => {
+    const [, link] = parseInline("see [docs](https://example.com/x)");
+    expect(spanText(link!)).toBe("[docs](https://example.com/x)");
+    expect(spanText({ text: "plain" })).toBe("plain");
   });
 });
 

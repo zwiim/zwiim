@@ -122,6 +122,10 @@ fn workspace(input: &HarnessInput) -> String {
             "The Git stash is shared with the main checkout and other worktrees. Never use bare `git stash` / `git stash pop`; prefer a WIP commit."
                 .into(),
         );
+        lines.push(
+            "Save screenshots, captures and generated images under `.zwiim/images/` in this directory (it is excluded from Git), and show one to the user as `![name](.zwiim/images/<file>)`."
+                .into(),
+        );
     }
     if let Some(branch) = input
         .git
@@ -193,6 +197,22 @@ mod tests {
                 placeholder_branch: Some("pune".into()),
             }),
         }
+    }
+
+    const IMAGES_LINE: &str = "- Save screenshots, captures and generated images under `.zwiim/images/` in this directory (it is excluded from Git), and show one to the user as `![name](.zwiim/images/<file>)`.\n";
+
+    #[test]
+    fn worktrees_tell_agents_where_images_go() {
+        assert!(render(&worktree()).contains(IMAGES_LINE));
+        let root = HarnessInput {
+            cwd: "/w/repo".into(),
+            git: Some(GitFacts {
+                worktree: false,
+                default_branch: Some("origin/main".into()),
+                placeholder_branch: None,
+            }),
+        };
+        assert!(!render(&root).contains(".zwiim/images"));
     }
 
     fn sections(text: &str) -> Vec<&str> {
