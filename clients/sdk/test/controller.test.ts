@@ -340,3 +340,30 @@ describe("HostController", () => {
     });
   });
 });
+
+describe("GitHub clone", () => {
+  it("lists a page with a long timeout", async () => {
+    const t = setup();
+    let seen: unknown;
+    t.transport.handlers["github.repos"] = (params: unknown) => {
+      seen = params;
+      return { repos: [], next_page: null };
+    };
+    await expect(t.controller.githubRepos(2, true)).resolves.toEqual({ repos: [], next_page: null });
+    expect(seen).toEqual({ page: 2, refresh: true });
+  });
+
+  it("starts and cancels a clone", async () => {
+    const t = setup();
+    t.transport.handlers["workspace.clone"] = () => ({ clone_id: "c_1" });
+    t.transport.handlers["workspace.clone_cancel"] = () => ({ cancelled: true });
+    await expect(t.controller.cloneWorkspace("octo", "app")).resolves.toEqual({ clone_id: "c_1" });
+    await expect(t.controller.cancelClone("c_1")).resolves.toBe(true);
+  });
+
+  it("treats clone and cancel as mutating", () => {
+    expect(MUTATING_OPS.has("workspace.clone")).toBe(true);
+    expect(MUTATING_OPS.has("workspace.clone_cancel")).toBe(true);
+    expect(MUTATING_OPS.has("github.repos")).toBe(false);
+  });
+});

@@ -395,7 +395,7 @@ async fn has_local_identity(path: &Path) -> bool {
 }
 
 /// Write `identity` to the repository's own config.
-async fn set_identity(path: &Path, identity: &Identity) -> Result<(), String> {
+pub(crate) async fn set_identity(path: &Path, identity: &Identity) -> Result<(), String> {
     git(
         path,
         &[],
@@ -433,6 +433,14 @@ async fn has_identity(path: &Path, env: &[(&str, &str)]) -> bool {
         }
     }
     true
+}
+
+/// Git would sign commits here with some `user.email` (any config level).
+pub(crate) async fn has_email(path: &Path, env: &[(&str, &str)]) -> bool {
+    matches!(
+        git(path, env, &["config", "--get", "user.email"]).await,
+        Ok(v) if !v.trim().is_empty()
+    )
 }
 
 /// How long one git step may run. The user's Git config applies, so a

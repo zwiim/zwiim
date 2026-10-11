@@ -166,6 +166,12 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/git.pr", post(http::git_pr))
         .route("/git.pr_merge", post(http::git_pr_merge))
         .route("/github.repo_available", post(http::github_repo_available))
+        .route("/github.repos", post(http::github_repos))
+        .route("/workspace.clone", post(http::workspace_clone))
+        .route(
+            "/workspace.clone_cancel",
+            post(http::workspace_clone_cancel),
+        )
         .route("/terminal.spawn", post(http::terminal_spawn))
         .route("/terminal.write", post(http::terminal_write))
         .route("/terminal.resize", post(http::terminal_resize))

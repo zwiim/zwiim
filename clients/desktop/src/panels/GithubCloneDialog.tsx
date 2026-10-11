@@ -1,0 +1,451 @@
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Loader2, Lock, Search } from "lucide-react";
+import { ZwiimClientError, type CloneJob, type GithubRepo } from "@zwiim/sdk";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { errorMessage, useController, useOnline } from "@/lib/host-context";
+import { cn } from "@/lib/utils";
+import { relativeTime } from "./GitPanel";
+import { Code, unavailableLine, type Unavailable } from "./PublishDialog";
+
+export interface RepoRef {
+  owner: string;
+  name: string;
+}
+
+/**
+ * The repository a search text names: `owner/name`, a `github.com` URL (any
+ * page of it), or an SSH remote. Null for anything else. The Host validates
+ * again before cloning.
+ */
+export function repoRef(text: string): RepoRef | null {
+  const t = text.trim().replace(/\/+$/, "");
+  const m =
+    /^(?:https?:\/\/)?(?:www\.)?github\.com\/([^/?#\s]+)\/([^/?#\s]+)/i.exec(t) ??
+    /^git@github\.com:([^/\s]+)\/([^/\s]+)$/i.exec(t) ??
+    /^([^/\s:]+)\/([^/\s]+)$/.exec(t);
+  if (!m) return null;
+  const owner = m[1]!;
+  const name = m[2]!.replace(/\.git$/i, "");
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(owner)) return null;
+  if (!/^[A-Za-z0-9._-]{1,100}$/.test(name) || name === "." || name === "..") return null;
+  return { owner, name };
+}
+
+export const fullName = (r: RepoRef) => `${r.owner}/${r.name}`;
+
+/** GitHub names are case-insensitive. */
+export const sameRepo = (a: RepoRef, b: RepoRef) =>
+  a.owner.toLowerCase() === b.owner.toLowerCase() && a.name.toLowerCase() === b.name.toLowerCase();
+
+export const isActive = (j: CloneJob) => j.state === "queued" || j.state === "cloning" || j.state === "adding";
+
+/** The job a repository's row shows: one in flight, else its failure, else a finished one. */
+function jobFor(jobs: readonly CloneJob[], repo: RepoRef): CloneJob | null {
+  const mine = jobs.filter((j) => sameRepo(j, repo));
+  return mine.find(isActive) ?? mine.find((j) => j.state === "failed") ?? mine.find((j) => j.state === "done") ?? null;
+}
+
+/** "Receiving objects 42%" */
+export function progressLabel(job: CloneJob): string {
+  if (job.state === "queued") return "Waiting to clone…";
+  if (job.state === "adding") return "Opening…";
+  const pct = job.percent === null ? "" : ` ${job.percent}%`;
+  switch (job.phase) {
+    case "receiving":
+      return `Receiving objects${pct}`;
+    case "resolving":
+      return `Resolving deltas${pct}`;
+    case "checkout":
+      return `Checking out files${pct}`;
+    default:
+      return "Cloning…";
+  }
+}
+
+/** A failed clone's line (spec §5); a Zwiim add or worktree failure keeps its own message. */
+export function cloneErrorLine(job: CloneJob, host: string): ReactNode {
+  const code = job.error?.code ?? "failed";
+  switch (code) {
+    case "gh_unavailable":
+    case "gh_unauthenticated":
+      return unavailableLine(code, host);
+    case "network":
+      return "Couldn't reach GitHub.";
+    case "not_found":
+      return (
+        <>
+          <Code>{fullName(job)}</Code> was not found, or this account can't see it.
+        </>
+      );
+    case "auth_failed":
+      return (
+        <>
+          GitHub refused the credentials. Check <Code>gh auth status</Code>.
+        </>
+      );
+    case "timeout":
+      return "The clone stopped making progress.";
+    case "failed":
+      return "The clone failed.";
+    default:
+      return job.error?.message ?? "The clone failed.";
+  }
+}
+
+/** A thin bar; without a percent, a full faint pulse. */
+export function ProgressBar({ percent, fill, label }: { percent: number | null; fill: string; label: string }) {
+  return (
+    <div
+      className="bg-muted h-1 w-full overflow-hidden rounded-full"
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={percent ?? undefined}
+      aria-valuetext={label}
+    >
+      <div
+        className={cn("h-full rounded-full transition-[width]", fill, percent === null && "animate-pulse opacity-40")}
+        style={{ width: `${percent ?? 100}%` }}
+      />
+    </div>
+  );
+}
+
+/** GitHub's mark: Primer Octicons `mark-github` (MIT). lucide-react has none. */
+export function GithubMark({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" className={cn("size-4", className)}>
+      <path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z" />
+    </svg>
+  );
+}
+
+type ListFailure = { kind: "unavailable"; reason: Unavailable } | { kind: "failed"; message: ReactNode };
+
+/**
+ * Why the list could not load. `network` and `timeout` are GitHub's only when
+ * the Host answered (a status); without one they are the connection's own.
+ */
+function listFailure(e: unknown): ListFailure {
+  if (e instanceof ZwiimClientError) {
+    if (e.code === "gh_unavailable" || e.code === "gh_unauthenticated")
+      return { kind: "unavailable", reason: e.code as Unavailable };
+    if (e.status !== undefined) {
+      if (e.code === "github_unreachable" || e.code === "network" || e.code === "timeout") {
+        return { kind: "failed", message: "Couldn't reach GitHub." };
+      }
+      if (e.code === "auth_failed") {
+        return {
+          kind: "failed",
+          message: (
+            <>
+              GitHub refused the credentials. Check <Code>gh auth status</Code>.
+            </>
+          ),
+        };
+      }
+    }
+  }
+  return { kind: "failed", message: errorMessage(e) };
+}
+
+type List = { kind: "loading" } | ListFailure | { kind: "ready"; repos: GithubRepo[]; next: number | null };
+
+export interface GithubCloneDialogProps {
+  /** Whether the Host is another computer ("the host" in copy) or this one ("this Mac"). */
+  remote: boolean;
+  /** This Host's clone jobs, cancelled and dismissed ones left out. */
+  jobs: readonly CloneJob[];
+  /** Closing never stops a clone; it goes on in the workspace list. */
+  onClose(): void;
+  /** Start cloning `owner/name`; rejects with the Host's refusal. */
+  onClone(owner: string, name: string): Promise<void>;
+}
+
+/** Lists the Host account's GitHub repositories; a click clones one into a workspace (spec §6). */
+export function GithubCloneDialog({ remote, jobs, onClose, onClone }: GithubCloneDialogProps) {
+  const controller = useController();
+  const online = useOnline();
+  const hostName = remote ? "the host" : "this Mac";
+  const [list, setList] = useState<List>({ kind: "loading" });
+  const [more, setMore] = useState<{ loading: boolean; error: ReactNode }>({ loading: false, error: null });
+  const [text, setText] = useState("");
+  // Repositories whose clone request is on its way, lowercased `owner/name`.
+  const [starting, setStarting] = useState<string[]>([]);
+  const [refused, setRefused] = useState<{ key: string; message: string } | null>(null);
+  // Each load's number: an answer to an older one is dropped.
+  const asked = useRef(0);
+
+  async function load(refresh: boolean) {
+    const ask = ++asked.current;
+    setList({ kind: "loading" });
+    setMore({ loading: false, error: null });
+    try {
+      const page = await controller.githubRepos(undefined, refresh);
+      if (ask === asked.current) setList({ kind: "ready", repos: page.repos, next: page.next_page });
+    } catch (e) {
+      if (ask === asked.current) setList(listFailure(e));
+    }
+  }
+
+  async function loadMore() {
+    if (list.kind !== "ready" || list.next === null || more.loading) return;
+    const ask = asked.current;
+    const page = list.next;
+    setMore({ loading: true, error: null });
+    try {
+      const next = await controller.githubRepos(page);
+      if (ask !== asked.current) return;
+      setList((l) =>
+        l.kind === "ready"
+          ? {
+              kind: "ready",
+              repos: [...l.repos, ...next.repos.filter((r) => !l.repos.some((o) => sameRepo(o, r)))],
+              next: next.next_page,
+            }
+          : l,
+      );
+      setMore({ loading: false, error: null });
+    } catch (e) {
+      if (ask !== asked.current) return;
+      const f = listFailure(e);
+      setMore({ loading: false, error: f.kind === "unavailable" ? unavailableLine(f.reason, hostName) : f.message });
+    }
+  }
+
+  useEffect(() => {
+    void load(false);
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  async function clone(target: RepoRef) {
+    const key = fullName(target).toLowerCase();
+    if (starting.includes(key)) return;
+    setRefused(null);
+    setStarting((s) => [...s, key]);
+    try {
+      await onClone(target.owner, target.name);
+    } catch (e) {
+      setRefused({ key, message: errorMessage(e) });
+    } finally {
+      setStarting((s) => s.filter((k) => k !== key));
+    }
+  }
+
+  async function cancel(job: CloneJob) {
+    setRefused(null);
+    try {
+      await controller.cancelClone(job.clone_id);
+    } catch (e) {
+      setRefused({ key: fullName(job).toLowerCase(), message: errorMessage(e) });
+    }
+  }
+
+  const ref = repoRef(text);
+  const needle = (ref ? fullName(ref) : text.trim()).toLowerCase();
+  const repos = list.kind === "ready" ? list.repos : [];
+  const shown =
+    needle === ""
+      ? repos
+      : repos.filter(
+          (r) =>
+            fullName(r).toLowerCase().includes(needle) ||
+            (!ref && (r.description ?? "").toLowerCase().includes(needle)),
+        );
+  // A named repository no loaded page lists gets its own row; the Host decides if it exists.
+  const pasted = ref && list.kind !== "unavailable" && !repos.some((r) => sameRepo(r, ref)) ? ref : null;
+
+  const rowFor = (target: RepoRef, repo?: GithubRepo) => {
+    const key = fullName(target).toLowerCase();
+    return (
+      <RepoRow
+        key={key}
+        target={target}
+        repo={repo}
+        job={jobFor(jobs, target)}
+        starting={starting.includes(key)}
+        refused={refused?.key === key ? refused.message : null}
+        online={online}
+        host={hostName}
+        onClone={() => void clone(target)}
+        onCancel={(job) => void cancel(job)}
+      />
+    );
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-6"
+      onPointerDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="bg-card text-card-foreground ring-border flex max-h-[80vh] w-full max-w-lg flex-col rounded-2xl shadow-2xl ring-1"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Open GitHub project"
+      >
+        <div className="flex flex-col gap-3 px-5 pt-5">
+          <h2 className="text-base font-semibold tracking-tight">Open GitHub project</h2>
+          {list.kind !== "unavailable" && (
+            <label className="bg-muted/60 ring-border focus-within:ring-ring flex items-center gap-2 rounded-lg px-2.5 py-1.5 ring-1">
+              <Search className="text-muted-foreground size-3.5 shrink-0" />
+              <input
+                autoFocus
+                aria-label="Search repositories"
+                placeholder="Search, or paste owner/name"
+                className="min-w-0 flex-1 bg-transparent text-[13px] outline-none"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+              />
+            </label>
+          )}
+        </div>
+        <div className="mt-3 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-3">
+          {list.kind === "unavailable" && (
+            <div className="flex items-center gap-2 px-2.5 py-2">
+              <p className="flex-1 text-sm">{unavailableLine(list.reason, hostName)}</p>
+              <Button size="xs" variant="ghost" disabled={!online} onClick={() => void load(true)}>
+                Try again
+              </Button>
+            </div>
+          )}
+          {list.kind === "loading" && (
+            <p className="text-muted-foreground flex items-center gap-2 px-2.5 py-2 text-xs">
+              <Loader2 className="size-3.5 animate-spin" />
+              Loading repositories…
+            </p>
+          )}
+          {list.kind === "failed" && (
+            <div className="flex items-center gap-2 px-2.5 py-2">
+              <p className="text-destructive flex-1 text-xs">{list.message}</p>
+              <Button size="xs" variant="ghost" disabled={!online} onClick={() => void load(true)}>
+                Try again
+              </Button>
+            </div>
+          )}
+          {list.kind === "ready" && shown.map((r) => rowFor(r, r))}
+          {pasted && rowFor(pasted)}
+          {list.kind === "ready" && shown.length === 0 && !pasted && (
+            <p className="text-muted-foreground px-2.5 py-2 text-xs">
+              {list.repos.length === 0 ? "No repositories on this account yet." : "No repositories match."}
+            </p>
+          )}
+          {list.kind === "ready" && list.next !== null && (
+            <div className="flex flex-col items-center gap-1 py-2">
+              <Button size="sm" variant="ghost" disabled={more.loading || !online} onClick={() => void loadMore()}>
+                {more.loading && <Loader2 className="animate-spin" />}
+                Load more
+              </Button>
+              {more.error && <p className="text-destructive text-xs">{more.error}</p>}
+            </div>
+          )}
+        </div>
+        <div className="flex justify-end px-5 py-4">
+          <Button variant="secondary" size="sm" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface RepoRowProps {
+  target: RepoRef;
+  /** The listed repository; absent for a pasted `owner/name`. */
+  repo?: GithubRepo;
+  job: CloneJob | null;
+  starting: boolean;
+  refused: string | null;
+  online: boolean;
+  host: string;
+  onClone(): void;
+  onCancel(job: CloneJob): void;
+}
+
+function RepoRow({ target, repo, job, starting, refused, online, host, onClone, onCancel }: RepoRowProps) {
+  const name = fullName(target);
+  const active = job !== null && isActive(job) ? job : null;
+  const failed = job?.state === "failed" ? job : null;
+  const added = (repo?.workspace_id ?? null) !== null || job?.state === "done";
+  return (
+    <div
+      className="hover:bg-muted/60 has-[:focus-visible]:bg-muted/60 flex flex-col gap-1.5 rounded-lg px-2.5 py-2"
+      data-testid={`repo-${name}`}
+    >
+      <button
+        className="flex min-w-0 flex-col items-start gap-0.5 text-left outline-none disabled:cursor-default"
+        aria-label={`Clone ${name}`}
+        disabled={active !== null || starting || !online}
+        onClick={onClone}
+      >
+        <span className="flex max-w-full items-center gap-1.5">
+          {!repo && <span className="text-muted-foreground text-[13px]">Clone</span>}
+          <span className="truncate font-mono text-[13px]">{name}</span>
+          {repo?.private && (
+            <span role="img" aria-label="Private" title="Private" className="text-muted-foreground">
+              <Lock className="size-3" aria-hidden="true" />
+            </span>
+          )}
+          {repo?.fork && (
+            <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+              Fork
+            </Badge>
+          )}
+          {repo?.archived && (
+            <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+              Archived
+            </Badge>
+          )}
+          {added && (
+            <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
+              Added
+            </Badge>
+          )}
+          {starting && <Loader2 className="text-muted-foreground size-3 animate-spin" />}
+        </span>
+        {repo && (repo.description || repo.pushed_at) && (
+          <span className="text-muted-foreground flex w-full items-center gap-2 text-xs">
+            <span className="min-w-0 flex-1 truncate">{repo.description}</span>
+            {repo.pushed_at && <span className="shrink-0">{relativeTime(repo.pushed_at)}</span>}
+          </span>
+        )}
+      </button>
+      {active && (
+        <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <span className="text-muted-foreground text-xs">{progressLabel(active)}</span>
+            <ProgressBar percent={active.percent} fill="bg-brand" label={progressLabel(active)} />
+          </div>
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={active.state === "adding" || !online}
+            onClick={() => onCancel(active)}
+          >
+            Cancel
+          </Button>
+        </div>
+      )}
+      {failed && (
+        <div className="flex items-center gap-2">
+          <p className="text-destructive min-w-0 flex-1 text-xs">{cloneErrorLine(failed, host)}</p>
+          <Button size="xs" variant="ghost" disabled={starting || !online} onClick={onClone}>
+            Retry
+          </Button>
+        </div>
+      )}
+      {refused && <p className="text-destructive text-xs">{refused}</p>}
+    </div>
+  );
+}

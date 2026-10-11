@@ -1438,17 +1438,93 @@ pub async fn github_repo_available(
     ZJson(p): ZJson<RepoAvailableParams>,
 ) -> ZResult<RepoAvailable> {
     workspace::check_target(&p.owner, &p.name)?;
-    let cwd = workspace::home_dir()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(std::env::temp_dir);
-    let exists = git_harness::github_repo_exists(
-        state.gh.as_deref(),
-        &cwd.to_string_lossy(),
-        &p.owner,
-        &p.name,
-    )
-    .await?;
+    let exists =
+        git_harness::github_repo_exists(state.gh.as_deref(), &gh_cwd(), &p.owner, &p.name).await?;
     Ok(Json(RepoAvailable { available: !exists }))
+}
+
+/// Where the Host runs read-only `gh` calls: the home directory, else temp.
+fn gh_cwd() -> String {
+    workspace::home_dir()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(std::env::temp_dir)
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GithubReposParams {
+    #[serde(default)]
+    pub page: Option<u32>,
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+/// One page of the signed-in account's GitHub repositories, each with the
+/// root already opened on it.
+pub async fn github_repos(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<GithubReposParams>,
+) -> ZResult<workspace::clone::GithubRepoPage> {
+    let page = p.page.unwrap_or(1);
+    if page == 0 {
+        return Err(ZwiimError::invalid_input("Pages start at 1"));
+    }
+    let listed = state
+        .clones
+        .github_repos(
+            &state.db.conn,
+            state.gh.as_deref(),
+            &gh_cwd(),
+            page,
+            p.refresh,
+        )
+        .await?;
+    Ok(Json(listed))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloneParams {
+    pub owner: String,
+    pub name: String,
+}
+
+/// Open `owner/name` as a workspace: the root already on it, or a new clone
+/// job.
+pub async fn workspace_clone(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<CloneParams>,
+) -> ZResult<workspace::clone::CloneStart> {
+    Ok(Json(
+        state
+            .clones
+            .start(state.clone_env(), &p.owner, &p.name)
+            .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloneCancelParams {
+    pub clone_id: String,
+}
+
+#[derive(Serialize)]
+pub struct CloneCancelled {
+    cancelled: bool,
+}
+
+/// Cancel a clone job still queued or cloning; no effect once it is adding
+/// or finished.
+pub async fn workspace_clone_cancel(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<CloneCancelParams>,
+) -> ZResult<CloneCancelled> {
+    Ok(Json(CloneCancelled {
+        cancelled: state.clones.cancel(&p.clone_id)?,
+    }))
 }
 
 // ─── terminal ────────────────────────────────────────────────────────────

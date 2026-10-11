@@ -48,6 +48,7 @@ use crate::web::event_bridge::{
     EventEmitter, WebEvent, CONVERSATIONS_BULK_CHANGED_EVENT, CONVERSATION_CHANGED_EVENT,
     FOLDER_CHANGED_EVENT,
 };
+use crate::workspace::clone::{CloneJob, CloneJobs, CloneState};
 use crate::workspace::{self, WorkspaceInfo};
 use crate::workspace_state;
 
@@ -93,6 +94,9 @@ pub struct HostSnapshot {
     pub terminals: Vec<TerminalSummary>,
     /// The pull request of each workspace that has one (or cannot see them).
     pub prs: BTreeMap<String, PrEntry>,
+    /// Clone jobs in progress or finished within the retention period,
+    /// oldest first.
+    pub clones: Vec<CloneJob>,
 }
 
 /// How long `git.pr { refresh }` waits for GitHub.
@@ -107,6 +111,7 @@ struct Projection {
     sessions: HashMap<String, Vec<SessionSummary>>,
     terminals: BTreeMap<String, TerminalSummary>,
     prs: BTreeMap<String, PrEntry>,
+    clones: Vec<CloneJob>,
 }
 
 impl Projection {
@@ -123,6 +128,7 @@ impl Projection {
                 .collect(),
             terminals: self.terminals.values().cloned().collect(),
             prs: self.prs.clone(),
+            clones: self.clones.clone(),
         }
     }
 }
@@ -226,6 +232,7 @@ async fn start(state: &Arc<AppState>, prs: PrWatchConfig) -> Result<Arc<Shared>,
     // Subscribe before the first read so no change between them is lost.
     let web_rx = state.event_broadcaster.subscribe();
     let bus_rx = state.acp_event_bus.subscribe();
+    let clones_rx = state.clones.subscribe();
     let (pr_results, pr_rx) = mpsc::unbounded_channel();
     let pr_cmd = pr_watch::spawn(state.db.conn.clone(), state.data_dir.clone(), prs, pr_results);
     let mut task = FeedTask {
@@ -238,8 +245,10 @@ async fn start(state: &Arc<AppState>, prs: PrWatchConfig) -> Result<Arc<Shared>,
         watch_keys: HashMap::new(),
         pr_cmd: pr_cmd.clone(),
         pr_targets: Vec::new(),
+        clones: state.clones.clone(),
     };
     task.projection.workspaces = workspace::list(&task.db).await?;
+    task.projection.clones = task.clones.list();
     let ids: Vec<String> = task
         .projection
         .workspaces
@@ -257,7 +266,7 @@ async fn start(state: &Arc<AppState>, prs: PrWatchConfig) -> Result<Arc<Shared>,
         tx,
         prs: pr_cmd,
     });
-    tokio::spawn(task.run(shared.clone(), web_rx, bus_rx, pr_rx));
+    tokio::spawn(task.run(shared.clone(), web_rx, bus_rx, pr_rx, clones_rx));
     Ok(shared)
 }
 
@@ -276,6 +285,7 @@ struct Stale {
     departed: Vec<String>,
     /// Agent connections that finished a turn.
     turns: Vec<String>,
+    clones: bool,
 }
 
 impl Stale {
@@ -287,6 +297,7 @@ impl Stale {
             || !self.watched.is_empty()
             || !self.departed.is_empty()
             || !self.turns.is_empty()
+            || self.clones
     }
 
     fn everything(&mut self) {
@@ -294,6 +305,7 @@ impl Stale {
         self.sessions = true;
         self.terminals = true;
         self.all_diffs = true;
+        self.clones = true;
     }
 }
 
@@ -315,6 +327,7 @@ struct FeedTask {
     pr_cmd: mpsc::UnboundedSender<PrCmd>,
     /// What the PR watcher was last told to follow.
     pr_targets: Vec<PrTarget>,
+    clones: Arc<CloneJobs>,
 }
 
 /// Spellings a watcher event may name `path` by: as given and canonical.
@@ -369,6 +382,24 @@ fn pr_changed(workspace_id: &str, entry: &PrEntry) -> (&'static str, Value) {
     )
 }
 
+/// `clone.changed` for each new or changed job, `clone.removed` for each
+/// expired one.
+fn clone_events(old: &[CloneJob], new: &[CloneJob]) -> Vec<(&'static str, Value)> {
+    let mut events = Vec::new();
+    for job in new {
+        if old.iter().find(|o| o.clone_id == job.clone_id) != Some(job) {
+            events.push(("clone.changed", json!({ "clone": job })));
+        }
+    }
+    for gone in old
+        .iter()
+        .filter(|o| !new.iter().any(|j| j.clone_id == o.clone_id))
+    {
+        events.push(("clone.removed", json!({ "clone_id": gone.clone_id })));
+    }
+    events
+}
+
 impl FeedTask {
     async fn run(
         mut self,
@@ -376,6 +407,7 @@ impl FeedTask {
         mut web_rx: broadcast::Receiver<WebEvent>,
         mut bus_rx: broadcast::Receiver<Arc<EventEnvelope>>,
         mut pr_rx: mpsc::UnboundedReceiver<PrResult>,
+        mut clones_rx: tokio::sync::watch::Receiver<u64>,
     ) {
         let (recheck_tx, mut recheck_rx) = mpsc::unbounded_channel::<()>();
         let mut stale = Stale::default();
@@ -392,6 +424,10 @@ impl FeedTask {
                     Err(RecvError::Closed) => return,
                 },
                 Some(()) = recheck_rx.recv() => stale.sessions = true,
+                r = clones_rx.changed() => match r {
+                    Ok(()) => stale.clones = true,
+                    Err(_) => return,
+                },
                 Some(result) = pr_rx.recv() => {
                     self.apply_pr(&shared, result);
                     continue;
@@ -416,6 +452,10 @@ impl FeedTask {
             }
             while recheck_rx.try_recv().is_ok() {
                 stale.sessions = true;
+            }
+            if clones_rx.has_changed().unwrap_or(false) {
+                clones_rx.borrow_and_update();
+                stale.clones = true;
             }
             if stale.any() {
                 self.pass(&shared, std::mem::take(&mut stale), &recheck_tx)
@@ -470,9 +510,24 @@ impl FeedTask {
     async fn pass(&mut self, shared: &Shared, stale: Stale, recheck: &mpsc::UnboundedSender<()>) {
         let old = &self.projection;
 
+        // Clones: a job that just finished added workspaces, so relist in
+        // this same pass and publish them before its `done` (R4).
+        let clones = if stale.clones {
+            self.clones.list()
+        } else {
+            old.clones.clone()
+        };
+        let newly_done = clones.iter().any(|j| {
+            j.state == CloneState::Done
+                && !old
+                    .clones
+                    .iter()
+                    .any(|o| o.clone_id == j.clone_id && o.state == CloneState::Done)
+        });
+
         // Workspaces: the whole list, or just the ones whose git metadata moved.
         let mut workspaces = old.workspaces.clone();
-        let mut relist = stale.workspaces;
+        let mut relist = stale.workspaces || newly_done;
         if !relist {
             for (workspace_id, paths) in &stale.watched {
                 let touches_git = paths
@@ -588,12 +643,14 @@ impl FeedTask {
 
         let mut events = diff_events(old, &workspaces, &sessions, &terminals, &diffs);
         events.extend(pr_events);
+        events.extend(clone_events(&old.clones, &clones));
         self.projection = Projection {
             seq: old.seq,
             workspaces,
             sessions,
             terminals,
             prs,
+            clones,
         };
         self.publish(shared, events);
         self.sync_watchers().await;
@@ -907,6 +964,12 @@ mod tests {
     }
 
     async fn fixture_with(prs: PrWatchConfig) -> Fixture {
+        fixture_full(prs, None).await
+    }
+
+    /// With `gh`, a stand-in `gh` running that `case` arm list, `{bare}`
+    /// replaced by a bare clone of the root repo.
+    async fn fixture_full(prs: PrWatchConfig, gh: Option<&str>) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         std::fs::create_dir(&repo).unwrap();
@@ -922,6 +985,21 @@ mod tests {
         let folder_id = seed_folder(&db, &root).await;
         let mut state = AppState::new_for_test(db, data_dir);
         state.host_feed = Arc::new(HostFeed::with_pr_watch(prs));
+        if let Some(body) = gh {
+            let bare = dir.path().join("remote.git");
+            git(
+                dir.path(),
+                &[
+                    "clone",
+                    "-q",
+                    "--bare",
+                    repo.to_str().unwrap(),
+                    bare.to_str().unwrap(),
+                ],
+            );
+            let body = body.replace("{bare}", bare.to_str().unwrap());
+            state.gh = Some(crate::git_harness::fake_gh(dir.path(), &body).0);
+        }
         let state = Arc::new(state);
         let root_id = workspace::workspace_id_of(&state.db.conn, folder_id)
             .await
@@ -1928,5 +2006,108 @@ esac
         );
         feed.until("pr cleared", pr_is(wt.workspace_id.clone(), |p| p["pr"].is_null()))
             .await;
+    }
+
+    // ── clones ──────────────────────────────────────────────────────────
+
+    const CLONE_GH: &str = r#""api user") echo '{"login":"octo","id":42,"name":"Octo Cat"}';;
+"repo clone octo/app"*) printf 'Receiving objects:  50%% (1/2)\r' >&2; git clone -q 'file://{bare}' "$4" && git -C "$4" remote set-url origin https://github.com/octo/app.git && git -C "$4" config 'url.file://{bare}.insteadOf' https://github.com/octo/app.git;;
+"repo clone acme/"*) sleep 30;;"#;
+
+    fn clone_is(id: String, state: &'static str) -> impl Fn(&HostEvent) -> bool {
+        move |e| {
+            e.kind == "clone.changed"
+                && e.payload["clone"]["clone_id"] == id.as_str()
+                && e.payload["clone"]["state"] == state
+        }
+    }
+
+    async fn start_clone(f: &Fixture, owner: &str, name: &str) -> String {
+        match f
+            .state
+            .clones
+            .start(f.state.clone_env(), owner, name)
+            .await
+            .unwrap()
+        {
+            crate::workspace::clone::CloneStart::Job { clone_id } => clone_id,
+            other => panic!("expected a job, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_clone_streams_forward_and_is_done_after_its_workspaces() {
+        let f = fixture_full(PrWatchConfig::default(), Some(CLONE_GH)).await;
+        let (snapshot, mut feed) = f.subscribe().await;
+        assert!(snapshot.clones.is_empty());
+        let id = start_clone(&f, "octo", "app").await;
+
+        let order = ["queued", "cloning", "adding", "done"];
+        let mut seen: Vec<&str> = Vec::new();
+        let mut listed = std::collections::HashSet::new();
+        let done = loop {
+            let ev = feed.next().await;
+            match ev.kind {
+                "workspace.changed" => {
+                    listed.insert(
+                        ev.payload["workspace"]["workspace_id"]
+                            .as_str()
+                            .unwrap()
+                            .to_string(),
+                    );
+                }
+                "clone.changed" if ev.payload["clone"]["clone_id"] == id.as_str() => {
+                    let state = ev.payload["clone"]["state"].as_str().unwrap();
+                    assert_ne!(state, "failed", "{}", ev.payload);
+                    let at = order.iter().position(|s| *s == state).unwrap();
+                    if let Some(last) = seen.last() {
+                        assert!(
+                            order.iter().position(|s| s == last).unwrap() <= at,
+                            "{seen:?} then {state}"
+                        );
+                    }
+                    seen.push(order[at]);
+                    if state == "done" {
+                        break ev.payload["clone"].clone();
+                    }
+                }
+                _ => {}
+            }
+        };
+        // R4: both workspaces were announced before `done`.
+        assert!(
+            listed.contains(done["workspace_id"].as_str().unwrap()),
+            "{done}"
+        );
+        assert!(
+            listed.contains(done["worktree_id"].as_str().unwrap()),
+            "{done}"
+        );
+        // A fresh snapshot carries the finished job (reconnect recovery).
+        let (snapshot, _again) = f.subscribe().await;
+        assert_eq!(snapshot.clones.len(), 1);
+        assert_eq!(snapshot.clones[0].clone_id, id);
+        // Removed after the test retention (2 s).
+        feed.until("clone.removed", is("clone.removed", "clone_id", id.clone()))
+            .await;
+        let (snapshot, _) = f.subscribe().await;
+        assert!(snapshot.clones.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_reconnect_mid_clone_sees_it_in_the_snapshot_and_cancel_is_published() {
+        let f = fixture_full(PrWatchConfig::default(), Some(CLONE_GH)).await;
+        let (_, mut feed) = f.subscribe().await;
+        let id = start_clone(&f, "acme", "big").await;
+        feed.until("cloning", clone_is(id.clone(), "cloning")).await;
+        let (snapshot, _) = f.subscribe().await;
+        let job = snapshot
+            .clones
+            .iter()
+            .find(|j| j.clone_id == id)
+            .expect("clone in snapshot");
+        assert_eq!(job.state, crate::workspace::clone::CloneState::Cloning);
+        assert!(f.state.clones.cancel(&id).unwrap());
+        feed.until("cancelled", clone_is(id, "cancelled")).await;
     }
 }

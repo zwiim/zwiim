@@ -4,6 +4,7 @@ import { HostClient } from "../src/client/host-client";
 import { initialHostState, reduceHost, type HostState } from "../src/state/store";
 import { selectWorkspaceTree } from "../src/state/workspaces";
 import type {
+  CloneJob,
   HostFeedEvent,
   HostSnapshot,
   PrState,
@@ -72,6 +73,20 @@ const pr = (number: number, extra: Partial<PrState> = {}): PrState => ({
   ...extra,
 });
 const ids = (list: { session_id: string }[] | undefined) => list?.map((s) => s.session_id);
+function cloneJob(over: Partial<CloneJob> = {}): CloneJob {
+  return {
+    clone_id: "c_1",
+    owner: "octo",
+    name: "app",
+    state: "cloning",
+    phase: "receiving",
+    percent: 40,
+    workspace_id: null,
+    worktree_id: null,
+    error: null,
+    ...over,
+  };
+}
 
 describe("host feed reducers", () => {
   it("a snapshot replaces workspaces, sessions and terminals", () => {
@@ -252,6 +267,21 @@ describe("host feed reducers", () => {
       fresh.sessionsByWorkspace,
       fresh.terminals,
     ]);
+  });
+});
+
+describe("clones", () => {
+  it("come from the snapshot and follow clone events", () => {
+    let s = fromSnapshot({ clones: [cloneJob()] });
+    expect(s.clones["c_1"]!.percent).toBe(40);
+    s = apply(s, { type: "clone.changed", payload: { clone: cloneJob({ state: "done", workspace_id: "w1", worktree_id: "w2" }) } });
+    expect(s.clones["c_1"]!.state).toBe("done");
+    s = apply(s, { type: "clone.removed", payload: { clone_id: "c_1" } });
+    expect(s.clones).toEqual({});
+  });
+
+  it("default to none for a Host without clones", () => {
+    expect(fromSnapshot({}).clones).toEqual({});
   });
 });
 

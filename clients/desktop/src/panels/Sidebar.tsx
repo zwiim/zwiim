@@ -1,14 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
   Folder,
   FolderGit2,
+  FolderOpen,
   GitBranch,
   GitBranchPlus,
   History,
   Plus,
   Trash2,
+  X,
 } from "lucide-react";
 import {
   busyDetails,
@@ -18,6 +20,7 @@ import {
   largeFolderText,
   openTarget,
   selectWorkspaceTree,
+  type CloneJob,
   type LargeFolderDetails,
   type WorkspaceBusyDetails,
   type WorkspaceInfo,
@@ -28,6 +31,16 @@ import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { rememberSidebarFolds, sidebarFolds, type SidebarFolds } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
+import {
+  GithubCloneDialog,
+  GithubMark,
+  ProgressBar,
+  cloneErrorLine,
+  fullName,
+  isActive,
+  progressLabel,
+  sameRepo,
+} from "./GithubCloneDialog";
 import { NewWorktree } from "./NewWorktree";
 import { PublishDialog, type PublishSubject } from "./PublishDialog";
 
@@ -64,6 +77,10 @@ export function baseLabel(w: WorkspaceInfo): string | null {
 /** Row actions stay out of the way until the row is hovered or focused. */
 const HOVER_ACTION = "opacity-0 group-hover:opacity-100 focus-visible:opacity-100";
 
+/** The `+` menu's items, as the account menu's. */
+const MENU_ITEM =
+  "hover:bg-muted focus-visible:bg-muted flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] outline-none disabled:opacity-50";
+
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** "2 agents running, 1 terminal open — stop them to remove." */
@@ -95,6 +112,61 @@ export function Sidebar(props: SidebarProps) {
   // One inspect or dialog at a time, from + or a root's click.
   const busy = adding || opening !== null || publishing !== null;
   const [folds, setFolds] = useState(sidebarFolds);
+
+  // A Host from before cloning has only folders to add: `+` picks one at once.
+  const cloneable = useHost((s) => hasCapability(s.connection.compat, "workspace.clone"));
+  const clones = useHost((s) => s.clones);
+  const [menu, setMenu] = useState(false);
+  const menuRoot = useRef<HTMLDivElement>(null);
+  // Not part of `busy`: a clone's `{ workspace_id }` opens its root while the dialog is still open.
+  const [github, setGithub] = useState(false);
+  // Failed clones this window put away; the Host expires them on its own.
+  const [dismissed, setDismissed] = useState<string[]>([]);
+  // Clones this window started: only their `done` moves the selection.
+  const [started, setStarted] = useState<string[]>([]);
+  const jobs = useMemo(
+    () => Object.values(clones).filter((j) => j.state !== "cancelled" && !dismissed.includes(j.clone_id)),
+    [clones, dismissed],
+  );
+  // In flight or failed: a row in the workspace list, so closing the dialog loses nothing (spec §6).
+  const pending = jobs.filter((j) => isActive(j) || j.state === "failed");
+
+  useEffect(() => {
+    if (!menu) return;
+    const onDown = (e: PointerEvent) => {
+      if (!menuRoot.current?.contains(e.target as Node)) setMenu(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenu(false);
+    };
+    window.addEventListener("pointerdown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menu]);
+
+  // Offline or busy, the menu's items could not run.
+  useEffect(() => {
+    if (!online || busy) setMenu(false);
+  }, [online, busy]);
+
+  // A clone this window started has ended: done selects its worktree and closes the dialog.
+  useEffect(() => {
+    const ended = started.map((id) => clones[id]).filter((j): j is CloneJob => j !== undefined && !isActive(j));
+    if (ended.length === 0) return;
+    setStarted((s) => s.filter((id) => !ended.some((j) => j.clone_id === id)));
+    const done = ended.filter((j) => j.state === "done" && (j.worktree_id ?? j.workspace_id) !== null);
+    const last = done[done.length - 1];
+    if (!last) return;
+    fold({
+      workspaces: false,
+      repositories: folds.repositories.filter((r) => !done.some((j) => j.workspace_id === r)),
+    });
+    props.onSelectWorkspace((last.worktree_id ?? last.workspace_id)!);
+    setGithub(false);
+  }, [clones, started]);
 
   function fold(next: SidebarFolds) {
     setFolds(next);
@@ -129,7 +201,7 @@ export function Sidebar(props: SidebarProps) {
   async function addPicked(path: string) {
     try {
       const inspection = await controller.inspectWorkspace(path);
-      if (inspection.git === "origin") await openFirstWorktree(await controller.addWorkspace(path));
+      if (inspection.git === "origin") await openFirstWorktree((await controller.addWorkspace(path)).workspace_id);
       else setPublishing({ subject: { kind: "path", path }, inspection });
     } catch (e) {
       setError(errorMessage(e));
@@ -141,11 +213,11 @@ export function Sidebar(props: SidebarProps) {
    * composer, never the root. If the worktree fails the repository stays
    * added and the error shows. Never throws: the dialog's `onAdded` lands here.
    */
-  async function openFirstWorktree(root: WorkspaceInfo) {
+  async function openFirstWorktree(rootId: string) {
     try {
       // The new repository shows even if the list or the repository was folded away.
-      fold({ workspaces: false, repositories: folds.repositories.filter((r) => r !== root.workspace_id) });
-      const worktree = await controller.createWorktree(root.workspace_id);
+      fold({ workspaces: false, repositories: folds.repositories.filter((r) => r !== rootId) });
+      const worktree = await controller.createWorktree(rootId);
       props.onSelectWorkspace(worktree.workspace_id);
     } catch (e) {
       setError(errorMessage(e));
@@ -158,33 +230,54 @@ export function Sidebar(props: SidebarProps) {
    * publish dialog, anything else gets a new worktree. Never selects the root,
    * except on a Host from before publishing, as it always did.
    */
-  async function openRoot(root: WorkspaceInfo) {
-    if (!publishable) return props.onSelectWorkspace(root.workspace_id);
-    const target = openTarget(controller.store.getState(), root.workspace_id);
+  async function openRoot(rootId: string) {
+    if (!publishable) return props.onSelectWorkspace(rootId);
+    const target = openTarget(controller.store.getState(), rootId);
     if (target) return props.onSelectWorkspace(target.workspace_id);
-    await newWorktree(root);
+    await newWorktree(rootId);
   }
 
   /**
-   * A new worktree for `root` as its click makes one, even beside others: a
+   * A new worktree for `rootId` as its click makes one, even beside others: a
    * plain or unborn repository opens the publish dialog first.
    */
-  async function newWorktree(root: WorkspaceInfo) {
+  async function newWorktree(rootId: string) {
     // Offline, an inspect could not be told apart from a lost one; a click that only selects still works.
     if (busy || !online) return;
     setError(null);
     setLarge(null);
-    setOpening(root.workspace_id);
+    setOpening(rootId);
     try {
-      const inspection = await controller.inspectRoot(root.workspace_id);
+      const inspection = await controller.inspectRoot(rootId);
       if (inspection.git === "none" || (inspection.git === "no_origin" && inspection.first_commit)) {
-        setPublishing({ subject: { kind: "root", workspace_id: root.workspace_id }, inspection });
-      } else await openFirstWorktree(root);
+        setPublishing({ subject: { kind: "root", workspace_id: rootId }, inspection });
+      } else await openFirstWorktree(rootId);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
       setOpening(null);
     }
+  }
+
+  /**
+   * Start cloning `owner/name` (spec §6). A clone this window starts is
+   * selected once done; a repository already added opens as its click does.
+   * Once the Host accepts, an earlier failure of the same repository is put
+   * away. Rejects with the Host's refusal, shown by the row that asked.
+   */
+  async function startClone(owner: string, name: string) {
+    const repo = { owner, name };
+    const failed = jobs.filter((j) => j.state === "failed" && sameRepo(j, repo)).map((j) => j.clone_id);
+    const start = await controller.cloneWorkspace(owner, name);
+    if (failed.length > 0) setDismissed((d) => [...d, ...failed]);
+    if ("clone_id" in start) {
+      // The new row shows even if the list was folded away.
+      if (folds.workspaces) fold({ ...folds, workspaces: false });
+      setStarted((s) => [...s, start.clone_id]);
+      return;
+    }
+    setGithub(false);
+    await openRoot(start.workspace_id);
   }
 
   // A root session's Continue (§5.3, D8): a new worktree, never its open target.
@@ -196,7 +289,7 @@ export function Sidebar(props: SidebarProps) {
     taken.current = request.nonce;
     props.onContinued?.();
     const root = controller.store.getState().workspaces?.find((w) => w.workspace_id === request.root);
-    if (root) void newWorktree(root);
+    if (root) void newWorktree(root.workspace_id);
   }, [request?.nonce]);
 
   async function add(path: string, allowLarge: boolean) {
@@ -230,16 +323,51 @@ export function Sidebar(props: SidebarProps) {
           Workspaces
           <ChevronDown className={cn("size-3", folds.workspaces && "-rotate-90")} />
         </button>
-        <Button
-          className="text-muted-foreground ml-auto"
-          size="icon-sm"
-          variant="ghost"
-          title="Add workspace"
-          onClick={addWorkspace}
-          disabled={busy || !online}
-        >
-          <Plus />
-        </Button>
+        <div className="relative ml-auto" ref={menuRoot}>
+          <Button
+            className="text-muted-foreground"
+            size="icon-sm"
+            variant="ghost"
+            title="Add workspace"
+            aria-haspopup={cloneable ? "menu" : undefined}
+            aria-expanded={cloneable ? menu : undefined}
+            onClick={() => (cloneable ? setMenu((m) => !m) : void addWorkspace())}
+            disabled={busy || !online}
+          >
+            <Plus />
+          </Button>
+          {menu && (
+            <div
+              className="bg-card text-card-foreground ring-border absolute top-full right-0 z-40 mt-1 w-52 rounded-xl p-1.5 shadow-lg ring-1"
+              role="menu"
+              aria-label="Add workspace"
+            >
+              <button
+                className={MENU_ITEM}
+                role="menuitem"
+                onClick={() => {
+                  setMenu(false);
+                  void addWorkspace();
+                }}
+              >
+                <FolderOpen className="text-muted-foreground size-4" />
+                Open project
+              </button>
+              <button
+                className={MENU_ITEM}
+                role="menuitem"
+                onClick={() => {
+                  setMenu(false);
+                  setError(null);
+                  setGithub(true);
+                }}
+              >
+                <GithubMark className="text-muted-foreground" />
+                Open GitHub project
+              </button>
+            </div>
+          )}
+        </div>
       </div>
       {error && <p className="text-destructive px-2 text-xs">{error}</p>}
       {publishing && (
@@ -254,9 +382,12 @@ export function Sidebar(props: SidebarProps) {
           // then closes this dialog only, never one opened since.
           onAdded={(root) => {
             const shown = publishing;
-            void openFirstWorktree(root).finally(() => setPublishing((p) => (p === shown ? null : p)));
+            void openFirstWorktree(root.workspace_id).finally(() => setPublishing((p) => (p === shown ? null : p)));
           }}
         />
+      )}
+      {github && (
+        <GithubCloneDialog remote={props.remote} jobs={jobs} onClose={() => setGithub(false)} onClone={startClone} />
       )}
       {large && (
         <div className="bg-card mx-1 flex flex-col gap-2 rounded-lg p-2.5 text-xs shadow-sm" role="alertdialog" aria-label="Large folder">
@@ -279,7 +410,16 @@ export function Sidebar(props: SidebarProps) {
       {!folds.workspaces && (
         <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-1" data-testid="workspace-tree">
           {!loaded && <p className="text-muted-foreground px-2 text-xs">Loading…</p>}
-          {loaded && tree.length === 0 && (
+          {pending.map((job) => (
+            <CloneRow
+              key={job.clone_id}
+              job={job}
+              remote={props.remote}
+              onRetry={() => startClone(job.owner, job.name)}
+              onDismiss={() => setDismissed((d) => [...d, job.clone_id])}
+            />
+          ))}
+          {loaded && tree.length === 0 && pending.length === 0 && (
             <p className="text-muted-foreground px-2 text-xs">No workspaces yet. Add a folder with +.</p>
           )}
           {tree.map((node) => (
@@ -301,6 +441,81 @@ export function Sidebar(props: SidebarProps) {
   );
 }
 
+/**
+ * A clone in the workspace list: muted `owner/name` with an uncolored
+ * progress bar and a cancel `×`, or its failure with Retry and Dismiss.
+ */
+function CloneRow(props: { job: CloneJob; remote: boolean; onRetry(): Promise<void>; onDismiss(): void }) {
+  const { job } = props;
+  const controller = useController();
+  const online = useOnline();
+  const [error, setError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const failed = job.state === "failed";
+
+  async function cancel() {
+    setError(null);
+    try {
+      await controller.cancelClone(job.clone_id);
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+
+  async function retry() {
+    setError(null);
+    setRetrying(true);
+    try {
+      await props.onRetry();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setRetrying(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1 py-1 pr-1" data-testid={`clone-${job.clone_id}`}>
+      <div className="flex items-center gap-2">
+        <span className="w-5 shrink-0" />
+        <FolderGit2 className="text-muted-foreground size-3.5 shrink-0" />
+        <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[13px]">{fullName(job)}</span>
+        {!failed && (
+          <Button
+            className="text-muted-foreground"
+            size="icon-sm"
+            variant="ghost"
+            title="Cancel clone"
+            disabled={job.state === "adding" || !online}
+            onClick={() => void cancel()}
+          >
+            <X />
+          </Button>
+        )}
+      </div>
+      {!failed && (
+        <div className="pr-2 pl-7">
+          <ProgressBar percent={job.percent} fill="bg-muted-foreground/60" label={progressLabel(job)} />
+        </div>
+      )}
+      {failed && (
+        <div className="flex flex-col gap-1 pl-7">
+          <p className="text-destructive text-xs">{cloneErrorLine(job, props.remote ? "the host" : "this Mac")}</p>
+          <div className="flex gap-1">
+            <Button size="xs" variant="ghost" disabled={retrying || !online} onClick={() => void retry()}>
+              Retry
+            </Button>
+            <Button size="xs" variant="ghost" onClick={props.onDismiss}>
+              Dismiss
+            </Button>
+          </div>
+        </div>
+      )}
+      {error && <p className="text-destructive pl-7 text-xs">{error}</p>}
+    </div>
+  );
+}
+
 type RowProps = SidebarProps & {
   node: WorkspaceNode;
   /** Repositories whose worktrees are folded away. */
@@ -309,7 +524,7 @@ type RowProps = SidebarProps & {
   onError(message: string | null): void;
   /** The root whose click is reading it or preparing its worktree. */
   opening: string | null;
-  onOpenRoot(root: WorkspaceInfo): void;
+  onOpenRoot(rootId: string): void;
   /** A current Host: a root is selected only read-only, through its earlier-sessions row. */
   publishable: boolean;
 };
@@ -359,7 +574,7 @@ function WorkspaceRow(props: RowProps) {
           className={cn("flex min-w-0 flex-1 items-center gap-2 py-1.5 pr-1 text-left text-[13px]", !isRoot && "pl-2")}
           aria-current={selected || undefined}
           title={base ?? undefined}
-          onClick={() => (isRoot ? props.onOpenRoot(w) : props.onSelectWorkspace(w.workspace_id))}
+          onClick={() => (isRoot ? props.onOpenRoot(w.workspace_id) : props.onSelectWorkspace(w.workspace_id))}
         >
           {isRoot && !w.is_git_repo ? (
             <Folder className="text-muted-foreground size-4 shrink-0" aria-label="Folder, not a Git repository" />

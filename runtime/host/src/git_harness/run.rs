@@ -105,17 +105,17 @@ pub(super) async fn run(
 }
 
 /// Kills the child's process group when dropped, unless disarmed.
-struct GroupKill {
+pub(super) struct GroupKill {
     #[cfg_attr(not(unix), allow(dead_code))]
     pgid: Option<u32>,
 }
 
 impl GroupKill {
-    fn new(pid: Option<u32>) -> Self {
+    pub(super) fn new(pid: Option<u32>) -> Self {
         Self { pgid: pid }
     }
 
-    fn disarm(mut self) {
+    pub(super) fn disarm(mut self) {
         self.pgid = None;
     }
 }

@@ -47,6 +47,7 @@ export const CLIENT_CAPABILITIES: readonly string[] = [
   "workspace.publish",
   "attachments",
   "file_ranges",
+  "workspace.clone",
 ];
 
 /** What an app says about itself in `host.hello`. */

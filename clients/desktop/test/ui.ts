@@ -18,3 +18,10 @@ export function openSettings(section: string) {
   fireEvent.click(within(dialog.getByRole("navigation", { name: "Settings sections" })).getByText(section));
   return dialog;
 }
+
+/** Pick a folder from the Workspaces `+`: through its menu when the Host can clone, else at once. */
+export function openProject() {
+  fireEvent.click(screen.getByTitle("Add workspace"));
+  const menu = screen.queryByRole("menu", { name: "Add workspace" });
+  if (menu) fireEvent.click(within(menu).getByRole("menuitem", { name: "Open project" }));
+}

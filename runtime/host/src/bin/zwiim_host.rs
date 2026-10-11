@@ -425,6 +425,8 @@ async fn async_main() -> Exit {
         emitter,
         worktrees_dir: zwiim_host::app_state::default_worktrees_dir()
             .unwrap_or_else(|| data_dir.join("worktrees")),
+        repos_dir: zwiim_host::app_state::default_repos_dir()
+            .unwrap_or_else(|| data_dir.join("repos")),
         data_dir,
         web_server_state: WebServerState::new(),
         workspace_transfer: Arc::new(
@@ -447,6 +449,9 @@ async fn async_main() -> Exit {
         lan: Arc::new(zwiim_host::lan::LanLink::from_env()),
         lifecycle: Default::default(),
         gh: None,
+        clones: Arc::new(zwiim_host::workspace::clone::CloneJobs::new(
+            zwiim_host::workspace::clone::RETENTION,
+        )),
     });
 
     // Load (first boot: mint) the host's identity keys off the startup path.
@@ -802,6 +807,11 @@ async fn async_main() -> Exit {
             lifecycle.request(zwiim_host::host_lifecycle::ShutdownKind::Stop);
         });
     }
+
+    // Clones cut short by the last exit leave staging folders behind; swept
+    // before the server can accept a request that might start a new one
+    // (otherwise a racing clone's staging dir could be deleted mid-clone).
+    zwiim_host::workspace::clone::sweep_cloning(&state.repos_dir).await;
 
     // Start serving; stop accepting once the drain has told clients to go.
     let shutdown = shutdown_signal.clone();

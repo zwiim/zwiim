@@ -26,6 +26,9 @@ pub struct AppState {
     /// Where new managed worktrees are created, as `<repo>/<hex>` under it.
     /// Resolved once at startup by [`default_worktrees_dir`].
     pub worktrees_dir: PathBuf,
+    /// Where GitHub projects are cloned, as `<owner>/<name>` under it.
+    /// Resolved once at startup by [`default_repos_dir`].
+    pub repos_dir: PathBuf,
     pub web_server_state: WebServerState,
     pub workspace_transfer: Arc<WorkspaceTransferManager>,
     /// Multi-agent delegation broker. Spawned in both desktop and server
@@ -98,6 +101,8 @@ pub struct AppState {
     /// The `gh` the Host runs to read the GitHub account and publish
     /// repositories; `None` finds the user's installed one.
     pub gh: Option<PathBuf>,
+    /// GitHub clone jobs (in memory) and the repository-list cache.
+    pub clones: Arc<crate::workspace::clone::CloneJobs>,
 }
 
 pub fn default_system_op_lock() -> Arc<tokio::sync::Mutex<()>> {
@@ -230,7 +235,28 @@ pub fn default_worktrees_dir() -> Option<PathBuf> {
     }
 }
 
+/// Where GitHub projects are cloned: `ZWIIM_REPOS_DIR` when set, else
+/// `~/zwiim/repos`. `None` only without a home directory; callers then fall
+/// back to the data dir.
+pub fn default_repos_dir() -> Option<PathBuf> {
+    match std::env::var_os("ZWIIM_REPOS_DIR") {
+        Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
+        _ => dirs::home_dir().map(|home| home.join("zwiim").join("repos")),
+    }
+}
+
 impl AppState {
+    /// What a clone job needs, from this Host's state.
+    pub fn clone_env(&self) -> crate::workspace::clone::CloneEnv {
+        crate::workspace::clone::CloneEnv {
+            conn: self.db.conn.clone(),
+            emitter: self.emitter.clone(),
+            repos_dir: self.repos_dir.clone(),
+            worktrees_dir: self.worktrees_dir.clone(),
+            gh: self.gh.clone(),
+        }
+    }
+
     /// Test-only constructor: build an `AppState` wired to an in-memory
     /// database and a `WebOnly` event emitter. Suitable for axum-test driven
     /// HTTP integration tests where no Tauri runtime is available.
@@ -267,6 +293,7 @@ impl AppState {
             acp_event_bus,
             emitter,
             worktrees_dir: data_dir.join("worktrees"),
+            repos_dir: data_dir.join("repos"),
             data_dir,
             web_server_state: crate::web::WebServerState::new(),
             workspace_transfer: Arc::new(
@@ -293,6 +320,9 @@ impl AppState {
             lan: Default::default(),
             lifecycle: Default::default(),
             gh: None,
+            clones: Arc::new(crate::workspace::clone::CloneJobs::new(
+                std::time::Duration::from_secs(2),
+            )),
         }
     }
 }

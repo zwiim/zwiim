@@ -13,6 +13,7 @@ import { DiffPanel, DiffView } from "@/panels/DiffPanel";
 import { SessionPanel } from "@/panels/SessionPanel";
 import { busyMessage, Sidebar, type SidebarProps } from "@/panels/Sidebar";
 import { FakeTransport, hostHello, tick } from "./fakes";
+import { openProject } from "./ui";
 
 afterEach(() => {
   cleanup();
@@ -197,7 +198,7 @@ describe("folding", () => {
     expect(JSON.parse(window.localStorage.getItem("zwiim.desktop.folds")!).workspaces).toBe(true);
     expect(screen.queryByText("Add workspace")).toBeNull();
     // Adding unfolds, so the new workspace shows.
-    fireEvent.click(screen.getByTitle("Add workspace"));
+    openProject();
     await tick();
     expect(props.onSelectWorkspace).toHaveBeenCalledWith("new");
     expect(screen.getByTestId("workspace-tree")).toBeTruthy();
@@ -213,7 +214,7 @@ describe("folding", () => {
     const props = sidebarProps({ pickFolder: vi.fn(async () => "/tmp/big") });
     await mount(t, () => <Sidebar {...props} />);
 
-    fireEvent.click(screen.getByTitle("Add workspace"));
+    openProject();
     await tick();
     const card = screen.getByRole("alertdialog");
     expect(card.textContent).toContain("Large folder");
@@ -222,7 +223,7 @@ describe("folding", () => {
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(props.onSelectWorkspace).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByTitle("Add workspace"));
+    openProject();
     await tick();
     fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Add anyway" }));
     await tick();
@@ -248,7 +249,7 @@ describe("folding", () => {
     const props = sidebarProps({ pickFolder: vi.fn(async () => "/tmp/big") });
     await mount(t, () => <Sidebar {...props} />);
 
-    fireEvent.click(screen.getByTitle("Add workspace"));
+    openProject();
     await tick();
     const card = screen.getByRole("alertdialog");
     fireEvent.click(within(card).getByRole("button", { name: "Add anyway" }));

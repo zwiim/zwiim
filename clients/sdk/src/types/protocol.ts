@@ -307,6 +307,48 @@ export interface PublishTarget {
   name: string;
 }
 
+/** One repository the Host's GitHub account can see (`github.repos`). */
+export interface GithubRepo {
+  owner: string;
+  name: string;
+  private: boolean;
+  fork: boolean;
+  archived: boolean;
+  description: string | null;
+  pushed_at: string | null;
+  size_kb: number;
+  default_branch: string | null;
+  /** The root workspace already opened on this repository, if any. */
+  workspace_id: string | null;
+}
+
+export interface GithubRepoPage {
+  repos: GithubRepo[];
+  next_page: number | null;
+}
+
+export type CloneState = "queued" | "cloning" | "adding" | "done" | "failed" | "cancelled";
+export type ClonePhase = "receiving" | "resolving" | "checkout";
+
+/**
+ * A GitHub clone on the Host. States only move forward but may be skipped
+ * (the feed coalesces); `done` arrives after its workspaces.
+ */
+export interface CloneJob {
+  clone_id: string;
+  owner: string;
+  name: string;
+  state: CloneState;
+  phase: ClonePhase | null;
+  percent: number | null;
+  workspace_id: string | null;
+  worktree_id: string | null;
+  error: { code: string; message: string } | null;
+}
+
+/** A new clone job, or the root already opened on the repository. */
+export type CloneStart = { clone_id: string } | { workspace_id: string };
+
 export interface WorktreeRemoved {
   workspace_id: string;
   parent_workspace_id: string;
@@ -899,6 +941,8 @@ export type HostFeedEvent = { seq: number } & (
   | { type: "terminal.changed"; payload: { terminal: TerminalInfo } }
   | { type: "terminal.removed"; payload: { terminal_id: string } }
   | { type: "workspace.pr_changed"; payload: { workspace_id: string } & PrEntry }
+  | { type: "clone.changed"; payload: { clone: CloneJob } }
+  | { type: "clone.removed"; payload: { clone_id: string } }
 );
 
 /** The feed's baseline: what `workspace.list`, `session.list` and `terminal.list` return. */
@@ -912,6 +956,8 @@ export interface HostSnapshot {
   terminals: TerminalInfo[];
   /** Workspaces whose branch has a pull request (or whose PR lookup failed). */
   prs?: Record<string, PrEntry>;
+  /** GitHub clones in flight or recently finished (older Hosts omit it). */
+  clones?: CloneJob[];
 }
 
 // ─── event socket ────────────────────────────────────────────────────────
@@ -1116,6 +1162,11 @@ export interface Operations {
   "workspace.inspect": [{ path: string } | { home_path: string[] } | { workspace_id: string }, WorkspaceInspection];
   /** Whether `owner/name` is free on GitHub for the Host's signed-in account. */
   "github.repo_available": [PublishTarget, { available: boolean }];
+  /** One page (from 1) of the Host account's GitHub repositories. */
+  "github.repos": [{ page?: number; refresh?: boolean }, GithubRepoPage];
+  /** Clone `owner/name` into a new workspace, or the root already opened on it. */
+  "workspace.clone": [PublishTarget, CloneStart];
+  "workspace.clone_cancel": [{ clone_id: string }, { cancelled: boolean }];
   "workspace.browse": [{ path: string[] }, BrowseListing];
   /** Make one folder `name` inside the folder `path` (folder names under home); `already_exists` if taken. */
   "workspace.create_folder": [{ path: string[]; name: string }, BrowseEntry];
@@ -1268,4 +1319,6 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "device.pair",
   "device.revoke",
   "cloud.enroll",
+  "workspace.clone",
+  "workspace.clone_cancel",
 ]);

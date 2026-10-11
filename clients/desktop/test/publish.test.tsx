@@ -14,6 +14,7 @@ import { HostProvider } from "@/lib/host-context";
 import { PublishDialog, type PublishDialogProps } from "@/panels/PublishDialog";
 import { Sidebar, type SidebarProps } from "@/panels/Sidebar";
 import { FakeTransport, hostHello, tick } from "./fakes";
+import { openProject } from "./ui";
 
 afterEach(() => {
   cleanup();
@@ -1147,7 +1148,7 @@ async function mountSidebar(t: FakeTransport, props: Partial<SidebarProps> = {})
 
 /** Click + and let the picked folder be read. */
 async function pick() {
-  fireEvent.click(screen.getByTitle("Add workspace"));
+  openProject();
   await tick();
 }
 
@@ -1545,7 +1546,7 @@ describe("Opening a repository from the sidebar", () => {
     let picked: (p: string | null) => void = () => {};
     await mountSidebar(t, { pickFolder: vi.fn(() => new Promise<string | null>((resolve) => (picked = resolve))) });
     const add = screen.getByTitle("Add workspace") as HTMLButtonElement;
-    fireEvent.click(add);
+    openProject();
     await tick();
     expect(add.disabled).toBe(true);
     await openRoot();

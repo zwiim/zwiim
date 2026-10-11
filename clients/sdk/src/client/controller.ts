@@ -9,6 +9,8 @@ import { historyCovers, type SessionFrame } from "../state/session";
 import type {
   AgentSummary,
   AgentType,
+  CloneStart,
+  GithubRepoPage,
   HostOwner,
   MergeMethod,
   OpParams,
@@ -30,6 +32,9 @@ const HISTORY_SETTLE_DELAYS_MS = [250, 500, 1000, 2000];
 
 /** `workspace.add` with `publish`: creating the GitHub repo and pushing can run long. */
 const PUBLISH_TIMEOUT_MS = 330_000;
+
+/** The Host's `gh` call has its own 15 s limit; leave room for it. */
+const GITHUB_REPOS_TIMEOUT_MS = 20_000;
 
 /** Frames after which `session.history` may include more turns. */
 function transcriptMayHaveChanged(frame: SessionFrame): boolean {
@@ -191,6 +196,26 @@ export class HostController {
   /** Whether `owner/name` is free on GitHub for the Host's signed-in account. */
   async repoAvailable(owner: string, name: string): Promise<boolean> {
     return (await this.client.request("github.repo_available", { owner, name })).available;
+  }
+
+  /** One page (from 1) of the Host account's GitHub repositories. */
+  async githubRepos(page?: number, refresh?: boolean): Promise<GithubRepoPage> {
+    return this.client.request(
+      "github.repos",
+      { ...(page === undefined ? {} : { page }), ...(refresh ? { refresh } : {}) },
+      { timeoutMs: GITHUB_REPOS_TIMEOUT_MS },
+    );
+  }
+
+  /** Clone `owner/name` on the Host; progress arrives as `clones` state. */
+  async cloneWorkspace(owner: string, name: string): Promise<CloneStart> {
+    return this.client.request("workspace.clone", { owner, name });
+  }
+
+  /** `true` when the clone was stopped; `false` once it is past cloning. */
+  async cancelClone(cloneId: string): Promise<boolean> {
+    const r = await this.client.request("workspace.clone_cancel", { clone_id: cloneId });
+    return r.cancelled;
   }
 
   async addWorkspace(path: string, opts: AddOptions = {}): Promise<WorkspaceInfo> {

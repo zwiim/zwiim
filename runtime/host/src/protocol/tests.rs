@@ -62,6 +62,9 @@ const OPS: &[&str] = &[
     "git.pr",
     "git.pr_merge",
     "github.repo_available",
+    "github.repos",
+    "workspace.clone",
+    "workspace.clone_cancel",
     "terminal.spawn",
     "terminal.write",
     "terminal.resize",
@@ -863,6 +866,167 @@ async fn repo_available_without_gh_is_gh_unavailable() {
         .await,
         (StatusCode::UNPROCESSABLE_ENTITY, "gh_unavailable".into())
     );
+}
+
+/// `SIGNED_IN_GH` plus listing and cloning: `octo/app` clones the fixture's
+/// bare remote and points `origin` at GitHub.
+const CLONING_GH: &str = r#"
+"api user") echo '{"login":"octo","id":42,"name":"Octo Cat"}';;
+"api user/repos"*) echo '[{"full_name":"octo/app","private":true,"size":5,"default_branch":"main"},{"full_name":"octo/mine","private":false,"size":1}]';;
+"repo clone octo/app"*) git clone -q 'file://{bare}' "$4" && git -C "$4" remote set-url origin https://github.com/octo/app.git && git -C "$4" config 'url.file://{bare}.insteadOf' https://github.com/octo/app.git;;
+"#;
+
+/// Give the fixture's bare remote a `main` to clone.
+fn seed_bare(h: &Host) {
+    git(
+        std::path::Path::new(&h.root),
+        &[
+            "push",
+            "-q",
+            h.bare.to_str().unwrap(),
+            "HEAD:refs/heads/main",
+        ],
+    );
+    git(&h.bare, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+}
+
+#[tokio::test]
+async fn github_repos_lists_a_page_with_opened_roots() {
+    let h = host_with_gh(false, Some(CLONING_GH)).await;
+    git(
+        std::path::Path::new(&h.root),
+        &["remote", "add", "origin", "git@github.com:Octo/Mine.git"],
+    );
+    let v = h.ok("github.repos", json!({})).await;
+    assert_eq!(v["next_page"], Value::Null);
+    assert_eq!(v["repos"][0]["owner"], "octo");
+    assert_eq!(v["repos"][0]["name"], "app");
+    assert_eq!(v["repos"][0]["private"], true);
+    assert_eq!(v["repos"][0]["size_kb"], 5);
+    assert_eq!(v["repos"][0]["workspace_id"], Value::Null);
+    assert_eq!(v["repos"][1]["workspace_id"], h.workspace_id.as_str());
+    assert_eq!(
+        h.err("github.repos", json!({ "page": 0 })).await,
+        (StatusCode::BAD_REQUEST, "invalid_input".into())
+    );
+    // An unknown field (e.g. a host path a client must never send) is a
+    // `deny_unknown_fields` rejection, same as every other op.
+    assert_eq!(
+        h.err("github.repos", json!({ "path": "/" })).await,
+        (StatusCode::BAD_REQUEST, "invalid_request".into())
+    );
+}
+
+#[tokio::test]
+async fn github_repos_without_gh_is_gh_unavailable() {
+    let h = host(false).await;
+    assert_eq!(
+        h.err("github.repos", json!({})).await,
+        (StatusCode::UNPROCESSABLE_ENTITY, "gh_unavailable".into())
+    );
+}
+
+#[tokio::test]
+async fn workspace_clone_opens_the_repository_then_finds_it_again() {
+    let h = host_with_gh(false, Some(CLONING_GH)).await;
+    seed_bare(&h);
+    let v = h
+        .ok("workspace.clone", json!({ "owner": "octo", "name": "app" }))
+        .await;
+    let clone_id = v["clone_id"].as_str().expect("a clone job").to_string();
+    assert_eq!(v.as_object().unwrap().len(), 1, "{v}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let job = loop {
+        let job = h
+            .state
+            .clones
+            .list()
+            .into_iter()
+            .find(|j| j.clone_id == clone_id)
+            .unwrap();
+        if job.state.finished() {
+            break job;
+        }
+        assert!(std::time::Instant::now() < deadline, "clone never finished");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    assert_eq!(
+        job.state,
+        crate::workspace::clone::CloneState::Done,
+        "{job:?}"
+    );
+    let list = h.ok("workspace.list", json!({})).await;
+    let ids: Vec<&str> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["workspace_id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&job.workspace_id.as_deref().unwrap()));
+    assert!(ids.contains(&job.worktree_id.as_deref().unwrap()));
+    let again = h
+        .ok("workspace.clone", json!({ "owner": "octo", "name": "app" }))
+        .await;
+    assert_eq!(again, json!({ "workspace_id": job.workspace_id.unwrap() }));
+}
+
+#[tokio::test]
+async fn workspace_clone_refuses_hostile_targets_and_unknown_fields() {
+    let h = host_with_gh(false, Some(CLONING_GH)).await;
+    for (owner, name) in [
+        ("-o", "app"),
+        ("octo", "ext::x"),
+        ("octo", "a b"),
+        ("https://github.com/o/n", "x"),
+    ] {
+        assert_eq!(
+            h.err("workspace.clone", json!({ "owner": owner, "name": name }))
+                .await,
+            (StatusCode::BAD_REQUEST, "invalid_input".into()),
+            "{owner}/{name}"
+        );
+    }
+    // An unknown field (e.g. a host path a client must never send) is a
+    // `deny_unknown_fields` rejection, same as every other op.
+    assert_eq!(
+        h.err(
+            "workspace.clone",
+            json!({ "owner": "octo", "name": "app", "path": "/tmp/x" })
+        )
+        .await,
+        (StatusCode::BAD_REQUEST, "invalid_request".into())
+    );
+}
+
+#[tokio::test]
+async fn clone_cancel_of_an_unknown_clone_is_not_found() {
+    let h = host(false).await;
+    assert_eq!(
+        h.err("workspace.clone_cancel", json!({ "clone_id": "c_nope" }))
+            .await,
+        (StatusCode::NOT_FOUND, "not_found".into())
+    );
+}
+
+#[tokio::test]
+async fn paired_devices_can_list_and_clone() {
+    let h = host_with_gh(false, Some(CLONING_GH)).await;
+    let device = bearer_device(&h, "dev-1").await;
+    let (status, v) = h.call_as(&device, "github.repos", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let (status, v) = h
+        .call_as(
+            &device,
+            "workspace.clone_cancel",
+            json!({ "clone_id": "c_nope" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{v}");
+}
+
+#[test]
+fn clone_is_a_capability() {
+    assert!(crate::protocol::compat::CAPABILITIES.contains(&"workspace.clone"));
 }
 
 /// A plain folder with something to commit and a secret publishing must

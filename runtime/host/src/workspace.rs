@@ -33,11 +33,12 @@ use crate::protocol::error::ZwiimError;
 use crate::terminal::manager::TerminalManager;
 use crate::web::event_bridge::EventEmitter;
 
+pub mod clone;
 mod env_files;
 mod names;
-pub(crate) mod zwiim_dir;
 mod publish;
 mod repo_init;
+pub(crate) mod zwiim_dir;
 
 pub(crate) use publish::check_target;
 pub use publish::{inspect, GitState, Inspection, Publish};
@@ -1568,11 +1569,17 @@ mod tests {
         let exclude = std::fs::read_to_string(Path::new(&repo).join(".git/info/exclude")).unwrap();
         assert!(exclude.lines().any(|l| l.trim() == "/.zwiim/"), "{exclude}");
         std::fs::write(wt_path.join(".zwiim/images/a.png"), b"x").unwrap();
-        assert_eq!(git(wt_path, &["status", "--porcelain", "--untracked-files=all"]), "");
+        assert_eq!(
+            git(wt_path, &["status", "--porcelain", "--untracked-files=all"]),
+            ""
+        );
         // The file tree lists it.
-        let tree = folders::get_file_tree(wt.path.clone(), Some(1)).await.unwrap();
+        let tree = folders::get_file_tree(wt.path.clone(), Some(1))
+            .await
+            .unwrap();
         assert!(
-            tree.iter().any(|n| matches!(n, folders::FileTreeNode::Dir { name, .. } if name == ".zwiim")),
+            tree.iter()
+                .any(|n| matches!(n, folders::FileTreeNode::Dir { name, .. } if name == ".zwiim")),
             "tree lists .zwiim"
         );
     }

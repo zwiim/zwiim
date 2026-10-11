@@ -44,7 +44,7 @@ type Verdict = "available" | "taken" | "failed";
 
 /** Why the Host's GitHub CLI can't publish (`workspace.inspect`'s `github.reason`, or the add's error code). */
 const UNAVAILABLE = ["gh_unavailable", "gh_unauthenticated", "github_unreachable"] as const;
-type Unavailable = (typeof UNAVAILABLE)[number];
+export type Unavailable = (typeof UNAVAILABLE)[number];
 
 /**
  * What the dialog shows: the owner and name fields, or one line in their
@@ -72,12 +72,12 @@ function phaseOf(inspection: WorkspaceInspection): Phase {
 /** DESIGN.md's `primary` button: the accent, `brand` on Desktop (as Continue after a merge). */
 const PRIMARY = "bg-brand text-brand-foreground hover:bg-brand/85";
 
-const Code = ({ children }: { children: React.ReactNode }) => <code className="font-mono text-xs">{children}</code>;
+export const Code = ({ children }: { children: React.ReactNode }) => <code className="font-mono text-xs">{children}</code>;
 
 /** The folder's name, as the Host names a root added from it. */
 const folderName = (path: string) => path.replace(/\/+$/, "").split("/").pop() ?? "";
 
-function unavailableLine(reason: Unavailable, host: string) {
+export function unavailableLine(reason: Unavailable, host: string) {
   switch (reason) {
     case "gh_unavailable":
       return <>GitHub CLI isn't installed on {host}.</>;

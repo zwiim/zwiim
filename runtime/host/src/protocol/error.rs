@@ -343,6 +343,16 @@ impl ZwiimError {
             "Internal host error",
         )
     }
+
+    /// GitHub (through the Host's `gh`) could not be reached or answered
+    /// unexpectedly.
+    pub fn github_unreachable() -> Self {
+        Self::new(
+            StatusCode::BAD_GATEWAY,
+            "github_unreachable",
+            "GitHub could not be reached",
+        )
+    }
 }
 
 impl IntoResponse for ZwiimError {
@@ -418,11 +428,7 @@ impl From<GitError> for ZwiimError {
                 "gh_unauthenticated",
                 "GitHub CLI on the Host is not logged in",
             ),
-            GitErrorCode::Network | GitErrorCode::Timeout => Self::new(
-                StatusCode::BAD_GATEWAY,
-                "github_unreachable",
-                "GitHub could not be reached",
-            ),
+            GitErrorCode::Network | GitErrorCode::Timeout => Self::github_unreachable(),
             _ => {
                 tracing::warn!(
                     code = e.code.as_str(),

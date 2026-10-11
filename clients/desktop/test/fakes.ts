@@ -2,6 +2,7 @@ import { act } from "@testing-library/react";
 import { CLIENT_CAPABILITIES, CLIENT_REVISION } from "@zwiim/sdk";
 import type {
   ClientMessage,
+  CloneJob,
   EventChannel,
   EventChannelHandlers,
   HostFeedEvent,
@@ -47,6 +48,7 @@ export class FakeTransport implements Transport {
   handlersForEvents: EventChannelHandlers | null = null;
   sent: ClientMessage[] = [];
   feedSeq = 0;
+  clones: CloneJob[] = [];
   async request(op: OpName, params: unknown) {
     this.calls.push({ op, params });
     const h = this.handlers[op];
@@ -82,6 +84,7 @@ export class FakeTransport implements Transport {
         })),
       ),
       terminals: h["terminal.list"]!({}),
+      clones: this.clones,
     };
   }
   /** Publish the next host feed event, as another client's change would. */

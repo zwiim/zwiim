@@ -6,6 +6,7 @@
 import type { ConnectionState } from "../client/connection";
 import type {
   AgentSummary,
+  CloneJob,
   HostFeedEvent,
   HostHello,
   HostOwner,
@@ -46,6 +47,8 @@ export interface HostState {
    * workspace without an entry has no pull request (or no named branch).
    */
   prs: Record<string, PrEntry>;
+  /** GitHub clones in flight or recently finished, by `clone_id`. */
+  clones: Record<string, CloneJob>;
 }
 
 export type HostAction =
@@ -75,6 +78,7 @@ export function initialHostState(): HostState {
     terminals: {},
     diffRevision: {},
     prs: {},
+    clones: {},
   };
 }
 
@@ -151,6 +155,7 @@ export function reduceHost(state: HostState, action: HostAction): HostState {
         terminals: listTerminals(state.terminals, terminals),
         diffRevision,
         prs: action.snapshot.prs ?? {},
+        clones: Object.fromEntries((action.snapshot.clones ?? []).map((c) => [c.clone_id, c])),
       };
     }
     case "host_event":
@@ -226,6 +231,14 @@ function reduceFeedEvent(state: HostState, event: HostFeedEvent): HostState {
       }
       const { [id]: _, ...rest } = state.terminals;
       return { ...state, terminals: rest };
+    }
+    case "clone.changed": {
+      const clone = event.payload.clone;
+      return { ...state, clones: { ...state.clones, [clone.clone_id]: clone } };
+    }
+    case "clone.removed": {
+      const { [event.payload.clone_id]: _gone, ...clones } = state.clones;
+      return { ...state, clones };
     }
     default:
       // An event from a newer Host: ignore it, keep the state.

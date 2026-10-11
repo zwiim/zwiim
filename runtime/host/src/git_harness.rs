@@ -27,6 +27,7 @@
 //! depend on it; it never depends on them.
 
 mod account;
+mod clone;
 mod error;
 mod github;
 mod local;
@@ -35,7 +36,7 @@ mod pr_state;
 mod remote;
 mod run;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -45,9 +46,10 @@ use crate::app_error::AppErrorCode;
 use crate::db::entities::folder;
 
 pub use account::{
-    github_account, github_owners, github_repo_create, github_repo_exists, GithubAccount,
-    GithubOwner, GithubOwnerKind,
+    github_account, github_owners, github_repo_create, github_repo_exists, github_repos,
+    GithubAccount, GithubOwner, GithubOwnerKind, GithubRepoRow,
 };
+pub use clone::{github_repo_clone, ClonePhase, CloneRun};
 pub use error::{GitError, GitErrorCode};
 pub use op::{
     BranchOutcome, CommitOutcome, FetchOutcome, GitOp, GitOpKind, GitOutcome, MergeMethod, PrCheck,
@@ -57,6 +59,11 @@ pub use op::{
 pub use pr_state::{
     CheckState, MergeStatus, PrCheckItem, PrChecksSummary, PrLifecycle, PrMergeInfo, PrState,
 };
+
+/// The `gh` the Host runs: `configured`, else the user's installed one.
+pub fn find_gh(configured: Option<&Path>) -> Result<PathBuf, GitError> {
+    run::find_gh(configured)
+}
 
 /// The Host services the Harness runs against.
 #[derive(Clone, Copy)]

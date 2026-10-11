@@ -43,6 +43,7 @@ pub const CAPABILITIES: &[&str] = &[
     "host.diagnostics",
     "agent.auth",
     "workspace.publish",
+    "workspace.clone",
     "attachments",
     "file_ranges",
 ];
