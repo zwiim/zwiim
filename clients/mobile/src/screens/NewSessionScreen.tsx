@@ -40,9 +40,10 @@ import { Paperclip } from "../ui/icons";
 import { AttachSheet, PendingFiles } from "../ui/session";
 import { radius, space, type, useTheme } from "../ui/tokens";
 import { useHostName } from "./HostFrame";
+import { GithubProjects, NewWorkspaceChooser, useCanClone, useStartedClones } from "./github";
 import { WorkspaceTree } from "./workspaces";
 
-type Picking = "workspace" | "agent" | "model" | "effort" | "mode" | null;
+type Picking = "workspace" | "agent" | "model" | "effort" | "mode" | "new" | "github" | null;
 
 /** The picker opens once the attach sheet has slid away; iOS shows one modal at a time. */
 const SHEET_CLOSE_MS = 400;
@@ -184,6 +185,20 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
     setPicking(null);
     setConfirmUnattended(false);
   };
+  const canClone = useCanClone();
+  // This screen's own clone: started with choose: false, so Files keeps its
+  // selection; when done it becomes this session's target. Leaving drops it.
+  const pending = useStartedClones((job) => {
+    const id = job.worktree_id ?? job.workspace_id;
+    if (id) setTargetId(id);
+    // Close only if the sheet is still showing the New workspace flow (not
+    // reopened for something else, like Model or the unattended confirm).
+    if (picking === "new" || picking === "github") closeSheet();
+  });
+  const folder = () => {
+    closeSheet();
+    navigation.navigate("BrowseMac", { then: "NewSession" });
+  };
 
   return (
     <View style={[styles.page, { backgroundColor: theme.bg, paddingTop: insets.top }]}>
@@ -312,7 +327,7 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
       </KeyboardAvoidingView>
 
       <AttachSheet visible={attaching} onClose={() => setAttaching(false)} onPick={pick} />
-      <Sheet visible={sheet !== null || picking === "workspace"} onClose={closeSheet}>
+      <Sheet visible={sheet !== null || picking === "workspace" || picking === "new" || picking === "github"} onClose={closeSheet}>
         {picking === "workspace" ? (
           <WorkspaceTree
             selected={target.kind === "ready" ? target.workspace.workspace_id : null}
@@ -320,10 +335,19 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
               setTargetId(id);
               closeSheet();
             }}
-            onNewWorkspace={() => {
+            onNewWorkspace={canClone ? () => setPicking("new") : folder}
+          />
+        ) : picking === "new" ? (
+          <NewWorkspaceChooser onFolder={folder} onGithub={() => setPicking("github")} />
+        ) : picking === "github" ? (
+          <GithubProjects
+            onBack={() => setPicking("new")}
+            onOpen={(workspace_id) => {
+              setTargetId(workspace_id);
               closeSheet();
-              navigation.navigate("BrowseMac", { then: "NewSession" });
             }}
+            choose={false}
+            onStarted={pending}
           />
         ) : confirmUnattended ? (
           <>

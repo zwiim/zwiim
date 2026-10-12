@@ -56,6 +56,7 @@ export * from "./state/store";
 export * from "./state/workspaces";
 export * from "./state/options";
 export * from "./state/usage";
+export * from "./state/clones";
 export * from "./changes/diff";
 export * from "./changes/turns";
 export * from "./changes/fullfile";

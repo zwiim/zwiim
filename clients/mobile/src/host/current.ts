@@ -6,7 +6,9 @@
 
 import {
   ZwiimClientError,
+  type CloneStart,
   type ConnectionMode,
+  type GithubRepoPage,
   type HostHello,
   type HostStore,
   type MergeMethod,
@@ -23,6 +25,7 @@ import {
 } from "@zwiim/sdk";
 import type { HostEntry } from "../account/hosts";
 import type { Preferences, SecureStore } from "../platform/capabilities";
+import { settleClones } from "./clone";
 import { errorInfo, type ErrorInfo, type HostConnection, type HostConnectionView, type TerminalHold } from "./connection";
 
 export interface CurrentHostState {
@@ -37,6 +40,8 @@ export interface CurrentHostState {
   store: HostStore | null;
   /** The worktree Files shows (a root or one of its worktrees), once chosen; kept per host. */
   workspaceId: string | null;
+  /** Failed clones whose card was dismissed on this phone. */
+  dismissedClones: ReadonlySet<string>;
 }
 
 export interface CurrentHostDeps {
@@ -46,7 +51,15 @@ export interface CurrentHostDeps {
   open(hostId: string, mode: ConnectionMode): Promise<HostConnection>;
 }
 
-const EMPTY: CurrentHostState = { host: null, view: null, hello: null, openError: null, store: null, workspaceId: null };
+const EMPTY: CurrentHostState = {
+  host: null,
+  view: null,
+  hello: null,
+  openError: null,
+  store: null,
+  workspaceId: null,
+  dismissedClones: new Set(),
+};
 
 export class CurrentHost {
   readonly #deps: CurrentHostDeps;
@@ -61,6 +74,9 @@ export class CurrentHost {
   readonly #lastSession = new Map<string, string>();
   /** What's typed and not yet sent in each session of this host (in memory; never sent to the host). */
   readonly #drafts = new Map<string, string>();
+  /** Clones started here with `choose`: the first one done becomes the selection. */
+  readonly #chosen = new Set<string>();
+  #unwatch: (() => void) | null = null;
 
   constructor(deps: CurrentHostDeps) {
     this.#deps = deps;
@@ -87,13 +103,15 @@ export class CurrentHost {
 
   /** Control `host` over a new connection, read again from the store (after pairing). */
   async open(host: HostEntry): Promise<void> {
-    if (this.#state.host?.host_id !== host.host_id) {
+    const sameHost = this.#state.host?.host_id === host.host_id;
+    if (!sameHost) {
       this.#lastSession.clear();
       this.#drafts.clear();
+      this.#chosen.clear();
     }
     this.#drop();
     const run = ++this.#run;
-    this.#set({ ...EMPTY, host });
+    this.#set({ ...EMPTY, host, dismissedClones: sameHost ? this.#state.dismissedClones : EMPTY.dismissedClones });
     await this.#deps.prefs.setLastHost({ host_id: host.host_id, name: host.name });
     const [modes, chosen] = await Promise.all([this.#deps.prefs.connectionModes(), this.#deps.prefs.workspaces()]);
     const mode = modes[host.host_id] ?? "auto";
@@ -107,6 +125,7 @@ export class CurrentHost {
     }
     if (run !== this.#run) return connection.close();
     this.#connection = connection;
+    this.#unwatch = connection.store.subscribe(() => this.#settleClones());
     connection.subscribe((view) => this.#onView(run, view));
     this.#set({ view: connection.view, store: connection.store });
     connection.connect();
@@ -275,6 +294,38 @@ export class CurrentHost {
     return workspace;
   }
 
+  /** One page of the Host's GitHub repositories; `refresh` skips the Host's cache. */
+  async githubRepos(page?: number, refresh?: boolean): Promise<GithubRepoPage> {
+    return this.#opened().githubRepos(page, refresh);
+  }
+
+  /**
+   * Clone a GitHub repository on the Host. With `choose` (the default), its
+   * worktree becomes the selection once the clone is done. A repository
+   * already added replies with its root and starts nothing.
+   */
+  async startClone(owner: string, name: string, { choose = true }: { choose?: boolean } = {}): Promise<CloneStart> {
+    const host_id = this.#state.host?.host_id;
+    const started = await this.#opened().cloneWorkspace(owner, name);
+    if (choose && "clone_id" in started && this.#state.host?.host_id === host_id) {
+      this.#chosen.add(started.clone_id);
+      // It may already be done: the feed can beat the reply.
+      this.#settleClones();
+    }
+    return started;
+  }
+
+  /** Stop a clone; `false` once it is past cloning (it then finishes). */
+  async cancelClone(clone_id: string): Promise<boolean> {
+    return this.#opened().cancelClone(clone_id);
+  }
+
+  /** Hide a failed clone's card on this phone. */
+  dismissClone(clone_id: string): void {
+    if (this.#state.dismissedClones.has(clone_id)) return;
+    this.#set({ dismissedClones: new Set([...this.#state.dismissedClones, clone_id]) });
+  }
+
   /**
    * Remove a worktree. The host refuses while agents or terminals run there
    * (`workspace_busy`, even with `force`) and, without `force`, while it has
@@ -317,6 +368,7 @@ export class CurrentHost {
   /** Stop controlling any host, and forget the last one (signing out). */
   async clear(): Promise<void> {
     this.#drop();
+    this.#chosen.clear();
     this.#run++;
     this.#set(EMPTY);
     await this.#deps.prefs.setLastHost(null);
@@ -351,8 +403,22 @@ export class CurrentHost {
     return this.#connection;
   }
 
+  /** Select the worktree of a chosen clone once it is done. Reads the connection's store: it can change before `#set`. */
+  #settleClones(): void {
+    if (this.#chosen.size === 0 || !this.#connection) return;
+    const { done, left } = settleClones(this.#connection.store.getState().clones, [...this.#chosen]);
+    this.#chosen.clear();
+    for (const id of left) this.#chosen.add(id);
+    for (const job of done) {
+      const id = job.worktree_id ?? job.workspace_id;
+      if (id) this.chooseWorkspace(id);
+    }
+  }
+
   #drop(): void {
     this.#asked = false;
+    this.#unwatch?.();
+    this.#unwatch = null;
     this.#connection?.close();
     this.#connection = null;
   }

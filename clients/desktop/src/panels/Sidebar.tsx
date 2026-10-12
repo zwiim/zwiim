@@ -15,10 +15,14 @@ import {
 import {
   busyDetails,
   dirtyDetails,
+  fullName,
   hasCapability,
+  isActive,
   largeFolderDetails,
   largeFolderText,
   openTarget,
+  progressLabel,
+  sameRepo,
   selectWorkspaceTree,
   type CloneJob,
   type LargeFolderDetails,
@@ -31,16 +35,7 @@ import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { rememberSidebarFolds, sidebarFolds, type SidebarFolds } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
-import {
-  GithubCloneDialog,
-  GithubMark,
-  ProgressBar,
-  cloneErrorLine,
-  fullName,
-  isActive,
-  progressLabel,
-  sameRepo,
-} from "./GithubCloneDialog";
+import { GithubCloneDialog, GithubMark, ProgressBar, cloneErrorLine } from "./GithubCloneDialog";
 import { NewWorktree } from "./NewWorktree";
 import { PublishDialog, type PublishSubject } from "./PublishDialog";
 

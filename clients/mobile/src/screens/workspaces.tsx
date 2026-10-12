@@ -32,11 +32,16 @@ import { currentHost } from "../services";
 import { Button, Chip, Sheet, T } from "../ui/components";
 import { ChevronDown, ChevronLeft, ChevronRight, Icon, Plus } from "../ui/icons";
 import { radius, space, type, useTheme } from "../ui/tokens";
+import { CloneCards, GithubProjects, NewWorkspaceChooser, useCanClone, useStartedClones } from "./github";
 import { useHostName } from "./HostFrame";
 import { toneColor } from "./PrStrip";
 import { RemoveWorktree } from "./RemoveWorktree";
 
-type Level = { kind: "workspaces" } | { kind: "worktrees"; root_id: string; fromList: boolean };
+type Level =
+  | { kind: "workspaces" }
+  | { kind: "new" }
+  | { kind: "github" }
+  | { kind: "worktrees"; root_id: string; fromList: boolean };
 
 /** `[ zwiim ▾ ]  [ ⎇ fix-auth ▾ ]` for the selected worktree. */
 export function ContextBar() {
@@ -66,18 +71,75 @@ export function ContextBar() {
   );
 }
 
-/** Opens Browse Mac to add a workspace. */
+/** New workspace from the Files tab: a folder on the Mac, or a GitHub project. */
 export function NewWorkspaceButton() {
   const nav = useRootNavigation();
-  return <Button kind="secondary" label="New workspace" onPress={() => nav.navigate("BrowseMac")} testID="workspace-new" />;
+  const canClone = useCanClone();
+  const [level, setLevel] = useState<"new" | "github" | null>(null);
+  const close = () => setLevel(null);
+  // Close only if the sheet is still showing the New workspace flow; a sheet
+  // reopened for something else since the clone started stays open.
+  const started = useStartedClones(() => {
+    if (level === "new" || level === "github") close();
+  });
+  const folder = () => {
+    close();
+    nav.navigate("BrowseMac");
+  };
+  return (
+    <>
+      <Button kind="secondary" label="New workspace" onPress={canClone ? () => setLevel("new") : folder} testID="workspace-new" />
+      <Sheet visible={level !== null} onClose={close}>
+        {level === "new" ? (
+          <NewWorkspaceChooser onFolder={folder} onGithub={() => setLevel("github")} />
+        ) : level === "github" ? (
+          <GithubProjects
+            onBack={() => setLevel("new")}
+            onOpen={(workspace_id) => {
+              currentHost.chooseWorkspace(workspace_id);
+              close();
+            }}
+            choose
+            onStarted={started}
+          />
+        ) : null}
+      </Sheet>
+    </>
+  );
 }
 
 function WorkspaceSheet({ level, onLevel, selected }: { level: Level | null; onLevel(level: Level | null): void; selected: WorkspaceInfo }) {
+  const nav = useRootNavigation();
+  const canClone = useCanClone();
   const close = () => onLevel(null);
+  // CurrentHost selects a done clone's worktree; close only if the sheet is
+  // still showing the New workspace flow (not reopened for something else).
+  const started = useStartedClones(() => {
+    if (level?.kind === "new" || level?.kind === "github") close();
+  });
+  const folder = () => {
+    close();
+    nav.navigate("BrowseMac");
+  };
   return (
     <Sheet visible={level !== null} onClose={close}>
       {level?.kind === "workspaces" ? (
-        <Workspaces selected={selected} onRoot={(root_id) => onLevel({ kind: "worktrees", root_id, fromList: true })} onClose={close} />
+        <Workspaces
+          selected={selected}
+          onRoot={(root_id) => onLevel({ kind: "worktrees", root_id, fromList: true })}
+          onNew={canClone ? () => onLevel({ kind: "new" }) : folder}
+          onStarted={started}
+          onClose={close}
+        />
+      ) : level?.kind === "new" ? (
+        <NewWorkspaceChooser onFolder={folder} onGithub={() => onLevel({ kind: "github" })} />
+      ) : level?.kind === "github" ? (
+        <GithubProjects
+          onBack={() => onLevel({ kind: "new" })}
+          onOpen={(root_id) => onLevel({ kind: "worktrees", root_id, fromList: true })}
+          choose
+          onStarted={started}
+        />
       ) : level?.kind === "worktrees" ? (
         <Worktrees
           root_id={level.root_id}
@@ -95,9 +157,20 @@ function useTree(): WorkspaceNode[] {
 }
 
 /** Level one: the host's workspaces, searchable. */
-function Workspaces({ selected, onRoot, onClose }: { selected: WorkspaceInfo; onRoot(root_id: string): void; onClose(): void }) {
+function Workspaces({
+  selected,
+  onRoot,
+  onNew,
+  onStarted,
+  onClose,
+}: {
+  selected: WorkspaceInfo;
+  onRoot(root_id: string): void;
+  onNew(): void;
+  onStarted(clone_id: string): void;
+  onClose(): void;
+}) {
   const theme = useTheme();
-  const nav = useRootNavigation();
   const tree = useTree();
   const [query, setQuery] = useState("");
   const roots = workspaceRoots(tree, query);
@@ -108,16 +181,9 @@ function Workspaces({ selected, onRoot, onClose }: { selected: WorkspaceInfo; on
         <T variant="title" style={styles.flex}>
           Workspaces
         </T>
-        <Button
-          kind="secondary"
-          label="New workspace"
-          onPress={() => {
-            onClose();
-            nav.navigate("BrowseMac");
-          }}
-          testID="sheet-workspace-new"
-        />
+        <Button kind="secondary" label="New workspace" onPress={onNew} testID="sheet-workspace-new" />
       </View>
+      <CloneCards onStarted={onStarted} />
       <TextInput
         value={query}
         onChangeText={setQuery}

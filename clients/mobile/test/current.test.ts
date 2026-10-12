@@ -1,4 +1,4 @@
-import { ZwiimClientError, type ConnectionMode } from "@zwiim/sdk";
+import { ZwiimClientError, type CloneJob, type ConnectionMode } from "@zwiim/sdk";
 import { describe, expect, it } from "vitest";
 import type { HostEntry } from "../src/account/hosts";
 import type { HostConnectionView } from "../src/host/connection";
@@ -246,7 +246,15 @@ describe("the current host", () => {
     const seen: CurrentHostState[] = [];
     current.subscribe(() => seen.push(current.state));
     await current.clear();
-    expect(current.state).toEqual({ host: null, view: null, hello: null, openError: null, store: null, workspaceId: null });
+    expect(current.state).toEqual({
+      host: null,
+      view: null,
+      hello: null,
+      openError: null,
+      store: null,
+      workspaceId: null,
+      dismissedClones: new Set(),
+    });
     expect(await s.prefs.lastHost()).toBeNull();
     expect(await s.prefs.connectionModes()).toEqual({ [s.entry.host_id]: "cloud" });
     expect(await s.store.pinnedHost(s.entry.host_id)).not.toBeNull();
@@ -341,7 +349,16 @@ describe("how the connection reads", () => {
 
   it("describes the current host's row by this phone's own connection", () => {
     const host: HostEntry = { host_id: "h", name: "Mac", static_pubkey: "pk", online: true, last_seen_at: 100, paired: true };
-    const state = (over: Partial<CurrentHostState>): CurrentHostState => ({ host, view: null, hello: null, openError: null, store: null, workspaceId: null, ...over });
+    const state = (over: Partial<CurrentHostState>): CurrentHostState => ({
+      host,
+      view: null,
+      hello: null,
+      openError: null,
+      store: null,
+      workspaceId: null,
+      dismissedClones: new Set(),
+      ...over,
+    });
     expect(hostRowState(host, state({}), undefined, 200)).toEqual({ meta: "connecting…", dot: "work" });
     expect(hostRowState(host, state({ view: view({ active: "lan" }) }), undefined, 200)).toEqual({
       meta: "⌂ same network · paired",
@@ -917,5 +934,156 @@ describe("stopping agents and removing worktrees (R8.13)", () => {
   it("reads an agent not bound to a session yet as starting", () => {
     expect(otherBlockers({ live_sessions: 3, terminals: 2, session_ids: ["a"] })).toBe("2 agents starting · 2 terminals running");
     expect(otherBlockers({ live_sessions: 1, terminals: 0, session_ids: ["a"] })).toBeNull();
+  });
+});
+
+describe("GitHub clones", () => {
+  const job = (over: Partial<CloneJob> = {}): CloneJob => ({
+    clone_id: "c1",
+    owner: "acme",
+    name: "web",
+    state: "cloning",
+    phase: "receiving",
+    percent: 10,
+    workspace_id: null,
+    worktree_id: null,
+    error: null,
+    ...over,
+  });
+
+  async function live(s: ReturnType<typeof setup>) {
+    await pin(s);
+    const current = s.launch();
+    await current.open(s.entry);
+    await waitFor(() => current.state.view?.status === "live");
+    return current;
+  }
+
+  it("selects the worktree of a clone it started once it is done", async () => {
+    const s = setup();
+    const asked: unknown[] = [];
+    s.w.host.backend.handlers["workspace.clone"] = (p: unknown) => (asked.push(p), { clone_id: "c1" });
+    const current = await live(s);
+    expect(await current.startClone("acme", "web")).toEqual({ clone_id: "c1" });
+    expect(asked).toEqual([{ owner: "acme", name: "web" }]);
+    s.w.host.backend.feedEvent("clone.changed", { clone: job({ percent: 80 }) });
+    s.w.host.backend.feedEvent("clone.changed", { clone: job({ state: "done", workspace_id: "root", worktree_id: "tree" }) });
+    await waitFor(() => current.state.workspaceId === "tree");
+    await current.clear();
+  });
+
+  it("falls back to the root when a done clone has no worktree", async () => {
+    const s = setup();
+    s.w.host.backend.handlers["workspace.clone"] = () => ({ clone_id: "c1" });
+    const current = await live(s);
+    await current.startClone("acme", "web");
+    s.w.host.backend.feedEvent("clone.changed", { clone: job({ state: "done", workspace_id: "root" }) });
+    await waitFor(() => current.state.workspaceId === "root");
+    await current.clear();
+  });
+
+  it("still selects when done arrives before the reply", async () => {
+    const s = setup();
+    s.w.host.backend.handlers["workspace.clone"] = async () => {
+      s.w.host.backend.feedEvent("clone.changed", { clone: job({ state: "done", workspace_id: "root", worktree_id: "tree" }) });
+      await waitFor(() => current.state.store?.getState().clones.c1?.state === "done");
+      return { clone_id: "c1" };
+    };
+    const current = await live(s);
+    await current.startClone("acme", "web");
+    await waitFor(() => current.state.workspaceId === "tree");
+    await current.clear();
+  });
+
+  it("never selects for choose: false, a foreign clone, or a repository already added", async () => {
+    const s = setup();
+    let reply: object = { clone_id: "c1" };
+    s.w.host.backend.handlers["workspace.clone"] = () => reply;
+    const current = await live(s);
+    current.chooseWorkspace("mine");
+    await current.startClone("acme", "web", { choose: false });
+    reply = { workspace_id: "root" };
+    expect(await current.startClone("acme", "api")).toEqual({ workspace_id: "root" });
+    s.w.host.backend.feedEvent("clone.changed", { clone: job({ state: "done", workspace_id: "root", worktree_id: "tree" }) });
+    // Started on Desktop: this phone only shows it.
+    s.w.host.backend.feedEvent("clone.changed", { clone: job({ clone_id: "c9", state: "done", workspace_id: "r9", worktree_id: "t9" }) });
+    await waitFor(() => current.state.store?.getState().clones.c9?.state === "done");
+    expect(current.state.workspaceId).toBe("mine");
+    await current.clear();
+  });
+
+  it("forgets a clone that failed or was cancelled", async () => {
+    const s = setup();
+    let next = 0;
+    s.w.host.backend.handlers["workspace.clone"] = () => ({ clone_id: `c${++next}` });
+    const current = await live(s);
+    current.chooseWorkspace("mine");
+    await current.startClone("acme", "web");
+    await current.startClone("acme", "api");
+    s.w.host.backend.feedEvent("clone.changed", { clone: job({ clone_id: "c1", state: "failed", error: { code: "network", message: "x" } }) });
+    s.w.host.backend.feedEvent("clone.changed", { clone: job({ clone_id: "c2", name: "api", state: "cancelled" }) });
+    await waitFor(() => current.state.store?.getState().clones.c2?.state === "cancelled");
+    // A later done for the same ids (it can't happen, states only move forward) is not followed.
+    s.w.host.backend.feedEvent("clone.changed", { clone: job({ clone_id: "c1", state: "done", workspace_id: "root", worktree_id: "tree" }) });
+    await waitFor(() => current.state.store?.getState().clones.c1?.state === "done");
+    expect(current.state.workspaceId).toBe("mine");
+    await current.clear();
+  });
+
+  it("dismisses failed clones on this phone, and switching Host resets what it waits on", async () => {
+    const s = setup();
+    s.w.host.backend.handlers["workspace.clone"] = () => ({ clone_id: "c1" });
+    const current = await live(s);
+    await current.startClone("acme", "web");
+    current.dismissClone("old");
+    current.dismissClone("old");
+    expect([...current.state.dismissedClones]).toEqual(["old"]);
+
+    // Reopening the same Host keeps both. Settle it fully before switching
+    // away: otherwise this connection's own handshake is abandoned in
+    // flight, and its stray `ws.open` can still reach the fake Host after
+    // the next connection's, leaving the test feeding events to a connection
+    // nothing reads from.
+    await current.open(s.entry);
+    await waitFor(() => current.state.view?.status === "live");
+    expect([...current.state.dismissedClones]).toEqual(["old"]);
+
+    const other = { ...s.entry, host_id: "host-2", name: "Office Mac" };
+    await s.store.pinHost({ host_id: other.host_id, host_static_pubkey: other.static_pubkey });
+    await current.select(other);
+    await waitFor(() => current.state.view?.status === "live");
+    expect(current.state.dismissedClones.size).toBe(0);
+    current.chooseWorkspace("mine");
+    // The fake serves the same backend for every Host id: c1 here is not the
+    // clone started before. "live" only means the event channel's `ws.open`
+    // handshake finished; it says nothing about `host.subscribe` having
+    // reached the fake Host yet. Wait for it, or a `feedEvent` sent the
+    // instant we go live can arrive before the client has a snapshot to
+    // place it against, and is dropped.
+    await waitFor(() => s.w.host.backend.channel.sent.some((m) => m.op === "host.subscribe"));
+    s.w.host.backend.feedEvent("clone.changed", { clone: job({ state: "done", workspace_id: "root", worktree_id: "tree" }) });
+    await waitFor(() => current.state.store?.getState().clones.c1?.state === "done");
+    expect(current.state.workspaceId).toBe("mine");
+    await current.clear();
+  });
+
+  it("passes list and cancel through to the Host", async () => {
+    const s = setup();
+    const asked: unknown[] = [];
+    s.w.host.backend.handlers["github.repos"] = (p: unknown) => (asked.push(p), { repos: [], next_page: null });
+    s.w.host.backend.handlers["workspace.clone_cancel"] = (p: unknown) => (asked.push(p), { cancelled: false });
+    const current = await live(s);
+    expect(await current.githubRepos(2, true)).toEqual({ repos: [], next_page: null });
+    expect(await current.cancelClone("c1")).toBe(false);
+    expect(asked).toEqual([{ page: 2, refresh: true }, { clone_id: "c1" }]);
+    await current.clear();
+  });
+
+  it("refuses clone ops without a connection", async () => {
+    const s = setup();
+    const current = s.launch();
+    for (const op of [() => current.githubRepos(), () => current.startClone("acme", "web"), () => current.cancelClone("c1")]) {
+      await expect(op()).rejects.toMatchObject({ code: "network" });
+    }
   });
 });

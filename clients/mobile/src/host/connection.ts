@@ -17,10 +17,12 @@ import {
   type ActiveConnection,
   type BackoffOptions,
   type ClientInfo,
+  type CloneStart,
   type Compatibility,
   type CloudClient,
   type ConnectionMode,
   type ConnectionStatus,
+  type GithubRepoPage,
   type HostLanEndpoint,
   type HostStore,
   type MergeMethod,
@@ -221,6 +223,21 @@ export class HostConnection {
   /** Create a worktree of a root workspace from its current branch; never retried. */
   async createWorktree(root_workspace_id: string): Promise<WorkspaceInfo> {
     return this.#live().createWorktree(root_workspace_id);
+  }
+
+  /** One page of the repositories the Host's GitHub account can see (`github.repos`); `refresh` skips the Host's cache. */
+  async githubRepos(page?: number, refresh?: boolean): Promise<GithubRepoPage> {
+    return this.#live().githubRepos(page, refresh);
+  }
+
+  /** Clone `owner/name` on the Host (`workspace.clone`); never retried. Progress arrives as `clones` state. */
+  async cloneWorkspace(owner: string, name: string): Promise<CloneStart> {
+    return this.#live().cloneWorkspace(owner, name);
+  }
+
+  /** Stop a clone (`workspace.clone_cancel`); `false` once it is past cloning. Never retried. */
+  async cancelClone(clone_id: string): Promise<boolean> {
+    return this.#live().cancelClone(clone_id);
   }
 
   /** Remove a worktree (`workspace.remove_worktree`); never retried. The host may refuse it. */

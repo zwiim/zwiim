@@ -10,7 +10,7 @@ import {
   type WorkspaceInfo,
 } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
-import { GithubCloneDialog, repoRef, type GithubCloneDialogProps } from "@/panels/GithubCloneDialog";
+import { GithubCloneDialog, type GithubCloneDialogProps } from "@/panels/GithubCloneDialog";
 import { Sidebar, type SidebarProps } from "@/panels/Sidebar";
 import { FakeTransport, hostHello, tick } from "./fakes";
 
@@ -109,25 +109,6 @@ const search = () => screen.getByLabelText("Search repositories") as HTMLInputEl
 const type = (text: string) => fireEvent.change(search(), { target: { value: text } });
 const text = (s: string) => (_: string, el: Element | null) => el?.textContent === s;
 const button = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
-
-describe("repoRef", () => {
-  it("reads owner/name, GitHub URLs and SSH remotes", () => {
-    expect(repoRef("acme/web")).toEqual({ owner: "acme", name: "web" });
-    expect(repoRef("  acme/web/  ")).toEqual({ owner: "acme", name: "web" });
-    expect(repoRef("https://github.com/acme/web")).toEqual({ owner: "acme", name: "web" });
-    expect(repoRef("https://github.com/ACME/Web.git")).toEqual({ owner: "ACME", name: "Web" });
-    expect(repoRef("github.com/acme/web/tree/main/src")).toEqual({ owner: "acme", name: "web" });
-    expect(repoRef("https://www.github.com/acme/web?tab=readme")).toEqual({ owner: "acme", name: "web" });
-    expect(repoRef("git@github.com:acme/web.git")).toEqual({ owner: "acme", name: "web" });
-    expect(repoRef("acme/web.js")).toEqual({ owner: "acme", name: "web.js" });
-  });
-
-  it("refuses anything that is not one repository", () => {
-    for (const bad of ["", "web", "acme/web/extra", "-acme/web", "acme/..", "acme/we b", "https://gitlab.com/acme/web", "a".repeat(40) + "/web"]) {
-      expect(repoRef(bad)).toBeNull();
-    }
-  });
-});
 
 describe("GithubCloneDialog", () => {
   it("shows loading, then the account's repositories with their badges; the search is focused", async () => {
