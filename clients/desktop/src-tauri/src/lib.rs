@@ -354,6 +354,7 @@ pub fn run() {
         update::desktop_update_check,
         update::desktop_update_install,
         update::desktop_update_restart,
+        update::desktop_update_set_channel,
         login::host_login_status,
         login::host_login_set
     ];

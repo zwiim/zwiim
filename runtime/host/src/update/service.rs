@@ -1,13 +1,17 @@
 //! The Host's update engine: discover, verify, download, stage; then apply
 //! on a restart and prove the new version in a trial.
 //!
-//! - **Discover.** The stable channel's newest release is
-//!   `<releases>/latest/download/release.json` (+ `.sig`) on GitHub Releases.
-//!   Checked a few minutes after start, then every 6 hours, and on
-//!   `host.update.check`. Offline is not an error anyone must act on.
+//! - **Discover.** On GitHub Releases, the stable channel's newest release
+//!   is `<releases>/latest/download/release.json` (+ `.sig`); the beta
+//!   channel's is `<releases>/download/beta/release.json`, a release the
+//!   release tooling moves to the newest beta or stable version. The channel
+//!   is the Host's own setting (`host.update.set_channel`). Checked a few
+//!   minutes after start, then every 6 hours, and on `host.update.check`.
+//!   Offline is not an error anyone must act on.
 //! - **Verify.** The manifest's signature against the release key compiled
 //!   into this build (a build without one never updates), then the policy in
-//!   `manifest::offer`: newer only, same channel, not blocked, not changed.
+//!   `manifest::offer`: newer only, no beta on stable, not blocked, not
+//!   changed.
 //! - **Download and stage.** The Host archive is fetched and staged by
 //!   `install::stage_archive` (hash, platform signature, self-reported
 //!   version). A version the Desktop bundle already provided is not
@@ -65,6 +69,33 @@ const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn current_version() -> Version {
     Version::parse(env!("CARGO_PKG_VERSION")).expect("the crate version is semver")
+}
+
+/// The channel of the running version: a beta install follows beta.
+pub(super) fn own_channel() -> Channel {
+    if current_version().pre.is_empty() {
+        Channel::Stable
+    } else {
+        Channel::Beta
+    }
+}
+
+/// The channel this Host follows: the one saved, else the running
+/// version's.
+fn channel(root: &Path) -> Channel {
+    install::channel(root).unwrap_or_else(own_channel)
+}
+
+/// [`channel`], saved on first check so a beta tester stays on beta once a
+/// stable release replaces the beta they started with.
+pub(super) fn follow(root: &Path) -> Channel {
+    let c = channel(root);
+    if install::channel(root).is_none() {
+        if let Err(e) = install::set_channel(root, c) {
+            tracing::warn!("[update] could not save the update channel: {e}");
+        }
+    }
+    c
 }
 
 fn releases_url() -> String {
@@ -137,11 +168,19 @@ fn with_engine<R>(f: impl FnOnce(&mut Engine) -> R) -> R {
     f(guard.get_or_insert_with(Engine::default))
 }
 
+/// Where a channel's newest release manifest is published.
+pub(super) fn discovery_url(releases: &str, channel: Channel) -> String {
+    match channel {
+        Channel::Stable => format!("{releases}/latest/download"),
+        Channel::Beta => format!("{releases}/download/beta"),
+    }
+}
+
 /// `host.update.status`.
 pub fn status() -> Value {
-    let state = data_dir()
-        .map(|d| install::read(&install::root(&d)))
-        .unwrap_or_default();
+    let root = data_dir().map(|d| install::root(&d));
+    let state = root.as_deref().map(install::read).unwrap_or_default();
+    let channel = root.as_deref().map(channel).unwrap_or_else(own_channel);
     let (activity, available, last_checked) = with_engine(|e| {
         (
             e.activity.clone(),
@@ -152,7 +191,7 @@ pub fn status() -> Value {
     let unsupported = unsupported_reason();
     json!({
         "version": env!("CARGO_PKG_VERSION"),
-        "channel": Channel::Stable.as_str(),
+        "channel": channel.as_str(),
         "supported": unsupported.is_none(),
         "unsupported_reason": unsupported,
         "activity": activity,
@@ -235,7 +274,8 @@ async fn check_inner(download: bool) -> Result<(), CheckError> {
     };
     let data_dir = data_dir().ok_or(("install", "no data directory".to_string()))?;
     let root = install::root(&data_dir);
-    let base = format!("{}/latest/download", releases_url());
+    let channel = follow(&root);
+    let base = discovery_url(&releases_url(), channel);
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
@@ -251,14 +291,23 @@ async fn check_inner(download: bool) -> Result<(), CheckError> {
                 .send()
                 .await
                 .map_err(|e| ("network", e.to_string()))?;
+            if res.status() == reqwest::StatusCode::NOT_FOUND {
+                return Ok(None);
+            }
             if !res.status().is_success() {
                 return Err(("network", format!("{url}: HTTP {}", res.status())));
             }
-            res.bytes().await.map_err(|e| ("network", e.to_string()))
+            res.bytes().await.map(Some).map_err(|e| ("network", e.to_string()))
         }
     };
-    let bytes = fetch(manifest::MANIFEST_ASSET).await?;
-    let sig = fetch(manifest::SIGNATURE_ASSET).await?;
+    let Some(bytes) = fetch(manifest::MANIFEST_ASSET).await? else {
+        // Nothing published on this channel yet.
+        with_engine(|e| e.available = None);
+        return Ok(());
+    };
+    let sig = fetch(manifest::SIGNATURE_ASSET)
+        .await?
+        .ok_or(("verification", "the release has no signature".to_string()))?;
     let sig = String::from_utf8_lossy(&sig).to_string();
     let verified = manifest::verify(&key, &bytes, &sig).map_err(|e| match e {
         manifest::ManifestError::UnsupportedSchema(_) => ("unsupported_manifest", e.to_string()),
@@ -270,7 +319,7 @@ async fn check_inner(download: bool) -> Result<(), CheckError> {
     let offer = manifest::offer(
         &verified,
         &current_version(),
-        Channel::Stable,
+        channel,
         state.seen.get(&version).map(String::as_str),
         state.blocked.contains(&version),
     );
@@ -365,6 +414,28 @@ async fn check_inner(download: bool) -> Result<(), CheckError> {
         "[update] Host {version} is verified and staged; it applies on the next update restart"
     );
     Ok(())
+}
+
+/// `host.update.set_channel`: follow `channel` from the next check. What
+/// the old channel offered is forgotten; nothing installed changes, and
+/// leaving beta keeps the running version until a newer stable one ships.
+pub fn set_channel(channel: Channel) -> std::io::Result<Value> {
+    let root = install::root(&data_dir().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "no data directory")
+    })?);
+    let before = self::channel(&root);
+    if install::channel(&root) != Some(channel) {
+        install::set_channel(&root, channel)?;
+    }
+    if before != channel {
+        with_engine(|e| {
+            e.available = None;
+            if matches!(e.activity, Activity::Failed { .. }) {
+                e.activity = Activity::Idle;
+            }
+        });
+    }
+    Ok(status())
 }
 
 /// The platform signature check: on macOS, a valid code signature from the

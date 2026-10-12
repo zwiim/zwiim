@@ -8,6 +8,7 @@
 //! ```text
 //! <data>/runtime/
 //!   state.json            current, previous, staged, trial, blocked, seen, last
+//!   channel.json          the release channel this Host follows
 //!   versions/<v>/         zwiim-host, zwiim-mcp
 //!   .staging-*  .trash-*  in-flight work, swept on the next run
 //! ```
@@ -37,10 +38,13 @@ use serde::{Deserialize, Serialize};
 use crate::app_error::{AppCommandError, AppErrorCode};
 use crate::db::schema_guard::MigrationOutcome;
 
-use super::manifest::Artifact;
+use super::manifest::{Artifact, Channel};
 
 pub const ROOT: &str = "runtime";
 const STATE_FILE: &str = "state.json";
+/// Its own file: `state.json` is rewritten by whichever version runs, and
+/// one older than the channel setting would drop it.
+const CHANNEL_FILE: &str = "channel.json";
 const VERSIONS: &str = "versions";
 const STAGING_PREFIX: &str = ".staging-";
 
@@ -153,6 +157,26 @@ pub fn write(root: &Path, state: &State) -> io::Result<()> {
         let _ = dir.sync_all();
     }
     Ok(())
+}
+
+#[derive(Serialize, Deserialize)]
+struct ChannelChoice {
+    channel: Channel,
+}
+
+/// The release channel saved for this Host, if any.
+pub fn channel(root: &Path) -> Option<Channel> {
+    std::fs::read(root.join(CHANNEL_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<ChannelChoice>(&b).ok())
+        .map(|c| c.channel)
+}
+
+pub fn set_channel(root: &Path, channel: Channel) -> io::Result<()> {
+    std::fs::create_dir_all(root)?;
+    let tmp = root.join(format!("{CHANNEL_FILE}.tmp"));
+    std::fs::write(&tmp, serde_json::to_vec(&ChannelChoice { channel })?)?;
+    std::fs::rename(&tmp, root.join(CHANNEL_FILE))
 }
 
 fn now() -> String {

@@ -31,6 +31,7 @@ const OPS: &[&str] = &[
     "host.update.status",
     "host.update.check",
     "host.update.apply",
+    "host.update.set_channel",
     "host.diagnostics",
     "agent.list",
     "agent.setup",
@@ -3581,12 +3582,21 @@ async fn a_rejected_key_is_never_echoed() {
     );
 }
 
+fn own_channel() -> &'static str {
+    if env!("CARGO_PKG_VERSION").contains('-') {
+        "beta"
+    } else {
+        "stable"
+    }
+}
+
 #[tokio::test]
 async fn an_unsigned_unsupervised_host_reports_that_it_cannot_update() {
     let h = host(false).await;
     let status = h.ok("host.update.status", json!({})).await;
     assert_eq!(status["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(status["channel"], "stable");
+    // Until one is chosen, a Host follows its own version's channel.
+    assert_eq!(status["channel"], own_channel());
     assert_eq!(status["supported"], false, "{status}");
     // Test builds carry no release key.
     assert_eq!(status["unsupported_reason"], "unsigned_build", "{status}");
@@ -3606,11 +3616,22 @@ async fn an_unsigned_unsupervised_host_reports_that_it_cannot_update() {
         (status, code.as_str()),
         (StatusCode::BAD_REQUEST, "invalid_request")
     );
+    for body in [
+        json!({"channel": "nightly"}),
+        json!({}),
+        json!({"channel": "beta", "extra": 1}),
+    ] {
+        let (status, code) = h.err("host.update.set_channel", body.clone()).await;
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::BAD_REQUEST, "invalid_request"),
+            "{body}"
+        );
+    }
     let hello = h.ok("host.hello", json!({})).await;
-    assert!(hello["capabilities"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("host.update")));
+    let capabilities = hello["capabilities"].as_array().unwrap();
+    assert!(capabilities.contains(&json!("host.update")));
+    assert!(capabilities.contains(&json!("host.update.channel")));
 }
 
 #[tokio::test]
@@ -3988,6 +4009,7 @@ async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
         ("device.revoke", json!({"device_id": "dev-1"})),
         ("host.claim", json!({"user_id": "u-mallory"})),
         ("host.restart", json!({"mode": "now"})),
+        ("host.update.set_channel", json!({"channel": "beta"})),
         ("agent.setup", json!({"agent": "claude_code"})),
         ("agent.sign_in", json!({"agent": "codex"})),
         (
@@ -4197,7 +4219,7 @@ async fn diagnostics_report_versions_and_state_without_secrets() {
     let h = host(false).await;
     let d = h.ok("host.diagnostics", json!({})).await;
     assert_eq!(d["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(d["channel"], "stable");
+    assert_eq!(d["channel"], own_channel());
     assert_eq!(
         d["protocol"]["revision"],
         crate::protocol::compat::PROTOCOL_REVISION

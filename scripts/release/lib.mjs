@@ -29,6 +29,25 @@ export function parseVersion(v) {
   return { major: +m[1], minor: +m[2], patch: +m[3], pre: m[4] ?? null };
 }
 
+/** Semver precedence: negative, zero or positive. Pre-releases sort below their release. */
+export function compareVersions(a, b) {
+  const x = parseVersion(a);
+  const y = parseVersion(b);
+  if (!x || !y) throw new Error(`not a version: ${!x ? a : b}`);
+  for (const k of ["major", "minor", "patch"]) if (x[k] !== y[k]) return x[k] - y[k];
+  if (!x.pre || !y.pre) return (x.pre ? -1 : 0) - (y.pre ? -1 : 0);
+  const p = x.pre.split(".");
+  const q = y.pre.split(".");
+  for (let i = 0; i < Math.min(p.length, q.length); i++) {
+    if (p[i] === q[i]) continue;
+    const [m, n] = [/^\d+$/.test(p[i]), /^\d+$/.test(q[i])];
+    if (m && n) return +p[i] - +q[i];
+    if (m !== n) return m ? -1 : 1;
+    return p[i] < q[i] ? -1 : 1;
+  }
+  return p.length - q.length;
+}
+
 export function channelOf(version) {
   return parseVersion(version)?.pre ? "beta" : "stable";
 }

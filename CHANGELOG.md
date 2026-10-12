@@ -6,6 +6,44 @@ its text becomes the release notes and the `notes` of `release.json`
 this order; write "None." under one with nothing to say. Mobile store builds
 have their own versions and are listed under Compatibility.
 
+## [0.1.0-rc.8] - 2026-10-12
+
+### Added
+- Two update channels. Stable gets released versions (0.1.0, 0.1.1, …); beta also gets early versions (0.1.0-rc.8, …) and every newer stable one. Desktop → About & updates → Get beta updates switches this app and the host on this computer together; for a remote host it switches only this app. Turning it off keeps the version you have until a newer stable one ships, never a downgrade. Until you choose, an early version follows beta and a released one follows stable.
+- Edit CSV and TSV files on Desktop: Edit in the preview makes cells editable, adds and deletes rows, and Save writes back only the changed rows (line endings, a BOM and the final newline are kept). Files up to 1,000 rows by 100 columns.
+
+### Changed
+- Tool output in the transcript is clipped at 20,000 characters on Desktop and mobile.
+
+### Fixed
+- Check for updates failed with "Could not fetch a valid release JSON" (HTTP 404) on Desktop and the Host: they looked only for the newest stable release, and none is published yet. A channel with nothing published now reads as up to date.
+- Large attachments no longer make the composer lag over a remote connection, and opening an image the agent viewed no longer freezes the app.
+- Saving a file that changed on disk says so (with Reload) instead of failing with a generic error.
+
+### Security
+- None.
+
+### Compatibility
+- Protocol `zwiim/1`, revision 1; clients from revision 1. New op `host.update.set_channel` (local host authority) with capability `host.update.channel`. New error: `file_changed`.
+- Mobile: Android app 0.1.0 (version code 1) as `com.zwiim.mobile`, installed from the APK. iOS 0.1.0 (build 2) for TestFlight testers.
+
+### Provider changes
+- None. Claude adapter 0.81.2, Codex adapter 1.13.1.
+
+### Migration notes
+- Coming from 0.1.0-rc.7 or earlier: install this version by hand once (Desktop from this release's DMG; it brings its Host). Earlier versions look for updates where none are published, so they cannot find this one. It follows beta from then on.
+
+### Known limitations
+- macOS on Apple Silicon only.
+- Updates apply when you restart the Host (Desktop → About & updates, or Update Host on Mobile).
+- Mobile has no channel setting; a host's channel is set from Desktop on the same computer.
+- The Android app is not updated automatically: install each new APK by hand.
+- Keeping the Mac awake cannot stop sleep when a MacBook's lid is closed, unless it is on power with an external display.
+- Agent sign-in and API keys are managed on the Mac running the Host; a remote Desktop shows their status only.
+- Pull requests, Continue and creating GitHub repositories need the GitHub CLI (`gh`) installed and signed in on the Mac running the Host.
+- Over a remote (relay) connection, files above 10 MB cannot be previewed; they open on the same network.
+- Slash commands in a terminal card were checked with Codex; Claude Code's path has not been checked by hand yet.
+
 ## [0.1.0-rc.7] - 2026-10-10
 
 ### Added

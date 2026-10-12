@@ -40,6 +40,7 @@ pub const CAPABILITIES: &[&str] = &[
     "host.lan_endpoint",
     "agent.setup",
     "host.update",
+    "host.update.channel",
     "host.diagnostics",
     "agent.auth",
     "workspace.publish",

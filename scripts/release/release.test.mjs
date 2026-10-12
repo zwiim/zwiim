@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { buildLatest, buildManifest } from "./manifest.mjs";
 import { releaseNotes, SECTIONS } from "./notes.mjs";
-import { channelOf } from "./lib.mjs";
+import { channelOf, compareVersions } from "./lib.mjs";
 import { DEBUG_CERT_SHA256, RELEASE_CERT_SHA256, normalizeDigest, signerDigests, signerProblem } from "./build-android.mjs";
 import { configProblems, tauriConfig } from "./local.mjs";
 
@@ -24,6 +24,18 @@ test("release notes need every heading, in order, none empty", () => {
 test("the channel follows the version", () => {
   assert.equal(channelOf("0.2.0"), "stable");
   assert.equal(channelOf("0.2.0-beta.1"), "beta");
+});
+
+test("versions compare by semver precedence", () => {
+  const order = ["0.1.0-rc.2", "0.1.0-rc.8", "0.1.0-rc.10", "0.1.0", "0.1.1-beta.1", "0.1.1", "0.2.0", "1.0.0"];
+  for (let i = 1; i < order.length; i++) {
+    assert.ok(compareVersions(order[i - 1], order[i]) < 0, `${order[i - 1]} < ${order[i]}`);
+    assert.ok(compareVersions(order[i], order[i - 1]) > 0, `${order[i]} > ${order[i - 1]}`);
+  }
+  assert.equal(compareVersions("0.1.0-rc.8", "0.1.0-rc.8"), 0);
+  assert.ok(compareVersions("1.0.0-alpha", "1.0.0-alpha.1") < 0);
+  assert.ok(compareVersions("1.0.0-1", "1.0.0-alpha") < 0);
+  assert.throws(() => compareVersions("0.1", "0.1.0"), /not a version/);
 });
 
 test("the manifest records every artifact's hash and the build's own facts", () => {

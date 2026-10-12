@@ -6,7 +6,7 @@
 # Zwiim naming.
 [package]
 name = "zwiim-host"
-version = "0.1.0-rc.7"
+version = "0.1.0-rc.8"
 description = "Zwiim Host Runtime — headless execution core"
 authors = ["Zwiim"]
 edition.workspace = true

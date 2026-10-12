@@ -115,6 +115,10 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
             post(http::host_keep_awake_status),
         )
         .route("/host.keep_awake.set", post(http::host_keep_awake_set))
+        .route(
+            "/host.update.set_channel",
+            post(http::host_update_set_channel),
+        )
         .route("/agent.setup", post(http::agent_setup))
         .route("/agent.sign_in", post(http::agent_sign_in))
         .route("/agent.save_key", post(http::agent_save_key))

@@ -1136,6 +1136,12 @@ export interface Operations {
   "host.update.check": [Record<string, never>, HostUpdateStatus];
   /** `update_unavailable` when nothing is staged or the Host cannot switch versions. */
   "host.update.apply": [{ mode?: HostRestartMode }, HostUpdateApply];
+  /**
+   * Which releases the Host follows from its next check; beta takes stable
+   * releases too. Local host authority only. Idempotent. Offered with the
+   * `host.update.channel` capability.
+   */
+  "host.update.set_channel": [{ channel: HostUpdateStatus["channel"] }, HostUpdateStatus];
   "host.diagnostics": [Record<string, never>, HostDiagnostics];
   "agent.list": [Record<string, never>, AgentSummary[]];
   /** Install or repair a host-managed adapter in the background (local authority). */

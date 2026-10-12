@@ -89,6 +89,8 @@ export interface DesktopUpdateStatus {
   /** False in a build made outside the release pipeline: it never updates. */
   supported: boolean;
   unsupported_reason: "unsigned_build" | null;
+  /** Which releases this app updates to. Beta takes stable releases too. */
+  channel: "stable" | "beta";
   activity: DesktopUpdateActivity;
 }
 
@@ -100,6 +102,8 @@ export interface DesktopUpdates {
   install(): Promise<DesktopUpdateStatus>;
   /** Relaunch into the installed update. The host keeps running. */
   restart(): Promise<void>;
+  /** Follow `channel` from the next check, and remember it. */
+  setChannel(channel: DesktopUpdateStatus["channel"]): Promise<DesktopUpdateStatus>;
 }
 
 export interface NativeBridge {
@@ -242,6 +246,10 @@ export function tauriBridge(): NativeBridge {
       async restart() {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("desktop_update_restart");
+      },
+      async setChannel(channel) {
+        const { invoke } = await import("@tauri-apps/api/core");
+        return invoke<DesktopUpdateStatus>("desktop_update_set_channel", { channel });
       },
     },
     hostLogin: {

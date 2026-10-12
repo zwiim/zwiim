@@ -1,6 +1,6 @@
 [package]
 name = "zwiim-desktop"
-version = "0.1.0-rc.7"
+version = "0.1.0-rc.8"
 description = "Zwiim Desktop: thin native shell around the web UI"
 edition.workspace = true
 license.workspace = true

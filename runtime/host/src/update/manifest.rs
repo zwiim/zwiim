@@ -32,9 +32,10 @@ pub const SCHEMA: u32 = 1;
 pub const MANIFEST_ASSET: &str = "release.json";
 pub const SIGNATURE_ASSET: &str = "release.json.sig";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Channel {
+    #[default]
     Stable,
     Beta,
 }
@@ -290,7 +291,7 @@ pub fn host_target() -> Option<&'static str> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum Refusal {
-    /// Published for another channel.
+    /// A beta release, and this Host follows the stable channel.
     Channel,
     /// This Host is too old to upgrade in place.
     NeedsManualInstall { min_upgrade_from: String },
@@ -310,8 +311,10 @@ pub enum Offer {
     Refused(Refusal),
 }
 
-/// What a verified manifest means for a Host running `current`.
-/// `seen_digest` is the digest accepted earlier for the manifest's version.
+/// What a verified manifest means for a Host running `current` on
+/// `channel`. A beta Host takes stable releases too; a stable Host only
+/// stable ones. `seen_digest` is the digest accepted earlier for the
+/// manifest's version.
 pub fn offer(
     verified: &Verified,
     current: &Version,
@@ -323,7 +326,7 @@ pub fn offer(
     if seen_digest.is_some_and(|d| d != verified.digest) {
         return Offer::Refused(Refusal::Changed);
     }
-    if m.channel != channel {
+    if m.channel == Channel::Beta && channel == Channel::Stable {
         return Offer::Refused(Refusal::Channel);
     }
     let Ok(version) = Version::parse(&m.version) else {

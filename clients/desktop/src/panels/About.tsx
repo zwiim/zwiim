@@ -51,6 +51,7 @@ export function AboutUpdates({ bridge, remote }: { bridge: NativeBridge; remote:
     <>
       <DesktopSection bridge={bridge} />
       <HostSection remote={remote} />
+      <BetaUpdatesToggle bridge={bridge} remote={remote} />
       <DiagnosticsSection bridge={bridge} />
     </>
   );
@@ -270,6 +271,77 @@ function HostSection({ remote }: { remote: boolean }) {
       {applied?.state === "restart_pending" && (
         <p className="text-muted-foreground">Restarting now stops running turns and closes terminals.</p>
       )}
+      {error && (
+        <p className="text-destructive" role="alert">
+          {error}
+        </p>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Beta updates: this app's channel and, on this computer, the host's, set
+ * together so the host Desktop brings matches. A remote host keeps its own
+ * channel; only its operator can change it.
+ */
+function BetaUpdatesToggle({ bridge, remote }: { bridge: NativeBridge; remote: boolean }) {
+  const updates = bridge.updates;
+  const controller = useController();
+  const hostCan = useHost((s) => !remote && (s.host?.capabilities ?? []).includes("host.update.channel"));
+  const [channel, setChannel] = useState<DesktopUpdateStatus["channel"] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!updates) return;
+    let stop = false;
+    void (async () => {
+      const mine = (await updates.status()).channel;
+      // The host on this computer is the truth: follow it if they differ.
+      const host = hostCan
+        ? (await controller.client.request("host.update.status", {}).catch(() => null))?.channel
+        : undefined;
+      const next = host && host !== mine ? (await updates.setChannel(host)).channel : mine;
+      if (!stop) setChannel(next);
+    })().catch(() => {});
+    return () => {
+      stop = true;
+    };
+  }, [updates, controller, hostCan]);
+
+  if (!updates || channel === null) return null;
+  const set = async (next: DesktopUpdateStatus["channel"]) => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (hostCan) await controller.client.request("host.update.set_channel", { channel: next });
+      setChannel((await updates.setChannel(next)).channel);
+      void updates.check().catch(() => {});
+      if (hostCan) void controller.client.request("host.update.check", {}).catch(() => {});
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="flex flex-col gap-1 rounded-md border p-2.5">
+      <label className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          data-testid="beta-updates"
+          checked={channel === "beta"}
+          disabled={busy}
+          onChange={(e) => void set(e.target.checked ? "beta" : "stable")}
+        />
+        <span className="font-medium">Get beta updates</span>
+      </label>
+      <p className="text-muted-foreground">
+        New features before everyone else, with rough edges.{" "}
+        {remote ? "Applies to this app; the host keeps its own setting." : "Applies to this app and its host."}{" "}
+        Turning it off keeps the version you have until a newer stable one ships.
+      </p>
       {error && (
         <p className="text-destructive" role="alert">
           {error}

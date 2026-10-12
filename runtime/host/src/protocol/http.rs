@@ -210,6 +210,22 @@ pub async fn host_update_status() -> ZResult<Value> {
     Ok(Json(crate::update::service::status()))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateChannelParams {
+    pub channel: crate::update::manifest::Channel,
+}
+
+/// `host.update.set_channel`: which releases this Host follows. Beta takes
+/// stable releases too. Local host authority only.
+pub async fn host_update_set_channel(ZJson(p): ZJson<UpdateChannelParams>) -> ZResult<Value> {
+    let status = crate::update::service::set_channel(p.channel).map_err(|e| {
+        tracing::error!("[update] could not save the update channel: {e}");
+        ZwiimError::internal()
+    })?;
+    Ok(Json(status))
+}
+
 /// `host.diagnostics`: what support needs to know about this Host — its
 /// versions, protocol, adapters, update and rollback state, and database
 /// migrations. Facts only: never credentials, tokens, keys or paths.

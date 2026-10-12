@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HostClient, HostController, type HostUpdateStatus } from "@zwiim/sdk";
+import { CLIENT_CAPABILITIES, HostClient, HostController, type HostUpdateStatus } from "@zwiim/sdk";
 import type { DesktopUpdateStatus, DesktopUpdates, NativeBridge } from "@/lib/bridge";
 import { HostProvider } from "@/lib/host-context";
 import { AboutUpdates, HostLoginToggle } from "@/panels/About";
@@ -42,6 +42,10 @@ function desktopUpdates(initial: DesktopUpdateStatus): DesktopUpdates & { curren
       return u.current;
     }),
     restart: vi.fn(async () => {}),
+    setChannel: vi.fn(async (channel: DesktopUpdateStatus["channel"]) => {
+      u.current = { ...u.current, channel };
+      return u.current;
+    }),
   };
   return u;
 }
@@ -89,6 +93,7 @@ describe("About & updates", () => {
       version: "0.3.0",
       supported: true,
       unsupported_reason: null,
+      channel: "stable",
       activity: { state: "up_to_date" },
     });
     const c = await mount(t, bridge(updates));
@@ -134,6 +139,7 @@ describe("About & updates", () => {
       version: "0.1.0",
       supported: false,
       unsupported_reason: "unsigned_build",
+      channel: "stable",
       activity: { state: "idle" },
     });
     const c = await mount(t, bridge(updates));
@@ -150,6 +156,7 @@ describe("About & updates", () => {
       version: "0.2.0",
       supported: true,
       unsupported_reason: null,
+      channel: "stable",
       activity: { state: "available", version: "0.3.0", notes: "### Added\n- Updates" },
     });
     const c = await mount(t, bridge(updates));
@@ -240,6 +247,7 @@ describe("update card", () => {
       version: "0.2.0",
       supported: true,
       unsupported_reason: null,
+      channel: "stable",
       activity: { state: "available", version: "0.3.0", notes: null },
     });
     const b = bridge(u);
@@ -305,7 +313,7 @@ describe("diagnostics", () => {
     });
     const writeText = vi.fn(async () => {});
     Object.assign(navigator, { clipboard: { writeText } });
-    const updates = desktopUpdates({ version: "0.2.0", supported: true, unsupported_reason: null, activity: { state: "up_to_date" } });
+    const updates = desktopUpdates({ version: "0.2.0", supported: true, unsupported_reason: null, channel: "stable", activity: { state: "up_to_date" } });
     const c = await mount(t, bridge(updates));
     expect(t.calls.some((x) => x.op === "host.diagnostics")).toBe(false);
     fireEvent.click(screen.getByText("Show"));
@@ -354,5 +362,89 @@ describe("starting the host at login", () => {
     const r = await mount(new FakeTransport(), installed, true);
     expect(screen.queryByTestId("host-login")).toBeNull();
     r.dispose();
+  });
+});
+
+describe("beta updates", () => {
+  const upToDate = (): DesktopUpdateStatus => ({
+    version: "0.2.0",
+    supported: true,
+    unsupported_reason: null,
+    channel: "stable",
+    activity: { state: "up_to_date" },
+  });
+  /** A host that offers the channel op and keeps its own channel. */
+  function channelHost(initial: HostUpdateStatus["channel"] = "stable") {
+    const t = new FakeTransport();
+    let channel = initial;
+    t.handlers["host.hello"] = () => hostHello({ capabilities: [...CLIENT_CAPABILITIES, "host.update.channel"] });
+    t.handlers["host.update.status"] = () => hostStatus({ channel });
+    t.handlers["host.update.set_channel"] = (p) => {
+      channel = (p as { channel: HostUpdateStatus["channel"] }).channel;
+      return hostStatus({ channel });
+    };
+    return t;
+  }
+  const sets = (t: FakeTransport) => t.calls.filter((x) => x.op === "host.update.set_channel").map((x) => x.params);
+
+  it("moves this app and the host on this computer together, then checks both", async () => {
+    const t = channelHost();
+    const u = desktopUpdates(upToDate());
+    const c = await mount(t, bridge(u));
+    const box = screen.getByTestId("beta-updates") as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    fireEvent.click(box);
+    await tick();
+    expect(sets(t)).toEqual([{ channel: "beta" }]);
+    expect(u.setChannel).toHaveBeenCalledWith("beta");
+    expect(u.check).toHaveBeenCalled();
+    expect(t.calls.some((x) => x.op === "host.update.check")).toBe(true);
+    expect((screen.getByTestId("beta-updates") as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByTestId("beta-updates"));
+    await tick();
+    expect(sets(t)).toEqual([{ channel: "beta" }, { channel: "stable" }]);
+    expect((screen.getByTestId("beta-updates") as HTMLInputElement).checked).toBe(false);
+    c.dispose();
+  });
+
+  it("follows the channel of the host on this computer", async () => {
+    const t = channelHost("beta");
+    const u = desktopUpdates(upToDate());
+    const c = await mount(t, bridge(u));
+    await tick();
+    expect(u.setChannel).toHaveBeenCalledWith("beta");
+    expect((screen.getByTestId("beta-updates") as HTMLInputElement).checked).toBe(true);
+    expect(sets(t)).toEqual([]);
+    c.dispose();
+  });
+
+  it("changes only this app for a remote host or one without channels", async () => {
+    const remote = channelHost();
+    const u = desktopUpdates(upToDate());
+    const r = await mount(remote, bridge(u), true);
+    fireEvent.click(screen.getByTestId("beta-updates"));
+    await tick();
+    expect(u.setChannel).toHaveBeenCalledWith("beta");
+    expect(sets(remote)).toEqual([]);
+    expect(screen.getByText(/the host keeps its own setting/)).toBeTruthy();
+    r.dispose();
+    cleanup();
+
+    const old = new FakeTransport();
+    old.handlers["host.update.status"] = () => hostStatus();
+    const v = desktopUpdates(upToDate());
+    const o = await mount(old, bridge(v));
+    fireEvent.click(screen.getByTestId("beta-updates"));
+    await tick();
+    expect(v.setChannel).toHaveBeenCalledWith("beta");
+    expect(old.calls.some((x) => x.op === "host.update.set_channel")).toBe(false);
+    o.dispose();
+  });
+
+  it("is not shown without a Desktop updater", async () => {
+    const t = channelHost();
+    const c = await mount(t, bridge());
+    expect(screen.queryByTestId("beta-updates")).toBeNull();
+    c.dispose();
   });
 });

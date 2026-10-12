@@ -268,6 +268,72 @@ fn only_a_newer_version_is_offered() {
 }
 
 #[test]
+fn the_beta_channel_takes_beta_and_stable_releases() {
+    assert_eq!(
+        manifest::offer(&verified("0.1.0-rc.9"), &v("0.1.0-rc.8"), Channel::Beta, None, false),
+        Offer::Update
+    );
+    assert_eq!(
+        manifest::offer(&verified("0.1.0"), &v("0.1.0-rc.9"), Channel::Beta, None, false),
+        Offer::Update
+    );
+    // Leaving beta keeps the running version until a newer stable ships.
+    assert_eq!(
+        manifest::offer(&verified("0.1.0"), &v("0.1.0-rc.9"), Channel::Stable, None, false),
+        Offer::Update
+    );
+    assert_eq!(
+        manifest::offer(&verified("0.1.0-rc.9"), &v("0.1.0-rc.9"), Channel::Beta, None, false),
+        Offer::UpToDate
+    );
+}
+
+#[test]
+fn each_channel_has_its_own_discovery_url() {
+    use super::service::discovery_url;
+    let base = "https://github.com/o/r/releases";
+    assert_eq!(
+        discovery_url(base, Channel::Stable),
+        "https://github.com/o/r/releases/latest/download"
+    );
+    assert_eq!(
+        discovery_url(base, Channel::Beta),
+        "https://github.com/o/r/releases/download/beta"
+    );
+}
+
+#[test]
+fn the_channel_is_unset_until_saved_and_survives_state_rewrites() {
+    use super::install;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = install::root(tmp.path());
+    assert_eq!(install::channel(&root), None);
+    install::set_channel(&root, Channel::Beta).unwrap();
+    install::write(&root, &install::State::default()).unwrap();
+    assert_eq!(install::channel(&root), Some(Channel::Beta));
+    install::set_channel(&root, Channel::Stable).unwrap();
+    assert_eq!(install::channel(&root), Some(Channel::Stable));
+}
+
+#[test]
+fn a_host_follows_its_own_versions_channel_until_one_is_saved() {
+    use super::{install, service};
+    let tmp = tempfile::tempdir().unwrap();
+    let root = install::root(tmp.path());
+    let own = service::own_channel();
+    assert_eq!(
+        own == Channel::Beta,
+        !service::current_version().pre.is_empty()
+    );
+    // The first check saves it, so a later stable version keeps a beta
+    // tester on beta.
+    assert_eq!(service::follow(&root), own);
+    assert_eq!(install::channel(&root), Some(own));
+    install::set_channel(&root, Channel::Stable).unwrap();
+    assert_eq!(service::follow(&root), Channel::Stable);
+}
+
+#[test]
 fn a_changed_release_is_refused() {
     let m = verified("0.2.0");
     let seen = "e".repeat(64);
@@ -283,11 +349,12 @@ fn a_changed_release_is_refused() {
 
 #[test]
 fn channel_blocked_and_too_old_are_refused() {
-    let m = verified("0.2.0");
+    let beta = verified("0.2.0-rc.1");
     assert_eq!(
-        manifest::offer(&m, &v("0.1.0"), Channel::Beta, None, false),
+        manifest::offer(&beta, &v("0.1.0"), Channel::Stable, None, false),
         Offer::Refused(Refusal::Channel)
     );
+    let m = verified("0.2.0");
     assert_eq!(
         manifest::offer(&m, &v("0.1.0"), Channel::Stable, None, true),
         Offer::Refused(Refusal::Blocked)
