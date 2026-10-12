@@ -10,6 +10,7 @@ have their own versions and are listed under Compatibility.
 
 ### Added
 - Two update channels. Stable gets released versions (0.1.0, 0.1.1, …); beta also gets early versions (0.1.0-rc.8, …) and every newer stable one. Desktop → About & updates → Get beta updates switches this app and the host on this computer together; for a remote host it switches only this app. Turning it off keeps the version you have until a newer stable one ships, never a downgrade. Until you choose, an early version follows beta and a released one follows stable.
+- Desktop shows its update's download as a progress bar on the update card, with megabytes done, the total and the percent, then "Installing…" until Restart is offered. A download started from About & updates shows there too.
 - Edit CSV and TSV files on Desktop: Edit in the preview makes cells editable, adds and deletes rows, and Save writes back only the changed rows (line endings, a BOM and the final newline are kept). Files up to 1,000 rows by 100 columns.
 
 ### Changed
@@ -17,6 +18,7 @@ have their own versions and are listed under Compatibility.
 
 ### Fixed
 - Check for updates failed with "Could not fetch a valid release JSON" (HTTP 404) on Desktop and the Host: they looked only for the newest stable release, and none is published yet. A channel with nothing published now reads as up to date.
+- Desktop left open for days now notices a new version: it looks again every 6 hours, not only shortly after launch.
 - Large attachments no longer make the composer lag over a remote connection, and opening an image the agent viewed no longer freezes the app.
 - Saving a file that changed on disk says so (with Reload) instead of failing with a generic error.
 

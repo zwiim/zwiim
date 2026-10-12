@@ -4,10 +4,13 @@ import type { HostRestartMode, HostUpdateApply, HostUpdateStatus } from "@zwiim/
 import { Button } from "@/components/ui/button";
 import type { DesktopUpdateStatus, NativeBridge } from "@/lib/bridge";
 import { errorMessage, updateRequiredMessage, useController, useHost } from "@/lib/host-context";
-import { blockersText } from "@/panels/About";
+import { blockersText, mb } from "@/panels/About";
+import { ProgressBar } from "@/panels/GithubCloneDialog";
 
 /** How often the host's update state is read while connected. */
 const HOST_POLL_MS = 10 * 60_000;
+/** How often this app looks for a newer version while it stays open. */
+export const DESKTOP_CHECK_MS = 6 * 60 * 60_000;
 
 export interface Updates {
   desktop: DesktopUpdateStatus | null;
@@ -25,8 +28,9 @@ export interface Updates {
 }
 
 /**
- * This app's update (checked once shortly after launch, followed while it
- * downloads) and the host's (read while connected, again on each reconnect).
+ * This app's update (checked shortly after launch and every few hours after,
+ * followed once one is available, so a download started from About shows here
+ * too) and the host's (read while connected, again on each reconnect).
  */
 export function useUpdates(bridge: NativeBridge): Updates {
   const controller = useController();
@@ -38,16 +42,22 @@ export function useUpdates(bridge: NativeBridge): Updates {
 
   useEffect(() => {
     if (!updates) return;
-    const t = setTimeout(() => updates.check().then(setDesktop, () => {}), 10_000);
-    return () => clearTimeout(t);
+    const check = () => void updates.check().then(setDesktop, () => {});
+    const first = setTimeout(check, 10_000);
+    const every = setInterval(check, DESKTOP_CHECK_MS);
+    return () => {
+      clearTimeout(first);
+      clearInterval(every);
+    };
   }, [updates]);
 
-  const downloading = desktop?.activity.state === "downloading";
+  const state = desktop?.activity.state;
+  const following = state === "available" || state === "downloading";
   useEffect(() => {
-    if (!updates || !downloading) return;
+    if (!updates || !following) return;
     const t = setInterval(() => updates.status().then(setDesktop, () => {}), 1000);
     return () => clearInterval(t);
-  }, [updates, downloading]);
+  }, [updates, following]);
 
   useEffect(() => {
     if (!live) return;
@@ -83,6 +93,21 @@ interface Card {
   title: string;
   detail: string;
   actions: React.ReactNode;
+  /** While this app's update downloads. */
+  progress?: { percent: number | null; label: string };
+}
+
+type Downloading = Extract<DesktopUpdateStatus["activity"], { state: "downloading" }>;
+
+/**
+ * How far a download is: a percent once the size is known. Once it is all
+ * here, the update is being verified and installed.
+ */
+export function downloadProgress(d: Downloading): { percent: number | null; label: string } {
+  if (d.total && d.downloaded >= d.total) return { percent: 100, label: "Installing…" };
+  const percent = d.total ? Math.min(100, Math.floor((d.downloaded / d.total) * 100)) : null;
+  const size = d.total ? `${mb(d.downloaded)} of ${mb(d.total)} (${percent}%)` : mb(d.downloaded);
+  return { percent, label: `Downloading… ${size}` };
 }
 
 const secondary = "h-7 px-2.5 text-xs";
@@ -202,11 +227,9 @@ export function UpdateCard({
   } else if (required) {
     card = {
       title: required.update === "host" ? "Host update required" : "App update required",
-      detail:
-        required.update === "client" && d?.state === "downloading"
-          ? `Downloading Zwiim Desktop ${d.version}…`
-          : updateRequiredMessage(required, remote),
+      detail: updateRequiredMessage(required, remote),
       actions: required.update === "client" && desktopActions,
+      progress: required.update === "client" && d?.state === "downloading" ? downloadProgress(d) : undefined,
     };
   } else if (h?.restart_required && h.staged) {
     card = {
@@ -236,13 +259,14 @@ export function UpdateCard({
     card = {
       key: `desktop:${d.version}`,
       title: "New update available",
-      detail: d.state === "downloading" ? `Downloading Zwiim Desktop ${d.version}…` : `Zwiim Desktop ${d.version}.`,
+      detail: `Zwiim Desktop ${d.version}.`,
       actions: (
         <>
           {seeChanges}
           {desktopActions}
         </>
       ),
+      progress: d.state === "downloading" ? downloadProgress(d) : undefined,
     };
   }
 
@@ -271,6 +295,12 @@ export function UpdateCard({
         </p>
       </div>
       <div className="flex flex-wrap gap-1.5">{card.actions}</div>
+      {card.progress && (
+        <div className="flex flex-col gap-1" data-testid="update-progress">
+          <ProgressBar percent={card.progress.percent} fill="bg-brand" label={card.progress.label} />
+          <p className="text-muted-foreground text-xs tabular-nums">{card.progress.label}</p>
+        </div>
+      )}
       {error && (
         <p className="text-destructive text-xs break-words" role="alert">
           {error}

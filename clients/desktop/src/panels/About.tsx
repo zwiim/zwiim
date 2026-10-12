@@ -37,7 +37,7 @@ export function blockersText(b: HostUpdateApply["blockers"]): string {
   return parts.join(", ");
 }
 
-function mb(bytes: number) {
+export function mb(bytes: number) {
   return `${(bytes / 1_000_000).toFixed(1)} MB`;
 }
 

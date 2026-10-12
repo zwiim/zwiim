@@ -4,12 +4,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CLIENT_CAPABILITIES, CLIENT_REVISION, HostClient, HostController, ZwiimClientError, type WorkspaceInfo } from "@zwiim/sdk";
 import { Workbench } from "@/App";
 import { bootHost, type BootPhase } from "@/lib/boot";
-import type { DiscoveredHost, NativeBridge } from "@/lib/bridge";
+import type { DesktopUpdateStatus, DiscoveredHost, NativeBridge } from "@/lib/bridge";
 import { HostProvider } from "@/lib/host-context";
 import { rememberSelection } from "@/lib/prefs";
 import { SessionPanel, agentLabel, defaultAgent, offeredAgents } from "@/panels/SessionPanel";
 import { ConnectionStatus } from "@/panels/ConnectionStatus";
-import { UpdateCard } from "@/panels/UpdateCard";
+import { DESKTOP_CHECK_MS, UpdateCard, useUpdates } from "@/panels/UpdateCard";
 import pkg from "../package.json";
 import { FakeTransport, hostHello, tick } from "./fakes";
 
@@ -98,6 +98,94 @@ describe("compatibility", () => {
     expect(screen.queryByTestId("connection-status")).toBeNull();
     expect(screen.getByTestId("update-card").textContent).toContain("Host update required");
     expect(screen.getByTestId("update-card").textContent).toContain("older than this app");
+    c.dispose();
+  });
+});
+
+describe("desktop updates", () => {
+  function Probe({ bridge }: { bridge: NativeBridge }) {
+    const updates = useUpdates(bridge);
+    return <span data-testid="desktop-update">{updates.desktop?.activity.state ?? "unknown"}</span>;
+  }
+
+  it("looks again every few hours while the app stays open", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const status = (activity: DesktopUpdateStatus["activity"]): DesktopUpdateStatus => ({
+        version: pkg.version,
+        supported: true,
+        unsupported_reason: null,
+        channel: "beta",
+        activity,
+      });
+      const check = vi
+        .fn()
+        .mockResolvedValueOnce(status({ state: "up_to_date" }))
+        .mockResolvedValue(status({ state: "available", version: "9.0.0", notes: null }));
+      const updates = { status: vi.fn(async () => status({ state: "available", version: "9.0.0", notes: null })), check, install: vi.fn(), restart: vi.fn(), setChannel: vi.fn() };
+      const c = await mount(new FakeTransport(), <Probe bridge={bridge({ updates })} />);
+      expect(check).not.toHaveBeenCalled();
+      await act(async () => vi.advanceTimersByTime(10_000));
+      await tick();
+      expect(check).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("desktop-update").textContent).toBe("up_to_date");
+      await act(async () => vi.advanceTimersByTime(DESKTOP_CHECK_MS));
+      await tick();
+      expect(check).toHaveBeenCalledTimes(2);
+      expect(screen.getByTestId("desktop-update").textContent).toBe("available");
+      // Started from About & updates: followed here as it downloads.
+      updates.status.mockResolvedValue(status({ state: "downloading", version: "9.0.0", downloaded: 1, total: 2 }));
+      await act(async () => vi.advanceTimersByTime(1000));
+      await tick();
+      expect(screen.getByTestId("desktop-update").textContent).toBe("downloading");
+      c.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("desktop update progress", () => {
+  const downloading = (downloaded: number, total: number | null): DesktopUpdateStatus => ({
+    version: pkg.version,
+    supported: true,
+    unsupported_reason: null,
+    channel: "beta",
+    activity: { state: "downloading", version: "9.0.0", downloaded, total },
+  });
+  const updates = { status: vi.fn(), check: vi.fn(), install: vi.fn(), restart: vi.fn(), setChannel: vi.fn() };
+
+  async function card(status: DesktopUpdateStatus) {
+    return mount(
+      new FakeTransport(),
+      <UpdateCard
+        bridge={bridge({ updates })}
+        updates={{ ...NO_UPDATES, desktop: status }}
+        remote={false}
+        onSeeChanges={() => {}}
+      />,
+    );
+  }
+
+  it("shows how much of this app's update has downloaded", async () => {
+    const c = await card(downloading(2_000_000, 8_000_000));
+    const bar = within(screen.getByTestId("update-progress")).getByRole("progressbar");
+    expect(bar.getAttribute("aria-valuenow")).toBe("25");
+    expect(screen.getByTestId("update-progress").textContent).toBe("Downloading… 2.0 MB of 8.0 MB (25%)");
+    c.dispose();
+  });
+
+  it("says when the download is done and the update installs", async () => {
+    const c = await card(downloading(8_000_000, 8_000_000));
+    expect(screen.getByTestId("update-progress").textContent).toBe("Installing…");
+    c.dispose();
+  });
+
+  it("pulses until the size is known", async () => {
+    const c = await card(downloading(1_500_000, null));
+    const bar = within(screen.getByTestId("update-progress")).getByRole("progressbar");
+    expect(bar.getAttribute("aria-valuenow")).toBeNull();
+    expect(screen.getByTestId("update-progress").textContent).toBe("Downloading… 1.5 MB");
     c.dispose();
   });
 });
