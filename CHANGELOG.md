@@ -27,7 +27,7 @@ have their own versions and are listed under Compatibility.
 
 ### Compatibility
 - Protocol `zwiim/1`, revision 1; clients from revision 1. New op `host.update.set_channel` (local host authority) with capability `host.update.channel`. New error: `file_changed`.
-- Mobile: Android app 0.1.0 (version code 1) as `com.zwiim.mobile`, installed from the APK. iOS 0.1.0 (build 2) for TestFlight testers.
+- Mobile: Android app 0.1.0 (version code 1) as `com.zwiim.mobile`, installed from the APK. iOS 0.1.0 (build 3) for TestFlight testers.
 
 ### Provider changes
 - None. Claude adapter 0.81.2, Codex adapter 1.13.1.
