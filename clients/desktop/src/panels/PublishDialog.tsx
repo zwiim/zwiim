@@ -95,7 +95,9 @@ export function unavailableLine(reason: Unavailable, host: string) {
 /**
  * Asks before a folder becomes a private GitHub repository (D11): only the
  * click on its button creates one, under the owner and name shown, which the
- * user can change and which are checked on GitHub as they type.
+ * user can change and which are checked on GitHub as they type. Its checkbox,
+ * checked by default, lets the user add the folder as a local Git repository
+ * instead (D4).
  */
 export function PublishDialog({ subject, remote, onClose, onAdded, ...props }: PublishDialogProps) {
   const controller = useController();
@@ -105,6 +107,8 @@ export function PublishDialog({ subject, remote, onClose, onAdded, ...props }: P
   const owners = inspection.github?.available ? inspection.github.owners : [];
   const [owner, setOwner] = useState(owners[0]?.login ?? "");
   const [name, setName] = useState(inspection.suggested_name);
+  // Unchecked, the folder is added locally: the owner and name stay for a check again.
+  const [publish, setPublish] = useState(true);
   const [check, setCheck] = useState<{
     owner: string;
     name: string;
@@ -152,14 +156,14 @@ export function PublishDialog({ subject, remote, onClose, onAdded, ...props }: P
   }
 
   useEffect(() => {
-    if (phase.kind !== "form") return;
+    if (phase.kind !== "form" || !publish) return;
     field.current?.focus();
     field.current?.select();
-  }, [phase.kind]);
+  }, [phase.kind, publish]);
 
   useEffect(() => {
     const id = ++asked.current;
-    if (phase.kind !== "form" || rule !== null || owner === "" || createdHere) return;
+    if (phase.kind !== "form" || !publish || rule !== null || owner === "" || createdHere) return;
     const timer = setTimeout(() => {
       const answer = (verdict: Verdict) => {
         if (asked.current === id) setCheck({ owner, name, verdict });
@@ -170,7 +174,7 @@ export function PublishDialog({ subject, remote, onClose, onAdded, ...props }: P
       );
     }, CHECK_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [controller, owner, name, rule, phase.kind, createdHere]);
+  }, [controller, owner, name, rule, phase.kind, publish, createdHere]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -282,7 +286,7 @@ export function PublishDialog({ subject, remote, onClose, onAdded, ...props }: P
   }
 
   function create() {
-    if (!ready) return;
+    if (!ready || !publish) return;
     const target = { owner, name };
     const opts = { ...(large ? { allowLarge: true } : {}), publish: target };
     return add("publish", opts, (e) => {
@@ -357,7 +361,9 @@ export function PublishDialog({ subject, remote, onClose, onAdded, ...props }: P
     </Button>
   );
 
-  const title = "Create a private GitHub repo?";
+  // Only the form offers the checkbox; every other phase is about GitHub.
+  const local = phase.kind === "form" && !publish;
+  const title = local ? "Add without GitHub?" : "Create a private GitHub repo?";
   const cancel = (
     <Button variant="secondary" size="sm" disabled={busy} onClick={close}>
       Cancel
@@ -381,7 +387,17 @@ export function PublishDialog({ subject, remote, onClose, onAdded, ...props }: P
           {/* A detached HEAD has no branch to name; a folder with a remote gets no GitHub steps. */}
           {phase.kind !== "detached" && phase.kind !== "has_origin" && !waiting && (
             <p className="text-muted-foreground text-sm leading-relaxed">
-              {inspection.git === "none" ? (
+              {local ? (
+                inspection.git === "none" ? (
+                  <>
+                    Zwiim will run <Code>git init</Code> and make a first commit. Nothing is pushed to GitHub.
+                  </>
+                ) : inspection.first_commit ? (
+                  "Zwiim will make a first commit. Nothing is pushed to GitHub."
+                ) : (
+                  "Zwiim will add this repository as it is. Nothing is pushed to GitHub."
+                )
+              ) : inspection.git === "none" ? (
                 <>
                   Zwiim will run <Code>git init</Code>, create a private GitHub repo, add it as <Code>origin</Code>, and
                   push <Code>{branch}</Code>.
@@ -398,77 +414,90 @@ export function PublishDialog({ subject, remote, onClose, onAdded, ...props }: P
         <div className="flex flex-col gap-3 px-5 pt-4">
           {phase.kind === "form" ? (
             <>
-              <div className="flex flex-col gap-1">
-                <span className="text-xs font-medium">Owner</span>
-                <ControlSelect
-                  className="bg-input/30 text-foreground h-8 w-full justify-between rounded-md border"
-                  label="Owner"
-                  value={owner}
-                  disabled={busy}
-                  onChange={setOwner}
-                  options={owners.map((o) => ({ value: o.login, label: o.login }))}
-                />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-xs font-medium" htmlFor={nameId}>
-                  Repository name
-                </label>
+              <label className="flex items-center gap-2 text-sm">
                 <input
-                  ref={field}
-                  id={nameId}
-                  className="bg-input/30 w-full rounded-md border px-2 py-1.5 font-mono text-xs outline-none"
-                  value={name}
+                  type="checkbox"
+                  checked={publish}
                   disabled={busy}
-                  spellCheck={false}
-                  autoComplete="off"
-                  aria-invalid={rule !== null || verdict === "taken" || refusedHere}
-                  onChange={(e) => setName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-                      e.preventDefault();
-                      void create();
-                    }
-                  }}
+                  onChange={(e) => setPublish(e.target.checked)}
                 />
-                <p className="text-muted-foreground font-mono text-xs">
-                  Will create {owner}/{name}
-                </p>
-                <p
-                  className={cn(
-                    "text-xs",
-                    rule !== null || verdict === "taken" || refusedHere
-                      ? "text-destructive"
-                      : verdict === "available"
-                        ? "text-done"
-                        : "text-muted-foreground",
-                  )}
-                  aria-live="polite"
-                >
-                  {rule ??
-                    (refusedHere ? (
-                      <>
-                        GitHub didn't create{" "}
-                        <Code>
-                          {owner}/{name}
-                        </Code>
-                        . Try another owner or name.
-                      </>
-                    ) : verdict === "available" ? (
-                      "Repository name is available."
-                    ) : verdict === "taken" ? (
-                      <>
-                        <Code>
-                          {owner}/{name}
-                        </Code>{" "}
-                        already exists.
-                      </>
-                    ) : verdict === "failed" ? (
-                      "Couldn't check this name."
-                    ) : (
-                      "Checking…"
-                    ))}
-                </p>
-              </div>
+                Create a private GitHub repo
+              </label>
+              {publish && (
+                <>
+                  <div className="flex flex-col gap-1">
+                    <span className="text-xs font-medium">Owner</span>
+                    <ControlSelect
+                      className="bg-input/30 text-foreground h-8 w-full justify-between rounded-md border"
+                      label="Owner"
+                      value={owner}
+                      disabled={busy}
+                      onChange={setOwner}
+                      options={owners.map((o) => ({ value: o.login, label: o.login }))}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs font-medium" htmlFor={nameId}>
+                      Repository name
+                    </label>
+                    <input
+                      ref={field}
+                      id={nameId}
+                      className="bg-input/30 w-full rounded-md border px-2 py-1.5 font-mono text-xs outline-none"
+                      value={name}
+                      disabled={busy}
+                      spellCheck={false}
+                      autoComplete="off"
+                      aria-invalid={rule !== null || verdict === "taken" || refusedHere}
+                      onChange={(e) => setName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                          e.preventDefault();
+                          void create();
+                        }
+                      }}
+                    />
+                    <p className="text-muted-foreground font-mono text-xs">
+                      Will create {owner}/{name}
+                    </p>
+                    <p
+                      className={cn(
+                        "text-xs",
+                        rule !== null || verdict === "taken" || refusedHere
+                          ? "text-destructive"
+                          : verdict === "available"
+                            ? "text-done"
+                            : "text-muted-foreground",
+                      )}
+                      aria-live="polite"
+                    >
+                      {rule ??
+                        (refusedHere ? (
+                          <>
+                            GitHub didn't create{" "}
+                            <Code>
+                              {owner}/{name}
+                            </Code>
+                            . Try another owner or name.
+                          </>
+                        ) : verdict === "available" ? (
+                          "Repository name is available."
+                        ) : verdict === "taken" ? (
+                          <>
+                            <Code>
+                              {owner}/{name}
+                            </Code>{" "}
+                            already exists.
+                          </>
+                        ) : verdict === "failed" ? (
+                          "Couldn't check this name."
+                        ) : (
+                          "Checking…"
+                        ))}
+                    </p>
+                  </div>
+                </>
+              )}
             </>
           ) : phase.kind === "failed" ? (
             <div className="flex flex-col items-start gap-2">
@@ -517,7 +546,9 @@ export function PublishDialog({ subject, remote, onClose, onAdded, ...props }: P
         <div className="flex flex-col gap-2 p-5">
           <div className="flex justify-end gap-2">
             {cancel}
-            {phase.kind === "form" ? (
+            {local ? (
+              addPlainButton("primary", inspection.git === "none" ? "Initialize Git and add" : "Add workspace")
+            ) : phase.kind === "form" ? (
               <>
                 {plainOffered && addPlainButton("secondary")}
                 <Button className={PRIMARY} size="sm" disabled={!ready} onClick={() => void create()}>

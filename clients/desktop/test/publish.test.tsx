@@ -101,6 +101,7 @@ const inspects = (t: FakeTransport) => t.calls.filter((c) => c.op === "workspace
 const offline = (reason: "gh_unavailable" | "gh_unauthenticated" | "github_unreachable") =>
   plain({ github: { available: false, reason } });
 const large = { files: 12_431, bytes: 1.8 * 1024 ** 3, at_least: false, large: true };
+const publishBox = () => screen.getByRole("checkbox", { name: "Create a private GitHub repo" }) as HTMLInputElement;
 
 describe("PublishDialog", () => {
   it("asks to create a private repository, with the plain folder's steps", async () => {
@@ -405,6 +406,95 @@ describe("PublishDialog", () => {
     });
     await tick();
     expect(adds(t)).toHaveLength(1);
+  });
+});
+
+describe("PublishDialog's Create a private GitHub repo checkbox", () => {
+  it("is checked by default, with the owner, the name and its check as before", async () => {
+    const t = host();
+    await mount(t);
+    expect(publishBox().checked).toBe(true);
+    expect(screen.getByLabelText("Owner")).toBeTruthy();
+    expect(nameField().value).toBe("my-app");
+    await settle();
+    expect(checks(t)).toEqual([{ owner: "Ashish1101", name: "my-app" }]);
+    expect(confirm().disabled).toBe(false);
+  });
+
+  it("unchecked, hides the fields, checks no name, and adds the folder with no publish", async () => {
+    const t = host();
+    const props = await mount(t);
+    fireEvent.click(publishBox());
+    expect(publishBox().checked).toBe(false);
+    expect(screen.queryByLabelText("Owner")).toBeNull();
+    expect(screen.queryByLabelText("Repository name")).toBeNull();
+    expect(screen.queryByText(/Will create/)).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Add without GitHub?" })).toBeTruthy();
+    expect(
+      screen.getByText(text("Zwiim will run git init and make a first commit. Nothing is pushed to GitHub."), {
+        selector: "p",
+      }),
+    ).toBeTruthy();
+    expect(buttons()).toEqual(["Cancel", "Initialize Git and add"]);
+    await settle();
+    expect(checks(t)).toEqual([]);
+
+    fireEvent.click(button("Initialize Git and add"));
+    await tick();
+    expect(adds(t)).toEqual([{ path: "/Users/me/my-app" }]);
+    expect(props.onAdded).toHaveBeenCalledWith(added);
+    expect(checks(t)).toEqual([]);
+  });
+
+  it("words an unchecked repository without an origin: unborn, or with history", async () => {
+    const t = host();
+    await mount(t, { subject: { kind: "root", workspace_id: "r1" }, inspection: plain({ git: "no_origin" }) });
+    fireEvent.click(publishBox());
+    expect(
+      screen.getByText(text("Zwiim will make a first commit. Nothing is pushed to GitHub."), { selector: "p" }),
+    ).toBeTruthy();
+    fireEvent.click(button("Add workspace"));
+    await tick();
+    expect(adds(t)).toEqual([{ workspace_id: "r1" }]);
+    cleanup();
+    vi.useRealTimers();
+
+    await mount(host(), { inspection: plain({ git: "no_origin", first_commit: null }) });
+    fireEvent.click(publishBox());
+    expect(
+      screen.getByText(text("Zwiim will add this repository as it is. Nothing is pushed to GitHub."), { selector: "p" }),
+    ).toBeTruthy();
+    expect(buttons()).toEqual(["Cancel", "Add workspace"]);
+  });
+
+  it("unchecked, keeps the large line and confirms it with allow_large", async () => {
+    const t = host();
+    await mount(t, { inspection: plain({ first_commit: large }) });
+    fireEvent.click(publishBox());
+    expect(screen.getByText(text("The first commit will hold 12,431 files (1.8 GB)."), { selector: "p" })).toBeTruthy();
+    fireEvent.click(button("Initialize Git and add"));
+    await tick();
+    expect(adds(t)).toEqual([{ path: "/Users/me/my-app", allow_large: true }]);
+  });
+
+  it("checked again, brings back the owner, the name and Create", async () => {
+    const t = host();
+    await mount(t);
+    fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "mazik-labs" } });
+    fireEvent.change(nameField(), { target: { value: "tool" } });
+    fireEvent.click(publishBox());
+    await settle();
+    expect(checks(t)).toEqual([]);
+
+    fireEvent.click(publishBox());
+    expect(screen.getByRole("dialog", { name: "Create a private GitHub repo?" })).toBeTruthy();
+    expect((screen.getByLabelText("Owner") as HTMLSelectElement).value).toBe("mazik-labs");
+    expect(nameField().value).toBe("tool");
+    await settle();
+    expect(checks(t)).toEqual([{ owner: "mazik-labs", name: "tool" }]);
+    fireEvent.click(confirm());
+    await tick();
+    expect(adds(t)).toEqual([{ path: "/Users/me/my-app", publish: { owner: "mazik-labs", name: "tool" } }]);
   });
 });
 
@@ -1188,13 +1278,8 @@ describe("Adding a folder from the sidebar", () => {
     expect(add.disabled).toBe(false);
   });
 
-  it("asks for a repository without an origin too: with history, unborn, or GitHub unavailable", async () => {
-    const cases = [
-      plain({ git: "no_origin", first_commit: null }),
-      plain({ git: "no_origin" }),
-      plain({ git: "no_origin", first_commit: null, github: { available: false, reason: "gh_unavailable" } }),
-    ];
-    for (const inspection of cases) {
+  it("asks for a repository without an origin too: with history or unborn", async () => {
+    for (const inspection of [plain({ git: "no_origin", first_commit: null }), plain({ git: "no_origin" })]) {
       const t = sidebarHost(inspection);
       await mountSidebar(t);
       await pick();
@@ -1203,17 +1288,64 @@ describe("Adding a folder from the sidebar", () => {
       cleanup();
       vi.useRealTimers();
     }
+  });
+
+  it("adds a folder without an origin locally when GitHub can't be used: no dialog, then a new worktree", async () => {
+    const cases = [
+      offline("gh_unavailable"),
+      offline("gh_unauthenticated"),
+      offline("github_unreachable"),
+      plain({ git: "no_origin", github: { available: false, reason: "gh_unavailable" } }),
+    ];
+    for (const inspection of cases) {
+      const t = sidebarHost(inspection);
+      const props = await mountSidebar(t);
+      await pick();
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(ops(t, ["workspace.inspect", "workspace.add", "workspace.create_worktree"])).toEqual([
+        "workspace.inspect",
+        "workspace.add",
+        "workspace.create_worktree",
+      ]);
+      expect(adds(t)).toEqual([{ path: "/Users/me/my-app" }]);
+      expect(worktrees(t)).toEqual([{ workspace_id: "w1" }]);
+      expect(props.onSelectWorkspace).toHaveBeenCalledTimes(1);
+      expect(props.onSelectWorkspace).toHaveBeenCalledWith("wt1");
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows the Large folder card when GitHub can't be used, and opens a worktree after Add anyway", async () => {
     const t = sidebarHost(offline("gh_unavailable"));
-    await mountSidebar(t);
+    t.handlers["workspace.add"] = (p: { allow_large?: boolean }) => {
+      if (!p.allow_large) throw new ZwiimClientError("large_folder", "big", 409, { files: 5001, bytes: 10, at_least: true });
+      return added;
+    };
+    const props = await mountSidebar(t);
     await pick();
-    expect(screen.getByText("GitHub CLI isn't installed on this Mac.")).toBeTruthy();
-    expect(buttons()).toContain("Add without GitHub");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    const card = screen.getByRole("alertdialog", { name: "Large folder" });
+    expect(worktrees(t)).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "Add anyway" }));
+    await tick();
+    expect(card.isConnected).toBe(false);
+    expect(adds(t)).toEqual([{ path: "/Users/me/my-app" }, { path: "/Users/me/my-app", allow_large: true }]);
+    expect(worktrees(t)).toEqual([{ workspace_id: "w1" }]);
+    expect(props.onSelectWorkspace).toHaveBeenCalledTimes(1);
+    expect(props.onSelectWorkspace).toHaveBeenCalledWith("wt1");
   });
 
   it("names the host in the dialog when the Host is another computer", async () => {
-    const t = sidebarHost(offline("gh_unavailable"));
+    const t = sidebarHost(plain());
+    t.handlers["workspace.add"] = () => {
+      throw new ZwiimClientError("gh_unavailable", "gh missing", 409);
+    };
     await mountSidebar(t, { remote: true });
     await pick();
+    await settle();
+    fireEvent.click(confirm());
+    await tick();
     expect(screen.getByText("GitHub CLI isn't installed on the host.")).toBeTruthy();
   });
 
@@ -1493,18 +1625,47 @@ describe("Opening a repository from the sidebar", () => {
     }
   });
 
-  it("shows the unavailable form, and the large line of a too-large plain folder", async () => {
-    let t = rootHost(offline("gh_unauthenticated"));
-    await mountSidebar(t);
-    await openRoot();
-    expect(
-      screen.getByText(text("GitHub CLI isn't signed in on this Mac. Run gh auth login, then try again."), { selector: "p" }),
-    ).toBeTruthy();
-    expect(buttons()).toContain("Add without GitHub");
-    cleanup();
-    vi.useRealTimers();
+  it("adds a plain or unborn repository locally by id when GitHub can't be used, then opens a worktree", async () => {
+    const cases = [
+      offline("gh_unavailable"),
+      offline("gh_unauthenticated"),
+      offline("github_unreachable"),
+      plain({ git: "no_origin", github: { available: false, reason: "github_unreachable" } }),
+    ];
+    for (const inspection of cases) {
+      const t = rootHost(inspection);
+      const props = await mountSidebar(t);
+      await openRoot();
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(adds(t)).toEqual([{ workspace_id: "w1" }]);
+      expect(worktrees(t)).toEqual([{ workspace_id: "w1" }]);
+      expect(props.onSelectWorkspace).toHaveBeenCalledTimes(1);
+      expect(props.onSelectWorkspace).toHaveBeenCalledWith("wt1");
+      expect(rootRow().textContent).not.toContain("Preparing workspace…");
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
 
-    t = rootHost(plain({ first_commit: large }));
+  it("shows the Large folder card for a root when GitHub can't be used; Add anyway adds it by id", async () => {
+    const t = rootHost(offline("gh_unauthenticated"));
+    t.handlers["workspace.add"] = (p: { allow_large?: boolean }) => {
+      if (!p.allow_large) throw new ZwiimClientError("large_folder", "big", 409, { files: 5001, bytes: 10, at_least: true });
+      return added;
+    };
+    const props = await mountSidebar(t);
+    await openRoot();
+    const card = screen.getByRole("alertdialog", { name: "Large folder" });
+    fireEvent.click(screen.getByRole("button", { name: "Add anyway" }));
+    await tick();
+    expect(card.isConnected).toBe(false);
+    expect(adds(t)).toEqual([{ workspace_id: "w1" }, { workspace_id: "w1", allow_large: true }]);
+    expect(worktrees(t)).toEqual([{ workspace_id: "w1" }]);
+    expect(props.onSelectWorkspace).toHaveBeenCalledWith("wt1");
+  });
+
+  it("shows the large line of a too-large plain folder", async () => {
+    const t = rootHost(plain({ first_commit: large }));
     await mountSidebar(t);
     await openRoot();
     expect(dialog()).toBeTruthy();

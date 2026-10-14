@@ -97,7 +97,8 @@ export function Sidebar(props: SidebarProps) {
   const publishable = useHost((s) => hasCapability(s.connection.compat, "workspace.publish"));
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
-  const [large, setLarge] = useState<{ path: string; details: LargeFolderDetails } | null>(null);
+  // A folder the Host refused as too large: a picked path, or a root added without GitHub.
+  const [large, setLarge] = useState<{ subject: PublishSubject; details: LargeFolderDetails } | null>(null);
   // A picked folder or clicked root without an origin, asking before it becomes a GitHub repository.
   const [publishing, setPublishing] = useState<{ subject: PublishSubject; inspection: WorkspaceInspection } | null>(
     null,
@@ -191,12 +192,14 @@ export function Sidebar(props: SidebarProps) {
 
   /**
    * The folder as `workspace.inspect` reads it: one with an origin is added
-   * at once; any other opens the publish dialog, and only its click adds (D11).
+   * at once; any other opens the publish dialog only when GitHub can be used,
+   * and only its click adds (D11). Without GitHub it is added locally (D4).
    */
   async function addPicked(path: string) {
     try {
       const inspection = await controller.inspectWorkspace(path);
       if (inspection.git === "origin") await openFirstWorktree((await controller.addWorkspace(path)).workspace_id);
+      else if (inspection.github?.available === false) await addLocal({ kind: "path", path }, false);
       else setPublishing({ subject: { kind: "path", path }, inspection });
     } catch (e) {
       setError(errorMessage(e));
@@ -234,7 +237,8 @@ export function Sidebar(props: SidebarProps) {
 
   /**
    * A new worktree for `rootId` as its click makes one, even beside others: a
-   * plain or unborn repository opens the publish dialog first.
+   * plain or unborn repository opens the publish dialog first, only when
+   * GitHub can be used; without GitHub it is added locally first (D4).
    */
   async function newWorktree(rootId: string) {
     // Offline, an inspect could not be told apart from a lost one; a click that only selects still works.
@@ -245,7 +249,9 @@ export function Sidebar(props: SidebarProps) {
     try {
       const inspection = await controller.inspectRoot(rootId);
       if (inspection.git === "none" || (inspection.git === "no_origin" && inspection.first_commit)) {
-        setPublishing({ subject: { kind: "root", workspace_id: rootId }, inspection });
+        const subject: PublishSubject = { kind: "root", workspace_id: rootId };
+        if (inspection.github?.available === false) await addLocal(subject, false);
+        else setPublishing({ subject, inspection });
       } else await openFirstWorktree(rootId);
     } catch (e) {
       setError(errorMessage(e));
@@ -287,6 +293,34 @@ export function Sidebar(props: SidebarProps) {
     if (root) void newWorktree(root.workspace_id);
   }, [request?.nonce]);
 
+  /**
+   * Adds the folder as a local Git repository, with no GitHub repository
+   * (its first commit included), then opens its first worktree: roots are
+   * read-only (D7). A folder past the size limit shows the large card.
+   */
+  async function addLocal(subject: PublishSubject, allowLarge: boolean) {
+    if (subject.kind === "path") setAdding(true);
+    else setOpening(subject.workspace_id);
+    try {
+      const ws =
+        subject.kind === "path"
+          ? await controller.addWorkspace(subject.path, { allowLarge })
+          : await controller.addRoot(subject.workspace_id, { allowLarge });
+      setLarge(null);
+      await openFirstWorktree(ws.workspace_id);
+    } catch (e) {
+      const details = largeFolderDetails(e);
+      if (details) setLarge({ subject, details });
+      else {
+        setLarge(null);
+        setError(errorMessage(e));
+      }
+    } finally {
+      if (subject.kind === "path") setAdding(false);
+      else setOpening(null);
+    }
+  }
+
   async function add(path: string, allowLarge: boolean) {
     setAdding(true);
     try {
@@ -297,7 +331,7 @@ export function Sidebar(props: SidebarProps) {
       props.onSelectWorkspace(ws.workspace_id);
     } catch (e) {
       const details = largeFolderDetails(e);
-      if (details) setLarge({ path, details });
+      if (details) setLarge({ subject: { kind: "path", path }, details });
       else {
         setLarge(null);
         setError(errorMessage(e));
@@ -388,15 +422,22 @@ export function Sidebar(props: SidebarProps) {
         <div className="bg-card mx-1 flex flex-col gap-2 rounded-lg p-2.5 text-xs shadow-sm" role="alertdialog" aria-label="Large folder">
           <p className="font-medium">Large folder</p>
           <p>
-            This folder isn't a Git repository yet. Zwiim will commit <strong>{largeFolderText(large.details)}</strong> as
-            "Initial Commit". Add it anyway?
+            Zwiim will commit <strong>{largeFolderText(large.details)}</strong> as "Initial Commit". Add it anyway?
           </p>
           <div className="flex justify-end gap-1.5">
             {/* The Host finishes an add it has started, so Cancel cannot stop it. */}
-            <Button size="xs" variant="ghost" disabled={adding} onClick={() => setLarge(null)}>
+            <Button size="xs" variant="ghost" disabled={busy} onClick={() => setLarge(null)}>
               Cancel
             </Button>
-            <Button size="xs" disabled={adding || !online} onClick={() => void add(large.path, true)}>
+            <Button
+              size="xs"
+              disabled={busy || !online}
+              onClick={() => {
+                const { subject } = large;
+                if (publishable) void addLocal(subject, true);
+                else if (subject.kind === "path") void add(subject.path, true);
+              }}
+            >
               Add anyway
             </Button>
           </div>
