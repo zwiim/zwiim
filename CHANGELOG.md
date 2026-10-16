@@ -6,6 +6,34 @@ its text becomes the release notes and the `notes` of `release.json`
 this order; write "None." under one with nothing to say. Mobile store builds
 have their own versions and are listed under Compatibility.
 
+## [Unreleased]
+
+### Added
+- Claude and Codex plans get the same plan card on Desktop and mobile: Copy the plan, Hand off (start a new session in the same workspace that implements the plan, and stop this one), Approve, or type adjustments and send them as your next message. Abandon stays.
+
+### Changed
+- Sending plan adjustments now waits for the agent to stop planning, then posts them as your next message (Claude, Codex and Grok).
+
+### Fixed
+- Codex in Plan mode no longer starts editing files when your message says "Implement…"; it presents a plan for approval.
+- After approving a Claude plan, the implementation no longer vanished from the session when the turn ended. The "clear context" approvals that moved the work into a conversation Zwiim could not see are no longer offered.
+
+### Security
+- None.
+
+### Compatibility
+- New capability `session.plan_hand_off`; plan answers accept `hand_off`, and `session.respond` returns the new `session_id` after a hand-off.
+
+### Provider changes
+- None.
+
+### Migration notes
+- None. Sessions already split by a "clear context" approval are not recovered.
+
+### Known limitations
+- Approve returns Claude to your normal mode; a mode chosen before planning (such as unattended) is not restored.
+- Codex cannot block edits while planning: its Plan mode is only an instruction to the model. Zwiim now reminds Codex of Plan mode on every message, which kept it planning in every test, but this is not a hard guarantee.
+
 ## [0.1.0-rc.8] - 2026-10-12
 
 ### Added

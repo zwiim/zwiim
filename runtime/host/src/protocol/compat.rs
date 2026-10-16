@@ -47,6 +47,7 @@ pub const CAPABILITIES: &[&str] = &[
     "workspace.clone",
     "attachments",
     "file_ranges",
+    "session.plan_hand_off",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -140,6 +141,11 @@ mod tests {
             };
             assert_eq!(client_verdict(Some(&old)), Some("update_required"));
         }
+    }
+
+    #[test]
+    fn plan_hand_off_is_served() {
+        assert!(CAPABILITIES.contains(&"session.plan_hand_off"));
     }
 
     #[test]

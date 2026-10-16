@@ -272,6 +272,7 @@ export function SessionPanel(props: {
       removed={removed}
       root={root}
       onContinue={props.onContinue}
+      onSessionStarted={props.onSessionStarted}
     />
   );
 }
@@ -358,6 +359,7 @@ function OpenSession({
   removed: gone,
   root,
   onContinue,
+  onSessionStarted,
 }: {
   workspaceId: string;
   sessionId: string;
@@ -365,6 +367,8 @@ function OpenSession({
   /** It ran in the repository folder: read-only, with Continue in place of the composer. */
   root: boolean;
   onContinue?(): void;
+  /** A plan was handed off to a new session in this workspace. */
+  onSessionStarted(id: string): void;
 }) {
   // Neither a removed worktree nor the repository folder takes new work.
   const removed = gone || root;
@@ -373,6 +377,7 @@ function OpenSession({
   const view = useHost((s) => s.sessions[sessionId]);
   const summary = useHost((s) => s.sessionsByWorkspace[workspaceId]?.find((x) => x.session_id === sessionId));
   const agentName = useHost((s) => s.agents?.find((a) => a.agent === summary?.agent)?.name ?? null);
+  const handOff = useHost((s) => hasCapability(s.connection.compat, "session.plan_hand_off"));
   // Before its agent announces them (or while it is away), the commands it
   // offered last.
   const agentCommands = useHost((s) => s.agents?.find((a) => a.agent === summary?.agent)?.commands ?? null);
@@ -490,12 +495,14 @@ function OpenSession({
               <RequestCard
                 request={view.pendingRequest}
                 disabled={!online}
+                handOff={handOff}
                 onAnswer={async (answer) => {
-                  await controller.client.request("session.respond", {
+                  const result = await controller.client.request("session.respond", {
                     session_id: sessionId,
                     request_id: view.pendingRequest!.request_id,
                     ...answer,
                   });
+                  if (result.session_id) onSessionStarted(result.session_id);
                 }}
               />
             )}

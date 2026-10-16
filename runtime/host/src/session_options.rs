@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::acp::manager::ConnectionManager;
+use crate::acp::plan_approval::CLAUDE_EXIT_PLAN_DEFAULT;
 use crate::acp::types::{
     AcpEvent, ConnectionStatus, SessionConfigKindInfo, SessionConfigOptionInfo,
     SessionConfigSelectInfo, SessionConfigSelectOptionInfo,
@@ -236,6 +237,12 @@ impl<'a> Native<'a> {
 
 fn is_normal_kind(kind: Option<&str>) -> bool {
     !matches!(kind, Some(PLAN) | Some(FULL_ACCESS))
+}
+
+/// Whether the session is in a plan mode the agent does not enforce: Codex's
+/// plan switch only instructs the model, so file edits are still possible.
+pub fn in_unenforced_plan(options: &[SessionConfigOptionInfo]) -> bool {
+    Native::of(options).in_collaboration_plan()
 }
 
 /// The generic options for an agent's native config options.
@@ -973,7 +980,7 @@ pub async fn apply_on_start(
 /// ExitPlanMode inside the SDK but leaves its advertised mode on `plan`.
 fn mode_after_plan_exit(agent: AgentType, option_id: &str) -> Option<&'static str> {
     match (agent, option_id) {
-        (AgentType::ClaudeCode, "exit-plan-default") => Some("default"),
+        (AgentType::ClaudeCode, CLAUDE_EXIT_PLAN_DEFAULT) => Some("default"),
         (AgentType::ClaudeCode, "exit-plan-accept-edits") => Some("acceptEdits"),
         (AgentType::ClaudeCode, "exit-plan-auto") => Some("auto"),
         (AgentType::ClaudeCode, "exit-plan-bypass") => Some("bypassPermissions"),
@@ -994,22 +1001,61 @@ pub async fn sync_plan_exit(
     let Some(target) = mode_after_plan_exit(agent, option_id) else {
         return;
     };
+    set_mode(connections, connection_id, |_| Some(target.to_string())).await;
+}
+
+/// After the user approved a Claude plan from the Zwiim plan card, return the
+/// agent to session `session_id`'s remembered normal mode (the card always
+/// exits plan through the adapter's default mode). Advisory, like
+/// `sync_plan_exit`.
+pub async fn sync_plan_approve(
+    db: &DatabaseConnection,
+    connections: &ConnectionManager,
+    connection_id: &str,
+    session_id: &str,
+    agent: AgentType,
+) {
+    let Some(fallback) = mode_after_plan_exit(agent, CLAUDE_EXIT_PLAN_DEFAULT) else {
+        return;
+    };
+    let remembered = load(db, session_id).await.normal_mode;
+    set_mode(connections, connection_id, |native| {
+        Some(
+            native
+                .normal_value(remembered.as_deref())
+                .unwrap_or(fallback)
+                .to_string(),
+        )
+    })
+    .await;
+}
+
+/// Set the agent's permission mode to `target(native)` when it offers that
+/// value and is not already on it.
+async fn set_mode(
+    connections: &ConnectionManager,
+    connection_id: &str,
+    target: impl FnOnce(&Native<'_>) -> Option<String>,
+) {
     let Some(state) = connections.get_state(connection_id).await else {
         return;
     };
-    let config_id = {
+    let (config_id, target) = {
         let s = state.read().await;
         let options = s.config_options.clone().unwrap_or_default();
         let native = Native::of(&options);
+        let Some(target) = target(&native) else {
+            return;
+        };
         match native.mode {
-            Some(mode) if mode.current() != target && mode.find(target).is_some() => {
-                mode.id.to_string()
+            Some(mode) if mode.current() != target && mode.find(&target).is_some() => {
+                (mode.id.to_string(), target)
             }
             _ => return,
         }
     };
     if let Err(e) = connections
-        .set_config_option(connection_id, config_id, target.to_string())
+        .set_config_option(connection_id, config_id, target)
         .await
     {
         tracing::warn!("[session_options] failed to sync mode after plan approval: {e}");
@@ -1092,7 +1138,7 @@ fn merge_catalog(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::acp::types::SessionConfigBooleanInfo;
 
@@ -1126,7 +1172,7 @@ mod tests {
     }
 
     /// Claude (`claude-agent-acp` 0.79) as captured live.
-    fn claude(mode: &str) -> Vec<SessionConfigOptionInfo> {
+    pub(crate) fn claude(mode: &str) -> Vec<SessionConfigOptionInfo> {
         vec![
             select(
                 "mode",
@@ -1166,7 +1212,7 @@ mod tests {
     }
 
     /// Codex (`codex-acp` 1.12) as captured live.
-    fn codex(mode: &str, collaboration: &str) -> Vec<SessionConfigOptionInfo> {
+    pub(crate) fn codex(mode: &str, collaboration: &str) -> Vec<SessionConfigOptionInfo> {
         vec![
             select(
                 "mode",
@@ -1213,6 +1259,15 @@ mod tests {
         assert_eq!(project(&claude("plan")).mode.unwrap().current, Mode::Plan);
         // Auto-review is the agent's own normal operation, not unattended.
         assert_eq!(project(&claude("auto")).mode.unwrap().current, Mode::Normal);
+    }
+
+    #[test]
+    fn only_a_plan_switch_is_unenforced_plan_mode() {
+        assert!(in_unenforced_plan(&codex("agent", "plan")));
+        assert!(!in_unenforced_plan(&codex("agent", "default")));
+        // Claude's plan mode blocks edits itself.
+        assert!(!in_unenforced_plan(&claude("plan")));
+        assert!(!in_unenforced_plan(&[]));
     }
 
     #[test]

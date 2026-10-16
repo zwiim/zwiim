@@ -226,6 +226,12 @@ pub fn strip_notices(text: &mut String) -> bool {
     removed
 }
 
+/// What an agent is told on every turn while it is in a plan mode it does not
+/// enforce (see [`crate::session_options::in_unenforced_plan`]). A user
+/// message like "Implement the following plan" otherwise wins over the
+/// agent's own plan-mode instructions and it starts editing.
+pub const PLAN_MODE_NOTICE: &str = "Plan mode is on. Do not edit files or run commands that change anything, even if the message above asks you to implement. Read what you need, then present your plan in a <proposed_plan> block and wait for approval.";
+
 /// What an agent is told after its workspace continued past merged pull
 /// request `number` onto `branch`, cut from `base_branch` at `base_commit`.
 pub fn continuation_notice(

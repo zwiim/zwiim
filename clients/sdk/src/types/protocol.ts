@@ -716,7 +716,8 @@ export type RequestAnswer =
     }
   | {
       kind: "plan_approval";
-      answer: { decision: "approve" | "request_changes" | "abandon"; feedback?: string };
+      /** `hand_off` (Host capability `session.plan_hand_off`) continues the plan in a new session. */
+      answer: { decision: "approve" | "request_changes" | "abandon" | "hand_off"; feedback?: string };
     };
 
 export type LiveBlock =
@@ -1261,7 +1262,8 @@ export interface Operations {
   ];
   "session.respond": [
     { session_id: string; request_id: string } & RequestAnswer,
-    Record<string, never>,
+    /** `session_id`: the new session a plan was handed off to. */
+    { session_id?: string },
   ];
   "session.list": [{ workspace_id: string }, SessionSummary[]];
   "session.history": [{ session_id: string }, SessionHistory];

@@ -5541,6 +5541,7 @@ async fn run_connection(
                 // diverting them needs the shared question access (and the ask
                 // feature toggle).
                 let perm_ask_access = native_ask_access.clone();
+                let perm_plan_access = grok_plan_access.clone();
                 let perm_conn_id = connection_id.clone();
                 async move |req: RequestPermissionRequest,
                             responder: Responder<RequestPermissionResponse>,
@@ -5564,6 +5565,23 @@ async fn run_connection(
                         &perm_conn_id,
                         &state_inner,
                         &emitter_inner,
+                        &perms,
+                        &req,
+                        responder,
+                    )
+                    .await
+                    {
+                        Ok(()) => return Ok(()),
+                        Err(responder) => responder,
+                    };
+                    // Claude's ExitPlanMode and Codex's plan review become the
+                    // plan-approval card.
+                    let responder = match try_bridge_plan_review(
+                        &perm_plan_access,
+                        &perm_conn_id,
+                        &state_inner,
+                        &emitter_inner,
+                        agent_type,
                         &perms,
                         &req,
                         responder,
@@ -7139,6 +7157,125 @@ async fn try_bridge_pi_select_ask(
     Ok(())
 }
 
+/// The plan to bridge when `req` is Claude's `ExitPlanMode` or Codex's plan
+/// review permission request, else `None` (the request stays on the
+/// permission card).
+fn plan_review_to_bridge(agent_type: AgentType, req: &RequestPermissionRequest) -> Option<String> {
+    match agent_type {
+        AgentType::ClaudeCode => crate::acp::plan_approval::parse_claude_exit_plan_request(req),
+        AgentType::Codex => crate::acp::plan_approval::parse_codex_plan_review_request(req),
+        _ => None,
+    }
+}
+
+/// The adapter option answering a bridged plan review for `decision`.
+fn plan_review_option(
+    agent_type: AgentType,
+    decision: crate::acp::plan_approval::PlanApprovalDecision,
+) -> &'static str {
+    if agent_type == AgentType::Codex {
+        crate::acp::plan_approval::codex_plan_option(decision)
+    } else {
+        crate::acp::plan_approval::claude_exit_plan_option(decision)
+    }
+}
+
+/// Bridge Claude's `ExitPlanMode` and Codex's plan review into Zwiim's
+/// plan-approval card, the one grok's `exit_plan_mode` uses, so every agent
+/// shows the same card. The adapter's option ids stay inside the Host: the
+/// card offers Zwiim decisions and the answer maps back through
+/// [`plan_review_option`]. Claude's clear-context options are never offered —
+/// they restart Claude under a session id the Host never learns, which split
+/// the conversation.
+///
+/// Hands the responder back when the request is not a plan review or no
+/// approval could be registered, so it continues down the normal permission
+/// path.
+#[allow(clippy::too_many_arguments)]
+async fn try_bridge_plan_review(
+    access: &Option<Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>>,
+    connection_id: &str,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    agent_type: AgentType,
+    perms: &PendingPermissions,
+    req: &RequestPermissionRequest,
+    responder: Responder<RequestPermissionResponse>,
+) -> Result<(), Responder<RequestPermissionResponse>> {
+    let Some(plan) = plan_review_to_bridge(agent_type, req) else {
+        return Err(responder);
+    };
+    let Some(access) = access else {
+        return Err(responder);
+    };
+    // Park BEFORE registering — see `try_bridge_pi_select_ask`.
+    let (abort_tx, abort_rx) = oneshot::channel();
+    perms.lock().await.park_detached(abort_tx);
+    let Some(registered) = access
+        .register_plan_approval(connection_id, req.tool_call.tool_call_id.to_string(), plan)
+        .await
+    else {
+        return Err(responder);
+    };
+    // Codex never announces its review tool call; seed it so the follow-up
+    // `tool_call_update` merges into a titled card (see
+    // `handle_permission_request`).
+    let codex_review = is_codex_plan_review(agent_type, req.meta.as_ref()).then(|| {
+        (
+            Arc::clone(state),
+            emitter.clone(),
+            req.tool_call.tool_call_id.to_string(),
+        )
+    });
+    if codex_review.is_some() {
+        emit_codex_plan_review_tool_call(state, emitter, req).await;
+    }
+    let access = Arc::clone(access);
+    let connection_id = connection_id.to_string();
+    tokio::spawn(async move {
+        let outcome = resolve_plan_review(
+            access.as_ref(),
+            &connection_id,
+            agent_type,
+            registered.answer_rx,
+            abort_rx,
+        )
+        .await;
+        if let Some((state, emitter, tool_call_id)) = &codex_review {
+            settle_codex_plan_review_tool_call(state, emitter, tool_call_id, &outcome).await;
+        }
+        let _ = responder.respond(RequestPermissionResponse::new(outcome));
+    });
+    Ok(())
+}
+
+/// Wait for the user's decision on a bridged plan review and turn it into the
+/// adapter's reply. A drain (turn cancel, teardown) or a canceled approval
+/// clears the card and cancels the request.
+async fn resolve_plan_review(
+    access: &dyn crate::acp::plan_approval::SessionPlanApprovalAccess,
+    connection_id: &str,
+    agent_type: AgentType,
+    answer_rx: oneshot::Receiver<crate::acp::plan_approval::PlanApprovalAnswer>,
+    abort_rx: oneshot::Receiver<()>,
+) -> RequestPermissionOutcome {
+    // `biased` so an answer landing in the same instant as a drain still counts.
+    let answer = tokio::select! {
+        biased;
+        answered = answer_rx => answered.ok(),
+        _ = abort_rx => None,
+    };
+    match answer {
+        Some(answer) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+            plan_review_option(agent_type, answer.decision),
+        )),
+        None => {
+            access.cancel_plan_approvals_by_parent(connection_id).await;
+            RequestPermissionOutcome::Cancelled
+        }
+    }
+}
+
 /// Bridge grok's native `_x.ai/exit_plan_mode` ext request into Zwiim's
 /// interactive plan-approval card. Grok BLOCKS on the reply — it won't leave plan
 /// mode until the user acts — so Zwiim registers the approval through the shared
@@ -7446,6 +7583,42 @@ async fn handle_elicitation_request(
     }
 }
 
+/// The permission card's options for `options`. Claude's clear-context
+/// exit-plan options are dropped: they restart Claude under a session the Host
+/// never learns (see `try_bridge_plan_review`).
+fn permission_option_infos(
+    agent_type: AgentType,
+    options: &[sacp::schema::PermissionOption],
+) -> Vec<PermissionOptionInfo> {
+    options
+        .iter()
+        .filter(|opt| {
+            agent_type != AgentType::ClaudeCode
+                || !opt
+                    .option_id
+                    .to_string()
+                    .starts_with(crate::acp::plan_approval::CLAUDE_EXIT_PLAN_CLEAR_PREFIX)
+        })
+        .map(|opt| PermissionOptionInfo {
+            option_id: opt.option_id.to_string(),
+            name: opt.name.clone(),
+            kind: match opt.kind {
+                PermissionOptionKind::AllowOnce => "allow_once".into(),
+                PermissionOptionKind::AllowAlways => "allow_always".into(),
+                PermissionOptionKind::RejectOnce => "reject_once".into(),
+                PermissionOptionKind::RejectAlways => "reject_always".into(),
+                _ => "unknown".into(),
+            },
+            // Opaque passthrough — the frontend reads codex-acp ≥1.1.8's
+            // `_meta.permission.changes[].description` off this.
+            meta: opt
+                .meta
+                .as_ref()
+                .map(|m| serde_json::Value::Object(m.clone())),
+        })
+        .collect()
+}
+
 async fn handle_permission_request(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
@@ -7465,49 +7638,10 @@ async fn handle_permission_request(
     // `agent_message_chunk` before this) and the permission card renders it from
     // the request's own `rawInput.plan` — a third copy would be noise.
     if is_codex_plan_review(agent_type, req.meta.as_ref()) {
-        emit_with_state(
-            state,
-            emitter,
-            AcpEvent::ToolCall {
-                tool_call_id: req.tool_call.tool_call_id.to_string(),
-                title: req.tool_call.fields.title.clone().unwrap_or_default(),
-                kind: "switch_mode".to_string(),
-                status: "pending".to_string(),
-                content: None,
-                raw_input: None,
-                raw_output: None,
-                locations: None,
-                meta: req
-                    .meta
-                    .as_ref()
-                    .map(|m| serde_json::Value::Object(m.clone())),
-                images: None,
-            },
-        )
-        .await;
+        emit_codex_plan_review_tool_call(state, emitter, &req).await;
     }
 
-    let options: Vec<PermissionOptionInfo> = req
-        .options
-        .iter()
-        .map(|opt| PermissionOptionInfo {
-            option_id: opt.option_id.to_string(),
-            name: opt.name.clone(),
-            kind: match opt.kind {
-                PermissionOptionKind::AllowOnce => "allow_once".into(),
-                PermissionOptionKind::AllowAlways => "allow_always".into(),
-                PermissionOptionKind::RejectOnce => "reject_once".into(),
-                PermissionOptionKind::RejectAlways => "reject_always".into(),
-                _ => "unknown".into(),
-            },
-            // Opaque passthrough — the frontend reads codex-acp ≥1.1.8's
-            // `_meta.permission.changes[].description` off this.
-            meta: opt
-                .meta
-                .as_ref()
-                .map(|m| serde_json::Value::Object(m.clone())),
-        })
-        .collect();
+    let options = permission_option_infos(agent_type, &req.options);
 
     let mut tool_call_value = serde_json::to_value(&req.tool_call).unwrap_or_default();
 
@@ -8816,6 +8950,23 @@ fn map_prompt_blocks(blocks: Vec<PromptInputBlock>) -> Vec<ContentBlock> {
         .collect()
 }
 
+/// Add [`crate::harness::PLAN_MODE_NOTICE`] to a turn sent while the agent is
+/// in a plan mode it does not enforce. Read here, not where the manager takes
+/// queued notices: a new session's options are only known once the connection
+/// has opened it.
+fn with_plan_mode_notice(
+    mut notices: Vec<String>,
+    blocks: &[PromptInputBlock],
+    config_options: Option<&[SessionConfigOptionInfo]>,
+) -> Vec<String> {
+    if crate::harness::takes_notices(blocks)
+        && config_options.is_some_and(crate::session_options::in_unenforced_plan)
+    {
+        notices.push(crate::harness::PLAN_MODE_NOTICE.to_string());
+    }
+    notices
+}
+
 /// The single final agent boundary. `delegation_enabled` is this connection's
 /// launch verdict, so routing is appended for EVERY agent that received the
 /// companion's delegation group — that flag is the only gate, and it is already
@@ -9902,7 +10053,11 @@ async fn run_conversation_loop<'a>(
                 // and cross-client broadcast. Only the final agent-bound prompt
                 // receives Host notices and the machine routing block derived
                 // from agent badges.
-                let delegation_enabled = state.read().await.delegation_enabled;
+                let (delegation_enabled, notices) = {
+                    let st = state.read().await;
+                    let notices = with_plan_mode_notice(notices, &blocks, st.config_options.as_deref());
+                    (st.delegation_enabled, notices)
+                };
                 let prompt_blocks =
                     prepare_agent_bound_prompt(agent_type, blocks, &notices, delegation_enabled);
                 if prompt_blocks.is_empty() {
@@ -12572,6 +12727,66 @@ async fn settle_codex_subagent_launch(
 /// tool call from this request that update lands on an unknown id and renders as
 /// an untitled generic tool card, so `handle_permission_request` emits one.
 /// Gated on Codex, mirroring [`classify_codex_subagent_activity`].
+/// Seed the tool call codex never announced for its plan review.
+async fn emit_codex_plan_review_tool_call(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    req: &RequestPermissionRequest,
+) {
+    emit_with_state(
+        state,
+        emitter,
+        AcpEvent::ToolCall {
+            tool_call_id: req.tool_call.tool_call_id.to_string(),
+            title: req.tool_call.fields.title.clone().unwrap_or_default(),
+            kind: "switch_mode".to_string(),
+            status: "pending".to_string(),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            locations: None,
+            meta: req
+                .meta
+                .as_ref()
+                .map(|m| serde_json::Value::Object(m.clone())),
+            images: None,
+        },
+    )
+    .await;
+}
+
+/// Settle the seeded plan-review tool call once the Host answers it. Codex
+/// sends its own completion update after the reply, but Hand off stops the
+/// session right away and a cancel sends none, which left the card pending.
+async fn settle_codex_plan_review_tool_call(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    tool_call_id: &str,
+    outcome: &RequestPermissionOutcome,
+) {
+    let status = match outcome {
+        RequestPermissionOutcome::Selected(_) => "completed",
+        _ => "failed",
+    };
+    emit_with_state(
+        state,
+        emitter,
+        AcpEvent::ToolCallUpdate {
+            tool_call_id: tool_call_id.to_string(),
+            title: None,
+            status: Some(status.to_string()),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            raw_output_append: None,
+            locations: None,
+            meta: None,
+            images: None,
+        },
+    )
+    .await;
+}
+
 fn is_codex_plan_review(
     agent_type: AgentType,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -16885,6 +17100,314 @@ mod tests {
             ),
             sacp::schema::PermissionOption::new("reject", "No", PermissionOptionKind::RejectOnce),
         ]
+    }
+
+    /// claude-agent-acp 0.81.2's ExitPlanMode request (see
+    /// `plan_approval::tests::claude_exit_plan`).
+    fn claude_exit_plan_request(option_ids: &[&str]) -> RequestPermissionRequest {
+        RequestPermissionRequest::new(
+            SessionId::new("sess-1"),
+            sacp::schema::ToolCallUpdate::new(
+                "toolu_plan",
+                sacp::schema::ToolCallUpdateFields::new()
+                    .title("Ready to code?".to_string())
+                    .kind(ToolKind::SwitchMode)
+                    .raw_input(serde_json::json!({ "plan": "# Plan" })),
+            ),
+            option_ids
+                .iter()
+                .map(|id| {
+                    sacp::schema::PermissionOption::new(
+                        id.to_string(),
+                        id.to_string(),
+                        PermissionOptionKind::AllowAlways,
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    const CLAUDE_EXIT_PLAN_OPTIONS: &[&str] = &[
+        "exit-plan-clear-auto",
+        "exit-plan-auto",
+        "exit-plan-bypass",
+        "exit-plan-default",
+        "reject",
+    ];
+    const CLAUDE_EXIT_PLAN_ACCEPT_EDITS_OPTIONS: &[&str] = &[
+        "exit-plan-clear-accept-edits",
+        "exit-plan-accept-edits",
+        "exit-plan-default",
+        "reject",
+    ];
+
+    /// codex-acp 1.13.1's plan-review request (see
+    /// `plan_approval::tests::codex_plan_review`).
+    fn codex_plan_review_request() -> RequestPermissionRequest {
+        let mut req = RequestPermissionRequest::new(
+            SessionId::new("sess-1"),
+            sacp::schema::ToolCallUpdate::new(
+                "plan-review:item-7",
+                sacp::schema::ToolCallUpdateFields::new()
+                    .title("Implement this plan?".to_string())
+                    .kind(ToolKind::SwitchMode)
+                    .raw_input(serde_json::json!({ "plan": "# Plan" })),
+            ),
+            vec![
+                sacp::schema::PermissionOption::new(
+                    "implement_plan",
+                    "Yes, implement this plan",
+                    PermissionOptionKind::AllowOnce,
+                ),
+                sacp::schema::PermissionOption::new(
+                    "revise_plan",
+                    "No, and tell Codex what to do differently",
+                    PermissionOptionKind::RejectOnce,
+                ),
+            ],
+        );
+        req.meta = Some(meta_map(serde_json::json!({
+            "codex": { "kind": "plan_review", "planItemId": "item-7" }
+        })));
+        req
+    }
+
+    #[test]
+    fn plan_reviews_bridge_only_for_their_own_agent() {
+        let claude = claude_exit_plan_request(CLAUDE_EXIT_PLAN_OPTIONS);
+        assert_eq!(
+            plan_review_to_bridge(AgentType::ClaudeCode, &claude).as_deref(),
+            Some("# Plan")
+        );
+        let codex = codex_plan_review_request();
+        assert_eq!(
+            plan_review_to_bridge(AgentType::Codex, &codex).as_deref(),
+            Some("# Plan")
+        );
+        for other in [AgentType::Grok, AgentType::Pi] {
+            assert!(plan_review_to_bridge(other, &claude).is_none());
+            assert!(plan_review_to_bridge(other, &codex).is_none());
+        }
+        assert!(plan_review_to_bridge(AgentType::Codex, &claude).is_none());
+        assert!(plan_review_to_bridge(AgentType::ClaudeCode, &codex).is_none());
+        // An ordinary approval stays on the permission card.
+        let mcp = claude_mcp_permission_request("Bash", claude_permission_options());
+        assert!(plan_review_to_bridge(AgentType::ClaudeCode, &mcp).is_none());
+        assert!(plan_review_to_bridge(AgentType::Codex, &mcp).is_none());
+    }
+
+    #[derive(Default)]
+    struct RecordingPlanApprovals {
+        canceled: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::acp::plan_approval::SessionPlanApprovalAccess for RecordingPlanApprovals {
+        async fn register_plan_approval(
+            &self,
+            _parent_connection_id: &str,
+            _tool_call_id: String,
+            _plan_markdown: String,
+        ) -> Option<crate::acp::plan_approval::RegisteredPlanApproval> {
+            None
+        }
+
+        async fn cancel_plan_approvals_by_parent(&self, parent_connection_id: &str) {
+            self.canceled
+                .lock()
+                .unwrap()
+                .push(parent_connection_id.to_string());
+        }
+    }
+
+    fn selected_option(outcome: &RequestPermissionOutcome) -> Option<String> {
+        match outcome {
+            RequestPermissionOutcome::Selected(s) => Some(s.option_id.to_string()),
+            _ => None,
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_review_answer_maps_to_the_adapter_option() {
+        use crate::acp::plan_approval::{PlanApprovalAnswer, PlanApprovalDecision};
+        for (agent_type, decision, option) in [
+            (
+                AgentType::ClaudeCode,
+                PlanApprovalDecision::Approve,
+                "exit-plan-default",
+            ),
+            (
+                AgentType::ClaudeCode,
+                PlanApprovalDecision::RequestChanges,
+                "reject",
+            ),
+            (
+                AgentType::ClaudeCode,
+                PlanApprovalDecision::Abandon,
+                "reject",
+            ),
+            (
+                AgentType::ClaudeCode,
+                PlanApprovalDecision::HandOff,
+                "reject",
+            ),
+            (
+                AgentType::Codex,
+                PlanApprovalDecision::Approve,
+                "implement_plan",
+            ),
+            (
+                AgentType::Codex,
+                PlanApprovalDecision::RequestChanges,
+                "revise_plan",
+            ),
+            (
+                AgentType::Codex,
+                PlanApprovalDecision::Abandon,
+                "revise_plan",
+            ),
+            (
+                AgentType::Codex,
+                PlanApprovalDecision::HandOff,
+                "revise_plan",
+            ),
+        ] {
+            let access = RecordingPlanApprovals::default();
+            let (answer_tx, answer_rx) = oneshot::channel();
+            let (_abort_tx, abort_rx) = oneshot::channel::<()>();
+            answer_tx
+                .send(PlanApprovalAnswer {
+                    decision,
+                    feedback: None,
+                })
+                .unwrap();
+            let outcome =
+                resolve_plan_review(&access, "conn-1", agent_type, answer_rx, abort_rx).await;
+            assert_eq!(selected_option(&outcome).as_deref(), Some(option));
+            assert!(access.canceled.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_review_abort_cancels_and_clears_the_approval() {
+        // A drain drops the abort sender.
+        let access = RecordingPlanApprovals::default();
+        let (_answer_tx, answer_rx) =
+            oneshot::channel::<crate::acp::plan_approval::PlanApprovalAnswer>();
+        let (abort_tx, abort_rx) = oneshot::channel::<()>();
+        drop(abort_tx);
+        let outcome =
+            resolve_plan_review(&access, "conn-1", AgentType::Codex, answer_rx, abort_rx).await;
+        assert!(matches!(outcome, RequestPermissionOutcome::Cancelled));
+        assert_eq!(*access.canceled.lock().unwrap(), vec!["conn-1".to_string()]);
+
+        // The approval itself was canceled (sender dropped).
+        let access = RecordingPlanApprovals::default();
+        let (answer_tx, answer_rx) =
+            oneshot::channel::<crate::acp::plan_approval::PlanApprovalAnswer>();
+        let (_abort_tx, abort_rx) = oneshot::channel::<()>();
+        drop(answer_tx);
+        let outcome =
+            resolve_plan_review(&access, "conn-1", AgentType::Codex, answer_rx, abort_rx).await;
+        assert!(matches!(outcome, RequestPermissionOutcome::Cancelled));
+        assert_eq!(*access.canceled.lock().unwrap(), vec!["conn-1".to_string()]);
+    }
+
+    async fn settled_plan_review_status(outcome: RequestPermissionOutcome) -> Option<String> {
+        let state = Arc::new(RwLock::new(SessionState::new(
+            "conn-codex".to_string(),
+            AgentType::Codex,
+            None,
+            "win".to_string(),
+            None,
+        )));
+        settle_codex_plan_review_tool_call(
+            &state,
+            &EventEmitter::Noop,
+            "plan-review:item-7",
+            &outcome,
+        )
+        .await;
+        let guard = state.read().await;
+        guard
+            .recent_events_after(0)
+            .expect("events recorded")
+            .iter()
+            .find_map(|e| match &e.payload {
+                AcpEvent::ToolCallUpdate {
+                    tool_call_id,
+                    status,
+                    ..
+                } if tool_call_id == "plan-review:item-7" => status.clone(),
+                _ => None,
+            })
+    }
+
+    /// Hand off answers the review and stops the session at once, so codex's own
+    /// completion update can lose the race and the old session kept a pending
+    /// "Implement this plan?" card forever. The Host settles it itself.
+    #[tokio::test]
+    async fn a_resolved_codex_plan_review_settles_its_tool_call() {
+        let selected = RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+            "revise_plan".to_string(),
+        ));
+        assert_eq!(
+            settled_plan_review_status(selected).await.as_deref(),
+            Some("completed")
+        );
+        assert_eq!(
+            settled_plan_review_status(RequestPermissionOutcome::Cancelled)
+                .await
+                .as_deref(),
+            Some("failed")
+        );
+    }
+
+    #[test]
+    fn a_turn_in_codex_plan_mode_carries_the_plan_mode_notice() {
+        use crate::session_options::tests::{claude, codex};
+        let text = |t: &str| vec![PromptInputBlock::Text { text: t.to_string() }];
+        let queued = vec!["queued".to_string()];
+        let plan = codex("agent", "plan");
+        assert_eq!(
+            with_plan_mode_notice(queued.clone(), &text("Implement it"), Some(&plan)),
+            vec!["queued".to_string(), crate::harness::PLAN_MODE_NOTICE.to_string()]
+        );
+        // A slash command goes to the CLI as typed.
+        assert_eq!(
+            with_plan_mode_notice(queued.clone(), &text("/status"), Some(&plan)),
+            queued
+        );
+        for options in [Some(codex("agent", "default")), Some(claude("plan")), None] {
+            assert_eq!(
+                with_plan_mode_notice(queued.clone(), &text("Implement it"), options.as_deref()),
+                queued
+            );
+        }
+    }
+
+    #[test]
+    fn claude_fallback_card_never_offers_clear_context() {
+        for set in [
+            CLAUDE_EXIT_PLAN_OPTIONS,
+            CLAUDE_EXIT_PLAN_ACCEPT_EDITS_OPTIONS,
+        ] {
+            let req = claude_exit_plan_request(set);
+            let offered: Vec<String> = permission_option_infos(AgentType::ClaudeCode, &req.options)
+                .into_iter()
+                .map(|o| o.option_id)
+                .collect();
+            assert!(offered.iter().all(|id| !id.starts_with("exit-plan-clear-")));
+            assert!(offered.contains(&"exit-plan-default".to_string()));
+            assert!(offered.contains(&"reject".to_string()));
+            assert_eq!(offered.len(), set.len() - 1);
+        }
+        // Another agent's options pass through untouched.
+        let req = claude_exit_plan_request(CLAUDE_EXIT_PLAN_OPTIONS);
+        assert_eq!(
+            permission_option_infos(AgentType::Codex, &req.options).len(),
+            CLAUDE_EXIT_PLAN_OPTIONS.len()
+        );
     }
 
     #[test]

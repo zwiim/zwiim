@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { Copy } from "lucide-react";
 import type { AgentRequest, PermissionTool, RequestAnswer } from "@zwiim/sdk";
 import { Markdown } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
@@ -13,11 +14,14 @@ export function RequestCard({
   request,
   onAnswer,
   disabled = false,
+  handOff = false,
 }: {
   request: AgentRequest;
   onAnswer(answer: RequestAnswer): Promise<void>;
   /** Offline: the request stays visible but cannot be answered. */
   disabled?: boolean;
+  /** The Host can continue a plan in a new session (`session.plan_hand_off`). */
+  handOff?: boolean;
 }) {
   const [sending, setBusy] = useState(false);
   const busy = sending || disabled;
@@ -72,7 +76,7 @@ export function RequestCard({
         <QuestionForm request={request} busy={busy} onSubmit={submit} />
       )}
       {request.kind === "plan_approval" && (
-        <PlanForm request={request} busy={busy} onSubmit={submit} />
+        <PlanForm request={request} busy={busy} handOff={handOff} onSubmit={submit} />
       )}
       {error && <p className="text-destructive text-xs">{error}</p>}
     </div>
@@ -164,47 +168,42 @@ function QuestionForm({
 function PlanForm({
   request,
   busy,
+  handOff,
   onSubmit,
 }: {
   request: Extract<AgentRequest, { kind: "plan_approval" }>;
   busy: boolean;
+  handOff: boolean;
   onSubmit(a: RequestAnswer): void;
 }) {
   const [feedback, setFeedback] = useState("");
   const [confirmAbandon, setConfirmAbandon] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const adjustments = feedback.trim();
+  const plan = (answer: Extract<RequestAnswer, { kind: "plan_approval" }>["answer"]) =>
+    onSubmit({ kind: "plan_approval", answer });
+
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
+
   return (
     <>
       <p className="font-medium">Review the plan</p>
       <PlanText text={request.plan_markdown} />
       <textarea
         className="bg-background min-h-16 rounded-md border px-2.5 py-1.5"
-        placeholder="Feedback (for requesting changes)"
+        placeholder="Enter your plan adjustments here…"
         value={feedback}
         onChange={(e) => setFeedback(e.target.value)}
       />
-      <div className="flex gap-2">
-        <Button size="sm" disabled={busy} onClick={() => onSubmit({ kind: "plan_approval", answer: { decision: "approve" } })}>
-          Approve
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={busy || !feedback.trim()}
-          onClick={() =>
-            onSubmit({ kind: "plan_approval", answer: { decision: "request_changes", feedback: feedback.trim() } })
-          }
-        >
-          Request changes
-        </Button>
+      <div className="flex flex-wrap items-center gap-2">
         {confirmAbandon ? (
           <span className="flex items-center gap-1.5 text-xs" data-testid="confirm-abandon">
             Discard this plan?
-            <Button
-              size="sm"
-              variant="destructive"
-              disabled={busy}
-              onClick={() => onSubmit({ kind: "plan_approval", answer: { decision: "abandon" } })}
-            >
+            <Button size="sm" variant="destructive" disabled={busy} onClick={() => plan({ decision: "abandon" })}>
               Discard
             </Button>
             <Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirmAbandon(false)}>
@@ -212,10 +211,48 @@ function PlanForm({
             </Button>
           </span>
         ) : (
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => setConfirmAbandon(true)}>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-[#D93B3B] dark:text-[#FF6467]"
+            disabled={busy}
+            onClick={() => setConfirmAbandon(true)}
+          >
             Abandon
           </Button>
         )}
+        <span className="flex-1" />
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => {
+            void navigator.clipboard.writeText(request.plan_markdown).then(() => setCopied(true));
+          }}
+        >
+          <Copy />
+          {copied ? "Copied" : "Copy"}
+        </Button>
+        {handOff && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            title="Continue this plan in a new session; this one stops"
+            onClick={() => plan({ decision: "hand_off" })}
+          >
+            Hand off
+          </Button>
+        )}
+        <Button
+          size="sm"
+          className="bg-[#B7791F] text-white hover:bg-[#B7791F]/85 dark:bg-[#F5B544] dark:text-[#2A1E05] dark:hover:bg-[#F5B544]/85"
+          disabled={busy}
+          onClick={() =>
+            plan(adjustments ? { decision: "request_changes", feedback: adjustments } : { decision: "approve" })
+          }
+        >
+          {adjustments ? "Send adjustments" : "Approve"}
+        </Button>
       </div>
     </>
   );

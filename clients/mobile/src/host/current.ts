@@ -150,11 +150,13 @@ export class CurrentHost {
   /**
    * Answer a session's pending request. The host then resolves it on the
    * session's stream, which updates the store; nothing is changed here first.
+   * Resolves to the new session a plan was handed off to, else null.
    */
-  async respond(session_id: string, request_id: string, answer: RequestAnswer): Promise<void> {
+  async respond(session_id: string, request_id: string, answer: RequestAnswer): Promise<string | null> {
     const connection = this.#connection;
     if (!connection) throw new ZwiimClientError("network", "Not connected to the host");
-    await connection.request("session.respond", { session_id, request_id, ...answer });
+    const result = await connection.request("session.respond", { session_id, request_id, ...answer });
+    return result.session_id ?? null;
   }
 
   /** A session is on screen: stream it and load its transcript until hidden. */

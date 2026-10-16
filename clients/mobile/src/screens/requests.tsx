@@ -6,8 +6,11 @@
 
 import { useEffect, useState } from "react";
 import { ScrollView, StyleSheet, TextInput, View, Pressable, useWindowDimensions } from "react-native";
+import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
-import { type AgentRequest, type PermissionOption, type RequestAnswer, type ToolDiff } from "@zwiim/sdk";
+import { hasCapability, type AgentRequest, type PermissionOption, type RequestAnswer, type ToolDiff } from "@zwiim/sdk";
+import { useCurrentHost } from "../app/hooks";
+import { useRootNavigation } from "../app/navigation";
 import {
   diffCounts,
   diffLines,
@@ -25,6 +28,7 @@ import {
 } from "../sessions/model";
 import { currentHost } from "../services";
 import { Button, CommandBlock, Sheet, T } from "../ui/components";
+import { Check, Copy } from "../ui/icons";
 import { fonts, radius, space, useTheme } from "../ui/tokens";
 
 /**
@@ -32,6 +36,7 @@ import { fonts, radius, space, useTheme } from "../ui/tokens";
  * request is gone: the host's resolution, not the reply, updates the screen.
  */
 function useRespond(session_id: string, request_id: string, hostName: string) {
+  const nav = useRootNavigation();
   const [sending, setSending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -42,7 +47,13 @@ function useRespond(session_id: string, request_id: string, hostName: string) {
     setSending(key);
     setError(null);
     try {
-      await currentHost.respond(session_id, request_id, answer);
+      const handedOff = await currentHost.respond(session_id, request_id, answer);
+      // A plan handed off: its new session takes the old one's place on screen.
+      if (handedOff) {
+        const top = nav.getState()?.routes.at(-1);
+        if (top?.name === "Session") nav.replace("Session", { session_id: handedOff, started: true });
+        else nav.navigate("Session", { session_id: handedOff, started: true });
+      }
       return true;
     } catch (e) {
       setSending(null);
@@ -197,7 +208,11 @@ export function RequestSheet({
           ))}
         </View>
       ) : request.kind === "plan_approval" ? (
-        <PlanActions sending={sending} onAnswer={(a, key) => void answer(a, key)} />
+        <PlanActions
+          markdown={request.plan_markdown}
+          sending={sending}
+          onAnswer={(a, key) => void answer(a, key)}
+        />
       ) : null}
       {error ? (
         <T variant="callout" color={theme.err} testID="sheet-error">
@@ -273,50 +288,62 @@ function PlanText({ markdown }: { markdown: string }) {
 }
 
 function PlanActions({
+  markdown,
   sending,
   onAnswer,
 }: {
+  markdown: string;
   sending: string | null;
   onAnswer(a: RequestAnswer, key: string): void;
 }) {
   const theme = useTheme();
-  const [changing, setChanging] = useState(false);
+  const { view } = useCurrentHost();
+  const canHandOff = hasCapability(view?.compat ?? null, "session.plan_hand_off");
   const [feedback, setFeedback] = useState("");
   const [abandoning, setAbandoning] = useState(false);
-  const plan = (decision: "approve" | "request_changes" | "abandon", text?: string): RequestAnswer => ({
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
+  const adjustments = feedback.trim();
+  const plan = (decision: "approve" | "request_changes" | "abandon" | "hand_off", text?: string): RequestAnswer => ({
     kind: "plan_approval",
     answer: text ? { decision, feedback: text } : { decision },
   });
   const busy = sending !== null;
-  if (changing) {
-    return (
-      <View style={styles.stack}>
-        <TextInput
-          testID="plan-feedback"
-          value={feedback}
-          onChangeText={setFeedback}
-          placeholder="What should change?"
-          placeholderTextColor={theme.faint}
-          multiline
-          autoFocus
-          style={[styles.input, { backgroundColor: theme.surface, color: theme.fg }]}
-        />
-        <Button
-          testID="plan-send-changes"
-          tall
-          kind="need"
-          label="Send changes"
-          disabled={!feedback.trim() || (busy && sending !== "request_changes")}
-          loading={sending === "request_changes"}
-          onPress={() => onAnswer(plan("request_changes", feedback.trim()), "request_changes")}
-        />
-        <Button tall kind="ghost" label="Back" disabled={busy} onPress={() => setChanging(false)} />
-      </View>
-    );
-  }
+  const primary = adjustments ? "request_changes" : "approve";
   return (
     <View style={styles.stack}>
-      <Button tall kind="secondary" label="Request changes" disabled={busy} onPress={() => setChanging(true)} testID="plan-request-changes" />
+      <TextInput
+        testID="plan-feedback"
+        value={feedback}
+        onChangeText={setFeedback}
+        placeholder="Enter your plan adjustments here…"
+        placeholderTextColor={theme.faint}
+        multiline
+        style={[styles.input, { backgroundColor: theme.surface, color: theme.fg }]}
+      />
+      <Button
+        testID="plan-copy"
+        tall
+        kind="ghost"
+        icon={copied ? Check : Copy}
+        label={copied ? "Copied" : "Copy plan"}
+        onPress={() => void Clipboard.setStringAsync(markdown).then(() => setCopied(true))}
+      />
+      {canHandOff ? (
+        <Button
+          testID="plan-hand-off"
+          tall
+          kind="secondary"
+          label="Hand off to a new session"
+          loading={sending === "hand_off"}
+          disabled={busy && sending !== "hand_off"}
+          onPress={() => onAnswer(plan("hand_off"), "hand_off")}
+        />
+      ) : null}
       <Button
         testID="plan-abandon"
         tall
@@ -330,12 +357,12 @@ function PlanActions({
         testID="plan-approve"
         tall
         kind="need"
-        label="Approve"
-        loading={sending === "approve"}
-        disabled={busy && sending !== "approve"}
+        label={adjustments ? "Send adjustments" : "Approve"}
+        loading={sending === primary}
+        disabled={busy && sending !== primary}
         onPress={() => {
           void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          onAnswer(plan("approve"), "approve");
+          onAnswer(plan(primary, adjustments || undefined), primary);
         }}
       />
     </View>

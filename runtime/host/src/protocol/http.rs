@@ -2066,13 +2066,17 @@ pub async fn session_respond(
     Extension(state): Extension<Arc<AppState>>,
     ZJson(p): ZJson<SessionRespondParams>,
 ) -> ZResult<Value> {
-    session::respond(
+    let outcome = session::respond(
         &state.db,
         &state.connection_manager,
+        &RuntimeLauncher { state: &state },
         &p.session_id,
         &p.request_id,
         p.answer,
     )
     .await?;
-    ok()
+    match outcome.handed_off_session_id {
+        Some(session_id) => Ok(Json(json!({ "session_id": session_id }))),
+        None => ok(),
+    }
 }

@@ -48,6 +48,7 @@ export const CLIENT_CAPABILITIES: readonly string[] = [
   "attachments",
   "file_ranges",
   "workspace.clone",
+  "session.plan_hand_off",
 ];
 
 /** What an app says about itself in `host.hello`. */

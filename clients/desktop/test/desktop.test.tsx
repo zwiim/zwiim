@@ -174,6 +174,56 @@ describe("RequestCard", () => {
 });
 
 describe("SessionPanel", () => {
+  it("opens the session a plan was handed off to", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.history"] = (p) => ({ session_id: p.session_id, turns: [] });
+    t.handlers["session.respond"] = () => ({ session_id: "s2" });
+    const client = new HostClient({ transport: t });
+    const controller = new HostController(client);
+    client.start();
+    await tick();
+    const onSessionStarted = vi.fn();
+
+    render(
+      <HostProvider value={controller}>
+        <SessionPanel workspaceId="w1" sessionId="s1" onSessionStarted={onSessionStarted} />
+      </HostProvider>,
+    );
+    await tick();
+    await act(async () => {
+      t.frame({
+        type: "snapshot",
+        subscription_id: "sub-1",
+        session_id: "s1",
+        epoch: "e1",
+        event_seq: 1,
+        snapshot: {
+          status: "prompting",
+          live_message: null,
+          tool_calls: [],
+          pending_request: { kind: "plan_approval", request_id: "p1", plan_markdown: "1. do it" },
+          pending_user_message: null,
+          last_error: null,
+          usage: null,
+          options: null,
+          commands: [],
+        },
+      });
+    });
+    await tick();
+
+    fireEvent.click(screen.getByText("Hand off"));
+    await tick();
+    expect(t.calls.find((c) => c.op === "session.respond")?.params).toEqual({
+      session_id: "s1",
+      request_id: "p1",
+      kind: "plan_approval",
+      answer: { decision: "hand_off" },
+    });
+    expect(onSessionStarted).toHaveBeenCalledWith("s2");
+    controller.dispose();
+  });
+
   it("renders history plus the live turn, and routes request answers to the host", async () => {
     const t = new FakeTransport();
     t.handlers["session.history"] = (p) => ({

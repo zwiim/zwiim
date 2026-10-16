@@ -663,7 +663,10 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // its own option set, including three "accept the plan AND clear
             // context" variants (`exit-plan-clear-{auto,bypass,accept-edits}`,
             // named `Yes, clear context (N% used) and …`) that swap Claude's
-            // private conversation while the ACP turn stays open;
+            // private conversation while the ACP turn stays open. Zwiim never
+            // offers them: the ExitPlanMode request is bridged to its own plan
+            // card (`try_bridge_plan_review`), and a fallback permission
+            // card drops them;
             // `tool-result-meta.js` parses the SDK's `tool_result_meta` sidecar
             // (`nonExecutionKind` + `userFeedback`) but only feeds exit-plan's
             // internal reconciliation. `engines.node` stays ">=22".
@@ -1236,8 +1239,9 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `_meta.codex = {kind:"plan_review", planItemId}` whose `toolCall`
             // (`plan-review:<itemId>`, kind `switch_mode`, `rawInput.plan`) was
             // NEVER announced as a `tool_call` — Zwiim seeds it from the request
-            // (see `is_codex_plan_review` / `handle_permission_request`) so the
-            // follow-up `tool_call_update` has a card to merge into. On approval
+            // (see `is_codex_plan_review` / `try_bridge_plan_review`) so the
+            // follow-up `tool_call_update` has a card to merge into; the review
+            // itself is bridged to Zwiim's plan card, as Claude's is. On approval
             // codex flips the mode back to default (a mid-turn
             // `config_option_update`) and runs the implementation turn inside
             // the SAME `session/prompt`. 1.1.8 (#342) also hangs a structured

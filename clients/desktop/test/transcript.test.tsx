@@ -812,6 +812,47 @@ describe("request cards", () => {
     await tick();
     expect(onAnswer).toHaveBeenCalledWith({ kind: "plan_approval", answer: { decision: "abandon" } });
   });
+
+  it("sends typed plan adjustments in place of approving", async () => {
+    const onAnswer = vi.fn(async () => {});
+    render(
+      <RequestCard request={{ kind: "plan_approval", request_id: "p", plan_markdown: "- step" }} onAnswer={onAnswer} />,
+    );
+    expect(screen.queryByText("Send adjustments")).toBeNull();
+    fireEvent.change(screen.getByPlaceholderText("Enter your plan adjustments here…"), {
+      target: { value: "  use sqlite  " },
+    });
+    expect(screen.queryByText("Approve")).toBeNull();
+    fireEvent.click(screen.getByText("Send adjustments"));
+    await tick();
+    expect(onAnswer).toHaveBeenCalledWith({
+      kind: "plan_approval",
+      answer: { decision: "request_changes", feedback: "use sqlite" },
+    });
+  });
+
+  it("copies the plan", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    render(
+      <RequestCard request={{ kind: "plan_approval", request_id: "p", plan_markdown: "- step" }} onAnswer={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByText("Copy"));
+    await tick();
+    expect(writeText).toHaveBeenCalledWith("- step");
+    expect(screen.getByText("Copied")).toBeTruthy();
+  });
+
+  it("offers hand off only when the Host can", async () => {
+    const onAnswer = vi.fn(async () => {});
+    const request: AgentRequest = { kind: "plan_approval", request_id: "p", plan_markdown: "- step" };
+    const { rerender } = render(<RequestCard request={request} onAnswer={onAnswer} />);
+    expect(screen.queryByText("Hand off")).toBeNull();
+    rerender(<RequestCard request={request} onAnswer={onAnswer} handOff />);
+    fireEvent.click(screen.getByText("Hand off"));
+    await tick();
+    expect(onAnswer).toHaveBeenCalledWith({ kind: "plan_approval", answer: { decision: "hand_off" } });
+  });
 });
 
 describe("error wording", () => {

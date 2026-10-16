@@ -454,6 +454,18 @@ const STOP_TURN_WAIT: Duration = if cfg!(test) {
     Duration::from_secs(5)
 };
 
+/// Wait up to `STOP_TURN_WAIT` for the running turn to end. Whether it did.
+async fn wait_turn_end(state: &tokio::sync::RwLock<crate::acp::SessionState>) -> bool {
+    let deadline = tokio::time::Instant::now() + STOP_TURN_WAIT;
+    while state.read().await.turn_in_flight {
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    true
+}
+
 /// Stop session `session_id`'s agent, keeping the session. A running turn is
 /// cancelled (declining any request waiting on the user) and given
 /// `STOP_TURN_WAIT` to end; then the agent is disconnected, which ends its
@@ -476,10 +488,7 @@ pub async fn stop(
         if is_busy(&*state.read().await) {
             // Best effort: the disconnect below ends the turn regardless.
             let _ = connections.cancel(&db.conn, &connection_id).await;
-            let deadline = tokio::time::Instant::now() + STOP_TURN_WAIT;
-            while state.read().await.turn_in_flight && tokio::time::Instant::now() < deadline {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
+            wait_turn_end(&state).await;
         }
     }
     match connections.disconnect(&connection_id).await {
@@ -545,15 +554,31 @@ pub enum RequestAnswer {
     },
 }
 
+/// What answering a request led to, beyond the answer itself.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RespondOutcome {
+    /// The session a plan was handed off to.
+    pub handed_off_session_id: Option<String>,
+}
+
 /// Answer the pending request `request_id` of session `session_id`. The
 /// request must be the one currently pending on that session's agent.
-pub async fn respond(
+///
+/// A plan answer does more than reply to the agent:
+/// - `approve` (Claude) returns the agent to the session's normal mode;
+/// - `request_changes` with feedback waits for the rejected turn to end, then
+///   sends the feedback as the next user message;
+/// - `hand_off` starts a new session in the same workspace, seeded with the
+///   plan, then stops this one. When the new session cannot start, nothing
+///   is answered and the plan stays pending.
+pub async fn respond<L: AgentLauncher>(
     db: &AppDatabase,
     connections: &ConnectionManager,
+    launcher: &L,
     session_id: &str,
     request_id: &str,
     answer: RequestAnswer,
-) -> Result<(), ZwiimError> {
+) -> Result<RespondOutcome, ZwiimError> {
     let connection_id = live_connection_id(&db.conn, connections, session_id)
         .await?
         .ok_or_else(ZwiimError::session_not_live)?;
@@ -561,13 +586,17 @@ pub async fn respond(
         .get_state(&connection_id)
         .await
         .ok_or_else(ZwiimError::session_not_live)?;
-    let (pending, plan_exit_agent) = {
+    let (pending, agent_type, plan_exit_agent, plan_markdown) = {
         let s = state.read().await;
         let plan_exit_agent = s
             .pending_permission
             .as_ref()
             .filter(|p| p.tool_call.get("kind").and_then(|k| k.as_str()) == Some("switch_mode"))
             .map(|_| s.agent_type);
+        let plan = s
+            .pending_plan_approval
+            .as_ref()
+            .filter(|p| p.approval_id == request_id);
         let pending = match &answer {
             RequestAnswer::Permission { .. } => s
                 .pending_permission
@@ -577,12 +606,10 @@ pub async fn respond(
                 .pending_question
                 .as_ref()
                 .is_some_and(|q| q.question_id == request_id),
-            RequestAnswer::PlanApproval { .. } => s
-                .pending_plan_approval
-                .as_ref()
-                .is_some_and(|p| p.approval_id == request_id),
+            RequestAnswer::PlanApproval { .. } => plan.is_some(),
         };
-        (pending, plan_exit_agent)
+        let plan_markdown = plan.map(|p| p.plan_markdown.clone()).unwrap_or_default();
+        (pending, s.agent_type, plan_exit_agent, plan_markdown)
     };
     if !pending {
         return Err(ZwiimError::not_found("No such pending request"));
@@ -613,16 +640,113 @@ pub async fn respond(
                 .await?
         }
         RequestAnswer::PlanApproval { decision, feedback } => {
-            connections
-                .answer_plan_approval(
-                    &connection_id,
-                    request_id,
-                    PlanApprovalAnswer { decision, feedback },
-                )
-                .await?
+            let answer = PlanApprovalAnswer { decision, feedback };
+            match decision {
+                PlanApprovalDecision::Approve => {
+                    connections
+                        .answer_plan_approval(&connection_id, request_id, answer)
+                        .await?;
+                    crate::session_options::sync_plan_approve(
+                        &db.conn,
+                        connections,
+                        &connection_id,
+                        session_id,
+                        agent_type,
+                    )
+                    .await;
+                }
+                PlanApprovalDecision::RequestChanges => {
+                    let feedback = answer.normalized_feedback();
+                    connections
+                        .answer_plan_approval(&connection_id, request_id, answer)
+                        .await?;
+                    if !feedback.is_empty() {
+                        if !wait_turn_end(&state).await {
+                            let _ = connections.cancel(&db.conn, &connection_id).await;
+                            wait_turn_end(&state).await;
+                        }
+                        send(
+                            db,
+                            connections,
+                            launcher,
+                            session_id,
+                            vec![PromptInputBlock::Text { text: feedback }],
+                            None,
+                        )
+                        .await?;
+                    }
+                }
+                PlanApprovalDecision::Abandon => {
+                    connections
+                        .answer_plan_approval(&connection_id, request_id, answer)
+                        .await?;
+                }
+                PlanApprovalDecision::HandOff => {
+                    return hand_off(
+                        db,
+                        connections,
+                        launcher,
+                        session_id,
+                        &connection_id,
+                        request_id,
+                        agent_type,
+                        plan_markdown,
+                        answer,
+                    )
+                    .await;
+                }
+            }
         }
     }
-    Ok(())
+    Ok(RespondOutcome::default())
+}
+
+/// Hand a plan off: start a new session in the same workspace with the plan
+/// as its first prompt, then decline the plan here and stop this session.
+#[allow(clippy::too_many_arguments)]
+async fn hand_off<L: AgentLauncher>(
+    db: &AppDatabase,
+    connections: &ConnectionManager,
+    launcher: &L,
+    session_id: &str,
+    connection_id: &str,
+    request_id: &str,
+    agent_type: AgentType,
+    plan_markdown: String,
+    answer: PlanApprovalAnswer,
+) -> Result<RespondOutcome, ZwiimError> {
+    let row = resolve(&db.conn, session_id).await?;
+    let workspace_id = crate::workspace::workspace_id_of(&db.conn, row.folder_id)
+        .await?
+        .ok_or_else(|| ZwiimError::not_found("Session has no workspace"))?;
+    let new_session_id = start(
+        db,
+        connections,
+        launcher,
+        &workspace_id,
+        agent_type,
+        vec![PromptInputBlock::Text {
+            text: format!("Implement the following plan:\n\n{plan_markdown}"),
+        }],
+        None,
+        &OptionsRequest::default(),
+    )
+    .await?;
+    if let Err(e) = connections
+        .answer_plan_approval(connection_id, request_id, answer)
+        .await
+    {
+        tracing::warn!("[session] failed to answer the handed-off plan: {e}");
+    }
+    if let Err(e) = stop(db, connections, session_id).await {
+        tracing::warn!(
+            "[session] failed to stop the handed-off session: {}",
+            e.message
+        );
+    }
+    Ok(RespondOutcome {
+        handed_off_session_id: Some(new_session_id),
+    })
 }
 
 #[cfg(test)]
@@ -891,6 +1015,10 @@ pub(crate) mod orchestration_tests {
         /// The directory each agent was launched in, in launch order.
         pub working_dirs: std::sync::Mutex<Vec<String>>,
         pub commands: Arc<std::sync::Mutex<Vec<(String, &'static str)>>>,
+        /// The text of every prompt, per connection, in order.
+        pub prompts: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+        /// Every `SetConfigOption` as `(connection, config_id, value)`.
+        pub config_sets: Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
         pub delay: Duration,
     }
 
@@ -902,8 +1030,20 @@ pub(crate) mod orchestration_tests {
                 resumed: Default::default(),
                 working_dirs: Default::default(),
                 commands: Default::default(),
+                prompts: Default::default(),
+                config_sets: Default::default(),
                 delay: Duration::ZERO,
             }
+        }
+
+        pub(crate) fn prompts_for(&self, conn: &str) -> Vec<String> {
+            self.prompts
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(c, _)| c == conn)
+                .map(|(_, t)| t.clone())
+                .collect()
         }
 
         pub(crate) fn commands_for(&self, conn: &str) -> Vec<&'static str> {
@@ -950,11 +1090,34 @@ pub(crate) mod orchestration_tests {
                 .external_id = Some(native);
             self.resumed.lock().unwrap().push(resume_external_id);
             let log = self.commands.clone();
+            let prompts = self.prompts.clone();
+            let config_sets = self.config_sets.clone();
             let conn = id.clone();
             tokio::spawn(async move {
                 while let Some(cmd) = rx.recv().await {
                     let kind = match cmd {
-                        ConnectionCommand::Prompt { .. } => "prompt",
+                        ConnectionCommand::Prompt { blocks, .. } => {
+                            let text = blocks
+                                .iter()
+                                .filter_map(|b| match b {
+                                    PromptInputBlock::Text { text } => Some(text.as_str()),
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            prompts.lock().unwrap().push((conn.clone(), text));
+                            "prompt"
+                        }
+                        ConnectionCommand::SetConfigOption {
+                            config_id,
+                            value_id,
+                        } => {
+                            config_sets
+                                .lock()
+                                .unwrap()
+                                .push((conn.clone(), config_id, value_id));
+                            "other"
+                        }
                         ConnectionCommand::Cancel => "cancel",
                         ConnectionCommand::RespondPermission { .. } => "respond_permission",
                         ConnectionCommand::Disconnect => "disconnect",
@@ -1517,6 +1680,7 @@ pub(crate) mod orchestration_tests {
         let wrong = respond(
             &db,
             &mgr,
+            &launcher,
             &sid,
             "perm-other",
             RequestAnswer::Permission {
@@ -1529,6 +1693,7 @@ pub(crate) mod orchestration_tests {
         respond(
             &db,
             &mgr,
+            &launcher,
             &sid,
             "perm-1",
             RequestAnswer::Permission {
@@ -1570,6 +1735,7 @@ pub(crate) mod orchestration_tests {
         respond(
             &db,
             &mgr,
+            &launcher,
             &sid,
             &q.question_id,
             RequestAnswer::Question {
@@ -1594,24 +1760,25 @@ pub(crate) mod orchestration_tests {
         respond(
             &db,
             &mgr,
+            &launcher,
             &sid,
             &p.approval_id,
             RequestAnswer::PlanApproval {
-                decision: PlanApprovalDecision::RequestChanges,
-                feedback: Some("smaller".into()),
+                decision: PlanApprovalDecision::Abandon,
+                feedback: None,
             },
         )
         .await
         .unwrap();
         let answer = p.answer_rx.await.unwrap();
-        assert_eq!(answer.decision, PlanApprovalDecision::RequestChanges);
-        assert_eq!(answer.feedback.as_deref(), Some("smaller"));
+        assert_eq!(answer.decision, PlanApprovalDecision::Abandon);
 
         // No live agent: nothing to answer.
         mgr.disconnect(conn).await.unwrap();
         let err = respond(
             &db,
             &mgr,
+            &launcher,
             &sid,
             "perm-1",
             RequestAnswer::Permission {
@@ -1621,5 +1788,254 @@ pub(crate) mod orchestration_tests {
         .await
         .unwrap_err();
         assert_eq!(err.code, "session_not_live");
+    }
+
+    /// A launcher whose agents never start.
+    struct FailingLauncher;
+
+    impl AgentLauncher for FailingLauncher {
+        async fn launch(
+            &self,
+            _agent_type: AgentType,
+            _working_dir: String,
+            _resume_external_id: Option<String>,
+            _preferred: BTreeMap<String, String>,
+        ) -> Result<String, ZwiimError> {
+            Err(ZwiimError::session_not_live())
+        }
+    }
+
+    fn plan_answer(decision: PlanApprovalDecision, feedback: Option<&str>) -> RequestAnswer {
+        RequestAnswer::PlanApproval {
+            decision,
+            feedback: feedback.map(str::to_string),
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_adjustments_follow_the_ended_turn_as_the_next_message() {
+        let db = fresh_in_memory_db().await;
+        let wid = workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = started(&db, &mgr, &launcher, &wid).await;
+        let conn = "fake-conn-1";
+
+        // Like Claude: rejecting the plan interrupts, ending the turn.
+        let p = mgr
+            .register_plan_approval(conn, "tc-plan".into(), "# Plan".into())
+            .await
+            .expect("registered");
+        let ender = {
+            let mgr = mgr.clone_ref();
+            tokio::spawn(async move {
+                let answer = p.answer_rx.await.unwrap();
+                finish_turn(&mgr, conn).await;
+                answer
+            })
+        };
+        let out = respond(
+            &db,
+            &mgr,
+            &launcher,
+            &sid,
+            &p.approval_id,
+            plan_answer(PlanApprovalDecision::RequestChanges, Some("  smaller  ")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.handed_off_session_id, None);
+        let answer = ender.await.unwrap();
+        assert_eq!(answer.decision, PlanApprovalDecision::RequestChanges);
+        settle().await;
+        assert_eq!(launcher.prompts_for(conn), ["hi", "smaller"]);
+        assert_eq!(launcher.commands_for(conn), ["prompt", "prompt"]);
+    }
+
+    #[tokio::test]
+    async fn plan_adjustments_cancel_a_turn_that_does_not_end() {
+        let db = fresh_in_memory_db().await;
+        let wid = workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = started(&db, &mgr, &launcher, &wid).await;
+        let conn = "fake-conn-1";
+        let p = mgr
+            .register_plan_approval(conn, "tc-plan".into(), "# Plan".into())
+            .await
+            .expect("registered");
+        ends_turn_on_cancel(&mgr, &launcher, conn);
+        respond(
+            &db,
+            &mgr,
+            &launcher,
+            &sid,
+            &p.approval_id,
+            plan_answer(PlanApprovalDecision::RequestChanges, Some("smaller")),
+        )
+        .await
+        .unwrap();
+        settle().await;
+        assert_eq!(launcher.commands_for(conn), ["prompt", "cancel", "prompt"]);
+        assert_eq!(launcher.prompts_for(conn), ["hi", "smaller"]);
+    }
+
+    #[tokio::test]
+    async fn plan_changes_without_feedback_send_nothing() {
+        let db = fresh_in_memory_db().await;
+        let wid = workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = started(&db, &mgr, &launcher, &wid).await;
+        let conn = "fake-conn-1";
+        let p = mgr
+            .register_plan_approval(conn, "tc-plan".into(), "# Plan".into())
+            .await
+            .expect("registered");
+        respond(
+            &db,
+            &mgr,
+            &launcher,
+            &sid,
+            &p.approval_id,
+            plan_answer(PlanApprovalDecision::RequestChanges, Some("   ")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            p.answer_rx.await.unwrap().decision,
+            PlanApprovalDecision::RequestChanges
+        );
+        settle().await;
+        assert_eq!(launcher.commands_for(conn), ["prompt"]);
+    }
+
+    #[tokio::test]
+    async fn plan_hand_off_starts_a_new_session_and_stops_the_old_one() {
+        let db = fresh_in_memory_db().await;
+        let wid = workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = started(&db, &mgr, &launcher, &wid).await;
+        let conn = "fake-conn-1";
+        let p = mgr
+            .register_plan_approval(conn, "tc-plan".into(), "# Plan\nDo X".into())
+            .await
+            .expect("registered");
+        ends_turn_on_cancel(&mgr, &launcher, conn);
+        let out = respond(
+            &db,
+            &mgr,
+            &launcher,
+            &sid,
+            &p.approval_id,
+            plan_answer(PlanApprovalDecision::HandOff, None),
+        )
+        .await
+        .unwrap();
+        let new_sid = out.handed_off_session_id.expect("handed off");
+        assert_ne!(new_sid, sid);
+        assert_eq!(
+            p.answer_rx.await.unwrap().decision,
+            PlanApprovalDecision::HandOff
+        );
+
+        let new_row = resolve(&db.conn, &new_sid).await.unwrap();
+        let old_row = resolve(&db.conn, &sid).await.unwrap();
+        assert_eq!(new_row.folder_id, old_row.folder_id, "same workspace");
+        assert_eq!(new_row.agent_type, old_row.agent_type);
+        settle().await;
+        assert_eq!(
+            launcher.prompts_for("fake-conn-2"),
+            ["Implement the following plan:\n\n# Plan\nDo X"]
+        );
+        assert!(
+            launcher.config_sets.lock().unwrap().is_empty(),
+            "default options"
+        );
+        assert!(launcher.commands_for(conn).contains(&"disconnect"));
+        assert_eq!(
+            live_connection_id(&db.conn, &mgr, &sid).await.unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_hand_off_leaves_the_plan_card_pending() {
+        let db = fresh_in_memory_db().await;
+        let wid = workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = started(&db, &mgr, &launcher, &wid).await;
+        let conn = "fake-conn-1";
+        let p = mgr
+            .register_plan_approval(conn, "tc-plan".into(), "# Plan".into())
+            .await
+            .expect("registered");
+        let err = respond(
+            &db,
+            &mgr,
+            &FailingLauncher,
+            &sid,
+            &p.approval_id,
+            plan_answer(PlanApprovalDecision::HandOff, None),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "session_not_live");
+        let state = mgr.get_state(conn).await.unwrap();
+        assert!(state.read().await.pending_plan_approval.is_some());
+        settle().await;
+        assert!(!launcher.commands_for(conn).contains(&"disconnect"));
+    }
+
+    #[tokio::test]
+    async fn plan_approve_returns_claude_to_the_remembered_normal_mode() {
+        let db = fresh_in_memory_db().await;
+        let wid = workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = started(&db, &mgr, &launcher, &wid).await;
+        let conn = "fake-conn-1";
+        mgr.get_state(conn)
+            .await
+            .unwrap()
+            .write()
+            .await
+            .config_options = Some(crate::session_options::tests::claude("plan"));
+        crate::db::service::app_metadata_service::upsert_value(
+            &db.conn,
+            &format!("zwiim.session_options:{sid}"),
+            r#"{"values":{},"normal_mode":"acceptEdits"}"#,
+        )
+        .await
+        .unwrap();
+        let p = mgr
+            .register_plan_approval(conn, "tc-plan".into(), "# Plan".into())
+            .await
+            .expect("registered");
+        respond(
+            &db,
+            &mgr,
+            &launcher,
+            &sid,
+            &p.approval_id,
+            plan_answer(PlanApprovalDecision::Approve, None),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            p.answer_rx.await.unwrap().decision,
+            PlanApprovalDecision::Approve
+        );
+        settle().await;
+        assert_eq!(
+            *launcher.config_sets.lock().unwrap(),
+            [(
+                conn.to_string(),
+                "mode".to_string(),
+                "acceptEdits".to_string()
+            )]
+        );
     }
 }

@@ -35,15 +35,33 @@
 //!     `feedback` becomes "approve with review comments".
 //!   * `"abandoned"` — abandon the plan and turn plan mode off.
 //!   * anything else (we send `"keep_planning"`) — stay in plan mode. Grok drops
-//!     the reply `feedback`, so the user's revision notes must be delivered
-//!     out-of-band as a follow-up prompt (mirroring Grok's own TUI, where
-//!     "request changes" moves focus to the prompt).
+//!     the reply `feedback`, so `session::respond` delivers the user's revision
+//!     notes as the next user message once the turn ends (mirroring Grok's own
+//!     TUI, where "request changes" moves focus to the prompt).
+//!
+//! ## Claude
+//!
+//! Claude's `ExitPlanMode` arrives as an ordinary ACP permission request (kind
+//! `switch_mode`) whose options are the adapter's own `exit-plan-*` / `reject`
+//! ids. The Host bridges it into this same card ([`parse_claude_exit_plan_request`],
+//! [`claude_exit_plan_option`]) so the adapter's ids never reach a client and
+//! its clear-context variants, which restart Claude under a session Zwiim never
+//! learns about, are never offered.
+//!
+//! ## Codex
+//!
+//! Codex's plan review (`_meta.codex.kind = "plan_review"`) is bridged the same
+//! way ([`parse_codex_plan_review_request`], [`codex_plan_option`]), so every
+//! agent shows one plan card. Approve maps to `implement_plan` (codex leaves
+//! plan mode and implements in the same prompt); everything else maps to
+//! `revise_plan`, which ends the turn in plan mode.
 //!
 //! An earlier inferred shape (`{ decision: "approve"/... }`) was wrong: Grok
 //! silently defaulted it to keep-planning, so "Approve" read as "request changes".
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use sacp::schema::RequestPermissionRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::oneshot;
@@ -89,6 +107,9 @@ pub enum PlanApprovalDecision {
     RequestChanges,
     /// Abandon the plan → plan mode is turned off.
     Abandon,
+    /// Hand the plan off to a new session (`session::respond` starts it); the
+    /// agent is told the same as for `Abandon`.
+    HandOff,
 }
 
 /// The user's submission for a pending plan approval (frontend → backend → the
@@ -195,7 +216,7 @@ pub fn build_grok_exit_plan_response(answer: &PlanApprovalAnswer) -> Value {
     let outcome = match answer.decision {
         PlanApprovalDecision::Approve => "approved",
         PlanApprovalDecision::RequestChanges => "keep_planning",
-        PlanApprovalDecision::Abandon => "abandoned",
+        PlanApprovalDecision::Abandon | PlanApprovalDecision::HandOff => "abandoned",
     };
     serde_json::json!({
         "outcome": outcome,
@@ -213,9 +234,126 @@ pub fn grok_exit_plan_disconnect_response() -> Value {
     serde_json::json!({ "outcome": "keep_planning", "feedback": "" })
 }
 
+/// Claude adapter option that leaves plan mode in the same conversation.
+pub const CLAUDE_EXIT_PLAN_DEFAULT: &str = "exit-plan-default";
+/// Claude adapter option that keeps planning: deny + interrupt, so the turn
+/// ends cancelled and the session stays in plan mode.
+pub const CLAUDE_EXIT_PLAN_REJECT: &str = "reject";
+/// Prefix of the Claude adapter's clear-context options. Choosing one restarts
+/// Claude under a private session id the Host never learns, so they are never
+/// offered to a client.
+pub const CLAUDE_EXIT_PLAN_CLEAR_PREFIX: &str = "exit-plan-clear-";
+
+/// The plan markdown of a Claude `ExitPlanMode` permission request, or `None`
+/// when `req` is not one Zwiim can bridge into the plan-approval card: the tool
+/// kind must be `switch_mode`, the options must include
+/// [`CLAUDE_EXIT_PLAN_DEFAULT`] and [`CLAUDE_EXIT_PLAN_REJECT`], and the plan
+/// (`rawInput.plan`, else the text content) must be non-empty. Bounded to
+/// [`MAX_PLAN_MARKDOWN_CHARS`].
+pub fn parse_claude_exit_plan_request(req: &RequestPermissionRequest) -> Option<String> {
+    let has_option = |id: &str| req.options.iter().any(|o| o.option_id.to_string() == id);
+    if !has_option(CLAUDE_EXIT_PLAN_DEFAULT) || !has_option(CLAUDE_EXIT_PLAN_REJECT) {
+        return None;
+    }
+    let tool_call = serde_json::to_value(&req.tool_call).ok()?;
+    if tool_call.get("kind").and_then(Value::as_str) != Some("switch_mode") {
+        return None;
+    }
+    let from_input = tool_call
+        .get("rawInput")
+        .and_then(|i| i.get("plan"))
+        .and_then(Value::as_str)
+        .filter(|p| !p.trim().is_empty());
+    let plan = match from_input {
+        Some(plan) => plan.to_string(),
+        None => tool_call
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|c| c.get("content")?.get("text")?.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    };
+    let plan = plan.trim();
+    if plan.is_empty() {
+        return None;
+    }
+    Some(plan.chars().take(MAX_PLAN_MARKDOWN_CHARS).collect())
+}
+
+/// The Claude adapter option answering a bridged `ExitPlanMode` for `decision`.
+/// Only Approve leaves plan mode; every other decision keeps planning (hand-off
+/// and adjustments continue from the Host, not inside this turn).
+pub fn claude_exit_plan_option(decision: PlanApprovalDecision) -> &'static str {
+    match decision {
+        PlanApprovalDecision::Approve => CLAUDE_EXIT_PLAN_DEFAULT,
+        PlanApprovalDecision::RequestChanges
+        | PlanApprovalDecision::Abandon
+        | PlanApprovalDecision::HandOff => CLAUDE_EXIT_PLAN_REJECT,
+    }
+}
+
+/// Codex adapter option that approves the plan: codex leaves plan mode itself
+/// and implements it within the same prompt.
+pub const CODEX_PLAN_IMPLEMENT: &str = "implement_plan";
+/// Codex adapter option that keeps planning: codex stays in plan mode and the
+/// turn ends normally.
+pub const CODEX_PLAN_REVISE: &str = "revise_plan";
+
+/// The plan markdown of a Codex plan-review permission request, or `None` when
+/// `req` is not one Zwiim can bridge into the plan-approval card: the request
+/// `_meta.codex.kind` must be `plan_review`, the tool kind `switch_mode`, the
+/// options must include [`CODEX_PLAN_IMPLEMENT`] and [`CODEX_PLAN_REVISE`], and
+/// `rawInput.plan` must be non-empty. Bounded to [`MAX_PLAN_MARKDOWN_CHARS`].
+pub fn parse_codex_plan_review_request(req: &RequestPermissionRequest) -> Option<String> {
+    let kind = req
+        .meta
+        .as_ref()
+        .and_then(|m| m.get("codex"))
+        .and_then(|codex| codex.get("kind"))
+        .and_then(Value::as_str);
+    if kind != Some("plan_review") {
+        return None;
+    }
+    let has_option = |id: &str| req.options.iter().any(|o| o.option_id.to_string() == id);
+    if !has_option(CODEX_PLAN_IMPLEMENT) || !has_option(CODEX_PLAN_REVISE) {
+        return None;
+    }
+    let tool_call = serde_json::to_value(&req.tool_call).ok()?;
+    if tool_call.get("kind").and_then(Value::as_str) != Some("switch_mode") {
+        return None;
+    }
+    let plan = tool_call
+        .get("rawInput")
+        .and_then(|i| i.get("plan"))
+        .and_then(Value::as_str)?
+        .trim();
+    if plan.is_empty() {
+        return None;
+    }
+    Some(plan.chars().take(MAX_PLAN_MARKDOWN_CHARS).collect())
+}
+
+/// The Codex adapter option answering a bridged plan review for `decision`.
+/// Only Approve implements; every other decision keeps planning (hand-off and
+/// adjustments continue from the Host once the turn ends).
+pub fn codex_plan_option(decision: PlanApprovalDecision) -> &'static str {
+    match decision {
+        PlanApprovalDecision::Approve => CODEX_PLAN_IMPLEMENT,
+        PlanApprovalDecision::RequestChanges
+        | PlanApprovalDecision::Abandon
+        | PlanApprovalDecision::HandOff => CODEX_PLAN_REVISE,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sacp::schema::{
+        PermissionOption, PermissionOptionKind, SessionId, ToolCallContent, ToolCallUpdate,
+        ToolCallUpdateFields, ToolKind,
+    };
     use serde_json::json;
 
     fn grok_params(plan: &str) -> Value {
@@ -317,6 +455,206 @@ mod tests {
             serde_json::from_value(json!({ "decision": "approve" })).unwrap();
         assert_eq!(a.decision, PlanApprovalDecision::Approve);
         assert!(a.feedback.is_none());
+    }
+
+    /// claude-agent-acp 0.81.2's ExitPlanMode permission request, verified
+    /// against `buildClaudePermissionPresentation` + `toolInfoFromToolUse` +
+    /// `buildExitPlanModePermissionOptions`: kind `switch_mode`, the plan in
+    /// `rawInput.plan` and mirrored as text content.
+    fn claude_exit_plan(plan: &str, option_ids: &[&str]) -> RequestPermissionRequest {
+        claude_request(plan, option_ids, ToolKind::SwitchMode)
+    }
+
+    fn claude_request(plan: &str, option_ids: &[&str], kind: ToolKind) -> RequestPermissionRequest {
+        RequestPermissionRequest::new(
+            SessionId::new("sess-1"),
+            ToolCallUpdate::new(
+                "toolu_plan",
+                ToolCallUpdateFields::new()
+                    .title("Ready to code?".to_string())
+                    .kind(kind)
+                    .raw_input(json!({ "plan": plan })),
+            ),
+            option_ids
+                .iter()
+                .map(|id| {
+                    PermissionOption::new(
+                        id.to_string(),
+                        id.to_string(),
+                        PermissionOptionKind::AllowAlways,
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    const CLAUDE_0_81_2_OPTIONS: &[&str] = &[
+        "exit-plan-clear-auto",
+        "exit-plan-auto",
+        "exit-plan-bypass",
+        "exit-plan-default",
+        "reject",
+    ];
+
+    #[test]
+    fn claude_parse_accepts_the_exit_plan_card() {
+        let req = claude_exit_plan("# Plan\n- step", CLAUDE_0_81_2_OPTIONS);
+        assert_eq!(
+            parse_claude_exit_plan_request(&req).as_deref(),
+            Some("# Plan\n- step")
+        );
+        // The accept-edits set (no auto / bypass modes advertised).
+        let req = claude_exit_plan(
+            "plan",
+            &[
+                "exit-plan-clear-accept-edits",
+                "exit-plan-accept-edits",
+                "exit-plan-default",
+                "reject",
+            ],
+        );
+        assert_eq!(
+            parse_claude_exit_plan_request(&req).as_deref(),
+            Some("plan")
+        );
+    }
+
+    #[test]
+    fn claude_parse_falls_back_to_text_content() {
+        let mut req = claude_exit_plan("", CLAUDE_0_81_2_OPTIONS);
+        req.tool_call.fields.raw_input = None;
+        req.tool_call.fields.content = Some(vec![ToolCallContent::from("from content")]);
+        assert_eq!(
+            parse_claude_exit_plan_request(&req).as_deref(),
+            Some("from content")
+        );
+    }
+
+    #[test]
+    fn claude_parse_rejects_anything_else() {
+        let missing_default = claude_exit_plan("plan", &["exit-plan-auto", "reject"]);
+        assert!(parse_claude_exit_plan_request(&missing_default).is_none());
+        let missing_reject = claude_exit_plan("plan", &["exit-plan-default", "exit-plan-auto"]);
+        assert!(parse_claude_exit_plan_request(&missing_reject).is_none());
+        let empty_plan = claude_exit_plan("  \n ", CLAUDE_0_81_2_OPTIONS);
+        assert!(parse_claude_exit_plan_request(&empty_plan).is_none());
+        let other_kind = claude_request("plan", CLAUDE_0_81_2_OPTIONS, ToolKind::Other);
+        assert!(parse_claude_exit_plan_request(&other_kind).is_none());
+    }
+
+    #[test]
+    fn claude_parse_bounds_the_plan() {
+        let huge = "p".repeat(MAX_PLAN_MARKDOWN_CHARS + 10);
+        let req = claude_exit_plan(&huge, CLAUDE_0_81_2_OPTIONS);
+        assert_eq!(
+            parse_claude_exit_plan_request(&req)
+                .unwrap()
+                .chars()
+                .count(),
+            MAX_PLAN_MARKDOWN_CHARS
+        );
+    }
+
+    #[test]
+    fn claude_option_maps_every_decision() {
+        assert_eq!(
+            claude_exit_plan_option(PlanApprovalDecision::Approve),
+            "exit-plan-default"
+        );
+        for decision in [
+            PlanApprovalDecision::RequestChanges,
+            PlanApprovalDecision::Abandon,
+            PlanApprovalDecision::HandOff,
+        ] {
+            assert_eq!(claude_exit_plan_option(decision), "reject");
+        }
+    }
+
+    /// codex-acp 1.13.1's plan-review request (`src/permissions/plan-review.ts`):
+    /// tool call `plan-review:<itemId>`, kind `switch_mode`, the plan in
+    /// `rawInput.plan`, and `_meta.codex.kind = "plan_review"` on the request.
+    fn codex_plan_review(plan: &str, option_ids: &[&str]) -> RequestPermissionRequest {
+        let mut req = RequestPermissionRequest::new(
+            SessionId::new("sess-1"),
+            ToolCallUpdate::new(
+                "plan-review:item-7",
+                ToolCallUpdateFields::new()
+                    .title("Implement this plan?".to_string())
+                    .kind(ToolKind::SwitchMode)
+                    .raw_input(json!({ "plan": plan })),
+            ),
+            option_ids
+                .iter()
+                .map(|id| {
+                    PermissionOption::new(
+                        id.to_string(),
+                        id.to_string(),
+                        PermissionOptionKind::AllowOnce,
+                    )
+                })
+                .collect(),
+        );
+        req.meta = json!({ "codex": { "kind": "plan_review", "planItemId": "item-7" } })
+            .as_object()
+            .cloned();
+        req
+    }
+
+    const CODEX_1_13_1_OPTIONS: &[&str] = &["implement_plan", "revise_plan"];
+
+    #[test]
+    fn codex_parse_accepts_the_plan_review() {
+        let req = codex_plan_review("# Plan\n- step\n", CODEX_1_13_1_OPTIONS);
+        assert_eq!(
+            parse_codex_plan_review_request(&req).as_deref(),
+            Some("# Plan\n- step")
+        );
+    }
+
+    #[test]
+    fn codex_parse_rejects_anything_else() {
+        let missing_revise = codex_plan_review("plan", &["implement_plan"]);
+        assert!(parse_codex_plan_review_request(&missing_revise).is_none());
+        let empty_plan = codex_plan_review("  ", CODEX_1_13_1_OPTIONS);
+        assert!(parse_codex_plan_review_request(&empty_plan).is_none());
+        let mut no_meta = codex_plan_review("plan", CODEX_1_13_1_OPTIONS);
+        no_meta.meta = None;
+        assert!(parse_codex_plan_review_request(&no_meta).is_none());
+        let mut other_kind = codex_plan_review("plan", CODEX_1_13_1_OPTIONS);
+        other_kind.tool_call.fields.kind = Some(ToolKind::Other);
+        assert!(parse_codex_plan_review_request(&other_kind).is_none());
+        let huge = "p".repeat(MAX_PLAN_MARKDOWN_CHARS + 10);
+        let req = codex_plan_review(&huge, CODEX_1_13_1_OPTIONS);
+        assert_eq!(
+            parse_codex_plan_review_request(&req)
+                .unwrap()
+                .chars()
+                .count(),
+            MAX_PLAN_MARKDOWN_CHARS
+        );
+    }
+
+    #[test]
+    fn codex_option_maps_every_decision() {
+        assert_eq!(
+            codex_plan_option(PlanApprovalDecision::Approve),
+            "implement_plan"
+        );
+        for decision in [
+            PlanApprovalDecision::RequestChanges,
+            PlanApprovalDecision::Abandon,
+            PlanApprovalDecision::HandOff,
+        ] {
+            assert_eq!(codex_plan_option(decision), "revise_plan");
+        }
+    }
+
+    #[test]
+    fn hand_off_deserializes_and_grok_abandons_it() {
+        let a: PlanApprovalAnswer =
+            serde_json::from_value(json!({ "decision": "hand_off" })).unwrap();
+        assert_eq!(a.decision, PlanApprovalDecision::HandOff);
+        assert_eq!(build_grok_exit_plan_response(&a)["outcome"], "abandoned");
     }
 
     #[test]

@@ -435,6 +435,24 @@ describe("starting a session", () => {
     await current.clear();
   });
 
+  it("answers a request and reports the session a plan was handed off to", async () => {
+    const s = setup();
+    const asked: unknown[] = [];
+    let handedOff: string | undefined;
+    s.w.host.backend.handlers["session.respond"] = (p: unknown) => (asked.push(p), handedOff ? { session_id: handedOff } : {});
+    const current = await live(s);
+    const approve = { kind: "plan_approval" as const, answer: { decision: "approve" as const } };
+    expect(await current.respond("s1", "p1", approve)).toBeNull();
+    handedOff = "s2";
+    const handOff = { kind: "plan_approval" as const, answer: { decision: "hand_off" as const } };
+    expect(await current.respond("s1", "p1", handOff)).toBe("s2");
+    expect(asked).toEqual([
+      { session_id: "s1", request_id: "p1", ...approve },
+      { session_id: "s1", request_id: "p1", ...handOff },
+    ]);
+    await current.clear();
+  });
+
   it("a failed start creates nothing and leaves the selection", async () => {
     const s = setup();
     s.w.host.backend.handlers["session.start"] = () => {
