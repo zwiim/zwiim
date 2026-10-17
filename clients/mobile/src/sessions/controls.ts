@@ -62,7 +62,7 @@ export function optionsError(e: unknown, hostName: string): string {
   return "Couldn't change that. Try again.";
 }
 
-/** The composer's chips: the mode (amber when unattended) and the model with its effort. */
+/** The composer's chips: the mode (needs-you color when unattended) and the model with its effort. */
 export interface OptionChips {
   mode: { mode: SessionMode; label: string } | null;
   /** `Opus 5 · High`; effort only while the model offers one. */

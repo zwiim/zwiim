@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { SquareTerminal } from "lucide-react";
 import type { SessionCommand } from "@zwiim/sdk";
+import { usePresence } from "@/lib/presence";
 import { cn } from "@/lib/utils";
 
 /** `/query` being typed just before the caret, at the start or after a space. */
@@ -142,16 +143,11 @@ export function useSlashMenu({
     }
   };
 
-  const menu = open && (
-    <ul
-      ref={list}
-      role="listbox"
-      aria-label="Commands"
-      className={cn(
-        "bg-card text-card-foreground absolute left-0 z-30 max-h-64 w-full overflow-y-auto rounded-xl border p-1 shadow-xl",
-        below ? "top-full mt-1" : "bottom-full mb-2",
-      )}
-    >
+  // The menu stays mounted for its exit, showing the rows it last had.
+  const presence = usePresence(open);
+  const shown = useRef<ReactNode>(null);
+  const rows = open ? (
+    <>
       {matches.map((c, i) => (
         <li
           key={c.name}
@@ -168,7 +164,7 @@ export function useSlashMenu({
             pick(c);
           }}
         >
-          <span className="shrink-0 font-mono text-[13px]">/{c.name}</span>
+          <span className="text-ui shrink-0 font-mono">/{c.name}</span>
           {c.hint && <span className="text-muted-foreground shrink-0 font-mono text-xs">{c.hint}</span>}
           <span className="text-muted-foreground min-w-0 truncate text-xs">{c.description}</span>
           {inCli(c) && (
@@ -197,11 +193,31 @@ export function useSlashMenu({
         >
           <SquareTerminal className="text-muted-foreground size-3.5 shrink-0" />
           <span className="shrink-0">
-            Run <span className="font-mono text-[13px]">{inTerminal}</span> in the embedded terminal
+            Run <span className="text-ui font-mono">{inTerminal}</span> in the embedded terminal
           </span>
           <span className="text-muted-foreground min-w-0 truncate text-xs">{terminal.agentName}</span>
         </li>
       )}
+    </>
+  ) : (
+    shown.current
+  );
+  if (open) shown.current = rows;
+
+  const menu = presence.mounted && (
+    <ul
+      ref={list}
+      role="listbox"
+      aria-label="Commands"
+      data-state={presence.state}
+      aria-hidden={!open || undefined}
+      inert={!open}
+      className={cn(
+        "bg-popover text-popover-foreground presence-pop shadow-pop absolute left-0 z-30 max-h-64 w-full overflow-y-auto rounded-xl border p-1",
+        below ? "top-full mt-1 origin-top" : "bottom-full mb-2 origin-bottom",
+      )}
+    >
+      {rows}
     </ul>
   );
 

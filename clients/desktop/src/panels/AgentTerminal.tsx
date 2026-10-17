@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
-import { SquareTerminal } from "lucide-react";
+import { Loader2, SquareTerminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
 import { TerminalView } from "./TerminalPanel";
@@ -53,16 +53,20 @@ export function AgentTerminalCard({ workspaceId }: { workspaceId: string }) {
   const run = terminals?.runs[workspaceId] ?? null;
   const alive = useHost((s) => (run ? (s.terminals[run.terminalId]?.alive ?? false) : false));
   const [error, setError] = useState<string | null>(null);
+  const [ending, setEnding] = useState(false);
   if (!terminals || !run) return null;
 
   async function done() {
     setError(null);
+    setEnding(true);
     try {
       if (alive) await controller.client.request("terminal.kill", { terminal_id: run!.terminalId });
       else controller.detachTerminal(run!.terminalId);
       terminals!.close(workspaceId);
     } catch (e) {
       setError(errorMessage(e));
+    } finally {
+      setEnding(false);
     }
   }
 
@@ -77,12 +81,12 @@ export function AgentTerminalCard({ workspaceId }: { workspaceId: string }) {
         <p className="text-muted-foreground min-w-0 flex-1 truncate">
           {alive ? (
             <>
-              Complete <span className="text-foreground font-mono text-[13px]">{run.command}</span> below, then click
+              Complete <span className="text-foreground font-mono text-ui">{run.command}</span> below, then click
               Done
             </>
           ) : (
             <>
-              <span className="font-mono text-[13px]">{run.command}</span> has finished
+              <span className="font-mono text-ui">{run.command}</span> has finished
             </>
           )}
         </p>
@@ -91,11 +95,12 @@ export function AgentTerminalCard({ workspaceId }: { workspaceId: string }) {
             {error}
           </span>
         )}
-        <Button size="xs" variant="outline" onClick={done}>
+        <Button size="xs" variant="outline" disabled={ending} onClick={done}>
+          {ending && <Loader2 className="animate-spin" />}
           Done
         </Button>
       </div>
-      <div className="h-72 bg-[#0c0c0c] p-1">
+      <div className="h-72 bg-terminal p-1">
         <TerminalView
           controller={controller}
           terminalId={run.terminalId}

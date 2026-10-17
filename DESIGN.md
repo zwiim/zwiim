@@ -69,47 +69,53 @@ process, or a clock, it is mono.
 
 ## Color
 
-**Approach:** restrained. Neutrals + one brand accent + status colors that carry
-meaning. Violet is calm ("working"); amber is the loudest color in the app and is
-reserved for "needs you".
+**Approach:** restrained, "Tide". Cool graphite neutrals + one accent + two status
+colors. The accent is the only chromatic hue that is not a result: links, mentions,
+focus, selection, the primary action, the active tab and **needs you**. Working is
+not a color: it is a breathing neutral dot. Green and red mean done and failed.
+Amber and yellow are not used anywhere.
 
 | Token | Dark (default) | Light | Use |
 |---|---|---|---|
-| `bg` | `#131314` | `#FFFFFF` | Screen background |
-| `surface` | `#1C1C1D` | `#F7F7F8` | Cards, composer, grouped rows, chips |
-| `raised` | `#212123` | `#FFFFFF` + `line` | Sheets, secondary buttons, menus |
-| `code` | `#0C0C0D` | `#F4F4F5` | Terminal, command blocks, diffs |
-| `fg` | `#EEEEF0` | `#0A0A0B` | Primary text |
-| `mut` | `#929296` | `#6E6E73` | Secondary text, metadata |
-| `faint` | `#5E5E63` | `#A1A1A6` | Placeholders, idle dots, disabled |
+| `bg` | `#121416` | `#FFFFFF` | Screen background |
+| `chrome` | `#17191B` | `#F6F8F9` | Sidebar, tab bar, headers |
+| `surface` | `#1E2123` | `#EFF1F4` | Cards, composer, grouped rows, chips, user bubble |
+| `raised` | `#282A2D` | `#ECEEF1` | Sheets, secondary buttons, menus |
+| `code` | `#0D0E10` | `#F3F5F6` | Command blocks, diffs (the terminal is `#0D0E10` in both themes) |
+| `fg` | `#DFE1E3` | `#101214` | Primary text (dark softened from pure white to ease glare) |
+| `prose` | `#C8CBCE` | `#2F3337` | Rendered markdown body (agent replies, previews) |
+| `prose-strong` | `#E6E8EA` | `#0B0C0E` | Markdown bold and headings: brighter than body so emphasis reads by tone and weight |
+| `mut` | `#A3A6A9` | `#5F6368` | Secondary text, metadata, **working** dot |
+| `faint` | `#75787C` | `#8C9094` | Placeholders, idle dots, disabled; never essential text |
 | `line` | `rgba(255,255,255,.07)` | `rgba(0,0,0,.08)` | Hairlines |
-| `accent` | `#9C96F8` | `#6B55DF` | Brand, **working**, send, focus, "since you left" |
-| `accent-ink` | `#17152B` | `#FFFFFF` | Text on accent |
-| `need` | `#F5B544` | `#B7791F` | **Needs you**: requests, badges, the primary action on a request |
-| `need-ink` | `#2A1E05` | `#FFFFFF` | Text on need |
-| `done` | `#4CC38A` | `#1F8A5B` | Completed, online host, `+` diff lines, passed checks, the Merge button |
+| `accent` | `#6CB4F0` | `#1A68B3` | Links, mentions, focus, selection, send, active tab, **needs you** |
+| `accent-ink` | `#071A2B` | `#FFFFFF` | Text on accent |
+| `need` | = `accent` | = `accent` | Alias kept for the needs-you roles below (badge, request edge, request action) |
+| `need-ink` | = `accent-ink` | = `accent-ink` | Text on need |
+| `done` | `#4CC38A` | `#1B7A50` | Completed, online host, `+` diff lines, passed checks, the Merge button |
 | `done-ink` | `#0B2A1B` | `#FFFFFF` | Text on done (Merge only) |
-| `err` | `#FF6467` | `#D93B3B` | Error, revoked, destructive, `−` diff lines |
+| `err` | `#FF6467` | `#C8343A` | Error, revoked, destructive, `−` diff lines |
+| `add-bg` / `del-bg` | `done` / `err` at 11% | at 10% / 9% | Diff line backgrounds |
 
-Values derive from the Desktop Graphite tokens in
-`clients/desktop/src/styles.css` (oklch → sRGB).
+Desktop (`clients/desktop/src/styles.css`) and mobile use the same values. Light
+`done`, `err` and `mut` are darkened to reach 4.5:1 on white.
 
 ### Status semantics (one mapping, used everywhere)
 
 | State | Dot | Source |
 |---|---|---|
-| Needs you | `need`, 4px halo | `SessionSnapshot.pending_request != null` |
-| Working | `accent`, 4px halo, breathing | `AgentStatus = prompting` |
+| Needs you | `accent`, 4px halo | `SessionSnapshot.pending_request != null` |
+| Working | `mut`, breathing | `AgentStatus = prompting` |
 | Ready / idle | `faint` | `connected`, no pending request |
 | Completed | `done` | `SessionStatus = completed` |
 | Error | `err` | `AgentStatus = error` / `last_error` |
 | Disconnected | hollow `faint` ring | `AgentStatus = disconnected` |
 
-Host dot: `done` = online, `faint` = offline, `accent` breathing = connecting/reconnecting.
+Host dot: `done` = online, `faint` = offline, `mut` breathing = connecting/reconnecting.
 
 **Connection path is never color-coded.** LAN and Cloud are both healthy; they
 are shown as a mono pill with a glyph (`⌂ local`, `☁ cloud`). Color appears only
-when the path is degraded (reconnecting → breathing accent dot; offline → `faint`).
+when the path is degraded (reconnecting → breathing `mut` dot and dimmed content; offline → `faint`).
 
 **Dark mode** is default and follows the OS setting (`useColorScheme`). Light
 theme is a full token set, not an inversion: surfaces use `surface` tint, `raised`
@@ -315,7 +321,7 @@ Approved layout (variant A):
   Effort follows the Model row: the levels that model offers, and no Effort
   row on a model without one (Haiku); an Effort pick comes back with a model
   that offers it (R8.14).
-  Unattended asks first ("Turn off approvals?") and shows in amber. Then
+  Unattended asks first ("Turn off approvals?") and shows in `need`. Then
   **First prompt** and a full-width **Start session** in the thumb zone. A
   selected worktree that was removed shows `Workspace removed` in red and Start
   stays disabled until another is picked; it never falls back to the root.
@@ -398,7 +404,7 @@ Top to bottom:
 - **Now bar** (pinned above the composer, 44pt, mono):
   - working: breathing dot · `Running npm test -- lan` · elapsed · **Stop** (`fg` button) → `session.cancel`
   - thinking: `Thinking` · elapsed · **Stop**
-  - needs you: amber tint, `Waiting for you · Edit transport/lan.ts` · **Review** → Request sheet
+  - needs you: `need` tint, `Waiting for you · Edit transport/lan.ts` · **Review** → Request sheet
     (and the sheet auto-presents once when the request arrives while the screen is open)
   - reconnecting: `Reconnecting… retry in 3s` (from `ConnectionState.retryInMs`)
   - idle / completed: bar hidden.
@@ -433,7 +439,7 @@ model brings its own effort (or none) and never the old one. Unattended asks
 first ("Turn off approvals?"). While a turn runs, offline, or before the agent
 reports its options, the controls are read-only with the reason in `mut` under
 the title; refusals (`turn_in_progress`, `option_unavailable`) show in `err`. In
-Unattended an amber note carries **Ask first again**. Below, **Context**: a 6pt
+Unattended a `need` note carries **Ask first again**. Below, **Context**: a 6pt
 accent bar (only with both figures) and one mono line, `37,738 of 1,000,000`
 with `962,262 left` at the right (a missing figure is named: `window not
 reported`, in `faint`). After a finished turn, a fold **Last turn · 87,352
@@ -650,7 +656,7 @@ glyph, a title, one line, one action.
 | No terminals | Files → Terminals | "No terminals in {worktree}" · **New terminal** |
 | No changes | Files → Changes | "No uncommitted changes on r8-mobile." |
 | No active sessions | Sessions | "No sessions yet in {workspace}" · **New session** |
-| Agent waiting for user | List card, Now bar amber, tab badge, sheet | As specified in Screens 4 and 5 |
+| Agent waiting for user | List card, Now bar `need`, tab badge, sheet | As specified in Screens 4 and 5 |
 | Agent working | Breathing dot + Now bar | As specified |
 | Agent completed | Row `done` dot; session shows final message, Now bar hidden, a mono footer row `✓ Turn finished · 3m 12s · 14 tool calls` |
 | Error (`last_error`) | Inline error row in transcript (`err` left edge) with the message and **Retry** where the op is retryable | |
@@ -673,17 +679,43 @@ glyph, a title, one line, one action.
 
 ## Desktop alignment
 
-- Desktop (`clients/desktop/src/styles.css`) already uses these color values
-  (Graphite dark, violet brand).
-- Desktop uses Inter; mobile uses Geist. Moving Desktop to Geist + Geist Mono is
-  a one-line font-family change plus a mono pass. Deferred to its own slice; until
-  then the families differ in type only.
-- Amber-for-needs-you and the status mapping should be adopted by Desktop when
-  it is next touched, so a waiting agent looks the same on both.
+- Desktop (`clients/desktop/src/styles.css`) uses these Tide color values and the
+  status mapping above; `brand` there is `accent` here.
+- Desktop uses Inter + JetBrains Mono (bundled via `@fontsource-variable`, the
+  same two-voices rule); mobile uses Geist. Desktop type scale: `2xs` 11/14,
+  `xs` 12/16, `ui` 13/18 (rows, buttons), `sm` 14/20, `body` 14/22 (prose),
+  `base` 16/22, `xl` 20/26 (dialog titles); mono 12/18 in rows and the terminal.
+- Desktop motion: state changes 120ms standard curve; menus, popovers and dialogs
+  enter in 180ms (out-curve) and leave in 130ms (in-curve); a press scales to .98;
+  folds animate their height in 200ms. Transcript arrivals (messages, tool rows,
+  thinking) rise 12px and fade in over 320ms (`ease-rise`). Streaming text has no
+  caret on desktop; under it, the working mark (a 3×3 dot grid; a three-dot snake
+  walks its edge clockwise, 1.2s loop) with "Working" and the elapsed time says it is still arriving. A running tool row has
+  no spinner: its verb shimmers until it finishes. The same mark stands in for a
+  session tab's icon while it works, and for a sidebar worktree's (or repository's)
+  icon while any session in it works; desktop has no breathing dot there. Both
+  side panels slide to their rail and back, and the terminal folds to its tab
+  strip and back, in 200ms (`ease-std`); a drag-resize follows the pointer with
+  no animation. Reduce Motion stops everything.
+- Desktop's collapsed sidebar rail keeps the account: its avatar sits at the
+  rail's foot (update dot on its corner) and opens the same account and settings
+  menu, rightward.
+- Desktop focus: one ring everywhere, 2px `brand` at 55%, offset 2. Disabled
+  buttons keep their tooltip.
 - Desktop's composer carries the same context ring beside send (R8.15). Hover
   shows the window and last turn's tokens; a click pins them until Escape or a
   click elsewhere. Same rule as the phone: only reported figures, a missing one
   reads "not reported".
+- Desktop's composer mode menu reads Ask / Plan / **Auto** (Auto is the
+  `unattended` mode on the wire). A new session starts in Auto wherever the
+  agent offers it; picking Auto takes one click, with no confirmation. The chip
+  stays `brand` and the composer keeps its Auto note with **Ask first again**.
+  The phone still says Unattended and asks first.
+- Desktop opens an agent's image from one place: the compact chip (image icon
+  and name, no thumbnail) on the tool row that read it; click opens the picture
+  in the preview panel. A workspace image linked in the agent's text shows
+  nothing. An image with no row (a message's own image part, a result's extra
+  images) gets the same chip.
 - Desktop's PR banner (V2.3) sits above the Files / Diff / Git views: PR icon,
   mono `#12` and the title (opens the PR), a `done` **Merge** button (tooltip
   names the method, or GitHub's reason when disabled), then the status and check
@@ -704,10 +736,10 @@ glyph, a title, one line, one action.
   one `N removed` row, opened automatically when one is selected. Worktree rows
   are one line (branch in mono, base in the tooltip); the repository name keeps
   its room and the branch beside it truncates first. Working is a pulsing
-  `brand` dot, not amber. Folds are remembered on the device.
-- Desktop's Files tree marks files by type with Lucide icons in muted hues
-  (code, docs, config, images, archives, keys; lockfiles muted with a lock), uses
-  an open-folder icon when expanded, and opens a folder whose only entry is a
+  neutral dot, not a color. Folds are remembered on the device.
+- Desktop's Files tree marks files and folders by type with Material Icon Theme
+  icons (the pack's own SVGs and name tables, light variants in light theme;
+  `third_party/material-icon-theme`), uses its open-folder icon when expanded, and opens a folder whose only entry is a
   folder (not a link) straight through, on one row: `dist / 0.1.0-rc.3`.
 - Desktop's chat links: a bare web address reads without its scheme
   (`github.com/…`), in `brand` with no underline until hover and an
@@ -717,8 +749,8 @@ glyph, a title, one line, one action.
   the file as a tab beside the conversation; the tooltip is its workspace path.
   Files outside the workspace, or in a removed worktree, stay muted and inert.
 - Desktop's connection line follows the host-dot rule: connected is a `done`
-  dot and a muted label, no pill; connecting / reconnecting a breathing `brand`
-  dot; only a failure (not authorized, error) is a red badge. Amber is not used.
+  dot and a muted label, no pill; connecting / reconnecting a breathing neutral
+  dot and the content dims; only a failure (not authorized, error) is a red badge.
 - Desktop's empty terminal dock sits on the panel surface (the `code` black is
   for a running terminal) with a **New terminal** button. A workspace whose
   folder is gone says so in Files ("This folder is no longer on the host") with
@@ -776,3 +808,5 @@ glyph, a title, one line, one action.
 | 2026-10-04 | Continue after merge is one tap, no confirm (V2.4) | Continue loses nothing: sessions, terminals and the old branch all stay, so a confirm would only ask the user to read the same line twice. The Host is the guard: it refuses while an agent works, with uncommitted changes, or unless GitHub says it merged this branch's head. Merge keeps its confirm on the phone because a merge can't be taken back |
 | 2026-10-04 | Slash commands can run in the agent's CLI, embedded over the composer | Many CLI commands (`/mcp`, `/status`, `/login`, plugin commands) do nothing over ACP; Conductor runs them in a terminal over its composer and the gap read as broken. The agent's ACP list decides (user call): what it lists runs over ACP, what it does not only the CLI runs; ACP strips Claude's `builtin` flag, so the listed ones whose screen is the CLI's are named. A terminal in the dock with the command typed made the user move focus and press Enter there (user call: follow Conductor); the card runs it in place. Codex gets Enter only when the command shows, so a prompt the CLI asks first is never answered for the user |
 | 2026-10-06 | Plain folders become repositories on add; a large folder asks first | Worktrees, Changes and every Git feature need a repository, and a plain folder had none of them. The Host commits the folder as "Initial Commit" with a basic `.gitignore` (written only if none exists) so secrets stay out; over 5,000 files or 500 MB the user confirms the count first, since a huge first commit is slow and easy to regret. A failed init fails the add, so a folder is never half-registered. Supersedes 2026-09-27's "Git stays optional" for new adds |
+| 2026-10-17 | Tide accent; amber removed; working is neutral (design-shotgun r2, A3) | One accent reads calmer than violet plus amber; a waiting agent is still the only accent-colored dot with a halo, while working breathes in grey so color means "look here". Desktop loads Inter + JetBrains Mono (the font was named but never loaded), gains a type scale, motion tokens, one focus ring and Material file icons. Supersedes 2026-09-26 "Keep Desktop Graphite + violet" and "Amber is the loudest color" |
+| 2026-10-17 | Desktop: Unattended renamed Auto and made the default, no confirmation | User call: approvals on every command slowed normal work. Auto is the label only (the wire keeps `unattended`); a new session starts in it where the agent offers it, and the brand chip plus the Ask first again note keep it visible and one click from leaving. Supersedes the desktop half of R8.15 "Unattended asks first" |

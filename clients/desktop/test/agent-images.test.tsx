@@ -12,8 +12,17 @@ afterEach(() => {
 });
 
 const workspace = {
-  workspace_id: "w1", name: "a9b70af5", alias: null, kind: "worktree", parent_workspace_id: "root",
-  is_git_repo: true, branch: "zwiim/a9b70af5", base_branch: "main", base_commit: null, removed: false, display_path: null,
+  workspace_id: "w1",
+  name: "a9b70af5",
+  alias: null,
+  kind: "worktree",
+  parent_workspace_id: "root",
+  is_git_repo: true,
+  branch: "zwiim/a9b70af5",
+  base_branch: "main",
+  base_commit: null,
+  removed: false,
+  display_path: null,
 } as const;
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
 const b64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
@@ -42,52 +51,27 @@ async function mount(ui: React.ReactNode, files: Record<string, Uint8Array> = {}
 }
 
 describe("agent image chip", () => {
-  it("shows a thumbnail and opens the preview", async () => {
-    const { links, controller } = await mount(<AgentImageChip path=".zwiim/images/ab12.png" />, { ".zwiim/images/ab12.png": PNG });
+  it("shows the file's icon and name, fetches nothing, and opens the preview", async () => {
+    const { links, controller, t } = await mount(<AgentImageChip path=".zwiim/images/ab12.png" />, {
+      ".zwiim/images/ab12.png": PNG,
+    });
     const chip = screen.getByTestId("agent-image");
     expect(chip.textContent).toContain("ab12.png");
-    expect(chip.querySelector("img")?.getAttribute("src")).toBe("blob:thumb");
+    expect(chip.querySelector("img:not([aria-hidden])")).toBeNull();
+    expect(t.calls.some((c) => c.op === "files.download")).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Open ab12.png" }));
     expect(links.open).toHaveBeenCalledWith(".zwiim/images/ab12.png");
-    controller.dispose();
-  });
-
-  it("fetches a hashed image once however many chips show it", async () => {
-    const path = ".zwiim/images/0123456789abcdef.png";
-    const { controller, t } = await mount(
-      <>
-        <AgentImageChip path={path} />
-        <AgentImageChip path={path} inline />
-      </>,
-      { [path]: PNG },
-    );
-    expect(t.calls.filter((c) => c.op === "files.download")).toHaveLength(1);
-    expect(screen.getAllByTestId("agent-image")).toHaveLength(2);
-    cleanup();
-    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
-    controller.dispose();
-  });
-
-  it("shows missing and disables the chip when the file is gone", async () => {
-    const { links, controller } = await mount(<AgentImageChip path=".zwiim/images/gone.png" />);
-    const chip = screen.getByTestId("agent-image");
-    expect(chip.textContent).toContain("missing");
-    const button = screen.getByRole("button", { name: "Open gone.png" }) as HTMLButtonElement;
-    expect(button.disabled).toBe(true);
-    fireEvent.click(button);
-    expect(links.open).not.toHaveBeenCalled();
     controller.dispose();
   });
 });
 
 describe("markdown paths", () => {
-  it("renders a workspace image as a chip with an inline preview", async () => {
-    const { controller } = await mount(<Markdown text={"Here:\n\n![screen](.zwiim/images/my%20shot.png)"} />, {
+  it("shows a workspace image as a chip without fetching it", async () => {
+    const { controller, t } = await mount(<Markdown text={"Here:\n\n![screen](.zwiim/images/my%20shot.png)"} />, {
       ".zwiim/images/my shot.png": PNG,
     });
-    const chip = screen.getByTestId("agent-image");
-    expect(chip.textContent).toContain("my shot.png");
-    expect(chip.querySelectorAll("img").length).toBe(2); // thumbnail + inline preview
+    expect(screen.getByTestId("agent-image").textContent).toContain("my shot.png");
+    expect(t.calls.some((c) => c.op === "files.download")).toBe(false);
     controller.dispose();
   });
 
@@ -99,7 +83,9 @@ describe("markdown paths", () => {
   });
 
   it("renders a link to a workspace pdf as a file chip that opens the preview", async () => {
-    const { links, controller } = await mount(<Markdown text={"See [the report](out/report.pdf) and [code](src/a.ts)."} />);
+    const { links, controller } = await mount(
+      <Markdown text={"See [the report](out/report.pdf) and [code](src/a.ts)."} />,
+    );
     const chip = screen.getByTestId("file-link-chip");
     expect(chip.textContent).toContain("report.pdf");
     fireEvent.click(chip);

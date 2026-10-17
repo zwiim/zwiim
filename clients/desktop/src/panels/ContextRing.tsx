@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { contextFraction, contextLeft, type SessionView } from "@zwiim/sdk";
+import { usePresence } from "@/lib/presence";
 import { cn } from "@/lib/utils";
 
 /** A token count in full, grouped: `46,210`. */
@@ -53,6 +54,7 @@ export function ContextRing({ view, agent }: { view: SessionView | undefined; ag
   const root = useRef<HTMLDivElement>(null);
   const leave = useRef<ReturnType<typeof setTimeout> | null>(null);
   const open = hover || pinned;
+  const presence = usePresence(open);
 
   const fraction = contextFraction(view?.usage);
   const percent = fraction === null ? "—" : `${Math.round(fraction * 100)}%`;
@@ -97,7 +99,7 @@ export function ContextRing({ view, agent }: { view: SessionView | undefined; ag
         aria-expanded={open}
         aria-haspopup="dialog"
         onClick={() => setPinned((p) => !p)}
-        className="text-muted-foreground hover:text-foreground hover:bg-muted focus-visible:ring-ring/50 flex h-7 items-center gap-1.5 rounded-md px-2 font-mono text-xs tabular-nums outline-none focus-visible:ring-2"
+        className="text-muted-foreground hover:text-foreground hover:bg-muted focus-visible:ring-ring/50 flex h-7 items-center gap-1.5 rounded-md px-2 font-mono text-xs tabular-nums transition-colors outline-none focus-visible:ring-2"
         data-testid="context-ring"
       >
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden>
@@ -111,7 +113,7 @@ export function ContextRing({ view, agent }: { view: SessionView | undefined; ag
                 cy="8"
                 r={R}
                 fill="none"
-                className="stroke-brand"
+                className="stroke-brand ease-std transition-[stroke-dasharray] duration-300"
                 strokeWidth={2}
                 strokeLinecap="round"
                 strokeDasharray={`${Math.max(0.02, fraction) * C} ${C}`}
@@ -122,17 +124,20 @@ export function ContextRing({ view, agent }: { view: SessionView | undefined; ag
         </svg>
         {percent}
       </button>
-      {open && (
+      {presence.mounted && (
         <div
           role="dialog"
           aria-label="Context"
-          className="bg-card text-card-foreground absolute right-0 bottom-full z-20 mb-2 flex w-72 flex-col gap-2.5 rounded-xl border p-3 text-xs shadow-xl"
+          className="bg-card text-card-foreground presence-pop shadow-pop absolute right-0 bottom-full z-20 mb-2 flex w-72 origin-bottom-right flex-col gap-2.5 rounded-xl border p-3 text-xs"
           data-testid="context-popover"
+          data-state={presence.state}
+          aria-hidden={!open || undefined}
+          inert={!open}
         >
-          <p className="text-muted-foreground font-medium tracking-wide uppercase">Context</p>
+          <p className="text-muted-foreground text-2xs font-semibold tracking-wide uppercase">Context</p>
           {fraction !== null && (
             <div className="bg-muted h-1.5 overflow-hidden rounded-full">
-              <div className="bg-brand h-full rounded-full" style={{ width: `${Math.max(2, fraction * 100)}%` }} />
+              <div className="bg-brand ease-std h-full rounded-full transition-[width] duration-300" style={{ width: `${Math.max(2, fraction * 100)}%` }} />
             </div>
           )}
           {reported ? (
@@ -144,11 +149,11 @@ export function ContextRing({ view, agent }: { view: SessionView | undefined; ag
           )}
           {rows.lastTurn && (
             <>
-              <p className="text-muted-foreground mt-1 font-medium tracking-wide uppercase">Last turn · tokens</p>
+              <p className="text-muted-foreground text-2xs mt-1 font-semibold tracking-wide uppercase">Last turn · tokens</p>
               <Figures rows={rows.lastTurn} />
             </>
           )}
-          <p className="text-muted-foreground/70">As {agent ?? "the agent"} reports them. Nothing here is estimated.</p>
+          <p className="text-muted-foreground">As {agent ?? "the agent"} reports them. Nothing here is estimated.</p>
         </div>
       )}
     </div>
@@ -161,7 +166,7 @@ function Figures({ rows }: { rows: Row[] }) {
       {rows.map((r) => (
         <div key={r.key} className="contents" data-testid={`context-${r.key}`}>
           <dt className="text-muted-foreground">{r.label}</dt>
-          <dd className={cn("text-right font-mono tabular-nums", r.value === null && "text-muted-foreground/60")}>
+          <dd className={cn("text-right font-mono tabular-nums", r.value === null && "text-muted-foreground")}>
             {r.value ?? "not reported"}
           </dd>
         </div>

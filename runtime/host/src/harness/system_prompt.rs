@@ -82,13 +82,14 @@ fn section(title: &str, lines: &[String]) -> String {
 }
 
 fn runtime() -> String {
-    "You are running in Zwiim, on the user's machine. The user may be on Desktop or on their phone.\n\n".to_string()
+    "You are running in Zwiim, on the user's computer, with its shell. The user may be at this computer or writing from their phone.\n\n".to_string()
         + &section(
             "Runtime",
             &[
                 "Zwiim Host is the source of truth for workspace, session, terminal, and agent state.".into(),
                 "Do not bypass the Host by directly manipulating managed runtime state.".into(),
                 "A client disconnect does not mean the Host session or agent has stopped.".into(),
+                "\"The screen\" or \"my display\" means this computer's display, even when the user writes from their phone. Without screen-control tools, capture it with the shell (on macOS `screencapture -x <file>.png`) and open the file with your image-viewing tool.".into(),
             ],
         )
 }
@@ -103,6 +104,7 @@ fn rules() -> String {
             "Never expose, print, commit, or persist credentials, API keys, tokens, private keys, or other secrets.".into(),
             "Don't claim something works without running checks; say what wasn't verified.".into(),
             "Follow the project's instructions (CLAUDE.md, AGENTS.md).".into(),
+            "Number options, findings, steps and questions 1, 2, 3 (nested 1.1, 1.2), not bullet dots, so the user can reply by number. Keep the numbers stable when you list the same items again.".into(),
             "These instructions apply for the entire session.".into(),
         ],
     )
@@ -123,7 +125,7 @@ fn workspace(input: &HarnessInput) -> String {
                 .into(),
         );
         lines.push(
-            "Save screenshots, captures and generated images under `.zwiim/images/` in this directory (it is excluded from Git), and show one to the user as `![name](.zwiim/images/<file>)`."
+            "Save screenshots, captures and generated images under `.zwiim/images/` in this directory (it is excluded from Git), then open each with your image-viewing tool: that is how the user sees it. Don't link or embed images in your reply."
                 .into(),
         );
     }
@@ -199,7 +201,7 @@ mod tests {
         }
     }
 
-    const IMAGES_LINE: &str = "- Save screenshots, captures and generated images under `.zwiim/images/` in this directory (it is excluded from Git), and show one to the user as `![name](.zwiim/images/<file>)`.\n";
+    const IMAGES_LINE: &str = "- Save screenshots, captures and generated images under `.zwiim/images/` in this directory (it is excluded from Git), then open each with your image-viewing tool: that is how the user sees it. Don't link or embed images in your reply.\n";
 
     #[test]
     fn worktrees_tell_agents_where_images_go() {
@@ -225,7 +227,7 @@ mod tests {
     #[test]
     fn worktree_with_a_remote_gets_every_line() {
         let text = render(&worktree());
-        assert!(text.starts_with("You are running in Zwiim, on the user's machine."));
+        assert!(text.starts_with("You are running in Zwiim, on the user's computer, with its shell."));
         assert!(text.contains(
             "\nWorkspace\n- Working directory: /w/repo/pune. Work only here unless the user asks otherwise.\n"
         ));
@@ -244,8 +246,10 @@ mod tests {
         assert!(text.contains("run `git` or `gh` directly only when those tools are unavailable"));
         assert!(text.contains("- Updating a branch: merge origin/main into it."));
         assert!(text.contains("\nRuntime\n- Zwiim Host is the source of truth"));
+        assert!(text.contains("capture it with the shell (on macOS `screencapture -x <file>.png`)"));
         assert!(text.contains("\nRules\n- Inspect before changing."));
         assert!(text.contains("- Follow the project's instructions (CLAUDE.md, AGENTS.md).\n"));
+        assert!(text.contains("- Number options, findings, steps and questions 1, 2, 3 (nested 1.1, 1.2), not bullet dots, so the user can reply by number."));
         assert!(text.ends_with("`git merge --abort` returns to where you started.\n"));
         assert!(!text.contains('{'), "no unfilled placeholder: {text}");
     }

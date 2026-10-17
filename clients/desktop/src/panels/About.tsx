@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { Loader2 } from "lucide-react";
 import type { Compatibility, HostDiagnostics, HostUpdateApply, HostUpdateStatus } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { DESKTOP_CLIENT } from "@/lib/app-info";
@@ -61,6 +62,8 @@ function DesktopSection({ bridge }: { bridge: NativeBridge }) {
   const updates = bridge.updates;
   const [status, setStatus] = useState<DesktopUpdateStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The button clicked, until its call answers.
+  const [pending, setPending] = useState<"check" | "install" | "restart" | null>(null);
 
   useEffect(() => {
     if (!updates) return;
@@ -74,17 +77,20 @@ function DesktopSection({ bridge }: { bridge: NativeBridge }) {
     };
   }, [updates]);
 
-  const run = (f: () => Promise<DesktopUpdateStatus | void>) => {
+  const run = (label: "check" | "install" | "restart", f: () => Promise<DesktopUpdateStatus | void>) => {
     setError(null);
-    f().then(
-      (s) => s && setStatus(s),
-      (e) => setError(errorMessage(e)),
-    );
+    setPending(label);
+    f()
+      .then(
+        (s) => s && setStatus(s),
+        (e) => setError(errorMessage(e)),
+      )
+      .finally(() => setPending(null));
   };
 
   const a = status?.activity;
   return (
-    <section className="flex flex-col gap-1.5 rounded-md border p-2.5" data-testid="about-desktop">
+    <section className="flex flex-col gap-1.5 rounded-md border p-3" data-testid="about-desktop">
       <div className="flex items-center gap-2">
         <span className="font-medium">Zwiim Desktop</span>
         <span className="text-muted-foreground font-mono">{status?.version ?? DESKTOP_CLIENT.version}</span>
@@ -104,17 +110,20 @@ function DesktopSection({ bridge }: { bridge: NativeBridge }) {
               {a?.state === "failed" && <span className="text-destructive">{a.message}</span>}
             </span>
             {(a?.state === "idle" || a?.state === "up_to_date" || a?.state === "failed") && (
-              <Button size="xs" variant="outline" onClick={() => run(() => updates.check())}>
+              <Button size="xs" variant="outline" disabled={pending !== null} onClick={() => run("check", () => updates.check())}>
+                {pending === "check" && <Loader2 className="animate-spin" />}
                 Check for updates
               </Button>
             )}
             {a?.state === "available" && (
-              <Button size="xs" onClick={() => run(() => updates.install())}>
+              <Button size="xs" variant="brand" disabled={pending !== null} onClick={() => run("install", () => updates.install())}>
+                {pending === "install" && <Loader2 className="animate-spin" />}
                 Download and install
               </Button>
             )}
             {a?.state === "ready" && (
-              <Button size="xs" onClick={() => run(() => updates.restart())}>
+              <Button size="xs" variant="brand" disabled={pending !== null} onClick={() => run("restart", () => updates.restart())}>
+                {pending === "restart" && <Loader2 className="animate-spin" />}
                 Restart Zwiim
               </Button>
             )}
@@ -177,7 +186,7 @@ function HostSection({ remote }: { remote: boolean }) {
   const last = s?.last_result;
   const failed = s?.activity.state === "failed" ? s.activity : null;
   return (
-    <section className="flex flex-col gap-1.5 rounded-md border p-2.5" data-testid="about-host">
+    <section className="flex flex-col gap-1.5 rounded-md border p-3" data-testid="about-host">
       <div className="flex items-center gap-2">
         <span className="font-medium">{remote ? "Host" : "Host on this computer"}</span>
         <span className="text-muted-foreground font-mono">{hello?.version ?? "—"}</span>
@@ -238,11 +247,13 @@ function HostSection({ remote }: { remote: boolean }) {
                       : null}
           </span>
           {s.staged ? (
-            <Button size="xs" disabled={busy !== null} onClick={() => void apply("when_idle")}>
+            <Button size="xs" variant="brand" disabled={busy !== null} onClick={() => void apply("when_idle")}>
+              {busy === "apply:when_idle" && <Loader2 className="animate-spin" />}
               {busy === "apply:when_idle" ? "Restarting…" : "Restart host"}
             </Button>
           ) : (
             <Button size="xs" variant="outline" disabled={busy !== null} onClick={() => void check()}>
+              {busy === "check" && <Loader2 className="animate-spin" />}
               {busy === "check" ? "Checking…" : "Check for updates"}
             </Button>
           )}
@@ -264,6 +275,7 @@ function HostSection({ remote }: { remote: boolean }) {
             The host restarts when {blockersText(applied.blockers) || "its work"} finishes.
           </span>
           <Button size="xs" variant="destructive" disabled={busy !== null} onClick={() => void apply("now")}>
+            {busy === "apply:now" && <Loader2 className="animate-spin" />}
             Restart now
           </Button>
         </div>
@@ -326,7 +338,7 @@ function BetaUpdatesToggle({ bridge, remote }: { bridge: NativeBridge; remote: b
     }
   };
   return (
-    <section className="flex flex-col gap-1 rounded-md border p-2.5">
+    <section className="flex flex-col gap-1 rounded-md border p-3">
       <label className="flex items-center gap-2">
         <input
           type="checkbox"
@@ -361,7 +373,7 @@ export function HostLoginToggle({ bridge }: { bridge: NativeBridge }) {
   }, [login]);
   if (!login || !status?.supported) return null;
   return (
-    <section className="flex flex-col gap-1 rounded-md border p-2.5">
+    <section className="flex flex-col gap-1 rounded-md border p-3">
       <label className="flex items-center gap-2">
         <input
           type="checkbox"
@@ -410,6 +422,12 @@ function DiagnosticsSection({ bridge }: { bridge: NativeBridge }) {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
+
   const load = () => {
     setError(null);
     controller.client.request("host.diagnostics", {}).then(setD, (e) => setError(errorMessage(e)));
@@ -425,7 +443,7 @@ function DiagnosticsSection({ bridge }: { bridge: NativeBridge }) {
   };
 
   return (
-    <section className="flex flex-col gap-1.5 rounded-md border p-2.5" data-testid="about-diagnostics">
+    <section className="flex flex-col gap-1.5 rounded-md border p-3" data-testid="about-diagnostics">
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 font-medium">Diagnostics</span>
         {d ? (

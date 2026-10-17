@@ -1,30 +1,24 @@
-import { createContext, useContext } from "react";
-import { ArrowUpRight } from "lucide-react";
+import { useContext, useEffect, useRef, useState } from "react";
+import { ArrowUpRight, Check, Copy } from "lucide-react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { workspaceFile, type WorkspaceInfo } from "@zwiim/sdk";
+import { workspaceFile } from "@zwiim/sdk";
 import { opensInPreview, previewKind } from "@zwiim/preview";
-import { AgentImageChip } from "@/attachments/AgentImageChip";
 import { fileIcon } from "@/panels/FilesPanel";
+import { AgentImageChip } from "@/attachments/AgentImageChip";
 import { isOpenableLink, openLink } from "@/lib/bridge";
+import { FileLinksContext } from "@/lib/file-links";
 import { cn } from "@/lib/utils";
 
 /** A bare URL reads without its scheme; the full address stays in the tooltip. */
 export function linkText(href: string | undefined, children: React.ReactNode): React.ReactNode {
-  const text = typeof children === "string" ? children : Array.isArray(children) && children.length === 1 ? children[0] : null;
+  const text =
+    typeof children === "string" ? children : Array.isArray(children) && children.length === 1 ? children[0] : null;
   if (!href || text !== href || !/^https?:\/\//i.test(href)) return children;
   return href.replace(/^https?:\/\//i, "").replace(/\/$/, "");
 }
 
-/** Where a conversation's file links open: its workspace's files, beside it. */
-export interface FileLinks {
-  workspace: WorkspaceInfo;
-  open(path: string): void;
-  /** Opens a file with its uncommitted changes marked. */
-  openDiff(path: string): void;
-}
-
-export const FileLinksContext = createContext<FileLinks | null>(null);
+export { FileLinksContext, type FileLinks } from "@/lib/file-links";
 
 export { workspaceFile };
 
@@ -78,17 +72,22 @@ const components: Components = {
   img: ({ src, alt }) => {
     const files = useContext(FileLinksContext);
     const file = files && typeof src === "string" ? workspaceFile(src, files.workspace) : null;
-    // Only workspace files show; nothing remote is fetched.
-    if (file && previewKind(file) === "image") return <AgentImageChip path={file} inline />;
+    // A workspace image shows as a chip that opens the preview; nothing remote is fetched.
+    if (file && previewKind(file) === "image") return <AgentImageChip path={file} />;
     return <span className="text-muted-foreground">[image{alt ? `: ${alt}` : ""}]</span>;
   },
+  strong: ({ children }) => <strong className="text-prose-strong font-semibold">{children}</strong>,
   p: ({ children }) => <p className="my-2.5 first:mt-0 last:mb-0">{children}</p>,
   ul: ({ children }) => <ul className="my-2 list-disc pl-5">{children}</ul>,
   ol: ({ children }) => <ol className="my-2 list-decimal pl-5">{children}</ol>,
   li: ({ children }) => <li className="my-0.5">{children}</li>,
-  h1: ({ children }) => <h1 className="mt-5 mb-2 text-lg font-semibold tracking-tight first:mt-0">{children}</h1>,
-  h2: ({ children }) => <h2 className="mt-5 mb-2 text-base font-semibold tracking-tight first:mt-0">{children}</h2>,
-  h3: ({ children }) => <h3 className="mt-4 mb-1.5 font-semibold first:mt-0">{children}</h3>,
+  h1: ({ children }) => (
+    <h1 className="text-prose-strong mt-5 mb-2 text-lg font-semibold tracking-tight first:mt-0">{children}</h1>
+  ),
+  h2: ({ children }) => (
+    <h2 className="text-prose-strong mt-5 mb-2 text-base font-semibold tracking-tight first:mt-0">{children}</h2>
+  ),
+  h3: ({ children }) => <h3 className="text-prose-strong mt-4 mb-1.5 font-semibold first:mt-0">{children}</h3>,
   blockquote: ({ children }) => (
     <blockquote className="text-muted-foreground my-2 border-l-2 pl-3">{children}</blockquote>
   ),
@@ -99,9 +98,7 @@ const components: Components = {
   ),
   th: ({ children }) => <th className="border-b px-2.5 py-1.5 text-left font-medium">{children}</th>,
   td: ({ children }) => <td className="border-b px-2.5 py-1.5">{children}</td>,
-  pre: ({ children }) => (
-    <pre className="bg-code my-3 overflow-x-auto rounded-lg px-4 py-3 font-mono text-xs leading-5">{children}</pre>
-  ),
+  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
   code: ({ className, children }) => {
     const lang = /language-(\S+)/.exec(className ?? "")?.[1];
     // Fenced blocks arrive inside <pre>; inline code does not carry a language
@@ -110,14 +107,44 @@ const components: Components = {
     return block ? (
       <code data-language={lang}>{children}</code>
     ) : (
-      <code className="bg-muted rounded px-1.5 py-0.5 font-mono text-[0.85em]">{children}</code>
+      <code className="bg-muted rounded-sm px-1.5 py-0.5 font-mono text-[0.85em]">{children}</code>
     );
   },
 };
 
+/** A fenced block, with a Copy button that shows on hover or keyboard focus. */
+function CodeBlock({ children }: { children: React.ReactNode }) {
+  const pre = useRef<HTMLPreElement>(null);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
+  return (
+    <div className="group relative my-3">
+      <pre ref={pre} className="bg-code overflow-x-auto rounded-lg px-4 py-3 font-mono text-xs leading-5">
+        {children}
+      </pre>
+      <button
+        type="button"
+        className="bg-popover text-muted-foreground hover:text-foreground ease-std absolute top-2 right-2 inline-flex h-6 items-center gap-1 rounded-md border px-2 text-xs opacity-0 transition-[opacity,color] duration-120 group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100"
+        aria-label={copied ? "Copied" : "Copy code"}
+        onClick={() => {
+          const text = pre.current?.textContent ?? "";
+          void navigator.clipboard?.writeText(text).then(() => setCopied(true));
+        }}
+      >
+        {copied ? <Check className="text-done size-3.5" /> : <Copy className="size-3.5" />}
+        {copied ? "Copied" : "Copy"}
+      </button>
+    </div>
+  );
+}
+
 export function Markdown({ text, className }: { text: string; className?: string }) {
   return (
-    <div className={cn("break-words", className)} data-testid="markdown">
+    <div className={cn("text-prose break-words", className)} data-testid="markdown">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {text}
       </ReactMarkdown>

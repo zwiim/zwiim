@@ -405,7 +405,7 @@ function QuestionBody({
                 }
                 style={[styles.choice, { backgroundColor: on ? theme.surface : "transparent", borderColor: on ? theme.need : theme.line }]}
               >
-                <T variant="mono" color={on ? theme.need : theme.faint}>
+                <T variant="mono" color={on ? theme.need : theme.mut}>
                   {q.multi_select ? (on ? "[x]" : "[ ]") : on ? "(•)" : "( )"}
                 </T>
                 <View style={styles.flex}>

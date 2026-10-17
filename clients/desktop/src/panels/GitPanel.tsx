@@ -1,18 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUp, Loader2, RefreshCw } from "lucide-react";
 import type { GitLogEntry, GitStatusEntry, WorkspaceInfo } from "@zwiim/sdk";
-import { NotGitRepository } from "@/panels/DiffPanel";
+import { ListSkeleton, NotGitRepository } from "@/panels/DiffPanel";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { cn } from "@/lib/utils";
 
 const STATUS: Record<string, { label: string; className: string }> = {
-  M: { label: "Modified", className: "text-amber-600" },
-  A: { label: "Added", className: "text-emerald-600" },
-  D: { label: "Deleted", className: "text-red-600" },
-  R: { label: "Renamed", className: "text-sky-600" },
-  C: { label: "Copied", className: "text-sky-600" },
-  T: { label: "Type changed", className: "text-amber-600" },
+  // Only additions and deletions carry colour; brand stays reserved for "needs you".
+  M: { label: "Modified", className: "text-foreground" },
+  A: { label: "Added", className: "text-done" },
+  D: { label: "Deleted", className: "text-destructive" },
+  R: { label: "Renamed", className: "text-muted-foreground" },
+  C: { label: "Copied", className: "text-muted-foreground" },
+  T: { label: "Type changed", className: "text-foreground" },
   U: { label: "Conflict", className: "text-destructive" },
   "??": { label: "Untracked", className: "text-muted-foreground" },
 };
@@ -141,9 +142,14 @@ export function GitPanel({ workspace }: { workspace: WorkspaceInfo }) {
         </Button>
       </div>
       {error && (
-        <p className="text-destructive px-4 py-2 text-xs" role="alert" data-testid="git-error">
-          {error}
-        </p>
+        <div className="flex items-center gap-2 px-3 py-2 text-xs">
+          <p className="text-destructive min-w-0 flex-1" role="alert" data-testid="git-error">
+            {error}
+          </p>
+          <Button size="xs" variant="outline" onClick={refresh} disabled={loading}>
+            Retry
+          </Button>
+        </div>
       )}
       <div className="flex min-h-0 flex-1 flex-col">
         <section className="flex max-h-[60%] min-h-0 shrink-0 flex-col border-b" data-testid="git-status">
@@ -161,12 +167,15 @@ export function GitPanel({ workspace }: { workspace: WorkspaceInfo }) {
                 </label>
               )}
             </div>
-            {status === null && !error && <Loading />}
+            {status === null && !error && <ListSkeleton rows={4} />}
             {status?.length === 0 && <p className="text-muted-foreground text-xs">Working tree clean</p>}
             {status?.map((e) => {
               const s = statusLabel(e.status);
               return (
-                <label key={e.file} className="hover:bg-muted/60 flex items-center gap-2 rounded px-1 py-0.5 text-xs">
+                <label
+                  key={e.file}
+                  className="hover:bg-muted flex items-center gap-2 rounded-sm px-1 py-0.5 text-xs transition-colors"
+                >
                   <input type="checkbox" checked={!excluded.has(e.file)} onChange={() => toggle(e.file)} />
                   <span className={cn("w-3 shrink-0 font-mono font-semibold", s.className)} title={s.label}>
                     {s.letter}
@@ -188,7 +197,7 @@ export function GitPanel({ workspace }: { workspace: WorkspaceInfo }) {
                 disabled={committing}
               />
               <div className="flex items-center gap-2">
-                <Button size="xs" onClick={commit} disabled={!canCommit}>
+                <Button size="xs" variant="brand" onClick={commit} disabled={!canCommit}>
                   {committing && <Loader2 className="animate-spin" />}
                   Commit {files.length} file{files.length === 1 ? "" : "s"}
                 </Button>
@@ -202,14 +211,14 @@ export function GitPanel({ workspace }: { workspace: WorkspaceInfo }) {
             </p>
           )}
           {notice && (
-            <p className="border-t px-3 py-2 text-xs text-emerald-600" role="status" data-testid="git-notice">
+            <p className="text-done border-t px-3 py-2 text-xs" role="status" data-testid="git-notice">
               {notice}
             </p>
           )}
         </section>
         <section className="min-h-0 flex-1 overflow-auto p-3" data-testid="git-log">
           <h3 className="mb-2 text-xs font-medium">History</h3>
-          {log === null && !error && <Loading />}
+          {log === null && !error && <ListSkeleton rows={4} />}
           {log?.length === 0 && <p className="text-muted-foreground text-xs">No commits yet</p>}
           {log?.map((c) => {
             const [subject, ...body] = c.message.trim().split("\n");
@@ -220,7 +229,7 @@ export function GitPanel({ workspace }: { workspace: WorkspaceInfo }) {
                 title={body.join("\n").trim() || undefined}
               >
                 <div className="truncate text-xs">{subject}</div>
-                <div className="text-muted-foreground flex items-center gap-2 text-[11px]">
+                <div className="text-muted-foreground text-2xs flex items-center gap-2">
                   <span className="font-mono">{c.hash}</span>
                   <span className="truncate">{c.author}</span>
                   {c.pushed === false && (
@@ -239,13 +248,5 @@ export function GitPanel({ workspace }: { workspace: WorkspaceInfo }) {
         </section>
       </div>
     </div>
-  );
-}
-
-function Loading() {
-  return (
-    <p className="text-muted-foreground flex items-center gap-1.5 text-xs">
-      <Loader2 className="size-3 animate-spin" /> Loading…
-    </p>
   );
 }

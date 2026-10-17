@@ -42,6 +42,13 @@ export class InputQueue {
   }
 }
 
+const TERMINAL_BG = "#0d0e10";
+const TERMINAL_FG = "#d5d8db";
+
+/** A terminal tab's kill/close button. */
+const CLOSE =
+  "text-muted-foreground hover:text-foreground flex size-4 items-center justify-center rounded-sm transition-colors disabled:opacity-50";
+
 export function TerminalPanel({
   workspaceId,
   leading,
@@ -111,8 +118,8 @@ export function TerminalPanel({
           <div
             key={t.terminal_id}
             className={cn(
-              "flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 text-xs",
-              active === t.terminal_id ? "bg-muted font-medium" : "hover:bg-muted/60",
+              "flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 text-xs transition-colors",
+              active === t.terminal_id ? "bg-accent font-medium" : "hover:bg-muted",
               !t.alive && "text-muted-foreground",
             )}
           >
@@ -130,6 +137,7 @@ export function TerminalPanel({
             </button>
             {t.alive ? (
               <button
+                className={CLOSE}
                 title="Kill terminal"
                 aria-label={`Kill ${t.title || `Terminal ${i + 1}`}`}
                 disabled={!online}
@@ -138,7 +146,12 @@ export function TerminalPanel({
                 <X className="size-3" />
               </button>
             ) : (
-              <button title="Close" aria-label="Close" onClick={() => controller.detachTerminal(t.terminal_id)}>
+              <button
+                className={CLOSE}
+                title="Close"
+                aria-label="Close"
+                onClick={() => controller.detachTerminal(t.terminal_id)}
+              >
                 <X className="size-3" />
               </button>
             )}
@@ -163,7 +176,7 @@ export function TerminalPanel({
           </Button>
         </div>
       )}
-      <div className={cn("min-h-0 flex-1 p-1", active && "bg-[#0c0c0c]")}>
+      <div className={cn("min-h-0 flex-1 overflow-hidden p-1", active && "bg-terminal")}>
         {active ? (
           <TerminalView
             key={active}
@@ -214,7 +227,8 @@ export function TerminalView({
       fontSize: 13,
       fontFamily: '"JetBrains Mono", Menlo, Monaco, "Courier New", monospace',
       scrollback: 5000,
-      theme: { background: "#0c0c0c" },
+      // xterm paints its own canvas: these mirror the `--terminal` token (styles.css), dark in both themes.
+      theme: { background: TERMINAL_BG, foreground: TERMINAL_FG },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -272,5 +286,5 @@ export function TerminalView({
     };
   }, [controller, terminalId, onError]);
 
-  return <div ref={host} className="h-full w-full" data-testid="terminal" />;
+  return <div ref={host} className="animate-fade-in h-full w-full" data-testid="terminal" />;
 }

@@ -29,7 +29,7 @@ import { Banner, Button, EmptyState, ScreenHeader, Sheet, T } from "../ui/compon
 import { useCharWidth, WideList } from "../ui/code";
 import { ArrowUp, ChevronRight, ChevronUp, Icon } from "../ui/icons";
 import { KeysRow, TERM_LINE_HEIGHT, TermRow, type TermKey } from "../ui/terminal";
-import { fonts, MONO_MAX_SCALE, radius, space, type, useTheme } from "../ui/tokens";
+import { fonts, MONO_MAX_SCALE, PRESSED_OPACITY, radius, space, type, useTheme } from "../ui/tokens";
 import { useHostName } from "./HostFrame";
 
 function terminalError(e: unknown, hostName: string, doing: string): string {
@@ -68,7 +68,7 @@ export function TerminalsDock({ workspace }: { workspace: WorkspaceInfo }) {
         </T>
         <View style={styles.dots}>
           {listed.map((t) => (
-            <View key={t.terminal_id} style={[styles.dockDot, { backgroundColor: t.alive ? theme.accent : theme.faint }]} />
+            <View key={t.terminal_id} style={[styles.dockDot, { backgroundColor: t.alive ? theme.mut : theme.faint }]} />
           ))}
         </View>
         <Icon icon={ChevronUp} color={theme.faint} size={16} />
@@ -158,13 +158,13 @@ function TerminalRow({ meta, onPress }: { meta: TerminalMeta; onPress(): void })
       style={({ pressed }) => [styles.row, { borderBottomColor: theme.line }, pressed && { backgroundColor: theme.surface }]}
       testID={`terminal-${meta.terminal_id}`}
     >
-      <View style={[styles.rowDot, { backgroundColor: meta.alive ? theme.accent : theme.faint }]} />
+      <View style={[styles.rowDot, { backgroundColor: meta.alive ? theme.mut : theme.faint }]} />
       <View style={styles.rowText}>
         <View style={styles.rowHead}>
           <T variant="mono" numberOfLines={1} style={styles.rowTitle}>
             {meta.title ?? "terminal"}
           </T>
-          <T variant="monoSm" color={meta.alive ? theme.accent : theme.mut}>
+          <T variant="monoSm" color={theme.mut}>
             {meta.alive ? "running" : "exited"}
           </T>
         </View>
@@ -277,7 +277,7 @@ export function TerminalScreenView({ route, navigation }: NativeStackScreenProps
                   accessibilityLabel="Send"
                   disabled={!live}
                   onPress={submit}
-                  style={({ pressed }) => [styles.send, { backgroundColor: theme.accent, opacity: !live ? 0.4 : pressed ? 0.8 : 1 }]}
+                  style={({ pressed }) => [styles.send, { backgroundColor: theme.accent, opacity: !live ? 0.4 : pressed ? PRESSED_OPACITY : 1 }]}
                   testID="terminal-send"
                 >
                   <Icon icon={ArrowUp} color={theme.accentInk} size={20} />
@@ -384,13 +384,13 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     gap: space.md,
     paddingHorizontal: space.lg,
-    paddingVertical: space.md + 2,
+    paddingVertical: space.md,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   rowDot: { width: 8, height: 8, borderRadius: radius.full, marginTop: 6 },
   rowText: { flex: 1, gap: space.xs },
   rowHead: { flexDirection: "row", alignItems: "baseline", gap: space.md },
-  rowTitle: { flexShrink: 1, fontFamily: fonts.monoMedium, fontSize: 14, lineHeight: 20 },
+  rowTitle: { flexShrink: 1, fontFamily: fonts.monoMedium },
   output: { paddingVertical: space.sm, paddingHorizontal: space.md },
   livePill: {
     position: "absolute",

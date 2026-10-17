@@ -293,7 +293,7 @@ function PathTrail({
                 style={styles.crumbButton}
                 testID={`crumb-${c.path || "root"}`}
               >
-                <T variant="mono" color={last ? theme.fg : theme.mut} style={styles.crumbText}>
+                <T variant="mono" color={last ? theme.fg : theme.mut}>
                   {c.label}
                 </T>
               </Pressable>
@@ -395,7 +395,7 @@ function SearchResults({
   const theme = useTheme();
   if (!query.trim()) {
     return (
-      <T variant="monoSm" color={theme.faint} style={styles.hint}>
+      <T variant="monoSm" color={theme.mut} style={styles.hint}>
         Type part of a file name
       </T>
     );
@@ -435,9 +435,9 @@ function EntryRow({ row, onPress }: { row: BrowseRow; onPress(): void }) {
       style={({ pressed }) => [styles.row, { borderBottomColor: theme.line }, pressed && { backgroundColor: theme.surface }]}
       testID={`entry-${node.path}`}
     >
-      <T variant="mono" numberOfLines={1} style={[styles.flex, styles.rowName]}>
+      <T variant="mono" numberOfLines={1} style={styles.flex}>
         {node.name}
-        {dir ? <T variant="mono" color={theme.faint} style={styles.rowName}>/</T> : null}
+        {dir ? <T variant="mono" color={theme.faint}>/</T> : null}
       </T>
       {changed ? <View style={[styles.changedDot, { backgroundColor: theme.fg }]} testID={`entry-changed-${node.path}`} /> : null}
       {letter ? (
@@ -446,7 +446,7 @@ function EntryRow({ row, onPress }: { row: BrowseRow; onPress(): void }) {
         </T>
       ) : null}
       {meta ? (
-        <T variant="monoSm" color={theme.faint} style={styles.tabular}>
+        <T variant="monoSm" color={theme.mut} style={styles.tabular}>
           {meta}
         </T>
       ) : null}
@@ -467,7 +467,7 @@ function FoundRow({ file, letter, onPress }: { file: FoundFile; letter: string |
       testID={`found-${file.path}`}
     >
       <View style={styles.found}>
-        <T variant="mono" numberOfLines={1} style={styles.rowName}>
+        <T variant="mono" numberOfLines={1}>
           {file.name}
         </T>
         <T variant="monoSm" color={theme.mut} numberOfLines={1} ellipsizeMode="head">
@@ -495,7 +495,7 @@ const styles = StyleSheet.create({
     marginHorizontal: space.md,
     marginTop: space.xs,
     marginBottom: space.sm,
-    paddingHorizontal: space.md + 2,
+    paddingHorizontal: space.md,
     borderRadius: radius.md,
   },
   changesTitle: { flex: 1, fontFamily: fonts.sansMedium },
@@ -512,9 +512,8 @@ const styles = StyleSheet.create({
   crumbsTop: { paddingLeft: space.md },
   crumb: { flexDirection: "row", alignItems: "center" },
   crumbButton: { height: 40, justifyContent: "center", paddingHorizontal: 3 },
-  crumbText: { fontSize: 13.5 },
-  searchBox: { flex: 1, height: 36, marginLeft: space.sm, borderRadius: radius.md, paddingHorizontal: space.sm + 2, justifyContent: "center" },
-  searchInput: { fontSize: 14, padding: 0 },
+  searchBox: { flex: 1, height: 36, marginLeft: space.sm, borderRadius: radius.md, paddingHorizontal: space.sm, justifyContent: "center" },
+  searchInput: { padding: 0 },
   cancel: { height: 44, paddingHorizontal: space.md, justifyContent: "center" },
   cancelText: { fontFamily: fonts.sansMedium },
   hint: { padding: space.lg },
@@ -522,12 +521,11 @@ const styles = StyleSheet.create({
     minHeight: 52,
     flexDirection: "row",
     alignItems: "center",
-    gap: space.sm + 2,
+    gap: space.sm,
     paddingHorizontal: space.lg,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  rowName: { fontSize: 14, lineHeight: 20 },
   found: { flex: 1, gap: space.xxs, paddingVertical: space.sm },
   changedDot: { width: 6, height: 6, borderRadius: radius.full, opacity: 0.85 },
-  letter: { width: 18, textAlign: "center", fontFamily: fonts.monoMedium, fontSize: 12 },
+  letter: { width: 18, textAlign: "center", fontFamily: fonts.monoMedium },
 });

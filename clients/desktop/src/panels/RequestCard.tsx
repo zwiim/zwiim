@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Copy } from "lucide-react";
+import { Copy, Loader2 } from "lucide-react";
 import type { AgentRequest, PermissionTool, RequestAnswer } from "@zwiim/sdk";
 import { Markdown } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
@@ -23,26 +23,28 @@ export function RequestCard({
   /** The Host can continue a plan in a new session (`session.plan_hand_off`). */
   handOff?: boolean;
 }) {
-  const [sending, setBusy] = useState(false);
-  const busy = sending || disabled;
+  /** The answer being sent: its button shows a spinner. */
+  const [sending, setSending] = useState<string | null>(null);
+  const busy = sending !== null || disabled;
   const [error, setError] = useState<string | null>(null);
   const isPlan = request.kind === "permission" && (!!request.plan_markdown || request.tool?.kind === "switch_mode");
 
-  async function submit(answer: RequestAnswer) {
-    setBusy(true);
+  async function submit(answer: RequestAnswer, which: string) {
+    setSending(which);
     setError(null);
     try {
       await onAnswer(answer);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
-      setBusy(false);
+      setSending(null);
     }
   }
 
   return (
     <div
-      className="bg-card flex flex-col gap-3 rounded-xl border-l-2 border-l-amber-500 p-4 shadow-sm"
+      // "Needs you": the accent rule on the card's leading edge.
+      className="bg-card animate-enter flex flex-col gap-3 rounded-lg p-4 shadow-[inset_2px_0_0_var(--brand)] motion-reduce:animate-none"
       data-testid="request-card"
     >
       {request.kind === "permission" && (
@@ -62,10 +64,11 @@ export function RequestCard({
               <Button
                 key={o.option_id}
                 size="sm"
-                variant={o.kind.startsWith("allow") ? "default" : "outline"}
+                variant={o.kind.startsWith("allow") ? "brand" : "outline"}
                 disabled={busy}
-                onClick={() => submit({ kind: "permission", answer: { option_id: o.option_id } })}
+                onClick={() => submit({ kind: "permission", answer: { option_id: o.option_id } }, o.option_id)}
               >
+                {sending === o.option_id && <Loader2 className="animate-spin" />}
                 {o.name}
               </Button>
             ))}
@@ -73,24 +76,31 @@ export function RequestCard({
         </>
       )}
       {request.kind === "question" && (
-        <QuestionForm request={request} busy={busy} onSubmit={submit} />
+        <QuestionForm request={request} busy={busy} sending={sending} onSubmit={submit} />
       )}
       {request.kind === "plan_approval" && (
-        <PlanForm request={request} busy={busy} handOff={handOff} onSubmit={submit} />
+        <PlanForm request={request} busy={busy} sending={sending} handOff={handOff} onSubmit={submit} />
       )}
       {error && <p className="text-destructive text-xs">{error}</p>}
     </div>
   );
 }
 
+/** A spinner on the button whose answer is being sent. */
+function Sending({ on }: { on: boolean }) {
+  return on ? <Loader2 className="animate-spin" /> : null;
+}
+
 function QuestionForm({
   request,
   busy,
+  sending,
   onSubmit,
 }: {
   request: Extract<AgentRequest, { kind: "question" }>;
   busy: boolean;
-  onSubmit(a: RequestAnswer): void;
+  sending: string | null;
+  onSubmit(a: RequestAnswer, which: string): void;
 }) {
   const [selected, setSelected] = useState<Record<string, string[]>>({});
   const [other, setOther] = useState<Record<string, string>>({});
@@ -116,7 +126,9 @@ function QuestionForm({
       <p className="font-medium">The agent has a question</p>
       {request.questions.map((q) => (
         <div key={q.question_id} className="flex flex-col gap-2">
-          {q.header && <span className="text-muted-foreground text-xs font-medium uppercase">{q.header}</span>}
+          {q.header && (
+            <span className="text-muted-foreground text-2xs font-semibold tracking-wide uppercase">{q.header}</span>
+          )}
           <p>{q.question}</p>
           <div className="flex flex-col gap-1">
             {q.options.map((o) => {
@@ -124,9 +136,11 @@ function QuestionForm({
               return (
                 <button
                   key={o.label}
+                  type="button"
+                  aria-pressed={on}
                   className={cn(
-                    "rounded-md border px-2.5 py-1.5 text-left",
-                    on ? "border-primary bg-primary/5" : "hover:bg-muted",
+                    "ease-std rounded-md border px-3 py-2 text-left transition-colors duration-120",
+                    on ? "border-brand bg-brand-soft" : "hover:bg-muted",
                   )}
                   onClick={() => toggle(q.question_id, o.label, q.multi_select)}
                 >
@@ -136,7 +150,7 @@ function QuestionForm({
               );
             })}
             <input
-              className="bg-background rounded-md border px-2.5 py-1.5"
+              className="bg-background rounded-md border px-3 py-2"
               placeholder="Other…"
               value={other[q.question_id] ?? ""}
               onChange={(e) => setOther((s) => ({ ...s, [q.question_id]: e.target.value }))}
@@ -147,17 +161,20 @@ function QuestionForm({
       <div className="flex gap-2">
         <Button
           size="sm"
+          variant="brand"
           disabled={busy || answers.some((a) => a.labels.length === 0)}
-          onClick={() => onSubmit({ kind: "question", answer: { answers } })}
+          onClick={() => onSubmit({ kind: "question", answer: { answers } }, "answer")}
         >
+          <Sending on={sending === "answer"} />
           Answer
         </Button>
         <Button
           size="sm"
           variant="outline"
           disabled={busy}
-          onClick={() => onSubmit({ kind: "question", answer: { answers: [], declined: true } })}
+          onClick={() => onSubmit({ kind: "question", answer: { answers: [], declined: true } }, "decline")}
         >
+          <Sending on={sending === "decline"} />
           Decline
         </Button>
       </div>
@@ -168,20 +185,22 @@ function QuestionForm({
 function PlanForm({
   request,
   busy,
+  sending,
   handOff,
   onSubmit,
 }: {
   request: Extract<AgentRequest, { kind: "plan_approval" }>;
   busy: boolean;
+  sending: string | null;
   handOff: boolean;
-  onSubmit(a: RequestAnswer): void;
+  onSubmit(a: RequestAnswer, which: string): void;
 }) {
   const [feedback, setFeedback] = useState("");
   const [confirmAbandon, setConfirmAbandon] = useState(false);
   const [copied, setCopied] = useState(false);
   const adjustments = feedback.trim();
   const plan = (answer: Extract<RequestAnswer, { kind: "plan_approval" }>["answer"]) =>
-    onSubmit({ kind: "plan_approval", answer });
+    onSubmit({ kind: "plan_approval", answer }, answer.decision);
 
   useEffect(() => {
     if (!copied) return;
@@ -194,7 +213,7 @@ function PlanForm({
       <p className="font-medium">Review the plan</p>
       <PlanText text={request.plan_markdown} />
       <textarea
-        className="bg-background min-h-16 rounded-md border px-2.5 py-1.5"
+        className="bg-background min-h-16 rounded-md border px-3 py-2"
         placeholder="Enter your plan adjustments here…"
         value={feedback}
         onChange={(e) => setFeedback(e.target.value)}
@@ -204,6 +223,7 @@ function PlanForm({
           <span className="flex items-center gap-1.5 text-xs" data-testid="confirm-abandon">
             Discard this plan?
             <Button size="sm" variant="destructive" disabled={busy} onClick={() => plan({ decision: "abandon" })}>
+              <Sending on={sending === "abandon"} />
               Discard
             </Button>
             <Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirmAbandon(false)}>
@@ -214,7 +234,7 @@ function PlanForm({
           <Button
             size="sm"
             variant="ghost"
-            className="text-[#D93B3B] dark:text-[#FF6467]"
+            className="text-destructive enabled:hover:text-destructive"
             disabled={busy}
             onClick={() => setConfirmAbandon(true)}
           >
@@ -240,17 +260,19 @@ function PlanForm({
             title="Continue this plan in a new session; this one stops"
             onClick={() => plan({ decision: "hand_off" })}
           >
+            <Sending on={sending === "hand_off"} />
             Hand off
           </Button>
         )}
         <Button
           size="sm"
-          className="bg-[#B7791F] text-white hover:bg-[#B7791F]/85 dark:bg-[#F5B544] dark:text-[#2A1E05] dark:hover:bg-[#F5B544]/85"
+          variant="brand"
           disabled={busy}
           onClick={() =>
             plan(adjustments ? { decision: "request_changes", feedback: adjustments } : { decision: "approve" })
           }
         >
+          <Sending on={sending === "approve" || sending === "request_changes"} />
           {adjustments ? "Send adjustments" : "Approve"}
         </Button>
       </div>
@@ -280,13 +302,15 @@ function ToolDetails({ tool }: { tool: PermissionTool }) {
           <div className="text-muted-foreground border-b px-3 py-1.5 font-mono">{d.path ?? "file"}</div>
           <pre className="max-h-60 overflow-auto font-mono leading-5">
             {(d.old_text ?? "").split("\n").filter((l, j, a) => l !== "" || j < a.length - 1).map((l, j) => (
-              <div key={`o${j}`} className="bg-red-500/10 px-2 text-red-800 dark:text-red-300">
-                -{l}
+              <div key={`o${j}`} className="bg-del px-2">
+                <span className="text-destructive select-none">-</span>
+                {l}
               </div>
             ))}
             {(d.new_text ?? "").split("\n").filter((l, j, a) => l !== "" || j < a.length - 1).map((l, j) => (
-              <div key={`n${j}`} className="bg-emerald-500/10 px-2 text-emerald-800 dark:text-emerald-300">
-                +{l}
+              <div key={`n${j}`} className="bg-add px-2">
+                <span className="text-done select-none">+</span>
+                {l}
               </div>
             ))}
           </pre>

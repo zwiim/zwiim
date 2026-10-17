@@ -16,7 +16,7 @@ export interface Choice {
   detail?: string | null;
   disabled?: boolean;
   icon?: LucideIcon;
-  /** The label's color when chosen (amber for Unattended); accent by default. */
+  /** The label's color when chosen (needs-you for Unattended); accent by default. */
   tint?: string;
 }
 
@@ -232,7 +232,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: space.xs + 2,
+    gap: space.sm,
     paddingHorizontal: space.xs,
   },
   group: { borderRadius: radius.lg, overflow: "hidden" },

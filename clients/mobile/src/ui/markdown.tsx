@@ -11,7 +11,7 @@ import { opensInPreview, previewKind } from "@zwiim/preview";
 import { parseInline, parseMarkdown, spanText } from "../sessions/markdown";
 import { T } from "./components";
 import { AgentImageChip } from "./session";
-import { fonts, radius, space, useTheme } from "./tokens";
+import { fonts, radius, space, type, useTheme } from "./tokens";
 
 type Files = {
   /** The workspace path a link points at, or null when it leaves the workspace. */
@@ -138,7 +138,7 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   bold: { fontFamily: fonts.sansSemi },
   boldCode: { fontFamily: fonts.monoMedium },
-  inlineCode: { fontSize: 13 },
+  inlineCode: { fontSize: type.mono.fontSize },
   item: { flexDirection: "row", gap: space.sm, paddingLeft: space.xs },
   marker: { minWidth: 14 },
   quote: { borderLeftWidth: 2, paddingLeft: space.md },

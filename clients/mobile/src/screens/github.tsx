@@ -392,7 +392,7 @@ function RepoItem({
         </T>
       ) : null}
       {meta ? (
-        <T variant="monoSm" color={theme.faint}>
+        <T variant="monoSm" color={theme.mut}>
           {meta}
         </T>
       ) : null}

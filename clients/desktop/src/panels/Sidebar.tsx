@@ -34,7 +34,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { rememberSidebarFolds, sidebarFolds, type SidebarFolds } from "@/lib/prefs";
+import { usePresence } from "@/lib/presence";
+import { WorkingMark } from "@/components/WorkingMark";
 import { cn } from "@/lib/utils";
+import { moveMenuFocus } from "./ControlCenter";
 import { GithubCloneDialog, GithubMark, ProgressBar, cloneErrorLine } from "./GithubCloneDialog";
 import { NewWorktree } from "./NewWorktree";
 import { PublishDialog, type PublishSubject } from "./PublishDialog";
@@ -70,11 +73,12 @@ export function baseLabel(w: WorkspaceInfo): string | null {
 }
 
 /** Row actions stay out of the way until the row is hovered or focused. */
-const HOVER_ACTION = "opacity-0 group-hover:opacity-100 focus-visible:opacity-100";
+const HOVER_ACTION =
+  "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100";
 
 /** The `+` menu's items, as the account menu's. */
 const MENU_ITEM =
-  "hover:bg-muted focus-visible:bg-muted flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] outline-none disabled:opacity-50";
+  "hover:bg-muted focus-visible:bg-muted flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-ui transition-colors disabled:opacity-50";
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
@@ -114,6 +118,8 @@ export function Sidebar(props: SidebarProps) {
   const clones = useHost((s) => s.clones);
   const [menu, setMenu] = useState(false);
   const menuRoot = useRef<HTMLDivElement>(null);
+  const menuList = useRef<HTMLDivElement>(null);
+  const menuPresence = usePresence(menu);
   // Not part of `busy`: a clone's `{ workspace_id }` opens its root while the dialog is still open.
   const [github, setGithub] = useState(false);
   // Failed clones this window put away; the Host expires them on its own.
@@ -129,11 +135,14 @@ export function Sidebar(props: SidebarProps) {
 
   useEffect(() => {
     if (!menu) return;
+    menuList.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
     const onDown = (e: PointerEvent) => {
       if (!menuRoot.current?.contains(e.target as Node)) setMenu(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMenu(false);
+      if (e.key !== "Escape") return;
+      setMenu(false);
+      menuRoot.current?.querySelector<HTMLElement>('[aria-haspopup="menu"]')?.focus();
     };
     window.addEventListener("pointerdown", onDown);
     window.addEventListener("keydown", onKey);
@@ -345,12 +354,12 @@ export function Sidebar(props: SidebarProps) {
     <div className="flex min-h-0 flex-1 flex-col gap-1.5">
       <div className="flex items-center pr-1">
         <button
-          className="text-muted-foreground hover:text-foreground flex items-center gap-1 px-2 text-[11px] font-medium tracking-wider uppercase"
+          className="text-muted-foreground hover:text-foreground text-2xs flex items-center gap-1 rounded-sm px-2 font-semibold tracking-wide uppercase transition-colors"
           aria-expanded={!folds.workspaces}
           onClick={() => fold({ ...folds, workspaces: !folds.workspaces })}
         >
           Workspaces
-          <ChevronDown className={cn("size-3", folds.workspaces && "-rotate-90")} />
+          <ChevronDown className={cn("size-3 transition-transform", folds.workspaces && "-rotate-90")} />
         </button>
         <div className="relative ml-auto" ref={menuRoot}>
           <Button
@@ -365,11 +374,16 @@ export function Sidebar(props: SidebarProps) {
           >
             <Plus />
           </Button>
-          {menu && (
+          {menuPresence.mounted && (
             <div
-              className="bg-card text-card-foreground ring-border absolute top-full right-0 z-40 mt-1 w-52 rounded-xl p-1.5 shadow-lg ring-1"
+              ref={menuList}
+              className="bg-card text-card-foreground ring-border presence-pop shadow-pop absolute top-full right-0 z-40 mt-1 w-52 origin-top-right rounded-xl p-1.5 ring-1"
               role="menu"
               aria-label="Add workspace"
+              data-state={menuPresence.state}
+              aria-hidden={!menu || undefined}
+              inert={!menu}
+              onKeyDown={moveMenuFocus}
             >
               <button
                 className={MENU_ITEM}
@@ -419,7 +433,11 @@ export function Sidebar(props: SidebarProps) {
         <GithubCloneDialog remote={props.remote} jobs={jobs} onClose={() => setGithub(false)} onClone={startClone} />
       )}
       {large && (
-        <div className="bg-card mx-1 flex flex-col gap-2 rounded-lg p-2.5 text-xs shadow-sm" role="alertdialog" aria-label="Large folder">
+        <div
+          className="bg-card animate-pop-in mx-1 flex flex-col gap-2 rounded-lg p-2.5 text-xs shadow-sm"
+          role="alertdialog"
+          aria-label="Large folder"
+        >
           <p className="font-medium">Large folder</p>
           <p>
             Zwiim will commit <strong>{largeFolderText(large.details)}</strong> as "Initial Commit". Add it anyway?
@@ -431,6 +449,7 @@ export function Sidebar(props: SidebarProps) {
             </Button>
             <Button
               size="xs"
+              variant="brand"
               disabled={busy || !online}
               onClick={() => {
                 const { subject } = large;
@@ -444,7 +463,10 @@ export function Sidebar(props: SidebarProps) {
         </div>
       )}
       {!folds.workspaces && (
-        <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-1" data-testid="workspace-tree">
+        <div
+          className="animate-fade-in -mx-1 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-1"
+          data-testid="workspace-tree"
+        >
           {!loaded && <p className="text-muted-foreground px-2 text-xs">Loading…</p>}
           {pending.map((job) => (
             <CloneRow
@@ -515,7 +537,7 @@ function CloneRow(props: { job: CloneJob; remote: boolean; onRetry(): Promise<vo
       <div className="flex items-center gap-2">
         <span className="w-5 shrink-0" />
         <FolderGit2 className="text-muted-foreground size-3.5 shrink-0" />
-        <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[13px]">{fullName(job)}</span>
+        <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-ui">{fullName(job)}</span>
         {!failed && (
           <Button
             className="text-muted-foreground"
@@ -589,14 +611,14 @@ function WorkspaceRow(props: RowProps) {
     <div data-testid={`workspace-${w.workspace_id}`}>
       <div
         className={cn(
-          "group hover:bg-sidebar-accent flex items-center rounded-md pr-1",
+          "group hover:bg-sidebar-accent flex items-center rounded-md pr-1 transition-colors",
           (selected || holdsSelected) && "bg-sidebar-accent",
         )}
       >
         {isRoot &&
           (nested ? (
             <button
-              className="text-muted-foreground hover:text-foreground flex h-7 w-5 shrink-0 items-center justify-center"
+              className="text-muted-foreground hover:text-foreground flex h-7 w-5 shrink-0 items-center justify-center rounded-sm transition-colors"
               title={folded ? "Show worktrees" : "Hide worktrees"}
               aria-expanded={!folded}
               onClick={() => props.onFold(w.workspace_id, !folded)}
@@ -607,12 +629,15 @@ function WorkspaceRow(props: RowProps) {
             <span className="w-5 shrink-0" />
           ))}
         <button
-          className={cn("flex min-w-0 flex-1 items-center gap-2 py-1.5 pr-1 text-left text-[13px]", !isRoot && "pl-2")}
+          className={cn("text-ui flex min-w-0 flex-1 items-center gap-2 py-1.5 pr-1 text-left", !isRoot && "pl-2")}
           aria-current={selected || undefined}
           title={base ?? undefined}
           onClick={() => (isRoot ? props.onOpenRoot(w.workspace_id) : props.onSelectWorkspace(w.workspace_id))}
         >
-          {isRoot && !w.is_git_repo ? (
+          {working > 0 ? (
+            // A row with an agent at work trades its icon for the working mark.
+            <WorkingMark className={isRoot ? "size-4" : undefined} />
+          ) : isRoot && !w.is_git_repo ? (
             <Folder className="text-muted-foreground size-4 shrink-0" aria-label="Folder, not a Git repository" />
           ) : isRoot ? (
             <FolderGit2 className="text-muted-foreground size-4 shrink-0" />
@@ -630,20 +655,14 @@ function WorkspaceRow(props: RowProps) {
           >
             {isRoot ? (w.alias ?? w.name) : worktreeLabel(w)}
           </span>
-          <span className="ml-auto flex min-w-0 items-center gap-1.5 text-[11px] font-normal">
+          <span className="ml-auto flex min-w-0 items-center gap-1.5 text-2xs font-normal">
             {preparing ? (
               <span className="text-muted-foreground min-w-0 truncate">Preparing workspace…</span>
             ) : (
               isRoot && w.branch && <span className="text-muted-foreground min-w-0 truncate font-mono">{w.branch}</span>
             )}
             {working > 0 && (
-              <span
-                className="flex size-3 shrink-0 items-center justify-center"
-                title={`${plural(working, "agent", "agents")} working`}
-              >
-                <span className="bg-brand ring-brand/25 size-1.5 animate-pulse rounded-full ring-[3px]" />
-                <span className="sr-only">{working} working</span>
-              </span>
+              <span className="sr-only">{working} working</span>
             )}
           </span>
         </button>
@@ -688,7 +707,7 @@ function WorkspaceRow(props: RowProps) {
       )}
       {removing && <RemoveWorktree workspace={w} onClose={() => setRemoving(false)} />}
       {nested && !folded && (
-        <div className="border-sidebar-border ml-[27px] flex flex-col gap-px border-l py-0.5 pl-1.5">
+        <div className="border-sidebar-border animate-fade-in ml-[27px] flex flex-col gap-px border-l py-0.5 pl-1.5">
           {worktrees
             .filter((n) => !n.workspace.removed)
             .map((n) => (
@@ -713,7 +732,7 @@ function WorkspaceRow(props: RowProps) {
 
 /** A muted row standing for history folded beneath a repository. */
 const FOLDED_ROW =
-  "text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex items-center gap-2 rounded-md px-2 py-1 text-left text-xs";
+  "text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex items-center gap-2 rounded-md px-2 py-1 text-left text-xs transition-colors";
 
 /** Removed worktrees keep their sessions' history, folded under one row. */
 function RemovedWorktrees({ nodes, ...row }: RowProps & { nodes: WorkspaceNode[] }) {
@@ -771,7 +790,7 @@ function RemoveWorktree({ workspace, onClose }: { workspace: WorkspaceInfo; onCl
   }
 
   return (
-    <div className="bg-card my-1 ml-2 flex flex-col gap-2 rounded-lg p-2.5 text-xs shadow-sm" role="alertdialog">
+    <div className="bg-card animate-pop-in my-1 ml-2 flex flex-col gap-2 rounded-lg p-2.5 text-xs shadow-sm" role="alertdialog">
       {phase.kind === "confirm" && (
         <p>
           Remove worktree <span className="font-mono">{branch}</span>? Branch{" "}
@@ -787,7 +806,8 @@ function RemoveWorktree({ workspace, onClose }: { workspace: WorkspaceInfo; onCl
       {phase.kind === "busy" && <p className="text-destructive">{phase.message}</p>}
       {error && <p className="text-destructive">{error}</p>}
       <div className="flex justify-end gap-1.5">
-        <Button size="xs" variant="ghost" onClick={onClose}>
+        {/* Focus lands on the safe choice (DESIGN.md: never on the destructive one). */}
+        <Button size="xs" variant="ghost" autoFocus onClick={onClose}>
           Cancel
         </Button>
         {phase.kind === "dirty" ? (

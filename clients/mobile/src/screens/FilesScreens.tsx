@@ -178,7 +178,7 @@ export function ChangesScreen({ route, navigation }: NativeStackScreenProps<Root
             ))
           )}
           {truncated ? (
-            <T variant="monoSm" color={theme.faint} style={styles.note}>
+            <T variant="monoSm" color={theme.mut} style={styles.note}>
               More files changed than {hostName} lists here.
             </T>
           ) : null}
@@ -209,7 +209,7 @@ function ChangeRow({ item, onPress }: { item: ChangeItem; onPress(): void }) {
         </T>
       </View>
       <View style={styles.rowText}>
-        <T variant="mono" numberOfLines={1} style={[styles.name, item.letter === "D" && styles.struck]}>
+        <T variant="mono" numberOfLines={1} style={item.letter === "D" ? styles.struck : undefined}>
           {name}
         </T>
         <T variant="monoSm" color={theme.mut} numberOfLines={1} ellipsizeMode="head">
@@ -217,7 +217,7 @@ function ChangeRow({ item, onPress }: { item: ChangeItem; onPress(): void }) {
         </T>
       </View>
       {item.binary || item.tooLarge ? (
-        <T variant="monoSm" color={theme.faint}>
+        <T variant="monoSm" color={theme.mut}>
           {item.binary ? "binary" : "large"}
         </T>
       ) : (
@@ -287,7 +287,7 @@ export function FileScreen({ route, navigation }: NativeStackScreenProps<RootSta
                 style={[styles.wrap, { backgroundColor: theme.surface }]}
                 testID="file-wrap"
               >
-                <T variant="monoSm" color={wrap ? theme.fg : theme.faint}>
+                <T variant="monoSm" color={wrap ? theme.fg : theme.mut}>
                   wrap
                 </T>
               </Pressable>
@@ -571,7 +571,6 @@ const styles = StyleSheet.create({
   letterTile: { width: 24, height: 24, borderRadius: radius.sm, alignItems: "center", justifyContent: "center" },
   letter: { fontFamily: fonts.monoMedium },
   rowText: { flex: 1, gap: 3 },
-  name: { fontSize: 14, lineHeight: 20 },
   struck: { textDecorationLine: "line-through" },
   note: { paddingHorizontal: space.lg, paddingTop: space.md },
   wrap: { height: 36, borderRadius: radius.sm, paddingHorizontal: space.md, justifyContent: "center" },
@@ -584,7 +583,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.lg,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  link: { fontFamily: fonts.sansMedium, fontSize: 14 },
+  link: { fontFamily: fonts.sansMedium },
   headerLink: { height: 44, justifyContent: "center" },
   diffStrip: {
     minHeight: 44,

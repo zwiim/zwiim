@@ -1,7 +1,7 @@
 import { useContext, useEffect, useState } from "react";
 import { CircleAlert, Loader2, X } from "lucide-react";
 import { formatSize, type AttachmentBlock } from "@zwiim/sdk";
-import { FileLinksContext } from "@/components/Markdown";
+import { FileLinksContext } from "@/lib/file-links";
 import { fileIcon } from "@/panels/FilesPanel";
 import { cn } from "@/lib/utils";
 import type { PendingFile } from "./pending";
@@ -100,7 +100,10 @@ export function SentAttachments({ blocks, className }: { blocks: readonly { type
   const files = blocks.filter((b): b is AttachmentBlock => b.type === "attachment");
   if (files.length === 0) return null;
   return (
-    <div className={cn("flex max-w-[85%] flex-wrap justify-end gap-1.5 self-end", className)} data-testid="sent-attachments">
+    <div
+      className={cn("flex max-w-[85%] flex-wrap justify-end gap-1.5 self-end", className)}
+      data-testid="sent-attachments"
+    >
       {files.map((b) => (
         <SentChip key={b.attachment_id} block={b} />
       ))}

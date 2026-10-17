@@ -61,25 +61,20 @@ describe("options bar", () => {
     );
     expect(screen.queryByLabelText("Effort")).toBeNull();
     expect(screen.getByLabelText("Model")).toBeTruthy();
-    expect(modeItem("Unattended")).toBeNull();
+    expect(modeItem("Auto")).toBeNull();
     expect(modeItem("Plan")).toBeTruthy();
   });
 
-  it("never enables unattended without an explicit confirmation", () => {
+  it("switches to Auto directly, without a confirmation", () => {
     const onChange = vi.fn();
     render(<OptionsBar options={opts()} disabled={false} onChange={onChange} />);
-    fireEvent.click(modeItem("Unattended")!);
-    expect(onChange).not.toHaveBeenCalled();
-    expect(screen.getByTestId("confirm-unattended")).toBeTruthy();
-    fireEvent.click(screen.getByText("Keep asking"));
-    expect(screen.queryByTestId("confirm-unattended")).toBeNull();
-    expect(onChange).not.toHaveBeenCalled();
-    fireEvent.click(modeItem("Unattended")!);
-    fireEvent.click(screen.getByText("Run unattended"));
+    fireEvent.click(modeItem("Auto")!);
     expect(onChange).toHaveBeenCalledWith({ mode: "unattended" });
+    // The menu closes (it plays its exit hidden from assistive tech).
+    expect(screen.queryByRole("menu")).toBeNull();
   });
 
-  it("makes the unattended state obvious and easy to leave", () => {
+  it("makes the Auto state obvious and easy to leave", () => {
     const onChange = vi.fn();
     render(
       <>
@@ -88,7 +83,7 @@ describe("options bar", () => {
       </>,
     );
     expect(screen.getByTestId("unattended-banner").textContent).toContain("without asking");
-    expect(screen.getByRole("button", { name: "Mode: Unattended" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Mode: Auto" })).toBeTruthy();
     fireEvent.click(screen.getByText("Ask first again"));
     expect(onChange).toHaveBeenCalledWith({ mode: "normal" });
   });
@@ -114,10 +109,14 @@ describe("options bar", () => {
 });
 
 describe("new session options", () => {
-  it("starts from remembered model/effort when still offered, and normal mode unless picked", () => {
+  it("starts from remembered model/effort when still offered, and Auto mode unless picked", () => {
     const a = newSessionOptions(opts(), { model: "opus", effort: "gone" }, {});
-    expect(a.request).toEqual({ model: "opus", effort: "low" });
-    expect(a.shown.mode?.current).toBe("normal");
+    expect(a.request).toEqual({ model: "opus", effort: "low", mode: "unattended" });
+    expect(a.shown.mode?.current).toBe("unattended");
+    // Without Auto on offer, the agent's own mode stays.
+    const ask = newSessionOptions(opts("normal", ["normal", "plan"]), { model: null, effort: null }, {});
+    expect(ask.request.mode).toBeUndefined();
+    expect(ask.shown.mode?.current).toBe("normal");
     const b = newSessionOptions(opts(), { model: null, effort: null }, { mode: "plan", effort: "high" });
     expect(b.request).toEqual({ model: "sonnet", effort: "high", mode: "plan" });
     expect(b.shown.mode?.current).toBe("plan");
@@ -130,9 +129,9 @@ describe("new session options", () => {
     const effortOn = (model: string | null) => (model === "opus" ? null : high);
     const opus = newSessionOptions(opts(), { model: "opus", effort: "low" }, {}, effortOn);
     expect(opus.shown.effort).toBeNull();
-    expect(opus.request).toEqual({ model: "opus" });
+    expect(opus.request).toEqual({ model: "opus", mode: "unattended" });
     const sonnet = newSessionOptions(opts(), { model: "opus", effort: "low" }, { model: "sonnet" }, effortOn);
-    expect(sonnet.request).toEqual({ model: "sonnet", effort: "high" });
+    expect(sonnet.request).toEqual({ model: "sonnet", effort: "high", mode: "unattended" });
   });
 
   it("sends the chosen options with the first message", async () => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Copy, Loader2 } from "lucide-react";
+import { Check, Copy, Loader2 } from "lucide-react";
 import { renderSVG } from "uqr";
 import type { CloudStatus, DeviceInfo, KeyPairingInvitation, LanStatus } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,8 @@ import { enableRemoteAccess } from "@/lib/remote";
 
 /** While a pairing code shows, how often to look for the device it paired. */
 const POLL_MS = 2000;
+/** How long Copy says "Copied". */
+const COPIED_MS = 1500;
 
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "never");
 
@@ -86,19 +88,21 @@ export function DevicesSettings({ bridge }: { bridge: NativeBridge }) {
       <div className="flex items-center">
         <p className="font-medium">Paired devices</p>
         <Button className="ml-auto" size="xs" variant="outline" disabled={!online || busy !== null} onClick={() => void pairDevice()}>
+          {busy === "invite" && <Loader2 className="animate-spin" />}
           Pair a device
         </Button>
       </div>
       {invite && <PairingCode invite={invite} onExpired={() => setInvite(null)} />}
-      {paired && <p className="text-emerald-700 dark:text-emerald-400">Paired {paired}.</p>}
+      {paired && <p className="text-done">Paired {paired}.</p>}
       {devices === null ? (
-        <Loader2 className="text-muted-foreground size-4 animate-spin" />
+        // A list that failed to load says so below, with Try again, instead of spinning.
+        !error && <Loader2 className="text-muted-foreground size-4 animate-spin" />
       ) : devices.length === 0 ? (
-        <p className="text-muted-foreground">No devices yet.</p>
+        <p className="text-muted-foreground">No devices yet. Pair one to reach this host from your phone or another computer.</p>
       ) : (
         <ul className="flex flex-col divide-y rounded-md border" data-testid="devices">
           {devices.map((d) => (
-            <li key={d.device_id} className="flex items-center gap-2 px-2.5 py-2">
+            <li key={d.device_id} className="flex items-center gap-2 px-3 py-2">
               <div className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate font-medium">{d.device_name}</span>
                 <span className="text-muted-foreground truncate">
@@ -115,6 +119,7 @@ export function DevicesSettings({ bridge }: { bridge: NativeBridge }) {
                   title="The device is disconnected now and cannot reconnect until paired again"
                   onClick={() => void revoke(d)}
                 >
+                  {busy === `revoke:${d.device_id}` && <Loader2 className="animate-spin" />}
                   {busy === `revoke:${d.device_id}` ? "Revoking…" : "Revoke"}
                 </Button>
               )}
@@ -123,9 +128,24 @@ export function DevicesSettings({ bridge }: { bridge: NativeBridge }) {
         </ul>
       )}
       {error && (
-        <p className="text-destructive" role="alert">
-          {error}
-        </p>
+        <div className="flex items-center gap-2">
+          <p className="text-destructive min-w-0 flex-1" role="alert">
+            {error}
+          </p>
+          {devices === null && (
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={!online}
+              onClick={() => {
+                setError(null);
+                refresh().catch((e) => setError(errorMessage(e)));
+              }}
+            >
+              Try again
+            </Button>
+          )}
+        </div>
       )}
     </>
   );
@@ -144,6 +164,11 @@ function PairingCode({ invite, onExpired }: { invite: KeyPairingInvitation; onEx
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), COPIED_MS);
+    return () => clearTimeout(t);
+  }, [copied]);
   const left = Math.max(0, Math.ceil((expires - now) / 1000));
   useEffect(() => {
     if (left === 0) onExpired();
@@ -160,8 +185,11 @@ function PairingCode({ invite, onExpired }: { invite: KeyPairingInvitation; onEx
         On your phone, open Zwiim and tap Scan pairing code. On another computer, choose Pair with a host and paste the
         text below. Expires in {Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")}.
       </p>
-      <div className="flex w-full items-center gap-1.5">
-        <code className="bg-muted min-w-0 flex-1 truncate rounded px-1.5 py-1 text-[10px]" data-testid="pairing-text">
+      <div className="flex w-full items-start gap-2">
+        <code
+          className="bg-muted min-w-0 flex-1 rounded-md px-2 py-1.5 font-mono text-xs break-all select-all"
+          data-testid="pairing-text"
+        >
           {text}
         </code>
         <Button
@@ -169,7 +197,7 @@ function PairingCode({ invite, onExpired }: { invite: KeyPairingInvitation; onEx
           variant="outline"
           onClick={() => void navigator.clipboard?.writeText(text).then(() => setCopied(true))}
         >
-          <Copy /> {copied ? "Copied" : "Copy"}
+          {copied ? <Check /> : <Copy />} {copied ? "Copied" : "Copy"}
         </Button>
       </div>
     </div>
@@ -218,17 +246,19 @@ function RemoteAccess({ bridge }: { bridge: NativeBridge }) {
     offline: "Offline — reconnecting",
   }[status.connection];
   return (
-    <div className="flex flex-col gap-1.5 rounded-md border p-2.5" data-testid="remote-access">
+    <div className="flex flex-col gap-1.5 rounded-md border p-3" data-testid="remote-access">
       <div className="flex items-center gap-2">
         <span className="font-medium">Remote access</span>
         <span className="text-muted-foreground">{connection}</span>
         {!status.enrolled && account.signedIn && (
           <Button className="ml-auto" size="xs" variant="outline" disabled={pending || !online} onClick={() => void enable()}>
+            {pending && <Loader2 className="animate-spin" />}
             {pending ? "Enabling…" : "Enable"}
           </Button>
         )}
         {elsewhere && (
           <Button className="ml-auto" size="xs" variant="outline" disabled={pending || !online} onClick={() => void enable()}>
+            {pending && <Loader2 className="animate-spin" />}
             {pending ? "Moving…" : "Move to this Cloud"}
           </Button>
         )}
@@ -285,7 +315,7 @@ function LanAccess() {
   if (!status) return null;
   const state = !status.enabled ? "Off" : status.listening ? `On · port ${status.port}` : "Not listening";
   return (
-    <div className="flex flex-col gap-1.5 rounded-md border p-2.5" data-testid="lan-access">
+    <div className="flex flex-col gap-1.5 rounded-md border p-3" data-testid="lan-access">
       <div className="flex items-center gap-2">
         <span className="font-medium">Local network access</span>
         <span className="text-muted-foreground">{state}</span>
@@ -296,6 +326,7 @@ function LanAccess() {
           disabled={pending || !online}
           onClick={() => void set(!status.enabled)}
         >
+          {pending && <Loader2 className="animate-spin" />}
           {pending ? (status.enabled ? "Turning off…" : "Turning on…") : status.enabled ? "Turn off" : "Turn on"}
         </Button>
       </div>

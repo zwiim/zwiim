@@ -10,6 +10,7 @@ import {
   type WorkspaceInspection,
 } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
+import { Dialog } from "@/components/ui/dialog";
 import { openLink } from "@/lib/bridge";
 import { errorMessage, useController, useOnline } from "@/lib/host-context";
 import { cn } from "@/lib/utils";
@@ -68,9 +69,6 @@ function phaseOf(inspection: WorkspaceInspection): Phase {
   if (inspection.github?.available === false) return { kind: "unavailable", reason: inspection.github.reason };
   return { kind: "form" };
 }
-
-/** DESIGN.md's `primary` button: the accent, `brand` on Desktop (as Continue after a merge). */
-const PRIMARY = "bg-brand text-brand-foreground hover:bg-brand/85";
 
 export const Code = ({ children }: { children: React.ReactNode }) => <code className="font-mono text-xs">{children}</code>;
 
@@ -175,14 +173,6 @@ export function PublishDialog({ subject, remote, onClose, onAdded, ...props }: P
     }, CHECK_DELAY_MS);
     return () => clearTimeout(timer);
   }, [controller, owner, name, rule, phase.kind, publish, createdHere]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busy) close();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose, busy]);
 
   // The add outlasted the SDK's timeout, so the Host may still be adding the
   // folder: read it every 10 s, one read at a time, for 10 minutes. Once it
@@ -350,8 +340,7 @@ export function PublishDialog({ subject, remote, onClose, onAdded, ...props }: P
 
   const addPlainButton = (variant: "primary" | "secondary", label = "Add without GitHub") => (
     <Button
-      variant={variant === "secondary" ? "secondary" : undefined}
-      className={variant === "primary" ? PRIMARY : undefined}
+      variant={variant === "secondary" ? "secondary" : "brand"}
       size="sm"
       disabled={!online || busy || inspecting}
       onClick={() => void addWithoutGithub()}
@@ -370,238 +359,226 @@ export function PublishDialog({ subject, remote, onClose, onAdded, ...props }: P
     </Button>
   );
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-6"
-      onPointerDown={(e) => {
-        if (e.target === e.currentTarget && !busy) close();
-      }}
-    >
-      <div
-        className="bg-card text-card-foreground ring-border flex w-full max-w-lg flex-col rounded-2xl shadow-2xl ring-1"
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-      >
-        <div className="flex flex-col gap-2 px-5 pt-5">
-          <h2 className="text-base font-semibold tracking-tight">{title}</h2>
-          {/* A detached HEAD has no branch to name; a folder with a remote gets no GitHub steps. */}
-          {phase.kind !== "detached" && phase.kind !== "has_origin" && !waiting && (
-            <p className="text-muted-foreground text-sm leading-relaxed">
-              {local ? (
-                inspection.git === "none" ? (
-                  <>
-                    Zwiim will run <Code>git init</Code> and make a first commit. Nothing is pushed to GitHub.
-                  </>
-                ) : inspection.first_commit ? (
-                  "Zwiim will make a first commit. Nothing is pushed to GitHub."
-                ) : (
-                  "Zwiim will add this repository as it is. Nothing is pushed to GitHub."
-                )
-              ) : inspection.git === "none" ? (
-                <>
-                  Zwiim will run <Code>git init</Code>, create a private GitHub repo, add it as <Code>origin</Code>, and
-                  push <Code>{branch}</Code>.
-                </>
-              ) : (
-                <>
-                  Zwiim will {inspection.first_commit ? "make a first commit, create" : "create"} a private GitHub repo,
-                  add it as <Code>origin</Code>, and push <Code>{branch}</Code>.
-                </>
-              )}
-            </p>
-          )}
-        </div>
-        <div className="flex flex-col gap-3 px-5 pt-4">
-          {phase.kind === "form" ? (
-            <>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={publish}
-                  disabled={busy}
-                  onChange={(e) => setPublish(e.target.checked)}
-                />
-                Create a private GitHub repo
-              </label>
-              {publish && (
-                <>
-                  <div className="flex flex-col gap-1">
-                    <span className="text-xs font-medium">Owner</span>
-                    <ControlSelect
-                      className="bg-input/30 text-foreground h-8 w-full justify-between rounded-md border"
-                      label="Owner"
-                      value={owner}
-                      disabled={busy}
-                      onChange={setOwner}
-                      options={owners.map((o) => ({ value: o.login, label: o.login }))}
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs font-medium" htmlFor={nameId}>
-                      Repository name
-                    </label>
-                    <input
-                      ref={field}
-                      id={nameId}
-                      className="bg-input/30 w-full rounded-md border px-2 py-1.5 font-mono text-xs outline-none"
-                      value={name}
-                      disabled={busy}
-                      spellCheck={false}
-                      autoComplete="off"
-                      aria-invalid={rule !== null || verdict === "taken" || refusedHere}
-                      onChange={(e) => setName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-                          e.preventDefault();
-                          void create();
-                        }
-                      }}
-                    />
-                    <p className="text-muted-foreground font-mono text-xs">
-                      Will create {owner}/{name}
-                    </p>
-                    <p
-                      className={cn(
-                        "text-xs",
-                        rule !== null || verdict === "taken" || refusedHere
-                          ? "text-destructive"
-                          : verdict === "available"
-                            ? "text-done"
-                            : "text-muted-foreground",
-                      )}
-                      aria-live="polite"
-                    >
-                      {rule ??
-                        (refusedHere ? (
-                          <>
-                            GitHub didn't create{" "}
-                            <Code>
-                              {owner}/{name}
-                            </Code>
-                            . Try another owner or name.
-                          </>
-                        ) : verdict === "available" ? (
-                          "Repository name is available."
-                        ) : verdict === "taken" ? (
-                          <>
-                            <Code>
-                              {owner}/{name}
-                            </Code>{" "}
-                            already exists.
-                          </>
-                        ) : verdict === "failed" ? (
-                          "Couldn't check this name."
-                        ) : (
-                          "Checking…"
-                        ))}
-                    </p>
-                  </div>
-                </>
-              )}
-            </>
-          ) : phase.kind === "failed" ? (
-            <div className="flex flex-col items-start gap-2">
-              <p className="text-sm">
-                <Code>
-                  {phase.owner}/{phase.name}
-                </Code>{" "}
-                was created on GitHub, but pushing to it failed.
-              </p>
-              <button
-                type="button"
-                className="text-brand text-xs underline-offset-2 hover:underline"
-                onClick={() => void openLink(`https://github.com/${phase.owner}/${phase.name}`).catch(() => {})}
-              >
-                Open on GitHub
-                <ArrowUpRight className="ml-0.5 inline size-3 align-[-1px]" aria-hidden />
-              </button>
-            </div>
-          ) : phase.kind === "watching" ? (
-            // Once the watch found the root, the button says what happens next.
-            !added && (
-              <p className="flex items-center gap-2 text-sm" role="status">
-                <Loader2 className="text-muted-foreground size-4 animate-spin" aria-hidden />
-                Still working on {hostName}…
-              </p>
-            )
-          ) : phase.kind === "unfinished" ? (
-            <p className="text-sm">
-              {remote ? "The host" : "This Mac"} didn't finish adding this folder. Check the sidebar, or try again.
-            </p>
-          ) : (
-            <p className="text-sm">
-              {phase.kind === "unavailable"
-                ? unavailableLine(phase.reason, hostName)
-                : phase.kind === "has_origin"
-                  ? "This folder already has a remote, so there's nothing to publish."
-                  : `This repository isn't on a branch. Check out a branch on ${hostName}, then try again.`}
-            </p>
-          )}
-          {large && !waiting && (
-            <p className="text-muted-foreground text-xs">
-              The first commit will hold <Code>{largeFolderText(large)}</Code>.
-            </p>
-          )}
-        </div>
-        <div className="flex flex-col gap-2 p-5">
-          <div className="flex justify-end gap-2">
-            {cancel}
+    <Dialog className="max-w-lg" aria-label={title} dismissible={!busy} onClose={close}>
+      <div className="flex flex-col gap-2 px-5 pt-5">
+        <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
+        {/* A detached HEAD has no branch to name; a folder with a remote gets no GitHub steps. */}
+        {phase.kind !== "detached" && phase.kind !== "has_origin" && !waiting && (
+          <p className="text-muted-foreground text-sm leading-relaxed">
             {local ? (
-              addPlainButton("primary", inspection.git === "none" ? "Initialize Git and add" : "Add workspace")
-            ) : phase.kind === "form" ? (
-              <>
-                {plainOffered && addPlainButton("secondary")}
-                <Button className={PRIMARY} size="sm" disabled={!ready} onClick={() => void create()}>
-                  {sending === "publish" && <Loader2 className="animate-spin" />}
-                  {sending === "publish"
-                    ? added
-                      ? "Preparing workspace…"
-                      : "Creating repo…"
-                    : inspection.git === "none"
-                      ? "Initialize Git and create repo"
-                      : "Create repo"}
-                </Button>
-              </>
-            ) : phase.kind === "failed" ? (
-              <>
-                <Button variant="secondary" size="sm" disabled={busy} onClick={tryAnotherName}>
-                  Try another name
-                </Button>
-                {addPlainButton("primary")}
-              </>
-            ) : phase.kind === "has_origin" ? (
-              // The remote may well be GitHub, and the add keeps it.
-              addPlainButton("primary", "Add repository")
-            ) : phase.kind === "watching" || phase.kind === "unfinished" ? (
-              // Cancel only, until the watch finds the root and the worktree step runs.
-              added && (
-                <Button className={PRIMARY} size="sm" disabled>
-                  <Loader2 className="animate-spin" />
-                  Preparing workspace…
-                </Button>
+              inspection.git === "none" ? (
+                <>
+                  Zwiim will run <Code>git init</Code> and make a first commit. Nothing is pushed to GitHub.
+                </>
+              ) : inspection.first_commit ? (
+                "Zwiim will make a first commit. Nothing is pushed to GitHub."
+              ) : (
+                "Zwiim will add this repository as it is. Nothing is pushed to GitHub."
               )
+            ) : inspection.git === "none" ? (
+              <>
+                Zwiim will run <Code>git init</Code>, create a private GitHub repo, add it as <Code>origin</Code>, and
+                push <Code>{branch}</Code>.
+              </>
             ) : (
               <>
-                {addPlainButton("secondary")}
-                <Button
-                  className={PRIMARY}
-                  size="sm"
-                  disabled={!online || busy || inspecting}
-                  onClick={() => void inspectAgain()}
-                >
-                  {inspecting && <Loader2 className="animate-spin" />}
-                  Try again
-                </Button>
+                Zwiim will {inspection.first_commit ? "make a first commit, create" : "create"} a private GitHub repo,
+                add it as <Code>origin</Code>, and push <Code>{branch}</Code>.
               </>
             )}
-          </div>
-          {error && (
-            <p className="text-destructive text-xs" role="alert">
-              {error}
+          </p>
+        )}
+      </div>
+      <div className="flex flex-col gap-3 px-5 pt-4">
+        {phase.kind === "form" ? (
+          <>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={publish}
+                disabled={busy}
+                onChange={(e) => setPublish(e.target.checked)}
+              />
+              Create a private GitHub repo
+            </label>
+            {publish && (
+              <>
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs font-medium">Owner</span>
+                  <ControlSelect
+                    className="bg-input/30 text-foreground h-8 w-full justify-between rounded-md border"
+                    label="Owner"
+                    value={owner}
+                    disabled={busy}
+                    onChange={setOwner}
+                    options={owners.map((o) => ({ value: o.login, label: o.login }))}
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-medium" htmlFor={nameId}>
+                    Repository name
+                  </label>
+                  <input
+                    ref={field}
+                    id={nameId}
+                    className="bg-input/30 w-full rounded-md border px-2 py-1.5 font-mono text-xs"
+                    value={name}
+                    disabled={busy}
+                    spellCheck={false}
+                    autoComplete="off"
+                    aria-invalid={rule !== null || verdict === "taken" || refusedHere}
+                    onChange={(e) => setName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                        e.preventDefault();
+                        void create();
+                      }
+                    }}
+                  />
+                  <p className="text-muted-foreground font-mono text-xs">
+                    Will create {owner}/{name}
+                  </p>
+                  <p
+                    className={cn(
+                      "text-xs",
+                      rule !== null || verdict === "taken" || refusedHere
+                        ? "text-destructive"
+                        : verdict === "available"
+                          ? "text-done"
+                          : "text-muted-foreground",
+                    )}
+                    aria-live="polite"
+                  >
+                    {rule ??
+                      (refusedHere ? (
+                        <>
+                          GitHub didn't create{" "}
+                          <Code>
+                            {owner}/{name}
+                          </Code>
+                          . Try another owner or name.
+                        </>
+                      ) : verdict === "available" ? (
+                        "Repository name is available."
+                      ) : verdict === "taken" ? (
+                        <>
+                          <Code>
+                            {owner}/{name}
+                          </Code>{" "}
+                          already exists.
+                        </>
+                      ) : verdict === "failed" ? (
+                        "Couldn't check this name."
+                      ) : (
+                        "Checking…"
+                      ))}
+                  </p>
+                </div>
+              </>
+            )}
+          </>
+        ) : phase.kind === "failed" ? (
+          <div className="flex flex-col items-start gap-2">
+            <p className="text-sm">
+              <Code>
+                {phase.owner}/{phase.name}
+              </Code>{" "}
+              was created on GitHub, but pushing to it failed.
             </p>
+            <button
+              type="button"
+              className="text-brand rounded-sm text-xs underline-offset-2 hover:underline"
+              onClick={() => void openLink(`https://github.com/${phase.owner}/${phase.name}`).catch(() => {})}
+            >
+              Open on GitHub
+              <ArrowUpRight className="ml-0.5 inline size-3 align-[-1px]" aria-hidden />
+            </button>
+          </div>
+        ) : phase.kind === "watching" ? (
+          // Once the watch found the root, the button says what happens next.
+          !added && (
+            <p className="flex items-center gap-2 text-sm" role="status">
+              <Loader2 className="text-muted-foreground size-4 animate-spin" aria-hidden />
+              Still working on {hostName}…
+            </p>
+          )
+        ) : phase.kind === "unfinished" ? (
+          <p className="text-sm">
+            {remote ? "The host" : "This Mac"} didn't finish adding this folder. Check the sidebar, or try again.
+          </p>
+        ) : (
+          <p className="text-sm">
+            {phase.kind === "unavailable"
+              ? unavailableLine(phase.reason, hostName)
+              : phase.kind === "has_origin"
+                ? "This folder already has a remote, so there's nothing to publish."
+                : `This repository isn't on a branch. Check out a branch on ${hostName}, then try again.`}
+          </p>
+        )}
+        {large && !waiting && (
+          <p className="text-muted-foreground text-xs">
+            The first commit will hold <Code>{largeFolderText(large)}</Code>.
+          </p>
+        )}
+      </div>
+      <div className="flex flex-col gap-2 p-5">
+        <div className="flex justify-end gap-2">
+          {cancel}
+          {local ? (
+            addPlainButton("primary", inspection.git === "none" ? "Initialize Git and add" : "Add workspace")
+          ) : phase.kind === "form" ? (
+            <>
+              {plainOffered && addPlainButton("secondary")}
+              <Button variant="brand" size="sm" disabled={!ready} onClick={() => void create()}>
+                {sending === "publish" && <Loader2 className="animate-spin" />}
+                {sending === "publish"
+                  ? added
+                    ? "Preparing workspace…"
+                    : "Creating repo…"
+                  : inspection.git === "none"
+                    ? "Initialize Git and create repo"
+                    : "Create repo"}
+              </Button>
+            </>
+          ) : phase.kind === "failed" ? (
+            <>
+              <Button variant="secondary" size="sm" disabled={busy} onClick={tryAnotherName}>
+                Try another name
+              </Button>
+              {addPlainButton("primary")}
+            </>
+          ) : phase.kind === "has_origin" ? (
+            // The remote may well be GitHub, and the add keeps it.
+            addPlainButton("primary", "Add repository")
+          ) : phase.kind === "watching" || phase.kind === "unfinished" ? (
+            // Cancel only, until the watch finds the root and the worktree step runs.
+            added && (
+              <Button variant="brand" size="sm" disabled>
+                <Loader2 className="animate-spin" />
+                Preparing workspace…
+              </Button>
+            )
+          ) : (
+            <>
+              {addPlainButton("secondary")}
+              <Button
+                variant="brand"
+                size="sm"
+                disabled={!online || busy || inspecting}
+                onClick={() => void inspectAgain()}
+              >
+                {inspecting && <Loader2 className="animate-spin" />}
+                Try again
+              </Button>
+            </>
           )}
         </div>
+        {error && (
+          <p className="text-destructive text-xs" role="alert">
+            {error}
+          </p>
+        )}
       </div>
-    </div>
+    </Dialog>
   );
 }

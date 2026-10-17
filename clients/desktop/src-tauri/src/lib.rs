@@ -230,7 +230,7 @@ fn is_app_origin(origin: Option<&str>) -> bool {
     matches!(
         origin,
         Some("tauri://localhost" | "http://tauri.localhost" | "https://tauri.localhost")
-    ) || (cfg!(debug_assertions) && origin == Some("http://localhost:1420"))
+    ) || (cfg!(debug_assertions) && matches!(origin, Some("http://localhost:1420" | "http://localhost:1421")))
 }
 
 fn is_openable_link(url: &str) -> bool {

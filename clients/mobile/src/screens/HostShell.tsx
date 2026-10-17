@@ -31,7 +31,7 @@ import { releasesUrl } from "../config";
 import { auth, cloud, currentHost } from "../services";
 import { Button, PathPill, Sheet, StatusDot, T } from "../ui/components";
 import { Folder, Icon, Laptop, MessagesSquare } from "../ui/icons";
-import { fonts, radius, space, useTheme } from "../ui/tokens";
+import { fonts, radius, space, type, useTheme } from "../ui/tokens";
 import { FilesTab } from "./FilesTab";
 import { HostFrame } from "./HostFrame";
 import { SessionsTab } from "./SessionsTab";
@@ -93,9 +93,9 @@ export function HostShell() {
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: theme.fg,
-        tabBarInactiveTintColor: theme.faint,
+        tabBarInactiveTintColor: theme.mut,
         tabBarStyle: { backgroundColor: theme.bg, borderTopColor: theme.line },
-        tabBarLabelStyle: { fontFamily: fonts.sansMedium, fontSize: 11 },
+        tabBarLabelStyle: { fontFamily: fonts.sansMedium, fontSize: type.caption.fontSize },
       }}
     >
       <Tabs.Screen
@@ -106,7 +106,7 @@ export function HostShell() {
           tabBarButtonTestID: "tab-sessions",
           // Requests waiting across the host.
           tabBarBadge: pending || undefined,
-          tabBarBadgeStyle: { backgroundColor: theme.need, color: theme.needInk, fontFamily: fonts.mono, fontSize: 11 },
+          tabBarBadgeStyle: { backgroundColor: theme.need, color: theme.needInk, fontFamily: fonts.mono, fontSize: type.monoSm.fontSize },
         }}
       />
       <Tabs.Screen name="Files" component={FilesTab} options={{ tabBarIcon: ICONS.Files, tabBarButtonTestID: "tab-files" }} />

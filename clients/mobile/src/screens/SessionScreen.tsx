@@ -10,7 +10,7 @@
 // the composer (and the header's `⋯`) open Session options: the model, effort
 // and mode the Host reports, changed between turns, and the agent's context.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { FlatList, Keyboard, KeyboardAvoidingView, Platform, Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -315,8 +315,11 @@ function sendError(e: unknown, hostName: string): string {
   return "Couldn't send that. Try again.";
 }
 
-/** The picker opens once the attach sheet has slid away; iOS shows one modal at a time. */
-const SHEET_CLOSE_MS = 400;
+/** A clock for the parts that show it, so a ticking second doesn't redraw the transcript. */
+function Ticking({ on, children }: { on: boolean; children(now: number): ReactNode }) {
+  const now = useNow(on);
+  return <>{children(now)}</>;
+}
 
 function stopError(e: unknown, hostName: string): string {
   if (isClientError(e, "unknown_outcome")) return "Not sure that went through. Refreshed from your Mac.";
@@ -356,7 +359,7 @@ function Live({
   const running = turnRunning(view);
   const now = nowState(view, connected);
   const request = view?.pendingRequest ?? null;
-  const tick = useNow(running || now?.type === "reconnecting" || request !== null);
+  const ticking = running || now?.type === "reconnecting" || request !== null;
 
   // The running turn's timer, from when this phone first saw it.
   const key = turnKey(session_id, view);
@@ -435,13 +438,19 @@ function Live({
     }
   };
 
+  // The picker opens once the attach sheet has gone; iOS shows one modal at a time.
+  const picking = useRef<"photos" | "files" | null>(null);
   const pick = (from: "photos" | "files") => {
+    picking.current = from;
     setAttaching(false);
-    setTimeout(() => {
-      (from === "photos" ? pickPhotos() : pickFiles())
-        .then(attachments.add)
-        .catch(() => setNotice(from === "photos" ? "Couldn't open your photos." : "Couldn't open Files."));
-    }, SHEET_CLOSE_MS);
+  };
+  const openPicker = () => {
+    const from = picking.current;
+    picking.current = null;
+    if (!from) return;
+    (from === "photos" ? pickPhotos() : pickFiles())
+      .then(attachments.add)
+      .catch(() => setNotice(from === "photos" ? "Couldn't open your photos." : "Couldn't open Files."));
   };
 
   // A sent file opens in-app: text in the file view, anything else in Preview.
@@ -502,7 +511,7 @@ function Live({
     );
   };
 
-  const nowBar = (() => {
+  const nowBar = (tick: number) => {
     if (!now) return null;
     const stopButton = running ? (
       <NowAction kind="inverse" label="Stop" onPress={() => void stop()} loading={stopping} disabled={!connected} testID="now-stop" />
@@ -529,7 +538,8 @@ function Live({
       case "disconnected":
         return <NowBar tone="plain" dot="off" text="Agent disconnected" />;
     }
-  })();
+  };
+  const newestFirst = useMemo(() => [...rows].reverse(), [rows]);
 
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : "height"}>
@@ -542,7 +552,7 @@ function Live({
         ) : (
           <FlatList
             inverted
-            data={[...rows].reverse()}
+            data={newestFirst}
             keyExtractor={(r) => r.key}
             renderItem={renderRow}
             contentContainerStyle={styles.list}
@@ -552,12 +562,16 @@ function Live({
               <View pointerEvents={connected ? "auto" : "none"} style={styles.headerStack}>
                 {attachError ? <ErrorRow message={attachError} /> : null}
                 {request ? (
-                  <RequestCard
-                    item={item as SessionItem & { request: AgentRequest }}
-                    hostName={hostName}
-                    now={tick}
-                    showTitle={false}
-                  />
+                  <Ticking on>
+                    {(tick) => (
+                      <RequestCard
+                        item={item as SessionItem & { request: AgentRequest }}
+                        hostName={hostName}
+                        now={tick}
+                        showTitle={false}
+                      />
+                    )}
+                  </Ticking>
                 ) : null}
               </View>
             }
@@ -569,7 +583,7 @@ function Live({
         style={{ paddingBottom: keyboard ? space.sm : Math.max(insets.bottom, space.sm) }}
         pointerEvents={connected ? "auto" : "none"}
       >
-        {nowBar}
+        <Ticking on={ticking}>{nowBar}</Ticking>
         {notice ? (
           <T variant="callout" color={theme.err} style={styles.notice} testID="session-notice">
             {notice}
@@ -594,7 +608,7 @@ function Live({
           onRemoveFile={attachments.remove}
         />
       </View>
-      <AttachSheet visible={attaching} onClose={() => setAttaching(false)} onPick={pick} />
+      <AttachSheet visible={attaching} onClose={() => setAttaching(false)} onPick={pick} onClosed={openPicker} />
       <ToolSheet tool={tool} onClose={() => setTool(null)} />
       {request ? (
         <RequestSheet

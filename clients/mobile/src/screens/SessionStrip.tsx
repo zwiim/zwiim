@@ -171,7 +171,7 @@ const styles = StyleSheet.create({
     paddingLeft: space.lg,
     paddingRight: space.sm,
   },
-  worktreeText: { flexShrink: 1, fontSize: 13 },
+  worktreeText: { flexShrink: 1 },
   divider: { width: StyleSheet.hairlineWidth, height: 20 },
   tabs: { alignItems: "center", gap: space.xs, paddingHorizontal: space.sm },
   tab: {

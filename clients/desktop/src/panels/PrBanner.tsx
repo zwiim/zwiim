@@ -88,7 +88,7 @@ export function prStatus(pr: PrState): { label: string; tone: "done" | "err" | "
 const TONE: Record<"done" | "err" | "work" | "mut", string> = {
   done: "text-done",
   err: "text-destructive",
-  work: "text-brand",
+  work: "text-muted-foreground",
   mut: "text-muted-foreground",
 };
 
@@ -99,7 +99,7 @@ function CheckIcon({ state, className }: { state: CheckState; className?: string
     case "failed":
       return <X className={cn("text-destructive size-3.5", className)} aria-label="failed" />;
     case "pending":
-      return <Loader2 className={cn("text-brand size-3.5 animate-spin", className)} aria-label="running" />;
+      return <Loader2 className={cn("text-muted-foreground size-3.5 animate-spin", className)} aria-label="running" />;
     case "skipped":
       return <Minus className={cn("text-muted-foreground size-3.5", className)} aria-label="skipped" />;
   }
@@ -131,7 +131,7 @@ function CheckRow({ check }: { check: PrCheckItem }) {
     <li>
       <button
         type="button"
-        className="hover:bg-muted flex w-full items-center gap-2 rounded px-1.5 py-1 text-left font-mono text-[11.5px] disabled:cursor-default disabled:hover:bg-transparent"
+        className="hover:bg-muted flex w-full items-center gap-2 rounded-sm px-1.5 py-1 text-left font-mono text-2xs transition-colors disabled:cursor-default disabled:hover:bg-transparent"
         disabled={!check.link}
         title={check.link ?? undefined}
         onClick={() => check.link && void openLink(check.link).catch(() => {})}
@@ -229,7 +229,7 @@ export function PrBanner({ workspaceId }: { workspaceId: string }) {
         <PrIcon pr={pr} />
         <button
           type="button"
-          className="min-w-0 flex-1 truncate text-left text-[13px] hover:underline"
+          className="min-w-0 flex-1 truncate text-left text-ui hover:underline"
           title={pr.url}
           onClick={() => void openLink(pr.url).catch(() => {})}
         >
@@ -243,7 +243,8 @@ export function PrBanner({ workspaceId }: { workspaceId: string }) {
             {canContinue && (
               <Button
                 size="xs"
-                className="bg-brand text-brand-foreground hover:bg-brand/85 shrink-0"
+                variant="brand"
+                className="shrink-0"
                 disabled={!online || continuing}
                 title={
                   online
@@ -260,7 +261,8 @@ export function PrBanner({ workspaceId }: { workspaceId: string }) {
         ) : (
           <Button
             size="xs"
-            className="bg-done text-done-foreground hover:bg-done/85 shrink-0"
+            variant="done"
+            className="shrink-0"
             disabled={!canMerge}
             title={canMerge && method ? METHOD_LABELS[method] : (reason ?? undefined)}
             onClick={() => void merge()}
@@ -278,7 +280,7 @@ export function PrBanner({ workspaceId }: { workspaceId: string }) {
           {pr.checks.items.length > 0 ? (
             <button
               type="button"
-              className="text-muted-foreground hover:text-foreground flex items-center gap-0.5 font-mono text-[11.5px]"
+              className="text-muted-foreground hover:text-foreground flex items-center gap-0.5 font-mono text-2xs transition-colors"
               aria-expanded={open}
               onClick={() => setOpen((o) => !o)}
             >
@@ -286,7 +288,7 @@ export function PrBanner({ workspaceId }: { workspaceId: string }) {
               {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
             </button>
           ) : (
-            <span className="text-muted-foreground font-mono text-[11.5px]">{checksLine(pr)}</span>
+            <span className="text-muted-foreground font-mono text-2xs">{checksLine(pr)}</span>
           )}
         </div>
       )}

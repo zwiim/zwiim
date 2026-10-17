@@ -13,6 +13,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
   type TextProps,
   type TextStyle,
@@ -20,7 +21,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { LucideIcon } from "lucide-react-native";
 import { ChevronDown, ChevronLeft, ChevronRight, Icon, Laptop, X } from "./icons";
-import { fonts, MONO_MAX_SCALE, radius, space, type, useTheme } from "./tokens";
+import { fonts, MONO_MAX_SCALE, motion, PRESSED_OPACITY, PRESSED_SCALE, radius, space, type, useTheme } from "./tokens";
 
 type Variant = keyof typeof type;
 
@@ -54,7 +55,7 @@ export function useReduceMotion(): boolean {
 
 export type DotState = "need" | "work" | "idle" | "done" | "err" | "off";
 
-/** A status dot; `work` breathes (static under Reduce Motion). */
+/** A status dot; `work` is neutral and breathes (static under Reduce Motion). */
 export function StatusDot({ state }: { state: DotState }) {
   const theme = useTheme();
   const reduce = useReduceMotion();
@@ -75,7 +76,7 @@ export function StatusDot({ state }: { state: DotState }) {
     loop.start();
     return () => loop.stop();
   }, [breathing, opacity]);
-  const color = { need: theme.need, work: theme.accent, idle: theme.faint, done: theme.done, err: theme.err, off: theme.faint }[
+  const color = { need: theme.need, work: theme.mut, idle: theme.faint, done: theme.done, err: theme.err, off: theme.faint }[
     state
   ];
   const hollow = state === "off";
@@ -128,11 +129,12 @@ export function Button({
     need: { bg: theme.need, fg: theme.needInk },
     // Merge only (DESIGN.md, PR strip).
     done: { bg: theme.done, fg: theme.doneInk },
-    secondary: { bg: theme.raised, fg: theme.fg },
+    // Its own surface and edge, so it reads on a sheet's `raised` too.
+    secondary: { bg: theme.surface, fg: theme.fg, border: theme.lineStrong },
     ghost: { bg: "transparent", fg: theme.fg },
     destructive: { bg: "transparent", fg: theme.err },
     inverse: { bg: theme.fg, fg: theme.bg },
-  }[kind];
+  }[kind] as { bg: string; fg: string; border?: string };
   const off = disabled || loading;
   return (
     <Pressable
@@ -142,15 +144,23 @@ export function Button({
       accessibilityState={{ disabled: !!off, busy: !!loading }}
       onPress={onPress}
       disabled={off}
+      // 40pt reaches the 44pt target through its slop; 48pt already does.
+      hitSlop={tall ? undefined : { top: 2, bottom: 2 }}
       style={({ pressed }) => [
         styles.button,
-        { backgroundColor: look.bg, height: tall ? 48 : 44, opacity: disabled ? 0.4 : pressed ? 0.8 : 1 },
+        {
+          backgroundColor: look.bg,
+          height: tall ? 48 : 40,
+          opacity: disabled ? 0.4 : pressed ? PRESSED_OPACITY : 1,
+          transform: [{ scale: pressed && !off ? PRESSED_SCALE : 1 }],
+        },
+        look.border ? { borderWidth: 1, borderColor: look.border } : null,
       ]}
     >
       {loading ? <ActivityIndicator color={look.fg} /> : (
         <View style={styles.buttonRow}>
           {icon ? <Icon icon={icon} color={color ?? look.fg} size={20} /> : leading}
-          <T variant="callout" color={color ?? look.fg} style={styles.buttonText}>
+          <T color={color ?? look.fg} style={styles.buttonText}>
             {label}
           </T>
         </View>
@@ -159,23 +169,85 @@ export function Button({
   );
 }
 
-/** A bottom sheet for one decision; it rises above the keyboard when it holds a field. */
-export function Sheet({ visible, onClose, children }: { visible: boolean; onClose(): void; children: ReactNode }) {
+/**
+ * A bottom sheet for one decision; it rises above the keyboard when it holds a field.
+ * The scrim fades while only the sheet slides (a cross-fade under Reduce Motion).
+ * `onClosed` runs once it has fully gone, so the next native picker can present.
+ */
+export function Sheet({
+  visible,
+  onClose,
+  onClosed,
+  children,
+}: {
+  visible: boolean;
+  onClose(): void;
+  onClosed?(): void;
+  children: ReactNode;
+}) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
+  const reduce = useReduceMotion();
+  const { height } = useWindowDimensions();
+  const progress = useRef(new Animated.Value(0)).current;
+  const [mounted, setMounted] = useState(visible);
+  // While it slides away, keep showing what it held.
+  const held = useRef(children);
+  if (visible) held.current = children;
+  const closed = useRef(onClosed);
+  closed.current = onClosed;
+  const wasMounted = useRef(mounted);
+  useEffect(() => {
+    if (visible) setMounted(true);
+  }, [visible]);
+  useEffect(() => {
+    if (!mounted) return;
+    const run = Animated.timing(progress, {
+      toValue: visible ? 1 : 0,
+      duration: motion.medium,
+      easing: visible ? Easing.out(Easing.cubic) : Easing.in(Easing.cubic),
+      useNativeDriver: true,
+    });
+    run.start(({ finished }) => {
+      if (finished && !visible) setMounted(false);
+    });
+    return () => run.stop();
+  }, [visible, mounted, progress]);
+  useEffect(() => {
+    // iOS reports it through the Modal's onDismiss.
+    if (wasMounted.current && !mounted && Platform.OS !== "ios") closed.current?.();
+    wasMounted.current = mounted;
+  }, [mounted]);
+  const translateY = reduce ? 0 : progress.interpolate({ inputRange: [0, 1], outputRange: [height, 0] });
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose} statusBarTranslucent>
-      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : "height"}>
-        <Pressable style={styles.scrim} onPress={onClose} accessibilityLabel="Close" />
-        <View
-          style={[
-            styles.sheet,
-            { backgroundColor: theme.raised, paddingBottom: Math.max(insets.bottom, space.lg), maxHeight: "92%" },
-          ]}
-        >
-          {children}
-        </View>
-      </KeyboardAvoidingView>
+    <Modal
+      visible={mounted}
+      transparent
+      animationType="none"
+      onRequestClose={onClose}
+      onDismiss={() => closed.current?.()}
+      statusBarTranslucent
+    >
+      <View style={styles.flex} pointerEvents={visible ? "auto" : "none"}>
+        <Animated.View style={[StyleSheet.absoluteFill, styles.scrim, { opacity: progress }]} />
+        <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : "height"}>
+          <Pressable style={styles.flex} onPress={onClose} accessibilityLabel="Close" />
+          <Animated.View
+            style={[
+              styles.sheet,
+              {
+                backgroundColor: theme.raised,
+                paddingBottom: Math.max(insets.bottom, space.lg),
+                maxHeight: "92%",
+                opacity: reduce ? progress : 1,
+                transform: [{ translateY }],
+              },
+            ]}
+          >
+            {held.current}
+          </Animated.View>
+        </KeyboardAvoidingView>
+      </View>
     </Modal>
   );
 }
@@ -433,11 +505,11 @@ export function Chip({
       testID={testID}
     >
       {glyph ? (
-        <T variant="mono" color={theme.mut} style={large ? styles.chipLargeText : undefined}>
+        <T variant="mono" color={theme.mut}>
           {glyph}
         </T>
       ) : null}
-      <T variant="mono" numberOfLines={1} style={large ? [styles.shrink, styles.chipLargeText] : styles.shrink}>
+      <T variant="mono" numberOfLines={1} style={styles.shrink}>
         {label}
       </T>
       {badge ? (
@@ -490,9 +562,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   buttonRow: { flexDirection: "row", alignItems: "center", gap: space.sm },
-  buttonText: { fontSize: 15 },
+  buttonText: { fontFamily: fonts.sansMedium },
   flex: { flex: 1 },
-  scrim: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)" },
+  scrim: { backgroundColor: "rgba(0,0,0,0.45)" },
   sheet: {
     borderTopLeftRadius: radius.sheet,
     borderTopRightRadius: radius.sheet,
@@ -546,7 +618,6 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
     paddingHorizontal: space.sm,
   },
-  chipLarge: { height: 44, maxWidth: 220, gap: space.sm, paddingLeft: space.md + 2, paddingRight: space.md },
-  chipLargeText: { fontSize: 14, lineHeight: 20 },
+  chipLarge: { height: 44, maxWidth: 220, gap: space.sm, paddingHorizontal: space.md },
   emptyAction: { marginTop: space.md, alignItems: "flex-start" },
 });

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Bot, Info, Monitor, Moon, Network, Settings2, Smartphone, Sun, UserRound, X } from "lucide-react";
 import type { KeepAwakeStatus } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
+import { Dialog } from "@/components/ui/dialog";
 import type { AccountState } from "@/lib/account";
 import type { NativeBridge } from "@/lib/bridge";
 import { errorMessage, useController } from "@/lib/host-context";
@@ -58,76 +59,56 @@ export function SettingsDialog({
   ];
   const current = tabs.find((t) => t.id === tab) ?? tabs[0]!;
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-6"
-      onPointerDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        className="bg-card text-card-foreground ring-border flex h-[min(640px,100%)] w-full max-w-3xl overflow-hidden rounded-xl shadow-2xl ring-1"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Settings"
-      >
-        <nav className="bg-sidebar flex w-52 shrink-0 flex-col gap-0.5 p-2" aria-label="Settings sections">
-          {(["Settings", "Host"] as const).map((group) => (
-            <div key={group} className="flex flex-col gap-0.5">
-              <span className="text-muted-foreground px-2.5 pt-3 pb-1 text-[11px] font-medium">{group}</span>
-              {tabs
-                .filter((t) => t.group === group)
-                .map((t) => (
-                  <button
-                    key={t.id}
-                    className={cn(
-                      "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors",
-                      t.id === current.id
-                        ? "bg-sidebar-accent text-foreground"
-                        : "text-muted-foreground hover:text-foreground hover:bg-sidebar-accent/60",
-                    )}
-                    aria-current={t.id === current.id ? "page" : undefined}
-                    onClick={() => onTab(t.id)}
-                  >
-                    <t.icon className="size-4 shrink-0" />
-                    <span className="flex-1">{t.label}</span>
-                    {t.id === "about" && updateHint && (
-                      <span className="bg-brand size-1.5 rounded-full" aria-label="Update available" />
-                    )}
-                  </button>
-                ))}
-            </div>
-          ))}
-        </nav>
-        <div className="relative flex min-w-0 flex-1 flex-col">
-          <Button className="absolute top-3 right-3" size="icon-sm" variant="ghost" title="Close" onClick={onClose}>
-            <X />
-          </Button>
-          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-7 py-6 text-xs" data-testid={`settings-${current.id}`}>
-            <h2 className="mb-1 text-base font-semibold tracking-tight">{current.label}</h2>
-            {current.id === "general" && <General bridge={bridge} remote={remote} />}
-            {current.id === "account" && <AccountPanel state={account} />}
-            {current.id === "agents" && <AgentsSettings remote={remote} />}
-            {current.id === "connection" && link && (
-              <>
-                <p className="text-muted-foreground">How this computer reaches the host.</p>
-                <ConnectionModeChooser link={link} />
-              </>
-            )}
-            {current.id === "devices" && <DevicesSettings bridge={bridge} />}
-            {current.id === "about" && <AboutUpdates bridge={bridge} remote={remote} />}
+    <Dialog className="h-[min(640px,100%)] max-w-3xl flex-row overflow-hidden" aria-label="Settings" onClose={onClose}>
+      <nav className="bg-sidebar flex w-52 shrink-0 flex-col gap-0.5 p-2" aria-label="Settings sections">
+        {(["Settings", "Host"] as const).map((group) => (
+          <div key={group} className="flex flex-col gap-0.5">
+            <span className="text-muted-foreground px-2 pt-3 pb-1 text-2xs font-semibold tracking-wide uppercase">{group}</span>
+            {tabs
+              .filter((t) => t.group === group)
+              .map((t) => (
+                <button
+                  key={t.id}
+                  className={cn(
+                    "flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-ui transition-colors",
+                    t.id === current.id
+                      ? "bg-sidebar-accent text-foreground"
+                      : "text-muted-foreground hover:text-foreground hover:bg-sidebar-accent/60",
+                  )}
+                  aria-current={t.id === current.id ? "page" : undefined}
+                  onClick={() => onTab(t.id)}
+                >
+                  <t.icon className="size-4 shrink-0" />
+                  <span className="flex-1">{t.label}</span>
+                  {t.id === "about" && updateHint && (
+                    <span className="bg-brand size-2 rounded-full" aria-label="Update available" />
+                  )}
+                </button>
+              ))}
           </div>
+        ))}
+      </nav>
+      <div className="relative flex min-w-0 flex-1 flex-col">
+        <Button className="absolute top-3 right-3" size="icon-sm" variant="ghost" title="Close" onClick={onClose}>
+          <X />
+        </Button>
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-7 py-6 text-xs" data-testid={`settings-${current.id}`}>
+          <h2 className="mb-1 text-lg font-semibold tracking-tight">{current.label}</h2>
+          {current.id === "general" && <General bridge={bridge} remote={remote} />}
+          {current.id === "account" && <AccountPanel state={account} />}
+          {current.id === "agents" && <AgentsSettings remote={remote} />}
+          {current.id === "connection" && link && (
+            <>
+              <p className="text-muted-foreground">How this computer reaches the host.</p>
+              <ConnectionModeChooser link={link} />
+            </>
+          )}
+          {current.id === "devices" && <DevicesSettings bridge={bridge} />}
+          {current.id === "about" && <AboutUpdates bridge={bridge} remote={remote} />}
         </div>
       </div>
-    </div>
+    </Dialog>
   );
 }
 
@@ -142,7 +123,7 @@ function General({ bridge, remote }: { bridge: NativeBridge; remote: boolean }) 
   return (
     <>
       <div className="flex items-center gap-3 border-b pb-3">
-        <span className="flex-1 text-[13px]">Theme</span>
+        <span className="text-ui flex-1">Theme</span>
         <div className="bg-muted flex gap-0.5 rounded-lg p-0.5" role="radiogroup" aria-label="Theme">
           {THEMES.map((t) => (
             <button
@@ -182,7 +163,7 @@ function KeepAwakeToggle() {
   }, [controller]);
   if (!status?.supported) return null;
   return (
-    <section className="flex flex-col gap-1 rounded-md border p-2.5">
+    <section className="flex flex-col gap-1 rounded-md border p-3">
       <label className="flex items-center gap-2">
         <input
           type="checkbox"

@@ -53,8 +53,8 @@ export function offeredAgents(agents: readonly AgentSummary[]): AgentSummary[] {
  * What a new session of an agent starts with: the agent's advertised options,
  * the model/effort this client last chose for it (if still offered), and
  * explicit picks. Effort is the chosen model's own (`effortOn`; none on a
- * model without one). Mode always starts at the agent's normal,
- * approval-required mode unless picked.
+ * model without one). Mode starts at Auto (unattended) where the agent
+ * offers it, else at the agent's own mode, unless picked.
  */
 export function newSessionOptions(
   advertised: SessionOptions,
@@ -73,8 +73,9 @@ export function newSessionOptions(
     return { ...option, current };
   };
   const mode = advertised.mode;
-  if (mode && picks.mode && picks.mode !== mode.current && mode.available.includes(picks.mode)) {
-    request.mode = picks.mode;
+  const wantMode = picks.mode ?? (mode?.available.includes("unattended") ? "unattended" : undefined);
+  if (mode && wantMode && wantMode !== mode.current && mode.available.includes(wantMode)) {
+    request.mode = wantMode;
   }
   const model = choose("model", advertised.model);
   return {
@@ -282,7 +283,8 @@ function ContinueButton({ onContinue }: { onContinue?(): void }) {
   return (
     <Button
       size="xs"
-      className="bg-brand text-brand-foreground hover:bg-brand/85 shrink-0"
+      variant="brand"
+      className="shrink-0"
       disabled={!online || !onContinue}
       title={online ? "A new worktree of this repository, with an empty composer" : "The Host is offline"}
       onClick={onContinue}
@@ -344,7 +346,7 @@ export function NoAgents() {
       <p>No agent is available on this host.</p>
       <p className="mt-1">
         Install one on the host (for example Claude Code), then{" "}
-        <button className="underline" onClick={() => void controller.refreshAgents().catch(() => {})}>
+        <button className="hover:text-foreground underline underline-offset-2 transition-colors" onClick={() => void controller.refreshAgents().catch(() => {})}>
           check again
         </button>
         .
@@ -493,6 +495,7 @@ function OpenSession({
             )}
             {view?.pendingRequest && (
               <RequestCard
+                key={view.pendingRequest.request_id}
                 request={view.pendingRequest}
                 disabled={!online}
                 handOff={handOff}
@@ -510,7 +513,7 @@ function OpenSession({
         </div>
         {!atBottom && (
           <Button
-            className="bg-card absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full shadow-lg"
+            className="bg-popover shadow-pop animate-fade-in absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full"
             size="xs"
             variant="outline"
             onClick={jump}
@@ -523,7 +526,7 @@ function OpenSession({
         <div className="shrink-0 px-6 pt-1 pb-4">
           <div
             // In the composer's place, on the composer's surface.
-            className="bg-card ring-border mx-auto flex w-full max-w-3xl items-center gap-3 rounded-2xl px-4 py-3 text-sm ring-1"
+            className="bg-card ring-border mx-auto flex w-full max-w-3xl items-center gap-3 rounded-2xl px-4 py-3 text-ui ring-1"
             data-testid="root-continue"
           >
             <span className="text-muted-foreground min-w-0 flex-1">This session ran in the repository folder.</span>
@@ -537,13 +540,15 @@ function OpenSession({
             removed
               ? "This worktree was removed — the session is read-only"
               : running
-                ? "The agent is working…"
+                ? "Draft your next message while the agent works"
                 : "Send a message"
           }
-          disabled={running || removed || !online}
+          // A running turn only holds the send back: the next message can be drafted.
+          disabled={removed || !online}
+          busy={running}
           unattended={options?.mode?.current === "unattended"}
           commands={view?.commands ?? agentCommands}
-          terminal={terminal}
+          terminal={running ? null : terminal}
           notice={
             <>
               <AgentTerminalCard workspaceId={workspaceId} />
@@ -559,7 +564,7 @@ function OpenSession({
               )}
               {running && !removed && confirmCancel && (
                 <div
-                  className="bg-card flex items-center gap-2 rounded-lg px-3 py-2 text-xs shadow-sm"
+                  className="bg-card animate-enter flex items-center gap-2 rounded-lg px-3 py-2 text-xs shadow-sm"
                   data-testid="confirm-cancel"
                 >
                   <span className="flex-1">Stop the agent's current turn?</span>
@@ -567,6 +572,7 @@ function OpenSession({
                     Keep going
                   </Button>
                   <Button size="xs" variant="destructive" disabled={!online || cancelling} onClick={cancel}>
+                    {cancelling && <Loader2 className="animate-spin" />}
                     Stop
                   </Button>
                 </div>
@@ -606,7 +612,7 @@ function OpenSession({
             !removed && (
               <button
                 type="button"
-                className="bg-foreground text-background hover:bg-foreground/85 focus-visible:ring-ring/50 grid size-8 shrink-0 place-items-center rounded-full outline-none focus-visible:ring-2 disabled:opacity-50"
+                className="bg-foreground text-background enabled:hover:bg-foreground/85 ease-std grid size-8 shrink-0 place-items-center rounded-full transition-[background-color,opacity,transform] duration-120 enabled:active:scale-[.96] disabled:opacity-50"
                 aria-label="Stop agent"
                 title="Stop the agent's current turn"
                 data-testid="stop-agent"
@@ -636,25 +642,25 @@ function SessionStatus({ view }: { view: SessionView | undefined }) {
     text = s === "prompting" ? "Working" : s === "connecting" ? "Starting…" : "Agent ready";
     dot =
       s === "prompting"
-        ? "bg-amber-500 animate-pulse"
+        ? "bg-muted-foreground animate-breathe"
         : s === "connecting"
-          ? "bg-muted-foreground animate-pulse"
-          : "bg-emerald-500";
+          ? "bg-faint animate-breathe"
+          : "bg-done";
   } else if (view.attach === "attaching") {
     text = "Attaching…";
-    dot = "bg-muted-foreground animate-pulse";
+    dot = "bg-faint animate-breathe";
   } else if (view.attach === "error") {
     text = view.attachError?.message ?? "Error";
     dot = "bg-destructive";
   } else if (view.attach === "detached") {
     text = "Idle";
-    dot = "bg-muted-foreground/60";
+    dot = "bg-faint";
   } else {
     return null;
   }
   return (
     <span className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-xs" data-testid="session-status">
-      <span className={cn("size-1.5 shrink-0 rounded-full", dot)} />
+      <span className={cn("size-2 shrink-0 rounded-full", dot)} />
       <span className="truncate">{text}</span>
     </span>
   );
@@ -768,6 +774,8 @@ function Composer(props: {
   workspaceId: string;
   placeholder: string;
   disabled?: boolean;
+  /** The agent is working: the message can be written but not sent. */
+  busy?: boolean;
   /** Unattended is on: the frame says so. */
   unattended?: boolean;
   /** Above the composer: confirmations and errors. */
@@ -790,7 +798,7 @@ function Composer(props: {
   const area = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const attachments = usePendingAttachments();
-  const canAttach = attachments.enabled && !props.disabled;
+  const canAttach = attachments.enabled && !props.disabled && !sending;
   const agentTerminal = props.terminal;
   const slash = useSlashMenu({
     text,
@@ -823,7 +831,7 @@ function Composer(props: {
   async function send() {
     const trimmed = text.trim();
     const attaching = attachments.files.length > 0;
-    if ((!trimmed && !attaching) || sending) return;
+    if ((!trimmed && !attaching) || sending || props.busy) return;
     setSending(true);
     setError(null);
     try {
@@ -863,8 +871,8 @@ function Composer(props: {
         )}
         <div
           className={cn(
-            "bg-card relative rounded-2xl shadow-lg ring-1 transition-shadow",
-            props.unattended ? "ring-amber-500/50" : "ring-border focus-within:ring-ring/60",
+            "bg-card ease-std relative rounded-2xl shadow-lg ring-1 transition-shadow duration-120",
+            props.unattended ? "ring-brand/50" : "ring-border focus-within:ring-ring/60",
           )}
           data-testid="composer"
           onClick={(e) => {
@@ -890,11 +898,14 @@ function Composer(props: {
           />
           <textarea
             ref={area}
-            className="placeholder:text-muted-foreground block max-h-60 min-h-12 w-full resize-none bg-transparent px-4 pt-3.5 pb-1 leading-relaxed outline-none disabled:cursor-not-allowed"
+            // The composer's ring shows its focus.
+            className="placeholder:text-muted-foreground text-body block max-h-60 min-h-12 w-full resize-none bg-transparent px-4 pt-3.5 pb-1 outline-none disabled:cursor-not-allowed"
             placeholder={placeholder}
             value={text}
             rows={1}
-            disabled={props.disabled || sending}
+            // Read-only while sending, not disabled: the caret stays for the next message.
+            readOnly={sending}
+            disabled={props.disabled}
             onChange={(e) => {
               setText(e.target.value);
               slash.track(e);
@@ -945,9 +956,9 @@ function Composer(props: {
             {props.action || (
               <button
                 type="button"
-                className="bg-brand text-brand-foreground hover:bg-brand/85 focus-visible:ring-ring/50 disabled:bg-muted disabled:text-muted-foreground grid size-8 shrink-0 place-items-center rounded-full outline-none focus-visible:ring-2"
+                className="bg-brand text-brand-foreground enabled:hover:bg-brand/88 disabled:bg-muted disabled:text-muted-foreground ease-std grid size-8 shrink-0 place-items-center rounded-full transition-[background-color,color,transform] duration-120 enabled:active:scale-[.96]"
                 onClick={send}
-                disabled={props.disabled || sending || (!text.trim() && attachments.files.length === 0)}
+                disabled={props.disabled || props.busy || sending || (!text.trim() && attachments.files.length === 0)}
                 title="Send"
                 aria-label="Send"
               >

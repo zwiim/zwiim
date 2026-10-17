@@ -18,12 +18,13 @@ const STATUS_MS = 7_000;
 const SLOT = { width: 160, height: 40 };
 
 type Opacity = Animated.Value | Animated.AnimatedInterpolation<number>;
-/** An orbiting chip: its icon in violet, with an optional status color faded over it. */
+/** An orbiting chip: its icon in the accent (or `color`), with an optional status color faded over it. */
 type Chip = {
   label: string;
   x: number;
   y: number;
   icon: LucideIcon;
+  color?: string;
   base?: Opacity;
   over?: { color: string; opacity: Opacity };
 };
@@ -126,7 +127,7 @@ function Orbit() {
 
   const turn = spin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
   const unturn = spin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "-360deg"] });
-  // Sessions wait on you (amber), then run (violet); workspaces run, then finish (green).
+  // Sessions wait on you (the needs-you color), then run; workspaces run, then finish (green).
   const sessionsNeed = status.interpolate({ inputRange: [0, 0.38, 0.42, 0.96, 1], outputRange: [1, 1, 0, 0, 1] });
   const workspacesDone = status.interpolate({ inputRange: [0, 0.55, 0.6, 0.96, 1], outputRange: [0, 0, 1, 1, 0] });
 
@@ -139,6 +140,8 @@ function Orbit() {
       x: r * 0.866,
       y: r / 2,
       icon: MessagesSquare,
+      // Muted while running: the needs-you color is the accent, so it would not show over it.
+      color: theme.mut,
       over: { color: theme.need, opacity: sessionsNeed },
     },
     {
@@ -155,7 +158,7 @@ function Orbit() {
       <View style={[styles.ring, { borderColor: theme.line }]} />
       <View style={[styles.disc, { backgroundColor: theme.surface }]}>
         <Icon icon={Laptop} color={theme.fg} size={30} />
-        <T variant="monoSm" color={theme.mut} style={styles.discLabel}>
+        <T variant="monoSm" color={theme.mut}>
           your Mac
         </T>
       </View>
@@ -171,7 +174,7 @@ function Orbit() {
             <View style={[styles.chip, { backgroundColor: theme.raised }]}>
               <View style={styles.chipIcon}>
                 <Animated.View style={[StyleSheet.absoluteFill, { opacity: c.base ?? 1 }]}>
-                  <Icon icon={c.icon} color={theme.accent} size={13} />
+                  <Icon icon={c.icon} color={c.color ?? theme.accent} size={13} />
                 </Animated.View>
                 {c.over ? (
                   <Animated.View style={[StyleSheet.absoluteFill, { opacity: c.over.opacity }]}>
@@ -226,7 +229,6 @@ const styles = StyleSheet.create({
   },
   ring: { position: "absolute", width: RING, height: RING, borderRadius: RING / 2, borderWidth: 1 },
   disc: { width: 112, height: 112, borderRadius: 56, alignItems: "center", justifyContent: "center", gap: space.xs },
-  discLabel: { fontSize: 11 },
   orbit: { position: "absolute", width: RING, height: RING },
   slot: {
     position: "absolute",
@@ -245,7 +247,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.full,
   },
   chipIcon: { width: 13, height: 13 },
-  chipText: { fontFamily: fonts.monoMedium, fontSize: 12 },
+  chipText: { fontFamily: fonts.monoMedium },
   word: { marginTop: space.sm },
   bottom: { gap: space.md },
   center: { textAlign: "center" },

@@ -2,12 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, ListChecks, ShieldAlert, ShieldCheck } from "lucide-react";
 import type { ChoiceOption, OptionsRequest, SessionMode, SessionOptions } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
+import { usePresence } from "@/lib/presence";
 import { cn } from "@/lib/utils";
 
 const MODE_LABEL: Record<SessionMode, string> = {
   normal: "Ask",
   plan: "Plan",
-  unattended: "Unattended",
+  unattended: "Auto",
 };
 
 const MODE_ICON: Record<SessionMode, typeof ShieldCheck> = {
@@ -24,9 +25,8 @@ const MODE_HINT: Record<SessionMode, string> = {
 
 /**
  * Model, effort and mode for the agent's next turn, as compact controls for
- * the composer. Options the agent does not offer are not shown; unattended
- * appears only where the agent supports it and is never chosen without an
- * explicit confirmation.
+ * the composer. Options the agent does not offer are not shown; Auto
+ * (unattended) appears only where the agent supports it.
  */
 export function OptionsBar({
   options,
@@ -45,10 +45,20 @@ export function OptionsBar({
   return (
     <div className="flex min-w-0 items-center gap-0.5" data-testid="options-bar" title={hint}>
       {options.model && (
-        <OptionSelect label="Model" option={options.model} disabled={disabled} onPick={(model) => onChange({ model })} />
+        <OptionSelect
+          label="Model"
+          option={options.model}
+          disabled={disabled}
+          onPick={(model) => onChange({ model })}
+        />
       )}
       {options.effort && (
-        <OptionSelect label="Effort" option={options.effort} disabled={disabled} onPick={(effort) => onChange({ effort })} />
+        <OptionSelect
+          label="Effort"
+          option={options.effort}
+          disabled={disabled}
+          onPick={(effort) => onChange({ effort })}
+        />
       )}
       {mode && mode.available.length > 1 && (
         <ModeMenu
@@ -137,10 +147,7 @@ export function ControlSelect({
   );
 }
 
-/**
- * Ask / Plan / Unattended as one choice. Picking unattended asks for a
- * confirmation inside the menu before anything changes.
- */
+/** Ask / Plan / Auto as one choice. */
 function ModeMenu({
   current,
   available,
@@ -155,15 +162,13 @@ function ModeMenu({
   onPick(mode: SessionMode): void;
 }) {
   const [open, setOpen] = useState(false);
-  const [confirming, setConfirming] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const items = useRef<(HTMLButtonElement | null)[]>([]);
+  // The menu stays mounted for its exit.
+  const menu = usePresence(open);
 
   useEffect(() => {
-    if (!open) {
-      setConfirming(false);
-      return;
-    }
+    if (!open) return;
     const close = (e: PointerEvent) => {
       if (!root.current?.contains(e.target as Node)) setOpen(false);
     };
@@ -176,12 +181,11 @@ function ModeMenu({
   }, [disabled]);
 
   useEffect(() => {
-    if (open && !confirming) items.current[Math.max(0, available.indexOf(current))]?.focus();
-  }, [open, confirming, available, current]);
+    if (open) items.current[Math.max(0, available.indexOf(current))]?.focus();
+  }, [open, available, current]);
 
   function pick(next: SessionMode) {
     if (next === current) return setOpen(false);
-    if (next === "unattended") return setConfirming(true);
     setOpen(false);
     onPick(next);
   }
@@ -207,11 +211,11 @@ function ModeMenu({
         aria-label={`Mode: ${MODE_LABEL[current]}`}
         title={agentLabel ? `${MODE_HINT[current]} (${agentLabel})` : MODE_HINT[current]}
         disabled={disabled}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => setOpen(!open)}
         className={cn(
-          "focus-visible:ring-ring/50 flex h-7 items-center gap-1 rounded-md px-2 text-xs outline-none focus-visible:ring-2 disabled:opacity-50",
+          "ease-std flex h-7 items-center gap-1 rounded-md px-2 text-xs transition-colors duration-120 disabled:opacity-50",
           unattended
-            ? "bg-amber-500/15 font-medium text-amber-600 hover:bg-amber-500/25 dark:text-amber-400"
+            ? "bg-brand-soft text-brand hover:bg-brand-halo font-medium"
             : "text-muted-foreground hover:text-foreground hover:bg-muted disabled:hover:bg-transparent",
         )}
       >
@@ -219,73 +223,48 @@ function ModeMenu({
         {MODE_LABEL[current]}
         <ChevronDown className="size-3" />
       </button>
-      {open && (
+      {menu.mounted && (
         <div
-          className="bg-card text-card-foreground absolute right-0 bottom-full z-20 mb-2 w-72 rounded-xl border p-1 shadow-xl"
+          className="bg-popover text-popover-foreground presence-pop shadow-pop absolute right-0 bottom-full z-20 mb-2 w-72 origin-bottom-right rounded-xl border p-1"
           role="menu"
           aria-label="Mode"
+          data-state={menu.state}
+          aria-hidden={!open || undefined}
+          inert={!open}
           onKeyDown={(e) => {
-            if (confirming || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
+            if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
             e.preventDefault();
             const at = items.current.findIndex((el) => el === document.activeElement);
             const n = available.length;
             items.current[(at + (e.key === "ArrowDown" ? 1 : n - 1)) % n]?.focus();
           }}
         >
-          {confirming ? (
-            <div className="flex flex-col gap-2 p-2 text-xs" data-testid="confirm-unattended">
-              <p className="flex items-center gap-1.5 font-medium text-amber-600 dark:text-amber-400">
-                <ShieldAlert className="size-4" /> Turn off approvals?
-              </p>
-              <p className="text-muted-foreground">
-                The agent will run commands and edit files in this workspace without asking you first.
-              </p>
-              <div className="flex justify-end gap-1.5">
-                <Button size="xs" variant="ghost" onClick={() => setOpen(false)} autoFocus>
-                  Keep asking
-                </Button>
-                <Button
-                  size="xs"
-                  className="bg-amber-600 text-white hover:bg-amber-700"
-                  onClick={() => {
-                    setOpen(false);
-                    onPick("unattended");
-                  }}
-                >
-                  Run unattended
-                </Button>
-              </div>
-            </div>
-          ) : (
-            available.map((m, i) => (
-              <button
-                key={m}
-                ref={(el) => {
-                  items.current[i] = el;
-                }}
-                type="button"
-                role="menuitemradio"
-                aria-checked={current === m}
-                className="hover:bg-muted focus-visible:bg-muted flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left outline-none"
-                onClick={() => pick(m)}
-              >
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className={cn("text-sm", m === "unattended" && "text-amber-600 dark:text-amber-400")}>
-                    {MODE_LABEL[m]}
-                  </span>
-                  <span className="text-muted-foreground text-xs">{MODE_HINT[m]}</span>
-                </span>
-                {current === m && <Check className="mt-0.5 size-4 shrink-0" />}
-              </button>
-            ))
-          )}
+          {available.map((m, i) => (
+            <button
+              key={m}
+              ref={(el) => {
+                items.current[i] = el;
+              }}
+              type="button"
+              role="menuitemradio"
+              aria-checked={current === m}
+              className="hover:bg-muted focus-visible:bg-muted ease-std flex w-full items-start gap-2 rounded-lg px-3 py-2 text-left transition-colors duration-120"
+              onClick={() => pick(m)}
+            >
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className={cn("text-ui", m === "unattended" && "text-brand")}>{MODE_LABEL[m]}</span>
+                <span className="text-muted-foreground text-xs">{MODE_HINT[m]}</span>
+              </span>
+              {current === m && <Check className="mt-0.5 size-4 shrink-0" />}
+            </button>
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-/** While unattended is on, the composer says so and offers the way back. */
+/** While Auto (unattended) is on, the composer says so and offers the way back. */
 export function UnattendedBanner({
   options,
   disabled,
@@ -299,15 +278,16 @@ export function UnattendedBanner({
   if (mode?.current !== "unattended") return null;
   return (
     <div
-      className="flex items-center gap-2 rounded-t-[inherit] border-b border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-700 dark:text-amber-300"
+      className="border-brand/30 bg-brand-soft text-brand flex items-center gap-2 rounded-t-[inherit] border-b px-3 py-1.5 text-xs"
       role="status"
       data-testid="unattended-banner"
     >
       <ShieldAlert className="size-3.5 shrink-0" />
-      <span className="flex-1">Unattended — the agent runs commands and edits files without asking.</span>
+      <span className="flex-1">Auto — the agent runs commands and edits files without asking.</span>
       {mode.available.includes("normal") && (
         <button
-          className="font-medium underline-offset-2 hover:underline disabled:opacity-60"
+          type="button"
+          className="rounded-sm font-medium underline-offset-2 hover:underline disabled:opacity-50"
           disabled={disabled}
           onClick={() => onChange({ mode: "normal" })}
         >

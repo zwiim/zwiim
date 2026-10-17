@@ -1,0 +1,3 @@
+/* External, not inline: the bundled CSP nonces inline styles, which would then block xterm's injected <style>. */
+html { background: #ffffff; }
+html.dark { background: #121416; color-scheme: dark; }

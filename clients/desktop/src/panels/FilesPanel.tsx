@@ -1,26 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Braces,
-  ChevronDown,
-  ExternalLink,
-  ChevronRight,
-  File,
-  FileArchive,
-  FileCodeCorner,
-  FileCog,
-  FileImage,
-  FileKey,
-  FileText as FileTextIcon,
-  Folder,
-  FolderOpen,
-  GitBranch,
-  Loader2,
-  Lock,
-  Pencil,
-  RefreshCw,
-  SquareTerminal,
-  type LucideIcon,
-} from "lucide-react";
+import { ChevronDown, ExternalLink, ChevronRight, Loader2, Pencil, RefreshCw } from "lucide-react";
+import { FolderIcon, fileIcon } from "@/components/FileIcon";
 import {
   delimitedEditable,
   delimiterFor,
@@ -38,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { isTauri, openFileBytes } from "@/lib/bridge";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
 import { cn } from "@/lib/utils";
+import { ListSkeleton } from "./DiffPanel";
 import { HtmlView } from "./preview/HtmlView";
 import { PdfView } from "./preview/PdfView";
 import { PreviewFailure, PreviewLoading } from "./preview/PreviewState";
@@ -130,7 +111,7 @@ export function FilesPanel({
   /** An open folder whose only entry is a folder (not a link) shares its row: `a / b`. */
   function chainOf(node: FileTreeNode): FileTreeNode[] {
     const chain = [node];
-    for (let at = node; open.has(at.path); ) {
+    for (let at = node; open.has(at.path);) {
       const listing = listings[at.path];
       const only = listing && !("error" in listing) && listing.nodes.length === 1 ? listing.nodes[0]! : null;
       if (only?.kind !== "dir" || only.symlink) break;
@@ -145,25 +126,28 @@ export function FilesPanel({
     // Level with the file icons beside it.
     const pad = { paddingLeft: depth * 14 + 24 };
     if (!listing) {
-      return (
-        <p className="text-muted-foreground flex items-center gap-1 py-0.5 text-xs" style={pad}>
-          <Loader2 className="size-3 animate-spin" /> Loading…
-        </p>
-      );
+      return <ListSkeleton rows={path ? 2 : 6} className="pr-2" style={{ paddingLeft: depth * 14 + 4 }} />;
     }
     if ("error" in listing && listing.missing) {
       return (
         <div className="text-muted-foreground flex flex-col gap-1 px-3 py-2 text-xs" role="status">
           <p className="text-foreground font-medium">This folder is no longer on the host</p>
-          <p>It was moved, renamed or deleted. Put it back, or add it again from its new place with + in the sidebar.</p>
+          <p>
+            It was moved, renamed or deleted. Put it back, or add it again from its new place with + in the sidebar.
+          </p>
         </div>
       );
     }
     if ("error" in listing) {
       return (
-        <p className="text-destructive py-0.5 text-xs" style={pad} role="alert">
-          {listing.error}
-        </p>
+        <div className="flex items-center gap-2 py-0.5 pr-2 text-xs" style={pad}>
+          <p className="text-destructive min-w-0 flex-1" role="alert">
+            {listing.error}
+          </p>
+          <Button size="xs" variant="outline" onClick={() => (path ? expand(path) : reset())}>
+            Retry
+          </Button>
+        </div>
       );
     }
     if (listing.nodes.length === 0) {
@@ -174,14 +158,15 @@ export function FilesPanel({
       );
     }
     return listing.nodes.map((n) => {
-      const row = "hover:bg-muted flex w-full items-center gap-1.5 rounded-md px-1 py-[3px] text-left text-[13px]";
+      const row =
+        "hover:bg-muted flex h-7 w-full items-center gap-1.5 rounded-md px-1 text-left text-ui transition-colors";
       const indent = { paddingLeft: depth * 14 + 4 };
       if (n.kind !== "dir") {
         const { icon: Icon, color } = fileIcon(n.name);
         return (
           <button
             key={n.path}
-            className={cn(row, selected === n.path && "bg-muted font-medium")}
+            className={cn(row, selected === n.path && "bg-accent font-medium")}
             style={indent}
             onClick={() => onOpen(n.path)}
           >
@@ -195,21 +180,13 @@ export function FilesPanel({
       const expanded = open.has(last.path);
       return (
         <div key={n.path}>
-          <button
-            className={row}
-            style={indent}
-            onClick={() => (expanded ? close(n.path) : expand(last.path))}
-          >
+          <button className={row} style={indent} onClick={() => (expanded ? close(n.path) : expand(last.path))}>
             {expanded ? (
               <ChevronDown className="text-muted-foreground size-3.5 shrink-0" />
             ) : (
               <ChevronRight className="text-muted-foreground size-3.5 shrink-0" />
             )}
-            {expanded ? (
-              <FolderOpen className="text-muted-foreground size-4 shrink-0" />
-            ) : (
-              <Folder className="text-muted-foreground size-4 shrink-0" />
-            )}
+            <FolderIcon name={last.name} open={expanded} />
             <span className="truncate">{chain.map((c) => c.name).join(" / ")}</span>
           </button>
           {expanded && renderListing(last.path, depth + 1)}
@@ -233,33 +210,7 @@ export function FilesPanel({
   );
 }
 
-const BY_EXTENSION: Record<string, { icon: LucideIcon; color: string }> = {};
-const kind = (icon: LucideIcon, color: string, extensions: string) => {
-  for (const ext of extensions.split(" ")) BY_EXTENSION[ext] = { icon, color };
-};
-kind(Braces, "text-yellow-600 dark:text-yellow-300", "json jsonc json5");
-kind(FileTextIcon, "text-sky-600 dark:text-sky-400", "md mdx markdown txt rst");
-kind(FileCodeCorner, "text-blue-600 dark:text-blue-400", "ts tsx mts cts");
-kind(FileCodeCorner, "text-yellow-600 dark:text-yellow-400", "js jsx mjs cjs");
-kind(FileCodeCorner, "text-orange-600 dark:text-orange-400", "rs swift html");
-kind(FileCodeCorner, "text-teal-600 dark:text-teal-400", "py go rb");
-kind(FileCodeCorner, "text-violet-600 dark:text-violet-400", "kt kts java scala");
-kind(FileCodeCorner, "text-pink-600 dark:text-pink-400", "css scss sass less");
-kind(SquareTerminal, "text-emerald-600 dark:text-emerald-400", "sh bash zsh fish ps1");
-kind(FileCog, "text-rose-600 dark:text-rose-400", "yml yaml toml ini conf cfg xml plist");
-kind(FileImage, "text-emerald-600 dark:text-emerald-400", "png jpg jpeg gif svg webp ico icns avif");
-kind(FileArchive, "text-amber-600 dark:text-amber-400", "zip tar gz tgz xz dmg apk aab");
-kind(FileKey, "text-red-600 dark:text-red-400", "sig pem key pub crt minisig");
-
-/** A file's type at a glance: icon and color by name, as an editor's tree shows them. */
-export function fileIcon(name: string): { icon: LucideIcon; color: string } {
-  const lower = name.toLowerCase();
-  if (/(\.lockb?|-lock\.(json|yaml))$/.test(lower)) return { icon: Lock, color: "text-muted-foreground" };
-  if (lower.startsWith(".git")) return { icon: GitBranch, color: "text-orange-600 dark:text-orange-400" };
-  if (lower.startsWith(".env")) return BY_EXTENSION.toml!;
-  const dot = lower.lastIndexOf(".");
-  return (dot > 0 && BY_EXTENSION[lower.slice(dot + 1)]) || { icon: File, color: "text-muted-foreground" };
-}
+export { fileIcon } from "@/components/FileIcon";
 
 type Shown =
   | { text: FileContent }
@@ -312,6 +263,8 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
         if (kind === "sheet") next = { sheets: readSheet(bytes, name).sheets };
         else if (kind === "word") next = { word: await renderWord(bytes) };
         else {
+          // A read overtaken by a newer one must not revoke the URL that one shows.
+          if (load !== loads.current) return;
           if (imageUrl.current) URL.revokeObjectURL(imageUrl.current);
           imageUrl.current = URL.createObjectURL(new Blob([bytes as BlobPart], { type: imageMime(path) }));
           next = { image: imageUrl.current };
@@ -369,7 +322,8 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
     try {
       const file = await controller.client.request("files.read", { workspace_id: workspaceId, path });
       const table = parseDelimited(file.content, delimiter);
-      if (!delimitedEditable(table)) return setEditError("Only files up to 1,000 rows and 100 columns can be edited here.");
+      if (!delimitedEditable(table))
+        return setEditError("Only files up to 1,000 rows and 100 columns can be edited here.");
       setEditing({ table, source: file.content, etag: file.etag });
     } catch (e) {
       setEditError(errorMessage(e));
@@ -413,7 +367,9 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
                 key={m}
                 className={cn(
                   "h-6 rounded-md px-2 transition-colors",
-                  mode === m ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                  mode === m
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
                 )}
                 role="radio"
                 aria-checked={mode === m}
@@ -439,7 +395,7 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
             <Button size="xs" variant="ghost" onClick={stopEdit} disabled={saving}>
               Cancel
             </Button>
-            <Button size="xs" onClick={() => void save()} disabled={!dirty || saving}>
+            <Button size="xs" variant="brand" onClick={() => void save()} disabled={!dirty || saving}>
               {saving && <Loader2 className="animate-spin" />} Save
             </Button>
           </>
@@ -459,7 +415,8 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
       {stale && (
         <div className="flex items-center gap-3 border-b px-4 py-2 text-xs" role="alert">
           <p className="text-destructive flex-1">
-            This file changed on disk since you started editing. Reload to see the latest version; your edits will be lost.
+            This file changed on disk since you started editing. Reload to see the latest version; your edits will be
+            lost.
           </p>
           <Button
             size="xs"
@@ -486,7 +443,10 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
       {failure ? (
         <PreviewFailure error={failure} name={name} opening={opening} onOpen={() => void openElsewhere()} />
       ) : shown && "none" in shown ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center" data-testid="file-no-preview">
+        <div
+          className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center"
+          data-testid="file-no-preview"
+        >
           <p className="text-muted-foreground text-xs">
             No preview for <span className="text-foreground font-mono">{name}</span> here yet.
           </p>

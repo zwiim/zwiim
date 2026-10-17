@@ -15,7 +15,10 @@ export function SheetView({ sheets }: { sheets: Sheet[] }) {
               key={s.name}
               role="tab"
               aria-selected={i === at}
-              className={cn("rounded px-2 py-1 text-xs", i === at ? "bg-muted text-foreground" : "text-muted-foreground")}
+              className={cn(
+                "rounded-sm px-2 py-1 text-xs transition-colors",
+                i === at ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground",
+              )}
               onClick={() => setAt(i)}
             >
               {s.name}
@@ -24,7 +27,7 @@ export function SheetView({ sheets }: { sheets: Sheet[] }) {
         </div>
       )}
       {sheet.truncated && <p className="text-muted-foreground shrink-0 px-4 pt-2 text-xs">{SHEET_CAP_NOTE}</p>}
-      <div className="min-h-0 flex-1 overflow-auto p-4">
+      <div key={at} className="animate-fade-in min-h-0 flex-1 overflow-auto p-4">
         <table className="border-collapse font-mono text-xs" data-testid="sheet-table">
           <tbody>
             {sheet.rows.map((row, r) => (

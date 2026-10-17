@@ -15,7 +15,6 @@ import {
   Keyboard,
   ListCollapse,
   ListTodo,
-  Loader2,
   MessageCircleQuestion,
   Search,
   Terminal,
@@ -38,6 +37,7 @@ import {
 } from "@zwiim/sdk";
 import { opensInPreview } from "@zwiim/preview";
 import { AgentImageChip } from "@/attachments/AgentImageChip";
+import { WorkingMark } from "@/components/WorkingMark";
 import { SentAttachments } from "@/attachments/AttachmentChip";
 import { FileLinksContext, Markdown } from "@/components/Markdown";
 import { basename, parseUnifiedDiff, type FileDiff } from "@/lib/diff";
@@ -45,13 +45,13 @@ import { clipToolText, historyTool, liveTool, type ToolSummary } from "@/lib/too
 import { cn } from "@/lib/utils";
 
 /** How an item that just arrived comes in (DESIGN.md, Motion: medium, ease-out). */
-const ENTER = "animate-enter motion-reduce:animate-none";
+const ENTER = "animate-rise motion-reduce:animate-none";
 
 export function UserBubble({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
     <div
       className={cn(
-        "bg-muted max-w-[85%] self-end rounded-2xl rounded-br-md px-4 py-2.5 leading-relaxed whitespace-pre-wrap",
+        "bg-card text-body max-w-[85%] self-end rounded-2xl rounded-br-sm px-3.5 py-2.5 whitespace-pre-wrap",
         className,
       )}
     >
@@ -109,7 +109,7 @@ function Disclosure({
     <>
       <button
         type="button"
-        className={cn("group/row hover:bg-muted/60 cursor-pointer", rowClass)}
+        className={cn("group/row hover:bg-muted cursor-pointer transition-colors", rowClass)}
         aria-expanded={open}
         aria-controls={id}
         aria-label={label}
@@ -184,8 +184,8 @@ function Counts({
   const removed = diffs.reduce((n, d) => n + d.removed, 0);
   return (
     <span className="flex shrink-0 gap-1 font-mono text-xs" data-testid={testId}>
-      <span className="text-emerald-700 dark:text-emerald-400">+{added}</span>
-      <span className="text-red-700 dark:text-red-400">−{removed}</span>
+      <span className="text-done">+{added}</span>
+      <span className="text-destructive">−{removed}</span>
     </span>
   );
 }
@@ -196,7 +196,7 @@ function Counts({
  */
 function DiffCard({ diff, onOpen }: { diff: FileDiff; onOpen?: () => void }) {
   const numbered = diff.lines.some((l) => l.old !== undefined || l.new !== undefined);
-  const gutter = "text-muted-foreground/70 w-9 shrink-0 pr-2 text-right select-none";
+  const gutter = "text-faint w-9 shrink-0 pr-2 text-right select-none";
   const header = "bg-card border-border sticky top-0 z-10 flex w-full items-center gap-2 border-b px-3 py-2 text-left";
   const path = diff.path && (
     <>
@@ -227,17 +227,13 @@ function DiffCard({ diff, onOpen }: { diff: FileDiff; onOpen?: () => void }) {
       <div className="bg-code py-1 leading-5">
         {diff.lines.map((l, i) =>
           l.kind === "hunk" ? (
-            <div key={i} className="text-muted-foreground bg-muted/50 my-1 truncate px-3 select-none">
+            <div key={i} className="text-muted-foreground bg-muted my-1 truncate px-3 select-none">
               ⋯ {l.text}
             </div>
           ) : (
             <div
               key={i}
-              className={cn(
-                "flex",
-                l.kind === "add" && "bg-emerald-500/10 text-emerald-800 dark:text-emerald-300",
-                l.kind === "del" && "bg-red-500/10 text-red-800 dark:text-red-300",
-              )}
+              className={cn("flex", l.kind === "add" && "bg-add", l.kind === "del" && "bg-del")}
               data-kind={l.kind}
             >
               {numbered && (
@@ -246,7 +242,13 @@ function DiffCard({ diff, onOpen }: { diff: FileDiff; onOpen?: () => void }) {
                   <span className={gutter}>{l.new ?? ""}</span>
                 </>
               )}
-              <span className="w-5 shrink-0 text-center select-none">
+              <span
+                className={cn(
+                  "w-5 shrink-0 text-center select-none",
+                  l.kind === "add" && "text-done",
+                  l.kind === "del" && "text-destructive",
+                )}
+              >
                 {l.kind === "add" ? "+" : l.kind === "del" ? "-" : ""}
               </span>
               <span className="min-w-0 flex-1 pr-3 break-all whitespace-pre-wrap">{l.text || " "}</span>
@@ -381,7 +383,7 @@ function HoverCard({
             ref={panel}
             id={id}
             role="tooltip"
-            className="bg-card text-card-foreground border-border animate-enter fixed z-50 flex flex-col divide-y overflow-auto rounded-lg border text-xs shadow-lg motion-reduce:animate-none"
+            className="bg-popover text-card-foreground border-border animate-enter shadow-pop fixed z-50 flex flex-col divide-y overflow-auto rounded-lg border text-xs motion-reduce:animate-none"
             style={style}
             onMouseEnter={() => {
               pointer.current = true;
@@ -452,7 +454,10 @@ export function ToolCallView(props: {
       summary={
         <>
           <Icon className="text-muted-foreground size-3.5 shrink-0" />
-          <span className="text-foreground/90 shrink-0">{verbLabel}</span>
+          {/* Running: the verb shimmers; no spinner. */}
+          <span className={cn("text-foreground/90 shrink-0", running && "animate-shimmer motion-reduce:animate-none")}>
+            {verbLabel}
+          </span>
           {image ? (
             <AgentImageChip path={image.path} name={label || image.name} compact />
           ) : (
@@ -475,13 +480,12 @@ export function ToolCallView(props: {
                 <code>{label}</code>
               </HoverCard>
             ) : (
-              <code className={chip} title={title}>
+              <code className={cn(chip, running && "animate-fade-in motion-reduce:animate-none")} title={title}>
                 {label}
               </code>
             ))
           )}
           {diffs && <Counts diffs={diffs} />}
-          {running && <Loader2 className="text-muted-foreground size-3 shrink-0 animate-spin" />}
           {failed && (
             <span className="text-destructive flex shrink-0 items-center gap-0.5 text-xs">
               <X className="size-3" /> failed
@@ -496,11 +500,7 @@ export function ToolCallView(props: {
     </Disclosure>
   );
   return (
-    <div
-      className={cn("relative text-[13px]", props.className)}
-      data-testid="tool-call"
-      data-status={props.status ?? ""}
-    >
+    <div className={cn("text-ui relative", props.className)} data-testid="tool-call" data-status={props.status ?? ""}>
       {row}
       {rest.length > 0 && (
         <div className="mt-1 ml-5 flex flex-wrap gap-1.5">
@@ -522,7 +522,7 @@ export function Thought({ text, className }: { text: string; className?: string 
     .replace(/^#+\s*|\*\*|__/g, "")
     .trim();
   return (
-    <div className={cn("relative text-[13px]", className)} data-testid="thought">
+    <div className={cn("text-ui relative", className)} data-testid="thought">
       <Disclosure
         summary={(open) => (
           <>
@@ -537,7 +537,7 @@ export function Thought({ text, className }: { text: string; className?: string 
         )}
       >
         {body && (
-          <div className="text-muted-foreground border-border mt-1 mb-2 ml-1.5 border-l-2 pl-3 leading-relaxed">
+          <div className="text-muted-foreground border-border mt-1 mb-2 ml-1.5 border-l-2 pl-3">
             <Markdown text={body} />
           </div>
         )}
@@ -553,7 +553,15 @@ const userText = (blocks: { type: string; text?: string }[]) =>
     .trim();
 
 /** What the user sent: the files it carried, then its text. */
-function UserMessage({ text, blocks, className }: { text: string; blocks: readonly { type: string }[]; className?: string }) {
+function UserMessage({
+  text,
+  blocks,
+  className,
+}: {
+  text: string;
+  blocks: readonly { type: string }[];
+  className?: string;
+}) {
   const files = <SentAttachments blocks={blocks} className={className} />;
   if (!text) return files;
   return (
@@ -576,7 +584,7 @@ export function HistoryTurnView({ turn }: { turn: HistoryTurn }) {
     turn.blocks.flatMap((b) => (b.type === "tool_call" && b.tool_call_id ? [b.tool_call_id] : [])),
   );
   return (
-    <div className="flex flex-col gap-2.5 leading-relaxed">
+    <div className="text-body flex flex-col gap-2.5">
       {turn.blocks.map((b, i) => {
         switch (b.type) {
           case "text":
@@ -613,7 +621,7 @@ export function HistoryTurnView({ turn }: { turn: HistoryTurn }) {
               </Fragment>
             );
           case "agent_image":
-            return <AgentImageChip key={i} path={b.path} name={b.name} inline />;
+            return <AgentImageChip key={i} path={b.path} name={b.name} />;
           case "image":
             return null; // older Hosts' inline bytes; agent images now arrive as files
           default:
@@ -634,12 +642,12 @@ export function LiveTurnView({ turn, streaming, animate }: { turn: LiveTurn; str
   const enter = animate ? ENTER : undefined;
   if (!turn.userMessage && !turn.message && !streaming) return null;
   return (
-    <div className="flex flex-col gap-2.5 leading-relaxed" data-testid="live-turn">
+    <div className="text-body flex flex-col gap-2.5" data-testid="live-turn">
       {turn.userMessage && <UserMessage text={text} blocks={turn.userMessage.blocks} className={enter} />}
       {turn.message?.content.map((b, i) => {
         if (b.type === "text") return <Markdown key={i} className={enter} text={b.text} />;
         if (b.type === "thought") return <Thought key={i} className={enter} text={b.text} />;
-        if (b.type === "agent_image") return <AgentImageChip key={i} path={b.path} name={b.name} inline />;
+        if (b.type === "agent_image") return <AgentImageChip key={i} path={b.path} name={b.name} />;
         const tc = toolCall(b.tool_call_id);
         return (
           <ToolCallView
@@ -652,12 +660,39 @@ export function LiveTurnView({ turn, streaming, animate }: { turn: LiveTurn; str
           />
         );
       })}
-      {streaming && (
-        <span className={cn("text-muted-foreground flex items-center gap-2 text-xs", enter)}>
-          <Loader2 className="size-3.5 animate-spin" /> Working…
-        </span>
-      )}
+      {streaming && <Working className={enter} turnId={turn.userMessage?.message_id} />}
     </div>
+  );
+}
+
+/** When each live turn was first seen, so its timer survives a remount (switching sessions). */
+const turnStarts = new Map<string, number>();
+
+function turnStart(id: string | undefined): number {
+  if (!id) return Date.now();
+  let at = turnStarts.get(id);
+  if (at === undefined) {
+    at = Date.now();
+    turnStarts.set(id, at);
+    if (turnStarts.size > 64) turnStarts.delete(turnStarts.keys().next().value!);
+  }
+  return at;
+}
+
+/** While the agent works: four dots lighting in turn, and how long it has been at it. */
+function Working({ className, turnId }: { className?: string; turnId?: string }) {
+  const [since] = useState(() => turnStart(turnId));
+  const [now, setNow] = useState(since);
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <span className={cn("text-muted-foreground flex items-center gap-2 text-xs", className)} data-testid="working">
+      <WorkingMark />
+      Working
+      <span className="font-mono tabular-nums">{turnDuration(now - since)}</span>
+    </span>
   );
 }
 
@@ -676,9 +711,13 @@ export function TurnFooter({ group }: { group: TurnGroup }) {
   const files = group.files;
   const rest = files.slice(shown);
   if (!time && files.length === 0) return null;
-  const more = "bg-muted hover:bg-accent hover:text-foreground flex items-center gap-1.5 rounded-md px-1.5 py-0.5 transition-colors";
+  const more =
+    "bg-muted hover:bg-accent hover:text-foreground flex items-center gap-1.5 rounded-md px-1.5 py-0.5 transition-colors";
   return (
-    <div className="text-muted-foreground -mt-2 flex flex-wrap items-center gap-1.5 font-mono text-xs" data-testid="turn-footer">
+    <div
+      className="text-muted-foreground -mt-2 flex flex-wrap items-center gap-1.5 font-mono text-xs"
+      data-testid="turn-footer"
+    >
       {time && (
         <span className="mr-1" data-testid="turn-time">
           {time}
@@ -688,7 +727,12 @@ export function TurnFooter({ group }: { group: TurnGroup }) {
         <FileChip key={f.path} file={f} />
       ))}
       {rest.length > 0 ? (
-        <button type="button" className={more} onClick={() => setShown((n) => n + FOOTER_FILES)} title={rest.map((f) => f.path).join("\n")}>
+        <button
+          type="button"
+          className={more}
+          onClick={() => setShown((n) => n + FOOTER_FILES)}
+          title={rest.map((f) => f.path).join("\n")}
+        >
           +{rest.length} more
           <Counts diffs={rest} testId="file-counts" />
         </button>

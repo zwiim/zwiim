@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Columns2, Copy, Eye, FileText, Loader2, RefreshCw, Rows2 } from "lucide-react";
+import { Check, Columns2, Copy, Eye, FileText, RefreshCw, Rows2 } from "lucide-react";
 import {
   fullFile,
   isMarkdown,
@@ -84,19 +84,24 @@ export function DiffPanel({
         </Button>
       </div>
       {error && (
-        <p className="text-destructive px-3 py-2 text-xs" role="alert" data-testid="diff-error">
-          {error}
-        </p>
+        <div className="flex items-center gap-2 px-3 py-2 text-xs">
+          <p className="text-destructive min-w-0 flex-1" role="alert" data-testid="diff-error">
+            {error}
+          </p>
+          <Button size="xs" variant="outline" onClick={refresh} disabled={loading}>
+            Retry
+          </Button>
+        </div>
       )}
       <section className="min-h-0 flex-1 overflow-auto px-1 pb-1" data-testid="diff-files">
-        {diff === null && !error && <Loading />}
+        {diff === null && !error && <ListSkeleton rows={5} />}
         {diff?.files.length === 0 && <p className="text-muted-foreground p-2 text-xs">No changes</p>}
         {diff?.files.map((f) => (
           <button
             key={f.path}
             className={cn(
-              "hover:bg-muted flex w-full items-center gap-2 rounded-md px-2 py-1 text-left font-mono text-xs",
-              selected === f.path && "bg-muted",
+              "hover:bg-muted flex w-full items-center gap-2 rounded-md px-2 py-1 text-left font-mono text-xs transition-colors",
+              selected === f.path && "bg-accent",
             )}
             title={f.path}
             onClick={() => onOpen(f.path)}
@@ -131,8 +136,8 @@ function FileBadges({ file }: { file: DiffFile }) {
       {file.untracked && <Badge variant="outline">untracked</Badge>}
       {file.binary && <Badge>binary</Badge>}
       {file.too_large && <Badge>too large</Badge>}
-      {file.additions !== null && <span className="text-emerald-600">+{file.additions}</span>}
-      {file.deletions !== null && <span className="text-red-600">−{file.deletions}</span>}
+      {file.additions !== null && <span className="text-done">+{file.additions}</span>}
+      {file.deletions !== null && <span className="text-destructive">−{file.deletions}</span>}
     </span>
   );
 }
@@ -229,8 +234,8 @@ export function DiffView({ workspace, path }: { workspace: WorkspaceInfo; path: 
         {file && <span className="text-muted-foreground shrink-0 font-mono">{CHANGE_LETTER[file.change]}</span>}
         {file && (
           <span className="flex shrink-0 items-center gap-1 font-mono">
-            {file.additions !== null && <span className="text-emerald-600">+{file.additions}</span>}
-            {file.deletions !== null && <span className="text-red-600">−{file.deletions}</span>}
+            {file.additions !== null && <span className="text-done">+{file.additions}</span>}
+            {file.deletions !== null && <span className="text-destructive">−{file.deletions}</span>}
           </span>
         )}
         {viewed && viewed.kind !== "gone" && (
@@ -259,11 +264,16 @@ export function DiffView({ workspace, path }: { workspace: WorkspaceInfo; path: 
       </div>
       <section className="min-h-0 flex-1 overflow-auto" data-testid="diff-patch">
         {error && (
-          <p className="text-destructive p-4 text-xs" role="alert" data-testid="diff-error">
-            {error}
-          </p>
+          <div className="flex items-center gap-2 p-4 text-xs">
+            <p className="text-destructive min-w-0 flex-1" role="alert" data-testid="diff-error">
+              {error}
+            </p>
+            <Button size="xs" variant="outline" onClick={refresh} disabled={loading}>
+              Retry
+            </Button>
+          </div>
         )}
-        {viewed === null && !error && <Loading />}
+        {viewed === null && !error && <CodeSkeleton />}
         {viewed?.kind === "gone" && <Note>This file is gone.</Note>}
         {viewed?.kind === "binary" && <Note>Binary file — not shown</Note>}
         {viewed?.kind === "too_large" && <Note>{TOO_LARGE}</Note>}
@@ -349,11 +359,43 @@ function CopyButton({ text }: { text: string | null }) {
   );
 }
 
-function Loading() {
+const SKELETON_WIDTHS = ["w-3/4", "w-1/2", "w-2/3", "w-2/5", "w-3/5"];
+
+/** Placeholder rows for a list that is still loading, so the layout holds when it arrives. */
+export function ListSkeleton({
+  rows,
+  className,
+  style,
+}: {
+  rows: number;
+  className?: string;
+  style?: React.CSSProperties;
+}) {
   return (
-    <p className="text-muted-foreground flex items-center gap-1.5 p-2 text-xs">
-      <Loader2 className="size-3 animate-spin" /> Loading…
-    </p>
+    <div className={cn("flex flex-col", className)} style={style} role="status" aria-label="Loading">
+      {Array.from({ length: rows }, (_, i) => (
+        <div key={i} className="flex h-7 items-center gap-2 px-2">
+          <span className="animate-shimmer bg-muted size-3.5 shrink-0 rounded-sm" />
+          <span
+            className={cn("animate-shimmer bg-muted h-3 rounded-sm", SKELETON_WIDTHS[i % SKELETON_WIDTHS.length])}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Placeholder lines for a file that is still loading. */
+function CodeSkeleton() {
+  return (
+    <div className="flex flex-col gap-2 px-4 py-3" role="status" aria-label="Loading">
+      {Array.from({ length: 8 }, (_, i) => (
+        <span
+          key={i}
+          className={cn("animate-shimmer bg-muted h-3 rounded-sm", SKELETON_WIDTHS[i % SKELETON_WIDTHS.length])}
+        />
+      ))}
+    </div>
   );
 }
 

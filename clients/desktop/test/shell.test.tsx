@@ -502,10 +502,12 @@ describe("workbench", () => {
     const t = workbenchHost();
     const c = await mount(t, <Workbench bridge={bridge()} />);
     fireEvent.click(screen.getByTitle("Hide sidebar"));
-    expect(screen.queryByTestId("sidebar")).toBeNull();
+    // Collapsed, it stays mounted (its state survives) but is out of reach.
+    expect(screen.getByTestId("sidebar").getAttribute("aria-hidden")).toBe("true");
+    expect(screen.queryByRole("button", { name: "Hide sidebar" })).toBeNull();
     expect(JSON.parse(window.localStorage.getItem("zwiim.desktop.sidebar")!).collapsed).toBe(true);
     fireEvent.click(screen.getByTitle("Show sidebar"));
-    expect(screen.getByTestId("sidebar")).toBeTruthy();
+    expect(screen.getByTestId("sidebar").getAttribute("aria-hidden")).toBeNull();
     c.dispose();
   });
 
@@ -748,7 +750,7 @@ describe("start on a current Host", () => {
       fireEvent.click(screen.getByTitle("Hide sidebar"));
       fireEvent.click(continueButton());
       await tick();
-      expect(screen.getByTestId("sidebar")).toBeTruthy();
+      expect(screen.getByTestId("sidebar").getAttribute("aria-hidden")).toBeNull();
       expect(shown()).toEqual({ workspaceId: "t3", sessionId: null });
       c.dispose();
     });

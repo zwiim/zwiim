@@ -1,76 +1,236 @@
 @import "tailwindcss";
 @import "@xterm/xterm/css/xterm.css";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
 @custom-variant dark (&:is(.dark *));
 
-/* Neutral theme tokens adapted from the upstream web UI's `src/app/globals.css`
-   (Apache-2.0; see third_party/codeg/PROVENANCE.md). */
+/* Theme tokens: variable names adapted from the upstream web UI's `src/app/globals.css`
+   (Apache-2.0; see third_party/codeg/PROVENANCE.md); values are Zwiim's Tide palette
+   (DESIGN.md "Desktop"). One accent (`brand`) for links, mentions, focus, the primary
+   action and "needs you"; `done` green and `destructive` red carry status; nothing else
+   is chromatic. */
 :root {
   --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.58 0.22 27);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-accent: oklch(0.94 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --code: oklch(0.975 0 0);
-  --brand: oklch(0.55 0.2 285);
-  --brand-foreground: oklch(0.99 0 0);
-  /* DESIGN.md `done`: completed, passed checks, Merge. */
-  --done: #1f8a5b;
+  /* Tide light: cool graphite neutrals, accent 5.7:1 on white. */
+  --background: #ffffff;
+  --foreground: #101214;
+  /* Rendered prose: body a step below `foreground`, bold and headings above it, so emphasis reads by tone as well as weight. */
+  --prose: #2f3337;
+  --prose-strong: #0b0c0e;
+  --card: #eff1f4;
+  --card-foreground: #101214;
+  --popover: #ffffff;
+  --primary: #101214;
+  --primary-foreground: #ffffff;
+  --secondary: #eceef1;
+  --secondary-foreground: #101214;
+  --muted: rgba(0, 0, 0, 0.045);
+  --muted-foreground: #5f6368;
+  --faint: #8c9094;
+  --accent: rgba(0, 0, 0, 0.07);
+  --accent-foreground: #101214;
+  --destructive: #c8343a;
+  --border: rgba(0, 0, 0, 0.08);
+  --input: rgba(0, 0, 0, 0.12);
+  --ring: color-mix(in srgb, #1a68b3 55%, transparent);
+  --sidebar: #f6f8f9;
+  --sidebar-foreground: #101214;
+  --sidebar-accent: rgba(0, 0, 0, 0.055);
+  --sidebar-border: rgba(0, 0, 0, 0.07);
+  --code: #f3f5f6;
+  --brand: #1a68b3;
+  --brand-foreground: #ffffff;
+  --brand-soft: rgba(26, 104, 179, 0.09);
+  --brand-halo: rgba(26, 104, 179, 0.18);
+  /* DESIGN.md `done`: completed, passed checks, Merge (darkened for 4.5:1 on white). */
+  --done: #1b7a50;
   --done-foreground: #ffffff;
-  font-family: "Inter Variable", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --add-bg: rgba(31, 138, 91, 0.1);
+  --del-bg: rgba(217, 59, 59, 0.09);
+  --pop-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 10px 28px rgba(0, 0, 0, 0.1), 0 2px 6px rgba(0, 0, 0, 0.05);
+  --scrim: rgba(10, 12, 14, 0.24);
+  --selection: rgba(26, 104, 179, 0.2);
+  /* The terminal is dark in both themes. */
+  --terminal: #0d0e10;
+  font-family: var(--font-sans);
+  font-feature-settings: "calt" 1, "cv11" 1, "ss03" 1;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  color-scheme: light;
 }
 
 .dark {
-  /* Graphite: neutral charcoal; surfaces separate by tone, not lines. */
-  --background: oklch(0.185 0.002 286);
-  --foreground: oklch(0.95 0.002 286);
-  --card: oklch(0.225 0.002 286);
-  --card-foreground: oklch(0.95 0.002 286);
-  --primary: oklch(0.93 0.002 286);
-  --primary-foreground: oklch(0.2 0.002 286);
-  --secondary: oklch(0.26 0.002 286);
-  --secondary-foreground: oklch(0.95 0.002 286);
-  --muted: oklch(0.25 0.002 286);
-  --muted-foreground: oklch(0.66 0.006 286);
-  --accent: oklch(0.3 0.002 286);
-  --accent-foreground: oklch(0.95 0.002 286);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 7%);
-  --input: oklch(1 0 0 / 10%);
-  --ring: oklch(0.6 0.004 286);
-  --sidebar: oklch(0.205 0.002 286);
-  --sidebar-foreground: oklch(0.93 0.002 286);
-  --sidebar-accent: oklch(1 0 0 / 6%);
-  --sidebar-border: oklch(1 0 0 / 6%);
-  --code: oklch(0.155 0.002 286);
-  --brand: oklch(0.72 0.14 285);
-  --brand-foreground: oklch(0.18 0.02 285);
+  /* Tide dark: graphite at hue 250, chroma near zero; each layer a clear step apart. */
+  --background: #121416;
+  --foreground: #dfe1e3;
+  --prose: #c8cbce;
+  --prose-strong: #e6e8ea;
+  --card: #1e2123;
+  --card-foreground: #dfe1e3;
+  --popover: #232629;
+  --primary: #edeff0;
+  --primary-foreground: #121416;
+  --secondary: #282a2d;
+  --secondary-foreground: #dfe1e3;
+  --muted: rgba(255, 255, 255, 0.045);
+  --muted-foreground: #a3a6a9;
+  --faint: #75787c;
+  --accent: rgba(255, 255, 255, 0.08);
+  --accent-foreground: #dfe1e3;
+  --destructive: #ff6467;
+  --border: rgba(255, 255, 255, 0.07);
+  --input: rgba(255, 255, 255, 0.1);
+  --ring: color-mix(in srgb, #6cb4f0 55%, transparent);
+  --sidebar: #17191b;
+  --sidebar-foreground: #dfe1e3;
+  --sidebar-accent: rgba(255, 255, 255, 0.06);
+  --sidebar-border: rgba(255, 255, 255, 0.06);
+  --code: #0d0e10;
+  --brand: #6cb4f0;
+  --brand-foreground: #071a2b;
+  --brand-soft: rgba(108, 180, 240, 0.12);
+  --brand-halo: rgba(108, 180, 240, 0.22);
   --done: #4cc38a;
   --done-foreground: #0b2a1b;
+  --add-bg: rgba(76, 195, 138, 0.11);
+  --del-bg: rgba(255, 100, 103, 0.11);
+  --pop-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.07), 0 14px 36px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --scrim: rgba(0, 0, 0, 0.5);
+  --selection: rgba(108, 180, 240, 0.3);
+  color-scheme: dark;
 }
 
 @theme {
+  --font-sans: "Inter Variable", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Type scale (DESIGN.md "Desktop"): every size carries its leading and tracking.
+     Small text opens up, large text tightens. */
+  --text-2xs: 11px;
+  --text-2xs--line-height: 14px;
+  --text-2xs--letter-spacing: 0.02em;
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+  --text-xs--letter-spacing: 0.01em;
+  --text-ui: 13px;
+  --text-ui--line-height: 18px;
+  --text-sm: 14px;
+  --text-sm--line-height: 20px;
+  --text-body: 14px;
+  --text-body--line-height: 22px;
+  --text-base: 16px;
+  --text-base--line-height: 22px;
+  --text-base--letter-spacing: -0.01em;
+  --text-lg: 18px;
+  --text-lg--line-height: 24px;
+  --text-lg--letter-spacing: -0.016em;
+  --text-xl: 20px;
+  --text-xl--line-height: 26px;
+  --text-xl--letter-spacing: -0.02em;
+  --text-2xl: 24px;
+  --text-2xl--line-height: 30px;
+  --text-2xl--letter-spacing: -0.024em;
+
+  /* Motion (DESIGN.md "Motion"): state 120ms, enter 180ms out-curve, exit 130ms in-curve. */
+  --ease-std: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-rise: cubic-bezier(0.16, 1, 0.3, 1);
+  --default-transition-duration: 120ms;
+  --default-transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+
   --animate-enter: enter 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  /* Transcript arrivals: up from below and settle into place. */
+  --animate-rise: rise 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-pop-in: pop-in 180ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  --animate-pop-out: pop-out 130ms cubic-bezier(0.7, 0, 0.84, 0) both;
+  --animate-fade-in: fade-in 180ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  --animate-fade-out: fade-out 130ms cubic-bezier(0.7, 0, 0.84, 0) both;
+  --animate-breathe: breathe 1.6s ease-in-out infinite;
+  --animate-blink: blink 1s step-end infinite;
+  --animate-attention: attention 240ms cubic-bezier(0.23, 1, 0.32, 1);
+  --animate-shimmer: shimmer 1.6s ease-in-out infinite;
+  /* The working mark: four dots light one after another, clockwise. */
+  --animate-snake-dot: snake-dot 1.2s steps(1) infinite;
   @keyframes enter {
     from {
       opacity: 0;
       transform: translateY(4px);
+    }
+  }
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(12px);
+    }
+  }
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px) scale(0.98);
+    }
+  }
+  @keyframes pop-out {
+    to {
+      opacity: 0;
+      transform: translateY(-2px) scale(0.98);
+    }
+  }
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes fade-out {
+    to {
+      opacity: 0;
+    }
+  }
+  /* The working dot: opacity .55 to 1 over 1.6s. */
+  @keyframes breathe {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.55;
+    }
+  }
+  @keyframes blink {
+    50% {
+      opacity: 0;
+    }
+  }
+  /* "Needs you" arriving: one pop, never a loop. */
+  @keyframes attention {
+    50% {
+      transform: scale(1.5);
+    }
+  }
+  @keyframes snake-dot {
+    0% {
+      opacity: 1;
+    }
+    12.5% {
+      opacity: 0.6;
+    }
+    25% {
+      opacity: 0.3;
+    }
+    37.5%,
+    100% {
+      opacity: 0.12;
+    }
+  }
+  @keyframes shimmer {
+    0%,
+    100% {
+      opacity: 0.55;
+    }
+    50% {
+      opacity: 1;
     }
   }
 }
@@ -78,14 +238,18 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-prose: var(--prose);
+  --color-prose-strong: var(--prose-strong);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-faint: var(--faint);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
@@ -97,19 +261,28 @@
   --color-sidebar-accent: var(--sidebar-accent);
   --color-sidebar-border: var(--sidebar-border);
   --color-code: var(--code);
+  --color-terminal: var(--terminal);
   --color-brand: var(--brand);
   --color-brand-foreground: var(--brand-foreground);
+  --color-brand-soft: var(--brand-soft);
+  --color-brand-halo: var(--brand-halo);
   --color-done: var(--done);
   --color-done-foreground: var(--done-foreground);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
+  --color-add: var(--add-bg);
+  --color-del: var(--del-bg);
+  --color-scrim: var(--scrim);
+  --shadow-pop: var(--pop-shadow);
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-2xl: 16px;
 }
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border outline-ring;
   }
   html,
   body,
@@ -121,6 +294,20 @@
     margin: 0;
     /* The app is a fixed frame; only its panels scroll. */
     overflow: hidden;
+  }
+  code,
+  kbd,
+  pre,
+  .font-mono {
+    font-feature-settings: "calt" 1;
+  }
+  ::selection {
+    background: var(--selection);
+  }
+  /* One keyboard focus ring, everywhere: the accent at half strength, off the element. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
   }
   ::-webkit-scrollbar {
     width: 10px;
@@ -134,5 +321,50 @@
   }
   ::-webkit-scrollbar-track {
     background: transparent;
+  }
+}
+
+/* Mounted-while-leaving surfaces (`usePresence`): enter on open, a faster exit on close. */
+@utility presence-pop {
+  animation: var(--animate-pop-in);
+  &[data-state="closed"] {
+    animation: var(--animate-pop-out);
+    pointer-events: none;
+  }
+}
+@utility presence-fade {
+  animation: var(--animate-fade-in);
+  &[data-state="closed"] {
+    animation: var(--animate-fade-out);
+    pointer-events: none;
+  }
+}
+
+/* Height expand/collapse without measuring: the row track goes 0fr to 1fr. */
+@utility collapsible {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition:
+    grid-template-rows 200ms var(--ease-std),
+    opacity 160ms var(--ease-std);
+  & > * {
+    min-height: 0;
+    overflow: hidden;
+  }
+  &[data-state="closed"] {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}
+
+/* Reduce Motion: nothing moves or loops; state changes stay as instant cross-fades. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
   }
 }

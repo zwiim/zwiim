@@ -9,6 +9,11 @@ export default defineConfig({
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   clearScreen: false,
   server: { port: 1420, strictPort: true },
-  build: { target: "es2022", outDir: "dist" },
+  build: {
+    target: "es2022",
+    outDir: "dist",
+    // File-type icons stay separate files, loaded as shown, not inlined into the bundle.
+    assetsInlineLimit: (file) => (file.includes("material-icon-theme") ? false : undefined),
+  },
   test: { environment: "jsdom", include: ["test/**/*.test.{ts,tsx}"], setupFiles: ["test/setup.ts"] },
 });

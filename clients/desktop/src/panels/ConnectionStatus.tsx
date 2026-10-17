@@ -97,7 +97,7 @@ export function ConnectionStatus({
       <div className="flex items-center gap-2">
         {failed ? (
           <Badge variant="destructive">
-            <span className="size-1.5 rounded-full bg-current" />
+            <span className="size-2 rounded-full bg-current" />
             {remoteLabel ?? LABELS[conn.status] ?? conn.status}
           </Badge>
         ) : (
@@ -105,12 +105,12 @@ export function ConnectionStatus({
           <span className="text-muted-foreground flex items-center gap-1.5 px-0.5 text-xs">
             <span
               className={cn(
-                "size-1.5 rounded-full",
+                "size-2 rounded-full",
                 conn.status === "live"
                   ? "bg-done"
                   : conn.status === "disconnected"
-                    ? "ring-muted-foreground ring-1"
-                    : "bg-brand animate-pulse",
+                    ? "bg-faint"
+                    : "bg-muted-foreground animate-breathe",
               )}
             />
             {remoteLabel ?? pathLabel ?? LABELS[conn.status] ?? conn.status}
@@ -201,7 +201,7 @@ export function ConnectionModeChooser({ link }: { link: RemoteLink }) {
       {MODES.map((m) => (
         <label
           key={m.mode}
-          className="hover:bg-muted/60 has-checked:bg-muted flex cursor-pointer items-start gap-2.5 rounded-md px-2.5 py-2"
+          className="hover:bg-muted has-checked:bg-muted flex cursor-pointer items-start gap-2.5 rounded-md px-2.5 py-2 transition-colors"
         >
           <input
             className="accent-brand mt-0.5"
@@ -212,7 +212,7 @@ export function ConnectionModeChooser({ link }: { link: RemoteLink }) {
             onChange={() => link.onMode(m.mode)}
           />
           <span className="flex flex-col gap-0.5">
-            <span className="text-[13px] font-medium">{m.label}</span>
+            <span className="text-ui font-medium">{m.label}</span>
             <span className="text-muted-foreground text-xs">{m.detail}</span>
           </span>
         </label>

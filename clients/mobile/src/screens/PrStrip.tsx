@@ -27,12 +27,12 @@ import { ChevronRight, GitBranchPlus, GitMerge, GitPullRequest, Icon } from "../
 import { space, useTheme, type Palette } from "../ui/tokens";
 
 export const toneColor = (tone: PrTone, theme: Palette) =>
-  ({ done: theme.done, err: theme.err, work: theme.accent, mut: theme.mut })[tone];
+  ({ done: theme.done, err: theme.err, work: theme.mut, mut: theme.mut })[tone];
 
 const CHECK_GLYPH: Record<CheckState, [string, (t: Palette) => string]> = {
   passed: ["✓", (t) => t.done],
   failed: ["✕", (t) => t.err],
-  pending: ["●", (t) => t.accent],
+  pending: ["●", (t) => t.mut],
   skipped: ["–", (t) => t.faint],
 };
 

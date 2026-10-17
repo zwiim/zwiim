@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Check, ChevronsUpDown, Globe, Loader2, Monitor, X } from "lucide-react";
 import type { CloudHost, ConnectionMode } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
+import { Dialog } from "@/components/ui/dialog";
 import type { NativeBridge, PairedHost } from "@/lib/bridge";
 import { errorMessage } from "@/lib/host-context";
 import type { HostChoice } from "@/lib/prefs";
+import { usePresence } from "@/lib/presence";
 import { hostLabel, listCloudHosts, pairRemote } from "@/lib/remote";
 import { cn } from "@/lib/utils";
 
@@ -26,35 +28,24 @@ export function Modal({
   onClose(): void;
   children: React.ReactNode;
 }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busy) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [busy, onClose]);
+  const titleId = useId();
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-6"
-      onPointerDown={(e) => {
-        if (e.target === e.currentTarget && !busy) onClose();
-      }}
+    <Dialog
+      className="max-h-full max-w-md gap-3 overflow-y-auto p-5 text-xs"
+      aria-labelledby={titleId}
+      dismissible={!busy}
+      onClose={onClose}
     >
-      <div
-        className="bg-card text-card-foreground ring-border flex max-h-full w-full max-w-md flex-col gap-3 overflow-y-auto rounded-xl p-5 text-xs shadow-2xl ring-1"
-        role="dialog"
-        aria-modal="true"
-        aria-label={label}
-      >
-        <div className="flex items-center">
-          <p className="text-sm font-semibold">{label}</p>
-          <Button className="ml-auto" size="icon-sm" variant="ghost" title="Close" disabled={busy} onClick={onClose}>
-            <X />
-          </Button>
-        </div>
-        {children}
+      <div className="flex items-center">
+        <h2 id={titleId} className="text-xl font-semibold tracking-tight">
+          {label}
+        </h2>
+        <Button className="ml-auto" size="icon-sm" variant="ghost" title="Close" disabled={busy} onClick={onClose}>
+          <X />
+        </Button>
       </div>
-    </div>
+      {children}
+    </Dialog>
   );
 }
 
@@ -101,8 +92,8 @@ async function loadHosts(bridge: NativeBridge, mode: ConnectionMode): Promise<Ho
 
 const rowClass = (selected: boolean) =>
   cn(
-    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] disabled:opacity-50",
-    selected ? "bg-muted" : "hover:bg-muted/60",
+    "text-ui flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+    selected ? "bg-accent" : "enabled:hover:bg-muted",
   );
 
 /**
@@ -125,6 +116,14 @@ export function HostPicker({
   onPair(target: PairTarget): void;
 }) {
   const [open, setOpen] = useState(false);
+  const pop = usePresence(open);
+  // Esc closes the list, like every other menu.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
   const [list, setList] = useState<HostList | null>(null);
   const [pinnedName, setPinnedName] = useState<string | null>(null);
 
@@ -164,7 +163,7 @@ export function HostPicker({
   return (
     <div className="relative" data-testid="host-picker">
       <button
-        className="hover:bg-muted flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left"
+        className="hover:bg-muted flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors"
         aria-haspopup="listbox"
         aria-expanded={open}
         title="Choose the host this window shows"
@@ -176,11 +175,12 @@ export function HostPicker({
         </span>
         <ChevronsUpDown className="text-muted-foreground size-3.5 shrink-0" />
       </button>
-      {open && (
+      {pop.mounted && (
         <>
-          <div className="fixed inset-0 z-40" onPointerDown={() => setOpen(false)} />
+          {open && <div className="fixed inset-0 z-40" onPointerDown={() => setOpen(false)} />}
           <div
-            className="bg-card absolute top-full right-0 left-0 z-50 mt-1 flex flex-col gap-0.5 rounded-lg border p-1 shadow-lg"
+            className="bg-popover shadow-pop presence-pop absolute top-full right-0 left-0 z-50 mt-1 flex origin-top flex-col gap-0.5 rounded-lg border p-1"
+            data-state={pop.state}
             role="listbox"
             aria-label="Hosts"
           >
@@ -196,7 +196,7 @@ export function HostPicker({
             </button>
             {!list ? (
               <span className="text-muted-foreground flex items-center gap-1.5 px-2 py-1.5 text-xs">
-                <Loader2 className="size-3 animate-spin" /> Looking for your hosts…
+                <Loader2 className="size-3.5 animate-spin" /> Looking for your hosts…
               </span>
             ) : !list.cloudUrl && !list.lan ? null : (
               <>
@@ -209,7 +209,7 @@ export function HostPicker({
                       className={rowClass(selected)}
                       role="option"
                       aria-selected={selected}
-                      title={h.host_id}
+                      title={paired ? `Switch to ${hostLabel(h)}` : `Pair with ${hostLabel(h)}`}
                       onClick={() => {
                         if (paired) pick({ kind: "remote", hostId: h.host_id });
                         else {
@@ -219,7 +219,7 @@ export function HostPicker({
                       }}
                     >
                       <span
-                        className={cn("size-2 shrink-0 rounded-full", h.online ? "bg-emerald-500" : "bg-muted-foreground/40")}
+                        className={cn("size-2 shrink-0 rounded-full", h.online ? "bg-done" : "bg-faint")}
                         aria-label={h.online ? "online" : "offline"}
                       />
                       <span className="min-w-0 flex-1 truncate">{hostLabel(h)}</span>
@@ -242,7 +242,7 @@ export function HostPicker({
                       role="option"
                       aria-selected={selected}
                       disabled={!reachable && !selected}
-                      title={reachable ? p.host_id : "Not one of the signed-in account's hosts"}
+                      title={reachable ? `Switch to ${hostLabel(p)}` : "Not one of the signed-in account's hosts"}
                       onClick={() => pick({ kind: "remote", hostId: p.host_id })}
                     >
                       <Globe className="size-3.5 shrink-0" />
@@ -326,7 +326,7 @@ export function PairDialog({
         here. The code works once, for a few minutes.
       </p>
       <textarea
-        className="bg-input/30 min-h-24 w-full resize-none rounded-md border p-2 font-mono text-[11px] outline-none"
+        className="bg-input/30 min-h-24 w-full resize-none rounded-md border p-2 font-mono text-2xs"
         aria-label="Pairing code"
         placeholder='{"v":2,"host_id":…}'
         autoFocus
@@ -343,7 +343,7 @@ export function PairDialog({
         <Button size="sm" variant="ghost" disabled={pending} onClick={onClose}>
           Cancel
         </Button>
-        <Button size="sm" disabled={pending || !text.trim()} onClick={() => void pair()}>
+        <Button size="sm" variant="brand" disabled={pending || !text.trim()} onClick={() => void pair()}>
           {pending && <Loader2 className="animate-spin" />}
           Pair
         </Button>
@@ -362,7 +362,7 @@ export function HostPathDialog({ onDone }: { onDone(path: string | null): void }
     <Modal label="Add a folder on the host" onClose={() => onDone(null)}>
       <p className="text-muted-foreground">The folder's absolute path on the host's computer.</p>
       <input
-        className="bg-input/30 w-full rounded-md border px-2 py-1.5 font-mono text-xs outline-none"
+        className="bg-input/30 w-full rounded-md border px-2 py-1.5 font-mono text-xs"
         aria-label="Folder path on the host"
         placeholder="/Users/me/project"
         autoFocus
@@ -376,7 +376,7 @@ export function HostPathDialog({ onDone }: { onDone(path: string | null): void }
         <Button size="sm" variant="ghost" onClick={() => onDone(null)}>
           Cancel
         </Button>
-        <Button size="sm" disabled={!path.trim()} onClick={() => onDone(path.trim())}>
+        <Button size="sm" variant="brand" disabled={!path.trim()} onClick={() => onDone(path.trim())}>
           Add
         </Button>
       </div>

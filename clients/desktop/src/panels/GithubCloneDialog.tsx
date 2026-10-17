@@ -14,6 +14,7 @@ import {
 } from "@zwiim/sdk";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog } from "@/components/ui/dialog";
 import { errorMessage, useController, useOnline } from "@/lib/host-context";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "./GitPanel";
@@ -174,14 +175,6 @@ export function GithubCloneDialog({ remote, jobs, onClose, onClone }: GithubClon
     void load(false);
   }, []);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   async function clone(target: RepoRef) {
     const key = fullName(target).toLowerCase();
     if (starting.includes(key)) return;
@@ -238,81 +231,69 @@ export function GithubCloneDialog({ remote, jobs, onClose, onClone }: GithubClon
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-6"
-      onPointerDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        className="bg-card text-card-foreground ring-border flex max-h-[80vh] w-full max-w-lg flex-col rounded-2xl shadow-2xl ring-1"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Open GitHub project"
-      >
-        <div className="flex flex-col gap-3 px-5 pt-5">
-          <h2 className="text-base font-semibold tracking-tight">Open GitHub project</h2>
-          {list.kind !== "unavailable" && (
-            <label className="bg-muted/60 ring-border focus-within:ring-ring flex items-center gap-2 rounded-lg px-2.5 py-1.5 ring-1">
-              <Search className="text-muted-foreground size-3.5 shrink-0" />
-              <input
-                autoFocus
-                aria-label="Search repositories"
-                placeholder="Search, or paste owner/name"
-                className="min-w-0 flex-1 bg-transparent text-[13px] outline-none"
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-              />
-            </label>
-          )}
-        </div>
-        <div className="mt-3 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-3">
-          {list.kind === "unavailable" && (
-            <div className="flex items-center gap-2 px-2.5 py-2">
-              <p className="flex-1 text-sm">{unavailableLine(list.reason, hostName)}</p>
-              <Button size="xs" variant="ghost" disabled={!online} onClick={() => void load(true)}>
-                Try again
-              </Button>
-            </div>
-          )}
-          {list.kind === "loading" && (
-            <p className="text-muted-foreground flex items-center gap-2 px-2.5 py-2 text-xs">
-              <Loader2 className="size-3.5 animate-spin" />
-              Loading repositories…
-            </p>
-          )}
-          {list.kind === "failed" && (
-            <div className="flex items-center gap-2 px-2.5 py-2">
-              <p className="text-destructive flex-1 text-xs">{list.message}</p>
-              <Button size="xs" variant="ghost" disabled={!online} onClick={() => void load(true)}>
-                Try again
-              </Button>
-            </div>
-          )}
-          {list.kind === "ready" && shown.map((r) => rowFor(r, r))}
-          {pasted && rowFor(pasted)}
-          {list.kind === "ready" && shown.length === 0 && !pasted && (
-            <p className="text-muted-foreground px-2.5 py-2 text-xs">
-              {list.repos.length === 0 ? "No repositories on this account yet." : "No repositories match."}
-            </p>
-          )}
-          {list.kind === "ready" && list.next !== null && (
-            <div className="flex flex-col items-center gap-1 py-2">
-              <Button size="sm" variant="ghost" disabled={more.loading || !online} onClick={() => void loadMore()}>
-                {more.loading && <Loader2 className="animate-spin" />}
-                Load more
-              </Button>
-              {more.error && <p className="text-destructive text-xs">{more.error}</p>}
-            </div>
-          )}
-        </div>
-        <div className="flex justify-end px-5 py-4">
-          <Button variant="secondary" size="sm" onClick={onClose}>
-            Close
-          </Button>
-        </div>
+    <Dialog className="max-h-[80vh] max-w-lg" aria-label="Open GitHub project" onClose={onClose}>
+      <div className="flex flex-col gap-3 px-5 pt-5">
+        <h2 className="text-xl font-semibold tracking-tight">Open GitHub project</h2>
+        {list.kind !== "unavailable" && (
+          <label className="bg-muted/60 ring-border focus-within:ring-ring flex items-center gap-2 rounded-lg px-3 py-1.5 ring-1 transition-shadow">
+            <Search className="text-muted-foreground size-3.5 shrink-0" />
+            <input
+              autoFocus
+              aria-label="Search repositories"
+              placeholder="Search, or paste owner/name"
+              className="text-ui min-w-0 flex-1 bg-transparent outline-none"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+          </label>
+        )}
       </div>
-    </div>
+      <div className="mt-3 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-3">
+        {list.kind === "unavailable" && (
+          <div className="flex items-center gap-2 px-3 py-2">
+            <p className="flex-1 text-sm">{unavailableLine(list.reason, hostName)}</p>
+            <Button size="xs" variant="ghost" disabled={!online} onClick={() => void load(true)}>
+              Try again
+            </Button>
+          </div>
+        )}
+        {list.kind === "loading" && (
+          <p className="text-muted-foreground flex items-center gap-2 px-3 py-2 text-xs">
+            <Loader2 className="size-3.5 animate-spin" />
+            Loading repositories…
+          </p>
+        )}
+        {list.kind === "failed" && (
+          <div className="flex items-center gap-2 px-3 py-2">
+            <p className="text-destructive flex-1 text-xs">{list.message}</p>
+            <Button size="xs" variant="ghost" disabled={!online} onClick={() => void load(true)}>
+              Try again
+            </Button>
+          </div>
+        )}
+        {list.kind === "ready" && shown.map((r) => rowFor(r, r))}
+        {pasted && rowFor(pasted)}
+        {list.kind === "ready" && shown.length === 0 && !pasted && (
+          <p className="text-muted-foreground px-3 py-2 text-xs">
+            {list.repos.length === 0 ? "No repositories on this account yet." : "No repositories match."}
+          </p>
+        )}
+        {list.kind === "ready" && list.next !== null && (
+          <div className="flex flex-col items-center gap-1 py-2">
+            <Button size="sm" variant="ghost" disabled={more.loading || !online} onClick={() => void loadMore()}>
+              {more.loading && <Loader2 className="animate-spin" />}
+              Load more
+            </Button>
+            {more.error && <p className="text-destructive text-xs">{more.error}</p>}
+          </div>
+        )}
+      </div>
+      <div className="flex justify-end px-5 py-4">
+        <Button variant="secondary" size="sm" onClick={onClose}>
+          Close
+        </Button>
+      </div>
+    </Dialog>
   );
 }
 
@@ -336,7 +317,7 @@ function RepoRow({ target, repo, job, starting, refused, online, host, onClone, 
   const added = (repo?.workspace_id ?? null) !== null || job?.state === "done";
   return (
     <div
-      className="hover:bg-muted/60 has-[:focus-visible]:bg-muted/60 flex flex-col gap-1.5 rounded-lg px-2.5 py-2"
+      className="hover:bg-muted/60 has-[:focus-visible]:bg-muted/60 has-[:focus-visible]:ring-ring flex flex-col gap-1.5 rounded-lg px-3 py-2 transition-colors has-[:focus-visible]:ring-2"
       data-testid={`repo-${name}`}
     >
       <button
@@ -346,25 +327,25 @@ function RepoRow({ target, repo, job, starting, refused, online, host, onClone, 
         onClick={onClone}
       >
         <span className="flex max-w-full items-center gap-1.5">
-          {!repo && <span className="text-muted-foreground text-[13px]">Clone</span>}
-          <span className="truncate font-mono text-[13px]">{name}</span>
+          {!repo && <span className="text-muted-foreground text-ui">Clone</span>}
+          <span className="text-ui truncate font-mono">{name}</span>
           {repo?.private && (
             <span role="img" aria-label="Private" title="Private" className="text-muted-foreground">
               <Lock className="size-3" aria-hidden="true" />
             </span>
           )}
           {repo?.fork && (
-            <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+            <Badge variant="outline" className="text-2xs px-1.5 py-0">
               Fork
             </Badge>
           )}
           {repo?.archived && (
-            <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+            <Badge variant="outline" className="text-2xs px-1.5 py-0">
               Archived
             </Badge>
           )}
           {added && (
-            <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
+            <Badge variant="secondary" className="text-2xs px-1.5 py-0">
               Added
             </Badge>
           )}

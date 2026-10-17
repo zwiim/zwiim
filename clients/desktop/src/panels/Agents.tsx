@@ -103,7 +103,7 @@ export function AgentsSettings({ remote }: { remote: boolean }) {
               role="tab"
               aria-selected={a.id === agent}
               className={cn(
-                "rounded-md px-3 py-1 text-[13px] transition-colors",
+                "text-ui rounded-md px-3 py-1 transition-colors",
                 a.id === agent ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
               )}
               onClick={() => choose(a.id)}
@@ -135,7 +135,7 @@ export function AgentsSettings({ remote }: { remote: boolean }) {
             </p>
           ) : (
             <>
-              <div className="flex flex-col gap-1.5 rounded-md border p-2.5" data-testid="agent-account">
+              <div className="flex flex-col gap-1.5 rounded-md border p-3" data-testid="agent-account">
                 <div className="flex items-center gap-2">
                   <span className="font-medium">Account</span>
                   {!accountSignedIn && (
@@ -146,6 +146,7 @@ export function AgentsSettings({ remote }: { remote: boolean }) {
                       disabled={disabled}
                       onClick={() => void signIn()}
                     >
+                      {busy === "sign-in" && <Loader2 className="animate-spin" />}
                       {status.sign_in === "running" ? "Start over" : "Sign in"}
                     </Button>
                   )}
@@ -161,7 +162,7 @@ export function AgentsSettings({ remote }: { remote: boolean }) {
                 </p>
               </div>
 
-              <div className="flex flex-col gap-1.5 rounded-md border p-2.5" data-testid="agent-key">
+              <div className="flex flex-col gap-1.5 rounded-md border p-3" data-testid="agent-key">
                 <div className="flex items-center gap-2">
                   <span className="font-medium">API key</span>
                   {status.saved_key && <span className="text-muted-foreground">Saved on this Mac</span>}
@@ -173,6 +174,7 @@ export function AgentsSettings({ remote }: { remote: boolean }) {
                       disabled={disabled}
                       onClick={() => void removeKey()}
                     >
+                      {busy === "remove-key" && <Loader2 className="animate-spin" />}
                       {busy === "remove-key" ? "Removing…" : "Remove key"}
                     </Button>
                   )}
@@ -185,7 +187,7 @@ export function AgentsSettings({ remote }: { remote: boolean }) {
                   }}
                 >
                   <input
-                    className="bg-input/30 min-w-0 flex-1 rounded-md border px-2 py-1 font-mono text-xs outline-none"
+                    className="bg-input/30 min-w-0 flex-1 rounded-md border px-2 py-1 font-mono text-xs"
                     type="password"
                     aria-label={info.keyName}
                     placeholder={info.keyHint}
@@ -195,6 +197,7 @@ export function AgentsSettings({ remote }: { remote: boolean }) {
                     onChange={(e) => setKey(e.target.value)}
                   />
                   <Button size="xs" variant="outline" type="submit" disabled={disabled || !key.trim()}>
+                    {busy === "save-key" && <Loader2 className="animate-spin" />}
                     {busy === "save-key" ? "Saving…" : status.saved_key ? "Replace key" : "Save key"}
                   </Button>
                 </form>
@@ -224,6 +227,7 @@ export function AgentsSettings({ remote }: { remote: boolean }) {
                       disabled={disabled}
                       onClick={() => setConfirmSignOut(true)}
                     >
+                      {busy === "sign-out" && <Loader2 className="animate-spin" />}
                       {busy === "sign-out" ? "Signing out…" : "Sign out"}
                     </Button>
                   )}
@@ -250,11 +254,11 @@ function StatusRow({ status, account }: { status: AgentAuthStatus; account: stri
   return (
     <div className="flex items-start gap-2 border-b pb-3" data-testid="agent-status">
       <span
-        className={cn("mt-1 size-2 shrink-0 rounded-full", status.connected ? "bg-emerald-500" : "bg-muted-foreground/40")}
+        className={cn("mt-1 size-2 shrink-0 rounded-full", status.connected ? "bg-done" : "bg-faint")}
         aria-hidden
       />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="text-[13px] font-medium">{status.connected ? "Connected" : "Not signed in"}</span>
+        <span className="text-ui font-medium">{status.connected ? "Connected" : "Not signed in"}</span>
         {method && <span className="text-muted-foreground">{method}</span>}
         {(status.email || status.plan) && (
           <span className="text-muted-foreground truncate font-mono">

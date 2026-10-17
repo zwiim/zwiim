@@ -127,7 +127,7 @@ const EditorRow = memo(function EditorRow({
               aria-label="Cell"
               autoFocus
               rows={Math.max(1, value.split("\n").length)}
-              className="block min-w-24 resize-none bg-transparent px-2 py-1 outline-none"
+              className="focus:ring-brand/55 block min-w-24 resize-none bg-transparent px-2 py-1 outline-none focus:ring-2 focus:ring-inset"
               value={value}
               onChange={(e) => onEdit(r, c, e.target.value)}
               onKeyDown={keyDown}

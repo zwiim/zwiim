@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { HostClient, HostController, ZwiimClientError, type WorkspaceInfo } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
 import { DiffPanel, numberPatch } from "@/panels/DiffPanel";
-import { File, FileCodeCorner, GitBranch, Lock } from "lucide-react";
+import { fileIconId, folderIconId } from "@/lib/file-icons";
 import { fileIcon, FilesPanel, FileView } from "@/panels/FilesPanel";
 import { GitPanel, relativeTime, statusLabel } from "@/panels/GitPanel";
 import { FakeTransport, tick } from "./fakes";
@@ -272,13 +272,20 @@ describe("files panel", () => {
   });
 
   it("marks files by type", () => {
-    expect(fileIcon("main.tsx")).toEqual({ icon: FileCodeCorner, color: expect.stringContaining("blue") });
-    expect(fileIcon("lib.RS").color).toContain("orange");
-    expect(fileIcon("pnpm-lock.yaml").icon).toBe(Lock);
-    expect(fileIcon("Cargo.lock").icon).toBe(Lock);
-    expect(fileIcon(".gitignore").icon).toBe(GitBranch);
-    expect(fileIcon(".env.local")).toEqual(fileIcon("config.toml"));
-    expect(fileIcon("Makefile").icon).toBe(File);
-    expect(fileIcon(".bashrc").icon).toBe(File);
+    // Material Icon Theme's own tables: exact names, then the longest known extension.
+    expect(fileIconId("main.tsx", false)).toBe("react_ts");
+    expect(fileIconId("lib.RS", false)).toBe("rust");
+    expect(fileIconId("index.html", false)).toBe("html");
+    expect(fileIconId("src/Button.test.tsx", false)).toBe("test-jsx");
+    expect(fileIconId("package.json", false)).toBe("nodejs");
+    expect(fileIconId(".gitignore", false)).toBe("git");
+    expect(fileIconId("Cargo.lock", false)).toBe("lock");
+    expect(fileIconId("notes.zzzq", false)).toBe("file");
+    expect(folderIconId("src", false, false)).toBe("folder-src");
+    expect(folderIconId("src", true, false)).toBe("folder-src-open");
+    expect(folderIconId("misc-stuff", false, false)).toBe("folder");
+    // The icon is the pack's image, the same element for the same type.
+    expect(fileIcon("a.rs").icon).toBe(fileIcon("b.rs").icon);
+    expect(fileIcon("a.rs").icon).not.toBe(fileIcon("a.ts").icon);
   });
 });

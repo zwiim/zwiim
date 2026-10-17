@@ -7,7 +7,7 @@
 // runs is picked from the workspace tree, which can also add a workspace
 // (Browse Mac) or a worktree to start in.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -44,9 +44,6 @@ import { GithubProjects, NewWorkspaceChooser, useCanClone, useStartedClones } fr
 import { WorkspaceTree } from "./workspaces";
 
 type Picking = "workspace" | "agent" | "model" | "effort" | "mode" | "new" | "github" | null;
-
-/** The picker opens once the attach sheet has slid away; iOS shows one modal at a time. */
-const SHEET_CLOSE_MS = 400;
 
 export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<RootStack, "NewSession">) {
   const theme = useTheme();
@@ -121,13 +118,19 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
     }
   };
 
+  // The picker opens once the attach sheet has gone; iOS shows one modal at a time.
+  const pickingFrom = useRef<"photos" | "files" | null>(null);
   const pick = (from: "photos" | "files") => {
+    pickingFrom.current = from;
     setAttaching(false);
-    setTimeout(() => {
-      (from === "photos" ? pickPhotos() : pickFiles())
-        .then(attachments.add)
-        .catch(() => setError(from === "photos" ? "Couldn't open your photos." : "Couldn't open Files."));
-    }, SHEET_CLOSE_MS);
+  };
+  const openPicker = () => {
+    const from = pickingFrom.current;
+    pickingFrom.current = null;
+    if (!from) return;
+    (from === "photos" ? pickPhotos() : pickFiles())
+      .then(attachments.add)
+      .catch(() => setError(from === "photos" ? "Couldn't open your photos." : "Couldn't open Files."));
   };
 
   const checkAgents = async () => {
@@ -203,7 +206,7 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
   return (
     <View style={[styles.page, { backgroundColor: theme.bg, paddingTop: insets.top }]}>
       <ScreenHeader testID="new-session" title="New session" subtitle={`on ${name}`} onBack={close} close />
-      <KeyboardAvoidingView style={styles.page} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <KeyboardAvoidingView style={styles.page} behavior={Platform.OS === "ios" ? "padding" : "height"}>
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
           <View style={[styles.group, { backgroundColor: theme.surface }]}>
             <Field
@@ -262,7 +265,7 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
             </View>
           ) : null}
           {agent?.available && !options ? (
-            <T variant="callout" color={theme.faint}>
+            <T variant="callout" color={theme.mut}>
               Model and mode show here after the first {agent.name} session on {name}.
             </T>
           ) : null}
@@ -326,7 +329,7 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
         </View>
       </KeyboardAvoidingView>
 
-      <AttachSheet visible={attaching} onClose={() => setAttaching(false)} onPick={pick} />
+      <AttachSheet visible={attaching} onClose={() => setAttaching(false)} onPick={pick} onClosed={openPicker} />
       <Sheet visible={sheet !== null || picking === "workspace" || picking === "new" || picking === "github"} onClose={closeSheet}>
         {picking === "workspace" ? (
           <WorkspaceTree

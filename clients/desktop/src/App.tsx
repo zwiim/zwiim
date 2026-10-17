@@ -52,6 +52,7 @@ import {
   welcomed,
   type HostChoice,
 } from "@/lib/prefs";
+import { usePresence } from "@/lib/presence";
 import { connectRemote } from "@/lib/remote";
 import { Welcome } from "@/panels/Account";
 import { cn } from "@/lib/utils";
@@ -63,6 +64,7 @@ import { GitPanel } from "@/panels/GitPanel";
 import { HostPathDialog, HostPicker, PairDialog, type PairTarget } from "@/panels/Hosts";
 import { PrBanner } from "@/panels/PrBanner";
 import { SessionPanel } from "@/panels/SessionPanel";
+import { WorkingMark } from "@/components/WorkingMark";
 import { SettingsDialog, type SettingsTab } from "@/panels/Settings";
 import { Sidebar, type ContinueRequest } from "@/panels/Sidebar";
 import { TerminalPanel } from "@/panels/TerminalPanel";
@@ -313,6 +315,9 @@ export function Workbench({
   // On a current Host the repository folder's own sessions are read-only history too (§5.3, D8).
   const readOnlyRoot = publishable && workspace?.parent_workspace_id === null;
   const readOnly = removed || readOnlyRoot;
+  // On the way back to the host the content stays, dimmed (DESIGN.md "Reconnecting").
+  const status = useHost((s) => s.connection.status);
+  const reconnecting = status === "reconnecting" || status === "connecting" || status === "handshaking";
   /** A read-only root's Continue, until the sidebar takes it; numbered so each click runs once. */
   const [continueRequest, setContinueRequest] = useState<ContinueRequest | null>(null);
   const continues = useRef(0);
@@ -408,6 +413,16 @@ export function Workbench({
       <SidebarFrame
         // A Continue shows the sidebar, where its dialog or "Preparing workspace…" appears.
         reveal={continueRequest !== null}
+        rail={
+          <ControlCenter
+            compact
+            account={account}
+            remote={remote}
+            updateHint={updates.hint}
+            onSettings={setSettings}
+            onCheckUpdates={updates.check}
+          />
+        }
         footer={
           <>
             <UpdateCard bridge={bridge} updates={updates} remote={remote} onSeeChanges={() => setSettings("about")} />
@@ -438,7 +453,10 @@ export function Workbench({
             onStartHost={remote ? undefined : () => bridge.startHost()}
             remote={
               remoteHostId
-                ? { onSignIn: account.signIn, onPair: () => onPair?.({ hostId: remoteHostId }) }
+                ? {
+                    onSignIn: account.signIn,
+                    onPair: () => onPair?.({ hostId: remoteHostId }),
+                  }
                 : undefined
             }
             link={remote ? link : undefined}
@@ -507,7 +525,9 @@ export function Workbench({
               onSelectDoc={setActiveDoc}
               onCloseDoc={closeDoc}
             />
-            <div className="relative min-h-0 flex-1">
+            <div
+              className={cn("relative min-h-0 flex-1 transition-opacity duration-200", reconnecting && "opacity-60")}
+            >
               <TabPane active={current === null}>
                 {/* A removed worktree has no files to open, nor does a read-only root. */}
                 <FileLinksContext.Provider
@@ -515,7 +535,12 @@ export function Workbench({
                     workspace && !readOnly
                       ? {
                           workspace,
-                          open: (path) => openDoc({ kind: "file", workspaceId: workspace.workspace_id, path }),
+                          open: (path) =>
+                            openDoc({
+                              kind: "file",
+                              workspaceId: workspace.workspace_id,
+                              path,
+                            }),
                           // A plain folder has no changes to mark: the file opens as it is.
                           openDiff: (path) =>
                             openDoc({
@@ -534,7 +559,11 @@ export function Workbench({
                       onSessionStarted={setSessionId}
                       onContinue={
                         readOnlyRoot
-                          ? () => setContinueRequest({ root: workspaceId, nonce: ++continues.current })
+                          ? () =>
+                              setContinueRequest({
+                                root: workspaceId,
+                                nonce: ++continues.current,
+                              })
                           : undefined
                       }
                     />
@@ -585,7 +614,7 @@ const NO_SESSIONS: SessionSummary[] = [];
 
 const tabClass = (selected: boolean) =>
   cn(
-    "group -mb-px flex max-w-56 shrink-0 items-center gap-1.5 border-b-2 px-3 text-[13px] transition-colors",
+    "group -mb-px flex max-w-56 shrink-0 items-center gap-1.5 border-b-2 px-3 text-ui transition-colors",
     selected ? "border-foreground text-foreground" : "text-muted-foreground hover:text-foreground border-transparent",
   );
 
@@ -617,7 +646,15 @@ function CenterTabs({
   // The host lists newest first; tabs open left to right.
   const sessions = [...listed].reverse();
   const drafting = sessionId === null && !removed;
-  const [deleting, setDeleting] = useState<{ session: SessionSummary; anchor: DOMRect } | null>(null);
+  const [deleting, setDeleting] = useState<{
+    session: SessionSummary;
+    anchor: DOMRect;
+  } | null>(null);
+  // The confirm stays mounted through its exit, showing the session it asked about.
+  const confirm = usePresence(deleting !== null);
+  const lastDeleting = useRef(deleting);
+  if (deleting) lastDeleting.current = deleting;
+  const confirming = deleting ?? lastDeleting.current;
 
   /** After a delete, the tab beside the deleted one shows (or a new session). */
   function deleted(id: string) {
@@ -650,14 +687,16 @@ function CenterTabs({
           </button>
         )}
         {!removed && (
-          <button
-            className="text-muted-foreground hover:text-foreground hover:bg-muted my-auto grid size-7 shrink-0 place-items-center rounded-md"
+          <Button
+            className="text-muted-foreground my-auto shrink-0"
+            size="icon-sm"
+            variant="ghost"
             title="New session"
             aria-label="New session"
             onClick={() => onSelectSession(null)}
           >
-            <Plus className="size-4" />
-          </button>
+            <Plus />
+          </Button>
         )}
         {docs.length > 0 && <span className="bg-border mx-1.5 my-3 w-px shrink-0" aria-hidden />}
         {docs.map((d) => {
@@ -681,7 +720,7 @@ function CenterTabs({
               </button>
               <button
                 className={cn(
-                  "hover:bg-muted rounded p-0.5 opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+                  "hover:bg-muted rounded-sm p-0.5 opacity-0 transition-[opacity,background-color] group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100",
                   active === key && "opacity-100",
                 )}
                 aria-label={`Close ${name}`}
@@ -694,12 +733,14 @@ function CenterTabs({
           );
         })}
       </nav>
-      {deleting && (
+      {confirm.mounted && confirming && (
         <DeleteSession
-          session={deleting.session}
-          anchor={deleting.anchor}
+          key={confirming.session.session_id}
+          session={confirming.session}
+          anchor={confirming.anchor}
+          state={confirm.state}
           onClose={() => setDeleting(null)}
-          onDeleted={() => deleted(deleting.session.session_id)}
+          onDeleted={() => deleted(confirming.session.session_id)}
         />
       )}
     </>
@@ -728,18 +769,12 @@ function SessionTab({
         aria-current={selected ? "page" : undefined}
         onClick={onSelect}
       >
-        {working ? (
-          <span className="grid size-3.5 shrink-0 place-items-center">
-            <span className="size-1.5 animate-pulse rounded-full bg-amber-500" />
-          </span>
-        ) : (
-          <MessageSquare className="size-3.5 shrink-0" />
-        )}
+        {working ? <WorkingMark /> : <MessageSquare className="size-3.5 shrink-0" />}
         <span className="truncate">{label}</span>
       </button>
       <button
         className={cn(
-          "hover:bg-muted rounded p-0.5 opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+          "hover:bg-muted rounded-sm p-0.5 opacity-0 transition-[opacity,background-color] group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100",
           selected && "opacity-100",
         )}
         aria-label={`Delete ${label}`}
@@ -759,11 +794,13 @@ function SessionTab({
 function DeleteSession({
   session,
   anchor,
+  state,
   onClose,
   onDeleted,
 }: {
   session: SessionSummary;
   anchor: DOMRect;
+  state: "open" | "closed";
   onClose(): void;
   onDeleted(): void;
 }) {
@@ -772,13 +809,16 @@ function DeleteSession({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const open = state === "open";
+
   useEffect(() => {
+    if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !pending) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [pending, onClose]);
+  }, [open, pending, onClose]);
 
   async function remove() {
     setPending(true);
@@ -795,12 +835,18 @@ function DeleteSession({
 
   return (
     <>
-      <div className="fixed inset-0 z-40" onPointerDown={() => !pending && onClose()} />
+      {open && <div className="fixed inset-0 z-40" onPointerDown={() => !pending && onClose()} />}
       <div
         role="alertdialog"
         aria-label="Delete session"
-        className="bg-card fixed z-50 flex w-72 flex-col gap-2 rounded-lg border p-3 text-xs shadow-lg"
-        style={{ top: anchor.bottom + 6, left: Math.max(8, Math.min(anchor.right - 288, window.innerWidth - 296)) }}
+        className="bg-card presence-pop shadow-pop fixed z-50 flex w-72 origin-top-right flex-col gap-2 rounded-lg border p-3 text-xs"
+        data-state={state}
+        aria-hidden={!open || undefined}
+        inert={!open}
+        style={{
+          top: anchor.bottom + 6,
+          left: Math.max(8, Math.min(anchor.right - 288, window.innerWidth - 296)),
+        }}
       >
         <p>
           Delete <span className="font-medium">{session.title || "Untitled session"}</span>? Its conversation will no
@@ -808,10 +854,11 @@ function DeleteSession({
         </p>
         {error && <p className="text-destructive">{error}</p>}
         <div className="flex justify-end gap-1.5">
-          <Button size="xs" variant="ghost" disabled={pending} onClick={onClose}>
+          {/* Focus lands on the safe choice, never the destructive one. */}
+          <Button size="xs" variant="ghost" autoFocus disabled={pending} onClick={onClose}>
             Cancel
           </Button>
-          <Button size="xs" variant="destructive" autoFocus disabled={pending || !online} onClick={() => void remove()}>
+          <Button size="xs" variant="destructive" disabled={pending || !online} onClick={() => void remove()}>
             Delete
           </Button>
         </div>
@@ -844,8 +891,12 @@ function WorkspacePanel({
   // keeps each one's state (open files, selected diff, scroll).
   const [visited, setVisited] = useState<Set<Tab>>(() => new Set(["files"]));
   const drag = useRef<{ x: number; width: number } | null>(null);
+  // Width follows the pointer directly while dragging; it animates only on collapse.
+  const [resizing, setResizing] = useState(false);
   const split = useRef<HTMLDivElement>(null);
   const splitting = useRef(false);
+  // Height follows the pointer directly while dragging; it animates only on collapse.
+  const [splitDrag, setSplitDrag] = useState(false);
   const workspaceId = workspace.workspace_id;
 
   useEffect(() => rememberPanel(layout), [layout]);
@@ -854,37 +905,185 @@ function WorkspacePanel({
     setVisited((v) => (v.has(tab) ? v : new Set([...v, tab])));
   }, [tab]);
 
-  // Collapsed, the panel stays mounted so open files and terminals survive.
+  // Collapsed, the panel narrows to a rail (sliding like the sidebar) and stays
+  // mounted, so open files and terminals survive.
+  const collapsed = layout.collapsed;
   return (
-    <>
-      {layout.collapsed && (
-        <aside className="bg-sidebar border-sidebar-border flex shrink-0 flex-col items-center border-l p-1.5">
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            title="Show panel"
-            onClick={() => setLayout((l) => ({ ...l, collapsed: false }))}
-          >
-            <PanelRightOpen />
-          </Button>
-        </aside>
+    <aside
+      className={cn(
+        "bg-sidebar border-sidebar-border relative shrink-0 border-l",
+        !resizing && "ease-std transition-[width] duration-200",
       )}
-      <aside
-        className={cn(
-          "bg-sidebar border-sidebar-border relative flex shrink-0 flex-col border-l",
-          layout.collapsed && "hidden",
-        )}
-        style={{ width: layout.width }}
-        aria-hidden={layout.collapsed}
-        data-testid="workspace-panel"
-      >
+      style={{ width: collapsed ? RAIL : layout.width }}
+    >
+      <div className="absolute inset-0 overflow-hidden">
         <div
-          className="hover:bg-sidebar-border absolute top-0 -left-1 z-10 h-full w-2 cursor-col-resize"
+          className={cn("flex h-full flex-col transition-opacity duration-200", collapsed && "opacity-0")}
+          style={{ width: layout.width - 1 }}
+          aria-hidden={collapsed}
+          inert={collapsed}
+          data-testid="workspace-panel"
+        >
+          <PrBanner workspaceId={workspaceId} />
+          <nav className="flex h-11 shrink-0 items-center gap-1 border-b px-2" aria-label="Views">
+            {TABS.map((t) => (
+              <button
+                key={t.id}
+                className={cn(
+                  "focus-visible:ring-ring/50 text-ui flex h-7 items-center gap-1.5 rounded-md px-2.5 transition-colors outline-none focus-visible:ring-2",
+                  tab === t.id ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground",
+                )}
+                aria-current={tab === t.id ? "page" : undefined}
+                onClick={() => setTab(t.id)}
+              >
+                <t.icon className="size-3.5" />
+                {t.label}
+              </button>
+            ))}
+            <Button
+              className="ml-auto"
+              size="icon-sm"
+              variant="ghost"
+              title="Hide panel"
+              onClick={() => setLayout((l) => ({ ...l, collapsed: true }))}
+            >
+              <PanelRightClose />
+            </Button>
+          </nav>
+          <div ref={split} className="flex min-h-0 flex-1 flex-col">
+            <div className="relative min-h-0 flex-1">
+              <TabPane active={tab === "files"}>
+                <FilesPanel
+                  workspaceId={workspaceId}
+                  selected={showing?.kind === "file" ? showing.path : null}
+                  onOpen={(path) => onOpen("file", path)}
+                />
+              </TabPane>
+              {visited.has("diff") && (
+                <TabPane active={tab === "diff"}>
+                  <DiffPanel
+                    workspace={workspace}
+                    selected={showing?.kind === "diff" ? showing.path : null}
+                    onOpen={(path) => onOpen("diff", path)}
+                  />
+                </TabPane>
+              )}
+              {visited.has("git") && (
+                <TabPane active={tab === "git"}>
+                  <GitPanel workspace={workspace} />
+                </TabPane>
+              )}
+            </div>
+            {layout.terminalCollapsed ? (
+              <div className="shrink-0 border-t" />
+            ) : (
+              <div
+                className="hover:bg-sidebar-border focus-visible:bg-sidebar-border h-1 shrink-0 cursor-row-resize border-t transition-colors"
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label="Resize terminal"
+                aria-valuenow={Math.round(layout.terminal * 100)}
+                aria-valuemin={Math.round(TERMINAL_MIN * 100)}
+                aria-valuemax={Math.round(TERMINAL_MAX * 100)}
+                tabIndex={0}
+                title="Drag to resize"
+                onKeyDown={(e) => {
+                  const step = e.key === "ArrowUp" ? 0.05 : e.key === "ArrowDown" ? -0.05 : 0;
+                  if (!step) return;
+                  e.preventDefault();
+                  setLayout((l) => ({
+                    ...l,
+                    terminal: Math.min(TERMINAL_MAX, Math.max(TERMINAL_MIN, l.terminal + step)),
+                  }));
+                }}
+                onPointerDown={(e) => {
+                  splitting.current = true;
+                  setSplitDrag(true);
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                }}
+                onPointerMove={(e) => {
+                  const box = split.current?.getBoundingClientRect();
+                  if (!splitting.current || !box || box.height === 0) return;
+                  const terminal = Math.min(
+                    TERMINAL_MAX,
+                    Math.max(TERMINAL_MIN, (box.bottom - e.clientY) / box.height),
+                  );
+                  setLayout((l) => ({ ...l, terminal }));
+                }}
+                onPointerUp={() => {
+                  splitting.current = false;
+                  setSplitDrag(false);
+                }}
+              />
+            )}
+            <section
+              className={cn(
+                "min-h-0 shrink-0 overflow-hidden",
+                !splitDrag && "ease-std transition-[height] duration-200",
+              )}
+              // Both heights inline (the tab strip's 2.25rem, or a share of the split) so the change animates.
+              style={{
+                height: layout.terminalCollapsed ? "2.25rem" : `${layout.terminal * 100}%`,
+              }}
+              aria-label="Terminal"
+            >
+              <TerminalPanel
+                workspaceId={workspaceId}
+                hidden={hiddenTerminals}
+                leading={
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    title={layout.terminalCollapsed ? "Show terminal" : "Hide terminal"}
+                    onClick={() =>
+                      setLayout((l) => ({
+                        ...l,
+                        terminalCollapsed: !l.terminalCollapsed,
+                      }))
+                    }
+                  >
+                    {layout.terminalCollapsed ? <ChevronUp /> : <ChevronDown />}
+                  </Button>
+                }
+              />
+            </section>
+          </div>
+        </div>
+      </div>
+      {collapsed ? (
+        <Button
+          className="animate-fade-in absolute top-1.5 left-1.5"
+          size="icon-sm"
+          variant="ghost"
+          title="Show panel"
+          onClick={() => setLayout((l) => ({ ...l, collapsed: false }))}
+        >
+          <PanelRightOpen />
+        </Button>
+      ) : (
+        <div
+          className="hover:bg-sidebar-border focus-visible:bg-sidebar-border absolute top-0 -left-1 z-10 h-full w-2 cursor-col-resize transition-colors"
           role="separator"
           aria-orientation="vertical"
+          aria-label="Resize panel"
+          aria-valuenow={layout.width}
+          aria-valuemin={PANEL_MIN}
+          aria-valuemax={PANEL_MAX}
+          tabIndex={0}
           title="Drag to resize"
+          onKeyDown={(e) => {
+            // The panel sits on the right: Left widens it.
+            const step = e.key === "ArrowLeft" ? 16 : e.key === "ArrowRight" ? -16 : 0;
+            if (!step) return;
+            e.preventDefault();
+            setLayout((l) => ({
+              ...l,
+              width: Math.min(PANEL_MAX, Math.max(PANEL_MIN, l.width + step)),
+            }));
+          }}
           onPointerDown={(e) => {
             drag.current = { x: e.clientX, width: layout.width };
+            setResizing(true);
             e.currentTarget.setPointerCapture(e.pointerId);
           }}
           onPointerMove={(e) => {
@@ -895,209 +1094,179 @@ function WorkspacePanel({
           }}
           onPointerUp={() => {
             drag.current = null;
+            setResizing(false);
           }}
         />
-        <PrBanner workspaceId={workspaceId} />
-        <nav className="flex h-11 shrink-0 items-center gap-1 border-b px-2" aria-label="Views">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              className={cn(
-                "focus-visible:ring-ring/50 flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[13px] transition-colors outline-none focus-visible:ring-2",
-                tab === t.id ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground",
-              )}
-              aria-current={tab === t.id ? "page" : undefined}
-              onClick={() => setTab(t.id)}
-            >
-              <t.icon className="size-3.5" />
-              {t.label}
-            </button>
-          ))}
-          <Button
-            className="ml-auto"
-            size="icon-sm"
-            variant="ghost"
-            title="Hide panel"
-            onClick={() => setLayout((l) => ({ ...l, collapsed: true }))}
-          >
-            <PanelRightClose />
-          </Button>
-        </nav>
-        <div ref={split} className="flex min-h-0 flex-1 flex-col">
-          <div className="relative min-h-0 flex-1">
-            <TabPane active={tab === "files"}>
-              <FilesPanel
-                workspaceId={workspaceId}
-                selected={showing?.kind === "file" ? showing.path : null}
-                onOpen={(path) => onOpen("file", path)}
-              />
-            </TabPane>
-            {visited.has("diff") && (
-              <TabPane active={tab === "diff"}>
-                <DiffPanel
-                  workspace={workspace}
-                  selected={showing?.kind === "diff" ? showing.path : null}
-                  onOpen={(path) => onOpen("diff", path)}
-                />
-              </TabPane>
-            )}
-            {visited.has("git") && (
-              <TabPane active={tab === "git"}>
-                <GitPanel workspace={workspace} />
-              </TabPane>
-            )}
-          </div>
-          {layout.terminalCollapsed ? (
-            <div className="shrink-0 border-t" />
-          ) : (
-            <div
-              className="hover:bg-sidebar-border h-1 shrink-0 cursor-row-resize border-t"
-              role="separator"
-              aria-orientation="horizontal"
-              title="Drag to resize"
-              onPointerDown={(e) => {
-                splitting.current = true;
-                e.currentTarget.setPointerCapture(e.pointerId);
-              }}
-              onPointerMove={(e) => {
-                const box = split.current?.getBoundingClientRect();
-                if (!splitting.current || !box || box.height === 0) return;
-                const terminal = Math.min(TERMINAL_MAX, Math.max(TERMINAL_MIN, (box.bottom - e.clientY) / box.height));
-                setLayout((l) => ({ ...l, terminal }));
-              }}
-              onPointerUp={() => {
-                splitting.current = false;
-              }}
-            />
-          )}
-          <section
-            className={cn("min-h-0 shrink-0 overflow-hidden", layout.terminalCollapsed && "h-9")}
-            style={layout.terminalCollapsed ? undefined : { height: `${layout.terminal * 100}%` }}
-            aria-label="Terminal"
-          >
-            <TerminalPanel
-              workspaceId={workspaceId}
-              hidden={hiddenTerminals}
-              leading={
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  title={layout.terminalCollapsed ? "Show terminal" : "Hide terminal"}
-                  onClick={() => setLayout((l) => ({ ...l, terminalCollapsed: !l.terminalCollapsed }))}
-                >
-                  {layout.terminalCollapsed ? <ChevronUp /> : <ChevronDown />}
-                </Button>
-              }
-            />
-          </section>
-        </div>
-      </aside>
-    </>
+      )}
+    </aside>
   );
 }
 
 /** A mounted panel; hidden ones keep their state. */
 function TabPane({ active, children }: { active: boolean; children: React.ReactNode }) {
   return (
-    <div className={cn("absolute inset-0", !active && "invisible")} aria-hidden={!active} data-active={active}>
+    <div
+      className={cn("absolute inset-0", active ? "animate-fade-in" : "invisible")}
+      aria-hidden={!active}
+      data-active={active}
+    >
       {children}
     </div>
   );
 }
 
+/** The collapsed sidebar's width: a ghost icon button (28px), its padding and the border. */
+const RAIL = 41;
+
 /** Resizable, collapsible sidebar; its layout is a client preference. */
 function SidebarFrame({
   children,
   footer,
+  rail,
   reveal = false,
 }: {
   children: React.ReactNode;
   footer: React.ReactNode;
+  /** The collapsed rail's foot (account and settings). */
+  rail: React.ReactNode;
   /** Show a collapsed sidebar, for work that happens there. */
   reveal?: boolean;
 }) {
   const [layout, setLayout] = useState(sidebarLayout);
   const drag = useRef<{ x: number; width: number } | null>(null);
+  // Width follows the pointer directly while dragging; it animates only on collapse.
+  const [resizing, setResizing] = useState(false);
 
   useEffect(() => rememberSidebar(layout), [layout]);
   useEffect(() => {
     if (reveal) setLayout((l) => (l.collapsed ? { ...l, collapsed: false } : l));
   }, [reveal]);
 
-  if (layout.collapsed) {
-    return (
-      <aside className="bg-sidebar border-sidebar-border flex shrink-0 flex-col items-center border-r p-1.5">
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          title="Show sidebar"
-          onClick={() => setLayout((l) => ({ ...l, collapsed: false }))}
-        >
-          <PanelLeftOpen />
-        </Button>
-      </aside>
-    );
-  }
+  const collapsed = layout.collapsed;
+  // Collapsed, the sidebar narrows to a rail and stays mounted, so its state survives.
   return (
     <aside
-      className="bg-sidebar text-sidebar-foreground border-sidebar-border relative flex shrink-0 flex-col gap-5 border-r px-2.5 py-3"
-      style={{ width: layout.width }}
-      data-testid="sidebar"
+      className={cn(
+        "bg-sidebar text-sidebar-foreground border-sidebar-border relative shrink-0 border-r",
+        !resizing && "ease-std transition-[width] duration-200",
+      )}
+      style={{ width: collapsed ? RAIL : layout.width }}
     >
-      <Button
-        className="absolute top-2.5 right-2"
-        size="icon-sm"
-        variant="ghost"
-        title="Hide sidebar"
-        onClick={() => setLayout((l) => ({ ...l, collapsed: true }))}
-      >
-        <PanelLeftClose />
-      </Button>
-      {children}
-      <div className="-mx-2.5 -mb-1 flex flex-col px-1.5">{footer}</div>
-      <div
-        className="hover:bg-sidebar-border absolute top-0 -right-1 h-full w-2 cursor-col-resize"
-        role="separator"
-        aria-orientation="vertical"
-        title="Drag to resize"
-        onPointerDown={(e) => {
-          drag.current = { x: e.clientX, width: layout.width };
-          e.currentTarget.setPointerCapture(e.pointerId);
-        }}
-        onPointerMove={(e) => {
-          const d = drag.current;
-          if (!d) return;
-          const width = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, d.width + e.clientX - d.x));
-          setLayout((l) => ({ ...l, width }));
-        }}
-        onPointerUp={() => {
-          drag.current = null;
-        }}
-      />
+      <div className="absolute inset-0 overflow-hidden">
+        <div
+          className={cn(
+            "relative flex h-full flex-col gap-5 px-2.5 py-3 transition-opacity duration-200",
+            collapsed && "opacity-0",
+          )}
+          style={{ width: layout.width - 1 }}
+          aria-hidden={collapsed || undefined}
+          inert={collapsed}
+          data-testid="sidebar"
+        >
+          <Button
+            className="absolute top-2.5 right-2"
+            size="icon-sm"
+            variant="ghost"
+            title="Hide sidebar"
+            onClick={() => setLayout((l) => ({ ...l, collapsed: true }))}
+          >
+            <PanelLeftClose />
+          </Button>
+          {children}
+          <div className="-mx-2.5 -mb-1 flex flex-col px-1.5">{footer}</div>
+        </div>
+      </div>
+      {collapsed ? (
+        <>
+          <Button
+            className="animate-fade-in absolute top-1.5 left-1.5"
+            size="icon-sm"
+            variant="ghost"
+            title="Show sidebar"
+            onClick={() => setLayout((l) => ({ ...l, collapsed: false }))}
+          >
+            <PanelLeftOpen />
+          </Button>
+          <div className="animate-fade-in absolute bottom-2 left-1.5">{rail}</div>
+        </>
+      ) : (
+        <div
+          className="hover:bg-sidebar-border focus-visible:bg-sidebar-border absolute top-0 -right-1 z-10 h-full w-2 cursor-col-resize transition-colors"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          aria-valuenow={layout.width}
+          aria-valuemin={SIDEBAR_MIN}
+          aria-valuemax={SIDEBAR_MAX}
+          tabIndex={0}
+          title="Drag to resize"
+          onKeyDown={(e) => {
+            const step = e.key === "ArrowRight" ? 16 : e.key === "ArrowLeft" ? -16 : 0;
+            if (!step) return;
+            e.preventDefault();
+            setLayout((l) => ({
+              ...l,
+              width: Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, l.width + step)),
+            }));
+          }}
+          onPointerDown={(e) => {
+            drag.current = { x: e.clientX, width: layout.width };
+            setResizing(true);
+            e.currentTarget.setPointerCapture(e.pointerId);
+          }}
+          onPointerMove={(e) => {
+            const d = drag.current;
+            if (!d) return;
+            const width = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, d.width + e.clientX - d.x));
+            setLayout((l) => ({ ...l, width }));
+          }}
+          onPointerUp={() => {
+            drag.current = null;
+            setResizing(false);
+          }}
+        />
+      )}
     </aside>
   );
 }
 
-/** While the host is unreachable nothing can change; say so once, up top. */
+/** While the host is unreachable nothing can change; say so once, up top, quietly. */
 function OfflineBanner() {
   const status = useHost((s) => s.connection.status);
-  if (status === "live") return null;
+  const offline = status !== "live";
+  const { mounted, state } = usePresence(offline, 200);
+  // Leaving, the banner keeps saying what it said.
+  const last = useRef(status);
+  if (offline) last.current = status;
+  if (!mounted) return null;
+  const shown = last.current;
   const text =
-    status === "incompatible"
+    shown === "incompatible"
       ? "An update is required before this app can use the host. Changes are disabled."
-      : status === "unauthenticated"
-      ? "This app is not authorized by the host. Changes are disabled."
-      : status === "error"
-        ? "Not connected to the host. Changes are disabled."
-        : "Reconnecting to the host… Changes are disabled until it is back.";
+      : shown === "unauthenticated"
+        ? "This app is not authorized by the host. Changes are disabled."
+        : shown === "error"
+          ? "Not connected to the host. Changes are disabled."
+          : "Reconnecting to the host… Changes are disabled until it is back.";
+  const failed = shown === "incompatible" || shown === "unauthenticated" || shown === "error";
   return (
-    <div
-      className="flex items-center gap-2 border-b bg-amber-500/10 px-4 py-1.5 text-xs text-amber-800 dark:text-amber-300"
-      role="status"
-      data-testid="offline-banner"
-    >
-      <WifiOff className="size-3.5" />
-      {text}
+    <div className="collapsible shrink-0" data-state={state}>
+      <div>
+        <div
+          className="text-muted-foreground animate-fade-in flex items-center gap-2 border-b px-4 py-1.5 text-xs"
+          role="status"
+          data-testid="offline-banner"
+        >
+          {failed ? (
+            <WifiOff className="size-3.5" />
+          ) : (
+            <span className="grid size-3.5 place-items-center">
+              <span className="bg-muted-foreground animate-breathe size-2 rounded-full" />
+            </span>
+          )}
+          {text}
+        </div>
+      </div>
     </div>
   );
 }

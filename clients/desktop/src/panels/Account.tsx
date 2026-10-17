@@ -14,7 +14,7 @@ export function AccountPanel({ state }: { state: AccountState }) {
       <div className="flex items-center gap-3">
         <Avatar email={account?.email ?? null} size="lg" />
         <div className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate text-[13px] font-medium" title={account ? (account.email ?? account.user_id) : undefined}>
+          <span className="text-ui truncate font-medium" title={account ? (account.email ?? account.user_id) : undefined}>
             {account ? (account.email ?? "Signed in") : "Not signed in"}
           </span>
           <span className="text-muted-foreground text-xs">
@@ -44,7 +44,7 @@ export function AccountPanel({ state }: { state: AccountState }) {
               </Button>
             </span>
           ) : (
-            <Button size="sm" onClick={() => void state.signIn()}>
+            <Button size="sm" variant="brand" onClick={() => void state.signIn()}>
               Sign in
             </Button>
           ))
@@ -58,11 +58,11 @@ export function AccountPanel({ state }: { state: AccountState }) {
       )}
       {ownership.kind === "mismatch" && (
         <div
-          className="flex gap-1.5 rounded-md border border-amber-500/50 bg-amber-500/10 p-2 text-xs text-amber-800 dark:text-amber-300"
+          className="border-brand/40 bg-brand-soft text-foreground flex gap-2 rounded-md border p-2 text-xs"
           role="status"
           data-testid="owner-mismatch"
         >
-          <ShieldAlert className="size-3.5 shrink-0" />
+          <ShieldAlert className="text-brand size-3.5 shrink-0" />
           <span>
             This host belongs to {ownership.ownerEmail ?? "another account"}. It stays theirs; you can keep using it
             locally.
@@ -99,12 +99,12 @@ export function Avatar({ email, size = "sm" }: { email: string | null; size?: "s
 export function Welcome({ state, onLocal }: { state: AccountState; onLocal(): void }) {
   return (
     <div className="bg-background/80 absolute inset-0 z-20 flex items-center justify-center backdrop-blur-sm" data-testid="welcome">
-      <div className="bg-card flex w-80 flex-col gap-3 rounded-lg border p-6 shadow-lg">
+      <div className="bg-popover shadow-pop animate-enter flex w-80 flex-col gap-3 rounded-xl border p-6">
         <p className="text-lg font-semibold">Welcome to Zwiim</p>
         <p className="text-muted-foreground text-xs">
           Sign in to link this computer's host to your account. Everything runs here either way.
         </p>
-        <Button onClick={() => void state.signIn()} disabled={state.pending}>
+        <Button variant="brand" onClick={() => void state.signIn()} disabled={state.pending}>
           {state.pending && <Loader2 className="animate-spin" />}
           {state.pending ? "Finish signing in in your browser…" : "Continue with Google"}
         </Button>

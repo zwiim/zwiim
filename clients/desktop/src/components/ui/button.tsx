@@ -5,16 +5,20 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-transparent text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  // Named transitions only (DESIGN.md "Motion"); a press scales to .98; a disabled button keeps
+  // its pointer events so its tooltip still explains why.
+  "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-transparent text-sm font-medium whitespace-nowrap transition-[background-color,color,border-color,box-shadow,opacity,transform] duration-120 ease-std select-none enabled:active:scale-[.98] enabled:active:duration-75 disabled:cursor-not-allowed disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/80",
-        outline: "border-border bg-input/30 hover:bg-input/50",
-        secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-        ghost: "hover:bg-muted hover:text-foreground dark:hover:bg-muted/50",
+        default: "bg-primary text-primary-foreground enabled:hover:bg-primary/85",
+        brand: "bg-brand text-brand-foreground enabled:hover:bg-brand/88",
+        done: "bg-done text-done-foreground enabled:hover:bg-done/88",
+        outline: "border-border bg-input/30 enabled:hover:bg-input/60",
+        secondary: "bg-secondary text-secondary-foreground enabled:hover:bg-accent",
+        ghost: "enabled:hover:bg-accent enabled:hover:text-foreground",
         destructive:
-          "bg-destructive/10 text-destructive hover:bg-destructive/20 dark:bg-destructive/20 dark:hover:bg-destructive/30",
+          "bg-destructive/10 text-destructive enabled:hover:bg-destructive/20 dark:bg-destructive/15 dark:enabled:hover:bg-destructive/25",
       },
       size: {
         default: "h-9 px-3",

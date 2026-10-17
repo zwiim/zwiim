@@ -92,7 +92,7 @@ export function SessionsTab() {
             <SectionHeader title="Recent" />
             {sections.recent.map((item) => row(item, ago(item.updatedAt, now)))}
             {sections.more ? (
-              <T variant="monoSm" color={theme.faint} style={styles.more}>
+              <T variant="monoSm" color={theme.mut} style={styles.more}>
                 +{sections.more} older
               </T>
             ) : null}

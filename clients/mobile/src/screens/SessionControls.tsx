@@ -25,7 +25,7 @@ import { currentHost } from "../services";
 import { RadioGroup, Segmented, type Choice } from "../ui/choices";
 import { Button, Sheet, T } from "../ui/components";
 import { ChevronDown, ChevronUp, Icon, ListChecks, Shield, ShieldOff } from "../ui/icons";
-import { radius, space, useTheme, type Palette } from "../ui/tokens";
+import { PRESSED_OPACITY, radius, space, useTheme, type Palette } from "../ui/tokens";
 
 const MODE_ICON = { normal: Shield, plan: ListChecks, unattended: ShieldOff } as const;
 
@@ -140,7 +140,7 @@ function Chip({
       style={({ pressed }) => [
         styles.chip,
         shrink && styles.shrink,
-        { backgroundColor: fill, opacity: pressed ? 0.8 : dim ? 0.55 : 1 },
+        { backgroundColor: fill, opacity: pressed ? PRESSED_OPACITY : dim ? 0.55 : 1 },
       ]}
       testID={testID}
     >
@@ -386,7 +386,7 @@ function Context({ view, agent }: { view: SessionView | undefined; agent: string
           </T>
           <T
             variant="mono"
-            color={summary.aside.endsWith("not reported") ? theme.faint : theme.mut}
+            color={theme.mut}
             style={styles.tabular}
             numberOfLines={1}
           >
@@ -415,7 +415,7 @@ function Context({ view, agent }: { view: SessionView | undefined; agent: string
           {open ? <Figures rows={figures.lastTurn} /> : null}
         </>
       ) : null}
-      <T variant="callout" color={theme.faint}>
+      <T variant="callout" color={theme.mut}>
         As {agent ?? "the agent"} reports them. Nothing here is estimated.
       </T>
     </View>
@@ -435,7 +435,7 @@ function Figures({ rows }: { rows: ContextRow[] }) {
           <T color={theme.mut} style={styles.flex}>
             {r.label}
           </T>
-          <T variant="mono" color={r.value === null ? theme.faint : theme.fg} style={styles.tabular}>
+          <T variant="mono" color={r.value === null ? theme.mut : theme.fg} style={styles.tabular}>
             {r.value ?? "not reported"}
           </T>
         </View>
@@ -452,12 +452,12 @@ const styles = StyleSheet.create({
   chip: {
     height: 28,
     borderRadius: radius.sm,
-    paddingHorizontal: space.sm + 1,
+    paddingHorizontal: space.sm,
     flexDirection: "row",
     alignItems: "center",
-    gap: space.xs + 1,
+    gap: space.xs,
   },
-  ring: { height: 28, flexDirection: "row", alignItems: "center", gap: space.xs + 1, paddingRight: space.xxs },
+  ring: { height: 28, flexDirection: "row", alignItems: "center", gap: space.xs, paddingRight: space.xxs },
   content: { gap: space.md },
   head: { gap: space.xxs },
   group: { borderRadius: radius.lg, overflow: "hidden" },

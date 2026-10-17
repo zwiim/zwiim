@@ -566,7 +566,7 @@ const styles = StyleSheet.create({
   // The tree: a tile's lead (chevron or dot) is 16 wide; its children hang on a line under it.
   lead: { width: 16, alignItems: "center" },
   treeIndent: { paddingLeft: 16 + space.sm },
-  branch: { marginLeft: space.md + 8, paddingLeft: space.xs, borderLeftWidth: StyleSheet.hairlineWidth },
+  branch: { marginLeft: space.md + space.sm, paddingLeft: space.xs, borderLeftWidth: StyleSheet.hairlineWidth },
   leaf: { minHeight: 44, borderRadius: radius.md, paddingHorizontal: space.sm, paddingVertical: space.xs, gap: space.xxs, justifyContent: "center" },
   leafNote: { paddingHorizontal: space.sm, paddingVertical: space.xs },
 });

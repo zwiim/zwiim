@@ -590,10 +590,11 @@ describe("changed files", () => {
     expect(within(card).getAllByTestId("agent-image")).toHaveLength(1);
     expect(card.querySelector("button button")).toBeNull();
     // The row's chip shows the image icon, not a thumbnail, and fetches nothing.
-    expect(card.querySelector("img")).toBeNull();
+    expect(card.querySelector("img:not([aria-hidden])")).toBeNull();
     expect(t.calls.some((c) => c.op === "files.download" && c.params.path === ".zwiim/images/ab.png")).toBe(false);
-    const chips = screen.getAllByTestId("agent-image");
-    expect(chips.map((c) => c.textContent)).toEqual([expect.stringContaining("shot.png"), expect.stringContaining("cd.png")]);
+    // The message's image is a chip too.
+    expect(screen.getAllByTestId("agent-image")).toHaveLength(2);
+    expect(screen.getAllByTestId("agent-image")[1]!.textContent).toContain("cd.png");
     fireEvent.click(within(card).getByRole("button", { name: "Open shot.png" }));
     expect(l.open).toHaveBeenCalledWith(".zwiim/images/ab.png");
     controller.dispose();

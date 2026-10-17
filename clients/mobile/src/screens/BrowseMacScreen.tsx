@@ -122,7 +122,7 @@ export function BrowseMacScreen({ navigation, route }: NativeStackScreenProps<Ro
           entries.map((entry) => <FolderRow key={entry.name} entry={entry} onPress={() => open([...path, entry.name])} />)
         )}
         {truncated ? (
-          <T variant="monoSm" color={theme.faint} style={styles.note}>
+          <T variant="monoSm" color={theme.mut} style={styles.note}>
             Showing the first 1,000 folders.
           </T>
         ) : null}

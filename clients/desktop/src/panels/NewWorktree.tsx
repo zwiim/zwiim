@@ -16,6 +16,7 @@ import { isClientError, type PromptBlock, type WorktreeBases } from "@zwiim/sdk"
 import { PendingAttachments } from "@/attachments/AttachmentChip";
 import { UPLOAD_FAILED_MESSAGE, usePendingAttachments } from "@/attachments/usePendingAttachments";
 import { Button } from "@/components/ui/button";
+import { Dialog } from "@/components/ui/dialog";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { cn } from "@/lib/utils";
 import { ControlSelect } from "./OptionsBar";
@@ -83,14 +84,6 @@ export function NewWorktree({
     };
   }, [controller, repo]);
 
-  useEffect(() => {
-    const close = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !pending) onClose();
-    };
-    document.addEventListener("keydown", close);
-    return () => document.removeEventListener("keydown", close);
-  }, [onClose, pending]);
-
   function attach(files: Iterable<File>) {
     if (!attachments.enabled) return;
     setError(null);
@@ -134,162 +127,156 @@ export function NewWorktree({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-6"
-      onPointerDown={(e) => {
-        if (e.target === e.currentTarget && !pending) onClose();
+    <Dialog
+      className="max-w-2xl"
+      aria-label="New worktree"
+      dismissible={!pending}
+      onClose={onClose}
+      onDragOver={(e) => {
+        if (attachments.enabled && !pending && e.dataTransfer.types.includes("Files")) e.preventDefault();
+      }}
+      onDrop={(e) => {
+        if (!attachments.enabled || pending || e.dataTransfer.files.length === 0) return;
+        e.preventDefault();
+        attach(e.dataTransfer.files);
       }}
     >
-      <div
-        className="bg-card text-card-foreground ring-border flex w-full max-w-2xl flex-col rounded-2xl shadow-2xl ring-1"
-        role="dialog"
-        aria-modal="true"
-        aria-label="New worktree"
-        onDragOver={(e) => {
-          if (attachments.enabled && !pending && e.dataTransfer.types.includes("Files")) e.preventDefault();
-        }}
-        onDrop={(e) => {
-          if (!attachments.enabled || pending || e.dataTransfer.files.length === 0) return;
-          e.preventDefault();
-          attach(e.dataTransfer.files);
-        }}
-      >
-        <div className="flex items-center gap-1 border-b px-3 py-2">
-          <FolderGit2 className="text-muted-foreground ml-1 size-4 shrink-0" />
-          <ControlSelect
-            className="text-foreground text-sm font-medium"
-            label="Repository"
-            value={repo}
-            disabled={created !== null || pending}
-            onChange={setRepo}
-            options={roots.map((w) => ({ value: w.workspace_id, label: w.alias ?? w.name }))}
-          />
-          <span className="text-muted-foreground text-sm">from</span>
-          <BranchPicker bases={bases} value={base} disabled={created !== null || pending} onChange={setBase} />
-          <Button className="ml-auto" size="icon-sm" variant="ghost" title="Close" disabled={pending} onClick={onClose}>
-            <X />
-          </Button>
-        </div>
-        <div className="relative">
-          <textarea
-            ref={area}
-            className="placeholder:text-muted-foreground block min-h-36 w-full resize-none bg-transparent px-4 pt-3 pb-1 leading-relaxed outline-none"
-            placeholder="What do you want to work on?"
-            aria-label="What do you want to work on?"
-            autoFocus
-            value={text}
-            disabled={pending}
-            onChange={(e) => {
-              setText(e.target.value);
-              slash.track(e);
-            }}
-            onSelect={slash.track}
-            onPaste={(e) => {
-              if (!attachments.enabled || e.clipboardData.files.length === 0) return;
-              e.preventDefault();
-              attach(e.clipboardData.files);
-            }}
-            onKeyDown={(e) => {
-              if (slash.onKeyDown(e)) return;
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                void create();
-              } else if (e.key === "Tab" && e.shiftKey && canPlan) {
-                e.preventDefault();
-                togglePlan();
-              } else if (attachments.enabled && e.key.toLowerCase() === "u" && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                fileInput.current?.click();
-              }
-            }}
-          />
-          {slash.menu}
-        </div>
-        <input
-          ref={fileInput}
-          type="file"
-          multiple
-          hidden
-          data-testid="attachment-input"
+      <div className="flex items-center gap-1 border-b px-3 py-2">
+        <FolderGit2 className="text-muted-foreground ml-1 size-4 shrink-0" />
+        <ControlSelect
+          className="text-foreground text-sm font-medium"
+          label="Repository"
+          value={repo}
+          disabled={created !== null || pending}
+          onChange={setRepo}
+          options={roots.map((w) => ({ value: w.workspace_id, label: w.alias ?? w.name }))}
+        />
+        <span className="text-muted-foreground text-sm">from</span>
+        <BranchPicker bases={bases} value={base} disabled={created !== null || pending} onChange={setBase} />
+        <Button className="ml-auto" size="icon-sm" variant="ghost" title="Close" disabled={pending} onClick={onClose}>
+          <X />
+        </Button>
+      </div>
+      <div className="relative">
+        <textarea
+          ref={area}
+          className="placeholder:text-muted-foreground block min-h-36 w-full resize-none bg-transparent px-4 pt-3 pb-1 leading-relaxed outline-none"
+          placeholder="What do you want to work on?"
+          aria-label="What do you want to work on?"
+          autoFocus
+          value={text}
+          disabled={pending}
           onChange={(e) => {
-            if (e.target.files) attach(e.target.files);
-            e.target.value = "";
+            setText(e.target.value);
+            slash.track(e);
+          }}
+          onSelect={slash.track}
+          onPaste={(e) => {
+            if (!attachments.enabled || e.clipboardData.files.length === 0) return;
+            e.preventDefault();
+            attach(e.clipboardData.files);
+          }}
+          onKeyDown={(e) => {
+            if (slash.onKeyDown(e)) return;
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              void create();
+            } else if (e.key === "Tab" && e.shiftKey && canPlan) {
+              e.preventDefault();
+              togglePlan();
+            } else if (attachments.enabled && e.key.toLowerCase() === "u" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              fileInput.current?.click();
+            }
           }}
         />
-        {planning && (
-          <div className="flex flex-wrap items-center gap-1.5 px-4 pb-2" data-testid="plan-mode">
-            <span className="flex h-7 items-center gap-1.5 rounded-md bg-sky-500/10 px-2 text-xs text-sky-700 dark:text-sky-300">
-              <ListChecks className="size-3.5" /> Plan mode
-              <button className="hover:text-foreground" aria-label="Leave plan mode" onClick={togglePlan}>
-                <X className="size-3" />
-              </button>
-            </span>
-          </div>
-        )}
-        <PendingAttachments
-          className="px-4 pb-2"
-          files={attachments.files}
-          errors={attachments.errors}
-          disabled={pending}
-          onRemove={attachments.remove}
-        />
-        {agents !== null && agent === null && (
-          <div className="px-4 pb-2">
-            <NoAgents />
-          </div>
-        )}
-        {error && (
-          <p className="text-destructive px-4 pb-2 text-xs" role="alert">
-            {error}
-          </p>
-        )}
-        <div className="flex items-center gap-2 px-2 pb-2">
-          <div className="flex min-w-0 flex-1 items-center gap-0.5">
-            {/* Plan mode is in the + menu; unattended stays a choice made inside a session. */}
-            <NewSessionControls
-              picker={{ ...picker, start: start && { ...start, shown: { ...start.shown, mode: null } } }}
-              disabled={!online || pending}
-            />
-          </div>
-          <div className="relative shrink-0">
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              title="More options"
-              aria-haspopup="menu"
-              aria-expanded={menu}
-              disabled={pending}
-              onClick={() => setMenu((m) => !m)}
-            >
-              <Plus />
-            </Button>
-            {menu && (
-              <PlusMenu
-                canPlan={canPlan}
-                canAttach={attachments.enabled}
-                planning={planning}
-                onClose={() => {
-                  setMenu(false);
-                  area.current?.focus();
-                }}
-                onAttach={() => fileInput.current?.click()}
-                onPlan={togglePlan}
-              />
-            )}
-          </div>
-          <Button
-            className="bg-foreground text-background hover:bg-foreground/85 shrink-0"
-            size="sm"
-            disabled={pending || !online || bases === null || (task && agent === null)}
-            onClick={() => void create()}
-          >
-            {pending && <Loader2 className="animate-spin" />}
-            {created ? "Start session" : "Create"}
-            {!pending && <CornerDownLeft className="opacity-60" />}
-          </Button>
-        </div>
+        {slash.menu}
       </div>
-    </div>
+      <input
+        ref={fileInput}
+        type="file"
+        multiple
+        hidden
+        data-testid="attachment-input"
+        onChange={(e) => {
+          if (e.target.files) attach(e.target.files);
+          e.target.value = "";
+        }}
+      />
+      {planning && (
+        <div className="flex flex-wrap items-center gap-1.5 px-4 pb-2" data-testid="plan-mode">
+          <span className="flex h-7 items-center gap-1.5 bg-brand-soft text-brand rounded-md px-2 text-xs">
+            <ListChecks className="size-3.5" /> Plan mode
+            <button className="hover:text-foreground rounded-sm transition-colors" aria-label="Leave plan mode" onClick={togglePlan}>
+              <X className="size-3" />
+            </button>
+          </span>
+        </div>
+      )}
+      <PendingAttachments
+        className="px-4 pb-2"
+        files={attachments.files}
+        errors={attachments.errors}
+        disabled={pending}
+        onRemove={attachments.remove}
+      />
+      {agents !== null && agent === null && (
+        <div className="px-4 pb-2">
+          <NoAgents />
+        </div>
+      )}
+      {error && (
+        <p className="text-destructive px-4 pb-2 text-xs" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="flex items-center gap-2 px-2 pb-2">
+        <div className="flex min-w-0 flex-1 items-center gap-0.5">
+          {/* Plan mode is in the + menu; Auto is the default, changed inside a session. */}
+          <NewSessionControls
+            picker={{ ...picker, start: start && { ...start, shown: { ...start.shown, mode: null } } }}
+            disabled={!online || pending}
+          />
+        </div>
+        <div className="relative shrink-0">
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            title="More options"
+            aria-haspopup="menu"
+            aria-expanded={menu}
+            disabled={pending}
+            onClick={() => setMenu((m) => !m)}
+          >
+            <Plus />
+          </Button>
+          {menu && (
+            <PlusMenu
+              canPlan={canPlan}
+              canAttach={attachments.enabled}
+              planning={planning}
+              onClose={() => {
+                setMenu(false);
+                area.current?.focus();
+              }}
+              onAttach={() => fileInput.current?.click()}
+              onPlan={togglePlan}
+            />
+          )}
+        </div>
+        <Button
+          className="shrink-0"
+          size="sm"
+          variant="brand"
+          disabled={pending || !online || bases === null || (task && agent === null)}
+          onClick={() => void create()}
+        >
+          {pending && <Loader2 className="animate-spin" />}
+          {created ? "Start session" : "Create"}
+          {!pending && <CornerDownLeft className="opacity-60" />}
+        </Button>
+      </div>
+    </Dialog>
   );
 }
 
@@ -320,11 +307,11 @@ function PlusMenu({
     return () => document.removeEventListener("pointerdown", close);
   }, [onClose]);
   const item =
-    "hover:bg-muted focus-visible:bg-muted flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm outline-none disabled:opacity-50";
+    "hover:bg-muted focus-visible:bg-muted flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm transition-colors outline-none disabled:cursor-not-allowed disabled:opacity-50";
   return (
     <div
       ref={root}
-      className="bg-card text-card-foreground absolute right-0 bottom-full z-20 mb-2 w-60 rounded-xl border p-1 shadow-xl"
+      className="bg-popover text-foreground shadow-pop animate-pop-in absolute right-0 bottom-full z-20 mb-2 w-60 origin-bottom-right rounded-xl border p-1"
       role="menu"
       aria-label="More options"
       onKeyDown={(e) => {
@@ -413,7 +400,7 @@ function BranchPicker({
     <div ref={root} className="relative min-w-0">
       <button
         type="button"
-        className="text-muted-foreground hover:text-foreground hover:bg-muted focus-visible:ring-ring/50 flex h-7 min-w-0 items-center gap-1 rounded-md px-2 text-sm outline-none focus-visible:ring-2 disabled:opacity-60 disabled:hover:bg-transparent"
+        className="text-muted-foreground hover:text-foreground hover:bg-muted focus-visible:ring-ring/50 flex h-7 min-w-0 items-center gap-1 rounded-md px-2 text-sm transition-colors outline-none focus-visible:ring-2 disabled:opacity-60 disabled:hover:bg-transparent"
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={`Base branch: ${value ?? "current HEAD"}`}
@@ -427,7 +414,7 @@ function BranchPicker({
       </button>
       {open && (
         <div
-          className="bg-card text-card-foreground absolute top-full left-0 z-20 mt-1 flex w-72 flex-col rounded-xl border shadow-xl"
+          className="bg-popover text-foreground shadow-pop animate-pop-in absolute top-full left-0 z-20 mt-1 flex w-72 origin-top-left flex-col rounded-xl border"
           onKeyDown={(e) => {
             if (e.key === "Escape") {
               e.stopPropagation();
@@ -454,7 +441,7 @@ function BranchPicker({
             }}
           />
           <ul className="max-h-64 overflow-y-auto p-1" role="listbox" aria-label="Branches">
-            {shown.length === 0 && <li className="text-muted-foreground px-2.5 py-2 text-xs">No matching branch</li>}
+            {shown.length === 0 && <li className="text-muted-foreground px-2 py-2 text-xs">No matching branch</li>}
             {shown.map((b, i) => (
               <li
                 key={b}
@@ -462,7 +449,7 @@ function BranchPicker({
                 role="option"
                 aria-selected={b === value}
                 className={cn(
-                  "flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 font-mono text-xs",
+                  "flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 font-mono text-xs",
                   i === at && "bg-muted",
                 )}
                 onPointerEnter={() => setAt(i)}

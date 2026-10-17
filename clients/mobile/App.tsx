@@ -5,7 +5,7 @@
 // the dev screen instead; release builds leave the dev screen out.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AppState, Linking, useColorScheme } from "react-native";
+import { AppState, Linking, Platform, useColorScheme } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import * as SplashScreen from "expo-splash-screen";
 import { useFonts } from "expo-font";
@@ -32,7 +32,7 @@ import { SessionScreen } from "./src/screens/SessionScreen";
 import { SignInScreen } from "./src/screens/SignInScreen";
 import { TerminalScreenView } from "./src/screens/TerminalScreens";
 import { auth, currentHost } from "./src/services";
-import { useTheme } from "./src/ui/tokens";
+import { CONTENT_MAX_WIDTH, useTheme } from "./src/ui/tokens";
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -40,6 +40,11 @@ const Stack = createNativeStackNavigator<RootStack>();
 
 // DEV ONLY. `__DEV__` is false in release bundles, so Metro drops this require
 // and everything under src/dev with it.
+/** On iPad the phone layout sits centered at its own width (DESIGN.md, Layout); the camera stays full-bleed. */
+const PAD_CONTENT = Platform.OS === "ios" && Platform.isPad
+  ? { width: "100%", maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center" } as const
+  : undefined;
+
 const dev: typeof import("./src/dev/DevScreen") | null = __DEV__ ? require("./src/dev/DevScreen") : null;
 
 const isDevLink = (link: string | null | undefined) => !!dev && !!link && dev.devProvisionUrl(link) !== null;
@@ -152,7 +157,7 @@ export default function App() {
       ) : (
         <AccountScope.Provider value={scope}>
           <NavigationContainer theme={navTheme} initialState={initialState}>
-            <Stack.Navigator screenOptions={{ headerShown: false }}>
+            <Stack.Navigator screenOptions={{ headerShown: false, contentStyle: PAD_CONTENT }}>
               {!account ? (
                 <Stack.Screen name="SignIn">{() => <SignInScreen onSignedIn={setAccount} />}</Stack.Screen>
               ) : (
@@ -167,7 +172,7 @@ export default function App() {
                   <Stack.Screen name="Diff" component={DiffScreen} />
                   <Stack.Screen name="TerminalView" component={TerminalScreenView} />
                   <Stack.Screen name="BrowseMac" component={BrowseMacScreen} />
-                  <Stack.Screen name="Pair" component={PairRoute} options={{ presentation: "fullScreenModal" }} />
+                  <Stack.Screen name="Pair" component={PairRoute} options={{ presentation: "fullScreenModal", contentStyle: undefined }} />
                 </>
               )}
             </Stack.Navigator>

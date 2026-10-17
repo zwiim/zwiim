@@ -9,7 +9,7 @@ import type { PendingFile } from "../attachments/pending";
 import type { ToolItem } from "../sessions/transcript";
 import { Button, Sheet, StatusDot, T, useReduceMotion } from "./components";
 import { ArrowUp, CircleAlert, FileText, Icon, Image, Paperclip, X } from "./icons";
-import { fonts, MONO_MAX_SCALE, radius, space, type, useTheme } from "./tokens";
+import { fonts, PRESSED_OPACITY, radius, space, type, useTheme } from "./tokens";
 
 /** The streaming caret: blinks once a second (static under Reduce Motion). */
 export function Caret() {
@@ -72,7 +72,7 @@ function SentFileChip({ file, onPress }: { file: AttachmentBlock; onPress?(): vo
       accessibilityLabel={gone ? `${file.name}, removed` : `Open ${file.name}`}
       disabled={!open}
       onPress={open}
-      hitSlop={6}
+      hitSlop={8}
       style={({ pressed }) => [styles.fileChip, { backgroundColor: pressed ? theme.raised : theme.surface }]}
       testID="sent-attachment"
     >
@@ -80,7 +80,7 @@ function SentFileChip({ file, onPress }: { file: AttachmentBlock; onPress?(): vo
       <T variant="monoSm" color={gone ? theme.mut : theme.fg} numberOfLines={1} style={styles.shrink}>
         {file.name}
       </T>
-      <T variant="monoSm" color={theme.faint}>
+      <T variant="monoSm" color={theme.mut}>
         {gone ? "removed" : formatSize(file.size!)}
       </T>
     </Pressable>
@@ -96,7 +96,7 @@ export function AgentImageChip({ image, onPress }: { image: AgentImage; onPress?
       accessibilityLabel={`Open ${image.name}`}
       disabled={!onPress}
       onPress={onPress}
-      hitSlop={6}
+      hitSlop={8}
       style={({ pressed }) => [styles.fileChip, { alignSelf: "flex-start", backgroundColor: pressed ? theme.raised : theme.surface }]}
       testID="agent-image"
     >
@@ -125,7 +125,7 @@ function PendingFileChip({ file, disabled, onRemove }: { file: PendingFile; disa
       <T variant="monoSm" numberOfLines={1} style={styles.shrink}>
         {file.name}
       </T>
-      <T variant="monoSm" color={failed ? theme.err : theme.faint} numberOfLines={1}>
+      <T variant="monoSm" color={failed ? theme.err : theme.mut} numberOfLines={1}>
         {failed ? "Upload failed" : formatSize(file.size)}
       </T>
       <Pressable
@@ -133,7 +133,8 @@ function PendingFileChip({ file, disabled, onRemove }: { file: PendingFile; disa
         accessibilityLabel={`Remove ${file.name}`}
         disabled={disabled || file.status === "uploading"}
         onPress={onRemove}
-        hitSlop={8}
+        // A 13pt mark; the slop makes it a 44pt target.
+        hitSlop={16}
         testID="pending-remove"
       >
         <Icon icon={X} color={theme.mut} size={13} />
@@ -179,13 +180,16 @@ export function AttachSheet({
   visible,
   onClose,
   onPick,
+  onClosed,
 }: {
   visible: boolean;
   onClose(): void;
   onPick(from: "photos" | "files"): void;
+  /** Once the sheet has fully gone: the moment a native picker can present. */
+  onClosed?(): void;
 }) {
   return (
-    <Sheet visible={visible} onClose={onClose}>
+    <Sheet visible={visible} onClose={onClose} onClosed={onClosed}>
       <View style={styles.sheetBody}>
         <T variant="title">Attach</T>
         <Button tall kind="secondary" icon={Image} label="Photos" onPress={() => onPick("photos")} testID="attach-photos" />
@@ -257,6 +261,7 @@ export function ToolRow({ tool, onPress, opens }: { tool: ToolItem; onPress?(): 
       accessibilityHint={opens ? "Opens the file" : undefined}
       onPress={pressable ? onPress : undefined}
       disabled={!pressable}
+      hitSlop={ROW_SLOP}
       style={({ pressed }) => [styles.monoRow, pressed && { backgroundColor: theme.surface }]}
       testID="tool-row"
     >
@@ -297,6 +302,7 @@ export function ToolGroup({
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
         onPress={() => setOpen((o) => !o)}
+        hitSlop={ROW_SLOP}
         style={({ pressed }) => [styles.monoRow, pressed && { backgroundColor: theme.surface }]}
         testID="tool-group"
       >
@@ -475,7 +481,7 @@ function FileChip({
       accessibilityLabel={a11y}
       disabled={!onPress}
       onPress={onPress}
-      hitSlop={6}
+      hitSlop={8}
       style={({ pressed }) => [styles.fileChip, { backgroundColor: pressed ? theme.raised : theme.surface }]}
       testID={more ? "turn-more" : "turn-file"}
     >
@@ -558,7 +564,7 @@ export function NowAction({
       onPress={onPress}
       disabled={disabled || loading}
       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-      style={({ pressed }) => [styles.nowAction, { backgroundColor: bg, opacity: disabled ? 0.4 : pressed ? 0.8 : 1 }]}
+      style={({ pressed }) => [styles.nowAction, { backgroundColor: bg, opacity: disabled ? 0.4 : pressed ? PRESSED_OPACITY : 1 }]}
       testID={testID}
     >
       {loading ? <ActivityIndicator size="small" color={fg} /> : (
@@ -572,7 +578,7 @@ export function NowAction({
 
 /**
  * The message box: multiline input over a row of the session's controls and
- * the round accent send. An amber border marks an unattended session.
+ * the round accent send. An accent border marks an unattended session.
  */
 export function Composer({
   value,
@@ -627,12 +633,11 @@ export function Composer({
         multiline
         editable={!disabled && !sending}
         style={[type.body, styles.input, { color: theme.fg }]}
-        maxFontSizeMultiplier={MONO_MAX_SCALE * 1.5}
         accessibilityLabel="Message"
         testID="composer-input"
       />
       {note ? (
-        <T variant="monoSm" color={theme.faint} numberOfLines={1} style={styles.composerNote} testID="composer-note">
+        <T variant="monoSm" color={theme.mut} numberOfLines={1} style={styles.composerNote} testID="composer-note">
           {note}
         </T>
       ) : null}
@@ -643,8 +648,8 @@ export function Composer({
             accessibilityLabel="Attach files"
             onPress={onAttach}
             disabled={disabled || sending}
-            hitSlop={6}
-            style={({ pressed }) => [styles.attach, { opacity: disabled || sending ? 0.4 : pressed ? 0.6 : 1 }]}
+            hitSlop={{ top: 4, bottom: 4, left: 8, right: 8 }}
+            style={({ pressed }) => [styles.attach, { opacity: disabled || sending ? 0.4 : pressed ? PRESSED_OPACITY : 1 }]}
             testID="composer-attach"
           >
             <Icon icon={Paperclip} color={theme.mut} size={18} />
@@ -660,7 +665,7 @@ export function Composer({
           hitSlop={6}
           style={({ pressed }) => [
             styles.send,
-            { backgroundColor: can || sending ? theme.accent : theme.raised, opacity: pressed ? 0.8 : 1 },
+            { backgroundColor: can || sending ? theme.accent : theme.raised, opacity: pressed ? PRESSED_OPACITY : 1 },
           ]}
           testID="composer-send"
         >
@@ -673,6 +678,9 @@ export function Composer({
   );
 }
 
+/** 32pt mono rows reach the 44pt target through their slop, keeping the transcript dense. */
+const ROW_SLOP = { top: 6, bottom: 6 };
+
 const styles = StyleSheet.create({
   shrink: { flexShrink: 1 },
   flexSpacer: { flex: 1 },
@@ -681,12 +689,12 @@ const styles = StyleSheet.create({
   user: {
     alignSelf: "flex-end",
     maxWidth: "85%",
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    borderBottomRightRadius: 4,
-    borderBottomLeftRadius: 16,
+    borderTopLeftRadius: radius.xl,
+    borderTopRightRadius: radius.xl,
+    borderBottomRightRadius: space.xs,
+    borderBottomLeftRadius: radius.xl,
     paddingHorizontal: space.md,
-    paddingVertical: space.sm + 2,
+    paddingVertical: space.sm,
   },
   monoRow: { minHeight: 32, flexDirection: "row", alignItems: "center", gap: space.sm, borderRadius: radius.sm },
   glyph: { width: 16, textAlign: "center", alignItems: "center" },
@@ -727,12 +735,12 @@ const styles = StyleSheet.create({
     borderRadius: radius.xl,
     borderWidth: 1,
     paddingLeft: space.md,
-    paddingRight: space.xs + 2,
+    paddingRight: space.sm,
     paddingTop: space.xs,
-    paddingBottom: space.xs + 2,
+    paddingBottom: space.sm,
     gap: space.xs,
   },
-  input: { minHeight: 40, maxHeight: 140, paddingTop: 9, paddingBottom: 4, paddingRight: space.sm, fontFamily: fonts.sans },
+  input: { minHeight: 40, maxHeight: 140, paddingTop: space.sm, paddingBottom: space.xs, paddingRight: space.sm, fontFamily: fonts.sans },
   composerNote: { paddingBottom: space.xxs },
   composerRow: { flexDirection: "row", alignItems: "center", gap: space.sm },
   composerControls: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs },

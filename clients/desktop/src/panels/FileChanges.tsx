@@ -8,20 +8,16 @@ import type { DiffLayout } from "@/lib/prefs";
 import { splitRows } from "@/lib/split";
 import { cn } from "@/lib/utils";
 
+// Line tints are theme tokens (`--add-bg`/`--del-bg`), tuned for light and dark.
 const TINT: Record<FileLine["kind"], string> = {
-  add: "bg-emerald-500/10",
-  del: "bg-red-500/10",
-  ctx: "",
-};
-const GUTTER_TINT: Record<FileLine["kind"], string> = {
-  add: "bg-emerald-500/15",
-  del: "bg-red-500/15",
+  add: "bg-add",
+  del: "bg-del",
   ctx: "",
 };
 const SIGN: Record<FileLine["kind"], string> = { add: "+", del: "-", ctx: "" };
 const SIGN_COLOR: Record<FileLine["kind"], string> = {
-  add: "text-emerald-600 dark:text-emerald-400",
-  del: "text-red-600 dark:text-red-400",
+  add: "text-done",
+  del: "text-destructive",
   ctx: "",
 };
 
@@ -66,7 +62,7 @@ export function FileChanges({
             <tr key={`fold-${s.at}`}>
               <td colSpan={columns} className="p-0">
                 <button
-                  className="bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground flex w-full items-center gap-2 px-3 py-1 text-left transition-colors"
+                  className="bg-muted text-muted-foreground hover:bg-accent hover:text-foreground flex w-full items-center gap-2 px-3 py-1 text-left transition-colors"
                   onClick={() => onReveal(s.at, revealStep(s.count))}
                   data-testid="fold"
                 >
@@ -106,7 +102,7 @@ export function FileChanges({
 
 function Gutter({ n, kind }: { n: number | null; kind: FileLine["kind"] }) {
   return (
-    <td className={cn("text-muted-foreground pr-2 text-right tabular-nums select-none", GUTTER_TINT[kind])}>
+    <td className={cn("text-muted-foreground pr-2 text-right tabular-nums select-none", TINT[kind])}>
       {n ?? ""}
     </td>
   );
@@ -119,10 +115,10 @@ function Text({ text }: { text: string }) {
 /** One side of a split row; a side with no line is a faint blank. */
 function SplitHalf({ line, side }: { line: FileLine | null; side: "old" | "new" }) {
   const edge = side === "new" && "border-l";
-  if (!line) return <td colSpan={3} className={cn("bg-muted/40", edge)} />;
+  if (!line) return <td colSpan={3} className={cn("bg-muted", edge)} />;
   return (
     <>
-      <td className={cn("text-muted-foreground pr-2 text-right tabular-nums select-none", GUTTER_TINT[line.kind], edge)}>
+      <td className={cn("text-muted-foreground pr-2 text-right tabular-nums select-none", TINT[line.kind], edge)}>
         {side === "old" ? line.old : line.new}
       </td>
       <td className={cn("text-center select-none", TINT[line.kind], SIGN_COLOR[line.kind])}>{SIGN[line.kind]}</td>
