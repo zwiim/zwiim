@@ -9,9 +9,40 @@ have their own versions and are listed under Compatibility.
 ## [Unreleased]
 
 ### Added
+- None.
+
+### Changed
+- None.
+
+### Fixed
+- None.
+
+### Security
+- None.
+
+### Compatibility
+- None.
+
+### Provider changes
+- None.
+
+### Migration notes
+- None.
+
+### Known limitations
+- None.
+
+## [0.1.0-rc.9] - 2026-10-17
+
+### Added
+- Adding a folder on Desktop offers a "Create a private GitHub repo" checkbox, checked by default. Unchecked, or when gh can't be used, the folder is added as a local Git repository only.
 - Claude and Codex plans get the same plan card on Desktop and mobile: Copy the plan, Hand off (start a new session in the same workspace that implements the plan, and stop this one), Approve, or type adjustments and send them as your next message. Abandon stays.
 
 ### Changed
+- A new look on Desktop and mobile: cool graphite neutrals and one blue accent, which also marks what needs you; amber is gone. An agent at work shows a breathing mark, and the live turn shows how long it has been working.
+- Desktop shows file icons by type, menus and dialogs animate open and closed, and the theme is applied before the first paint (no white flash in dark mode).
+- Images an agent saves in the workspace show as a chip that opens the preview; agents open images instead of embedding them in replies.
+- New sessions on Desktop start unattended.
 - Sending plan adjustments now waits for the agent to stop planning, then posts them as your next message (Claude, Codex and Grok).
 
 ### Fixed
