@@ -49,7 +49,12 @@ export interface SubagentCard<B> {
    */
   status: SubagentCardStatus | null;
   duration_ms: number | null;
-  /** Tool calls the sub-agent itself made, not counting its sub-agents'. */
+  /** Tokens it spent, once its result says. */
+  tokens: number | null;
+  /**
+   * Tool calls the sub-agent itself made, not counting its sub-agents': its
+   * result's count once it has one, else the calls seen so far.
+   */
   tool_count: number;
   /** Everything it produced, in order. */
   blocks: B[];
@@ -81,7 +86,8 @@ function card<B extends { type: string }>(
     prompt: info?.prompt ?? null,
     status,
     duration_ms: info?.duration_ms ?? null,
-    tool_count: ids.size,
+    tokens: info?.tokens ?? null,
+    tool_count: info?.tool_uses ?? ids.size,
     blocks: [...blocks],
   };
 }

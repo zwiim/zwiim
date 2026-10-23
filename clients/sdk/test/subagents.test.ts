@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { applyEvent, initialSessionView, reduceSession, type SessionFrame } from "../src/state/session";
 import { historyLaunches, historySubagentCards, lateSubagentBlocks, liveSubagentCards } from "../src/subagents/cards";
-import { subagentDescription, waitingText } from "../src/subagents/labels";
+import { subagentDescription, tokensText, waitingText } from "../src/subagents/labels";
 import { modelShortName } from "../src/subagents/model";
 import type { HistoryBlock, HistoryTurn, SessionEvent, SessionSnapshot, ToolCall } from "../src/types/protocol";
 
@@ -171,6 +171,7 @@ describe("snapshot with sub-agents", () => {
         prompt: null,
         status: "in_progress",
         duration_ms: null,
+        tokens: null,
         tool_count: 1,
         blocks: [
           { type: "thought", text: "child thinks" },
@@ -201,6 +202,26 @@ describe("liveSubagentCards", () => {
     const nested = liveSubagentCards(v.live, cards[0]!.blocks);
     expect(nested.map((c) => [c.parent_id, c.tool_count])).toEqual([["inner", 1]]);
     expect(nested[0]!.blocks).toEqual([{ type: "tool_call", tool_call_id: "grep" }]);
+  });
+
+  it("counts the tools seen so far, then takes the totals its result gives", () => {
+    const running = [
+      ev(1, "agent.tool_call", call("a", "Agent", { subagent: { description: "Survey" } })),
+      ev(2, "agent.tool_call", call("r1", "Read", { parent_id: "a" })),
+      ev(3, "agent.tool_call", call("r2", "Read", { parent_id: "a" })),
+    ].reduce(reduceSession, initialSessionView("s1"));
+    expect(liveSubagentCards(running.live).map((c) => [c.tool_count, c.tokens])).toEqual([[2, null]]);
+    const done = reduceSession(
+      running,
+      ev(4, "agent.tool_call_update", {
+        tool_call_id: "a",
+        title: null,
+        status: "completed",
+        content: null,
+        subagent: { duration_ms: 9000, tokens: 75223, tool_uses: 42 },
+      }),
+    );
+    expect(liveSubagentCards(done.live).map((c) => [c.tool_count, c.tokens, c.duration_ms])).toEqual([[42, 75223, 9000]]);
   });
 
   it("puts a sub-agent whose launch it never saw last, so nothing is hidden", () => {
@@ -258,6 +279,7 @@ describe("historySubagentCards", () => {
         prompt: "Look in src",
         status: "completed",
         duration_ms: 4200,
+        tokens: null,
         tool_count: 1,
         blocks: (blocks[1] as { subagent: { blocks: HistoryBlock[] } }).subagent.blocks,
       },
@@ -268,6 +290,7 @@ describe("historySubagentCards", () => {
         prompt: null,
         status: "failed",
         duration_ms: null,
+        tokens: null,
         tool_count: 0,
         blocks: [],
       },
@@ -428,6 +451,21 @@ describe("sub-agent labels", () => {
     for (const title of ["Agent", "Task", "`Agent`", "agent", "spawn_agent", "Spawn subagent", "", "  ", null, undefined]) {
       expect(subagentDescription(null, title)).toBeNull();
     }
+  });
+
+  it("shortens token counts", () => {
+    expect([0, 840, 999, 1000, 9949, 12_400, 75_223, 999_499, 999_500, 1_234_567].map(tokensText)).toEqual([
+      "0 tokens",
+      "840 tokens",
+      "999 tokens",
+      "1k tokens",
+      "9.9k tokens",
+      "12k tokens",
+      "75k tokens",
+      "999k tokens",
+      "1M tokens",
+      "1.2M tokens",
+    ]);
   });
 
   it("counts background tasks in the singular and plural", () => {

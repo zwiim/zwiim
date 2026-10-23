@@ -207,6 +207,7 @@ describe("sub-agent cards", () => {
               description: "Survey the repo",
               model: "claude-opus-4-1-20250805",
               duration_ms: 42_000,
+              tokens: 75_223,
               blocks: [
                 { type: "text", text: "surveying" },
                 { type: "tool_call", tool_call_id: "b1", title: "Bash", input_preview: JSON.stringify({ command: "ls" }), status: null },
@@ -222,7 +223,15 @@ describe("sub-agent cards", () => {
     );
     expect(types(v)).toEqual(["user", "subagent", "agent", "footer"]);
     const agent = agentOf(v);
-    expect(agent).toMatchObject({ model: "Opus 4.1", description: "Survey the repo", state: "done", duration: "42s", tools: 2 });
+    expect(agent).toMatchObject({
+      model: "Opus 4.1",
+      description: "Survey the repo",
+      state: "done",
+      duration: "42s",
+      tools: 2,
+      tokens: "75k tokens",
+    });
+    expect(subagentLabel(agent)).toBe("Agent, Opus 4.1, Survey the repo, 2 tools, 75k tokens, 42s, done");
     expect(agent.rows.map((r) => r.type)).toEqual(["agent", "tool", "subagent"]);
     expect(agent.rows[1]).toMatchObject({ tool: { verb: "Run", target: "ls", state: "done" } });
     const nested = agent.rows[2] as Extract<TranscriptRow, { type: "subagent" }>;

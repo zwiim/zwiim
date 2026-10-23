@@ -49,7 +49,12 @@ use serde::{Deserialize, Serialize};
 /// ended (`completed`, `failed`, `stopped`, or null while the transcript does
 /// not say), and its `output_preview` is the sub-agent's report. Older
 /// clients ignore the field.
-pub const PROTOCOL_REVISION: u32 = 6;
+///
+/// Revision 7 (sub-agent totals): a launch's `subagent` carries `tokens` and
+/// `tool_uses`, what the sub-agent spent and how many tools it called, once
+/// its result says so, live and in `session.history`. Older clients ignore
+/// the fields.
+pub const PROTOCOL_REVISION: u32 = 7;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -209,6 +214,12 @@ mod tests {
         const _: () = assert!(PROTOCOL_REVISION >= 5);
         // How a background launch ended is a field of revision 6.
         const _: () = assert!(PROTOCOL_REVISION >= 6);
+    }
+
+    #[test]
+    fn subagent_totals_are_a_revision() {
+        // A launch's `subagent.tokens` and `subagent.tool_uses`.
+        const _: () = assert!(PROTOCOL_REVISION >= 7);
     }
 
     #[test]

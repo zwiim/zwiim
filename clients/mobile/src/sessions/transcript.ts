@@ -14,6 +14,7 @@ import {
   modelShortName,
   parseUnifiedDiff,
   subagentDescription,
+  tokensText,
   toolChanges,
   turnDuration,
   turnGroups,
@@ -69,6 +70,8 @@ export interface SubagentItem {
   duration: string | null;
   /** Tool calls it made itself. */
   tools: number;
+  /** Tokens it spent ("75k tokens"), once its result says. */
+  tokens: string | null;
   prompt: string | null;
   /** What it did, in order, as rows of its own (never top-level rows). */
   rows: TranscriptRow[];
@@ -247,6 +250,7 @@ function subagentItem<B>(card: SubagentCard<B>, title: string | null, rows: Tran
               : "idle",
     duration: card.duration_ms !== null ? turnDuration(card.duration_ms) : null,
     tools: card.tool_count,
+    tokens: card.tokens !== null ? tokensText(card.tokens) : null,
     prompt: card.prompt?.trim() || null,
     rows,
   };
@@ -256,7 +260,7 @@ function subagentItem<B>(card: SubagentCard<B>, title: string | null, rows: Tran
 export function subagentLabel(agent: SubagentItem): string {
   const tools = agent.tools > 0 ? `${agent.tools} ${agent.tools === 1 ? "tool" : "tools"}` : null;
   const state = agent.state === "idle" ? null : agent.state;
-  return ["Agent", agent.model, agent.description, tools, agent.duration, state].filter(Boolean).join(", ");
+  return ["Agent", agent.model, agent.description, tools, agent.tokens, agent.duration, state].filter(Boolean).join(", ");
 }
 
 /** What an open card shows; a collapsed one shows nothing, so nothing in it is drawn. */

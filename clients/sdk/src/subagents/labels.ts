@@ -25,3 +25,10 @@ export function subagentDescription(
 export function waitingText(count: number): string {
   return `Waiting on ${count} background ${count === 1 ? "task" : "tasks"}`;
 }
+
+/** "840 tokens", "9.9k tokens", "75k tokens", "1.2M tokens". */
+export function tokensText(n: number): string {
+  const short = (v: number, unit: string) => `${v < 10 ? Math.round(v * 10) / 10 : Math.round(v)}${unit}`;
+  const count = n < 1000 ? String(Math.round(n)) : n < 999_500 ? short(n / 1000, "k") : short(n / 1_000_000, "M");
+  return `${count} tokens`;
+}

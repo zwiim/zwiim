@@ -755,6 +755,12 @@ fn with_subagent(mut v: Value, info: Option<&SubagentInfo>, root: Option<&str>) 
     if let Some(d) = info.duration_ms {
         sub.insert("duration_ms".into(), json!(d));
     }
+    if let Some(n) = info.tokens {
+        sub.insert("tokens".into(), json!(n));
+    }
+    if let Some(n) = info.tool_uses {
+        sub.insert("tool_uses".into(), json!(n));
+    }
     v["subagent"] = Value::Object(sub);
     v
 }
@@ -895,6 +901,8 @@ fn launch_block(
     let mut info = SubagentInfo::of(input.as_ref(), None);
     info.merge(SubagentInfo {
         duration_ms: stats.and_then(|s| s.total_duration_ms),
+        tokens: stats.and_then(|s| s.total_tokens),
+        tool_uses: stats.and_then(|s| s.total_tool_use_count).map(u64::from),
         ..Default::default()
     });
     if let Some(t) = transcript {
@@ -903,6 +911,7 @@ fn launch_block(
             model: t.model.clone(),
             prompt: t.prompt.clone(),
             duration_ms: t.duration_ms,
+            ..Default::default()
         });
     }
     if codex {
@@ -2357,6 +2366,8 @@ pub(crate) mod tests {
                 "agentType": "Explore",
                 "resolvedModel": "claude-opus-5-5[1m]",
                 "totalDurationMs": 4200,
+                "totalTokens": 75223,
+                "totalToolUseCount": 42,
                 "status": "completed",
             } } })),
             images: None,
@@ -2377,10 +2388,14 @@ pub(crate) mod tests {
         let (_, p) = project_event(&claude_agent_call("toolu_01Agent", None), None).unwrap();
         assert_eq!(p["subagent"], json!({}));
 
-        // The model the sub-agent ran on and how long it took arrive with its result.
+        // The model the sub-agent ran on, how long it took, the tokens it
+        // spent and the tools it called arrive with its result.
         let (kind, p) = project_event(&claude_agent_result("toolu_01Agent"), None).unwrap();
         assert_eq!(kind, "agent.tool_call_update");
-        assert_eq!(p["subagent"], json!({ "model": "claude-opus-5-5", "duration_ms": 4200 }));
+        assert_eq!(
+            p["subagent"],
+            json!({ "model": "claude-opus-5-5", "duration_ms": 4200, "tokens": 75223, "tool_uses": 42 })
+        );
 
         // Any other tool has none.
         let (_, p) = project_event(&claude_tool_call("toolu_01X", "Read", None), None).unwrap();
@@ -2411,6 +2426,8 @@ pub(crate) mod tests {
                 "prompt": "Look in src",
                 "model": "claude-opus-5-5",
                 "duration_ms": 4200,
+                "tokens": 75223,
+                "tool_uses": 42,
             })
         );
     }
@@ -2528,6 +2545,8 @@ pub(crate) mod tests {
         let mut stats: crate::models::message::AgentExecutionStats = serde_json::from_value(json!({
             "agent_type": "general-purpose",
             "total_duration_ms": 9999,
+            "total_tokens": 75223,
+            "total_tool_use_count": 42,
             "tool_calls": [{ "tool_name": "Read", "input_preview": "{}", "output_preview": "x", "is_error": false }],
         }))
         .unwrap();
@@ -2614,6 +2633,8 @@ pub(crate) mod tests {
         assert_eq!(sub["model"], "claude-sonnet-5");
         assert_eq!(sub["prompt"], "Look in src");
         assert_eq!(sub["duration_ms"], 4200);
+        assert_eq!(sub["tokens"], 75223, "the totals survive a reload");
+        assert_eq!(sub["tool_uses"], 42);
         let children = sub["blocks"].as_array().unwrap();
         assert_eq!(children[0], json!({ "type": "thought", "text": "child thinks" }));
         assert_eq!(children[1]["type"], "tool_call");
@@ -2642,8 +2663,15 @@ pub(crate) mod tests {
         assert_eq!(blocks.len(), 2, "no synthetic children: {v}");
         assert_eq!(
             blocks[0]["subagent"],
-            json!({ "description": "Find tests", "prompt": "Look in src", "model": "haiku", "duration_ms": 9999 }),
-            "the launch's own duration still comes through without the file"
+            json!({
+                "description": "Find tests",
+                "prompt": "Look in src",
+                "model": "haiku",
+                "duration_ms": 9999,
+                "tokens": 75223,
+                "tool_uses": 42,
+            }),
+            "the launch's own totals still come through without the file"
         );
     }
 

@@ -127,8 +127,8 @@ pub struct ToolCallState {
 /// what claude-agent-acp sends on an `Agent` / `Task` tool call: the tool's
 /// input (`description`, `prompt`, the requested `model`) as the call's raw
 /// input, and, once it finishes, the tool's result in
-/// `_meta.claudeCode.toolResponse` (the model it actually ran on and how long
-/// it took).
+/// `_meta.claudeCode.toolResponse` (the model it actually ran on, how long
+/// it took, the tokens it spent and how many tools it called).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SubagentInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -139,6 +139,12 @@ pub struct SubagentInfo {
     pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// Tokens the sub-agent spent (`totalTokens`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+    /// Tool calls the sub-agent made (`totalToolUseCount`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_uses: Option<u64>,
 }
 
 impl SubagentInfo {
@@ -182,13 +188,19 @@ impl SubagentInfo {
                         .and_then(|s| s.get("durationMs"))
                 })
                 .and_then(serde_json::Value::as_u64),
+            tokens: response
+                .and_then(|r| r.get("totalTokens"))
+                .and_then(serde_json::Value::as_u64),
+            tool_uses: response
+                .and_then(|r| r.get("totalToolUseCount"))
+                .and_then(serde_json::Value::as_u64),
         }
     }
 
     /// Fold in what a later event said; a field it did not carry keeps its
     /// value.
     pub fn merge(&mut self, newer: Self) {
-        let Self { description, model, prompt, duration_ms } = newer;
+        let Self { description, model, prompt, duration_ms, tokens, tool_uses } = newer;
         if description.is_some() {
             self.description = description;
         }
@@ -200,6 +212,12 @@ impl SubagentInfo {
         }
         if duration_ms.is_some() {
             self.duration_ms = duration_ms;
+        }
+        if tokens.is_some() {
+            self.tokens = tokens;
+        }
+        if tool_uses.is_some() {
+            self.tool_uses = tool_uses;
         }
     }
 }

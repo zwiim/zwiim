@@ -1015,6 +1015,7 @@ describe("sub-agent cards", () => {
               description: "Survey the repo",
               model: "claude-opus-4-1-20250805",
               duration_ms: 42_000,
+              tokens: 75_223,
               blocks: [
                 { type: "text", text: "surveying" },
                 { type: "tool_call", tool_call_id: "b1", title: "Bash", input_preview: JSON.stringify({ command: "ls" }), status: null },
@@ -1035,6 +1036,7 @@ describe("sub-agent cards", () => {
     expect(within(card!).getByTestId("subagent-name").textContent).toBe("Agent • Opus 4.1");
     expect(within(card!).getByTestId("subagent-duration").textContent).toBe("42s");
     expect(within(card!).getByTestId("subagent-tools").textContent).toBe("2 tools");
+    expect(within(card!).getByTestId("subagent-tokens").textContent).toBe("75k tokens");
     expect(screen.queryByText("surveying")).toBeNull();
     fireEvent.click(row(card!));
     const body = within(card!).getByTestId("subagent-body");

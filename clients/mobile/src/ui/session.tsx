@@ -462,6 +462,11 @@ export function SubagentRow({
             {tools}
           </T>
         ) : null}
+        {agent.tokens ? (
+          <T variant="monoSm" color={theme.mut} style={styles.tabular} testID="subagent-tokens">
+            {agent.tokens}
+          </T>
+        ) : null}
         {agent.duration ? (
           <T variant="monoSm" color={theme.mut} style={styles.tabular} testID="subagent-duration">
             {agent.duration}

@@ -676,7 +676,8 @@ export interface ToolCall {
   parent_id?: string;
   /**
    * Set when this call launches a sub-agent, with what is known of it so far
-   * (`model` and `duration_ms` usually arrive with the result). Read it
+   * (`model`, `duration_ms`, `tokens` and `tool_uses` usually arrive with
+   * the result). Read it
    * through `liveSubagentCards`.
    */
   subagent?: SubagentInfo;
@@ -691,6 +692,10 @@ export interface SubagentInfo {
   /** What it was asked to do. */
   prompt?: string;
   duration_ms?: number;
+  /** Tokens it spent, once its result says (revision 7). */
+  tokens?: number;
+  /** Tool calls it made, once its result says (revision 7). */
+  tool_uses?: number;
 }
 
 export interface PermissionOption {

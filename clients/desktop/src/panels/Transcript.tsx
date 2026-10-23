@@ -30,6 +30,7 @@ import {
   liveSubagentCards,
   modelShortName,
   subagentDescription,
+  tokensText,
   turnDuration,
   workspaceFile,
   type AgentImage,
@@ -685,6 +686,7 @@ function SubagentCardView({
         )}
         <span className="text-muted-foreground ml-auto flex shrink-0 items-center gap-1.5 font-mono text-xs tabular-nums">
           {card.tool_count > 0 && <span data-testid="subagent-tools">{tools}</span>}
+          {card.tokens !== null && <span data-testid="subagent-tokens">{tokensText(card.tokens)}</span>}
           {card.duration_ms !== null ? (
             <span data-testid="subagent-duration">{turnDuration(card.duration_ms)}</span>
           ) : (
