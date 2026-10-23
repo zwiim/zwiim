@@ -58,6 +58,30 @@ pub struct AgentExecutionStats {
     /// Absent for agents whose sub-agents have no separate session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub child_session_id: Option<String>,
+    /// The sub-agent's own transcript, rebuilt from its file beside the
+    /// session (Claude: `<session>/subagents/agent-<id>.jsonl`). Absent when
+    /// the agent keeps none or the file is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<Box<SubagentTranscript>>,
+}
+
+/// What one sub-agent did, as its own transcript records it: what it was
+/// asked, the model it ran on, how long it took and every block it produced,
+/// with the agent's real tool-call ids.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SubagentTranscript {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The first user message: the prompt the sub-agent was started with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// First to last entry of the transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<ContentBlock>,
 }
 
 /// Image payload shared by content blocks and ACP wire events.

@@ -270,20 +270,44 @@ fn only_a_newer_version_is_offered() {
 #[test]
 fn the_beta_channel_takes_beta_and_stable_releases() {
     assert_eq!(
-        manifest::offer(&verified("0.1.0-rc.9"), &v("0.1.0-rc.8"), Channel::Beta, None, false),
+        manifest::offer(
+            &verified("0.1.0-rc.9"),
+            &v("0.1.0-rc.8"),
+            Channel::Beta,
+            None,
+            false
+        ),
         Offer::Update
     );
     assert_eq!(
-        manifest::offer(&verified("0.1.0"), &v("0.1.0-rc.9"), Channel::Beta, None, false),
+        manifest::offer(
+            &verified("0.1.0"),
+            &v("0.1.0-rc.9"),
+            Channel::Beta,
+            None,
+            false
+        ),
         Offer::Update
     );
     // Leaving beta keeps the running version until a newer stable ships.
     assert_eq!(
-        manifest::offer(&verified("0.1.0"), &v("0.1.0-rc.9"), Channel::Stable, None, false),
+        manifest::offer(
+            &verified("0.1.0"),
+            &v("0.1.0-rc.9"),
+            Channel::Stable,
+            None,
+            false
+        ),
         Offer::Update
     );
     assert_eq!(
-        manifest::offer(&verified("0.1.0-rc.9"), &v("0.1.0-rc.9"), Channel::Beta, None, false),
+        manifest::offer(
+            &verified("0.1.0-rc.9"),
+            &v("0.1.0-rc.9"),
+            Channel::Beta,
+            None,
+            false
+        ),
         Offer::UpToDate
     );
 }

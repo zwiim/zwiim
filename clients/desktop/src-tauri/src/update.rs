@@ -157,7 +157,10 @@ pub struct DesktopUpdate {
 
 impl DesktopUpdate {
     fn get(&self) -> Activity {
-        self.activity.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.activity
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
     fn set(&self, a: Activity) {
         *self.activity.lock().unwrap_or_else(|p| p.into_inner()) = a;
@@ -231,7 +234,10 @@ async fn find<R: tauri::Runtime>(
 }
 
 #[tauri::command]
-pub fn desktop_update_status(app: tauri::AppHandle, state: tauri::State<'_, DesktopUpdate>) -> Status {
+pub fn desktop_update_status(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopUpdate>,
+) -> Status {
     status_of(&state, state.channel(&app))
 }
 

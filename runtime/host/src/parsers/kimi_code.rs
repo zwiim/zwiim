@@ -757,6 +757,7 @@ fn agent_stats_from_subagent(
         // Kimi's sub-agent transcript is a file under the parent session, not a
         // session of its own.
         child_session_id: None,
+        transcript: None,
     })
 }
 

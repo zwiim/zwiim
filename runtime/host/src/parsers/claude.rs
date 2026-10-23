@@ -1220,9 +1220,12 @@ impl AgentParser for ClaudeParser {
 /// unchanged (guarded by the parser snapshot tests and the whole-vs-chunked
 /// differential test in this file's test module).
 pub(crate) struct ClaudeRecordAccumulator {
-    /// Session transcript path — the subagent-stats lookup resolves
-    /// `<session>/subagents/agent-<id>.jsonl` relative to it.
-    session_path: PathBuf,
+    /// `<session>/subagents/`: where every sub-agent of the session keeps
+    /// its transcript (`agent-<id>.jsonl`), nested ones included.
+    subagent_dir: PathBuf,
+    /// How many sub-agents deep this feed is: 0 for the session itself. Caps
+    /// how far nested sub-agent transcripts are followed.
+    subagent_depth: u8,
     pub(crate) messages: Vec<UnifiedMessage>,
     pub(crate) cwd: Option<String>,
     pub(crate) git_branch: Option<String>,
@@ -1287,8 +1290,15 @@ pub(crate) struct ClaudeRecordAccumulator {
 
 impl ClaudeRecordAccumulator {
     pub(crate) fn new(session_path: PathBuf) -> Self {
+        Self::for_subagent(session_path.with_extension("").join("subagents"), 0)
+    }
+
+    /// An accumulator over a sub-agent's own transcript, `depth` sub-agents
+    /// below the session whose sub-agents live in `subagent_dir`.
+    fn for_subagent(subagent_dir: PathBuf, subagent_depth: u8) -> Self {
         Self {
-            session_path,
+            subagent_dir,
+            subagent_depth,
             messages: Vec::new(),
             cwd: None,
             git_branch: None,
@@ -1397,7 +1407,8 @@ impl ClaudeRecordAccumulator {
 
     pub(crate) fn feed_value(&mut self, value: serde_json::Value) {
         let Self {
-            session_path: path,
+            subagent_dir,
+            subagent_depth,
             messages,
             cwd,
             git_branch,
@@ -1687,8 +1698,13 @@ impl ClaudeRecordAccumulator {
                         }
                     }
 
-                    // Extract agent execution stats from toolUseResult
-                    if tur.get("agentType").is_some() {
+                    // Extract agent execution stats from toolUseResult. A
+                    // background launch acks before the sub-agent has done
+                    // anything (no `agentType`), but its transcript fills in
+                    // all the same.
+                    let async_launch = tur.get("isAsync").and_then(|v| v.as_bool()) == Some(true)
+                        && tur.get("agentId").is_some();
+                    if tur.get("agentType").is_some() || async_launch {
                         let mut stats = extract_agent_execution_stats(tur);
                         // Load tool calls from subagent's own JSONL transcript
                         if let Some(agent_id) = tur.get("agentId").and_then(|v| v.as_str()) {
@@ -1697,12 +1713,20 @@ impl ClaudeRecordAccumulator {
                             // `is_safe_subagent_id` — rejects separators, `..`, a
                             // Windows drive colon, and NUL).
                             if is_safe_subagent_id(agent_id) {
-                                let subagent_dir = path.with_extension("").join("subagents");
                                 let subagent_path =
                                     subagent_dir.join(format!("agent-{}.jsonl", agent_id));
                                 if subagent_path.exists() {
                                     stats.tool_calls =
                                         parse_subagent_tool_calls(&subagent_path).0;
+                                }
+                                if *subagent_depth < MAX_SUBAGENT_DEPTH {
+                                    stats.transcript = read_subagent_transcript(
+                                        subagent_dir,
+                                        agent_id,
+                                        *subagent_depth + 1,
+                                        tur,
+                                    )
+                                    .map(Box::new);
                                 }
                             }
                         }
@@ -2558,7 +2582,85 @@ fn extract_agent_execution_stats(tur: &serde_json::Value) -> AgentExecutionStats
         // Claude's sub-agent lives inside the parent transcript (a sidechain),
         // not as a session of its own.
         child_session_id: None,
+        transcript: None,
     }
+}
+
+/// How many sub-agents deep nested transcripts are followed. Claude Code
+/// itself nests only a level or two; the cap only bounds a pathological tree.
+const MAX_SUBAGENT_DEPTH: u8 = 4;
+
+/// One sub-agent's own transcript, `<subagent_dir>/agent-<agent_id>.jsonl`,
+/// rebuilt with the session parser so its blocks read exactly like the
+/// session's own: real tool-call ids, thinking, text, results. `None` when the
+/// file is missing or unreadable. `tool_use_result` is the launching call's
+/// `toolUseResult`, the first source for the description and the fallback for
+/// the model; `agent-<id>.meta.json` is the second source for the description.
+fn read_subagent_transcript(
+    subagent_dir: &Path,
+    agent_id: &str,
+    depth: u8,
+    tool_use_result: &serde_json::Value,
+) -> Option<SubagentTranscript> {
+    let bytes = fs::read(subagent_dir.join(format!("agent-{agent_id}.jsonl"))).ok()?;
+    let mut acc = ClaudeRecordAccumulator::for_subagent(subagent_dir.to_path_buf(), depth);
+    for chunk in bytes.split(|b| *b == b'\n') {
+        if let Ok(line) = std::str::from_utf8(chunk) {
+            acc.feed_line(line);
+        }
+    }
+    acc.finalize_background_lifecycle();
+
+    let duration_ms = match (acc.first_timestamp, acc.last_timestamp) {
+        (Some(first), Some(last)) => u64::try_from((last - first).num_milliseconds()).ok(),
+        _ => None,
+    };
+    let text_of = |v: Option<&serde_json::Value>| {
+        v.and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string)
+    };
+    let model = acc
+        .model
+        .clone()
+        .filter(|m| m != "<synthetic>")
+        .or_else(|| text_of(tool_use_result.get("resolvedModel")));
+    let description = text_of(tool_use_result.get("description")).or_else(|| {
+        let meta = fs::read(subagent_dir.join(format!("agent-{agent_id}.meta.json"))).ok()?;
+        let meta: serde_json::Value = serde_json::from_slice(&meta).ok()?;
+        text_of(meta.get("description"))
+    });
+
+    let cwd = acc.cwd.clone();
+    let mut turns = group_into_turns(acc.messages);
+    super::relocate_orphaned_tool_results(&mut turns);
+    super::structurize_read_tool_output(&mut turns);
+    super::resolve_patch_line_numbers(&mut turns, cwd.as_deref());
+
+    // The first user message is the prompt it was started with. Anything the
+    // user side says later is the sub-agent's tool results, which the turn
+    // grouping already moved next to their calls, or harness chatter.
+    let prompt = turns.iter().find(|t| matches!(t.role, TurnRole::User)).and_then(|t| {
+        let text: Vec<&str> = t
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        (!text.is_empty()).then(|| text.join("\n"))
+    });
+    let blocks = turns
+        .into_iter()
+        .filter(|t| matches!(t.role, TurnRole::Assistant))
+        .flat_map(|t| t.blocks)
+        .collect();
+    Some(SubagentTranscript {
+        description,
+        model,
+        prompt,
+        duration_ms,
+        blocks,
+    })
 }
 
 /// Parse a subagent's JSONL transcript and extract its tool calls.
@@ -4895,6 +4997,211 @@ mod tests {
             carrying.iter().any(|(ts, n)| ts.starts_with("2026-03-01") && *n == 5_010),
             "sub-agent spend belongs to the turn that launched it, got {carrying:?}"
         );
+    }
+
+    /// Write a session transcript plus arbitrary files in its `subagents/`
+    /// directory, and parse the result.
+    fn parse_with_subagent_files(lines: &[String], files: &[(&str, String)]) -> crate::models::ConversationDetail {
+        let stem = std::env::temp_dir().join(format!("zwiim-claude-sub-{}", uuid::Uuid::new_v4()));
+        let path = stem.with_extension("jsonl");
+        fs::write(&path, lines.join("\n")).expect("write session jsonl");
+        let dir = stem.join("subagents");
+        fs::create_dir_all(&dir).expect("create subagents dir");
+        for (name, body) in files {
+            fs::write(dir.join(name), body).expect("write subagent file");
+        }
+        let detail = ClaudeParser {
+            base_dir: PathBuf::new(),
+        }
+        .parse_conversation_detail(&path, "sub-test")
+        .expect("parse detail");
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir_all(&stem);
+        detail
+    }
+
+    /// A session that launches one `Agent` sub-agent and gets its result back
+    /// with `tool_use_result` as the `toolUseResult` sibling.
+    fn session_with_agent(tool_use_result: serde_json::Value) -> Vec<String> {
+        vec![
+            assistant_block_line(
+                "a1",
+                "msg_launch",
+                "2026-03-01T10:00:00Z",
+                json!({"type": "tool_use", "id": "toolu_01Agent", "name": "Agent", "input": {
+                    "description": "Find tests", "prompt": "Look for tests", "subagent_type": "Explore"
+                }}),
+                json!({"input_tokens": 1, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}),
+            ),
+            json!({
+                "type": "user",
+                "timestamp": "2026-03-01T10:00:09Z",
+                "uuid": "r1",
+                "message": {"role": "user", "content": [{
+                    "type": "tool_result", "tool_use_id": "toolu_01Agent", "content": "found them"
+                }]},
+                "toolUseResult": tool_use_result,
+            })
+            .to_string(),
+        ]
+    }
+
+    fn sub_line(kind: &str, at: &str, model: Option<&str>, content: serde_json::Value) -> String {
+        let mut message = json!({"role": kind, "content": content});
+        if let Some(m) = model {
+            message["model"] = json!(m);
+            message["id"] = json!(format!("msg_{at}"));
+        }
+        json!({"type": kind, "timestamp": at, "uuid": format!("u-{at}"), "isSidechain": true, "message": message})
+            .to_string()
+    }
+
+    /// A sub-agent's own transcript as Claude Code writes it: the prompt as a
+    /// plain user message, then thinking, a tool call, its result and a reply.
+    fn sub_agent_transcript(model: Option<&str>) -> String {
+        [
+            sub_line("user", "2026-03-01T10:00:01Z", None, json!("Look for tests")),
+            sub_line("assistant", "2026-03-01T10:00:02Z", model, json!([{"type": "thinking", "thinking": "where are they"}])),
+            sub_line("assistant", "2026-03-01T10:00:02Z", model, json!([{
+                "type": "tool_use", "id": "toolu_01Read", "name": "Read", "input": {"file_path": "/w/p/a.rs"}
+            }])),
+            sub_line("user", "2026-03-01T10:00:03Z", None, json!([{
+                "type": "tool_result", "tool_use_id": "toolu_01Read", "content": "fn a() {}"
+            }])),
+            sub_line("assistant", "2026-03-01T10:00:05Z", model, json!([{"type": "text", "text": "found them"}])),
+        ]
+        .join("\n")
+    }
+
+    fn agent_stats_of(detail: &crate::models::ConversationDetail) -> Vec<AgentExecutionStats> {
+        detail
+            .turns
+            .iter()
+            .flat_map(|t| &t.blocks)
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult { agent_stats: Some(s), .. } => Some(s.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sub_agent_transcript_keeps_its_own_blocks_prompt_model_and_duration() {
+        let detail = parse_with_subagent_files(
+            &session_with_agent(json!({
+                "agentType": "Explore", "agentId": "a1b2", "status": "completed",
+                "resolvedModel": "claude-sonnet-5-5", "totalDurationMs": 8000
+            })),
+            &[
+                ("agent-a1b2.jsonl", sub_agent_transcript(Some("claude-sonnet-5"))),
+                ("agent-a1b2.meta.json", json!({"agentType": "Explore", "description": "Find tests", "model": "sonnet"}).to_string()),
+            ],
+        );
+        let stats = agent_stats_of(&detail);
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].tool_calls.len(), 1, "the existing summary stays");
+        let t = stats[0].transcript.as_ref().expect("transcript");
+        assert_eq!(t.description.as_deref(), Some("Find tests"));
+        assert_eq!(t.model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(t.prompt.as_deref(), Some("Look for tests"));
+        assert_eq!(t.duration_ms, Some(4000));
+        let shapes: Vec<String> = t
+            .blocks
+            .iter()
+            .map(|b| match b {
+                ContentBlock::Thinking { text } => format!("thinking:{text}"),
+                ContentBlock::Text { text } => format!("text:{text}"),
+                ContentBlock::ToolUse { tool_use_id, tool_name, .. } => {
+                    format!("tool_use:{}:{tool_name}", tool_use_id.as_deref().unwrap_or(""))
+                }
+                ContentBlock::ToolResult { tool_use_id, output_preview, .. } => format!(
+                    "tool_result:{}:{}",
+                    tool_use_id.as_deref().unwrap_or(""),
+                    output_preview.as_deref().unwrap_or("")
+                ),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            shapes,
+            [
+                "thinking:where are they",
+                "tool_use:toolu_01Read:Read",
+                "tool_result:toolu_01Read:fn a() {}",
+                "text:found them",
+            ]
+        );
+    }
+
+    #[test]
+    fn sub_agent_without_its_file_has_no_transcript() {
+        let detail = parse_with_subagent_files(
+            &session_with_agent(json!({"agentType": "Explore", "agentId": "gone", "status": "completed"})),
+            &[],
+        );
+        let stats = agent_stats_of(&detail);
+        assert_eq!(stats.len(), 1, "the stats themselves stay");
+        assert!(stats[0].transcript.is_none());
+        assert!(stats[0].tool_calls.is_empty());
+    }
+
+    #[test]
+    fn async_sub_agent_takes_description_and_model_from_its_launch() {
+        // A background launch acks at once: no `agentType`, but the ack names
+        // the description, prompt and model it was started with.
+        let detail = parse_with_subagent_files(
+            &session_with_agent(json!({
+                "isAsync": true, "status": "async_launched", "agentId": "bg1",
+                "description": "Scan the tree", "prompt": "Look for tests",
+                "resolvedModel": "claude-opus-5-5[1m]"
+            })),
+            &[
+                ("agent-bg1.jsonl", sub_agent_transcript(None)),
+                ("agent-bg1.meta.json", json!({"description": "ignored"}).to_string()),
+            ],
+        );
+        let stats = agent_stats_of(&detail);
+        assert_eq!(stats.len(), 1);
+        let t = stats[0].transcript.as_ref().expect("transcript");
+        assert_eq!(t.description.as_deref(), Some("Scan the tree"));
+        assert_eq!(t.model.as_deref(), Some("claude-opus-5-5[1m]"));
+        assert_eq!(t.blocks.len(), 4);
+    }
+
+    #[test]
+    fn nested_sub_agent_transcript_is_read_from_the_same_directory() {
+        let outer = [
+            sub_line("user", "2026-03-01T10:00:01Z", None, json!("Delegate")),
+            sub_line("assistant", "2026-03-01T10:00:02Z", Some("claude-sonnet-5"), json!([{
+                "type": "tool_use", "id": "toolu_01Inner", "name": "Agent", "input": {"description": "Go deeper", "prompt": "Dig"}
+            }])),
+            json!({
+                "type": "user", "timestamp": "2026-03-01T10:00:04Z", "uuid": "u-inner", "isSidechain": true,
+                "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01Inner", "content": "dug"}]},
+                "toolUseResult": {"agentType": "general-purpose", "agentId": "inner", "status": "completed"},
+            })
+            .to_string(),
+        ]
+        .join("\n");
+        let detail = parse_with_subagent_files(
+            &session_with_agent(json!({"agentType": "Explore", "agentId": "outer", "status": "completed"})),
+            &[
+                ("agent-outer.jsonl", outer),
+                ("agent-inner.jsonl", sub_agent_transcript(Some("claude-haiku-5"))),
+            ],
+        );
+        let stats = agent_stats_of(&detail);
+        let outer = stats[0].transcript.as_ref().expect("outer transcript");
+        let inner = outer
+            .blocks
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::ToolResult { agent_stats: Some(s), .. } => s.transcript.as_ref(),
+                _ => None,
+            })
+            .expect("inner transcript");
+        assert_eq!(inner.model.as_deref(), Some("claude-haiku-5"));
+        assert_eq!(inner.blocks.len(), 4);
     }
 
     #[test]

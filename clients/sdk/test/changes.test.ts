@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { editChanges, toolChanges } from "../src/changes/diff";
 import { fileSegments, fullFile, isMarkdown, revealStep, type FileLine } from "../src/changes/fullfile";
 import { workspaceFile } from "../src/changes/paths";
-import { clockTime, mergeChanges, turnDuration, turnGroups } from "../src/changes/turns";
+import { clockTime, mergeChanges, turnChanges, turnDuration, turnGroups } from "../src/changes/turns";
 import type { HistoryBlock, HistoryTurn } from "../src/types/protocol";
 
 const kinds = (lines: FileLine[]) => lines.map((l) => `${l.kind[0]}${l.old ?? "-"}/${l.new ?? "-"}:${l.text}`);
@@ -170,6 +170,35 @@ describe("turnGroups", () => {
       { path: "/w/b.md", added: 1, removed: 0 },
     ]);
     expect(second!.files).toEqual([]);
+  });
+
+  it("counts a sub-agent's edits, at any depth, as the turn's", () => {
+    const agent = (id: string, blocks: HistoryBlock[]): HistoryBlock => ({
+      type: "tool_call",
+      tool_call_id: id,
+      title: "Agent",
+      input_preview: "{}",
+      status: null,
+      subagent: { blocks },
+    });
+    const turns = [
+      turn("assistant", "2026-10-06T10:00:05Z", [
+        call("1", "Edit", { file_path: "/w/a.ts", old_string: "x", new_string: "y" }),
+        result("1"),
+        agent("2", [
+          call("3", "Write", { file_path: "/w/b.md", content: "hi\n" }),
+          result("3"),
+          call("4", "Edit", { file_path: "/w/c.ts", old_string: "q", new_string: "r" }),
+          result("4", true),
+          agent("5", [call("6", "Edit", { file_path: "/w/a.ts", old_string: "p", new_string: "s" }), result("6")]),
+        ]),
+        result("2"),
+      ]),
+    ];
+    expect(turnChanges(turns)).toEqual([
+      { path: "/w/a.ts", added: 2, removed: 2 },
+      { path: "/w/b.md", added: 1, removed: 0 },
+    ]);
   });
 
   it("merges by first change", () => {

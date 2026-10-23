@@ -669,6 +669,28 @@ export interface ToolCall {
   status: ToolCallStatus | null;
   content: unknown;
   images?: AgentImage[];
+  /**
+   * The sub-agent tool call that made this call; absent on the main thread
+   * (Host capability `agent.subagents`).
+   */
+  parent_id?: string;
+  /**
+   * Set when this call launches a sub-agent, with what is known of it so far
+   * (`model` and `duration_ms` usually arrive with the result). Read it
+   * through `liveSubagentCards`.
+   */
+  subagent?: SubagentInfo;
+}
+
+/** A sub-agent as the tool call that launched it describes it. */
+export interface SubagentInfo {
+  /** The short task title the agent gave it. */
+  description?: string;
+  /** The model it ran on, by its plain id or the alias it was asked for. */
+  model?: string;
+  /** What it was asked to do. */
+  prompt?: string;
+  duration_ms?: number;
 }
 
 export interface PermissionOption {
@@ -743,6 +765,12 @@ export interface LiveMessage {
   message_id: string | null;
   role: string;
   content: LiveBlock[];
+  /**
+   * Snapshots only: each sub-agent's own blocks, by the tool call that
+   * launched it, in order of first appearance. Never part of `content`.
+   * The session reducer moves them to `LiveTurn.subagents`.
+   */
+  subagents?: { parent_id: string; blocks: LiveBlock[] }[];
 }
 
 export interface PendingUserMessage {
@@ -803,6 +831,9 @@ interface EventBase<T extends string, P> {
 export type SessionEvent =
   | EventBase<"agent.message_delta", { text: string }>
   | EventBase<"agent.thought_delta", { text: string }>
+  /** A sub-agent's own text and thinking, by the tool call that launched it. */
+  | EventBase<"agent.subagent_message_delta", { parent_id: string; text: string }>
+  | EventBase<"agent.subagent_thought_delta", { parent_id: string; text: string }>
   | EventBase<"agent.message_image", AgentImage>
   | EventBase<"agent.user_message", PendingUserMessage>
   | EventBase<"agent.tool_call", ToolCall>
@@ -834,6 +865,11 @@ export type HistoryBlock =
       title: string;
       input_preview: string | null;
       status: ToolCallStatus | null;
+      /**
+       * Set when this call launched a sub-agent; `blocks` is everything the
+       * sub-agent did, when its transcript was found.
+       */
+      subagent?: SubagentInfo & { blocks?: HistoryBlock[] };
     }
   | {
       type: "tool_result";

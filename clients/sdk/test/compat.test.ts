@@ -95,6 +95,13 @@ describe("evaluateCompatibility", () => {
     expect(hasCapability(c, "session.revert.chat")).toBe(false);
   });
 
+  it("asks for sub-agent nesting at the revision that brought parent_id", () => {
+    expect(CLIENT_CAPABILITIES).toContain("agent.subagents");
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(4);
+    const old = evaluateCompatibility(hello({ revision: 3, min_client_revision: 1, capabilities: ["session.revert"] }));
+    expect(hasCapability(old, "agent.subagents")).toBe(false);
+  });
+
   it("a different protocol major is incompatible and names the older side", () => {
     expect(evaluateCompatibility(hello({ protocol: "zwiim/2" }), client())).toMatchObject({
       status: "update_required",

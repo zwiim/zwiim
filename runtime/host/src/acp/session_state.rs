@@ -106,9 +106,93 @@ pub struct ToolCallState {
     /// surviving page refresh without re-fetching from JSONL.
     #[serde(default)]
     pub images: Vec<ToolCallImageInfo>,
+    /// The tool call of the sub-agent that made this call: Claude marks a
+    /// sub-agent's own calls with `claudeCode.parentToolUseId`
+    /// (claude-agent-acp); `None` on the main thread. Kept once known: an
+    /// update that does not repeat it never clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    /// What is known so far about the sub-agent this call started, when it is
+    /// a sub-agent launch (Claude's `Agent` / `Task`); each field is filled
+    /// in as an event brings it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<SubagentInfo>,
     /// 流式拼接的 input chunks（serde 不输出，仅运行时用）
     #[serde(skip)]
     pub raw_input_chunks: Vec<String>,
+}
+
+/// What a sub-agent launch says about the sub-agent it starts. Built from
+/// what claude-agent-acp sends on an `Agent` / `Task` tool call: the tool's
+/// input (`description`, `prompt`, the requested `model`) as the call's raw
+/// input, and, once it finishes, the tool's result in
+/// `_meta.claudeCode.toolResponse` (the model it actually ran on and how long
+/// it took).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct SubagentInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+impl SubagentInfo {
+    /// Whether a tool call's metadata marks it as a sub-agent launch:
+    /// claude-agent-acp names the tool (`claudeCode.toolName`) and flags it
+    /// (`claudeCode.subagent`).
+    pub fn marks_launch(meta: Option<&serde_json::Value>) -> bool {
+        let Some(claude) = meta.and_then(|m| m.get("claudeCode")) else {
+            return false;
+        };
+        matches!(
+            claude.get("toolName").and_then(serde_json::Value::as_str),
+            Some("Agent" | "Task")
+        ) || claude.get("subagent").and_then(serde_json::Value::as_bool) == Some(true)
+    }
+
+    /// What one event says: the launch's `input` (when the event carried it)
+    /// and its `meta`.
+    pub fn of(input: Option<&serde_json::Value>, meta: Option<&serde_json::Value>) -> Self {
+        let text = |v: Option<&serde_json::Value>| {
+            v.and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+        };
+        let field = |key: &str| text(input.and_then(|i| i.get(key)));
+        let response = meta
+            .and_then(|m| m.get("claudeCode"))
+            .and_then(|c| c.get("toolResponse"));
+        Self {
+            description: field("description"),
+            prompt: field("prompt"),
+            model: text(response.and_then(|r| r.get("resolvedModel"))).or_else(|| field("model")),
+            duration_ms: response
+                .and_then(|r| r.get("totalDurationMs"))
+                .and_then(serde_json::Value::as_u64),
+        }
+    }
+
+    /// Fold in what a later event said; a field it did not carry keeps its
+    /// value.
+    pub fn merge(&mut self, newer: Self) {
+        let Self { description, model, prompt, duration_ms } = newer;
+        if description.is_some() {
+            self.description = description;
+        }
+        if model.is_some() {
+            self.model = model;
+        }
+        if prompt.is_some() {
+            self.prompt = prompt;
+        }
+        if duration_ms.is_some() {
+            self.duration_ms = duration_ms;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1843,6 +1927,10 @@ impl SessionState {
         meta: Option<&serde_json::Value>,
         images: Option<&[ToolCallImageInfo]>,
     ) {
+        let parent = crate::acp::connection::claude_chunk_parent_tool_use_id(
+            self.agent_type,
+            meta.and_then(serde_json::Value::as_object),
+        );
         let entry = self
             .active_tool_calls
             .entry(id.to_string())
@@ -1857,6 +1945,8 @@ impl SessionState {
                 locations: None,
                 meta: None,
                 images: Vec::new(),
+                parent_id: None,
+                subagent: None,
                 raw_input_chunks: Vec::new(),
             });
         if let Some(k) = kind {
@@ -1891,6 +1981,18 @@ impl SessionState {
         }
         if let Some(m) = meta {
             entry.meta = Some(m.clone());
+        }
+        if let Some(parent) = parent {
+            entry.parent_id = Some(parent);
+        }
+        if entry.subagent.is_some() || SubagentInfo::marks_launch(meta) {
+            // The input counts only when this event brought (more of) it; the
+            // last word on the model is the one the result reports.
+            let input = raw_input.and(entry.input.as_ref());
+            entry
+                .subagent
+                .get_or_insert_with(SubagentInfo::default)
+                .merge(SubagentInfo::of(input, meta));
         }
         if let Some(imgs) = images {
             // Replace-on-update: the agent re-sends the full image list on

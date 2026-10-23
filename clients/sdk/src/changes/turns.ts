@@ -40,18 +40,28 @@ export function mergeChanges(diffs: readonly FileDiff[]): ChangedFile[] {
 
 type ToolResult = Extract<HistoryBlock, { type: "tool_result" }>;
 
-/** What the edits in these turns changed; a failed edit changed nothing. */
+/** `blocks` and, in place of each sub-agent launch, the launch then its sub-agent's blocks. */
+function withSubagentBlocks(blocks: readonly HistoryBlock[]): HistoryBlock[] {
+  return blocks.flatMap((b) =>
+    b.type === "tool_call" && b.subagent?.blocks ? [b, ...withSubagentBlocks(b.subagent.blocks)] : [b],
+  );
+}
+
+/**
+ * What the edits in these turns changed; a failed edit changed nothing. A
+ * sub-agent's edits count as the turn's: they changed the turn's files, and
+ * reverting the turn puts them back too.
+ */
 export function turnChanges(turns: readonly HistoryTurn[]): ChangedFile[] {
+  const blocks = turns.flatMap((t) => withSubagentBlocks(t.blocks));
   const results = new Map<string, ToolResult>();
-  for (const t of turns) for (const b of t.blocks) if (b.type === "tool_result" && b.tool_call_id) results.set(b.tool_call_id, b);
+  for (const b of blocks) if (b.type === "tool_result" && b.tool_call_id) results.set(b.tool_call_id, b);
   const diffs: FileDiff[] = [];
-  for (const t of turns) {
-    for (const b of t.blocks) {
-      if (b.type !== "tool_call") continue;
-      const r = b.tool_call_id ? results.get(b.tool_call_id) : undefined;
-      const failed = b.status === "failed" || !!r?.is_error;
-      diffs.push(...(toolChanges(b.title, b.input_preview, r?.output_preview ?? null, failed) ?? []));
-    }
+  for (const b of blocks) {
+    if (b.type !== "tool_call") continue;
+    const r = b.tool_call_id ? results.get(b.tool_call_id) : undefined;
+    const failed = b.status === "failed" || !!r?.is_error;
+    diffs.push(...(toolChanges(b.title, b.input_preview, r?.output_preview ?? null, failed) ?? []));
   }
   return mergeChanges(diffs);
 }

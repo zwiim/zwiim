@@ -2939,6 +2939,7 @@ fn parse_codex_subagent_stats(
         // Codex's sub-agent rollout is folded into these stats; there is no
         // separate session for the card to open.
         child_session_id: None,
+        transcript: None,
     })
 }
 

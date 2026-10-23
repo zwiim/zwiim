@@ -297,7 +297,10 @@ async fn check_inner(download: bool) -> Result<(), CheckError> {
             if !res.status().is_success() {
                 return Err(("network", format!("{url}: HTTP {}", res.status())));
             }
-            res.bytes().await.map(Some).map_err(|e| ("network", e.to_string()))
+            res.bytes()
+                .await
+                .map(Some)
+                .map_err(|e| ("network", e.to_string()))
         }
     };
     let Some(bytes) = fetch(manifest::MANIFEST_ASSET).await? else {
@@ -420,9 +423,10 @@ async fn check_inner(download: bool) -> Result<(), CheckError> {
 /// the old channel offered is forgotten; nothing installed changes, and
 /// leaving beta keeps the running version until a newer stable one ships.
 pub fn set_channel(channel: Channel) -> std::io::Result<Value> {
-    let root = install::root(&data_dir().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "no data directory")
-    })?);
+    let root =
+        install::root(&data_dir().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "no data directory")
+        })?);
     let before = self::channel(&root);
     if install::channel(&root) != Some(channel) {
         install::set_channel(&root, channel)?;

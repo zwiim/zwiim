@@ -227,7 +227,9 @@ mod tests {
     #[test]
     fn worktree_with_a_remote_gets_every_line() {
         let text = render(&worktree());
-        assert!(text.starts_with("You are running in Zwiim, on the user's computer, with its shell."));
+        assert!(
+            text.starts_with("You are running in Zwiim, on the user's computer, with its shell.")
+        );
         assert!(text.contains(
             "\nWorkspace\n- Working directory: /w/repo/pune. Work only here unless the user asks otherwise.\n"
         ));

@@ -62,5 +62,6 @@ export * from "./changes/diff";
 export * from "./changes/turns";
 export * from "./changes/fullfile";
 export * from "./changes/paths";
+export * from "./subagents/cards";
 export * from "./attachments";
 export * from "./files";

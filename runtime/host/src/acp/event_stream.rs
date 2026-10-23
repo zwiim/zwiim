@@ -1005,6 +1005,7 @@ mod tests {
                             is_error: false,
                         }],
                         child_session_id: Some("019fe6bf-0bcb-70c2-a02d-e5c006dfc32a".into()),
+                        transcript: None,
                     }),
                     images: vec![image],
                 },

@@ -479,6 +479,7 @@ impl GrokParser {
             // session directory. `get_conversation` resolves it even though
             // `build_summary` keeps sub-agent sessions out of the sidebar.
             child_session_id: is_safe_subagent_id(child_id).then(|| child_id.to_string()),
+            transcript: None,
         })
     }
 }

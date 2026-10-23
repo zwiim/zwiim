@@ -15,7 +15,15 @@ use serde::{Deserialize, Serialize};
 
 /// Protocol revision this Host speaks. Bump on every additive change a
 /// client can observe (new operation, event, field or capability).
-pub const PROTOCOL_REVISION: u32 = 3;
+///
+/// Revision 4 (`agent.subagents`): sub-agent work. A sub-agent's tool calls
+/// carry `parent_id` (the tool call that launched it); its text and thinking
+/// stream as `agent.subagent_message_delta` / `agent.subagent_thought_delta`
+/// and sit in a snapshot's `live_message.subagents`, never in the reply's
+/// own content, so an older client that ignores them shows the reply alone.
+/// The launching tool call carries `subagent` (description, model, prompt,
+/// duration), and on reload `subagent.blocks` holds what the sub-agent did.
+pub const PROTOCOL_REVISION: u32 = 4;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -50,6 +58,7 @@ pub const CAPABILITIES: &[&str] = &[
     "session.plan_hand_off",
     "session.revert",
     "session.revert.chat",
+    "agent.subagents",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -158,6 +167,13 @@ mod tests {
     #[test]
     fn revert_chat_is_served() {
         assert!(CAPABILITIES.contains(&"session.revert.chat"));
+    }
+
+    #[test]
+    fn subagents_are_served() {
+        assert!(CAPABILITIES.contains(&"agent.subagents"));
+        // Sub-agent events and fields are a revision bump.
+        const _: () = assert!(PROTOCOL_REVISION >= 4);
     }
 
     #[test]

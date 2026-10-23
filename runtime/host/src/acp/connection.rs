@@ -13293,7 +13293,7 @@ fn should_suppress_subagent_chunk(
 /// into the live Agent capsule instead of the main thread. Gated on
 /// ClaudeCode so no other agent's namespaced meta can alias into parented
 /// routing; empty strings are treated as absent.
-fn claude_chunk_parent_tool_use_id(
+pub(crate) fn claude_chunk_parent_tool_use_id(
     agent_type: AgentType,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Option<String> {

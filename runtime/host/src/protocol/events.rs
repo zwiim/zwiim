@@ -11,7 +11,7 @@
 //! `session_commands`, and host paths inside the session's workspace are made
 //! workspace-relative.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -21,11 +21,14 @@ use crate::acp::git_tools;
 use crate::acp::plan_approval::PendingPlanApprovalState;
 use crate::acp::question::{PendingQuestionState, QuestionSpec};
 use crate::acp::session_state::{
-    LiveContentBlock, LiveSessionSnapshot, PendingPermissionState, PendingUserMessage,
-    ToolCallOutput, ToolCallState,
+    LiveContentBlock, LiveMessage, LiveSessionSnapshot, PendingPermissionState,
+    PendingUserMessage, SubagentInfo, ToolCallOutput, ToolCallState,
 };
 use crate::acp::types::{AcpEvent, EventEnvelope, PermissionOptionInfo, UserMessageBlock};
-use crate::models::message::{ContentBlock, ImageData, MessageTurn, TurnRole};
+use crate::models::agent::AgentType;
+use crate::models::message::{
+    AgentExecutionStats, ContentBlock, ImageData, MessageTurn, TurnRole,
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionEvent {
@@ -137,15 +140,29 @@ pub fn project_envelope(
 fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, Value)> {
     let content_opt = |text: &Option<String>| text.as_deref().map(|t| tool_content(t, root));
     Some(match event {
-        // Sub-agent chunks (`parent_tool_use_id` set) are delegation internals.
+        // A sub-agent's own chunks travel as their own event types, naming
+        // the sub-agent's tool call as `parent_id`: a client that does not
+        // know them ignores them instead of folding them into the reply.
         AcpEvent::ContentDelta {
             text,
-            parent_tool_use_id: None,
-        } => ("agent.message_delta", json!({ "text": text })),
+            parent_tool_use_id,
+        } => match parent_tool_use_id.as_deref() {
+            Some(parent) => (
+                "agent.subagent_message_delta",
+                json!({ "parent_id": parent, "text": text }),
+            ),
+            None => ("agent.message_delta", json!({ "text": text })),
+        },
         AcpEvent::Thinking {
             text,
-            parent_tool_use_id: None,
-        } => ("agent.thought_delta", json!({ "text": text })),
+            parent_tool_use_id,
+        } => match parent_tool_use_id.as_deref() {
+            Some(parent) => (
+                "agent.subagent_thought_delta",
+                json!({ "parent_id": parent, "text": text }),
+            ),
+            None => ("agent.thought_delta", json!({ "text": text })),
+        },
         AcpEvent::ContentImage { data, mime_type } => (
             "agent.message_image",
             crate::agent_images::one(root, data, mime_type, None)?,
@@ -160,21 +177,23 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
             kind,
             status,
             content,
+            raw_input,
             raw_output,
             locations,
+            meta,
             images,
-            ..
         } => (
             "agent.tool_call",
             with_images(
-                json!({
+                with_subagent(with_parent(json!({
                     "tool_call_id": tool_call_id,
                     "title": tool_title(title, root),
                     "kind": tool_kind(Some(kind.as_str()), Some(title)),
                     "status": status,
                     "content": content_opt(content)
                         .or_else(|| command_output(raw_output.as_deref(), root)),
-                }),
+                }), tool_parent(meta.as_ref()).as_deref()),
+                launch(raw_input.as_deref(), meta.as_ref()).as_ref(), root),
                 root,
                 images.as_deref(),
                 first_location(locations.as_ref()),
@@ -185,20 +204,23 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
             title,
             status,
             content,
+            raw_input,
             raw_output,
             locations,
+            meta,
             images,
             ..
         } => (
             "agent.tool_call_update",
             with_images(
-                json!({
+                with_subagent(with_parent(json!({
                     "tool_call_id": tool_call_id,
                     "title": title.as_deref().map(|t| tool_title(t, root)),
                     "status": status,
                     "content": content_opt(content)
                         .or_else(|| command_output(raw_output.as_deref(), root)),
-                }),
+                }), tool_parent(meta.as_ref()).as_deref()),
+                launch(raw_input.as_deref(), meta.as_ref()).as_ref(), root),
                 root,
                 images.as_deref(),
                 first_location(locations.as_ref()),
@@ -444,11 +466,7 @@ fn plan_request(approval_id: &str, plan_markdown: &str) -> Value {
 pub fn project_snapshot(s: &LiveSessionSnapshot, root: Option<&str>) -> Value {
     json!({
         "status": to_value(&s.status),
-        "live_message": s.live_message.as_ref().map(|m| json!({
-            "message_id": m.id,
-            "role": to_value(&m.role),
-            "content": m.content.iter().filter_map(|b| live_block(b, root)).collect::<Vec<_>>(),
-        })),
+        "live_message": s.live_message.as_ref().map(|m| live_message(m, &s.active_tool_calls, root)),
         "tool_calls": s
             .active_tool_calls
             .iter()
@@ -482,16 +500,79 @@ pub fn project_snapshot(s: &LiveSessionSnapshot, root: Option<&str>) -> Value {
     })
 }
 
+/// The reply in progress. `content` is what every client reads as the reply:
+/// a sub-agent's own text and thinking never enter it (the main thread's text
+/// on either side of them reads as one block, as it streamed), while a
+/// sub-agent's tool calls stay in it as they always have. `subagents` holds
+/// each sub-agent's blocks (its thinking, text and tool calls, in order),
+/// one entry per sub-agent tool call in order of first appearance; left out
+/// when no sub-agent has spoken.
+fn live_message(m: &LiveMessage, tool_calls: &[ToolCallState], root: Option<&str>) -> Value {
+    let parent_of: HashMap<&str, &str> = tool_calls
+        .iter()
+        .filter_map(|t| Some((t.id.as_str(), t.parent_id.as_deref()?)))
+        .collect();
+    let mut content = Vec::new();
+    let mut groups: Vec<(&str, Vec<Value>)> = Vec::new();
+    for block in &m.content {
+        let (parent, in_content) = match block {
+            LiveContentBlock::Text { parent_tool_use_id, .. }
+            | LiveContentBlock::Thinking { parent_tool_use_id, .. } => (parent_tool_use_id.as_deref(), false),
+            LiveContentBlock::ToolCallRef { tool_call_id } => (parent_of.get(tool_call_id.as_str()).copied(), true),
+            _ => (None, true),
+        };
+        let Some(value) = live_block(block, root) else { continue };
+        let Some(parent) = parent else {
+            push_joined(&mut content, value);
+            continue;
+        };
+        if in_content {
+            push_joined(&mut content, value.clone());
+        }
+        match groups.iter_mut().find(|(p, _)| *p == parent) {
+            Some((_, blocks)) => push_joined(blocks, value),
+            None => groups.push((parent, vec![value])),
+        }
+    }
+    let mut v = json!({
+        "message_id": m.id,
+        "role": to_value(&m.role),
+        "content": content,
+    });
+    if !groups.is_empty() {
+        v["subagents"] = groups
+            .into_iter()
+            .map(|(parent, blocks)| json!({ "parent_id": parent, "blocks": blocks }))
+            .collect();
+    }
+    v
+}
+
+/// Push `block`, joining it onto a trailing text (or thought) block it
+/// continues.
+fn push_joined(blocks: &mut Vec<Value>, block: Value) {
+    if let Some(last) = blocks.last_mut() {
+        let joinable = matches!(block["type"].as_str(), Some("text" | "thought"))
+            && last["type"] == block["type"]
+            && last.as_object().map(|o| o.len()) == Some(2)
+            && block.as_object().map(|o| o.len()) == Some(2);
+        if joinable {
+            let joined = format!(
+                "{}{}",
+                last["text"].as_str().unwrap_or_default(),
+                block["text"].as_str().unwrap_or_default()
+            );
+            last["text"] = json!(joined);
+            return;
+        }
+    }
+    blocks.push(block);
+}
+
 fn live_block(block: &LiveContentBlock, root: Option<&str>) -> Option<Value> {
     match block {
-        LiveContentBlock::Text {
-            text,
-            parent_tool_use_id: None,
-        } => Some(json!({ "type": "text", "text": text })),
-        LiveContentBlock::Thinking {
-            text,
-            parent_tool_use_id: None,
-        } => Some(json!({ "type": "thought", "text": text })),
+        LiveContentBlock::Text { text, .. } => Some(json!({ "type": "text", "text": text })),
+        LiveContentBlock::Thinking { text, .. } => Some(json!({ "type": "thought", "text": text })),
         LiveContentBlock::ToolCallRef { tool_call_id } => {
             Some(json!({ "type": "tool_call", "tool_call_id": tool_call_id }))
         }
@@ -510,7 +591,7 @@ fn tool_call(t: &ToolCallState, root: Option<&str>) -> Value {
         _ => None,
     };
     with_images(
-        json!({
+        with_subagent(with_parent(json!({
             "tool_call_id": t.id,
             "title": tool_title(&t.label, root),
             "kind": match git_tools::kind_of_title(&t.label) {
@@ -519,7 +600,7 @@ fn tool_call(t: &ToolCallState, root: Option<&str>) -> Value {
             },
             "status": to_value(&t.status),
             "content": t.content.as_deref().map(|c| tool_content(c, root)).or(output),
-        }),
+        }), t.parent_id.as_deref()), t.subagent.as_ref(), root),
         root,
         Some(&t.images),
         first_location(t.locations.as_ref()),
@@ -585,6 +666,65 @@ pub fn project_terminal(channel: &str, payload: &Value) -> Option<TerminalEvent>
     })
 }
 
+/// The sub-agent tool call a tool call was made by, read off its metadata
+/// (Claude: `claudeCode.parentToolUseId`, which only claude-agent-acp writes).
+fn tool_parent(meta: Option<&Value>) -> Option<String> {
+    crate::acp::connection::claude_chunk_parent_tool_use_id(
+        AgentType::ClaudeCode,
+        meta.and_then(Value::as_object),
+    )
+}
+
+/// What one live tool-call event says about the sub-agent it launches;
+/// `None` when the call launches none.
+fn launch(raw_input: Option<&str>, meta: Option<&Value>) -> Option<SubagentInfo> {
+    SubagentInfo::marks_launch(meta).then(|| {
+        let input = raw_input.and_then(|r| serde_json::from_str::<Value>(r).ok());
+        SubagentInfo::of(input.as_ref(), meta)
+    })
+}
+
+/// `v` with `subagent` set when it is a sub-agent launch: the fields known so
+/// far, the prompt workspace-relative and the model by its plain name (no
+/// context-size suffix such as `[1m]`). An empty object when nothing is known
+/// yet; left out on every other tool call.
+fn with_subagent(mut v: Value, info: Option<&SubagentInfo>, root: Option<&str>) -> Value {
+    let Some(info) = info else { return v };
+    let mut sub = serde_json::Map::new();
+    if let Some(d) = &info.description {
+        sub.insert("description".into(), json!(relativize(d, root)));
+    }
+    if let Some(m) = info.model.as_deref().map(plain_model).filter(|m| !m.is_empty()) {
+        sub.insert("model".into(), json!(m));
+    }
+    if let Some(p) = &info.prompt {
+        sub.insert("prompt".into(), json!(relativize(p, root)));
+    }
+    if let Some(d) = info.duration_ms {
+        sub.insert("duration_ms".into(), json!(d));
+    }
+    v["subagent"] = Value::Object(sub);
+    v
+}
+
+/// A model id without the context-size suffix Claude Code appends
+/// (`claude-opus-5-5[1m]` → `claude-opus-5-5`).
+fn plain_model(model: &str) -> &str {
+    match (model.rfind('['), model.ends_with(']')) {
+        (Some(at), true) => model[..at].trim_end(),
+        _ => model,
+    }
+}
+
+/// `v` with `parent_id` set when it was made by a sub-agent; left out, never
+/// null, on the main thread.
+fn with_parent(mut v: Value, parent_id: Option<&str>) -> Value {
+    if let Some(p) = parent_id {
+        v["parent_id"] = json!(p);
+    }
+    v
+}
+
 /// `v` with `images` set when any of `images` could be stored.
 fn with_images(mut v: Value, root: Option<&str>, images: Option<&[ImageData]>, source: Option<&str>) -> Value {
     let projected = images.map(|i| crate::agent_images::project(root, i, source)).unwrap_or_default();
@@ -627,14 +767,105 @@ fn agent_image(image: Option<Value>, revised_prompt: Option<&str>) -> Vec<Value>
         .unwrap_or_default()
 }
 
+/// Tool use id → the execution stats of the sub-agent it launched, from the
+/// first result that has them (one with the sub-agent's transcript wins).
+type Launches<'a> = HashMap<&'a str, &'a AgentExecutionStats>;
+
+fn launches_in<'a>(blocks: impl Iterator<Item = &'a ContentBlock>) -> Launches<'a> {
+    let mut out: Launches<'a> = HashMap::new();
+    for block in blocks {
+        if let ContentBlock::ToolResult { tool_use_id: Some(id), agent_stats: Some(stats), .. } = block {
+            let known = out.entry(id.as_str()).or_insert(stats);
+            if known.transcript.is_none() && stats.transcript.is_some() {
+                *known = stats;
+            }
+        }
+    }
+    out
+}
+
+/// Whether a transcript tool call launches a sub-agent (Claude's `Agent`,
+/// formerly `Task`).
+fn is_launch(tool_name: &str) -> bool {
+    matches!(tool_name, "Agent" | "Task")
+}
+
+/// An agent turn's blocks, each through [`agent_block`].
+fn agent_blocks(
+    blocks: &[ContentBlock],
+    root: Option<&str>,
+    launches: &Launches,
+    attached: &mut HashSet<String>,
+) -> Vec<Value> {
+    let sources = input_files(blocks);
+    let mut out = Vec::new();
+    for block in blocks {
+        out.extend(agent_block(block, root, &sources, launches, attached));
+    }
+    out
+}
+
+/// A sub-agent launch's `tool_call` block with its `subagent`: what it was
+/// asked (from its input), the model it ran on and how long it took, and,
+/// when its transcript was found, every block it produced as `blocks`,
+/// projected like the turn's own (a nested launch nests the same way). The
+/// blocks are attached once per launch, however many results name it; the
+/// `subagent_type` naming in the input stays inside.
+fn launch_block(
+    block: &ContentBlock,
+    root: Option<&str>,
+    launches: &Launches,
+    attached: &mut HashSet<String>,
+) -> Value {
+    let ContentBlock::ToolUse { tool_use_id, input_preview, .. } = block else {
+        return history_block(block, root);
+    };
+    let mut v = history_block(block, root);
+    let input = input_preview.as_deref().and_then(|i| serde_json::from_str::<Value>(i).ok());
+    if let Some(mut input) = input.clone().filter(Value::is_object) {
+        if let Some(map) = input.as_object_mut() {
+            map.remove("subagent_type");
+        }
+        v["input_preview"] = json!(relativize(&input.to_string(), root));
+    }
+    let stats = tool_use_id.as_deref().and_then(|id| launches.get(id).copied());
+    let transcript = stats.and_then(|s| s.transcript.as_ref());
+    let mut info = SubagentInfo::of(input.as_ref(), None);
+    info.merge(SubagentInfo {
+        duration_ms: stats.and_then(|s| s.total_duration_ms),
+        ..Default::default()
+    });
+    if let Some(t) = transcript {
+        info.merge(SubagentInfo {
+            description: t.description.clone(),
+            model: t.model.clone(),
+            prompt: t.prompt.clone(),
+            duration_ms: t.duration_ms,
+        });
+    }
+    v = with_subagent(v, Some(&info), root);
+    if let (Some(id), Some(t)) = (tool_use_id, transcript) {
+        if !t.blocks.is_empty() && attached.insert(id.clone()) {
+            let nested = launches_in(t.blocks.iter());
+            v["subagent"]["blocks"] = Value::Array(agent_blocks(&t.blocks, root, &nested, attached));
+        }
+    }
+    v
+}
+
 /// An agent turn's block; images become files (`agent_image`), never bytes.
 fn agent_block(
     block: &ContentBlock,
     root: Option<&str>,
-    sources: &std::collections::HashMap<&str, String>,
+    sources: &HashMap<&str, String>,
+    launches: &Launches,
+    attached: &mut HashSet<String>,
 ) -> Vec<Value> {
     use crate::agent_images::one;
     match block {
+        ContentBlock::ToolUse { tool_name, .. } if is_launch(tool_name) => {
+            vec![launch_block(block, root, launches, attached)]
+        }
         ContentBlock::Image { data, mime_type, .. } => agent_image(one(root, data, mime_type, None), None),
         ContentBlock::ImageGeneration { revised_prompt, image } => match image {
             Some(i) => agent_image(one(root, &i.data, &i.mime_type, None), revised_prompt.as_deref()),
@@ -652,7 +883,9 @@ fn agent_block(
 /// live stream (`text`, `image` (user), `agent_image`, `thought`, `tool_call`,
 /// `tool_result`);
 /// delegation meta, execution stats, image URIs and agent-native message ids
-/// stay on the host. Tool calls read workspace-relative, as live ones do;
+/// stay on the host; what a sub-agent did comes back nested in the `subagent`
+/// of the tool call that launched it, never as blocks of the turn. Tool calls
+/// read workspace-relative, as live ones do;
 /// `root` is the session's workspace directory.
 pub fn project_history(turns: &[MessageTurn], root: Option<&str>) -> Value {
     project_history_with(turns, root, &HashSet::new())
@@ -662,19 +895,27 @@ pub fn project_history(turns: &[MessageTurn], root: Option<&str>) -> Value {
 /// turn's id is in `revertible`, that is, the files it started with were saved
 /// and `session.revert` can put them back.
 pub fn project_history_with(turns: &[MessageTurn], root: Option<&str>, revertible: &HashSet<String>) -> Value {
+    let launches = launches_in(turns.iter().flat_map(|t| &t.blocks));
+    let mut attached = HashSet::new();
     Value::Array(
         turns
             .iter()
             .map(|t| {
-                let sources = input_files(&t.blocks);
+                let blocks = match t.role {
+                    TurnRole::User => t
+                        .blocks
+                        .iter()
+                        .flat_map(|b| match b {
+                            ContentBlock::Text { text } => user_text(&without_plan_tags(text), root),
+                            _ => vec![history_block(b, root)],
+                        })
+                        .collect::<Vec<_>>(),
+                    _ => agent_blocks(&t.blocks, root, &launches, &mut attached),
+                };
                 let mut turn = json!({
                     "turn_id": t.id,
                     "role": to_value(&t.role),
-                    "blocks": t.blocks.iter().flat_map(|b| match (&t.role, b) {
-                        (TurnRole::User, ContentBlock::Text { text }) => user_text(&without_plan_tags(text), root),
-                        (TurnRole::User, _) => vec![history_block(b, root)],
-                        _ => agent_block(b, root, &sources),
-                    }).collect::<Vec<_>>(),
+                    "blocks": blocks,
                     "timestamp": t.timestamp,
                     "completed_at": t.completed_at,
                     "duration_ms": t.duration_ms,
@@ -752,6 +993,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::acp::session_state::SessionState;
     use crate::models::agent::AgentType;
+    use crate::models::message::SubagentTranscript;
 
     /// Keys that must never appear anywhere in a projected value.
     pub(crate) const FORBIDDEN_KEYS: &[&str] = &[
@@ -768,6 +1010,11 @@ pub(crate) mod tests {
         "parent_conversation_id",
         "parent_tool_use_id",
         "id",
+        "agentId",
+        "resolvedModel",
+        "isSidechain",
+        "toolUseResult",
+        "subagent_type",
     ];
 
     pub(crate) fn assert_no_internal_keys(v: &Value) {
@@ -1477,10 +1724,6 @@ pub(crate) mod tests {
                 session_id: "x".into(),
                 message: json!({}),
             },
-            AcpEvent::ContentDelta {
-                text: "sub-agent".into(),
-                parent_tool_use_id: Some("tu".into()),
-            },
             AcpEvent::HistoryRewound,
         ] {
             assert!(project_envelope("s", None, &env(event)).is_none());
@@ -1741,5 +1984,480 @@ pub(crate) mod tests {
             dir.path().to_str(),
         )
         .is_none());
+    }
+
+    // Sub-agent fixtures follow the claude-agent-acp 0.81.2 frame shape: a
+    // child's `tool_call` / `tool_call_update` carries
+    // `_meta.claudeCode.{toolName, parentToolUseId}`, which the Host keeps as
+    // the event's `meta`; a child's message / thought chunk arrives with the
+    // Host's own parent tool use id already read off the same key.
+    fn claude_meta(tool_name: &str, parent: Option<&str>) -> Option<Value> {
+        let mut claude = json!({ "toolName": tool_name });
+        if let Some(p) = parent {
+            claude["parentToolUseId"] = json!(p);
+        }
+        Some(json!({ "claudeCode": claude }))
+    }
+
+    fn claude_tool_call(id: &str, title: &str, parent: Option<&str>) -> AcpEvent {
+        AcpEvent::ToolCall {
+            tool_call_id: id.into(),
+            title: title.into(),
+            kind: "read".into(),
+            status: "in_progress".into(),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            locations: None,
+            meta: claude_meta(title, parent),
+            images: None,
+        }
+    }
+
+    fn claude_tool_call_update(id: &str, parent: Option<&str>) -> AcpEvent {
+        AcpEvent::ToolCallUpdate {
+            tool_call_id: id.into(),
+            title: None,
+            status: Some("completed".into()),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            raw_output_append: None,
+            locations: None,
+            meta: claude_meta("Read", parent),
+            images: None,
+        }
+    }
+
+    #[test]
+    fn claude_child_tool_call_projects_parent_id() {
+        let (kind, p) = project_event(&claude_tool_call("toolu_01Child", "Read", Some("toolu_01Agent")), None).unwrap();
+        assert_eq!(kind, "agent.tool_call");
+        assert_eq!(p["parent_id"], "toolu_01Agent");
+
+        let (kind, p) = project_event(&claude_tool_call_update("toolu_01Child", Some("toolu_01Agent")), None).unwrap();
+        assert_eq!(kind, "agent.tool_call_update");
+        assert_eq!(p["parent_id"], "toolu_01Agent");
+
+        // A main-thread call has no parent: the key is left out, never null.
+        let (_, p) = project_event(&claude_tool_call("toolu_01Agent", "Task", None), None).unwrap();
+        assert!(p.get("parent_id").is_none(), "{p}");
+        let (_, p) = project_event(&claude_tool_call("toolu_01X", "Read", Some("")), None).unwrap();
+        assert!(p.get("parent_id").is_none(), "empty parent is no parent: {p}");
+        let (_, p) = project_event(&claude_tool_call_update("toolu_01Agent", None), None).unwrap();
+        assert!(p.get("parent_id").is_none(), "{p}");
+    }
+
+    #[test]
+    fn parented_delta_projects_as_subagent_event() {
+        let (kind, p) = project_event(
+            &AcpEvent::ContentDelta { text: "child says".into(), parent_tool_use_id: Some("toolu_01Agent".into()) },
+            None,
+        )
+        .unwrap();
+        assert_eq!(kind, "agent.subagent_message_delta");
+        assert_eq!(p, json!({ "parent_id": "toolu_01Agent", "text": "child says" }));
+
+        let (kind, p) = project_event(
+            &AcpEvent::Thinking { text: "child thinks".into(), parent_tool_use_id: Some("toolu_01Agent".into()) },
+            None,
+        )
+        .unwrap();
+        assert_eq!(kind, "agent.subagent_thought_delta");
+        assert_eq!(p, json!({ "parent_id": "toolu_01Agent", "text": "child thinks" }));
+
+        // The main thread's chunks keep their types and never name a parent.
+        let (kind, p) = project_event(&AcpEvent::ContentDelta { text: "main".into(), parent_tool_use_id: None }, None).unwrap();
+        assert_eq!(kind, "agent.message_delta");
+        assert_eq!(p, json!({ "text": "main" }));
+        let (kind, p) = project_event(&AcpEvent::Thinking { text: "hm".into(), parent_tool_use_id: None }, None).unwrap();
+        assert_eq!(kind, "agent.thought_delta");
+        assert_eq!(p, json!({ "text": "hm" }));
+    }
+
+    const AGENT_INPUT: &str =
+        r#"{"description":"Find tests","prompt":"Look in /w/p/src","subagent_type":"Explore","model":"sonnet"}"#;
+
+    /// A Claude `Agent` tool call as claude-agent-acp 0.81.2 sends it: the
+    /// tool input as the call's raw input (absent until it has streamed in),
+    /// `toolName` and the `subagent` marker in meta.
+    fn claude_agent_call(id: &str, raw_input: Option<&str>) -> AcpEvent {
+        AcpEvent::ToolCall {
+            tool_call_id: id.into(),
+            title: "Find tests".into(),
+            kind: "think".into(),
+            status: "pending".into(),
+            content: None,
+            raw_input: raw_input.map(str::to_owned),
+            raw_output: None,
+            locations: None,
+            meta: Some(json!({ "claudeCode": { "toolName": "Agent", "subagent": true } })),
+            images: None,
+        }
+    }
+
+    /// The PostToolUse update that ends an `Agent` call: the tool's result
+    /// rides in meta.
+    fn claude_agent_result(id: &str) -> AcpEvent {
+        AcpEvent::ToolCallUpdate {
+            tool_call_id: id.into(),
+            title: None,
+            status: Some("completed".into()),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            raw_output_append: None,
+            locations: None,
+            meta: Some(json!({ "claudeCode": { "toolName": "Agent", "toolResponse": {
+                "agentId": "a1b2c3",
+                "agentType": "Explore",
+                "resolvedModel": "claude-opus-5-5[1m]",
+                "totalDurationMs": 4200,
+                "status": "completed",
+            } } })),
+            images: None,
+        }
+    }
+
+    #[test]
+    fn agent_tool_call_carries_subagent() {
+        let (kind, p) = project_event(&claude_agent_call("toolu_01Agent", Some(AGENT_INPUT)), Some("/w/p")).unwrap();
+        assert_eq!(kind, "agent.tool_call");
+        assert_eq!(
+            p["subagent"],
+            json!({ "description": "Find tests", "prompt": "Look in src", "model": "sonnet" })
+        );
+
+        // Before the input has streamed in the call is still marked as a
+        // sub-agent's; nothing about it is known yet.
+        let (_, p) = project_event(&claude_agent_call("toolu_01Agent", None), None).unwrap();
+        assert_eq!(p["subagent"], json!({}));
+
+        // The model the sub-agent ran on and how long it took arrive with its result.
+        let (kind, p) = project_event(&claude_agent_result("toolu_01Agent"), None).unwrap();
+        assert_eq!(kind, "agent.tool_call_update");
+        assert_eq!(p["subagent"], json!({ "model": "claude-opus-5-5", "duration_ms": 4200 }));
+
+        // Any other tool has none.
+        let (_, p) = project_event(&claude_tool_call("toolu_01X", "Read", None), None).unwrap();
+        assert!(p.get("subagent").is_none(), "{p}");
+
+        // The snapshot keeps everything known so far, newest value winning.
+        let mut state = SessionState::new("conn".into(), AgentType::ClaudeCode, None, "w".into(), None);
+        state.apply_event(&AcpEvent::StatusChanged { status: crate::acp::types::ConnectionStatus::Prompting });
+        state.apply_event(&claude_agent_call("toolu_01Agent", None));
+        state.apply_event(&AcpEvent::ToolCallUpdate {
+            tool_call_id: "toolu_01Agent".into(),
+            title: Some("Find tests".into()),
+            status: None,
+            content: None,
+            raw_input: Some(AGENT_INPUT.into()),
+            raw_output: None,
+            raw_output_append: None,
+            locations: None,
+            meta: Some(json!({ "claudeCode": { "toolName": "Agent", "subagent": true } })),
+            images: None,
+        });
+        state.apply_event(&claude_agent_result("toolu_01Agent"));
+        let v = project_snapshot(&state.to_snapshot(), Some("/w/p"));
+        assert_eq!(
+            v["tool_calls"][0]["subagent"],
+            json!({
+                "description": "Find tests",
+                "prompt": "Look in src",
+                "model": "claude-opus-5-5",
+                "duration_ms": 4200,
+            })
+        );
+    }
+
+    fn claude_subagent_turn() -> SessionState {
+        let mut state = SessionState::new("conn".into(), AgentType::ClaudeCode, None, "w".into(), None);
+        state.apply_event(&AcpEvent::StatusChanged { status: crate::acp::types::ConnectionStatus::Prompting });
+        state.apply_event(&AcpEvent::ContentDelta { text: "delegating".into(), parent_tool_use_id: None });
+        state.apply_event(&claude_agent_call("toolu_01Agent", Some(AGENT_INPUT)));
+        state.apply_event(&AcpEvent::Thinking { text: "child thinks".into(), parent_tool_use_id: Some("toolu_01Agent".into()) });
+        state.apply_event(&AcpEvent::ContentDelta { text: "child says".into(), parent_tool_use_id: Some("toolu_01Agent".into()) });
+        state.apply_event(&claude_tool_call("toolu_01Child", "Read", Some("toolu_01Agent")));
+        // An update that does not repeat the parent keeps it.
+        state.apply_event(&AcpEvent::ToolCallUpdate {
+            tool_call_id: "toolu_01Child".into(),
+            title: None,
+            status: Some("completed".into()),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            raw_output_append: None,
+            locations: None,
+            meta: None,
+            images: None,
+        });
+        state
+    }
+
+    #[test]
+    fn snapshot_keeps_subagent_blocks_out_of_content() {
+        let v = project_snapshot(&claude_subagent_turn().to_snapshot(), Some("/w/p"));
+        // What every client reads as the reply: the sub-agent's own tool call
+        // stays (old clients showed it flat at base), its text and thinking do not.
+        assert_eq!(
+            v["live_message"]["content"],
+            json!([
+                { "type": "text", "text": "delegating" },
+                { "type": "tool_call", "tool_call_id": "toolu_01Agent" },
+                { "type": "tool_call", "tool_call_id": "toolu_01Child" },
+            ])
+        );
+        assert_eq!(
+            v["live_message"]["subagents"],
+            json!([{
+                "parent_id": "toolu_01Agent",
+                "blocks": [
+                    { "type": "thought", "text": "child thinks" },
+                    { "type": "text", "text": "child says" },
+                    { "type": "tool_call", "tool_call_id": "toolu_01Child" },
+                ],
+            }])
+        );
+        let calls = v["tool_calls"].as_array().unwrap();
+        let call = |id: &str| calls.iter().find(|c| c["tool_call_id"] == id).unwrap().clone();
+        assert!(call("toolu_01Agent").get("parent_id").is_none());
+        assert_eq!(call("toolu_01Agent")["subagent"]["description"], "Find tests");
+        assert_eq!(call("toolu_01Child")["parent_id"], "toolu_01Agent");
+        assert_eq!(call("toolu_01Child")["status"], "completed");
+        assert!(call("toolu_01Child").get("subagent").is_none());
+    }
+
+    #[test]
+    fn snapshot_rejoins_main_text_split_by_a_subagent() {
+        let mut state = SessionState::new("conn".into(), AgentType::ClaudeCode, None, "w".into(), None);
+        state.apply_event(&AcpEvent::StatusChanged { status: crate::acp::types::ConnectionStatus::Prompting });
+        let parent = Some("toolu_01Agent".to_string());
+        state.apply_event(&AcpEvent::ContentDelta { text: "one ".into(), parent_tool_use_id: None });
+        state.apply_event(&AcpEvent::ContentDelta { text: "x".into(), parent_tool_use_id: parent.clone() });
+        state.apply_event(&AcpEvent::ContentDelta { text: "two".into(), parent_tool_use_id: None });
+        state.apply_event(&AcpEvent::ContentDelta { text: "y".into(), parent_tool_use_id: parent.clone() });
+        state.apply_event(&AcpEvent::Thinking { text: "z".into(), parent_tool_use_id: Some("toolu_01Other".into()) });
+        state.apply_event(&AcpEvent::ContentDelta { text: "w".into(), parent_tool_use_id: parent });
+        let v = project_snapshot(&state.to_snapshot(), None);
+        // A client streaming live never splits the reply where a sub-agent
+        // spoke, so the snapshot must not either.
+        assert_eq!(v["live_message"]["content"], json!([{ "type": "text", "text": "one two" }]));
+        assert_eq!(
+            v["live_message"]["subagents"],
+            json!([
+                { "parent_id": "toolu_01Agent", "blocks": [{ "type": "text", "text": "xyw" }] },
+                { "parent_id": "toolu_01Other", "blocks": [{ "type": "thought", "text": "z" }] },
+            ])
+        );
+    }
+
+    #[test]
+    fn snapshot_without_subagents_has_no_subagents_field() {
+        let mut state = SessionState::new("conn".into(), AgentType::ClaudeCode, None, "w".into(), None);
+        state.apply_event(&AcpEvent::ContentDelta { text: "hi".into(), parent_tool_use_id: None });
+        let v = project_snapshot(&state.to_snapshot(), None);
+        assert!(v["live_message"].get("subagents").is_none(), "{v}");
+    }
+
+    fn agent_tool_use(id: &str, input: &str) -> ContentBlock {
+        ContentBlock::ToolUse {
+            tool_use_id: Some(id.into()),
+            tool_name: "Agent".into(),
+            input_preview: Some(input.into()),
+            status: None,
+            meta: None,
+        }
+    }
+
+    fn agent_result(id: &str, stats: Option<crate::models::message::AgentExecutionStats>) -> ContentBlock {
+        ContentBlock::ToolResult {
+            tool_use_id: Some(id.into()),
+            output_preview: Some("done".into()),
+            is_error: false,
+            agent_stats: stats,
+            images: vec![],
+        }
+    }
+
+    fn stats_with(transcript: Option<SubagentTranscript>) -> crate::models::message::AgentExecutionStats {
+        let mut stats: crate::models::message::AgentExecutionStats = serde_json::from_value(json!({
+            "agent_type": "general-purpose",
+            "total_duration_ms": 9999,
+            "tool_calls": [{ "tool_name": "Read", "input_preview": "{}", "output_preview": "x", "is_error": false }],
+        }))
+        .unwrap();
+        stats.transcript = transcript.map(Box::new);
+        stats
+    }
+
+    /// The sub-agent's own transcript as the Claude parser rebuilds it from
+    /// `subagents/agent-<id>.jsonl`, with a nested sub-agent of its own.
+    fn child_transcript(root: &str) -> SubagentTranscript {
+        let nested = SubagentTranscript {
+            description: Some("Go deeper".into()),
+            model: Some("claude-haiku-5".into()),
+            prompt: Some("Dig".into()),
+            duration_ms: Some(10),
+            blocks: vec![ContentBlock::Text { text: "deep".into() }],
+        };
+        SubagentTranscript {
+            description: Some("Find tests".into()),
+            model: Some("claude-sonnet-5".into()),
+            prompt: Some(format!("Look in {root}/src")),
+            duration_ms: Some(4200),
+            blocks: vec![
+                ContentBlock::Thinking { text: "child thinks".into() },
+                ContentBlock::ToolUse {
+                    tool_use_id: Some("toolu_01Read".into()),
+                    tool_name: "Read".into(),
+                    input_preview: Some(format!("{{\"file_path\":\"{root}/src/a.rs\"}}")),
+                    status: None,
+                    meta: None,
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: Some("toolu_01Read".into()),
+                    output_preview: Some("fn a() {}".into()),
+                    is_error: false,
+                    agent_stats: None,
+                    images: vec![],
+                },
+                ContentBlock::Text { text: "child says".into() },
+                agent_tool_use("toolu_01Nested", r#"{"description":"Go deeper","prompt":"Dig","subagent_type":"Explore"}"#),
+                agent_result("toolu_01Nested", Some(stats_with(Some(nested)))),
+            ],
+        }
+    }
+
+    fn agent_turn(blocks: Vec<ContentBlock>) -> Vec<MessageTurn> {
+        vec![MessageTurn {
+            id: "t".into(),
+            role: TurnRole::Assistant,
+            blocks,
+            timestamp: chrono::Utc::now(),
+            usage: None,
+            duration_ms: None,
+            model: None,
+            completed_at: None,
+            agent_message_id: None,
+        }]
+    }
+
+    fn agent_turn_with_children(root: &str) -> Vec<MessageTurn> {
+        agent_turn(vec![
+            agent_tool_use("toolu_01Agent", &format!(r#"{{"description":"Find tests","prompt":"Look in {root}/src","subagent_type":"Explore"}}"#)),
+            agent_result("toolu_01Agent", Some(stats_with(Some(child_transcript(root))))),
+            ContentBlock::Text { text: "all done".into() },
+        ])
+    }
+
+    #[test]
+    fn history_nests_subagent_blocks_in_its_agent_call() {
+        let v = project_history(&agent_turn_with_children("/w/p"), Some("/w/p"));
+        let blocks = v[0]["blocks"].as_array().unwrap();
+        let types: Vec<_> = blocks.iter().map(|b| b["type"].as_str().unwrap()).collect();
+        assert_eq!(types, ["tool_call", "tool_result", "text"], "no child is a top-level block");
+        assert!(blocks.iter().all(|b| b.get("parent_id").is_none()));
+        assert!(blocks[1].get("subagent").is_none(), "the result carries no children");
+
+        let agent = &blocks[0];
+        assert_eq!(agent["tool_call_id"], "toolu_01Agent");
+        let input: Value = serde_json::from_str(agent["input_preview"].as_str().unwrap()).unwrap();
+        assert!(input.get("subagent_type").is_none(), "{input}");
+        assert_eq!(input["description"], "Find tests");
+        let sub = &agent["subagent"];
+        assert_eq!(sub["description"], "Find tests");
+        assert_eq!(sub["model"], "claude-sonnet-5");
+        assert_eq!(sub["prompt"], "Look in src");
+        assert_eq!(sub["duration_ms"], 4200);
+        let children = sub["blocks"].as_array().unwrap();
+        assert_eq!(children[0], json!({ "type": "thought", "text": "child thinks" }));
+        assert_eq!(children[1]["type"], "tool_call");
+        assert_eq!(children[1]["tool_call_id"], "toolu_01Read");
+        assert_eq!(children[1]["title"], "Read");
+        assert_eq!(children[1]["input_preview"], "{\"file_path\":\"src/a.rs\"}");
+        assert_eq!(children[2]["type"], "tool_result");
+        assert_eq!(children[2]["tool_call_id"], "toolu_01Read");
+        assert_eq!(children[2]["output_preview"], "fn a() {}");
+        assert_eq!(children[3], json!({ "type": "text", "text": "child says" }));
+        // A sub-agent's own sub-agent nests the same way.
+        assert_eq!(children[4]["tool_call_id"], "toolu_01Nested");
+        assert_eq!(children[4]["subagent"]["model"], "claude-haiku-5");
+        assert_eq!(children[4]["subagent"]["blocks"], json!([{ "type": "text", "text": "deep" }]));
+        assert_eq!(children.len(), 6);
+    }
+
+    #[test]
+    fn history_without_transcript_has_no_children() {
+        let turns = agent_turn(vec![
+            agent_tool_use("toolu_01Agent", r#"{"description":"Find tests","prompt":"Look in /w/p/src","subagent_type":"Explore","model":"haiku"}"#),
+            agent_result("toolu_01Agent", Some(stats_with(None))),
+        ]);
+        let v = project_history(&turns, Some("/w/p"));
+        let blocks = v[0]["blocks"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2, "no synthetic children: {v}");
+        assert_eq!(
+            blocks[0]["subagent"],
+            json!({ "description": "Find tests", "prompt": "Look in src", "model": "haiku", "duration_ms": 9999 }),
+            "the launch's own duration still comes through without the file"
+        );
+    }
+
+    #[test]
+    fn history_duplicate_agent_result_gives_children_once() {
+        let turns = agent_turn(vec![
+            agent_tool_use("toolu_01Agent", r#"{"description":"Find tests","prompt":"p","subagent_type":"Explore"}"#),
+            agent_result("toolu_01Agent", Some(stats_with(Some(child_transcript("/w/p"))))),
+            agent_result("toolu_01Agent", Some(stats_with(Some(child_transcript("/w/p"))))),
+        ]);
+        let v = project_history(&turns, Some("/w/p"));
+        let blocks = v[0]["blocks"].as_array().unwrap();
+        assert_eq!(blocks.len(), 3, "{v}");
+        let with_children: Vec<_> = blocks.iter().filter(|b| b.get("subagent").is_some()).collect();
+        assert_eq!(with_children.len(), 1);
+        assert_eq!(with_children[0]["subagent"]["blocks"].as_array().unwrap().len(), 6);
+    }
+
+    #[test]
+    fn no_internal_keys_with_subagents() {
+        let mut projected = vec![];
+        for event in [
+            claude_tool_call("toolu_01Child", "Read", Some("toolu_01Agent")),
+            claude_tool_call_update("toolu_01Child", Some("toolu_01Agent")),
+            claude_agent_call("toolu_01Agent", Some(AGENT_INPUT)),
+            claude_agent_result("toolu_01Agent"),
+            AcpEvent::ContentDelta { text: "c".into(), parent_tool_use_id: Some("toolu_01Agent".into()) },
+            AcpEvent::Thinking { text: "c".into(), parent_tool_use_id: Some("toolu_01Agent".into()) },
+        ] {
+            projected.push(project_envelope("s", Some("/w/p"), &env(event)).map(|e| e.payload).unwrap());
+        }
+        let mut state = claude_subagent_turn();
+        state.apply_event(&claude_agent_result("toolu_01Agent"));
+        projected.push(project_snapshot(&state.to_snapshot(), Some("/w/p")));
+        projected.push(project_history(&agent_turn_with_children("/w/p"), Some("/w/p")));
+        for v in &projected {
+            assert_no_internal_keys(v);
+            let text = v.to_string();
+            for vendor in [
+                "claudeCode",
+                "parentToolUseId",
+                "toolName",
+                "toolResponse",
+                "agent_stats",
+                "general-purpose",
+                "agentId",
+                "agentType",
+                "resolvedModel",
+                "isSidechain",
+                "toolUseResult",
+                "subagent_type",
+                "totalDurationMs",
+                "Explore",
+                "/w/p",
+                "[1m]",
+            ] {
+                assert!(!text.contains(vendor), "leaked `{vendor}` in {text}");
+            }
+        }
     }
 }
