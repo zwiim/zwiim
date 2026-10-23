@@ -21,6 +21,7 @@ import {
   type PromptBlock,
   type RequestAnswer,
   type SessionOptions,
+  type SessionRevertResult,
   type WorkspaceInfo,
 } from "@zwiim/sdk";
 import type { HostEntry } from "../account/hosts";
@@ -229,6 +230,15 @@ export class CurrentHost {
    */
   async stopSession(session_id: string): Promise<void> {
     await this.#opened().stopSession(session_id);
+  }
+
+  /**
+   * Reset a session to before one of its messages: the files it started
+   * with and, when asked and possible, the chat. A rewound chat arrives as
+   * the session's next snapshot. Never retried.
+   */
+  async revertSession(session_id: string, turn_id: string, what: { files: boolean; chat: boolean }): Promise<SessionRevertResult> {
+    return this.#opened().revertSession(session_id, turn_id, what);
   }
 
   /**

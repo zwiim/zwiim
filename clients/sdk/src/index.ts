@@ -50,6 +50,7 @@ export * from "./client/errors";
 export * from "./client/connection";
 export * from "./client/host-client";
 export * from "./client/controller";
+export * from "./client/revert";
 export * from "./state/session";
 export * from "./state/terminal";
 export * from "./state/store";

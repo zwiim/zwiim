@@ -16,6 +16,7 @@ import {
   ListCollapse,
   ListTodo,
   MessageCircleQuestion,
+  RotateCcw,
   Search,
   Terminal,
   Trash2,
@@ -572,10 +573,35 @@ function UserMessage({
   );
 }
 
-export function HistoryTurnView({ turn }: { turn: HistoryTurn }) {
+export function HistoryTurnView({
+  turn,
+  onRevert,
+  revertDisabled,
+}: {
+  turn: HistoryTurn;
+  /** Offered on a message the Host can put the session back to. */
+  onRevert?(): void;
+  revertDisabled?: boolean;
+}) {
   if (turn.role === "user") {
     const text = userText(turn.blocks);
-    return <UserMessage text={text} blocks={turn.blocks} />;
+    if (!turn.revertible || !onRevert) return <UserMessage text={text} blocks={turn.blocks} />;
+    return (
+      <div className="group/reset flex flex-col gap-2.5">
+        <UserMessage text={text} blocks={turn.blocks} />
+        <button
+          type="button"
+          className="text-muted-foreground enabled:hover:text-foreground enabled:hover:bg-accent ease-std -mt-1 flex items-center gap-1 self-end rounded-md px-1.5 py-0.5 text-xs opacity-0 transition-[opacity,color,background-color] duration-120 group-focus-within/reset:opacity-100 group-hover/reset:opacity-100 focus-visible:opacity-100 disabled:opacity-0 disabled:group-hover/reset:opacity-50"
+          aria-label="Reset to here"
+          title="Reset the session to before this message"
+          disabled={revertDisabled}
+          onClick={onRevert}
+        >
+          <RotateCcw className="size-3" />
+          Reset to here
+        </button>
+      </div>
+    );
   }
   // A result is shown with its call; one without a call stands alone.
   const results = new Map<string, Extract<HistoryBlock, { type: "tool_result" }>>();

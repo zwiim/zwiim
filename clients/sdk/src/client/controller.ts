@@ -337,7 +337,7 @@ export class HostController {
     turn_id: string,
     what: { files?: boolean; chat?: boolean },
   ): Promise<SessionRevertResult> {
-    return this.client.request("session.revert", {
+    return this.client.revertSession({
       session_id,
       turn_id,
       files: what.files ?? false,

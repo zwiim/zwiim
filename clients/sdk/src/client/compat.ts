@@ -50,6 +50,7 @@ export const CLIENT_CAPABILITIES: readonly string[] = [
   "workspace.clone",
   "session.plan_hand_off",
   "session.revert",
+  "session.revert.chat",
 ];
 
 /** What an app says about itself in `host.hello`. */

@@ -4,11 +4,12 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
-import { basename, formatSize, type AgentImage, type AttachmentBlock, type ChangedFile } from "@zwiim/sdk";
+import { basename, formatSize, type AgentImage, type AttachmentBlock, type ChangedFile, type RevertChoice } from "@zwiim/sdk";
 import type { PendingFile } from "../attachments/pending";
+import { revertCopy } from "../sessions/revert";
 import type { ToolItem } from "../sessions/transcript";
 import { Button, Sheet, StatusDot, T, useReduceMotion } from "./components";
-import { ArrowUp, CircleAlert, FileText, Icon, Image, Paperclip, X } from "./icons";
+import { ArrowUp, CircleAlert, FileText, Icon, Image, Paperclip, RotateCcw, X } from "./icons";
 import { fonts, PRESSED_OPACITY, radius, space, type, useTheme } from "./tokens";
 
 /** The streaming caret: blinks once a second (static under Reduce Motion). */
@@ -36,11 +37,16 @@ export function UserMessage({
   text,
   files = [],
   onOpenFile,
+  onRevert,
+  revertDisabled,
 }: {
   text: string;
   /** The files it carried, above the text. */
   files?: readonly AttachmentBlock[];
   onOpenFile?(file: AttachmentBlock): void;
+  /** Offered on a message the Host can put the session back to. */
+  onRevert?(): void;
+  revertDisabled?: boolean;
 }) {
   const theme = useTheme();
   return (
@@ -57,7 +63,93 @@ export function UserMessage({
           <T selectable>{text}</T>
         </View>
       ) : null}
+      {onRevert ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Reset to here"
+          accessibilityState={{ disabled: !!revertDisabled }}
+          disabled={revertDisabled}
+          onPress={onRevert}
+          hitSlop={REVERT_SLOP}
+          style={({ pressed }) => [styles.revert, { opacity: revertDisabled ? 0.4 : pressed ? PRESSED_OPACITY : 1 }]}
+          testID="user-reset"
+        >
+          <Icon icon={RotateCcw} color={theme.mut} size={13} />
+          <T variant="callout" color={theme.mut}>
+            Reset to here
+          </T>
+        </Pressable>
+      ) : null}
     </View>
+  );
+}
+
+/**
+ * Asks before a session goes back to before one of its messages. With `chat`
+ * the chat is reset, and the files with it unless unchecked; otherwise only
+ * the files are. A refusal keeps it open and reads under its title.
+ */
+export function RevertSheet({
+  visible,
+  chat,
+  disabled,
+  error,
+  resetting,
+  onReset,
+  onClose,
+}: {
+  visible: boolean;
+  chat: boolean;
+  /** Offline or busy: the reset waits. */
+  disabled?: boolean;
+  error: string | null;
+  resetting: boolean;
+  onReset(choice: RevertChoice): void;
+  onClose(): void;
+}) {
+  const theme = useTheme();
+  const copy = revertCopy(chat);
+  const [files, setFiles] = useState(true);
+  useEffect(() => {
+    if (visible) setFiles(true);
+  }, [visible]);
+  return (
+    <Sheet visible={visible} onClose={onClose}>
+      <T variant="title">{copy.title}</T>
+      <T color={theme.mut} testID="reset-body">
+        {copy.body}
+      </T>
+      {copy.filesOption ? (
+        <Pressable
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked: files, disabled: resetting }}
+          disabled={resetting}
+          onPress={() => setFiles((f) => !f)}
+          style={styles.checkRow}
+          testID="reset-files"
+        >
+          <T variant="mono" color={files ? theme.fg : theme.mut}>
+            {files ? "[x]" : "[ ]"}
+          </T>
+          <T>{copy.filesOption}</T>
+        </Pressable>
+      ) : null}
+      {error ? (
+        <T color={theme.err} testID="reset-error">
+          {error}
+        </T>
+      ) : null}
+      <Button
+        tall
+        kind="destructive"
+        label={copy.confirm}
+        loading={resetting}
+        disabled={disabled}
+        onPress={() => onReset(chat ? { files, chat: true } : { files: true, chat: false })}
+        testID="reset-confirm"
+      />
+      <Button tall kind="secondary" label="Cancel" onPress={onClose} />
+    </Sheet>
   );
 }
 
@@ -680,12 +772,16 @@ export function Composer({
 
 /** 32pt mono rows reach the 44pt target through their slop, keeping the transcript dense. */
 const ROW_SLOP = { top: 6, bottom: 6 };
+/** "Reset to here" is a 22pt row (18pt callout, 2pt padding); its slop makes the 44pt target. */
+const REVERT_SLOP = { top: 11, bottom: 11, left: 8, right: 8 };
 
 const styles = StyleSheet.create({
   shrink: { flexShrink: 1 },
   flexSpacer: { flex: 1 },
   tabular: { fontVariant: ["tabular-nums"] },
   rowGap: { gap: space.xs },
+  revert: { alignSelf: "flex-end", flexDirection: "row", alignItems: "center", gap: space.xxs, paddingVertical: space.xxs },
+  checkRow: { flexDirection: "row", alignItems: "center", gap: space.sm, minHeight: 44 },
   user: {
     alignSelf: "flex-end",
     maxWidth: "85%",

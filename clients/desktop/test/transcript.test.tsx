@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CLIENT_CAPABILITIES,
   clockTime,
   HostClient,
   HostController,
@@ -8,12 +9,13 @@ import {
   type AgentRequest,
   type HistoryTurn,
   type SessionSnapshot,
+  type WorkspaceInfo,
 } from "@zwiim/sdk";
 import { FileLinksContext, linkText, Markdown, workspaceFile, type FileLinks } from "@/components/Markdown";
 import { errorMessage, HostProvider } from "@/lib/host-context";
 import { RequestCard } from "@/panels/RequestCard";
 import { SessionPanel } from "@/panels/SessionPanel";
-import { FakeTransport, tick } from "./fakes";
+import { FakeTransport, hostHello, tick } from "./fakes";
 
 afterEach(cleanup);
 
@@ -472,6 +474,222 @@ describe("transcript", () => {
     expect(el.scrollTop).toBe(100);
     await vi.waitFor(() => expect(el.scrollTop).toBe(700), { timeout: 3000 });
     expect(screen.queryByText("Jump to latest")).toBeNull();
+    controller.dispose();
+  });
+});
+
+describe("reset to a message", () => {
+  const worktreeW1: WorkspaceInfo = {
+    workspace_id: "w1",
+    name: "a9b70af5",
+    alias: null,
+    kind: "worktree",
+    parent_workspace_id: "root",
+    is_git_repo: true,
+    branch: "zwiim/a9b70af5",
+    base_branch: "main",
+    base_commit: null,
+    removed: false,
+    display_path: null,
+  };
+  const said = (id: string, text: string, revertible?: boolean): HistoryTurn => ({
+    ...turn(id, "user", [{ type: "text", text }]),
+    ...(revertible === undefined ? {} : { revertible }),
+  });
+  const answered = (id: string, text: string) => turn(id, "assistant", [{ type: "text", text }]);
+
+  async function resetting(
+    opts: { canRewind?: boolean; turns?: HistoryTurn[]; revert?: (p: any) => unknown; workspace?: Partial<WorkspaceInfo> } = {},
+  ) {
+    const t = new FakeTransport();
+    if (opts.workspace) t.handlers["workspace.list"] = () => [{ ...worktreeW1, ...opts.workspace }];
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: opts.turns ?? [said("u1", "first", true), answered("a1", "done"), said("u2", "second", true), answered("a2", "ok")],
+    });
+    t.handlers["session.options"] = (p) => ({
+      session_id: p.session_id,
+      options: { model: null, effort: null, mode: null, ...(opts.canRewind === undefined ? {} : { can_rewind_chat: opts.canRewind }) },
+    });
+    t.handlers["session.revert"] = opts.revert ?? (() => ({ files_restored: true, chat_rewound: true, head_moved: false }));
+    const opened = await openSession(t);
+    await opened.frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot() });
+    return { t, ...opened };
+  }
+  const reverts = (t: FakeTransport) => t.calls.filter((c) => c.op === "session.revert").map((c) => c.params);
+
+  it("offers a reset only on the messages the Host can put back", async () => {
+    const { controller } = await resetting({
+      turns: [said("u1", "first", false), answered("a1", "done"), said("u2", "second", true), answered("a2", "ok"), said("u3", "third")],
+    });
+    expect(screen.getAllByLabelText("Reset to here")).toHaveLength(1);
+    fireEvent.click(screen.getByLabelText("Reset to here"));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    controller.dispose();
+  });
+
+  it("resets the chat and the files to before a message", async () => {
+    const { t, controller } = await resetting({ canRewind: true });
+    fireEvent.click(screen.getAllByLabelText("Reset to here")[1]!);
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("Reset chat to here?")).toBeTruthy();
+    expect(within(dialog).getByText("Later messages will be removed.")).toBeTruthy();
+    const files = within(dialog).getByLabelText("Also reset files") as HTMLInputElement;
+    expect(files.checked).toBe(true);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Reset" }));
+    await tick();
+    expect(reverts(t)).toEqual([{ session_id: "s1", turn_id: "u2", files: true, chat: true }]);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    controller.dispose();
+  });
+
+  it("leaves the files alone when unchecked", async () => {
+    const { t, controller } = await resetting({ canRewind: true });
+    fireEvent.click(screen.getAllByLabelText("Reset to here")[1]!);
+    fireEvent.click(screen.getByLabelText("Also reset files"));
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    await tick();
+    expect(reverts(t)).toEqual([{ session_id: "s1", turn_id: "u2", files: false, chat: true }]);
+    controller.dispose();
+  });
+
+  it("resets only the files when the agent cannot take its chat back", async () => {
+    const { t, controller } = await resetting({ canRewind: false });
+    fireEvent.click(screen.getAllByLabelText("Reset to here")[1]!);
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("Reset files to here?")).toBeTruthy();
+    expect(within(dialog).queryByText("Later messages will be removed.")).toBeNull();
+    expect(within(dialog).queryByLabelText("Also reset files")).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Reset files" }));
+    await tick();
+    expect(reverts(t)).toEqual([{ session_id: "s1", turn_id: "u2", files: true, chat: false }]);
+    controller.dispose();
+  });
+
+  it("resets only the files to before the first message, which has no reply before it", async () => {
+    const { t, controller } = await resetting({ canRewind: true });
+    fireEvent.click(screen.getAllByLabelText("Reset to here")[0]!);
+    expect(screen.getByText("Reset files to here?")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Reset files" }));
+    await tick();
+    expect(reverts(t)).toEqual([{ session_id: "s1", turn_id: "u1", files: true, chat: false }]);
+    controller.dispose();
+  });
+
+  it("resets only the files on a Host that cannot take a chat back", async () => {
+    const t = new FakeTransport();
+    t.handlers["host.hello"] = () => hostHello({ capabilities: CLIENT_CAPABILITIES.filter((c) => c !== "session.revert.chat") });
+    t.handlers["session.history"] = (p) => ({ session_id: p.session_id, turns: [answered("a0", "hi"), said("u1", "go", true)] });
+    t.handlers["session.options"] = (p) => ({ session_id: p.session_id, options: { model: null, effort: null, mode: null, can_rewind_chat: true } });
+    t.handlers["session.revert"] = () => ({ files_restored: true, chat_rewound: false, head_moved: false });
+    const { controller, frame } = await openSession(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot() });
+    fireEvent.click(screen.getByLabelText("Reset to here"));
+    fireEvent.click(screen.getByRole("button", { name: "Reset files" }));
+    await tick();
+    expect(t.calls.find((c) => c.op === "session.revert")!.params).toMatchObject({ files: true, chat: false });
+    controller.dispose();
+  });
+
+  it("says commits made since stay, once the reset is done", async () => {
+    const { controller } = await resetting({
+      canRewind: true,
+      revert: () => ({ files_restored: true, chat_rewound: true, head_moved: true }),
+    });
+    expect(screen.queryByText(/Commits made after this point stay/)).toBeNull();
+    fireEvent.click(screen.getAllByLabelText("Reset to here")[1]!);
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    await tick();
+    expect(
+      screen.getByText("Commits made after this point stay; their changes are undone as uncommitted edits."),
+    ).toBeTruthy();
+    controller.dispose();
+  });
+
+  it("says when the files were reset but the chat was not", async () => {
+    const { controller } = await resetting({
+      canRewind: true,
+      revert: () => ({ files_restored: true, chat_rewound: false, head_moved: false }),
+    });
+    fireEvent.click(screen.getAllByLabelText("Reset to here")[1]!);
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    await tick();
+    expect(screen.getByText(/files were reset, but the chat could not be taken back/i)).toBeTruthy();
+    controller.dispose();
+  });
+
+  it("keeps the dialog open and says why the Host refused", async () => {
+    let refusal = new ZwiimClientError("checkpoint_unavailable", "no checkpoint", 409);
+    const { t, controller } = await resetting({
+      canRewind: true,
+      revert: () => {
+        throw refusal;
+      },
+    });
+    fireEvent.click(screen.getAllByLabelText("Reset to here")[1]!);
+    const reset = () => fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    reset();
+    await tick();
+    expect(within(screen.getByRole("dialog")).getByRole("alert").textContent).toBe("This point can't be restored.");
+    refusal = new ZwiimClientError("workspace_busy", "busy", 409, { live_sessions: 0, terminals: 0, session_ids: [], operation: "rebase" });
+    reset();
+    await tick();
+    expect(screen.getByRole("alert").textContent).toMatch(/workspace is busy: a rebase is in progress/i);
+    refusal = new ZwiimClientError("workspace_busy", "busy", 409, { live_sessions: 1, terminals: 0, session_ids: ["s2"] });
+    reset();
+    await tick();
+    expect(screen.getByRole("alert").textContent).toMatch(/workspace is busy: another agent is working in it/i);
+    refusal = new ZwiimClientError("turn_in_progress", "turn", 409);
+    reset();
+    await tick();
+    expect(screen.getByRole("alert").textContent).toMatch(/agent is still working/i);
+    refusal = new ZwiimClientError("root_workspace", "root", 409);
+    reset();
+    await tick();
+    expect(screen.getByRole("alert").textContent).toMatch(/repository folder/i);
+    expect(reverts(t)).toHaveLength(5);
+    controller.dispose();
+  });
+
+  it("offers no reset in a removed worktree or the repository folder", async () => {
+    for (const workspace of [{ removed: true, branch: null }, { kind: "root" as const, parent_workspace_id: null, base_branch: null }]) {
+      const { controller } = await resetting({ canRewind: true, workspace });
+      expect(screen.getByText("second")).toBeTruthy();
+      expect(screen.queryByLabelText("Reset to here")).toBeNull();
+      controller.dispose();
+      cleanup();
+    }
+    // The same history in a live worktree offers it.
+    const { controller } = await resetting({ canRewind: true, workspace: {} });
+    expect(screen.getAllByLabelText("Reset to here")).toHaveLength(2);
+    controller.dispose();
+  });
+
+  it("sends one reset while it is pending, and holds the dialog open until it ends", async () => {
+    let finish!: (r: unknown) => void;
+    const { t, controller } = await resetting({ canRewind: true, revert: () => new Promise((r) => (finish = r)) });
+    fireEvent.click(screen.getAllByLabelText("Reset to here")[1]!);
+    const confirm = screen.getByRole("button", { name: "Reset" }) as HTMLButtonElement;
+    fireEvent.click(confirm);
+    await tick();
+    expect(confirm.disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(confirm);
+    fireEvent.keyDown(document, { key: "Escape" });
+    await tick();
+    expect(reverts(t)).toHaveLength(1);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    await act(async () => finish({ files_restored: true, chat_rewound: true, head_moved: false }));
+    await tick();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(reverts(t)).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it("holds the reset while the agent works", async () => {
+    const { controller, frame } = await resetting({ canRewind: true });
+    await frame({ type: "snapshot", epoch: "e", event_seq: 2, snapshot: snapshot({ status: "prompting" }) });
+    for (const b of screen.getAllByLabelText("Reset to here")) expect((b as HTMLButtonElement).disabled).toBe(true);
     controller.dispose();
   });
 });

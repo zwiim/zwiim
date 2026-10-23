@@ -303,6 +303,52 @@ describe("session subscriptions", () => {
     ]);
   });
 
+  it("re-attaches a detached session after a revert, which may have resumed its agent", async () => {
+    const t = setup();
+    t.transport.handlers["session.revert"] = () => ({ files_restored: true, chat_rewound: true, head_moved: false });
+    t.client.attachSession("s1");
+    await goLive(t);
+    const ch = t.transport.channel;
+    ch.frame({ type: "detached", subscription_id: "sub-1", reason: "session_not_live" });
+    const before = ch.sent.length;
+    const out = await t.client.revertSession({ session_id: "s1", turn_id: "turn-2", files: true, chat: true });
+    expect(out).toEqual({ files_restored: true, chat_rewound: true, head_moved: false });
+    expect(ch.sent.slice(before)).toEqual([
+      { op: "session.subscribe", subscription_id: "sub-1", session_id: "s1" },
+    ]);
+  });
+
+  it("leaves a detached session detached after a revert that did not take the chat back", async () => {
+    const t = setup();
+    const results = [
+      { files_restored: true, chat_rewound: false, head_moved: false },
+      { files_restored: true, chat_rewound: false, head_moved: true },
+    ];
+    t.transport.handlers["session.revert"] = () => results.shift()!;
+    t.client.attachSession("s1");
+    await goLive(t);
+    const ch = t.transport.channel;
+    ch.frame({ type: "detached", subscription_id: "sub-1", reason: "session_not_live" });
+    const before = ch.sent.length;
+    // Files only: no agent resumed, so a subscribe would only be refused again.
+    await t.client.revertSession({ session_id: "s1", turn_id: "turn-2", files: true, chat: false });
+    // Chat asked for, but the agent could not take it back.
+    await t.client.revertSession({ session_id: "s1", turn_id: "turn-2", files: true, chat: true });
+    expect(ch.sent.slice(before)).toEqual([]);
+  });
+
+  it("leaves a live session's subscription alone after a revert", async () => {
+    const t = setup();
+    t.transport.handlers["session.revert"] = () => ({ files_restored: true, chat_rewound: true, head_moved: false });
+    t.client.attachSession("s1");
+    await goLive(t);
+    const ch = t.transport.channel;
+    ch.frame({ type: "snapshot", subscription_id: "sub-1", session_id: "s1", epoch: "e1", snapshot, event_seq: 4 });
+    const before = ch.sent.length;
+    await t.client.revertSession({ session_id: "s1", turn_id: "turn-2", files: true, chat: true });
+    expect(ch.sent.slice(before)).toEqual([]);
+  });
+
   it("detach stops the subscription", async () => {
     const t = setup();
     t.client.attachSession("s1");

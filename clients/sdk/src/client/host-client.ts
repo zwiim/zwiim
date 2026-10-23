@@ -438,6 +438,21 @@ export class HostClient {
     }
   }
 
+  /**
+   * Take a session back to before a turn. A chat rewind resumes the agent of
+   * a session that was not live, so a detached subscription re-attaches to
+   * see the rewound transcript; after a files-only reset the agent stays
+   * down and a subscribe would only be refused again. Never retried.
+   */
+  async revertSession(params: OpParams<"session.revert">): Promise<OpResult<"session.revert">> {
+    const result = await this.request("session.revert", params);
+    const sub = this.sessions.get(params.session_id);
+    if (result.chat_rewound && sub && (sub.state === "detached" || sub.state === "error")) {
+      this.attachSession(params.session_id);
+    }
+    return result;
+  }
+
   private sendSubscribe(sub: SessionSub): void {
     if (this.stateValue.status !== "live" || !this.channel) return;
     this.emit((l) => l.session?.(sub.session_id, { type: "attaching" }));

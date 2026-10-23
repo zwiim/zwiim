@@ -34,6 +34,7 @@ import {
   type PrState,
   type PromptBlock,
   type SessionOptions,
+  type SessionRevertResult,
   type WorkspaceInfo,
 } from "@zwiim/sdk";
 import type { LanAccess, NetworkReachability } from "../platform/capabilities";
@@ -284,6 +285,14 @@ export class HostConnection {
   /** Stop a session's agent (`session.stop`), keeping the session; never retried. */
   async stopSession(session_id: string): Promise<void> {
     await this.#live().stopSession(session_id);
+  }
+
+  /**
+   * Reset a session to before history turn `turn_id` (`session.revert`):
+   * its files and, where the Host and agent can, its chat. Never retried.
+   */
+  async revertSession(session_id: string, turn_id: string, what: { files: boolean; chat: boolean }): Promise<SessionRevertResult> {
+    return this.#live().revertSession(session_id, turn_id, what);
   }
 
   /**

@@ -4,7 +4,9 @@ import {
   effortFor,
   hasCapability,
   isClientError,
+  offersChatRewind,
   optionUnavailableDetails,
+  revertNotes,
   turnGroups,
   type AgentSummary,
   type AgentType,
@@ -12,11 +14,13 @@ import {
   type OpParams,
   type OptionsRequest,
   type PromptBlock,
+  type RevertChoice,
   type SessionCommand,
   type SessionOptions,
   type SessionView,
 } from "@zwiim/sdk";
 import { PendingAttachments } from "@/attachments/AttachmentChip";
+import { RevertDialog } from "@/components/RevertDialog";
 import { UPLOAD_FAILED_MESSAGE, usePendingAttachments } from "@/attachments/usePendingAttachments";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
@@ -380,6 +384,7 @@ function OpenSession({
   const summary = useHost((s) => s.sessionsByWorkspace[workspaceId]?.find((x) => x.session_id === sessionId));
   const agentName = useHost((s) => s.agents?.find((a) => a.agent === summary?.agent)?.name ?? null);
   const handOff = useHost((s) => hasCapability(s.connection.compat, "session.plan_hand_off"));
+  const compat = useHost((s) => s.connection.compat);
   // Before its agent announces them (or while it is away), the commands it
   // offered last.
   const agentCommands = useHost((s) => s.agents?.find((a) => a.agent === summary?.agent)?.commands ?? null);
@@ -387,6 +392,9 @@ function OpenSession({
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  // The message a reset is being asked about, and what the last one left to say.
+  const [resetting, setResetting] = useState<{ turnId: string; chat: boolean } | null>(null);
+  const [resetNotes, setResetNotes] = useState<string[]>([]);
   const {
     ref: scroller,
     atBottom,
@@ -434,6 +442,13 @@ function OpenSession({
     }
   }
 
+  async function reset(turnId: string, choice: RevertChoice) {
+    setResetNotes([]);
+    // A chat rewind arrives as a fresh snapshot; nothing to refetch.
+    const result = await controller.revertSession(sessionId, turnId, choice);
+    setResetNotes(revertNotes(result, choice));
+  }
+
   async function cancel() {
     setCancelError(null);
     setCancelling(true);
@@ -472,11 +487,19 @@ function OpenSession({
               </p>
             )}
             {empty && <p className="text-muted-foreground py-10 text-center">No messages yet.</p>}
-            {view?.history?.map((t, i) => {
+            {view?.history?.map((t, i, all) => {
               const group = footers.get(i);
               return (
                 <Fragment key={t.turn_id}>
-                  <HistoryTurnView turn={t} />
+                  <HistoryTurnView
+                    turn={t}
+                    onRevert={
+                      removed
+                        ? undefined
+                        : () => setResetting({ turnId: t.turn_id, chat: offersChatRewind(all[i - 1], view.options, compat) })
+                    }
+                    revertDisabled={running || !online}
+                  />
                   {group && i !== runningEnd && <TurnFooter group={group} />}
                 </Fragment>
               );
@@ -552,6 +575,11 @@ function OpenSession({
           notice={
             <>
               <AgentTerminalCard workspaceId={workspaceId} />
+              {resetNotes.map((note) => (
+                <p key={note} className="text-muted-foreground text-xs" role="status" data-testid="reset-note">
+                  {note}
+                </p>
+              ))}
               {optionsError && (
                 <p className="text-destructive text-xs" role="alert" data-testid="options-error">
                   {optionsError}
@@ -623,9 +651,18 @@ function OpenSession({
               </button>
             )
           }
-          onSend={(blocks, client_message_id) =>
-            controller.sendMessage({ session_id: sessionId, blocks, client_message_id })
-          }
+          onSend={(blocks, client_message_id) => {
+            setResetNotes([]);
+            return controller.sendMessage({ session_id: sessionId, blocks, client_message_id });
+          }}
+        />
+      )}
+      {resetting && (
+        <RevertDialog
+          chat={resetting.chat}
+          disabled={!online || running}
+          onRevert={(choice) => reset(resetting.turnId, choice)}
+          onClose={() => setResetting(null)}
         />
       )}
     </div>

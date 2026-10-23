@@ -41,8 +41,15 @@ export interface ToolItem {
   path: string | null;
 }
 
+/** A history message the Host can put the session back to (it is `revertible`). */
+export interface RevertPoint {
+  turn_id: string;
+  /** The history turn before it, which a chat rewind goes back to; null on the first message. */
+  before: HistoryTurn | null;
+}
+
 export type TranscriptRow =
-  | { type: "user"; key: string; text: string; files: AttachmentBlock[] }
+  | { type: "user"; key: string; text: string; files: AttachmentBlock[]; revert?: RevertPoint }
   | { type: "agent"; key: string; text: string; streaming: boolean }
   | { type: "thought"; key: string; text: string; streaming: boolean }
   | { type: "tool"; key: string; tool: ToolItem }
@@ -196,11 +203,13 @@ type Piece = Exclude<TranscriptRow, { type: "tools" }>;
 const imageRows = (key: string, images: AgentImage[] | undefined): Piece[] =>
   (images ?? []).map((image, i) => ({ type: "image", key: `${key}:img${i}`, image }));
 
-function historyRows(turn: HistoryTurn): Piece[] {
+function historyRows(turn: HistoryTurn, before: HistoryTurn | undefined): Piece[] {
   if (turn.role === "user") {
     const text = userText(turn.blocks);
     const files = userFiles(turn.blocks);
-    return text || files.length > 0 ? [{ type: "user", key: turn.turn_id, text, files }] : [];
+    if (!text && files.length === 0) return [];
+    const revert = turn.revertible ? { turn_id: turn.turn_id, before: before ?? null } : null;
+    return [{ type: "user", key: turn.turn_id, text, files, ...(revert ? { revert } : {}) }];
   }
   // A result is shown with its call; one without a call stands alone if it failed.
   const results = new Map<string, Extract<HistoryBlock, { type: "tool_result" }>>();
@@ -350,7 +359,7 @@ export function transcriptRows(view: SessionView | undefined): TranscriptRow[] {
   const shownLive = !!view.settled || !!view.live.userMessage || !!view.live.message;
   const pieces: Piece[] = [];
   turns.forEach((turn, i) => {
-    pieces.push(...historyRows(turn));
+    pieces.push(...historyRows(turn, turns[i - 1]));
     const g = groups.get(i);
     const last = i === turns.length - 1 && !shownLive;
     // The agent may still be answering the history's last prompt.

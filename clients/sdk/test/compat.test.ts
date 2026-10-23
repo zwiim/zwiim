@@ -87,6 +87,14 @@ describe("evaluateCompatibility", () => {
     expect(c).toEqual({ status: "compatible", hostRevision: 3, capabilities: ["session.usage", "terminal"] });
   });
 
+  it("asks for chat rewinds, which a Host offers apart from file reverts", () => {
+    expect(CLIENT_CAPABILITIES).toContain("session.revert");
+    expect(CLIENT_CAPABILITIES).toContain("session.revert.chat");
+    const c = evaluateCompatibility(hello({ revision: 3, min_client_revision: 1, capabilities: ["session.revert"] }));
+    expect(hasCapability(c, "session.revert")).toBe(true);
+    expect(hasCapability(c, "session.revert.chat")).toBe(false);
+  });
+
   it("a different protocol major is incompatible and names the older side", () => {
     expect(evaluateCompatibility(hello({ protocol: "zwiim/2" }), client())).toMatchObject({
       status: "update_required",

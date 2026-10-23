@@ -19,9 +19,12 @@ import { randomUUID } from "expo-crypto";
 import {
   ATTACHMENT_GONE_MESSAGE,
   isClientError,
+  offersChatRewind,
+  revertNotes,
   workspaceFile,
   type AgentRequest,
   type AttachmentBlock,
+  type RevertChoice,
   type SessionView,
 } from "@zwiim/sdk";
 import { pickFiles, pickPhotos } from "../attachments/native";
@@ -40,8 +43,10 @@ import {
   turnKey,
   turnRunning,
   type ToolItem,
+  type RevertPoint,
   type TranscriptRow,
 } from "../sessions/transcript";
+import { canReset, oneReset, revertError } from "../sessions/revert";
 import { stopAgentError } from "../host/removal";
 import { agentName, lockedNote } from "../sessions/controls";
 import { currentHost } from "../services";
@@ -57,6 +62,7 @@ import {
   FooterRow,
   NowAction,
   NowBar,
+  RevertSheet,
   ThoughtRow,
   ToolGroup,
   ToolRow,
@@ -159,6 +165,7 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
         onOptions={() => setOptionsOpen(true)}
         fileOf={fileOf}
         onOpenFile={openFile}
+        resettable={canReset(workspace)}
       />
     );
   }
@@ -340,6 +347,7 @@ function Live({
   onOptions,
   fileOf,
   onOpenFile,
+  resettable,
 }: {
   item: SessionItem;
   view: SessionView | undefined;
@@ -349,6 +357,7 @@ function Live({
   onOptions(): void;
   fileOf(path: string): string | null;
   onOpenFile(path: string): void;
+  resettable: boolean;
 }) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
@@ -379,6 +388,12 @@ function Live({
   const [tool, setTool] = useState<ToolItem | null>(null);
   const [reviewing, setReviewing] = useState(false);
   const [attaching, setAttaching] = useState(false);
+  // The message a reset is being asked about, and what the last one left to say.
+  const [resetting, setResetting] = useState<{ point: RevertPoint; chat: boolean } | null>(null);
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [resetNotes, setResetNotes] = useState<string[]>([]);
+  const [runReset] = useState(() => oneReset<void>());
   const attachments = usePendingAttachments(hostName);
   const workspace_id = item.workspace_id;
   const canAttach = attachments.enabled && workspace_id !== null;
@@ -417,6 +432,7 @@ function Live({
     const id = randomUUID();
     setSending(true);
     setNotice(null);
+    setResetNotes([]);
     setUnsure(null);
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
@@ -467,6 +483,35 @@ function Live({
     nav.navigate(openTarget(path), { workspace_id, path });
   };
 
+  const askReset = (point: RevertPoint) => {
+    setResetError(null);
+    setResetting({ point, chat: offersChatRewind(point.before, view?.options, connection?.compat ?? null) });
+  };
+  const closeReset = () => {
+    if (resetBusy) return;
+    setResetting(null);
+    setResetError(null);
+  };
+  // A chat taken back arrives as the session's next snapshot; nothing to refetch.
+  const reset = (choice: RevertChoice) => {
+    if (!resetting) return;
+    const { turn_id } = resetting.point;
+    return runReset(async () => {
+      setResetBusy(true);
+      setResetError(null);
+      setResetNotes([]);
+      try {
+        const result = await currentHost.revertSession(session_id, turn_id, choice);
+        setResetNotes(revertNotes(result, choice));
+        setResetting(null);
+      } catch (e) {
+        setResetError(revertError(e, hostName));
+      } finally {
+        setResetBusy(false);
+      }
+    });
+  };
+
   const stop = async () => {
     setStopping(true);
     setNotice(null);
@@ -506,6 +551,8 @@ function Live({
           onOpenFile={onOpenFile}
           onOpenSent={workspace_id ? (f) => openSent(f) : undefined}
           onOpenImage={workspace_id ? openImage : undefined}
+          onRevert={resettable ? askReset : undefined}
+          revertDisabled={running || !connected}
         />
       </View>
     );
@@ -589,6 +636,11 @@ function Live({
             {notice}
           </T>
         ) : null}
+        {resetNotes.map((note) => (
+          <T key={note} variant="callout" color={theme.mut} style={styles.notice} testID="session-revert-note">
+            {note}
+          </T>
+        ))}
         <Composer
           value={draft}
           onChange={(t) => {
@@ -610,6 +662,15 @@ function Live({
       </View>
       <AttachSheet visible={attaching} onClose={() => setAttaching(false)} onPick={pick} onClosed={openPicker} />
       <ToolSheet tool={tool} onClose={() => setTool(null)} />
+      <RevertSheet
+        visible={resetting !== null}
+        chat={resetting?.chat ?? false}
+        disabled={!connected || running}
+        error={resetError}
+        resetting={resetBusy}
+        onReset={(choice) => void reset(choice)}
+        onClose={closeReset}
+      />
       {request ? (
         <RequestSheet
           visible={reviewing && connected}
@@ -631,6 +692,8 @@ function Row({
   onOpenFile,
   onOpenSent,
   onOpenImage,
+  onRevert,
+  revertDisabled,
 }: {
   row: TranscriptRow;
   onTool(tool: ToolItem): void;
@@ -639,11 +702,23 @@ function Row({
   onOpenFile(path: string): void;
   onOpenSent?(file: AttachmentBlock): void;
   onOpenImage?(path: string): void;
+  onRevert?(point: RevertPoint): void;
+  revertDisabled: boolean;
 }) {
   const opens = (tool: ToolItem) => toolFile(tool) !== null;
   switch (row.type) {
-    case "user":
-      return <UserMessage text={row.text} files={row.files} onOpenFile={onOpenSent} />;
+    case "user": {
+      const point = row.revert;
+      return (
+        <UserMessage
+          text={row.text}
+          files={row.files}
+          onOpenFile={onOpenSent}
+          onRevert={point && onRevert ? () => onRevert(point) : undefined}
+          revertDisabled={revertDisabled}
+        />
+      );
+    }
     case "agent":
       return <Markdown text={row.text} caret={row.streaming ? <Caret /> : undefined} fileOf={fileOf} onOpen={onOpenImage} />;
     case "thought":

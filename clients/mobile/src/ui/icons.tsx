@@ -32,6 +32,7 @@ export {
   MessagesSquare,
   Paperclip,
   Plus,
+  RotateCcw,
   RotateCw,
   ScanLine,
   Search,

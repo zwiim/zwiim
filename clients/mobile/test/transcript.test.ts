@@ -1,17 +1,23 @@
 import {
+  CLIENT_CAPABILITIES,
   clockTime,
   decodeServerFrame,
+  evaluateCompatibility,
   initialSessionView,
+  offersChatRewind,
   reduceSession,
+  ZwiimClientError,
   type HistoryTurn,
   type SessionEvent,
   type SessionFrame,
   type SessionView,
+  type WorkspaceInfo,
 } from "@zwiim/sdk";
 import { describe, expect, it } from "vitest";
 import type { FakeChannel } from "../../sdk/test/fakes";
 import { parseInline, parseMarkdown, spanText } from "../src/sessions/markdown";
 import { clock, duration, historyBefore, nowState, transcriptRows, turnKey, turnRunning } from "../src/sessions/transcript";
+import { canReset, oneReset, revertCopy, revertError } from "../src/sessions/revert";
 import { waitFor, world } from "./support";
 
 // ─── building views the way the SDK does ─────────────────────────────────
@@ -572,5 +578,122 @@ describe("files sent with a message", () => {
     // Different files, same (empty) text: a different message.
     const other = view(history([turn("u0", "user", [pdf])]), ev("agent.user_message", { message_id: "m1", blocks: [sheet] }));
     expect(historyBefore(other.history!, other)).toHaveLength(1);
+  });
+});
+
+describe("resetting to a message", () => {
+  const said = (id: string, text: string, revertible?: boolean): HistoryTurn => ({
+    ...turn(id, "user", [{ type: "text", text }]),
+    ...(revertible === undefined ? {} : { revertible }),
+  });
+  const answered = (id: string, text: string) => turn(id, "assistant", [{ type: "text", text }]);
+  const compat = (capabilities: readonly string[] = CLIENT_CAPABILITIES) =>
+    evaluateCompatibility({ host_id: "h", protocol: "zwiim/1", version: "1", owner: null, revision: 3, min_client_revision: 1, capabilities: [...capabilities] });
+  const users = (v: SessionView) => transcriptRows(v).filter((r) => r.type === "user");
+
+  it("offers a reset only on the history's messages the Host can put back", () => {
+    const v = view(
+      history([said("u1", "first", true), answered("a1", "done"), said("u2", "second", false), answered("a2", "ok"), said("u3", "third", true)]),
+      user("m1", "live one"),
+    );
+    expect(users(v).map((r) => [r.key, r.type === "user" ? (r.revert ?? null) : null])).toEqual([
+      ["u1", { turn_id: "u1", before: null }],
+      ["u2", null],
+      ["u3", { turn_id: "u3", before: answered("a2", "ok") }],
+      ["live:m1:user", null],
+    ]);
+  });
+
+  it("takes the chat back too only when a reply comes before the message", () => {
+    const v = view(history([said("u1", "first", true), answered("a1", "done"), said("u2", "second", true)]));
+    const [first, second] = users(v).map((r) => (r.type === "user" ? r.revert! : null!));
+    const options = { model: null, effort: null, mode: null, can_rewind_chat: true };
+    // The rest of the rule (the Host, the agent) is the SDK's, tested there.
+    expect(offersChatRewind(second!.before, options, compat())).toBe(true);
+    expect(offersChatRewind(first!.before, options, compat())).toBe(false);
+  });
+
+  it("offers a reset only in a worktree that is still there", () => {
+    const ws = (over: Partial<WorkspaceInfo> = {}): WorkspaceInfo => ({
+      workspace_id: "w1",
+      name: "a9b70af5",
+      alias: null,
+      kind: "worktree",
+      parent_workspace_id: "root",
+      is_git_repo: true,
+      branch: "zwiim/a9b70af5",
+      base_branch: "main",
+      base_commit: null,
+      removed: false,
+      display_path: null,
+      ...over,
+    });
+    expect(canReset(ws())).toBe(true);
+    expect(canReset(ws({ removed: true, branch: null }))).toBe(false);
+    expect(canReset(ws({ kind: "root", parent_workspace_id: null, base_branch: null }))).toBe(false);
+    expect(canReset(null)).toBe(false);
+    expect(canReset(undefined)).toBe(false);
+  });
+
+  it("sends one reset while it is pending, and the next once it ends", async () => {
+    const run = oneReset<string>();
+    let finish!: (v: string) => void;
+    let calls = 0;
+    const first = run(() => {
+      calls++;
+      return new Promise((r) => (finish = r));
+    });
+    // A second tap while the first is in flight is dropped, not sent.
+    expect(await run(async () => (calls++, "again"))).toBeUndefined();
+    expect(calls).toBe(1);
+    finish("done");
+    expect(await first).toBe("done");
+    expect(await run(async () => (calls++, "next"))).toBe("next");
+    expect(calls).toBe(2);
+    // A failed one frees it too.
+    await expect(run(async () => Promise.reject(new Error("boom")))).rejects.toThrow("boom");
+    expect(await run(async () => "after")).toBe("after");
+  });
+
+  it("asks in the words agreed, and promises nothing about messages on a files-only reset", () => {
+    expect(revertCopy(true)).toEqual({
+      title: "Reset chat to here?",
+      body: "Later messages will be removed.",
+      filesOption: "Also reset files",
+      confirm: "Reset",
+    });
+    const files = revertCopy(false);
+    expect(files).toMatchObject({ title: "Reset files to here?", filesOption: null, confirm: "Reset files" });
+    expect(files.body).not.toMatch(/messages will be removed/i);
+  });
+
+  it("says why a reset did not happen", () => {
+    const err = (code: ConstructorParameters<typeof ZwiimClientError>[0], details?: Record<string, unknown>) =>
+      new ZwiimClientError(code, "x", 409, details);
+    // The Host's refusals read as the SDK words them, on desktop too.
+    expect(revertError(err("checkpoint_unavailable"), "Mac")).toBe("This point can't be restored.");
+    expect(revertError(err("workspace_busy", { live_sessions: 0, terminals: 0, session_ids: [], operation: "merge" }), "Mac")).toMatch(
+      /^The workspace is busy: a merge is in progress/,
+    );
+    expect(revertError(err("root_workspace"), "Mac")).toMatch(/repository folder/);
+    expect(revertError(err("unknown_outcome"), "Mac")).toMatch(/Not sure .* Check .* on Mac/);
+    expect(revertError(err("network"), "Mac")).toBe("Not connected to Mac. Try again when it's back.");
+    expect(revertError(err("timeout"), "Mac")).toBe("Not connected to Mac. Try again when it's back.");
+    expect(revertError(new Error("boom"), "Mac")).toBe("Couldn't reset. Try again.");
+  });
+
+  it("asks the Host for the reset once, and refuses while offline", async () => {
+    const { w, c } = hostWith([{ session_id: "live", live: true }]);
+    const asked: unknown[] = [];
+    w.host.backend.handlers["session.revert"] = (p) => {
+      asked.push(p);
+      return { files_restored: true, chat_rewound: true, head_moved: false };
+    };
+    await expect(c.revertSession("live", "u1", { files: true, chat: true })).rejects.toMatchObject({ code: "network" });
+    c.connect();
+    await waitFor(() => subscribes(w.host.backend.channels.at(-1)).length === 1);
+    expect(await c.revertSession("live", "u1", { files: false, chat: true })).toEqual({ files_restored: true, chat_rewound: true, head_moved: false });
+    expect(asked).toEqual([{ session_id: "live", turn_id: "u1", files: false, chat: true }]);
+    c.close();
   });
 });
