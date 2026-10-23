@@ -327,9 +327,10 @@ export class HostController {
   /**
    * Take session `session_id` back to before user turn `turn_id` (one whose
    * history turn is `revertible`). `files` restores the files and staged
-   * changes the turn started with; `chat` is accepted, `chat_rewound` stays
-   * `false` for now. Refused with `turn_in_progress`, `workspace_busy` or
-   * `checkpoint_unavailable`. Never retried.
+   * changes the turn started with; `chat` takes the conversation back to the
+   * agent reply before it (Hosts with `session.revert.chat`, agents whose
+   * options say `can_rewind_chat`). Refused with `turn_in_progress`,
+   * `workspace_busy` or `checkpoint_unavailable`. Never retried.
    */
   async revertSession(
     session_id: string,

@@ -202,7 +202,8 @@ impl ForkPoint {
 /// An agent that does not implement it ignores the unknown `_meta` key, so this
 /// is inert rather than an error wherever it isn't understood. An agent that
 /// DOES implement it but cannot resolve the point answers `invalid_params`,
-/// which surfaces as a fork failure the user can retry from a different turn.
+/// returned as [`AcpError::ForkPointRejected`]: a fork failure the user can
+/// retry from a different turn.
 pub async fn fork_session(
     cx: &ConnectionTo<Agent>,
     session_id: &SessionId,
@@ -225,13 +226,24 @@ pub async fn fork_session(
         .send_request_to(Agent, untyped_req)
         .block_task()
         .await
-        .map_err(|e| AcpError::protocol(format!("session/fork failed: {e}")))?;
+        .map_err(|e| fork_error(e, fork_point.is_some()))?;
 
     let models = raw_response.get("models").cloned();
     let response: ForkSessionResponse = serde_json::from_value(raw_response)
         .map_err(|e| AcpError::protocol(format!("Failed to parse fork response: {e}")))?;
 
     Ok((response, models))
+}
+
+/// The error for a failed `session/fork`; `pointed` when it named a message.
+fn fork_error(e: sacp::Error, pointed: bool) -> AcpError {
+    if pointed && e.code == sacp::schema::ErrorCode::InvalidParams {
+        let AcpError::Protocol(message) = AcpError::protocol(e.to_string()) else {
+            return AcpError::ForkPointRejected(String::new());
+        };
+        return AcpError::ForkPointRejected(message);
+    }
+    AcpError::protocol(format!("session/fork failed: {e}"))
 }
 
 #[cfg(test)]
@@ -518,6 +530,25 @@ mod tests {
         assert_eq!(
             fingerprint_agent_message("abc"),
             "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn an_agent_refusing_the_fork_point_is_told_apart() {
+        let invalid = || sacp::Error::invalid_params();
+        assert!(matches!(
+            fork_error(invalid(), true),
+            AcpError::ForkPointRejected(_)
+        ));
+        // A fork at the tail has no point to refuse.
+        assert!(matches!(fork_error(invalid(), false), AcpError::Protocol(_)));
+        assert!(matches!(
+            fork_error(sacp::Error::method_not_found(), true),
+            AcpError::Protocol(_)
+        ));
+        assert_eq!(
+            fork_error(invalid(), true).code(),
+            Some("fork_point_rejected")
         );
     }
 }

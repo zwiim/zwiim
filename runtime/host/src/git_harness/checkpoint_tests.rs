@@ -556,6 +556,52 @@ async fn cap_keeps_last_50() {
 }
 
 #[tokio::test]
+async fn drop_from_forgets_later_turns_only() {
+    let (_tmp, root) = repo();
+    let start = saved_oid(&root, &key("s-drop", 1), Phase::Start).await;
+    saved_oid(&root, &key("s-drop", 1), Phase::End).await;
+    for n in 2..=4 {
+        for phase in ["start", "end"] {
+            git(
+                &root,
+                &[
+                    "update-ref",
+                    &format!("refs/zwiim/checkpoints/s-drop/{n}/{phase}"),
+                    &start,
+                ],
+            );
+        }
+    }
+    let restore_point = "refs/zwiim/checkpoints/s-drop/revert-1700000000000";
+    git(&root, &["update-ref", restore_point, &start]);
+    saved_oid(&root, &key("s-other", 3), Phase::Start).await;
+
+    checkpoint::drop_from(&root, "s-drop", 3).await;
+
+    let mut turns: Vec<u32> = checkpoint::list(&root, "s-drop")
+        .await
+        .unwrap()
+        .iter()
+        .map(|c| c.key.ordinal)
+        .collect();
+    turns.dedup();
+    assert_eq!(turns, [1, 2]);
+    assert!(zwiim_refs(&root).contains(&restore_point.to_string()));
+    assert_eq!(checkpoint::list(&root, "s-other").await.unwrap().len(), 1);
+
+    // From the first turn: every turn goes, the restore point stays.
+    checkpoint::drop_from(&root, "s-drop", 1).await;
+    assert!(checkpoint::list(&root, "s-drop").await.unwrap().is_empty());
+    assert!(zwiim_refs(&root).contains(&restore_point.to_string()));
+
+    // Not a repository, or nothing to drop: a no-op.
+    let plain = _tmp.path().join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    checkpoint::drop_from(&plain, "s-drop", 1).await;
+    checkpoint::drop_from(&root, "s-none", 1).await;
+}
+
+#[tokio::test]
 async fn changes_summarize_the_turn() {
     let (_tmp, root) = repo();
     let turn = key("s-changes", 1);

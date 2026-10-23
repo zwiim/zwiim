@@ -2078,7 +2078,15 @@ pub async fn session_revert(
     Extension(state): Extension<Arc<AppState>>,
     ZJson(p): ZJson<SessionRevertParams>,
 ) -> ZResult<Value> {
-    let out = session::revert(&state, &p.session_id, &p.turn_id, p.files, p.chat).await?;
+    let out = session::revert(
+        &state,
+        &RuntimeLauncher { state: &state },
+        &p.session_id,
+        &p.turn_id,
+        p.files,
+        p.chat,
+    )
+    .await?;
     Ok(Json(json!({
         "files_restored": out.files_restored,
         "chat_rewound": out.chat_rewound,

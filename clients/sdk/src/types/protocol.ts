@@ -526,6 +526,12 @@ export interface SessionOptions {
   model: ChoiceOption | null;
   effort: ChoiceOption | null;
   mode: ModeOption | null;
+  /**
+   * Whether `session.revert` can rewind this session's chat as well as its
+   * files. Present on `session.options` replies; absent on older Hosts and on
+   * live option changes (keep the last value seen).
+   */
+  can_rewind_chat?: boolean;
 }
 
 /** A requested change; absent fields are left alone. */
@@ -860,6 +866,11 @@ export interface HistoryTurn {
 
 export interface SessionRevertResult {
   files_restored: boolean;
+  /**
+   * The chat was taken back to before the turn. `false` when `chat` was not
+   * asked for, the agent cannot rewind (see `SessionOptions.can_rewind_chat`)
+   * or, with `files`, the rewind failed after the files were restored.
+   */
   chat_rewound: boolean;
   /** The checked-out commit moved since the turn started; it was left as it is. */
   head_moved: boolean;
@@ -1289,8 +1300,11 @@ export interface Operations {
   /**
    * Take a session back to before user turn `turn_id`. `files` restores the
    * workspace files and staged changes the turn started with (HEAD and
-   * ignored files are never touched). `chat` is accepted; `chat_rewound` is
-   * `false` for now. Capability `session.revert`.
+   * ignored files are never touched). `chat` takes the conversation back to
+   * the agent reply before the turn, keeping the `session_id` (capability
+   * `session.revert.chat`; a first turn has no reply before it and is
+   * `checkpoint_unavailable`). With both, files are restored first. Capability
+   * `session.revert`.
    */
   "session.revert": [
     { session_id: string; turn_id: string; files: boolean; chat: boolean },

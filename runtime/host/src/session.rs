@@ -26,7 +26,7 @@ use crate::db::entities::conversation::{self, ConversationStatus};
 use crate::db::error::DbError;
 use crate::db::AppDatabase;
 use crate::models::agent::AgentType;
-use crate::models::message::MessageTurn;
+use crate::models::message::{MessageTurn, TurnRole};
 use crate::protocol::error::ZwiimError;
 use crate::session_options::{OptionsRequest, SessionOptions};
 use crate::web::event_bridge::EventEmitter;
@@ -558,28 +558,57 @@ pub struct RevertOutcome {
     /// The workspace's files and staged changes are back to how they were
     /// when the turn was sent.
     pub files_restored: bool,
-    /// The conversation was taken back to before the turn. Not yet: always
-    /// `false`.
+    /// The conversation was taken back to before the turn: the agent carries
+    /// on from the answer that preceded it. `false` when the session's agent
+    /// cannot rewind its chat (see [`can_rewind_chat`]), or when the rewind
+    /// failed after the files were restored.
     pub chat_rewound: bool,
     /// The checked-out commit is not the one the turn started on (the agent
     /// committed, or the branch changed). It was left as it is.
     pub head_moved: bool,
 }
 
-/// Take session `session_id` back to before user turn `turn_id`. With
-/// `files`, the workspace's files and staged changes return to the turn's
-/// start checkpoint; HEAD, branches and ignored files are never touched, and
-/// the state replaced is kept for recovery (see
-/// [`crate::git_harness::checkpoint::restore`]). `chat` is accepted and not
-/// acted on yet: `chat_rewound` is `false`.
+/// Whether `agent`'s sessions can be rewound to before a turn: its adapter
+/// forks its session at an exact earlier answer.
+pub fn can_rewind_chat(agent: AgentType) -> bool {
+    matches!(
+        agent,
+        AgentType::Codex | AgentType::ClaudeCode | AgentType::DeepSeek
+    )
+}
+
+/// Take session `session_id` back to before user turn `turn_id`.
+///
+/// With `files`, the workspace's files and staged changes return to the
+/// turn's start checkpoint; HEAD, branches and ignored files are never
+/// touched, and the state replaced is kept for recovery (see
+/// [`crate::git_harness::checkpoint::restore`]).
+///
+/// With `chat`, the agent's session is forked just after the answer that
+/// preceded the turn and the session carries on from the fork: same
+/// `session_id`, the turn and everything after it gone from its history. The
+/// history before the rewind is kept out of sight. Checkpoints of the turns
+/// rewound away are dropped, so later turns map onto their own. An agent that
+/// cannot rewind ([`can_rewind_chat`]) leaves the chat as it is, reported as
+/// `chat_rewound: false`; the first turn, having no answer before it, cannot
+/// be rewound to (`checkpoint_unavailable`).
+///
+/// With both, the files are restored first and the chat rewound after. A
+/// rewind that then fails does not hide the restore: the result reports
+/// `files_restored: true, chat_rewound: false`.
+///
+/// A chat rewind may have to resume the agent, which never runs in a root
+/// workspace: there, `chat` is refused with `root_workspace` (and
+/// `can_rewind_chat` reads false), with `files` too, before anything changes.
 ///
 /// Refused with `turn_in_progress` while the session's turn runs,
 /// `workspace_busy` while another agent works in the workspace or the
 /// repository is mid-operation, and `checkpoint_unavailable` when the turn
 /// has no checkpoint that is certainly its own: a guessed state is never
-/// restored.
-pub async fn revert(
+/// restored, nor a chat forked anywhere but exactly before the turn.
+pub async fn revert<L: AgentLauncher>(
     state: &AppState,
+    launcher: &L,
     session_id: &str,
     turn_id: &str,
     files: bool,
@@ -597,22 +626,27 @@ pub async fn revert(
     revert_locked(
         &state.db,
         &state.connection_manager,
+        launcher,
         &row,
         &turns,
         turn_id,
         files,
+        chat,
     )
     .await
 }
 
 /// [`revert`] under the session lock, with the session's transcript.
-async fn revert_locked(
+#[allow(clippy::too_many_arguments)]
+async fn revert_locked<L: AgentLauncher>(
     db: &AppDatabase,
     connections: &ConnectionManager,
+    launcher: &L,
     row: &conversation::Model,
     turns: &[MessageTurn],
     turn_id: &str,
     files: bool,
+    chat: bool,
 ) -> Result<RevertOutcome, ZwiimError> {
     let session_id = row.session_id.as_deref().ok_or_else(ZwiimError::internal)?;
     // Same order as a send: session lock, then the workspace.
@@ -635,17 +669,102 @@ async fn revert_locked(
     if busy > 0 {
         return Err(ZwiimError::workspace_busy(busy, 0, session_ids));
     }
-    if !turns
+    let Some(idx) = turns
         .iter()
-        .any(|t| t.id == turn_id && matches!(t.role, crate::models::message::TurnRole::User))
-    {
+        .position(|t| t.id == turn_id && matches!(t.role, TurnRole::User))
+    else {
         return Err(ZwiimError::checkpoint_unavailable());
-    }
-    if !files {
-        return Ok(RevertOutcome::default());
-    }
-
+    };
+    // Everything that can refuse the rewind does so before anything changes.
+    let fork_point = match chat {
+        true => chat_rewind_point(row, &folder, turns, idx)?,
+        false => None,
+    };
     let root = std::path::Path::new(&folder.path);
+    let mut outcome = RevertOutcome::default();
+    // Read before the restore and the fork: afterwards neither the transcript
+    // nor the checkpoints are the ones the turn was matched against.
+    let rewind = match fork_point {
+        Some(point) => Some((
+            point,
+            crate::session_checkpoints::RewindCut {
+                root: root.to_path_buf(),
+                session_id: session_id.to_string(),
+                from: crate::session_checkpoints::rewind_from(root, session_id, turns, turn_id)
+                    .await,
+            },
+        )),
+        None => None,
+    };
+
+    if files {
+        let restored = restore_files(root, session_id, turns, turn_id).await?;
+        outcome.files_restored = true;
+        outcome.head_moved = restored.head_moved;
+    }
+    let Some((point, cut)) = rewind else {
+        return Ok(outcome);
+    };
+    let from_turn = cut.from;
+    if let Err(e) = rewind_chat(db, connections, launcher, row, &folder, point, cut).await {
+        if !outcome.files_restored {
+            return Err(e);
+        }
+        tracing::warn!(
+            session_id = %session_id,
+            code = %e.code,
+            "[zwiim] session chat not rewound; its files were"
+        );
+        return Ok(outcome);
+    }
+    outcome.chat_rewound = true;
+    tracing::info!(
+        session_id = %session_id,
+        from_turn,
+        "[zwiim] session chat rewound"
+    );
+    Ok(outcome)
+}
+
+/// Where to fork to rewind `row`'s chat to before user turn `turns[idx]`: just
+/// after the answer right before it. `None` when the agent cannot rewind its
+/// chat at all, which is not an error.
+fn chat_rewind_point(
+    row: &conversation::Model,
+    folder: &crate::db::entities::folder::Model,
+    turns: &[MessageTurn],
+    idx: usize,
+) -> Result<Option<crate::acp::fork::ForkPoint>, ZwiimError> {
+    let agent: AgentType =
+        serde_json::from_value(serde_json::Value::String(row.agent_type.clone()))
+            .map_err(|_| ZwiimError::internal())?;
+    if !can_rewind_chat(agent) {
+        return Ok(None);
+    }
+    // The rewind may have to resume the agent: never there, as for a send.
+    crate::workspace::ensure_not_removed(folder)?;
+    if folder.parent_id.is_none() {
+        return Err(ZwiimError::root_workspace());
+    }
+    // The first turn has no answer before it to carry on from, and a turn
+    // that follows an unanswered one would lose that one too.
+    let previous = idx
+        .checked_sub(1)
+        .map(|i| &turns[i])
+        .filter(|t| matches!(t.role, TurnRole::Assistant))
+        .ok_or_else(ZwiimError::checkpoint_unavailable)?;
+    crate::acp::fork::resolve_fork_point(turns, &previous.id, agent)
+        .map(Some)
+        .ok_or_else(ZwiimError::checkpoint_unavailable)
+}
+
+/// Restore the workspace at `root` to user turn `turn_id`'s start checkpoint.
+async fn restore_files(
+    root: &std::path::Path,
+    session_id: &str,
+    turns: &[MessageTurn],
+    turn_id: &str,
+) -> Result<crate::git_harness::checkpoint::Restored, ZwiimError> {
     let cp = crate::session_checkpoints::start_checkpoint_of(root, session_id, turns, turn_id)
         .await
         .ok_or_else(ZwiimError::checkpoint_unavailable)?;
@@ -673,10 +792,51 @@ async fn revert_locked(
         head_moved = restored.head_moved,
         "[zwiim] session files reverted"
     );
-    Ok(RevertOutcome {
-        files_restored: true,
-        chat_rewound: false,
-        head_moved: restored.head_moved,
+    Ok(restored)
+}
+
+/// Fork `row`'s agent session at `point`, resuming the agent first if it is
+/// not live, and re-point the session at the fork, dropping the checkpoints
+/// `cut` names. The history before the rewind stays on a row of its own,
+/// deleted as it is written so no client ever lists it. Once the agent has
+/// forked, all of this completes even if the caller goes away (see
+/// [`ConnectionManager::fork_session_rewind`]), and the session's subscribers
+/// get a fresh snapshot.
+async fn rewind_chat<L: AgentLauncher>(
+    db: &AppDatabase,
+    connections: &ConnectionManager,
+    launcher: &L,
+    row: &conversation::Model,
+    folder: &crate::db::entities::folder::Model,
+    point: crate::acp::fork::ForkPoint,
+    cut: crate::session_checkpoints::RewindCut,
+) -> Result<(), ZwiimError> {
+    let (connection_id, spawned) = ensure_live(db, connections, launcher, row, folder).await?;
+    let forked = connections
+        .fork_session_rewind(
+            db,
+            &connection_id,
+            Some(row.id),
+            Some(row.folder_id),
+            point,
+            cut,
+        )
+        .await;
+    let Err(e) = forked else {
+        return Ok(());
+    };
+    if spawned {
+        let _ = connections.disconnect(&connection_id).await;
+    }
+    tracing::warn!(
+        session_id = ?row.session_id,
+        error = %e,
+        "[zwiim] session chat rewind failed"
+    );
+    Err(match e {
+        // The agent no longer has the answer to fork after.
+        AcpError::ForkPointRejected(_) => ZwiimError::checkpoint_unavailable(),
+        e => e.into(),
     })
 }
 
@@ -1162,6 +1322,7 @@ pub(crate) mod orchestration_tests {
 
     /// A connection and the `refs/zwiim` refs present when its prompt arrived.
     type RefsAtPrompt = (String, Vec<String>);
+    type ForkAsked = (String, Option<crate::acp::fork::ForkPoint>);
 
     /// Launches in-process fake agents: a live command channel whose commands
     /// are recorded, and an agent-native session id like a real ACP handshake.
@@ -1179,6 +1340,15 @@ pub(crate) mod orchestration_tests {
         /// The `refs/zwiim` refs of the agent's repository at the moment each
         /// prompt reached it, per connection, in order.
         pub refs_at_prompt: Arc<std::sync::Mutex<Vec<RefsAtPrompt>>>,
+        /// Every fork asked of an agent, per connection, with where to.
+        pub forks: Arc<std::sync::Mutex<Vec<ForkAsked>>>,
+        /// Agents refuse to fork.
+        pub fork_fails: Arc<std::sync::atomic::AtomicBool>,
+        /// Agents refuse to fork at the point asked, as one that no longer
+        /// has that message does.
+        pub fork_point_rejected: Arc<std::sync::atomic::AtomicBool>,
+        /// When set, an agent answers a fork only once this is notified.
+        pub fork_gate: Arc<std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>>,
         pub delay: Duration,
     }
 
@@ -1193,6 +1363,10 @@ pub(crate) mod orchestration_tests {
                 prompts: Default::default(),
                 config_sets: Default::default(),
                 refs_at_prompt: Default::default(),
+                forks: Default::default(),
+                fork_fails: Default::default(),
+                fork_point_rejected: Default::default(),
+                fork_gate: Default::default(),
                 delay: Duration::ZERO,
             }
         }
@@ -1254,6 +1428,11 @@ pub(crate) mod orchestration_tests {
             let prompts = self.prompts.clone();
             let config_sets = self.config_sets.clone();
             let refs_at_prompt = self.refs_at_prompt.clone();
+            let forks = self.forks.clone();
+            let fork_fails = self.fork_fails.clone();
+            let fork_point_rejected = self.fork_point_rejected.clone();
+            let fork_gate = self.fork_gate.clone();
+            let connections = self.connections.clone_ref();
             let conn = id.clone();
             tokio::spawn(async move {
                 while let Some(cmd) = rx.recv().await {
@@ -1289,6 +1468,40 @@ pub(crate) mod orchestration_tests {
                         ConnectionCommand::Cancel => "cancel",
                         ConnectionCommand::RespondPermission { .. } => "respond_permission",
                         ConnectionCommand::Disconnect => "disconnect",
+                        // Like an agent's fork: the connection carries on in
+                        // the forked agent session.
+                        ConnectionCommand::Fork { fork_point, reply } => {
+                            let n = {
+                                let mut forks = forks.lock().unwrap();
+                                forks.push((conn.clone(), fork_point));
+                                forks.len()
+                            };
+                            let gate = fork_gate.lock().unwrap().clone();
+                            if let Some(gate) = gate {
+                                gate.notified().await;
+                            }
+                            let result = if fork_fails.load(Ordering::SeqCst) {
+                                Err(crate::acp::error::AcpError::protocol(
+                                    "fork refused".to_string(),
+                                ))
+                            } else if fork_point_rejected.load(Ordering::SeqCst) {
+                                Err(crate::acp::error::AcpError::ForkPointRejected(
+                                    "no such message".to_string(),
+                                ))
+                            } else {
+                                let state = connections.get_state(&conn).await.expect("state");
+                                let mut state = state.write().await;
+                                let original = state.external_id.clone().unwrap_or_default();
+                                let forked = format!("native-fork-{n}");
+                                state.external_id = Some(forked.clone());
+                                Ok(crate::acp::types::ForkProtocolResult {
+                                    forked_session_id: forked,
+                                    original_session_id: original,
+                                })
+                            };
+                            let _ = reply.send(result);
+                            "fork"
+                        }
                         _ => "other",
                     };
                     log.lock().unwrap().push((conn.clone(), kind));
@@ -2542,12 +2755,25 @@ pub(crate) mod orchestration_tests {
         dir: &Path,
         prompts: &[&str],
     ) -> String {
+        ran_as(db, mgr, launcher, wid, dir, AgentType::Codex, prompts).await
+    }
+
+    /// [`ran`] with an `agent` session, on `launcher`'s first connection.
+    async fn ran_as(
+        db: &AppDatabase,
+        mgr: &ConnectionManager,
+        launcher: &FakeLauncher,
+        wid: &str,
+        dir: &Path,
+        agent: AgentType,
+        prompts: &[&str],
+    ) -> String {
         let sid = start(
             db,
             mgr,
             launcher,
             wid,
-            AgentType::Codex,
+            agent,
             text(prompts[0]),
             None,
             &Default::default(),
@@ -2575,8 +2801,23 @@ pub(crate) mod orchestration_tests {
         turns: &[MessageTurn],
         turn_id: &str,
     ) -> Result<RevertOutcome, ZwiimError> {
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        revert_with(db, mgr, &launcher, sid, turns, turn_id, true, false).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn revert_with(
+        db: &AppDatabase,
+        mgr: &ConnectionManager,
+        launcher: &FakeLauncher,
+        sid: &str,
+        turns: &[MessageTurn],
+        turn_id: &str,
+        files: bool,
+        chat: bool,
+    ) -> Result<RevertOutcome, ZwiimError> {
         let row = resolve(&db.conn, sid).await.unwrap();
-        revert_locked(db, mgr, &row, turns, turn_id, true).await
+        revert_locked(db, mgr, launcher, &row, turns, turn_id, files, chat).await
     }
 
     fn a_txt(dir: &Path) -> String {
@@ -2788,6 +3029,572 @@ pub(crate) mod orchestration_tests {
         assert_eq!(a_txt(&dir), "after continue 1\n");
         revert_turn(&db, &mgr, &sid, &turns, "turn-4").await.unwrap();
         assert_eq!(a_txt(&dir), "after first 0\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── chat rewind ─────────────────────────────────────────────────────
+
+    /// Every ordinal checkpoint ref of `sid`, as `(turn, phase)`.
+    fn turn_refs(dir: &Path, sid: &str) -> Vec<(u32, String)> {
+        let prefix = format!("refs/zwiim/checkpoints/{sid}/");
+        let mut refs: Vec<(u32, String)> = zwiim_refs(dir)
+            .iter()
+            .filter_map(|r| {
+                let (turn, phase) = r.strip_prefix(&prefix)?.split_once('/')?;
+                Some((turn.parse().ok()?, phase.to_string()))
+            })
+            .collect();
+        refs.sort();
+        refs
+    }
+
+    fn phases(turns: &[u32]) -> Vec<(u32, String)> {
+        turns
+            .iter()
+            .flat_map(|&t| [(t, "end".to_string()), (t, "start".to_string())])
+            .collect()
+    }
+
+    async fn row_of(db: &AppDatabase, sid: &str) -> conversation::Model {
+        resolve(&db.conn, sid).await.unwrap()
+    }
+
+    /// The row that holds agent session `external_id`, deleted or not.
+    async fn holder_of(db: &AppDatabase, external_id: &str) -> Option<conversation::Model> {
+        use sea_orm::{ColumnTrait, QueryFilter};
+        conversation::Entity::find()
+            .filter(conversation::Column::ExternalId.eq(external_id))
+            .one(&db.conn)
+            .await
+            .unwrap()
+    }
+
+    const CHAT_ONLY: (bool, bool) = (false, true);
+    const BOTH: (bool, bool) = (true, true);
+
+    #[tokio::test]
+    async fn revert_chat_forks_at_previous_assistant_turn() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let prompts = ["first", "second", "third"];
+        let sid = ran(&db, &mgr, &launcher, &wid, &dir, &prompts).await;
+        let turns = transcript(&prompts);
+
+        let (files, chat) = CHAT_ONLY;
+        let out = revert_with(&db, &mgr, &launcher, &sid, &turns, "turn-4", files, chat)
+            .await
+            .unwrap();
+        assert_eq!(
+            out,
+            RevertOutcome {
+                files_restored: false,
+                chat_rewound: true,
+                head_moved: false,
+            }
+        );
+        // The agent answered "done" every turn: the fork names the second
+        // answer, the one just before "third".
+        let forks = launcher.forks.lock().unwrap().clone();
+        assert_eq!(forks.len(), 1);
+        assert_eq!(forks[0].0, "fake-conn-1");
+        let point = forks[0].1.clone().expect("a fork point, never the tail");
+        assert_eq!(
+            point.message_fingerprint.as_deref(),
+            Some(crate::acp::fork::fingerprint_agent_message("done").as_str())
+        );
+        assert_eq!(point.message_occurrence, Some(2));
+        // Chat only: the files stay as the last turn left them.
+        assert_eq!(a_txt(&dir), "after third 2\n");
+        assert_eq!(revert_refs(&dir, &sid), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn revert_chat_keeps_session_id() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let prompts = ["first", "second"];
+        let sid = ran(&db, &mgr, &launcher, &wid, &dir, &prompts).await;
+        let before = row_of(&db, &sid).await;
+        // The agent went idle: the rewind resumes it first.
+        stop(&db, &mgr, &sid).await.unwrap();
+
+        let (files, chat) = CHAT_ONLY;
+        let out = revert_with(
+            &db,
+            &mgr,
+            &launcher,
+            &sid,
+            &transcript(&prompts),
+            "turn-2",
+            files,
+            chat,
+        )
+        .await
+        .unwrap();
+        assert!(out.chat_rewound);
+        assert_eq!(
+            launcher.resumed.lock().unwrap().last().cloned().flatten(),
+            Some("native-1".to_string())
+        );
+        let after = row_of(&db, &sid).await;
+        assert_eq!(after.id, before.id, "the same session, re-pointed");
+        assert_eq!(after.external_id.as_deref(), Some("native-fork-1"));
+        assert_eq!(after.title, before.title, "no fork marker on the session");
+        assert_eq!(after.title_locked, before.title_locked);
+        // It carries on: the next prompt goes to the rewound agent session.
+        send(&db, &mgr, &launcher, &sid, text("again"), None)
+            .await
+            .unwrap();
+        settle().await;
+        assert_eq!(launcher.prompts_for("fake-conn-2"), ["again"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn revert_chat_hides_sibling() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let prompts = ["first", "second"];
+        let sid = ran(&db, &mgr, &launcher, &wid, &dir, &prompts).await;
+
+        let (files, chat) = CHAT_ONLY;
+        revert_with(
+            &db,
+            &mgr,
+            &launcher,
+            &sid,
+            &transcript(&prompts),
+            "turn-2",
+            files,
+            chat,
+        )
+        .await
+        .unwrap();
+        // The pre-rewind conversation is kept, out of sight.
+        let sibling = holder_of(&db, "native-1").await.expect("kept");
+        assert!(sibling.deleted_at.is_some());
+        let listed: Vec<String> = list_for_workspace(&db.conn, &mgr, &wid)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.session_id)
+            .collect();
+        assert_eq!(listed, std::slice::from_ref(&sid));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn revert_chat_first_turn_refused() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let prompts = ["first", "second"];
+        let sid = ran(&db, &mgr, &launcher, &wid, &dir, &prompts).await;
+        let turns = transcript(&prompts);
+
+        for (files, chat) in [CHAT_ONLY, BOTH] {
+            let err = revert_with(&db, &mgr, &launcher, &sid, &turns, "turn-0", files, chat)
+                .await
+                .unwrap_err();
+            assert_eq!(err.code, "checkpoint_unavailable", "files={files}");
+        }
+        assert!(launcher.forks.lock().unwrap().is_empty());
+        assert_eq!(a_txt(&dir), "after second 1\n", "nothing was restored");
+        assert_eq!(revert_refs(&dir, &sid), 0);
+        // The files alone can still go back.
+        let out = revert_with(&db, &mgr, &launcher, &sid, &turns, "turn-0", true, false)
+            .await
+            .unwrap();
+        assert!(out.files_restored && !out.chat_rewound);
+        assert_eq!(a_txt(&dir), "one\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn revert_chat_unsupported_agent_files_only() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let prompts = ["first", "second"];
+        let sid = ran_as(&db, &mgr, &launcher, &wid, &dir, AgentType::Gemini, &prompts).await;
+        let turns = transcript(&prompts);
+
+        let (files, chat) = BOTH;
+        let out = revert_with(&db, &mgr, &launcher, &sid, &turns, "turn-2", files, chat)
+            .await
+            .unwrap();
+        assert_eq!(
+            out,
+            RevertOutcome {
+                files_restored: true,
+                chat_rewound: false,
+                head_moved: false,
+            }
+        );
+        assert_eq!(a_txt(&dir), "after first 0\n");
+        let (files, chat) = CHAT_ONLY;
+        let out = revert_with(&db, &mgr, &launcher, &sid, &turns, "turn-2", files, chat)
+            .await
+            .unwrap();
+        assert_eq!(out, RevertOutcome::default());
+        assert!(launcher.forks.lock().unwrap().is_empty());
+        assert_eq!(row_of(&db, &sid).await.external_id.as_deref(), Some("native-1"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn revert_chat_drops_the_checkpoints_of_rewound_turns() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let prompts = ["first", "second", "third"];
+        let sid = ran(&db, &mgr, &launcher, &wid, &dir, &prompts).await;
+
+        let (files, chat) = BOTH;
+        let out = revert_with(
+            &db,
+            &mgr,
+            &launcher,
+            &sid,
+            &transcript(&prompts),
+            "turn-2",
+            files,
+            chat,
+        )
+        .await
+        .unwrap();
+        assert!(out.files_restored && out.chat_rewound);
+        assert_eq!(a_txt(&dir), "after first 0\n");
+        assert_eq!(turn_refs(&dir, &sid), phases(&[1]));
+        assert_eq!(revert_refs(&dir, &sid), 1, "the restore stays recoverable");
+
+        // The same prompt again: its checkpoint is its own, and a later
+        // revert finds it.
+        send(&db, &mgr, &launcher, &sid, text("second"), None)
+            .await
+            .unwrap();
+        settle().await;
+        std::fs::write(dir.join("a.txt"), "after second again\n").unwrap();
+        end_turn_observed(&mgr, "fake-conn-1", "end_turn").await;
+        assert!(wait_for_ref(&dir, &checkpoint_ref(&sid, 4, "end")).await);
+        assert_eq!(turn_refs(&dir, &sid), phases(&[1, 4]));
+        let turns = transcript(&["first", "second"]);
+        let revertible = crate::session_checkpoints::revertible_turns(&dir, &sid, &turns).await;
+        assert!(revertible.contains("turn-2"), "{revertible:?}");
+        revert_turn(&db, &mgr, &sid, &turns, "turn-2").await.unwrap();
+        assert_eq!(a_txt(&dir), "after first 0\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn revert_files_and_chat_reports_the_restore_when_the_rewind_fails() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let prompts = ["first", "second"];
+        let sid = ran(&db, &mgr, &launcher, &wid, &dir, &prompts).await;
+        let turns = transcript(&prompts);
+        launcher.fork_fails.store(true, Ordering::SeqCst);
+
+        let (files, chat) = BOTH;
+        let out = revert_with(&db, &mgr, &launcher, &sid, &turns, "turn-2", files, chat)
+            .await
+            .unwrap();
+        assert_eq!(
+            out,
+            RevertOutcome {
+                files_restored: true,
+                chat_rewound: false,
+                head_moved: false,
+            }
+        );
+        assert_eq!(a_txt(&dir), "after first 0\n");
+        // The conversation was not rewound, so its checkpoints still match it.
+        assert_eq!(turn_refs(&dir, &sid), phases(&[1, 2]));
+        assert_eq!(row_of(&db, &sid).await.external_id.as_deref(), Some("native-1"));
+
+        // Chat alone has nothing else to report: the failure is the answer.
+        let (files, chat) = CHAT_ONLY;
+        let err = revert_with(&db, &mgr, &launcher, &sid, &turns, "turn-2", files, chat)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "internal");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn revert_chat_works_outside_git() {
+        let db = fresh_in_memory_db().await;
+        let wid = workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = start(
+            &db,
+            &mgr,
+            &launcher,
+            &wid,
+            AgentType::Codex,
+            text("first"),
+            None,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+        finish_turn(&mgr, "fake-conn-1").await;
+        let prompts = ["first", "second"];
+
+        let (files, chat) = CHAT_ONLY;
+        let out = revert_with(
+            &db,
+            &mgr,
+            &launcher,
+            &sid,
+            &transcript(&prompts),
+            "turn-2",
+            files,
+            chat,
+        )
+        .await
+        .unwrap();
+        assert!(out.chat_rewound);
+        let (files, chat) = BOTH;
+        let err = revert_with(
+            &db,
+            &mgr,
+            &launcher,
+            &sid,
+            &transcript(&prompts),
+            "turn-2",
+            files,
+            chat,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "checkpoint_unavailable");
+    }
+
+    async fn listed(db: &AppDatabase, mgr: &ConnectionManager, wid: &str) -> Vec<String> {
+        list_for_workspace(&db.conn, mgr, wid)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.session_id)
+            .collect()
+    }
+
+    /// Whether `conn`'s subscribers were told its history was rewound.
+    async fn told_rewound(mgr: &ConnectionManager, conn: &str) -> bool {
+        let state = mgr.get_state(conn).await.expect("state");
+        let state = state.read().await;
+        state
+            .recent_events_after(0)
+            .unwrap_or_default()
+            .iter()
+            .any(|e| matches!(e.payload, AcpEvent::HistoryRewound))
+    }
+
+    /// Hold every fork `launcher`'s agents are asked for until notified.
+    fn hold_forks(launcher: &FakeLauncher) -> Arc<tokio::sync::Notify> {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        *launcher.fork_gate.lock().unwrap() = Some(gate.clone());
+        gate
+    }
+
+    #[tokio::test]
+    async fn revert_chat_never_lists_the_history_it_keeps() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let prompts = ["first", "second"];
+        let sid = ran(&db, &mgr, &launcher, &wid, &dir, &prompts).await;
+        let gate = hold_forks(&launcher);
+        let turns = transcript(&prompts);
+
+        let (files, chat) = CHAT_ONLY;
+        let revert = revert_with(&db, &mgr, &launcher, &sid, &turns, "turn-2", files, chat);
+        tokio::pin!(revert);
+        // The listing is checked all along: while the agent forks, and while
+        // the fork is written down.
+        let out = loop {
+            tokio::select! {
+                out = &mut revert => break out.unwrap(),
+                _ = tokio::time::sleep(Duration::from_millis(2)) => {
+                    assert_eq!(listed(&db, &mgr, &wid).await, std::slice::from_ref(&sid));
+                    if !launcher.forks.lock().unwrap().is_empty() {
+                        gate.notify_one();
+                    }
+                }
+            }
+        };
+        assert!(out.chat_rewound);
+        assert_eq!(listed(&db, &mgr, &wid).await, std::slice::from_ref(&sid));
+        let kept = holder_of(&db, "native-1").await.expect("kept");
+        assert!(kept.deleted_at.is_some());
+        assert_ne!(kept.id, row_of(&db, &sid).await.id);
+        assert!(told_rewound(&mgr, "fake-conn-1").await);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn revert_chat_completes_when_the_caller_goes_away() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let prompts = ["first", "second"];
+        let sid = ran(&db, &mgr, &launcher, &wid, &dir, &prompts).await;
+        assert_eq!(turn_refs(&dir, &sid), phases(&[1, 2]));
+        let gate = hold_forks(&launcher);
+        let turns = transcript(&prompts);
+
+        // The caller goes away once the agent has been asked to fork.
+        let (files, chat) = CHAT_ONLY;
+        let mut revert = Box::pin(revert_with(
+            &db, &mgr, &launcher, &sid, &turns, "turn-2", files, chat,
+        ));
+        while launcher.forks.lock().unwrap().is_empty() {
+            tokio::select! {
+                _ = &mut revert => panic!("the fork is held"),
+                _ = tokio::time::sleep(Duration::from_millis(2)) => {}
+            }
+        }
+        drop(revert);
+        gate.notify_one();
+
+        // The rewind still completes, all of it.
+        let mut done = false;
+        for _ in 0..500 {
+            let repointed = row_of(&db, &sid).await.external_id.as_deref() == Some("native-fork-1");
+            let hidden = holder_of(&db, "native-1")
+                .await
+                .is_some_and(|kept| kept.deleted_at.is_some());
+            if repointed && hidden && told_rewound(&mgr, "fake-conn-1").await {
+                done = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(done, "the rewind completed without its caller");
+        assert_eq!(
+            turn_refs(&dir, &sid),
+            phases(&[1]),
+            "its checkpoints dropped"
+        );
+        assert_eq!(listed(&db, &mgr, &wid).await, std::slice::from_ref(&sid));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn revert_chat_to_an_answer_the_agent_no_longer_has() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let prompts = ["first", "second"];
+        let sid = ran(&db, &mgr, &launcher, &wid, &dir, &prompts).await;
+        let turns = transcript(&prompts);
+        launcher.fork_point_rejected.store(true, Ordering::SeqCst);
+
+        let (files, chat) = CHAT_ONLY;
+        let err = revert_with(&db, &mgr, &launcher, &sid, &turns, "turn-2", files, chat)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "checkpoint_unavailable");
+        assert_eq!(
+            row_of(&db, &sid).await.external_id.as_deref(),
+            Some("native-1")
+        );
+        assert_eq!(turn_refs(&dir, &sid), phases(&[1, 2]));
+        assert!(!told_rewound(&mgr, "fake-conn-1").await);
+
+        let (files, chat) = BOTH;
+        let out = revert_with(&db, &mgr, &launcher, &sid, &turns, "turn-2", files, chat)
+            .await
+            .unwrap();
+        assert!(out.files_restored && !out.chat_rewound);
+        assert_eq!(a_txt(&dir), "after first 0\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn revert_files_and_chat_in_a_root_workspace_is_refused_up_front() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let prompts = ["first", "second"];
+        let sid = ran(&db, &mgr, &launcher, &wid, &dir, &prompts).await;
+        let turns = transcript(&prompts);
+        use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait, IntoActiveModel};
+        // The workspace turns out to be a root one.
+        let mut folder =
+            crate::db::entities::folder::Entity::find_by_id(row_of(&db, &sid).await.folder_id)
+                .one(&db.conn)
+                .await
+                .unwrap()
+                .unwrap()
+                .into_active_model();
+        folder.parent_id = Set(None);
+        folder.update(&db.conn).await.unwrap();
+
+        for (files, chat) in [CHAT_ONLY, BOTH] {
+            let err = revert_with(&db, &mgr, &launcher, &sid, &turns, "turn-2", files, chat)
+                .await
+                .unwrap_err();
+            assert_eq!(err.code, "root_workspace", "files={files}");
+        }
+        assert!(launcher.forks.lock().unwrap().is_empty());
+        assert_eq!(a_txt(&dir), "after second 1\n", "nothing was restored");
+        assert_eq!(revert_refs(&dir, &sid), 0);
+        assert_eq!(turn_refs(&dir, &sid), phases(&[1, 2]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn revert_takes_the_session_lock() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let data = tempfile::tempdir().unwrap();
+        let state = Arc::new(AppState::new_for_test(db, data.path().to_path_buf()));
+        let mgr = &state.connection_manager;
+        let launcher = Arc::new(FakeLauncher::new(mgr.clone_ref()));
+        let prompts = ["first", "second"];
+        let sid = ran(&state.db, mgr, &launcher, &wid, &dir, &prompts).await;
+
+        let err = revert(&state, &*launcher, &sid, "turn-2", false, false)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_input");
+
+        // Another operation holds the session: the revert waits its turn.
+        let lock = session_lock(&sid);
+        let held = lock.lock().await;
+        let task = tokio::spawn({
+            let (state, launcher, sid) = (state.clone(), launcher.clone(), sid.clone());
+            async move { revert(&state, &*launcher, &sid, "turn-2", true, true).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!task.is_finished(), "the revert waits for the session lock");
+        drop(held);
+        // The fake agent keeps no transcript, so the turn is not one the
+        // session has: refused, with nothing touched.
+        let err = task.await.unwrap().unwrap_err();
+        assert_eq!(err.code, "checkpoint_unavailable");
+        assert!(launcher.forks.lock().unwrap().is_empty());
+        assert_eq!(a_txt(&dir), "after second 1\n");
+        assert_eq!(revert_refs(&dir, &sid), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

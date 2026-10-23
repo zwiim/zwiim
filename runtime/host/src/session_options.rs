@@ -88,6 +88,11 @@ pub struct SessionOptions {
     pub model: Option<ChoiceOption>,
     pub effort: Option<ChoiceOption>,
     pub mode: Option<ModeOption>,
+    /// Whether `session.revert` can rewind this session's chat as well as its
+    /// files. Set where the session's agent is known; absent elsewhere, so a
+    /// client keeps the last value it was told.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_rewind_chat: Option<bool>,
 }
 
 /// A requested change; absent fields are left alone.
@@ -275,6 +280,7 @@ pub fn project(options: &[SessionConfigOptionInfo]) -> SessionOptions {
         model: native.model.as_ref().map(Select::choice),
         effort: native.effort.as_ref().map(Select::choice),
         mode,
+        can_rewind_chat: None,
     }
 }
 
@@ -685,11 +691,34 @@ pub async fn read(
     row: &conversation::Model,
     session_id: &str,
 ) -> Option<SessionOptions> {
-    if let Some(live) = live_options(connections, row).await {
-        return Some(project(&live));
-    }
-    let stored = load(db, session_id).await;
-    Some(project(&idle_view(db, &row.agent_type, &stored, None).await?))
+    let options = match live_options(connections, row).await {
+        Some(live) => project(&live),
+        None => {
+            let stored = load(db, session_id).await;
+            project(&idle_view(db, &row.agent_type, &stored, None).await?)
+        }
+    };
+    Some(SessionOptions {
+        can_rewind_chat: Some(rewinds_chat(db, row).await),
+        ..options
+    })
+}
+
+/// Whether session `row` can have its chat rewound: its agent can, and it is
+/// not in a root workspace, where a rewind is refused (`root_workspace`).
+async fn rewinds_chat(db: &DatabaseConnection, row: &conversation::Model) -> bool {
+    agent_rewinds_chat(&row.agent_type)
+        && <crate::db::entities::folder::Entity as sea_orm::EntityTrait>::find_by_id(row.folder_id)
+            .one(db)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|folder| folder.parent_id.is_some())
+}
+
+/// Whether an agent of wire type `agent_type` can have a chat rewound.
+fn agent_rewinds_chat(agent_type: &str) -> bool {
+    crate::models::agent::AgentType::from_wire(agent_type).is_some_and(crate::session::can_rewind_chat)
 }
 
 /// `idle_options` for session `stored` of `agent`, with the effort of the
@@ -1141,6 +1170,50 @@ fn merge_catalog(
 pub(crate) mod tests {
     use super::*;
     use crate::acp::types::SessionConfigBooleanInfo;
+
+    #[test]
+    fn options_say_whether_the_chat_can_be_rewound() {
+        assert!(agent_rewinds_chat("codex"));
+        assert!(agent_rewinds_chat("claude_code"));
+        assert!(agent_rewinds_chat("deepseek"));
+        assert!(!agent_rewinds_chat("gemini"));
+        assert!(!agent_rewinds_chat("custom:mine"));
+        assert!(!agent_rewinds_chat("nonsense"));
+        let unknown = serde_json::to_value(SessionOptions::default()).unwrap();
+        assert!(unknown.get("can_rewind_chat").is_none(), "{unknown}");
+        let known = SessionOptions {
+            can_rewind_chat: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(serde_json::to_value(known).unwrap()["can_rewind_chat"], false);
+    }
+
+    #[tokio::test]
+    async fn a_root_workspace_session_cannot_rewind_its_chat() {
+        use crate::db::test_helpers::{
+            fresh_in_memory_db, seed_conversation, seed_folder, seed_worktree_folder,
+        };
+        let db = fresh_in_memory_db().await;
+        let row = |id: i32| {
+            let conn = db.conn.clone();
+            async move {
+                <conversation::Entity as sea_orm::EntityTrait>::find_by_id(id)
+                    .one(&conn)
+                    .await
+                    .unwrap()
+                    .unwrap()
+            }
+        };
+        let root = seed_folder(&db, "/tmp/rewind-root").await;
+        let worktree = seed_worktree_folder(&db, "/tmp/rewind-worktree").await;
+        let in_root = row(seed_conversation(&db, root, AgentType::Codex).await).await;
+        let in_worktree = row(seed_conversation(&db, worktree, AgentType::Codex).await).await;
+        let gemini = row(seed_conversation(&db, worktree, AgentType::Gemini).await).await;
+
+        assert!(!rewinds_chat(&db.conn, &in_root).await);
+        assert!(rewinds_chat(&db.conn, &in_worktree).await);
+        assert!(!rewinds_chat(&db.conn, &gemini).await);
+    }
 
     fn value(value: &str, name: &str, kind: Option<&str>) -> SessionConfigSelectOptionInfo {
         SessionConfigSelectOptionInfo {

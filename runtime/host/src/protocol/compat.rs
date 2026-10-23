@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 /// Protocol revision this Host speaks. Bump on every additive change a
 /// client can observe (new operation, event, field or capability).
-pub const PROTOCOL_REVISION: u32 = 2;
+pub const PROTOCOL_REVISION: u32 = 3;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -49,6 +49,7 @@ pub const CAPABILITIES: &[&str] = &[
     "file_ranges",
     "session.plan_hand_off",
     "session.revert",
+    "session.revert.chat",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -152,6 +153,11 @@ mod tests {
     #[test]
     fn revert_is_served() {
         assert!(CAPABILITIES.contains(&"session.revert"));
+    }
+
+    #[test]
+    fn revert_chat_is_served() {
+        assert!(CAPABILITIES.contains(&"session.revert.chat"));
     }
 
     #[test]

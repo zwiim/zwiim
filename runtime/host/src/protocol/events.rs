@@ -1481,6 +1481,7 @@ pub(crate) mod tests {
                 text: "sub-agent".into(),
                 parent_tool_use_id: Some("tu".into()),
             },
+            AcpEvent::HistoryRewound,
         ] {
             assert!(project_envelope("s", None, &env(event)).is_none());
         }

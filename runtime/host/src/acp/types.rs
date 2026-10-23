@@ -474,6 +474,11 @@ pub enum AcpEvent {
     },
     /// Initial selector payloads (modes/config options) have been emitted
     SelectorsReady,
+    /// The conversation's chat was rewound to an earlier turn and its row
+    /// re-pointed at the rewound session: the history earlier events built is
+    /// no longer its history. Host-internal, never sent to clients as such;
+    /// session subscribers are sent a fresh snapshot in its place.
+    HistoryRewound,
     /// Prompt capabilities for this connection
     PromptCapabilities {
         prompt_capabilities: PromptCapabilitiesInfo,

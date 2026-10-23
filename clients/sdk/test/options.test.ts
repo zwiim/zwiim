@@ -53,6 +53,24 @@ describe("session options state", () => {
     });
     expect(v.options?.model?.current).toBe("haiku");
   });
+
+  it("keeps whether the chat can be rewound across option changes that do not say", () => {
+    let v = reduceSession(initialSessionView("s1"), {
+      type: "options",
+      options: { ...opts("normal"), can_rewind_chat: true },
+    });
+    expect(v.options?.can_rewind_chat).toBe(true);
+    v = reduceSession(v, {
+      type: "event",
+      event: { session_id: "s1", seq: 2, type: "session.options", payload: { options: opts("plan") } },
+    });
+    expect(v.options?.mode?.current).toBe("plan");
+    expect(v.options?.can_rewind_chat).toBe(true);
+    v = reduceSession(v, { type: "snapshot", epoch: "e2", seq: 0, snapshot: snapshot(opts("normal")) });
+    expect(v.options?.can_rewind_chat).toBe(true);
+    v = reduceSession(v, { type: "options", options: { ...opts("normal"), can_rewind_chat: false } });
+    expect(v.options?.can_rewind_chat).toBe(false);
+  });
 });
 
 describe("session commands state", () => {

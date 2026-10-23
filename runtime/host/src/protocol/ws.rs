@@ -182,6 +182,40 @@ fn project_server_msg(msg: ServerMsg, subs: &HashMap<String, Subscription>) -> O
     }
 }
 
+/// `msg`, unless it says its session's history was rewound: then a fresh
+/// snapshot of the session in its place, which clients take as "reload the
+/// transcript". Events already queued behind it carry `seq`s the snapshot
+/// covers, so clients drop them.
+async fn resnapshot_rewound(
+    state: &AppState,
+    msg: ServerMsg,
+    subs: &HashMap<String, Subscription>,
+) -> ServerMsg {
+    let ServerMsg::Event {
+        subscription_id,
+        envelope,
+    } = &msg
+    else {
+        return msg;
+    };
+    if !ws_attach::rewinds_history(envelope) {
+        return msg;
+    }
+    let Some(sub) = subs
+        .get(subscription_id)
+        .filter(|s| s.connection_id == envelope.connection_id)
+    else {
+        return msg;
+    };
+    let fresh = ws_attach::snapshot(
+        &state.connection_manager,
+        subscription_id.clone(),
+        sub.connection_id.clone(),
+    )
+    .await;
+    fresh.unwrap_or(msg)
+}
+
 fn host_snapshot_frame(snapshot: HostSnapshot) -> Value {
     json!({
         "type": "host.snapshot",
@@ -305,6 +339,7 @@ async fn handle_socket(
 
             outgoing = outbound_rx.recv() => {
                 let Some(msg) = outgoing else { break };
+                let msg = resnapshot_rewound(&state, msg, &subs).await;
                 if let Some(frame) = project_server_msg(msg, &subs) {
                     if !send_json(&mut socket, &frame).await {
                         break;

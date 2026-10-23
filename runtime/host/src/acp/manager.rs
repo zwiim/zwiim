@@ -68,6 +68,16 @@ const CONFIRM_GONE_POLL: Duration = Duration::from_millis(50);
 /// exited but that nobody has reaped yet never zeroes its cell.
 const SIGKILL_SETTLE: Duration = Duration::from_millis(200);
 
+/// Where a fork branches off the agent's session.
+enum ForkAt {
+    /// After the last message.
+    Tail,
+    /// After this rendered turn, if the agent can name it; else the tail.
+    Turn(String),
+    /// After exactly this agent message.
+    Point(crate::acp::fork::ForkPoint),
+}
+
 /// What one pass of [`kill_tree_pass`] established about the target itself.
 #[derive(Debug, PartialEq, Eq)]
 enum KillPass {
@@ -2062,6 +2072,53 @@ impl ConnectionManager {
         // always done.
         fork_from_turn_id: Option<String>,
     ) -> Result<ForkResultInfo, AcpError> {
+        let at = match fork_from_turn_id {
+            None => ForkAt::Tail,
+            Some(turn_id) => ForkAt::Turn(turn_id),
+        };
+        self.fork_at(db, conn_id, link_conversation_id, link_folder_id, at, None)
+            .await
+    }
+
+    /// Rewind the chat of the conversation on `conn_id` to just after the
+    /// agent message `point` names: the agent forks its session there and
+    /// the conversation row is re-pointed at the fork, keeping its title. The
+    /// pre-rewind history is preserved on a sibling row that is deleted as it
+    /// is written, so no listing ever shows it, and the checkpoints `cut`
+    /// names are dropped. Once the agent has forked, all of this completes
+    /// even if the caller goes away, and the connection's subscribers are told
+    /// the history changed ([`AcpEvent::HistoryRewound`]). Linkage arguments
+    /// as [`fork_session`].
+    pub(crate) async fn fork_session_rewind(
+        &self,
+        db: &AppDatabase,
+        conn_id: &str,
+        link_conversation_id: Option<i32>,
+        link_folder_id: Option<i32>,
+        point: crate::acp::fork::ForkPoint,
+        cut: crate::session_checkpoints::RewindCut,
+    ) -> Result<ForkResultInfo, AcpError> {
+        self.fork_at(
+            db,
+            conn_id,
+            link_conversation_id,
+            link_folder_id,
+            ForkAt::Point(point),
+            Some(cut),
+        )
+        .await
+    }
+
+    async fn fork_at(
+        &self,
+        db: &AppDatabase,
+        conn_id: &str,
+        link_conversation_id: Option<i32>,
+        link_folder_id: Option<i32>,
+        at: ForkAt,
+        // `Some` for a chat rewind: the checkpoints it makes stale.
+        rewind: Option<crate::session_checkpoints::RewindCut>,
+    ) -> Result<ForkResultInfo, AcpError> {
         let (state_arc, cmd_tx, emitter) = {
             let connections = self.connections.lock().await;
             let conn = connections
@@ -2123,9 +2180,10 @@ impl ConnectionManager {
         // a read-only parse, so a caller that disappears here has changed
         // nothing. Failing to resolve is not an error — it degrades to the tail
         // fork rather than refusing the user's click.
-        let fork_point = match fork_from_turn_id {
-            None => None,
-            Some(turn_id) => {
+        let fork_point = match at {
+            ForkAt::Tail => None,
+            ForkAt::Point(point) => Some(point),
+            ForkAt::Turn(turn_id) => {
                 let agent_type = state_arc.read().await.agent_type;
                 match crate::commands::conversations::get_folder_conversation_core(
                     &db.conn,
@@ -2195,6 +2253,7 @@ impl ConnectionManager {
         // caller; the result is harmlessly discarded if the caller is gone.
         let db_conn = db.conn.clone();
         let conn_id_for_task = conn_id.to_string();
+        let checkpoints = self.turn_checkpoints.clone();
         let handle = tokio::spawn(async move {
             // Holding the owned guard for the whole task is what shields the
             // persistence from caller cancellation.
@@ -2216,13 +2275,20 @@ impl ConnectionManager {
                 let forked_session_id = protocol_result.forked_session_id;
                 let original_session_id = protocol_result.original_session_id;
 
-                let sibling_id = Self::persist_fork_outcome(
+                let (sibling_id, adopted) = Self::persist_fork_outcome(
                     &db_conn,
                     conversation_id,
                     forked_session_id.clone(),
                     original_session_id.clone(),
+                    rewind.is_some(),
                 )
                 .await?;
+                // A rewind drops the checkpoints of the turns it removed here,
+                // not in the caller, so a caller that goes away can't leave
+                // them matching turns the conversation no longer has.
+                if let Some(cut) = &rewind {
+                    checkpoints.rewind(conversation_id, cut).await;
+                }
 
                 // Fork mutates the sidebar in two ways the rest of the system
                 // never sees otherwise: the current row's title (`[Fork] …`) and
@@ -2237,10 +2303,24 @@ impl ConnectionManager {
                     conversation_id,
                 )
                 .await;
-                crate::commands::conversations::emit_conversation_upsert(
-                    &emitter, &db_conn, sibling_id,
-                )
-                .await;
+                if rewind.is_none() {
+                    crate::commands::conversations::emit_conversation_upsert(
+                        &emitter, &db_conn, sibling_id,
+                    )
+                    .await;
+                } else {
+                    // A rewind's sibling is only kept for the record, and was
+                    // written deleted. Never announced — unless the lifecycle
+                    // subscriber made and announced it first (see
+                    // `persist_fork_outcome`): take that back.
+                    if adopted {
+                        crate::commands::conversations::emit_conversation_deleted(
+                            &emitter, sibling_id,
+                        );
+                    }
+                    // Committed: subscribers can now reload the rewound history.
+                    emit_with_state(&state_arc, &emitter, AcpEvent::HistoryRewound).await;
+                }
 
                 Ok(ForkResultInfo {
                     forked_session_id,
@@ -2274,7 +2354,13 @@ impl ConnectionManager {
     /// Persist the two-row fork layout: re-point the current row at S2 under a
     /// locked `[Fork]` title prefix, and INSERT a sibling row preserving the
     /// pre-fork (S1) history at `PendingReview`, which inherits the original's
-    /// title lock. Returns the sibling row id.
+    /// title lock. Returns the sibling row id, and whether that row already
+    /// existed (adopted, see below) rather than being inserted here.
+    ///
+    /// For a chat `rewind` the current row keeps its title and lock, and the
+    /// sibling is deleted in the same transaction it is written in — inserted
+    /// with `deleted_at` set, or soft-deleted when adopted — so no listing can
+    /// ever return it.
     ///
     /// Both titles outlive the per-turn auto-title backfill by design: neither
     /// the user's own name nor Zwiim's `[Fork] ` marker exists in the session
@@ -2318,12 +2404,15 @@ impl ConnectionManager {
         conversation_id: i32,
         forked_session_id: String,
         original_session_id: String,
-    ) -> Result<i32, AcpError> {
+        rewind: bool,
+    ) -> Result<(i32, bool), AcpError> {
         use sea_orm::sea_query::Expr;
         use sea_orm::{ColumnTrait, QueryFilter};
 
+        // A rewound row stays the same conversation: no `[Fork]` marker.
+        let mark_title = !rewind;
         db_conn
-            .transaction::<_, i32, sea_orm::DbErr>(|txn| {
+            .transaction::<_, (i32, bool), sea_orm::DbErr>(|txn| {
                 Box::pin(async move {
                     let now = chrono::Utc::now();
 
@@ -2399,7 +2488,7 @@ impl ConnectionManager {
                     // after this fn returns; the lifecycle subscriber's later
                     // SessionStarted{S2} write is an idempotent no-op.
                     let mut active: conversation::ActiveModel = current.into();
-                    if let Some(ref clean) = clean_title {
+                    if let Some(clean) = clean_title.as_ref().filter(|_| mark_title) {
                         active.title = Set(Some(format!("[Fork] {clean}")));
                         // ...and lock it. The `[Fork] ` marker is Zwiim's own —
                         // no parser derives it from a transcript — so on an
@@ -2444,7 +2533,13 @@ impl ConnectionManager {
                         .one(txn)
                         .await?
                     {
-                        return Ok(existing.id);
+                        if rewind {
+                            let mut hidden: conversation::ActiveModel = existing.into();
+                            hidden.deleted_at = Set(Some(now));
+                            let hidden = hidden.update(txn).await?;
+                            return Ok((hidden.id, true));
+                        }
+                        return Ok((existing.id, true));
                     }
 
                     // INSERT sibling row preserving pre-fork (S1) history.
@@ -2466,13 +2561,13 @@ impl ConnectionManager {
                         message_count: Set(0),
                         created_at: Set(now),
                         updated_at: Set(now),
-                        deleted_at: Set(None),
+                        deleted_at: Set(rewind.then_some(now)),
                         pinned_at: Set(None),
                         origin_cwd: Set(None),
                         session_id: NotSet,
                     };
                     let inserted = sibling.insert(txn).await?;
-                    Ok(inserted.id)
+                    Ok((inserted.id, false))
                 })
             })
             .await

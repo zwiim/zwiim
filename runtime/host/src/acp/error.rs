@@ -69,6 +69,11 @@ pub enum AcpError {
     /// agent text: the vendor's answer may echo the credential.
     #[error("Codex sign-in failed. Check the API key, or sign in to Codex.")]
     CodexSignInFailed,
+    /// The agent refused to fork at the message Zwiim named (`invalid_params`
+    /// on a pointed `session/fork`): it no longer has that message. Carries
+    /// the agent's sanitized answer.
+    #[error("the agent could not fork at that message: {0}")]
+    ForkPointRejected(String),
 }
 
 impl AcpError {
@@ -116,6 +121,7 @@ impl AcpError {
             Self::ConnectionNotFound(_) => Some("connection_not_found"),
             Self::McpRejectedByAgent(_) => Some("mcp_rejected_by_agent"),
             Self::CodexSignInFailed => Some("agent_sign_in_failed"),
+            Self::ForkPointRejected(_) => Some("fork_point_rejected"),
             Self::Protocol(_) => None,
         }
     }

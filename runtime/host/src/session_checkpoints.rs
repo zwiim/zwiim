@@ -40,6 +40,15 @@ const MAX_DELEGATION_DEPTH: usize = 8;
 #[derive(Clone, Default)]
 pub struct TurnCheckpoints(Arc<Mutex<Inner>>);
 
+/// The checkpoints a chat rewind makes stale: those of session `session_id`
+/// at `root` from turn `from` on (see [`rewind_from`]).
+#[derive(Debug, Clone)]
+pub(crate) struct RewindCut {
+    pub root: PathBuf,
+    pub session_id: String,
+    pub from: u32,
+}
+
 #[derive(Default)]
 struct Inner {
     /// By connection id.
@@ -247,6 +256,16 @@ impl TurnCheckpoints {
         roots.sort();
         roots.dedup();
         roots
+    }
+
+    /// After `conversation_id`'s chat went back to before turn `cut.from`:
+    /// end its open turns, then forget that turn and every later one, so the
+    /// checkpoints keep matching the conversation. Turn numbers keep counting
+    /// up; restore points stay.
+    pub(crate) async fn rewind(&self, conversation_id: i32, cut: &RewindCut) {
+        self.close_conversation(conversation_id, "interrupted")
+            .await;
+        checkpoint::drop_from(&cut.root, &cut.session_id, cut.from).await;
     }
 
     /// Before a new turn: end turns this one supersedes (the connection's
@@ -579,6 +598,38 @@ pub(crate) async fn start_checkpoint_of(
     Some(starts.swap_remove(idx))
 }
 
+/// The first turn number a chat rewind to before user turn `turn_id` makes
+/// stale: that turn's own, else the one after the last earlier turn's, else
+/// the first. Checkpoints of turns that never matched go with it, as they could
+/// never be reverted to and would blur matching the turns sent next.
+pub(crate) async fn rewind_from(
+    root: &Path,
+    session_id: &str,
+    turns: &[MessageTurn],
+    turn_id: &str,
+) -> u32 {
+    let starts = start_checkpoints(root, session_id).await;
+    rewind_cut(turns, &starts, turn_id)
+}
+
+fn rewind_cut(turns: &[MessageTurn], starts: &[Checkpoint], turn_id: &str) -> u32 {
+    let matched = match_turns(turns, starts);
+    if let Some(&idx) = matched.get(turn_id) {
+        return starts[idx].key.ordinal;
+    }
+    let earlier: HashSet<&str> = turns
+        .iter()
+        .take_while(|t| t.id != turn_id)
+        .map(|t| t.id.as_str())
+        .collect();
+    matched
+        .iter()
+        .filter(|(id, _)| earlier.contains(id.as_str()))
+        .map(|(_, &idx)| starts[idx].key.ordinal + 1)
+        .max()
+        .unwrap_or(1)
+}
+
 /// The session `conversation_id` belongs to: its own, or for a delegated
 /// child, the nearest ancestor's.
 async fn session_of(db: &DatabaseConnection, conversation_id: i32) -> Option<String> {
@@ -695,6 +746,21 @@ mod tests {
 
     fn pairs(list: &[(&str, u32)]) -> Vec<(String, u32)> {
         list.iter().map(|(id, o)| (id.to_string(), *o)).collect()
+    }
+
+    #[test]
+    fn a_chat_rewind_cuts_at_the_turn_or_just_after_the_last_earlier_one() {
+        let cut = |turns: &[Option<&str>], cps: &[Option<&str>], turn_id: &str| {
+            rewind_cut(&transcript(turns), &starts(cps), turn_id)
+        };
+        let abc = [Some("a"), Some("b"), Some("c")];
+        assert_eq!(cut(&abc, &abc, "turn-2"), 2, "its own checkpoint");
+        // `b` was never checkpointed: everything after `a`'s goes.
+        assert_eq!(cut(&abc, &[Some("a"), Some("c")], "turn-2"), 2);
+        assert_eq!(cut(&abc, &[Some("a"), Some("x"), Some("c")], "turn-2"), 2);
+        // Nothing earlier matched: every turn goes.
+        assert_eq!(cut(&abc, &[Some("x"), Some("c")], "turn-2"), 1);
+        assert_eq!(cut(&abc, &[], "turn-2"), 1);
     }
 
     #[test]

@@ -108,6 +108,14 @@ fn is_removed_worktree(row: &folder::Model) -> bool {
     row.deleted_at.is_some() && row.parent_id.is_some()
 }
 
+/// Refuse Folder `row` when it is a removed worktree workspace.
+pub(crate) fn ensure_not_removed(row: &folder::Model) -> Result<(), AppCommandError> {
+    match is_removed_worktree(row) {
+        true => Err(removed(row.workspace_id.as_deref().unwrap_or_default())),
+        false => Ok(()),
+    }
+}
+
 async fn find(
     conn: &DatabaseConnection,
     workspace_id: &str,

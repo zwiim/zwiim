@@ -2969,6 +2969,51 @@ async fn ws_subscribe_snapshot_live_replay_and_epoch() {
 }
 
 #[tokio::test]
+async fn ws_history_rewind_sends_subscribers_a_fresh_snapshot() {
+    let h = host(true).await;
+    let (sid, _rx) = h.live_session().await;
+    let mut ws = h.ws().await;
+    ws.send_json(&json!({"op": "session.subscribe", "subscription_id": "a", "session_id": sid}))
+        .await;
+    let snap = recv(&mut ws).await;
+    assert_eq!(snap["type"], "snapshot");
+    let epoch = snap["epoch"].as_str().unwrap().to_string();
+    let base = snap["event_seq"].as_u64().unwrap();
+    h.emit(delta("old")).await;
+    assert_eq!(recv(&mut ws).await["event"]["type"], "agent.message_delta");
+
+    // The chat was rewound: the subscriber gets the session afresh, which is
+    // what makes it reload the transcript, and no event of its own.
+    h.emit(AcpEvent::HistoryRewound).await;
+    let fresh = recv(&mut ws).await;
+    assert_eq!(fresh["type"], "snapshot", "{fresh}");
+    assert_eq!(fresh["subscription_id"], "a");
+    assert_eq!(fresh["session_id"], sid.as_str());
+    assert_eq!(fresh["epoch"], epoch.as_str());
+    let rewound = fresh["event_seq"].as_u64().unwrap();
+    assert!(rewound > base + 1, "covers the rewind itself");
+    h.emit(delta("new")).await;
+    let ev = recv(&mut ws).await;
+    assert_eq!(ev["event"]["payload"], json!({"text": "new"}));
+    assert!(ev["event"]["seq"].as_u64().unwrap() > rewound);
+    ws.close().await;
+
+    // A client that was away across the rewind is not replayed the gap: its
+    // transcript is no longer the session's.
+    let mut ws = h.ws().await;
+    ws.send_json(&json!({"op": "session.subscribe", "subscription_id": "b", "session_id": sid, "since_seq": base, "epoch": epoch}))
+        .await;
+    let f = recv(&mut ws).await;
+    assert_eq!(f["type"], "snapshot", "{f}");
+    // After the rewind, a gap is replayed as before.
+    let mut ws = h.ws().await;
+    ws.send_json(&json!({"op": "session.subscribe", "subscription_id": "c", "session_id": sid, "since_seq": rewound, "epoch": epoch}))
+        .await;
+    let f = recv(&mut ws).await;
+    assert_eq!(f["type"], "replay", "{f}");
+}
+
+#[tokio::test]
 async fn ws_detach_session_not_live_and_errors() {
     let h = host(true).await;
     let (sid, _rx) = h.live_session().await;

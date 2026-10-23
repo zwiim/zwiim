@@ -144,8 +144,17 @@ export function reduceSession(view: SessionView, frame: SessionFrame): SessionVi
     case "history":
       return { ...view, history: frame.turns, historyStale: false, settled: null };
     case "options":
-      return { ...view, options: frame.options };
+      return { ...view, options: keepRewindHint(view.options, frame.options) };
   }
+}
+
+/**
+ * `next`, keeping `can_rewind_chat` from `prev` when `next` does not say:
+ * only `session.options` replies carry it, not live option changes.
+ */
+function keepRewindHint(prev: SessionOptions | null, next: SessionOptions | null): SessionOptions | null {
+  if (!next || next.can_rewind_chat !== undefined || prev?.can_rewind_chat === undefined) return next;
+  return { ...next, can_rewind_chat: prev.can_rewind_chat };
 }
 
 function applySnapshot(
@@ -174,7 +183,7 @@ function applySnapshot(
     turnUsage: s.turn_usage ?? null,
     // A freshly spawned agent may not have advertised its options yet; its
     // `session.options` event follows.
-    options: s.options ?? view.options,
+    options: s.options ? keepRewindHint(view.options, s.options) : view.options,
     // Likewise its commands, announced shortly after it starts.
     commands: s.commands && s.commands.length > 0 ? s.commands : view.commands,
     historyStale: true,
@@ -299,7 +308,7 @@ export function applyEvent(view: SessionView, ev: SessionEvent): SessionView {
     case "session.status":
       return { ...next, sessionStatus: ev.payload.status };
     case "session.options":
-      return { ...next, options: ev.payload.options };
+      return { ...next, options: keepRewindHint(next.options, ev.payload.options) };
     case "session.commands":
       return { ...next, commands: ev.payload.commands };
     case "session.usage":

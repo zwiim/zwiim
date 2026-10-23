@@ -643,6 +643,24 @@ pub async fn cap(root: &Path, session_id: &str, keep: u32) {
     delete_refs(root, &doomed).await;
 }
 
+/// Forget the turns of `session_id` from turn `from` on, both phases. Restore
+/// points (`revert-<ms>`) and earlier turns stay. Failures are logged.
+pub async fn drop_from(root: &Path, session_id: &str, from: u32) {
+    let Some(root) = repo_root(root).filter(|_| ref_safe(session_id)) else {
+        return;
+    };
+    let prefix = session_prefix(session_id);
+    let refs = match session_refs(root, session_id).await {
+        Ok(refs) => refs,
+        Err(reason) => return cleanup_failed(&reason),
+    };
+    let doomed: Vec<String> = refs
+        .into_iter()
+        .filter(|r| parse_ref(&prefix, r).is_some_and(|(ordinal, _)| ordinal >= from))
+        .collect();
+    delete_refs(root, &doomed).await;
+}
+
 /// What changed between `key`'s start and end checkpoints; `None` when either
 /// is missing or the diff fails.
 pub async fn changes(root: &Path, key: &CheckpointKey) -> Option<TurnChanges> {

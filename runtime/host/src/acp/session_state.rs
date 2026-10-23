@@ -1285,6 +1285,11 @@ impl SessionState {
                 // already done — the event fires only once per connection.
                 self.selectors_ready = true;
             }
+            AcpEvent::HistoryRewound => {
+                // No-op on purpose: the rewound transcript lives in the agent's
+                // session, not in live state (a rewind only runs between
+                // turns). The event exists for subscribers to resync on.
+            }
             AcpEvent::Error {
                 message,
                 code,

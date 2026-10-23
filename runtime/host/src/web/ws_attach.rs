@@ -21,7 +21,7 @@ use tokio::task::JoinHandle;
 use crate::acp::internal_bus::EventBusMetrics;
 use crate::acp::manager::ConnectionManager;
 use crate::acp::session_state::LiveSessionSnapshot;
-use crate::acp::types::EventEnvelope;
+use crate::acp::types::{AcpEvent, EventEnvelope};
 
 /// Maximum number of events delivered in a single `replay` response. Larger
 /// gaps fall through to a `snapshot` even when the ring buffer can satisfy
@@ -142,6 +142,8 @@ pub async fn handle_attach(
     //   - cursor in ring buffer with small gap → replay
     //   - cursor in ring buffer with large gap → snapshot (cheaper)
     //   - cursor older than ring buffer → snapshot (only choice)
+    //   - gap holds a history rewind → snapshot (the client's transcript is
+    //     no longer the session's, and a snapshot is what reloads it)
     let snapshot_msg = || ServerMsg::Snapshot {
         subscription_id: subscription_id.clone(),
         connection_id: connection_id.clone(),
@@ -162,7 +164,11 @@ pub async fn handle_attach(
             snapshot_msg()
         }
         Some(cursor) => match s.recent_events_after(cursor) {
-            Some(events) if events.len() <= REPLAY_BATCH_THRESHOLD && !events.is_empty() => {
+            Some(events)
+                if events.len() <= REPLAY_BATCH_THRESHOLD
+                    && !events.is_empty()
+                    && !events.iter().any(|e| rewinds_history(e)) =>
+            {
                 let event_count = events.len() as u64;
                 let high_water_seq = events.last().expect("non-empty checked above").seq;
                 metrics.replay_count.fetch_add(1, Ordering::Relaxed);
@@ -176,7 +182,8 @@ pub async fn handle_attach(
                     high_water_seq,
                 }
             }
-            // Either too many to batch, or buffer doesn't cover the cursor.
+            // Too many to batch, buffer doesn't cover the cursor, or the
+            // history was rewound in the gap.
             _ => {
                 metrics
                     .snapshot_fallback_count
@@ -192,6 +199,30 @@ pub async fn handle_attach(
     Ok(AttachOutcome {
         initial_msg,
         receiver,
+    })
+}
+
+/// Whether `envelope` says its session's history was rewound: a subscriber
+/// must take a fresh snapshot rather than apply further events to the
+/// transcript it holds.
+pub fn rewinds_history(envelope: &EventEnvelope) -> bool {
+    matches!(envelope.payload, AcpEvent::HistoryRewound)
+}
+
+/// A fresh `Snapshot` frame of `connection_id`, as an attach without a cursor
+/// gets. `None` when the connection is gone.
+pub async fn snapshot(
+    manager: &ConnectionManager,
+    subscription_id: String,
+    connection_id: String,
+) -> Option<ServerMsg> {
+    let state_arc = manager.get_state(&connection_id).await?;
+    let s = state_arc.read().await;
+    Some(ServerMsg::Snapshot {
+        subscription_id,
+        connection_id,
+        snapshot: Box::new(s.to_snapshot()),
+        event_seq: s.event_seq,
     })
 }
 
