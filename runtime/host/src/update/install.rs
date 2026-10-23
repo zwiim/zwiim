@@ -56,6 +56,11 @@ pub const HOST_BIN: &str = "zwiim-host";
 pub const MCP_BIN: &str = "zwiim-mcp.exe";
 #[cfg(not(windows))]
 pub const MCP_BIN: &str = "zwiim-mcp";
+/// The GitHub CLI shipped with the Host (see `git_harness::find_gh`).
+#[cfg(windows)]
+pub const GH_BIN: &str = "gh.exe";
+#[cfg(not(windows))]
+pub const GH_BIN: &str = "gh";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
@@ -194,14 +199,14 @@ pub fn worker_exe(root: &Path) -> Option<PathBuf> {
     exe.is_file().then_some(exe)
 }
 
-/// Copy a complete install (the Host and, when present, the MCP bridge next
-/// to it) from `from_dir` into `versions/<version>` by rename.
+/// Copy a complete install (the Host and, when present, the MCP bridge and
+/// `gh` next to it) from `from_dir` into `versions/<version>` by rename.
 fn install_from_dir(root: &Path, from_dir: &Path, version: &str) -> io::Result<()> {
     let versions = root.join(VERSIONS);
     std::fs::create_dir_all(&versions)?;
     let staging = new_staging(&versions)?;
     let result = (|| {
-        for bin in [HOST_BIN, MCP_BIN] {
+        for bin in [HOST_BIN, MCP_BIN, GH_BIN] {
             let src = from_dir.join(bin);
             if src.is_file() {
                 std::fs::copy(&src, staging.join(bin))?;
@@ -309,7 +314,7 @@ pub trait PlatformCheck {
 }
 
 /// Stage a downloaded Host archive for `version`: its hash and size match
-/// the signed manifest, both binaries pass the platform check, and the Host
+/// the signed manifest, every binary passes the platform check, and the Host
 /// reports `version` itself. Only then does it get `versions/<version>`.
 pub fn stage_archive(
     root: &Path,
@@ -330,13 +335,13 @@ pub fn stage_archive(
     std::fs::create_dir_all(&versions)?;
     let staging = new_staging(&versions)?;
     let result = (|| {
-        crate::adapters::install::extract(archive, &staging, Some(&[HOST_BIN, MCP_BIN]))
+        crate::adapters::install::extract(archive, &staging, Some(&[HOST_BIN, MCP_BIN, GH_BIN]))
             .map_err(|e| StageError::Io(e.to_string()))?;
         let host = staging.join(HOST_BIN);
         if !host.is_file() {
             return Err(StageError::Io("the archive has no Host binary".into()));
         }
-        for bin in [HOST_BIN, MCP_BIN] {
+        for bin in [HOST_BIN, MCP_BIN, GH_BIN] {
             let path = staging.join(bin);
             if path.is_file() {
                 platform.check(&path).map_err(StageError::Platform)?;

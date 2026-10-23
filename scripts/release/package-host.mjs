@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Package the Host for self-update: `zwiim-host-<version>-<triple>.tar.gz`
-// holding one top directory with `zwiim-host` and `zwiim-mcp`, the layout
+// holding one top directory with `zwiim-host`, `zwiim-mcp` and `gh`, the layout
 // `update::install::stage_archive` unpacks. The binaries must already be
 // signed (Developer ID, hardened runtime) on macOS: the signature is inside
 // each Mach-O file and survives the archive.
@@ -26,7 +26,7 @@ if (reported !== version) fail(`${binDir}/zwiim-host is ${reported}, VERSION is 
 const top = `zwiim-host-${version}-${target}`;
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), "zwiim-package-"));
 fs.mkdirSync(path.join(stage, top));
-for (const name of ["zwiim-host", "zwiim-mcp"]) {
+for (const name of ["zwiim-host", "zwiim-mcp", "gh"]) {
   const src = path.join(binDir, name);
   if (!fs.existsSync(src)) fail(`missing ${src}`);
   fs.copyFileSync(src, path.join(stage, top, name));

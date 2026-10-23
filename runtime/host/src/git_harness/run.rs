@@ -170,15 +170,28 @@ impl Drop for GroupKill {
     }
 }
 
-/// The `gh` to run: `configured`, else the user's installed one (`PATH`, then
-/// the usual Homebrew locations, which a GUI-launched Host's `PATH` lacks).
+/// The `gh` to run: `configured`, else the one shipped next to the Host
+/// executable, else the user's installed one (`PATH`, then the usual Homebrew
+/// locations, which a GUI-launched Host's `PATH` lacks).
 pub(super) fn find_gh(configured: Option<&Path>) -> Result<std::path::PathBuf, GitError> {
+    let exe = crate::update::runtime::self_exe();
+    find_gh_from(configured, exe.parent())
+}
+
+fn find_gh_from(
+    configured: Option<&Path>,
+    host_dir: Option<&Path>,
+) -> Result<std::path::PathBuf, GitError> {
     if let Some(path) = configured {
         return if path.is_file() {
             Ok(path.to_path_buf())
         } else {
             Err(gh_unavailable())
         };
+    }
+    let shipped = host_dir.map(|dir| dir.join(crate::update::install::GH_BIN));
+    if let Some(path) = shipped.filter(|p| is_executable(p)) {
+        return Ok(path);
     }
     if let Ok(path) = which::which("gh") {
         return Ok(path);
@@ -195,9 +208,77 @@ pub(super) fn find_gh(configured: Option<&Path>) -> Result<std::path::PathBuf, G
     .ok_or_else(gh_unavailable)
 }
 
+fn is_executable(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.is_file() && meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        meta.is_file()
+    }
+}
+
 fn gh_unavailable() -> GitError {
     GitError::new(
         GitErrorCode::GhUnavailable,
         "The GitHub CLI (gh) is not installed. Install it from https://cli.github.com and run `gh auth login`.",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_exe(path: &Path, mode: u32) {
+        std::fs::write(path, b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        #[cfg(not(unix))]
+        let _ = mode;
+    }
+
+    #[test]
+    fn prefers_the_gh_shipped_next_to_the_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let shipped = dir.path().join(crate::update::install::GH_BIN);
+        write_exe(&shipped, 0o755);
+        assert_eq!(find_gh_from(None, Some(dir.path())).unwrap(), shipped);
+    }
+
+    #[test]
+    fn configured_gh_wins_over_the_shipped_one() {
+        let dir = tempfile::tempdir().unwrap();
+        write_exe(&dir.path().join(crate::update::install::GH_BIN), 0o755);
+        let configured = dir.path().join("my-gh");
+        write_exe(&configured, 0o755);
+        assert_eq!(
+            find_gh_from(Some(&configured), Some(dir.path())).unwrap(),
+            configured
+        );
+        let missing = dir.path().join("absent");
+        assert_eq!(
+            find_gh_from(Some(&missing), Some(dir.path()))
+                .unwrap_err()
+                .code,
+            GitErrorCode::GhUnavailable
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skips_a_shipped_gh_that_is_not_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let shipped = dir.path().join(crate::update::install::GH_BIN);
+        write_exe(&shipped, 0o644);
+        // Falls through to the user's install, whatever that is here.
+        assert_ne!(find_gh_from(None, Some(dir.path())).ok(), Some(shipped));
+    }
 }

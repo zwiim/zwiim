@@ -463,7 +463,7 @@ mod installer {
     use sha2::{Digest, Sha256};
 
     use super::super::install::{
-        self, Outcome, PlatformCheck, Seeded, StageError, StageSource, HOST_BIN, MCP_BIN,
+        self, Outcome, PlatformCheck, Seeded, StageError, StageSource, GH_BIN, HOST_BIN, MCP_BIN,
     };
     use super::super::manifest::Artifact;
     use crate::db::schema_guard::MigrationOutcome;
@@ -505,6 +505,7 @@ mod installer {
             let exe = self.bundle.join(HOST_BIN);
             write_exe(&exe, &host_script(version));
             write_exe(&self.bundle.join(MCP_BIN), "#!/bin/sh\n");
+            write_exe(&self.bundle.join(GH_BIN), "#!/bin/sh\n");
             exe
         }
 
@@ -526,6 +527,7 @@ mod installer {
             for (name, body) in [
                 (HOST_BIN, host_body),
                 (MCP_BIN, "#!/bin/sh\n"),
+                (GH_BIN, "#!/bin/sh\n"),
                 ("README", "not extracted"),
             ] {
                 let mut header = tar::Header::new_gnu();
@@ -567,6 +569,18 @@ mod installer {
         }
     }
 
+    /// Rejects only the binary named `0`.
+    struct RejectOnly(&'static str);
+    impl PlatformCheck for RejectOnly {
+        fn check(&self, binary: &Path) -> Result<(), String> {
+            if binary.file_name().is_some_and(|n| n == self.0) {
+                Err(format!("{} is not signed by Team ID TEAM123", self.0))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
     fn installs(root: &Path) -> Vec<String> {
         let mut names: Vec<String> = std::fs::read_dir(root.join("versions"))
             .map(|d| {
@@ -591,6 +605,12 @@ mod installer {
         assert!(install::version_dir(&w.root, "0.1.0")
             .join(MCP_BIN)
             .is_file());
+        assert!(
+            install::version_dir(&w.root, "0.1.0")
+                .join(GH_BIN)
+                .is_file(),
+            "the bundled gh is installed with the Host"
+        );
         // Starting again changes nothing.
         let exe = w.bundle("0.1.0");
         assert_eq!(
@@ -639,6 +659,7 @@ mod installer {
         assert_eq!(state.seen.get("0.2.0").map(String::as_str), Some("d1"));
         let dir = install::version_dir(&w.root, "0.2.0");
         assert!(dir.join(HOST_BIN).is_file() && dir.join(MCP_BIN).is_file());
+        assert!(dir.join(GH_BIN).is_file(), "gh ships in the update too");
         assert!(
             !dir.join("README").exists(),
             "only the Host binaries are extracted"
@@ -670,6 +691,18 @@ mod installer {
         );
         assert!(matches!(
             install::stage_archive(&w.root, &archive, &artifact, "0.2.0", "d", &Reject),
+            Err(StageError::Platform(_))
+        ));
+        // gh runs with the user's GitHub login: it is checked like the Host.
+        assert!(matches!(
+            install::stage_archive(
+                &w.root,
+                &archive,
+                &artifact,
+                "0.2.0",
+                "d",
+                &RejectOnly(GH_BIN)
+            ),
             Err(StageError::Platform(_))
         ));
         // A binary that is not the version the release names.

@@ -2,9 +2,11 @@
 // Third-party notices for what Zwiim ships, and a gate against copyleft.
 //
 // Desktop: the Rust crates built into zwiim-host, zwiim-mcp and the Desktop
-// shell (cargo-about, `about.toml`), plus the npm packages bundled into the
-// Desktop UI. Mobile: the npm packages of the app. Development-only packages
-// and the agent CLIs (downloaded at install, never shipped) are not included.
+// shell (cargo-about, `about.toml`), the npm packages bundled into the
+// Desktop UI, and the GitHub CLI shipped next to the Host (its MIT license
+// and the licenses built into it). Mobile: the npm packages of the app.
+// Development-only packages and the agent CLIs (downloaded at install, never
+// shipped) are not included.
 //
 // Fails when a shipped package is under a copyleft license (GPL, AGPL, LGPL,
 // SSPL, ...): Zwiim is closed source.
@@ -16,6 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { fetchGh, ghDependencyNotices, GH_VERSION } from "../gh/fetch.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const check = process.argv.includes("--check");
@@ -153,6 +156,25 @@ function incorporated() {
   ];
 }
 
+/** The pinned GitHub CLI: one entry for the notice, and its dependencies for the gate. */
+async function ghNotices() {
+  const triple = execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/^host: (\S+)$/m)[1];
+  const { bin, license } = await fetchGh(triple);
+  const deps = ghDependencyNotices(bin).trim();
+  // `name (version) - license - url` per dependency, before the license texts.
+  const gated = [...deps.matchAll(/^(\S+) \(([^)]+)\) - (\S+) - \S+$/gm)].map(([, name, version, l]) => ({
+    id: `${name}@${version}`,
+    license: l,
+  }));
+  if (!gated.length) fail("gh licenses listed no dependencies");
+  const entry = {
+    id: `GitHub CLI ${GH_VERSION} (https://github.com/cli/cli)`,
+    license: "MIT",
+    text: `${fs.readFileSync(license, "utf8").trim()}\n\n${deps}`,
+  };
+  return { entry, gated };
+}
+
 // ─── Output ─────────────────────────────────────────────────────────────
 
 /** Packages grouped under each distinct license text, so a text appears once. */
@@ -208,7 +230,8 @@ const mobileNpm = npmNotices([
   [root, "clients/sdk"],
   [root, "clients/preview"],
 ]);
-gate([...rust, ...desktopNpm, ...mobileNpm]);
+const gh = await ghNotices();
+gate([...rust, ...desktopNpm, ...mobileNpm, ...gh.gated]);
 
 write(
   "clients/desktop/src-tauri/THIRD_PARTY_NOTICES.txt",
@@ -216,6 +239,7 @@ write(
     ["Incorporated source", incorporated()],
     ["Rust crates", rust],
     ["JavaScript packages", desktopNpm],
+    ["Bundled programs", [gh.entry]],
   ]),
 );
 write(
