@@ -25,16 +25,24 @@ import {
 } from "lucide-react";
 import {
   clockTime,
+  historySubagentCards,
+  liveSubagentCards,
+  modelShortName,
+  subagentDescription,
   turnDuration,
   workspaceFile,
   type AgentImage,
   type ChangedFile,
   type HistoryBlock,
   type HistoryTurn,
+  type LiveBlock,
   type LiveTurn,
+  type SessionBackground,
+  type SubagentCard,
   type ToolCall,
   type ToolCallStatus,
   type TurnGroup,
+  waitingText,
 } from "@zwiim/sdk";
 import { opensInPreview } from "@zwiim/preview";
 import { AgentImageChip } from "@/attachments/AgentImageChip";
@@ -547,6 +555,137 @@ export function Thought({ text, className }: { text: string; className?: string 
   );
 }
 
+/**
+ * One sub-agent, at its launch's place: "Agent • Sonnet 5", what it was sent
+ * to do, how long it ran. It opens to the prompt it was given (behind its own
+ * toggle) and what it did, drawn as the transcript draws a reply; its own
+ * sub-agents nest as cards. What it did mounts only while it is open.
+ */
+function SubagentCardView({
+  card,
+  title,
+  images,
+  className,
+  children,
+}: {
+  card: SubagentCard<unknown>;
+  /** The launch's title, for a sub-agent that says nothing of what it does. */
+  title?: string | null;
+  /** Images its launch returned; shown after what it did. */
+  images?: readonly AgentImage[];
+  className?: string;
+  /** What it did; rendered only while open. */
+  children: () => React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [promptOpen, setPromptOpen] = useState(false);
+  const id = useId();
+  const model = modelShortName(card.model);
+  const description = subagentDescription(card.description, title);
+  const running = card.status === "in_progress" || card.status === "pending";
+  const failed = card.status === "failed";
+  const tools = card.tool_count === 1 ? "1 tool" : `${card.tool_count} tools`;
+  const prompt = card.prompt?.trim();
+  return (
+    <div
+      className={cn("text-ui relative", className)}
+      data-testid="subagent-card"
+      data-status={card.status ?? ""}
+    >
+      <button
+        type="button"
+        className="group/row hover:bg-muted -mx-2 flex w-[calc(100%+1rem)] min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left transition-colors"
+        aria-expanded={open}
+        aria-controls={open ? id : undefined}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <Bot className="text-muted-foreground size-3.5 shrink-0" />
+        {/* Running: the name shimmers, as a running tool's verb does. */}
+        <span
+          className={cn("text-foreground/90 shrink-0", running && "animate-shimmer motion-reduce:animate-none")}
+          data-testid="subagent-name"
+        >
+          Agent
+          {model && (
+            <>
+              <span className="text-muted-foreground"> • </span>
+              {model}
+            </>
+          )}
+        </span>
+        {description && (
+          <span
+            className="text-muted-foreground min-w-0 truncate font-mono text-xs"
+            title={description}
+            data-testid="subagent-description"
+          >
+            {description}
+          </span>
+        )}
+        <span className="text-muted-foreground ml-auto flex shrink-0 items-center gap-1.5 font-mono text-xs tabular-nums">
+          {card.tool_count > 0 && <span data-testid="subagent-tools">{tools}</span>}
+          {card.duration_ms !== null ? (
+            <span data-testid="subagent-duration">{turnDuration(card.duration_ms)}</span>
+          ) : (
+            running && <WorkingMark />
+          )}
+        </span>
+        {failed && (
+          <span className="text-destructive flex shrink-0 items-center gap-0.5 text-xs">
+            <X className="size-3" /> failed
+          </span>
+        )}
+        {card.status && !failed && <span className="sr-only">{STATUS_LABEL[card.status] ?? card.status}</span>}
+        <ChevronRight
+          className={cn(
+            "text-muted-foreground size-3 shrink-0 opacity-0 transition-[rotate,opacity] duration-180 ease-in-out group-hover/row:opacity-100",
+            open && "rotate-90 opacity-100",
+          )}
+        />
+      </button>
+      {open && (
+        <div
+          id={id}
+          className="border-border animate-fade-in mt-1 mb-2 ml-1.5 flex flex-col gap-2.5 border-l-2 pl-3 motion-reduce:animate-none"
+          data-testid="subagent-body"
+        >
+          {prompt && (
+            <div>
+              <button
+                type="button"
+                className="text-muted-foreground hover:text-foreground flex cursor-pointer items-center gap-1 text-xs transition-colors"
+                aria-expanded={promptOpen}
+                onClick={() => setPromptOpen((o) => !o)}
+              >
+                <ChevronRight
+                  className={cn("size-3 transition-[rotate] duration-180 ease-in-out", promptOpen && "rotate-90")}
+                />
+                Prompt
+              </button>
+              {promptOpen && (
+                <p
+                  className="text-muted-foreground bg-code mt-1 max-h-72 overflow-auto rounded-lg p-3 font-mono text-xs leading-5 whitespace-pre-wrap"
+                  data-testid="subagent-prompt"
+                >
+                  {clipToolText(prompt)}
+                </p>
+              )}
+            </div>
+          )}
+          {children()}
+          {!!images?.length && (
+            <div className="flex flex-wrap gap-1.5" data-testid="subagent-images">
+              {images.map((img, j) => (
+                <AgentImageChip key={j} path={img.path} name={img.name} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const userText = (blocks: { type: string; text?: string }[]) =>
   blocks
     .map((b) => (b.type === "text" ? (b.text ?? "") : ""))
@@ -577,11 +716,14 @@ export function HistoryTurnView({
   turn,
   onRevert,
   revertDisabled,
+  background,
 }: {
   turn: HistoryTurn;
   /** Offered on a message the Host can put the session back to. */
   onRevert?(): void;
   revertDisabled?: boolean;
+  /** The session's background work: a sub-agent still at it reads running. */
+  background?: SessionBackground | null;
 }) {
   if (turn.role === "user") {
     const text = userText(turn.blocks);
@@ -603,21 +745,50 @@ export function HistoryTurnView({
       </div>
     );
   }
-  // A result is shown with its call; one without a call stands alone.
-  const results = new Map<string, Extract<HistoryBlock, { type: "tool_result" }>>();
-  for (const b of turn.blocks) if (b.type === "tool_result" && b.tool_call_id) results.set(b.tool_call_id, b);
-  const called = new Set(
-    turn.blocks.flatMap((b) => (b.type === "tool_call" && b.tool_call_id ? [b.tool_call_id] : [])),
-  );
   return (
     <div className="text-body flex flex-col gap-2.5">
-      {turn.blocks.map((b, i) => {
+      <HistoryBlocks blocks={turn.blocks} background={background ?? null} />
+    </div>
+  );
+}
+
+/**
+ * A reply's blocks as the transcript shows them, or a sub-agent's: its
+ * launches (the tool calls that started a sub-agent) as sub-agent cards.
+ */
+function HistoryBlocks({
+  blocks,
+  background,
+}: {
+  blocks: readonly HistoryBlock[];
+  background: SessionBackground | null;
+}) {
+  // A result is shown with its call; one without a call stands alone.
+  const results = new Map<string, Extract<HistoryBlock, { type: "tool_result" }>>();
+  for (const b of blocks) if (b.type === "tool_result" && b.tool_call_id) results.set(b.tool_call_id, b);
+  const called = new Set(blocks.flatMap((b) => (b.type === "tool_call" && b.tool_call_id ? [b.tool_call_id] : [])));
+  const cards = new Map(historySubagentCards(blocks, background).map((c) => [c.parent_id, c]));
+  // Cards keep their open state by launch order within the turn, never by id.
+  let launches = 0;
+  return (
+    <>
+      {blocks.map((b, i) => {
         switch (b.type) {
           case "text":
             return <Markdown key={i} text={b.text} />;
           case "thought":
             return <Thought key={i} text={b.text} />;
           case "tool_call": {
+            const card = b.tool_call_id ? cards.get(b.tool_call_id) : undefined;
+            if (card) {
+              // Its result's text repeats the sub-agent's last reply; its images do not.
+              const images = results.get(card.parent_id)?.images;
+              return (
+                <SubagentCardView key={`agent:${launches++}`} card={card} title={b.title} images={images}>
+                  {() => <HistoryBlocks blocks={card.blocks} background={background} />}
+                </SubagentCardView>
+              );
+            }
             const r = b.tool_call_id ? results.get(b.tool_call_id) : undefined;
             return (
               <ToolCallView
@@ -654,7 +825,7 @@ export function HistoryTurnView({
             return null;
         }
       })}
-    </div>
+    </>
   );
 }
 
@@ -662,19 +833,73 @@ export function HistoryTurnView({
  * The turn in progress (or one just finished). With `animate`, what arrives
  * eases in; a finished turn shows without it, so it does not arrive twice.
  */
-export function LiveTurnView({ turn, streaming, animate }: { turn: LiveTurn; streaming?: boolean; animate?: boolean }) {
+export function LiveTurnView({
+  turn,
+  streaming,
+  animate,
+  background,
+}: {
+  turn: LiveTurn;
+  streaming?: boolean;
+  animate?: boolean;
+  /** The session's background work: a sub-agent still at it reads running. */
+  background?: SessionBackground | null;
+}) {
   const text = turn.userMessage ? userText(turn.userMessage.blocks) : "";
-  const toolCall = (id: string): ToolCall | undefined => turn.toolCalls[id];
   const enter = animate ? ENTER : undefined;
   if (!turn.userMessage && !turn.message && !streaming) return null;
   return (
     <div className="text-body flex flex-col gap-2.5" data-testid="live-turn">
       {turn.userMessage && <UserMessage text={text} blocks={turn.userMessage.blocks} className={enter} />}
-      {turn.message?.content.map((b, i) => {
+      <LiveBlocks turn={turn} background={background ?? null} enter={enter} />
+      {streaming && <Working className={enter} turnId={turn.userMessage?.message_id} />}
+    </div>
+  );
+}
+
+/**
+ * The live reply's blocks, or (given `blocks`) a sub-agent's: its launches
+ * as sub-agent cards. The reply's also ends with any sub-agent whose launch
+ * it does not hold, so nothing a sub-agent did is hidden.
+ */
+function LiveBlocks({
+  turn,
+  blocks,
+  background,
+  enter,
+}: {
+  turn: LiveTurn;
+  blocks?: readonly LiveBlock[];
+  background: SessionBackground | null;
+  enter?: string;
+}) {
+  const scope = blocks ?? turn.message?.content ?? [];
+  const all = liveSubagentCards(turn, blocks, background);
+  const cards = new Map(all.map((c) => [c.parent_id, c]));
+  const inScope = new Set(scope.flatMap((b) => (b.type === "tool_call" ? [b.tool_call_id] : [])));
+  const orphans = all.filter((c) => !inScope.has(c.parent_id));
+  // Cards keep their open state by launch order within the turn, never by id.
+  let launches = 0;
+  const cardView = (card: SubagentCard<LiveBlock>) => (
+    <SubagentCardView
+      key={`agent:${launches++}`}
+      className={enter}
+      card={card}
+      title={turn.toolCalls[card.parent_id]?.title}
+      images={turn.toolCalls[card.parent_id]?.images}
+    >
+      {() => <LiveBlocks turn={turn} blocks={card.blocks} background={background} />}
+    </SubagentCardView>
+  );
+  return (
+    <>
+      {scope.map((b, i) => {
         if (b.type === "text") return <Markdown key={i} className={enter} text={b.text} />;
         if (b.type === "thought") return <Thought key={i} className={enter} text={b.text} />;
         if (b.type === "agent_image") return <AgentImageChip key={i} path={b.path} name={b.name} />;
-        const tc = toolCall(b.tool_call_id);
+        const card = cards.get(b.tool_call_id);
+        if (card) return cardView(card);
+        const tc: ToolCall | undefined = turn.toolCalls[b.tool_call_id];
         return (
           <ToolCallView
             key={i}
@@ -686,8 +911,8 @@ export function LiveTurnView({ turn, streaming, animate }: { turn: LiveTurn; str
           />
         );
       })}
-      {streaming && <Working className={enter} turnId={turn.userMessage?.message_id} />}
-    </div>
+      {orphans.map(cardView)}
+    </>
   );
 }
 
@@ -719,6 +944,48 @@ function Working({ className, turnId }: { className?: string; turnId?: string })
       Working
       <span className="font-mono tabular-nums">{turnDuration(now - since)}</span>
     </span>
+  );
+}
+
+/**
+ * The agent has nothing left to do but wait for its background work: how
+ * many tasks and since when, counting each second. Nothing otherwise.
+ */
+export function BackgroundWaiting({
+  background,
+  className,
+}: {
+  background: SessionBackground | null | undefined;
+  className?: string;
+}) {
+  const parsed =
+    background && background.outstanding > 0 && background.waiting_since
+      ? Date.parse(background.waiting_since)
+      : NaN;
+  // A time it cannot read counts as not waiting, as on Mobile.
+  const since = Number.isNaN(parsed) ? null : parsed;
+  const [now, setNow] = useState(() => Date.now());
+  const shown = since !== null;
+  useEffect(() => {
+    if (!shown) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [shown]);
+  if (!background || since === null) return null;
+  return (
+    <p
+      className={cn("text-muted-foreground flex items-center gap-2 text-xs", className)}
+      role="status"
+      data-testid="background-waiting"
+    >
+      <WorkingMark />
+      {waitingText(background.outstanding)}
+      {/* Hidden from screen readers: a live region must not announce every second. */}
+      <span className="font-mono tabular-nums" aria-hidden="true" data-testid="background-waiting-time">
+        {turnDuration(now - since)}
+      </span>
+    </p>
   );
 }
 

@@ -869,6 +869,365 @@ describe("changed files", () => {
   });
 });
 
+describe("sub-agent cards", () => {
+  const event = (seq: number, type: string, payload: object) => ({ type: "event", event: { session_id: "s1", seq, type, payload } });
+  const launch = (tool_call_id: string, subagent: object, extra: object = {}) => ({
+    tool_call_id,
+    title: "Agent",
+    kind: "other",
+    status: "in_progress",
+    content: null,
+    subagent,
+    ...extra,
+  });
+  const cards = () => screen.queryAllByTestId("subagent-card");
+  const row = (card: HTMLElement) => card.querySelector<HTMLButtonElement>(":scope > button")!;
+
+  /** A turn with two sub-agents; the first thinks, speaks and runs a tool. */
+  async function twoSubagents() {
+    const t = new FakeTransport();
+    const opened = await openSession(t);
+    const { frame } = opened;
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+    await frame(event(2, "agent.message_delta", { text: "Delegating." }));
+    await frame(event(3, "agent.tool_call", launch("a1", { description: "Map client add-workspace code", model: "claude-sonnet-5-5", prompt: "Find where the client adds a workspace" })));
+    await frame(event(4, "agent.subagent_thought_delta", { parent_id: "a1", text: "child plans" }));
+    await frame(event(5, "agent.subagent_message_delta", { parent_id: "a1", text: "child found it" }));
+    await frame(event(6, "agent.tool_call", { tool_call_id: "r1", title: "Read src/a.ts", kind: "read", status: "completed", content: null, parent_id: "a1" }));
+    await frame(event(7, "agent.tool_call", launch("a2", { description: "Review the diff" })));
+    return opened;
+  }
+
+  it("is one collapsed row per sub-agent, in launch order, with nothing it did mounted", async () => {
+    const { controller } = await twoSubagents();
+    const [first, second] = cards();
+    expect(cards()).toHaveLength(2);
+    expect(within(first!).getByTestId("subagent-name").textContent).toBe("Agent • Sonnet 5.5");
+    expect(within(first!).getByTestId("subagent-description").textContent).toBe("Map client add-workspace code");
+    expect(within(first!).getByTestId("subagent-tools").textContent).toBe("1 tool");
+    expect(within(second!).getByTestId("subagent-description").textContent).toBe("Review the diff");
+    // Collapsed: a button that says so, and the sub-agent's content is not in the page.
+    expect(row(first!).getAttribute("aria-expanded")).toBe("false");
+    expect(within(first!).queryByTestId("subagent-body")).toBeNull();
+    expect(screen.queryByText("child found it")).toBeNull();
+    expect(screen.queryByTestId("thought")).toBeNull();
+    // The launch is the card, not a tool row too; the reply's own text stays.
+    expect(screen.queryAllByTestId("tool-call")).toHaveLength(0);
+    expect(screen.getByText("Delegating.")).toBeTruthy();
+    controller.dispose();
+  });
+
+  it("opens to its prompt behind a toggle, then its thinking, text and tool calls", async () => {
+    const { controller } = await twoSubagents();
+    const [first] = cards();
+    fireEvent.click(row(first!));
+    expect(row(first!).getAttribute("aria-expanded")).toBe("true");
+    const body = within(first!).getByTestId("subagent-body");
+    // The prompt stays folded until asked for.
+    const toggle = within(body).getByRole("button", { name: "Prompt" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(within(body).queryByTestId("subagent-prompt")).toBeNull();
+    fireEvent.click(toggle);
+    expect(within(body).getByTestId("subagent-prompt").textContent).toBe("Find where the client adds a workspace");
+    // Drawn as the transcript draws a reply.
+    expect(within(body).getByTestId("thought").textContent).toContain("child plans");
+    expect(within(body).getAllByTestId("markdown").map((m) => m.textContent)).toContain("child found it");
+    expect(within(body).getByTestId("tool-call").textContent).toBe("Reada.tsdone");
+    // Shutting it unmounts what it did again.
+    fireEvent.click(row(first!));
+    expect(within(first!).queryByTestId("subagent-body")).toBeNull();
+    controller.dispose();
+  });
+
+  it("omits the model when the agent names none", async () => {
+    const { controller } = await twoSubagents();
+    expect(within(cards()[1]!).getByTestId("subagent-name").textContent).toBe("Agent");
+    controller.dispose();
+  });
+
+  it("reads running, then done with its duration, or failed", async () => {
+    const { controller, frame } = await twoSubagents();
+    const [first, second] = cards();
+    expect(first!.getAttribute("data-status")).toBe("in_progress");
+    expect(first!.textContent).toContain("running");
+    expect(within(first!).queryByTestId("subagent-duration")).toBeNull();
+    await frame(event(8, "agent.tool_call_update", { tool_call_id: "a1", title: null, status: "completed", content: null, subagent: { duration_ms: 106_400 } }));
+    await frame(event(9, "agent.tool_call_update", { tool_call_id: "a2", title: null, status: "failed", content: null }));
+    expect(first!.getAttribute("data-status")).toBe("completed");
+    expect(within(first!).getByTestId("subagent-duration").textContent).toBe("1m 46s");
+    expect(first!.textContent).toContain("done");
+    expect(second!.getAttribute("data-status")).toBe("failed");
+    expect(second!.textContent).toContain("failed");
+    controller.dispose();
+  });
+
+  it("renders the same from a snapshot after a reconnect", async () => {
+    const t = new FakeTransport();
+    const { controller, frame } = await openSession(t);
+    await frame({
+      type: "snapshot",
+      epoch: "e",
+      event_seq: 9,
+      snapshot: snapshot({
+        status: "prompting",
+        live_message: {
+          message_id: null,
+          role: "assistant",
+          content: [{ type: "text", text: "Delegating." }, { type: "tool_call", tool_call_id: "a1" }],
+          subagents: [{ parent_id: "a1", blocks: [{ type: "text", text: "child found it" }, { type: "tool_call", tool_call_id: "r1" }] }],
+        },
+        tool_calls: [
+          launch("a1", { description: "Map client add-workspace code", model: "claude-sonnet-5-5", prompt: "Find it" }),
+          { tool_call_id: "r1", title: "Read src/a.ts", kind: "read", status: "completed", content: null, parent_id: "a1" },
+        ],
+      }),
+    });
+    const [card] = cards();
+    expect(cards()).toHaveLength(1);
+    expect(within(card!).getByTestId("subagent-name").textContent).toBe("Agent • Sonnet 5.5");
+    expect(within(card!).getByTestId("subagent-tools").textContent).toBe("1 tool");
+    expect(screen.queryByText("child found it")).toBeNull();
+    fireEvent.click(row(card!));
+    expect(within(card!).getByTestId("markdown").textContent).toBe("child found it");
+    expect(within(card!).getByTestId("tool-call").textContent).toBe("Reada.tsdone");
+    controller.dispose();
+  });
+
+  it("renders from history, with a sub-agent's own sub-agents nested as cards", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        turn("t1", "assistant", [
+          {
+            type: "tool_call",
+            tool_call_id: "a1",
+            title: "Task",
+            input_preview: null,
+            status: null,
+            subagent: {
+              description: "Survey the repo",
+              model: "claude-opus-4-1-20250805",
+              duration_ms: 42_000,
+              blocks: [
+                { type: "text", text: "surveying" },
+                { type: "tool_call", tool_call_id: "b1", title: "Bash", input_preview: JSON.stringify({ command: "ls" }), status: null },
+                { type: "tool_result", tool_call_id: "b1", output_preview: "a.ts", is_error: false },
+                { type: "tool_call", tool_call_id: "a2", title: "Task", input_preview: null, status: "completed", subagent: { description: "Dig deeper", blocks: [] } },
+              ],
+            },
+          },
+          { type: "tool_result", tool_call_id: "a1", output_preview: "done", is_error: false },
+          { type: "text", text: "All done." },
+        ]),
+      ],
+    });
+    const { controller } = await openSession(t);
+    const [card] = cards();
+    expect(cards()).toHaveLength(1);
+    expect(card!.getAttribute("data-status")).toBe("completed");
+    expect(within(card!).getByTestId("subagent-name").textContent).toBe("Agent • Opus 4.1");
+    expect(within(card!).getByTestId("subagent-duration").textContent).toBe("42s");
+    expect(within(card!).getByTestId("subagent-tools").textContent).toBe("2 tools");
+    expect(screen.queryByText("surveying")).toBeNull();
+    fireEvent.click(row(card!));
+    const body = within(card!).getByTestId("subagent-body");
+    expect(within(body).getByText("surveying")).toBeTruthy();
+    expect(within(body).getByTestId("tool-call").textContent).toContain("Run");
+    const nested = within(body).getAllByTestId("subagent-card");
+    expect(nested).toHaveLength(1);
+    expect(within(nested[0]!).getByTestId("subagent-description").textContent).toBe("Dig deeper");
+    expect(screen.getByText("All done.")).toBeTruthy();
+    controller.dispose();
+  });
+
+  it("keeps an older Host's agent launch as a plain tool row", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        turn("t1", "assistant", [
+          { type: "tool_call", tool_call_id: "a1", title: "Task", input_preview: JSON.stringify({ description: "Survey the repo" }), status: null },
+          { type: "tool_result", tool_call_id: "a1", output_preview: "done", is_error: false },
+        ]),
+      ],
+    });
+    const { controller } = await openSession(t);
+    expect(cards()).toHaveLength(0);
+    expect(screen.getByTestId("tool-call").textContent).toContain("Agent");
+    controller.dispose();
+  });
+
+  it("says what the agent waits on and for how long, then clears", async () => {
+    const t = new FakeTransport();
+    const { controller, frame } = await openSession(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "connected" }) });
+    expect(screen.queryByTestId("background-waiting")).toBeNull();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-10-19T10:01:05Z"));
+      const tasks = [{ task_id: "t1", label: "Review", state: "running" }];
+      await frame(event(2, "session.background", { outstanding: 1, tasks, waiting_since: "2026-10-19T10:00:00Z" }));
+      const banner = screen.getByTestId("background-waiting");
+      expect(banner.textContent).toBe("Waiting on 1 background task1m 5s");
+      act(() => void vi.advanceTimersByTime(2000));
+      expect(screen.getByTestId("background-waiting-time").textContent).toBe("1m 7s");
+      await frame(event(3, "session.background", { outstanding: 3, tasks, waiting_since: "2026-10-19T10:00:00Z" }));
+      expect(screen.getByTestId("background-waiting").textContent).toContain("Waiting on 3 background tasks");
+      // Running a turn again (no longer waiting), or nothing outstanding: gone.
+      await frame(event(4, "session.background", { outstanding: 3, tasks, waiting_since: null }));
+      expect(screen.queryByTestId("background-waiting")).toBeNull();
+      await frame(event(5, "session.background", { outstanding: 1, tasks, waiting_since: "2026-10-19T10:00:00Z" }));
+      expect(screen.getByTestId("background-waiting")).toBeTruthy();
+      await frame(event(6, "session.background", { outstanding: 0, tasks: [], waiting_since: "2026-10-19T10:00:00Z" }));
+      expect(screen.queryByTestId("background-waiting")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+    controller.dispose();
+  });
+
+  it("nests a sub-agent's own sub-agents as cards in a live turn", async () => {
+    const { controller, frame } = await twoSubagents();
+    await frame(event(8, "agent.tool_call", launch("a3", { description: "Dig deeper" }, { parent_id: "a1" })));
+    await frame(event(9, "agent.subagent_message_delta", { parent_id: "a3", text: "deep result" }));
+    // Still two top-level cards; the nested one is inside the first, unmounted until opened.
+    expect(cards()).toHaveLength(2);
+    expect(screen.queryByText("deep result")).toBeNull();
+    fireEvent.click(row(cards()[0]!));
+    const nested = within(within(cards()[0]!).getByTestId("subagent-body")).getAllByTestId("subagent-card");
+    expect(nested).toHaveLength(1);
+    expect(within(nested[0]!).getByTestId("subagent-description").textContent).toBe("Dig deeper");
+    expect(within(nested[0]!).queryByText("deep result")).toBeNull();
+    fireEvent.click(row(nested[0]!));
+    expect(within(nested[0]!).getByText("deep result")).toBeTruthy();
+    controller.dispose();
+  });
+
+  it("puts a sub-agent whose launch is not in the reply last, so nothing it did is hidden", async () => {
+    const t = new FakeTransport();
+    const { controller, frame } = await openSession(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+    await frame(event(2, "agent.message_delta", { text: "Working on it." }));
+    await frame(event(3, "agent.subagent_message_delta", { parent_id: "x9", text: "orphan says" }));
+    await frame(event(4, "agent.tool_call", launch("a1", { description: "Review the diff" })));
+    const [first, orphan] = cards();
+    expect(cards()).toHaveLength(2);
+    expect(within(first!).getByTestId("subagent-description").textContent).toBe("Review the diff");
+    // Nothing is known of it but what it did: no doubled "Agent", no description.
+    expect(within(orphan!).getByTestId("subagent-name").textContent).toBe("Agent");
+    expect(within(orphan!).queryByTestId("subagent-description")).toBeNull();
+    expect(screen.queryByText("orphan says")).toBeNull();
+    fireEvent.click(row(orphan!));
+    expect(within(orphan!).getByText("orphan says")).toBeTruthy();
+    controller.dispose();
+  });
+
+  it("describes a sub-agent by its launch's title only when that says more than Agent", async () => {
+    const t = new FakeTransport();
+    const { controller, frame } = await openSession(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+    await frame(event(2, "agent.tool_call", launch("a1", {})));
+    await frame(event(3, "agent.tool_call", launch("a2", {}, { title: "`Survey the repo`" })));
+    const [generic, titled] = cards();
+    expect(within(generic!).queryByTestId("subagent-description")).toBeNull();
+    expect(generic!.textContent).not.toContain("AgentAgent");
+    expect(within(titled!).getByTestId("subagent-description").textContent).toBe("Survey the repo");
+    controller.dispose();
+  });
+
+  it("shows the images its launch returned after what it did, live, but not the launch's text", async () => {
+    const { controller, frame } = await twoSubagents();
+    await frame(event(8, "agent.tool_call_update", {
+      tool_call_id: "a1",
+      title: null,
+      status: "completed",
+      content: "child found it (as the launch's result)",
+      images: [{ name: "shot.png", mime_type: "image/png", path: ".zwiim/images/shot.png" }],
+    }));
+    const [first] = cards();
+    expect(screen.queryAllByTestId("agent-image")).toHaveLength(0);
+    fireEvent.click(row(first!));
+    const body = within(first!).getByTestId("subagent-body");
+    const images = within(body).getByTestId("subagent-images");
+    expect(within(images).getByTestId("agent-image").textContent).toContain("shot.png");
+    // After the sub-agent's own rows.
+    expect(body.lastElementChild).toBe(images);
+    expect(screen.queryByText("child found it (as the launch's result)")).toBeNull();
+    controller.dispose();
+  });
+
+  it("shows the images its launch returned after what it did, from history, but not the launch's text", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        turn("t1", "assistant", [
+          { type: "tool_call", tool_call_id: "a1", title: "Task", input_preview: null, status: null, subagent: { description: "Draw it", blocks: [{ type: "text", text: "drew it" }] } },
+          {
+            type: "tool_result",
+            tool_call_id: "a1",
+            output_preview: "the launch's own text",
+            is_error: false,
+            images: [{ name: "plot.png", mime_type: "image/png", path: ".zwiim/images/plot.png" }],
+          },
+        ]),
+      ],
+    });
+    const { controller } = await openSession(t);
+    const [card] = cards();
+    expect(screen.queryAllByTestId("agent-image")).toHaveLength(0);
+    fireEvent.click(row(card!));
+    const body = within(card!).getByTestId("subagent-body");
+    expect(within(body).getByText("drew it")).toBeTruthy();
+    expect(body.lastElementChild).toBe(within(body).getByTestId("subagent-images"));
+    expect(within(body).getByTestId("agent-image").textContent).toContain("plot.png");
+    expect(screen.queryByText("the launch's own text")).toBeNull();
+    controller.dispose();
+  });
+
+  it("announces how many tasks it waits on, not each second", async () => {
+    const t = new FakeTransport();
+    const { controller, frame } = await openSession(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "connected" }) });
+    const tasks = [{ task_id: "t1", label: "Review", state: "running" }];
+    await frame(event(2, "session.background", { outstanding: 2, tasks, waiting_since: "2026-10-19T10:00:00Z" }));
+    const banner = screen.getByRole("status");
+    expect(banner).toBe(screen.getByTestId("background-waiting"));
+    expect(screen.getByTestId("background-waiting-time").getAttribute("aria-hidden")).toBe("true");
+    // What a screen reader reads: the count alone.
+    const read = [...banner.childNodes]
+      .filter((n) => !(n instanceof HTMLElement && n.getAttribute("aria-hidden") === "true"))
+      .map((n) => n.textContent)
+      .join("");
+    expect(read).toBe("Waiting on 2 background tasks");
+    controller.dispose();
+  });
+
+  it("shows no waiting banner for a time it cannot read", async () => {
+    const t = new FakeTransport();
+    const { controller, frame } = await openSession(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "connected" }) });
+    const tasks = [{ task_id: "t1", label: "Review", state: "running" }];
+    await frame(event(2, "session.background", { outstanding: 1, tasks, waiting_since: "not a time" }));
+    expect(screen.queryByTestId("background-waiting")).toBeNull();
+    await frame(event(3, "session.background", { outstanding: 1, tasks, waiting_since: "2026-10-19T10:00:00Z" }));
+    expect(screen.getByTestId("background-waiting")).toBeTruthy();
+    controller.dispose();
+  });
+
+  it("reads a sub-agent running while its background task is outstanding", async () => {
+    const t = new FakeTransport();
+    const { controller, frame } = await openSession(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+    await frame(event(2, "agent.tool_call", launch("a1", { description: "Review" }, { status: "completed" })));
+    expect(cards()[0]!.getAttribute("data-status")).toBe("completed");
+    await frame(event(3, "session.background", { outstanding: 1, tasks: [{ task_id: "t1", label: "Review", state: "running", tool_call_id: "a1" }], waiting_since: null }));
+    expect(cards()[0]!.getAttribute("data-status")).toBe("in_progress");
+    controller.dispose();
+  });
+});
+
 describe("links", () => {
   it("shortens bare web addresses only", () => {
     expect(linkText("https://github.com/a/b/", "https://github.com/a/b/")).toBe("github.com/a/b");

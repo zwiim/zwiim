@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { applyEvent, initialSessionView, reduceSession, type SessionFrame } from "../src/state/session";
 import { historySubagentCards, liveSubagentCards } from "../src/subagents/cards";
+import { subagentDescription, waitingText } from "../src/subagents/labels";
+import { modelShortName } from "../src/subagents/model";
 import type { HistoryBlock, SessionEvent, SessionSnapshot, ToolCall } from "../src/types/protocol";
 
 const ev = (seq: number, type: string, payload: unknown): SessionFrame => ({
@@ -302,5 +304,49 @@ describe("background sub-agents", () => {
     expect(historySubagentCards(blocks)[0]!.status).toBe("completed");
     expect(historySubagentCards(blocks, background("agent"))[0]!.status).toBe("in_progress");
     expect(historySubagentCards(blocks, null)[0]!.status).toBe("completed");
+  });
+});
+
+describe("model short name", () => {
+  it("names current Claude ids by family and version", () => {
+    expect(modelShortName("claude-sonnet-5-5")).toBe("Sonnet 5.5");
+    expect(modelShortName("claude-opus-4-1-20250805")).toBe("Opus 4.1");
+    expect(modelShortName("claude-sonnet-4-20250514")).toBe("Sonnet 4");
+    expect(modelShortName("claude-haiku-4-5")).toBe("Haiku 4.5");
+    expect(modelShortName("claude-opus-5-5[1m]")).toBe("Opus 5.5");
+  });
+
+  it("names older Claude ids and bare family aliases", () => {
+    expect(modelShortName("claude-3-5-sonnet-20241022")).toBe("Sonnet 3.5");
+    expect(modelShortName("claude-3-opus-20240229")).toBe("Opus 3");
+    expect(modelShortName("sonnet")).toBe("Sonnet");
+    expect(modelShortName("Opus")).toBe("Opus");
+  });
+
+  it("passes unknown ids through and omits a missing model", () => {
+    expect(modelShortName("gpt-5.2-codex")).toBe("gpt-5.2-codex");
+    expect(modelShortName("claude-sonnet-latest")).toBe("claude-sonnet-latest");
+    expect(modelShortName("inherit")).toBe("inherit");
+    expect(modelShortName("")).toBeNull();
+    expect(modelShortName("   ")).toBeNull();
+    expect(modelShortName(null)).toBeNull();
+    expect(modelShortName(undefined)).toBeNull();
+  });
+});
+
+describe("sub-agent labels", () => {
+  it("describes a sub-agent by what it was asked, else a launch title that says more than Agent", () => {
+    expect(subagentDescription("  Review the diff ", "Agent")).toBe("Review the diff");
+    expect(subagentDescription(null, "`Survey the repo`")).toBe("Survey the repo");
+    expect(subagentDescription("", "Survey the repo")).toBe("Survey the repo");
+    // The generic launch names say nothing, so nothing is shown.
+    for (const title of ["Agent", "Task", "`Agent`", "agent", "spawn_agent", "Spawn subagent", "", "  ", null, undefined]) {
+      expect(subagentDescription(null, title)).toBeNull();
+    }
+  });
+
+  it("counts background tasks in the singular and plural", () => {
+    expect(waitingText(1)).toBe("Waiting on 1 background task");
+    expect(waitingText(3)).toBe("Waiting on 3 background tasks");
   });
 });

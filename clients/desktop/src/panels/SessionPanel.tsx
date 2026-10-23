@@ -31,7 +31,7 @@ import { ControlSelect, OptionsBar, UnattendedBanner } from "./OptionsBar";
 import { RequestCard } from "./RequestCard";
 import { useSlashMenu } from "./SlashCommands";
 import { AgentTerminalCard, AgentTerminalsContext } from "./AgentTerminal";
-import { HistoryTurnView, LiveTurnView, stopReasonText, TurnFooter } from "./Transcript";
+import { BackgroundWaiting, HistoryTurnView, LiveTurnView, stopReasonText, TurnFooter } from "./Transcript";
 
 const UNAVAILABLE: Record<string, string> = {
   not_installed: "not installed",
@@ -400,7 +400,14 @@ function OpenSession({
     atBottom,
     jump,
     scrollProps,
-  } = useStickToBottom([view?.history, view?.live, view?.settled, view?.pendingRequest, view?.lastError]);
+  } = useStickToBottom([
+    view?.history,
+    view?.live,
+    view?.settled,
+    view?.pendingRequest,
+    view?.lastError,
+    view?.background,
+  ]);
 
   useEffect(() => {
     controller.openSession(sessionId);
@@ -499,13 +506,16 @@ function OpenSession({
                         : () => setResetting({ turnId: t.turn_id, chat: offersChatRewind(all[i - 1], view.options, compat) })
                     }
                     revertDisabled={running || !online}
+                    background={view.background}
                   />
                   {group && i !== runningEnd && <TurnFooter group={group} />}
                 </Fragment>
               );
             })}
-            {view?.settled && <LiveTurnView turn={view.settled} />}
-            {view && <LiveTurnView turn={view.live} streaming={running} animate />}
+            {view?.settled && <LiveTurnView turn={view.settled} background={view.background} />}
+            {view && <LiveTurnView turn={view.live} streaming={running} animate background={view.background} />}
+            {/* The turn is over but its background work is not: say so where the turn ended. */}
+            <BackgroundWaiting background={view?.background} className="animate-fade-in motion-reduce:animate-none" />
             {stopped && (
               <p className="text-muted-foreground text-xs" data-testid="stop-reason">
                 {stopped}

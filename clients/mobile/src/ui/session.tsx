@@ -7,9 +7,9 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View, 
 import { basename, formatSize, type AgentImage, type AttachmentBlock, type ChangedFile, type RevertChoice } from "@zwiim/sdk";
 import type { PendingFile } from "../attachments/pending";
 import { revertCopy } from "../sessions/revert";
-import type { ToolItem } from "../sessions/transcript";
+import { subagentLabel, subagentShown, type SubagentItem, type ToolItem, type TranscriptRow } from "../sessions/transcript";
 import { Button, Sheet, StatusDot, T, useReduceMotion } from "./components";
-import { ArrowUp, CircleAlert, FileText, Icon, Image, Paperclip, RotateCcw, X } from "./icons";
+import { ArrowUp, Bot, CircleAlert, FileText, Icon, Image, Paperclip, RotateCcw, X } from "./icons";
 import { fonts, PRESSED_OPACITY, radius, space, type, useTheme } from "./tokens";
 
 /** The streaming caret: blinks once a second (static under Reduce Motion). */
@@ -412,6 +412,100 @@ export function ToolGroup({
   );
 }
 
+/**
+ * One sub-agent: a row with its model, task, tool count and time; open to read
+ * its prompt (behind its own toggle) and what it did, drawn by `renderChild`.
+ * Nothing inside is drawn while it is shut.
+ */
+export function SubagentRow({
+  agent,
+  renderChild,
+}: {
+  agent: SubagentItem;
+  renderChild(row: TranscriptRow): ReactNode;
+}) {
+  const theme = useTheme();
+  const [open, setOpen] = useState(false);
+  const [promptOpen, setPromptOpen] = useState(false);
+  const shown = subagentShown(agent, open, promptOpen);
+  const running = agent.state === "running";
+  const tools = agent.tools > 0 ? `${agent.tools} ${agent.tools === 1 ? "tool" : "tools"}` : null;
+  const label = subagentLabel(agent);
+  return (
+    <View testID="subagent">
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={label}
+        onPress={() => setOpen((o) => !o)}
+        hitSlop={ROW_SLOP}
+        style={({ pressed }) => [styles.monoRow, pressed && { backgroundColor: theme.surface }]}
+        testID="subagent-row"
+      >
+        <View style={styles.glyph}>
+          <Icon icon={Bot} color={running ? theme.fg : theme.mut} size={16} />
+        </View>
+        <T variant="mono" numberOfLines={1} style={styles.shrink}>
+          <T variant="mono">Agent</T>
+          {agent.model ? <T variant="mono" color={theme.mut}>{` • ${agent.model}`}</T> : null}
+          {agent.description ? <T variant="mono" color={theme.mut}>{`  ${agent.description}`}</T> : null}
+        </T>
+        <View style={styles.flexSpacer} />
+        {tools ? (
+          <T variant="monoSm" color={theme.mut} style={styles.tabular} testID="subagent-tools">
+            {tools}
+          </T>
+        ) : null}
+        {agent.duration ? (
+          <T variant="monoSm" color={theme.mut} style={styles.tabular} testID="subagent-duration">
+            {agent.duration}
+          </T>
+        ) : running ? (
+          <StatusDot state="work" />
+        ) : null}
+        {agent.state === "failed" ? (
+          <T variant="monoSm" color={theme.err} testID="subagent-failed">
+            ✕ failed
+          </T>
+        ) : null}
+        <T variant="mono" color={theme.mut}>
+          {open ? "▾" : "▸"}
+        </T>
+      </Pressable>
+      {open ? (
+        <View style={[styles.subagent, { borderLeftColor: theme.line }]} testID="subagent-body">
+          {shown.promptToggle ? (
+            <View style={styles.rowGap}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ expanded: promptOpen }}
+                onPress={() => setPromptOpen((o) => !o)}
+                hitSlop={ROW_SLOP}
+                style={styles.monoRow}
+                testID="subagent-prompt-toggle"
+              >
+                <T variant="mono" color={theme.mut}>
+                  {promptOpen ? "▾ Prompt" : "▸ Prompt"}
+                </T>
+              </Pressable>
+              {shown.prompt ? (
+                <View style={[styles.prompt, { backgroundColor: theme.code }]}>
+                  <T variant="monoSm" color={theme.mut} selectable testID="subagent-prompt">
+                    {shown.prompt}
+                  </T>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+          {shown.rows.map((row) => (
+            <View key={row.key}>{renderChild(row)}</View>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 const isDiff = (text: string) => text.startsWith("--- ") && text.includes("\n+++ ");
 
 function Output({ text, error }: { text: string; error?: boolean }) {
@@ -805,6 +899,8 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
   },
   thought: { borderLeftWidth: 2, paddingLeft: space.md, marginLeft: space.xs },
+  subagent: { borderLeftWidth: 2, paddingLeft: space.md, marginLeft: space.xs, marginTop: space.xs, gap: space.sm },
+  prompt: { borderRadius: radius.md, padding: space.md },
   output: { borderRadius: radius.md, flexGrow: 0 },
   outputContent: { padding: space.md },
   sheetBody: { gap: space.md },

@@ -12,11 +12,24 @@ import {
   type SessionFrame,
   type SessionView,
   type WorkspaceInfo,
+  waitingText,
 } from "@zwiim/sdk";
 import { describe, expect, it } from "vitest";
 import type { FakeChannel } from "../../sdk/test/fakes";
 import { parseInline, parseMarkdown, spanText } from "../src/sessions/markdown";
-import { clock, duration, historyBefore, nowState, transcriptRows, turnKey, turnRunning } from "../src/sessions/transcript";
+import {
+  clock,
+  duration,
+  historyBefore,
+  nowState,
+  subagentShown,
+  transcriptRows,
+  turnKey,
+  subagentLabel,
+  turnRunning,
+  type SubagentItem,
+  type TranscriptRow,
+} from "../src/sessions/transcript";
 import { canReset, oneReset, revertCopy, revertError } from "../src/sessions/revert";
 import { waitFor, world } from "./support";
 
@@ -74,6 +87,270 @@ const turn = (id: string, role: string, blocks: HistoryTurn["blocks"], at = "202
 
 const history = (turns: HistoryTurn[]): SessionFrame => ({ type: "history", turns });
 const types = (v: SessionView) => transcriptRows(v).map((r) => r.type);
+
+// ─── sub-agents ──────────────────────────────────────────────────────────
+
+describe("sub-agent cards", () => {
+  const launch = (id: string, subagent: Record<string, unknown>, status = "in_progress") =>
+    ev("agent.tool_call", { tool_call_id: id, title: "Agent", kind: "other", status, content: null, subagent } as never);
+  const childTool = (id: string, parent: string, title: string) =>
+    ev("agent.tool_call", { tool_call_id: id, title, kind: "read", status: "completed", content: null, parent_id: parent } as never);
+  const background = (outstanding: number, waiting_since: string | null, tool_call_id?: string) =>
+    ev("session.background", {
+      outstanding,
+      tasks: outstanding ? [{ task_id: "t1", label: "Review", state: "running", ...(tool_call_id ? { tool_call_id } : {}) }] : [],
+      waiting_since,
+    });
+  const cards = (v: SessionView) =>
+    transcriptRows(v).filter((r): r is Extract<TranscriptRow, { type: "subagent" }> => r.type === "subagent");
+  const agentOf = (v: SessionView, i = 0): SubagentItem => cards(v)[i]!.agent;
+
+  /** A turn with two sub-agents; the first thinks, speaks and runs three tools. */
+  const twoSubagents = () =>
+    view(
+      user("u1", "go"),
+      delta("Delegating."),
+      launch("a1", { description: "Map client add-workspace code", model: "claude-sonnet-5-5", prompt: "Find it" }),
+      ev("agent.subagent_thought_delta", { parent_id: "a1", text: "child plans" }),
+      ev("agent.subagent_message_delta", { parent_id: "a1", text: "child found it" }),
+      childTool("r1", "a1", "Read src/a.ts"),
+      childTool("r2", "a1", "Read src/b.ts"),
+      childTool("r3", "a1", "Read src/c.ts"),
+      launch("a2", { description: "Review the diff" }),
+    );
+
+  it("is one row per sub-agent at its launch, in launch order, holding what it did", () => {
+    const v = twoSubagents();
+    expect(types(v)).toEqual(["user", "agent", "subagent", "subagent"]);
+    const first = agentOf(v);
+    expect(first).toMatchObject({
+      model: "Sonnet 5.5",
+      description: "Map client add-workspace code",
+      state: "running",
+      duration: null,
+      tools: 3,
+      prompt: "Find it",
+    });
+    expect(agentOf(v, 1)).toMatchObject({ model: null, description: "Review the diff", tools: 0, prompt: null });
+    // Its three tool calls fold inside the card; none of it is a top-level row.
+    expect(first.rows.map((r) => r.type)).toEqual(["thought", "agent", "tools"]);
+    expect(first.rows[1]).toMatchObject({ text: "child found it" });
+    const top = transcriptRows(v);
+    expect(top.some((r) => r.type === "agent" && r.text.includes("child"))).toBe(false);
+    expect(top.some((r) => r.type === "thought" || r.type === "tool" || r.type === "tools")).toBe(false);
+    // Keyed by launch order within the turn, never by id.
+    expect(cards(v).map((c) => c.key)).toEqual(["live:u1:agent0", "live:u1:agent1"]);
+  });
+
+  it("shows nothing while shut; open, its prompt behind a toggle and then what it did", () => {
+    const agent = agentOf(twoSubagents());
+    expect(subagentShown(agent, false, true)).toEqual({ promptToggle: false, prompt: null, rows: [] });
+    expect(subagentShown(agent, true, false)).toEqual({ promptToggle: true, prompt: null, rows: agent.rows });
+    expect(subagentShown(agent, true, true).prompt).toBe("Find it");
+    // No prompt, no toggle.
+    expect(subagentShown(agentOf(twoSubagents(), 1), true, true).promptToggle).toBe(false);
+  });
+
+  it("reads done with its duration, or failed", () => {
+    const v = play(
+      twoSubagents(),
+      ev("agent.tool_call_update", { tool_call_id: "a1", title: null, status: "completed", content: null, subagent: { duration_ms: 106_400 } } as never),
+      toolDone("a2", "failed"),
+      done(),
+    );
+    expect(agentOf(v)).toMatchObject({ state: "done", duration: "1m 46s" });
+    expect(agentOf(v, 1)).toMatchObject({ state: "failed", duration: null });
+  });
+
+  it("reads running while its background task is outstanding, after its turn ends", () => {
+    let v = view(user("u1", "go"), launch("a1", { description: "Review" }, "completed"), done());
+    expect(agentOf(v).state).toBe("done");
+    v = play(v, background(1, "2026-10-19T10:00:00Z", "a1"));
+    expect(agentOf(v).state).toBe("running");
+  });
+
+  it("builds the same card from a snapshot after a reconnect", () => {
+    const v = reduceSession(initialSessionView("s1"), {
+      ...snapshot("prompting"),
+      snapshot: {
+        ...(snapshot("prompting") as Extract<SessionFrame, { type: "snapshot" }>).snapshot,
+        live_message: {
+          message_id: "m1",
+          role: "assistant",
+          content: [{ type: "text", text: "Delegating." }, { type: "tool_call", tool_call_id: "a1" }],
+          subagents: [{ parent_id: "a1", blocks: [{ type: "text", text: "child found it" }, { type: "tool_call", tool_call_id: "r1" }] }],
+        },
+        tool_calls: [
+          { tool_call_id: "a1", title: "Agent", kind: "other", status: "in_progress", content: null, subagent: { description: "Map", model: "claude-sonnet-5-5" } },
+          { tool_call_id: "r1", title: "Read src/a.ts", kind: "read", status: "completed", content: null, parent_id: "a1" },
+        ],
+      } as never,
+    } as SessionFrame);
+    expect(types(v)).toEqual(["agent", "subagent"]);
+    expect(agentOf(v)).toMatchObject({ model: "Sonnet 5.5", description: "Map", state: "running", tools: 1 });
+    expect(agentOf(v).rows.map((r) => r.type)).toEqual(["agent", "tool"]);
+  });
+
+  it("builds cards from history, nesting a sub-agent's own sub-agents", () => {
+    const v = view(
+      history([
+        turn("t0", "user", [{ type: "text", text: "go" }]),
+        turn("t1", "assistant", [
+          {
+            type: "tool_call",
+            tool_call_id: "a1",
+            title: "Task",
+            input_preview: null,
+            status: null,
+            subagent: {
+              description: "Survey the repo",
+              model: "claude-opus-4-1-20250805",
+              duration_ms: 42_000,
+              blocks: [
+                { type: "text", text: "surveying" },
+                { type: "tool_call", tool_call_id: "b1", title: "Bash", input_preview: JSON.stringify({ command: "ls" }), status: null },
+                { type: "tool_result", tool_call_id: "b1", output_preview: "a.ts", is_error: false },
+                { type: "tool_call", tool_call_id: "a2", title: "Task", input_preview: null, status: "completed", subagent: { description: "Dig deeper", blocks: [] } },
+              ],
+            },
+          },
+          { type: "tool_result", tool_call_id: "a1", output_preview: "done", is_error: false },
+          { type: "text", text: "All done." },
+        ] as never),
+      ]),
+    );
+    expect(types(v)).toEqual(["user", "subagent", "agent", "footer"]);
+    const agent = agentOf(v);
+    expect(agent).toMatchObject({ model: "Opus 4.1", description: "Survey the repo", state: "done", duration: "42s", tools: 2 });
+    expect(agent.rows.map((r) => r.type)).toEqual(["agent", "tool", "subagent"]);
+    expect(agent.rows[1]).toMatchObject({ tool: { verb: "Run", target: "ls", state: "done" } });
+    const nested = agent.rows[2] as Extract<TranscriptRow, { type: "subagent" }>;
+    expect(nested.agent).toMatchObject({ description: "Dig deeper", state: "done" });
+    expect(nested.key).toBe("t1:agent0:agent0");
+  });
+
+  it("nests a sub-agent's own sub-agents as cards in a live turn", () => {
+    const v = play(
+      twoSubagents(),
+      ev("agent.tool_call", { tool_call_id: "a3", title: "Agent", kind: "other", status: "in_progress", content: null, parent_id: "a1", subagent: { description: "Dig deeper" } } as never),
+      ev("agent.subagent_message_delta", { parent_id: "a3", text: "deep result" }),
+    );
+    expect(types(v)).toEqual(["user", "agent", "subagent", "subagent"]);
+    const first = agentOf(v);
+    expect(first.tools).toBe(4);
+    const nested = first.rows.find((r): r is Extract<TranscriptRow, { type: "subagent" }> => r.type === "subagent")!;
+    expect(nested.key).toBe("live:u1:agent0:agent0");
+    expect(nested.agent).toMatchObject({ description: "Dig deeper", state: "running" });
+    expect(nested.agent.rows).toEqual([expect.objectContaining({ type: "agent", text: "deep result" })]);
+    expect(transcriptRows(v).some((r) => r.type === "agent" && r.text === "deep result")).toBe(false);
+  });
+
+  it("puts a sub-agent whose launch is not in the reply last, so nothing it did is hidden", () => {
+    const v = view(
+      user("u1", "go"),
+      delta("Working on it."),
+      ev("agent.subagent_message_delta", { parent_id: "x9", text: "orphan says" }),
+      launch("a1", { description: "Review the diff" }),
+    );
+    expect(types(v)).toEqual(["user", "agent", "subagent", "subagent"]);
+    expect(agentOf(v).description).toBe("Review the diff");
+    const orphan = agentOf(v, 1);
+    // Nothing is known of it but what it did: no description, no status.
+    expect(orphan).toMatchObject({ model: null, description: null, state: "idle", tools: 0 });
+    expect(orphan.rows).toEqual([expect.objectContaining({ type: "agent", text: "orphan says" })]);
+    expect(cards(v)[1]!.key).toBe("live:u1:agent1");
+    expect(subagentLabel(orphan)).toBe("Agent");
+  });
+
+  it("describes a sub-agent by its launch's title only when that says more than Agent", () => {
+    const v = view(
+      user("u1", "go"),
+      launch("a1", {}),
+      ev("agent.tool_call", { tool_call_id: "a2", title: "`Survey the repo`", kind: "other", status: "in_progress", content: null, subagent: {} } as never),
+    );
+    expect(agentOf(v).description).toBeNull();
+    expect(agentOf(v, 1).description).toBe("Survey the repo");
+  });
+
+  it("says a card's status to a screen reader only when it is known", () => {
+    const v = play(
+      twoSubagents(),
+      ev("agent.tool_call_update", { tool_call_id: "a1", title: null, status: "completed", content: null, subagent: { duration_ms: 106_400 } } as never),
+    );
+    expect(subagentLabel(agentOf(v))).toBe("Agent, Sonnet 5.5, Map client add-workspace code, 3 tools, 1m 46s, done");
+    expect(subagentLabel(agentOf(v, 1))).toBe("Agent, Review the diff, running");
+    expect(subagentLabel({ ...agentOf(v, 1), state: "idle" })).toBe("Agent, Review the diff");
+  });
+
+  it("shows the images its launch returned after what it did, live, but not the launch's text", () => {
+    const v = play(
+      twoSubagents(),
+      ev("agent.tool_call_update", {
+        tool_call_id: "a1",
+        title: null,
+        status: "completed",
+        content: "the launch's own text",
+        images: [{ name: "shot.png", mime_type: "image/png", path: ".zwiim/images/shot.png" }],
+      } as never),
+    );
+    expect(types(v)).toEqual(["user", "agent", "subagent", "subagent"]);
+    const rows = agentOf(v).rows;
+    expect(rows.map((r) => r.type)).toEqual(["thought", "agent", "tools", "image"]);
+    expect(rows.at(-1)).toMatchObject({ key: "live:u1:agent0:img0", image: { name: "shot.png" } });
+    expect(JSON.stringify(transcriptRows(v))).not.toContain("the launch's own text");
+  });
+
+  it("shows the images its launch returned after what it did, from history, but not the launch's text", () => {
+    const v = view(
+      history([
+        turn("t1", "assistant", [
+          { type: "tool_call", tool_call_id: "a1", title: "Task", input_preview: null, status: null, subagent: { description: "Draw it", blocks: [{ type: "text", text: "drew it" }] } },
+          {
+            type: "tool_result",
+            tool_call_id: "a1",
+            output_preview: "the launch's own text",
+            is_error: false,
+            images: [{ name: "plot.png", mime_type: "image/png", path: ".zwiim/images/plot.png" }],
+          },
+        ] as never),
+      ]),
+    );
+    expect(types(v)).toEqual(["subagent"]);
+    const rows = agentOf(v).rows;
+    expect(rows.map((r) => r.type)).toEqual(["agent", "image"]);
+    expect(rows[1]).toMatchObject({ key: "t1:agent0:img0", image: { name: "plot.png" } });
+    expect(JSON.stringify(transcriptRows(v))).not.toContain("the launch's own text");
+  });
+
+  it("keeps an older Host's agent launch as a plain tool row", () => {
+    const v = view(
+      history([
+        turn("t1", "assistant", [
+          { type: "tool_call", tool_call_id: "a1", title: "Task", input_preview: JSON.stringify({ description: "Survey" }), status: null },
+          { type: "tool_result", tool_call_id: "a1", output_preview: "done", is_error: false },
+        ] as never),
+      ]),
+    );
+    expect(types(v)).toEqual(["tool"]);
+    const live = view(user("u1", "go"), tool("a1", "Agent", "other"));
+    expect(types(live)).toEqual(["user", "tool"]);
+  });
+
+  it("says what the idle agent waits on and since when, then clears", () => {
+    expect(waitingText(1)).toBe("Waiting on 1 background task");
+    expect(waitingText(3)).toBe("Waiting on 3 background tasks");
+    let v = view(user("u1", "go"), done());
+    expect(nowState(v, true)).toBeNull();
+    v = play(v, background(2, "2026-10-19T10:00:00Z"));
+    expect(nowState(v, true)).toEqual({ type: "waiting", count: 2, since: Date.parse("2026-10-19T10:00:00Z") });
+    // A turn running again says what it does instead.
+    expect(nowState(play(v, user("u2", "more")), true)).toMatchObject({ type: "working" });
+    expect(nowState(play(v, background(2, null)), true)).toBeNull();
+    expect(nowState(play(v, background(0, "2026-10-19T10:00:00Z")), true)).toBeNull();
+    // A time it cannot read counts as not waiting, as on Desktop.
+    expect(nowState(play(v, background(2, "not a time")), true)).toBeNull();
+  });
+});
 
 // ─── the transcript ──────────────────────────────────────────────────────
 

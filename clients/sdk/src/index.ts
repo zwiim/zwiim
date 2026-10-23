@@ -63,5 +63,7 @@ export * from "./changes/turns";
 export * from "./changes/fullfile";
 export * from "./changes/paths";
 export * from "./subagents/cards";
+export * from "./subagents/model";
+export * from "./subagents/labels";
 export * from "./attachments";
 export * from "./files";

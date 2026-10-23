@@ -26,6 +26,7 @@ import {
   type AttachmentBlock,
   type RevertChoice,
   type SessionView,
+  waitingText,
 } from "@zwiim/sdk";
 import { pickFiles, pickPhotos } from "../attachments/native";
 import { UPLOAD_FAILED_MESSAGE } from "../attachments/pending";
@@ -63,6 +64,7 @@ import {
   NowAction,
   NowBar,
   RevertSheet,
+  SubagentRow,
   ThoughtRow,
   ToolGroup,
   ToolRow,
@@ -368,7 +370,7 @@ function Live({
   const running = turnRunning(view);
   const now = nowState(view, connected);
   const request = view?.pendingRequest ?? null;
-  const ticking = running || now?.type === "reconnecting" || request !== null;
+  const ticking = running || now?.type === "reconnecting" || now?.type === "waiting" || request !== null;
 
   // The running turn's timer, from when this phone first saw it.
   const key = turnKey(session_id, view);
@@ -584,6 +586,8 @@ function Live({
       }
       case "disconnected":
         return <NowBar tone="plain" dot="off" text="Agent disconnected" />;
+      case "waiting":
+        return <NowBar tone="plain" dot="work" text={waitingText(now.count)} time={clock(tick - now.since)} />;
     }
   };
   const newestFirst = useMemo(() => [...rows].reverse(), [rows]);
@@ -727,6 +731,24 @@ function Row({
       return <ToolRow tool={row.tool} onPress={() => onTool(row.tool)} opens={opens(row.tool)} />;
     case "tools":
       return <ToolGroup tools={row.tools} onOpen={onTool} opens={opens} />;
+    case "subagent":
+      return (
+        <SubagentRow
+          agent={row.agent}
+          renderChild={(child) => (
+            <Row
+              row={child}
+              onTool={onTool}
+              toolFile={toolFile}
+              fileOf={fileOf}
+              onOpenFile={onOpenFile}
+              onOpenSent={onOpenSent}
+              onOpenImage={onOpenImage}
+              revertDisabled={revertDisabled}
+            />
+          )}
+        />
+      );
     case "image":
       return <AgentImageChip image={row.image} onPress={onOpenImage && (() => onOpenImage(row.image.path))} />;
     case "error":

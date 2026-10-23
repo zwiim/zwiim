@@ -7,7 +7,11 @@
 
 import {
   clockTime,
+  historySubagentCards,
+  liveSubagentCards,
+  modelShortName,
   parseUnifiedDiff,
+  subagentDescription,
   toolChanges,
   turnDuration,
   turnGroups,
@@ -17,8 +21,11 @@ import {
   type FileDiff,
   type HistoryBlock,
   type HistoryTurn,
+  type LiveBlock,
   type LiveTurn,
+  type SessionBackground,
   type SessionView,
+  type SubagentCard,
   type ToolCall,
   type ToolCallStatus,
 } from "@zwiim/sdk";
@@ -48,12 +55,29 @@ export interface RevertPoint {
   before: HistoryTurn | null;
 }
 
+/** One sub-agent of a turn, as its card shows it (collapsed by default). */
+export interface SubagentItem {
+  /** The model's short name ("Sonnet 5.5"); null when the agent names none. */
+  model: string | null;
+  /** What it was asked to do, else its launch's title when that says more than "Agent". */
+  description: string | null;
+  state: ToolState;
+  /** How long it ran ("1m 46s"), once known. */
+  duration: string | null;
+  /** Tool calls it made itself. */
+  tools: number;
+  prompt: string | null;
+  /** What it did, in order, as rows of its own (never top-level rows). */
+  rows: TranscriptRow[];
+}
+
 export type TranscriptRow =
   | { type: "user"; key: string; text: string; files: AttachmentBlock[]; revert?: RevertPoint }
   | { type: "agent"; key: string; text: string; streaming: boolean }
   | { type: "thought"; key: string; text: string; streaming: boolean }
   | { type: "tool"; key: string; tool: ToolItem }
   | { type: "tools"; key: string; tools: ToolItem[] }
+  | { type: "subagent"; key: string; agent: SubagentItem }
   | { type: "error"; key: string; message: string }
   | { type: "image"; key: string; image: AgentImage }
   | { type: "footer"; key: string; text: string; stopped: boolean; files: ChangedFile[] };
@@ -203,7 +227,37 @@ type Piece = Exclude<TranscriptRow, { type: "tools" }>;
 const imageRows = (key: string, images: AgentImage[] | undefined): Piece[] =>
   (images ?? []).map((image, i) => ({ type: "image", key: `${key}:img${i}`, image }));
 
-function historyRows(turn: HistoryTurn, before: HistoryTurn | undefined): Piece[] {
+/** A sub-agent's card: still going reads running, whether or not the turn is. */
+function subagentItem<B>(card: SubagentCard<B>, title: string | null, rows: TranscriptRow[]): SubagentItem {
+  return {
+    model: modelShortName(card.model),
+    description: subagentDescription(card.description, title),
+    state: card.status === "completed" ? "done" : card.status === "failed" ? "failed" : active(card.status) ? "running" : "idle",
+    duration: card.duration_ms !== null ? turnDuration(card.duration_ms) : null,
+    tools: card.tool_count,
+    prompt: card.prompt?.trim() || null,
+    rows,
+  };
+}
+
+/** What a screen reader says of a card: never a status it does not know. */
+export function subagentLabel(agent: SubagentItem): string {
+  const tools = agent.tools > 0 ? `${agent.tools} ${agent.tools === 1 ? "tool" : "tools"}` : null;
+  const state = agent.state === "idle" ? null : agent.state;
+  return ["Agent", agent.model, agent.description, tools, agent.duration, state].filter(Boolean).join(", ");
+}
+
+/** What an open card shows; a collapsed one shows nothing, so nothing in it is drawn. */
+export function subagentShown(
+  agent: SubagentItem,
+  open: boolean,
+  promptOpen: boolean,
+): { promptToggle: boolean; prompt: string | null; rows: TranscriptRow[] } {
+  if (!open) return { promptToggle: false, prompt: null, rows: [] };
+  return { promptToggle: agent.prompt !== null, prompt: promptOpen ? agent.prompt : null, rows: agent.rows };
+}
+
+function historyRows(turn: HistoryTurn, before: HistoryTurn | undefined, background: SessionBackground | null): Piece[] {
   if (turn.role === "user") {
     const text = userText(turn.blocks);
     const files = userFiles(turn.blocks);
@@ -211,16 +265,24 @@ function historyRows(turn: HistoryTurn, before: HistoryTurn | undefined): Piece[
     const revert = turn.revertible ? { turn_id: turn.turn_id, before: before ?? null } : null;
     return [{ type: "user", key: turn.turn_id, text, files, ...(revert ? { revert } : {}) }];
   }
+  return historyBlockRows(turn.blocks, turn.turn_id, background);
+}
+
+/** A reply's blocks (or a sub-agent's) as rows; each sub-agent is one card row. */
+function historyBlockRows(blocks: readonly HistoryBlock[], prefix: string, background: SessionBackground | null): Piece[] {
   // A result is shown with its call; one without a call stands alone if it failed.
   const results = new Map<string, Extract<HistoryBlock, { type: "tool_result" }>>();
   const called = new Set<string>();
-  for (const b of turn.blocks) {
+  for (const b of blocks) {
     if (b.type === "tool_result" && b.tool_call_id) results.set(b.tool_call_id, b);
     if (b.type === "tool_call" && b.tool_call_id) called.add(b.tool_call_id);
   }
+  const cards = new Map(historySubagentCards(blocks, background).map((c) => [c.parent_id, c]));
+  // Cards are keyed by launch order, never by id: ids can differ after a reload.
+  let launches = 0;
   const rows: Piece[] = [];
-  turn.blocks.forEach((b, i) => {
-    const key = `${turn.turn_id}:${i}`;
+  blocks.forEach((b, i) => {
+    const key = `${prefix}:${i}`;
     switch (b.type) {
       case "text":
         if (b.text.trim()) rows.push({ type: "agent", key, text: b.text.trim(), streaming: false });
@@ -229,6 +291,15 @@ function historyRows(turn: HistoryTurn, before: HistoryTurn | undefined): Piece[
         if (b.text.trim()) rows.push({ type: "thought", key, text: b.text.trim(), streaming: false });
         return;
       case "tool_call": {
+        const card = b.tool_call_id ? cards.get(b.tool_call_id) : undefined;
+        if (card) {
+          const at = `${prefix}:agent${launches++}`;
+          // Its result's text repeats the sub-agent's last reply; its images, after what it did, do not.
+          const images = imageRows(at, results.get(card.parent_id)?.images);
+          const inner = fold([...historyBlockRows(card.blocks, at, background), ...images]);
+          rows.push({ type: "subagent", key: at, agent: subagentItem(card, b.title, inner) });
+          return;
+        }
         const r = b.tool_call_id ? results.get(b.tool_call_id) : undefined;
         // Transcripts often omit the status; a result means it ran.
         const status = r?.is_error ? "failed" : (b.status ?? (r ? "completed" : null));
@@ -264,16 +335,45 @@ function historyRows(turn: HistoryTurn, before: HistoryTurn | undefined): Piece[
   return rows;
 }
 
-function liveRows(turn: LiveTurn, prefix: string, running: boolean): Piece[] {
+function liveRows(turn: LiveTurn, prefix: string, running: boolean, background: SessionBackground | null): Piece[] {
   const rows: Piece[] = [];
   const turnKey = `${prefix}:${turn.userMessage?.message_id ?? turn.message?.message_id ?? "turn"}`;
   const text = turn.userMessage ? userText(turn.userMessage.blocks) : "";
   const files = turn.userMessage ? userFiles(turn.userMessage.blocks) : [];
   if (text || files.length > 0) rows.push({ type: "user", key: `${turnKey}:user`, text, files });
-  const content = turn.message?.content ?? [];
-  content.forEach((b, i) => {
-    const key = `${turnKey}:${i}`;
-    const last = running && i === content.length - 1;
+  rows.push(...liveBlockRows(turn, undefined, turnKey, running, background));
+  return rows;
+}
+
+/**
+ * The live reply's blocks, or given a card's `blocks` that sub-agent's, as
+ * rows; each sub-agent is one card row. For the reply, a sub-agent whose
+ * launch is not in it comes last.
+ */
+function liveBlockRows(
+  turn: LiveTurn,
+  blocks: readonly LiveBlock[] | undefined,
+  prefix: string,
+  running: boolean,
+  background: SessionBackground | null,
+): Piece[] {
+  const scope = blocks ?? turn.message?.content ?? [];
+  const all = liveSubagentCards(turn, blocks, background);
+  const cards = new Map(all.map((c) => [c.parent_id, c]));
+  const inScope = new Set(scope.flatMap((b) => (b.type === "tool_call" ? [b.tool_call_id] : [])));
+  // Cards are keyed by launch order, never by id: ids can differ after a reload.
+  let launches = 0;
+  const cardRow = (card: SubagentCard<LiveBlock>): Piece => {
+    const key = `${prefix}:agent${launches++}`;
+    const going = active(card.status);
+    const images = imageRows(key, turn.toolCalls[card.parent_id]?.images);
+    const inner = fold([...liveBlockRows(turn, card.blocks, key, going, background), ...images]);
+    return { type: "subagent", key, agent: subagentItem(card, turn.toolCalls[card.parent_id]?.title ?? null, inner) };
+  };
+  const rows: Piece[] = [];
+  scope.forEach((b, i) => {
+    const key = `${prefix}:${i}`;
+    const last = running && i === scope.length - 1;
     if (b.type === "text") {
       if (b.text.trim() || last) rows.push({ type: "agent", key, text: b.text.trim(), streaming: last });
     } else if (b.type === "thought") {
@@ -281,11 +381,17 @@ function liveRows(turn: LiveTurn, prefix: string, running: boolean): Piece[] {
     } else if (b.type === "agent_image") {
       rows.push({ type: "image", key, image: b });
     } else {
+      const card = cards.get(b.tool_call_id);
+      if (card) {
+        rows.push(cardRow(card));
+        return;
+      }
       const tc = turn.toolCalls[b.tool_call_id];
       rows.push({ type: "tool", key, tool: liveTool(tc, running) });
       rows.push(...imageRows(key, tc?.images));
     }
   });
+  for (const card of all) if (!inScope.has(card.parent_id)) rows.push(cardRow(card));
   return rows;
 }
 
@@ -354,12 +460,13 @@ export function transcriptRows(view: SessionView | undefined): TranscriptRow[] {
   const busy = running || !!view.pendingRequest;
   const stopped = busy ? null : stopText(view);
   const turns = historyBefore(view.history ?? [], view);
+  const background = view.background ?? null;
   // Under each answered prompt: how long it ran, when it ended, what it changed.
   const groups = new Map(turnGroups(turns).map((g) => [g.end, g]));
   const shownLive = !!view.settled || !!view.live.userMessage || !!view.live.message;
   const pieces: Piece[] = [];
   turns.forEach((turn, i) => {
-    pieces.push(...historyRows(turn, turns[i - 1]));
+    pieces.push(...historyRows(turn, turns[i - 1], background));
     const g = groups.get(i);
     const last = i === turns.length - 1 && !shownLive;
     // The agent may still be answering the history's last prompt.
@@ -369,8 +476,8 @@ export function transcriptRows(view: SessionView | undefined): TranscriptRow[] {
     const text = [stop, ...time].filter(Boolean).join(" · ");
     pieces.push({ type: "footer", key: `footer:${turn.turn_id}`, text, stopped: !!stop, files: g.files });
   });
-  if (view.settled) pieces.push(...liveRows(view.settled, "settled", false));
-  pieces.push(...liveRows(view.live, "live", running));
+  if (view.settled) pieces.push(...liveRows(view.settled, "settled", false, background));
+  pieces.push(...liveRows(view.live, "live", running, background));
   const rows = fold(pieces);
   if (view.lastError) rows.push({ type: "error", key: "last-error", message: view.lastError.message });
   // A turn not yet in the history gets its time once the history has it.
@@ -385,7 +492,16 @@ export type NowState =
   | { type: "thinking" }
   | { type: "needs_you" }
   | { type: "reconnecting" }
-  | { type: "disconnected" };
+  | { type: "disconnected" }
+  /** Idle, while background work the agent started is still outstanding; `since` in ms. */
+  | { type: "waiting"; count: number; since: number };
+
+/** Background work the idle agent waits on; null unless the Host says it waits. */
+function waiting(background: SessionBackground | null | undefined): NowState | null {
+  if (!background || background.outstanding <= 0 || !background.waiting_since) return null;
+  const since = Date.parse(background.waiting_since);
+  return Number.isNaN(since) ? null : { type: "waiting", count: background.outstanding, since };
+}
 
 /** What the agent is doing, from the live turn alone; null when there is nothing to say. */
 export function nowState(view: SessionView | undefined, connected: boolean): NowState | null {
@@ -401,7 +517,7 @@ export function nowState(view: SessionView | undefined, connected: boolean): Now
     case "prompting":
       break;
     default:
-      return null;
+      return waiting(view.background);
   }
   const calls = Object.values(view.live.toolCalls);
   for (let i = calls.length - 1; i >= 0; i--) {
