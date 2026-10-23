@@ -20,6 +20,7 @@ import type {
   PrState,
   PublishTarget,
   SessionOptions,
+  SessionRevertResult,
   WorkspaceDiff,
   WorkspaceInfo,
   WorkspaceInspection,
@@ -321,6 +322,26 @@ export class HostController {
       void this.loadHistory(session_id);
       throw e;
     }
+  }
+
+  /**
+   * Take session `session_id` back to before user turn `turn_id` (one whose
+   * history turn is `revertible`). `files` restores the files and staged
+   * changes the turn started with; `chat` is accepted, `chat_rewound` stays
+   * `false` for now. Refused with `turn_in_progress`, `workspace_busy` or
+   * `checkpoint_unavailable`. Never retried.
+   */
+  async revertSession(
+    session_id: string,
+    turn_id: string,
+    what: { files?: boolean; chat?: boolean },
+  ): Promise<SessionRevertResult> {
+    return this.client.request("session.revert", {
+      session_id,
+      turn_id,
+      files: what.files ?? false,
+      chat: what.chat ?? false,
+    });
   }
 
   /** Stage and commit `files` (repo-relative). Never retried. */

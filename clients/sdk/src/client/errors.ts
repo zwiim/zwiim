@@ -90,12 +90,17 @@ export class ZwiimClientError extends Error {
   }
 }
 
-/** The running agents/terminals behind a `workspace_busy` refusal. */
+/** The running agents/terminals, or the repository operation, behind a `workspace_busy` refusal. */
 export function busyDetails(e: unknown): WorkspaceBusyDetails | null {
   if (!isClientError(e, "workspace_busy")) return null;
   const d = e.details ?? {};
   const ids = Array.isArray(d.session_ids) ? d.session_ids.filter((id): id is string => typeof id === "string") : [];
-  return { live_sessions: Number(d.live_sessions ?? 0), terminals: Number(d.terminals ?? 0), session_ids: ids };
+  return {
+    live_sessions: Number(d.live_sessions ?? 0),
+    terminals: Number(d.terminals ?? 0),
+    session_ids: ids,
+    ...(typeof d.operation === "string" ? { operation: d.operation } : {}),
+  };
 }
 
 /** The uncommitted changes behind a `workspace_dirty` refusal. */

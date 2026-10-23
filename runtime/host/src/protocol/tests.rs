@@ -82,6 +82,7 @@ const OPS: &[&str] = &[
     "session.set_options",
     "session.list",
     "session.history",
+    "session.revert",
     "device.pair_invite",
     "device.list",
     "device.revoke",
@@ -1943,6 +1944,54 @@ async fn session_list_and_history_use_public_ids_only() {
             json!({"session_id": sid, "conversation_id": conv})
         )
         .await,
+        (StatusCode::BAD_REQUEST, "invalid_request".into())
+    );
+}
+
+#[tokio::test]
+async fn session_revert_speaks_zwiim_only() {
+    let h = host(false).await;
+    let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+
+    // Every user turn says whether it can be reverted; none here can.
+    let history = h.ok("session.history", json!({"session_id": sid})).await;
+    for turn in history["turns"].as_array().unwrap() {
+        if turn["role"] == "user" {
+            assert_eq!(turn["revertible"], false, "{turn}");
+        }
+    }
+
+    let revert = |turn_id: &str, files: bool, chat: bool| {
+        json!({"session_id": sid, "turn_id": turn_id, "files": files, "chat": chat})
+    };
+    assert_eq!(
+        h.err("session.revert", revert("turn-404", true, true)).await,
+        (StatusCode::CONFLICT, "checkpoint_unavailable".into())
+    );
+    assert_eq!(
+        h.err("session.revert", revert("turn-404", false, false)).await,
+        (StatusCode::BAD_REQUEST, "invalid_input".into())
+    );
+    assert_eq!(
+        h.err(
+            "session.revert",
+            json!({"session_id": "nope", "turn_id": "t", "files": true, "chat": false})
+        )
+        .await,
+        (StatusCode::NOT_FOUND, "not_found".into())
+    );
+    assert_eq!(
+        h.err(
+            "session.revert",
+            json!({"session_id": sid, "turn_id": "t", "files": true, "chat": false, "ordinal": 1})
+        )
+        .await,
+        (StatusCode::BAD_REQUEST, "invalid_request".into())
+    );
+    assert_eq!(
+        h.err("session.revert", json!({"session_id": sid, "turn_id": "t"}))
+            .await,
         (StatusCode::BAD_REQUEST, "invalid_request".into())
     );
 }

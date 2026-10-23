@@ -15,15 +15,20 @@
 //! The refs are the whole record: nothing else is stored, and they survive a
 //! Host restart.
 //!
-//! Restoring a checkpoint is not here yet.
+//! [`restore`] puts a checkpoint's files and index back, saving the state it
+//! replaces first. It never moves HEAD.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use super::error::{GitError, GitErrorCode};
 use super::run::{git, run, run_with_input, Output};
 
 /// Everything one save may take before it is abandoned.
 const BUDGET: Duration = Duration::from_secs(10);
+/// Each step of a restore. Writing a large worktree back takes longer than
+/// reading it.
+const RESTORE_BUDGET: Duration = Duration::from_secs(60);
 /// Commit identity of a checkpoint. Not a person: these commits never join
 /// any history.
 const AUTHOR_NAME: &str = "Zwiim";
@@ -100,8 +105,9 @@ pub struct Checkpoint {
     pub head: Option<String>,
     pub index_tree: String,
     pub worktree_tree: String,
-    /// `fingerprint_agent_message` of the prompt's text, on start
-    /// checkpoints of prompts that had text.
+    /// Fingerprint of the prompt's text in the canonical form
+    /// `session_checkpoints` takes it in, on start checkpoints of prompts
+    /// that had text.
     pub prompt_fingerprint: Option<String>,
 }
 
@@ -241,6 +247,51 @@ async fn save_in(
     phase: Phase,
     prompt_fingerprint: Option<&str>,
 ) -> Result<String, SkipReason> {
+    let snap = snapshot(root).await?;
+    let subject = format!(
+        "zwiim checkpoint {} {}/{}",
+        phase.as_str(),
+        key.session_id,
+        key.ordinal
+    );
+    let mut trailers = format!(
+        "Zwiim-Session: {}\nZwiim-Turn: {}\nZwiim-Phase: {}\n",
+        key.session_id,
+        key.ordinal,
+        phase.as_str()
+    );
+    snap.push_trailers(&mut trailers);
+    if let Some(fp) = prompt_fingerprint.filter(|fp| !fp.contains('\n')) {
+        trailers.push_str(&format!("Zwiim-Prompt: {fp}\n"));
+    }
+    store(
+        root,
+        &ref_name(key, phase),
+        &snap.worktree_tree,
+        &subject,
+        &trailers,
+    )
+    .await
+}
+
+/// The worktree at `root` as it is now, written as trees through a private
+/// copy of the index. Nothing the user sees is touched.
+struct Snapshot {
+    index_tree: String,
+    worktree_tree: String,
+    head: Option<String>,
+}
+
+impl Snapshot {
+    fn push_trailers(&self, trailers: &mut String) {
+        if let Some(head) = &self.head {
+            trailers.push_str(&format!("Zwiim-Head: {head}\n"));
+        }
+        trailers.push_str(&format!("Zwiim-Index-Tree: {}\n", self.index_tree));
+    }
+}
+
+async fn snapshot(root: &str) -> Result<Snapshot, SkipReason> {
     // This worktree's own git dir and index; a linked worktree has both apart
     // from the main one's.
     let out = git_ok(
@@ -296,35 +347,31 @@ async fn save_in(
         .trim()
         .to_string();
     let head = head(root).await?;
+    Ok(Snapshot {
+        index_tree,
+        worktree_tree,
+        head,
+    })
+}
 
-    let subject = format!(
-        "zwiim checkpoint {} {}/{}",
-        phase.as_str(),
-        key.session_id,
-        key.ordinal
-    );
-    let mut trailers = format!(
-        "Zwiim-Session: {}\nZwiim-Turn: {}\nZwiim-Phase: {}\n",
-        key.session_id,
-        key.ordinal,
-        phase.as_str()
-    );
-    if let Some(head) = &head {
-        trailers.push_str(&format!("Zwiim-Head: {head}\n"));
-    }
-    trailers.push_str(&format!("Zwiim-Index-Tree: {index_tree}\n"));
-    if let Some(fp) = prompt_fingerprint.filter(|fp| !fp.contains('\n')) {
-        trailers.push_str(&format!("Zwiim-Prompt: {fp}\n"));
-    }
+/// Commit `tree` as a parentless checkpoint and store it at `refname`, which
+/// must not exist yet. The new commit's oid.
+async fn store(
+    root: &str,
+    refname: &str,
+    tree: &str,
+    subject: &str,
+    trailers: &str,
+) -> Result<String, SkipReason> {
     let mut cmd = git(root);
     cmd.args([
         "commit-tree",
         "--no-gpg-sign",
-        &worktree_tree,
+        tree,
         "-m",
-        &subject,
+        subject,
         "-m",
-        &trailers,
+        trailers,
     ])
     .env("GIT_AUTHOR_NAME", AUTHOR_NAME)
     .env("GIT_AUTHOR_EMAIL", AUTHOR_EMAIL)
@@ -338,13 +385,93 @@ async fn save_in(
     .trim()
     .to_string();
     // Create-only: the empty old value makes Git refuse a ref that exists.
-    git_ok(
-        root,
-        &["update-ref", &ref_name(key, phase), &oid, ""],
-        "store checkpoint",
-    )
-    .await?;
+    git_ok(root, &["update-ref", refname, &oid, ""], "store checkpoint").await?;
     Ok(oid)
+}
+
+/// What a [`restore`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Restored {
+    /// HEAD is no longer the commit it was when the checkpoint was taken.
+    /// It was left where it is.
+    pub head_moved: bool,
+}
+
+/// Put the worktree and index at `root` back to `cp`. HEAD, branches,
+/// commits and ignored files are never touched: a turn's commits stay and
+/// show as undone changes.
+///
+/// The state being replaced is saved first, as a recovery checkpoint at
+/// `refs/zwiim/checkpoints/<session_id>/revert-<unix_ms>`. It is not a turn
+/// (listing, numbering and capping ignore it) and goes when the session's
+/// checkpoints do. When it cannot be saved, nothing is restored. A
+/// repository mid-operation is refused with [`GitErrorCode::Conflict`] and
+/// the operation as the detail.
+///
+/// The caller holds the workspace exclusively: nothing else may write the
+/// worktree meanwhile.
+pub async fn restore(root: &Path, cp: &Checkpoint) -> Result<Restored, GitError> {
+    let root = session_root(root, &cp.key.session_id).map_err(restore_error)?;
+
+    let snap = snapshot(root).await.map_err(restore_error)?;
+    let unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    let mut trailers = format!(
+        "Zwiim-Session: {}\nZwiim-Phase: revert\n",
+        cp.key.session_id
+    );
+    snap.push_trailers(&mut trailers);
+    store(
+        root,
+        &format!("{}revert-{unix_ms}", session_prefix(&cp.key.session_id)),
+        &snap.worktree_tree,
+        &format!("zwiim checkpoint revert {}", cp.key.session_id),
+        &trailers,
+    )
+    .await
+    .map_err(restore_error)?;
+
+    // The worktree first, through the index: files the checkpoint has are
+    // written, tracked files it lacks are removed. Then files no index entry
+    // names (ignored ones excepted), then the index the checkpoint had.
+    for (args, what) in [
+        (
+            vec!["read-tree", "--reset", "-u", cp.worktree_tree.as_str()],
+            "restore files",
+        ),
+        (vec!["clean", "-f", "-d", "-q"], "remove new files"),
+        (
+            vec!["read-tree", cp.index_tree.as_str()],
+            "restore the index",
+        ),
+    ] {
+        let mut cmd = git(root);
+        cmd.args(&args);
+        checked(run(cmd, RESTORE_BUDGET, what).await, what).map_err(restore_error)?;
+    }
+    let head = head(root).await.map_err(restore_error)?;
+    Ok(Restored {
+        head_moved: head != cp.head,
+    })
+}
+
+fn restore_error(reason: SkipReason) -> GitError {
+    match reason {
+        SkipReason::NotGit => GitError::new(
+            GitErrorCode::NotAGitRepository,
+            "The workspace is not a Git repository",
+        ),
+        SkipReason::Busy(what) => GitError::new(
+            GitErrorCode::Conflict,
+            "The repository is in the middle of another operation",
+        )
+        .with_detail(what),
+        SkipReason::Timeout => GitError::new(GitErrorCode::Timeout, "Restoring files timed out"),
+        SkipReason::Failed(detail) => {
+            GitError::new(GitErrorCode::Failed, "Restoring files failed").with_detail(&detail)
+        }
+    }
 }
 
 /// `git <args>` against the private index at `index`.

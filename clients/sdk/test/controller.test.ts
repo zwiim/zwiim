@@ -220,6 +220,19 @@ describe("HostController", () => {
     expect(t.transport.requests.at(-1)?.options).toEqual({ mutating: true });
   });
 
+  it("reverts a turn's files once, never retried", async () => {
+    const t = setup();
+    t.transport.handlers["session.revert"] = () => ({ files_restored: true, chat_rewound: false, head_moved: true });
+    const out = await t.controller.revertSession("s1", "turn-2", { files: true, chat: true });
+    expect(out).toEqual({ files_restored: true, chat_rewound: false, head_moved: true });
+    expect(t.transport.requests.at(-1)?.params).toEqual({ session_id: "s1", turn_id: "turn-2", files: true, chat: true });
+    expect(t.transport.requests.at(-1)?.options).toEqual({ mutating: true });
+    expect(MUTATING_OPS.has("session.revert")).toBe(true);
+
+    await t.controller.revertSession("s1", "turn-0", { files: true });
+    expect(t.transport.requests.at(-1)?.params).toEqual({ session_id: "s1", turn_id: "turn-0", files: true, chat: false });
+  });
+
   it("adds a workspace by its folder names under the host's home", async () => {
     const t = setup();
     t.transport.handlers["workspace.add"] = () => ({

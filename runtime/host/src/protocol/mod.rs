@@ -192,6 +192,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/session.respond", post(http::session_respond))
         .route("/session.list", post(http::session_list))
         .route("/session.history", post(http::session_history))
+        .route("/session.revert", post(http::session_revert))
         .route("/ws", get(ws::ws_handler))
         .merge(local_authority)
         .fallback(unknown_operation)

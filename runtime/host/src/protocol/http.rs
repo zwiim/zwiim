@@ -2048,9 +2048,41 @@ pub async fn session_history(
 ) -> ZResult<Value> {
     let turns = session::history(&state, &p.session_id).await?;
     let root = session::workspace_dir(&state.db.conn, &p.session_id).await;
+    let revertible = match &root {
+        Some(dir) => {
+            crate::session_checkpoints::revertible_turns(
+                std::path::Path::new(dir),
+                &p.session_id,
+                &turns,
+            )
+            .await
+        }
+        None => Default::default(),
+    };
     Ok(Json(json!({
         "session_id": p.session_id,
-        "turns": super::events::project_history(&turns, root.as_deref()),
+        "turns": super::events::project_history_with(&turns, root.as_deref(), &revertible),
+    })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRevertParams {
+    pub session_id: String,
+    pub turn_id: String,
+    pub files: bool,
+    pub chat: bool,
+}
+
+pub async fn session_revert(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<SessionRevertParams>,
+) -> ZResult<Value> {
+    let out = session::revert(&state, &p.session_id, &p.turn_id, p.files, p.chat).await?;
+    Ok(Json(json!({
+        "files_restored": out.files_restored,
+        "chat_rewound": out.chat_rewound,
+        "head_moved": out.head_moved,
     })))
 }
 

@@ -55,6 +55,8 @@ export type HostErrorCode =
   /** `files.download`: the file is larger than 10 MB. */
   | "file_too_large"
   | "file_too_large_for_remote"
+  /** `session.revert`: the turn has no saved state that is certainly its own. */
+  | "checkpoint_unavailable"
   | "internal";
 
 export interface WireError {
@@ -70,6 +72,11 @@ export interface WorkspaceBusyDetails {
   terminals: number;
   /** The sessions whose agents run there (an agent not bound to one yet is only counted). */
   session_ids: string[];
+  /**
+   * Set when the repository, not an agent, is busy: the operation it is in the
+   * middle of (`merge`, `rebase`, `cherry_pick`, `revert`, `conflict`, `index_lock`).
+   */
+  operation?: string;
 }
 
 /** `host_restarting` details: the Host is draining to stop or restart. */
@@ -833,6 +840,11 @@ export type HistoryBlock =
 export interface HistoryTurn {
   turn_id: string;
   role: string;
+  /**
+   * User turns only: `session.revert` can put back the files this turn
+   * started with. Absent on agent turns and from older Hosts.
+   */
+  revertible?: boolean;
   blocks: HistoryBlock[];
   timestamp: string;
   completed_at: string | null;
@@ -844,6 +856,13 @@ export interface HistoryTurn {
     cache_creation_input_tokens: number;
     cache_read_input_tokens: number;
   } | null;
+}
+
+export interface SessionRevertResult {
+  files_restored: boolean;
+  chat_rewound: boolean;
+  /** The checked-out commit moved since the turn started; it was left as it is. */
+  head_moved: boolean;
 }
 
 export interface SessionHistory {
@@ -1267,6 +1286,16 @@ export interface Operations {
   ];
   "session.list": [{ workspace_id: string }, SessionSummary[]];
   "session.history": [{ session_id: string }, SessionHistory];
+  /**
+   * Take a session back to before user turn `turn_id`. `files` restores the
+   * workspace files and staged changes the turn started with (HEAD and
+   * ignored files are never touched). `chat` is accepted; `chat_rewound` is
+   * `false` for now. Capability `session.revert`.
+   */
+  "session.revert": [
+    { session_id: string; turn_id: string; files: boolean; chat: boolean },
+    SessionRevertResult,
+  ];
   /** Local host authority only, like `device.list` / `device.revoke` and `host.claim`. */
   "device.pair_invite": [Record<string, never>, KeyPairingInvitation];
   /** Unauthenticated: the one-time `code` authorizes it. */
@@ -1323,6 +1352,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "session.cancel",
   "session.stop",
   "session.delete",
+  "session.revert",
   "session.respond",
   "device.pair",
   "device.revoke",

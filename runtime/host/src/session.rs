@@ -552,6 +552,134 @@ pub async fn delete(
     Ok(())
 }
 
+/// What `session.revert` did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct RevertOutcome {
+    /// The workspace's files and staged changes are back to how they were
+    /// when the turn was sent.
+    pub files_restored: bool,
+    /// The conversation was taken back to before the turn. Not yet: always
+    /// `false`.
+    pub chat_rewound: bool,
+    /// The checked-out commit is not the one the turn started on (the agent
+    /// committed, or the branch changed). It was left as it is.
+    pub head_moved: bool,
+}
+
+/// Take session `session_id` back to before user turn `turn_id`. With
+/// `files`, the workspace's files and staged changes return to the turn's
+/// start checkpoint; HEAD, branches and ignored files are never touched, and
+/// the state replaced is kept for recovery (see
+/// [`crate::git_harness::checkpoint::restore`]). `chat` is accepted and not
+/// acted on yet: `chat_rewound` is `false`.
+///
+/// Refused with `turn_in_progress` while the session's turn runs,
+/// `workspace_busy` while another agent works in the workspace or the
+/// repository is mid-operation, and `checkpoint_unavailable` when the turn
+/// has no checkpoint that is certainly its own: a guessed state is never
+/// restored.
+pub async fn revert(
+    state: &AppState,
+    session_id: &str,
+    turn_id: &str,
+    files: bool,
+    chat: bool,
+) -> Result<RevertOutcome, ZwiimError> {
+    if !files && !chat {
+        return Err(ZwiimError::invalid_input(
+            "Choose what to revert: files, chat or both",
+        ));
+    }
+    let row = resolve(&state.db.conn, session_id).await?;
+    let lock = session_lock(session_id);
+    let _guard = lock.lock().await;
+    let turns = history(state, session_id).await?;
+    revert_locked(
+        &state.db,
+        &state.connection_manager,
+        &row,
+        &turns,
+        turn_id,
+        files,
+    )
+    .await
+}
+
+/// [`revert`] under the session lock, with the session's transcript.
+async fn revert_locked(
+    db: &AppDatabase,
+    connections: &ConnectionManager,
+    row: &conversation::Model,
+    turns: &[MessageTurn],
+    turn_id: &str,
+    files: bool,
+) -> Result<RevertOutcome, ZwiimError> {
+    let session_id = row.session_id.as_deref().ok_or_else(ZwiimError::internal)?;
+    // Same order as a send: session lock, then the workspace.
+    let _exclusive = crate::workspace::enter_exclusive(row.folder_id).await;
+    let folder = crate::db::entities::folder::Entity::find_by_id(row.folder_id)
+        .one(&db.conn)
+        .await
+        .map_err(db_err)?
+        .ok_or_else(|| ZwiimError::not_found("Workspace not found"))?;
+    let own = connection_for(connections, row).await;
+    if let Some(connection_id) = &own {
+        if let Some(state) = connections.get_state(connection_id).await {
+            if is_busy(&*state.read().await) {
+                return Err(ZwiimError::turn_in_progress());
+            }
+        }
+    }
+    let (busy, session_ids) =
+        crate::workspace::busy_agents(&db.conn, connections, &folder, own.as_deref()).await?;
+    if busy > 0 {
+        return Err(ZwiimError::workspace_busy(busy, 0, session_ids));
+    }
+    if !turns
+        .iter()
+        .any(|t| t.id == turn_id && matches!(t.role, crate::models::message::TurnRole::User))
+    {
+        return Err(ZwiimError::checkpoint_unavailable());
+    }
+    if !files {
+        return Ok(RevertOutcome::default());
+    }
+
+    let root = std::path::Path::new(&folder.path);
+    let cp = crate::session_checkpoints::start_checkpoint_of(root, session_id, turns, turn_id)
+        .await
+        .ok_or_else(ZwiimError::checkpoint_unavailable)?;
+    let restored = crate::git_harness::checkpoint::restore(root, &cp)
+        .await
+        .map_err(|e| {
+            use crate::git_harness::GitErrorCode;
+            match e.code {
+                GitErrorCode::Conflict => ZwiimError::repository_busy(e.detail.as_deref()),
+                GitErrorCode::NotAGitRepository => ZwiimError::checkpoint_unavailable(),
+                _ => {
+                    tracing::warn!(
+                        code = e.code.as_str(),
+                        message = %e.message,
+                        detail = ?e.detail,
+                        "[zwiim] revert failed"
+                    );
+                    ZwiimError::internal()
+                }
+            }
+        })?;
+    tracing::info!(
+        session_id = %session_id,
+        turn = cp.key.ordinal,
+        head_moved = restored.head_moved,
+        "[zwiim] session files reverted"
+    );
+    Ok(RevertOutcome {
+        files_restored: true,
+        chat_rewound: false,
+        head_moved: restored.head_moved,
+    })
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QuestionReplyItem {
@@ -2373,5 +2501,293 @@ pub(crate) mod orchestration_tests {
                 "acceptEdits".to_string()
             )]
         );
+    }
+
+    // ── revert ──────────────────────────────────────────────────────────
+
+    /// The transcript of `prompts`, each answered: user turns `turn-0`,
+    /// `turn-2`, ...
+    fn transcript(prompts: &[&str]) -> Vec<MessageTurn> {
+        use crate::models::message::{ContentBlock, TurnRole};
+        let turn = |n: usize, role: TurnRole, text: &str| MessageTurn {
+            id: format!("turn-{n}"),
+            role,
+            blocks: vec![ContentBlock::Text { text: text.into() }],
+            timestamp: chrono::Utc::now(),
+            usage: None,
+            duration_ms: None,
+            model: None,
+            completed_at: None,
+            agent_message_id: None,
+        };
+        prompts
+            .iter()
+            .enumerate()
+            .flat_map(|(k, p)| {
+                [
+                    turn(2 * k, TurnRole::User, p),
+                    turn(2 * k + 1, TurnRole::Assistant, "done"),
+                ]
+            })
+            .collect()
+    }
+
+    /// A Codex session in the Git workspace `dir` that ran `prompts` to the
+    /// end. During turn `k` the agent writes `a.txt` as `after <prompt> <k>`.
+    async fn ran(
+        db: &AppDatabase,
+        mgr: &ConnectionManager,
+        launcher: &FakeLauncher,
+        wid: &str,
+        dir: &Path,
+        prompts: &[&str],
+    ) -> String {
+        let sid = start(
+            db,
+            mgr,
+            launcher,
+            wid,
+            AgentType::Codex,
+            text(prompts[0]),
+            None,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+        for (k, prompt) in prompts.iter().enumerate() {
+            if k > 0 {
+                send(db, mgr, launcher, &sid, text(prompt), None)
+                    .await
+                    .unwrap();
+            }
+            settle().await;
+            std::fs::write(dir.join("a.txt"), format!("after {prompt} {k}\n")).unwrap();
+            end_turn_observed(mgr, "fake-conn-1", "end_turn").await;
+            assert!(wait_for_ref(dir, &checkpoint_ref(&sid, k as u32 + 1, "end")).await);
+        }
+        sid
+    }
+
+    async fn revert_turn(
+        db: &AppDatabase,
+        mgr: &ConnectionManager,
+        sid: &str,
+        turns: &[MessageTurn],
+        turn_id: &str,
+    ) -> Result<RevertOutcome, ZwiimError> {
+        let row = resolve(&db.conn, sid).await.unwrap();
+        revert_locked(db, mgr, &row, turns, turn_id, true).await
+    }
+
+    fn a_txt(dir: &Path) -> String {
+        std::fs::read_to_string(dir.join("a.txt")).unwrap()
+    }
+
+    fn revert_refs(dir: &Path, sid: &str) -> usize {
+        let prefix = format!("refs/zwiim/checkpoints/{sid}/revert-");
+        zwiim_refs(dir).iter().filter(|r| r.starts_with(&prefix)).count()
+    }
+
+    #[tokio::test]
+    async fn revert_puts_back_the_files_a_turn_started_with() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = ran(&db, &mgr, &launcher, &wid, &dir, &["first", "second"]).await;
+        std::fs::write(dir.join("new.txt"), "made by the turn\n").unwrap();
+        let turns = transcript(&["first", "second"]);
+
+        let out = revert_turn(&db, &mgr, &sid, &turns, "turn-2").await.unwrap();
+        assert_eq!(
+            out,
+            RevertOutcome {
+                files_restored: true,
+                chat_rewound: false,
+                head_moved: false,
+            }
+        );
+        assert_eq!(a_txt(&dir), "after first 0\n");
+        assert!(!dir.join("new.txt").exists());
+
+        revert_turn(&db, &mgr, &sid, &turns, "turn-0").await.unwrap();
+        assert_eq!(a_txt(&dir), "one\n");
+        assert_eq!(fixture_git(&dir, &["status", "--porcelain"]), "");
+        assert_eq!(revert_refs(&dir, &sid), 2, "each revert is recoverable");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn revert_unknown_turn_is_checkpoint_unavailable() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = ran(&db, &mgr, &launcher, &wid, &dir, &["first"]).await;
+        let turns = transcript(&["first"]);
+
+        for (turns, turn_id) in [
+            (&turns, "turn-9"),
+            // Not a user turn.
+            (&turns, "turn-1"),
+            // A prompt no checkpoint was saved for.
+            (&transcript(&["something else"]), "turn-0"),
+        ] {
+            let err = revert_turn(&db, &mgr, &sid, turns, turn_id)
+                .await
+                .unwrap_err();
+            assert_eq!(err.code, "checkpoint_unavailable", "{turn_id}");
+        }
+        assert_eq!(a_txt(&dir), "after first 0\n");
+        assert_eq!(revert_refs(&dir, &sid), 0);
+
+        // A workspace that is not a Git repository has no checkpoints.
+        let plain = workspace(&db).await;
+        let other = start(
+            &db,
+            &mgr,
+            &launcher,
+            &plain,
+            AgentType::Codex,
+            text("first"),
+            None,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+        finish_turn(&mgr, "fake-conn-2").await;
+        let err = revert_turn(&db, &mgr, &other, &turns, "turn-0")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "checkpoint_unavailable");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn revert_refused_during_turn() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = ran(&db, &mgr, &launcher, &wid, &dir, &["first"]).await;
+        send(&db, &mgr, &launcher, &sid, text("second"), None)
+            .await
+            .unwrap();
+        settle().await;
+        std::fs::write(dir.join("a.txt"), "mid-turn\n").unwrap();
+
+        let err = revert_turn(&db, &mgr, &sid, &transcript(&["first"]), "turn-0")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "turn_in_progress");
+        assert_eq!(a_txt(&dir), "mid-turn\n");
+        assert_eq!(revert_refs(&dir, &sid), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn revert_refused_when_busy() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = ran(&db, &mgr, &launcher, &wid, &dir, &["first"]).await;
+        let turns = transcript(&["first"]);
+
+        // The repository is mid-merge.
+        let head = fixture_git(&dir, &["rev-parse", "HEAD"]);
+        std::fs::write(dir.join(".git/MERGE_HEAD"), head).unwrap();
+        let err = revert_turn(&db, &mgr, &sid, &turns, "turn-0")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "workspace_busy");
+        assert_eq!(err.details.as_ref().unwrap()["operation"], "merge");
+        assert_eq!(a_txt(&dir), "after first 0\n");
+        std::fs::remove_file(dir.join(".git/MERGE_HEAD")).unwrap();
+
+        // Another session's agent is working in the workspace.
+        let other = start(
+            &db,
+            &mgr,
+            &launcher,
+            &wid,
+            AgentType::Codex,
+            text("other"),
+            None,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+        settle().await;
+        let err = revert_turn(&db, &mgr, &sid, &turns, "turn-0")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "workspace_busy");
+        let details = err.details.unwrap();
+        assert_eq!(details["live_sessions"], 1);
+        assert_eq!(details["session_ids"], serde_json::json!([other]));
+        assert_eq!(a_txt(&dir), "after first 0\n");
+        assert_eq!(revert_refs(&dir, &sid), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn history_marks_revertible_turns() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = ran(
+            &db,
+            &mgr,
+            &launcher,
+            &wid,
+            &dir,
+            &["first", "continue", "continue"],
+        )
+        .await;
+        // The oldest turn predates checkpoints.
+        let turns = transcript(&["old", "first", "continue", "continue"]);
+
+        let revertible = crate::session_checkpoints::revertible_turns(&dir, &sid, &turns).await;
+        let mut ids: Vec<&str> = revertible.iter().map(String::as_str).collect();
+        ids.sort();
+        assert_eq!(ids, ["turn-2", "turn-4", "turn-6"]);
+
+        let projected = crate::protocol::events::project_history_with(&turns, None, &revertible);
+        crate::protocol::events::tests::assert_no_internal_keys(&projected);
+        let flags: Vec<(String, serde_json::Value)> = projected
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| (t["role"].as_str().unwrap().to_string(), t["revertible"].clone()))
+            .collect();
+        let user = |b: bool| ("user".to_string(), serde_json::Value::Bool(b));
+        let agent = ("assistant".to_string(), serde_json::Value::Null);
+        assert_eq!(
+            flags,
+            [
+                user(false),
+                agent.clone(),
+                user(true),
+                agent.clone(),
+                user(true),
+                agent.clone(),
+                user(true),
+                agent,
+            ]
+        );
+        for t in projected.as_array().unwrap() {
+            if t["role"] == "assistant" {
+                assert!(t.get("revertible").is_none(), "{t}");
+            }
+        }
+
+        // Each "continue" goes back to its own start.
+        revert_turn(&db, &mgr, &sid, &turns, "turn-6").await.unwrap();
+        assert_eq!(a_txt(&dir), "after continue 1\n");
+        revert_turn(&db, &mgr, &sid, &turns, "turn-4").await.unwrap();
+        assert_eq!(a_txt(&dir), "after first 0\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

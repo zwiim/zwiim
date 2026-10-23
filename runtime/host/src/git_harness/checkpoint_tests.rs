@@ -600,3 +600,168 @@ async fn changes_cap_the_file_list() {
     assert_eq!(changes.added, 201);
     assert!(changes.truncated);
 }
+
+// ── restore ─────────────────────────────────────────────────────────────
+
+/// The start checkpoint of `key`, read back.
+async fn start_of(root: &Path, key: &CheckpointKey) -> checkpoint::Checkpoint {
+    checkpoint::list(root, &key.session_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|c| c.key == *key && c.phase == Phase::Start)
+        .expect("start checkpoint")
+}
+
+/// The staged state, as `git ls-files --stage` prints it.
+fn staged(root: &Path) -> String {
+    git(root, &["ls-files", "--stage"])
+}
+
+#[tokio::test]
+async fn revert_restores_files_to_turn_start() {
+    let (_tmp, root) = repo();
+    // Before the turn: an unstaged edit, a staged new file, an untracked one.
+    write(&root, "a.txt", "two\n");
+    write(&root, "b.txt", "b\n");
+    git(&root, &["add", "b.txt"]);
+    write(&root, "c.txt", "c\n");
+    let turn = key("s-restore", 1);
+    saved_oid(&root, &turn, Phase::Start).await;
+    let files_before = worktree_bytes(&root);
+    let staged_before = staged(&root);
+    let head_before = git(&root, &["rev-parse", "HEAD"]);
+
+    // The turn edits, deletes, stages and adds.
+    write(&root, "a.txt", "three\n");
+    std::fs::remove_file(root.join("b.txt")).unwrap();
+    git(&root, &["add", "-A", "b.txt"]);
+    write(&root, "c.txt", "changed\n");
+    write(&root, "d.txt", "d\n");
+    git(&root, &["add", "d.txt"]);
+
+    let cp = start_of(&root, &turn).await;
+    let restored = checkpoint::restore(&root, &cp).await.expect("restore");
+    assert!(!restored.head_moved);
+    assert_eq!(worktree_bytes(&root), files_before);
+    assert_eq!(staged(&root), staged_before);
+    assert_eq!(git(&root, &["rev-parse", "HEAD"]), head_before);
+    // `c.txt` is untracked again, `b.txt` staged again.
+    assert_eq!(
+        git(&root, &["status", "--porcelain"]),
+        // (The fixture trims the first line's leading space.)
+        "M a.txt\nA  b.txt\n?? c.txt"
+    );
+}
+
+#[tokio::test]
+async fn revert_keeps_ignored_files() {
+    let (_tmp, root) = repo();
+    write(&root, "ignored.txt", "before\n");
+    let turn = key("s-ignored", 1);
+    saved_oid(&root, &turn, Phase::Start).await;
+
+    write(&root, "ignored.txt", "after\n");
+    write(&root, "node_modules/pkg/index.js", "x\n");
+    write(&root, "a.txt", "turn\n");
+
+    let cp = start_of(&root, &turn).await;
+    checkpoint::restore(&root, &cp).await.expect("restore");
+    assert_eq!(
+        std::fs::read_to_string(root.join("a.txt")).unwrap(),
+        "one\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("ignored.txt")).unwrap(),
+        "after\n"
+    );
+    assert!(root.join("node_modules/pkg/index.js").exists());
+}
+
+#[tokio::test]
+async fn revert_removes_new_untracked_and_is_recoverable() {
+    let (_tmp, root) = repo();
+    let turn = key("s-recover", 1);
+    saved_oid(&root, &turn, Phase::Start).await;
+
+    write(&root, "new.txt", "new\n");
+    write(&root, "new_dir/inner.txt", "inner\n");
+    write(&root, "a.txt", "turn\n");
+
+    let cp = start_of(&root, &turn).await;
+    checkpoint::restore(&root, &cp).await.expect("restore");
+    assert!(!root.join("new.txt").exists());
+    assert!(!root.join("new_dir").exists());
+    assert_eq!(
+        std::fs::read_to_string(root.join("a.txt")).unwrap(),
+        "one\n"
+    );
+
+    // The state before the restore is kept under the session, apart from
+    // its turns.
+    let recovery: Vec<String> = zwiim_refs(&root)
+        .into_iter()
+        .filter(|r| {
+            r.strip_prefix("refs/zwiim/checkpoints/s-recover/revert-")
+                .is_some_and(|ms| !ms.is_empty() && ms.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .collect();
+    assert_eq!(recovery.len(), 1, "{:?}", zwiim_refs(&root));
+    let files = tree_files(&root, &recovery[0]);
+    assert!(files.contains(&"new.txt".to_string()), "{files:?}");
+    assert!(
+        files.contains(&"new_dir/inner.txt".to_string()),
+        "{files:?}"
+    );
+    assert_eq!(
+        git(&root, &["show", &format!("{}:a.txt", recovery[0])]),
+        "turn"
+    );
+    // Not a turn: the turns and the next turn number are unchanged.
+    assert_eq!(checkpoint::list(&root, "s-recover").await.unwrap().len(), 1);
+    assert_eq!(checkpoint::next_ordinal(&root, "s-recover").await, Ok(2));
+    // Deleting the session deletes it too.
+    checkpoint::gc_session(&root, "s-recover").await;
+    assert!(zwiim_refs(&root).is_empty());
+}
+
+#[tokio::test]
+async fn revert_with_moved_head_keeps_commits() {
+    let (_tmp, root) = repo();
+    let turn = key("s-head", 1);
+    saved_oid(&root, &turn, Phase::Start).await;
+    let files_before = worktree_bytes(&root);
+
+    write(&root, "a.txt", "committed by the turn\n");
+    git(&root, &["commit", "-qam", "turn commit"]);
+    let moved = git(&root, &["rev-parse", "HEAD"]);
+
+    let cp = start_of(&root, &turn).await;
+    let restored = checkpoint::restore(&root, &cp).await.expect("restore");
+    assert!(restored.head_moved);
+    assert_eq!(git(&root, &["rev-parse", "HEAD"]), moved, "HEAD untouched");
+    assert_eq!(git(&root, &["log", "-1", "--format=%s"]), "turn commit");
+    assert_eq!(worktree_bytes(&root), files_before);
+    // The commit's change now shows as undone, staged, against HEAD.
+    assert_eq!(git(&root, &["status", "--porcelain"]), "M  a.txt");
+}
+
+#[tokio::test]
+async fn restore_refuses_a_busy_repo() {
+    let (_tmp, root) = repo();
+    let turn = key("s-busy-restore", 1);
+    saved_oid(&root, &turn, Phase::Start).await;
+    let cp = start_of(&root, &turn).await;
+    write(&root, "a.txt", "turn\n");
+    std::fs::write(root.join(".git/index.lock"), "").unwrap();
+
+    let err = checkpoint::restore(&root, &cp).await.unwrap_err();
+    assert_eq!(err.code, super::GitErrorCode::Conflict);
+    assert_eq!(err.detail.as_deref(), Some("index_lock"));
+    // Nothing changed and nothing was saved.
+    assert_eq!(
+        std::fs::read_to_string(root.join("a.txt")).unwrap(),
+        "turn\n"
+    );
+    assert_eq!(zwiim_refs(&root).len(), 1);
+}

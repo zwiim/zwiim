@@ -125,6 +125,29 @@ impl ZwiimError {
         e
     }
 
+    /// The repository is mid-operation (`merge`, `rebase`, `cherry_pick`,
+    /// `revert`, `conflict`, `index_lock`): a `workspace_busy` with no agents
+    /// and the operation named.
+    pub fn repository_busy(operation: Option<&str>) -> Self {
+        let mut e = Self::workspace_busy(0, 0, Vec::new());
+        e.message = "The repository is in the middle of another operation".into();
+        if let (Some(details), Some(operation)) = (e.details.as_mut(), operation) {
+            details["operation"] = operation.into();
+        }
+        e
+    }
+
+    /// The turn has no saved state to go back to: it predates checkpoints,
+    /// its checkpoint was not saved or is gone, or it is not a user turn of
+    /// the session.
+    pub fn checkpoint_unavailable() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            "checkpoint_unavailable",
+            "There is no saved state to go back to for this turn",
+        )
+    }
+
     /// The Host is draining to stop or restart; retry once it is back.
     pub fn host_restarting() -> Self {
         let mut e = Self::new(

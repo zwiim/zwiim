@@ -370,6 +370,20 @@ describe("LocalTransport error details", () => {
     const e2 = (await fail(t))!;
     expect(e2.details).toBeUndefined();
   });
+
+  it("names the operation a busy repository is in, and only as text", () => {
+    const busy = (details: Record<string, unknown>) =>
+      busyDetails(new ZwiimClientError("workspace_busy", "busy", 409, details));
+    const none = { live_sessions: 0, terminals: 0, session_ids: [] };
+    expect(busy({ ...none, operation: "rebase" })).toStrictEqual({ ...none, operation: "rebase" });
+    // Agents running, or an operation the host could not name: no operation.
+    expect(busy({ live_sessions: 1, terminals: 0, session_ids: ["s1"] })).toStrictEqual({
+      live_sessions: 1,
+      terminals: 0,
+      session_ids: ["s1"],
+    });
+    expect(busy({ ...none, operation: 7 })).toStrictEqual(none);
+  });
 });
 
 describe("adding a large folder", () => {

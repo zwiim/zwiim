@@ -11,6 +11,8 @@
 //! `session_commands`, and host paths inside the session's workspace are made
 //! workspace-relative.
 
+use std::collections::HashSet;
+
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -653,12 +655,19 @@ fn agent_block(
 /// stay on the host. Tool calls read workspace-relative, as live ones do;
 /// `root` is the session's workspace directory.
 pub fn project_history(turns: &[MessageTurn], root: Option<&str>) -> Value {
+    project_history_with(turns, root, &HashSet::new())
+}
+
+/// [`project_history`], with `revertible` on every user turn: true when the
+/// turn's id is in `revertible`, that is, the files it started with were saved
+/// and `session.revert` can put them back.
+pub fn project_history_with(turns: &[MessageTurn], root: Option<&str>, revertible: &HashSet<String>) -> Value {
     Value::Array(
         turns
             .iter()
             .map(|t| {
                 let sources = input_files(&t.blocks);
-                json!({
+                let mut turn = json!({
                     "turn_id": t.id,
                     "role": to_value(&t.role),
                     "blocks": t.blocks.iter().flat_map(|b| match (&t.role, b) {
@@ -676,7 +685,11 @@ pub fn project_history(turns: &[MessageTurn], root: Option<&str>) -> Value {
                         "cache_creation_input_tokens": u.cache_creation_input_tokens,
                         "cache_read_input_tokens": u.cache_read_input_tokens,
                     })),
-                })
+                });
+                if matches!(t.role, TurnRole::User) {
+                    turn["revertible"] = Value::Bool(revertible.contains(&t.id));
+                }
+                turn
             })
             .collect(),
     )
