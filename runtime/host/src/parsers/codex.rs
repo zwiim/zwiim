@@ -2697,10 +2697,8 @@ fn is_forked_thread_header(value: &serde_json::Value) -> bool {
             .is_some_and(|id| !id.trim().is_empty())
 }
 
-fn parse_codex_subagent_stats(
-    session_dir: &std::path::Path,
-    agent_id: &str,
-) -> Option<AgentExecutionStats> {
+/// The rollout a sub-agent wrote, found next to its parent's in `session_dir`.
+fn find_codex_subagent_file(session_dir: &std::path::Path, agent_id: &str) -> Option<PathBuf> {
     if agent_id.len() > 64 || agent_id.contains("..") || agent_id.contains('/') {
         return None;
     }
@@ -2736,7 +2734,14 @@ fn parse_codex_subagent_stats(
         candidates.sort();
         candidates.into_iter().next()?
     };
+    Some(session_file)
+}
 
+fn parse_codex_subagent_stats(
+    session_dir: &std::path::Path,
+    agent_id: &str,
+) -> Option<AgentExecutionStats> {
+    let session_file = find_codex_subagent_file(session_dir, agent_id)?;
     let file = fs::File::open(&session_file).ok()?;
     let reader = BufReader::new(file);
 
@@ -2943,11 +2948,141 @@ fn parse_codex_subagent_stats(
     })
 }
 
+/// How deep sub-agent transcripts are rebuilt on reload. A sub-agent's own
+/// sub-agents nest a level or two; the cap only bounds a pathological tree.
+const MAX_CODEX_SUBAGENT_DEPTH: u8 = 4;
+
+/// A sub-agent's display name from its `agent_path` ("/root/list_files"):
+/// the last segment, words split on `_`, first letter capitalised ("List
+/// files"), the way codex-acp names it live.
+fn codex_agent_path_name(agent_path: &str) -> Option<String> {
+    let last = agent_path.rsplit('/').next()?.trim();
+    if last.is_empty() {
+        return None;
+    }
+    let words = last.replace(['_', '-'], " ");
+    let mut chars = words.chars();
+    let first = chars.next()?;
+    Some(first.to_uppercase().chain(chars).collect())
+}
+
 impl CodexParser {
     fn parse_conversation_detail(
         &self,
         path: &Path,
         conversation_id: &str,
+    ) -> Result<ConversationDetail, ParseError> {
+        self.parse_conversation_detail_at(path, conversation_id, 0)
+    }
+
+    /// A spawn's execution stats with the sub-agent's transcript attached.
+    /// A forked v2 child counts no stats of its own (see
+    /// `is_forked_thread_header`), so its transcript rides bare stats.
+    fn codex_subagent_stats(
+        &self,
+        session_dir: &Path,
+        parent: &Path,
+        agent_id: &str,
+        depth: u8,
+    ) -> Option<AgentExecutionStats> {
+        let mut stats = parse_codex_subagent_stats(session_dir, agent_id);
+        let transcript = find_codex_subagent_file(session_dir, agent_id)
+            .filter(|file| file != parent)
+            .and_then(|file| self.read_codex_subagent_transcript(&file, depth));
+        if let Some(t) = transcript {
+            let stats = stats.get_or_insert_with(|| AgentExecutionStats {
+                agent_type: None,
+                status: None,
+                total_duration_ms: t.duration_ms,
+                total_tokens: None,
+                total_tool_use_count: None,
+                read_count: None,
+                search_count: None,
+                bash_count: None,
+                edit_file_count: None,
+                lines_added: None,
+                lines_removed: None,
+                other_tool_count: None,
+                tool_calls: Vec::new(),
+                child_session_id: None,
+                transcript: None,
+            });
+            stats.transcript = Some(Box::new(t));
+        }
+        stats
+    }
+
+    /// One sub-agent's own transcript, rebuilt from the rollout it wrote with
+    /// this same parser, so its blocks read exactly like the session's own and
+    /// its sub-agents nest the same way. The parent history codex seeds the
+    /// file with is already dropped by `rollout_lines`. `None` when the file is
+    /// unreadable or past [`MAX_CODEX_SUBAGENT_DEPTH`].
+    ///
+    /// The prompt stays `None`: codex v2 hands the task over encrypted, and a
+    /// plain-text task is already on the launch's own input.
+    fn read_codex_subagent_transcript(&self, file: &Path, depth: u8) -> Option<SubagentTranscript> {
+        if depth >= MAX_CODEX_SUBAGENT_DEPTH {
+            return None;
+        }
+        let mut description = None;
+        let mut model = None;
+        let mut duration_ms: Option<u64> = None;
+        for line in self.rollout_lines(file).ok()? {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            let Some(payload) = value.get("payload") else {
+                continue;
+            };
+            let kind = value.get("type").and_then(serde_json::Value::as_str);
+            let payload_kind = payload.get("type").and_then(serde_json::Value::as_str);
+            match (kind, payload_kind) {
+                (Some("session_meta"), _) if description.is_none() => {
+                    description = payload
+                        .get("agent_path")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(codex_agent_path_name);
+                }
+                (Some("event_msg"), Some("thread_settings_applied")) => {
+                    if let Some(m) = payload
+                        .pointer("/thread_settings/model")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|m| !m.is_empty())
+                    {
+                        model = Some(m.to_string());
+                    }
+                }
+                (Some("event_msg"), Some("task_complete")) => {
+                    if let Some(ms) = payload.get("duration_ms").and_then(serde_json::Value::as_u64) {
+                        duration_ms = Some(duration_ms.unwrap_or(0) + ms);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let id = file.file_stem()?.to_string_lossy().into_owned();
+        let detail = self.parse_conversation_detail_at(file, &id, depth + 1).ok()?;
+        let model = model.or(detail.summary.model.clone());
+        let blocks = detail
+            .turns
+            .into_iter()
+            .filter(|t| matches!(t.role, TurnRole::Assistant))
+            .flat_map(|t| t.blocks)
+            .collect();
+        Some(SubagentTranscript {
+            description,
+            model,
+            prompt: None,
+            duration_ms,
+            blocks,
+        })
+    }
+
+    fn parse_conversation_detail_at(
+        &self,
+        path: &Path,
+        conversation_id: &str,
+        depth: u8,
     ) -> Result<ConversationDetail, ParseError> {
         let lines = self.rollout_lines(path)?;
 
@@ -4829,7 +4964,7 @@ impl CodexParser {
                                 if let Some(dir) = session_dir {
                                     let stats = agent_stats_cache.entry(agent_id.to_string())
                                         .or_insert_with(|| {
-                                            parse_codex_subagent_stats(dir, agent_id)
+                                            self.codex_subagent_stats(dir, path, agent_id, depth)
                                         });
                                     if stats.is_some() {
                                         *agent_stats = stats.clone();
@@ -13973,5 +14108,157 @@ mod tests {
         assert_eq!(images.len(), 1);
         assert_eq!(images[0].mime_type, "image/png");
         assert_eq!(images[0].data, "QUJD");
+    }
+
+    /// Reload of a codex-acp 1.13.1 session whose turn spawned one v2
+    /// sub-agent (codex 0.156.1, recorded 2026-10-19, paths scrubbed to
+    /// `/work/repo`, instructions trimmed): what the sub-agent did nests under
+    /// its launch, in the same tree the live stream builds.
+    const SUBAGENT_PARENT: &str = "01a1521b-a481-7ec3-b772-6670c440ba4b";
+    const SUBAGENT_CHILD: &str = "01a1521b-b7e5-7d62-aa83-c5fd5a5ea422";
+    const SUBAGENT_PARENT_ROLLOUT: &str =
+        include_str!("testdata/rollout-2026-10-19T08-31-45-01a1521b-a481-7ec3-b772-6670c440ba4b.jsonl");
+
+    #[test]
+    fn codex_history_child_items_nest_under_launch() {
+        let history = subagent_reload(SUBAGENT_PARENT_ROLLOUT, "subagent-reload");
+        assert_subagent_reload(&history);
+    }
+
+    /// The same session with its `wait_agent` answered in the legacy shape,
+    /// a status map keyed by the child's thread id, so the reloaded wait's
+    /// stored input names the child in `receiverThreadIds` and `agentsStates`.
+    /// None of it reaches the projected history.
+    #[test]
+    fn codex_history_legacy_wait_keeps_child_ids_inside() {
+        let native = r#""output":"{\"message\":\"Wait completed.\",\"timed_out\":false}""#;
+        let legacy = format!(
+            r#""output":"{{\"status\":{{\"{SUBAGENT_CHILD}\":{{\"completed\":\"a.txt\"}}}}}}""#
+        );
+        assert_eq!(SUBAGENT_PARENT_ROLLOUT.matches(native).count(), 1);
+        let rollout = SUBAGENT_PARENT_ROLLOUT.replace(native, &legacy);
+
+        // The stored input does name the child, so the check below is real.
+        let dir = temp_session_dir("subagent-reload-legacy-wait-stored");
+        let parent_name = format!("rollout-2026-10-19T08-31-45-{SUBAGENT_PARENT}.jsonl");
+        fs::write(dir.join(&parent_name), &rollout).unwrap();
+        let detail = CodexParser::with_base_dir(dir.clone())
+            .parse_conversation_detail(&dir.join(&parent_name), SUBAGENT_PARENT)
+            .expect("parse parent");
+        let _ = fs::remove_dir_all(&dir);
+        let stored = detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .find_map(|b| match b {
+                ContentBlock::ToolUse { tool_name, input_preview, .. } if tool_name == "collab_agent" => {
+                    input_preview.as_deref()
+                }
+                _ => None,
+            })
+            .expect("wait block");
+        let stored: serde_json::Value = serde_json::from_str(stored).unwrap();
+        assert_eq!(stored["receiverThreadIds"], serde_json::json!([SUBAGENT_CHILD]));
+
+        let history = subagent_reload(&rollout, "subagent-reload-legacy-wait");
+        assert_subagent_reload(&history);
+        let wait = history
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["blocks"].as_array())
+            .flatten()
+            .find(|b| b["tool_call_id"] == "call_1c3cb40c125e4c408c82b8172f0817c1" && b["type"] == "tool_call")
+            .unwrap_or_else(|| panic!("wait in {history:#}"));
+        let input: serde_json::Value = serde_json::from_str(wait["input_preview"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            input,
+            serde_json::json!({
+                "status": "completed",
+                "agents": [{ "status": "completed", "message": "a.txt" }],
+            }),
+            "{wait:#}"
+        );
+    }
+
+    /// The recorded sub-agent session reloaded from `parent` (its child
+    /// rollout alongside) and projected as `session.history`.
+    fn subagent_reload(parent: &str, tag: &str) -> serde_json::Value {
+        const PARENT: &str = SUBAGENT_PARENT;
+        const CHILD: &str = SUBAGENT_CHILD;
+        let dir = temp_session_dir(tag);
+        let parent_name = format!("rollout-2026-10-19T08-31-45-{PARENT}.jsonl");
+        let child_name = format!("rollout-2026-10-19T08-31-50-{CHILD}.jsonl");
+        fs::write(dir.join(&parent_name), parent).unwrap();
+        fs::write(
+            dir.join(&child_name),
+            include_str!("testdata/rollout-2026-10-19T08-31-50-01a1521b-b7e5-7d62-aa83-c5fd5a5ea422.jsonl"),
+        )
+        .unwrap();
+
+        let detail = CodexParser::with_base_dir(dir.clone())
+            .parse_conversation_detail(&dir.join(&parent_name), PARENT)
+            .expect("parse parent");
+        let history = crate::protocol::events::project_history(&detail.turns, Some("/work/repo"));
+        let _ = fs::remove_dir_all(&dir);
+        history
+    }
+
+    /// What every reload of the recorded sub-agent session must read as: the
+    /// child nested under its launch, titled with its name, and nothing of the
+    /// host's own (`__zwiim*` markers, the child's thread id) anywhere.
+    fn assert_subagent_reload(history: &serde_json::Value) {
+        let blocks: Vec<&serde_json::Value> = history
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["blocks"].as_array())
+            .flatten()
+            .collect();
+        let launch = blocks
+            .iter()
+            .find(|b| b["type"] == "tool_call" && b["tool_call_id"] == "call_2579b398182848a9b1b816e082bd5f04")
+            .unwrap_or_else(|| panic!("launch in {history:#}"));
+        let sub = &launch["subagent"];
+        assert_eq!(sub["description"], "List files", "{launch:#}");
+        assert_eq!(sub["model"], "gpt-6-luna");
+        assert!(sub["prompt"].is_null(), "ciphertext never becomes the prompt: {sub:#}");
+        assert_eq!(sub["duration_ms"], 6789);
+        let nested = sub["blocks"].as_array().unwrap_or_else(|| panic!("nested blocks in {sub:#}"));
+        assert!(
+            nested.iter().any(|b| b["type"] == "tool_call"),
+            "the child's command nests under the launch: {:#}",
+            sub["blocks"]
+        );
+        assert!(
+            nested
+                .iter()
+                .any(|b| b["type"] == "text" && b["text"].as_str().is_some_and(|t| t.contains("a.txt"))),
+            "the child's answer nests under the launch: {:#}",
+            sub["blocks"]
+        );
+        // Nothing the child did reads as the parent's own reply.
+        let own_text: Vec<&str> = blocks
+            .iter()
+            .filter(|b| b["type"] == "text")
+            .filter_map(|b| b["text"].as_str())
+            .collect();
+        assert!(!own_text.iter().any(|t| t.contains("shows")), "{own_text:?}");
+        assert_eq!(history.as_array().unwrap().len(), 4, "no turn of the child's own: {history:#}");
+
+        // Titled with the sub-agent's name, as live.
+        assert_eq!(launch["title"], "List files", "{launch:#}");
+        // The child thread id and the parser's launch markers stay inside.
+        crate::protocol::events::tests::assert_no_internal_keys(history);
+        let launch_text = launch.to_string();
+        for word in [CODEX_SUBAGENT_LAUNCH_KEY, CODEX_SUBAGENT_STATE_KEY] {
+            assert!(!launch_text.contains(word), "`{word}` leaked in {launch:#}");
+        }
+        // `"__zwiim` (quote first) is a key or value the host made; it does not
+        // match the `mcp__zwiim_mcp__*` tool names, which are real.
+        let text = history.to_string();
+        for word in ["\"__zwiim", "agent_id", "receiverThreadIds", "senderThreadId", SUBAGENT_CHILD, "c5fd5a5ea422"] {
+            assert!(!text.contains(word), "`{word}` leaked in {history:#}");
+        }
     }
 }

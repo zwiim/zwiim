@@ -143,8 +143,12 @@ pub struct SubagentInfo {
 impl SubagentInfo {
     /// Whether a tool call's metadata marks it as a sub-agent launch:
     /// claude-agent-acp names the tool (`claudeCode.toolName`) and flags it
-    /// (`claudeCode.subagent`).
+    /// (`claudeCode.subagent`); the launch the Host makes for a Codex
+    /// sub-agent carries `zwiim/subagent` (see `acp::codex_subagents`).
     pub fn marks_launch(meta: Option<&serde_json::Value>) -> bool {
+        if meta.and_then(|m| m.get(crate::acp::codex_subagents::SUBAGENT_META)).is_some() {
+            return true;
+        }
         let Some(claude) = meta.and_then(|m| m.get("claudeCode")) else {
             return false;
         };
@@ -172,6 +176,10 @@ impl SubagentInfo {
             model: text(response.and_then(|r| r.get("resolvedModel"))).or_else(|| field("model")),
             duration_ms: response
                 .and_then(|r| r.get("totalDurationMs"))
+                .or_else(|| {
+                    meta.and_then(|m| m.get(crate::acp::codex_subagents::SUBAGENT_META))
+                        .and_then(|s| s.get("durationMs"))
+                })
                 .and_then(serde_json::Value::as_u64),
         }
     }
@@ -216,6 +224,8 @@ pub enum ToolKind {
     Execute,
     Think,
     Fetch,
+    /// A sub-agent launch.
+    Agent,
     Other,
 }
 
@@ -743,6 +753,10 @@ pub struct SessionState {
     /// `ConversationLinked` so a title dropped while the row was still
     /// unbound can be accepted on the next send.
     pub last_native_title: Option<String>,
+    /// Codex sub-agent links of this connection: which child session id
+    /// belongs to which launch. Shared by the connection's frame handler and
+    /// its event loops.
+    pub codex_children: crate::acp::codex_subagents::SharedChildRouter,
 }
 
 impl SessionState {
@@ -812,6 +826,7 @@ impl SessionState {
             config_stale: false,
             config_stale_kind: None,
             last_native_title: None,
+            codex_children: crate::acp::codex_subagents::CodexChildRouter::shared(),
         }
     }
 
@@ -2211,6 +2226,7 @@ fn parse_tool_kind(s: &str) -> ToolKind {
         "execute" => ToolKind::Execute,
         "think" => ToolKind::Think,
         "fetch" => ToolKind::Fetch,
+        "agent" => ToolKind::Agent,
         _ => ToolKind::Other,
     }
 }

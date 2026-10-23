@@ -44,3 +44,4 @@ clients/desktop/src-tauri/src/preview.rs
 runtime/host/src/git_harness/checkpoint.rs
 runtime/host/src/git_harness/checkpoint_tests.rs
 runtime/host/src/session_checkpoints.rs
+runtime/host/src/acp/codex_subagents.rs

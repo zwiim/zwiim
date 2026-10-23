@@ -809,8 +809,12 @@ fn agent_blocks(
 /// asked (from its input), the model it ran on and how long it took, and,
 /// when its transcript was found, every block it produced as `blocks`,
 /// projected like the turn's own (a nested launch nests the same way). The
-/// blocks are attached once per launch, however many results name it; the
-/// `subagent_type` naming in the input stays inside.
+/// blocks are attached once per launch, however many results name it.
+///
+/// What stays inside: the input's `subagent_type`, and for a Codex launch
+/// the child thread id (`agent_id`) and the parser's `__zwiim*` markers;
+/// the stored input keeps them for the parser's own readers. A Codex
+/// launch is titled with its sub-agent's name, as it is live.
 fn launch_block(
     block: &ContentBlock,
     root: Option<&str>,
@@ -822,9 +826,15 @@ fn launch_block(
     };
     let mut v = history_block(block, root);
     let input = input_preview.as_deref().and_then(|i| serde_json::from_str::<Value>(i).ok());
+    let codex = input
+        .as_ref()
+        .and_then(Value::as_object)
+        .is_some_and(|map| map.keys().any(|k| k == "agent_id" || k.starts_with("__zwiim")));
     if let Some(mut input) = input.clone().filter(Value::is_object) {
         if let Some(map) = input.as_object_mut() {
             map.remove("subagent_type");
+            map.remove("agent_id");
+            map.retain(|k, _| !k.starts_with("__zwiim"));
         }
         v["input_preview"] = json!(relativize(&input.to_string(), root));
     }
@@ -842,6 +852,11 @@ fn launch_block(
             prompt: t.prompt.clone(),
             duration_ms: t.duration_ms,
         });
+    }
+    if codex {
+        if let Some(name) = info.description.as_deref().filter(|d| !d.is_empty()) {
+            v["title"] = json!(name);
+        }
     }
     v = with_subagent(v, Some(&info), root);
     if let (Some(id), Some(t)) = (tool_use_id, transcript) {
@@ -945,8 +960,48 @@ fn without_plan_tags(text: &str) -> String {
     text.replace("<proposed_plan>", "").replace("</proposed_plan>", "").trim().to_string()
 }
 
+/// A tool call's input as a client reads it. The Codex parser's collab
+/// block (`collab_agent`: a reloaded `wait_agent` or `list_agents`) carries
+/// its op as a `__zwiim*` key and names the sub-agents by thread id
+/// (`receiverThreadIds`, `senderThreadId`, the wait's `agentsStates` keys);
+/// all of that stays on the host. What is left is the call's `status` and
+/// one entry per sub-agent in `agents` (its `status` and `message`; a roster
+/// entry also keeps its `name`, a path such as `/root/list_files`, never a
+/// thread id). The stored input keeps every field for the parser's own
+/// readers. Any other input passes through untouched.
+fn public_input(input: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    let Ok(Value::Object(mut map)) = serde_json::from_str::<Value>(input) else {
+        return Cow::Borrowed(input);
+    };
+    if !map.keys().any(|k| k.starts_with("__zwiim")) {
+        return Cow::Borrowed(input);
+    }
+    let op = map.get("__zwiimCollabOp").and_then(Value::as_str).map(str::to_owned);
+    map.retain(|k, _| !k.starts_with("__zwiim"));
+    if let Some(op) = op {
+        map.remove("receiverThreadIds");
+        map.remove("senderThreadId");
+        if let Some(states) = map.remove("agentsStates") {
+            let agents = match states {
+                Value::Object(states) => states
+                    .into_iter()
+                    .map(|(key, mut state)| {
+                        if let (Some(entry), true) = (state.as_object_mut(), op == "list") {
+                            entry.insert("name".into(), json!(key));
+                        }
+                        state
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            map.insert("agents".into(), Value::Array(agents));
+        }
+    }
+    Cow::Owned(Value::Object(map).to_string())
+}
+
 fn history_block(block: &ContentBlock, root: Option<&str>) -> Value {
-    let rel_opt = |text: &Option<String>| text.as_deref().map(|t| relativize(t, root));
     match block {
         ContentBlock::Text { text } => json!({ "type": "text", "text": without_plan_tags(text) }),
         ContentBlock::Image {
@@ -970,7 +1025,7 @@ fn history_block(block: &ContentBlock, root: Option<&str>) -> Value {
             "type": "tool_call",
             "tool_call_id": tool_use_id,
             "title": tool_title(tool_name, root),
-            "input_preview": rel_opt(input_preview),
+            "input_preview": input_preview.as_deref().map(|t| relativize(&public_input(t), root)),
             "status": status,
         }),
         ContentBlock::ToolResult {

@@ -33,6 +33,7 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 
 use crate::acp::agent_mentions::append_agent_routes;
 use crate::acp::background_watch;
+use crate::acp::codex_subagents;
 use crate::acp::error::AcpError;
 use crate::acp::file_system_runtime::{
     FileSystemRuntime, FileSystemRuntimeError, FsAccessPolicy, FS_POLICY_ENV,
@@ -4527,37 +4528,30 @@ fn build_client_capabilities(
     // codex-acp 1.7.0 and claude-agent-acp 0.73.0 have a third,
     // "nativeSubagentSessions" (the draft ACP subagent RFD; the canonical gate
     // is a `clientCapabilities.subagents: {}` field, with this AIR key as the
-    // fallback for SDKs that strip it). It stays out — and the reason is no
-    // longer "the schema crate can't deserialize it". `air_async_task_delta`
-    // proves a raw pre-dispatch reader gets around that for any variant. The
-    // reason is that advertising DELETES the frame Zwiim renders subagents
-    // from, and replaces it with strictly less:
+    // fallback for SDKs that strip it). Zwiim takes it from CODEX ONLY.
     //
-    // * The adapter suppresses the `Agent`/`Task` tool call outright once the
-    //   capability is on — `NativeSubagentRuntime.route()` returns null for it,
-    //   commented "Native Agent/Task control calls are intentionally not
-    //   transcript tools". codex does the same to its `subAgentActivity` item.
-    // * That tool call is Zwiim's whole anchor. `conversation-runtime-store`
-    //   registers its id as an "agent" capsule, nests the child's tool calls
-    //   under it by `meta.claudeCode.parentToolUseId`, and attaches the child's
-    //   prose to it as `agent_transcript`.
-    // * `subagent_spawned` cannot replace it: it carries `subagentSessionId`,
-    //   `name`, `task` and an empty `capabilities` — and NO `parentToolUseId`.
-    //   The child's own updates keep theirs, but it names the tool call that
-    //   was just suppressed, so every one of them would arrive as an orphan.
-    // * The child's output is not new information either. `route()` rewrites
-    //   only `sessionId`; the `_meta.claudeCode.parentToolUseId` Zwiim already
-    //   routes on rides through untouched. So opting in would move the same
-    //   content onto a session id Zwiim would then have to map back — to a
-    //   capsule it no longer receives.
+    // Codex: without it codex-acp drops a sub-agent's work entirely — the
+    // child's items never reach the wire, only the parent's `wait` call. With
+    // it the adapter suppresses its `subAgentActivity` item and instead sends
+    // `subagent_spawned {subagentSessionId, name, task}`, then the child's own
+    // updates under the CHILD's session id, then `subagent_state_update`. None
+    // of these names a parent tool call, so the Host builds the launch itself:
+    // `codex_subagents` moves the child's frames onto the root session marked
+    // with a synthesized launch tool call (an opaque `subagent-<hash>`), and
+    // the S5 parent projection does the rest. The schema crate cannot
+    // deserialize the two announcement variants; like
+    // `air_async_task_delta`, the reader takes them from the raw frame first.
     //
-    // Net: the advertisement trades a precise rendering for a poorer one plus a
-    // connection-level session router, against a spec that is still an
-    // UNMERGED draft (agent-client-protocol#1992) whose adapter file calls
-    // itself "Temporary typed surface … replaced by SDK exports when the draft
-    // ships". Revisit when the draft lands and the announcement carries enough
-    // to rebuild the capsule — a parent tool-use id, or the child tool calls
-    // arriving with one Zwiim has seen.
+    // Claude: stays out, unchanged. Advertising makes claude-agent-acp
+    // suppress the `Agent`/`Task` tool call outright
+    // (`NativeSubagentRuntime.route()` returns null for it) — the very launch
+    // Zwiim already nests Claude's sub-agents under by
+    // `_meta.claudeCode.parentToolUseId`, which its child updates carry today
+    // without the capability. Opting in would only move that same content
+    // onto a child session id Zwiim would then have to map back, to a launch
+    // it no longer receives. Revisit when the draft
+    // (agent-client-protocol#1992) lands with a parent tool-use id on the
+    // announcement.
     //
     // "recommendedValue" is the last AIR capability, and Zwiim takes it from
     // BOTH speakers — claude-agent-acp 0.76.0 and codex-acp 1.11.0 each
@@ -4594,7 +4588,10 @@ fn build_client_capabilities(
     // preference is healed on the frontend rather than here; and the codex
     // entry (a) for the 1.11.0 wire trace.
     if matches!(agent_type, AgentType::ClaudeCode | AgentType::Codex) {
-        let capabilities = ["sessionFailure", "asyncTasks", "recommendedValue"];
+        let mut capabilities = vec!["sessionFailure", "asyncTasks", "recommendedValue"];
+        if agent_type == AgentType::Codex {
+            capabilities.push("nativeSubagentSessions");
+        }
         meta.insert(
             "jetbrains".to_string(),
             serde_json::json!({
@@ -5528,9 +5525,19 @@ async fn run_connection(
         Arc::clone(&prompt_ledger),
     );
 
+    // Codex sub-agents: a child session's frames reach this connection under
+    // the child's own session id, which no session here claims. This handler
+    // runs before the per-session ones and moves them onto the root session,
+    // marked with their launch (see `codex_subagents`).
+    let child_router = Arc::clone(&state.read().await.codex_children);
+
     Client
         .builder()
         .name("zwiim")
+        .with_handler(codex_subagents::CodexChildReroute::new(
+            Arc::clone(&child_router),
+            agent_type == AgentType::Codex,
+        ))
         .on_receive_request(
             {
                 let emitter_inner = emitter_clone.clone();
@@ -6324,6 +6331,15 @@ async fn run_connection(
                                 let h = emitter_clone.clone();
                                 let st = Arc::clone(&state);
                                 let dispatch = fix_usage_update_nulls(dispatch);
+                                // A past Codex sub-agent replayed with the
+                                // root: its announcement, its own frames and
+                                // its end report. The link is recorded but
+                                // nothing is emitted; history already shows
+                                // the launch with its work, and a replayed
+                                // anchor would be an empty live card.
+                                if codex_subagents::consume_replayed(&child_router, &dispatch) {
+                                    continue;
+                                }
                                 // Historical replay: a task announced in a past
                                 // session is not running now, and its terminal
                                 // edge may never have been recorded. Drop rather
@@ -8269,7 +8285,7 @@ struct CachedOutput {
 /// and keep the fingerprint bounded so it works even when the full output
 /// grows into the multi-MB range.
 #[derive(Debug, Default)]
-struct ToolCallOutputCache {
+pub(crate) struct ToolCallOutputCache {
     entries: HashMap<String, CachedOutput>,
     next_generation: u64,
 }
@@ -9941,6 +9957,9 @@ async fn run_conversation_loop<'a>(
     // Set on Cancel until the agent answers the cancelled prompt; see
     // `is_cancelled_turn_prose`.
     let mut cancelled_prompt: Option<CancelledPrompt> = None;
+    // Connection-scoped, like `prompt_ledger`: the same links across fork
+    // restarts of this loop.
+    let child_router = Arc::clone(&state.read().await.codex_children);
     loop {
         // Wait for either a user command or a session update (e.g. available_commands_update)
         let cmd = loop {
@@ -9957,7 +9976,11 @@ async fn run_conversation_loop<'a>(
                             // Background work outlives the turn that started it,
                             // so these frames arrive on the IDLE loop as often
                             // as inside one.
-                            if let Some(delta) = air_async_task_delta(&dispatch) {
+                            if let Some(events) = codex_subagents::claim_dispatch(&child_router, &dispatch) {
+                                for event in events {
+                                    emit_with_state(&st, &h, event).await;
+                                }
+                            } else if let Some(delta) = air_async_task_delta(&dispatch) {
                                 emit_with_state(&st, &h, AcpEvent::AsyncTask { delta }).await;
                             } else {
                             let drift = &mut config_drift_to_reassert;
@@ -10287,7 +10310,14 @@ async fn run_conversation_loop<'a>(
                                     // letting them set the flag would silence
                                     // the empty-turn diagnosis for a prompt the
                                     // agent really did answer with nothing.
-                                    if let Some(delta) = air_async_task_delta(&dispatch) {
+                                    // A Codex sub-agent launch is this
+                                    // turn's output; its settle is not.
+                                    if let Some(events) = codex_subagents::claim_dispatch(&child_router, &dispatch) {
+                                        for event in events {
+                                            probe.saw_agent_output |= matches!(event, AcpEvent::ToolCall { .. });
+                                            emit_with_state(&st, &h, event).await;
+                                        }
+                                    } else if let Some(delta) = air_async_task_delta(&dispatch) {
                                         probe.saw_agent_output |= delta.spawned;
                                         emit_with_state(
                                             &st,
@@ -12587,6 +12617,13 @@ enum CodexSubagentActivity {
 /// say so later, with a `completed` / `interrupted` activity of its own — see
 /// [`CodexSubagentActivity::Terminal`], which is routed back onto the launch
 /// capsule rather than rendered.
+///
+/// Legacy path only. The Host now advertises `nativeSubagentSessions` to
+/// Codex, and codex-acp then sends no `subAgentActivity` item at all: a live
+/// sub-agent arrives as its own session and is linked by
+/// `acp/codex_subagents.rs`. This stays for a codex-acp that ignores the
+/// capability; reload reads the same shape from the rollout in
+/// `parsers/codex.rs`.
 fn classify_codex_subagent_activity(
     agent_type: AgentType,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -13293,10 +13330,22 @@ fn should_suppress_subagent_chunk(
 /// into the live Agent capsule instead of the main thread. Gated on
 /// ClaudeCode so no other agent's namespaced meta can alias into parented
 /// routing; empty strings are treated as absent.
+///
+/// Any agent: the Host's own `zwiim/parentId` wins. It is stamped only by
+/// the Host on a Codex sub-agent's frames once rerouted onto the parent
+/// session (an agent-sent copy is stripped first; see
+/// `acp::codex_subagents`).
 pub(crate) fn claude_chunk_parent_tool_use_id(
     agent_type: AgentType,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Option<String> {
+    if let Some(parent) = meta
+        .and_then(|m| m.get(crate::acp::codex_subagents::PARENT_ID_META))
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        return Some(parent.to_owned());
+    }
     if agent_type != AgentType::ClaudeCode {
         return None;
     }
@@ -13355,7 +13404,7 @@ fn track_subagent_window(
 /// shared across the idle and active-turn loops; the historical-replay path uses
 /// a throwaway instance. Mirrors `ToolCallOutputCache`'s lifetime.
 #[derive(Default)]
-struct CodeBuddyLiveState {
+pub(crate) struct CodeBuddyLiveState {
     /// tool_call_id → authoritative title: `"agent"` for a native sub-agent, or
     /// the inner `mcp__…` name for a `DeferExecuteTool` MCP call. Re-asserted on
     /// every later frame so a status-only update can't downgrade the card.
@@ -14492,7 +14541,7 @@ fn air_task_usage(value: Option<&serde_json::Value>) -> Option<AsyncTaskUsage> {
 /// delegation card and un-nest its children) plus the open-sub-agent window used
 /// to suppress a CodeBuddy sub-agent's interleaved thought/message chunks.
 /// Mirrors `raw_output_cache`'s lifetime.
-async fn emit_conversation_update(
+pub(crate) async fn emit_conversation_update(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
     agent_type: AgentType,
@@ -16570,6 +16619,27 @@ mod tests {
     }
 
     #[test]
+    fn claude_capabilities_unchanged() {
+        // Codex's sub-agent capability must not reach Claude: the whole
+        // serialized capability set, under either host-tools policy, is
+        // pinned byte for byte to what it was before Codex took it.
+        for (policy, expected) in [
+            (
+                HostToolsPolicy::Default,
+                r#"{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true,"_meta":{"jetbrains":{"air":{"capabilities":["sessionFailure","asyncTasks","recommendedValue"],"version":1}},"subagent-transcript":true}}"#,
+            ),
+            (
+                HostToolsPolicy::Agent,
+                r#"{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false,"_meta":{"jetbrains":{"air":{"capabilities":["sessionFailure","asyncTasks","recommendedValue"],"version":1}},"subagent-transcript":true}}"#,
+            ),
+        ] {
+            let caps = serde_json::to_string(&build_client_capabilities(AgentType::ClaudeCode, policy)).unwrap();
+            assert_eq!(caps, expected, "{policy:?}");
+            assert!(!caps.contains("nativeSubagentSessions"));
+        }
+    }
+
+    #[test]
     fn client_capabilities_advertise_air_for_claude_and_codex_only() {
         // Both AIR speakers must send EXACTLY the shape the adapters gate on:
         // integer version >= 1 plus "sessionFailure" in the capabilities
@@ -16610,23 +16680,27 @@ mod tests {
             // it, so it goes back to being per-agent the moment either pin
             // moves backwards.
             //
-            // The other two stay out. "agentFileChangeReport"
-            // (claude-agent-acp 0.69.0 / codex-acp 1.4.0) buys a clamped,
+            // "agentFileChangeReport" stays out
+            // (claude-agent-acp 0.69.0 / codex-acp 1.4.0): it buys a clamped,
             // truncating subset of what the `workspace_state` watcher already
             // sees — on claude still for an extra model round-trip per turn, on
             // codex since 1.12.0 for free, by parsing the turn diff, which is
             // explicitly narrower still (it omits anything not done through
-            // `apply_patch`). And
-            // "nativeSubagentSessions" would make both adapters SUPPRESS the
-            // `Agent`/`Task` tool call that Zwiim builds its whole subagent
-            // rendering around, replacing it with an announcement that carries
-            // no parent tool-use id to rebuild it from. See the reasoning at
-            // the advertisement site before relaxing this.
-            let expected: Vec<serde_json::Value> = vec![
+            // `apply_patch`).
+            //
+            // "nativeSubagentSessions" is Codex-only: without it codex-acp
+            // drops a sub-agent's work, and `codex_subagents` rebuilds the
+            // launch it suppresses. On Claude it would SUPPRESS the
+            // `Agent`/`Task` tool call Zwiim nests sub-agents under. See the
+            // reasoning at the advertisement site before relaxing this.
+            let mut expected: Vec<serde_json::Value> = vec![
                 "sessionFailure".into(),
                 "asyncTasks".into(),
                 "recommendedValue".into(),
             ];
+            if agent == AgentType::Codex {
+                expected.push("nativeSubagentSessions".into());
+            }
             assert_eq!(
                 capabilities, &expected,
                 "{agent:?} advertises an unexpected AIR capability set"
