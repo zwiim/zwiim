@@ -51,6 +51,7 @@ pub mod process;
 pub mod protocol;
 pub mod redact;
 pub mod session;
+pub mod session_checkpoints;
 pub mod session_commands;
 pub mod session_options;
 pub mod supervise;

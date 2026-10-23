@@ -27,6 +27,7 @@
 //! depend on it; it never depends on them.
 
 mod account;
+pub mod checkpoint;
 mod clone;
 mod error;
 mod github;
@@ -303,6 +304,8 @@ async fn resolve_workspace(
         })
 }
 
+#[cfg(test)]
+mod checkpoint_tests;
 #[cfg(test)]
 mod tests;
 

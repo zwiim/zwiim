@@ -483,6 +483,8 @@ async fn async_main() -> Exit {
     zwiim_host::session_options::spawn_tracker(state.clone());
     // Keep each agent's slash commands for its next new session.
     zwiim_host::session_commands::spawn_tracker(state.clone());
+    // Close each turn's Git checkpoint when the agent ends the turn.
+    zwiim_host::session_checkpoints::spawn_tracker(state.clone());
     // Keep the Mac awake while an agent works.
     zwiim_host::keep_awake::spawn(state.clone());
 

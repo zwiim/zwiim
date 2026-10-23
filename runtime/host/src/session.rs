@@ -482,6 +482,10 @@ pub async fn stop(
     let lock = session_lock(session_id);
     let _guard = lock.lock().await;
     let Some(connection_id) = connection_for(connections, &row).await else {
+        connections
+            .turn_checkpoints
+            .close_conversation(row.id, "stopped")
+            .await;
         return Ok(());
     };
     if let Some(state) = connections.get_state(&connection_id).await {
@@ -491,10 +495,16 @@ pub async fn stop(
             wait_turn_end(&state).await;
         }
     }
-    match connections.disconnect(&connection_id).await {
+    let disconnected = match connections.disconnect(&connection_id).await {
         Ok(()) | Err(AcpError::ConnectionNotFound(_)) => Ok(()),
         Err(e) => Err(e.into()),
-    }
+    };
+    // The turn's end checkpoint exists by the time stop returns.
+    connections
+        .turn_checkpoints
+        .close_conversation(row.id, "stopped")
+        .await;
+    disconnected
 }
 
 /// Delete session `session_id`. Refused with `turn_in_progress` while a turn
@@ -518,12 +528,27 @@ pub async fn delete(
         }
         connections.disconnect(&connection_id).await?;
     }
+    let mut checkpoint_roots = connections
+        .turn_checkpoints
+        .forget_conversation(row.id)
+        .await;
     crate::commands::conversations::delete_conversation_with_cleanup_core(
         emitter,
         &db.conn,
         row.id,
     )
     .await?;
+    if let Ok(Some(folder)) = crate::db::entities::folder::Entity::find_by_id(row.folder_id)
+        .one(&db.conn)
+        .await
+    {
+        checkpoint_roots.push(folder.path.into());
+    }
+    checkpoint_roots.sort();
+    checkpoint_roots.dedup();
+    for root in checkpoint_roots {
+        crate::git_harness::checkpoint::gc_session(&root, session_id).await;
+    }
     Ok(())
 }
 
@@ -1003,8 +1028,12 @@ pub(crate) mod orchestration_tests {
     use crate::acp::types::{AcpEvent, PermissionOptionInfo};
     use crate::db::test_helpers::{fresh_in_memory_db, seed_worktree_folder};
     use crate::web::event_bridge::{emit_with_state, EventEmitter};
+    use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
+
+    /// A connection and the `refs/zwiim` refs present when its prompt arrived.
+    type RefsAtPrompt = (String, Vec<String>);
 
     /// Launches in-process fake agents: a live command channel whose commands
     /// are recorded, and an agent-native session id like a real ACP handshake.
@@ -1019,6 +1048,9 @@ pub(crate) mod orchestration_tests {
         pub prompts: Arc<std::sync::Mutex<Vec<(String, String)>>>,
         /// Every `SetConfigOption` as `(connection, config_id, value)`.
         pub config_sets: Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
+        /// The `refs/zwiim` refs of the agent's repository at the moment each
+        /// prompt reached it, per connection, in order.
+        pub refs_at_prompt: Arc<std::sync::Mutex<Vec<RefsAtPrompt>>>,
         pub delay: Duration,
     }
 
@@ -1032,6 +1064,7 @@ pub(crate) mod orchestration_tests {
                 commands: Default::default(),
                 prompts: Default::default(),
                 config_sets: Default::default(),
+                refs_at_prompt: Default::default(),
                 delay: Duration::ZERO,
             }
         }
@@ -1074,7 +1107,7 @@ pub(crate) mod orchestration_tests {
                 .insert_test_connection_live(
                     &id,
                     agent_type,
-                    Some(working_dir.into()),
+                    Some(working_dir.clone().into()),
                     EventEmitter::Noop,
                 )
                 .await;
@@ -1092,11 +1125,18 @@ pub(crate) mod orchestration_tests {
             let log = self.commands.clone();
             let prompts = self.prompts.clone();
             let config_sets = self.config_sets.clone();
+            let refs_at_prompt = self.refs_at_prompt.clone();
             let conn = id.clone();
             tokio::spawn(async move {
                 while let Some(cmd) = rx.recv().await {
                     let kind = match cmd {
                         ConnectionCommand::Prompt { blocks, .. } => {
+                            if Path::new(&working_dir).join(".git").exists() {
+                                refs_at_prompt
+                                    .lock()
+                                    .unwrap()
+                                    .push((conn.clone(), zwiim_refs(Path::new(&working_dir))));
+                            }
                             let text = blocks
                                 .iter()
                                 .filter_map(|b| match b {
@@ -1144,6 +1184,58 @@ pub(crate) mod orchestration_tests {
             .expect("workspace_id")
     }
 
+    /// A Git workspace: a committed repository registered as a worktree.
+    pub(crate) async fn git_workspace(db: &AppDatabase) -> (String, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("zwiim-orch-git-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            fixture_git(&dir, args);
+        }
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        fixture_git(&dir, &["add", "-A"]);
+        fixture_git(&dir, &["commit", "-q", "-m", "init"]);
+        let folder = seed_worktree_folder(db, dir.to_str().unwrap()).await;
+        let wid = crate::workspace::workspace_id_of(&db.conn, folder)
+            .await
+            .unwrap()
+            .expect("workspace_id");
+        (wid, dir)
+    }
+
+    fn fixture_git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "Fixture")
+            .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
+            .env("GIT_COMMITTER_NAME", "Fixture")
+            .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// Every `refs/zwiim` ref in `dir`'s repository, sorted.
+    pub(crate) fn zwiim_refs(dir: &Path) -> Vec<String> {
+        let mut refs: Vec<String> =
+            fixture_git(dir, &["for-each-ref", "--format=%(refname)", "refs/zwiim"])
+                .lines()
+                .map(str::to_string)
+                .collect();
+        refs.sort();
+        refs
+    }
+
     /// End the in-flight turn so the next prompt passes the turn gate.
     pub(crate) async fn finish_turn(connections: &ConnectionManager, conn: &str) {
         let (state, emitter) = connections.get_state_and_emitter(conn).await.unwrap();
@@ -1161,6 +1253,250 @@ pub(crate) mod orchestration_tests {
 
     async fn settle() {
         tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    fn checkpoint_ref(sid: &str, turn: u32, phase: &str) -> String {
+        format!("refs/zwiim/checkpoints/{sid}/{turn}/{phase}")
+    }
+
+    /// End `conn`'s turn with `stop_reason` and hand the turn-end event to
+    /// the checkpoint tracker, as the Host's event bus does.
+    async fn end_turn_observed(connections: &ConnectionManager, conn: &str, stop_reason: &str) {
+        let (state, emitter) = connections.get_state_and_emitter(conn).await.unwrap();
+        let payload = AcpEvent::TurnComplete {
+            session_id: "native".into(),
+            stop_reason: stop_reason.into(),
+            agent_type: "codex".into(),
+        };
+        emit_with_state(&state, &emitter, payload.clone()).await;
+        let seq = state.read().await.event_seq;
+        connections
+            .turn_checkpoints
+            .observe(&crate::acp::types::EventEnvelope {
+                seq,
+                connection_id: conn.to_string(),
+                payload,
+            });
+    }
+
+    async fn wait_for_ref(dir: &Path, name: &str) -> bool {
+        for _ in 0..250 {
+            if zwiim_refs(dir).iter().any(|r| r == name) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn start_checkpoint_precedes_prompt() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+
+        let sid = start(
+            &db,
+            &mgr,
+            &launcher,
+            &wid,
+            AgentType::Codex,
+            text("first"),
+            None,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+        settle().await;
+        end_turn_observed(&mgr, "fake-conn-1", "end_turn").await;
+        assert!(wait_for_ref(&dir, &checkpoint_ref(&sid, 1, "end")).await);
+        send(&db, &mgr, &launcher, &sid, text("second"), None)
+            .await
+            .unwrap();
+        settle().await;
+
+        // Each prompt reached the agent only after its own start ref existed.
+        let seen = launcher.refs_at_prompt.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert_eq!(seen[0].1, vec![checkpoint_ref(&sid, 1, "start")]);
+        assert_eq!(
+            seen[1].1,
+            vec![
+                checkpoint_ref(&sid, 1, "end"),
+                checkpoint_ref(&sid, 1, "start"),
+                checkpoint_ref(&sid, 2, "start"),
+            ]
+        );
+        let listed = crate::git_harness::checkpoint::list(&dir, &sid)
+            .await
+            .unwrap();
+        assert_eq!(
+            listed[0].prompt_fingerprint.as_deref(),
+            Some(crate::acp::fork::fingerprint_agent_message("first").as_str())
+        );
+        assert_eq!(
+            listed.last().unwrap().prompt_fingerprint.as_deref(),
+            Some(crate::acp::fork::fingerprint_agent_message("second").as_str())
+        );
+        // A checkpoint never touches the user's branch or files.
+        assert_eq!(fixture_git(&dir, &["status", "--porcelain"]), "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn turn_is_admitted_while_its_start_checkpoint_is_saved() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = start(
+            &db,
+            &mgr,
+            &launcher,
+            &wid,
+            AgentType::Codex,
+            text("first"),
+            None,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+        settle().await;
+        end_turn_observed(&mgr, "fake-conn-1", "end_turn").await;
+        assert!(wait_for_ref(&dir, &checkpoint_ref(&sid, 1, "end")).await);
+        let in_flight = || async {
+            mgr.get_state("fake-conn-1")
+                .await
+                .unwrap()
+                .read()
+                .await
+                .turn_in_flight
+        };
+        assert!(!in_flight().await);
+
+        // While the start checkpoint is being written the turn already holds
+        // the gate, and the prompt has not reached the agent.
+        let (reached, resume) = mgr.turn_checkpoints.pause_before_save();
+        let probe = async {
+            reached.notified().await;
+            let seen = (in_flight().await, launcher.prompts.lock().unwrap().len());
+            resume.notify_one();
+            seen
+        };
+        let (sent, (gated, prompts)) = tokio::join!(
+            send(&db, &mgr, &launcher, &sid, text("second"), None),
+            probe
+        );
+        sent.unwrap();
+        assert!(gated, "turn_in_flight is set during the start checkpoint");
+        assert_eq!(prompts, 1, "the second prompt waits for its checkpoint");
+        end_turn_observed(&mgr, "fake-conn-1", "end_turn").await;
+        assert!(wait_for_ref(&dir, &checkpoint_ref(&sid, 2, "end")).await);
+
+        // A prompt abandoned during its checkpoint gives the gate back.
+        let (reached, _resume) = mgr.turn_checkpoints.pause_before_save();
+        tokio::select! {
+            _ = send(&db, &mgr, &launcher, &sid, text("third"), None) => {
+                panic!("the paused send cannot finish")
+            }
+            _ = reached.notified() => {}
+        }
+        let mut reopened = false;
+        for _ in 0..50 {
+            if !in_flight().await {
+                reopened = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(reopened, "a dropped prompt must not leave the gate set");
+        assert_eq!(launcher.prompts.lock().unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn end_checkpoint_on_cancel_and_stop() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+
+        let sid = start(
+            &db,
+            &mgr,
+            &launcher,
+            &wid,
+            AgentType::Codex,
+            text("one"),
+            None,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+        settle().await;
+        // The agent wrote a file, then the user cancelled.
+        std::fs::write(dir.join("b.txt"), "two\n").unwrap();
+        end_turn_observed(&mgr, "fake-conn-1", "cancelled").await;
+        assert!(
+            wait_for_ref(&dir, &checkpoint_ref(&sid, 1, "end")).await,
+            "cancel takes the end checkpoint"
+        );
+
+        send(&db, &mgr, &launcher, &sid, text("two"), None)
+            .await
+            .unwrap();
+        settle().await;
+        assert!(zwiim_refs(&dir).contains(&checkpoint_ref(&sid, 2, "start")));
+        // Stop with the turn still running: the end checkpoint exists by the
+        // time stop returns.
+        stop(&db, &mgr, &sid).await.unwrap();
+        assert!(
+            zwiim_refs(&dir).contains(&checkpoint_ref(&sid, 2, "end")),
+            "{:?}",
+            zwiim_refs(&dir)
+        );
+
+        let listed = crate::git_harness::checkpoint::list(&dir, &sid)
+            .await
+            .unwrap();
+        let end1 = listed
+            .iter()
+            .find(|c| c.key.ordinal == 1 && c.phase == crate::git_harness::checkpoint::Phase::End)
+            .unwrap();
+        let start1 = &listed[0];
+        assert_ne!(
+            start1.worktree_tree, end1.worktree_tree,
+            "b.txt is in turn 1's end"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn delete_removes_the_sessions_checkpoints() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+
+        let sid = start(
+            &db,
+            &mgr,
+            &launcher,
+            &wid,
+            AgentType::Codex,
+            text("one"),
+            None,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+        settle().await;
+        end_turn_observed(&mgr, "fake-conn-1", "end_turn").await;
+        assert!(wait_for_ref(&dir, &checkpoint_ref(&sid, 1, "end")).await);
+        delete(&db, &EventEmitter::Noop, &mgr, &sid).await.unwrap();
+        assert_eq!(zwiim_refs(&dir), Vec::<String>::new());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

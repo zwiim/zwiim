@@ -1078,6 +1078,7 @@ pub async fn remove_worktree(
     terminals.kill_under_dir(&spellings);
     folders::remove_worktree_checkout(&root.path, &wt.path, force).await?;
     folders::converge_removed_worktree_folder(db, emitter, wt.id, None, &wt.path).await;
+    prune_checkpoints(db, wt.id, Path::new(&root.path)).await;
     let kept_sessions = conversation::Entity::find()
         .filter(conversation::Column::FolderId.eq(wt.id))
         .filter(conversation::Column::SessionId.is_not_null())
@@ -1091,6 +1092,31 @@ pub async fn remove_worktree(
         parent_workspace_id,
         kept_sessions,
     })
+}
+
+/// Drop the turn checkpoints of the sessions of removed worktree `folder_id`.
+/// They live in the shared repository at `repo`, nothing can restore into a
+/// checkout that is gone, and deleting such a session later could no longer
+/// find the repository to clean them up.
+async fn prune_checkpoints(db: &AppDatabase, folder_id: i32, repo: &Path) {
+    let sessions: Vec<Option<String>> = match conversation::Entity::find()
+        .select_only()
+        .column(conversation::Column::SessionId)
+        .filter(conversation::Column::FolderId.eq(folder_id))
+        .filter(conversation::Column::SessionId.is_not_null())
+        .into_tuple()
+        .all(&db.conn)
+        .await
+    {
+        Ok(sessions) => sessions,
+        Err(e) => {
+            tracing::warn!(folder_id, error = %e, "[zwiim] checkpoint prune: sessions unreadable");
+            return;
+        }
+    };
+    for session_id in sessions.into_iter().flatten() {
+        git_harness::checkpoint::gc_session(repo, &session_id).await;
+    }
 }
 
 // ─── continue after a merged pull request ────────────────────────────────
@@ -2265,6 +2291,67 @@ mod tests {
         git(
             Path::new(&repo),
             &["rev-parse", "--verify", &format!("refs/heads/{branch}")],
+        );
+    }
+
+    #[tokio::test]
+    async fn removal_prunes_the_removed_worktrees_checkpoints() {
+        use crate::git_harness::checkpoint::{self, CheckpointKey, Phase, Saved};
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
+        let emitter = EventEmitter::Noop;
+        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
+            .await
+            .unwrap();
+        let other = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
+            .await
+            .unwrap();
+        let session_of = |wid: String| {
+            let db = &db;
+            async move {
+                let folder = resolve(&db.conn, &wid).await.unwrap();
+                let conv = seed_conversation(db, folder.id, AgentType::ClaudeCode).await;
+                crate::db::entities::conversation::Entity::find_by_id(conv)
+                    .one(&db.conn)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .session_id
+                    .unwrap()
+            }
+        };
+        let removed_sid = session_of(wt.workspace_id.clone()).await;
+        let kept_sid = session_of(other.workspace_id.clone()).await;
+        for (path, sid) in [(&wt.path, &removed_sid), (&other.path, &kept_sid)] {
+            let key = CheckpointKey {
+                session_id: sid.clone(),
+                ordinal: 1,
+            };
+            let saved = checkpoint::save(Path::new(path), &key, Phase::Start, None).await;
+            assert!(matches!(saved, Saved::Ref { .. }), "{saved:?}");
+        }
+
+        remove_worktree(
+            &db,
+            &emitter,
+            &ConnectionManager::new(),
+            &TerminalManager::new(),
+            &wt.workspace_id,
+            false,
+        )
+        .await
+        .expect("remove");
+
+        // Refs are repository-wide: the removed worktree's sessions lose
+        // theirs (nothing could restore into it), the sibling's stay.
+        let refs = git(
+            Path::new(&repo),
+            &["for-each-ref", "--format=%(refname)", "refs/zwiim/"],
+        );
+        assert!(!refs.contains(&removed_sid), "{refs}");
+        assert!(
+            refs.contains(&format!("refs/zwiim/checkpoints/{kept_sid}/1/start")),
+            "{refs}"
         );
     }
 

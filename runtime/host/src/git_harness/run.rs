@@ -65,26 +65,63 @@ pub(super) fn gh(program: &Path, root: &str) -> tokio::process::Command {
 
 /// Run `cmd` to completion within `limit`. `what` names it in errors.
 pub(super) async fn run(
-    mut cmd: tokio::process::Command,
+    cmd: tokio::process::Command,
     limit: Duration,
     what: &str,
 ) -> Result<Output, GitError> {
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+    run_inner(cmd, None, limit, what).await
+}
+
+/// As [`run`], with `input` written to the child's stdin (then closed).
+pub(super) async fn run_with_input(
+    cmd: tokio::process::Command,
+    input: &[u8],
+    limit: Duration,
+    what: &str,
+) -> Result<Output, GitError> {
+    run_inner(cmd, Some(input), limit, what).await
+}
+
+/// Spawn `cmd` in its own process group and wait for it within `limit`,
+/// feeding it `input` when given (stdin is null otherwise).
+async fn run_inner(
+    mut cmd: tokio::process::Command,
+    input: Option<&[u8]>,
+    limit: Duration,
+    what: &str,
+) -> Result<Output, GitError> {
+    use tokio::io::AsyncWriteExt;
+
+    cmd.stdin(if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .kill_on_drop(true);
     #[cfg(unix)]
     cmd.process_group(0);
 
-    let child = crate::process::spawn_retrying_exec_busy(|| cmd.spawn())
+    let mut child = crate::process::spawn_retrying_exec_busy(|| cmd.spawn())
         .await
         .map_err(|e| {
             GitError::new(GitErrorCode::Failed, format!("{what}: could not start"))
                 .with_detail(&e.to_string())
         })?;
     let group = GroupKill::new(child.id());
+    let stdin = child.stdin.take();
 
-    match tokio::time::timeout(limit, child.wait_with_output()).await {
+    let finished = tokio::time::timeout(limit, async move {
+        if let (Some(mut stdin), Some(input)) = (stdin, input) {
+            // A child that exits early closes the pipe; its status says why.
+            let _ = stdin.write_all(input).await;
+            drop(stdin);
+        }
+        child.wait_with_output().await
+    })
+    .await;
+    match finished {
         Ok(Ok(out)) => {
             group.disarm();
             Ok(Output {

@@ -394,6 +394,68 @@ fn prune_reaped(draining: &mut DrainingChildren) {
     });
 }
 
+type SharedSessionState = Arc<tokio::sync::RwLock<crate::acp::session_state::SessionState>>;
+type PromptChannel = (
+    tokio::sync::mpsc::Sender<ConnectionCommand>,
+    SharedSessionState,
+);
+
+/// A turn admitted through a connection's concurrency gate but not yet
+/// handed to the agent. While it is held, `turn_in_flight` is set, so work
+/// done between admission and the enqueue (the turn's start checkpoint)
+/// runs inside the turn. Dropped without `sent` — the send failed, or the
+/// future was cancelled or unwound — it clears the gate again.
+struct TurnAdmission {
+    state: Option<SharedSessionState>,
+    /// `turns_completed` when the gate was taken. The deferred clear only
+    /// runs while it is unchanged, so it can never release a later turn.
+    turns_completed: u64,
+}
+
+impl TurnAdmission {
+    /// Take the gate, or `None` when a turn is already in flight.
+    async fn take(state: &SharedSessionState) -> Option<Self> {
+        let mut s = state.write().await;
+        if s.turn_in_flight {
+            return None;
+        }
+        s.turn_in_flight = true;
+        Some(Self {
+            state: Some(state.clone()),
+            turns_completed: s.turns_completed,
+        })
+    }
+
+    /// The prompt is being enqueued: the connection loop owns the gate now.
+    fn sent(mut self) {
+        self.state = None;
+    }
+}
+
+impl Drop for TurnAdmission {
+    fn drop(&mut self) {
+        let Some(state) = self.state.take() else {
+            return;
+        };
+        let admitted_at = self.turns_completed;
+        let release = move |s: &mut crate::acp::session_state::SessionState| {
+            if s.turns_completed == admitted_at {
+                s.turn_in_flight = false;
+            }
+        };
+        if let Ok(mut s) = state.try_write() {
+            release(&mut s);
+            return;
+        }
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move { release(&mut *state.write().await) });
+            }
+            Err(_) => tracing::warn!("[ACP] an unsent turn could not release the turn gate"),
+        }
+    }
+}
+
 pub struct ConnectionManager {
     pub(crate) connections: Arc<Mutex<HashMap<String, AgentConnection>>>,
     /// Connections whose teardown was requested but whose child process has
@@ -471,6 +533,8 @@ pub struct ConnectionManager {
     /// keyed by conversation row id so they outlive an agent respawn. In
     /// memory only: a Host restart drops them.
     notices: Arc<std::sync::Mutex<HashMap<i32, Vec<String>>>>,
+    /// Open per-turn Git checkpoints, shared by every clone.
+    pub(crate) turn_checkpoints: crate::session_checkpoints::TurnCheckpoints,
 }
 
 /// A parked `ask_user_question` awaiting its answer. The `sender` resolves the
@@ -510,6 +574,7 @@ impl ConnectionManager {
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
             notices: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            turn_checkpoints: Default::default(),
         }
     }
 
@@ -527,6 +592,7 @@ impl ConnectionManager {
             pending_questions: self.pending_questions.clone(),
             pending_plan_approvals: self.pending_plan_approvals.clone(),
             notices: self.notices.clone(),
+            turn_checkpoints: self.turn_checkpoints.clone(),
         }
     }
 
@@ -564,6 +630,7 @@ impl ConnectionManager {
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
             notices: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            turn_checkpoints: Default::default(),
         }
     }
 
@@ -973,13 +1040,7 @@ impl ConnectionManager {
                 "[ACP][{conn_id}] removed the reserved routing separator from an outgoing prompt"
             );
         }
-        let (cmd_tx, state_arc) = {
-            let connections = self.connections.lock().await;
-            let conn = connections
-                .get(conn_id)
-                .ok_or_else(|| AcpError::ConnectionNotFound(conn_id.into()))?;
-            (conn.cmd_tx.clone(), conn.state.clone())
-        };
+        let (cmd_tx, state_arc) = self.prompt_channel(conn_id).await?;
         // Concurrency gate: reject a second prompt while a turn is already in
         // flight on this connection. Reserve channel capacity FIRST — that
         // `reserve().await` is the only point that can block or be cancelled.
@@ -1002,9 +1063,10 @@ impl ConnectionManager {
             let mut s = state_arc.write().await;
             if s.turn_in_flight {
                 // Names the gate, not just the outcome: the linked path checks
-                // the same flag once before its side effects and again here, and
-                // the two lines share a module target with no file/line in the
-                // default format — identical text would be unattributable.
+                // the same flag once before its side effects and again at
+                // admission, and the lines share a module target with no
+                // file/line in the default format — identical text would be
+                // unattributable.
                 tracing::debug!(
                     connection_id = %conn_id,
                     "[ACP] prompt rejected at the send gate: a turn is already in flight"
@@ -1012,16 +1074,7 @@ impl ConnectionManager {
                 return Err(AcpError::TurnInProgress);
             }
             s.turn_in_flight = true;
-            // Taken with the gate, before the infallible send: a refused or
-            // cancelled send leaves them queued, and a slash command defers
-            // them to the next turn.
-            if crate::harness::takes_notices(&blocks) {
-                s.conversation_id
-                    .and_then(|id| self.lock_notices().remove(&id))
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            }
+            self.take_notices(&s, &blocks)
         };
         permit.send(ConnectionCommand::Prompt {
             blocks,
@@ -1029,6 +1082,58 @@ impl ConnectionManager {
             notices,
         });
         Ok(())
+    }
+
+    /// Enqueue the prompt of a turn already admitted through the gate (see
+    /// `TurnAdmission`). The gate stays set across the reserve; any failure,
+    /// cancellation or unwind before the enqueue drops `admission`, which
+    /// clears it.
+    async fn send_admitted_prompt(
+        &self,
+        conn_id: &str,
+        blocks: Vec<PromptInputBlock>,
+        user_message: Option<(String, Vec<crate::acp::UserMessageBlock>)>,
+        admission: TurnAdmission,
+    ) -> Result<(), AcpError> {
+        let (cmd_tx, state_arc) = self.prompt_channel(conn_id).await?;
+        let permit = cmd_tx
+            .reserve()
+            .await
+            .map_err(|_| AcpError::ProcessExited)?;
+        let notices = self.take_notices(&*state_arc.read().await, &blocks);
+        // No await from here to the infallible send.
+        admission.sent();
+        permit.send(ConnectionCommand::Prompt {
+            blocks,
+            user_message,
+            notices,
+        });
+        Ok(())
+    }
+
+    async fn prompt_channel(&self, conn_id: &str) -> Result<PromptChannel, AcpError> {
+        let connections = self.connections.lock().await;
+        let conn = connections
+            .get(conn_id)
+            .ok_or_else(|| AcpError::ConnectionNotFound(conn_id.into()))?;
+        Ok((conn.cmd_tx.clone(), conn.state.clone()))
+    }
+
+    /// Notices queued for the turn being enqueued. Taken with the gate held,
+    /// right before the infallible send: a refused or cancelled send leaves
+    /// them queued, and a slash command defers them to the next turn.
+    fn take_notices(
+        &self,
+        s: &crate::acp::session_state::SessionState,
+        blocks: &[PromptInputBlock],
+    ) -> Vec<String> {
+        if crate::harness::takes_notices(blocks) {
+            s.conversation_id
+                .and_then(|id| self.lock_notices().remove(&id))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        }
     }
 
     /// Queue `text` for conversation `conversation_id`'s next accepted turn.
@@ -1204,15 +1309,15 @@ impl ConnectionManager {
 
         // Reject a concurrent prompt while a turn is already in flight, BEFORE
         // any side effects (row creation, InProgress emit, user-message
-        // broadcast). `send_prompt_inner` re-checks and sets the flag
-        // authoritatively below; doing it here too — while still holding
+        // broadcast). The turn admission below re-checks and sets the flag
+        // authoritatively; doing it here too — while still holding
         // `prompt_lock`, so the value can't change underneath us (the loop only
         // ever clears it) — keeps a rejected prompt from flipping the row to
         // InProgress or broadcasting a phantom user message. The frontend turns
         // this rejection into a queued message above the input box.
         if turn_in_flight {
-            // Distinct from `send_prompt_inner`'s send-gate line so a log reader
-            // can tell which of the two checks bounced the prompt.
+            // Distinct from the admission and send-gate lines so a log reader
+            // can tell which check bounced the prompt.
             tracing::debug!(
                 connection_id = %conn_id,
                 "[ACP] prompt rejected before admission: a turn is already in flight"
@@ -1569,21 +1674,50 @@ impl ConnectionManager {
                 None
             };
 
-        // We hold `_prompt_guard` here, so call the lock-free inner helper —
-        // re-entering `send_prompt` would try to acquire the same mutex and
-        // deadlock. The helper reserves channel capacity FIRST and only then
-        // sets the turn-in-flight gate, with no await before the infallible
-        // `permit.send`; so a failure (channel closed / process exited) happens
-        // at the reserve step, BEFORE the gate is set — there is nothing to roll
-        // back. On that failure we still flip the row to `Cancelled` so the UI
-        // doesn't strand on `in_progress`: no `TurnComplete` will ever arrive
-        // for a prompt that never reached the agent, so without this the
-        // lifecycle subscriber's PendingReview write also never fires and the
-        // row would be stuck until a follow-up `send_prompt_linked` re-flipped it.
-        match self
-            .send_prompt_inner(conn_id, blocks, user_message)
-            .await
-        {
+        // Admit the turn, then save its start checkpoint, then send: no tool
+        // of this turn runs until the checkpoint is saved or skipped, and the
+        // turn is already in flight while it is (a fork or a second prompt
+        // sees a busy connection). We hold `_prompt_guard`, so call the
+        // lock-free helpers — re-entering `send_prompt` would try to acquire
+        // the same mutex and deadlock. If the send fails (channel closed /
+        // process exited) or this future is dropped, the admission is dropped
+        // unsent and clears the gate. On a failure we still flip the row to
+        // `Cancelled` so the UI doesn't strand on `in_progress`: no
+        // `TurnComplete` will ever arrive for a prompt that never reached the
+        // agent, so without this the lifecycle subscriber's PendingReview write
+        // also never fires and the row would be stuck until a follow-up
+        // `send_prompt_linked` re-flipped it.
+        let sent = match TurnAdmission::take(&state_arc).await {
+            None => {
+                tracing::debug!(
+                    connection_id = %conn_id,
+                    "[ACP] prompt rejected at admission: a turn is already in flight"
+                );
+                Err(AcpError::TurnInProgress)
+            }
+            Some(admission) => {
+                let (working_dir, start_seq) = {
+                    let s = state_arc.read().await;
+                    (s.working_dir.clone(), s.event_seq)
+                };
+                self.turn_checkpoints
+                    .before_prompt(
+                        &db.conn,
+                        conn_id,
+                        conversation_id_for_status,
+                        working_dir.as_deref(),
+                        start_seq,
+                        &blocks,
+                    )
+                    .await;
+                self.send_admitted_prompt(conn_id, blocks, user_message, admission)
+                    .await
+            }
+        };
+        if sent.is_err() {
+            self.turn_checkpoints.prompt_not_sent(conn_id).await;
+        }
+        match sent {
             Ok(()) => {
                 // The prompt reached the agent: surface it to the chat-channel
                 // "user message" event feed. Notification-only — never gates the
@@ -6005,16 +6139,16 @@ mod tests {
     #[tokio::test]
     async fn send_prompt_linked_failed_reserve_leaves_gate_clear() {
         // A failed enqueue (dropped cmd receiver) fails at the channel
-        // `reserve()` step — which is BEFORE the turn-in-flight gate is set — so
-        // the gate is never set, not "rolled back". The connection must stay
-        // usable (turn_in_flight false), and the row rolls back to Cancelled.
+        // `reserve()` step, after the turn was admitted: the unsent admission
+        // clears the gate again. The connection must stay usable
+        // (turn_in_flight false), and the row rolls back to Cancelled.
         // pending_user_message stays None (the loop, which never ran, owns it).
         use crate::db::test_helpers;
         let db = test_helpers::fresh_in_memory_db().await;
         let folder_id = test_helpers::seed_folder(&db, "/tmp/um-fail").await;
         let mgr = ConnectionManager::new();
         let conn_id = "conn-um-fail";
-        // insert_fake_connection drops the cmd receiver → send_prompt_inner fails.
+        // insert_fake_connection drops the cmd receiver → the send fails.
         insert_fake_connection(
             &mgr,
             conn_id,
