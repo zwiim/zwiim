@@ -610,9 +610,10 @@ pub fn can_rewind_chat(agent: AgentType) -> bool {
 /// rewind that then fails does not hide the restore: the result reports
 /// `files_restored: true, chat_rewound: false`.
 ///
-/// A chat rewind may have to resume the agent, which never runs in a root
-/// workspace: there, `chat` is refused with `root_workspace` (and
-/// `can_rewind_chat` reads false), with `files` too, before anything changes.
+/// A root workspace (the repository folder itself) is never reverted, files
+/// or chat: any revert there is refused with `root_workspace` before anything
+/// changes. A reset would rewrite the user's own checkout, and a chat rewind
+/// may have to resume the agent, which never runs there.
 ///
 /// Refused with `turn_in_progress` while the session's turn runs,
 /// `workspace_busy` while another agent works in the workspace or the
@@ -688,7 +689,10 @@ async fn revert_locked<L: AgentLauncher>(
     else {
         return Err(ZwiimError::checkpoint_unavailable());
     };
-    // Everything that can refuse the rewind does so before anything changes.
+    // Everything that can refuse the revert does so before anything changes.
+    if folder.parent_id.is_none() {
+        return Err(ZwiimError::root_workspace());
+    }
     let fork_point = match chat {
         true => chat_rewind_point(row, &folder, turns, idx)?,
         false => None,
@@ -756,9 +760,6 @@ fn chat_rewind_point(
     }
     // The rewind may have to resume the agent: never there, as for a send.
     crate::workspace::ensure_not_removed(folder)?;
-    if folder.parent_id.is_none() {
-        return Err(ZwiimError::root_workspace());
-    }
     // The first turn has no answer before it to carry on from, and a turn
     // that follows an unanswered one would lose that one too.
     let previous = idx
@@ -3082,6 +3083,7 @@ pub(crate) mod orchestration_tests {
             .unwrap()
     }
 
+    const FILES_ONLY: (bool, bool) = (true, false);
     const CHAT_ONLY: (bool, bool) = (false, true);
     const BOTH: (bool, bool) = (true, true);
 
@@ -3542,7 +3544,7 @@ pub(crate) mod orchestration_tests {
     }
 
     #[tokio::test]
-    async fn revert_files_and_chat_in_a_root_workspace_is_refused_up_front() {
+    async fn revert_in_a_root_workspace_is_refused_up_front() {
         let db = fresh_in_memory_db().await;
         let (wid, dir) = git_workspace(&db).await;
         let mgr = ConnectionManager::new();
@@ -3562,11 +3564,11 @@ pub(crate) mod orchestration_tests {
         folder.parent_id = Set(None);
         folder.update(&db.conn).await.unwrap();
 
-        for (files, chat) in [CHAT_ONLY, BOTH] {
+        for (files, chat) in [FILES_ONLY, CHAT_ONLY, BOTH] {
             let err = revert_with(&db, &mgr, &launcher, &sid, &turns, "turn-2", files, chat)
                 .await
                 .unwrap_err();
-            assert_eq!(err.code, "root_workspace", "files={files}");
+            assert_eq!(err.code, "root_workspace", "files={files} chat={chat}");
         }
         assert!(launcher.forks.lock().unwrap().is_empty());
         assert_eq!(a_txt(&dir), "after second 1\n", "nothing was restored");

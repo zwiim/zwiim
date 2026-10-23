@@ -536,6 +536,8 @@ describe("reset to a message", () => {
     expect(within(dialog).getByText("Later messages will be removed.")).toBeTruthy();
     const files = within(dialog).getByLabelText("Also reset files") as HTMLInputElement;
     expect(files.checked).toBe(true);
+    // Resetting files discards the user's own uncommitted edits, and the dialog says so.
+    expect(within(dialog).getByText("Uncommitted changes made since this message, including your own, will be discarded.")).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Reset" }));
     await tick();
     expect(reverts(t)).toEqual([{ session_id: "s1", turn_id: "u2", files: true, chat: true }]);
@@ -546,7 +548,10 @@ describe("reset to a message", () => {
   it("leaves the files alone when unchecked", async () => {
     const { t, controller } = await resetting({ canRewind: true });
     fireEvent.click(screen.getAllByLabelText("Reset to here")[1]!);
+    expect(screen.getByText("Uncommitted changes made since this message, including your own, will be discarded.")).toBeTruthy();
     fireEvent.click(screen.getByLabelText("Also reset files"));
+    // A chat-only reset keeps the files, so there is nothing to warn about.
+    expect(screen.queryByText("Uncommitted changes made since this message, including your own, will be discarded.")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Reset" }));
     await tick();
     expect(reverts(t)).toEqual([{ session_id: "s1", turn_id: "u2", files: false, chat: true }]);
@@ -560,6 +565,7 @@ describe("reset to a message", () => {
     expect(within(dialog).getByText("Reset files to here?")).toBeTruthy();
     expect(within(dialog).queryByText("Later messages will be removed.")).toBeNull();
     expect(within(dialog).queryByLabelText("Also reset files")).toBeNull();
+    expect(within(dialog).getByText("Uncommitted changes made since this message, including your own, will be discarded.")).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Reset files" }));
     await tick();
     expect(reverts(t)).toEqual([{ session_id: "s1", turn_id: "u2", files: true, chat: false }]);

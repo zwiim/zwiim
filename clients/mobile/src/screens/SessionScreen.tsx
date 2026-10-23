@@ -10,7 +10,7 @@
 // the composer (and the header's `⋯`) open Session options: the model, effort
 // and mode the Host reports, changed between turns, and the agent's context.
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { FlatList, Keyboard, KeyboardAvoidingView, Platform, Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -40,7 +40,7 @@ import { sessionToOpen, worktreeSessions } from "../sessions/worktree";
 import {
   clock,
   nowState,
-  transcriptRows,
+  transcriptBuilder,
   turnKey,
   turnRunning,
   type ToolItem,
@@ -108,12 +108,15 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
   const back = () => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Host"));
   // An edited file opens on its own screen while its worktree is still there.
   const workspace = state.workspaces?.find((w) => w.workspace_id === item?.workspace_id && !w.removed) ?? null;
-  const fileOf = (path: string) => (workspace ? workspaceFile(path, workspace) : null);
-  const openFile = (path: string) => {
-    if (!workspace) return;
-    const { workspace_id } = workspace;
-    navigation.push(fileScreen(path, workspace.is_git_repo), { workspace_id, path });
-  };
+  const fileOf = useCallback((path: string) => (workspace ? workspaceFile(path, workspace) : null), [workspace]);
+  const openFile = useCallback(
+    (path: string) => {
+      if (!workspace) return;
+      const { workspace_id } = workspace;
+      navigation.push(fileScreen(path, workspace.is_git_repo), { workspace_id, path });
+    },
+    [workspace, navigation],
+  );
 
   // On screen: stream the session and load its transcript until it's left.
   useEffect(() => {
@@ -141,7 +144,9 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
     else startIn(workspace_id);
   };
 
-  const rows = useMemo(() => transcriptRows(view), [view]);
+  // The history's rows stay the same objects while only the live turn changes.
+  const [build] = useState(transcriptBuilder);
+  const rows = useMemo(() => build(view), [build, view]);
   const text = connectionText(connection);
 
   let body;
@@ -532,33 +537,64 @@ function Live({
   const agentAway = view?.attach === "detached" || view?.agentStatus === "disconnected";
 
   // An edit to one file in the worktree opens that file; any other tool call its details.
-  const toolFile = (tool: ToolItem) => (tool.path ? fileOf(tool.path) : null);
+  const toolFile = useCallback((tool: ToolItem) => (tool.path ? fileOf(tool.path) : null), [fileOf]);
   const onTool = (tool: ToolItem) => {
     const path = toolFile(tool);
     if (path) onOpenFile(path);
     else setTool(tool);
   };
 
-  const renderRow = ({ item: row, index }: { item: TranscriptRow; index: number }) => {
-    // Inverted: index 0 is the newest, and `newer` the row below this one.
-    const newer = index > 0 ? rows[rows.length - index] : undefined;
-    const gap = newer && (newer.type === "user" || row.type === "user") ? space.lg : space.sm;
-    return (
-      <View style={{ marginTop: index === rows.length - 1 ? space.md : 0, marginBottom: index === 0 ? space.md : gap }}>
-        <Row
-          row={row}
-          onTool={onTool}
-          toolFile={toolFile}
-          fileOf={fileOf}
-          onOpenFile={onOpenFile}
-          onOpenSent={workspace_id ? (f) => openSent(f) : undefined}
-          onOpenImage={workspace_id ? openImage : undefined}
-          onRevert={resettable ? askReset : undefined}
-          revertDisabled={running || !connected}
-        />
-      </View>
-    );
-  };
+  // The list redraws a row only when its row, its place or `renderRow` changes,
+  // so `renderRow` reads what changes every render through these refs.
+  // The rows are set while rendering, not in an effect: the list draws its
+  // cells in this same render, before any effect runs, and a cell drawn from
+  // the previous rows would keep the wrong gap (nothing redraws it after). A
+  // render React throws away leaves rows the next render replaces before any
+  // cell reads them.
+  const shownRows = useRef(rows);
+  shownRows.current = rows;
+  // The handlers are only called on a press, after a commit.
+  const latest = useRef({ onTool, openSent, openImage, askReset });
+  useLayoutEffect(() => {
+    latest.current = { onTool, openSent, openImage, askReset };
+  });
+  const [actions] = useState(() => ({
+    onTool: (tool: ToolItem) => latest.current.onTool(tool),
+    openSent: (file: AttachmentBlock) => latest.current.openSent(file),
+    openImage: (path: string) => latest.current.openImage(path),
+    askReset: (point: RevertPoint) => latest.current.askReset(point),
+  }));
+  const hasWorkspace = workspace_id !== null;
+  // Each cell is memoized on its row and index, and its gap depends on the row
+  // below it. That holds because a change to a row's neighbour always changes
+  // the row's index or identity: rows are added only at the newest end (every
+  // index shifts), live rows are rebuilt on each change, and anything that
+  // changes the history's rows rebuilds them all. Keep it so, or pass the
+  // neighbour in.
+  const renderRow = useCallback(
+    ({ item: row, index }: { item: TranscriptRow; index: number }) => {
+      const rows = shownRows.current;
+      // Inverted: index 0 is the newest, and `newer` the row below this one.
+      const newer = index > 0 ? rows[rows.length - index] : undefined;
+      const gap = newer && (newer.type === "user" || row.type === "user") ? space.lg : space.sm;
+      return (
+        <View style={{ marginTop: index === rows.length - 1 ? space.md : 0, marginBottom: index === 0 ? space.md : gap }}>
+          <Row
+            row={row}
+            onTool={actions.onTool}
+            toolFile={toolFile}
+            fileOf={fileOf}
+            onOpenFile={onOpenFile}
+            onOpenSent={hasWorkspace ? actions.openSent : undefined}
+            onOpenImage={hasWorkspace ? actions.openImage : undefined}
+            onRevert={resettable ? actions.askReset : undefined}
+            revertDisabled={running || !connected}
+          />
+        </View>
+      );
+    },
+    [actions, toolFile, fileOf, onOpenFile, hasWorkspace, resettable, running, connected],
+  );
 
   const nowBar = (tick: number) => {
     if (!now) return null;
@@ -604,8 +640,12 @@ function Live({
           <FlatList
             inverted
             data={newestFirst}
-            keyExtractor={(r) => r.key}
+            keyExtractor={rowKey}
             renderItem={renderRow}
+            windowSize={11}
+            maxToRenderPerBatch={8}
+            // On iOS, clipping an inverted list can leave it blank.
+            removeClippedSubviews={Platform.OS === "android"}
             contentContainerStyle={styles.list}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="interactive"
@@ -687,6 +727,8 @@ function Live({
     </KeyboardAvoidingView>
   );
 }
+
+const rowKey = (row: TranscriptRow) => row.key;
 
 function Row({
   row,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CLIENT_CAPABILITIES, evaluateCompatibility } from "../src/client/compat";
 import { ZwiimClientError } from "../src/client/errors";
-import { HEAD_MOVED_NOTE, offersChatRewind, revertNotes, revertRefusalText } from "../src/client/revert";
+import { FILES_DISCARD_NOTE, HEAD_MOVED_NOTE, offersChatRewind, revertNotes, revertRefusalText, revertWarning } from "../src/client/revert";
 import type { HistoryTurn } from "../src/types/protocol";
 import { hello } from "./fakes";
 
@@ -84,5 +84,14 @@ describe("revertNotes", () => {
     expect(revertNotes({ files_restored: false, chat_rewound: false, head_moved: false }, { files: false, chat: true })).toEqual([
       "The chat could not be taken back. Its later messages stay.",
     ]);
+  });
+});
+
+describe("revertWarning", () => {
+  it("warns that uncommitted work is discarded whenever the files will be reset, and only then", () => {
+    expect(FILES_DISCARD_NOTE).toBe("Uncommitted changes made since this message, including your own, will be discarded.");
+    expect(revertWarning({ files: true, chat: false })).toBe(FILES_DISCARD_NOTE);
+    expect(revertWarning({ files: true, chat: true })).toBe(FILES_DISCARD_NOTE);
+    expect(revertWarning({ files: false, chat: true })).toBeNull();
   });
 });

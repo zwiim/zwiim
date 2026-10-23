@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use chrono::{DateTime, Utc};
 use regex::Regex;
@@ -1246,6 +1247,10 @@ pub(crate) struct ClaudeRecordAccumulator {
     /// How many sub-agents deep this feed is: 0 for the session itself. Caps
     /// how far nested sub-agent transcripts are followed.
     subagent_depth: u8,
+    /// The sub-agent transcripts one history parse has already read, shared
+    /// with the nested feeds and the usage pass; `None` reads each afresh (an
+    /// incremental feed, whose sub-agents keep writing).
+    subagent_files: Option<SubagentFiles>,
     pub(crate) messages: Vec<UnifiedMessage>,
     pub(crate) cwd: Option<String>,
     pub(crate) git_branch: Option<String>,
@@ -1319,6 +1324,7 @@ impl ClaudeRecordAccumulator {
         Self {
             subagent_dir,
             subagent_depth,
+            subagent_files: None,
             messages: Vec::new(),
             cwd: None,
             git_branch: None,
@@ -1429,6 +1435,7 @@ impl ClaudeRecordAccumulator {
         let Self {
             subagent_dir,
             subagent_depth,
+            subagent_files,
             messages,
             cwd,
             git_branch,
@@ -1735,18 +1742,22 @@ impl ClaudeRecordAccumulator {
                             if is_safe_subagent_id(agent_id) {
                                 let subagent_path =
                                     subagent_dir.join(format!("agent-{}.jsonl", agent_id));
-                                if subagent_path.exists() {
-                                    stats.tool_calls =
-                                        parse_subagent_tool_calls(&subagent_path).0;
-                                }
-                                if *subagent_depth < MAX_SUBAGENT_DEPTH {
-                                    stats.transcript = read_subagent_transcript(
-                                        subagent_dir,
-                                        agent_id,
-                                        *subagent_depth + 1,
-                                        tur,
-                                    )
-                                    .map(Box::new);
+                                // One read serves the summary and the transcript.
+                                if let Some(file) =
+                                    load_subagent_file(subagent_files.as_ref(), &subagent_path)
+                                {
+                                    stats.tool_calls = file.tool_calls.clone();
+                                    if *subagent_depth < MAX_SUBAGENT_DEPTH {
+                                        stats.transcript =
+                                            Some(Box::new(read_subagent_transcript(
+                                                subagent_dir,
+                                                subagent_files.as_ref(),
+                                                &file,
+                                                agent_id,
+                                                *subagent_depth + 1,
+                                                tur,
+                                            )));
+                                    }
                                 }
                             }
                         }
@@ -2237,7 +2248,11 @@ impl ClaudeParser {
         let bytes = fs::read(path)?;
         let transcript_watermark = bytes.len() as u64;
 
+        // Every sub-agent transcript this parse touches is read and parsed
+        // once, however many results name it and whether or not one does.
+        let subagent_files = SubagentFiles::default();
         let mut acc = ClaudeRecordAccumulator::new(path.clone());
+        acc.subagent_files = Some(subagent_files.clone());
         for chunk in bytes.split(|b| *b == b'\n') {
             // Mirror `BufReader::lines()`: a line that isn't valid UTF-8 is
             // skipped (the old loop's per-line `Err(_) => continue`).
@@ -2280,7 +2295,7 @@ impl ClaudeParser {
         let context_window_used_tokens = latest_claude_context_window_used_tokens(&turns);
         let context_window_max_tokens =
             claude_context_window_max_tokens_for_model(model.as_deref());
-        attribute_subagent_usage(path, &mut turns);
+        attribute_subagent_usage(path, &subagent_files, &mut turns);
         let session_stats = merge_claude_context_window_stats(
             super::compute_session_stats(&turns),
             context_window_used_tokens,
@@ -2610,24 +2625,24 @@ fn extract_agent_execution_stats(tur: &serde_json::Value) -> AgentExecutionStats
 /// itself nests only a level or two; the cap only bounds a pathological tree.
 const MAX_SUBAGENT_DEPTH: u8 = 4;
 
-/// One sub-agent's own transcript, `<subagent_dir>/agent-<agent_id>.jsonl`,
-/// rebuilt with the session parser so its blocks read exactly like the
-/// session's own: real tool-call ids, thinking, text, results. `None` when the
-/// file is missing or unreadable. `tool_use_result` is the launching call's
-/// `toolUseResult`, the first source for the description and the fallback for
-/// the model; `agent-<id>.meta.json` is the second source for the description.
+/// One sub-agent's own transcript, `<subagent_dir>/agent-<agent_id>.jsonl`
+/// as `file` holds it, rebuilt with the session parser so its blocks read
+/// exactly like the session's own: real tool-call ids, thinking, text,
+/// results. `tool_use_result` is the launching call's `toolUseResult`, the
+/// first source for the description and the fallback for the model;
+/// `agent-<id>.meta.json` is the second source for the description.
 fn read_subagent_transcript(
     subagent_dir: &Path,
+    subagent_files: Option<&SubagentFiles>,
+    file: &SubagentFile,
     agent_id: &str,
     depth: u8,
     tool_use_result: &serde_json::Value,
-) -> Option<SubagentTranscript> {
-    let bytes = fs::read(subagent_dir.join(format!("agent-{agent_id}.jsonl"))).ok()?;
+) -> SubagentTranscript {
     let mut acc = ClaudeRecordAccumulator::for_subagent(subagent_dir.to_path_buf(), depth);
-    for chunk in bytes.split(|b| *b == b'\n') {
-        if let Ok(line) = std::str::from_utf8(chunk) {
-            acc.feed_line(line);
-        }
+    acc.subagent_files = subagent_files.cloned();
+    for record in &file.records {
+        acc.feed_value(record.clone());
     }
     acc.finalize_background_lifecycle();
 
@@ -2674,12 +2689,87 @@ fn read_subagent_transcript(
         .filter(|t| matches!(t.role, TurnRole::Assistant))
         .flat_map(|t| t.blocks)
         .collect();
-    Some(SubagentTranscript {
+    SubagentTranscript {
         description,
         model,
         prompt,
         duration_ms,
         blocks,
+    }
+}
+
+/// One sub-agent transcript, read and parsed once: its records, for the
+/// transcript, and the summary of them the stats and the usage pass take.
+pub(crate) struct SubagentFile {
+    records: Vec<serde_json::Value>,
+    tool_calls: Vec<AgentToolCall>,
+    usage: Option<TurnUsage>,
+    started_at: Option<DateTime<Utc>>,
+}
+
+/// The sub-agent transcripts one history parse has read, by path. A missing
+/// or unreadable file is remembered as such, so it is not tried again. The
+/// usage pass, last, takes each file out as it goes, so none outlives it.
+#[derive(Clone, Default)]
+pub(crate) struct SubagentFiles(Arc<Mutex<HashMap<PathBuf, Option<Arc<SubagentFile>>>>>);
+
+impl SubagentFiles {
+    fn load(&self, path: &Path) -> Option<Arc<SubagentFile>> {
+        let mut files = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        files
+            .entry(path.to_path_buf())
+            .or_insert_with(|| read_subagent_file(path).map(Arc::new))
+            .clone()
+    }
+
+    /// The file as a launch already read it, taken out of the parse's keeping;
+    /// else read now and not kept, for a file no launch names.
+    fn take(&self, path: &Path) -> Option<Arc<SubagentFile>> {
+        let kept = self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(path);
+        match kept {
+            Some(file) => file,
+            None => read_subagent_file(path).map(Arc::new),
+        }
+    }
+}
+
+/// A sub-agent transcript from `files` when the parse shares one, else read now.
+fn load_subagent_file(files: Option<&SubagentFiles>, path: &Path) -> Option<Arc<SubagentFile>> {
+    match files {
+        Some(files) => files.load(path),
+        None => read_subagent_file(path).map(Arc::new),
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Sub-agent transcripts read from disk on this thread, for the tests.
+    static SUBAGENT_FILE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Read one sub-agent transcript: each line parsed once, blank, non-UTF-8 and
+/// non-JSON lines skipped as the session's own feed skips them. `None` when
+/// the file is missing or unreadable.
+fn read_subagent_file(path: &Path) -> Option<SubagentFile> {
+    #[cfg(test)]
+    SUBAGENT_FILE_READS.with(|n| n.set(n.get() + 1));
+    let bytes = fs::read(path).ok()?;
+    let records: Vec<serde_json::Value> = bytes
+        .split(|b| *b == b'\n')
+        .filter_map(|chunk| std::str::from_utf8(chunk).ok())
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    let (tool_calls, usage, started_at) = subagent_tool_calls(&records);
+    Some(SubagentFile {
+        records,
+        tool_calls,
+        usage,
+        started_at,
     })
 }
 
@@ -2715,7 +2805,11 @@ fn read_subagent_transcript(
 /// Runs on turns rather than messages, and deliberately after the context
 /// window has been read: delegated tokens are this session's *spend*, but they
 /// never occupied this session's prompt.
-fn attribute_subagent_usage(session_path: &Path, turns: &mut [MessageTurn]) {
+fn attribute_subagent_usage(
+    session_path: &Path,
+    subagent_files: &SubagentFiles,
+    turns: &mut [MessageTurn],
+) {
     let subagent_dir = session_path.with_extension("").join("subagents");
     let Ok(entries) = fs::read_dir(&subagent_dir) else {
         return;
@@ -2731,8 +2825,13 @@ fn attribute_subagent_usage(session_path: &Path, turns: &mut [MessageTurn]) {
     transcripts.sort();
 
     for transcript in transcripts {
-        let (_, usage, started_at) = parse_subagent_tool_calls(&transcript);
-        let Some(extra) = usage else { continue };
+        let Some(file) = subagent_files.take(&transcript) else {
+            continue;
+        };
+        let started_at = file.started_at;
+        let Some(extra) = file.usage.clone() else {
+            continue;
+        };
 
         // The turn that was speaking when the sub-agent began. Falling back to
         // the last assistant message keeps the tokens in the session even when
@@ -2767,22 +2866,16 @@ fn attribute_subagent_usage(session_path: &Path, turns: &mut [MessageTurn]) {
     }
 }
 
-/// Read one sub-agent's transcript: the tool calls it made, what it spent, and
-/// when it started.
+/// Summarize one sub-agent's transcript records: the tool calls it made, what
+/// it spent, and when it started.
 ///
 /// The usage is deduped by `message.id` on the same rule the parent transcript
 /// uses (see [`ClaudeRecordAccumulator::claim_assistant_usage`]) — a sub-agent
 /// transcript has the identical one-line-per-content-block shape. It is
 /// consumed by [`attribute_subagent_usage`]; the tool-call caller ignores it.
-fn parse_subagent_tool_calls(
-    path: &PathBuf,
+fn subagent_tool_calls(
+    records: &[serde_json::Value],
 ) -> (Vec<AgentToolCall>, Option<TurnUsage>, Option<DateTime<Utc>>) {
-    let file = match fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return (Vec::new(), None, None),
-    };
-    let reader = BufReader::new(file);
-
     // Collect tool_use entries and build a result map
     let mut calls: Vec<(String, String, Option<String>)> = Vec::new(); // (id, name, input)
     let mut results: std::collections::HashMap<String, (Option<String>, bool)> =
@@ -2792,27 +2885,15 @@ fn parse_subagent_tool_calls(
         std::collections::HashMap::new();
     let mut started_at: Option<DateTime<Utc>> = None;
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => continue,
-        };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let value: serde_json::Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
+    for value in records {
         let msg_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
         if started_at.is_none() {
-            started_at = parse_timestamp(&value);
+            started_at = parse_timestamp(value);
         }
 
         if msg_type == "assistant" {
-            if let Some(usage) = extract_usage(&value) {
+            if let Some(usage) = extract_usage(value) {
                 let billable = |u: &TurnUsage| {
                     u.input_tokens
                         .saturating_add(u.output_tokens)
@@ -5222,6 +5303,104 @@ mod tests {
             .expect("inner transcript");
         assert_eq!(inner.model.as_deref(), Some("claude-haiku-5"));
         assert_eq!(inner.blocks.len(), 4);
+    }
+
+    #[test]
+    fn the_usage_pass_takes_each_sub_agent_file_out_of_the_parses_keeping() {
+        // A file a launch read is handed over without a second read and kept no
+        // longer; one no launch names is read once and never kept.
+        let dir = std::env::temp_dir().join(format!("zwiim-claude-take-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).expect("create dir");
+        let named = dir.join("agent-named.jsonl");
+        let stray = dir.join("agent-stray.jsonl");
+        fs::write(&named, sub_agent_transcript(Some("claude-haiku-5"))).expect("write named");
+        fs::write(&stray, sub_agent_transcript(None)).expect("write stray");
+        SUBAGENT_FILE_READS.with(|n| n.set(0));
+        let files = SubagentFiles::default();
+        let loaded = files.load(&named).expect("named file");
+        let taken = files.take(&named).expect("named file again");
+        assert!(Arc::ptr_eq(&loaded, &taken));
+        assert_eq!(taken.tool_calls.len(), 1);
+        assert!(files.take(&stray).is_some());
+        assert_eq!(SUBAGENT_FILE_READS.with(|n| n.get()), 2);
+        assert!(
+            files.0.lock().unwrap().is_empty(),
+            "nothing kept after the pass"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn each_sub_agent_transcript_is_read_once_per_history_parse() {
+        // Two results name the same sub-agent, and the usage pass reads every
+        // transcript in the directory: still one read for its summary, its
+        // transcript and its spend. A nested one is read once too.
+        let outer = [
+            sub_line("user", "2026-03-01T10:00:01Z", None, json!("Delegate")),
+            sub_line("assistant", "2026-03-01T10:00:02Z", Some("claude-sonnet-5"), json!([{
+                "type": "tool_use", "id": "toolu_01Inner", "name": "Agent", "input": {"description": "Go deeper", "prompt": "Dig"}
+            }])),
+            json!({
+                "type": "user", "timestamp": "2026-03-01T10:00:04Z", "uuid": "u-inner", "isSidechain": true,
+                "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01Inner", "content": "dug"}]},
+                "toolUseResult": {"agentType": "general-purpose", "agentId": "inner", "status": "completed"},
+            })
+            .to_string(),
+        ]
+        .join("\n");
+        let mut lines = session_with_agent(
+            json!({"agentType": "Explore", "agentId": "outer", "status": "completed"}),
+        );
+        lines.push(
+            json!({
+                "type": "user",
+                "timestamp": "2026-03-01T10:00:10Z",
+                "uuid": "r2",
+                "message": {"role": "user", "content": [{
+                    "type": "tool_result", "tool_use_id": "toolu_01Again", "content": "found them"
+                }]},
+                "toolUseResult": {"agentType": "Explore", "agentId": "outer", "status": "completed"},
+            })
+            .to_string(),
+        );
+        SUBAGENT_FILE_READS.with(|n| n.set(0));
+        let detail = parse_with_subagent_files(
+            &lines,
+            &[
+                ("agent-outer.jsonl", outer),
+                (
+                    "agent-inner.jsonl",
+                    sub_agent_transcript(Some("claude-haiku-5")),
+                ),
+            ],
+        );
+        assert_eq!(
+            SUBAGENT_FILE_READS.with(|n| n.get()),
+            2,
+            "one read per sub-agent transcript"
+        );
+        let stats = agent_stats_of(&detail);
+        assert_eq!(stats.len(), 2);
+        for s in &stats {
+            assert_eq!(
+                s.tool_calls.len(),
+                1,
+                "the summary still comes from the transcript"
+            );
+            let outer = s.transcript.as_ref().expect("outer transcript");
+            let inner = outer
+                .blocks
+                .iter()
+                .find_map(|b| match b {
+                    ContentBlock::ToolResult {
+                        agent_stats: Some(s),
+                        ..
+                    } => s.transcript.as_ref(),
+                    _ => None,
+                })
+                .expect("inner transcript");
+            assert_eq!(inner.blocks.len(), 4);
+        }
     }
 
     #[test]

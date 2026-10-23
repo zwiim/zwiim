@@ -1887,7 +1887,7 @@ pub(crate) mod tests {
         let mut state = SessionState::new(
             "conn-secret".into(),
             AgentType::Codex,
-            Some("/Users/me/repo".into()),
+            Some("/home/me/repo".into()),
             "w".into(),
             None,
         );
@@ -1897,10 +1897,10 @@ pub(crate) mod tests {
                 spawned: true,
                 name: Some("npm run dev".into()),
                 task_type: Some("shell".into()),
-                description: Some("Run /Users/me/repo/scripts/dev.sh in /Users/me/other".into()),
+                description: Some("Run /home/me/repo/scripts/dev.sh in /home/me/other".into()),
                 state: Some("running".into()),
                 tool_call_id: Some("call_launch".into()),
-                output_file_path: Some("/Users/me/.codex/out.log".into()),
+                output_file_path: Some("/home/me/.codex/out.log".into()),
                 ..Default::default()
             },
         });
@@ -1944,7 +1944,7 @@ pub(crate) mod tests {
         assert_eq!(keys, ["label", "state", "task_id", "tool_call_id"]);
         assert_no_internal_keys(bg);
         let text = bg.to_string();
-        for leak in ["call_bg_vendor_77", "a7f3agentvendor", "/Users/me", ".codex", "npm run dev"] {
+        for leak in ["call_bg_vendor_77", "a7f3agentvendor", "/home/me", ".codex", "npm run dev"] {
             assert!(!text.contains(leak), "leaked {leak} in {text}");
         }
     }
@@ -1952,7 +1952,7 @@ pub(crate) mod tests {
     #[test]
     fn snapshot_carries_background_and_generation() {
         let state = background_state();
-        let v = project_snapshot(&state.to_snapshot(), Some("/Users/me/repo"));
+        let v = project_snapshot(&state.to_snapshot(), Some("/home/me/repo"));
         assert_background_shape(&v["background"]);
         assert_eq!(v["history_generation"].as_u64(), Some(state.history_generation));
         assert_no_internal_keys(&v);
@@ -1971,14 +1971,14 @@ pub(crate) mod tests {
                 background: state.background_view(),
                 history_generation: state.history_generation,
             },
-            Some("/Users/me/repo"),
+            Some("/home/me/repo"),
         )
         .expect("projected");
         assert_eq!(kind, "session.background");
         assert_background_shape(&payload);
         assert_eq!(payload["history_generation"].as_u64(), Some(state.history_generation));
         // The same task gets the same opaque id in the event and the snapshot.
-        let snap = project_snapshot(&state.to_snapshot(), Some("/Users/me/repo"));
+        let snap = project_snapshot(&state.to_snapshot(), Some("/home/me/repo"));
         assert_eq!(payload["tasks"], snap["background"]["tasks"]);
     }
 

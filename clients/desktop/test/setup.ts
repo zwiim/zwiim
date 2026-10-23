@@ -24,3 +24,17 @@ if (typeof window !== "undefined") {
   URL.createObjectURL = () => `blob:zwiim-test/${++next}`;
   URL.revokeObjectURL = () => {};
 }
+
+// jsdom lays nothing out, so every element is 0px tall and the transcript's
+// windowed history would mount no rows. The transcript gets a height (rows
+// stay 0px, so all of them fit); a test can set its own on an element.
+if (typeof window !== "undefined") {
+  const base = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      if (this.dataset.testid === "transcript") return 1000;
+      return base?.get?.call(this) ?? 0;
+    },
+  });
+}

@@ -23,6 +23,7 @@ import {
   historyBefore,
   nowState,
   subagentShown,
+  transcriptBuilder,
   transcriptRows,
   turnKey,
   subagentLabel,
@@ -613,6 +614,55 @@ describe("transcript", () => {
 });
 
 // ─── the Now bar ─────────────────────────────────────────────────────────
+
+describe("redrawing the transcript", () => {
+  const past = history([
+    turn("u1", "user", [{ type: "text", text: "One" }], "2026-09-26T10:00:00Z"),
+    turn(
+      "a1",
+      "assistant",
+      [
+        { type: "thought", text: "Look first." },
+        { type: "tool_call", tool_call_id: "t1", title: "Read", input_preview: '{"file_path":"src/a.ts"}', status: null },
+        { type: "tool_call", tool_call_id: "t2", title: "Read", input_preview: '{"file_path":"src/b.ts"}', status: null },
+        { type: "tool_call", tool_call_id: "t3", title: "Read", input_preview: '{"file_path":"src/c.ts"}', status: null },
+        { type: "text", text: "Read them." },
+      ],
+      "2026-09-26T10:00:01Z",
+      "2026-09-26T10:00:09Z",
+    ),
+  ]);
+
+  it("keeps the history's rows the same objects while the live reply grows", () => {
+    const build = transcriptBuilder();
+    const v1 = view(past, user("u2", "Two"), delta("Work"));
+    const v2 = play(v1, delta("ing on it"));
+    expect(v2.history).toBe(v1.history);
+    const before = build(v1);
+    const after = build(v2);
+    const history = before.filter((r) => !r.key.startsWith("live:"));
+    expect(history.map((r) => r.type)).toEqual(["user", "thought", "tools", "agent", "footer"]);
+    history.forEach((row, i) => expect(after[i]).toBe(row));
+    expect(after.at(-1)).not.toBe(before.at(-1));
+    expect(after).toEqual(transcriptRows(v2));
+  });
+
+  it("folds tool calls across the history's end and the live turn as one run", () => {
+    const build = transcriptBuilder();
+    // A history that starts mid-reply has no prompt, so no footer ends it.
+    const midTurn = history([
+      turn("a1", "assistant", [
+        { type: "tool_call", tool_call_id: "t1", title: "Read", input_preview: '{"file_path":"src/a.ts"}', status: null },
+        { type: "tool_call", tool_call_id: "t2", title: "Read", input_preview: '{"file_path":"src/b.ts"}', status: null },
+      ]),
+    ]);
+    const v1 = reduceSession(view(midTurn), snapshot("prompting"));
+    const v2 = play(v1, tool("t3", "Read src/c.ts", "read"));
+    build(v1);
+    expect(build(v2).map((r) => r.type)).toEqual(["tools"]);
+    expect(build(v2)).toEqual(transcriptBuilder()(v2));
+  });
+});
 
 describe("now bar", () => {
   it("says what the running turn does, from the SDK's events alone", () => {

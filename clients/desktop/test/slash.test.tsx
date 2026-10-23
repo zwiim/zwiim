@@ -31,6 +31,7 @@ vi.mock("@xterm/addon-fit", () => ({
 }));
 globalThis.ResizeObserver ??= class {
   observe() {}
+  unobserve() {}
   disconnect() {}
 } as unknown as typeof ResizeObserver;
 

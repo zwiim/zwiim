@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Loader2 } from "lucide-react";
-import { revertRefusalText, type RevertChoice } from "@zwiim/sdk";
+import { revertRefusalText, revertWarning, type RevertChoice } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { errorMessage } from "@/lib/host-context";
@@ -28,6 +28,7 @@ export function RevertDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const title = chat ? "Reset chat to here?" : "Reset files to here?";
+  const warning = revertWarning(chat ? { files, chat: true } : { files: true, chat: false });
 
   async function reset() {
     setBusy(true);
@@ -59,6 +60,7 @@ export function RevertDialog({
           </label>
         </div>
       )}
+      {warning && <p className="text-muted-foreground px-5 pt-3 text-sm leading-relaxed">{warning}</p>}
       <div className="flex flex-col gap-2 p-5">
         <div className="flex justify-end gap-2">
           <Button variant="secondary" size="sm" disabled={busy} onClick={onClose}>

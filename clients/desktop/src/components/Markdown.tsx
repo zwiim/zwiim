@@ -1,4 +1,4 @@
-import { useContext, useEffect, useRef, useState } from "react";
+import { memo, useContext, useEffect, useRef, useState } from "react";
 import { ArrowUpRight, Check, Copy } from "lucide-react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -142,12 +142,15 @@ function CodeBlock({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function Markdown({ text, className }: { text: string; className?: string }) {
+/** The plugin list, made once rather than on every render. */
+const remarkPlugins = [remarkGfm];
+
+export const Markdown = memo(function Markdown({ text, className }: { text: string; className?: string }) {
   return (
     <div className={cn("text-prose break-words", className)} data-testid="markdown">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>
         {text}
       </ReactMarkdown>
     </div>
   );
-}
+});

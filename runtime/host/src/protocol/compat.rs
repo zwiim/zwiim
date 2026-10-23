@@ -16,6 +16,20 @@ use serde::{Deserialize, Serialize};
 /// Protocol revision this Host speaks. Bump on every additive change a
 /// client can observe (new operation, event, field or capability).
 ///
+/// Revision 2 (`session.revert`): the `session.revert` operation puts a
+/// session's workspace files and staged changes back to what a user turn
+/// started with (`files`; HEAD and ignored files are never touched). It is
+/// refused with `turn_in_progress`, `workspace_busy` or
+/// `checkpoint_unavailable`, and its result reports `files_restored`,
+/// `chat_rewound` and `head_moved`. User turns in `session.history` carry
+/// `revertible`. Older clients never call the operation and ignore the field.
+///
+/// Revision 3 (`session.revert.chat`): `session.revert` with `chat` also takes
+/// the conversation back to the agent reply before the turn, keeping the
+/// `session_id`; `chat_rewound` says whether it did. `session.options` replies
+/// carry `can_rewind_chat` so a client knows in advance whether the agent can.
+/// A first turn has no reply before it and is `checkpoint_unavailable`.
+///
 /// Revision 4 (`agent.subagents`): sub-agent work. A sub-agent's tool calls
 /// carry `parent_id` (the tool call that launched it); its text and thinking
 /// stream as `agent.subagent_message_delta` / `agent.subagent_thought_delta`

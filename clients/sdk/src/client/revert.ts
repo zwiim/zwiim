@@ -16,6 +16,14 @@ export interface RevertChoice {
 /** The note after a reset that left commits made since the message in place. */
 export const HEAD_MOVED_NOTE = "Commits made after this point stay; their changes are undone as uncommitted edits.";
 
+/** Shown before a reset that puts the files back: it does not spare edits made since, the user's own included. */
+export const FILES_DISCARD_NOTE = "Uncommitted changes made since this message, including your own, will be discarded.";
+
+/** The warning to show before a reset: only one that will put the files back has any. */
+export function revertWarning(choice: RevertChoice): string | null {
+  return choice.files ? FILES_DISCARD_NOTE : null;
+}
+
 /**
  * Whether a reset to before a message takes the chat back too: the Host
  * offers it, the agent can (not known yet counts as yes; the Host says so if

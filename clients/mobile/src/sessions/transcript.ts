@@ -455,15 +455,64 @@ export function historyBefore(history: readonly HistoryTurn[], view: Pick<Sessio
 
 /** The transcript, oldest first. */
 export function transcriptRows(view: SessionView | undefined): TranscriptRow[] {
-  if (!view) return [];
-  const running = view.agentStatus === "prompting";
-  const busy = running || !!view.pendingRequest;
-  const stopped = busy ? null : stopText(view);
+  return transcriptBuilder()(view);
+}
+
+/** What the history's rows depend on; the same inputs give the same rows. */
+type HistoryInputs = readonly unknown[];
+
+const sameInputs = (a: HistoryInputs, b: HistoryInputs) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+/**
+ * `transcriptRows`, keeping the history's rows from one call to the next
+ * while only the live turn changes, so a list drawing them redraws only the
+ * live rows.
+ */
+export function transcriptBuilder(): (view: SessionView | undefined) => TranscriptRow[] {
+  let kept: { inputs: HistoryInputs; pieces: Piece[]; rows: TranscriptRow[] } | null = null;
+  return (view) => {
+    if (!view) return [];
+    const running = view.agentStatus === "prompting";
+    const busy = running || !!view.pendingRequest;
+    const stopped = busy ? null : stopText(view);
+    const background = view.background ?? null;
+    const shownLive = !!view.settled || !!view.live.userMessage || !!view.live.message;
+    const inputs = [
+      view.history,
+      view.live.userMessage && userKey(view.live.userMessage.blocks),
+      view.settled?.userMessage && userKey(view.settled.userMessage.blocks),
+      background,
+      shownLive,
+      busy,
+      stopped,
+    ];
+    if (!kept || !sameInputs(kept.inputs, inputs)) {
+      const pieces = historyPieces(view, busy, stopped, shownLive, background);
+      kept = { inputs, pieces, rows: fold(pieces) };
+    }
+    const live: Piece[] = [];
+    if (view.settled) live.push(...liveRows(view.settled, "settled", false, background));
+    live.push(...liveRows(view.live, "live", running, background));
+    // A run of tool calls across the history's end and the live turn folds as one.
+    const joined = kept.pieces.at(-1)?.type === "tool" && live[0]?.type === "tool";
+    const rows = joined ? fold([...kept.pieces, ...live]) : [...kept.rows, ...fold(live)];
+    if (view.lastError) rows.push({ type: "error", key: "last-error", message: view.lastError.message });
+    // A turn not yet in the history gets its time once the history has it.
+    if (stopped && shownLive) rows.push({ type: "footer", key: "footer", text: stopped, stopped: true, files: [] });
+    return rows;
+  };
+}
+
+function historyPieces(
+  view: SessionView,
+  busy: boolean,
+  stopped: string | null,
+  shownLive: boolean,
+  background: SessionBackground | null,
+): Piece[] {
   const turns = historyBefore(view.history ?? [], view);
-  const background = view.background ?? null;
   // Under each answered prompt: how long it ran, when it ended, what it changed.
   const groups = new Map(turnGroups(turns).map((g) => [g.end, g]));
-  const shownLive = !!view.settled || !!view.live.userMessage || !!view.live.message;
   const pieces: Piece[] = [];
   turns.forEach((turn, i) => {
     pieces.push(...historyRows(turn, turns[i - 1], background));
@@ -476,13 +525,7 @@ export function transcriptRows(view: SessionView | undefined): TranscriptRow[] {
     const text = [stop, ...time].filter(Boolean).join(" · ");
     pieces.push({ type: "footer", key: `footer:${turn.turn_id}`, text, stopped: !!stop, files: g.files });
   });
-  if (view.settled) pieces.push(...liveRows(view.settled, "settled", false, background));
-  pieces.push(...liveRows(view.live, "live", running, background));
-  const rows = fold(pieces);
-  if (view.lastError) rows.push({ type: "error", key: "last-error", message: view.lastError.message });
-  // A turn not yet in the history gets its time once the history has it.
-  if (stopped && shownLive) rows.push({ type: "footer", key: "footer", text: stopped, stopped: true, files: [] });
-  return rows;
+  return pieces;
 }
 
 // ─── the Now bar ─────────────────────────────────────────────────────────

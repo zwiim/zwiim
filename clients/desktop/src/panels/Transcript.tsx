@@ -1,4 +1,4 @@
-import { Fragment, useContext, useEffect, useId, useRef, useState } from "react";
+import { createContext, Fragment, memo, useCallback, useContext, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowRightLeft,
@@ -96,18 +96,51 @@ const VERB_ICONS: Record<string, typeof Terminal> = {
   Ask: MessageCircleQuestion,
 };
 
+/**
+ * What is open in a session's history (a card, a thought, a tool call), kept
+ * above the transcript's rows so a row scrolled out of view and back opens as
+ * it was left. Keyed by turn id and place within the turn; gone on reload.
+ */
+export type KeptState = Map<string, unknown>;
+export const KeptStateContext = createContext<KeptState | null>(null);
+
+/**
+ * `useState`, kept under `key` in the session's map when there is one: what
+ * a history row holds outlives the row. Without a key (the live turn), plain
+ * state.
+ */
+function useKeptState<T>(key: string | undefined, initial: T): [T, (next: (prev: T) => T) => void] {
+  const kept = useContext(KeptStateContext);
+  const [value, setValue] = useState<T>(() =>
+    key !== undefined && kept?.has(key) ? (kept.get(key) as T) : initial,
+  );
+  const set = useCallback(
+    (next: (prev: T) => T) =>
+      setValue((prev) => {
+        const v = next(prev);
+        if (key !== undefined) kept?.set(key, v);
+        return v;
+      }),
+    [key, kept],
+  );
+  return [value, set];
+}
+
 /** A row that opens to show more, easing its height open and shut. */
 function Disclosure({
   summary,
   children,
   label,
+  stateKey,
 }: {
   /** The row; given whether it is open when it shows something else then. */
   summary: React.ReactNode | ((open: boolean) => React.ReactNode);
   children?: React.ReactNode;
   label?: string;
+  /** Where its open state is kept, for a history row. */
+  stateKey?: string;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useKeptState(stateKey, false);
   const id = useId();
   const expandable = Boolean(children);
   const content = typeof summary === "function" ? summary(open) : summary;
@@ -413,14 +446,34 @@ function HoverCard({
  * One tool call: what it does and on what. It opens to a command and its
  * output, an edit's change to its file, or a tool's input and output.
  */
-export function ToolCallView(props: {
+interface ToolCallProps {
   tool: ToolSummary;
   status: ToolCallStatus | null;
   output?: string | null;
   isError?: boolean;
   images?: AgentImage[];
   className?: string;
-}) {
+  /** Where its open state is kept, for a history row. */
+  stateKey?: string;
+}
+
+/** The same call: its summary is rebuilt on every render, so it is compared by what it says. */
+function sameToolCall(a: ToolCallProps, b: ToolCallProps): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)] as (keyof ToolCallProps)[]);
+  for (const k of keys) if (k !== "tool" && !Object.is(a[k], b[k])) return false;
+  const t = a.tool;
+  const u = b.tool;
+  return (
+    t === u ||
+    (t.verb === u.verb &&
+      t.target === u.target &&
+      t.input === u.input &&
+      t.path === u.path &&
+      (t.changes === u.changes || (!t.changes?.length && !u.changes?.length)))
+  );
+}
+
+export const ToolCallView = memo(function ToolCallView(props: ToolCallProps) {
   const { verb, target } = props.tool;
   const images = props.images ?? [];
   const verbLabel = verb === "Read" && images.length > 0 ? "Read image" : verb;
@@ -460,6 +513,7 @@ export function ToolCallView(props: {
   const chip = "bg-muted text-muted-foreground min-w-0 truncate rounded-md px-1.5 py-0.5 font-mono text-xs";
   const row = (
     <Disclosure
+      stateKey={props.stateKey}
       summary={
         <>
           <Icon className="text-muted-foreground size-3.5 shrink-0" />
@@ -520,10 +574,10 @@ export function ToolCallView(props: {
       )}
     </div>
   );
-}
+}, sameToolCall);
 
 /** Thinking: its first line on the row, all of it on expand. */
-export function Thought({ text, className }: { text: string; className?: string }) {
+export function Thought({ text, className, stateKey }: { text: string; className?: string; stateKey?: string }) {
   const body = text.trim();
   // Thinking often opens with a bold heading; the row shows its words.
   const preview = body
@@ -533,6 +587,7 @@ export function Thought({ text, className }: { text: string; className?: string 
   return (
     <div className={cn("text-ui relative", className)} data-testid="thought">
       <Disclosure
+        stateKey={stateKey}
         summary={(open) => (
           <>
             <Brain className="text-muted-foreground size-3.5 shrink-0" />
@@ -566,6 +621,7 @@ function SubagentCardView({
   title,
   images,
   className,
+  stateKey,
   children,
 }: {
   card: SubagentCard<unknown>;
@@ -574,11 +630,13 @@ function SubagentCardView({
   /** Images its launch returned; shown after what it did. */
   images?: readonly AgentImage[];
   className?: string;
+  /** Where its open state (and its prompt's) is kept, for a history row. */
+  stateKey?: string;
   /** What it did; rendered only while open. */
   children: () => React.ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
-  const [promptOpen, setPromptOpen] = useState(false);
+  const [open, setOpen] = useKeptState(stateKey, false);
+  const [promptOpen, setPromptOpen] = useKeptState(stateKey && `${stateKey}/prompt`, false);
   const id = useId();
   const model = modelShortName(card.model);
   const description = subagentDescription(card.description, title);
@@ -712,7 +770,7 @@ function UserMessage({
   );
 }
 
-export function HistoryTurnView({
+export const HistoryTurnView = memo(function HistoryTurnView({
   turn,
   onRevert,
   revertDisabled,
@@ -747,10 +805,10 @@ export function HistoryTurnView({
   }
   return (
     <div className="text-body flex flex-col gap-2.5">
-      <HistoryBlocks blocks={turn.blocks} background={background ?? null} />
+      <HistoryBlocks blocks={turn.blocks} background={background ?? null} scope={turn.turn_id} />
     </div>
   );
-}
+});
 
 /**
  * A reply's blocks as the transcript shows them, or a sub-agent's: its
@@ -759,9 +817,12 @@ export function HistoryTurnView({
 function HistoryBlocks({
   blocks,
   background,
+  scope,
 }: {
   blocks: readonly HistoryBlock[];
   background: SessionBackground | null;
+  /** The turn's id, or the card's place under it: what open state is kept under. */
+  scope: string;
 }) {
   // A result is shown with its call; one without a call stands alone.
   const results = new Map<string, Extract<HistoryBlock, { type: "tool_result" }>>();
@@ -777,15 +838,17 @@ function HistoryBlocks({
           case "text":
             return <Markdown key={i} text={b.text} />;
           case "thought":
-            return <Thought key={i} text={b.text} />;
+            return <Thought key={i} text={b.text} stateKey={`${scope}/${i}`} />;
           case "tool_call": {
             const card = b.tool_call_id ? cards.get(b.tool_call_id) : undefined;
             if (card) {
               // Its result's text repeats the sub-agent's last reply; its images do not.
               const images = results.get(card.parent_id)?.images;
+              const key = `agent:${launches++}`;
+              const stateKey = `${scope}/${key}`;
               return (
-                <SubagentCardView key={`agent:${launches++}`} card={card} title={b.title} images={images}>
-                  {() => <HistoryBlocks blocks={card.blocks} background={background} />}
+                <SubagentCardView key={key} card={card} title={b.title} images={images} stateKey={stateKey}>
+                  {() => <HistoryBlocks blocks={card.blocks} background={background} scope={stateKey} />}
                 </SubagentCardView>
               );
             }
@@ -799,6 +862,7 @@ function HistoryBlocks({
                 output={r?.output_preview}
                 isError={r?.is_error}
                 images={r?.images}
+                stateKey={`${scope}/${i}`}
               />
             );
           }
@@ -993,8 +1057,15 @@ export function BackgroundWaiting({
 const FOOTER_FILES = 2;
 
 /** Under a finished turn: how long it ran, when it ended, and the files it changed. */
-export function TurnFooter({ group }: { group: TurnGroup }) {
-  const [shown, setShown] = useState(FOOTER_FILES);
+export const TurnFooter = memo(function TurnFooter({
+  group,
+  stateKey,
+}: {
+  group: TurnGroup;
+  /** Where how many files it shows is kept. */
+  stateKey?: string;
+}) {
+  const [shown, setShown] = useKeptState(stateKey, FOOTER_FILES);
   const time = [
     group.durationMs !== null ? turnDuration(group.durationMs) : "",
     group.completedAt ? clockTime(group.completedAt) : "",
@@ -1031,14 +1102,14 @@ export function TurnFooter({ group }: { group: TurnGroup }) {
         </button>
       ) : (
         files.length > FOOTER_FILES && (
-          <button type="button" className={more} onClick={() => setShown(FOOTER_FILES)}>
+          <button type="button" className={more} onClick={() => setShown(() => FOOTER_FILES)}>
             Show less
           </button>
         )
       )}
     </div>
   );
-}
+});
 
 /** A file a turn changed; opens it whole when it is inside the workspace. */
 function FileChip({ file }: { file: ChangedFile }) {

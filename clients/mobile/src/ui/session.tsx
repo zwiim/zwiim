@@ -4,7 +4,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
-import { basename, formatSize, type AgentImage, type AttachmentBlock, type ChangedFile, type RevertChoice } from "@zwiim/sdk";
+import { basename, formatSize, revertWarning, type AgentImage, type AttachmentBlock, type ChangedFile, type RevertChoice } from "@zwiim/sdk";
 import type { PendingFile } from "../attachments/pending";
 import { revertCopy } from "../sessions/revert";
 import { subagentLabel, subagentShown, type SubagentItem, type ToolItem, type TranscriptRow } from "../sessions/transcript";
@@ -110,6 +110,7 @@ export function RevertSheet({
   const theme = useTheme();
   const copy = revertCopy(chat);
   const [files, setFiles] = useState(true);
+  const warning = revertWarning(chat ? { files, chat: true } : { files: true, chat: false });
   useEffect(() => {
     if (visible) setFiles(true);
   }, [visible]);
@@ -133,6 +134,11 @@ export function RevertSheet({
           </T>
           <T>{copy.filesOption}</T>
         </Pressable>
+      ) : null}
+      {warning ? (
+        <T color={theme.mut} testID="reset-warning">
+          {warning}
+        </T>
       ) : null}
       {error ? (
         <T color={theme.err} testID="reset-error">

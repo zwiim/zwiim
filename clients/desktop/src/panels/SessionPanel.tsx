@@ -1,4 +1,5 @@
-import { Fragment, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown, ArrowUp, GitBranch, GitBranchPlus, Loader2, Paperclip, Square } from "lucide-react";
 import {
   effortFor,
@@ -11,13 +12,16 @@ import {
   type AgentSummary,
   type AgentType,
   type ChoiceOption,
+  type HistoryTurn,
   type OpParams,
   type OptionsRequest,
   type PromptBlock,
   type RevertChoice,
+  type SessionBackground,
   type SessionCommand,
   type SessionOptions,
   type SessionView,
+  type TurnGroup,
 } from "@zwiim/sdk";
 import { PendingAttachments } from "@/attachments/AttachmentChip";
 import { RevertDialog } from "@/components/RevertDialog";
@@ -31,7 +35,15 @@ import { ControlSelect, OptionsBar, UnattendedBanner } from "./OptionsBar";
 import { RequestCard } from "./RequestCard";
 import { useSlashMenu } from "./SlashCommands";
 import { AgentTerminalCard, AgentTerminalsContext } from "./AgentTerminal";
-import { BackgroundWaiting, HistoryTurnView, LiveTurnView, stopReasonText, TurnFooter } from "./Transcript";
+import {
+  BackgroundWaiting,
+  HistoryTurnView,
+  KeptStateContext,
+  LiveTurnView,
+  stopReasonText,
+  TurnFooter,
+  type KeptState,
+} from "./Transcript";
 
 const UNAVAILABLE: Record<string, string> = {
   not_installed: "not installed",
@@ -395,19 +407,35 @@ function OpenSession({
   // The message a reset is being asked about, and what the last one left to say.
   const [resetting, setResetting] = useState<{ turnId: string; chat: boolean } | null>(null);
   const [resetNotes, setResetNotes] = useState<string[]>([]);
-  const {
-    ref: scroller,
-    atBottom,
-    jump,
-    scrollProps,
-  } = useStickToBottom([
-    view?.history,
-    view?.live,
-    view?.settled,
-    view?.pendingRequest,
-    view?.lastError,
-    view?.background,
-  ]);
+  // What is open in the history, kept while the session is open.
+  const [kept] = useState<KeptState>(() => new Map());
+  const scroller = useRef<HTMLDivElement>(null);
+  const history = view?.history;
+  const turns = history ?? NO_TURNS;
+  // Only the history rows in and near view are mounted; the live turn and
+  // what follows it always are.
+  const list = useRef<HTMLDivElement>(null);
+  const [listTop, setListTop] = useState(0);
+  const rows = useVirtualizer({
+    count: turns.length,
+    getScrollElement: () => scroller.current,
+    estimateSize: estimateRow,
+    getItemKey: useCallback((i: number) => turns[i]!.turn_id, [turns]),
+    gap: ROW_GAP_PX,
+    overscan: ROW_OVERSCAN,
+    scrollMargin: listTop,
+    // Attaching to the transcript leaves it where it is.
+    initialOffset: () => scroller.current?.scrollTop ?? 0,
+  });
+  useLayoutEffect(() => {
+    const top = list.current?.offsetTop ?? 0;
+    if (top !== listTop) setListTop(top);
+  });
+  const { atBottom, jump, scrollProps } = useStickToBottom(
+    scroller,
+    [view?.history, view?.live, view?.settled, view?.pendingRequest, view?.lastError, view?.background],
+    rows.getTotalSize(),
+  );
 
   useEffect(() => {
     controller.openSession(sessionId);
@@ -423,7 +451,6 @@ function OpenSession({
   const stopped = running ? null : stopReasonText(view?.lastStopReason ?? null);
   const [optionsBusy, setOptionsBusy] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
-  const history = view?.history;
   const footers = useMemo(() => new Map((history ? turnGroups(history) : []).map((g) => [g.end, g])), [history]);
   // A prompt already in the history while the agent still answers it has no row yet.
   const runningEnd = running && !view?.live.userMessage && history?.length ? history.length - 1 : -1;
@@ -469,6 +496,22 @@ function OpenSession({
     }
   }
 
+  // One reset handler for every row, so a row redraws only when it changes.
+  const latest = useRef({ turns, options: view?.options, compat });
+  useLayoutEffect(() => {
+    latest.current = { turns, options: view?.options, compat };
+  });
+  const askReset = useCallback((i: number) => {
+    const { turns, options, compat } = latest.current;
+    const t = turns[i];
+    if (t) setResetting({ turnId: t.turn_id, chat: offersChatRewind(turns[i - 1], options, compat) });
+  }, []);
+
+  const shown = rows.getVirtualItems();
+  const total = rows.getTotalSize();
+  const first = shown[0];
+  const last = shown[shown.length - 1];
+
   const options = view?.options && !removed ? view.options : null;
   const optionsDisabled = running || starting || !online || optionsBusy;
   return (
@@ -484,7 +527,8 @@ function OpenSession({
         <div
           ref={scroller}
           {...scrollProps}
-          className="relative min-h-0 flex-1 overflow-y-auto"
+          // The rows keep the view in place as they are measured; the browser does not as well.
+          className="relative min-h-0 flex-1 overflow-y-auto [overflow-anchor:none]"
           data-testid="transcript"
         >
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-6 pt-4 pb-6">
@@ -494,24 +538,33 @@ function OpenSession({
               </p>
             )}
             {empty && <p className="text-muted-foreground py-10 text-center">No messages yet.</p>}
-            {view?.history?.map((t, i, all) => {
-              const group = footers.get(i);
-              return (
-                <Fragment key={t.turn_id}>
-                  <HistoryTurnView
-                    turn={t}
-                    onRevert={
-                      removed
-                        ? undefined
-                        : () => setResetting({ turnId: t.turn_id, chat: offersChatRewind(all[i - 1], view.options, compat) })
-                    }
-                    revertDisabled={running || !online}
-                    background={view.background}
-                  />
-                  {group && i !== runningEnd && <TurnFooter group={group} />}
-                </Fragment>
-              );
-            })}
+            {turns.length > 0 && (
+              <KeptStateContext.Provider value={kept}>
+                <div
+                  ref={list}
+                  className="flex flex-col gap-5"
+                  // The rows above and below the mounted ones, as space.
+                  style={{
+                    paddingTop: first ? first.start - listTop : 0,
+                    paddingBottom: last ? total - (last.end - listTop) : total,
+                  }}
+                  data-testid="history"
+                >
+                  {shown.map(({ index: i, key }) => (
+                    <HistoryRow
+                      key={key}
+                      index={i}
+                      measure={rows.measureElement}
+                      turn={turns[i]!}
+                      group={i !== runningEnd ? footers.get(i) : undefined}
+                      onRevert={removed ? undefined : askReset}
+                      revertDisabled={running || !online}
+                      background={view?.background ?? null}
+                    />
+                  ))}
+                </div>
+              </KeptStateContext.Provider>
+            )}
             {view?.settled && <LiveTurnView turn={view.settled} background={view.background} />}
             {view && <LiveTurnView turn={view.live} streaming={running} animate background={view.background} />}
             {/* The turn is over but its background work is not: say so where the turn ended. */}
@@ -679,6 +732,50 @@ function OpenSession({
   );
 }
 
+const NO_TURNS: readonly HistoryTurn[] = [];
+
+/** A history row's height until it is measured, the space between rows (gap-5), and the rows mounted past the view. */
+const ROW_ESTIMATE_PX = 160;
+const ROW_GAP_PX = 20;
+const ROW_OVERSCAN = 4;
+const estimateRow = () => ROW_ESTIMATE_PX;
+
+/**
+ * One history turn and the row under it (how long it ran, what it changed),
+ * measured where it sits. It redraws only when what it shows changes, not as
+ * the live turn streams.
+ */
+const HistoryRow = memo(function HistoryRow({
+  index,
+  measure,
+  turn,
+  group,
+  onRevert,
+  revertDisabled,
+  background,
+}: {
+  index: number;
+  measure(el: HTMLElement | null): void;
+  turn: HistoryTurn;
+  group: TurnGroup | undefined;
+  onRevert?(index: number): void;
+  revertDisabled: boolean;
+  background: SessionBackground | null;
+}) {
+  const revert = useCallback(() => onRevert?.(index), [onRevert, index]);
+  return (
+    <div ref={measure} data-index={index} className="flex flex-col gap-5">
+      <HistoryTurnView
+        turn={turn}
+        onRevert={onRevert && revert}
+        revertDisabled={revertDisabled}
+        background={background}
+      />
+      {group && <TurnFooter group={group} stateKey={`${turn.turn_id}/footer`} />}
+    </div>
+  );
+});
+
 /** Where the agent is: a dot and a word, next to the session title. */
 function SessionStatus({ view }: { view: SessionView | undefined }) {
   if (!view) return null;
@@ -724,12 +821,15 @@ function SessionStatus({ view }: { view: SessionView | undefined }) {
  */
 const FOLLOW_RATE = 0.16;
 
-function useStickToBottom(deps: unknown[]) {
-  const ref = useRef<HTMLDivElement>(null);
+function useStickToBottom(ref: React.RefObject<HTMLDivElement | null>, deps: unknown[], size: number) {
   const pinned = useRef(true);
   // Our own glide is under way: its scrolls are not the reader leaving.
   const gliding = useRef(false);
   const frame = useRef(0);
+  // The transcript itself moved its end (it opened, or content arrived) since
+  // the reader last did anything: rows measured now follow that end. A card
+  // the reader opens grows a row as well, and must leave the view where it is.
+  const settling = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
 
   const stop = useCallback(() => {
@@ -751,7 +851,7 @@ function useStickToBottom(deps: unknown[]) {
       if (frame.current) return;
       let last = performance.now();
       const step = (now: number) => {
-        const target = el.scrollHeight - el.clientHeight;
+        const target = Math.max(0, el.scrollHeight - el.clientHeight);
         const left = target - el.scrollTop;
         if (left <= 1 || !gliding.current) {
           if (left <= 1) el.scrollTop = target;
@@ -778,32 +878,45 @@ function useStickToBottom(deps: unknown[]) {
     const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
     pinned.current = bottom;
     setAtBottom(bottom);
-  }, []);
+  }, [ref]);
 
-  // The reader takes over: the glide stops where it is.
+  // The reader takes over: the glide stops where it is, and what they open
+  // or close does not move the view.
   const onIntent = useCallback(() => {
+    settling.current = false;
     if (gliding.current) stop();
   }, [stop]);
 
   const jump = useCallback(() => {
     const el = ref.current;
     if (!el) return;
+    settling.current = true;
     glide(el, true);
     pinned.current = true;
     setAtBottom(true);
-  }, [glide]);
+  }, [ref, glide]);
 
   useLayoutEffect(() => {
     const el = ref.current;
-    if (!el || !pinned.current) return;
+    if (!el) return;
+    settling.current = true;
+    if (!pinned.current) return;
     // A little more to show glides; a conversation just loaded is shown at once.
     const behind = el.scrollHeight - el.scrollTop - el.clientHeight;
-    glide(el, behind < el.clientHeight);
+    glide(el, behind > 1 && behind < el.clientHeight);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
+  // History rows measured while following (a session just opened, a turn just
+  // added) move the end: back to it at once. A glide under way follows it. A
+  // row the reader grew by opening something in it stays where it is.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || !pinned.current || !settling.current || frame.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [ref, size]);
+
   return {
-    ref,
     atBottom,
     jump,
     scrollProps: { onScroll, onWheel: onIntent, onTouchMove: onIntent, onPointerDown: onIntent, onKeyDown: onIntent },
