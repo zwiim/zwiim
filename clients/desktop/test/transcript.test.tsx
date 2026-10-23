@@ -700,6 +700,70 @@ describe("reset to a message", () => {
   });
 });
 
+describe("tool runs", () => {
+  const call = (id: string, title: string, input: string) =>
+    ({ type: "tool_call", tool_call_id: id, title, input_preview: input, status: null }) as const;
+  const result = (id: string, is_error = false) =>
+    ({ type: "tool_result", tool_call_id: id, output_preview: "out", is_error }) as const;
+
+  it("folds three or more tool calls in a row into one row that opens to list them", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        turn("t1", "assistant", [
+          call("c1", "Read", "a.ts"),
+          result("c1"),
+          call("c2", "Read", "b.ts"),
+          result("c2", true),
+          { type: "text", text: " " },
+          call("c3", "Read", "c.ts"),
+          result("c3"),
+          { type: "text", text: "Looked around." },
+          call("c4", "Read", "d.ts"),
+          call("c5", "Read", "e.ts"),
+        ]),
+      ],
+    });
+    const { controller } = await openSession(t);
+    // A blank text does not split the run; a reply does, and two in a row stay as they are.
+    const run = screen.getByTestId("tool-run");
+    const row = within(run).getAllByRole("button")[0]!;
+    expect(row.textContent).toBe("3 tool calls 1 failed");
+    expect(within(run).getAllByTestId("tool-call")).toHaveLength(3);
+    expect(screen.getAllByTestId("tool-call")).toHaveLength(5);
+    expect(row.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(row);
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    controller.dispose();
+  });
+
+  it("folds a live run as it grows, its count shimmering while one runs", async () => {
+    const t = new FakeTransport();
+    const { controller, frame } = await openSession(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+    const start = (seq: number, id: string) =>
+      frame({
+        type: "event",
+        event: { session_id: "s1", seq, type: "agent.tool_call", payload: { tool_call_id: id, title: `Read ${id}.ts`, kind: "read", status: "in_progress", content: null } },
+      });
+    await start(2, "a");
+    await start(3, "b");
+    expect(screen.queryByTestId("tool-run")).toBeNull();
+    await start(4, "c");
+    const run = screen.getByTestId("tool-run");
+    expect(run.textContent).toContain("3 tool calls");
+    expect(within(run).getByText("3 tool calls").className).toContain("animate-shimmer");
+    for (const [seq, id] of [[5, "a"], [6, "b"], [7, "c"]] as const)
+      await frame({
+        type: "event",
+        event: { session_id: "s1", seq, type: "agent.tool_call_update", payload: { tool_call_id: id, title: null, status: "completed", content: null } },
+      });
+    expect(within(screen.getByTestId("tool-run")).getByText("3 tool calls").className).not.toContain("animate-shimmer");
+    controller.dispose();
+  });
+});
+
 describe("changed files", () => {
   const workspace = {
     workspace_id: "w1",

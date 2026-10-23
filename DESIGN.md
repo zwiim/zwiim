@@ -711,6 +711,11 @@ glyph, a title, one line, one action.
   agent offers it; picking Auto takes one click, with no confirmation. The chip
   stays `brand` and the composer keeps its Auto note with **Ask first again**.
   The phone still says Unattended and asks first.
+- Desktop folds three or more consecutive tool calls into one row, as the
+  phone does: a layers icon, `n tool calls` (shimmering while one runs) and
+  `n failed` in `destructive`. It opens to the calls' own rows behind a left
+  rule, as a sub-agent card does, and a history run stays open as it was left.
+  A blank text between calls does not split a run; a reply does.
 - Desktop opens an agent's image from one place: the compact chip (image icon
   and name, no thumbnail) on the tool row that read it; click opens the picture
   in the preview panel. A workspace image linked in the agent's text shows

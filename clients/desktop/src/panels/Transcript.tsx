@@ -13,6 +13,7 @@ import {
   Globe,
   Image,
   Keyboard,
+  Layers,
   ListCollapse,
   ListTodo,
   MessageCircleQuestion,
@@ -579,6 +580,76 @@ export const ToolCallView = memo(function ToolCallView(props: ToolCallProps) {
   );
 }, sameToolCall);
 
+/** One row of a reply; a tool call's says what its run's summary counts. */
+interface ReplyRow {
+  node: React.ReactNode;
+  tool?: { failed: boolean; running: boolean };
+}
+
+/** Consecutive tool calls fold into one row from this many, as on the phone. */
+const FOLD_AT = 3;
+
+/**
+ * A reply's rows, each run of `FOLD_AT` or more tool calls folded into one
+ * row. A run's open state is kept under `scope` and its first call's place.
+ */
+function foldRuns(rows: readonly (ReplyRow | null)[], scope?: string, className?: string): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  let run: { row: ReplyRow; at: number }[] = [];
+  const flush = () => {
+    if (run.length >= FOLD_AT) {
+      const key = `run:${run[0]!.at}`;
+      out.push(
+        <ToolRun key={key} rows={run.map((r) => r.row)} stateKey={scope && `${scope}/${key}`} className={className} />,
+      );
+    } else out.push(...run.map((r) => r.row.node));
+    run = [];
+  };
+  rows.forEach((row, at) => {
+    if (!row) return;
+    if (row.tool) run.push({ row, at });
+    else {
+      flush();
+      out.push(row.node);
+    }
+  });
+  flush();
+  return out;
+}
+
+/** A run of tool calls: `n tool calls` and how many failed, open to list them. */
+function ToolRun({ rows, stateKey, className }: { rows: readonly ReplyRow[]; stateKey?: string; className?: string }) {
+  const failed = rows.filter((r) => r.tool?.failed).length;
+  const running = rows.some((r) => r.tool?.running);
+  return (
+    <div className={cn("text-ui", className)} data-testid="tool-run">
+      <Disclosure
+        stateKey={stateKey}
+        summary={
+          <>
+            <Layers className="text-muted-foreground size-3.5 shrink-0" />
+            {/* One of them running: the count shimmers, as a running row's verb does. */}
+            <span
+              className={cn("text-foreground/90 shrink-0", running && "animate-shimmer motion-reduce:animate-none")}
+            >
+              {rows.length} tool calls
+            </span>
+            {failed > 0 && (
+              <span className="text-destructive flex shrink-0 items-center gap-0.5 text-xs">
+                <X className="size-3" /> {failed} failed
+              </span>
+            )}
+          </>
+        }
+      >
+        <div className="border-border mt-1 mb-2 ml-1.5 flex flex-col gap-2.5 border-l-2 pl-3">
+          {rows.map((r) => r.node)}
+        </div>
+      </Disclosure>
+    </div>
+  );
+}
+
 /** Thinking: its first line on the row, all of it on expand. */
 export function Thought({ text, className, stateKey }: { text: string; className?: string; stateKey?: string }) {
   const body = text.trim();
@@ -861,80 +932,91 @@ function HistoryBlocks({
   const cards = new Map(historySubagentCards(blocks, background, ended).map((c) => [c.parent_id, c]));
   // Cards keep their open state by launch order within the turn, never by id.
   let launches = 0;
-  return (
-    <>
-      {blocks.map((b, i) => {
-        switch (b.type) {
-          case "text":
-            return <Markdown key={i} text={b.text} />;
-          case "thought":
-            return <Thought key={i} text={b.text} stateKey={`${scope}/${i}`} />;
-          case "tool_call": {
-            const card = b.tool_call_id ? cards.get(b.tool_call_id) : undefined;
-            if (card) {
-              // Its result's text repeats the sub-agent's last reply; its images do not.
-              const images = results.get(card.parent_id)?.images;
-              const key = `agent:${launches++}`;
-              const stateKey = `${scope}/${key}`;
-              return (
-                <SubagentCardView key={key} card={card} title={b.title} images={images} stateKey={stateKey}>
-                  {() => {
-                    const late = live ? lateSubagentBlocks(card, live) : [];
-                    return (
-                      <>
-                        <HistoryBlocks
-                          blocks={card.blocks}
-                          background={background}
-                          scope={stateKey}
-                          ended={ended && card.status !== "in_progress"}
-                          live={live}
-                        />
-                        {live && late.length > 0 && <LiveBlocks turn={live} blocks={late} background={background} />}
-                      </>
-                    );
-                  }}
-                </SubagentCardView>
-              );
-            }
-            const r = b.tool_call_id ? results.get(b.tool_call_id) : undefined;
-            return (
-              <ToolCallView
-                key={i}
-                tool={historyTool(b.title, b.input_preview)}
-                // Agents' transcripts often omit the status; a result means it ran.
-                status={r?.is_error ? "failed" : (b.status ?? (r ? "completed" : null))}
-                output={r?.output_preview}
-                isError={r?.is_error}
-                images={r?.images}
-                stateKey={`${scope}/${i}`}
-              />
-            );
-          }
-          case "tool_result":
-            if (b.tool_call_id && called.has(b.tool_call_id)) return null;
-            if (!b.images?.length && !(b.is_error && b.output_preview)) return null;
-            return (
-              <Fragment key={i}>
-                {b.is_error && b.output_preview && <Output text={b.output_preview} error />}
-                {!!b.images?.length && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {b.images.map((img, j) => (
-                      <AgentImageChip key={j} path={img.path} name={img.name} />
-                    ))}
-                  </div>
-                )}
-              </Fragment>
-            );
-          case "agent_image":
-            return <AgentImageChip key={i} path={b.path} name={b.name} />;
-          case "image":
-            return null; // older Hosts' inline bytes; agent images now arrive as files
-          default:
-            return null;
+  const rows = blocks.map((b, i): ReplyRow | null => {
+    switch (b.type) {
+      case "text":
+        // A blank one would split a run of tool calls for nothing.
+        return b.text.trim() ? { node: <Markdown key={i} text={b.text} /> } : null;
+      case "thought":
+        return {
+          node: <Thought key={i} text={b.text} stateKey={`${scope}/${i}`} />,
+        };
+      case "tool_call": {
+        const card = b.tool_call_id ? cards.get(b.tool_call_id) : undefined;
+        if (card) {
+          // Its result's text repeats the sub-agent's last reply; its images do not.
+          const images = results.get(card.parent_id)?.images;
+          const key = `agent:${launches++}`;
+          const stateKey = `${scope}/${key}`;
+          return {
+            node: (
+              <SubagentCardView key={key} card={card} title={b.title} images={images} stateKey={stateKey}>
+                {() => {
+                  const late = live ? lateSubagentBlocks(card, live) : [];
+                  return (
+                    <>
+                      <HistoryBlocks
+                        blocks={card.blocks}
+                        background={background}
+                        scope={stateKey}
+                        ended={ended && card.status !== "in_progress"}
+                        live={live}
+                      />
+                      {live && late.length > 0 && <LiveBlocks turn={live} blocks={late} background={background} />}
+                    </>
+                  );
+                }}
+              </SubagentCardView>
+            ),
+          };
         }
-      })}
-    </>
-  );
+        const r = b.tool_call_id ? results.get(b.tool_call_id) : undefined;
+        // Agents' transcripts often omit the status; a result means it ran.
+        const status = r?.is_error ? "failed" : (b.status ?? (r ? "completed" : null));
+        return {
+          node: (
+            <ToolCallView
+              key={i}
+              tool={historyTool(b.title, b.input_preview)}
+              status={status}
+              output={r?.output_preview}
+              isError={r?.is_error}
+              images={r?.images}
+              stateKey={`${scope}/${i}`}
+            />
+          ),
+          tool: {
+            failed: status === "failed",
+            running: status === "in_progress" || status === "pending",
+          },
+        };
+      }
+      case "tool_result":
+        if (b.tool_call_id && called.has(b.tool_call_id)) return null;
+        if (!b.images?.length && !(b.is_error && b.output_preview)) return null;
+        return {
+          node: (
+            <Fragment key={i}>
+              {b.is_error && b.output_preview && <Output text={b.output_preview} error />}
+              {!!b.images?.length && (
+                <div className="flex flex-wrap gap-1.5">
+                  {b.images.map((img, j) => (
+                    <AgentImageChip key={j} path={img.path} name={img.name} />
+                  ))}
+                </div>
+              )}
+            </Fragment>
+          ),
+        };
+      case "agent_image":
+        return { node: <AgentImageChip key={i} path={b.path} name={b.name} /> };
+      case "image":
+        return null; // older Hosts' inline bytes; agent images now arrive as files
+      default:
+        return null;
+    }
+  });
+  return <>{foldRuns(rows, scope)}</>;
 }
 
 /**
@@ -1005,26 +1087,34 @@ function LiveBlocks({
       {() => <LiveBlocks turn={turn} blocks={card.blocks} background={background} />}
     </SubagentCardView>
   );
+  const rows = scope.map((b, i): ReplyRow | null => {
+    if (b.type === "text") return b.text.trim() ? { node: <Markdown key={i} className={enter} text={b.text} /> } : null;
+    if (b.type === "thought") return { node: <Thought key={i} className={enter} text={b.text} /> };
+    if (b.type === "agent_image") return { node: <AgentImageChip key={i} path={b.path} name={b.name} /> };
+    const card = cards.get(b.tool_call_id);
+    if (card) return { node: cardView(card) };
+    const tc: ToolCall | undefined = turn.toolCalls[b.tool_call_id];
+    const status = tc?.status ?? null;
+    return {
+      node: (
+        <ToolCallView
+          key={i}
+          className={enter}
+          tool={liveTool(tc?.title ?? null, tc?.kind)}
+          status={status}
+          output={typeof tc?.content === "string" ? tc.content : null}
+          images={tc?.images}
+        />
+      ),
+      tool: {
+        failed: status === "failed",
+        running: status === "in_progress" || status === "pending",
+      },
+    };
+  });
   return (
     <>
-      {scope.map((b, i) => {
-        if (b.type === "text") return <Markdown key={i} className={enter} text={b.text} />;
-        if (b.type === "thought") return <Thought key={i} className={enter} text={b.text} />;
-        if (b.type === "agent_image") return <AgentImageChip key={i} path={b.path} name={b.name} />;
-        const card = cards.get(b.tool_call_id);
-        if (card) return cardView(card);
-        const tc: ToolCall | undefined = turn.toolCalls[b.tool_call_id];
-        return (
-          <ToolCallView
-            key={i}
-            className={enter}
-            tool={liveTool(tc?.title ?? null, tc?.kind)}
-            status={tc?.status ?? null}
-            output={typeof tc?.content === "string" ? tc.content : null}
-            images={tc?.images}
-          />
-        );
-      })}
+      {foldRuns(rows, undefined, enter)}
       {orphans.map(cardView)}
     </>
   );
