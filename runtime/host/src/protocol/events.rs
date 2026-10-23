@@ -24,7 +24,9 @@ use crate::acp::session_state::{
     LiveContentBlock, LiveMessage, LiveSessionSnapshot, PendingPermissionState,
     PendingUserMessage, SubagentInfo, ToolCallOutput, ToolCallState,
 };
-use crate::acp::types::{AcpEvent, EventEnvelope, PermissionOptionInfo, UserMessageBlock};
+use crate::acp::types::{
+    AcpEvent, BackgroundView, EventEnvelope, PermissionOptionInfo, UserMessageBlock,
+};
 use crate::models::agent::AgentType;
 use crate::models::message::{
     AgentExecutionStats, ContentBlock, ImageData, MessageTurn, TurnRole,
@@ -301,6 +303,17 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
                 "cached_write_tokens": cached_write_tokens,
             }),
         ),
+        AcpEvent::BackgroundChanged {
+            background: bg,
+            history_generation,
+        } => {
+            // The event alone carries the generation: out-of-turn turns move
+            // it with no `turn_complete`, and this is how a connected client
+            // hears it. The snapshot reports it at top level instead.
+            let mut payload = background(bg, root);
+            payload["history_generation"] = json!(history_generation);
+            ("session.background", payload)
+        }
         _ => return None,
     })
 }
@@ -497,7 +510,45 @@ pub fn project_snapshot(s: &LiveSessionSnapshot, root: Option<&str>) -> Value {
             "cached_write_tokens": u.cached_write_tokens,
         })),
         "commands": crate::session_commands::project(&s.available_commands),
+        "background": background(&s.background, root),
+        "history_generation": s.history_generation,
     })
+}
+
+/// Longest background-task label sent to clients, in characters.
+const BACKGROUND_LABEL_MAX_CHARS: usize = 200;
+
+/// A session's background work as clients see it: an opaque id per task
+/// (never the agent's own), a human label with host paths removed, its
+/// state and, when known, the tool call that launched it.
+fn background(bg: &BackgroundView, root: Option<&str>) -> Value {
+    json!({
+        "outstanding": bg.outstanding,
+        "tasks": bg
+            .tasks
+            .iter()
+            .map(|t| {
+                let label = scrub(&relativize(&t.label, root));
+                let mut v = json!({
+                    "task_id": opaque_task_id(&t.task_id),
+                    "label": crate::parsers::truncate_str(label.trim(), BACKGROUND_LABEL_MAX_CHARS),
+                    "state": t.state,
+                });
+                if let Some(id) = &t.tool_call_id {
+                    v["tool_call_id"] = json!(id);
+                }
+                v
+            })
+            .collect::<Vec<_>>(),
+        "waiting_since": bg.waiting_since,
+    })
+}
+
+/// Stable, opaque stand-in for an agent's task id.
+fn opaque_task_id(task_id: &str) -> String {
+    let digest = Sha256::digest(format!("zwiim-task:{task_id}").as_bytes());
+    let hex: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+    format!("task-{hex}")
 }
 
 /// The reply in progress. `content` is what every client reads as the reply:
@@ -1070,6 +1121,16 @@ pub(crate) mod tests {
         "isSidechain",
         "toolUseResult",
         "subagent_type",
+        "backgroundTaskId",
+        "taskId",
+        "task_type",
+        "taskType",
+        "tool_use_id",
+        "toolUseId",
+        "output_file_path",
+        "outputFilePath",
+        "show_in_transcript",
+        "can_stop",
     ];
 
     pub(crate) fn assert_no_internal_keys(v: &Value) {
@@ -1802,7 +1863,9 @@ pub(crate) mod tests {
         assert_eq!(
             keys,
             [
+                "background",
                 "commands",
+                "history_generation",
                 "last_error",
                 "live_message",
                 "options",
@@ -1818,6 +1881,105 @@ pub(crate) mod tests {
         let text = v.to_string();
         assert!(!text.contains("conn-secret") && !text.contains("agent-native"));
         assert!(!text.contains("/Users/me"));
+    }
+
+    fn background_state() -> SessionState {
+        let mut state = SessionState::new(
+            "conn-secret".into(),
+            AgentType::Codex,
+            Some("/Users/me/repo".into()),
+            "w".into(),
+            None,
+        );
+        state.apply_event(&AcpEvent::AsyncTask {
+            delta: crate::acp::types::AsyncTaskDelta {
+                task_id: "call_bg_vendor_77".into(),
+                spawned: true,
+                name: Some("npm run dev".into()),
+                task_type: Some("shell".into()),
+                description: Some("Run /Users/me/repo/scripts/dev.sh in /Users/me/other".into()),
+                state: Some("running".into()),
+                tool_call_id: Some("call_launch".into()),
+                output_file_path: Some("/Users/me/.codex/out.log".into()),
+                ..Default::default()
+            },
+        });
+        state.apply_event(&AcpEvent::BackgroundActivity {
+            session_id: "agent-native".into(),
+            turns: vec![],
+            outstanding: 1,
+            settled: vec![],
+            watermark: 0,
+            tasks: vec![crate::acp::types::BackgroundTaskView {
+                task_id: "a7f3agentvendor".into(),
+                label: "Review the diff".into(),
+                state: "running".into(),
+                tool_call_id: Some("toolu_01Agent".into()),
+            }],
+        });
+        state.apply_event(&AcpEvent::TurnComplete {
+            session_id: "agent-native".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "codex".into(),
+        });
+        state
+    }
+
+    fn assert_background_shape(bg: &Value) {
+        assert_eq!(bg["outstanding"], 2);
+        let tasks = bg["tasks"].as_array().expect("tasks");
+        assert_eq!(tasks.len(), 2, "{bg}");
+        let shell = &tasks[0];
+        assert_eq!(shell["label"], "Run scripts/dev.sh in <path>");
+        assert_eq!(shell["state"], "running");
+        assert_eq!(shell["tool_call_id"], "call_launch");
+        let task_id = shell["task_id"].as_str().unwrap();
+        assert!(task_id.starts_with("task-") && task_id.len() == 21, "{task_id}");
+        assert_eq!(tasks[1]["label"], "Review the diff");
+        assert_eq!(tasks[1]["tool_call_id"], "toolu_01Agent");
+        assert_ne!(tasks[1]["task_id"], shell["task_id"]);
+        assert!(bg["waiting_since"].as_str().is_some(), "{bg}");
+        let mut keys: Vec<_> = shell.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, ["label", "state", "task_id", "tool_call_id"]);
+        assert_no_internal_keys(bg);
+        let text = bg.to_string();
+        for leak in ["call_bg_vendor_77", "a7f3agentvendor", "/Users/me", ".codex", "npm run dev"] {
+            assert!(!text.contains(leak), "leaked {leak} in {text}");
+        }
+    }
+
+    #[test]
+    fn snapshot_carries_background_and_generation() {
+        let state = background_state();
+        let v = project_snapshot(&state.to_snapshot(), Some("/Users/me/repo"));
+        assert_background_shape(&v["background"]);
+        assert_eq!(v["history_generation"].as_u64(), Some(state.history_generation));
+        assert_no_internal_keys(&v);
+
+        // An idle session reports an empty background, never a missing one.
+        let idle = SessionState::new("c".into(), AgentType::Codex, None, "w".into(), None);
+        let v = project_snapshot(&idle.to_snapshot(), None);
+        assert_eq!(v["background"], json!({ "outstanding": 0, "tasks": [], "waiting_since": null }));
+    }
+
+    #[test]
+    fn background_change_projects_as_session_background() {
+        let state = background_state();
+        let (kind, payload) = project_event(
+            &AcpEvent::BackgroundChanged {
+                background: state.background_view(),
+                history_generation: state.history_generation,
+            },
+            Some("/Users/me/repo"),
+        )
+        .expect("projected");
+        assert_eq!(kind, "session.background");
+        assert_background_shape(&payload);
+        assert_eq!(payload["history_generation"].as_u64(), Some(state.history_generation));
+        // The same task gets the same opaque id in the event and the snapshot.
+        let snap = project_snapshot(&state.to_snapshot(), Some("/Users/me/repo"));
+        assert_eq!(payload["tasks"], snap["background"]["tasks"]);
     }
 
     #[test]

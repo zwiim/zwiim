@@ -14056,6 +14056,7 @@ fn map_grok_subagent_notification_inner(
                     outstanding: outstanding(cb_state),
                     settled: Vec::new(),
                     watermark: 0,
+                    tasks: Vec::new(),
                 });
             }
             Some(events)
@@ -14137,6 +14138,7 @@ fn map_grok_subagent_notification_inner(
                     result,
                 }],
                 watermark: 0,
+                tasks: Vec::new(),
             }])
         }
         _ => None,
@@ -14472,7 +14474,7 @@ fn usage_update_event(update: &sacp::schema::UsageUpdate) -> AcpEvent {
 /// every AIR speaker uses the same vocabulary. The two shapes differ only in how
 /// much they fill in: claude names a `description`, `usage` and
 /// `outputFilePath`; codex sends the command as `name` and stops there.
-fn air_async_task_delta(dispatch: &Dispatch) -> Option<AsyncTaskDelta> {
+pub(crate) fn air_async_task_delta(dispatch: &Dispatch) -> Option<AsyncTaskDelta> {
     let Dispatch::Notification(msg) = dispatch else {
         return None;
     };
@@ -15166,6 +15168,7 @@ pub(crate) async fn emit_conversation_update(
                             outstanding,
                             settled: Vec::new(),
                             watermark: 0,
+                            tasks: Vec::new(),
                         },
                     )
                     .await;

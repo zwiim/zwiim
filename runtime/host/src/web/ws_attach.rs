@@ -305,3 +305,171 @@ pub fn spawn_forwarder(
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::acp::types::ConnectionStatus;
+    use crate::models::agent::AgentType;
+    use crate::protocol::events::project_snapshot;
+    use crate::protocol::events::tests::assert_no_internal_keys;
+    use crate::web::event_bridge::{emit_with_state, EventEmitter};
+    use serde_json::{json, Value};
+
+    const CONN: &str = "conn-attach";
+    const LAUNCH: &str = "toolu_01Launch";
+
+    async fn manager() -> ConnectionManager {
+        let manager = ConnectionManager::new();
+        manager
+            .insert_test_connection(CONN, AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        // Mid-turn: a turn is running.
+        let state = manager.get_state(CONN).await.unwrap();
+        state.write().await.status = ConnectionStatus::Prompting;
+        manager
+    }
+
+    async fn emit(manager: &ConnectionManager, event: AcpEvent) {
+        let state = manager.get_state(CONN).await.unwrap();
+        emit_with_state(&state, &EventEmitter::Noop, event).await;
+    }
+
+    async fn head(manager: &ConnectionManager) -> (u64, u64) {
+        let state = manager.get_state(CONN).await.unwrap();
+        let s = state.read().await;
+        (s.event_seq, s.to_snapshot().history_generation)
+    }
+
+    async fn attach(manager: &ConnectionManager, since: u64) -> ServerMsg {
+        let outcome = handle_attach(
+            manager,
+            &EventBusMetrics::default(),
+            "sub".into(),
+            CONN.into(),
+            Some(since),
+        )
+        .await
+        .ok()
+        .expect("attached");
+        outcome.initial_msg
+    }
+
+    /// A tool call in claude-agent-acp's shape: `toolName` and, for a
+    /// sub-agent's call, `parentToolUseId` in `_meta.claudeCode`.
+    fn tool_call(id: &str, tool: &str, parent: Option<&str>) -> AcpEvent {
+        let mut claude = json!({ "toolName": tool });
+        if let Some(parent) = parent {
+            claude["parentToolUseId"] = json!(parent);
+        } else {
+            claude["subagent"] = json!(true);
+        }
+        AcpEvent::ToolCall {
+            tool_call_id: id.into(),
+            title: tool.into(),
+            kind: if parent.is_some() { "read" } else { "think" }.into(),
+            status: "in_progress".into(),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            locations: None,
+            meta: Some(json!({ "claudeCode": claude })),
+            images: None,
+        }
+    }
+
+    fn child_text(text: &str) -> AcpEvent {
+        AcpEvent::ContentDelta {
+            text: text.into(),
+            parent_tool_use_id: Some(LAUNCH.into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn attach_gap_within_batch_replays() {
+        let manager = manager().await;
+        emit(&manager, tool_call(LAUNCH, "Agent", None)).await;
+        let (cursor, _) = head(&manager).await;
+        for i in 0..4 {
+            emit(&manager, child_text(&format!("part {i} "))).await;
+        }
+        let ServerMsg::Replay { events, .. } = attach(&manager, cursor).await else {
+            panic!("a small gap replays");
+        };
+        assert_eq!(events.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn attach_gap_over_threshold_snapshots() {
+        let manager = manager().await;
+        emit(&manager, tool_call(LAUNCH, "Agent", None)).await;
+        let (cursor, _) = head(&manager).await;
+        for i in 0..=REPLAY_BATCH_THRESHOLD {
+            emit(&manager, child_text(&format!("part {i} "))).await;
+        }
+        assert!(matches!(
+            attach(&manager, cursor).await,
+            ServerMsg::Snapshot { .. }
+        ));
+    }
+
+    /// Review Focus 4, Claude-shaped: a client that drops mid-turn and misses
+    /// more than a replay batch of a sub-agent's stream gets a snapshot that
+    /// holds the sub-agent's blocks and parented tool calls, and carries the
+    /// history generation it already had, since no turn completed.
+    #[tokio::test]
+    async fn attach_after_long_claude_subagent_stream_snapshots_live_blocks() {
+        let manager = manager().await;
+        emit(&manager, tool_call(LAUNCH, "Agent", None)).await;
+        let (cursor, generation) = head(&manager).await;
+        for i in 0..30 {
+            emit(&manager, child_text(&format!("reading part {i}. "))).await;
+            if i % 2 == 0 {
+                let id = format!("toolu_01Child{i}");
+                emit(&manager, tool_call(&id, "Read", Some(LAUNCH))).await;
+            }
+        }
+        let (now, _) = head(&manager).await;
+        assert!(now - cursor > REPLAY_BATCH_THRESHOLD as u64);
+
+        let ServerMsg::Snapshot {
+            snapshot,
+            event_seq,
+            ..
+        } = attach(&manager, cursor).await
+        else {
+            panic!("a gap past the batch size snapshots");
+        };
+        assert_eq!(event_seq, now);
+        assert_eq!(snapshot.history_generation, generation, "no turn ended");
+        let wire = project_snapshot(&snapshot, None);
+        assert_no_internal_keys(&wire);
+        assert_eq!(wire["history_generation"], json!(generation));
+        let groups = wire["live_message"]["subagents"]
+            .as_array()
+            .expect("subagents");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0]["parent_id"], LAUNCH);
+        let text: String = groups[0]["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|b| b["text"].as_str())
+            .collect();
+        assert!(text.contains("reading part 29."), "{text}");
+        let calls = wire["tool_calls"].as_array().unwrap();
+        let children: Vec<&Value> = calls
+            .iter()
+            .filter(|t| t["parent_id"] == LAUNCH)
+            .collect();
+        assert_eq!(children.len(), 15);
+        let launch = calls
+            .iter()
+            .find(|t| t["tool_call_id"] == LAUNCH)
+            .expect("launch");
+        assert!(launch.get("parent_id").is_none());
+        // The reply itself holds none of the sub-agent's text.
+        let reply = wire["live_message"]["blocks"].to_string();
+        assert!(!reply.contains("reading part"), "{reply}");
+    }
+}

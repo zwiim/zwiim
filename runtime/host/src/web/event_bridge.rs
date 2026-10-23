@@ -476,22 +476,62 @@ pub async fn emit_with_state_gated<F>(
 where
     F: FnOnce(&SessionState) -> bool,
 {
-    let (envelope_arc, stream, evicted) = {
+    let (envelopes, stream) = {
         let mut s = state.write().await;
         if !gate(&s) {
             return false;
         }
+        let rederive = crate::acp::session_state::may_change_background(&payload);
+        let turns_landed = matches!(
+            &payload,
+            AcpEvent::BackgroundActivity { turns, .. } if !turns.is_empty()
+        );
         s.apply_event(&payload);
-        s.event_seq += 1;
-        let envelope = Arc::new(EventEnvelope {
-            seq: s.event_seq,
-            connection_id: s.connection_id.clone(),
-            payload,
-        });
-        let evicted = s.push_recent_event(Arc::clone(&envelope));
-        (envelope, s.event_stream(), evicted)
+        let mut envelopes = Vec::with_capacity(2);
+        let mut sequence = |s: &mut SessionState, payload: AcpEvent| {
+            s.event_seq += 1;
+            let envelope = Arc::new(EventEnvelope {
+                seq: s.event_seq,
+                connection_id: s.connection_id.clone(),
+                payload,
+            });
+            let evicted = s.push_recent_event(Arc::clone(&envelope));
+            envelopes.push((envelope, evicted));
+        };
+        sequence(&mut *s, payload);
+        // Background view moved (a launch, a settle, a turn ending with
+        // work outstanding, a new turn), or turns landed out of turn and
+        // moved the history generation: announce it right behind its cause,
+        // in the same critical section so the pair is never split by
+        // another event and a replay carries both.
+        if rederive {
+            let view = s.background_view();
+            if view != s.emitted_background || turns_landed {
+                let change = AcpEvent::BackgroundChanged {
+                    background: view,
+                    history_generation: s.history_generation,
+                };
+                s.apply_event(&change);
+                sequence(&mut *s, change);
+            }
+        }
+        (envelopes, s.event_stream())
     };
 
+    for (envelope_arc, evicted) in envelopes {
+        deliver(&stream, emitter, envelope_arc, evicted);
+    }
+    true
+}
+
+/// Fan one sequenced envelope out to the connection stream, the in-process
+/// bus (or Tauri webview) and the global status side-channel.
+fn deliver(
+    stream: &crate::acp::event_stream::ConnectionEventStream,
+    emitter: &EventEmitter,
+    envelope_arc: Arc<EventEnvelope>,
+    evicted: usize,
+) {
     // Per-connection broadcaster — primary delivery path for web/remote-
     // desktop transports (they use Subscribe-with-Snapshot attach for ACP
     // events).
@@ -551,7 +591,6 @@ where
             );
         }
     }
-    true
 }
 
 #[cfg(test)]
@@ -568,6 +607,246 @@ mod tests {
             "win-test".to_string(),
             None,
         )))
+    }
+
+    fn background_changes(state: &SessionState) -> Vec<(u64, crate::acp::types::BackgroundView)> {
+        state
+            .recent_events_after(0)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|e| match &e.payload {
+                AcpEvent::BackgroundChanged { background, .. } => Some((e.seq, background.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn async_spawn(task_id: &str, name: &str) -> AcpEvent {
+        AcpEvent::AsyncTask {
+            delta: crate::acp::types::AsyncTaskDelta {
+                task_id: task_id.into(),
+                spawned: true,
+                name: Some(name.into()),
+                task_type: Some("shell".into()),
+                description: Some(name.into()),
+                state: Some("running".into()),
+                tool_call_id: Some("call_launch".into()),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn async_state(task_id: &str, state: &str) -> AcpEvent {
+        AcpEvent::AsyncTask {
+            delta: crate::acp::types::AsyncTaskDelta {
+                task_id: task_id.into(),
+                state: Some(state.into()),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn background_event_on_outstanding_change() {
+        let state = fresh_state();
+        let emitter = EventEmitter::Noop;
+
+        // Nothing outstanding yet: an ordinary event announces nothing.
+        emit_with_state(&state, &emitter, AcpEvent::ContentDelta { text: "hi".into(), parent_tool_use_id: None }).await;
+        assert!(background_changes(&*state.read().await).is_empty());
+
+        // A launch moves the count: one change event, sequenced right after it.
+        emit_with_state(&state, &emitter, async_spawn("t1", "Run the build")).await;
+        let changes = background_changes(&*state.read().await);
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(changes[0].0, 3, "the change follows its cause in seq order");
+        assert_eq!(changes[0].1.outstanding, 1);
+        assert_eq!(changes[0].1.tasks[0].label, "Run the build");
+        assert_eq!(changes[0].1.tasks[0].state, "running");
+        assert_eq!(changes[0].1.tasks[0].tool_call_id.as_deref(), Some("call_launch"));
+        assert_eq!(state.read().await.event_seq, 3);
+
+        // Progress that changes nothing visible is not re-announced.
+        emit_with_state(&state, &emitter, async_state("t1", "running")).await;
+        emit_with_state(&state, &emitter, AcpEvent::ContentDelta { text: "more".into(), parent_tool_use_id: None }).await;
+        assert_eq!(background_changes(&*state.read().await).len(), 1);
+
+        // Settling drains it: one more change, back to zero.
+        emit_with_state(&state, &emitter, async_state("t1", "completed")).await;
+        let changes = background_changes(&*state.read().await);
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[1].1, crate::acp::types::BackgroundView::default());
+
+        // The watcher's count moves it the same way.
+        emit_with_state(
+            &state,
+            &emitter,
+            AcpEvent::BackgroundActivity {
+                session_id: "s".into(),
+                turns: vec![],
+                outstanding: 1,
+                settled: vec![],
+                watermark: 0,
+                tasks: vec![crate::acp::types::BackgroundTaskView {
+                    task_id: "a1".into(),
+                    label: "Review the diff".into(),
+                    state: "running".into(),
+                    tool_call_id: Some("toolu_01".into()),
+                }],
+            },
+        )
+        .await;
+        let changes = background_changes(&*state.read().await);
+        assert_eq!(changes.len(), 3);
+        assert_eq!(changes[2].1.outstanding, 1);
+        assert_eq!(changes[2].1.tasks[0].label, "Review the diff");
+        assert_eq!(state.read().await.to_snapshot().background, changes[2].1);
+    }
+
+    fn generation_changes(state: &SessionState) -> Vec<u64> {
+        state
+            .recent_events_after(0)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|e| match &e.payload {
+                AcpEvent::BackgroundChanged { history_generation, .. } => Some(*history_generation),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn background_turns(outstanding: u32, turns: usize) -> AcpEvent {
+        let turn: crate::models::MessageTurn = serde_json::from_value(serde_json::json!({
+            "id": "turn-bg",
+            "role": "assistant",
+            "blocks": [],
+            "timestamp": "2026-10-19T00:00:00Z",
+        }))
+        .unwrap();
+        AcpEvent::BackgroundActivity {
+            session_id: "s".into(),
+            turns: vec![turn; turns],
+            outstanding,
+            settled: vec![],
+            watermark: 0,
+            tasks: vec![],
+        }
+    }
+
+    /// Turns landing out of turn (a background task finishing after the turn
+    /// ended) grow the stored transcript with no `TurnComplete`. The history
+    /// generation must move, and a connected client must hear the new value
+    /// even when the visible background state did not change.
+    #[tokio::test]
+    async fn background_turns_bump_generation_and_announce_it() {
+        let state = fresh_state();
+        let emitter = EventEmitter::Noop;
+        let g0 = state.read().await.history_generation;
+
+        // A watcher tick with no turns moves nothing.
+        emit_with_state(&state, &emitter, background_turns(0, 0)).await;
+        assert_eq!(state.read().await.history_generation, g0);
+        assert!(generation_changes(&*state.read().await).is_empty());
+
+        // A tick carrying turns bumps the generation and announces it, even
+        // though outstanding/tasks/waiting are unchanged.
+        emit_with_state(&state, &emitter, background_turns(0, 1)).await;
+        let g1 = state.read().await.history_generation;
+        assert!(g1 > g0);
+        assert_eq!(generation_changes(&*state.read().await), vec![g1]);
+
+        // The next tick with more turns moves it again.
+        emit_with_state(&state, &emitter, background_turns(0, 2)).await;
+        let g2 = state.read().await.history_generation;
+        assert!(g2 > g1);
+        assert_eq!(generation_changes(&*state.read().await), vec![g1, g2]);
+        assert_eq!(state.read().await.to_snapshot().history_generation, g2);
+    }
+
+    /// Only events that feed the background view re-derive it. An unrelated
+    /// event must not announce a change even if the inputs moved underneath.
+    #[tokio::test]
+    async fn unrelated_event_does_not_recompute_background() {
+        let state = fresh_state();
+        let emitter = EventEmitter::Noop;
+        state.write().await.background_outstanding = 1;
+        emit_with_state(&state, &emitter, AcpEvent::ContentDelta { text: "x".into(), parent_tool_use_id: None }).await;
+        assert!(background_changes(&*state.read().await).is_empty());
+    }
+
+    #[tokio::test]
+    async fn waiting_since_after_turn_end_with_tasks() {
+        let state = fresh_state();
+        let emitter = EventEmitter::Noop;
+        let turn_end = || AcpEvent::TurnComplete {
+            session_id: "s".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+        };
+
+        // A turn that ends with nothing outstanding is not waiting.
+        emit_with_state(&state, &emitter, turn_end()).await;
+        assert!(state.read().await.to_snapshot().background.waiting_since.is_none());
+
+        // Mid-turn launch: outstanding, but the turn is still working.
+        emit_with_state(&state, &emitter, async_spawn("t1", "Run the build")).await;
+        assert!(state.read().await.to_snapshot().background.waiting_since.is_none());
+
+        // The turn ends with the task outstanding: waiting from now on.
+        emit_with_state(&state, &emitter, turn_end()).await;
+        let view = state.read().await.to_snapshot().background;
+        let since = view.waiting_since.clone().expect("waiting after the turn ended");
+        assert!(chrono::DateTime::parse_from_rfc3339(&since).is_ok(), "{since}");
+        let last = background_changes(&*state.read().await).pop().unwrap().1;
+        assert_eq!(last.waiting_since.as_deref(), Some(since.as_str()));
+
+        // The work draining ends the wait.
+        emit_with_state(&state, &emitter, async_state("t1", "completed")).await;
+        let view = state.read().await.to_snapshot().background;
+        assert_eq!(view, crate::acp::types::BackgroundView::default());
+
+        // A new user turn also ends it.
+        emit_with_state(&state, &emitter, async_spawn("t2", "Watch the logs")).await;
+        emit_with_state(&state, &emitter, turn_end()).await;
+        assert!(state.read().await.to_snapshot().background.waiting_since.is_some());
+        emit_with_state(&state, &emitter, AcpEvent::UserMessage { message_id: "m2".into(), blocks: vec![] }).await;
+        let view = state.read().await.to_snapshot().background;
+        assert_eq!(view.outstanding, 1);
+        assert!(view.waiting_since.is_none());
+    }
+
+    #[tokio::test]
+    async fn history_generation_moves_on_turn_end_rewind_and_fork_only() {
+        let state = fresh_state();
+        let emitter = EventEmitter::Noop;
+        let g0 = state.read().await.history_generation;
+        assert!(g0 > 0 && g0 < 1 << 53, "a JavaScript-safe generation: {g0}");
+
+        emit_with_state(&state, &emitter, AcpEvent::ContentDelta { text: "x".into(), parent_tool_use_id: None }).await;
+        assert_eq!(state.read().await.history_generation, g0, "mid-turn output leaves history alone");
+
+        emit_with_state(
+            &state,
+            &emitter,
+            AcpEvent::TurnComplete {
+                session_id: "s".into(),
+                stop_reason: "end_turn".into(),
+                agent_type: "claude_code".into(),
+            },
+        )
+        .await;
+        let g1 = state.read().await.history_generation;
+        assert!(g1 > g0);
+
+        emit_with_state(&state, &emitter, AcpEvent::HistoryRewound).await;
+        let g2 = state.read().await.history_generation;
+        assert!(g2 > g1);
+
+        emit_with_state(&state, &emitter, AcpEvent::SessionStarted { session_id: "a".into() }).await;
+        let g3 = state.read().await.history_generation;
+        assert!(g3 > g2, "attaching to a (forked) agent session");
+        emit_with_state(&state, &emitter, AcpEvent::SessionStarted { session_id: "a".into() }).await;
+        assert_eq!(state.read().await.history_generation, g3, "a repeat of the same session");
     }
 
     #[tokio::test]

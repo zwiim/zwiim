@@ -272,3 +272,35 @@ describe("historySubagentCards", () => {
     ]);
   });
 });
+
+describe("background sub-agents", () => {
+  const background = (tool_call_id: string, outstanding = 1) => ({
+    outstanding,
+    tasks: outstanding === 0 ? [] : [{ task_id: "task-00000000000000aa", label: "Review the diff", state: "running", tool_call_id }],
+    waiting_since: null,
+  });
+
+  it("a launch that returned at once reads running while its task is outstanding", () => {
+    const launched = [
+      ev(1, "agent.tool_call", call("agent", "Review", { subagent: { description: "Review the diff" } })),
+      ev(2, "agent.tool_call_update", { tool_call_id: "agent", title: null, status: "completed", content: null }),
+      ev(3, "agent.subagent_message_delta", { parent_id: "agent", text: "looking" }),
+    ];
+    const v = launched.reduce(reduceSession, initialSessionView("s1"));
+    expect(liveSubagentCards(v.live)[0]!.status).toBe("completed");
+    expect(liveSubagentCards(v.live, undefined, background("agent"))[0]!.status).toBe("in_progress");
+    // Another task's launch, or nothing outstanding: the launch's own status.
+    expect(liveSubagentCards(v.live, undefined, background("other"))[0]!.status).toBe("completed");
+    expect(liveSubagentCards(v.live, undefined, background("agent", 0))[0]!.status).toBe("completed");
+  });
+
+  it("after reload too", () => {
+    const blocks: HistoryBlock[] = [
+      { type: "tool_call", tool_call_id: "agent", title: "Review", input_preview: null, status: null, subagent: { description: "Review the diff" } },
+      { type: "tool_result", tool_call_id: "agent", output_preview: "Async agent launched", is_error: false },
+    ];
+    expect(historySubagentCards(blocks)[0]!.status).toBe("completed");
+    expect(historySubagentCards(blocks, background("agent"))[0]!.status).toBe("in_progress");
+    expect(historySubagentCards(blocks, null)[0]!.status).toBe("completed");
+  });
+});

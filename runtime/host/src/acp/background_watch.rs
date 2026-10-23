@@ -62,7 +62,7 @@ use tokio::sync::RwLock;
 
 use crate::acp::session_state::{background_keepalive_max_age, SessionState};
 use crate::acp::session_title::publish_native_title;
-use crate::acp::types::{AcpEvent, BackgroundSettledInfo, ConnectionStatus};
+use crate::acp::types::{AcpEvent, BackgroundSettledInfo, BackgroundTaskView, ConnectionStatus};
 use crate::models::agent::AgentType;
 use crate::models::message::MessageTurn;
 use crate::parsers::claude::{
@@ -416,6 +416,45 @@ async fn run_watch(
 struct TaskEntry {
     kind: &'static str,
     started_at: Instant,
+    /// Human label for the session's background view: the launch's own
+    /// description, else a generic name for the kind.
+    label: String,
+    /// The launching tool call (the ack's `tool_result.tool_use_id`), which
+    /// is the tool call id clients already hold for that card.
+    tool_call_id: Option<String>,
+}
+
+impl TaskEntry {
+    fn new(kind: &'static str, label: Option<&str>, tool_call_id: Option<String>) -> Self {
+        let label = label
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| match kind {
+                "shell" => "Background command".to_string(),
+                _ => "Background agent".to_string(),
+            });
+        Self {
+            kind,
+            started_at: Instant::now(),
+            label,
+            tool_call_id,
+        }
+    }
+}
+
+/// The `tool_use_id` of the record's first `tool_result` block — the tool
+/// call a launch ack answers.
+fn ack_tool_use_id(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("message")?
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+        .find_map(|b| b.get("tool_use_id").and_then(|v| v.as_str()))
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// The current out-of-turn episode: a contiguous run of transcript records
@@ -856,12 +895,24 @@ impl WatchState {
             return None;
         }
         self.last_emitted_outstanding = Some(outstanding);
+        let mut tasks: Vec<BackgroundTaskView> = self
+            .tasks
+            .iter()
+            .map(|(id, t)| BackgroundTaskView {
+                task_id: id.clone(),
+                label: t.label.clone(),
+                state: "running".to_string(),
+                tool_call_id: t.tool_call_id.clone(),
+            })
+            .collect();
+        tasks.sort_by(|a, b| a.task_id.cmp(&b.task_id));
         Some(AcpEvent::BackgroundActivity {
             session_id,
             turns: changed_turns,
             outstanding,
             settled,
             watermark: self.committed,
+            tasks,
         })
     }
 
@@ -995,10 +1046,11 @@ impl WatchState {
                             // alive. The log fires only on first registration.
                             self.tasks.entry(id.to_string()).or_insert_with(|| {
                                 tracing::info!("[bg-watch] registered async agent task={id}");
-                                TaskEntry {
-                                    kind: "agent",
-                                    started_at: Instant::now(),
-                                }
+                                TaskEntry::new(
+                                    "agent",
+                                    tur.get("description").and_then(|v| v.as_str()),
+                                    ack_tool_use_id(value),
+                                )
                             });
                             // This turn is still `Prompting` at launch time — a
                             // later out-of-turn follow-up for this SAME id is
@@ -1021,10 +1073,7 @@ impl WatchState {
                         // reads of this identical shape.
                         self.tasks.entry(id.to_string()).or_insert_with(|| {
                             tracing::info!("[bg-watch] registered background shell task={id}");
-                            TaskEntry {
-                                kind: "shell",
-                                started_at: Instant::now(),
-                            }
+                            TaskEntry::new("shell", None, ack_tool_use_id(value))
                         });
                         // Deliberately NOT inserted into `current_turn_launched_ids`:
                         // #870 never holds a turn open for a shell (this
@@ -1131,13 +1180,7 @@ impl WatchState {
                             };
                             if self.settled_ids.remove(to) {
                                 tracing::info!("[bg-watch] re-armed resumed task={to}");
-                                self.tasks.insert(
-                                    to.to_string(),
-                                    TaskEntry {
-                                        kind: "agent",
-                                        started_at: Instant::now(),
-                                    },
-                                );
+                                self.tasks.insert(to.to_string(), TaskEntry::new("agent", None, None));
                                 // Mirrors the launch-time insert in the
                                 // `async_launched` branch above: if THIS turn
                                 // (the one issuing the resume) is itself held
@@ -2299,6 +2342,32 @@ mod tests {
 
         // Unchanged file → stat-gated, no event.
         assert!(tick_now(&mut ws, &ledger).is_none());
+    }
+
+    /// Each outstanding task reaches the session's background view with a
+    /// human label (the launch's description, else a generic name) and the
+    /// launching tool call id from the ack.
+    #[test]
+    fn acks_carry_label_and_launching_tool_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+
+        write_lines(&path, &[&agent_ack("agent1"), &bash_ack("bash1")]);
+        let tasks = match tick_now(&mut ws, &ledger).expect("accounting event") {
+            AcpEvent::BackgroundActivity { tasks, .. } => tasks,
+            other => panic!("expected BackgroundActivity, got {other:?}"),
+        };
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].task_id, "agent1");
+        assert_eq!(tasks[0].label, "Run pnpm build");
+        assert_eq!(tasks[0].tool_call_id.as_deref(), Some("toolu_01"));
+        assert_eq!(tasks[0].state, "running");
+        assert_eq!(tasks[1].task_id, "bash1");
+        assert_eq!(tasks[1].label, "Background command");
+        assert_eq!(tasks[1].tool_call_id.as_deref(), Some("toolu_02"));
     }
 
     /// A background shell re-observed via a repeat `BashOutput`-style poll

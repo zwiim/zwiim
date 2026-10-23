@@ -5,7 +5,7 @@
 
 import { createHostStore, type HostStore } from "../state/store";
 import type { TerminalOutput } from "../state/terminal";
-import { historyCovers, type SessionFrame } from "../state/session";
+import { backgroundMovedHistory, historyCovers, type SessionFrame, type SessionView } from "../state/session";
 import type {
   AgentSummary,
   AgentType,
@@ -19,6 +19,7 @@ import type {
   PrMerged,
   PrState,
   PublishTarget,
+  SessionEvent,
   SessionOptions,
   SessionRevertResult,
   WorkspaceDiff,
@@ -37,20 +38,34 @@ const PUBLISH_TIMEOUT_MS = 330_000;
 /** The Host's `gh` call has its own 15 s limit; leave room for it. */
 const GITHUB_REPOS_TIMEOUT_MS = 20_000;
 
-/** Frames after which `session.history` may include more turns. */
-function transcriptMayHaveChanged(frame: SessionFrame): boolean {
+/**
+ * Frames after which `session.history` may include more turns. `view` is the
+ * session after the frame was applied.
+ */
+function transcriptMayHaveChanged(frame: SessionFrame, view: SessionView | undefined): boolean {
   switch (frame.type) {
     case "snapshot":
-      return true;
+      // A reconnect mid-turn changes nothing on disk; the reducer compares
+      // the Host's history generation with the one on screen.
+      return view?.historyStale ?? true;
     case "detached":
       return frame.reason === "session_not_live";
     case "event":
-      return frame.event.type === "agent.turn_complete";
+      return frame.event.type === "agent.turn_complete" || movedHistory(frame.event, view);
     case "replay":
-      return frame.events.some((e) => e.type === "agent.turn_complete");
+      return frame.events.some((e) => e.type === "agent.turn_complete" || movedHistory(e, view));
     default:
       return false;
   }
+}
+
+/**
+ * A background event whose history generation differs from the history on
+ * screen: turns landed outside a turn. Checked against the view after the
+ * frame, so a read already done at that generation is not repeated.
+ */
+function movedHistory(ev: SessionEvent, view: SessionView | undefined): boolean {
+  return view !== undefined && backgroundMovedHistory(ev, view);
 }
 
 /** Frames that carry the session's options as the host holds them now. */
@@ -118,7 +133,9 @@ export class HostController {
       session: (session_id, frame) => {
         this.store.dispatch({ type: "session_frame", session_id, frame });
         if (carriesOptions(frame)) this.bumpOptions(session_id);
-        if (transcriptMayHaveChanged(frame)) void this.loadHistory(session_id);
+        if (transcriptMayHaveChanged(frame, this.store.getState().sessions[session_id])) {
+          void this.loadHistory(session_id);
+        }
       },
       terminal: (terminal_id, out) => {
         if (out.kind === "exit") {
@@ -139,14 +156,30 @@ export class HostController {
   // ─── lists ─────────────────────────────────────────────────────────────
 
   /**
-   * Lists arrive with the feed snapshot; agents, open transcripts and their
-   * options are re-read.
+   * Lists arrive with the feed snapshot; agents and open sessions' options
+   * are re-read, and so is a transcript that may have moved on. A session
+   * that is re-attaching with a current transcript is not: its replay or
+   * snapshot says whether the history changed while the client was away.
    */
   private async refreshAll(): Promise<void> {
     await Promise.allSettled([
       this.refreshAgents(),
-      ...[...this.openSessions].flatMap((sid) => [this.loadHistory(sid), this.loadOptions(sid)]),
+      ...[...this.openSessions].flatMap((sid) => [
+        ...(this.historyMayBeBehind(sid) ? [this.loadHistory(sid)] : []),
+        this.loadOptions(sid),
+      ]),
     ]);
+  }
+
+  /**
+   * Whether a reconnect must re-read `session_id`'s transcript: it was never
+   * read or marked stale, or the session is not re-attaching (its agent was
+   * gone), so no replay or snapshot will tell.
+   */
+  private historyMayBeBehind(session_id: string): boolean {
+    const view = this.store.getState().sessions[session_id];
+    if (!view || view.historyStale) return true;
+    return view.attach !== "live" && view.attach !== "attaching";
   }
 
   /** Which agents this host can run. Detection only; nothing is installed. */
@@ -448,7 +481,7 @@ export class HostController {
     try {
       do {
         this.historyDirty.delete(session_id);
-        const { turns } = await this.client.request("session.history", { session_id });
+        const { turns, history_generation } = await this.client.request("session.history", { session_id });
         if (!this.openSessions.has(session_id)) return;
         const settled = this.store.getState().sessions[session_id]?.settled ?? null;
         const delay = HISTORY_SETTLE_DELAYS_MS[settleAttempt];
@@ -460,7 +493,11 @@ export class HostController {
           this.historyDirty.add(session_id);
           continue;
         }
-        this.store.dispatch({ type: "session_frame", session_id, frame: { type: "history", turns } });
+        this.store.dispatch({
+          type: "session_frame",
+          session_id,
+          frame: { type: "history", turns, generation: history_generation ?? null },
+        });
       } while (this.historyDirty.has(session_id));
     } catch {
       // Retried on the next stale mark or reconnect.

@@ -196,24 +196,27 @@ impl CodexChildRouter {
                 Some(vec![anchor_settled(link, status)])
             }
             _ if is_stamped(update) => {
-                // Only the child's work reaches the typed pipeline. Its
-                // other frames describe the child session, not the root, so
-                // they are claimed and dropped:
+                // Only the child's work reaches the typed pipeline, plus its
+                // AIR `async_task` deltas: a background terminal the child
+                // leaves running keeps the root session waiting just as one
+                // of the root's own would, so it counts toward the root's
+                // background state. Its other frames describe the child
+                // session, not the root, so they are claimed and dropped:
                 // 1. `plan`: the child's plan is not the root's plan strip.
                 // 2. `usage_update`: the child's context use is not the
                 //    root's.
                 // 3. `session_info_update`, `current_mode_update`,
                 //    `config_option_update`, `available_commands_update`:
                 //    the child's title, mode, options and commands.
-                // 4. AIR `async_task` deltas: a sub-agent's background
-                //    terminal would otherwise land in the root's task strip
-                //    with no way to tell whose it is.
-                // 5. `user_message_chunk` and anything unknown.
+                // 4. `user_message_chunk` and anything unknown.
                 match kind {
                     "tool_call"
                     | "tool_call_update"
                     | "agent_message_chunk"
-                    | "agent_thought_chunk" => None,
+                    | "agent_thought_chunk"
+                    | "async_task_spawned"
+                    | "async_task_progress"
+                    | "async_task_state_update" => None,
                     _ => Some(Vec::new()),
                 }
             }
@@ -394,7 +397,7 @@ impl sacp::HandleDispatchFrom<Agent> for CodexChildReroute {
 mod tests {
     use super::*;
     use crate::acp::connection::{
-        emit_conversation_update, CodeBuddyLiveState, ToolCallOutputCache,
+        air_async_task_delta, emit_conversation_update, CodeBuddyLiveState, ToolCallOutputCache,
     };
     use crate::acp::session_state::SessionState;
     use crate::models::agent::AgentType;
@@ -438,7 +441,6 @@ mod tests {
     /// would show.
     async fn drive_as(frames: Vec<Value>, replay: bool) -> (Vec<Value>, Value, String) {
         let router = CodexChildRouter::shared();
-        let handler = CodexChildReroute::new(Arc::clone(&router), true);
         let state = Arc::new(RwLock::new(SessionState::new(
             "conn-s6".to_string(),
             AgentType::Codex,
@@ -446,48 +448,7 @@ mod tests {
             "win".to_string(),
             None,
         )));
-        let emitter = EventEmitter::Noop;
-        let mut cache = ToolCallOutputCache::default();
-        let mut cb = CodeBuddyLiveState::default();
-        for mut frame in frames {
-            handler.apply(&mut frame["params"]);
-            if frame["params"]["sessionId"] != ROOT {
-                continue; // no session of this connection claims it
-            }
-            if replay {
-                let dispatch = Dispatch::Notification(
-                    sacp::UntypedMessage::new("session/update", frame["params"].clone()).unwrap(),
-                );
-                if consume_replayed(&router, &dispatch) {
-                    continue;
-                }
-            }
-            let claimed = router.lock().unwrap().claim(&frame);
-            match claimed {
-                Some(events) => {
-                    for event in events {
-                        emit_with_state(&state, &emitter, event).await;
-                    }
-                }
-                None => {
-                    let Ok(update) =
-                        serde_json::from_value::<SessionUpdate>(frame["params"]["update"].clone())
-                    else {
-                        continue;
-                    };
-                    emit_conversation_update(
-                        &state,
-                        &emitter,
-                        AgentType::Codex,
-                        update,
-                        None,
-                        &mut cache,
-                        &mut cb,
-                    )
-                    .await;
-                }
-            }
-        }
+        feed(&state, &router, frames, replay).await;
         let s = state.read().await;
         let wire = s
             .recent_events_after(0)
@@ -502,6 +463,65 @@ mod tests {
             project_snapshot(&s.to_snapshot(), Some("/work/repo")),
             anchor,
         )
+    }
+
+    /// The reader's steps for each frame, into `state`.
+    async fn feed(
+        state: &Arc<RwLock<SessionState>>,
+        router: &SharedChildRouter,
+        frames: Vec<Value>,
+        replay: bool,
+    ) {
+        let handler = CodexChildReroute::new(Arc::clone(router), true);
+        let emitter = EventEmitter::Noop;
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        for mut frame in frames {
+            handler.apply(&mut frame["params"]);
+            if frame["params"]["sessionId"] != ROOT {
+                continue; // no session of this connection claims it
+            }
+            if replay {
+                let dispatch = Dispatch::Notification(
+                    sacp::UntypedMessage::new("session/update", frame["params"].clone()).unwrap(),
+                );
+                if consume_replayed(router, &dispatch) {
+                    continue;
+                }
+            }
+            let claimed = router.lock().unwrap().claim(&frame);
+            let dispatch = Dispatch::Notification(
+                sacp::UntypedMessage::new("session/update", frame["params"].clone()).unwrap(),
+            );
+            match claimed {
+                Some(events) => {
+                    for event in events {
+                        emit_with_state(state, &emitter, event).await;
+                    }
+                }
+                None if air_async_task_delta(&dispatch).is_some() => {
+                    let delta = air_async_task_delta(&dispatch).unwrap();
+                    emit_with_state(state, &emitter, AcpEvent::AsyncTask { delta }).await;
+                }
+                None => {
+                    let Ok(update) =
+                        serde_json::from_value::<SessionUpdate>(frame["params"]["update"].clone())
+                    else {
+                        continue;
+                    };
+                    emit_conversation_update(
+                        state,
+                        &emitter,
+                        AgentType::Codex,
+                        update,
+                        None,
+                        &mut cache,
+                        &mut cb,
+                    )
+                    .await;
+                }
+            }
+        }
     }
 
     fn of_type<'a>(wire: &'a [Value], kind: &str) -> Vec<&'a Value> {
@@ -796,6 +816,131 @@ mod tests {
         for word in words {
             assert!(!text.contains(word), "`{word}` leaked in the snapshot");
         }
+    }
+
+    /// M8: a background terminal the child leaves running counts toward the
+    /// root's background state, while the child's usage stays its own.
+    #[tokio::test]
+    async fn codex_child_async_task_reaches_root_background() {
+        let mut all = frames();
+        let spawned = json!({ "jsonrpc": "2.0", "method": "session/update", "params": {
+            "sessionId": CHILD,
+            "update": {
+                "sessionUpdate": "async_task_spawned",
+                "asyncTaskId": format!("{CHILD}:exec-77"),
+                "name": "sleep 400",
+                "taskType": "shell",
+                "showInTranscript": false,
+                "canStop": true,
+                "toolCallId": "exec-77"
+            }
+        }});
+        all.insert(5, spawned.clone());
+        let (wire, snapshot, _) = drive(all.clone()).await;
+        let background = &snapshot["background"];
+        assert_eq!(background["outstanding"], 1, "{background}");
+        assert_eq!(background["tasks"][0]["label"], "sleep 400");
+        assert_eq!(background["tasks"][0]["state"], "running");
+        assert_eq!(background["tasks"][0]["tool_call_id"], "exec-77");
+        let changes = of_type(&wire, "session.background");
+        assert!(!changes.is_empty(), "the root saw the child's task");
+        for event in changes {
+            assert_no_internal_keys(event);
+            assert!(!event.to_string().contains("c5fd5a5ea422"));
+        }
+        assert!(of_type(&wire, "session.usage")
+            .iter()
+            .all(|u| u["payload"]["used"] != 16844 && u["payload"]["used"] != 16890));
+
+        // The child's stop settles it on the root as well.
+        let mut stopped = spawned;
+        stopped["params"]["update"] = json!({
+            "sessionUpdate": "async_task_state_update",
+            "asyncTaskId": format!("{CHILD}:exec-77"),
+            "state": "stopped",
+            "toolCallId": "exec-77"
+        });
+        all.insert(6, stopped);
+        let (_, snapshot, _) = drive(all).await;
+        assert_eq!(snapshot["background"]["outstanding"], 0);
+    }
+
+    /// Review Focus 4, Codex-shaped: a client that drops mid-turn and misses
+    /// more than a replay batch of the sub-agent's stream gets a snapshot
+    /// holding the child's blocks under its launch, and the same history
+    /// generation it had, since no turn completed.
+    #[tokio::test]
+    async fn attach_after_long_codex_subagent_stream_snapshots_live_blocks() {
+        use crate::acp::internal_bus::EventBusMetrics;
+        use crate::acp::manager::ConnectionManager;
+        use crate::web::ws_attach::{handle_attach, ServerMsg, REPLAY_BATCH_THRESHOLD};
+
+        let manager = ConnectionManager::new();
+        manager
+            .insert_test_connection("conn-rf4", AgentType::Codex, None, EventEmitter::Noop)
+            .await;
+        let state = manager.get_state("conn-rf4").await.unwrap();
+        // Mid-turn: a turn is running.
+        state.write().await.status = crate::acp::types::ConnectionStatus::Prompting;
+        let router = CodexChildRouter::shared();
+        let all = frames();
+        // Up to the launch: the client saw this much before it dropped.
+        feed(&state, &router, all[..2].to_vec(), false).await;
+        let (cursor, generation) = {
+            let s = state.read().await;
+            (s.event_seq, s.to_snapshot().history_generation)
+        };
+        // The child's work, its reply streamed three times over, while the
+        // turn is still running.
+        let mut child: Vec<Value> = all[2..8].to_vec();
+        for _ in 0..3 {
+            child.extend_from_slice(&all[8..21]);
+        }
+        feed(&state, &router, child, false).await;
+        let missed = state
+            .read()
+            .await
+            .recent_events_after(cursor)
+            .unwrap()
+            .len();
+        assert!(missed > REPLAY_BATCH_THRESHOLD, "only {missed} events");
+
+        let outcome = handle_attach(
+            &manager,
+            &EventBusMetrics::default(),
+            "sub".into(),
+            "conn-rf4".into(),
+            Some(cursor),
+        )
+        .await
+        .ok()
+        .expect("attached");
+        let ServerMsg::Snapshot { snapshot, .. } = outcome.initial_msg else {
+            panic!("a gap past the batch size snapshots");
+        };
+        assert_eq!(snapshot.history_generation, generation, "no turn ended");
+        let anchor = anchor_of(&router.lock().unwrap(), CHILD);
+        let wire = project_snapshot(&snapshot, Some("/work/repo"));
+        assert_no_internal_keys(&wire);
+        let groups = wire["live_message"]["subagents"]
+            .as_array()
+            .expect("subagents");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0]["parent_id"], anchor.as_str());
+        let text: String = groups[0]["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|b| b["text"].as_str())
+            .collect();
+        assert!(text.ends_with("`ls` shows `a.txt` and `b.txt`."), "{text}");
+        let calls = wire["tool_calls"].as_array().unwrap();
+        let child_call = calls
+            .iter()
+            .find(|t| t["tool_call_id"] == "exec-3a8ce7c4-6b98-4dbe-8ed8-1dc94dda3ca5")
+            .expect("child call in the snapshot");
+        assert_eq!(child_call["parent_id"], anchor.as_str());
+        assert_eq!(wire["history_generation"], json!(generation));
     }
 
     /// I1: on `session/load` codex-acp replays each past sub-agent. Nothing

@@ -435,8 +435,20 @@ fn estimate_envelope_size(envelope: &EventEnvelope) -> usize {
             outstanding: _,
             settled,
             watermark: _,
+            tasks,
         } => {
             json_str_len(session_id)
+                + tasks
+                    .iter()
+                    .map(|t| {
+                        // Keys + braces + commas for every field, generously
+                        // fixed like `settled` below.
+                        96 + json_str_len(&t.task_id)
+                            + json_str_len(&t.label)
+                            + json_str_len(&t.state)
+                            + opt_str_size(&t.tool_call_id)
+                    })
+                    .sum::<usize>()
                 + turns.len().saturating_sub(1)
                 + turns.iter().map(message_turn_size).sum::<usize>()
                 + settled
@@ -1048,6 +1060,12 @@ mod tests {
                     },
                 ],
                 watermark: u64::MAX,
+                tasks: vec![crate::acp::types::BackgroundTaskView {
+                    task_id: "ae6bd822f7a0e23a8".into(),
+                    label: "Run \"pnpm\" build\n".repeat(64),
+                    state: "running".into(),
+                    tool_call_id: Some("toolu_01P782zHv8AMMpXYqaz39ijf".into()),
+                }],
             },
         });
         assert_ge_serialized(&env);
@@ -1062,6 +1080,7 @@ mod tests {
                 outstanding: 0,
                 settled: vec![],
                 watermark: 0,
+                tasks: vec![],
             },
         });
         assert_ge_serialized(&env);

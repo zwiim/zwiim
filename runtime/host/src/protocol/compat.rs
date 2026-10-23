@@ -23,7 +23,13 @@ use serde::{Deserialize, Serialize};
 /// own content, so an older client that ignores them shows the reply alone.
 /// The launching tool call carries `subagent` (description, model, prompt,
 /// duration), and on reload `subagent.blocks` holds what the sub-agent did.
-pub const PROTOCOL_REVISION: u32 = 4;
+///
+/// Revision 5 (`session.background`): `session.background` events and a
+/// snapshot `background` field report outstanding background tasks and when
+/// the session started waiting on them; snapshots and `session.history`
+/// carry `history_generation` so a client re-reads history only when it
+/// changed. Older clients ignore the new event and fields.
+pub const PROTOCOL_REVISION: u32 = 5;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -59,6 +65,7 @@ pub const CAPABILITIES: &[&str] = &[
     "session.revert",
     "session.revert.chat",
     "agent.subagents",
+    "session.background",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -174,6 +181,12 @@ mod tests {
         assert!(CAPABILITIES.contains(&"agent.subagents"));
         // Sub-agent events and fields are a revision bump.
         const _: () = assert!(PROTOCOL_REVISION >= 4);
+    }
+
+    #[test]
+    fn background_is_served() {
+        assert!(CAPABILITIES.contains(&"session.background"));
+        const _: () = assert!(PROTOCOL_REVISION >= 5);
     }
 
     #[test]

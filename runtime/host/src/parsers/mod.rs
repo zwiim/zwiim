@@ -290,6 +290,14 @@ pub enum ParseError {
 pub trait AgentParser {
     fn list_conversations(&self) -> Result<Vec<ConversationSummary>, ParseError>;
     fn get_conversation(&self, conversation_id: &str) -> Result<ConversationDetail, ParseError>;
+
+    /// Every file `get_conversation(conversation_id)` reads, the transcript
+    /// itself first. A file that may not exist yet is still listed, so its
+    /// appearance is noticed. Empty when the parser does not say, which keeps
+    /// the conversation out of the history cache (`crate::history_cache`).
+    fn transcript_files(&self, _conversation_id: &str) -> Vec<PathBuf> {
+        Vec::new()
+    }
 }
 
 /// The ONE place a history parser is constructed.
@@ -362,6 +370,10 @@ impl AgentParser for RouteSanitized {
             sanitize_summary(summary);
         }
         Ok(summaries)
+    }
+
+    fn transcript_files(&self, conversation_id: &str) -> Vec<PathBuf> {
+        self.0.transcript_files(conversation_id)
     }
 
     fn get_conversation(&self, conversation_id: &str) -> Result<ConversationDetail, ParseError> {

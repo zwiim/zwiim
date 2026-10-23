@@ -2046,6 +2046,7 @@ pub async fn session_history(
     Extension(state): Extension<Arc<AppState>>,
     ZJson(p): ZJson<SessionParams>,
 ) -> ZResult<Value> {
+    let generation = session::history_generation(&state, &p.session_id).await;
     let turns = session::history(&state, &p.session_id).await?;
     let root = session::workspace_dir(&state.db.conn, &p.session_id).await;
     let revertible = match &root {
@@ -2062,6 +2063,7 @@ pub async fn session_history(
     Ok(Json(json!({
         "session_id": p.session_id,
         "turns": super::events::project_history_with(&turns, root.as_deref(), &revertible),
+        "history_generation": generation,
     })))
 }
 

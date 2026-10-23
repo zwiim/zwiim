@@ -1949,6 +1949,33 @@ async fn session_list_and_history_use_public_ids_only() {
 }
 
 #[tokio::test]
+async fn session_history_carries_the_history_generation() {
+    let h = host(false).await;
+    // No agent attached: there is no live generation to report.
+    let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
+    let idle = session_id_of(&h.state, conv).await;
+    let history = h.ok("session.history", json!({"session_id": idle})).await;
+    assert!(history["history_generation"].is_null(), "{history}");
+
+    // Live: the same generation the session's snapshot carries, and a new
+    // one once a turn completes.
+    let (sid, _rx) = h.live_session().await;
+    let live = h.state.connection_manager.get_state(CONN).await.unwrap();
+    let snap_gen = live.read().await.to_snapshot().history_generation;
+    let history = h.ok("session.history", json!({"session_id": sid})).await;
+    assert_eq!(history["history_generation"].as_u64(), Some(snap_gen));
+
+    h.emit(AcpEvent::TurnComplete {
+        session_id: "agent-native".into(),
+        stop_reason: "end_turn".into(),
+        agent_type: "claude_code".into(),
+    })
+    .await;
+    let history = h.ok("session.history", json!({"session_id": sid})).await;
+    assert!(history["history_generation"].as_u64().unwrap() > snap_gen);
+}
+
+#[tokio::test]
 async fn session_revert_speaks_zwiim_only() {
     let h = host(false).await;
     let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
@@ -2899,7 +2926,9 @@ async fn ws_subscribe_snapshot_live_replay_and_epoch() {
     assert_eq!(
         keys,
         [
+            "background",
             "commands",
+            "history_generation",
             "last_error",
             "live_message",
             "options",

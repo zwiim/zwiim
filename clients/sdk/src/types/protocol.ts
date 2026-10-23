@@ -819,6 +819,50 @@ export interface SessionSnapshot {
   options: SessionOptions | null;
   /** Empty until the agent has announced its commands. */
   commands: SessionCommand[];
+  /** Background work still running. Absent from Hosts before revision 5. */
+  background?: SessionBackground;
+  /**
+   * Changes whenever the session's history does (a finished turn, a chat
+   * rewind). Compare with `SessionHistory.history_generation` of the history
+   * on screen: equal means that history is current. Absent from Hosts before
+   * revision 5.
+   */
+  history_generation?: number;
+}
+
+/** One task the agent launched to run in the background. */
+export interface BackgroundTask {
+  /** Opaque; stable for the task while it runs. */
+  task_id: string;
+  /** Human text for the task. */
+  label: string;
+  /** `running` | `paused`. */
+  state: string;
+  /** The tool call that launched it, when the agent linked them. */
+  tool_call_id?: string;
+}
+
+/** The session's background work. */
+export interface SessionBackground {
+  /** Tasks launched and not yet finished. */
+  outstanding: number;
+  /** What is known about each (may be fewer than `outstanding`). */
+  tasks: BackgroundTask[];
+  /**
+   * RFC 3339: since when the agent has had nothing left to do but wait for
+   * its background work. Null while a turn runs or nothing is outstanding.
+   */
+  waiting_since: string | null;
+}
+
+/** `session.background`: the background work, plus where history stands. */
+export interface SessionBackgroundEvent extends SessionBackground {
+  /**
+   * The session's history generation when the event was sent. It moves when
+   * turns land outside a turn (background work finishing after the turn
+   * ended), which no `agent.turn_complete` announces. Absent from older Hosts.
+   */
+  history_generation?: number;
 }
 
 interface EventBase<T extends string, P> {
@@ -846,7 +890,9 @@ export type SessionEvent =
   | EventBase<"session.options", { options: SessionOptions }>
   | EventBase<"session.commands", { commands: SessionCommand[] }>
   | EventBase<"session.usage", Usage>
-  | EventBase<"session.turn_usage", TurnUsage>;
+  | EventBase<"session.turn_usage", TurnUsage>
+  /** The background work changed (revision 5). */
+  | EventBase<"session.background", SessionBackgroundEvent>;
 
 export type HistoryBlock =
   | { type: "text"; text: string }
@@ -915,6 +961,11 @@ export interface SessionRevertResult {
 export interface SessionHistory {
   session_id: string;
   turns: HistoryTurn[];
+  /**
+   * See `SessionSnapshot.history_generation`; null when no agent is attached.
+   * Absent from older Hosts.
+   */
+  history_generation?: number | null;
 }
 
 // ─── pull requests ───────────────────────────────────────────────────────

@@ -31,6 +31,7 @@ pub mod git_credential;
 pub mod git_harness;
 pub mod git_repo;
 pub mod harness;
+pub mod history_cache;
 pub mod host_feed;
 pub mod pr_watch;
 pub mod host_lifecycle;

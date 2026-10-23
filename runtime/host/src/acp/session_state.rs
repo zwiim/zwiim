@@ -14,7 +14,8 @@ use crate::acp::feedback::{FeedbackItem, FeedbackStatus};
 use crate::acp::plan_approval::PendingPlanApprovalState;
 use crate::acp::question::PendingQuestionState;
 use crate::acp::types::{
-    AcpEvent, AsyncTaskRecord, AvailableCommandInfo, ConfigStaleKind, ConnectionStatus,
+    async_task_state_is_terminal, AcpEvent, AsyncTaskRecord, AvailableCommandInfo,
+    BackgroundTaskView, BackgroundView, ConfigStaleKind, ConnectionStatus,
     EventEnvelope, GrokModelSpec, PromptCapabilitiesInfo, SessionConfigOptionInfo,
     SessionFailureRecord, SessionModeStateInfo, ToolCallImageInfo,
 };
@@ -719,6 +720,29 @@ pub struct SessionState {
     /// attachment hydration so a steered note cannot ride into the next turn.
     pub turns_completed: u64,
 
+    /// Which version of the session's history (`session.history`) is
+    /// current. Bumped whenever the transcript a client would read can have
+    /// changed: a turn completing, a chat rewind, a fork onto a new agent
+    /// session. Values come from [`next_history_generation`], seeded per Host
+    /// process, so a restarted Host never repeats one a client still holds.
+    /// Clients compare it with the generation of the history they loaded and
+    /// re-read only when it differs.
+    pub history_generation: u64,
+
+    /// When the last turn ended with background work still outstanding — the
+    /// session is waiting on its tasks, not on the user. Cleared when a new
+    /// turn starts or the work drains.
+    pub waiting_since: Option<DateTime<Utc>>,
+
+    /// The transcript watcher's outstanding tasks (labels + launching tool
+    /// call), mirrored from the latest `BackgroundActivity`.
+    pub background_tasks: Vec<BackgroundTaskView>,
+
+    /// The [`BackgroundView`] last announced with `BackgroundChanged`. The
+    /// event bridge compares [`SessionState::background_view`] with it after
+    /// every event so the change event fires exactly when the view moves.
+    pub emitted_background: BackgroundView,
+
     /// Whether the most recently completed turn ended via a stop reason other
     /// than `"end_turn"` (cancelled, refusal, max_tokens, max_turn_requests,
     /// empty, unknown — the same "abnormal ending" bucket `connection.rs`
@@ -822,6 +846,10 @@ impl SessionState {
             pending_user_message_started_at: None,
             turn_in_flight: false,
             turns_completed: 0,
+            history_generation: next_history_generation(),
+            waiting_since: None,
+            background_tasks: Vec::new(),
+            emitted_background: BackgroundView::default(),
             last_turn_ended_abnormally: false,
             config_stale: false,
             config_stale_kind: None,
@@ -898,6 +926,9 @@ impl SessionState {
                     // accepted between turns.
                     self.async_tasks.clear();
                     self.async_task_activity_at = None;
+                    // A different agent session (a fork, a chat rewind's new
+                    // branch) has different history.
+                    self.history_generation = next_history_generation();
                 }
                 self.external_id = Some(session_id.clone());
                 self.status = ConnectionStatus::Connected;
@@ -1281,6 +1312,13 @@ impl SessionState {
                 // admitted against" can now see that it is gone, even if a new
                 // turn sets `turn_in_flight` again before they look.
                 self.turns_completed = self.turns_completed.saturating_add(1);
+                // The finished turn is now part of the transcript.
+                self.history_generation = next_history_generation();
+                // Ending with background work outstanding: from here the
+                // session waits on its tasks rather than on the agent.
+                if self.waiting_since.is_none() && self.background_outstanding_now() > 0 {
+                    self.waiting_since = Some(Utc::now());
+                }
                 // NOTE: `active_delegations` is intentionally NOT cleared here.
                 // A running delegation's child runs in the background long after
                 // the parent's `delegate_to_agent` tool call returns and this
@@ -1300,6 +1338,8 @@ impl SessionState {
                 self.status = ConnectionStatus::Connected;
             }
             AcpEvent::UserMessage { message_id, blocks } => {
+                // A new turn: the agent is working again, not waiting.
+                self.waiting_since = None;
                 // Capture the in-flight user prompt so a client attaching
                 // mid-turn renders the user turn from the snapshot (the
                 // one-shot event won't replay for it). Cleared on TurnComplete.
@@ -1385,9 +1425,10 @@ impl SessionState {
                 self.selectors_ready = true;
             }
             AcpEvent::HistoryRewound => {
-                // No-op on purpose: the rewound transcript lives in the agent's
-                // session, not in live state (a rewind only runs between
-                // turns). The event exists for subscribers to resync on.
+                // The rewound transcript lives in the agent's session, not in
+                // live state (a rewind only runs between turns); only the
+                // history generation moves so clients know to re-read it.
+                self.history_generation = next_history_generation();
             }
             AcpEvent::Error {
                 message,
@@ -1501,14 +1542,29 @@ impl SessionState {
                     }
                 }
             }
-            AcpEvent::BackgroundActivity { outstanding, .. } => {
+            AcpEvent::BackgroundActivity {
+                turns,
+                outstanding,
+                tasks,
+                ..
+            } => {
                 // Mirror the watcher's authoritative accounting so the idle
                 // sweeps can exempt this connection while background work is
-                // pending. The turns/settled payloads are frontend-only; the
+                // pending. The settled payload is frontend-only; the
                 // trailing `last_activity_at = now` below additionally resets
                 // the backend idle timer on every batch of transcript activity.
+                //
+                // Turns here are transcript growth outside any turn (a task
+                // that finished after the turn ended): the stored history
+                // moved with no `TurnComplete`, so its generation moves too.
+                // A still-growing turn is re-sent each tick, and each such
+                // tick is new history, so it moves the generation each time.
+                if !turns.is_empty() {
+                    self.history_generation = next_history_generation();
+                }
                 self.background_outstanding = *outstanding;
                 self.background_activity_at = Some(Utc::now());
+                self.background_tasks = tasks.clone();
             }
             AcpEvent::SessionFailure { record } => {
                 // Monotonic per-id merge — the SAME rule the frontend reducer
@@ -1559,6 +1615,9 @@ impl SessionState {
                 // window asks.
                 self.async_task_activity_at = Some(Utc::now());
             }
+            AcpEvent::BackgroundChanged { background, .. } => {
+                self.emitted_background = background.clone();
+            }
             AcpEvent::ClaudeSdkMessage { .. }
             | AcpEvent::ConfigOptionRejected { .. }
             | AcpEvent::SessionLoadFailed { .. }
@@ -1573,7 +1632,79 @@ impl SessionState {
                 // 权威值已由紧随其后的 SessionConfigOptions 落进快照。
             }
         }
+        // Nothing left to wait for.
+        if may_change_background(payload)
+            && self.waiting_since.is_some()
+            && self.background_outstanding_now() == 0
+        {
+            self.waiting_since = None;
+        }
         self.last_activity_at = Utc::now();
+    }
+
+    /// Unsettled async-task rows (AIR table).
+    fn live_async_tasks(&self) -> impl Iterator<Item = &AsyncTaskRecord> {
+        self.async_tasks
+            .values()
+            .filter(|t| !async_task_state_is_terminal(&t.state))
+    }
+
+    /// Every known outstanding task: AIR rows first, then the watcher's tasks
+    /// not already listed by task id or launching tool call (a Claude
+    /// background shell is reported by both).
+    fn background_tasks_now(&self) -> Vec<BackgroundTaskView> {
+        let mut tasks: Vec<BackgroundTaskView> = self
+            .live_async_tasks()
+            .map(|t| BackgroundTaskView {
+                task_id: t.task_id.clone(),
+                label: if t.description.trim().is_empty() {
+                    t.name.clone()
+                } else {
+                    t.description.clone()
+                },
+                state: t.state.clone(),
+                tool_call_id: t.tool_call_id.clone(),
+            })
+            .collect();
+        if self.background_outstanding > 0 {
+            for t in &self.background_tasks {
+                let listed = tasks.iter().any(|e| {
+                    e.task_id == t.task_id
+                        || (t.tool_call_id.is_some() && e.tool_call_id == t.tool_call_id)
+                });
+                if !listed {
+                    tasks.push(t.clone());
+                }
+            }
+        }
+        tasks
+    }
+
+    /// Outstanding background tasks right now: the distinct known tasks, or
+    /// the watcher's count when it reports more than it could name (an
+    /// adapter that only counts).
+    fn background_outstanding_now(&self) -> u32 {
+        if self.background_outstanding == 0 && self.live_async_tasks().next().is_none() {
+            return 0;
+        }
+        (self.background_tasks_now().len() as u32).max(self.background_outstanding)
+    }
+
+    /// The session's background work as clients see it: the outstanding
+    /// count, one entry per known task, and the waiting mark.
+    pub fn background_view(&self) -> BackgroundView {
+        if self.background_outstanding == 0 && self.live_async_tasks().next().is_none() {
+            return BackgroundView::default();
+        }
+        let tasks = self.background_tasks_now();
+        let outstanding = (tasks.len() as u32).max(self.background_outstanding);
+        BackgroundView {
+            outstanding,
+            tasks,
+            waiting_since: self
+                .waiting_since
+                .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+        }
     }
 
     /// Whether this connection has launched background work (async sub-agent /
@@ -2052,9 +2183,59 @@ impl SessionState {
             session_failures: self.session_failures.values().cloned().collect(),
             async_tasks: self.async_tasks.values().cloned().collect(),
             goal_actions: self.goal_actions.clone(),
+            background: self.background_view(),
+            history_generation: self.history_generation,
             event_seq: self.event_seq,
         }
     }
+}
+
+/// Events that feed [`SessionState::background_view`]: the only ones after
+/// which the view is re-derived and compared (and the waiting mark
+/// re-checked). Keep in step with the
+/// `apply_event` arms that write `async_tasks`, `background_outstanding`,
+/// `background_tasks` or `waiting_since`.
+pub(crate) fn may_change_background(payload: &AcpEvent) -> bool {
+    matches!(
+        payload,
+        AcpEvent::AsyncTask { .. }
+            | AcpEvent::BackgroundActivity { .. }
+            | AcpEvent::TurnComplete { .. }
+            | AcpEvent::UserMessage { .. }
+            | AcpEvent::SessionStarted { .. }
+    )
+}
+
+/// A fresh history generation: unique and increasing across every session in
+/// this Host process. The process seed comes from [`generation_seed`], so
+/// values from one Host run are not reused by the next.
+pub fn next_history_generation() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::OnceLock;
+    static NEXT: OnceLock<AtomicU64> = OnceLock::new();
+    NEXT.get_or_init(|| {
+        let start = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(1);
+        AtomicU64::new(generation_seed(start, rand::random()))
+    })
+    .fetch_add(1, Ordering::Relaxed)
+}
+
+/// Bits of the seed given to the start time: 2^42 ms is about 139 years.
+const GENERATION_CLOCK_BITS: u32 = 42;
+
+/// The first history generation of a Host run. The low bits are the start
+/// time in unix milliseconds; the high bits are random (1..=2046), so a clock
+/// that went backwards across a restart still lands on a different range
+/// unless the random draw also repeats. The top value leaves 2^42 increments
+/// below 2^53, so every generation stays a JavaScript-safe integer (clients
+/// compare generations for equality only).
+fn generation_seed(unix_ms: u64, random: u64) -> u64 {
+    let high = random % 2046 + 1;
+    let clock = unix_ms & ((1 << GENERATION_CLOCK_BITS) - 1);
+    (high << GENERATION_CLOCK_BITS) | clock
 }
 
 /// Max age of the background keep-alive: how long a connection with
@@ -2189,6 +2370,12 @@ pub struct LiveSessionSnapshot {
     ///   maps to the legacy pair.
     #[serde(default)]
     pub goal_actions: Option<Vec<String>>,
+    /// The session's background work (see [`SessionState::background_view`]).
+    #[serde(default)]
+    pub background: BackgroundView,
+    /// See `SessionState.history_generation`.
+    #[serde(default)]
+    pub history_generation: u64,
     pub event_seq: u64,
 }
 
@@ -2287,6 +2474,22 @@ mod tests {
         EventEnvelope, PromptCapabilitiesInfo, SessionConfigKindInfo, SessionConfigOptionInfo,
         SessionConfigSelectInfo, SessionModeInfo, SessionModeStateInfo, UserMessageBlock,
     };
+
+    /// The seed mixes a random high component with the start time, so a
+    /// Host restart whose clock went backwards does not land on the values a
+    /// previous run handed out. Every value stays a JavaScript-safe integer.
+    #[test]
+    fn generation_seed_does_not_depend_on_the_clock_alone() {
+        let ms = 1_760_000_000_000;
+        assert_ne!(generation_seed(ms, 1), generation_seed(ms, 2));
+        assert_ne!(generation_seed(ms, 7), generation_seed(ms - 3_600_000, 8));
+        for (ms, random) in [(0, 0), (ms, u64::MAX), (u64::MAX, u64::MAX), (u64::MAX, 2045)] {
+            let seed = generation_seed(ms, random);
+            assert!(seed > 0);
+            // Headroom for 2^42 increments before leaving the safe range.
+            assert!(seed + (1 << 42) < (1 << 53), "{seed}");
+        }
+    }
 
     fn fresh_state() -> SessionState {
         SessionState::new(
@@ -2843,6 +3046,7 @@ mod tests {
             outstanding: 2,
             settled: vec![],
             watermark: 42,
+            tasks: vec![],
         });
         assert_eq!(s.background_outstanding, 2);
         let now = Utc::now();
@@ -2860,6 +3064,7 @@ mod tests {
             outstanding: 0,
             settled: vec![],
             watermark: 43,
+            tasks: vec![],
         });
         assert!(!s.has_active_background_work(Utc::now()));
     }
@@ -2873,6 +3078,7 @@ mod tests {
             outstanding: 3,
             settled: vec![],
             watermark: 0,
+            tasks: vec![],
         });
         assert_eq!(s.to_snapshot().background_outstanding, 3);
         let json = serde_json::to_value(s.to_snapshot()).unwrap();
@@ -4403,6 +4609,13 @@ mod tests {
     /// uses `Utc::now()`) but don't matter for snapshot/live consistency.
     fn normalize_snapshot(snap: &LiveSessionSnapshot) -> serde_json::Value {
         let mut v = serde_json::to_value(snap).unwrap();
+        // Unique per SessionState instance, and a wall-clock stamp.
+        if let Some(obj) = v.as_object_mut() {
+            obj.remove("history_generation");
+        }
+        if let Some(bg) = v.get_mut("background").and_then(|b| b.as_object_mut()) {
+            bg.remove("waiting_since");
+        }
         if let Some(lm) = v.get_mut("live_message") {
             if let Some(obj) = lm.as_object_mut() {
                 obj.remove("id");

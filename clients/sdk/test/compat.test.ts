@@ -102,6 +102,14 @@ describe("evaluateCompatibility", () => {
     expect(hasCapability(old, "agent.subagents")).toBe(false);
   });
 
+  it("asks for background work at revision 5; an older Host is limited, not broken", () => {
+    expect(CLIENT_CAPABILITIES).toContain("session.background");
+    expect(CLIENT_REVISION).toBe(5);
+    const old = evaluateCompatibility(hello({ revision: 4, min_client_revision: 1, capabilities: ["agent.subagents"] }));
+    expect(old.status).toBe("limited");
+    expect(hasCapability(old, "session.background")).toBe(false);
+  });
+
   it("a different protocol major is incompatible and names the older side", () => {
     expect(evaluateCompatibility(hello({ protocol: "zwiim/2" }), client())).toMatchObject({
       status: "update_required",

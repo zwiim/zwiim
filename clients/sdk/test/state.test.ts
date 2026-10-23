@@ -295,3 +295,93 @@ describe("host store", () => {
     expect(s.sessions.s9?.attach).toBe("attaching");
   });
 });
+
+describe("history generation and background work", () => {
+  const hist: HistoryTurn[] = [];
+  const snap = (extra: Partial<SessionSnapshot>): SessionFrame => ({
+    type: "snapshot",
+    epoch: "e1",
+    seq: 5,
+    snapshot: { ...baseSnapshot, ...extra },
+  });
+
+  it("a snapshot at the generation of the history on screen keeps it current", () => {
+    const v = run([{ type: "history", turns: hist, generation: 7 }, snap({ history_generation: 7 })]);
+    expect(v.historyGeneration).toBe(7);
+    expect(v.historyStale).toBe(false);
+  });
+
+  it("a snapshot at another generation, or none, or before any history, marks it stale", () => {
+    // A turn finished (or the chat was rewound) while away.
+    expect(run([{ type: "history", turns: hist, generation: 7 }, snap({ history_generation: 8 })]).historyStale).toBe(true);
+    // An older Host does not say.
+    expect(run([{ type: "history", turns: hist, generation: 7 }, snap({})]).historyStale).toBe(true);
+    // Nothing loaded yet.
+    expect(run([snap({ history_generation: 7 })]).historyStale).toBe(true);
+    // A history read without a generation (no agent attached then).
+    expect(run([{ type: "history", turns: hist }, snap({ history_generation: 7 })]).historyStale).toBe(true);
+  });
+
+  it("a rewind snapshot still reloads history", () => {
+    // The Host bumps the generation when a chat rewind forks the session;
+    // the snapshot that follows the rewind carries the new one.
+    let v = run([{ type: "history", turns: hist, generation: 7 }, snap({ history_generation: 7 })]);
+    expect(v.historyStale).toBe(false);
+    v = reduceSession(v, { type: "snapshot", epoch: "e1", seq: 9, snapshot: { ...baseSnapshot, live_message: null, history_generation: 8 } });
+    expect(v.historyStale).toBe(true);
+  });
+
+  it("an older snapshot without the new fields leaves background unknown", () => {
+    const v = run([snap({})]);
+    expect(v.background).toBeNull();
+  });
+
+  it("takes background work from the snapshot and session.background events", () => {
+    const background = {
+      outstanding: 1,
+      tasks: [{ task_id: "task-0123456789abcdef", label: "Run the dev server", state: "running", tool_call_id: "tc9" }],
+      waiting_since: "2026-10-19T10:00:00Z",
+    };
+    let v = run([snap({ background, history_generation: 1 })]);
+    expect(v.background).toEqual(background);
+    v = reduceSession(v, {
+      type: "event",
+      event: ev(6, "session.background", { outstanding: 0, tasks: [], waiting_since: null }),
+    });
+    expect(v.background).toEqual({ outstanding: 0, tasks: [], waiting_since: null });
+    // The agent going away takes its background work with it.
+    v = reduceSession(reduceSession(v, { type: "event", event: ev(7, "session.background", background) }), {
+      type: "detached",
+      reason: "session_not_live",
+    });
+    expect(v.background).toBeNull();
+  });
+
+  it("a session.background generation unlike the history on screen marks it stale", () => {
+    const idle = { outstanding: 0, tasks: [], waiting_since: null };
+    let v = run([{ type: "history", turns: hist, generation: 7 }, snap({ history_generation: 7 })]);
+    // At the generation on screen: still current, and the generation is not
+    // kept as part of the background work.
+    v = reduceSession(v, { type: "event", event: ev(6, "session.background", { ...idle, history_generation: 7 }) });
+    expect(v.historyStale).toBe(false);
+    expect(v.background).toEqual(idle);
+    // Turns landed out of turn: the Host moved the generation with no
+    // turn_complete.
+    v = reduceSession(v, { type: "event", event: ev(7, "session.background", { ...idle, history_generation: 8 }) });
+    expect(v.historyStale).toBe(true);
+    expect(v.background).toEqual(idle);
+    // An older Host's event says nothing about history.
+    v = run([{ type: "history", turns: hist, generation: 7 }, snap({ history_generation: 7 })]);
+    v = reduceSession(v, { type: "event", event: ev(6, "session.background", idle) });
+    expect(v.historyStale).toBe(false);
+  });
+
+  it("a turn with only sub-agent work is not empty", () => {
+    const v = run([
+      { type: "snapshot", epoch: "e1", seq: 1, snapshot: { ...baseSnapshot, live_message: null, tool_calls: [], pending_user_message: null } },
+      { type: "event", event: ev(2, "agent.subagent_message_delta", { parent_id: "launch", text: "child works" }) },
+      { type: "event", event: ev(3, "agent.turn_complete", { stop_reason: "end_turn" }) },
+    ]);
+    expect(v.settled?.subagents).toEqual({ launch: { blocks: [{ type: "text", text: "child works" }] } });
+  });
+});

@@ -77,7 +77,7 @@ describe("HostController", () => {
     expect(block?.type === "tool_call" && block.status).toBe("in_progress");
   });
 
-  it("re-reads open transcripts on reconnect", async () => {
+  it("re-reads on reconnect a transcript no attach will report on", async () => {
     const t = setup();
     t.client.start();
     await flush();
@@ -85,12 +85,246 @@ describe("HostController", () => {
     await flush();
     t.controller.openSession("s1");
     await flush();
+    // The agent is gone: no replay or snapshot follows a reconnect.
+    t.transport.channel.frame({ type: "detached", subscription_id: "sub-1", reason: "session_not_live" });
+    await flush();
     const before = t.transport.count("session.history");
     t.transport.channel.drop();
     await vi.advanceTimersByTimeAsync(500);
     t.transport.channel.open();
     await flush();
     expect(t.transport.count("session.history")).toBeGreaterThan(before);
+  });
+
+  /** An open, attached session whose history was read at generation `generation`. */
+  async function attachedAt(generation: number) {
+    const t = setup();
+    t.transport.handlers["session.history"] = (p: any) => ({ session_id: p.session_id, turns: [], history_generation: generation });
+    t.client.start();
+    await flush();
+    t.transport.channel.open();
+    await flush();
+    t.controller.openSession("s1");
+    await flush();
+    t.transport.channel.frame({
+      type: "snapshot",
+      subscription_id: "sub-1",
+      session_id: "s1",
+      epoch: "e",
+      snapshot: { ...snapshot, history_generation: generation },
+      event_seq: 1,
+    });
+    await flush();
+    expect(t.store.getState().sessions.s1!.historyGeneration).toBe(generation);
+    expect(t.store.getState().sessions.s1!.historyStale).toBe(false);
+    return t;
+  }
+
+  /** Drop the connection and come back; the Host answers the re-attach with `snap`. */
+  async function reconnectWithSnapshot(t: ReturnType<typeof setup>, snap: Record<string, unknown>) {
+    t.transport.channel.drop();
+    await vi.advanceTimersByTimeAsync(500);
+    t.transport.channel.open();
+    await flush();
+    t.transport.channel.frame({ type: "snapshot", subscription_id: "sub-1", session_id: "s1", epoch: "e", snapshot: snap as any, event_seq: 60 });
+    await flush();
+  }
+
+  it("mid_turn_snapshot_does_not_refetch_history", async () => {
+    const t = await attachedAt(7);
+    const before = t.transport.count("session.history");
+    // Reconnect mid-turn after a long sub-agent stream: the attach fell back
+    // to a snapshot carrying the sub-agent's live blocks. No turn finished.
+    await reconnectWithSnapshot(t, {
+      ...snapshot,
+      history_generation: 7,
+      live_message: {
+        message_id: null,
+        role: "assistant",
+        content: [
+          { type: "tool_call", tool_call_id: "launch" },
+          { type: "tool_call", tool_call_id: "child-read" },
+        ],
+        subagents: [{ parent_id: "launch", blocks: [{ type: "text", text: "reading part 29." }, { type: "tool_call", tool_call_id: "child-read" }] }],
+      },
+      tool_calls: [
+        { tool_call_id: "launch", title: "Explore", kind: "other", status: "in_progress", content: null, subagent: { description: "Explore" } },
+        { tool_call_id: "child-read", title: "Read a.rs", kind: "read", status: "completed", content: null, parent_id: "launch" },
+      ],
+    });
+    expect(t.transport.count("session.history")).toBe(before);
+    const view = t.store.getState().sessions.s1!;
+    expect(view.historyStale).toBe(false);
+    expect(view.live.subagents?.launch?.blocks).toEqual([
+      { type: "text", text: "reading part 29." },
+      { type: "tool_call", tool_call_id: "child-read" },
+    ]);
+    expect(view.live.message?.content).toEqual([{ type: "tool_call", tool_call_id: "launch" }]);
+  });
+
+  // The same reconnect for both sub-agent shapes the Host sends: Claude's
+  // launch is the Agent tool call (toolu_ ids); Codex's is a synthesized
+  // launch (opaque subagent- id) whose children are call_ ids.
+  it.each([
+    {
+      agent: "claude",
+      launch: { tool_call_id: "toolu_01Launch", title: "Explore the parser", kind: "other", subagent: { description: "Explore" } },
+      child: { tool_call_id: "toolu_01ChildRead", title: "Read src/a.rs", kind: "read" },
+    },
+    {
+      agent: "codex",
+      launch: { tool_call_id: "subagent-0123456789abcdef", title: "reviewer", kind: "agent", subagent: { description: "reviewer" } },
+      child: { tool_call_id: "call_ChildExec01", title: "Run cargo test", kind: "execute" },
+    },
+  ])("mid_turn_reconnect_restores_$agent subagents_without_history_refetch", async ({ launch, child }) => {
+    const t = await attachedAt(7);
+    const before = t.transport.count("session.history");
+    await reconnectWithSnapshot(t, {
+      ...snapshot,
+      history_generation: 7,
+      live_message: {
+        message_id: null,
+        role: "assistant",
+        content: [
+          { type: "text", text: "Delegating." },
+          { type: "tool_call", tool_call_id: launch.tool_call_id },
+          { type: "tool_call", tool_call_id: child.tool_call_id },
+        ],
+        subagents: [
+          {
+            parent_id: launch.tool_call_id,
+            blocks: [
+              { type: "thinking", text: "Checking the tests." },
+              { type: "tool_call", tool_call_id: child.tool_call_id },
+              { type: "text", text: "All green so far." },
+            ],
+          },
+        ],
+      },
+      tool_calls: [
+        { ...launch, status: "in_progress", content: null },
+        { ...child, status: "completed", content: null, parent_id: launch.tool_call_id },
+      ],
+    });
+    // Advance past any settle delay a stray read would wait on.
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(t.transport.count("session.history")).toBe(before);
+    const view = t.store.getState().sessions.s1!;
+    expect(view.historyStale).toBe(false);
+    expect(view.historyGeneration).toBe(7);
+    expect(view.live.subagents?.[launch.tool_call_id]?.blocks).toEqual([
+      { type: "thinking", text: "Checking the tests." },
+      { type: "tool_call", tool_call_id: child.tool_call_id },
+      { type: "text", text: "All green so far." },
+    ]);
+    expect(view.live.message?.content).toEqual([
+      { type: "text", text: "Delegating." },
+      { type: "tool_call", tool_call_id: launch.tool_call_id },
+    ]);
+  });
+
+  /** A session.background event as the Host sends it, carrying the history generation. */
+  const backgroundEvent = (seq: number, history_generation: number) => ({
+    session_id: "s1",
+    seq,
+    type: "session.background" as const,
+    payload: { outstanding: 1, tasks: [], waiting_since: "2026-10-19T10:00:00Z", history_generation },
+  });
+
+  it("re-reads history when background turns move the generation", async () => {
+    const t = await attachedAt(7);
+    const before = t.transport.count("session.history");
+    // A task finished after the turn ended and its turns landed: the Host
+    // bumped the generation with no turn_complete.
+    t.transport.handlers["session.history"] = (p: any) => ({ session_id: p.session_id, turns: [], history_generation: 8 });
+    t.transport.channel.frame({ type: "event", subscription_id: "sub-1", event: backgroundEvent(2, 8) });
+    await flush();
+    expect(t.transport.count("session.history")).toBe(before + 1);
+    let view = t.store.getState().sessions.s1!;
+    expect(view.historyGeneration).toBe(8);
+    expect(view.historyStale).toBe(false);
+    expect(view.background).toEqual({ outstanding: 1, tasks: [], waiting_since: "2026-10-19T10:00:00Z" });
+
+    // Background news at the generation on screen reads nothing.
+    t.transport.channel.frame({ type: "event", subscription_id: "sub-1", event: backgroundEvent(3, 8) });
+    await flush();
+    expect(t.transport.count("session.history")).toBe(before + 1);
+    view = t.store.getState().sessions.s1!;
+    expect(view.historyStale).toBe(false);
+  });
+
+  it("re-reads history when a replay carries a moved generation", async () => {
+    const t = await attachedAt(7);
+    const before = t.transport.count("session.history");
+    t.transport.handlers["session.history"] = (p: any) => ({ session_id: p.session_id, turns: [], history_generation: 8 });
+    t.transport.channel.drop();
+    await vi.advanceTimersByTimeAsync(500);
+    t.transport.channel.open();
+    await flush();
+    t.transport.channel.frame({
+      type: "replay",
+      subscription_id: "sub-1",
+      session_id: "s1",
+      epoch: "e",
+      events: [backgroundEvent(2, 8)],
+      high_water_seq: 2,
+    });
+    await flush();
+    expect(t.transport.count("session.history")).toBe(before + 1);
+    expect(t.store.getState().sessions.s1!.historyGeneration).toBe(8);
+  });
+
+  it("a reconnect after background turns landed re-reads history", async () => {
+    const t = await attachedAt(7);
+    const before = t.transport.count("session.history");
+    // While away, a task's turns landed out of turn; the snapshot carries
+    // the bumped generation (the turn itself ended before the drop).
+    t.transport.handlers["session.history"] = (p: any) => ({ session_id: p.session_id, turns: [], history_generation: 8 });
+    await reconnectWithSnapshot(t, {
+      ...snapshot,
+      status: "connected",
+      history_generation: 8,
+      background: { outstanding: 1, tasks: [], waiting_since: "2026-10-19T10:00:00Z" },
+    });
+    expect(t.transport.count("session.history")).toBe(before + 1);
+    const view = t.store.getState().sessions.s1!;
+    expect(view.historyGeneration).toBe(8);
+    expect(view.historyStale).toBe(false);
+  });
+
+  it("completed_turn_snapshot_refetches", async () => {
+    const t = await attachedAt(7);
+    const before = t.transport.count("session.history");
+    t.transport.handlers["session.history"] = (p: any) => ({ session_id: p.session_id, turns: [], history_generation: 8 });
+    await reconnectWithSnapshot(t, { ...snapshot, status: "connected", history_generation: 8 });
+    expect(t.transport.count("session.history")).toBe(before + 1);
+    const view = t.store.getState().sessions.s1!;
+    expect(view.historyGeneration).toBe(8);
+    expect(view.historyStale).toBe(false);
+  });
+
+  it("re-reads history after a chat rewind's snapshot", async () => {
+    const t = await attachedAt(7);
+    const before = t.transport.count("session.history");
+    // The rewind forks the agent session; the Host bumps the generation and
+    // the client gets a snapshot on the same connection.
+    t.transport.channel.frame({
+      type: "snapshot",
+      subscription_id: "sub-1",
+      session_id: "s1",
+      epoch: "e2",
+      snapshot: { ...snapshot, status: "connected", history_generation: 9 },
+      event_seq: 1,
+    });
+    await flush();
+    expect(t.transport.count("session.history")).toBe(before + 1);
+  });
+
+  it("re-reads history on every snapshot from a Host that predates generations", async () => {
+    const t = await attachedAt(7);
+    const before = t.transport.count("session.history");
+    await reconnectWithSnapshot(t, { ...snapshot });
+    expect(t.transport.count("session.history")).toBe(before + 1);
   });
 
   it("loads history on open and again after a turn completes", async () => {

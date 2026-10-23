@@ -11,6 +11,7 @@ import type {
   LiveBlock,
   LiveMessage,
   PendingUserMessage,
+  SessionBackground,
   SessionCommand,
   SessionErrorInfo,
   SessionEvent,
@@ -72,8 +73,18 @@ export interface SessionView {
   /** The agent's slash commands; null until a live agent announces them. */
   commands: SessionCommand[] | null;
   history: HistoryTurn[] | null;
+  /**
+   * The Host's history generation `history` was read at; null when the Host
+   * did not say (older Host, or no agent attached then).
+   */
+  historyGeneration: number | null;
   /** The transcript changed on the host since `history` was loaded. */
   historyStale: boolean;
+  /**
+   * Background work the agent launched and is still running, and since when
+   * it has only been waiting on it. Null until the Host reports it.
+   */
+  background: SessionBackground | null;
 }
 
 export type SessionFrame =
@@ -83,13 +94,16 @@ export type SessionFrame =
   | { type: "event"; event: SessionEvent }
   | { type: "detached"; reason: DetachReason }
   | { type: "error"; error: WireError }
-  | { type: "history"; turns: HistoryTurn[] }
+  | { type: "history"; turns: HistoryTurn[]; generation?: number | null }
   | { type: "options"; options: SessionOptions };
 
 const emptyTurn = (): LiveTurn => ({ userMessage: null, message: null, toolCalls: {} });
 
 const turnIsEmpty = (t: LiveTurn) =>
-  t.userMessage === null && t.message === null && Object.keys(t.toolCalls).length === 0;
+  t.userMessage === null &&
+  t.message === null &&
+  Object.keys(t.toolCalls).length === 0 &&
+  Object.keys(t.subagents ?? {}).length === 0;
 
 const blockText = (blocks: readonly { type: string; text?: string }[]) =>
   blocks
@@ -132,7 +146,9 @@ export function initialSessionView(session_id: string): SessionView {
     options: null,
     commands: null,
     history: null,
+    historyGeneration: null,
     historyStale: true,
+    background: null,
   };
 }
 
@@ -154,7 +170,13 @@ export function reduceSession(view: SessionView, frame: SessionFrame): SessionVi
     case "error":
       return { ...view, attach: "error", attachError: frame.error };
     case "history":
-      return { ...view, history: frame.turns, historyStale: false, settled: null };
+      return {
+        ...view,
+        history: frame.turns,
+        historyGeneration: frame.generation ?? null,
+        historyStale: false,
+        settled: null,
+      };
     case "options":
       return { ...view, options: keepRewindHint(view.options, frame.options) };
   }
@@ -210,7 +232,14 @@ function applySnapshot(
     options: s.options ? keepRewindHint(view.options, s.options) : view.options,
     // Likewise its commands, announced shortly after it starts.
     commands: s.commands && s.commands.length > 0 ? s.commands : view.commands,
-    historyStale: true,
+    // The history on screen is current only if it was read at the Host's
+    // present generation; an older Host does not say, so always re-read.
+    historyStale:
+      view.historyStale ||
+      view.history === null ||
+      s.history_generation === undefined ||
+      s.history_generation !== view.historyGeneration,
+    background: s.background ?? null,
   };
 }
 
@@ -231,6 +260,8 @@ function applyDetached(view: SessionView, reason: DetachReason): SessionView {
     settled: turnIsEmpty(view.live) ? view.settled : view.live,
     pendingRequest: null,
     historyStale: true,
+    // Its background work went with it.
+    background: null,
   };
 }
 
@@ -292,6 +323,17 @@ function placeToolCall(live: LiveTurn, call: ToolCall): LiveTurn {
 function mergeSubagent(older: SubagentInfo | undefined, newer: SubagentInfo | undefined): SubagentInfo | undefined {
   if (older === undefined || newer === undefined) return newer ?? older;
   return { ...older, ...newer };
+}
+
+/**
+ * Whether `ev` says the Host's history moved past the one on screen: a
+ * `session.background` carrying a generation other than the history's. Turns
+ * that land outside a turn move it with no `agent.turn_complete`.
+ */
+export function backgroundMovedHistory(ev: SessionEvent, view: SessionView): boolean {
+  if (ev.type !== "session.background") return false;
+  const generation = ev.payload.history_generation;
+  return view.history !== null && generation !== undefined && generation !== view.historyGeneration;
 }
 
 export function applyEvent(view: SessionView, ev: SessionEvent): SessionView {
@@ -372,6 +414,14 @@ export function applyEvent(view: SessionView, ev: SessionEvent): SessionView {
       return { ...next, usage: ev.payload };
     case "session.turn_usage":
       return { ...next, turnUsage: ev.payload };
+    case "session.background": {
+      const { history_generation: _, ...background } = ev.payload;
+      return {
+        ...next,
+        background,
+        historyStale: next.historyStale || backgroundMovedHistory(ev, view),
+      };
+    }
     default:
       return next;
   }

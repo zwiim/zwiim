@@ -1183,13 +1183,36 @@ impl AgentParser for ClaudeParser {
     }
 
     fn get_conversation(&self, conversation_id: &str) -> Result<ConversationDetail, ParseError> {
-        // Find the conversation file by searching all directories
-        if !self.base_dir.exists() {
-            return Err(ParseError::ConversationNotFound(
+        match self.find_session_file(conversation_id)? {
+            Some(file_path) => self.parse_conversation_detail(&file_path, conversation_id),
+            None => Err(ParseError::ConversationNotFound(
                 conversation_id.to_string(),
-            ));
+            )),
         }
+    }
 
+    /// The transcript, then each sub-agent transcript in its `subagents/`
+    /// directory, which the parse reads too.
+    fn transcript_files(&self, conversation_id: &str) -> Vec<PathBuf> {
+        let Ok(Some(main)) = self.find_session_file(conversation_id) else {
+            return Vec::new();
+        };
+        let mut side: Vec<PathBuf> = fs::read_dir(main.with_extension("").join("subagents"))
+            .map(|entries| entries.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default();
+        side.sort();
+        let mut files = vec![main];
+        files.extend(side);
+        files
+    }
+}
+
+impl ClaudeParser {
+    /// The session's transcript in whichever project directory holds it.
+    fn find_session_file(&self, conversation_id: &str) -> Result<Option<PathBuf>, ParseError> {
+        if !self.base_dir.exists() {
+            return Ok(None);
+        }
         for entry in fs::read_dir(&self.base_dir)? {
             let entry = match entry {
                 Ok(e) => e,
@@ -1202,13 +1225,10 @@ impl AgentParser for ClaudeParser {
 
             let file_path = project_dir.join(format!("{}.jsonl", conversation_id));
             if file_path.exists() {
-                return self.parse_conversation_detail(&file_path, conversation_id);
+                return Ok(Some(file_path));
             }
         }
-
-        Err(ParseError::ConversationNotFound(
-            conversation_id.to_string(),
-        ))
+        Ok(None)
     }
 }
 

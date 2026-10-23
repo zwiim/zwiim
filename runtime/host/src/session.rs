@@ -177,6 +177,19 @@ pub async fn history(
     Ok(detail.turns)
 }
 
+/// The live session's current history generation (see
+/// `SessionState.history_generation`), `None` when no agent is attached.
+/// Read before the transcript so a turn finishing in between leaves the
+/// client holding an older generation, which makes it re-read rather than
+/// miss the turn.
+pub async fn history_generation(state: &AppState, session_id: &str) -> Option<u64> {
+    let conn_id =
+        live_connection_id(&state.db.conn, &state.connection_manager, session_id).await.ok()??;
+    let live = state.connection_manager.get_state(&conn_id).await?;
+    let generation = live.read().await.history_generation;
+    Some(generation)
+}
+
 // ─── Session orchestration (Zwiim protocol `session.*`) ───────────────────
 
 /// Starts the agent process behind a session and returns its (host-internal)

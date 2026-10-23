@@ -191,7 +191,7 @@ pub struct AsyncTaskRecord {
 /// CREATE one, and every other field is an optional revision (absent = leave
 /// the stored value alone). Collapsing them keeps one merge rule instead of
 /// three, and keeps the event enum from growing a variant per wire frame.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AsyncTaskDelta {
     pub task_id: String,
     /// True only for `async_task_spawned`. A progress/state delta naming an
@@ -281,6 +281,36 @@ impl AsyncTaskDelta {
             record.tool_call_id = Some(v.clone());
         }
     }
+}
+
+/// One unfinished background task as the session reports it to clients.
+/// Built by `SessionState::background_view` from the adapter's async-task
+/// table and the transcript watcher's launch accounting.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackgroundTaskView {
+    /// The agent's own task id. Internal: the protocol projection replaces it
+    /// with an opaque `task_id` before it reaches a client.
+    pub task_id: String,
+    /// Human text for the task (its description), never a vendor field name.
+    pub label: String,
+    /// `running` | `paused` (anything not terminal).
+    pub state: String,
+    /// The tool call that launched the task, when the agent linked them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+/// The session's background work: how many launched tasks are still
+/// outstanding, which ones, and since when the session has had nothing to do
+/// but wait for them (set when a turn ends with work outstanding).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct BackgroundView {
+    pub outstanding: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<BackgroundTaskView>,
+    /// RFC 3339 UTC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_since: Option<String>,
 }
 
 /// Whether `state` is one the adapter never revises away from.
@@ -647,6 +677,21 @@ pub enum AcpEvent {
         /// `transcript_watermark` catches up (`>=`), closing the emit/refetch
         /// race without cross-namespace id dedup.
         watermark: u64,
+        /// The outstanding tasks behind `outstanding`, labelled from their
+        /// launch acks. Empty for adapters that only count.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tasks: Vec<BackgroundTaskView>,
+    },
+    /// The session's [`BackgroundView`] changed, or turns landed out of turn.
+    /// Never produced by an adapter: the event bridge derives it from
+    /// `SessionState` after any event that moved the outstanding count, the
+    /// task list or the waiting mark, and after a `BackgroundActivity` that
+    /// carried turns (the stored transcript grew with no `TurnComplete`).
+    BackgroundChanged {
+        background: BackgroundView,
+        /// The session's history generation when this was emitted, so a
+        /// connected client learns that out-of-turn growth moved it.
+        history_generation: u64,
     },
     /// A `delegate_to_agent` MCP tool call from the parent agent has spawned a
     /// child sub-session and the child's prompt is in flight. Emitted as soon

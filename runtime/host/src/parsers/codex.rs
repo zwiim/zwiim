@@ -794,35 +794,160 @@ impl AgentParser for CodexParser {
     }
 
     fn get_conversation(&self, conversation_id: &str) -> Result<ConversationDetail, ParseError> {
-        if !self.base_dir.exists() {
+        let Some(path) = self.find_conversation_file(conversation_id) else {
             return Err(ParseError::ConversationNotFound(
                 conversation_id.to_string(),
             ));
+        };
+        let (detail, children) =
+            collect_child_files(|| self.parse_conversation_detail(&path, conversation_id));
+        let mut detail = detail?;
+        remember_children(&self.base_dir, conversation_id, &path, children);
+        if let Some(title) = self.load_thread_name_index().get(conversation_id) {
+            detail.summary.title = Some(title.clone());
         }
+        Ok(detail)
+    }
 
-        // Find the conversation file by walking the directory tree
-        for entry in WalkDir::new(&self.base_dir)
+    /// The rollout, then the child rollouts its last parse read (a
+    /// sub-agent's own rollout, or the directory itself while a referenced
+    /// child is not on disk yet), then the title index. Other sessions'
+    /// rollouts in the same day directory are not stamped, so their writes
+    /// leave this session's cached parse valid.
+    ///
+    /// The parent of a forked session is not stamped either. Rollouts are
+    /// append-only, and a by-reference fork splices only the parent lines
+    /// below `forked_from_ordinal_exclusive`, which never change once the
+    /// fork exists; an inline-replay fork carries its own copy of them.
+    /// Caveat: parent lines without an ordinal are spliced regardless, so a
+    /// line appended to the parent without one is not seen until this
+    /// session's own rollout changes.
+    fn transcript_files(&self, conversation_id: &str) -> Vec<PathBuf> {
+        let Some(main) = self.find_conversation_file(conversation_id) else {
+            return Vec::new();
+        };
+        let mut files = vec![main.clone()];
+        files.extend(known_children(&self.base_dir, conversation_id, &main));
+        if let Some(home) = self.base_dir.parent() {
+            files.push(home.join("session_index.jsonl"));
+        }
+        files
+    }
+}
+
+impl CodexParser {
+    /// The rollout whose file name carries the conversation id.
+    /// Resolved once per conversation and kept while the file is there, so a
+    /// reload does not walk every rollout on disk.
+    fn find_conversation_file(&self, conversation_id: &str) -> Option<PathBuf> {
+        let key = (self.base_dir.clone(), conversation_id.to_string());
+        if let Some(known) = resolved_rollouts().get(&key) {
+            if known.main.is_file() {
+                return Some(known.main.clone());
+            }
+        }
+        let found = self.walk_for_conversation_file(conversation_id)?;
+        let mut memo = resolved_rollouts();
+        if memo.len() >= RESOLVED_ROLLOUTS_MAX && !memo.contains_key(&key) {
+            memo.clear();
+        }
+        let entry = memo.entry(key).or_insert_with(|| ResolvedRollout {
+            main: found.clone(),
+            children: Vec::new(),
+        });
+        if entry.main != found {
+            entry.main = found.clone();
+            entry.children.clear();
+        }
+        Some(found)
+    }
+
+    fn walk_for_conversation_file(&self, conversation_id: &str) -> Option<PathBuf> {
+        if !self.base_dir.exists() {
+            return None;
+        }
+        WalkDir::new(&self.base_dir)
             .into_iter()
             .filter_map(|e| e.ok())
-        {
-            let path = entry.path().to_path_buf();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let fname = path.file_name().unwrap_or_default().to_string_lossy();
-            if fname.contains(conversation_id) {
-                let mut detail = self.parse_conversation_detail(&path, conversation_id)?;
-                if let Some(title) = self.load_thread_name_index().get(conversation_id) {
-                    detail.summary.title = Some(title.clone());
-                }
-                return Ok(detail);
-            }
-        }
-
-        Err(ParseError::ConversationNotFound(
-            conversation_id.to_string(),
-        ))
+            .map(|entry| entry.path().to_path_buf())
+            .find(|path| {
+                path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                    && path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .contains(conversation_id)
+            })
     }
+}
+
+/// A conversation's rollout and the child rollouts its last parse read.
+struct ResolvedRollout {
+    main: PathBuf,
+    children: Vec<PathBuf>,
+}
+
+/// Bound on remembered conversations; past it the memo starts over.
+const RESOLVED_ROLLOUTS_MAX: usize = 1024;
+
+type ResolvedRollouts = HashMap<(PathBuf, String), ResolvedRollout>;
+
+fn resolved_rollouts() -> std::sync::MutexGuard<'static, ResolvedRollouts> {
+    static MEMO: OnceLock<std::sync::Mutex<ResolvedRollouts>> = OnceLock::new();
+    MEMO.get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+fn resolved_rollout(base_dir: &Path, conversation_id: &str) -> Option<PathBuf> {
+    resolved_rollouts()
+        .get(&(base_dir.to_path_buf(), conversation_id.to_string()))
+        .map(|r| r.main.clone())
+}
+
+/// The child files remembered for `main`'s last parse.
+fn known_children(base_dir: &Path, conversation_id: &str, main: &Path) -> Vec<PathBuf> {
+    resolved_rollouts()
+        .get(&(base_dir.to_path_buf(), conversation_id.to_string()))
+        .filter(|r| r.main == main)
+        .map(|r| r.children.clone())
+        .unwrap_or_default()
+}
+
+fn remember_children(base_dir: &Path, conversation_id: &str, main: &Path, children: Vec<PathBuf>) {
+    let mut memo = resolved_rollouts();
+    if let Some(r) = memo.get_mut(&(base_dir.to_path_buf(), conversation_id.to_string())) {
+        if r.main == main {
+            r.children = children;
+        }
+    }
+}
+
+thread_local! {
+    /// The child files the parse running on this thread has read so far.
+    static READ_CHILDREN: std::cell::RefCell<Option<Vec<PathBuf>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Note a child file the running parse depends on.
+fn note_child_file(path: &Path) {
+    READ_CHILDREN.with(|c| {
+        if let Some(files) = c.borrow_mut().as_mut() {
+            files.push(path.to_path_buf());
+        }
+    });
+}
+
+/// `f()` and the child files it read, sorted and deduplicated.
+fn collect_child_files<T>(f: impl FnOnce() -> T) -> (T, Vec<PathBuf>) {
+    let outer = READ_CHILDREN.with(|c| c.borrow_mut().replace(Vec::new()));
+    let out = f();
+    let mut files = READ_CHILDREN.with(|c| std::mem::replace(&mut *c.borrow_mut(), outer))
+        .unwrap_or_default();
+    files.sort();
+    files.dedup();
+    (out, files)
 }
 
 fn parse_codex_json_arg(payload: &serde_json::Value) -> Option<serde_json::Value> {
@@ -2986,7 +3111,11 @@ impl CodexParser {
         depth: u8,
     ) -> Option<AgentExecutionStats> {
         let mut stats = parse_codex_subagent_stats(session_dir, agent_id);
-        let transcript = find_codex_subagent_file(session_dir, agent_id)
+        let child = find_codex_subagent_file(session_dir, agent_id);
+        // A child not on disk yet is waited for through its directory, whose
+        // stamp moves when the rollout appears.
+        note_child_file(child.as_deref().unwrap_or(session_dir));
+        let transcript = child
             .filter(|file| file != parent)
             .and_then(|file| self.read_codex_subagent_transcript(&file, depth));
         if let Some(t) = transcript {
@@ -14179,6 +14308,68 @@ mod tests {
             }),
             "{wait:#}"
         );
+    }
+
+    /// The history cache stamps only the files a reload actually reads: the
+    /// session's rollout and the child rollouts it references. Another
+    /// session writing to the same day directory leaves the entry valid; the
+    /// referenced child changing does not. The rollout path is resolved once.
+    #[test]
+    fn codex_history_cache_ignores_unrelated_same_day_rollouts() {
+        use std::cell::Cell;
+        use std::io::Write;
+        let dir = temp_session_dir("subagent-cache-stamp");
+        let parent = dir.join(format!("rollout-2026-10-19T08-31-45-{SUBAGENT_PARENT}.jsonl"));
+        let child = dir.join(format!("rollout-2026-10-19T08-31-50-{SUBAGENT_CHILD}.jsonl"));
+        let unrelated = dir.join("rollout-2026-10-19T09-00-00-01a15300-0000-7000-8000-000000000001.jsonl");
+        fs::write(&parent, SUBAGENT_PARENT_ROLLOUT).unwrap();
+        fs::write(
+            &child,
+            include_str!("testdata/rollout-2026-10-19T08-31-50-01a1521b-b7e5-7d62-aa83-c5fd5a5ea422.jsonl"),
+        )
+        .unwrap();
+        fs::write(&unrelated, "{\"type\":\"session_meta\",\"payload\":{}}\n").unwrap();
+        let append = |path: &std::path::Path| {
+            let mut f = fs::OpenOptions::new().append(true).open(path).unwrap();
+            f.write_all(b"{\"type\":\"event_msg\",\"payload\":{}}\n").unwrap();
+        };
+
+        let parser = CodexParser::with_base_dir(dir.clone());
+        let cache = crate::history_cache::HistoryCache::new(4);
+        let parses = Cell::new(0);
+        let read = || {
+            let files = parser.transcript_files(SUBAGENT_PARENT);
+            cache
+                .get_or_parse(&files, || {
+                    parses.set(parses.get() + 1);
+                    parser.get_conversation(SUBAGENT_PARENT)
+                })
+                .expect("reload")
+        };
+        // The first parse learns which children the session references; the
+        // read after it stamps them too; from then on reads hit.
+        read();
+        read();
+        read();
+        let settled = parses.get();
+        assert!(settled <= 2, "{settled} parses");
+        read();
+        assert_eq!(parses.get(), settled, "an unchanged session is a hit");
+
+        let files = parser.transcript_files(SUBAGENT_PARENT);
+        assert_eq!(files.first(), Some(&parent));
+        assert!(files.contains(&child), "the referenced child is stamped: {files:?}");
+        assert!(!files.contains(&unrelated), "an unrelated rollout is not: {files:?}");
+        assert_eq!(super::resolved_rollout(&dir, SUBAGENT_PARENT), Some(parent.clone()), "resolved once and kept");
+
+        append(&unrelated);
+        read();
+        assert_eq!(parses.get(), settled, "another session's writes leave the entry valid");
+
+        append(&child);
+        read();
+        assert_eq!(parses.get(), settled + 1, "the referenced child changing is a miss");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// The recorded sub-agent session reloaded from `parent` (its child

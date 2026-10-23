@@ -1357,7 +1357,7 @@ pub async fn get_folder_conversation_core(
         };
         tokio::task::spawn_blocking(move || -> Result<_, AppCommandError> {
             let parser = build_agent_parser(at);
-            match parser.get_conversation(&eid) {
+            match crate::history_cache::get_conversation(parser.as_ref(), &eid) {
                 Ok(d) => Ok((
                     d.turns,
                     d.session_stats,
