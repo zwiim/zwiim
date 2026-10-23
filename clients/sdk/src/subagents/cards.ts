@@ -12,9 +12,29 @@
 // so the launch reads finished while the sub-agent still works. Given the
 // session's background work (Host capability `session.background`), a card
 // whose launch is the `tool_call_id` of an outstanding task reads running.
+//
+// A background sub-agent can keep working after its turn ended, and after the
+// transcript was loaded. What it does then arrives live, under a launch that
+// only the loaded transcript holds: `lateSubagentBlocks` is that tail, shown
+// under the reloaded card, and the reply leaves those groups out
+// (`liveSubagentCards`'s `earlier`).
 
 import type { LiveTurn } from "../state/session";
-import type { HistoryBlock, LiveBlock, SessionBackground, SubagentInfo, ToolCallStatus } from "../types/protocol";
+import type {
+  HistoryBlock,
+  HistoryTurn,
+  LiveBlock,
+  SessionBackground,
+  SubagentInfo,
+  ToolCallStatus,
+} from "../types/protocol";
+
+/**
+ * A card's status: its launch's, or `interrupted` when the sub-agent stopped
+ * before it finished (the turn ended, or the session stopped, without its
+ * result). `interrupted` is the SDK's reading, never sent by the Host.
+ */
+export type SubagentCardStatus = ToolCallStatus | "interrupted";
 
 /** What one sub-agent's card shows. Unknown fields are null. */
 export interface SubagentCard<B> {
@@ -25,9 +45,9 @@ export interface SubagentCard<B> {
   prompt: string | null;
   /**
    * The launch's status; `in_progress` (running) while the sub-agent is an
-   * outstanding background task.
+   * outstanding background task, `interrupted` when it stopped unfinished.
    */
-  status: ToolCallStatus | null;
+  status: SubagentCardStatus | null;
   duration_ms: number | null;
   /** Tool calls the sub-agent itself made, not counting its sub-agents'. */
   tool_count: number;
@@ -46,7 +66,7 @@ function runningLaunches(background: SessionBackground | null | undefined): Set<
 function card<B extends { type: string }>(
   parent_id: string,
   info: SubagentInfo | undefined,
-  status: ToolCallStatus | null,
+  status: SubagentCardStatus | null,
   blocks: readonly B[],
 ): SubagentCard<B> {
   const ids = new Set<string>();
@@ -71,12 +91,14 @@ function card<B extends { type: string }>(
  * given a card's `blocks`, of the sub-agents that sub-agent launched. A
  * launch is a tool call that says it launches one or that a sub-agent has
  * spoken under. For the reply, a sub-agent whose launch is nowhere in the
- * turn comes last, so nothing it did is hidden.
+ * turn comes last, so nothing it did is hidden, unless its launch is in
+ * `earlier` (`historyLaunches`): its card is there.
  */
 export function liveSubagentCards(
   live: LiveTurn,
   blocks?: readonly LiveBlock[],
   background?: SessionBackground | null,
+  earlier?: ReadonlySet<string>,
 ): SubagentCard<LiveBlock>[] {
   const groups = live.subagents ?? {};
   const running = runningLaunches(background);
@@ -105,32 +127,84 @@ export function liveSubagentCards(
     }
   };
   visit(scope);
-  for (const parent_id of Object.keys(groups)) if (!reachable.has(parent_id)) cards.push(cardOf(parent_id));
+  for (const parent_id of Object.keys(groups)) {
+    if (!reachable.has(parent_id) && !earlier?.has(parent_id)) cards.push(cardOf(parent_id));
+  }
   return cards;
 }
 
 type HistoryToolCall = Extract<HistoryBlock, { type: "tool_call" }>;
+type HistoryResult = Extract<HistoryBlock, { type: "tool_result" }>;
 type HistoryLaunch = HistoryToolCall & { tool_call_id: string; subagent: NonNullable<HistoryToolCall["subagent"]> };
+
+const isLaunch = (b: HistoryBlock): b is HistoryLaunch =>
+  b.type === "tool_call" && b.subagent !== undefined && b.tool_call_id !== null;
+
+const BACKGROUND_STATUS = { completed: "completed", failed: "failed", stopped: "interrupted" } as const;
 
 /**
  * The cards of the sub-agents launched in a reloaded turn's `blocks` (or a
  * card's), in launch order. The status is the launch's, else its result's,
- * unless the sub-agent is still running in the background.
+ * unless the sub-agent is still running in the background; a background
+ * launch says how its task ended. `ended` is whether the turn (or the card
+ * holding `blocks`) is over: a sub-agent left unfinished then reads
+ * `interrupted`. Pass false for a turn that may still be running.
  */
 export function historySubagentCards(
   blocks: readonly HistoryBlock[],
   background?: SessionBackground | null,
+  ended = true,
 ): SubagentCard<HistoryBlock>[] {
   const running = runningLaunches(background);
-  const isError = new Map<string, boolean>();
-  for (const b of blocks) if (b.type === "tool_result" && b.tool_call_id) isError.set(b.tool_call_id, b.is_error);
-  return blocks
-    .filter((b): b is HistoryLaunch => b.type === "tool_call" && b.subagent !== undefined && b.tool_call_id !== null)
-    .map((b) => {
-      const error = isError.get(b.tool_call_id);
-      const status = running.has(b.tool_call_id)
-        ? "in_progress"
-        : (b.status ?? (error === undefined ? null : error ? "failed" : "completed"));
-      return card(b.tool_call_id, b.subagent, status, b.subagent.blocks ?? []);
-    });
+  const results = new Map<string, HistoryResult>();
+  for (const b of blocks) if (b.type === "tool_result" && b.tool_call_id) results.set(b.tool_call_id, b);
+  return blocks.filter(isLaunch).map((b) => {
+    const result = results.get(b.tool_call_id);
+    let status: SubagentCardStatus | null;
+    if (running.has(b.tool_call_id)) {
+      status = "in_progress";
+    } else if (result?.background !== undefined) {
+      // Not running and the transcript never said how it ended: it died
+      // with the session. Unknown when the session's work is unknown.
+      status =
+        result.background === null
+          ? ended && background
+            ? "interrupted"
+            : null
+          : BACKGROUND_STATUS[result.background];
+    } else {
+      status = b.status ?? (result === undefined ? null : result.is_error ? "failed" : "completed");
+      if (ended && result === undefined && (status === null || status === "pending" || status === "in_progress")) {
+        status = "interrupted";
+      }
+    }
+    return card(b.tool_call_id, b.subagent, status, b.subagent.blocks ?? []);
+  });
+}
+
+/** Every launch in `turns`, sub-agents' own included. */
+export function historyLaunches(turns: readonly HistoryTurn[]): Set<string> {
+  const ids = new Set<string>();
+  const visit = (blocks: readonly HistoryBlock[]) => {
+    for (const b of blocks) {
+      if (!isLaunch(b)) continue;
+      ids.add(b.tool_call_id);
+      visit(b.subagent.blocks ?? []);
+    }
+  };
+  for (const t of turns) visit(t.blocks);
+  return ids;
+}
+
+/**
+ * What the sub-agent of a reloaded `card` did after its transcript was
+ * loaded, arriving live; empty when nothing did. Tool calls the card already
+ * shows are left out.
+ */
+export function lateSubagentBlocks(card: SubagentCard<HistoryBlock>, live: LiveTurn): LiveBlock[] {
+  const group = live.subagents?.[card.parent_id];
+  if (!group) return [];
+  const shown = new Set<string>();
+  for (const b of card.blocks) if (b.type === "tool_call" && b.tool_call_id) shown.add(b.tool_call_id);
+  return group.blocks.filter((b) => b.type !== "tool_call" || !shown.has(b.tool_call_id));
 }

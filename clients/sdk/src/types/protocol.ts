@@ -923,6 +923,13 @@ export type HistoryBlock =
       output_preview: string | null;
       is_error: boolean;
       images?: AgentImage[];
+      /**
+       * Revision 6: set when the call launched a sub-agent that ran in the
+       * background. How the task ended, or `null` while the transcript does
+       * not say (still running, or the session stopped first). Then
+       * `output_preview` is the sub-agent's report.
+       */
+      background?: "completed" | "failed" | "stopped" | null;
     };
 
 export interface HistoryTurn {

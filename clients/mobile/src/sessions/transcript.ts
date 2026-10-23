@@ -7,7 +7,9 @@
 
 import {
   clockTime,
+  historyLaunches,
   historySubagentCards,
+  lateSubagentBlocks,
   liveSubagentCards,
   modelShortName,
   parseUnifiedDiff,
@@ -61,7 +63,8 @@ export interface SubagentItem {
   model: string | null;
   /** What it was asked to do, else its launch's title when that says more than "Agent". */
   description: string | null;
-  state: ToolState;
+  /** Interrupted: its turn ended before it did, and nothing says it finished. */
+  state: ToolState | "interrupted";
   /** How long it ran ("1m 46s"), once known. */
   duration: string | null;
   /** Tool calls it made itself. */
@@ -232,7 +235,16 @@ function subagentItem<B>(card: SubagentCard<B>, title: string | null, rows: Tran
   return {
     model: modelShortName(card.model),
     description: subagentDescription(card.description, title),
-    state: card.status === "completed" ? "done" : card.status === "failed" ? "failed" : active(card.status) ? "running" : "idle",
+    state:
+      card.status === "completed"
+        ? "done"
+        : card.status === "failed"
+          ? "failed"
+          : card.status === "interrupted"
+            ? "interrupted"
+            : active(card.status)
+              ? "running"
+              : "idle",
     duration: card.duration_ms !== null ? turnDuration(card.duration_ms) : null,
     tools: card.tool_count,
     prompt: card.prompt?.trim() || null,
@@ -257,7 +269,18 @@ export function subagentShown(
   return { promptToggle: agent.prompt !== null, prompt: promptOpen ? agent.prompt : null, rows: agent.rows };
 }
 
-function historyRows(turn: HistoryTurn, before: HistoryTurn | undefined, background: SessionBackground | null): Piece[] {
+/**
+ * A turn of the history as rows. `ended` is false while it may still be
+ * running; `live` is given when a sub-agent it launched still adds to the
+ * live turn, and that work ends the sub-agent's card.
+ */
+function historyRows(
+  turn: HistoryTurn,
+  before: HistoryTurn | undefined,
+  background: SessionBackground | null,
+  ended: boolean,
+  live: LiveTurn | undefined,
+): Piece[] {
   if (turn.role === "user") {
     const text = userText(turn.blocks);
     const files = userFiles(turn.blocks);
@@ -265,11 +288,17 @@ function historyRows(turn: HistoryTurn, before: HistoryTurn | undefined, backgro
     const revert = turn.revertible ? { turn_id: turn.turn_id, before: before ?? null } : null;
     return [{ type: "user", key: turn.turn_id, text, files, ...(revert ? { revert } : {}) }];
   }
-  return historyBlockRows(turn.blocks, turn.turn_id, background);
+  return historyBlockRows(turn.blocks, turn.turn_id, background, ended, live);
 }
 
 /** A reply's blocks (or a sub-agent's) as rows; each sub-agent is one card row. */
-function historyBlockRows(blocks: readonly HistoryBlock[], prefix: string, background: SessionBackground | null): Piece[] {
+function historyBlockRows(
+  blocks: readonly HistoryBlock[],
+  prefix: string,
+  background: SessionBackground | null,
+  ended: boolean,
+  live: LiveTurn | undefined,
+): Piece[] {
   // A result is shown with its call; one without a call stands alone if it failed.
   const results = new Map<string, Extract<HistoryBlock, { type: "tool_result" }>>();
   const called = new Set<string>();
@@ -277,7 +306,7 @@ function historyBlockRows(blocks: readonly HistoryBlock[], prefix: string, backg
     if (b.type === "tool_result" && b.tool_call_id) results.set(b.tool_call_id, b);
     if (b.type === "tool_call" && b.tool_call_id) called.add(b.tool_call_id);
   }
-  const cards = new Map(historySubagentCards(blocks, background).map((c) => [c.parent_id, c]));
+  const cards = new Map(historySubagentCards(blocks, background, ended).map((c) => [c.parent_id, c]));
   // Cards are keyed by launch order, never by id: ids can differ after a reload.
   let launches = 0;
   const rows: Piece[] = [];
@@ -296,7 +325,13 @@ function historyBlockRows(blocks: readonly HistoryBlock[], prefix: string, backg
           const at = `${prefix}:agent${launches++}`;
           // Its result's text repeats the sub-agent's last reply; its images, after what it did, do not.
           const images = imageRows(at, results.get(card.parent_id)?.images);
-          const inner = fold([...historyBlockRows(card.blocks, at, background), ...images]);
+          const going = card.status === "in_progress";
+          const late = live ? lateSubagentBlocks(card, live) : [];
+          const inner = fold([
+            ...historyBlockRows(card.blocks, at, background, ended && !going, live),
+            ...(live && late.length > 0 ? liveBlockRows(live, late, `${at}:late`, going, background) : []),
+            ...images,
+          ]);
           rows.push({ type: "subagent", key: at, agent: subagentItem(card, b.title, inner) });
           return;
         }
@@ -335,20 +370,27 @@ function historyBlockRows(blocks: readonly HistoryBlock[], prefix: string, backg
   return rows;
 }
 
-function liveRows(turn: LiveTurn, prefix: string, running: boolean, background: SessionBackground | null): Piece[] {
+function liveRows(
+  turn: LiveTurn,
+  prefix: string,
+  running: boolean,
+  background: SessionBackground | null,
+  earlier: ReadonlySet<string>,
+): Piece[] {
   const rows: Piece[] = [];
   const turnKey = `${prefix}:${turn.userMessage?.message_id ?? turn.message?.message_id ?? "turn"}`;
   const text = turn.userMessage ? userText(turn.userMessage.blocks) : "";
   const files = turn.userMessage ? userFiles(turn.userMessage.blocks) : [];
   if (text || files.length > 0) rows.push({ type: "user", key: `${turnKey}:user`, text, files });
-  rows.push(...liveBlockRows(turn, undefined, turnKey, running, background));
+  rows.push(...liveBlockRows(turn, undefined, turnKey, running, background, earlier));
   return rows;
 }
 
 /**
  * The live reply's blocks, or given a card's `blocks` that sub-agent's, as
  * rows; each sub-agent is one card row. For the reply, a sub-agent whose
- * launch is not in it comes last.
+ * launch is not in it comes last, unless its launch is in `earlier` (the
+ * history's card shows it).
  */
 function liveBlockRows(
   turn: LiveTurn,
@@ -356,9 +398,10 @@ function liveBlockRows(
   prefix: string,
   running: boolean,
   background: SessionBackground | null,
+  earlier?: ReadonlySet<string>,
 ): Piece[] {
   const scope = blocks ?? turn.message?.content ?? [];
-  const all = liveSubagentCards(turn, blocks, background);
+  const all = liveSubagentCards(turn, blocks, background, earlier);
   const cards = new Map(all.map((c) => [c.parent_id, c]));
   const inScope = new Set(scope.flatMap((b) => (b.type === "tool_call" ? [b.tool_call_id] : [])));
   // Cards are keyed by launch order, never by id: ids can differ after a reload.
@@ -470,6 +513,7 @@ const sameInputs = (a: HistoryInputs, b: HistoryInputs) => a.length === b.length
  */
 export function transcriptBuilder(): (view: SessionView | undefined) => TranscriptRow[] {
   let kept: { inputs: HistoryInputs; pieces: Piece[]; rows: TranscriptRow[] } | null = null;
+  let shown: { inputs: HistoryInputs; turns: HistoryTurn[]; launches: Map<string, number> } | null = null;
   return (view) => {
     if (!view) return [];
     const running = view.agentStatus === "prompting";
@@ -477,22 +521,39 @@ export function transcriptBuilder(): (view: SessionView | undefined) => Transcri
     const stopped = busy ? null : stopText(view);
     const background = view.background ?? null;
     const shownLive = !!view.settled || !!view.live.userMessage || !!view.live.message;
-    const inputs = [
+    const turnInputs = [
       view.history,
       view.live.userMessage && userKey(view.live.userMessage.blocks),
       view.settled?.userMessage && userKey(view.settled.userMessage.blocks),
+    ];
+    if (!shown || !sameInputs(shown.inputs, turnInputs)) {
+      const turns = historyBefore(view.history ?? [], view);
+      // Each launch in the history, by its turn: a background sub-agent can
+      // keep working after its turn, and its live work shows on its card there.
+      const launches = new Map(turns.flatMap((t, i) => [...historyLaunches([t])].map((id) => [id, i] as const)));
+      shown = { inputs: turnInputs, turns, launches };
+    }
+    const { turns, launches } = shown;
+    const lateTurns = new Set(Object.keys(view.live.subagents ?? {}).flatMap((id) => launches.get(id) ?? []));
+    const inputs = [
+      ...turnInputs,
       background,
       shownLive,
       busy,
       stopped,
+      // Only while a history card takes live work, so the rest of the time
+      // the live turn streaming leaves the history's rows alone.
+      lateTurns.size > 0 ? view.live.subagents : null,
+      lateTurns.size > 0 ? view.live.toolCalls : null,
     ];
     if (!kept || !sameInputs(kept.inputs, inputs)) {
-      const pieces = historyPieces(view, busy, stopped, shownLive, background);
+      const pieces = historyPieces(view, turns, lateTurns, busy, stopped, shownLive, background);
       kept = { inputs, pieces, rows: fold(pieces) };
     }
+    const earlier = new Set(launches.keys());
     const live: Piece[] = [];
-    if (view.settled) live.push(...liveRows(view.settled, "settled", false, background));
-    live.push(...liveRows(view.live, "live", running, background));
+    if (view.settled) live.push(...liveRows(view.settled, "settled", false, background, earlier));
+    live.push(...liveRows(view.live, "live", running, background, earlier));
     // A run of tool calls across the history's end and the live turn folds as one.
     const joined = kept.pieces.at(-1)?.type === "tool" && live[0]?.type === "tool";
     const rows = joined ? fold([...kept.pieces, ...live]) : [...kept.rows, ...fold(live)];
@@ -505,19 +566,21 @@ export function transcriptBuilder(): (view: SessionView | undefined) => Transcri
 
 function historyPieces(
   view: SessionView,
+  turns: readonly HistoryTurn[],
+  lateTurns: ReadonlySet<number>,
   busy: boolean,
   stopped: string | null,
   shownLive: boolean,
   background: SessionBackground | null,
 ): Piece[] {
-  const turns = historyBefore(view.history ?? [], view);
   // Under each answered prompt: how long it ran, when it ended, what it changed.
   const groups = new Map(turnGroups(turns).map((g) => [g.end, g]));
   const pieces: Piece[] = [];
   turns.forEach((turn, i) => {
-    pieces.push(...historyRows(turn, turns[i - 1], background));
-    const g = groups.get(i);
     const last = i === turns.length - 1 && !shownLive;
+    const live = lateTurns.has(i) ? view.live : undefined;
+    pieces.push(...historyRows(turn, turns[i - 1], background, !(last && busy), live));
+    const g = groups.get(i);
     // The agent may still be answering the history's last prompt.
     if (!g || (last && busy)) return;
     const time = [g.durationMs !== null ? turnDuration(g.durationMs) : "", g.completedAt ? clockTime(g.completedAt) : ""];

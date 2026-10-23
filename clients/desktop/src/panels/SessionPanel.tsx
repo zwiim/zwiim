@@ -4,6 +4,7 @@ import { ArrowDown, ArrowUp, GitBranch, GitBranchPlus, Loader2, Paperclip, Squar
 import {
   effortFor,
   hasCapability,
+  historyLaunches,
   isClientError,
   offersChatRewind,
   optionUnavailableDetails,
@@ -13,6 +14,7 @@ import {
   type AgentType,
   type ChoiceOption,
   type HistoryTurn,
+  type LiveTurn,
   type OpParams,
   type OptionsRequest,
   type PromptBlock,
@@ -454,6 +456,14 @@ function OpenSession({
   const footers = useMemo(() => new Map((history ? turnGroups(history) : []).map((g) => [g.end, g])), [history]);
   // A prompt already in the history while the agent still answers it has no row yet.
   const runningEnd = running && !view?.live.userMessage && history?.length ? history.length - 1 : -1;
+  // Each launch in the history, by its turn: a background sub-agent can keep
+  // working after its turn, and its live work shows under its card there.
+  const launchTurns = useMemo(
+    () => new Map(turns.flatMap((t, i) => [...historyLaunches([t])].map((id) => [id, i] as const))),
+    [turns],
+  );
+  const earlier = useMemo(() => new Set(launchTurns.keys()), [launchTurns]);
+  const lateTurns = new Set(Object.keys(view?.live.subagents ?? {}).flatMap((id) => launchTurns.get(id) ?? []));
   const empty =
     view?.history?.length === 0 && !view.settled && !view.live.userMessage && !view.live.message && !running;
 
@@ -560,13 +570,23 @@ function OpenSession({
                       onRevert={removed ? undefined : askReset}
                       revertDisabled={running || !online}
                       background={view?.background ?? null}
+                      ended={i !== runningEnd}
+                      live={lateTurns.has(i) ? view?.live : undefined}
                     />
                   ))}
                 </div>
               </KeptStateContext.Provider>
             )}
-            {view?.settled && <LiveTurnView turn={view.settled} background={view.background} />}
-            {view && <LiveTurnView turn={view.live} streaming={running} animate background={view.background} />}
+            {view?.settled && <LiveTurnView turn={view.settled} background={view.background} earlier={earlier} />}
+            {view && (
+              <LiveTurnView
+                turn={view.live}
+                streaming={running}
+                animate
+                background={view.background}
+                earlier={earlier}
+              />
+            )}
             {/* The turn is over but its background work is not: say so where the turn ended. */}
             <BackgroundWaiting background={view?.background} className="animate-fade-in motion-reduce:animate-none" />
             {stopped && (
@@ -753,6 +773,8 @@ const HistoryRow = memo(function HistoryRow({
   onRevert,
   revertDisabled,
   background,
+  ended,
+  live,
 }: {
   index: number;
   measure(el: HTMLElement | null): void;
@@ -761,6 +783,9 @@ const HistoryRow = memo(function HistoryRow({
   onRevert?(index: number): void;
   revertDisabled: boolean;
   background: SessionBackground | null;
+  ended: boolean;
+  /** Only for a turn whose sub-agent is still adding to the live turn, so the rest do not redraw as it streams. */
+  live: LiveTurn | undefined;
 }) {
   const revert = useCallback(() => onRevert?.(index), [onRevert, index]);
   return (
@@ -770,6 +795,8 @@ const HistoryRow = memo(function HistoryRow({
         onRevert={onRevert && revert}
         revertDisabled={revertDisabled}
         background={background}
+        ended={ended}
+        live={live}
       />
       {group && <TurnFooter group={group} stateKey={`${turn.turn_id}/footer`} />}
     </div>

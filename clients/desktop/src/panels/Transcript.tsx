@@ -26,6 +26,7 @@ import {
 import {
   clockTime,
   historySubagentCards,
+  lateSubagentBlocks,
   liveSubagentCards,
   modelShortName,
   subagentDescription,
@@ -74,6 +75,7 @@ const STATUS_LABEL: Record<string, string> = {
   in_progress: "running",
   completed: "done",
   failed: "failed",
+  interrupted: "interrupted",
 };
 
 const VERB_ICONS: Record<string, typeof Terminal> = {
@@ -642,6 +644,7 @@ function SubagentCardView({
   const description = subagentDescription(card.description, title);
   const running = card.status === "in_progress" || card.status === "pending";
   const failed = card.status === "failed";
+  const interrupted = card.status === "interrupted";
   const tools = card.tool_count === 1 ? "1 tool" : `${card.tool_count} tools`;
   const prompt = card.prompt?.trim();
   return (
@@ -693,7 +696,15 @@ function SubagentCardView({
             <X className="size-3" /> failed
           </span>
         )}
-        {card.status && !failed && <span className="sr-only">{STATUS_LABEL[card.status] ?? card.status}</span>}
+        {/* Stopped unfinished: said plainly, muted, since nothing went wrong in it. */}
+        {interrupted && (
+          <span className="text-muted-foreground shrink-0 text-xs" data-testid="subagent-interrupted">
+            interrupted
+          </span>
+        )}
+        {card.status && !failed && !interrupted && (
+          <span className="sr-only">{STATUS_LABEL[card.status] ?? card.status}</span>
+        )}
         <ChevronRight
           className={cn(
             "text-muted-foreground size-3 shrink-0 opacity-0 transition-[rotate,opacity] duration-180 ease-in-out group-hover/row:opacity-100",
@@ -775,6 +786,8 @@ export const HistoryTurnView = memo(function HistoryTurnView({
   onRevert,
   revertDisabled,
   background,
+  ended = true,
+  live,
 }: {
   turn: HistoryTurn;
   /** Offered on a message the Host can put the session back to. */
@@ -782,6 +795,10 @@ export const HistoryTurnView = memo(function HistoryTurnView({
   revertDisabled?: boolean;
   /** The session's background work: a sub-agent still at it reads running. */
   background?: SessionBackground | null;
+  /** False while the turn may still be running: an unfinished sub-agent is not yet interrupted. */
+  ended?: boolean;
+  /** The live turn, when a sub-agent this turn launched is still adding to it. */
+  live?: LiveTurn;
 }) {
   if (turn.role === "user") {
     const text = userText(turn.blocks);
@@ -805,30 +822,41 @@ export const HistoryTurnView = memo(function HistoryTurnView({
   }
   return (
     <div className="text-body flex flex-col gap-2.5">
-      <HistoryBlocks blocks={turn.blocks} background={background ?? null} scope={turn.turn_id} />
+      <HistoryBlocks
+        blocks={turn.blocks}
+        background={background ?? null}
+        scope={turn.turn_id}
+        ended={ended}
+        live={live}
+      />
     </div>
   );
 });
 
 /**
  * A reply's blocks as the transcript shows them, or a sub-agent's: its
- * launches (the tool calls that started a sub-agent) as sub-agent cards.
+ * launches (the tool calls that started a sub-agent) as sub-agent cards. A
+ * card ends with what its sub-agent did since the transcript was loaded.
  */
 function HistoryBlocks({
   blocks,
   background,
   scope,
+  ended,
+  live,
 }: {
   blocks: readonly HistoryBlock[];
   background: SessionBackground | null;
   /** The turn's id, or the card's place under it: what open state is kept under. */
   scope: string;
+  ended: boolean;
+  live: LiveTurn | undefined;
 }) {
   // A result is shown with its call; one without a call stands alone.
   const results = new Map<string, Extract<HistoryBlock, { type: "tool_result" }>>();
   for (const b of blocks) if (b.type === "tool_result" && b.tool_call_id) results.set(b.tool_call_id, b);
   const called = new Set(blocks.flatMap((b) => (b.type === "tool_call" && b.tool_call_id ? [b.tool_call_id] : [])));
-  const cards = new Map(historySubagentCards(blocks, background).map((c) => [c.parent_id, c]));
+  const cards = new Map(historySubagentCards(blocks, background, ended).map((c) => [c.parent_id, c]));
   // Cards keep their open state by launch order within the turn, never by id.
   let launches = 0;
   return (
@@ -848,7 +876,21 @@ function HistoryBlocks({
               const stateKey = `${scope}/${key}`;
               return (
                 <SubagentCardView key={key} card={card} title={b.title} images={images} stateKey={stateKey}>
-                  {() => <HistoryBlocks blocks={card.blocks} background={background} scope={stateKey} />}
+                  {() => {
+                    const late = live ? lateSubagentBlocks(card, live) : [];
+                    return (
+                      <>
+                        <HistoryBlocks
+                          blocks={card.blocks}
+                          background={background}
+                          scope={stateKey}
+                          ended={ended && card.status !== "in_progress"}
+                          live={live}
+                        />
+                        {live && late.length > 0 && <LiveBlocks turn={live} blocks={late} background={background} />}
+                      </>
+                    );
+                  }}
                 </SubagentCardView>
               );
             }
@@ -902,12 +944,15 @@ export function LiveTurnView({
   streaming,
   animate,
   background,
+  earlier,
 }: {
   turn: LiveTurn;
   streaming?: boolean;
   animate?: boolean;
   /** The session's background work: a sub-agent still at it reads running. */
   background?: SessionBackground | null;
+  /** Launches in the history: their sub-agents' live work shows under their cards there. */
+  earlier?: ReadonlySet<string>;
 }) {
   const text = turn.userMessage ? userText(turn.userMessage.blocks) : "";
   const enter = animate ? ENTER : undefined;
@@ -915,7 +960,7 @@ export function LiveTurnView({
   return (
     <div className="text-body flex flex-col gap-2.5" data-testid="live-turn">
       {turn.userMessage && <UserMessage text={text} blocks={turn.userMessage.blocks} className={enter} />}
-      <LiveBlocks turn={turn} background={background ?? null} enter={enter} />
+      <LiveBlocks turn={turn} background={background ?? null} enter={enter} earlier={earlier} />
       {streaming && <Working className={enter} turnId={turn.userMessage?.message_id} />}
     </div>
   );
@@ -924,21 +969,24 @@ export function LiveTurnView({
 /**
  * The live reply's blocks, or (given `blocks`) a sub-agent's: its launches
  * as sub-agent cards. The reply's also ends with any sub-agent whose launch
- * it does not hold, so nothing a sub-agent did is hidden.
+ * it does not hold, so nothing a sub-agent did is hidden, unless its launch
+ * is in `earlier`.
  */
 function LiveBlocks({
   turn,
   blocks,
   background,
   enter,
+  earlier,
 }: {
   turn: LiveTurn;
   blocks?: readonly LiveBlock[];
   background: SessionBackground | null;
   enter?: string;
+  earlier?: ReadonlySet<string>;
 }) {
   const scope = blocks ?? turn.message?.content ?? [];
-  const all = liveSubagentCards(turn, blocks, background);
+  const all = liveSubagentCards(turn, blocks, background, earlier);
   const cards = new Map(all.map((c) => [c.parent_id, c]));
   const inScope = new Set(scope.flatMap((b) => (b.type === "tool_call" ? [b.tool_call_id] : [])));
   const orphans = all.filter((c) => !inScope.has(c.parent_id));

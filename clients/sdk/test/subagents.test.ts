@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { applyEvent, initialSessionView, reduceSession, type SessionFrame } from "../src/state/session";
-import { historySubagentCards, liveSubagentCards } from "../src/subagents/cards";
+import { historyLaunches, historySubagentCards, lateSubagentBlocks, liveSubagentCards } from "../src/subagents/cards";
 import { subagentDescription, waitingText } from "../src/subagents/labels";
 import { modelShortName } from "../src/subagents/model";
-import type { HistoryBlock, SessionEvent, SessionSnapshot, ToolCall } from "../src/types/protocol";
+import type { HistoryBlock, HistoryTurn, SessionEvent, SessionSnapshot, ToolCall } from "../src/types/protocol";
 
 const ev = (seq: number, type: string, payload: unknown): SessionFrame => ({
   type: "event",
@@ -304,6 +304,91 @@ describe("background sub-agents", () => {
     expect(historySubagentCards(blocks)[0]!.status).toBe("completed");
     expect(historySubagentCards(blocks, background("agent"))[0]!.status).toBe("in_progress");
     expect(historySubagentCards(blocks, null)[0]!.status).toBe("completed");
+  });
+
+  const launch = (id: string, result?: Partial<Extract<HistoryBlock, { type: "tool_result" }>>): HistoryBlock[] => [
+    { type: "tool_call", tool_call_id: id, title: "Agent", input_preview: null, status: "completed", subagent: {} },
+    ...(result ? [{ type: "tool_result" as const, tool_call_id: id, output_preview: null, is_error: false, ...result }] : []),
+  ];
+
+  it("a background launch reads how its task ended, whatever the launch says", () => {
+    const status = (background: "completed" | "failed" | "stopped" | null, session = background === null ? background0 : null) =>
+      historySubagentCards(launch("agent", { background }), session)[0]!.status;
+    const background0 = background("agent", 0);
+    expect(status("completed")).toBe("completed");
+    expect(status("failed")).toBe("failed");
+    expect(status("stopped")).toBe("interrupted");
+    // Never said and not running: it died with the session.
+    expect(status(null)).toBe("interrupted");
+    expect(status(null, background("agent"))).toBe("in_progress");
+    // Unknown while the session's work is unknown, or the turn may still be running.
+    expect(status(null, null)).toBeNull();
+    expect(historySubagentCards(launch("agent", { background: null }), background0, false)[0]!.status).toBeNull();
+  });
+
+  it("a launch with no result reads interrupted once its turn is over", () => {
+    const blocks: HistoryBlock[] = [
+      { type: "tool_call", tool_call_id: "a", title: "Agent", input_preview: null, status: null, subagent: {} },
+      { type: "tool_call", tool_call_id: "b", title: "Agent", input_preview: null, status: "in_progress", subagent: {} },
+      { type: "tool_call", tool_call_id: "c", title: "Agent", input_preview: null, status: "failed", subagent: {} },
+    ];
+    expect(historySubagentCards(blocks).map((c) => c.status)).toEqual(["interrupted", "interrupted", "failed"]);
+    expect(historySubagentCards(blocks, null, false).map((c) => c.status)).toEqual([null, "in_progress", "failed"]);
+    // Still running in the background is not interrupted.
+    expect(historySubagentCards(blocks, background("a"))[0]!.status).toBe("in_progress");
+  });
+});
+
+describe("sub-agents of earlier turns", () => {
+  const nested: HistoryBlock = {
+    type: "tool_call",
+    tool_call_id: "outer",
+    title: "Agent",
+    input_preview: null,
+    status: null,
+    subagent: {
+      blocks: [
+        { type: "tool_call", tool_call_id: "inner", title: "Agent", input_preview: null, status: null, subagent: {} },
+        { type: "tool_call", tool_call_id: "read", title: "Read", input_preview: null, status: null },
+      ],
+    },
+  };
+  const turn = (blocks: HistoryBlock[]): HistoryTurn => ({
+    turn_id: "t",
+    role: "assistant",
+    blocks,
+    timestamp: "2026-10-22T10:00:00Z",
+    completed_at: null,
+    duration_ms: null,
+    model: null,
+    usage: null,
+  });
+
+  it("finds every launch in history, nested ones too", () => {
+    expect([...historyLaunches([turn([{ type: "text", text: "hi" }]), turn([nested])])].sort()).toEqual(["inner", "outer"]);
+  });
+
+  it("the reply leaves out sub-agents whose card is in history", () => {
+    const v = [
+      ev(1, "agent.subagent_message_delta", { parent_id: "outer", text: "late" }),
+      ev(2, "agent.subagent_message_delta", { parent_id: "stray", text: "?" }),
+    ].reduce(reduceSession, initialSessionView("s1"));
+    expect(liveSubagentCards(v.live, undefined, null, new Set(["outer"])).map((c) => c.parent_id)).toEqual(["stray"]);
+  });
+
+  it("what a reloaded sub-agent did since arrives as its late blocks, without repeats", () => {
+    const v = [
+      ev(1, "agent.tool_call", call("read", "Read", { parent_id: "outer", status: "completed" })),
+      ev(2, "agent.tool_call", call("grep", "Grep", { parent_id: "outer" })),
+      ev(3, "agent.subagent_message_delta", { parent_id: "outer", text: "found it" }),
+    ].reduce(reduceSession, initialSessionView("s1"));
+    const [card] = historySubagentCards([nested]);
+    expect(lateSubagentBlocks(card!, v.live)).toEqual([
+      { type: "tool_call", tool_call_id: "grep" },
+      { type: "text", text: "found it" },
+    ]);
+    const [inner] = historySubagentCards(card!.blocks);
+    expect(lateSubagentBlocks(inner!, v.live)).toEqual([]);
   });
 });
 

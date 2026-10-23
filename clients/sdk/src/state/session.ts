@@ -24,6 +24,7 @@ import type {
   Usage,
   WireError,
 } from "../types/protocol";
+import { historyLaunches } from "../subagents/cards";
 
 export type AttachState = "idle" | "attaching" | "live" | "detached" | "error";
 
@@ -105,6 +106,57 @@ const turnIsEmpty = (t: LiveTurn) =>
   Object.keys(t.toolCalls).length === 0 &&
   Object.keys(t.subagents ?? {}).length === 0;
 
+/**
+ * The sub-agents in `t` that the reply does not reach, at any depth: ones
+ * launched in an earlier turn, still working in the background.
+ */
+function launchedEarlier(t: LiveTurn): Set<string> {
+  const groups = t.subagents ?? {};
+  const reached = new Set<string>();
+  const visit = (blocks: readonly LiveBlock[]) => {
+    for (const b of blocks) {
+      if (b.type !== "tool_call" || reached.has(b.tool_call_id)) continue;
+      reached.add(b.tool_call_id);
+      visit(groups[b.tool_call_id]?.blocks ?? []);
+    }
+  };
+  visit(t.message?.content ?? []);
+  return new Set(Object.keys(groups).filter((id) => !reached.has(id)));
+}
+
+/** `t` without sub-agents `ids`, and those sub-agents (with their tool calls) as a turn of their own. */
+function takeSubagents(t: LiveTurn, ids: ReadonlySet<string>): [rest: LiveTurn, taken: LiveTurn] {
+  const taken = emptyTurn();
+  if (ids.size === 0) return [t, taken];
+  const kept: Record<string, LiveSubagent> = {};
+  const takenGroups: Record<string, LiveSubagent> = {};
+  const toolCalls = { ...t.toolCalls };
+  for (const [id, group] of Object.entries(t.subagents ?? {})) {
+    if (!ids.has(id)) {
+      kept[id] = group;
+      continue;
+    }
+    takenGroups[id] = group;
+    for (const b of group.blocks) {
+      const call = b.type === "tool_call" ? toolCalls[b.tool_call_id] : undefined;
+      if (call === undefined) continue;
+      taken.toolCalls[call.tool_call_id] = call;
+      delete toolCalls[call.tool_call_id];
+    }
+  }
+  const rest: LiveTurn = { ...t, toolCalls };
+  if (Object.keys(kept).length > 0) rest.subagents = kept;
+  else delete rest.subagents;
+  if (Object.keys(takenGroups).length > 0) taken.subagents = takenGroups;
+  return [rest, taken];
+}
+
+/**
+ * A finished turn split in two: its own part, to settle, and what sub-agents
+ * launched earlier did in it, which stays live into the next turn.
+ */
+const settleTurn = (t: LiveTurn) => takeSubagents(t, launchedEarlier(t));
+
 const blockText = (blocks: readonly { type: string; text?: string }[]) =>
   blocks
     .map((b) => (b.type === "text" ? (b.text ?? "") : ""))
@@ -169,14 +221,19 @@ export function reduceSession(view: SessionView, frame: SessionFrame): SessionVi
       return applyDetached(view, frame.reason);
     case "error":
       return { ...view, attach: "error", attachError: frame.error };
-    case "history":
+    case "history": {
+      // Sub-agents of earlier turns: what they did so far is in the history now.
+      const launches = historyLaunches(frame.turns);
+      const covered = new Set([...launchedEarlier(view.live)].filter((id) => launches.has(id)));
       return {
         ...view,
+        live: takeSubagents(view.live, covered)[0],
         history: frame.turns,
         historyGeneration: frame.generation ?? null,
         historyStale: false,
         settled: null,
       };
+    }
     case "options":
       return { ...view, options: keepRewindHint(view.options, frame.options) };
   }
@@ -358,11 +415,11 @@ export function applyEvent(view: SessionView, ev: SessionEvent): SessionView {
     }
     case "agent.user_message": {
       // A new turn starts; an unsettled previous turn stays until history catches up.
-      const settled = turnIsEmpty(live) ? view.settled : live;
+      const [own, earlier] = settleTurn(live);
       return {
         ...next,
-        settled,
-        live: { userMessage: ev.payload, message: null, toolCalls: {} },
+        settled: turnIsEmpty(own) ? view.settled : own,
+        live: { ...earlier, userMessage: ev.payload },
         lastStopReason: null,
         // Status travels only in snapshots; turn boundaries are its events.
         agentStatus: "prompting",
@@ -392,16 +449,18 @@ export function applyEvent(view: SessionView, ev: SessionEvent): SessionView {
       return view.pendingRequest?.request_id === ev.payload.request_id
         ? { ...next, pendingRequest: null }
         : next;
-    case "agent.turn_complete":
+    case "agent.turn_complete": {
+      const [own, earlier] = settleTurn(live);
       return {
         ...next,
-        live: emptyTurn(),
-        settled: turnIsEmpty(live) ? view.settled : live,
+        live: earlier,
+        settled: turnIsEmpty(own) ? view.settled : own,
         pendingRequest: null,
         agentStatus: view.agentStatus === null ? null : "connected",
         lastStopReason: ev.payload.stop_reason,
         historyStale: true,
       };
+    }
     case "agent.error":
       return { ...next, lastError: ev.payload };
     case "session.status":

@@ -104,10 +104,16 @@ describe("evaluateCompatibility", () => {
 
   it("asks for background work at revision 5; an older Host is limited, not broken", () => {
     expect(CLIENT_CAPABILITIES).toContain("session.background");
-    expect(CLIENT_REVISION).toBe(5);
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(5);
     const old = evaluateCompatibility(hello({ revision: 4, min_client_revision: 1, capabilities: ["agent.subagents"] }));
     expect(old.status).toBe("limited");
     expect(hasCapability(old, "session.background")).toBe(false);
+  });
+
+  it("speaks revision 6, which says how a background launch ended", () => {
+    expect(CLIENT_REVISION).toBe(6);
+    // The field is optional: a revision-5 Host is still compatible.
+    expect(evaluateCompatibility(hello({ revision: 5, min_client_revision: 1 })).status).not.toBe("update_required");
   });
 
   it("a different protocol major is incompatible and names the older side", () => {

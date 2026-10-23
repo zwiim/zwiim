@@ -376,12 +376,81 @@ describe("history generation and background work", () => {
     expect(v.historyStale).toBe(false);
   });
 
-  it("a turn with only sub-agent work is not empty", () => {
+  it("sub-agent work under a launch from an earlier turn stays live past the turn", () => {
     const v = run([
       { type: "snapshot", epoch: "e1", seq: 1, snapshot: { ...baseSnapshot, live_message: null, tool_calls: [], pending_user_message: null } },
       { type: "event", event: ev(2, "agent.subagent_message_delta", { parent_id: "launch", text: "child works" }) },
       { type: "event", event: ev(3, "agent.turn_complete", { stop_reason: "end_turn" }) },
     ]);
-    expect(v.settled?.subagents).toEqual({ launch: { blocks: [{ type: "text", text: "child works" }] } });
+    expect(v.live.subagents).toEqual({ launch: { blocks: [{ type: "text", text: "child works" }] } });
+    expect(v.settled).toBeNull();
+  });
+});
+
+describe("sub-agents across turns", () => {
+  const idle: SessionSnapshot = { ...baseSnapshot, status: "connected", live_message: null, tool_calls: [], pending_user_message: null };
+  const childCall = { tool_call_id: "c1", title: "Read a.ts", kind: "read", status: "in_progress", content: null, parent_id: "bg" };
+  const launchTurn = (id: string): HistoryTurn => ({
+    turn_id: "t1",
+    role: "assistant",
+    blocks: [
+      {
+        type: "tool_call",
+        tool_call_id: id,
+        title: "Agent",
+        input_preview: null,
+        status: "completed",
+        subagent: { description: "Scan", blocks: [] },
+      },
+    ],
+    timestamp: "2026-10-22T10:00:00Z",
+    completed_at: null,
+    duration_ms: null,
+    model: null,
+    usage: null,
+  });
+
+  it("a new turn carries on the background sub-agent's work and settles only its own", () => {
+    const v = run([
+      { type: "snapshot", epoch: "e1", seq: 1, snapshot: idle },
+      { type: "event", event: ev(2, "agent.tool_call", childCall) },
+      { type: "event", event: ev(3, "agent.user_message", { message_id: "u2", blocks: [{ type: "text", text: "next" }] }) },
+      { type: "event", event: ev(4, "agent.subagent_message_delta", { parent_id: "bg", text: "done" }) },
+      { type: "event", event: ev(5, "agent.tool_call", { tool_call_id: "own", title: "Agent", kind: "think", status: "in_progress", content: null }) },
+      { type: "event", event: ev(6, "agent.subagent_message_delta", { parent_id: "own", text: "mine" }) },
+      { type: "event", event: ev(7, "agent.turn_complete", { stop_reason: "end_turn" }) },
+    ]);
+    // Nothing of the earlier sub-agent was settled with the empty turn before.
+    expect(v.settled?.userMessage?.message_id).toBe("u2");
+    expect(v.settled?.subagents).toEqual({ own: { blocks: [{ type: "text", text: "mine" }] } });
+    expect(Object.keys(v.settled?.toolCalls ?? {})).toEqual(["own"]);
+    expect(v.live.userMessage).toBeNull();
+    expect(v.live.subagents).toEqual({ bg: { blocks: [{ type: "tool_call", tool_call_id: "c1" }, { type: "text", text: "done" }] } });
+    expect(v.live.toolCalls).toEqual({ c1: childCall });
+  });
+
+  it("a loaded history that holds the launch takes over what its sub-agent did so far", () => {
+    const base = run([
+      { type: "snapshot", epoch: "e1", seq: 1, snapshot: idle },
+      { type: "event", event: ev(2, "agent.tool_call", childCall) },
+      { type: "event", event: ev(3, "agent.subagent_message_delta", { parent_id: "other", text: "?" }) },
+    ]);
+    const v = reduceSession(base, { type: "history", turns: [launchTurn("bg")] });
+    expect(v.live.subagents).toEqual({ other: { blocks: [{ type: "text", text: "?" }] } });
+    expect(v.live.toolCalls).toEqual({});
+    // Later work arrives live again, under the reloaded launch.
+    const later = reduceSession(v, { type: "event", event: ev(4, "agent.subagent_message_delta", { parent_id: "bg", text: "more" }) });
+    expect(later.live.subagents?.bg).toEqual({ blocks: [{ type: "text", text: "more" }] });
+  });
+
+  it("history leaves the running turn's own sub-agents alone", () => {
+    const v = run([
+      { type: "snapshot", epoch: "e1", seq: 1, snapshot: idle },
+      { type: "event", event: ev(2, "agent.user_message", { message_id: "u2", blocks: [{ type: "text", text: "go" }] }) },
+      { type: "event", event: ev(3, "agent.tool_call", { tool_call_id: "bg", title: "Agent", kind: "think", status: "in_progress", content: null }) },
+      { type: "event", event: ev(4, "agent.subagent_message_delta", { parent_id: "bg", text: "x" }) },
+      { type: "history", turns: [launchTurn("bg")] },
+    ]);
+    expect(v.live.subagents).toEqual({ bg: { blocks: [{ type: "text", text: "x" }] } });
   });
 });

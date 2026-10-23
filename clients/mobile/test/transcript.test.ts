@@ -337,6 +337,43 @@ describe("sub-agent cards", () => {
     expect(types(live)).toEqual(["user", "tool"]);
   });
 
+  it("reads a sub-agent its finished turn never heard back from as interrupted", () => {
+    const unanswered = history([
+      turn("t0", "user", [{ type: "text", text: "go" }]),
+      turn("t1", "assistant", [
+        { type: "tool_call", tool_call_id: "a1", title: "Task", input_preview: null, status: null, subagent: { description: "Survey", blocks: [] } },
+      ] as never),
+    ]);
+    const v = view(unanswered);
+    expect(agentOf(v).state).toBe("interrupted");
+    expect(subagentLabel(agentOf(v))).toBe("Agent, Survey, interrupted");
+    // While the agent may still be answering that prompt, it is not.
+    expect(agentOf(reduceSession(view(unanswered), snapshot("prompting"))).state).toBe("idle");
+  });
+
+  it("shows a background sub-agent's work after a reload on its card in the history", () => {
+    const build = transcriptBuilder();
+    const past = history([
+      turn("t0", "user", [{ type: "text", text: "go" }]),
+      turn("t1", "assistant", [
+        { type: "tool_call", tool_call_id: "a1", title: "Task", input_preview: null, status: "completed", subagent: { description: "Review", blocks: [{ type: "text", text: "started" }] } },
+        { type: "tool_result", tool_call_id: "a1", output_preview: "launched", is_error: false, background: null },
+      ] as never),
+    ]);
+    let v = play(view(past), background(1, null, "a1"), ev("agent.subagent_message_delta", { parent_id: "a1", text: "found more" }));
+    let rows = build(v);
+    expect(rows.map((r) => r.type)).toEqual(["user", "subagent", "footer"]);
+    let agent = cards(v)[0]!.agent;
+    expect(agent.state).toBe("running");
+    expect(agent.rows.map((r) => (r.type === "agent" ? r.text : r.type))).toEqual(["started", "found more"]);
+    // Its later work redraws the card, from the same builder.
+    v = play(v, childTool("r1", "a1", "Read src/a.ts"));
+    rows = build(v);
+    agent = (rows[1] as Extract<TranscriptRow, { type: "subagent" }>).agent;
+    expect(agent.rows.map((r) => r.type)).toEqual(["agent", "agent", "tool"]);
+    expect(rows).toEqual(transcriptRows(v));
+  });
+
   it("says what the idle agent waits on and since when, then clears", () => {
     expect(waitingText(1)).toBe("Waiting on 1 background task");
     expect(waitingText(3)).toBe("Waiting on 3 background tasks");

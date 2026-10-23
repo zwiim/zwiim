@@ -1047,6 +1047,49 @@ describe("sub-agent cards", () => {
     controller.dispose();
   });
 
+  it("reads a sub-agent its finished turn never heard back from as interrupted", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        turn("t1", "assistant", [
+          { type: "tool_call", tool_call_id: "a1", title: "Task", input_preview: null, status: null, subagent: { description: "Survey", blocks: [] } },
+        ]),
+      ],
+    });
+    const { controller } = await openSession(t);
+    const [card] = cards();
+    expect(card!.getAttribute("data-status")).toBe("interrupted");
+    expect(within(card!).getByTestId("subagent-interrupted").textContent).toBe("interrupted");
+    expect(within(card!).queryByText("failed")).toBeNull();
+    controller.dispose();
+  });
+
+  it("shows a background sub-agent's work after a reload under its card in the history", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        turn("t1", "assistant", [
+          { type: "tool_call", tool_call_id: "a1", title: "Task", input_preview: null, status: "completed", subagent: { description: "Review", blocks: [{ type: "text", text: "started" }] } },
+          { type: "tool_result", tool_call_id: "a1", output_preview: "launched", is_error: false, background: null },
+        ]),
+      ],
+    });
+    const { controller, frame } = await openSession(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "connected" }) });
+    await frame(event(2, "session.background", { outstanding: 1, tasks: [{ task_id: "t1", label: "Review", state: "running", tool_call_id: "a1" }], waiting_since: null }));
+    await frame(event(3, "agent.subagent_message_delta", { parent_id: "a1", text: "found more" }));
+    expect(cards()).toHaveLength(1);
+    const [card] = cards();
+    expect(card!.getAttribute("data-status")).toBe("in_progress");
+    fireEvent.click(row(card!));
+    const body = within(card!).getByTestId("subagent-body");
+    expect(within(body).getByText("started")).toBeTruthy();
+    expect(within(body).getByText("found more")).toBeTruthy();
+    controller.dispose();
+  });
+
   it("keeps an older Host's agent launch as a plain tool row", async () => {
     const t = new FakeTransport();
     t.handlers["session.history"] = (p) => ({

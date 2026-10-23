@@ -473,6 +473,11 @@ export function SubagentRow({
           <T variant="monoSm" color={theme.err} testID="subagent-failed">
             ✕ failed
           </T>
+        ) : agent.state === "interrupted" ? (
+          // Stopped unfinished: said plainly, muted, since nothing went wrong in it.
+          <T variant="monoSm" color={theme.mut} testID="subagent-interrupted">
+            interrupted
+          </T>
         ) : null}
         <T variant="mono" color={theme.mut}>
           {open ? "▾" : "▸"}

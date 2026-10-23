@@ -28,6 +28,7 @@ use crate::acp::types::{
     AcpEvent, BackgroundView, EventEnvelope, PermissionOptionInfo, UserMessageBlock,
 };
 use crate::models::agent::AgentType;
+use crate::parsers::claude::BACKGROUND_TASK_MARKER;
 use crate::models::message::{
     AgentExecutionStats, ContentBlock, ImageData, MessageTurn, TurnRole,
 };
@@ -1084,14 +1085,40 @@ fn history_block(block: &ContentBlock, root: Option<&str>) -> Value {
             output_preview,
             is_error,
             ..
-        } => json!({
-            "type": "tool_result",
-            "tool_call_id": tool_use_id,
-            "output_preview": output_preview.as_deref().map(|t| tool_content(t, root)),
-            "is_error": is_error,
-        }),
+        } => match output_preview.as_deref().and_then(background_task) {
+            Some((status, report)) => json!({
+                "type": "tool_result",
+                "tool_call_id": tool_use_id,
+                "output_preview": report.map(|t| tool_content(&t, root)),
+                "is_error": is_error,
+                "background": status,
+            }),
+            None => json!({
+                "type": "tool_result",
+                "tool_call_id": tool_use_id,
+                "output_preview": output_preview.as_deref().map(|t| tool_content(t, root)),
+                "is_error": is_error,
+            }),
+        },
         ContentBlock::Thinking { text } => json!({ "type": "thought", "text": text }),
     }
+}
+
+/// The answer to a launch that runs in the background, which the transcript
+/// readers rewrite to the task's outcome (see `BACKGROUND_TASK_MARKER`): how
+/// it ended as clients see it (`completed`, `failed`, `stopped`, or null
+/// while the transcript does not say), and the sub-agent's report, if any.
+/// Never the task's id. `None` for any other answer.
+fn background_task(preview: &str) -> Option<(Option<&'static str>, Option<String>)> {
+    let raw = preview.strip_prefix(BACKGROUND_TASK_MARKER)?;
+    let task: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+    let status = task.get("status").and_then(Value::as_str).map(|s| match s {
+        "completed" => "completed",
+        "killed" | "stopped" | "canceled" | "cancelled" => "stopped",
+        _ => "failed",
+    });
+    let report = task.get("result").and_then(Value::as_str).map(str::to_owned);
+    Some((status, report))
 }
 
 #[cfg(test)]
@@ -2633,6 +2660,78 @@ pub(crate) mod tests {
         let with_children: Vec<_> = blocks.iter().filter(|b| b.get("subagent").is_some()).collect();
         assert_eq!(with_children.len(), 1);
         assert_eq!(with_children[0]["subagent"]["blocks"].as_array().unwrap().len(), 6);
+    }
+
+    fn background_answer(id: &str, task: Value) -> ContentBlock {
+        ContentBlock::ToolResult {
+            tool_use_id: Some(id.into()),
+            output_preview: Some(format!("{BACKGROUND_TASK_MARKER}{task}")),
+            is_error: false,
+            agent_stats: None,
+            images: vec![],
+        }
+    }
+
+    #[test]
+    fn history_background_launch_says_how_it_ended_without_the_task() {
+        let report = "Found it in /w/p/src/a.rs";
+        let cases = [
+            (json!({ "task_id": "a1", "status": null, "summary": null, "result": null }), Value::Null, Value::Null),
+            (
+                json!({ "task_id": "a1", "status": "completed", "summary": "Agent \"x\" completed", "result": report }),
+                json!("completed"),
+                json!("Found it in src/a.rs"),
+            ),
+            (json!({ "task_id": "a1", "status": "killed", "summary": null, "result": null }), json!("stopped"), Value::Null),
+            (json!({ "task_id": "a1", "status": "cancelled", "summary": null, "result": null }), json!("stopped"), Value::Null),
+            (json!({ "task_id": "a1", "status": "timed_out", "summary": null, "result": null }), json!("failed"), Value::Null),
+        ];
+        for (task, status, output) in cases {
+            let turns = agent_turn(vec![
+                agent_tool_use("toolu_01Agent", r#"{"description":"Find tests","prompt":"p","run_in_background":true}"#),
+                background_answer("toolu_01Agent", task),
+            ]);
+            let v = project_history(&turns, Some("/w/p"));
+            let result = &v[0]["blocks"][1];
+            assert_eq!(result["type"], "tool_result");
+            assert_eq!(result["background"], status, "{v}");
+            assert_eq!(result["output_preview"], output, "{v}");
+            let text = v.to_string();
+            assert!(!text.contains(BACKGROUND_TASK_MARKER) && !text.contains("a1"), "{text}");
+        }
+    }
+
+    #[test]
+    fn history_background_answer_reads_the_same_in_a_sub_agent() {
+        let mut child = child_transcript("/w/p");
+        child.blocks = vec![
+            agent_tool_use("toolu_01Nested", r#"{"description":"Go deeper","prompt":"Dig"}"#),
+            background_answer("toolu_01Nested", json!({ "task_id": "a2", "status": "failed", "summary": null, "result": null })),
+        ];
+        let turns = agent_turn(vec![
+            agent_tool_use("toolu_01Agent", r#"{"description":"Find tests","prompt":"p"}"#),
+            agent_result("toolu_01Agent", Some(stats_with(Some(child)))),
+        ]);
+        let v = project_history(&turns, Some("/w/p"));
+        let inner = &v[0]["blocks"][0]["subagent"]["blocks"][1];
+        assert_eq!(inner["background"], "failed", "{v}");
+        assert!(inner["output_preview"].is_null(), "{v}");
+    }
+
+    #[test]
+    fn history_other_answers_carry_no_background() {
+        let v = project_history(&agent_turn_with_children("/w/p"), Some("/w/p"));
+        assert!(v[0]["blocks"][1].get("background").is_none(), "{v}");
+        let broken = agent_turn(vec![ContentBlock::ToolResult {
+            tool_use_id: Some("toolu_01Agent".into()),
+            output_preview: Some(format!("{BACKGROUND_TASK_MARKER}{{not json")),
+            is_error: false,
+            agent_stats: None,
+            images: vec![],
+        }]);
+        let v = project_history(&broken, None);
+        assert_eq!(v[0]["blocks"][0]["background"], Value::Null, "{v}");
+        assert!(v[0]["blocks"][0]["output_preview"].is_null(), "the marker never reaches a client: {v}");
     }
 
     #[test]

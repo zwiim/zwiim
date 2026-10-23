@@ -43,7 +43,13 @@ use serde::{Deserialize, Serialize};
 /// the session started waiting on them; snapshots and `session.history`
 /// carry `history_generation` so a client re-reads history only when it
 /// changed. Older clients ignore the new event and fields.
-pub const PROTOCOL_REVISION: u32 = 5;
+///
+/// Revision 6 (background outcome): in `session.history`, the result of a
+/// launch that ran in the background carries `background`, how the task
+/// ended (`completed`, `failed`, `stopped`, or null while the transcript does
+/// not say), and its `output_preview` is the sub-agent's report. Older
+/// clients ignore the field.
+pub const PROTOCOL_REVISION: u32 = 6;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -201,6 +207,8 @@ mod tests {
     fn background_is_served() {
         assert!(CAPABILITIES.contains(&"session.background"));
         const _: () = assert!(PROTOCOL_REVISION >= 5);
+        // How a background launch ended is a field of revision 6.
+        const _: () = assert!(PROTOCOL_REVISION >= 6);
     }
 
     #[test]
