@@ -32,6 +32,39 @@ have their own versions and are listed under Compatibility.
 ### Known limitations
 - None.
 
+## [0.1.0-rc.10] - 2026-10-24
+
+### Added
+- Reset a session to before one of its messages, on Desktop and mobile: "Reset to here" under a message puts the workspace's files back to how they were when that turn started and, when the agent supports it, takes the chat back too. HEAD, branches and ignored files are never touched, and the files being replaced are saved first so nothing is lost. The Host saves a Git checkpoint at the start and end of every agent turn, kept under `refs/zwiim/checkpoints/` and removed with the session.
+- Sub-agents from Claude and Codex show as one expandable row at their launch ("Agent • Sonnet 5.5"): their task, tool count, tokens spent and time, opening to their prompt and what they did, live, after a reconnect and from history. A sub-agent that keeps working after its turn stays with its launch, and one that was stopped reads "interrupted".
+- While the agent waits on background work, the transcript (Desktop) and the Now bar (mobile) say how many tasks and for how long.
+- The GitHub CLI (gh 2.102.1, MIT) ships inside the Desktop app and the Host update, so GitHub features work without installing gh.
+
+### Changed
+- Desktop folds three or more consecutive tool calls into one "n tool calls" row that opens to the calls, as mobile does.
+- Long transcripts stay smooth: Desktop draws only the turns in view and only the live turn redraws while a reply streams; mobile keeps its history rows unchanged while streaming.
+- Reconnecting skips history reloads the Host says are not needed, and a far-behind re-attach gets a fresh snapshot instead of a long replay.
+
+### Fixed
+- Codex sub-agents' work was dropped; it now shows under the sub-agent's launch.
+- Claude sub-agents' text was dropped and their tool calls showed flat in the main reply.
+
+### Security
+- None.
+
+### Compatibility
+- Protocol revision 7. New capabilities: `session.revert`, `session.revert.chat`, `agent.subagents`, `session.background`. `session.options` carries `can_rewind_chat`; history turns carry `revertible`; snapshots and history carry `history_generation`.
+
+### Provider changes
+- Codex is told it supports native sub-agent sessions, so codex-acp forwards sub-agents' work.
+
+### Migration notes
+- None. Turns from before this version have no checkpoints and cannot be reset.
+
+### Known limitations
+- A Claude sub-agent's tokens appear when it finishes; its tool count is live throughout.
+- Resetting the chat of a session's first turn is refused (there is no reply before it); its files can still be reset.
+
 ## [0.1.0-rc.9] - 2026-10-17
 
 ### Added
