@@ -7,6 +7,7 @@ import type {
   CloneJob,
   HostFeedEvent,
   HostSnapshot,
+  KeepAwakeStatus,
   PrState,
   SessionSummary,
   TerminalInfo,
@@ -282,6 +283,28 @@ describe("clones", () => {
 
   it("default to none for a Host without clones", () => {
     expect(fromSnapshot({}).clones).toEqual({});
+  });
+});
+
+describe("keep awake", () => {
+  const keepAwake: KeepAwakeStatus = {
+    supported: true,
+    mode: "always",
+    on_battery: false,
+    lid_closed: { support: "no_lid", enabled: false },
+    active: true,
+    blocked_by: null,
+    warnings: [],
+    power: { source: "ac", battery_percent: null },
+  };
+
+  it("keeps the Mac's keep-awake status from the snapshot and the feed", () => {
+    expect(fromSnapshot({}).keepAwake).toBeNull();
+    let s = fromSnapshot({ keep_awake: keepAwake });
+    expect(s.keepAwake).toEqual(keepAwake);
+    const later = { ...keepAwake, active: false, blocked_by: "on_battery" as const };
+    s = apply(s, { type: "host.keep_awake_changed", payload: later });
+    expect(s.keepAwake).toEqual(later);
   });
 });
 

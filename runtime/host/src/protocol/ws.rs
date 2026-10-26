@@ -225,6 +225,7 @@ fn host_snapshot_frame(snapshot: HostSnapshot) -> Value {
         "sessions": snapshot.sessions,
         "terminals": snapshot.terminals,
         "prs": snapshot.prs,
+        "keep_awake": snapshot.keep_awake,
     })
 }
 

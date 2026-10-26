@@ -40,6 +40,7 @@ use crate::acp::types::{AcpEvent, ConnectionStatus, EventEnvelope};
 use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::git_harness::{GitError, GitErrorCode};
+use crate::power::KeepAwakeStatus;
 use crate::pr_watch::{self, PrCmd, PrEntry, PrResult, PrTarget, PrWatchConfig};
 use crate::protocol::http::SessionSummary;
 use crate::session;
@@ -97,6 +98,8 @@ pub struct HostSnapshot {
     /// Clone jobs in progress or finished within the retention period,
     /// oldest first.
     pub clones: Vec<CloneJob>,
+    /// What keeping the host awake is doing; `None` until it first looked.
+    pub keep_awake: Option<KeepAwakeStatus>,
 }
 
 /// How long `git.pr { refresh }` waits for GitHub.
@@ -112,6 +115,7 @@ struct Projection {
     terminals: BTreeMap<String, TerminalSummary>,
     prs: BTreeMap<String, PrEntry>,
     clones: Vec<CloneJob>,
+    keep_awake: Option<KeepAwakeStatus>,
 }
 
 impl Projection {
@@ -129,6 +133,7 @@ impl Projection {
             terminals: self.terminals.values().cloned().collect(),
             prs: self.prs.clone(),
             clones: self.clones.clone(),
+            keep_awake: self.keep_awake.clone(),
         }
     }
 }
@@ -233,6 +238,7 @@ async fn start(state: &Arc<AppState>, prs: PrWatchConfig) -> Result<Arc<Shared>,
     let web_rx = state.event_broadcaster.subscribe();
     let bus_rx = state.acp_event_bus.subscribe();
     let clones_rx = state.clones.subscribe();
+    let mut keep_awake_rx = state.keep_awake.subscribe();
     let (pr_results, pr_rx) = mpsc::unbounded_channel();
     let pr_cmd = pr_watch::spawn(state.db.conn.clone(), state.data_dir.clone(), prs, pr_results);
     let mut task = FeedTask {
@@ -249,6 +255,7 @@ async fn start(state: &Arc<AppState>, prs: PrWatchConfig) -> Result<Arc<Shared>,
     };
     task.projection.workspaces = workspace::list(&task.db).await?;
     task.projection.clones = task.clones.list();
+    task.projection.keep_awake = keep_awake_rx.borrow_and_update().clone();
     let ids: Vec<String> = task
         .projection
         .workspaces
@@ -266,7 +273,14 @@ async fn start(state: &Arc<AppState>, prs: PrWatchConfig) -> Result<Arc<Shared>,
         tx,
         prs: pr_cmd,
     });
-    tokio::spawn(task.run(shared.clone(), web_rx, bus_rx, pr_rx, clones_rx));
+    tokio::spawn(task.run(
+        shared.clone(),
+        web_rx,
+        bus_rx,
+        pr_rx,
+        clones_rx,
+        keep_awake_rx,
+    ));
     Ok(shared)
 }
 
@@ -408,6 +422,7 @@ impl FeedTask {
         mut bus_rx: broadcast::Receiver<Arc<EventEnvelope>>,
         mut pr_rx: mpsc::UnboundedReceiver<PrResult>,
         mut clones_rx: tokio::sync::watch::Receiver<u64>,
+        mut keep_awake_rx: tokio::sync::watch::Receiver<Option<KeepAwakeStatus>>,
     ) {
         let (recheck_tx, mut recheck_rx) = mpsc::unbounded_channel::<()>();
         let mut stale = Stale::default();
@@ -432,6 +447,14 @@ impl FeedTask {
                     self.apply_pr(&shared, result);
                     continue;
                 }
+                r = keep_awake_rx.changed() => match r {
+                    Ok(()) => {
+                        let status = keep_awake_rx.borrow_and_update().clone();
+                        self.apply_keep_awake(&shared, status);
+                        continue;
+                    }
+                    Err(_) => return,
+                },
             }
             // Fold whatever is already queued into this pass.
             for _ in 0..MAX_INPUTS_PER_PASS {
@@ -651,6 +674,7 @@ impl FeedTask {
             terminals,
             prs,
             clones,
+            keep_awake: old.keep_awake.clone(),
         };
         self.publish(shared, events);
         self.sync_watchers().await;
@@ -701,6 +725,17 @@ impl FeedTask {
         }
         let event = pr_changed(&result.workspace_id, &result.entry);
         self.publish(shared, vec![event]);
+    }
+
+    /// Publish what keeping the host awake does now, if that changed.
+    fn apply_keep_awake(&mut self, shared: &Shared, status: Option<KeepAwakeStatus>) {
+        if status == self.projection.keep_awake {
+            return;
+        }
+        self.projection.keep_awake = status.clone();
+        let Some(status) = status else { return };
+        let payload = serde_json::to_value(&status).unwrap_or(Value::Null);
+        self.publish(shared, vec![("host.keep_awake_changed", payload)]);
     }
 
     /// Tell the PR watcher which workspaces to follow when that changed.
@@ -2109,5 +2144,63 @@ esac
         assert_eq!(job.state, crate::workspace::clone::CloneState::Cloning);
         assert!(f.state.clones.cancel(&id).unwrap());
         feed.until("cancelled", clone_is(id, "cancelled")).await;
+    }
+
+    // ── keep awake ──────────────────────────────────────────────────────
+
+    fn keep_awake(active: bool) -> crate::power::KeepAwakeStatus {
+        use crate::power::backend::{LidSupport, PowerSource};
+        crate::power::KeepAwakeStatus {
+            supported: true,
+            mode: crate::power::policy::Mode::Always,
+            on_battery: false,
+            lid_closed: crate::power::LidClosedStatus {
+                support: LidSupport::NoLid,
+                enabled: false,
+            },
+            active,
+            blocked_by: None,
+            warnings: Vec::new(),
+            power: crate::power::PowerStatus {
+                source: PowerSource::Ac,
+                battery_percent: None,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn keep_awake_streams_and_is_in_the_snapshot() {
+        let f = fixture().await;
+        let (snapshot, mut feed) = f.subscribe().await;
+        assert!(snapshot.keep_awake.is_none());
+
+        f.state.keep_awake.send_replace(Some(keep_awake(true)));
+        let changed: Vec<_> = feed
+            .drain(500)
+            .await
+            .into_iter()
+            .filter(|e| e.kind == "host.keep_awake_changed")
+            .collect();
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        assert_eq!(changed[0].payload["active"], true);
+        assert_eq!(changed[0].payload["mode"], "always");
+        let (snapshot, _) = f.subscribe().await;
+        assert_eq!(snapshot.keep_awake, Some(keep_awake(true)));
+
+        // The same status again is no change.
+        f.state.keep_awake.send_replace(Some(keep_awake(true)));
+        let again = feed.drain(300).await;
+        assert!(
+            again.iter().all(|e| e.kind != "host.keep_awake_changed"),
+            "{again:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_status_published_before_the_feed_started_is_in_its_first_snapshot() {
+        let f = fixture().await;
+        f.state.keep_awake.send_replace(Some(keep_awake(false)));
+        let (snapshot, _) = f.subscribe().await;
+        assert_eq!(snapshot.keep_awake, Some(keep_awake(false)));
     }
 }

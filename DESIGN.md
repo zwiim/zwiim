@@ -606,7 +606,10 @@ Secondary settings, grouped list:
   this phone is allowed and returns to Hosts with the not-paired state.
   **Pair another device** row: explains pairing happens by scanning a code
   shown on the Mac.
-- **Host**: host name, host id (mono, copyable), Zwiim version from `host.hello`.
+- **Host**: host name, host id (mono, copyable), Zwiim version from `host.hello`,
+  and whether the Mac stays reachable (dot `done` when kept awake, `faint`
+  otherwise; 'Mac on battery: may sleep'; warnings in `mut`; hidden while the
+  Host is out of reach). Read-only: the setting lives on the Mac.
 - **Account**: email, Sign out.
 - **Appearance**: System / Dark / Light.
 

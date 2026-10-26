@@ -79,8 +79,8 @@ impl Supervisor {
         tokio::spawn(async move {
             loop {
                 let seen = self.asked.load(Ordering::SeqCst);
-                let (config, _, decision) = evaluate(self.backend.as_ref(), &state).await;
-                {
+                let (config, power, decision) = evaluate(self.backend.as_ref(), &state).await;
+                let active = {
                     let mut hold = self.hold.lock().unwrap_or_else(|e| e.into_inner());
                     if hold.as_mut().is_some_and(|h| !h.is_alive()) {
                         tracing::warn!("[power] hold ended on its own; replacing it");
@@ -97,7 +97,22 @@ impl Supervisor {
                     } else if !decision.hold_idle && hold.take().is_some() {
                         tracing::info!("[power] released ({})", release_reason(&config, &decision));
                     }
-                }
+                    hold.as_mut().is_some_and(|h| h.is_alive())
+                };
+                let status = super::status_of(
+                    self.backend.capabilities(),
+                    &config,
+                    &power,
+                    decision,
+                    active,
+                );
+                state.keep_awake.send_if_modified(|old| {
+                    if old.as_ref() == Some(&status) {
+                        return false;
+                    }
+                    *old = Some(status);
+                    true
+                });
                 self.passes.send_replace(seen);
 
                 tokio::select! {
@@ -187,6 +202,7 @@ mod tests {
     };
     use crate::power::config;
     use crate::power::policy::Mode;
+    use crate::power::KeepAwakeStatus;
     use crate::web::event_bridge::EventEmitter;
 
     const AC: PowerSnapshot = PowerSnapshot {
@@ -429,6 +445,61 @@ mod tests {
             .await
             .unwrap();
         assert!(sup.active_now(true).await);
+    }
+
+    /// Waits up to 2 s for a published status that satisfies `ok`.
+    async fn published(state: &AppState, ok: impl Fn(&KeepAwakeStatus) -> bool) -> KeepAwakeStatus {
+        let mut rx = state.keep_awake.subscribe();
+        let wait = async {
+            rx.wait_for(|s| s.as_ref().is_some_and(&ok))
+                .await
+                .map(|s| s.clone())
+        };
+        match tokio::time::timeout(Duration::from_secs(2), wait).await {
+            Ok(Ok(Some(s))) => s,
+            _ => panic!("published: {:?}", *state.keep_awake.borrow()),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pass_publishes_what_it_did() {
+        let rig = Rig::new(cfg(Mode::Always, false)).await;
+        let fake = FakeBackend::new();
+        let sup = Supervisor::with_recheck(fake.clone(), Duration::from_secs(60));
+        sup.clone().run(rig.state.clone());
+        let s = published(&rig.state, |s| s.active).await;
+        assert_eq!(s.mode, Mode::Always);
+        assert_eq!(s.blocked_by, None);
+
+        fake.set_power(PowerSnapshot {
+            source: PowerSource::Battery,
+            battery_percent: Some(80),
+            ..AC
+        });
+        sup.nudge();
+        let s = published(&rig.state, |s| !s.active).await;
+        assert_eq!(s.blocked_by, Some(Blocker::OnBattery));
+        assert_eq!(s.power.source, PowerSource::Battery);
+        assert_eq!(s.power.battery_percent, Some(80));
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_pass_publishes_nothing() {
+        let rig = Rig::new(cfg(Mode::Always, false)).await;
+        let fake = FakeBackend::new();
+        let sup = Supervisor::with_recheck(fake.clone(), Duration::from_secs(60));
+        sup.clone().run(rig.state.clone());
+        published(&rig.state, |s| s.active).await;
+        let mut rx = rig.state.keep_awake.subscribe();
+        rx.borrow_and_update();
+        let mut passes = sup.passes.subscribe();
+        passes.borrow_and_update();
+        sup.nudge();
+        tokio::time::timeout(Duration::from_secs(2), passes.changed())
+            .await
+            .expect("another pass")
+            .unwrap();
+        assert!(!rx.has_changed().unwrap(), "an unchanged pass published");
     }
 
     /// A real `caffeinate`, held for exactly as long as a turn runs.

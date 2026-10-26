@@ -17,8 +17,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::app_state::AppState;
 use crate::protocol::error::ZwiimError;
-use backend::{LidSupport, PowerBackend, PowerSource};
-use policy::{Blocker, Mode, Warning};
+use backend::{Capabilities, LidSupport, PowerBackend, PowerSnapshot, PowerSource};
+use config::KeepAwakeConfig;
+use policy::{Blocker, Decision, Mode, Warning};
 use supervisor::Supervisor;
 
 /// The supervisor this host runs, once [`spawn`] started it.
@@ -70,7 +71,7 @@ pub struct KeepAwakePatch {
     pub lid_closed: Option<bool>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct KeepAwakeStatus {
     /// False where the host cannot keep the computer awake.
     pub supported: bool,
@@ -85,13 +86,13 @@ pub struct KeepAwakeStatus {
     pub power: PowerStatus,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LidClosedStatus {
     pub support: LidSupport,
     pub enabled: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PowerStatus {
     pub source: PowerSource,
     pub battery_percent: Option<u8>,
@@ -100,9 +101,30 @@ pub struct PowerStatus {
 /// `host.keep_awake.status`, read fresh.
 pub async fn status(state: &AppState) -> Result<KeepAwakeStatus, ZwiimError> {
     let backend = backend().await;
-    let caps = backend.capabilities();
     let (config, power, decision) = supervisor::evaluate(backend.as_ref(), state).await;
-    Ok(KeepAwakeStatus {
+    let active = match RUNNING.get() {
+        Some(s) => s.active_now(decision.hold_idle).await,
+        None => false,
+    };
+    Ok(status_of(
+        backend.capabilities(),
+        &config,
+        &power,
+        decision,
+        active,
+    ))
+}
+
+/// The status a reader sees, from one evaluation and whether a hold is in
+/// place.
+fn status_of(
+    caps: Capabilities,
+    config: &KeepAwakeConfig,
+    power: &PowerSnapshot,
+    decision: Decision,
+    active: bool,
+) -> KeepAwakeStatus {
+    KeepAwakeStatus {
         supported: caps.idle,
         mode: config.mode,
         on_battery: config.on_battery,
@@ -110,17 +132,14 @@ pub async fn status(state: &AppState) -> Result<KeepAwakeStatus, ZwiimError> {
             support: caps.lid,
             enabled: config.lid_closed,
         },
-        active: match RUNNING.get() {
-            Some(s) => s.active_now(decision.hold_idle).await,
-            None => false,
-        },
+        active,
         blocked_by: decision.blocked_by,
         warnings: decision.warnings,
         power: PowerStatus {
             source: power.source,
             battery_percent: power.battery_percent,
         },
-    })
+    }
 }
 
 /// `host.keep_awake.set`: change the setting, remember it, and act on it now.

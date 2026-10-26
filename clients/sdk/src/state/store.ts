@@ -11,6 +11,7 @@ import type {
   HostHello,
   HostOwner,
   HostSnapshot,
+  KeepAwakeStatus,
   PrEntry,
   SessionSummary,
   TerminalInfo,
@@ -49,6 +50,8 @@ export interface HostState {
   prs: Record<string, PrEntry>;
   /** GitHub clones in flight or recently finished, by `clone_id`. */
   clones: Record<string, CloneJob>;
+  /** Whether the host keeps its Mac awake, as the feed last said; null until it does. */
+  keepAwake: KeepAwakeStatus | null;
 }
 
 export type HostAction =
@@ -79,6 +82,7 @@ export function initialHostState(): HostState {
     diffRevision: {},
     prs: {},
     clones: {},
+    keepAwake: null,
   };
 }
 
@@ -156,6 +160,7 @@ export function reduceHost(state: HostState, action: HostAction): HostState {
         diffRevision,
         prs: action.snapshot.prs ?? {},
         clones: Object.fromEntries((action.snapshot.clones ?? []).map((c) => [c.clone_id, c])),
+        keepAwake: action.snapshot.keep_awake ?? null,
       };
     }
     case "host_event":
@@ -240,6 +245,8 @@ function reduceFeedEvent(state: HostState, event: HostFeedEvent): HostState {
       const { [event.payload.clone_id]: _gone, ...clones } = state.clones;
       return { ...state, clones };
     }
+    case "host.keep_awake_changed":
+      return { ...state, keepAwake: event.payload };
     default:
       // An event from a newer Host: ignore it, keep the state.
       return state;

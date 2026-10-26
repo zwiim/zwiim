@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { Bot, Info, Monitor, Moon, Network, Settings2, Smartphone, Sun, UserRound, X } from "lucide-react";
-import type { KeepAwakeMode, KeepAwakeStatus } from "@zwiim/sdk";
+import { reachability, type KeepAwakeMode, type KeepAwakeStatus, type Reachability } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import type { AccountState } from "@/lib/account";
 import type { NativeBridge } from "@/lib/bridge";
-import { errorMessage, useController } from "@/lib/host-context";
+import { errorMessage, useController, useHost } from "@/lib/host-context";
 import { rememberTheme, theme, type Theme } from "@/lib/prefs";
 import { applyTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
@@ -165,43 +165,39 @@ const WARNINGS: Record<KeepAwakeStatus["warnings"][number], string> = {
 };
 
 /** What the host is doing about sleep right now, and the dot that goes with it. */
-function reachability(s: KeepAwakeStatus): { text: string; dot: string } {
-  if (s.mode === "off") return { text: "This Mac sleeps as usual", dot: "bg-faint" };
-  // While working, the host blocks only once a turn starts; say so before.
-  const battery = s.power.source === "battery";
-  const percent = s.power.battery_percent;
-  const onBattery = s.blocked_by === "on_battery" || (battery && !s.on_battery);
-  const lowBattery = s.blocked_by === "low_battery" || (battery && percent !== null && percent < 10);
-  // Same order as the host: the 10% floor applies whatever the checkbox.
-  if (lowBattery) return { text: "Will sleep: battery below 10%", dot: "bg-faint" };
-  if (onBattery) return { text: "Will sleep: on battery", dot: "bg-faint" };
-  if (s.blocked_by === "thermal") return { text: "Will sleep: Mac is too hot", dot: "bg-faint" };
-  if (s.active) return { text: "Reachable: holding awake", dot: "bg-done" };
-  if (s.mode === "while_working") return { text: "Reachable while agents work", dot: "bg-faint" };
-  // Always, nothing in the way, yet no hold: the host tried and could not.
-  return { text: "Could not keep this Mac awake", dot: "bg-faint" };
-}
+const REACHABILITY: Record<Exclude<Reachability, "unsupported">, { text: string; dot: string }> = {
+  off: { text: "This Mac sleeps as usual", dot: "bg-faint" },
+  low_battery: { text: "Will sleep: battery below 10%", dot: "bg-faint" },
+  on_battery: { text: "Will sleep: on battery", dot: "bg-faint" },
+  thermal: { text: "Will sleep: Mac is too hot", dot: "bg-faint" },
+  held: { text: "Reachable: holding awake", dot: "bg-done" },
+  while_working: { text: "Reachable while agents work", dot: "bg-faint" },
+  not_held: { text: "Could not keep this Mac awake", dot: "bg-faint" },
+};
 
 /**
  * This computer's host keeps the Mac awake so phones can still reach it,
- * and says plainly when it will sleep anyway. Follows the host while open.
+ * and says plainly when it will sleep anyway. Follows the host feed while open.
  */
 function KeepReachable() {
   const controller = useController();
-  const [status, setStatus] = useState<KeepAwakeStatus | null>(null);
+  const fed = useHost((s) => s.keepAwake);
+  const [status, setStatus] = useState<KeepAwakeStatus | null>(fed);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    const load = () => controller.client.request("host.keep_awake.status", {}).then(setStatus, () => {});
-    load();
-    const timer = setInterval(load, 15000);
-    return () => clearInterval(timer);
+    if (fed) setStatus(fed);
+  }, [fed]);
+  useEffect(() => {
+    // A Host that has not fed the status yet (or never will) is asked once.
+    if (controller.store.getState().keepAwake) return;
+    controller.client.request("host.keep_awake.status", {}).then(setStatus, () => {});
   }, [controller]);
   if (!status?.supported) return null;
   const send = (patch: Partial<{ mode: KeepAwakeMode; on_battery: boolean }>) => {
     setError(null);
     controller.client.request("host.keep_awake.set", patch).then(setStatus, (err) => setError(errorMessage(err)));
   };
-  const now = reachability(status);
+  const now = REACHABILITY[reachability(status) as Exclude<Reachability, "unsupported">];
   return (
     <section className="flex flex-col gap-1 rounded-md border p-3">
       <span className="font-medium">Keep this Mac reachable</span>

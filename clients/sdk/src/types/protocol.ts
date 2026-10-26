@@ -1083,6 +1083,7 @@ export type HostFeedEvent = { seq: number } & (
   | { type: "workspace.pr_changed"; payload: { workspace_id: string } & PrEntry }
   | { type: "clone.changed"; payload: { clone: CloneJob } }
   | { type: "clone.removed"; payload: { clone_id: string } }
+  | { type: "host.keep_awake_changed"; payload: KeepAwakeStatus }
 );
 
 /** The feed's baseline: what `workspace.list`, `session.list` and `terminal.list` return. */
@@ -1098,6 +1099,8 @@ export interface HostSnapshot {
   prs?: Record<string, PrEntry>;
   /** GitHub clones in flight or recently finished (older Hosts omit it). */
   clones?: CloneJob[];
+  /** What keeping the Mac awake is doing; null until the host first looked (older Hosts omit it). */
+  keep_awake?: KeepAwakeStatus | null;
 }
 
 // ─── event socket ────────────────────────────────────────────────────────

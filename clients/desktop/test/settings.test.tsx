@@ -266,24 +266,36 @@ describe("keeping the Mac reachable", () => {
     c.dispose();
   });
 
-  it("follows the host while open", async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-    try {
-      const t = new FakeTransport();
-      let current = status({ active: true });
-      t.handlers["host.keep_awake.status"] = () => current;
-      const c = await mount(t);
-      openSettings("General");
-      await tick();
-      expect(screen.getByTestId("keep-awake-status").textContent).toContain("Reachable: holding awake");
-      current = status({ active: false, blocked_by: "on_battery" });
-      vi.advanceTimersByTime(15000);
-      await tick();
-      expect(screen.getByTestId("keep-awake-status").textContent).toContain("Will sleep: on battery");
-      c.dispose();
-    } finally {
-      vi.useRealTimers();
-    }
+  it("follows the host feed while open", async () => {
+    const t = new FakeTransport();
+    t.handlers["host.keep_awake.status"] = () => status({ active: true });
+    const c = await mount(t);
+    openSettings("General");
+    await tick();
+    expect(screen.getByTestId("keep-awake-status").textContent).toContain("Reachable: holding awake");
+    await t.feedEvent("host.keep_awake_changed", status({ active: false, blocked_by: "on_battery" }));
+    expect(screen.getByTestId("keep-awake-status").textContent).toContain("Will sleep: on battery");
+    expect(t.calls.filter((x) => x.op === "host.keep_awake.status")).toHaveLength(1);
+    c.dispose();
+  });
+
+  it("a change made here shows at once, then follows the feed", async () => {
+    const t = new FakeTransport();
+    let current = status();
+    t.handlers["host.keep_awake.status"] = () => current;
+    t.handlers["host.keep_awake.set"] = (p) => {
+      current = { ...current, ...(p as Partial<Reach>), active: false };
+      return current;
+    };
+    const c = await mount(t);
+    const dialog = openSettings("General");
+    await tick();
+    fireEvent.click(dialog.getByRole("radio", { name: "Never" }));
+    await tick();
+    expect(screen.getByTestId("keep-awake-status").textContent).toContain("This Mac sleeps as usual");
+    await t.feedEvent("host.keep_awake_changed", status({ mode: "always", active: true }));
+    expect(screen.getByTestId("keep-awake-status").textContent).toContain("Reachable: holding awake");
+    c.dispose();
   });
 
   it("is not offered where the host cannot keep the computer awake", async () => {

@@ -2,7 +2,14 @@
 // semantics and Global States): the Host bar's dot and path pill, the status
 // line, and the banner or full-screen state a failure calls for.
 
-import type { ActiveConnection, AgentAuthStatus, ConnectionMode } from "@zwiim/sdk";
+import {
+  reachability,
+  type ActiveConnection,
+  type AgentAuthStatus,
+  type ConnectionMode,
+  type KeepAwakeStatus,
+  type Reachability,
+} from "@zwiim/sdk";
 import { hostMeta, type HostEntry } from "../account/hosts";
 import type { DotState } from "../ui/components";
 import type { ErrorInfo, HostConnectionView } from "./connection";
@@ -27,6 +34,36 @@ export function connectionText(
     default:
       return { status: "Offline", pill: "offline", dot: "idle" };
   }
+}
+
+const REACHABILITY: Record<Exclude<Reachability, "unsupported">, { line: string; dot: DotState }> = {
+  held: { line: "Mac kept awake", dot: "done" },
+  while_working: { line: "Mac kept awake while agents work", dot: "idle" },
+  off: { line: "Mac sleeps as usual", dot: "idle" },
+  on_battery: { line: "Mac on battery: may sleep", dot: "idle" },
+  low_battery: { line: "Mac battery below 10%: may sleep", dot: "idle" },
+  thermal: { line: "Mac too hot: may sleep", dot: "idle" },
+  not_held: { line: "Could not keep the Mac awake", dot: "idle" },
+};
+
+const KEEP_AWAKE_WARNINGS: Record<KeepAwakeStatus["warnings"][number], string> = {
+  lid_close_will_sleep: "Closing the lid will sleep the Mac",
+  on_battery_will_drain: "Running on battery",
+};
+
+/**
+ * Whether the Mac stays reachable while the phone is away from it, as the
+ * Host tab shows it. Null until the Host says, where it cannot keep awake,
+ * and while the phone cannot reach it: what it last said is no longer true.
+ */
+export function reachabilityText(
+  s: KeepAwakeStatus | null,
+  view: HostConnectionView | null,
+): { line: string; dot: DotState; warnings: string[] } | null {
+  if (!s || (view?.active !== "lan" && view?.active !== "relay")) return null;
+  const reason = reachability(s);
+  if (reason === "unsupported") return null;
+  return { ...REACHABILITY[reason], warnings: s.warnings.map((w) => KEEP_AWAKE_WARNINGS[w]) };
 }
 
 /** A failure that needs more than waiting. */

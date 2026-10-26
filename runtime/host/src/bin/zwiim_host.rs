@@ -452,6 +452,7 @@ async fn async_main() -> Exit {
         clones: Arc::new(zwiim_host::workspace::clone::CloneJobs::new(
             zwiim_host::workspace::clone::RETENTION,
         )),
+           keep_awake: Default::default(),
     });
 
     // Load (first boot: mint) the host's identity keys off the startup path.

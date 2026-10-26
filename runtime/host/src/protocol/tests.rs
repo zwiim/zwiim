@@ -3490,6 +3490,18 @@ async fn host_feed_carries_legacy_mutations() {
 }
 
 #[tokio::test]
+async fn host_feed_snapshot_carries_keep_awake() {
+    let h = host(true).await;
+    let (mut ws, snapshot) = h.feed().await;
+    assert_eq!(snapshot.get("keep_awake"), Some(&Value::Null), "{snapshot}");
+
+    let status = crate::power::status(&h.state).await.unwrap();
+    h.state.keep_awake.send_replace(Some(status));
+    let changed = event_is("host.keep_awake_changed", |p| p["mode"] == "always");
+    h.host_event(&mut ws, "keep-awake change", &changed).await;
+}
+
+#[tokio::test]
 async fn host_feed_invalid_subscribe_and_resubscribe() {
     let h = host(true).await;
     let mut ws = h.ws().await;

@@ -103,6 +103,8 @@ pub struct AppState {
     pub gh: Option<PathBuf>,
     /// GitHub clone jobs (in memory) and the repository-list cache.
     pub clones: Arc<crate::workspace::clone::CloneJobs>,
+    /// What the keep-awake supervisor last did; `None` until its first pass.
+    pub keep_awake: Arc<tokio::sync::watch::Sender<Option<crate::power::KeepAwakeStatus>>>,
 }
 
 pub fn default_system_op_lock() -> Arc<tokio::sync::Mutex<()>> {
@@ -323,6 +325,7 @@ impl AppState {
             clones: Arc::new(crate::workspace::clone::CloneJobs::new(
                 std::time::Duration::from_secs(2),
             )),
+            keep_awake: Default::default(),
         }
     }
 }

@@ -54,7 +54,12 @@ use serde::{Deserialize, Serialize};
 /// `tool_uses`, what the sub-agent spent and how many tools it called, once
 /// its result says so, live and in `session.history`. Older clients ignore
 /// the fields.
-pub const PROTOCOL_REVISION: u32 = 7;
+///
+/// Revision 8 (keep-awake feed): the Host feed publishes
+/// `host.keep_awake_changed` with the `host.keep_awake.status` result
+/// whenever it changes, and `host.snapshot` carries the latest as
+/// `keep_awake`. Older clients ignore both.
+pub const PROTOCOL_REVISION: u32 = 8;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -220,6 +225,12 @@ mod tests {
     fn subagent_totals_are_a_revision() {
         // A launch's `subagent.tokens` and `subagent.tool_uses`.
         const _: () = assert!(PROTOCOL_REVISION >= 7);
+    }
+
+    #[test]
+    fn the_keep_awake_feed_is_a_revision() {
+        // `host.keep_awake_changed` and the snapshot's `keep_awake`.
+        const _: () = assert!(PROTOCOL_REVISION >= 8);
     }
 
     #[test]

@@ -12,7 +12,7 @@ import type { AgentAuthStatus, ConnectionMode } from "@zwiim/sdk";
 import type { LucideIcon } from "lucide-react-native";
 import { accountHosts, hostName, type HostEntry } from "../account/hosts";
 import { useAccount } from "../app/account";
-import { useCurrentHost, usePendingCount } from "../app/hooks";
+import { useCurrentHost, useKeepAwake, usePendingCount } from "../app/hooks";
 import { useRootNavigation, type HostTabs } from "../app/navigation";
 import {
   fetchMobileRelease,
@@ -24,7 +24,7 @@ import {
   type MobilePlatform,
   type MobileRelease,
 } from "../host/release";
-import { agentSignInRow, connectionText, hostProblem } from "../host/status";
+import { agentSignInRow, connectionText, hostProblem, reachabilityText } from "../host/status";
 import { appInfo } from "../platform/app-info";
 import { secureStore } from "../platform/native";
 import { releasesUrl } from "../config";
@@ -302,10 +302,12 @@ function HostTab() {
   const { host, view, hello } = useCurrentHost();
   const { account, signOut } = useAccount();
   const appUpdate = useOptionalAppUpdate();
+  const keepAwake = useKeepAwake();
   const [choosing, setChoosing] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   if (!host) return null;
   const text = connectionText(view);
+  const reach = reachabilityText(keepAwake, view);
   const mode = MODES.find((m) => m.mode === (view?.mode ?? "auto"))!;
   return (
     <HostFrame title="Host" always>
@@ -348,6 +350,22 @@ function HostTab() {
                   Zwiim {hello.version}
                 </T>
               </View>
+            </>
+          ) : null}
+          {reach ? (
+            <>
+              <View style={[styles.divider, { backgroundColor: theme.line }]} />
+              <View style={styles.groupRow}>
+                <StatusDot state={reach.dot} />
+                <T style={styles.flex} testID="host-reachability">
+                  {reach.line}
+                </T>
+              </View>
+              {reach.warnings.map((w) => (
+                <View key={w} style={styles.groupRow}>
+                  <T color={theme.mut}>{w}</T>
+                </View>
+              ))}
             </>
           ) : null}
           {view?.compat?.status === "limited" ? (

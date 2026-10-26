@@ -1,7 +1,14 @@
 // React views of the app's services.
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { initialHostState, isClientError, type ConnectionMode, type HostState, type WorkspaceInfo } from "@zwiim/sdk";
+import {
+  initialHostState,
+  isClientError,
+  type ConnectionMode,
+  type HostState,
+  type KeepAwakeStatus,
+  type WorkspaceInfo,
+} from "@zwiim/sdk";
 import { accountHosts, byLastUsed, type HostEntry } from "../account/hosts";
 import type { CurrentHostState } from "../host/current";
 import { currentWorkspace } from "../host/workspace";
@@ -27,6 +34,11 @@ function useHostSelector<T>(select: (state: HostState) => T): T {
 /** The current host's workspaces, sessions and their live views. */
 export function useHostState(): HostState {
   return useHostSelector((s) => s);
+}
+
+/** Whether the current host keeps its Mac awake, as its feed last said. */
+export function useKeepAwake(): KeepAwakeStatus | null {
+  return useHostSelector((s) => s.keepAwake);
 }
 
 /** Requests pending across the current host. */

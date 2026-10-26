@@ -117,9 +117,15 @@ describe("evaluateCompatibility", () => {
   });
 
   it("speaks revision 7, which gives a sub-agent's totals", () => {
-    expect(CLIENT_REVISION).toBe(7);
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(7);
     // The fields are optional: a revision-6 Host is still compatible.
     expect(evaluateCompatibility(hello({ revision: 6, min_client_revision: 1 })).status).not.toBe("update_required");
+  });
+
+  it("speaks revision 8, which streams keep-awake status", () => {
+    expect(CLIENT_REVISION).toBe(8);
+    // The event and field are optional: a revision-7 Host is still compatible.
+    expect(evaluateCompatibility(hello({ revision: 7, min_client_revision: 1 })).status).not.toBe("update_required");
   });
 
   it("a different protocol major is incompatible and names the older side", () => {
