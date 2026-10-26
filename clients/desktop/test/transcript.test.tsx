@@ -1031,6 +1031,82 @@ describe("sub-agent cards", () => {
     controller.dispose();
   });
 
+  it("ticks a running sub-agent's time from when it started, then shows its duration once done", async () => {
+    const t = new FakeTransport();
+    const { controller, frame } = await openSession(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-10-24T10:01:05Z"));
+      await frame(
+        event(
+          2,
+          "agent.tool_call",
+          launch("clock1", { description: "Survey", started_at: "2026-10-24T10:00:00.000Z" }),
+        ),
+      );
+      const [card] = cards();
+      expect(within(card!).getByTestId("subagent-elapsed").textContent).toBe("1m 5s");
+      act(() => void vi.advanceTimersByTime(2000));
+      expect(within(card!).getByTestId("subagent-elapsed").textContent).toBe("1m 7s");
+      await frame(
+        event(3, "agent.tool_call_update", {
+          tool_call_id: "clock1",
+          title: null,
+          status: "completed",
+          content: null,
+          subagent: { duration_ms: 70_000 },
+        }),
+      );
+      expect(within(card!).queryByTestId("subagent-elapsed")).toBeNull();
+      expect(within(card!).getByTestId("subagent-duration").textContent).toBe("1m 10s");
+      act(() => void vi.advanceTimersByTime(5000));
+      expect(within(card!).getByTestId("subagent-duration").textContent).toBe("1m 10s");
+    } finally {
+      vi.useRealTimers();
+    }
+    controller.dispose();
+  });
+
+  it("counts from when it first saw the launch when the Host does not say, across a remount", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-10-24T10:00:00Z"));
+      const opened = await openSession(new FakeTransport());
+      await opened.frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+      await opened.frame(event(2, "agent.tool_call", launch("clock2", { description: "Survey" })));
+      // A start ahead of this clock counts as just started.
+      await opened.frame(event(3, "agent.tool_call", launch("clock3", { started_at: "2026-10-24T10:05:00.000Z" })));
+      expect(screen.getAllByTestId("subagent-elapsed").map((e) => e.textContent)).toEqual(["0s", "0s"]);
+      act(() => void vi.advanceTimersByTime(3000));
+      expect(within(cards()[0]!).getByTestId("subagent-elapsed").textContent).toBe("3s");
+      opened.controller.dispose();
+      cleanup();
+
+      // Back to the session: the clock goes on from the first sight, not from zero.
+      vi.setSystemTime(new Date("2026-10-24T10:00:10Z"));
+      const again = await openSession(new FakeTransport());
+      await again.frame({
+        type: "snapshot",
+        epoch: "e",
+        event_seq: 9,
+        snapshot: snapshot({
+          status: "prompting",
+          live_message: {
+            message_id: null,
+            role: "assistant",
+            content: [{ type: "tool_call", tool_call_id: "clock2" }],
+          },
+          tool_calls: [launch("clock2", { description: "Survey" })],
+        }),
+      });
+      expect(within(cards()[0]!).getByTestId("subagent-elapsed").textContent).toBe("10s");
+      again.controller.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("renders the same from a snapshot after a reconnect", async () => {
     const t = new FakeTransport();
     const { controller, frame } = await openSession(t);
@@ -1339,6 +1415,7 @@ describe("sub-agent cards", () => {
     expect(cards()[0]!.getAttribute("data-status")).toBe("completed");
     await frame(event(3, "session.background", { outstanding: 1, tasks: [{ task_id: "t1", label: "Review", state: "running", tool_call_id: "a1" }], waiting_since: null }));
     expect(cards()[0]!.getAttribute("data-status")).toBe("in_progress");
+    expect(within(cards()[0]!).getByTestId("subagent-elapsed")).toBeTruthy();
     controller.dispose();
   });
 });

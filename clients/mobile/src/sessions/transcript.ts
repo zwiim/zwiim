@@ -68,6 +68,12 @@ export interface SubagentItem {
   state: ToolState | "interrupted";
   /** How long it ran ("1m 46s"), once known. */
   duration: string | null;
+  /**
+   * While running, when it started (ms): the Host's `started_at`, else when
+   * this client first saw its launch. Null when not running. `subagentTime`
+   * reads it.
+   */
+  since: number | null;
   /** Tool calls it made itself. */
   tools: number;
   /** Tokens it spent ("75k tokens"), once its result says. */
@@ -233,22 +239,38 @@ type Piece = Exclude<TranscriptRow, { type: "tools" }>;
 const imageRows = (key: string, images: AgentImage[] | undefined): Piece[] =>
   (images ?? []).map((image, i) => ({ type: "image", key: `${key}:img${i}`, image }));
 
+/** When each sub-agent launch was first seen, for a Host that does not say when it started. */
+const launchStarts = new Map<string, number>();
+
+/** When the launch `id` was first seen; now when it is new. Keeps the last 64. */
+function launchFirstSeen(id: string): number {
+  let at = launchStarts.get(id);
+  if (at === undefined) {
+    at = Date.now();
+    launchStarts.set(id, at);
+    if (launchStarts.size > 64) launchStarts.delete(launchStarts.keys().next().value!);
+  }
+  return at;
+}
+
 /** A sub-agent's card: still going reads running, whether or not the turn is. */
 function subagentItem<B>(card: SubagentCard<B>, title: string | null, rows: TranscriptRow[]): SubagentItem {
+  const state =
+    card.status === "completed"
+      ? "done"
+      : card.status === "failed"
+        ? "failed"
+        : card.status === "interrupted"
+          ? "interrupted"
+          : active(card.status)
+            ? "running"
+            : "idle";
   return {
     model: modelShortName(card.model),
     description: subagentDescription(card.description, title),
-    state:
-      card.status === "completed"
-        ? "done"
-        : card.status === "failed"
-          ? "failed"
-          : card.status === "interrupted"
-            ? "interrupted"
-            : active(card.status)
-              ? "running"
-              : "idle",
+    state,
     duration: card.duration_ms !== null ? turnDuration(card.duration_ms) : null,
+    since: state === "running" ? (card.started_at ?? launchFirstSeen(card.parent_id)) : null,
     tools: card.tool_count,
     tokens: card.tokens !== null ? tokensText(card.tokens) : null,
     prompt: card.prompt?.trim() || null,
@@ -256,11 +278,22 @@ function subagentItem<B>(card: SubagentCard<B>, title: string | null, rows: Tran
   };
 }
 
+/**
+ * The time a card shows at `now`: while running, how long it has been at it
+ * so far (never below zero); once finished, how long it ran; else null.
+ */
+export function subagentTime(agent: SubagentItem, now: number): string | null {
+  if (agent.state === "running" && agent.since !== null) return turnDuration(Math.max(0, now - agent.since));
+  return agent.state === "running" ? null : agent.duration;
+}
+
 /** What a screen reader says of a card: never a status it does not know. */
 export function subagentLabel(agent: SubagentItem): string {
   const tools = agent.tools > 0 ? `${agent.tools} ${agent.tools === 1 ? "tool" : "tools"}` : null;
   const state = agent.state === "idle" ? null : agent.state;
-  return ["Agent", agent.model, agent.description, tools, agent.tokens, agent.duration, state].filter(Boolean).join(", ");
+  // A running card's time ticks on screen; a duration from before would be stale.
+  const duration = agent.state === "running" ? null : agent.duration;
+  return ["Agent", agent.model, agent.description, tools, agent.tokens, duration, state].filter(Boolean).join(", ");
 }
 
 /** What an open card shows; a collapsed one shows nothing, so nothing in it is drawn. */

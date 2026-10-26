@@ -2694,6 +2694,9 @@ fn read_subagent_transcript(
         model,
         prompt,
         duration_ms,
+        started_at: acc
+            .first_timestamp
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
         blocks,
     }
 }
@@ -5206,6 +5209,11 @@ mod tests {
         assert_eq!(t.model.as_deref(), Some("claude-sonnet-5"));
         assert_eq!(t.prompt.as_deref(), Some("Look for tests"));
         assert_eq!(t.duration_ms, Some(4000));
+        assert_eq!(
+            t.started_at.as_deref(),
+            Some("2026-03-01T10:00:01.000Z"),
+            "the first entry"
+        );
         let shapes: Vec<String> = t
             .blocks
             .iter()

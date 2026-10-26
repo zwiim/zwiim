@@ -761,6 +761,9 @@ fn with_subagent(mut v: Value, info: Option<&SubagentInfo>, root: Option<&str>) 
     if let Some(n) = info.tool_uses {
         sub.insert("tool_uses".into(), json!(n));
     }
+    if let Some(t) = &info.started_at {
+        sub.insert("started_at".into(), json!(t));
+    }
     v["subagent"] = Value::Object(sub);
     v
 }
@@ -911,6 +914,7 @@ fn launch_block(
             model: t.model.clone(),
             prompt: t.prompt.clone(),
             duration_ms: t.duration_ms,
+            started_at: t.started_at.clone(),
             ..Default::default()
         });
     }
@@ -2418,7 +2422,13 @@ pub(crate) mod tests {
             images: None,
         });
         state.apply_event(&claude_agent_result("toolu_01Agent"));
-        let v = project_snapshot(&state.to_snapshot(), Some("/w/p"));
+        let mut v = project_snapshot(&state.to_snapshot(), Some("/w/p"));
+        // When the Host first saw the launch (see `live_launch_is_stamped_once`).
+        let started_at = v["tool_calls"][0]["subagent"]
+            .as_object_mut()
+            .unwrap()
+            .remove("started_at");
+        assert!(started_at.is_some_and(|t| t.is_string()));
         assert_eq!(
             v["tool_calls"][0]["subagent"],
             json!({
@@ -2430,6 +2440,85 @@ pub(crate) mod tests {
                 "tool_uses": 42,
             })
         );
+    }
+
+    #[test]
+    fn live_launch_is_stamped_once() {
+        let mut state =
+            SessionState::new("conn".into(), AgentType::ClaudeCode, None, "w".into(), None);
+        state.apply_event(&AcpEvent::StatusChanged {
+            status: crate::acp::types::ConnectionStatus::Prompting,
+        });
+        let started_at = |state: &SessionState| {
+            project_snapshot(&state.to_snapshot(), None)["tool_calls"][0]["subagent"]["started_at"]
+                .clone()
+        };
+
+        // The first sight of the launch stamps it with the Host's clock, and
+        // the event that showed it carries the stamp to live clients.
+        let before = chrono::Utc::now();
+        let mut first = claude_agent_call("toolu_01Agent", None);
+        state.apply_event(&first);
+        state.stamp_subagent_start(&mut first);
+        let stamp = started_at(&state);
+        let at = chrono::DateTime::parse_from_rfc3339(stamp.as_str().unwrap()).unwrap();
+        assert!(at >= before - chrono::Duration::milliseconds(1) && at <= chrono::Utc::now());
+        assert!(stamp.as_str().unwrap().ends_with('Z'), "{stamp}");
+        let (_, p) = project_event(&first, None).unwrap();
+        assert_eq!(p["subagent"], json!({ "started_at": stamp }));
+
+        // Later updates, even one that claims another start, keep it.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let mut input = AcpEvent::ToolCallUpdate {
+            tool_call_id: "toolu_01Agent".into(),
+            title: None,
+            status: None,
+            content: None,
+            raw_input: Some(AGENT_INPUT.into()),
+            raw_output: None,
+            raw_output_append: None,
+            locations: None,
+            meta: Some(json!({ "zwiim/subagent": { "startedAt": "2020-01-01T00:00:00.000Z" } })),
+            images: None,
+        };
+        state.apply_event(&input);
+        state.stamp_subagent_start(&mut input);
+        let mut result = claude_agent_result("toolu_01Agent");
+        state.apply_event(&result);
+        state.stamp_subagent_start(&mut result);
+        assert_eq!(started_at(&state), stamp);
+        for event in [&input, &result] {
+            let (_, p) = project_event(event, None).unwrap();
+            assert_eq!(p["subagent"]["started_at"], stamp, "{p}");
+        }
+        let (_, p) = project_event(&result, None).unwrap();
+        assert_eq!(p["subagent"]["duration_ms"], 4200);
+
+        // Any other tool call is never stamped: the field stays absent.
+        let mut read = claude_tool_call("toolu_01X", "Read", None);
+        state.apply_event(&read);
+        state.stamp_subagent_start(&mut read);
+        let (_, p) = project_event(&read, None).unwrap();
+        assert!(p.get("subagent").is_none(), "{p}");
+    }
+
+    #[test]
+    fn subagent_info_keeps_the_first_start() {
+        let mut info = SubagentInfo::default();
+        info.merge(SubagentInfo {
+            started_at: Some("2026-10-24T09:30:00.000Z".into()),
+            ..Default::default()
+        });
+        info.merge(SubagentInfo {
+            started_at: Some("2026-10-24T09:31:00.000Z".into()),
+            duration_ms: Some(5),
+            ..Default::default()
+        });
+        assert_eq!(info.started_at.as_deref(), Some("2026-10-24T09:30:00.000Z"));
+        assert_eq!(info.duration_ms, Some(5));
+        // An empty start is no start.
+        let meta = json!({ "zwiim/subagent": { "startedAt": "" } });
+        assert_eq!(SubagentInfo::of(None, Some(&meta)).started_at, None);
     }
 
     fn claude_subagent_turn() -> SessionState {
@@ -2562,6 +2651,7 @@ pub(crate) mod tests {
             model: Some("claude-haiku-5".into()),
             prompt: Some("Dig".into()),
             duration_ms: Some(10),
+            started_at: None,
             blocks: vec![ContentBlock::Text { text: "deep".into() }],
         };
         SubagentTranscript {
@@ -2569,6 +2659,7 @@ pub(crate) mod tests {
             model: Some("claude-sonnet-5".into()),
             prompt: Some(format!("Look in {root}/src")),
             duration_ms: Some(4200),
+            started_at: Some("2026-10-24T09:30:00.000Z".into()),
             blocks: vec![
                 ContentBlock::Thinking { text: "child thinks".into() },
                 ContentBlock::ToolUse {
@@ -2635,6 +2726,10 @@ pub(crate) mod tests {
         assert_eq!(sub["duration_ms"], 4200);
         assert_eq!(sub["tokens"], 75223, "the totals survive a reload");
         assert_eq!(sub["tool_uses"], 42);
+        assert_eq!(
+            sub["started_at"], "2026-10-24T09:30:00.000Z",
+            "the transcript's first entry"
+        );
         let children = sub["blocks"].as_array().unwrap();
         assert_eq!(children[0], json!({ "type": "thought", "text": "child thinks" }));
         assert_eq!(children[1]["type"], "tool_call");
@@ -2649,6 +2744,10 @@ pub(crate) mod tests {
         assert_eq!(children[4]["tool_call_id"], "toolu_01Nested");
         assert_eq!(children[4]["subagent"]["model"], "claude-haiku-5");
         assert_eq!(children[4]["subagent"]["blocks"], json!([{ "type": "text", "text": "deep" }]));
+        assert!(
+            children[4]["subagent"].get("started_at").is_none(),
+            "unknown, so absent"
+        );
         assert_eq!(children.len(), 6);
     }
 

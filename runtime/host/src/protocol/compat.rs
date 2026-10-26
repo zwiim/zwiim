@@ -68,7 +68,14 @@ use serde::{Deserialize, Serialize};
 /// attempt, a Zwiim `error` sentence. Paired devices may call them. Older
 /// clients never call the operations and keep telling the user to run
 /// `gh auth login`.
-pub const PROTOCOL_REVISION: u32 = 9;
+///
+/// Revision 10 (`subagent.started_at`): a launch's `subagent` carries
+/// `started_at`, when the sub-agent started (RFC 3339, UTC): the Host's clock
+/// when it first saw the launch, live, or the first entry of the sub-agent's
+/// transcript in `session.history`. It is absent when the Host cannot tell.
+/// A client ticks a running sub-agent's elapsed time from it. Older clients
+/// ignore the field.
+pub const PROTOCOL_REVISION: u32 = 10;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -106,6 +113,7 @@ pub const CAPABILITIES: &[&str] = &[
     "agent.subagents",
     "session.background",
     "github.auth",
+    "subagent.started_at",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -247,6 +255,12 @@ mod tests {
     fn github_sign_in_is_served() {
         assert!(CAPABILITIES.contains(&"github.auth"));
         const _: () = assert!(PROTOCOL_REVISION >= 9);
+    }
+
+    #[test]
+    fn subagent_start_is_served() {
+        assert!(CAPABILITIES.contains(&"subagent.started_at"));
+        assert_eq!(PROTOCOL_REVISION, 10);
     }
 
     #[test]

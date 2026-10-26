@@ -171,6 +171,7 @@ describe("snapshot with sub-agents", () => {
         prompt: null,
         status: "in_progress",
         duration_ms: null,
+        started_at: null,
         tokens: null,
         tool_count: 1,
         blocks: [
@@ -224,6 +225,26 @@ describe("liveSubagentCards", () => {
     expect(liveSubagentCards(done.live).map((c) => [c.tool_count, c.tokens, c.duration_ms])).toEqual([[42, 75223, 9000]]);
   });
 
+  it("reads when it started, in ms, and keeps it through later updates", () => {
+    const v = [
+      ev(1, "agent.tool_call", call("a", "Agent", { subagent: { started_at: "2026-10-24T09:30:00.000Z" } })),
+      ev(2, "agent.tool_call", call("b", "Agent", { subagent: { started_at: "not a time" } })),
+      ev(3, "agent.tool_call", call("c", "Agent", { subagent: {} })),
+      ev(4, "agent.tool_call_update", {
+        tool_call_id: "a",
+        title: null,
+        status: "completed",
+        content: null,
+        subagent: { duration_ms: 10 },
+      }),
+    ].reduce(reduceSession, initialSessionView("s1"));
+    expect(liveSubagentCards(v.live).map((c) => [c.parent_id, c.started_at])).toEqual([
+      ["a", Date.UTC(2026, 9, 24, 9, 30)],
+      ["b", null],
+      ["c", null],
+    ]);
+  });
+
   it("puts a sub-agent whose launch it never saw last, so nothing is hidden", () => {
     const v = [
       ev(1, "agent.tool_call", call("a", "First", { subagent: {} })),
@@ -255,6 +276,7 @@ describe("historySubagentCards", () => {
         model: "claude-sonnet-5",
         prompt: "Look in src",
         duration_ms: 4200,
+        started_at: "2026-10-24T09:30:00.000Z",
         blocks: [
           { type: "thought", text: "child thinks" },
           { type: "tool_call", tool_call_id: "toolu_01Read", title: "Read", input_preview: null, status: null },
@@ -279,6 +301,7 @@ describe("historySubagentCards", () => {
         prompt: "Look in src",
         status: "completed",
         duration_ms: 4200,
+        started_at: Date.UTC(2026, 9, 24, 9, 30),
         tokens: null,
         tool_count: 1,
         blocks: (blocks[1] as { subagent: { blocks: HistoryBlock[] } }).subagent.blocks,
@@ -290,6 +313,7 @@ describe("historySubagentCards", () => {
         prompt: null,
         status: "failed",
         duration_ms: null,
+        started_at: null,
         tokens: null,
         tool_count: 0,
         blocks: [],

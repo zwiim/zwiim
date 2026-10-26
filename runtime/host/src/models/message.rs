@@ -80,6 +80,9 @@ pub struct SubagentTranscript {
     /// First to last entry of the transcript.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// The first entry's timestamp, RFC 3339 UTC: when the sub-agent started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocks: Vec<ContentBlock>,
 }

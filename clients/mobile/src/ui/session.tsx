@@ -7,7 +7,15 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View, 
 import { basename, formatSize, revertWarning, type AgentImage, type AttachmentBlock, type ChangedFile, type RevertChoice } from "@zwiim/sdk";
 import type { PendingFile } from "../attachments/pending";
 import { revertCopy } from "../sessions/revert";
-import { subagentLabel, subagentShown, type SubagentItem, type ToolItem, type TranscriptRow } from "../sessions/transcript";
+import { useNow } from "../app/hooks";
+import {
+  subagentLabel,
+  subagentShown,
+  subagentTime,
+  type SubagentItem,
+  type ToolItem,
+  type TranscriptRow,
+} from "../sessions/transcript";
 import { Button, Sheet, StatusDot, T, useReduceMotion } from "./components";
 import { ArrowUp, Bot, CircleAlert, FileText, Icon, Image, Paperclip, RotateCcw, X } from "./icons";
 import { fonts, PRESSED_OPACITY, radius, space, type, useTheme } from "./tokens";
@@ -435,6 +443,8 @@ export function SubagentRow({
   const [promptOpen, setPromptOpen] = useState(false);
   const shown = subagentShown(agent, open, promptOpen);
   const running = agent.state === "running";
+  // Ticks here, not in the transcript's memoized rows, and only while running.
+  const time = subagentTime(agent, useNow(running && agent.since !== null));
   const tools = agent.tools > 0 ? `${agent.tools} ${agent.tools === 1 ? "tool" : "tools"}` : null;
   const label = subagentLabel(agent);
   return (
@@ -467,12 +477,16 @@ export function SubagentRow({
             {agent.tokens}
           </T>
         ) : null}
-        {agent.duration ? (
-          <T variant="monoSm" color={theme.mut} style={styles.tabular} testID="subagent-duration">
-            {agent.duration}
+        {running ? <StatusDot state="work" /> : null}
+        {time ? (
+          <T
+            variant="monoSm"
+            color={theme.mut}
+            style={styles.tabular}
+            testID={running ? "subagent-elapsed" : "subagent-duration"}
+          >
+            {time}
           </T>
-        ) : running ? (
-          <StatusDot state="work" />
         ) : null}
         {agent.state === "failed" ? (
           <T variant="monoSm" color={theme.err} testID="subagent-failed">

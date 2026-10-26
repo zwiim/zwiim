@@ -758,10 +758,13 @@ function SubagentCardView({
         <span className="text-muted-foreground ml-auto flex shrink-0 items-center gap-1.5 font-mono text-xs tabular-nums">
           {card.tool_count > 0 && <span data-testid="subagent-tools">{tools}</span>}
           {card.tokens !== null && <span data-testid="subagent-tokens">{tokensText(card.tokens)}</span>}
-          {card.duration_ms !== null ? (
-            <span data-testid="subagent-duration">{turnDuration(card.duration_ms)}</span>
+          {running ? (
+            <>
+              <WorkingMark />
+              <SubagentClock card={card} />
+            </>
           ) : (
-            running && <WorkingMark />
+            card.duration_ms !== null && <span data-testid="subagent-duration">{turnDuration(card.duration_ms)}</span>
           )}
         </span>
         {failed && (
@@ -1122,16 +1125,36 @@ function LiveBlocks({
 
 /** When each live turn was first seen, so its timer survives a remount (switching sessions). */
 const turnStarts = new Map<string, number>();
+/** When each sub-agent launch was first seen, for a Host that does not say when it started. */
+const launchStarts = new Map<string, number>();
 
-function turnStart(id: string | undefined): number {
-  if (!id) return Date.now();
-  let at = turnStarts.get(id);
+/** When `id` was first seen, by `seen`'s record; now when it is new. Keeps the last 64. */
+function firstSeen(seen: Map<string, number>, id: string): number {
+  let at = seen.get(id);
   if (at === undefined) {
     at = Date.now();
-    turnStarts.set(id, at);
-    if (turnStarts.size > 64) turnStarts.delete(turnStarts.keys().next().value!);
+    seen.set(id, at);
+    if (seen.size > 64) seen.delete(seen.keys().next().value!);
   }
   return at;
+}
+
+function turnStart(id: string | undefined): number {
+  return id ? firstSeen(turnStarts, id) : Date.now();
+}
+
+/**
+ * How long a running sub-agent has been at it, counting each second: from
+ * when the Host says it started, else from when its launch was first seen.
+ */
+function SubagentClock({ card }: { card: SubagentCard<unknown> }) {
+  const since = card.started_at ?? firstSeen(launchStarts, card.parent_id);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  return <span data-testid="subagent-elapsed">{turnDuration(Math.max(0, now - since))}</span>;
 }
 
 /** While the agent works: four dots lighting in turn, and how long it has been at it. */

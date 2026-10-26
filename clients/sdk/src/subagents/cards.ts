@@ -49,6 +49,11 @@ export interface SubagentCard<B> {
    */
   status: SubagentCardStatus | null;
   duration_ms: number | null;
+  /**
+   * When it started, in ms since the epoch, from the Host's `started_at`
+   * (Host capability `subagent.started_at`); null when the Host did not say.
+   */
+  started_at: number | null;
   /** Tokens it spent, once its result says. */
   tokens: number | null;
   /**
@@ -66,6 +71,13 @@ function runningLaunches(background: SessionBackground | null | undefined): Set<
   if (!background || background.outstanding === 0) return ids;
   for (const t of background.tasks) if (t.tool_call_id !== undefined) ids.add(t.tool_call_id);
   return ids;
+}
+
+/** A `started_at` in ms since the epoch, or null when absent or unreadable. */
+function startedAt(at: string | undefined): number | null {
+  if (at === undefined) return null;
+  const ms = Date.parse(at);
+  return Number.isNaN(ms) ? null : ms;
 }
 
 function card<B extends { type: string }>(
@@ -86,6 +98,7 @@ function card<B extends { type: string }>(
     prompt: info?.prompt ?? null,
     status,
     duration_ms: info?.duration_ms ?? null,
+    started_at: startedAt(info?.started_at),
     tokens: info?.tokens ?? null,
     tool_count: info?.tool_uses ?? ids.size,
     blocks: [...blocks],

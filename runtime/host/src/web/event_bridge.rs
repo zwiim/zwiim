@@ -470,7 +470,7 @@ pub async fn emit_with_state(
 pub async fn emit_with_state_gated<F>(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
-    payload: AcpEvent,
+    mut payload: AcpEvent,
     gate: F,
 ) -> bool
 where
@@ -487,6 +487,7 @@ where
             AcpEvent::BackgroundActivity { turns, .. } if !turns.is_empty()
         );
         s.apply_event(&payload);
+        s.stamp_subagent_start(&mut payload);
         let mut envelopes = Vec::with_capacity(2);
         let mut sequence = |s: &mut SessionState, payload: AcpEvent| {
             s.event_seq += 1;
@@ -761,6 +762,41 @@ mod tests {
         assert!(g2 > g1);
         assert_eq!(generation_changes(&*state.read().await), vec![g1, g2]);
         assert_eq!(state.read().await.to_snapshot().history_generation, g2);
+    }
+
+    #[tokio::test]
+    async fn sequenced_launch_events_carry_its_start() {
+        let state = fresh_state();
+        let emitter = EventEmitter::Noop;
+        let launch = |status: &str| AcpEvent::ToolCallUpdate {
+            tool_call_id: "toolu_01Agent".into(),
+            title: None,
+            status: Some(status.into()),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            raw_output_append: None,
+            locations: None,
+            meta: Some(serde_json::json!({ "claudeCode": { "toolName": "Agent" } })),
+            images: None,
+        };
+        emit_with_state(&state, &emitter, launch("in_progress")).await;
+        emit_with_state(&state, &emitter, launch("completed")).await;
+        let s = state.read().await;
+        let starts: Vec<serde_json::Value> = s
+            .recent_events_after(0)
+            .unwrap_or_default()
+            .iter()
+            .map(|e| match &e.payload {
+                AcpEvent::ToolCallUpdate { meta, .. } => {
+                    meta.as_ref().unwrap()["zwiim/subagent"]["startedAt"].clone()
+                }
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(starts.len(), 2);
+        assert!(starts[0].is_string(), "{starts:?}");
+        assert_eq!(starts[0], starts[1], "one start, replayed the same");
     }
 
     /// Only events that feed the background view re-derive it. An unrelated

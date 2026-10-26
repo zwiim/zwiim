@@ -3203,6 +3203,7 @@ impl CodexParser {
             model,
             prompt: None,
             duration_ms,
+            started_at: None,
             blocks,
         })
     }

@@ -14,7 +14,7 @@ import {
   type WorkspaceInfo,
   waitingText,
 } from "@zwiim/sdk";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FakeChannel } from "../../sdk/test/fakes";
 import { parseInline, parseMarkdown, spanText } from "../src/sessions/markdown";
 import {
@@ -23,6 +23,7 @@ import {
   historyBefore,
   nowState,
   subagentShown,
+  subagentTime,
   transcriptBuilder,
   transcriptRows,
   turnKey,
@@ -232,6 +233,10 @@ describe("sub-agent cards", () => {
       tokens: "75k tokens",
     });
     expect(subagentLabel(agent)).toBe("Agent, Opus 4.1, Survey the repo, 2 tools, 75k tokens, 42s, done");
+    // Still running (background work): the screen ticks, so the label drops the old duration.
+    expect(subagentLabel({ ...agent, state: "running" })).toBe(
+      "Agent, Opus 4.1, Survey the repo, 2 tools, 75k tokens, running",
+    );
     expect(agent.rows.map((r) => r.type)).toEqual(["agent", "tool", "subagent"]);
     expect(agent.rows[1]).toMatchObject({ tool: { verb: "Run", target: "ls", state: "done" } });
     const nested = agent.rows[2] as Extract<TranscriptRow, { type: "subagent" }>;
@@ -381,6 +386,61 @@ describe("sub-agent cards", () => {
     agent = (rows[1] as Extract<TranscriptRow, { type: "subagent" }>).agent;
     expect(agent.rows.map((r) => r.type)).toEqual(["agent", "agent", "tool"]);
     expect(rows).toEqual(transcriptRows(v));
+  });
+
+  describe("clock", () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+      vi.setSystemTime(Date.parse("2026-10-24T10:01:05Z"));
+    });
+    afterEach(() => vi.useRealTimers());
+
+    it("ticks a running sub-agent's time from when it started, then shows its duration once done", () => {
+      let v = view(
+        user("u1", "go"),
+        launch("clock1", { description: "Survey", started_at: "2026-10-24T10:00:00.000Z" }),
+      );
+      let agent = agentOf(v);
+      expect(agent.since).toBe(Date.parse("2026-10-24T10:00:00Z"));
+      expect(subagentTime(agent, Date.now())).toBe("1m 5s");
+      vi.advanceTimersByTime(2000);
+      expect(subagentTime(agent, Date.now())).toBe("1m 7s");
+      v = play(
+        v,
+        ev("agent.tool_call_update", {
+          tool_call_id: "clock1",
+          title: null,
+          status: "completed",
+          content: null,
+          subagent: { duration_ms: 70_000 },
+        } as never),
+      );
+      agent = agentOf(v);
+      expect(agent).toMatchObject({ state: "done", since: null, duration: "1m 10s" });
+      expect(subagentTime(agent, Date.now())).toBe("1m 10s");
+      vi.advanceTimersByTime(5000);
+      expect(subagentTime(agent, Date.now())).toBe("1m 10s");
+    });
+
+    it("counts from when it first saw the launch when the Host does not say, across a rebuild", () => {
+      const v = view(
+        user("u1", "go"),
+        launch("clock2", { description: "Survey" }),
+        launch("clock3", { description: "Ahead", started_at: "2026-10-24T10:05:00.000Z" }),
+      );
+      expect(agentOf(v).since).toBe(Date.now());
+      expect(subagentTime(agentOf(v), Date.now())).toBe("0s");
+      // A start ahead of this clock never reads below zero.
+      expect(subagentTime(agentOf(v, 1), Date.now())).toBe("0s");
+      vi.advanceTimersByTime(3000);
+      expect(subagentTime(agentOf(v), Date.now())).toBe("3s");
+      // Building its rows again keeps when it was first seen.
+      expect(
+        subagentTime(agentOf(view(user("u1", "go"), launch("clock2", { description: "Survey" }))), Date.now()),
+      ).toBe("3s");
+      // Not running and no duration: no time at all.
+      expect(subagentTime(agentOf(play(v, toolDone("clock2", "failed"))), Date.now())).toBeNull();
+    });
   });
 
   it("says what the idle agent waits on and since when, then clears", () => {

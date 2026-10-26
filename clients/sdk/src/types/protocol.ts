@@ -706,6 +706,11 @@ export interface SubagentInfo {
   tokens?: number;
   /** Tool calls it made, once its result says (revision 7). */
   tool_uses?: number;
+  /**
+   * When it started, RFC 3339 UTC (revision 10): when the Host first saw the
+   * launch, or on reload its transcript's first entry. Absent when unknown.
+   */
+  started_at?: string;
 }
 
 export interface PermissionOption {

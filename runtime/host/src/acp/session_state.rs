@@ -123,6 +123,10 @@ pub struct ToolCallState {
     pub raw_input_chunks: Vec<String>,
 }
 
+/// Key under a launch's `zwiim/subagent` metadata that carries when the Host
+/// first saw it (see `SessionState::stamp_subagent_start`).
+pub const STARTED_AT: &str = "startedAt";
+
 /// What a sub-agent launch says about the sub-agent it starts. Built from
 /// what claude-agent-acp sends on an `Agent` / `Task` tool call: the tool's
 /// input (`description`, `prompt`, the requested `model`) as the call's raw
@@ -145,6 +149,12 @@ pub struct SubagentInfo {
     /// Tool calls the sub-agent made (`totalToolUseCount`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_uses: Option<u64>,
+    /// When the sub-agent started, RFC 3339 UTC: the Host's clock when it
+    /// first saw the launch (stamped by `SessionState`, carried on the
+    /// launch's events as `zwiim/subagent.startedAt`), or on reload the first
+    /// entry of the sub-agent's transcript. Absent when neither is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
 }
 
 impl SubagentInfo {
@@ -194,13 +204,28 @@ impl SubagentInfo {
             tool_uses: response
                 .and_then(|r| r.get("totalToolUseCount"))
                 .and_then(serde_json::Value::as_u64),
+            started_at: text(
+                meta.and_then(|m| m.get(crate::acp::codex_subagents::SUBAGENT_META))
+                    .and_then(|s| s.get(STARTED_AT)),
+            ),
         }
     }
 
     /// Fold in what a later event said; a field it did not carry keeps its
-    /// value.
+    /// value. `started_at` is set once: the earliest value seen is kept.
     pub fn merge(&mut self, newer: Self) {
-        let Self { description, model, prompt, duration_ms, tokens, tool_uses } = newer;
+        let Self {
+            description,
+            model,
+            prompt,
+            duration_ms,
+            tokens,
+            tool_uses,
+            started_at,
+        } = newer;
+        if self.started_at.is_none() {
+            self.started_at = started_at;
+        }
         if description.is_some() {
             self.description = description;
         }
@@ -2071,6 +2096,41 @@ impl SessionState {
         }
     }
 
+    /// Write when the Host first saw a sub-agent launch onto one of its
+    /// events, as `zwiim/subagent.startedAt` in the event's metadata, so the
+    /// live projection and a replay from the ring buffer carry the same
+    /// `started_at` the snapshot does. Call it after [`Self::apply_event`]
+    /// stamped the launch; any other event is left alone.
+    pub fn stamp_subagent_start(&self, payload: &mut AcpEvent) {
+        let (AcpEvent::ToolCall {
+            tool_call_id, meta, ..
+        }
+        | AcpEvent::ToolCallUpdate {
+            tool_call_id, meta, ..
+        }) = payload
+        else {
+            return;
+        };
+        let Some(started_at) = self
+            .active_tool_calls
+            .get(tool_call_id)
+            .and_then(|t| t.subagent.as_ref())
+            .and_then(|s| s.started_at.clone())
+        else {
+            return;
+        };
+        let meta = meta.get_or_insert_with(|| serde_json::json!({}));
+        let Some(meta) = meta.as_object_mut() else {
+            return;
+        };
+        let info = meta
+            .entry(crate::acp::codex_subagents::SUBAGENT_META)
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(info) = info.as_object_mut() {
+            info.insert(STARTED_AT.to_owned(), serde_json::Value::String(started_at));
+        }
+    }
+
     /// Insert-or-update a tool call entry. Used by both `ToolCall` (initial) and
     /// `ToolCallUpdate` events. `kind` is `Some` only on the initial event;
     /// title/status/content/raw_input/raw_output/locations/meta are merged
@@ -2153,10 +2213,14 @@ impl SessionState {
             // The input counts only when this event brought (more of) it; the
             // last word on the model is the one the result reports.
             let input = raw_input.and(entry.input.as_ref());
-            entry
-                .subagent
-                .get_or_insert_with(SubagentInfo::default)
-                .merge(SubagentInfo::of(input, meta));
+            let info = entry.subagent.get_or_insert_with(SubagentInfo::default);
+            // The Host's clock when it first saw the launch; stamped before
+            // the merge so nothing an event carries replaces it.
+            if info.started_at.is_none() {
+                info.started_at =
+                    Some(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+            }
+            info.merge(SubagentInfo::of(input, meta));
         }
         if let Some(imgs) = images {
             // Replace-on-update: the agent re-sends the full image list on
