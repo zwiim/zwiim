@@ -59,7 +59,16 @@ use serde::{Deserialize, Serialize};
 /// `host.keep_awake_changed` with the `host.keep_awake.status` result
 /// whenever it changes, and `host.snapshot` carries the latest as
 /// `keep_awake`. Older clients ignore both.
-pub const PROTOCOL_REVISION: u32 = 8;
+///
+/// Revision 9 (`github.auth`): `github.auth_status`, `github.sign_in` and
+/// `github.cancel_sign_in` sign the Host's `gh` in to GitHub through GitHub's
+/// device flow. Each returns the sign-in state (`signed_out`, `signing_in`
+/// with the one-time `code` and the `url` to enter it at, `signed_in` with
+/// the `login`, or `unavailable` when gh is missing) and, once after a failed
+/// attempt, a Zwiim `error` sentence. Paired devices may call them. Older
+/// clients never call the operations and keep telling the user to run
+/// `gh auth login`.
+pub const PROTOCOL_REVISION: u32 = 9;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -96,6 +105,7 @@ pub const CAPABILITIES: &[&str] = &[
     "session.revert.chat",
     "agent.subagents",
     "session.background",
+    "github.auth",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -231,6 +241,12 @@ mod tests {
     fn the_keep_awake_feed_is_a_revision() {
         // `host.keep_awake_changed` and the snapshot's `keep_awake`.
         const _: () = assert!(PROTOCOL_REVISION >= 8);
+    }
+
+    #[test]
+    fn github_sign_in_is_served() {
+        assert!(CAPABILITIES.contains(&"github.auth"));
+        const _: () = assert!(PROTOCOL_REVISION >= 9);
     }
 
     #[test]

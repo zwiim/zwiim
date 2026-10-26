@@ -105,6 +105,8 @@ pub struct AppState {
     pub clones: Arc<crate::workspace::clone::CloneJobs>,
     /// What the keep-awake supervisor last did; `None` until its first pass.
     pub keep_awake: Arc<tokio::sync::watch::Sender<Option<crate::power::KeepAwakeStatus>>>,
+    /// The GitHub sign-in through `gh` (one at a time, in memory).
+    pub github_auth: Arc<crate::git_harness::GithubSignIn>,
 }
 
 pub fn default_system_op_lock() -> Arc<tokio::sync::Mutex<()>> {
@@ -326,6 +328,7 @@ impl AppState {
                 std::time::Duration::from_secs(2),
             )),
             keep_awake: Default::default(),
+            github_auth: Default::default(),
         }
     }
 }

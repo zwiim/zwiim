@@ -14,6 +14,7 @@ import {
   type PrState,
   type WorkspaceInfo,
 } from "@zwiim/sdk";
+import { SIGN_IN_HERE } from "./github";
 
 export type PrTone = "done" | "err" | "work" | "mut";
 
@@ -94,22 +95,29 @@ export function prBadge(entry: PrEntry | undefined): { text: string; tone: PrTon
   return { text: `#${pr.number}`, tone: prLook(pr, true).tone };
 }
 
-/** Why the Host can't see pull requests, in words for the user. */
-export function prErrorText(code: string, message: string, hostName: string): string {
-  if (code === "gh_unauthenticated") return `GitHub CLI on ${hostName} isn't signed in. Run gh auth login there to follow pull requests.`;
+/**
+ * Why the Host can't see pull requests, in words for the user. `signInOffered`:
+ * the Host signs its GitHub CLI in itself (`github.auth`), from the Host tab.
+ */
+export function prErrorText(code: string, message: string, hostName: string, signInOffered = false): string {
+  if (code === "gh_unauthenticated") {
+    return signInOffered
+      ? `GitHub CLI on ${hostName} isn't signed in. ${SIGN_IN_HERE} to follow pull requests.`
+      : `GitHub CLI on ${hostName} isn't signed in. Run gh auth login there to follow pull requests.`;
+  }
   if (code === "gh_unavailable") return `GitHub CLI isn't installed on ${hostName}. Install gh there to follow pull requests.`;
   return message;
 }
 
 /** A refused or failed merge, in words, with the next step. */
-export function mergeError(e: unknown, hostName: string): string {
+export function mergeError(e: unknown, hostName: string, signInOffered = false): string {
   if (isClientError(e, "pr_changed")) return "The pull request changed since you looked. Check it again before merging.";
   if (isClientError(e, "not_mergeable")) {
     const reason = (e as { details?: Record<string, unknown> }).details?.reason;
     return typeof reason === "string" ? reason : "GitHub won't merge it right now.";
   }
   if (isClientError(e, "gh_unauthenticated") || isClientError(e, "gh_unavailable")) {
-    return prErrorText((e as { code: string }).code, "", hostName);
+    return prErrorText((e as { code: string }).code, "", hostName, signInOffered);
   }
   if (isClientError(e, "github_unreachable")) return `${hostName} couldn't reach GitHub. Try again.`;
   if (isClientError(e, "unknown_outcome")) return `Not sure that went through. Check the PR on ${hostName} before trying again.`;
@@ -132,7 +140,7 @@ export const continueLine = (pr: PrState) =>
   `Start a new branch from ${pr.base}, where #${pr.number} landed. Sessions stay; each agent is told on its next turn. The old branch stays.`;
 
 /** A refused or failed Continue: what holds the worktree, or what GitHub says. */
-export function continueError(e: unknown, number: number, hostName: string): string {
+export function continueError(e: unknown, number: number, hostName: string, signInOffered = false): string {
   if (isClientError(e, "workspace_busy")) return "An agent is still working here. Wait for it or stop it, then Continue.";
   if (isClientError(e, "workspace_dirty")) return "Uncommitted changes here. Commit or discard them first.";
   if (isClientError(e, "head_not_merged")) return `This branch has commits #${number} didn't merge. Continue would leave them behind.`;
@@ -145,7 +153,7 @@ export function continueError(e: unknown, number: number, hostName: string): str
     isClientError(e, "network") ||
     isClientError(e, "timeout")
   ) {
-    return mergeError(e, hostName);
+    return mergeError(e, hostName, signInOffered);
   }
   return "Couldn't continue. Try again.";
 }

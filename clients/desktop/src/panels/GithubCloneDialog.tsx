@@ -18,15 +18,19 @@ import { Dialog } from "@/components/ui/dialog";
 import { errorMessage, useController, useOnline } from "@/lib/host-context";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "./GitPanel";
+import { GithubSignIn, useGithubSignInOffered } from "./Github";
 import { Code, unavailableLine, type Unavailable } from "./PublishDialog";
 
-/** A failed clone's line (spec §5); a Zwiim add or worktree failure keeps its own message. */
-export function cloneErrorLine(job: CloneJob, host: string): ReactNode {
+/**
+ * A failed clone's line (spec §5); a Zwiim add or worktree failure keeps its own message.
+ * `signInOffered`: the caller shows Sign in to GitHub under a `gh_unauthenticated` line.
+ */
+export function cloneErrorLine(job: CloneJob, host: string, signInOffered = false): ReactNode {
   const code = job.error?.code ?? "failed";
   switch (code) {
     case "gh_unavailable":
     case "gh_unauthenticated":
-      return unavailableLine(code, host);
+      return unavailableLine(code, host, signInOffered);
     case "network":
       return "Couldn't reach GitHub.";
     case "not_found":
@@ -124,9 +128,14 @@ export interface GithubCloneDialogProps {
 export function GithubCloneDialog({ remote, jobs, onClose, onClone }: GithubCloneDialogProps) {
   const controller = useController();
   const online = useOnline();
+  const signInOffered = useGithubSignInOffered();
   const hostName = remote ? "the host" : "this Mac";
   const [list, setList] = useState<List>({ kind: "loading" });
-  const [more, setMore] = useState<{ loading: boolean; error: ReactNode }>({ loading: false, error: null });
+  // `signIn`: the next page needs gh signed in.
+  const [more, setMore] = useState<{ loading: boolean; error: ReactNode; signIn?: boolean }>({
+    loading: false,
+    error: null,
+  });
   const [text, setText] = useState("");
   // Repositories whose clone request is on its way, lowercased `owner/name`.
   const [starting, setStarting] = useState<string[]>([]);
@@ -167,7 +176,15 @@ export function GithubCloneDialog({ remote, jobs, onClose, onClone }: GithubClon
     } catch (e) {
       if (ask !== asked.current) return;
       const f = listFailure(e);
-      setMore({ loading: false, error: f.kind === "unavailable" ? unavailableLine(f.reason, hostName) : f.message });
+      setMore(
+        f.kind === "unavailable"
+          ? {
+              loading: false,
+              error: unavailableLine(f.reason, hostName, signInOffered),
+              signIn: f.reason === "gh_unauthenticated",
+            }
+          : { loading: false, error: f.message },
+      );
     }
   }
 
@@ -250,11 +267,17 @@ export function GithubCloneDialog({ remote, jobs, onClose, onClone }: GithubClon
       </div>
       <div className="mt-3 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-3">
         {list.kind === "unavailable" && (
-          <div className="flex items-center gap-2 px-3 py-2">
-            <p className="flex-1 text-sm">{unavailableLine(list.reason, hostName)}</p>
-            <Button size="xs" variant="ghost" disabled={!online} onClick={() => void load(true)}>
-              Try again
-            </Button>
+          <div className="flex flex-col gap-2 px-3 py-2">
+            <div className="flex items-center gap-2">
+              <p className="flex-1 text-sm">{unavailableLine(list.reason, hostName, signInOffered)}</p>
+              <Button size="xs" variant="ghost" disabled={!online} onClick={() => void load(true)}>
+                Try again
+              </Button>
+            </div>
+            {list.reason === "gh_unauthenticated" && signInOffered && (
+              // Signed in, the list loads.
+              <GithubSignIn host={hostName} onSignedIn={() => void load(true)} />
+            )}
           </div>
         )}
         {list.kind === "loading" && (
@@ -285,6 +308,10 @@ export function GithubCloneDialog({ remote, jobs, onClose, onClone }: GithubClon
               Load more
             </Button>
             {more.error && <p className="text-destructive text-xs">{more.error}</p>}
+            {more.signIn && signInOffered && (
+              // Signed in, the page loads.
+              <GithubSignIn host={hostName} onSignedIn={() => void loadMore()} />
+            )}
           </div>
         )}
       </div>
@@ -314,6 +341,7 @@ function RepoRow({ target, repo, job, starting, refused, online, host, onClone, 
   const name = fullName(target);
   const active = job !== null && isActive(job) ? job : null;
   const failed = job?.state === "failed" ? job : null;
+  const signInOffered = useGithubSignInOffered();
   const added = (repo?.workspace_id ?? null) !== null || job?.state === "done";
   return (
     <div
@@ -376,12 +404,13 @@ function RepoRow({ target, repo, job, starting, refused, online, host, onClone, 
       )}
       {failed && (
         <div className="flex items-center gap-2">
-          <p className="text-destructive min-w-0 flex-1 text-xs">{cloneErrorLine(failed, host)}</p>
+          <p className="text-destructive min-w-0 flex-1 text-xs">{cloneErrorLine(failed, host, signInOffered)}</p>
           <Button size="xs" variant="ghost" disabled={starting || !online} onClick={onClone}>
             Retry
           </Button>
         </div>
       )}
+      {failed?.error?.code === "gh_unauthenticated" && signInOffered && <GithubSignIn host={host} />}
       {refused && <p className="text-destructive text-xs">{refused}</p>}
     </div>
   );

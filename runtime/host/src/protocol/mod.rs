@@ -171,6 +171,9 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/git.pr_merge", post(http::git_pr_merge))
         .route("/github.repo_available", post(http::github_repo_available))
         .route("/github.repos", post(http::github_repos))
+        .route("/github.auth_status", post(http::github_auth_status))
+        .route("/github.sign_in", post(http::github_sign_in))
+        .route("/github.cancel_sign_in", post(http::github_cancel_sign_in))
         .route("/workspace.clone", post(http::workspace_clone))
         .route(
             "/workspace.clone_cancel",

@@ -21,6 +21,7 @@ import {
   shortSha,
   type PrTone,
 } from "../host/pr";
+import { githubSignInOffered } from "../host/github";
 import { currentHost } from "../services";
 import { Button, Sheet, T } from "../ui/components";
 import { ChevronRight, GitBranchPlus, GitMerge, GitPullRequest, Icon } from "../ui/icons";
@@ -77,7 +78,7 @@ export function PrStrip({
       <View style={[styles.strip, { borderBottomColor: theme.line }]} testID="pr-strip">
         <Icon icon={GitPullRequest} color={theme.faint} size={16} />
         <T variant="monoSm" color={theme.mut} numberOfLines={2} style={styles.flex} testID="pr-strip-error">
-          {prErrorText(entry.error.code, entry.error.message, hostName)}
+          {prErrorText(entry.error.code, entry.error.message, hostName, githubSignInOffered(compat))}
         </T>
       </View>
     );
@@ -113,6 +114,7 @@ export function PrStrip({
         connected={connected}
         hostName={hostName}
         canContinue={offersContinue(pr, workspace, compat)}
+        signInOffered={githubSignInOffered(compat)}
         onMerged={setJustMerged}
         onContinued={setContinued}
         onClose={() => setSheet(false)}
@@ -128,6 +130,7 @@ function PrSheet({
   connected,
   hostName,
   canContinue,
+  signInOffered,
   onMerged,
   onContinued,
   onClose,
@@ -138,6 +141,8 @@ function PrSheet({
   connected: boolean;
   hostName: string;
   canContinue: boolean;
+  /** A `gh_unauthenticated` refusal points to the Host tab's GitHub group. */
+  signInOffered: boolean;
   onMerged(number: number): void;
   onContinued(number: number): void;
   onClose(): void;
@@ -169,7 +174,7 @@ function PrSheet({
       onMerged(merged.number);
       setConfirm(false);
     } catch (e) {
-      setError(mergeError(e, hostName));
+      setError(mergeError(e, hostName, signInOffered));
       setConfirm(false);
     } finally {
       setMerging(false);
@@ -186,7 +191,7 @@ function PrSheet({
       close();
       onContinued(pr.number);
     } catch (e) {
-      setError(continueError(e, pr.number, hostName));
+      setError(continueError(e, pr.number, hostName, signInOffered));
     } finally {
       setContinuing(false);
     }

@@ -502,7 +502,7 @@ describe("PublishDialog failure states", () => {
   it("names why GitHub is unavailable on this Mac, in place of the fields", async () => {
     const lines = {
       gh_unavailable: "GitHub CLI isn't installed on this Mac.",
-      gh_unauthenticated: "GitHub CLI isn't signed in on this Mac. Run gh auth login, then try again.",
+      gh_unauthenticated: "GitHub CLI isn't signed in on this Mac.",
       github_unreachable: "Zwiim can't reach GitHub.",
     } as const;
     for (const [reason, line] of Object.entries(lines)) {
@@ -511,7 +511,11 @@ describe("PublishDialog failure states", () => {
       expect(screen.getByText(text(line), { selector: "p" })).toBeTruthy();
       expect(screen.queryByLabelText("Repository name")).toBeNull();
       expect(screen.queryByLabelText("Owner")).toBeNull();
-      expect(buttons()).toEqual(["Cancel", "Add without GitHub", "Try again"]);
+      expect(buttons()).toEqual(
+        reason === "gh_unauthenticated"
+          ? ["Sign in to GitHub", "Cancel", "Add without GitHub", "Try again"]
+          : ["Cancel", "Add without GitHub", "Try again"],
+      );
       await settle();
       expect(checks(t)).toEqual([]);
       cleanup();
@@ -525,11 +529,7 @@ describe("PublishDialog failure states", () => {
     cleanup();
     vi.useRealTimers();
     await mount(host(), { inspection: offline("gh_unauthenticated"), remote: true });
-    expect(
-      screen.getByText(text("GitHub CLI isn't signed in on the host. Run gh auth login, then try again."), {
-        selector: "p",
-      }),
-    ).toBeTruthy();
+    expect(screen.getByText(text("GitHub CLI isn't signed in on the host."), { selector: "p" })).toBeTruthy();
   });
 
   it("adds without GitHub: no publish, and allow_large only when the large line showed", async () => {
@@ -583,11 +583,7 @@ describe("PublishDialog failure states", () => {
     fireEvent.click(button("Try again"));
     await tick();
     expect(inspects(t2)).toEqual([{ workspace_id: "r1" }]);
-    expect(
-      screen.getByText(text("GitHub CLI isn't signed in on this Mac. Run gh auth login, then try again."), {
-        selector: "p",
-      }),
-    ).toBeTruthy();
+    expect(screen.getByText(text("GitHub CLI isn't signed in on this Mac."), { selector: "p" })).toBeTruthy();
     expect(adds(t2)).toEqual([]);
   });
 
@@ -622,12 +618,48 @@ describe("PublishDialog failure states", () => {
     await settle();
     fireEvent.click(confirm());
     await tick();
+    expect(screen.getByText(text("GitHub CLI isn't signed in on this Mac."), { selector: "p" })).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(buttons()).toEqual(["Sign in to GitHub", "Cancel", "Add without GitHub", "Try again"]);
+  });
+
+  it("signs the Host in to GitHub from the signed-out form, then looks again", async () => {
+    const t = host();
+    let signedIn = false;
+    t.handlers["github.sign_in"] = () => ({
+      state: "signing_in",
+      code: "ABCD-1234",
+      url: "https://github.com/login/device",
+    });
+    t.handlers["github.auth_status"] = () =>
+      signedIn
+        ? { state: "signed_in", login: "Ashish1101" }
+        : { state: "signing_in", code: "ABCD-1234", url: "https://github.com/login/device" };
+    t.handlers["workspace.inspect"] = () => plain();
+    await mount(t, { inspection: offline("gh_unauthenticated") });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    fireEvent.click(button("Sign in to GitHub"));
+    await tick();
+    expect(t.calls.filter((c) => c.op === "github.sign_in")).toHaveLength(1);
+    expect(screen.getByLabelText("Sign-in code").textContent).toBe("ABCD-1234");
+    expect(inspects(t)).toEqual([]);
+    signedIn = true;
+    await act(async () => void vi.advanceTimersByTime(2000));
+    await tick();
+    expect(inspects(t)).toEqual([{ path: "/Users/me/my-app" }]);
+    expect(nameField().value).toBe("my-app");
+  });
+
+  it("on a Host without GitHub sign-in, still says to run gh auth login", async () => {
+    const t = host();
+    t.handlers["host.hello"] = () =>
+      hostHello({ capabilities: CLIENT_CAPABILITIES.filter((c) => c !== "github.auth") });
+    await mount(t, { inspection: offline("gh_unauthenticated") });
     expect(
       screen.getByText(text("GitHub CLI isn't signed in on this Mac. Run gh auth login, then try again."), {
         selector: "p",
       }),
     ).toBeTruthy();
-    expect(screen.queryByRole("alert")).toBeNull();
     expect(buttons()).toEqual(["Cancel", "Add without GitHub", "Try again"]);
   });
 

@@ -4,10 +4,11 @@
 // terminals; the Host tab holds the connection, the host and the account. A pairing the host has
 // dropped replaces the shell until paired again.
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { Linking, Platform, Pressable, StyleSheet, View } from "react-native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import * as Clipboard from "expo-clipboard";
 import type { AgentAuthStatus, ConnectionMode } from "@zwiim/sdk";
 import type { LucideIcon } from "lucide-react-native";
 import { accountHosts, hostName, type HostEntry } from "../account/hosts";
@@ -24,6 +25,7 @@ import {
   type MobilePlatform,
   type MobileRelease,
 } from "../host/release";
+import { GithubSignInFlow, githubPage, githubSignInOffered } from "../host/github";
 import { agentSignInRow, connectionText, hostProblem, reachabilityText } from "../host/status";
 import { appInfo } from "../platform/app-info";
 import { secureStore } from "../platform/native";
@@ -399,6 +401,10 @@ function HostTab() {
 
         <AgentsGroup live={view?.active === "lan" || view?.active === "relay"} />
 
+        {githubSignInOffered(view?.compat ?? null) ? (
+          <GithubGroup host={hostName(host)} live={view?.active === "lan" || view?.active === "relay"} />
+        ) : null}
+
         <T variant="caption" color={theme.mut}>
           Account
         </T>
@@ -511,6 +517,112 @@ function AgentsGroup({ live }: { live: boolean }) {
   );
 }
 
+/**
+ * Signing the host's GitHub CLI in: the host runs GitHub's device flow, this
+ * shows the one-time code and opens GitHub to enter it. No token reaches the
+ * phone, and the account stays with the host.
+ */
+function GithubGroup({ host, live }: { host: string; live: boolean }) {
+  const theme = useTheme();
+  const [flow] = useState(() => new GithubSignInFlow(currentHost, host));
+  const { auth, busy, error } = useSyncExternalStore(flow.subscribe, () => flow.state);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => () => flow.dispose(), [flow]);
+  useEffect(() => {
+    if (live) void flow.refresh();
+  }, [live, flow]);
+  const signingIn = auth?.state === "signing_in";
+  useEffect(() => {
+    if (!signingIn) setCopied(false);
+  }, [signingIn]);
+
+  if (!auth && !error) return null;
+  const page = githubPage(auth?.url);
+  const off = !live || busy !== null;
+  return (
+    <>
+      <T variant="caption" color={theme.mut}>
+        GitHub
+      </T>
+      <View style={[styles.group, { backgroundColor: theme.surface }]} testID="github">
+        {auth?.state === "signed_in" ? (
+          <View style={styles.groupRow} testID="github-signed-in">
+            <StatusDot state="done" />
+            <T style={styles.flex}>Signed in as</T>
+            <T variant="mono" color={theme.mut} numberOfLines={1}>
+              {auth.login ?? "unknown"}
+            </T>
+          </View>
+        ) : auth?.state === "unavailable" ? (
+          <View style={styles.groupRow}>
+            <T color={theme.mut} style={styles.flex}>
+              GitHub CLI isn't installed on {host}.
+            </T>
+          </View>
+        ) : signingIn && auth.code && page ? (
+          <View style={styles.githubCode} testID="github-code">
+            <T color={theme.mut}>Enter this code on GitHub to sign {host} in:</T>
+            <View style={styles.githubCodeRow}>
+              <T style={styles.code} selectable accessibilityLabel="Sign-in code" testID="github-code-text">
+                {auth.code}
+              </T>
+              <Button
+                testID="github-copy"
+                kind="ghost"
+                label={copied ? "Copied" : "Copy"}
+                onPress={() => void Clipboard.setStringAsync(auth.code!).then(() => setCopied(true))}
+              />
+            </View>
+            <View style={styles.githubCodeRow}>
+              <Button
+                testID="github-open"
+                label="Open GitHub"
+                onPress={() => void Linking.openURL(page).catch(() => {})}
+              />
+              <Button
+                testID="github-cancel"
+                kind="ghost"
+                label="Cancel"
+                loading={busy === "cancel"}
+                disabled={off}
+                onPress={() => void flow.cancel()}
+              />
+            </View>
+            <T variant="callout" color={theme.mut} accessibilityLiveRegion="polite">
+              Waiting for GitHub…
+            </T>
+          </View>
+        ) : (
+          <View style={styles.groupRow}>
+            <T color={theme.mut} style={styles.flex}>
+              Not signed in
+            </T>
+            <Button
+              testID="github-sign-in"
+              kind="secondary"
+              label="Sign in to GitHub"
+              loading={busy === "sign-in"}
+              disabled={off}
+              onPress={() => void flow.signIn()}
+            />
+          </View>
+        )}
+        {error ? (
+          <>
+            <View style={[styles.divider, { backgroundColor: theme.line }]} />
+            <View style={styles.groupRow}>
+              <T color={theme.err} style={styles.flex} accessibilityRole="alert" testID="github-error">
+                {error}
+              </T>
+            </View>
+          </>
+        ) : null}
+      </View>
+    </>
+  );
+}
+
 const styles = StyleSheet.create({
   page: { flex: 1 },
   flex: { flex: 1 },
@@ -518,6 +630,9 @@ const styles = StyleSheet.create({
   group: { borderRadius: radius.lg, marginBottom: space.lg },
   groupRow: { minHeight: 52, paddingHorizontal: space.md, flexDirection: "row", alignItems: "center", gap: space.sm },
   divider: { height: StyleSheet.hairlineWidth, marginLeft: space.md },
+  githubCode: { padding: space.md, gap: space.sm },
+  githubCodeRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm },
+  code: { fontFamily: fonts.monoMedium, fontSize: 28, lineHeight: 34, letterSpacing: 3 },
   option: { borderRadius: radius.md, padding: space.md, gap: space.xxs },
   problem: { flex: 1, paddingHorizontal: space.lg, justifyContent: "space-between" },
   problemText: { gap: space.sm },

@@ -14,13 +14,15 @@ import { AccountPanel } from "@/panels/Account";
 import { AgentsSettings } from "@/panels/Agents";
 import { ConnectionModeChooser, type RemoteLink } from "@/panels/ConnectionStatus";
 import { DevicesSettings } from "@/panels/Devices";
+import { GithubMark } from "@/panels/GithubCloneDialog";
+import { GithubSettings, useGithubSignInOffered } from "@/panels/Github";
 
-export type SettingsTab = "general" | "account" | "agents" | "connection" | "devices" | "about";
+export type SettingsTab = "general" | "account" | "agents" | "github" | "connection" | "devices" | "about";
 
 interface TabInfo {
   id: SettingsTab;
   label: string;
-  icon: typeof Info;
+  icon: React.ComponentType<{ className?: string }>;
   group: "Settings" | "Host";
 }
 
@@ -49,10 +51,12 @@ export function SettingsDialog({
   onTab(tab: SettingsTab): void;
   onClose(): void;
 }) {
+  const githubOffered = useGithubSignInOffered();
   const tabs: TabInfo[] = [
     { id: "general", label: "General", icon: Settings2, group: "Settings" },
     { id: "account", label: "Account", icon: UserRound, group: "Settings" },
     { id: "agents", label: "Agents", icon: Bot, group: "Host" },
+    ...(githubOffered ? [{ id: "github", label: "GitHub", icon: GithubMark, group: "Host" } as const] : []),
     ...(remote && link ? [{ id: "connection", label: "Connection", icon: Network, group: "Host" } as const] : []),
     ...(!remote ? [{ id: "devices", label: "Devices", icon: Smartphone, group: "Host" } as const] : []),
     { id: "about", label: "About & updates", icon: Info, group: "Host" },
@@ -98,6 +102,7 @@ export function SettingsDialog({
           {current.id === "general" && <General bridge={bridge} remote={remote} />}
           {current.id === "account" && <AccountPanel state={account} />}
           {current.id === "agents" && <AgentsSettings remote={remote} />}
+          {current.id === "github" && <GithubSettings remote={remote} />}
           {current.id === "connection" && link && (
             <>
               <p className="text-muted-foreground">How this computer reaches the host.</p>

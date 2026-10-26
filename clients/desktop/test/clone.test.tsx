@@ -192,6 +192,29 @@ describe("GithubCloneDialog", () => {
     expect(rows()).toEqual(["repo-acme/web", "repo-acme/api", "repo-me/old", "repo-acme/docs"]);
   });
 
+  it("a loadMore the signed-out GitHub CLI refused offers Sign in to GitHub, then loads the page", async () => {
+    const t = githubHost([firstPage(), [repo("acme", "docs")]]);
+    const list = t.handlers["github.repos"]!;
+    let signedIn = false;
+    await mountDialog(t);
+    t.handlers["github.repos"] = (p: { page?: number }) => {
+      if (!signedIn) throw new ZwiimClientError("gh_unauthenticated", "not logged in", 422);
+      return list(p);
+    };
+    t.handlers["github.sign_in"] = () => {
+      signedIn = true;
+      return { state: "signed_in", login: "Ashish1101" };
+    };
+    fireEvent.click(button("Load more"));
+    await tick();
+    expect(screen.getByText(text("GitHub CLI isn't signed in on this Mac."))).toBeTruthy();
+    fireEvent.click(button("Sign in to GitHub"));
+    await tick();
+    expect(rows()).toEqual(["repo-acme/web", "repo-acme/api", "repo-me/old", "repo-acme/docs"]);
+    expect(screen.queryByText(/isn't signed in/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Sign in to GitHub" })).toBeNull();
+  });
+
   it("a Host's GitHub failure offers Try again, which refreshes", async () => {
     const t = githubHost();
     const list = t.handlers["github.repos"]!;
@@ -224,11 +247,45 @@ describe("GithubCloneDialog", () => {
 
   it("without GitHub CLI shows PublishDialog's line and no list", async () => {
     await mountDialog(failing(new ZwiimClientError("gh_unauthenticated", "not logged in", 422)), { remote: true });
+    expect(screen.getByText(text("GitHub CLI isn't signed in on the host."))).toBeTruthy();
+    expect(screen.queryByLabelText("Search repositories")).toBeNull();
+    expect(button("Try again")).toBeTruthy();
+    expect(button("Sign in to GitHub")).toBeTruthy();
+    cleanup();
+
+    await mountDialog(failing(new ZwiimClientError("gh_unavailable", "not installed", 422)));
+    expect(screen.getByText(text("GitHub CLI isn't installed on this Mac."))).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Sign in to GitHub" })).toBeNull();
+  });
+
+  it("signs the Host in to GitHub when the list says it's signed out, then lists", async () => {
+    const t = githubHost();
+    let signedIn = false;
+    const repos = t.handlers["github.repos"]!;
+    t.handlers["github.repos"] = (p: { page?: number }) => {
+      if (!signedIn) throw new ZwiimClientError("gh_unauthenticated", "not logged in", 422);
+      return repos(p);
+    };
+    t.handlers["github.sign_in"] = () => {
+      signedIn = true;
+      return { state: "signed_in", login: "Ashish1101" };
+    };
+    await mountDialog(t);
+    fireEvent.click(button("Sign in to GitHub"));
+    await tick();
+    expect(screen.getByLabelText("Search repositories")).toBeTruthy();
+    expect(screen.queryByText(/isn't signed in/)).toBeNull();
+  });
+
+  it("on a Host without GitHub sign-in, still says to run gh auth login", async () => {
+    const t = failing(new ZwiimClientError("gh_unauthenticated", "not logged in", 422));
+    t.handlers["host.hello"] = () =>
+      hostHello({ capabilities: CLIENT_CAPABILITIES.filter((c) => c !== "github.auth") });
+    await mountDialog(t, { remote: true });
     expect(
       screen.getByText(text("GitHub CLI isn't signed in on the host. Run gh auth login, then try again.")),
     ).toBeTruthy();
-    expect(screen.queryByLabelText("Search repositories")).toBeNull();
-    expect(button("Try again")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Sign in to GitHub" })).toBeNull();
     cleanup();
 
     await mountDialog(failing(new ZwiimClientError("gh_unavailable", "not installed", 422)));
@@ -289,6 +346,9 @@ describe("GithubCloneDialog", () => {
     expect(line("The clone failed.")).toBeTruthy();
     failed("gh_unavailable");
     expect(line("GitHub CLI isn't installed on this Mac.")).toBeTruthy();
+    failed("gh_unauthenticated");
+    expect(line("GitHub CLI isn't signed in on this Mac.")).toBeTruthy();
+    expect(row("acme/web").getByRole("button", { name: "Sign in to GitHub" })).toBeTruthy();
     // A Zwiim add or worktree failure keeps its own Zwiim copy.
     failed("worktree_failed", "The worktree could not be created");
     expect(line("The worktree could not be created")).toBeTruthy();
@@ -517,6 +577,22 @@ describe("Clones in the workspace list", () => {
     fireEvent.click(cloneRow("c1").getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByTestId("clone-c1")).toBeNull();
     expect(t.calls.length).toBe(before);
+  });
+
+  it("a clone the signed-out GitHub CLI refused offers Sign in to GitHub on its row", async () => {
+    const t = cloneHost();
+    t.clones = [job({ state: "failed", error: { code: "gh_unauthenticated", message: "not logged in" } })];
+    t.handlers["github.sign_in"] = () => ({
+      state: "signing_in",
+      code: "ABCD-1234",
+      url: "https://github.com/login/device",
+    });
+    await mountSidebar(t);
+    expect(cloneRow("c1").getByText("GitHub CLI isn't signed in on this Mac.")).toBeTruthy();
+    fireEvent.click(cloneRow("c1").getByRole("button", { name: "Sign in to GitHub" }));
+    await tick();
+    expect(cloneRow("c1").getByLabelText("Sign-in code").textContent).toBe("ABCD-1234");
+    expect(cloneRow("c1").getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 
   it("Retry starts a new clone in place of the failed one", async () => {

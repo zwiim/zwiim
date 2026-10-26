@@ -93,6 +93,17 @@ describe("pull request errors in words", () => {
     expect(prErrorText("github_unreachable", "GitHub didn't answer", "Studio Mac")).toBe("GitHub didn't answer");
   });
 
+  it("sends a signed-out GitHub CLI to the Host tab when the Host signs in itself", () => {
+    const signIn =
+      "GitHub CLI on Studio Mac isn't signed in. Sign in under GitHub in the Host tab to follow pull requests.";
+    expect(prErrorText("gh_unauthenticated", "x", "Studio Mac", true)).toBe(signIn);
+    const err = new ZwiimClientError("gh_unauthenticated", "m", 422);
+    expect(mergeError(err, "Studio Mac", true)).toBe(signIn);
+    expect(continueError(err, 12, "Studio Mac", true)).toBe(signIn);
+    // An older Host still asks for gh auth login.
+    expect(mergeError(err, "Studio Mac")).toContain("Run gh auth login there");
+  });
+
   it("explains a refused merge and what comes next", () => {
     const err = (code: string, details?: Record<string, unknown>) => new ZwiimClientError(code as never, "m", 409, details);
     expect(mergeError(err("pr_changed"), "Studio Mac")).toBe(

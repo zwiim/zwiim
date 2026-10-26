@@ -200,8 +200,52 @@ describe("pull request banner", () => {
       error: { code: "gh_unauthenticated", message: "GitHub CLI on the Host is not logged in" },
     });
     expect(screen.getByTestId("pr-banner").textContent).toBe(
+      "GitHub CLI on the Host isn't signed in.Sign in to GitHub",
+    );
+    t.handlers["github.sign_in"] = () => ({
+      state: "signing_in",
+      code: "ABCD-1234",
+      url: "https://github.com/login/device",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in to GitHub" }));
+    await tick();
+    expect(screen.getByLabelText("Sign-in code").textContent).toBe("ABCD-1234");
+    fireEvent.click(screen.getByRole("button", { name: /Open GitHub/ }));
+    expect(openLink).toHaveBeenCalledWith("https://github.com/login/device");
+  });
+
+  it("on a Host without GitHub sign-in, still says to run gh auth login", async () => {
+    const t = new FakeTransport();
+    t.handlers["host.hello"] = () =>
+      hostHello({ capabilities: CLIENT_CAPABILITIES.filter((c) => c !== "github.auth") });
+    await mount(t);
+    await t.feedEvent("workspace.pr_changed", {
+      workspace_id: "a",
+      pr: null,
+      error: { code: "gh_unauthenticated", message: "GitHub CLI on the Host is not logged in" },
+    });
+    expect(screen.getByTestId("pr-banner").textContent).toBe(
       "GitHub CLI on the Host isn't signed in. Run gh auth login there to follow pull requests.",
     );
+    expect(screen.queryByRole("button", { name: "Sign in to GitHub" })).toBeNull();
+  });
+
+  it("a merge the signed-out GitHub CLI refused offers Sign in to GitHub", async () => {
+    const t = new FakeTransport();
+    t.handlers["git.pr_merge"] = () => {
+      throw new ZwiimClientError("gh_unauthenticated", "GitHub CLI on the Host is not logged in", 422);
+    };
+    t.handlers["github.sign_in"] = () => ({ state: "signed_in", login: "Ashish1101" });
+    await mount(t);
+    await t.feedEvent("workspace.pr_changed", { workspace_id: "a", pr: pr(), error: null });
+    fireEvent.click(merge());
+    await tick();
+    expect(screen.getByRole("alert").textContent).toBe("GitHub CLI on the Host isn't signed in.");
+    fireEvent.click(screen.getByRole("button", { name: "Sign in to GitHub" }));
+    await tick();
+    // Signed in, the refusal no longer stands: Merge again.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Sign in to GitHub" })).toBeNull();
   });
 
   it("continues a merged PR's worktree on a new branch from its base, and lets the banner go", async () => {

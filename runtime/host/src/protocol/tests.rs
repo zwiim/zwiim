@@ -64,6 +64,9 @@ const OPS: &[&str] = &[
     "git.pr_merge",
     "github.repo_available",
     "github.repos",
+    "github.auth_status",
+    "github.sign_in",
+    "github.cancel_sign_in",
     "workspace.clone",
     "workspace.clone_cancel",
     "terminal.spawn",
@@ -1024,6 +1027,62 @@ async fn paired_devices_can_list_and_clone() {
         )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{v}");
+}
+
+/// A `gh` signed out whose login shows gh's code and address, then waits.
+const SIGNING_IN_GH: &str = r#""auth status --json hosts") echo '{"hosts":{}}';;
+"auth login --web --hostname github.com --git-protocol https") echo '! First copy your one-time code: 36BE-F43F' >&2; echo 'Open this URL to continue in your web browser: https://github.com/login/device' >&2; exec sleep 30;;
+"#;
+
+#[tokio::test]
+async fn paired_devices_sign_the_host_gh_in_to_github() {
+    let h = host_with_gh(false, Some(SIGNING_IN_GH)).await;
+    assert_eq!(
+        h.ok("github.auth_status", json!({})).await,
+        json!({ "state": "signed_out" })
+    );
+    let device = bearer_device(&h, "dev-1").await;
+    let signing_in = json!({
+        "state": "signing_in",
+        "code": "36BE-F43F",
+        "url": "https://github.com/login/device",
+    });
+    let (status, v) = h.call_as(&device, "github.sign_in", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v, signing_in);
+    assert_eq!(h.ok("github.auth_status", json!({})).await, signing_in);
+    // A second sign-in is the same one.
+    assert_eq!(h.ok("github.sign_in", json!({})).await, signing_in);
+    let (status, v) = h.call_as(&device, "github.cancel_sign_in", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v, json!({ "state": "signed_out" }));
+}
+
+#[tokio::test]
+async fn github_sign_in_reads_signed_in_and_unavailable() {
+    let h = host_with_gh(
+        false,
+        Some(
+            r#""auth status --json hosts") echo '{"hosts":{"github.com":[{"state":"success","active":true,"host":"github.com","login":"octo"}]}}';;"#,
+        ),
+    )
+    .await;
+    let signed_in = json!({ "state": "signed_in", "login": "octo" });
+    assert_eq!(h.ok("github.auth_status", json!({})).await, signed_in);
+    assert_eq!(h.ok("github.sign_in", json!({})).await, signed_in);
+
+    let h = host_with_gh(false, None).await;
+    for op in [
+        "github.auth_status",
+        "github.sign_in",
+        "github.cancel_sign_in",
+    ] {
+        assert_eq!(
+            h.ok(op, json!({})).await,
+            json!({ "state": "unavailable" }),
+            "{op}"
+        );
+    }
 }
 
 #[test]

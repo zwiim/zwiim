@@ -1451,6 +1451,45 @@ pub async fn github_repo_available(
     Ok(Json(RepoAvailable { available: !exists }))
 }
 
+/// `github.auth_status`: how the Host's `gh` is signed in to GitHub, with the
+/// code to enter while a sign-in runs.
+pub async fn github_auth_status(
+    Extension(state): Extension<Arc<AppState>>,
+) -> ZResult<git_harness::GithubAuth> {
+    Ok(Json(
+        state
+            .github_auth
+            .status(state.gh.as_deref(), &gh_cwd())
+            .await,
+    ))
+}
+
+/// `github.sign_in`: start signing the Host's `gh` in through GitHub's device
+/// flow and return the code once gh shows it. Signed in already, or a sign-in
+/// running, reads as it is.
+pub async fn github_sign_in(
+    Extension(state): Extension<Arc<AppState>>,
+) -> ZResult<git_harness::GithubAuth> {
+    Ok(Json(
+        state
+            .github_auth
+            .sign_in(state.gh.as_deref(), &gh_cwd())
+            .await,
+    ))
+}
+
+/// `github.cancel_sign_in`: end the sign-in in progress, if any.
+pub async fn github_cancel_sign_in(
+    Extension(state): Extension<Arc<AppState>>,
+) -> ZResult<git_harness::GithubAuth> {
+    Ok(Json(
+        state
+            .github_auth
+            .cancel(state.gh.as_deref(), &gh_cwd())
+            .await,
+    ))
+}
+
 /// Where the Host runs read-only `gh` calls: the home directory, else temp.
 fn gh_cwd() -> String {
     workspace::home_dir()

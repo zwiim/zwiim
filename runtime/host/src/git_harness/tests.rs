@@ -524,6 +524,11 @@ fn gh_failures_map_to_structured_codes() {
         (Some(1), "error connecting to api.github.com", Network),
         (
             Some(1),
+            "dial tcp: lookup api.github.com: no such host",
+            Network,
+        ),
+        (
+            Some(1),
             "Post \"https://api.github.com/graphql\": dial tcp: i/o timeout",
             Network,
         ),

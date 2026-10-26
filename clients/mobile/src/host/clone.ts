@@ -14,19 +14,24 @@ import {
 } from "@zwiim/sdk";
 import { ago } from "../account/hosts";
 import { errorInfo } from "./connection";
+import { SIGN_IN_HERE } from "./github";
 
-const GH_LINES: Record<string, (host: string) => string> = {
+/** `signInOffered`: the Host signs its GitHub CLI in itself (`github.auth`), from the Host tab. */
+const GH_LINES: Record<string, (host: string, signInOffered: boolean) => string> = {
   gh_unavailable: (host) => `GitHub CLI isn't installed on ${host}. Install gh there to clone projects.`,
-  gh_unauthenticated: (host) => `GitHub CLI on ${host} isn't signed in. Run gh auth login there.`,
+  gh_unauthenticated: (host, signInOffered) =>
+    signInOffered
+      ? `GitHub CLI on ${host} isn't signed in. ${SIGN_IN_HERE}.`
+      : `GitHub CLI on ${host} isn't signed in. Run gh auth login there.`,
 };
 
 const authLine = (host: string) => `GitHub refused the credentials. Run gh auth status on ${host}.`;
 
 /** Why the repository list couldn't load. */
-export function listProblem(e: unknown, host: string): string {
+export function listProblem(e: unknown, host: string, signInOffered = false): string {
   const { code, message } = errorInfo(e);
   const gh = GH_LINES[code];
-  if (gh) return gh(host);
+  if (gh) return gh(host, signInOffered);
   switch (code) {
     case "github_unreachable":
     case "timeout":
@@ -44,10 +49,10 @@ export function listProblem(e: unknown, host: string): string {
 }
 
 /** A failed clone's line, and whether trying again can help. Never the Host's message: it may hold paths. */
-export function cloneProblem(job: CloneJob, host: string): { text: string; retry: boolean } {
+export function cloneProblem(job: CloneJob, host: string, signInOffered = false): { text: string; retry: boolean } {
   const code = job.error?.code ?? "failed";
   const gh = GH_LINES[code];
-  if (gh) return { text: gh(host), retry: false };
+  if (gh) return { text: gh(host, signInOffered), retry: false };
   switch (code) {
     case "network":
       return { text: "Couldn't reach GitHub.", retry: true };

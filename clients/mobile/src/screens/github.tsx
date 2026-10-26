@@ -8,6 +8,7 @@ import Svg, { Path } from "react-native-svg";
 import { fullName, hasCapability, isActive, progressLabel, sameRepo, type CloneJob, type GithubRepo } from "@zwiim/sdk";
 import { useCurrentHost, useHostState, useNow } from "../app/hooks";
 import { addedWorkspace, cloneCards, cloneProblem, listProblem, repoMeta, repoRows, settleClones, type RepoRow } from "../host/clone";
+import { githubSignInOffered } from "../host/github";
 import { currentHost } from "../services";
 import { Button, T } from "../ui/components";
 import { ChevronLeft, ChevronRight, Folder, Icon, Lock, RotateCw } from "../ui/icons";
@@ -144,6 +145,7 @@ export function GithubProjects({
   const theme = useTheme();
   const host = useHostName();
   const { view } = useCurrentHost();
+  const signIn = githubSignInOffered(view?.compat ?? null);
   const { clones } = useHostState();
   const live = view?.status === "live";
   const now = Math.floor(useNow(false) / 1000);
@@ -165,7 +167,7 @@ export function GithubProjects({
       const page = await currentHost.githubRepos(1, refresh);
       if (n === asked.current) setList({ kind: "ready", repos: page.repos, next_page: page.next_page });
     } catch (e) {
-      if (n === asked.current) setList({ kind: "failed", text: listProblem(e, host) });
+      if (n === asked.current) setList({ kind: "failed", text: listProblem(e, host, signIn) });
     } finally {
       if (n === asked.current) setRefreshing(false);
     }
@@ -185,7 +187,7 @@ export function GithubProjects({
       );
       setMore({ loading: false, error: null });
     } catch (e) {
-      if (n === asked.current) setMore({ loading: false, error: listProblem(e, host) });
+      if (n === asked.current) setMore({ loading: false, error: listProblem(e, host, signIn) });
     }
   };
 
@@ -207,7 +209,7 @@ export function GithubProjects({
       if ("workspace_id" in started) onOpen(started.workspace_id);
       else onStarted(started.clone_id);
     } catch (e) {
-      setRefused({ key, text: listProblem(e, host) });
+      setRefused({ key, text: listProblem(e, host, signIn) });
     } finally {
       setStarting((s) => {
         const next = new Set(s);
@@ -228,7 +230,7 @@ export function GithubProjects({
     try {
       await currentHost.cancelClone(clone_id);
     } catch (e) {
-      setRefused({ key, text: listProblem(e, host) });
+      setRefused({ key, text: listProblem(e, host, signIn) });
     }
   };
 
@@ -350,11 +352,15 @@ function RepoItem({
   onCancel(clone_id: string): void;
 }) {
   const theme = useTheme();
+  const { view } = useCurrentHost();
   const target = row.kind === "repo" ? row.repo : row.ref;
   const repo = row.kind === "repo" ? row.repo : null;
   const added = addedWorkspace(row);
   const active = row.job && isActive(row.job) ? row.job : null;
-  const failed = !added && !active && row.job?.state === "failed" ? cloneProblem(row.job, host) : null;
+  const failed =
+    !added && !active && row.job?.state === "failed"
+      ? cloneProblem(row.job, host, githubSignInOffered(view?.compat ?? null))
+      : null;
   const pill = added
     ? <Pill label="Added" color={theme.accent} />
     : repo?.private
@@ -429,6 +435,7 @@ export function CloneCards({ onStarted }: { onStarted(clone_id: string): void })
   const theme = useTheme();
   const host = useHostName();
   const { view, dismissedClones } = useCurrentHost();
+  const signIn = githubSignInOffered(view?.compat ?? null);
   const { clones } = useHostState();
   const live = view?.status === "live";
   const [error, setError] = useState<string | null>(null);
@@ -443,7 +450,7 @@ export function CloneCards({ onStarted }: { onStarted(clone_id: string): void })
       if ("clone_id" in started) onStarted(started.clone_id);
       else currentHost.chooseWorkspace(started.workspace_id);
     } catch (e) {
-      setError(listProblem(e, host));
+      setError(listProblem(e, host, signIn));
     }
   };
 
@@ -451,14 +458,14 @@ export function CloneCards({ onStarted }: { onStarted(clone_id: string): void })
     try {
       await currentHost.cancelClone(clone_id);
     } catch (e) {
-      setError(listProblem(e, host));
+      setError(listProblem(e, host, signIn));
     }
   };
 
   return (
     <View style={styles.cards}>
       {cards.map((job) => {
-        const problem = job.state === "failed" ? cloneProblem(job, host) : null;
+        const problem = job.state === "failed" ? cloneProblem(job, host, signIn) : null;
         return (
           <View key={job.clone_id} style={[styles.card, { backgroundColor: theme.surface }]} testID={`clone-${job.clone_id}`}>
             <View style={styles.rowHead}>

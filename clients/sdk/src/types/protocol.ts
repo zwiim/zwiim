@@ -1266,6 +1266,22 @@ export interface AgentAuthStatus {
   plan: string | null;
 }
 
+/** How the Host's `gh` is signed in to GitHub. `unavailable`: gh is not installed. */
+export type GithubAuthState = "signed_out" | "signing_in" | "signed_in" | "unavailable";
+
+/** `github.auth_status`: the Host's GitHub sign-in through gh's device flow. Never a token. */
+export interface GithubAuth {
+  state: GithubAuthState;
+  /** The signed-in account, when `signed_in`. */
+  login?: string;
+  /** The one-time code to enter, while `signing_in`. */
+  code?: string;
+  /** Where to enter it (always `https://github.com/...`), while `signing_in`. */
+  url?: string;
+  /** Why the last attempt failed, reported once. */
+  error?: string;
+}
+
 // ─── operations ──────────────────────────────────────────────────────────
 
 /** Request/response shape of every V1 operation the SDK exposes. */
@@ -1313,6 +1329,12 @@ export interface Operations {
   "github.repo_available": [PublishTarget, { available: boolean }];
   /** One page (from 1) of the Host account's GitHub repositories. */
   "github.repos": [{ page?: number; refresh?: boolean }, GithubRepoPage];
+  /** How the Host's gh is signed in to GitHub; the code while a sign-in runs. Capability `github.auth`. */
+  "github.auth_status": [Record<string, never>, GithubAuth];
+  /** Start signing the Host's gh in (or return the sign-in running); waits briefly for the code. */
+  "github.sign_in": [Record<string, never>, GithubAuth];
+  /** End the sign-in in progress, if any. */
+  "github.cancel_sign_in": [Record<string, never>, GithubAuth];
   /** Clone `owner/name` into a new workspace, or the root already opened on it. */
   "workspace.clone": [PublishTarget, CloneStart];
   "workspace.clone_cancel": [{ clone_id: string }, { cancelled: boolean }];
@@ -1485,4 +1507,6 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "cloud.enroll",
   "workspace.clone",
   "workspace.clone_cancel",
+  "github.sign_in",
+  "github.cancel_sign_in",
 ]);

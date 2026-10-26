@@ -123,9 +123,19 @@ describe("evaluateCompatibility", () => {
   });
 
   it("speaks revision 8, which streams keep-awake status", () => {
-    expect(CLIENT_REVISION).toBe(8);
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(8);
     // The event and field are optional: a revision-7 Host is still compatible.
     expect(evaluateCompatibility(hello({ revision: 7, min_client_revision: 1 })).status).not.toBe("update_required");
+  });
+
+  it("asks for GitHub sign-in at revision 9; an older Host is limited, not broken", () => {
+    expect(CLIENT_REVISION).toBe(9);
+    expect(CLIENT_CAPABILITIES).toContain("github.auth");
+    const old = evaluateCompatibility(hello({ revision: 8, min_client_revision: 1, capabilities: ["clone"] }));
+    expect(old.status).toBe("limited");
+    expect(hasCapability(old, "github.auth")).toBe(false);
+    const now = evaluateCompatibility(hello({ revision: 9, min_client_revision: 1, capabilities: ["github.auth"] }));
+    expect(hasCapability(now, "github.auth")).toBe(true);
   });
 
   it("a different protocol major is incompatible and names the older side", () => {

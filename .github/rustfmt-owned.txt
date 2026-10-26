@@ -52,3 +52,4 @@ runtime/host/src/git_harness/checkpoint_tests.rs
 runtime/host/src/session_checkpoints.rs
 runtime/host/src/acp/codex_subagents.rs
 runtime/host/src/history_cache.rs
+runtime/host/src/git_harness/gh_auth.rs

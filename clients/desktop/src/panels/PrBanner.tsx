@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { openLink } from "@/lib/bridge";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { cn } from "@/lib/utils";
+import { GithubSignIn, useGithubSignInOffered } from "./Github";
 
 /** What a merge does, as GitHub's own button says it. */
 export const METHOD_LABELS: Record<MergeMethod, string> = {
@@ -25,11 +26,16 @@ export const METHOD_LABELS: Record<MergeMethod, string> = {
   rebase: "Rebase and merge",
 };
 
-/** Why the Host can't see pull requests, in words for the user. */
-export function prErrorText(code: string, message: string): string {
+/**
+ * Why the Host can't see pull requests, in words for the user.
+ * `signInOffered`: the caller shows Sign in to GitHub under a `gh_unauthenticated` line.
+ */
+export function prErrorText(code: string, message: string, signInOffered = false): string {
   switch (code) {
     case "gh_unauthenticated":
-      return "GitHub CLI on the Host isn't signed in. Run gh auth login there to follow pull requests.";
+      return signInOffered
+        ? "GitHub CLI on the Host isn't signed in."
+        : "GitHub CLI on the Host isn't signed in. Run gh auth login there to follow pull requests.";
     case "gh_unavailable":
       return "GitHub CLI isn't installed on the Host. Install gh there to follow pull requests.";
     default:
@@ -38,7 +44,7 @@ export function prErrorText(code: string, message: string): string {
 }
 
 /** A refused merge in words: what changed, or why GitHub won't merge it now. */
-export function mergeErrorText(e: unknown): string {
+export function mergeErrorText(e: unknown, signInOffered = false): string {
   const code = e && typeof e === "object" && "code" in e ? String((e as { code: unknown }).code) : null;
   const details = e && typeof e === "object" && "details" in e ? (e as { details?: Record<string, unknown> }).details : undefined;
   switch (code) {
@@ -48,7 +54,7 @@ export function mergeErrorText(e: unknown): string {
       return typeof details?.reason === "string" ? details.reason : "GitHub won't merge it right now.";
     case "gh_unauthenticated":
     case "gh_unavailable":
-      return prErrorText(code, "");
+      return prErrorText(code, "", signInOffered);
     case "github_unreachable":
       return "The Host couldn't reach GitHub. Try again.";
     default:
@@ -56,8 +62,12 @@ export function mergeErrorText(e: unknown): string {
   }
 }
 
+function isGhUnauthenticated(e: unknown): boolean {
+  return !!e && typeof e === "object" && "code" in e && (e as { code: unknown }).code === "gh_unauthenticated";
+}
+
 /** A refused Continue in words: what holds the worktree, or what GitHub says. */
-export function continueErrorText(e: unknown, number: number): string {
+export function continueErrorText(e: unknown, number: number, signInOffered = false): string {
   const code = e && typeof e === "object" && "code" in e ? String((e as { code: unknown }).code) : null;
   switch (code) {
     case "workspace_busy":
@@ -69,7 +79,7 @@ export function continueErrorText(e: unknown, number: number): string {
     case "pr_not_merged":
       return `#${number} isn't merged on GitHub yet.`;
     default:
-      return mergeErrorText(e);
+      return mergeErrorText(e, signInOffered);
   }
 }
 
@@ -153,12 +163,15 @@ export function PrBanner({ workspaceId }: { workspaceId: string }) {
   const entry: PrEntry | undefined = useHost((s) => s.prs[workspaceId]);
   const workspace = useHost((s) => s.workspaces?.find((w) => w.workspace_id === workspaceId));
   const continueOffered = useHost((s) => hasCapability(s.connection.compat, "workspace.continue"));
+  const signInOffered = useGithubSignInOffered();
   const controller = useController();
   const online = useOnline();
   const [open, setOpen] = useState(false);
   const [merging, setMerging] = useState(false);
   const [continuing, setContinuing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The last merge was refused for want of a signed-in GitHub CLI. */
+  const [signInNeeded, setSignInNeeded] = useState(false);
   /** The PR this client just merged, shown merged until the feed says so too. */
   const [justMerged, setJustMerged] = useState<number | null>(null);
   /** The PR this client just continued past, hidden until the feed clears it. */
@@ -170,7 +183,10 @@ export function PrBanner({ workspaceId }: { workspaceId: string }) {
       : feedPr;
 
   // A new head is a new pull request to judge; an old refusal no longer applies.
-  useEffect(() => setError(null), [workspaceId, pr?.head_sha, pr?.state]);
+  useEffect(() => {
+    setError(null);
+    setSignInNeeded(false);
+  }, [workspaceId, pr?.head_sha, pr?.state]);
   useEffect(() => {
     setJustMerged(null);
     setContinued(null);
@@ -183,7 +199,11 @@ export function PrBanner({ workspaceId }: { workspaceId: string }) {
     return (
       <div className="text-muted-foreground flex shrink-0 items-start gap-2 border-b px-3 py-2 text-xs" data-testid="pr-banner">
         <GitPullRequest className="mt-px size-3.5 shrink-0" />
-        <span>{prErrorText(entry.error.code, entry.error.message)}</span>
+        <div className="flex min-w-0 flex-col gap-2">
+          <span>{prErrorText(entry.error.code, entry.error.message, signInOffered)}</span>
+          {/* Signed in, the Host's feed finds the pull request on its next look. */}
+          {entry.error.code === "gh_unauthenticated" && signInOffered && <GithubSignIn />}
+        </div>
       </div>
     );
   }
@@ -199,12 +219,14 @@ export function PrBanner({ workspaceId }: { workspaceId: string }) {
   async function merge() {
     setMerging(true);
     setError(null);
+    setSignInNeeded(false);
     try {
       // Pinned to the head shown here: a push since then is refused, not merged.
       const merged = await controller.mergePr(workspaceId, pr!, method ?? undefined);
       setJustMerged(merged.number);
     } catch (e) {
-      setError(mergeErrorText(e));
+      setError(mergeErrorText(e, signInOffered));
+      setSignInNeeded(signInOffered && isGhUnauthenticated(e));
     } finally {
       setMerging(false);
     }
@@ -213,11 +235,13 @@ export function PrBanner({ workspaceId }: { workspaceId: string }) {
   async function continueHere() {
     setContinuing(true);
     setError(null);
+    setSignInNeeded(false);
     try {
       await controller.continueWorkspace(workspaceId, pr!.number);
       setContinued(pr!.number);
     } catch (e) {
-      setError(continueErrorText(e, pr!.number));
+      setError(continueErrorText(e, pr!.number, signInOffered));
+      setSignInNeeded(signInOffered && isGhUnauthenticated(e));
     } finally {
       setContinuing(false);
     }
@@ -301,6 +325,16 @@ export function PrBanner({ workspaceId }: { workspaceId: string }) {
         <p className="text-destructive mt-1 pl-6 text-xs" role="alert">
           {error}
         </p>
+      )}
+      {error && signInNeeded && (
+        <div className="mt-1 pl-6">
+          <GithubSignIn
+            onSignedIn={() => {
+              setError(null);
+              setSignInNeeded(false);
+            }}
+          />
+        </div>
       )}
       {open && !settled && (
         <ul className="mt-1 max-h-48 overflow-y-auto pl-4" aria-label="Checks">

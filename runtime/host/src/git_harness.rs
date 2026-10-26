@@ -30,6 +30,7 @@ mod account;
 pub mod checkpoint;
 mod clone;
 mod error;
+mod gh_auth;
 mod github;
 mod local;
 mod op;
@@ -52,6 +53,7 @@ pub use account::{
 };
 pub use clone::{github_repo_clone, ClonePhase, CloneRun};
 pub use error::{GitError, GitErrorCode};
+pub use gh_auth::{GithubAuth, GithubAuthState, GithubSignIn};
 pub use op::{
     BranchOutcome, CommitOutcome, FetchOutcome, GitOp, GitOpKind, GitOutcome, MergeMethod, PrCheck,
     PrComment, PrComments, PrCreated, PrMerged, PrReview, PrReviewComment, PrSummary, PullMode,

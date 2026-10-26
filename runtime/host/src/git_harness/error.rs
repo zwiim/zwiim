@@ -231,6 +231,7 @@ pub(super) fn classify_gh(op: &str, exit: Option<i32>, stderr: &str) -> GitError
     {
         GitErrorCode::NotMergeable
     } else if lower.contains("could not resolve host")
+        || lower.contains("no such host")
         || lower.contains("connection refused")
         || lower.contains("network is unreachable")
         || lower.contains("error connecting to")

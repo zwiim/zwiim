@@ -14,6 +14,7 @@ import { Dialog } from "@/components/ui/dialog";
 import { openLink } from "@/lib/bridge";
 import { errorMessage, useController, useOnline } from "@/lib/host-context";
 import { cn } from "@/lib/utils";
+import { GithubSignIn, useGithubSignInOffered } from "./Github";
 import { ControlSelect } from "./OptionsBar";
 
 /** The folder being added: picked by path, or a root already in the list. */
@@ -75,11 +76,17 @@ export const Code = ({ children }: { children: React.ReactNode }) => <code class
 /** The folder's name, as the Host names a root added from it. */
 const folderName = (path: string) => path.replace(/\/+$/, "").split("/").pop() ?? "";
 
-export function unavailableLine(reason: Unavailable, host: string) {
+/**
+ * Why GitHub can't be used, in a line. `signInOffered` (a Host with
+ * `github.auth`): the caller shows the Sign in to GitHub action under it,
+ * so the line names no command.
+ */
+export function unavailableLine(reason: Unavailable, host: string, signInOffered = false) {
   switch (reason) {
     case "gh_unavailable":
       return <>GitHub CLI isn't installed on {host}.</>;
     case "gh_unauthenticated":
+      if (signInOffered) return <>GitHub CLI isn't signed in on {host}.</>;
       return (
         <>
           GitHub CLI isn't signed in on {host}. Run <Code>gh auth login</Code>, then try again.
@@ -100,6 +107,7 @@ export function unavailableLine(reason: Unavailable, host: string) {
 export function PublishDialog({ subject, remote, onClose, onAdded, ...props }: PublishDialogProps) {
   const controller = useController();
   const online = useOnline();
+  const signInOffered = useGithubSignInOffered();
   const [inspection, setInspection] = useState(props.inspection);
   const [phase, setPhase] = useState(() => phaseOf(props.inspection));
   const owners = inspection.github?.available ? inspection.github.owners : [];
@@ -509,11 +517,15 @@ export function PublishDialog({ subject, remote, onClose, onAdded, ...props }: P
         ) : (
           <p className="text-sm">
             {phase.kind === "unavailable"
-              ? unavailableLine(phase.reason, hostName)
+              ? unavailableLine(phase.reason, hostName, signInOffered)
               : phase.kind === "has_origin"
                 ? "This folder already has a remote, so there's nothing to publish."
                 : `This repository isn't on a branch. Check out a branch on ${hostName}, then try again.`}
           </p>
+        )}
+        {phase.kind === "unavailable" && phase.reason === "gh_unauthenticated" && signInOffered && (
+          // Signed in, the folder is read again and the form comes back.
+          <GithubSignIn host={hostName} onSignedIn={() => void inspectAgain()} />
         )}
         {large && !waiting && (
           <p className="text-muted-foreground text-xs">

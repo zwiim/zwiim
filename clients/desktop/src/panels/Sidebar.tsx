@@ -39,6 +39,7 @@ import { WorkingMark } from "@/components/WorkingMark";
 import { cn } from "@/lib/utils";
 import { moveMenuFocus } from "./ControlCenter";
 import { GithubCloneDialog, GithubMark, ProgressBar, cloneErrorLine } from "./GithubCloneDialog";
+import { GithubSignIn, useGithubSignInOffered } from "./Github";
 import { NewWorktree } from "./NewWorktree";
 import { PublishDialog, type PublishSubject } from "./PublishDialog";
 
@@ -507,9 +508,11 @@ function CloneRow(props: { job: CloneJob; remote: boolean; onRetry(): Promise<vo
   const { job } = props;
   const controller = useController();
   const online = useOnline();
+  const signInOffered = useGithubSignInOffered();
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
   const failed = job.state === "failed";
+  const host = props.remote ? "the host" : "this Mac";
 
   async function cancel() {
     setError(null);
@@ -558,7 +561,8 @@ function CloneRow(props: { job: CloneJob; remote: boolean; onRetry(): Promise<vo
       )}
       {failed && (
         <div className="flex flex-col gap-1 pl-7">
-          <p className="text-destructive text-xs">{cloneErrorLine(job, props.remote ? "the host" : "this Mac")}</p>
+          <p className="text-destructive text-xs">{cloneErrorLine(job, host, signInOffered)}</p>
+          {job.error?.code === "gh_unauthenticated" && signInOffered && <GithubSignIn host={host} />}
           <div className="flex gap-1">
             <Button size="xs" variant="ghost" disabled={retrying || !online} onClick={() => void retry()}>
               Retry

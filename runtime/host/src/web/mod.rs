@@ -926,6 +926,7 @@ pub(crate) async fn do_start_web_server_tauri(
             crate::workspace::clone::RETENTION,
         )),
            keep_awake: Default::default(),
+        github_auth: Default::default(),
     });
 
     // See do_start_web_server_with_state for rationale on the reset.

@@ -614,3 +614,29 @@ describe("GitHub clone", () => {
     expect(MUTATING_OPS.has("github.repos")).toBe(false);
   });
 });
+
+describe("GitHub sign-in", () => {
+  it("reads, starts and cancels the Host's sign-in", async () => {
+    const t = setup();
+    t.transport.handlers["github.auth_status"] = () => ({ state: "signed_out" });
+    t.transport.handlers["github.sign_in"] = () => ({
+      state: "signing_in",
+      code: "36BE-F43F",
+      url: "https://github.com/login/device",
+    });
+    t.transport.handlers["github.cancel_sign_in"] = () => ({ state: "signed_out" });
+    await expect(t.controller.githubAuthStatus()).resolves.toEqual({ state: "signed_out" });
+    expect(t.transport.requests.at(-1)?.options).toMatchObject({ timeoutMs: 20_000 });
+    await expect(t.controller.githubSignIn()).resolves.toMatchObject({ state: "signing_in", code: "36BE-F43F" });
+    // gh takes a few seconds to show the code: longer than the default timeout.
+    expect(t.transport.requests.at(-1)?.options).toEqual({ mutating: true, timeoutMs: 60_000 });
+    await expect(t.controller.cancelGithubSignIn()).resolves.toEqual({ state: "signed_out" });
+    expect(t.transport.requests.at(-1)?.options).toMatchObject({ mutating: true });
+  });
+
+  it("treats sign-in and cancel as mutating, the status read not", () => {
+    expect(MUTATING_OPS.has("github.sign_in")).toBe(true);
+    expect(MUTATING_OPS.has("github.cancel_sign_in")).toBe(true);
+    expect(MUTATING_OPS.has("github.auth_status")).toBe(false);
+  });
+});

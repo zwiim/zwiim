@@ -45,6 +45,20 @@ describe("listProblem", () => {
     );
   });
 
+  it("sends a signed-out GitHub CLI to the Host tab when the Host signs in itself", () => {
+    expect(listProblem(new ZwiimClientError("gh_unauthenticated", "x", 422), "Studio Mac", true)).toBe(
+      "GitHub CLI on Studio Mac isn't signed in. Sign in under GitHub in the Host tab.",
+    );
+    expect(cloneProblem(failed("gh_unauthenticated"), "Studio Mac", true)).toEqual({
+      text: "GitHub CLI on Studio Mac isn't signed in. Sign in under GitHub in the Host tab.",
+      retry: false,
+    });
+    // The rest of what it says doesn't change.
+    expect(listProblem(new ZwiimClientError("gh_unavailable", "x", 422), "Studio Mac", true)).toBe(
+      "GitHub CLI isn't installed on Studio Mac. Install gh there to clone projects.",
+    );
+  });
+
   it("blames GitHub for the Host's network failures and the phone for its own", () => {
     const unreachable = "Studio Mac couldn't reach GitHub.";
     expect(listProblem(new ZwiimClientError("github_unreachable", "x", 502), "Studio Mac")).toBe(unreachable);

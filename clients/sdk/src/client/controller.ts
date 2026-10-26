@@ -10,6 +10,7 @@ import type {
   AgentSummary,
   AgentType,
   CloneStart,
+  GithubAuth,
   GithubRepoPage,
   HostOwner,
   MergeMethod,
@@ -37,6 +38,9 @@ const PUBLISH_TIMEOUT_MS = 330_000;
 
 /** The Host's `gh` call has its own 15 s limit; leave room for it. */
 const GITHUB_REPOS_TIMEOUT_MS = 20_000;
+
+/** `github.sign_in` can take about 55 s at worst: gh's status (15 s), the code (10 s), then two more gh checks (15 s each). */
+const GITHUB_SIGN_IN_TIMEOUT_MS = 60_000;
 
 /**
  * Frames after which `session.history` may include more turns. `view` is the
@@ -239,6 +243,21 @@ export class HostController {
       { ...(page === undefined ? {} : { page }), ...(refresh ? { refresh } : {}) },
       { timeoutMs: GITHUB_REPOS_TIMEOUT_MS },
     );
+  }
+
+  /** How the Host's gh is signed in to GitHub. */
+  async githubAuthStatus(): Promise<GithubAuth> {
+    return this.client.request("github.auth_status", {}, { timeoutMs: GITHUB_REPOS_TIMEOUT_MS });
+  }
+
+  /** Start signing the Host's gh in to GitHub; `signing_in` carries the code to enter. */
+  async githubSignIn(): Promise<GithubAuth> {
+    return this.client.request("github.sign_in", {}, { timeoutMs: GITHUB_SIGN_IN_TIMEOUT_MS });
+  }
+
+  /** End the Host's GitHub sign-in in progress. */
+  async cancelGithubSignIn(): Promise<GithubAuth> {
+    return this.client.request("github.cancel_sign_in", {}, { timeoutMs: GITHUB_REPOS_TIMEOUT_MS });
   }
 
   /** Clone `owner/name` on the Host; progress arrives as `clones` state. */
