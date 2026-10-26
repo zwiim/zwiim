@@ -37,7 +37,7 @@ pub mod pr_watch;
 pub mod host_lifecycle;
 pub mod identity;
 pub mod intern;
-pub mod keep_awake;
+pub mod power;
 pub mod lan;
 pub mod keyring_store;
 pub mod local_host;

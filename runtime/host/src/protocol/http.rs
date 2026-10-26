@@ -348,26 +348,18 @@ pub async fn lan_set(
 
 // ─── keep awake ──────────────────────────────────────────────────────────
 //
-// Whether this Mac stays awake while an agent works: local host authority
-// only, like LAN access.
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct KeepAwakeSetParams {
-    pub enabled: bool,
-}
+// Whether this computer stays awake so the host stays reachable: local host
+// authority only, like LAN access.
 
 pub async fn host_keep_awake_status(Extension(state): Extension<Arc<AppState>>) -> ZResult<Value> {
-    Ok(Json(json!(crate::keep_awake::status(&state).await?)))
+    Ok(Json(json!(crate::power::status(&state).await?)))
 }
 
 pub async fn host_keep_awake_set(
     Extension(state): Extension<Arc<AppState>>,
-    ZJson(p): ZJson<KeepAwakeSetParams>,
+    ZJson(p): ZJson<crate::power::KeepAwakePatch>,
 ) -> ZResult<Value> {
-    Ok(Json(json!(
-        crate::keep_awake::set(&state, p.enabled).await?
-    )))
+    Ok(Json(json!(crate::power::set(&state, p).await?)))
 }
 
 // ─── device ──────────────────────────────────────────────────────────────

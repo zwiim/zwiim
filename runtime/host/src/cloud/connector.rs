@@ -34,6 +34,8 @@ pub(super) async fn run(state: Arc<AppState>, router: Router, shutdown: Arc<Shut
         cloud.set_status(Connection::Connecting, None);
         let (was_online, error) = tokio::select! {
             ended = session(&state, &router, &shutdown, &config) => ended,
+            // Dropping the session drops its socket, mid-dial or online.
+            _ = cloud.woke.notified() => (true, "woke from sleep".into()),
             _ = shutdown.wait() => return,
         };
         tracing::info!("[cloud] disconnected from {}: {error}", config.url);
@@ -47,6 +49,10 @@ pub(super) async fn run(state: Arc<AppState>, router: Router, shutdown: Arc<Shut
         let delay = half + half.mul_f64(rand::thread_rng().gen::<f64>());
         tokio::select! {
             _ = tokio::time::sleep(delay) => {}
+            _ = cloud.woke.notified() => {
+                backoff = timing.backoff_min;
+                continue;
+            }
             _ = shutdown.wait() => return,
         }
         backoff = (backoff * 2).min(timing.backoff_max);

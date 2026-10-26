@@ -127,6 +127,8 @@ pub struct CloudLink {
     runtime: OnceLock<Runtime>,
     /// Bounds concurrent relayed tunnels.
     relays: Arc<tokio::sync::Semaphore>,
+    /// The computer woke: drop whatever connection there is and redial.
+    woke: tokio::sync::Notify,
 }
 
 /// Concurrent relayed tunnels per host.
@@ -146,6 +148,7 @@ impl CloudLink {
             task: Mutex::new(None),
             runtime: OnceLock::new(),
             relays: Arc::new(tokio::sync::Semaphore::new(MAX_RELAYS)),
+            woke: tokio::sync::Notify::new(),
         }
     }
 
@@ -170,6 +173,15 @@ impl CloudLink {
 
     fn timing(&self) -> Timing {
         self.settings.read().unwrap().1
+    }
+
+    /// The computer woke from sleep: whatever socket the connector holds is
+    /// likely dead, so redial now rather than wait out the presence timeout
+    /// or the backoff.
+    pub fn nudge(&self) {
+        // Wakes only a connector waiting right now: no permit is stored for
+        // a later, healthy connection to trip over.
+        self.woke.notify_waiters();
     }
 
     pub fn status(&self) -> Status {

@@ -141,34 +141,158 @@ describe("theme", () => {
   });
 });
 
-describe("keeping the Mac awake", () => {
-  it("is on in General until turned off, and the host remembers the choice", async () => {
+type Reach = {
+  supported: boolean;
+  mode: "off" | "while_working" | "always";
+  on_battery: boolean;
+  lid_closed: { support: "no_lid" | "unavailable" | "needs_setup" | "available"; enabled: boolean };
+  active: boolean;
+  blocked_by: "on_battery" | "low_battery" | "thermal" | null;
+  warnings: ("lid_close_will_sleep" | "on_battery_will_drain")[];
+  power: { source: "ac" | "battery" | "unknown"; battery_percent: number | null };
+};
+
+function status(over: Partial<Reach> = {}): Reach {
+  return {
+    supported: true,
+    mode: "always",
+    on_battery: false,
+    lid_closed: { support: "unavailable", enabled: false },
+    active: true,
+    blocked_by: null,
+    warnings: [],
+    power: { source: "ac", battery_percent: 100 },
+    ...over,
+  };
+}
+
+describe("keeping the Mac reachable", () => {
+  it("offers the reachability mode in General and sends only what changed", async () => {
     const t = new FakeTransport();
-    let enabled = true;
-    t.handlers["host.keep_awake.status"] = () => ({ supported: true, enabled, active: false });
+    let current = status();
+    t.handlers["host.keep_awake.status"] = () => current;
     t.handlers["host.keep_awake.set"] = (p) => {
-      enabled = (p as { enabled: boolean }).enabled;
-      return { supported: true, enabled, active: false };
+      current = { ...current, ...(p as Partial<Reach>) };
+      return current;
     };
     const c = await mount(t);
-    openSettings("General");
+    const dialog = openSettings("General");
     await tick();
-    const box = screen.getByTestId("keep-awake") as HTMLInputElement;
-    expect(box.checked).toBe(true);
-    fireEvent.click(box);
+    const group = dialog.getByRole("radiogroup", { name: "Keep this Mac reachable" });
+    expect(group).toBeTruthy();
+    expect(dialog.getByRole("radio", { name: "Always (recommended)" }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(dialog.getByRole("radio", { name: "Only while agents work" }));
     await tick();
-    expect(t.calls.filter((x) => x.op === "host.keep_awake.set").map((x) => x.params)).toEqual([{ enabled: false }]);
-    expect((screen.getByTestId("keep-awake") as HTMLInputElement).checked).toBe(false);
+    expect(dialog.getByRole("radio", { name: "Only while agents work" }).getAttribute("aria-checked")).toBe("true");
+    const battery = screen.getByTestId("keep-awake-battery") as HTMLInputElement;
+    expect(battery.checked).toBe(false);
+    fireEvent.click(battery);
+    await tick();
+    fireEvent.click(dialog.getByRole("radio", { name: "Never" }));
+    await tick();
+    expect((screen.getByTestId("keep-awake-battery") as HTMLInputElement).disabled).toBe(true);
+    expect(t.calls.filter((x) => x.op === "host.keep_awake.set").map((x) => x.params)).toEqual([
+      { mode: "while_working" },
+      { on_battery: true },
+      { mode: "off" },
+    ]);
+    expect(screen.getByTestId("keep-awake-status").textContent).toContain("This Mac sleeps as usual");
     c.dispose();
+  });
+
+  it("says why the Mac will sleep", async () => {
+    const cases: [Partial<Reach>, string][] = [
+      [{ mode: "off", active: false }, "This Mac sleeps as usual"],
+      [{ active: false, blocked_by: "on_battery" }, "Will sleep: on battery"],
+      [{ active: false, blocked_by: "low_battery" }, "Will sleep: battery below 10%"],
+      // The host checks the 10% floor first; so does the copy.
+      [
+        { active: false, blocked_by: "low_battery", power: { source: "battery", battery_percent: 5 } },
+        "Will sleep: battery below 10%",
+      ],
+      [{ active: false, blocked_by: "thermal" }, "Will sleep: Mac is too hot"],
+      [{ active: true }, "Reachable: holding awake"],
+      [{ mode: "while_working", active: false }, "Reachable while agents work"],
+      [{ mode: "always", active: false }, "Could not keep this Mac awake"],
+      // While working, nothing is blocked until a turn starts; say so before.
+      [
+        { mode: "while_working", active: false, power: { source: "battery", battery_percent: 80 } },
+        "Will sleep: on battery",
+      ],
+      [
+        {
+          mode: "while_working",
+          active: false,
+          on_battery: true,
+          power: { source: "battery", battery_percent: 9 },
+        },
+        "Will sleep: battery below 10%",
+      ],
+    ];
+    for (const [over, text] of cases) {
+      const t = new FakeTransport();
+      t.handlers["host.keep_awake.status"] = () => status(over);
+      const c = await mount(t);
+      openSettings("General");
+      await tick();
+      expect(screen.getByTestId("keep-awake-status").textContent).toContain(text);
+      c.dispose();
+      cleanup();
+    }
+    const t = new FakeTransport();
+    t.handlers["host.keep_awake.status"] = () =>
+      status({ warnings: ["lid_close_will_sleep", "on_battery_will_drain"] });
+    const c = await mount(t);
+    const dialog = openSettings("General");
+    await tick();
+    expect(dialog.getByText("Closing the lid will still sleep this Mac")).toBeTruthy();
+    expect(dialog.getByText("Running on battery: this drains it")).toBeTruthy();
+    expect(dialog.getByText("The screen still turns off. Lock your Mac, don't log out.")).toBeTruthy();
+    c.dispose();
+  });
+
+  it("shows why a change was refused", async () => {
+    const t = new FakeTransport();
+    t.handlers["host.keep_awake.status"] = () => status();
+    t.handlers["host.keep_awake.set"] = () => {
+      throw new Error("nope");
+    };
+    const c = await mount(t);
+    const dialog = openSettings("General");
+    await tick();
+    fireEvent.click(dialog.getByRole("radio", { name: "Never" }));
+    await tick();
+    expect(dialog.getByRole("alert")).toBeTruthy();
+    c.dispose();
+  });
+
+  it("follows the host while open", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const t = new FakeTransport();
+      let current = status({ active: true });
+      t.handlers["host.keep_awake.status"] = () => current;
+      const c = await mount(t);
+      openSettings("General");
+      await tick();
+      expect(screen.getByTestId("keep-awake-status").textContent).toContain("Reachable: holding awake");
+      current = status({ active: false, blocked_by: "on_battery" });
+      vi.advanceTimersByTime(15000);
+      await tick();
+      expect(screen.getByTestId("keep-awake-status").textContent).toContain("Will sleep: on battery");
+      c.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("is not offered where the host cannot keep the computer awake", async () => {
     const t = new FakeTransport();
-    t.handlers["host.keep_awake.status"] = () => ({ supported: false, enabled: true, active: false });
+    t.handlers["host.keep_awake.status"] = () => status({ supported: false });
     const c = await mount(t);
     openSettings("General");
     await tick();
-    expect(screen.queryByTestId("keep-awake")).toBeNull();
+    expect(screen.queryByRole("radiogroup", { name: "Keep this Mac reachable" })).toBeNull();
     c.dispose();
   });
 });

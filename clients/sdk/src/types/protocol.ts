@@ -155,16 +155,26 @@ export interface CloudStatus {
 
 // ─── keep awake ──────────────────────────────────────────────────────────
 
+/** When the host keeps its Mac awake so phones can still reach it. */
+export type KeepAwakeMode = "off" | "while_working" | "always";
+
 /**
- * Whether the host's Mac stays awake while an agent works. On by default;
- * lets go on battery below 10%.
+ * Whether the host's Mac stays awake, and why not when it won't. Defaults
+ * to always, on AC power only; lets go on battery below 10%.
  */
 export interface KeepAwakeStatus {
   /** False where the host cannot keep the computer awake (not a Mac). */
   supported: boolean;
-  enabled: boolean;
+  mode: KeepAwakeMode;
+  /** Also keep awake on battery (still stops below 10%). */
+  on_battery: boolean;
+  lid_closed: { support: "no_lid" | "unavailable" | "needs_setup" | "available"; enabled: boolean };
   /** The Mac is being kept awake right now. */
   active: boolean;
+  /** Why the Mac will sleep although the mode asks to keep it awake. */
+  blocked_by: "on_battery" | "low_battery" | "thermal" | null;
+  warnings: ("lid_close_will_sleep" | "on_battery_will_drain")[];
+  power: { source: "ac" | "battery" | "unknown"; battery_percent: number | null };
 }
 
 // ─── lan ─────────────────────────────────────────────────────────────────
@@ -1432,7 +1442,7 @@ export interface Operations {
   /** Local host authority only. */
   "host.keep_awake.status": [Record<string, never>, KeepAwakeStatus];
   /** Local host authority only. Idempotent: sets, never toggles. */
-  "host.keep_awake.set": [{ enabled: boolean }, KeepAwakeStatus];
+  "host.keep_awake.set": [Partial<{ mode: KeepAwakeMode; on_battery: boolean; lid_closed: boolean }>, KeepAwakeStatus];
 }
 
 export type OpName = keyof Operations;

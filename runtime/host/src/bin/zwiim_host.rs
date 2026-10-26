@@ -486,7 +486,7 @@ async fn async_main() -> Exit {
     // Close each turn's Git checkpoint when the agent ends the turn.
     zwiim_host::session_checkpoints::spawn_tracker(state.clone());
     // Keep the Mac awake while an agent works.
-    zwiim_host::keep_awake::spawn(state.clone());
+    zwiim_host::power::spawn(state.clone());
 
     // Logging phase 3: wire the emitter so the Logs viewer's live tail
     // (`logs://appended`) reaches WS clients.

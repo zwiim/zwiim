@@ -425,6 +425,47 @@ async fn the_host_decides_who_gets_in() {
     ));
 }
 
+/// Polls `cloud.status` until `check` holds, for at most two seconds: well
+/// under the presence timeout, so only a nudge can explain a quick redial.
+async fn within_two_seconds(h: &Host, what: &str, check: impl Fn(&serde_json::Value) -> bool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let status = h.ok("cloud.status", json!({})).await;
+        if check(&status) {
+            return;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for {what}: {status}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_nudge_redials_at_once() {
+    let cloud = TestCloud::start().await;
+    let (h, _shutdown) = enrolled(&cloud, "u-alice").await;
+    let since = h.ok("cloud.status", json!({})).await["connected_since"].clone();
+    assert!(since.is_string(), "{since}");
+
+    h.state.cloud.nudge();
+    within_two_seconds(&h, "a fresh connection", |s| s["connection"] == "online" && s["connected_since"] != since)
+        .await;
+}
+
+#[tokio::test]
+async fn a_nudge_cuts_the_backoff_short() {
+    let cloud = TestCloud::start().await;
+    let (h, _shutdown) = enrolled(&cloud, "u-alice").await;
+    h.state.cloud.configure(Tls::default(), Timing { backoff_min: Duration::from_secs(10), ..host_timing() });
+
+    // The first nudge drops the connection; the connector now waits 5–10 s.
+    h.state.cloud.nudge();
+    wait_connection(&h, "offline").await;
+
+    // A second nudge redials without waiting that out.
+    h.state.cloud.nudge();
+    within_two_seconds(&h, "online again", |s| s["connection"] == "online").await;
+}
+
 #[tokio::test]
 async fn an_unreachable_host_is_reported_offline() {
     let cloud = TestCloud::start().await;
