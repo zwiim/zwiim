@@ -82,7 +82,14 @@ use serde::{Deserialize, Serialize};
 /// `subagent.tokens`. It is absent until the first reading, and the task
 /// leaves the list when it finishes, so the finished total is never
 /// overwritten. Older clients ignore the field.
-pub const PROTOCOL_REVISION: u32 = 11;
+///
+/// Revision 12 (`workspace.conflicts`): the Host feed publishes
+/// `workspace.conflicts_changed` with where a workspace's branch stands
+/// against its base (`clean`, `conflicts` with the files a merge would
+/// conflict in, or `in_progress` with the merge or rebase stopped on them),
+/// or null when there is nothing to compare with; `host.snapshot` carries
+/// the latest per workspace as `conflicts`. Older clients ignore both.
+pub const PROTOCOL_REVISION: u32 = 12;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -122,6 +129,7 @@ pub const CAPABILITIES: &[&str] = &[
     "github.auth",
     "subagent.started_at",
     "background.tokens",
+    "workspace.conflicts",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -274,7 +282,14 @@ mod tests {
     #[test]
     fn background_tokens_are_served() {
         assert!(CAPABILITIES.contains(&"background.tokens"));
-        assert_eq!(PROTOCOL_REVISION, 11);
+        const _: () = assert!(PROTOCOL_REVISION >= 11);
+    }
+
+    #[test]
+    fn conflicts_are_served() {
+        assert!(CAPABILITIES.contains(&"workspace.conflicts"));
+        // `workspace.conflicts_changed` and the snapshot's `conflicts`.
+        assert_eq!(PROTOCOL_REVISION, 12);
     }
 
     #[test]

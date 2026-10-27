@@ -147,13 +147,19 @@ describe("evaluateCompatibility", () => {
   });
 
   it("speaks revision 11, which gives a background sub-agent's tokens; an older Host is limited, not broken", () => {
-    expect(CLIENT_REVISION).toBe(11);
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(11);
     expect(CLIENT_CAPABILITIES).toContain("background.tokens");
     const old = evaluateCompatibility(
       hello({ revision: 10, min_client_revision: 1, capabilities: ["subagent.started_at"] }),
     );
     expect(old.status).not.toBe("update_required");
     expect(hasCapability(old, "background.tokens")).toBe(false);
+  });
+
+  it("speaks revision 12, which streams merge conflicts", () => {
+    expect(CLIENT_REVISION).toBe(12);
+    // The event and field are optional: a revision-11 Host is still compatible.
+    expect(evaluateCompatibility(hello({ revision: 11, min_client_revision: 1 })).status).not.toBe("update_required");
   });
 
   it("a different protocol major is incompatible and names the older side", () => {

@@ -33,6 +33,7 @@ pub mod git_repo;
 pub mod harness;
 pub mod history_cache;
 pub mod host_feed;
+pub mod conflict_watch;
 pub mod pr_watch;
 pub mod host_lifecycle;
 pub mod identity;

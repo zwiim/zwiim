@@ -13,6 +13,7 @@ import type {
   HostSnapshot,
   KeepAwakeStatus,
   PrEntry,
+  ConflictCheck,
   SessionSummary,
   TerminalInfo,
   WorkspaceInfo,
@@ -48,6 +49,11 @@ export interface HostState {
    * workspace without an entry has no pull request (or no named branch).
    */
   prs: Record<string, PrEntry>;
+  /**
+   * Each workspace's merge state against its base, as the Host last checked.
+   * A workspace without an entry has nothing to compare with.
+   */
+  conflicts: Record<string, ConflictCheck>;
   /** GitHub clones in flight or recently finished, by `clone_id`. */
   clones: Record<string, CloneJob>;
   /** Whether the host keeps its Mac awake, as the feed last said; null until it does. */
@@ -81,6 +87,7 @@ export function initialHostState(): HostState {
     terminals: {},
     diffRevision: {},
     prs: {},
+    conflicts: {},
     clones: {},
     keepAwake: null,
   };
@@ -159,6 +166,7 @@ export function reduceHost(state: HostState, action: HostAction): HostState {
         terminals: listTerminals(state.terminals, terminals),
         diffRevision,
         prs: action.snapshot.prs ?? {},
+        conflicts: action.snapshot.conflicts ?? {},
         clones: Object.fromEntries((action.snapshot.clones ?? []).map((c) => [c.clone_id, c])),
         keepAwake: action.snapshot.keep_awake ?? null,
       };
@@ -186,11 +194,13 @@ function reduceFeedEvent(state: HostState, event: HostFeedEvent): HostState {
       const id = event.payload.workspace_id;
       const { [id]: _, ...sessionsByWorkspace } = state.sessionsByWorkspace;
       const { [id]: __, ...prs } = state.prs;
+      const { [id]: ___, ...conflicts } = state.conflicts;
       return {
         ...state,
         workspaces: (state.workspaces ?? []).filter((w) => w.workspace_id !== id),
         sessionsByWorkspace,
         prs,
+        conflicts,
       };
     }
     case "workspace.pr_changed": {
@@ -198,6 +208,11 @@ function reduceFeedEvent(state: HostState, event: HostFeedEvent): HostState {
       const { [workspace_id]: _, ...prs } = state.prs;
       if (pr === null && error === null) return { ...state, prs };
       return { ...state, prs: { ...prs, [workspace_id]: { pr, error } } };
+    }
+    case "workspace.conflicts_changed": {
+      const { workspace_id, conflicts: check } = event.payload;
+      const { [workspace_id]: _, ...conflicts } = state.conflicts;
+      return { ...state, conflicts: check === null ? conflicts : { ...conflicts, [workspace_id]: check } };
     }
     case "workspace.diff_changed": {
       const id = event.payload.workspace_id;

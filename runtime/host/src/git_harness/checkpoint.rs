@@ -505,17 +505,8 @@ async fn head(root: &str) -> Result<Option<String>, SkipReason> {
 
 /// The operation in progress in this worktree, if any.
 fn busy(git_dir: &Path, index: &Path) -> Option<&'static str> {
-    if git_dir.join("MERGE_HEAD").exists() {
-        return Some("merge");
-    }
-    if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
-        return Some("rebase");
-    }
-    if git_dir.join("CHERRY_PICK_HEAD").exists() {
-        return Some("cherry_pick");
-    }
-    if git_dir.join("REVERT_HEAD").exists() {
-        return Some("revert");
+    if let Some(op) = super::conflicts::operation(git_dir) {
+        return Some(op);
     }
     let mut lock = index.as_os_str().to_owned();
     lock.push(".lock");

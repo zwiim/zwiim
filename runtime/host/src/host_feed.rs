@@ -21,6 +21,11 @@
 //! turn may have moved their pull request, and publishes what it finds as
 //! `workspace.pr_changed`.
 //!
+//! Merge conflicts come from the conflict watcher (`conflict_watch`): a
+//! batch that touches git metadata asks it to check the workspace against
+//! its base again, a finished agent turn asks it to fetch the base first,
+//! and what it finds is published as `workspace.conflicts_changed`.
+//!
 //! `epoch` names this feed's generation (one per host process) and `seq` is
 //! contiguous within it. There is no replay: a subscriber that falls behind
 //! gets a fresh snapshot instead.
@@ -39,7 +44,10 @@ use crate::acp::manager::ConnectionManager;
 use crate::acp::types::{AcpEvent, ConnectionStatus, EventEnvelope};
 use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
-use crate::git_harness::{GitError, GitErrorCode};
+use crate::conflict_watch::{
+    self, ConflictCmd, ConflictResult, ConflictTarget, ConflictWatchConfig,
+};
+use crate::git_harness::{ConflictCheck, GitError, GitErrorCode};
 use crate::power::KeepAwakeStatus;
 use crate::pr_watch::{self, PrCmd, PrEntry, PrResult, PrTarget, PrWatchConfig};
 use crate::protocol::http::SessionSummary;
@@ -50,7 +58,7 @@ use crate::web::event_bridge::{
     FOLDER_CHANGED_EVENT,
 };
 use crate::workspace::clone::{CloneJob, CloneJobs, CloneState};
-use crate::workspace::{self, WorkspaceInfo};
+use crate::workspace::{self, WorkspaceInfo, WorkspaceKind};
 use crate::workspace_state;
 
 /// Events a subscriber may fall behind by before it is re-snapshotted.
@@ -95,6 +103,9 @@ pub struct HostSnapshot {
     pub terminals: Vec<TerminalSummary>,
     /// The pull request of each workspace that has one (or cannot see them).
     pub prs: BTreeMap<String, PrEntry>,
+    /// Where each workspace's branch stands against its base, for those
+    /// that have one to compare with.
+    pub conflicts: BTreeMap<String, ConflictCheck>,
     /// Clone jobs in progress or finished within the retention period,
     /// oldest first.
     pub clones: Vec<CloneJob>,
@@ -114,6 +125,7 @@ struct Projection {
     sessions: HashMap<String, Vec<SessionSummary>>,
     terminals: BTreeMap<String, TerminalSummary>,
     prs: BTreeMap<String, PrEntry>,
+    conflicts: BTreeMap<String, ConflictCheck>,
     clones: Vec<CloneJob>,
     keep_awake: Option<KeepAwakeStatus>,
 }
@@ -132,6 +144,7 @@ impl Projection {
                 .collect(),
             terminals: self.terminals.values().cloned().collect(),
             prs: self.prs.clone(),
+            conflicts: self.conflicts.clone(),
             clones: self.clones.clone(),
             keep_awake: self.keep_awake.clone(),
         }
@@ -150,6 +163,7 @@ pub struct HostFeed {
     epoch: String,
     shared: OnceCell<Arc<Shared>>,
     prs: PrWatchConfig,
+    conflicts: ConflictWatchConfig,
 }
 
 impl Default for HostFeed {
@@ -165,10 +179,17 @@ impl HostFeed {
 
     /// A feed whose PR watcher reaches GitHub as `prs` says.
     pub fn with_pr_watch(prs: PrWatchConfig) -> Self {
+        Self::with_watchers(prs, ConflictWatchConfig::default())
+    }
+
+    /// A feed whose PR watcher reaches GitHub as `prs` says and whose
+    /// conflict watcher fetches as `conflicts` says.
+    pub fn with_watchers(prs: PrWatchConfig, conflicts: ConflictWatchConfig) -> Self {
         Self {
             epoch: uuid::Uuid::new_v4().simple().to_string(),
             shared: OnceCell::new(),
             prs,
+            conflicts,
         }
     }
 
@@ -191,7 +212,7 @@ impl HostFeed {
 
     async fn shared(&self, state: &Arc<AppState>) -> Result<&Arc<Shared>, AppCommandError> {
         self.shared
-            .get_or_try_init(|| start(state, self.prs.clone()))
+            .get_or_try_init(|| start(state, self.prs.clone(), self.conflicts.clone()))
             .await
     }
 
@@ -233,7 +254,11 @@ impl HostFeed {
     }
 }
 
-async fn start(state: &Arc<AppState>, prs: PrWatchConfig) -> Result<Arc<Shared>, AppCommandError> {
+async fn start(
+    state: &Arc<AppState>,
+    prs: PrWatchConfig,
+    conflicts: ConflictWatchConfig,
+) -> Result<Arc<Shared>, AppCommandError> {
     // Subscribe before the first read so no change between them is lost.
     let web_rx = state.event_broadcaster.subscribe();
     let bus_rx = state.acp_event_bus.subscribe();
@@ -241,6 +266,13 @@ async fn start(state: &Arc<AppState>, prs: PrWatchConfig) -> Result<Arc<Shared>,
     let mut keep_awake_rx = state.keep_awake.subscribe();
     let (pr_results, pr_rx) = mpsc::unbounded_channel();
     let pr_cmd = pr_watch::spawn(state.db.conn.clone(), state.data_dir.clone(), prs, pr_results);
+    let (conflict_results, conflict_rx) = mpsc::unbounded_channel();
+    let conflict_cmd = conflict_watch::spawn(
+        state.db.conn.clone(),
+        state.data_dir.clone(),
+        conflicts,
+        conflict_results,
+    );
     let mut task = FeedTask {
         db: state.db.conn.clone(),
         connections: state.connection_manager.clone_ref(),
@@ -251,6 +283,8 @@ async fn start(state: &Arc<AppState>, prs: PrWatchConfig) -> Result<Arc<Shared>,
         watch_keys: HashMap::new(),
         pr_cmd: pr_cmd.clone(),
         pr_targets: Vec::new(),
+        conflict_cmd,
+        conflict_targets: Vec::new(),
         clones: state.clones.clone(),
     };
     task.projection.workspaces = workspace::list(&task.db).await?;
@@ -266,6 +300,7 @@ async fn start(state: &Arc<AppState>, prs: PrWatchConfig) -> Result<Arc<Shared>,
     task.projection.terminals = task.read_terminals(&task.projection.workspaces);
     task.sync_watchers().await;
     task.sync_pr_targets();
+    task.sync_conflict_targets();
 
     let (tx, _) = broadcast::channel(SUBSCRIBER_CAPACITY);
     let shared = Arc::new(Shared {
@@ -278,6 +313,7 @@ async fn start(state: &Arc<AppState>, prs: PrWatchConfig) -> Result<Arc<Shared>,
         web_rx,
         bus_rx,
         pr_rx,
+        conflict_rx,
         clones_rx,
         keep_awake_rx,
     ));
@@ -341,6 +377,9 @@ struct FeedTask {
     pr_cmd: mpsc::UnboundedSender<PrCmd>,
     /// What the PR watcher was last told to follow.
     pr_targets: Vec<PrTarget>,
+    conflict_cmd: mpsc::UnboundedSender<ConflictCmd>,
+    /// What the conflict watcher was last told to follow.
+    conflict_targets: Vec<ConflictTarget>,
     clones: Arc<CloneJobs>,
 }
 
@@ -389,6 +428,31 @@ fn pr_targets(workspaces: &[WorkspaceInfo]) -> Vec<PrTarget> {
         .collect()
 }
 
+/// The workspaces whose branch may stop merging with a base: live, Git.
+fn conflict_targets(workspaces: &[WorkspaceInfo]) -> Vec<ConflictTarget> {
+    workspaces
+        .iter()
+        .filter(|w| !w.removed && w.is_git_repo)
+        .map(|w| ConflictTarget {
+            workspace_id: w.workspace_id.clone(),
+            path: w.path.clone(),
+            root_id: w
+                .parent_workspace_id
+                .clone()
+                .unwrap_or_else(|| w.workspace_id.clone()),
+            worktree: w.kind == WorkspaceKind::Worktree,
+            base_branch: w.base_branch.clone(),
+        })
+        .collect()
+}
+
+fn conflicts_changed(workspace_id: &str, check: Option<&ConflictCheck>) -> (&'static str, Value) {
+    (
+        "workspace.conflicts_changed",
+        json!({ "workspace_id": workspace_id, "conflicts": check }),
+    )
+}
+
 fn pr_changed(workspace_id: &str, entry: &PrEntry) -> (&'static str, Value) {
     (
         "workspace.pr_changed",
@@ -421,6 +485,7 @@ impl FeedTask {
         mut web_rx: broadcast::Receiver<WebEvent>,
         mut bus_rx: broadcast::Receiver<Arc<EventEnvelope>>,
         mut pr_rx: mpsc::UnboundedReceiver<PrResult>,
+        mut conflict_rx: mpsc::UnboundedReceiver<ConflictResult>,
         mut clones_rx: tokio::sync::watch::Receiver<u64>,
         mut keep_awake_rx: tokio::sync::watch::Receiver<Option<KeepAwakeStatus>>,
     ) {
@@ -445,6 +510,10 @@ impl FeedTask {
                 },
                 Some(result) = pr_rx.recv() => {
                     self.apply_pr(&shared, result);
+                    continue;
+                }
+                Some(result) = conflict_rx.recv() => {
+                    self.apply_conflicts(&shared, result);
                     continue;
                 }
                 r = keep_awake_rx.changed() => match r {
@@ -642,6 +711,33 @@ impl FeedTask {
                 }
             }
         }
+        // Conflicts: a workspace that left, or is no longer a repository,
+        // forgets them.
+        let mut conflicts = old.conflicts.clone();
+        let mut conflict_events = Vec::new();
+        for id in old.conflicts.keys() {
+            let now = workspaces.iter().find(|w| &w.workspace_id == id);
+            if now.is_none_or(|n| n.removed || !n.is_git_repo) {
+                conflicts.remove(id);
+                if now.is_some() {
+                    conflict_events.push(conflicts_changed(id, None));
+                }
+            }
+        }
+        // Moved git metadata may have moved the merge state.
+        let conflict_checks: Vec<String> = workspaces
+            .iter()
+            .filter(|w| !w.removed)
+            .filter(|w| {
+                stale
+                    .watched
+                    .get(&w.workspace_id)
+                    .is_some_and(|paths| conflict_watch::needs_conflict_check(paths.as_ref()))
+            })
+            .map(|w| w.workspace_id.clone())
+            .collect();
+        let mut conflict_fetches: Vec<String> = Vec::new();
+
         // A push may have opened or moved one.
         let mut pr_checks: Vec<String> = Vec::new();
         for w in workspaces.iter().filter(|w| !w.removed) {
@@ -660,12 +756,14 @@ impl FeedTask {
             };
             let dir = state.read().await.working_dir.clone();
             if let Some(id) = dir.and_then(|d| workspace::workspace_for_dir(&workspaces, &d.to_string_lossy())) {
-                pr_checks.push(id);
+                pr_checks.push(id.clone());
+                conflict_fetches.push(id);
             }
         }
 
         let mut events = diff_events(old, &workspaces, &sessions, &terminals, &diffs);
         events.extend(pr_events);
+        events.extend(conflict_events);
         events.extend(clone_events(&old.clones, &clones));
         self.projection = Projection {
             seq: old.seq,
@@ -675,12 +773,20 @@ impl FeedTask {
             prs,
             clones,
             keep_awake: old.keep_awake.clone(),
+            conflicts,
         };
         self.publish(shared, events);
         self.sync_watchers().await;
         self.sync_pr_targets();
+        self.sync_conflict_targets();
         for id in pr_checks {
             let _ = self.pr_cmd.send(PrCmd::Check(id));
+        }
+        for id in conflict_checks {
+            let _ = self.conflict_cmd.send(ConflictCmd::Check(id));
+        }
+        for id in conflict_fetches {
+            let _ = self.conflict_cmd.send(ConflictCmd::Fetch(id));
         }
 
         for connection_id in stale.departed {
@@ -727,6 +833,31 @@ impl FeedTask {
         self.publish(shared, vec![event]);
     }
 
+    /// Publish a check's answer if its workspace is still live and the
+    /// answer changes what clients know.
+    fn apply_conflicts(&mut self, shared: &Shared, result: ConflictResult) {
+        let live = self
+            .projection
+            .workspaces
+            .iter()
+            .any(|w| w.workspace_id == result.workspace_id && !w.removed);
+        if !live || self.projection.conflicts.get(&result.workspace_id) == result.check.as_ref() {
+            return;
+        }
+        match &result.check {
+            Some(check) => {
+                self.projection
+                    .conflicts
+                    .insert(result.workspace_id.clone(), check.clone());
+            }
+            None => {
+                self.projection.conflicts.remove(&result.workspace_id);
+            }
+        }
+        let event = conflicts_changed(&result.workspace_id, result.check.as_ref());
+        self.publish(shared, vec![event]);
+    }
+
     /// Publish what keeping the host awake does now, if that changed.
     fn apply_keep_awake(&mut self, shared: &Shared, status: Option<KeepAwakeStatus>) {
         if status == self.projection.keep_awake {
@@ -744,6 +875,15 @@ impl FeedTask {
         if targets != self.pr_targets {
             self.pr_targets = targets.clone();
             let _ = self.pr_cmd.send(PrCmd::Targets(targets));
+        }
+    }
+
+    /// Tell the conflict watcher which workspaces to follow when that changed.
+    fn sync_conflict_targets(&mut self) {
+        let targets = conflict_targets(&self.projection.workspaces);
+        if targets != self.conflict_targets {
+            self.conflict_targets = targets.clone();
+            let _ = self.conflict_cmd.send(ConflictCmd::Targets(targets));
         }
     }
 
@@ -962,6 +1102,8 @@ mod tests {
     use crate::protocol::events::tests::assert_no_internal_keys;
     use crate::terminal::manager::SpawnOptions;
     use crate::web::event_bridge::emit_with_state;
+    use crate::conflict_watch::ConflictPolicy;
+    use crate::git_harness::ConflictState;
 
     const CONN: &str = "conn-feed-4c1d";
 
@@ -1005,6 +1147,10 @@ mod tests {
     /// With `gh`, a stand-in `gh` running that `case` arm list, `{bare}`
     /// replaced by a bare clone of the root repo.
     async fn fixture_full(prs: PrWatchConfig, gh: Option<&str>) -> Fixture {
+        fixture_feed(HostFeed::with_pr_watch(prs), gh).await
+    }
+
+    async fn fixture_feed(feed: HostFeed, gh: Option<&str>) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         std::fs::create_dir(&repo).unwrap();
@@ -1019,7 +1165,7 @@ mod tests {
         let root = repo.canonicalize().unwrap().to_string_lossy().into_owned();
         let folder_id = seed_folder(&db, &root).await;
         let mut state = AppState::new_for_test(db, data_dir);
-        state.host_feed = Arc::new(HostFeed::with_pr_watch(prs));
+        state.host_feed = Arc::new(feed);
         if let Some(body) = gh {
             let bare = dir.path().join("remote.git");
             git(
@@ -2202,5 +2348,238 @@ esac
         f.state.keep_awake.send_replace(Some(keep_awake(false)));
         let (snapshot, _) = f.subscribe().await;
         assert_eq!(snapshot.keep_awake, Some(keep_awake(false)));
+    }
+
+    fn conflicts_fixture_policy(policy: ConflictPolicy) -> HostFeed {
+        HostFeed::with_watchers(PrWatchConfig::default(), ConflictWatchConfig { policy })
+    }
+
+    async fn conflicts_fixture(policy: ConflictPolicy) -> Fixture {
+        fixture_feed(conflicts_fixture_policy(policy), None).await
+    }
+
+    /// A worktree whose committed `tracked.txt` edit conflicts with one
+    /// pushed to `origin/main` from elsewhere, not yet fetched.
+    async fn diverged_worktree(f: &Fixture) -> WorkspaceInfo {
+        add_origin(f);
+        let wt = f.create_worktree().await;
+        assert_eq!(wt.base_branch.as_deref(), Some("origin/main"));
+        let wt_path = Path::new(&wt.path);
+        std::fs::write(wt_path.join("tracked.txt"), "mine\n").unwrap();
+        git(wt_path, &["commit", "-q", "-am", "mine"]);
+        let other = f.dir.path().join("other");
+        let origin = f.dir.path().join("origin.git");
+        git(
+            f.dir.path(),
+            &["clone", "-q", "-b", "main", origin.to_str().unwrap(), other.to_str().unwrap()],
+        );
+        std::fs::write(other.join("tracked.txt"), "theirs\n").unwrap();
+        git(&other, &["commit", "-q", "-am", "theirs"]);
+        git(&other, &["push", "-q", "origin", "main"]);
+        wt
+    }
+
+    /// An agent connection working in `dir`; [`turn_end`] reports its turns.
+    async fn attach_agent(f: &Fixture, dir: &str) {
+        let _ = f
+            .state
+            .connection_manager
+            .insert_test_connection_live(
+                CONN,
+                AgentType::ClaudeCode,
+                Some(dir.into()),
+                f.state.emitter.clone(),
+            )
+            .await;
+    }
+
+    async fn turn_end(f: &Fixture) {
+        f.emit(AcpEvent::TurnComplete {
+            session_id: "s".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+        })
+        .await;
+    }
+
+    fn conflicts_are(id: String, state: &'static str) -> impl Fn(&HostEvent) -> bool {
+        move |e| {
+            e.kind == "workspace.conflicts_changed"
+                && e.payload["workspace_id"] == id.as_str()
+                && e.payload["conflicts"]["state"] == state
+        }
+    }
+
+    /// Subscribed, with the worktree's merge state known to conflict.
+    async fn conflicting(f: &Fixture, wt: &WorkspaceInfo) -> Feed {
+        let (_, mut feed) = f.subscribe().await;
+        attach_agent(f, &wt.path).await;
+        turn_end(f).await;
+        let ev = feed
+            .until("conflicts", conflicts_are(wt.workspace_id.clone(), "conflicts"))
+            .await;
+        assert_eq!(ev.payload["conflicts"]["base"], "origin/main");
+        assert_eq!(ev.payload["conflicts"]["files"], json!(["tracked.txt"]));
+        feed
+    }
+
+    fn conflict_events(events: &[Arc<HostEvent>]) -> Vec<&Arc<HostEvent>> {
+        events
+            .iter()
+            .filter(|e| e.kind == "workspace.conflicts_changed")
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn conflicts_published_after_turn_end() {
+        let f = conflicts_fixture(ConflictPolicy::default()).await;
+        let wt = diverged_worktree(&f).await;
+        conflicting(&f, &wt).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn conflicts_cleared_by_manual_resolution() {
+        let f = conflicts_fixture(ConflictPolicy::default()).await;
+        let wt = diverged_worktree(&f).await;
+        let mut feed = conflicting(&f, &wt).await;
+        let wt_path = Path::new(&wt.path);
+        // A merge stops on the conflict, then the user resolves and commits.
+        let out = std::process::Command::new("git")
+            .args(["merge", "-q", "origin/main"])
+            .current_dir(wt_path)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "the merge conflicts");
+        let ev = feed
+            .until("in progress", conflicts_are(wt.workspace_id.clone(), "in_progress"))
+            .await;
+        assert_eq!(ev.payload["conflicts"]["operation"], "merge");
+        assert_eq!(ev.payload["conflicts"]["files"], json!(["tracked.txt"]));
+        std::fs::write(wt_path.join("tracked.txt"), "both\n").unwrap();
+        git(wt_path, &["add", "tracked.txt"]);
+        git(wt_path, &["commit", "-q", "--no-edit"]);
+        feed.until("clean", conflicts_are(wt.workspace_id.clone(), "clean"))
+            .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn conflicts_unchanged_not_resent() {
+        let f = conflicts_fixture(ConflictPolicy::default()).await;
+        let wt = diverged_worktree(&f).await;
+        let mut feed = conflicting(&f, &wt).await;
+        // Another turn end and an index refresh look again; nothing moved.
+        turn_end(&f).await;
+        git(Path::new(&wt.path), &["update-index", "--really-refresh"]);
+        let again = feed.drain(1500).await;
+        assert!(conflict_events(&again).is_empty(), "{again:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fetch_failure_keeps_last_state() {
+        let f = conflicts_fixture(ConflictPolicy {
+            fetch_interval: Duration::ZERO,
+        })
+        .await;
+        let wt = diverged_worktree(&f).await;
+        let mut feed = conflicting(&f, &wt).await;
+        git(Path::new(&f.root), &["remote", "set-url", "origin", "/nonexistent/origin.git"]);
+        turn_end(&f).await;
+        let after = feed.drain(1500).await;
+        assert!(conflict_events(&after).is_empty(), "{after:?}");
+        let (snapshot, _) = f.subscribe().await;
+        assert!(matches!(
+            snapshot.conflicts[&wt.workspace_id].state,
+            ConflictState::Conflicts { .. }
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn feed_not_blocked_by_slow_check() {
+        let f = conflicts_fixture(ConflictPolicy::default()).await;
+        let wt = diverged_worktree(&f).await;
+        // Every fetch from origin takes 5s.
+        let pack = f.dir.path().join("slow-upload-pack");
+        std::fs::write(&pack, "#!/bin/sh\nsleep 5\nexec git upload-pack \"$@\"\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&pack, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git(
+            Path::new(&f.root),
+            &["config", "remote.origin.uploadpack", pack.to_str().unwrap()],
+        );
+        let (_, mut feed) = f.subscribe().await;
+        attach_agent(&f, &wt.path).await;
+        turn_end(&f).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let started = std::time::Instant::now();
+        let (_, sid) = f.new_session(f.folder_id).await;
+        feed.until("session", session_is(sid, |_| true)).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "a session event waited {:?} behind the fetch",
+            started.elapsed()
+        );
+        feed.until("conflicts", conflicts_are(wt.workspace_id.clone(), "conflicts"))
+            .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn snapshot_carries_conflicts() {
+        let f = conflicts_fixture(ConflictPolicy::default()).await;
+        let wt = diverged_worktree(&f).await;
+        conflicting(&f, &wt).await;
+        let (snapshot, _) = f.subscribe().await;
+        let check = &snapshot.conflicts[&wt.workspace_id];
+        assert_eq!(check.base, "origin/main");
+        assert_eq!(
+            check.state,
+            ConflictState::Conflicts {
+                files: vec!["tracked.txt".into()]
+            }
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn root_compared_with_its_upstream() {
+        let f = conflicts_fixture(ConflictPolicy::default()).await;
+        add_origin(&f);
+        let root = Path::new(&f.root);
+        git(root, &["branch", "-q", "--set-upstream-to", "origin/main"]);
+        let other = f.dir.path().join("other");
+        let origin = f.dir.path().join("origin.git");
+        git(
+            f.dir.path(),
+            &["clone", "-q", "-b", "main", origin.to_str().unwrap(), other.to_str().unwrap()],
+        );
+        std::fs::write(other.join("tracked.txt"), "theirs\n").unwrap();
+        git(&other, &["commit", "-q", "-am", "theirs"]);
+        git(&other, &["push", "-q", "origin", "main"]);
+        std::fs::write(root.join("tracked.txt"), "mine\n").unwrap();
+        git(root, &["commit", "-q", "-am", "mine"]);
+
+        let (_, mut feed) = f.subscribe().await;
+        attach_agent(&f, &f.root).await;
+        turn_end(&f).await;
+        feed.until("conflicts", conflicts_are(f.root_id.clone(), "conflicts"))
+            .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn conflicts_cleared_when_the_repository_goes() {
+        let f = conflicts_fixture(ConflictPolicy::default()).await;
+        let wt = diverged_worktree(&f).await;
+        let mut feed = conflicting(&f, &wt).await;
+        std::fs::remove_file(Path::new(&wt.path).join(".git")).unwrap();
+        let id = wt.workspace_id.clone();
+        feed.until("cleared", move |e| {
+            e.kind == "workspace.conflicts_changed"
+                && e.payload["workspace_id"] == id.as_str()
+                && e.payload["conflicts"].is_null()
+        })
+        .await;
+        let (snapshot, _) = f.subscribe().await;
+        let snapshot = serde_json::to_value(&snapshot).unwrap();
+        assert!(snapshot["conflicts"].get(&wt.workspace_id).is_none(), "{snapshot}");
     }
 }

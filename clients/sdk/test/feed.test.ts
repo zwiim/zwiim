@@ -5,6 +5,7 @@ import { initialHostState, reduceHost, type HostState } from "../src/state/store
 import { selectWorkspaceTree } from "../src/state/workspaces";
 import type {
   CloneJob,
+  ConflictCheck,
   HostFeedEvent,
   HostSnapshot,
   KeepAwakeStatus,
@@ -181,6 +182,40 @@ describe("host feed reducers", () => {
     expect(Object.keys(s.prs)).toEqual(["root"]);
     s = fromSnapshot({ workspaces: [ws("root")] }, s);
     expect(s.prs).toEqual({});
+  });
+
+  it("store_keeps_conflicts_from_snapshot_and_event", () => {
+    const check = (state: ConflictCheck["state"], files: string[]): ConflictCheck =>
+      state === "clean"
+        ? { base: "origin/main", base_sha: "b1", head_sha: "h1", state }
+        : state === "conflicts"
+          ? { base: "origin/main", base_sha: "b1", head_sha: "h1", state, files }
+          : { base: "origin/main", base_sha: "b1", head_sha: "h1", state, operation: "merge", files };
+    let s = fromSnapshot({
+      workspaces: [ws("root"), ws("a"), ws("b")],
+      conflicts: { a: check("conflicts", ["src/x.ts"]) },
+    });
+    expect(s.conflicts.a).toMatchObject({ state: "conflicts", files: ["src/x.ts"] });
+
+    s = apply(
+      s,
+      { type: "workspace.conflicts_changed", payload: { workspace_id: "a", conflicts: check("in_progress", ["src/x.ts"]) } },
+      { type: "workspace.conflicts_changed", payload: { workspace_id: "b", conflicts: check("clean", []) } },
+    );
+    expect(s.conflicts.a).toMatchObject({ state: "in_progress", operation: "merge" });
+    expect(s.conflicts.b?.state).toBe("clean");
+
+    // Nothing to compare with: the entry goes.
+    s = apply(s, { type: "workspace.conflicts_changed", payload: { workspace_id: "a", conflicts: null } });
+    expect("a" in s.conflicts).toBe(false);
+    s = apply(s, { type: "workspace.removed", payload: { workspace_id: "b" } });
+    expect(s.conflicts).toEqual({});
+
+    // A Host without conflict checks has none.
+    s = fromSnapshot({ workspaces: [ws("root")], conflicts: { root: check("clean", []) } }, s);
+    expect(Object.keys(s.conflicts)).toEqual(["root"]);
+    s = fromSnapshot({ workspaces: [ws("root")] }, s);
+    expect(s.conflicts).toEqual({});
   });
 
   it("workspace.diff_changed invalidates only that workspace's diff", () => {

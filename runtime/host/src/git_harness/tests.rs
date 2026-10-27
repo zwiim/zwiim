@@ -2009,6 +2009,232 @@ async fn a_finished_run_leaves_its_group_alone() {
     unsafe { libc::kill(pid, libc::SIGKILL) };
 }
 
+// ── conflicts ───────────────────────────────────────────────────────────
+
+/// `git <args>` in `dir` that may fail; whether it succeeded.
+fn git_may_fail(dir: &Path, args: &[&str]) -> bool {
+    std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .expect("run git")
+        .status
+        .success()
+}
+
+fn commit_all(dir: &Path, message: &str) {
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", message]);
+}
+
+/// A workspace with `origin`, whose `main` holds `a.txt` and `b.txt`, and a
+/// second clone for moving `origin/main` on.
+async fn conflict_fixture() -> (Fixture, PathBuf) {
+    let fx = workspace(true).await;
+    write(&fx.root, "a.txt", "base\n");
+    write(&fx.root, "b.txt", "base\n");
+    commit_all(&fx.root, "base");
+    let bare = add_origin(&fx);
+    let other = clone_of(&fx, &bare, "other");
+    (fx, other)
+}
+
+/// Commit `text` to `rel` in `other`, push it, and fetch it into `fx`.
+fn upstream_edit(fx: &Fixture, other: &Path, rel: &str, text: &str) {
+    write(other, rel, text);
+    commit_all(other, "upstream");
+    git(other, &["push", "-q"]);
+    git(&fx.root, &["fetch", "-q"]);
+}
+
+/// A workspace whose `main` and `origin/main` both changed `a.txt`.
+async fn text_conflict() -> Fixture {
+    let (fx, other) = conflict_fixture().await;
+    write(&fx.root, "a.txt", "mine\n");
+    commit_all(&fx.root, "mine");
+    upstream_edit(&fx, &other, "a.txt", "theirs\n");
+    fx
+}
+
+async fn check(fx: &Fixture) -> ConflictCheck {
+    check_conflicts(&fx.root, "origin/main")
+        .await
+        .unwrap()
+        .expect("origin/main resolves")
+}
+
+#[tokio::test]
+async fn conflicts_clean_when_base_merges() {
+    let (fx, other) = conflict_fixture().await;
+    write(&fx.root, "a.txt", "mine\n");
+    commit_all(&fx.root, "mine");
+    upstream_edit(&fx, &other, "b.txt", "theirs\n");
+
+    let found = check(&fx).await;
+    assert_eq!(found.state, ConflictState::Clean);
+    assert_eq!(found.base, "origin/main");
+    assert_eq!(found.base_sha, git(&fx.root, &["rev-parse", "origin/main"]));
+    assert_eq!(found.head_sha, git(&fx.root, &["rev-parse", "HEAD"]));
+}
+
+#[tokio::test]
+async fn conflicts_list_text_conflict_files() {
+    let fx = text_conflict().await;
+    assert_eq!(
+        check(&fx).await.state,
+        ConflictState::Conflicts {
+            files: vec!["a.txt".into()]
+        }
+    );
+}
+
+#[tokio::test]
+async fn conflicts_list_delete_vs_edit() {
+    let (fx, other) = conflict_fixture().await;
+    git(&fx.root, &["rm", "-q", "b.txt"]);
+    git(&fx.root, &["commit", "-q", "-m", "drop b"]);
+    upstream_edit(&fx, &other, "b.txt", "theirs\n");
+    assert_eq!(
+        check(&fx).await.state,
+        ConflictState::Conflicts {
+            files: vec!["b.txt".into()]
+        }
+    );
+}
+
+#[tokio::test]
+async fn conflicts_report_merge_in_progress() {
+    let fx = text_conflict().await;
+    assert!(!git_may_fail(&fx.root, &["merge", "-q", "origin/main"]));
+    assert_eq!(
+        check(&fx).await.state,
+        ConflictState::InProgress {
+            operation: "merge".into(),
+            files: vec!["a.txt".into()]
+        }
+    );
+}
+
+#[tokio::test]
+async fn conflicts_base_is_the_remote_tracking_ref() {
+    // A local branch and a tag named like the base must not stand in for it.
+    let fx = text_conflict().await;
+    git(&fx.root, &["branch", "-q", "origin/main", "HEAD~1"]);
+    git(&fx.root, &["tag", "origin/main", "HEAD~1"]);
+    let found = check(&fx).await;
+    assert_eq!(
+        found.state,
+        ConflictState::Conflicts {
+            files: vec!["a.txt".into()]
+        }
+    );
+    assert_eq!(
+        found.base_sha,
+        git(&fx.root, &["rev-parse", "refs/remotes/origin/main"])
+    );
+    assert_eq!(
+        conflict_base(&fx.root, false, None).await.unwrap(),
+        Some("origin/main".into())
+    );
+}
+
+#[tokio::test]
+async fn conflicts_none_without_base() {
+    let fx = workspace(true).await;
+    assert_eq!(check_conflicts(&fx.root, "origin/main").await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn conflicts_report_unmerged_without_operation() {
+    let (fx, other) = conflict_fixture().await;
+    write(&fx.root, "a.txt", "mine\n");
+    git(&fx.root, &["stash", "-q"]);
+    upstream_edit(&fx, &other, "a.txt", "theirs\n");
+    git(&fx.root, &["merge", "-q", "--ff-only", "origin/main"]);
+    assert!(!git_may_fail(&fx.root, &["stash", "pop", "-q"]));
+    assert_eq!(
+        check(&fx).await.state,
+        ConflictState::InProgress {
+            operation: "unmerged".into(),
+            files: vec!["a.txt".into()]
+        }
+    );
+}
+
+#[tokio::test]
+async fn conflicts_check_does_not_touch_worktree() {
+    let fx = text_conflict().await;
+    write(&fx.root, "README.md", "edited\n");
+    write(&fx.root, "new.txt", "untracked\n");
+    git(&fx.root, &["add", "new.txt"]);
+    write(&fx.root, "loose.txt", "untracked\n");
+    let state = |fx: &Fixture| {
+        (
+            git(&fx.root, &["status", "--porcelain=v1", "-uall"]),
+            git(&fx.root, &["rev-parse", "HEAD"]),
+            std::fs::read(fx.root.join(".git/index")).unwrap(),
+        )
+    };
+    let before = state(&fx);
+    assert!(matches!(
+        check(&fx).await.state,
+        ConflictState::Conflicts { .. }
+    ));
+    assert_eq!(state(&fx), before);
+}
+
+#[tokio::test]
+async fn conflicts_fetch_base_updates_the_tracking_ref() {
+    let (fx, other) = conflict_fixture().await;
+    write(&other, "a.txt", "theirs\n");
+    commit_all(&other, "upstream");
+    git(&other, &["push", "-q"]);
+    fetch_base(&fx.host(), &fx.root, "origin/main").await.unwrap();
+    assert_eq!(
+        git(&fx.root, &["rev-parse", "origin/main"]),
+        git(&other, &["rev-parse", "HEAD"])
+    );
+    assert!(fetch_base(&fx.host(), &fx.root, "nowhere/main")
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn conflicts_base_of_a_root_is_its_upstream() {
+    let (fx, _) = conflict_fixture().await;
+    assert_eq!(
+        conflict_base(&fx.root, false, None).await.unwrap(),
+        Some("origin/main".into())
+    );
+    git(&fx.root, &["branch", "-q", "--unset-upstream"]);
+    assert_eq!(conflict_base(&fx.root, false, None).await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn conflicts_base_of_a_worktree_is_its_remote_base_branch() {
+    let (fx, _) = conflict_fixture().await;
+    let base = |b: Option<&'static str>| conflict_base(&fx.root, true, b);
+    assert_eq!(base(Some("main")).await.unwrap(), Some("origin/main".into()));
+    assert_eq!(
+        base(Some("origin/main")).await.unwrap(),
+        Some("origin/main".into())
+    );
+    assert_eq!(base(Some("gone")).await.unwrap(), None);
+    assert_eq!(base(None).await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn conflicts_base_needs_a_remote() {
+    let fx = workspace(true).await;
+    assert_eq!(conflict_base(&fx.root, false, None).await.unwrap(), None);
+    assert_eq!(
+        conflict_base(&fx.root, true, Some("main")).await.unwrap(),
+        None
+    );
+}
+
 // ── boundary ────────────────────────────────────────────────────────────
 
 /// The Harness serves every agent integration and depends on none: no
@@ -2024,6 +2250,7 @@ fn the_harness_knows_nothing_about_agent_integrations() {
         ("remote.rs", include_str!("remote.rs")),
         ("github.rs", include_str!("github.rs")),
         ("pr_state.rs", include_str!("pr_state.rs")),
+        ("conflicts.rs", include_str!("conflicts.rs")),
     ];
     for (name, source) in sources {
         let code = source.split("#[cfg(test)]").next().unwrap().to_lowercase();

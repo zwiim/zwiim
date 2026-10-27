@@ -29,6 +29,7 @@
 mod account;
 pub mod checkpoint;
 mod clone;
+mod conflicts;
 mod error;
 mod gh_auth;
 mod github;
@@ -52,6 +53,7 @@ pub use account::{
     GithubAccount, GithubOwner, GithubOwnerKind, GithubRepoRow,
 };
 pub use clone::{github_repo_clone, ClonePhase, CloneRun};
+pub use conflicts::{check_conflicts, conflict_base, fetch_base, ConflictCheck, ConflictState};
 pub use error::{GitError, GitErrorCode};
 pub use gh_auth::{GithubAuth, GithubAuthState, GithubSignIn};
 pub use op::{

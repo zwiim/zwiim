@@ -1071,6 +1071,18 @@ export interface PrEntry {
   error: PrError | null;
 }
 
+/**
+ * Where a workspace's branch stands against its base (`origin/main`, or a
+ * root's upstream). `conflicts`: merging the base in would conflict in
+ * `files`. `in_progress`: a merge or rebase stopped on `files`; `operation`
+ * is `unmerged` when entries are left with none running.
+ */
+export type ConflictCheck = { base: string; base_sha: string; head_sha: string } & (
+  | { state: "clean" }
+  | { state: "conflicts"; files: string[] }
+  | { state: "in_progress"; operation: string; files: string[] }
+);
+
 export interface PrMerged {
   number: number;
   method: MergeMethod;
@@ -1092,6 +1104,7 @@ export type HostFeedEvent = { seq: number } & (
   | { type: "terminal.changed"; payload: { terminal: TerminalInfo } }
   | { type: "terminal.removed"; payload: { terminal_id: string } }
   | { type: "workspace.pr_changed"; payload: { workspace_id: string } & PrEntry }
+  | { type: "workspace.conflicts_changed"; payload: { workspace_id: string; conflicts: ConflictCheck | null } }
   | { type: "clone.changed"; payload: { clone: CloneJob } }
   | { type: "clone.removed"; payload: { clone_id: string } }
   | { type: "host.keep_awake_changed"; payload: KeepAwakeStatus }
@@ -1108,6 +1121,8 @@ export interface HostSnapshot {
   terminals: TerminalInfo[];
   /** Workspaces whose branch has a pull request (or whose PR lookup failed). */
   prs?: Record<string, PrEntry>;
+  /** Workspaces with a base to compare with, and where they stand (older Hosts omit it). */
+  conflicts?: Record<string, ConflictCheck>;
   /** GitHub clones in flight or recently finished (older Hosts omit it). */
   clones?: CloneJob[];
   /** What keeping the Mac awake is doing; null until the host first looked (older Hosts omit it). */
