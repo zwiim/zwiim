@@ -32,6 +32,40 @@ have their own versions and are listed under Compatibility.
 ### Known limitations
 - None.
 
+## [0.1.0-rc.11] - 2026-10-27
+
+### Added
+- Keep this Mac reachable (Desktop, Settings > General): Always (recommended), Only while agents work or Never, with an Also on battery switch and a status line that says why the Mac would sleep. The Host holds the Mac awake by default and reconnects to Cloud within seconds of waking.
+- Stay awake with the lid closed (Desktop, Settings): a signed power helper that ships inside the app keeps the Mac awake with the lid shut while it is on power with charge, and puts sleep back when it is turned off, the Mac is unplugged or the Host stops. It is set up once and approved in System Settings > Login Items.
+- The phone's Host tab shows whether the Mac stays reachable, and hides it while the Mac is out of reach.
+- Sign the Host's GitHub CLI in from Zwiim through GitHub's device flow: a GitHub tab in Desktop Settings, a GitHub group in the phone's Host tab, and Sign in to GitHub on every "GitHub CLI isn't signed in" message. No token reaches a client.
+- A running sub-agent's clock ticks from when it started, and its tokens show live, including a background sub-agent while it runs.
+- The Host checks whether each Git workspace still merges with its base and can send a session a turn asking its agent to resolve the conflicts (Host and SDK; no client UI yet).
+
+### Changed
+- Tool rows and sub-agent cards fold together from three on both clients ("2 tool calls, 1 sub-agent"), and Desktop carries a fold across the end of the history into the live reply.
+- Desktop follows keep-awake status on the Host feed instead of polling.
+
+### Fixed
+- An unreachable GitHub no longer reads as signed out.
+- Codex sessions reloaded from history keep their sub-agents' start times.
+
+### Security
+- The power helper runs as root through launchd and only answers the signed Zwiim Host; it sets sleep back before it stops, and `sudo pmset -a disablesleep 0` restores sleep by hand if it ever could not.
+
+### Compatibility
+- Protocol revision 13. New capabilities: `host.keep_awake` feed, `github.auth`, `subagent.started_at`, `background.tokens`, `workspace.conflicts`, `workspace.resolve_conflicts`.
+
+### Provider changes
+- None.
+
+### Migration notes
+- A keep-awake setting from an older Host carries over (on becomes Always, off becomes Never); new installs default to Always.
+
+### Known limitations
+- Lid-closed awake is macOS only; Linux and Windows are not supported yet.
+- Merge conflicts are detected and resolvable through the protocol, but Desktop and the phone do not show them yet.
+
 ## [0.1.0-rc.10] - 2026-10-24
 
 ### Added
