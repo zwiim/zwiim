@@ -153,7 +153,7 @@ function General({ bridge, remote }: { bridge: NativeBridge; remote: boolean }) 
         </div>
       </div>
       {!remote && <HostLoginToggle bridge={bridge} />}
-      {!remote && <KeepReachable />}
+      {!remote && <KeepReachable bridge={bridge} />}
     </>
   );
 }
@@ -184,7 +184,7 @@ const REACHABILITY: Record<Exclude<Reachability, "unsupported">, { text: string;
  * This computer's host keeps the Mac awake so phones can still reach it,
  * and says plainly when it will sleep anyway. Follows the host feed while open.
  */
-function KeepReachable() {
+function KeepReachable({ bridge }: { bridge: NativeBridge }) {
   const controller = useController();
   const fed = useHost((s) => s.keepAwake);
   const [status, setStatus] = useState<KeepAwakeStatus | null>(fed);
@@ -198,7 +198,7 @@ function KeepReachable() {
     controller.client.request("host.keep_awake.status", {}).then(setStatus, () => {});
   }, [controller]);
   if (!status?.supported) return null;
-  const send = (patch: Partial<{ mode: KeepAwakeMode; on_battery: boolean }>) => {
+  const send = (patch: Partial<{ mode: KeepAwakeMode; on_battery: boolean; lid_closed: boolean }>) => {
     setError(null);
     controller.client.request("host.keep_awake.set", patch).then(setStatus, (err) => setError(errorMessage(err)));
   };
@@ -238,6 +238,13 @@ function KeepReachable() {
         <span>Also on battery</span>
         <span className="text-muted-foreground">Stops below 10%</span>
       </label>
+      <LidClosed
+        status={status}
+        bridge={bridge}
+        onChange={(lid_closed) => send({ lid_closed })}
+        onSetUp={() => controller.client.request("host.keep_awake.status", {}).then(setStatus, () => {})}
+        onError={setError}
+      />
       <p className="flex items-center gap-2" data-testid="keep-awake-status">
         <span className={cn("size-2 shrink-0 rounded-full", now.dot)} />
         {now.text}
@@ -256,3 +263,68 @@ function KeepReachable() {
     </section>
   );
 }
+
+/**
+ * Keeping a closed laptop awake needs the power helper; until it runs, this
+ * offers to set it up where the desktop app can.
+ */
+function LidClosed({
+  status,
+  bridge,
+  onChange,
+  onSetUp,
+  onError,
+}: {
+  status: KeepAwakeStatus;
+  bridge: NativeBridge;
+  onChange: (enabled: boolean) => void;
+  onSetUp: () => void;
+  onError: (message: string) => void;
+}) {
+  const [approval, setApproval] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const { support, enabled } = status.lid_closed;
+  if (support === "available") {
+    return (
+      <div className="flex flex-col gap-1" data-testid="keep-awake-lid">
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={enabled}
+            disabled={status.mode === "off"}
+            onChange={(e) => onChange(e.target.checked)}
+          />
+          <span>Stay awake with the lid closed</span>
+        </label>
+        <p className="text-muted-foreground">Don&apos;t put the Mac in a bag while this is on.</p>
+      </div>
+    );
+  }
+  const helper = bridge.lidHelper;
+  if (support !== "needs_setup" || !helper) return null;
+  const setUp = () => {
+    setBusy(true);
+    helper
+      .setup()
+      .then(
+        (result) => {
+          setApproval(result === "requires_approval");
+          onSetUp();
+        },
+        (err) => onError(errorMessage(err)),
+      )
+      .finally(() => setBusy(false));
+  };
+  return (
+    <div className="flex flex-col gap-1" data-testid="keep-awake-lid">
+      <div className="flex items-center gap-2">
+        <span className="flex-1">Stay awake with the lid closed</span>
+        <Button size="xs" variant="outline" disabled={busy} onClick={setUp}>
+          Set up
+        </Button>
+      </div>
+      {approval && <p className="text-muted-foreground">Allow Zwiim in System Settings → Login Items</p>}
+    </div>
+  );
+}
+

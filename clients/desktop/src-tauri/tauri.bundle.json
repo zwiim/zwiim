@@ -2,7 +2,12 @@
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
     "active": true,
-    "externalBin": ["binaries/zwiim-host", "binaries/zwiim-mcp", "binaries/gh"],
-    "resources": { "THIRD_PARTY_NOTICES.txt": "THIRD_PARTY_NOTICES.txt" }
+    "externalBin": ["binaries/zwiim-host", "binaries/zwiim-mcp", "binaries/zwiim-power-helper", "binaries/gh"],
+    "resources": { "THIRD_PARTY_NOTICES.txt": "THIRD_PARTY_NOTICES.txt" },
+    "macOS": {
+      "files": {
+        "Library/LaunchDaemons/com.zwiim.power-helper.plist": "../../../runtime/power-helper/resources/com.zwiim.power-helper.plist"
+      }
+    }
   }
 }

@@ -2,7 +2,9 @@
 // them up as Tauri sidecars: `src-tauri/binaries/<name>-<target triple>`.
 // The bundle places them next to the Desktop executable, which is where
 // the Desktop looks for `zwiim-host` and the host looks for `zwiim-mcp`
-// and `gh` (the pinned GitHub CLI, see scripts/gh/fetch.mjs).
+// and `gh` (the pinned GitHub CLI, see scripts/gh/fetch.mjs). The power
+// helper runs from there too: its launchd plist (Contents/Library/
+// LaunchDaemons) names Contents/MacOS/zwiim-power-helper.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -14,13 +16,14 @@ const root = path.resolve(desktop, "../..");
 const triple = execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/^host: (\S+)$/m)[1];
 const ext = process.platform === "win32" ? ".exe" : "";
 
-execFileSync("cargo", ["build", "--release", "-p", "zwiim-host", "--bin", "zwiim-host", "--bin", "zwiim-mcp"], {
-  cwd: root,
-  stdio: "inherit",
-});
+execFileSync(
+  "cargo",
+  ["build", "--release", "-p", "zwiim-host", "--bin", "zwiim-host", "--bin", "zwiim-mcp", "-p", "zwiim-power-helper"],
+  { cwd: root, stdio: "inherit" },
+);
 const out = path.join(desktop, "src-tauri/binaries");
 fs.mkdirSync(out, { recursive: true });
-for (const name of ["zwiim-host", "zwiim-mcp"]) {
+for (const name of ["zwiim-host", "zwiim-mcp", "zwiim-power-helper"]) {
   const dest = path.join(out, `${name}-${triple}${ext}`);
   fs.copyFileSync(path.join(root, "target/release", name + ext), dest);
   console.log(`staged ${path.relative(desktop, dest)}`);

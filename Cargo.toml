@@ -5,7 +5,12 @@
 # Zwiim-owned boundary genuinely requires it (see CLAUDE.md working rules).
 [workspace]
 resolver = "2"
-members = ["runtime/host", "runtime/cloud", "clients/desktop/src-tauri"]
+members = [
+    "runtime/host",
+    "runtime/cloud",
+    "runtime/power-helper",
+    "clients/desktop/src-tauri",
+]
 
 [workspace.package]
 edition = "2021"

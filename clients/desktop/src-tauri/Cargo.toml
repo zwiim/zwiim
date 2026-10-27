@@ -35,6 +35,11 @@ mdns-sd = "0.21"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Registering the power helper with SMAppService (see src/lid_helper.rs).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSError"] }
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread"] }

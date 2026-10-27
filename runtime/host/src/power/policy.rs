@@ -9,6 +9,10 @@ use super::config::KeepAwakeConfig;
 /// On battery below this, nothing is held whatever the setting.
 pub const MIN_BATTERY_PERCENT: u8 = 10;
 
+/// Below this, the lid is not held even on power: a closed Mac that is
+/// barely charged should be left to sleep.
+pub const LID_MIN_BATTERY_PERCENT: u8 = 20;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
@@ -80,7 +84,14 @@ pub fn decide(i: &Inputs) -> Decision {
         };
     }
     let hold_idle = i.caps.idle;
-    let hold_lid = hold_idle && i.config.lid_closed && i.caps.lid == LidSupport::Available;
+    // A closed Mac kept awake runs hot in a bag: only ever on power.
+    let hold_lid = hold_idle
+        && i.config.lid_closed
+        && i.caps.lid == LidSupport::Available
+        && i.power.source == PowerSource::Ac
+        && i.power
+            .battery_percent
+            .is_none_or(|p| p >= LID_MIN_BATTERY_PERCENT);
     let mut warnings = Vec::new();
     if hold_idle && i.caps.lid != LidSupport::NoLid && !hold_lid {
         warnings.push(Warning::LidCloseWillSleep);
@@ -300,6 +311,45 @@ mod tests {
             run(lid_on, false, AC, LAPTOP),
             holding(vec![Warning::LidCloseWillSleep])
         );
+    }
+
+    #[test]
+    fn lid_hold_needs_power_and_charge() {
+        let available = Capabilities {
+            lid: LidSupport::Available,
+            ..LAPTOP
+        };
+        let lid_on = KeepAwakeConfig {
+            lid_closed: true,
+            ..config(Mode::Always, true)
+        };
+        let lid = |power| run(lid_on, false, power, available);
+        let with_lid = Decision {
+            hold_lid: true,
+            ..holding(vec![])
+        };
+        assert_eq!(
+            lid(battery(80)),
+            holding(vec![
+                Warning::LidCloseWillSleep,
+                Warning::OnBatteryWillDrain
+            ])
+        );
+        let at = |percent| PowerSnapshot {
+            battery_percent: percent,
+            ..AC
+        };
+        assert_eq!(
+            lid(at(Some(LID_MIN_BATTERY_PERCENT - 1))),
+            holding(vec![Warning::LidCloseWillSleep])
+        );
+        assert_eq!(lid(at(Some(LID_MIN_BATTERY_PERCENT))), with_lid);
+        assert_eq!(lid(at(None)), with_lid);
+        let unknown = PowerSnapshot {
+            source: PowerSource::Unknown,
+            ..AC
+        };
+        assert_eq!(lid(unknown), holding(vec![Warning::LidCloseWillSleep]));
     }
 
     #[test]

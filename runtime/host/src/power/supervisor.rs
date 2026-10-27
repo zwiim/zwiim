@@ -11,7 +11,7 @@ use tokio::sync::{watch, Notify};
 
 use super::backend::{HoldGuard, PowerBackend, PowerSnapshot};
 use super::config::{self, KeepAwakeConfig};
-use super::policy::{decide, Blocker, Decision, Inputs, Mode};
+use super::policy::{decide, Blocker, Decision, Inputs, Mode, Warning};
 use crate::acp::types::{AcpEvent, EventEnvelope};
 use crate::app_state::AppState;
 
@@ -26,6 +26,8 @@ pub struct Supervisor {
     backend: Arc<dyn PowerBackend>,
     changed: Notify,
     hold: Mutex<Option<Box<dyn HoldGuard>>>,
+    /// Keeps the computer awake with the lid closed, through the helper.
+    lid: Mutex<Option<Box<dyn HoldGuard>>>,
     /// Requests to look again, counted; each pass publishes the count it saw
     /// on `passes`, so a caller can wait for a pass that began after asking.
     asked: AtomicU64,
@@ -43,6 +45,7 @@ impl Supervisor {
             backend,
             changed: Notify::new(),
             hold: Mutex::new(None),
+            lid: Mutex::new(None),
             asked: AtomicU64::new(0),
             passes: watch::Sender::new(0),
             recheck,
@@ -65,12 +68,31 @@ impl Supervisor {
     /// after a change or an unplug tells the truth.
     pub async fn active_now(&self, wanted: bool) -> bool {
         if self.active() != wanted {
-            let asked = self.asked.fetch_add(1, Ordering::SeqCst) + 1;
-            let mut passes = self.passes.subscribe();
-            self.changed.notify_one();
-            let _ = tokio::time::timeout(CATCH_UP, passes.wait_for(|seen| *seen >= asked)).await;
+            self.catch_up().await;
         }
         self.active()
+    }
+
+    /// Whether the lid hold is in place right now.
+    fn lid_held(&self) -> bool {
+        let mut lid = self.lid.lock().unwrap_or_else(|e| e.into_inner());
+        lid.as_mut().is_some_and(|h| h.is_alive())
+    }
+
+    /// [`Self::active_now`] for the lid hold.
+    pub async fn lid_now(&self, wanted: bool) -> bool {
+        if self.lid_held() != wanted {
+            self.catch_up().await;
+        }
+        self.lid_held()
+    }
+
+    /// Waits (up to [`CATCH_UP`]) for a pass that began after asking.
+    async fn catch_up(&self) {
+        let asked = self.asked.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut passes = self.passes.subscribe();
+        self.changed.notify_one();
+        let _ = tokio::time::timeout(CATCH_UP, passes.wait_for(|seen| *seen >= asked)).await;
     }
 
     /// Hold the computer as [`decide`] says, for as long as the host runs.
@@ -99,6 +121,26 @@ impl Supervisor {
                     }
                     hold.as_mut().is_some_and(|h| h.is_alive())
                 };
+                let lid_held = {
+                    let mut lid = self.lid.lock().unwrap_or_else(|e| e.into_inner());
+                    if lid.as_mut().is_some_and(|h| !h.is_alive()) {
+                        tracing::warn!("[power] lid hold ended on its own; replacing it");
+                        *lid = None;
+                    }
+                    if decision.hold_lid && lid.is_none() {
+                        match self.backend.hold_lid() {
+                            Ok(guard) => {
+                                tracing::info!("[power] holding with the lid closed");
+                                *lid = Some(guard);
+                            }
+                            Err(e) => tracing::warn!("[power] could not hold the lid: {e}"),
+                        }
+                    } else if !decision.hold_lid && lid.take().is_some() {
+                        tracing::info!("[power] lid hold released");
+                    }
+                    lid.as_mut().is_some_and(|h| h.is_alive())
+                };
+                let decision = with_lid_warning(decision, lid_held);
                 let status = super::status_of(
                     self.backend.capabilities(),
                     &config,
@@ -134,6 +176,14 @@ fn release_reason(config: &KeepAwakeConfig, decision: &Decision) -> &'static str
         (None, Mode::WhileWorking) => "no agent working",
         (None, Mode::Always) => "not supported",
     }
+}
+
+/// The policy wanted the lid held but it is not: closing the lid sleeps.
+pub fn with_lid_warning(mut decision: Decision, lid_held: bool) -> Decision {
+    if decision.hold_lid && !lid_held && !decision.warnings.contains(&Warning::LidCloseWillSleep) {
+        decision.warnings.insert(0, Warning::LidCloseWillSleep);
+    }
+    decision
 }
 
 /// The setting, the power state, and what to hold, read fresh.
@@ -201,7 +251,7 @@ mod tests {
         Capabilities, HoldGuard, LidSupport, PowerError, PowerSnapshot, PowerSource,
     };
     use crate::power::config;
-    use crate::power::policy::Mode;
+    use crate::power::policy::{Mode, Warning};
     use crate::power::KeepAwakeStatus;
     use crate::web::event_bridge::EventEmitter;
 
@@ -221,6 +271,13 @@ mod tests {
         acquired: AtomicUsize,
         /// Each guard's switch: false makes it report dead.
         guards: Mutex<Vec<Arc<AtomicBool>>>,
+        lid: Mutex<LidSupport>,
+        /// The same, for lid holds.
+        lid_live: Arc<AtomicUsize>,
+        lid_acquired: AtomicUsize,
+        lid_guards: Mutex<Vec<Arc<AtomicBool>>>,
+        /// The helper refuses every lid hold.
+        lid_fails: AtomicBool,
     }
 
     struct FakeGuard {
@@ -247,7 +304,25 @@ mod tests {
                 live: Arc::new(AtomicUsize::new(0)),
                 acquired: AtomicUsize::new(0),
                 guards: Mutex::new(Vec::new()),
+                lid: Mutex::new(LidSupport::NoLid),
+                lid_live: Arc::new(AtomicUsize::new(0)),
+                lid_acquired: AtomicUsize::new(0),
+                lid_guards: Mutex::new(Vec::new()),
+                lid_fails: AtomicBool::new(false),
             })
+        }
+
+        /// A Mac with a lid and the helper ready.
+        fn with_lid() -> Arc<Self> {
+            let fake = Self::new();
+            *fake.lid.lock().unwrap() = LidSupport::Available;
+            fake
+        }
+
+        fn kill_lid_guards(&self) {
+            for g in self.lid_guards.lock().unwrap().iter() {
+                g.store(false, Ordering::SeqCst);
+            }
         }
 
         fn set_power(&self, snapshot: PowerSnapshot) {
@@ -265,7 +340,7 @@ mod tests {
         fn capabilities(&self) -> Capabilities {
             Capabilities {
                 idle: true,
-                lid: LidSupport::NoLid,
+                lid: *self.lid.lock().unwrap(),
                 battery: true,
             }
         }
@@ -287,7 +362,33 @@ mod tests {
         }
 
         fn hold_lid(&self) -> Result<Box<dyn HoldGuard>, PowerError> {
-            Err(PowerError("no".into()))
+            if self.lid_fails.load(Ordering::SeqCst) {
+                return Err(PowerError("no".into()));
+            }
+            let alive = Arc::new(AtomicBool::new(true));
+            self.lid_guards.lock().unwrap().push(alive.clone());
+            self.lid_live.fetch_add(1, Ordering::SeqCst);
+            self.lid_acquired.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(FakeGuard {
+                live: self.lid_live.clone(),
+                alive,
+            }))
+        }
+    }
+
+    /// Waits up to 5 s for exactly `n` live lid holds.
+    async fn lid_held(fake: &FakeBackend, n: usize) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let live = fake.lid_live.load(Ordering::SeqCst);
+            if live == n {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "live lid holds: {live}, want {n}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
 
@@ -500,6 +601,105 @@ mod tests {
             .expect("another pass")
             .unwrap();
         assert!(!rx.has_changed().unwrap(), "an unchanged pass published");
+    }
+
+    fn lid_cfg(mode: Mode, lid_closed: bool) -> KeepAwakeConfig {
+        KeepAwakeConfig {
+            lid_closed,
+            ..cfg(mode, false)
+        }
+    }
+
+    #[tokio::test]
+    async fn lid_hold_follows_the_decision() {
+        let rig = Rig::new(lid_cfg(Mode::Always, true)).await;
+        let fake = FakeBackend::with_lid();
+        let sup = Supervisor::with_recheck(fake.clone(), Duration::from_secs(60));
+        sup.clone().run(rig.state.clone());
+        lid_held(&fake, 1).await;
+        held(&fake, 1).await;
+        assert!(sup.lid_now(true).await);
+        config::save(&rig.state.db.conn, &lid_cfg(Mode::Always, false))
+            .await
+            .unwrap();
+        sup.nudge();
+        lid_held(&fake, 0).await;
+        held(&fake, 1).await;
+        assert!(!sup.lid_now(false).await);
+    }
+
+    #[tokio::test]
+    async fn dead_lid_hold_is_replaced() {
+        let rig = Rig::new(lid_cfg(Mode::Always, true)).await;
+        let fake = FakeBackend::with_lid();
+        Supervisor::with_recheck(fake.clone(), FAST).run(rig.state.clone());
+        lid_held(&fake, 1).await;
+        fake.kill_lid_guards();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while fake.lid_acquired.load(Ordering::SeqCst) < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "the dead lid hold was not replaced"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        lid_held(&fake, 1).await;
+    }
+
+    #[tokio::test]
+    async fn failed_lid_hold_warns() {
+        let rig = Rig::new(lid_cfg(Mode::Always, true)).await;
+        let fake = FakeBackend::with_lid();
+        fake.lid_fails.store(true, Ordering::SeqCst);
+        let sup = Supervisor::with_recheck(fake.clone(), Duration::from_secs(60));
+        sup.clone().run(rig.state.clone());
+        let s = published(&rig.state, |s| s.active).await;
+        assert_eq!(s.warnings, vec![Warning::LidCloseWillSleep]);
+        assert_eq!(fake.lid_live.load(Ordering::SeqCst), 0);
+
+        // Once the helper takes it, the warning goes.
+        fake.lid_fails.store(false, Ordering::SeqCst);
+        sup.nudge();
+        let s = published(&rig.state, |s| s.warnings.is_empty()).await;
+        assert!(s.active);
+        lid_held(&fake, 1).await;
+    }
+
+    #[tokio::test]
+    async fn lid_released_when_idle_released() {
+        let rig = Rig::new(lid_cfg(Mode::Always, true)).await;
+        let fake = FakeBackend::with_lid();
+        let sup = Supervisor::with_recheck(fake.clone(), Duration::from_secs(60));
+        sup.clone().run(rig.state.clone());
+        lid_held(&fake, 1).await;
+        held(&fake, 1).await;
+        config::save(&rig.state.db.conn, &lid_cfg(Mode::Off, true))
+            .await
+            .unwrap();
+        sup.nudge();
+        lid_held(&fake, 0).await;
+        held(&fake, 0).await;
+    }
+
+    #[test]
+    fn an_unheld_lid_warns_once() {
+        let wants = Decision {
+            hold_idle: true,
+            hold_lid: true,
+            blocked_by: None,
+            warnings: vec![Warning::OnBatteryWillDrain],
+        };
+        assert_eq!(with_lid_warning(wants.clone(), true), wants);
+        assert_eq!(
+            with_lid_warning(wants.clone(), false).warnings,
+            vec![Warning::LidCloseWillSleep, Warning::OnBatteryWillDrain]
+        );
+        let not_wanted = Decision {
+            hold_lid: false,
+            warnings: vec![Warning::LidCloseWillSleep],
+            ..wants
+        };
+        assert_eq!(with_lid_warning(not_wanted.clone(), false), not_wanted);
     }
 
     /// A real `caffeinate`, held for exactly as long as a turn runs.

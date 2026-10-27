@@ -1,0 +1,27 @@
+# Zwiim power helper — the one root process Zwiim installs.
+#
+# Keeps a Mac laptop awake with the lid closed while the signed Zwiim Host
+# asks it to, and puts sleep back however the Host ends. Deliberately tiny:
+# std plus the code-signature check, and never the Host crate.
+[package]
+name = "zwiim-power-helper"
+version = "0.1.0-rc.10"
+description = "Zwiim power helper — lid-closed keep-awake for the Zwiim Host"
+authors = ["Zwiim"]
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "zwiim-power-helper"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7"
+core-foundation = "0.10"
+
+[dev-dependencies]
+tempfile = "3"

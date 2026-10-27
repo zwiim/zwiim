@@ -27,14 +27,14 @@ function bridge(): NativeBridge {
   };
 }
 
-async function mount(t = new FakeTransport()) {
+async function mount(t = new FakeTransport(), native: NativeBridge = bridge()) {
   const client = new HostClient({ transport: t, random: () => 0.5 });
   const controller = new HostController(client);
   client.start();
   await tick();
   render(
     <HostProvider value={controller}>
-      <Workbench bridge={bridge()} />
+      <Workbench bridge={native} />
     </HostProvider>,
   );
   await tick();
@@ -305,6 +305,81 @@ describe("keeping the Mac reachable", () => {
     openSettings("General");
     await tick();
     expect(screen.queryByRole("radiogroup", { name: "Keep this Mac reachable" })).toBeNull();
+    c.dispose();
+  });
+});
+
+describe("staying awake with the lid closed", () => {
+  const lid = (support: Reach["lid_closed"]["support"], enabled = false) => status({ lid_closed: { support, enabled } });
+
+  it("lid row hidden without a lid or helper", async () => {
+    for (const support of ["no_lid", "unavailable"] as const) {
+      const t = new FakeTransport();
+      t.handlers["host.keep_awake.status"] = () => lid(support);
+      const c = await mount(t);
+      openSettings("General");
+      await tick();
+      expect(screen.getByTestId("keep-awake-status")).toBeTruthy();
+      expect(screen.queryByTestId("keep-awake-lid")).toBeNull();
+      c.dispose();
+      cleanup();
+    }
+  });
+
+  it("available lid toggles lid_closed", async () => {
+    const t = new FakeTransport();
+    let current = lid("available");
+    t.handlers["host.keep_awake.status"] = () => current;
+    t.handlers["host.keep_awake.set"] = (p) => {
+      const { lid_closed } = p as { lid_closed: boolean };
+      current = { ...current, lid_closed: { ...current.lid_closed, enabled: lid_closed } };
+      return current;
+    };
+    const c = await mount(t);
+    const dialog = openSettings("General");
+    await tick();
+    const row = screen.getByTestId("keep-awake-lid");
+    const box = dialog.getByRole("checkbox", { name: "Stay awake with the lid closed" }) as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    expect(row.textContent).toContain("Don't put the Mac in a bag while this is on.");
+    fireEvent.click(box);
+    await tick();
+    expect(t.calls.filter((x) => x.op === "host.keep_awake.set").map((x) => x.params)).toEqual([{ lid_closed: true }]);
+    expect((dialog.getByRole("checkbox", { name: "Stay awake with the lid closed" }) as HTMLInputElement).checked).toBe(
+      true,
+    );
+    c.dispose();
+  });
+
+  it("needs_setup shows Set up", async () => {
+    const t = new FakeTransport();
+    t.handlers["host.keep_awake.status"] = () => lid("needs_setup");
+    const setup = vi.fn(async () => "requires_approval" as const);
+    const c = await mount(t, { ...bridge(), lidHelper: { setup } });
+    const dialog = openSettings("General");
+    await tick();
+    expect(screen.getByTestId("keep-awake-lid")).toBeTruthy();
+    expect(dialog.queryByRole("checkbox", { name: "Stay awake with the lid closed" })).toBeNull();
+    const reads = () => t.calls.filter((x) => x.op === "host.keep_awake.status").length;
+    const before = reads();
+    fireEvent.click(dialog.getByRole("button", { name: "Set up" }));
+    await tick();
+    await tick();
+    expect(setup).toHaveBeenCalledTimes(1);
+    expect(reads()).toBe(before + 1);
+    expect(screen.getByTestId("keep-awake-lid").textContent).toContain(
+      "Allow Zwiim in System Settings → Login Items",
+    );
+    c.dispose();
+  });
+
+  it("offers no Set up without a way to install the helper", async () => {
+    const t = new FakeTransport();
+    t.handlers["host.keep_awake.status"] = () => lid("needs_setup");
+    const c = await mount(t);
+    const dialog = openSettings("General");
+    await tick();
+    expect(dialog.queryByRole("button", { name: "Set up" })).toBeNull();
     c.dispose();
   });
 });

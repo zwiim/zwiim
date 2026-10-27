@@ -113,7 +113,7 @@ jobs:
           rm "$RUNNER_TEMP/cert.p12"
 
       - name: Build the Host
-        run: cargo build --release --locked -p zwiim-host --bin zwiim-host --bin zwiim-mcp
+        run: cargo build --release --locked -p zwiim-host --bin zwiim-host --bin zwiim-mcp -p zwiim-power-helper
       - name: The Host carries the release key and Team ID
         run: |
           target/release/zwiim-host --release-info | tee "$RUNNER_TEMP/release-info.json"
@@ -136,6 +136,11 @@ jobs:
             codesign --verify --strict --verbose=2 "target/release/$b"
           done
           scripts/release/check-host-signature.sh target/release/zwiim-host
+          # The power helper ships only inside Desktop and is notarized with it.
+          codesign --force --options runtime --timestamp --identifier com.zwiim.power-helper \
+            --sign "$APPLE_SIGNING_IDENTITY" target/release/zwiim-power-helper
+          codesign --verify --strict --verbose=2 target/release/zwiim-power-helper
+          scripts/release/check-host-signature.sh target/release/zwiim-power-helper com.zwiim.power-helper
           (cd target/release && zip -q "$RUNNER_TEMP/host-notarize.zip" zwiim-host zwiim-mcp gh)
           xcrun notarytool submit "$RUNNER_TEMP/host-notarize.zip" \
             --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
@@ -162,6 +167,9 @@ jobs:
           codesign -dv "$APP" 2>&1 | grep -q "TeamIdentifier=$APPLE_TEAM_ID"
           # The bundler re-signs its sidecars; the Host must come out as com.zwiim.host.
           scripts/release/check-host-signature.sh "$APP/Contents/MacOS/zwiim-host"
+          # launchd runs the power helper as root from the plist that names it.
+          scripts/release/check-host-signature.sh "$APP/Contents/MacOS/zwiim-power-helper" com.zwiim.power-helper
+          test -f "$APP/Contents/Library/LaunchDaemons/com.zwiim.power-helper.plist"
           xcrun stapler validate "$APP"
           spctl --assess --type execute --verbose=2 "$APP"
           DMG=$(ls target/release/bundle/dmg/*.dmg)

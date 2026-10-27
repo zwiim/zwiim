@@ -8939,6 +8939,8 @@ dependencies = [
  "keyring",
  "libc",
  "mdns-sd",
+ "objc2",
+ "objc2-foundation",
  "rand 0.8.8",
  "reqwest 0.12.28",
  "serde",
@@ -9042,4 +9044,14 @@ dependencies = [
  "zip 2.4.2",
  "zstd",
  "zwiim-cloud",
+]
+
+[[package]]
+name = "zwiim-power-helper"
+version = "0.1.0-rc.10"
+dependencies = [
+ "core-foundation 0.10.1",
+ "libc",
+ "security-framework 3.7.0",
+ "tempfile",
 ]

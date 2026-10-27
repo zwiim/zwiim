@@ -6,6 +6,8 @@
 
 pub mod backend;
 pub mod config;
+#[cfg(unix)]
+mod lid_helper;
 mod macos;
 pub mod policy;
 pub mod supervisor;
@@ -102,10 +104,14 @@ pub struct PowerStatus {
 pub async fn status(state: &AppState) -> Result<KeepAwakeStatus, ZwiimError> {
     let backend = backend().await;
     let (config, power, decision) = supervisor::evaluate(backend.as_ref(), state).await;
-    let active = match RUNNING.get() {
-        Some(s) => s.active_now(decision.hold_idle).await,
-        None => false,
+    let (active, lid_held) = match RUNNING.get() {
+        Some(s) => (
+            s.active_now(decision.hold_idle).await,
+            s.lid_now(decision.hold_lid).await,
+        ),
+        None => (false, false),
     };
+    let decision = supervisor::with_lid_warning(decision, lid_held);
     Ok(status_of(
         backend.capabilities(),
         &config,

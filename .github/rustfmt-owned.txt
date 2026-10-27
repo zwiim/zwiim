@@ -22,6 +22,7 @@ runtime/host/src/update/tests.rs
 runtime/host/tests/host_lifecycle.rs
 runtime/host/tests/provider_live.rs
 clients/desktop/src-tauri/src/login.rs
+clients/desktop/src-tauri/src/lid_helper.rs
 runtime/host/src/agent_auth.rs
 runtime/host/src/agent_auth/tests.rs
 runtime/host/src/redact.rs
@@ -29,6 +30,7 @@ runtime/host/src/power/mod.rs
 runtime/host/src/power/backend.rs
 runtime/host/src/power/policy.rs
 runtime/host/src/power/config.rs
+runtime/host/src/power/lid_helper.rs
 runtime/host/src/power/macos.rs
 runtime/host/src/power/supervisor.rs
 runtime/host/src/power/wake.rs
@@ -53,3 +55,9 @@ runtime/host/src/session_checkpoints.rs
 runtime/host/src/acp/codex_subagents.rs
 runtime/host/src/history_cache.rs
 runtime/host/src/git_harness/gh_auth.rs
+runtime/power-helper/src/main.rs
+runtime/power-helper/src/core.rs
+runtime/power-helper/src/probe.rs
+runtime/power-helper/src/auth.rs
+runtime/power-helper/src/server.rs
+runtime/power-helper/build.rs

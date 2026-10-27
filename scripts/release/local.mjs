@@ -128,7 +128,7 @@ function main() {
   const notarize = (file) => run("xcrun", ["notarytool", "submit", file, "--keychain-profile", "zwiim", "--wait"]);
 
   step("Build the Host");
-  run("cargo", ["build", "--release", "--locked", "-p", "zwiim-host", "--bin", "zwiim-host", "--bin", "zwiim-mcp"]);
+  run("cargo", ["build", "--release", "--locked", "-p", "zwiim-host", "--bin", "zwiim-host", "--bin", "zwiim-mcp", "-p", "zwiim-power-helper"]);
   const info = JSON.parse(execFileSync("target/release/zwiim-host", ["--release-info"], { cwd: ROOT, encoding: "utf8" }));
   if (info.release_key !== true || info.team_id !== env.APPLE_TEAM_ID || info.version !== version) {
     fail("the Host was not built with the release key, Team ID and VERSION");
@@ -144,6 +144,10 @@ function main() {
   sign("target/release/gh");
   for (const b of ["zwiim-host", "zwiim-mcp", "gh"]) run("codesign", ["--verify", "--strict", "--verbose=2", `target/release/${b}`]);
   run("scripts/release/check-host-signature.sh", ["target/release/zwiim-host"]);
+  // The power helper ships only inside Desktop and is notarized with it.
+  sign("target/release/zwiim-power-helper", ["--identifier", "com.zwiim.power-helper"]);
+  run("codesign", ["--verify", "--strict", "--verbose=2", "target/release/zwiim-power-helper"]);
+  run("scripts/release/check-host-signature.sh", ["target/release/zwiim-power-helper", "com.zwiim.power-helper"]);
   const zip = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "zwiim-notarize-")), "host.zip");
   run("zip", ["-q", zip, "zwiim-host", "zwiim-mcp", "gh"], { cwd: path.join(ROOT, "target/release") });
   notarize(zip);
@@ -158,6 +162,11 @@ function main() {
   if (!signed.includes(`TeamIdentifier=${env.APPLE_TEAM_ID}\n`)) fail(`${app} is not signed by team ${env.APPLE_TEAM_ID}`);
   // The bundler re-signs its sidecars; the Host must come out as com.zwiim.host.
   run("scripts/release/check-host-signature.sh", [`${app}/Contents/MacOS/zwiim-host`]);
+  // launchd runs the power helper as root from the plist that names it.
+  run("scripts/release/check-host-signature.sh", [`${app}/Contents/MacOS/zwiim-power-helper`, "com.zwiim.power-helper"]);
+  if (!fs.existsSync(path.join(ROOT, app, "Contents/Library/LaunchDaemons/com.zwiim.power-helper.plist"))) {
+    fail(`${app} lacks the power helper's launchd plist`);
+  }
   run("xcrun", ["stapler", "validate", app]);
   run("spctl", ["--assess", "--type", "execute", "--verbose=2", app]);
   const dmgDir = path.join(ROOT, "target/release/bundle/dmg");

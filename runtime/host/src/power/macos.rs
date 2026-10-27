@@ -16,34 +16,46 @@ mod imp {
     use super::super::backend::{
         Capabilities, HoldGuard, LidSupport, PowerBackend, PowerError, PowerSnapshot,
     };
+    use super::super::lid_helper;
     use super::{parse_batt, parse_clamshell, parse_therm};
 
     /// `pmset` and `ioreg` answer in milliseconds; past this, read nothing.
     const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+    /// Only a signed build can register the power helper.
+    const SIGNED: bool = option_env!("ZWIIM_APPLE_TEAM_ID").is_some();
+
     pub struct MacBackend {
-        pub(super) has_lid: bool,
+        has_lid: bool,
+        helper: std::path::PathBuf,
+        /// What the last snapshot learned about the power helper.
+        lid: std::sync::Mutex<LidSupport>,
     }
 
     impl MacBackend {
         /// A Mac with a lid reports `AppleClamshellState`; a desktop does not.
         pub async fn detect() -> Self {
+            Self::new(
+                parse_clamshell(&ioreg().await).is_some(),
+                lid_helper::SOCKET.into(),
+            )
+        }
+
+        pub(super) fn new(has_lid: bool, helper: std::path::PathBuf) -> Self {
+            let lid = lid_helper::lid_support(has_lid, false, lid_helper::Probe::Refused);
             Self {
-                has_lid: parse_clamshell(&ioreg().await).is_some(),
+                has_lid,
+                helper,
+                lid: std::sync::Mutex::new(lid),
             }
         }
     }
 
     impl PowerBackend for MacBackend {
         fn capabilities(&self) -> Capabilities {
-            let lid = if self.has_lid {
-                LidSupport::Unavailable
-            } else {
-                LidSupport::NoLid
-            };
             Capabilities {
                 idle: true,
-                lid,
+                lid: *self.lid.lock().unwrap(),
                 battery: true,
             }
         }
@@ -55,6 +67,17 @@ mod imp {
                     ioreg(),
                     output("/usr/bin/pmset", &["-g", "therm"])
                 );
+                if self.has_lid {
+                    let helper = self.helper.clone();
+                    match tokio::task::spawn_blocking(move || lid_helper::probe(&helper)).await {
+                        // A slow answer keeps what the last look learned.
+                        Ok(lid_helper::Probe::Busy) | Err(_) => {}
+                        Ok(probe) => {
+                            *self.lid.lock().unwrap() =
+                                lid_helper::lid_support(true, SIGNED, probe);
+                        }
+                    }
+                }
                 let (source, battery_percent) = parse_batt(&batt);
                 // pmset that could not run says nothing about the heat.
                 let thermal = (!therm.is_empty()).then(|| parse_therm(&therm));
@@ -82,8 +105,10 @@ mod imp {
             Ok(Box::new(CaffeinateHold(child)))
         }
 
+        /// Blocks for at most the helper's local timeout.
         fn hold_lid(&self) -> Result<Box<dyn HoldGuard>, PowerError> {
-            Err(PowerError("not available".into()))
+            let hold = lid_helper::hold(&self.helper).map_err(PowerError)?;
+            Ok(Box::new(hold))
         }
     }
 
@@ -273,12 +298,88 @@ mod tests {
         }
 
         let _turn = super::CAFFEINATE_TEST_LOCK.lock().await;
-        let backend = MacBackend { has_lid: true };
+        let backend = MacBackend::new(true, "/nonexistent".into());
         let mut guard = backend.hold_idle("test").unwrap();
         running(true).await;
         assert!(guard.is_alive());
         drop(guard);
         running(false).await;
+    }
+
+    /// The lid setting follows what the helper answered at the last look.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn lid_support_follows_the_helper() {
+        use std::io::{BufRead, BufReader, Write};
+
+        use super::super::backend::{LidSupport, PowerBackend};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("helper.sock");
+        let backend = MacBackend::new(true, path.clone());
+        assert_eq!(backend.capabilities().lid, LidSupport::Unavailable);
+        backend.snapshot().await;
+        assert_ne!(backend.capabilities().lid, LidSupport::Available);
+
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                std::thread::spawn(move || {
+                    let reader = BufReader::new(stream.try_clone().unwrap());
+                    for _ in reader.lines().map_while(Result::ok) {
+                        stream.write_all(b"ok\n").unwrap();
+                    }
+                });
+            }
+        });
+        backend.snapshot().await;
+        assert_eq!(backend.capabilities().lid, LidSupport::Available);
+        assert!(backend.hold_lid().unwrap().is_alive());
+
+        let desktop = MacBackend::new(false, path);
+        desktop.snapshot().await;
+        assert_eq!(desktop.capabilities().lid, LidSupport::NoLid);
+    }
+
+    /// A helper slow to answer (it may be running pmset for another caller)
+    /// must not take a working lid hold away.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_busy_helper_keeps_the_lid() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        use super::super::backend::{LidSupport, PowerBackend};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("helper.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let busy = Arc::new(AtomicBool::new(false));
+        let stalls = busy.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let stalls = stalls.clone();
+                std::thread::spawn(move || {
+                    let reader = BufReader::new(stream.try_clone().unwrap());
+                    for _ in reader.lines().map_while(Result::ok) {
+                        if stalls.load(Ordering::SeqCst) {
+                            std::thread::sleep(std::time::Duration::from_secs(4));
+                        }
+                        let _ = stream.write_all(b"ok\n");
+                    }
+                });
+            }
+        });
+        let backend = MacBackend::new(true, path);
+        backend.snapshot().await;
+        assert_eq!(backend.capabilities().lid, LidSupport::Available);
+
+        busy.store(true, Ordering::SeqCst);
+        backend.snapshot().await;
+        assert_eq!(backend.capabilities().lid, LidSupport::Available);
     }
 
     /// A stuck `pmset` or `ioreg` must not stall the supervisor for good.

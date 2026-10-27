@@ -123,6 +123,16 @@ export interface NativeBridge {
   updates?: DesktopUpdates;
   /** Only in the desktop app: whether the host starts when the user logs in. */
   hostLogin?: HostLogin;
+  /** Only in the desktop app on macOS: keeping a closed laptop awake. */
+  lidHelper?: LidHelper;
+}
+
+/** Where registering the power helper left it. */
+export type LidHelperSetup = "enabled" | "requires_approval" | "not_registered" | "not_found" | "unknown";
+
+export interface LidHelper {
+  /** Register the power helper; may open System Settings for approval. */
+  setup(): Promise<LidHelperSetup>;
 }
 
 export interface HostLoginStatus {
@@ -260,6 +270,12 @@ export function tauriBridge(): NativeBridge {
       async set(enabled) {
         const { invoke } = await import("@tauri-apps/api/core");
         return invoke<HostLoginStatus>("host_login_set", { enabled });
+      },
+    },
+    lidHelper: {
+      async setup() {
+        const { invoke } = await import("@tauri-apps/api/core");
+        return invoke<LidHelperSetup>("lid_helper_setup");
       },
     },
     remote: {

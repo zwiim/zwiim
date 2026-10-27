@@ -20,6 +20,7 @@ pub mod cloud;
 pub mod device;
 pub mod download;
 pub mod lan;
+pub mod lid_helper;
 pub mod login;
 pub mod preview;
 pub mod update;
@@ -356,7 +357,8 @@ pub fn run() {
         update::desktop_update_restart,
         update::desktop_update_set_channel,
         login::host_login_status,
-        login::host_login_set
+        login::host_login_set,
+        lid_helper::lid_helper_setup
     ];
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
