@@ -247,6 +247,20 @@ impl SubagentInfo {
     }
 }
 
+/// What a live token count read off a running sub-agent's transcript means
+/// to the session (see [`SessionState::subagent_usage_verdict`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubagentUsageVerdict {
+    /// A new count for a launch still running: apply it.
+    Apply,
+    /// The launch already shows this count.
+    Unchanged,
+    /// No sub-agent launch with this id is live in the session.
+    Unknown,
+    /// The launch has its final result; a live count must not replace it.
+    Finished,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolCallStatus {
@@ -1158,6 +1172,21 @@ impl SessionState {
                 // still gets anchored. Idempotent so the normal-flow case is
                 // a no-op here.
                 self.push_tool_call_ref_if_absent(tool_call_id);
+            }
+            AcpEvent::SubagentUsage {
+                tool_call_id,
+                tokens,
+            } => {
+                if self.subagent_usage_verdict(tool_call_id, *tokens) == SubagentUsageVerdict::Apply
+                {
+                    if let Some(info) = self
+                        .active_tool_calls
+                        .get_mut(tool_call_id)
+                        .and_then(|t| t.subagent.as_mut())
+                    {
+                        info.tokens = Some(*tokens);
+                    }
+                }
             }
             AcpEvent::PermissionRequest {
                 request_id,
@@ -2093,6 +2122,32 @@ impl SessionState {
             live.content.push(LiveContentBlock::ToolCallRef {
                 tool_call_id: tool_call_id.to_string(),
             });
+        }
+    }
+
+    /// Whether a running sub-agent's live token count belongs on its launch:
+    /// only a launch the session knows, with no final result yet (its
+    /// `tool_uses` reported, or the call completed or failed), so a late
+    /// reading never overwrites the finished total.
+    pub fn subagent_usage_verdict(&self, tool_call_id: &str, tokens: u64) -> SubagentUsageVerdict {
+        let Some((call, info)) = self
+            .active_tool_calls
+            .get(tool_call_id)
+            .and_then(|t| Some((t, t.subagent.as_ref()?)))
+        else {
+            return SubagentUsageVerdict::Unknown;
+        };
+        if info.tool_uses.is_some()
+            || matches!(
+                call.status,
+                ToolCallStatus::Completed | ToolCallStatus::Failed
+            )
+        {
+            SubagentUsageVerdict::Finished
+        } else if info.tokens == Some(tokens) {
+            SubagentUsageVerdict::Unchanged
+        } else {
+            SubagentUsageVerdict::Apply
         }
     }
 

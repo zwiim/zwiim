@@ -682,6 +682,12 @@ pub enum AcpEvent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tasks: Vec<BackgroundTaskView>,
     },
+    /// What a running Claude sub-agent's context holds so far, read by the
+    /// transcript watcher off the sub-agent's own transcript (the adapter
+    /// sends no usage until it finishes). `tokens` uses the finish total's
+    /// formula, so the number does not jump when the result lands; applied
+    /// only while the launch is known and has no final result yet.
+    SubagentUsage { tool_call_id: String, tokens: u64 },
     /// The session's [`BackgroundView`] changed, or turns landed out of turn.
     /// Never produced by an adapter: the event bridge derives it from
     /// `SessionState` after any event that moved the outstanding count, the

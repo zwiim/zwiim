@@ -54,13 +54,13 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Read, Seek, SeekFrom};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
 
-use crate::acp::session_state::{background_keepalive_max_age, SessionState};
+use crate::acp::session_state::{background_keepalive_max_age, SessionState, SubagentUsageVerdict};
 use crate::acp::session_title::publish_native_title;
 use crate::acp::types::{AcpEvent, BackgroundSettledInfo, BackgroundTaskView, ConnectionStatus};
 use crate::models::agent::AgentType;
@@ -73,7 +73,7 @@ use crate::parsers::claude::{
     CONTEXT_CONTINUATION_PREFIX,
 };
 use crate::parsers::truncate_str;
-use crate::web::event_bridge::{emit_with_state, EventEmitter};
+use crate::web::event_bridge::{emit_with_state, emit_with_state_gated, EventEmitter};
 
 /// Poll cadence while background work is outstanding or the transcript moved
 /// recently — tight enough that a completed task surfaces within a beat.
@@ -409,6 +409,63 @@ async fn run_watch(
             }
             emit_with_state(&state, &emitter, event).await;
         }
+
+        emit_subagent_usage(&state, &emitter, &mut ws).await;
+    }
+}
+
+/// Emit the live sub-agent counts the last tick read. Each is applied only
+/// while the session still knows the launch and it has no final result; once
+/// it does, the launch's transcripts are dropped so no later write is read.
+async fn emit_subagent_usage(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    ws: &mut WatchState,
+) {
+    let ids = ws.tracked_subagent_ids();
+    let pending = std::mem::take(&mut ws.pending_subagent_usage);
+    if ids.is_empty() {
+        return;
+    }
+    // One read-lock pass over every named launch settles the ones that have
+    // their result or have gone (a result landing after the transcript's last
+    // write, a turn ending or cancelling), so a reading the session would
+    // reject never takes the write lock.
+    let verdicts: Vec<(String, SubagentUsageVerdict)> = {
+        let s = state.read().await;
+        ids.into_iter()
+            .map(|id| {
+                let verdict = s.subagent_usage_verdict(&id, 0);
+                (id, verdict)
+            })
+            .collect()
+    };
+    let mut live = HashSet::new();
+    for (id, verdict) in verdicts {
+        match verdict {
+            SubagentUsageVerdict::Finished | SubagentUsageVerdict::Unknown => {
+                ws.settle_subagent(&id, verdict);
+            }
+            SubagentUsageVerdict::Apply | SubagentUsageVerdict::Unchanged => {
+                live.insert(id);
+            }
+        }
+    }
+    for (tool_call_id, tokens) in pending {
+        if !live.contains(&tool_call_id) {
+            continue;
+        }
+        let mut verdict = SubagentUsageVerdict::Unknown;
+        let event = AcpEvent::SubagentUsage {
+            tool_call_id: tool_call_id.clone(),
+            tokens,
+        };
+        emit_with_state_gated(state, emitter, event, |s| {
+            verdict = s.subagent_usage_verdict(&tool_call_id, tokens);
+            verdict == SubagentUsageVerdict::Apply
+        })
+        .await;
+        ws.settle_subagent(&tool_call_id, verdict);
     }
 }
 
@@ -481,6 +538,98 @@ enum Mode {
     Foreground,
     /// Records are out-of-turn — the overlay renders them.
     Background,
+}
+
+/// Append `path`'s bytes past `committed + carry` to `carry` and return every
+/// complete line in it, advancing `committed` past each. A trailing partial
+/// line stays in `carry` until its newline arrives.
+fn read_complete_lines(
+    path: &Path,
+    committed: &mut u64,
+    carry: &mut Vec<u8>,
+) -> std::io::Result<Vec<String>> {
+    let mut f = std::fs::File::open(path)?;
+    f.seek(SeekFrom::Start(*committed + carry.len() as u64))?;
+    let mut fresh = Vec::new();
+    f.read_to_end(&mut fresh)?;
+    if fresh.is_empty() {
+        return Ok(Vec::new());
+    }
+    carry.extend_from_slice(&fresh);
+
+    // One pass over the buffer, then one drain of everything consumed.
+    let mut lines = Vec::new();
+    let mut start = 0;
+    while let Some(off) = carry[start..].iter().position(|b| *b == b'\n') {
+        let end = start + off;
+        // Mirror the detail parser: a non-UTF-8 line is skipped, but its
+        // bytes still count toward the watermark.
+        if let Ok(line) = std::str::from_utf8(&carry[start..end]) {
+            lines.push(line.to_owned());
+        }
+        start = end + 1;
+    }
+    *committed += start as u64;
+    carry.drain(..start);
+    Ok(lines)
+}
+
+/// Tail of one running sub-agent's own transcript
+/// (`<session>/subagents/agent-*.jsonl`), read for its live token count: the
+/// adapter reports a sub-agent's usage only when it finishes.
+#[derive(Default)]
+struct SubagentTail {
+    /// Bytes consumed through the last complete line.
+    committed: u64,
+    /// A trailing partial line awaiting its newline.
+    carry: Vec<u8>,
+    /// Last observed (mtime, len), so an unchanged file costs one `stat`.
+    last_stat: Option<(Option<std::time::SystemTime>, u64)>,
+    /// The launch's tool call id, from the sibling `.meta.json` (`toolUseId`);
+    /// `None` until that file is readable.
+    tool_call_id: Option<String>,
+    /// Context tokens on the newest assistant record read so far.
+    tokens: Option<u64>,
+    /// The count last queued for emission, so only a change is sent. Cleared
+    /// when the session did not know the launch yet, so it is sent again.
+    sent: Option<u64>,
+    /// The session has taken a reading for this launch, so a later "unknown"
+    /// means the launch is gone rather than not registered yet.
+    accepted: bool,
+}
+
+/// The finish total's formula (input + cache creation + cache read + output)
+/// over one sub-agent transcript record, when it is a real assistant message
+/// carrying usage. `<synthetic>` records are the CLI's own stand-ins (an API
+/// error, an interruption) and say nothing about the context.
+fn assistant_context_tokens(value: &serde_json::Value) -> Option<u64> {
+    if value.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+        return None;
+    }
+    let message = value.get("message")?;
+    if message.get("model").and_then(|m| m.as_str()) == Some("<synthetic>") {
+        return None;
+    }
+    let usage = message.get("usage")?.as_object()?;
+    let field = |k: &str| usage.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+    Some(
+        field("input_tokens")
+            + field("cache_creation_input_tokens")
+            + field("cache_read_input_tokens")
+            + field("output_tokens"),
+    )
+}
+
+/// The launching tool call's id, from the `.meta.json` written beside a
+/// sub-agent transcript. `None` while it is missing or unreadable.
+fn subagent_tool_use_id(transcript: &Path) -> Option<String> {
+    let raw = std::fs::read(transcript.with_extension("meta.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+    value
+        .get("toolUseId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
 pub(crate) struct WatchState {
@@ -593,6 +742,16 @@ pub(crate) struct WatchState {
     /// when a title RECORD actually changed the resolution, so a session with
     /// a settled name costs nothing per tick.
     pending_title: Option<String>,
+    /// Sub-agent transcripts that changed since this watch began, keyed by
+    /// path. A transcript last written before the epoch is left alone until it
+    /// changes, then read from its start.
+    subagent_tails: HashMap<PathBuf, SubagentTail>,
+    /// Sub-agent transcripts whose launch has its final result: never read
+    /// again, so a late write cannot revive a finished count.
+    finished_subagent_files: HashSet<PathBuf>,
+    /// Live sub-agent counts (tool call id, tokens) read this tick, drained by
+    /// `run_watch` into gated `SubagentUsage` events.
+    pending_subagent_usage: Vec<(String, u64)>,
 }
 
 impl WatchState {
@@ -624,6 +783,129 @@ impl WatchState {
             custom_title: None,
             ai_title: None,
             pending_title: None,
+            subagent_tails: HashMap::new(),
+            finished_subagent_files: HashSet::new(),
+            pending_subagent_usage: Vec::new(),
+        }
+    }
+
+    /// Read every sub-agent transcript beside `session_file` that changed
+    /// since the watch began and queue each launch's new context count.
+    /// Nested sub-agents share the same flat directory, so they come for free.
+    /// Never fails: an unreadable directory, file or meta is retried next tick.
+    fn tail_subagents(&mut self, session_file: &Path) {
+        let dir = session_file.with_extension("").join("subagents");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_transcript = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("agent-") && n.ends_with(".jsonl"));
+            if !is_transcript || self.finished_subagent_files.contains(&path) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            let stat = (meta.modified().ok(), meta.len());
+            if !self.subagent_tails.contains_key(&path) {
+                let before_watch = matches!(
+                    (self.epoch, stat.0),
+                    (Some(epoch), Some(mtime)) if mtime < epoch
+                );
+                if before_watch {
+                    continue;
+                }
+            }
+            let tail = self.subagent_tails.entry(path.clone()).or_default();
+            if tail.tool_call_id.is_none() {
+                tail.tool_call_id = subagent_tool_use_id(&path);
+            }
+            if tail.last_stat != Some(stat) {
+                if stat.1 < tail.committed {
+                    // Rewritten out from under us: start the file over.
+                    tail.committed = 0;
+                    tail.carry.clear();
+                    tail.tokens = None;
+                }
+                match read_complete_lines(&path, &mut tail.committed, &mut tail.carry) {
+                    Ok(lines) => {
+                        tail.last_stat = Some(stat);
+                        if !lines.is_empty() {
+                            self.last_disk_activity = Some(Instant::now());
+                        }
+                        for line in &lines {
+                            let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+                                continue;
+                            };
+                            if let Some(n) = assistant_context_tokens(&value) {
+                                tail.tokens = Some(n);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("[bg-watch] sub-agent read failed: {e}");
+                    }
+                }
+            }
+            if let (Some(id), Some(n)) = (&tail.tool_call_id, tail.tokens) {
+                if tail.sent != Some(n) {
+                    tail.sent = Some(n);
+                    self.pending_subagent_usage.push((id.clone(), n));
+                }
+            }
+        }
+    }
+
+    /// The launches whose transcripts are being read and are named already.
+    fn tracked_subagent_ids(&self) -> Vec<String> {
+        let ids: HashSet<&String> = self
+            .subagent_tails
+            .values()
+            .filter_map(|t| t.tool_call_id.as_ref())
+            .collect();
+        ids.into_iter().cloned().collect()
+    }
+
+    /// Fold the session's verdict on a launch back into its tails: a launch
+    /// that took a reading is accepted; one with its result, or one that was
+    /// accepted and is now unknown (its turn ended or was cancelled), stops
+    /// being read; one never yet known is retried on the next tick.
+    fn settle_subagent(&mut self, tool_call_id: &str, verdict: SubagentUsageVerdict) {
+        let tails = self
+            .subagent_tails
+            .values_mut()
+            .filter(|t| t.tool_call_id.as_deref() == Some(tool_call_id));
+        match verdict {
+            SubagentUsageVerdict::Apply | SubagentUsageVerdict::Unchanged => {
+                tails.for_each(|t| t.accepted = true);
+            }
+            SubagentUsageVerdict::Finished => self.finish_subagent(tool_call_id),
+            SubagentUsageVerdict::Unknown => {
+                let mut gone = false;
+                for t in tails {
+                    gone |= t.accepted;
+                    t.sent = None;
+                }
+                if gone {
+                    self.finish_subagent(tool_call_id);
+                }
+            }
+        }
+    }
+
+    /// Stop reading the transcripts of a launch that has its final result.
+    pub(crate) fn finish_subagent(&mut self, tool_call_id: &str) {
+        let done: Vec<PathBuf> = self
+            .subagent_tails
+            .iter()
+            .filter(|(_, t)| t.tool_call_id.as_deref() == Some(tool_call_id))
+            .map(|(p, _)| p.clone())
+            .collect();
+        for path in done {
+            self.subagent_tails.remove(&path);
+            self.finished_subagent_files.insert(path);
         }
     }
 
@@ -795,6 +1077,7 @@ impl WatchState {
             }
         }
         let path = self.file.clone()?;
+        self.tail_subagents(&path);
 
         // Cheap gate: unchanged (mtime, len) and no pending partial line means
         // nothing to read this tick.
@@ -997,28 +1280,7 @@ impl WatchState {
     /// Read bytes appended since `committed`, returning COMPLETE lines only;
     /// a trailing partial line stays in `carry` until its newline arrives.
     fn read_new_lines(&mut self, path: &PathBuf) -> std::io::Result<Vec<String>> {
-        let mut f = std::fs::File::open(path)?;
-        f.seek(SeekFrom::Start(self.committed + self.carry.len() as u64))?;
-        let mut fresh = Vec::new();
-        f.read_to_end(&mut fresh)?;
-        if fresh.is_empty() {
-            return Ok(Vec::new());
-        }
-        self.carry.extend_from_slice(&fresh);
-
-        let mut lines = Vec::new();
-        while let Some(nl) = self.carry.iter().position(|b| *b == b'\n') {
-            let rest = self.carry.split_off(nl + 1);
-            let mut line_bytes = std::mem::replace(&mut self.carry, rest);
-            line_bytes.pop(); // the '\n'
-            self.committed += nl as u64 + 1;
-            // Mirror the detail parser: a non-UTF-8 line is skipped, but its
-            // bytes still count toward the watermark.
-            if let Ok(line) = String::from_utf8(line_bytes) {
-                lines.push(line);
-            }
-        }
-        Ok(lines)
+        read_complete_lines(path, &mut self.committed, &mut self.carry)
     }
 
     /// Task accounting for one record: launch acks; settlements via a
@@ -3234,5 +3496,539 @@ mod tests {
             ws.pending_title.take().as_deref(),
             Some("Find current vLLM stable release tag")
         );
+    }
+
+    // --- live sub-agent tokens (synthetic fixtures) ---
+
+    /// The sub-agents directory beside `session`, created.
+    fn subagents_dir(session: &Path) -> PathBuf {
+        let dir = session.with_extension("").join("subagents");
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_subagent_meta(dir: &Path, agent: &str, tool_use_id: &str) {
+        std::fs::write(
+            dir.join(format!("agent-{agent}.meta.json")),
+            format!(
+                r#"{{"agentType":"general-purpose","description":"Probe","toolUseId":"{tool_use_id}","spawnDepth":1}}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    /// A sub-agent assistant record with usage `(input, cache creation,
+    /// cache read, output)`.
+    fn sub_assistant(id: &str, model: &str, usage: (u64, u64, u64, u64)) -> String {
+        let (i, cc, cr, o) = usage;
+        format!(
+            r#"{{"type":"assistant","message":{{"id":"{id}","model":"{model}","role":"assistant","content":[{{"type":"text","text":"working"}}],"usage":{{"input_tokens":{i},"cache_creation_input_tokens":{cc},"cache_read_input_tokens":{cr},"output_tokens":{o}}}}}}}"#
+        )
+    }
+
+    fn sub_user_line() -> String {
+        r#"{"type":"user","message":{"role":"user","content":"look around"}}"#.to_string()
+    }
+
+    /// A watch over a fresh session with one sub-agent transcript (and its
+    /// meta) for tool call `toolu_sub1`.
+    fn subagent_fixture(dir: &tempfile::TempDir) -> (WatchState, PathBuf, PathBuf) {
+        let session = temp_session(dir);
+        write_lines(&session, &[]);
+        let subs = subagents_dir(&session);
+        write_subagent_meta(&subs, "a1", "toolu_sub1");
+        let transcript = subs.join("agent-a1.jsonl");
+        (
+            WatchState::with_file_for_test("s1", session.clone()),
+            session,
+            transcript,
+        )
+    }
+
+    fn drain_usage(ws: &mut WatchState) -> Vec<(String, u64)> {
+        std::mem::take(&mut ws.pending_subagent_usage)
+    }
+
+    #[test]
+    fn subagent_tokens_use_the_finish_formula_and_wait_for_a_partial_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, _, transcript) = subagent_fixture(&dir);
+        let ledger = PromptLedger::shared();
+        write_lines(
+            &transcript,
+            &[&sub_assistant(
+                "msg_1",
+                "claude-haiku-4-5",
+                (10, 200, 3000, 5),
+            )],
+        );
+        // The next record mid-flush: complete JSON, no newline yet.
+        append_raw(
+            &transcript,
+            &sub_assistant("msg_2", "claude-haiku-4-5", (1, 2, 4000, 7)),
+        );
+
+        tick_now(&mut ws, &ledger);
+        assert_eq!(drain_usage(&mut ws), vec![("toolu_sub1".to_string(), 3215)]);
+
+        append_raw(&transcript, "\n");
+        tick_now(&mut ws, &ledger);
+        assert_eq!(drain_usage(&mut ws), vec![("toolu_sub1".to_string(), 4010)]);
+    }
+
+    #[test]
+    fn subagent_tokens_take_the_last_line_of_a_repeated_message_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, _, transcript) = subagent_fixture(&dir);
+        write_lines(
+            &transcript,
+            &[
+                &sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 1)),
+                &sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 50)),
+            ],
+        );
+
+        tick_now(&mut ws, &PromptLedger::shared());
+        assert_eq!(drain_usage(&mut ws), vec![("toolu_sub1".to_string(), 151)]);
+    }
+
+    #[test]
+    fn subagent_tokens_skip_synthetic_and_usage_less_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, _, transcript) = subagent_fixture(&dir);
+        write_lines(
+            &transcript,
+            &[
+                &sub_assistant("msg_1", "claude-haiku-4-5", (3, 0, 500, 2)),
+                &sub_assistant("msg_2", "<synthetic>", (0, 0, 0, 0)),
+                r#"{"type":"assistant","message":{"id":"msg_3","model":"claude-haiku-4-5","content":[]}}"#,
+                &sub_user_line(),
+                "not json",
+            ],
+        );
+
+        tick_now(&mut ws, &PromptLedger::shared());
+        assert_eq!(drain_usage(&mut ws), vec![("toolu_sub1".to_string(), 505)]);
+    }
+
+    #[test]
+    fn subagent_tokens_are_queued_only_when_they_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, _, transcript) = subagent_fixture(&dir);
+        let ledger = PromptLedger::shared();
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 1))],
+        );
+        tick_now(&mut ws, &ledger);
+        assert_eq!(drain_usage(&mut ws).len(), 1);
+
+        // Nothing new, a non-assistant record, then a new message that
+        // happens to hold the same count: nothing to send.
+        tick_now(&mut ws, &ledger);
+        write_lines(&transcript, &[&sub_user_line()]);
+        tick_now(&mut ws, &ledger);
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_2", "claude-haiku-4-5", (0, 1, 100, 1))],
+        );
+        tick_now(&mut ws, &ledger);
+        assert!(drain_usage(&mut ws).is_empty());
+
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_3", "claude-haiku-4-5", (1, 0, 900, 1))],
+        );
+        tick_now(&mut ws, &ledger);
+        assert_eq!(drain_usage(&mut ws), vec![("toolu_sub1".to_string(), 902)]);
+    }
+
+    #[test]
+    fn subagent_meta_is_retried_until_it_is_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = temp_session(&dir);
+        write_lines(&session, &[]);
+        let subs = subagents_dir(&session);
+        let transcript = subs.join("agent-a1.jsonl");
+        let mut ws = WatchState::with_file_for_test("s1", session);
+        let ledger = PromptLedger::shared();
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 1))],
+        );
+
+        tick_now(&mut ws, &ledger);
+        assert!(
+            drain_usage(&mut ws).is_empty(),
+            "no meta: no launch to name"
+        );
+        std::fs::write(subs.join("agent-a1.meta.json"), "{\"toolUseId\":").unwrap();
+        tick_now(&mut ws, &ledger);
+        assert!(
+            drain_usage(&mut ws).is_empty(),
+            "half-written meta is retried"
+        );
+
+        write_subagent_meta(&subs, "a1", "toolu_sub1");
+        tick_now(&mut ws, &ledger);
+        assert_eq!(drain_usage(&mut ws), vec![("toolu_sub1".to_string(), 102)]);
+    }
+
+    #[test]
+    fn subagent_transcript_from_before_the_watch_waits_for_a_change_then_reads_from_its_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, _, transcript) = subagent_fixture(&dir);
+        let ledger = PromptLedger::shared();
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 700, 1))],
+        );
+        let now = std::time::SystemTime::now();
+        std::fs::File::options()
+            .write(true)
+            .open(&transcript)
+            .unwrap()
+            .set_modified(now - Duration::from_secs(600))
+            .unwrap();
+        ws.epoch = Some(now);
+
+        tick_now(&mut ws, &ledger);
+        assert!(drain_usage(&mut ws).is_empty());
+        assert!(
+            ws.subagent_tails.is_empty(),
+            "untouched history is not tracked"
+        );
+
+        // A write after the watch began: the count comes from the earlier
+        // record, so the file was read from its start.
+        write_lines(&transcript, &[&sub_user_line()]);
+        tick_now(&mut ws, &ledger);
+        assert_eq!(drain_usage(&mut ws), vec![("toolu_sub1".to_string(), 702)]);
+    }
+
+    #[test]
+    fn nested_subagents_in_the_same_directory_are_read_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, session, transcript) = subagent_fixture(&dir);
+        let subs = subagents_dir(&session);
+        write_subagent_meta(&subs, "b2", "toolu_sub2");
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 1))],
+        );
+        write_lines(
+            &subs.join("agent-b2.jsonl"),
+            &[&sub_assistant("msg_9", "claude-haiku-4-5", (1, 0, 200, 1))],
+        );
+        // A sibling that is not a transcript is never read.
+        std::fs::write(subs.join("agent-b2.prefix.json"), "{}").unwrap();
+
+        tick_now(&mut ws, &PromptLedger::shared());
+        let mut got = drain_usage(&mut ws);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("toolu_sub1".to_string(), 102),
+                ("toolu_sub2".to_string(), 202)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_finished_subagent_is_dropped_and_never_read_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, _, transcript) = subagent_fixture(&dir);
+        let ledger = PromptLedger::shared();
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 1))],
+        );
+        tick_now(&mut ws, &ledger);
+        assert_eq!(drain_usage(&mut ws).len(), 1);
+
+        ws.finish_subagent("toolu_sub1");
+        assert!(ws.subagent_tails.is_empty());
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_2", "claude-haiku-4-5", (1, 0, 999, 1))],
+        );
+        tick_now(&mut ws, &ledger);
+        assert!(drain_usage(&mut ws).is_empty());
+        assert!(ws.subagent_tails.is_empty());
+    }
+
+    #[tokio::test]
+    async fn subagent_usage_reaches_the_session_only_while_the_launch_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, _, transcript) = subagent_fixture(&dir);
+        let mut session =
+            SessionState::new("conn".into(), AgentType::ClaudeCode, None, "w".into(), None);
+        session.apply_event(&AcpEvent::StatusChanged {
+            status: ConnectionStatus::Prompting,
+        });
+        let launch_meta =
+            serde_json::json!({ "claudeCode": { "toolName": "Agent", "subagent": true } });
+        session.apply_event(&AcpEvent::ToolCall {
+            tool_call_id: "toolu_sub1".into(),
+            title: "Probe".into(),
+            kind: "think".into(),
+            status: "in_progress".into(),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            locations: None,
+            meta: Some(launch_meta),
+            images: None,
+        });
+        let state = Arc::new(RwLock::new(session));
+        let emitter = EventEmitter::Noop;
+        let tokens = |state: &SessionState| {
+            state.active_tool_calls["toolu_sub1"]
+                .subagent
+                .as_ref()
+                .and_then(|s| s.tokens)
+        };
+
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 1))],
+        );
+        tick_now(&mut ws, &PromptLedger::shared());
+        let seq = state.read().await.event_seq;
+        emit_subagent_usage(&state, &emitter, &mut ws).await;
+        assert_eq!(tokens(&*state.read().await), Some(102));
+        assert_eq!(state.read().await.event_seq, seq + 1);
+
+        // The launch finishes; the next reading is dropped, not sequenced,
+        // and the transcript is no longer tracked.
+        state.write().await.apply_event(&AcpEvent::ToolCallUpdate {
+            tool_call_id: "toolu_sub1".into(),
+            title: None,
+            status: Some("completed".into()),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            raw_output_append: None,
+            locations: None,
+            meta: None,
+            images: None,
+        });
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_2", "claude-haiku-4-5", (1, 0, 500, 1))],
+        );
+        tick_now(&mut ws, &PromptLedger::shared());
+        let seq = state.read().await.event_seq;
+        emit_subagent_usage(&state, &emitter, &mut ws).await;
+        assert_eq!(tokens(&*state.read().await), Some(102));
+        assert_eq!(state.read().await.event_seq, seq);
+        assert!(ws.subagent_tails.is_empty());
+        assert!(ws.finished_subagent_files.contains(&transcript));
+    }
+
+    /// A session mid-turn, with no tool calls yet.
+    fn prompting_session() -> SessionState {
+        let mut session =
+            SessionState::new("conn".into(), AgentType::ClaudeCode, None, "w".into(), None);
+        session.apply_event(&AcpEvent::StatusChanged {
+            status: ConnectionStatus::Prompting,
+        });
+        session
+    }
+
+    /// The tool call that launches sub-agent `id`.
+    fn subagent_launch(id: &str) -> AcpEvent {
+        AcpEvent::ToolCall {
+            tool_call_id: id.into(),
+            title: "Probe".into(),
+            kind: "think".into(),
+            status: "in_progress".into(),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            locations: None,
+            meta: Some(
+                serde_json::json!({ "claudeCode": { "toolName": "Agent", "subagent": true } }),
+            ),
+            images: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unknown_launch_is_retried_until_the_session_registers_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, _, transcript) = subagent_fixture(&dir);
+        let state = Arc::new(RwLock::new(prompting_session()));
+        let ledger = PromptLedger::shared();
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 1))],
+        );
+
+        // The transcript is ahead of the launch: nothing is sequenced, the
+        // tail stays, and the same reading is offered again next tick.
+        for _ in 0..2 {
+            tick_now(&mut ws, &ledger);
+            assert_eq!(
+                ws.pending_subagent_usage,
+                vec![("toolu_sub1".to_string(), 102)]
+            );
+            let seq = state.read().await.event_seq;
+            emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+            assert_eq!(state.read().await.event_seq, seq);
+            let tail = &ws.subagent_tails[&transcript];
+            assert!(!tail.accepted);
+            assert_eq!(tail.sent, None);
+        }
+
+        state
+            .write()
+            .await
+            .apply_event(&subagent_launch("toolu_sub1"));
+        tick_now(&mut ws, &ledger);
+        let seq = state.read().await.event_seq;
+        emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+        assert_eq!(state.read().await.event_seq, seq + 1);
+        assert_eq!(
+            state.read().await.active_tool_calls["toolu_sub1"]
+                .subagent
+                .as_ref()
+                .and_then(|s| s.tokens),
+            Some(102)
+        );
+        assert!(ws.subagent_tails[&transcript].accepted);
+
+        // Accepted and unchanged: not offered again.
+        tick_now(&mut ws, &ledger);
+        assert!(ws.pending_subagent_usage.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_launch_that_finishes_as_its_turn_ends_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, _, transcript) = subagent_fixture(&dir);
+        let mut session = prompting_session();
+        session.apply_event(&subagent_launch("toolu_sub1"));
+        let state = Arc::new(RwLock::new(session));
+        let ledger = PromptLedger::shared();
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 1))],
+        );
+        tick_now(&mut ws, &ledger);
+        emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+        assert!(ws.subagent_tails[&transcript].accepted);
+
+        // Both land before the next tick: the launch is gone from the
+        // session, so it reads as unknown rather than finished.
+        {
+            let mut s = state.write().await;
+            s.apply_event(&AcpEvent::ToolCallUpdate {
+                tool_call_id: "toolu_sub1".into(),
+                title: None,
+                status: Some("completed".into()),
+                content: None,
+                raw_input: None,
+                raw_output: None,
+                raw_output_append: None,
+                locations: None,
+                meta: None,
+                images: None,
+            });
+            s.apply_event(&AcpEvent::TurnComplete {
+                session_id: "s1".into(),
+                stop_reason: "end_turn".into(),
+                agent_type: "claude_code".into(),
+            });
+            assert!(!s.active_tool_calls.contains_key("toolu_sub1"));
+        }
+        tick_now(&mut ws, &ledger);
+        emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+        assert!(ws.subagent_tails.is_empty());
+        assert!(ws.finished_subagent_files.contains(&transcript));
+
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_2", "claude-haiku-4-5", (1, 0, 500, 1))],
+        );
+        tick_now(&mut ws, &ledger);
+        assert!(ws.pending_subagent_usage.is_empty());
+        assert!(ws.subagent_tails.is_empty());
+    }
+
+    #[test]
+    fn complete_lines_are_split_in_one_pass_and_a_partial_line_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lines.jsonl");
+        let mut bytes = b"one\ntwo\n".to_vec();
+        bytes.extend_from_slice(&[0xff, 0xfe, b'\n']);
+        bytes.extend_from_slice(b"three\npart");
+        std::fs::write(&path, &bytes).unwrap();
+        let (mut committed, mut carry) = (0u64, Vec::new());
+        let lines = read_complete_lines(&path, &mut committed, &mut carry).unwrap();
+        assert_eq!(lines, vec!["one", "two", "three"], "non-UTF-8 line skipped");
+        assert_eq!(
+            committed,
+            bytes.len() as u64 - 4,
+            "skipped line still counted"
+        );
+        assert_eq!(carry, b"part");
+
+        append_raw(&path, "ial\n");
+        let lines = read_complete_lines(&path, &mut committed, &mut carry).unwrap();
+        assert_eq!(lines, vec!["partial"]);
+        assert_eq!(committed, bytes.len() as u64 + 4);
+        assert!(carry.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_subagent_that_finishes_after_its_last_write_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, _, transcript) = subagent_fixture(&dir);
+        let mut session =
+            SessionState::new("conn".into(), AgentType::ClaudeCode, None, "w".into(), None);
+        session.apply_event(&AcpEvent::StatusChanged {
+            status: ConnectionStatus::Prompting,
+        });
+        session.apply_event(&AcpEvent::ToolCall {
+            tool_call_id: "toolu_sub1".into(),
+            title: "Probe".into(),
+            kind: "think".into(),
+            status: "in_progress".into(),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            locations: None,
+            meta: Some(
+                serde_json::json!({ "claudeCode": { "toolName": "Agent", "subagent": true } }),
+            ),
+            images: None,
+        });
+        let state = Arc::new(RwLock::new(session));
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 1))],
+        );
+        tick_now(&mut ws, &PromptLedger::shared());
+        emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+        assert_eq!(ws.subagent_tails.len(), 1, "still running: still read");
+
+        state.write().await.apply_event(&AcpEvent::ToolCallUpdate {
+            tool_call_id: "toolu_sub1".into(),
+            title: None,
+            status: Some("completed".into()),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            raw_output_append: None,
+            locations: None,
+            meta: None,
+            images: None,
+        });
+        tick_now(&mut ws, &PromptLedger::shared());
+        emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+        assert!(ws.subagent_tails.is_empty());
+        assert!(ws.finished_subagent_files.contains(&transcript));
     }
 }

@@ -229,6 +229,27 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
                 first_location(locations.as_ref()),
             ),
         ),
+        // A running sub-agent's live count rides the same update as its
+        // finish; every other field stays null so clients keep what they have.
+        AcpEvent::SubagentUsage {
+            tool_call_id,
+            tokens,
+        } => (
+            "agent.tool_call_update",
+            with_subagent(
+                json!({
+                    "tool_call_id": tool_call_id,
+                    "title": null,
+                    "status": null,
+                    "content": null,
+                }),
+                Some(&SubagentInfo {
+                    tokens: Some(*tokens),
+                    ..Default::default()
+                }),
+                root,
+            ),
+        ),
         AcpEvent::PermissionRequest {
             request_id,
             tool_call,
@@ -2521,6 +2542,128 @@ pub(crate) mod tests {
         assert_eq!(SubagentInfo::of(None, Some(&meta)).started_at, None);
     }
 
+    fn usage(id: &str, tokens: u64) -> AcpEvent {
+        AcpEvent::SubagentUsage {
+            tool_call_id: id.into(),
+            tokens,
+        }
+    }
+
+    fn snapshot_subagent(state: &SessionState, id: &str) -> Value {
+        let v = project_snapshot(&state.to_snapshot(), None);
+        v["tool_calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["tool_call_id"] == id)
+            .map(|t| t["subagent"].clone())
+            .unwrap_or(Value::Null)
+    }
+
+    #[test]
+    fn live_subagent_tokens_apply_until_the_result_lands() {
+        use crate::acp::session_state::SubagentUsageVerdict as V;
+        let mut state = claude_subagent_turn();
+        let started_at = snapshot_subagent(&state, "toolu_01Agent")["started_at"].clone();
+        assert!(started_at.is_string());
+
+        assert_eq!(
+            state.subagent_usage_verdict("toolu_01Agent", 1200),
+            V::Apply
+        );
+        state.apply_event(&usage("toolu_01Agent", 1200));
+        let sub = snapshot_subagent(&state, "toolu_01Agent");
+        assert_eq!(sub["tokens"], 1200);
+        assert_eq!(
+            sub["started_at"], started_at,
+            "the live count keeps the start"
+        );
+        assert_eq!(sub["description"], "Find tests");
+        assert_eq!(
+            state.subagent_usage_verdict("toolu_01Agent", 1200),
+            V::Unchanged
+        );
+
+        // The result's total replaces the live count, and a late reading
+        // never overwrites it.
+        state.apply_event(&claude_agent_result("toolu_01Agent"));
+        assert_eq!(
+            state.subagent_usage_verdict("toolu_01Agent", 80000),
+            V::Finished
+        );
+        state.apply_event(&usage("toolu_01Agent", 80000));
+        assert_eq!(snapshot_subagent(&state, "toolu_01Agent")["tokens"], 75223);
+    }
+
+    #[test]
+    fn live_subagent_tokens_stop_at_a_terminal_status_or_reported_tool_uses() {
+        use crate::acp::session_state::SubagentUsageVerdict as V;
+        let update = |status: Option<&str>, meta: Option<Value>| AcpEvent::ToolCallUpdate {
+            tool_call_id: "toolu_01Agent".into(),
+            title: None,
+            status: status.map(str::to_owned),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            raw_output_append: None,
+            locations: None,
+            meta,
+            images: None,
+        };
+
+        let mut failed = claude_subagent_turn();
+        failed.apply_event(&update(Some("failed"), None));
+        assert_eq!(
+            failed.subagent_usage_verdict("toolu_01Agent", 5),
+            V::Finished
+        );
+        failed.apply_event(&usage("toolu_01Agent", 5));
+        assert!(snapshot_subagent(&failed, "toolu_01Agent")
+            .get("tokens")
+            .is_none());
+
+        let mut reported = claude_subagent_turn();
+        let meta = json!({ "claudeCode": { "toolName": "Agent", "toolResponse": {
+            "totalToolUseCount": 3,
+        } } });
+        reported.apply_event(&update(None, Some(meta)));
+        assert_eq!(
+            reported.subagent_usage_verdict("toolu_01Agent", 5),
+            V::Finished
+        );
+    }
+
+    #[test]
+    fn live_subagent_tokens_for_an_unknown_launch_are_ignored() {
+        use crate::acp::session_state::SubagentUsageVerdict as V;
+        let mut state = claude_subagent_turn();
+        let before = project_snapshot(&state.to_snapshot(), None);
+        // No such call, and a call that is not a sub-agent launch.
+        for id in ["toolu_01Missing", "toolu_01Child"] {
+            assert_eq!(state.subagent_usage_verdict(id, 5), V::Unknown, "{id}");
+            state.apply_event(&usage(id, 5));
+        }
+        assert_eq!(project_snapshot(&state.to_snapshot(), None), before);
+    }
+
+    #[test]
+    fn live_subagent_tokens_project_as_a_tool_call_update() {
+        let envelope =
+            project_envelope("s", Some("/w/p"), &env(usage("toolu_01Agent", 4321))).unwrap();
+        assert_eq!(envelope.kind, "agent.tool_call_update");
+        assert_eq!(
+            envelope.payload,
+            json!({
+                "tool_call_id": "toolu_01Agent",
+                "title": null,
+                "status": null,
+                "content": null,
+                "subagent": { "tokens": 4321 },
+            })
+        );
+        assert_no_internal_keys(&envelope.payload);
+    }
+
     fn claude_subagent_turn() -> SessionState {
         let mut state = SessionState::new("conn".into(), AgentType::ClaudeCode, None, "w".into(), None);
         state.apply_event(&AcpEvent::StatusChanged { status: crate::acp::types::ConnectionStatus::Prompting });
@@ -2869,6 +3012,7 @@ pub(crate) mod tests {
             claude_tool_call_update("toolu_01Child", Some("toolu_01Agent")),
             claude_agent_call("toolu_01Agent", Some(AGENT_INPUT)),
             claude_agent_result("toolu_01Agent"),
+            usage("toolu_01Agent", 4321),
             AcpEvent::ContentDelta { text: "c".into(), parent_tool_use_id: Some("toolu_01Agent".into()) },
             AcpEvent::Thinking { text: "c".into(), parent_tool_use_id: Some("toolu_01Agent".into()) },
         ] {
