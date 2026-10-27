@@ -1244,11 +1244,39 @@ impl ConnectionManager {
         &self,
         db: &AppDatabase,
         conn_id: &str,
+        blocks: Vec<PromptInputBlock>,
+        folder_id: Option<i32>,
+        conversation_id: Option<i32>,
+        delegation: Option<crate::acp::delegation::spawner::DelegationLink>,
+        client_message_id: Option<String>,
+    ) -> Result<Option<i32>, AcpError> {
+        self.send_prompt_linked_tagged(
+            db,
+            conn_id,
+            blocks,
+            folder_id,
+            conversation_id,
+            delegation,
+            client_message_id,
+            None,
+        )
+        .await
+    }
+
+    /// As [`send_prompt_linked_with_message_id`], recording `action` (a
+    /// Host-started turn such as `resolve_conflicts`) on the turn's start
+    /// checkpoint.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn send_prompt_linked_tagged(
+        &self,
+        db: &AppDatabase,
+        conn_id: &str,
         mut blocks: Vec<PromptInputBlock>,
         folder_id: Option<i32>,
         conversation_id: Option<i32>,
         delegation: Option<crate::acp::delegation::spawner::DelegationLink>,
         client_message_id: Option<String>,
+        action: Option<&'static str>,
     ) -> Result<Option<i32>, AcpError> {
         // Reject an empty prompt up front, BEFORE any side effects: linking /
         // creating the conversation row, flipping it to InProgress, or emitting
@@ -1718,6 +1746,7 @@ impl ConnectionManager {
                         working_dir.as_deref(),
                         start_seq,
                         &blocks,
+                        action,
                     )
                     .await;
                 self.send_admitted_prompt(conn_id, blocks, user_message, admission)

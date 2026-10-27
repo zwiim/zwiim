@@ -42,6 +42,8 @@ export type HostErrorCode =
   | "gh_unauthenticated"
   /** GitHub could not be reached from the Host (not this client's connection). */
   | "github_unreachable"
+  /** `workspace.resolve_conflicts`: the branch has no conflicts with its base (checked after a fetch). */
+  | "no_conflicts"
   /** `session.start` / `session.send` / `terminal.spawn` in a root: sessions run in a worktree. */
   | "root_workspace"
   /** `workspace.add` with `publish`: GitHub did not take the repository. Details `{ created_on_github }`. */
@@ -1083,6 +1085,15 @@ export type ConflictCheck = { base: string; base_sha: string; head_sha: string }
   | { state: "in_progress"; operation: string; files: string[] }
 );
 
+/** How a resolve turn brings the base in. */
+export type ResolveStrategy = "merge" | "rebase";
+
+/** The conflicts a resolve turn was sent for. */
+export interface ResolveStarted {
+  base: string;
+  files: string[];
+}
+
 export interface PrMerged {
   number: number;
   method: MergeMethod;
@@ -1105,6 +1116,7 @@ export type HostFeedEvent = { seq: number } & (
   | { type: "terminal.removed"; payload: { terminal_id: string } }
   | { type: "workspace.pr_changed"; payload: { workspace_id: string } & PrEntry }
   | { type: "workspace.conflicts_changed"; payload: { workspace_id: string; conflicts: ConflictCheck | null } }
+  | { type: "workspace.resolving_changed"; payload: { workspace_id: string; session_id: string | null } }
   | { type: "clone.changed"; payload: { clone: CloneJob } }
   | { type: "clone.removed"; payload: { clone_id: string } }
   | { type: "host.keep_awake_changed"; payload: KeepAwakeStatus }
@@ -1123,6 +1135,8 @@ export interface HostSnapshot {
   prs?: Record<string, PrEntry>;
   /** Workspaces with a base to compare with, and where they stand (older Hosts omit it). */
   conflicts?: Record<string, ConflictCheck>;
+  /** Workspaces whose conflicts a session's turn is resolving, to that session (older Hosts omit it). */
+  resolving?: Record<string, string>;
   /** GitHub clones in flight or recently finished (older Hosts omit it). */
   clones?: CloneJob[];
   /** What keeping the Mac awake is doing; null until the host first looked (older Hosts omit it). */
@@ -1414,6 +1428,15 @@ export interface Operations {
    */
   "workspace.continue": [{ workspace_id: string; number: number }, WorkspaceInfo];
   /**
+   * Send session `session_id` the Host's own turn asking its agent to resolve
+   * the worktree's conflicts with its base (capability
+   * `workspace.resolve_conflicts`). Answers with the conflicts it was sent for.
+   */
+  "workspace.resolve_conflicts": [
+    { workspace_id: string; session_id: string; strategy?: ResolveStrategy },
+    ResolveStarted,
+  ];
+  /**
    * `agent` runs that agent's CLI in place of a shell (Claude Code and Codex;
    * capability `terminal.agent`). `command`, a slash command, runs in it;
    * one the CLI does not show back (it is asking something first) is not
@@ -1517,6 +1540,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "files.write",
   "workspace.remove_worktree",
   "workspace.continue",
+  "workspace.resolve_conflicts",
   "terminal.spawn",
   "terminal.write",
   "terminal.resize",

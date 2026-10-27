@@ -250,6 +250,125 @@ pub fn continuation_notice(
     )
 }
 
+/// How a resolve turn brings the base in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolveStrategy {
+    #[default]
+    Merge,
+    Rebase,
+}
+
+/// What a resolve turn's text is built from.
+pub struct ResolveFacts<'a> {
+    /// The remote-tracking ref the branch conflicts with, e.g. `origin/main`.
+    pub base: &'a str,
+    pub files: &'a [String],
+    pub strategy: ResolveStrategy,
+    /// Push the result: the branch has an open pull request.
+    pub push: bool,
+    /// The operation already stopped on conflicts, if any.
+    pub in_progress: Option<&'a str>,
+    /// The user's own words for resolve turns, appended last.
+    pub user_addition: Option<&'a str>,
+}
+
+/// Files named in a resolve turn; the rest are counted.
+const RESOLVE_LISTED: usize = 12;
+
+/// The user turn that asks an agent to resolve its branch's conflicts with
+/// `facts.base`.
+pub fn resolve_conflicts_prompt(facts: &ResolveFacts) -> String {
+    let base = facts.base;
+    let mut listed: Vec<String> = facts
+        .files
+        .iter()
+        .take(RESOLVE_LISTED)
+        .map(|f| format!("`{f}`"))
+        .collect();
+    if facts.files.len() > RESOLVE_LISTED {
+        listed.push(format!("and {} more", facts.files.len() - RESOLVE_LISTED));
+    }
+    let listed = listed.join(", ");
+    let resolve = "resolve each conflicted file so both sides' intent survives";
+    let conflicts_with_base = format!("this branch conflicts with `{base}` in {listed}");
+    // (what the files are, what to do, rebased, a commit results)
+    let (about, start, rebased, commits) = match facts.in_progress {
+        Some("rebase") => (
+            conflicts_with_base,
+            format!(
+                "A rebase is already in progress; finish it rather than starting another: \
+                 {resolve}, `git add` it, and run `git rebase --continue` until it is done."
+            ),
+            true,
+            true,
+        ),
+        Some("merge") => (
+            conflicts_with_base,
+            format!(
+                "A merge is already in progress; finish it rather than starting another: \
+                 {resolve}, `git add` it, then `git commit`."
+            ),
+            false,
+            true,
+        ),
+        Some(op @ ("cherry_pick" | "revert")) => {
+            let op = op.replace('_', "-");
+            (
+                format!("a {op} stopped with {listed} unmerged"),
+                format!(
+                    "Finish it rather than starting a merge: {resolve}, `git add` it, and run \
+                     `git {op} --continue`."
+                ),
+                false,
+                true,
+            )
+        }
+        Some(_) => (
+            format!("earlier git commands left {listed} unmerged"),
+            format!("Do not start a merge: {resolve}, then `git add` it."),
+            false,
+            false,
+        ),
+        None => match facts.strategy {
+            ResolveStrategy::Merge => (
+                conflicts_with_base,
+                format!(
+                    "Commit any uncommitted changes first. Then run `git merge {base}`, \
+                     {resolve}, and commit the merge."
+                ),
+                false,
+                true,
+            ),
+            ResolveStrategy::Rebase => (
+                conflicts_with_base,
+                format!(
+                    "Commit any uncommitted changes first. Then run `git rebase {base}`; at \
+                     each stop, {resolve}, `git add` it, and run `git rebase --continue`."
+                ),
+                true,
+                true,
+            ),
+        },
+    };
+    let push = match (facts.push && commits, rebased) {
+        (false, _) => "Do not push; the user decides what happens next.",
+        (true, false) => "Then `git push` so the pull request updates.",
+        (true, true) => {
+            "Then push with `git push --force-with-lease` so the pull request updates."
+        }
+    };
+    let mut text = format!(
+        "Zwiim: {about}. {start} Run the project's checks (build, tests, lint) and fix \
+         anything the update broke. {push}"
+    );
+    if let Some(addition) = facts.user_addition.map(str::trim).filter(|a| !a.is_empty()) {
+        text.push_str("\n\n");
+        text.push_str(addition);
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,6 +517,122 @@ mod tests {
             assert!(n.contains(part), "{part}");
         }
         assert!(!n.contains("0123456789abc"), "short commit only");
+    }
+
+    fn facts<'a>(files: &'a [String], strategy: ResolveStrategy, push: bool) -> ResolveFacts<'a> {
+        ResolveFacts {
+            base: "origin/main",
+            files,
+            strategy,
+            push,
+            in_progress: None,
+            user_addition: None,
+        }
+    }
+
+    fn conflicted() -> Vec<String> {
+        vec!["src/app.rs".into(), "docs/a b.md".into()]
+    }
+
+    fn assert_common(text: &str) {
+        for part in ["origin/main", "`src/app.rs`", "`docs/a b.md`", "checks"] {
+            assert!(text.contains(part), "missing {part}: {text}");
+        }
+        assert!(text.len() < 1200, "{} chars", text.len());
+    }
+
+    #[test]
+    fn resolve_prompt_merge() {
+        let files = conflicted();
+        let text = resolve_conflicts_prompt(&facts(&files, ResolveStrategy::Merge, true));
+        assert_common(&text);
+        assert!(text.contains("Commit any uncommitted changes first"), "{text}");
+        assert!(text.contains("git merge origin/main"), "{text}");
+        assert!(text.contains("commit the merge"), "{text}");
+        assert!(text.contains("git push"), "{text}");
+        assert!(!text.contains("--force"), "{text}");
+        assert!(!text.contains("rebase"), "{text}");
+    }
+
+    #[test]
+    fn resolve_prompt_rebase_force_with_lease() {
+        let files = conflicted();
+        let text = resolve_conflicts_prompt(&facts(&files, ResolveStrategy::Rebase, true));
+        assert_common(&text);
+        assert!(text.contains("Commit any uncommitted changes first"), "{text}");
+        assert!(text.contains("git rebase origin/main"), "{text}");
+        assert!(text.contains("git rebase --continue"), "{text}");
+        assert!(text.contains("git push --force-with-lease"), "{text}");
+        assert!(!text.contains("git merge origin/main"), "{text}");
+    }
+
+    #[test]
+    fn resolve_prompt_no_push_without_pr() {
+        let files = conflicted();
+        for strategy in [ResolveStrategy::Merge, ResolveStrategy::Rebase] {
+            let text = resolve_conflicts_prompt(&facts(&files, strategy, false));
+            assert_common(&text);
+            assert!(!text.contains("git push"), "{text}");
+            assert!(text.contains("Do not push"), "{text}");
+        }
+    }
+
+    #[test]
+    fn resolve_prompt_in_progress_continues() {
+        let files = conflicted();
+        for (op, verb) in [("merge", "git commit"), ("rebase", "git rebase --continue")] {
+            let text = resolve_conflicts_prompt(&ResolveFacts {
+                in_progress: Some(op),
+                ..facts(&files, ResolveStrategy::Merge, true)
+            });
+            assert_common(&text);
+            assert!(!text.contains("uncommitted"), "mid-{op}: {text}");
+            assert!(text.contains(&format!("A {op} is already in progress")), "{text}");
+            assert!(text.contains(verb), "{text}");
+            assert!(!text.contains("git merge origin/main"), "do not start another: {text}");
+            assert!(!text.contains("git rebase origin/main"), "do not start another: {text}");
+        }
+    }
+
+    /// A cherry-pick, revert or leftover unmerged files did not come from the
+    /// base: the text does not say so, and finishes the operation that did.
+    #[test]
+    fn resolve_prompt_other_operations_finish_themselves() {
+        let files = conflicted();
+        for (op, verb) in [
+            ("cherry_pick", Some("git cherry-pick --continue")),
+            ("revert", Some("git revert --continue")),
+            ("unmerged", None),
+        ] {
+            let text = resolve_conflicts_prompt(&ResolveFacts {
+                in_progress: Some(op),
+                ..facts(&files, ResolveStrategy::Merge, true)
+            });
+            for part in ["`src/app.rs`", "`docs/a b.md`", "checks", "`git add`"] {
+                assert!(text.contains(part), "{op}: missing {part}: {text}");
+            }
+            assert!(!text.contains("origin/main"), "{op}: not the base's: {text}");
+            assert!(!text.contains("A unmerged"), "{op}: {text}");
+            assert!(!text.contains("uncommitted"), "{op}: {text}");
+            match verb {
+                Some(verb) => {
+                    assert!(text.contains(verb), "{op}: {text}");
+                    assert!(text.contains("git push"), "{op}: {text}");
+                }
+                // Nothing was committed: there is nothing to push.
+                None => assert!(!text.contains("git push"), "{op}: {text}"),
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_prompt_appends_user_addition() {
+        let files = conflicted();
+        let text = resolve_conflicts_prompt(&ResolveFacts {
+            user_addition: Some("Prefer our lockfile."),
+            ..facts(&files, ResolveStrategy::Merge, false)
+        });
+        assert!(text.ends_with("Prefer our lockfile."), "{text}");
     }
 
     /// The harness decides what to say, never how a provider receives it.

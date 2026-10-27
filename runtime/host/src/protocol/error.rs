@@ -69,6 +69,15 @@ impl ZwiimError {
         )
     }
 
+    /// Another session's turn is running in the same worktree.
+    pub fn worktree_busy() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            "turn_in_progress",
+            "Another session is still working in this workspace",
+        )
+    }
+
     /// The session exists but has no running agent to take the operation.
     pub fn session_not_live() -> Self {
         Self::new(
@@ -313,6 +322,16 @@ impl ZwiimError {
             StatusCode::CONFLICT,
             "root_workspace",
             "Sessions run in a worktree, not in the repository folder",
+        )
+    }
+
+    /// The workspace's branch merges cleanly with its base: nothing to
+    /// resolve.
+    pub fn no_conflicts() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            "no_conflicts",
+            "The branch has no conflicts with its base",
         )
     }
 

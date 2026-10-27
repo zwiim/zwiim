@@ -50,6 +50,7 @@ const OPS: &[&str] = &[
     "workspace.create_worktree",
     "workspace.remove_worktree",
     "workspace.continue",
+    "workspace.resolve_conflicts",
     "files.read",
     "files.write",
     "files.create",
@@ -2895,6 +2896,49 @@ async fn worktree_create_diff_and_guarded_removal() {
         );
     }
     assert!(h.state.connection_manager.get_state(CONN).await.is_none());
+}
+
+#[tokio::test]
+async fn workspace_resolve_conflicts_refuses_before_sending() {
+    let h = host(false).await;
+    let wid = h.workspace_id.clone();
+    let wt = h
+        .ok("workspace.create_worktree", json!({"workspace_id": wid}))
+        .await;
+    let wt_id = wt["workspace_id"].as_str().unwrap().to_string();
+
+    let hello = h.ok("host.hello", json!({})).await;
+    assert!(hello["capabilities"]
+        .as_array()
+        .is_some_and(|c| c.iter().any(|v| v == "workspace.resolve_conflicts")));
+
+    // Only a worktree has a base to resolve against.
+    assert_eq!(
+        h.err(
+            "workspace.resolve_conflicts",
+            json!({"workspace_id": wid, "session_id": "nope"})
+        )
+        .await,
+        (StatusCode::CONFLICT, "root_workspace".into())
+    );
+    assert_eq!(
+        h.err(
+            "workspace.resolve_conflicts",
+            json!({"workspace_id": wt_id, "session_id": "nope"})
+        )
+        .await,
+        (StatusCode::NOT_FOUND, "not_found".into())
+    );
+    for body in [
+        json!({"workspace_id": wt_id}),
+        json!({"workspace_id": wt_id, "session_id": "nope", "strategy": "squash"}),
+        json!({"workspace_id": wt_id, "session_id": "nope", "text": "hi"}),
+    ] {
+        assert_eq!(
+            h.err("workspace.resolve_conflicts", body).await,
+            (StatusCode::BAD_REQUEST, "invalid_request".into())
+        );
+    }
 }
 
 #[tokio::test]

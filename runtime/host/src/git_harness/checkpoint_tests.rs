@@ -162,6 +162,20 @@ async fn save_captures_tracked_untracked_not_ignored() {
 }
 
 #[tokio::test]
+async fn save_tagged_records_the_action() {
+    let (_tmp, root) = repo();
+    let k = key("s-act", 1);
+    assert!(matches!(
+        checkpoint::save_tagged(&root, &k, Phase::Start, None, Some("resolve_conflicts")).await,
+        Saved::Ref { .. }
+    ));
+    saved_oid(&root, &k, Phase::End).await;
+    let listed = checkpoint::list(&root, "s-act").await.unwrap();
+    assert_eq!(listed[0].action.as_deref(), Some("resolve_conflicts"));
+    assert_eq!(listed[1].action, None);
+}
+
+#[tokio::test]
 async fn save_records_the_prompt_fingerprint() {
     let (_tmp, root) = repo();
     let fp = crate::acp::fork::fingerprint_agent_message("fix the bug");

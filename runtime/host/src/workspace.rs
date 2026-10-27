@@ -38,6 +38,7 @@ mod env_files;
 mod names;
 mod publish;
 mod repo_init;
+pub(crate) mod resolve;
 pub(crate) mod zwiim_dir;
 
 pub(crate) use publish::check_target;

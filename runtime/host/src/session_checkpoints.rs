@@ -97,6 +97,7 @@ impl TurnCheckpoints {
         working_dir: Option<&Path>,
         start_seq: u64,
         blocks: &[PromptInputBlock],
+        action: Option<&'static str>,
     ) {
         let (Some(conversation_id), Some(root)) = (conversation_id, working_dir) else {
             return;
@@ -161,7 +162,8 @@ impl TurnCheckpoints {
                 resume.notified().await;
             }
         }
-        let saved = checkpoint::save(root, &key, Phase::Start, fingerprint.as_deref()).await;
+        let saved =
+            checkpoint::save_tagged(root, &key, Phase::Start, fingerprint.as_deref(), action).await;
         log_saved(&key, Phase::Start, &saved);
         let start_skipped = match &saved {
             Saved::Ref { .. } => None,
@@ -729,6 +731,7 @@ mod tests {
                 index_tree: "i".into(),
                 worktree_tree: "w".into(),
                 prompt_fingerprint: prompt.map(fp),
+                action: None,
             })
             .collect()
     }

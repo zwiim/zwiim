@@ -377,6 +377,20 @@ pub async fn send<L: AgentLauncher>(
     blocks: Vec<PromptInputBlock>,
     client_message_id: Option<String>,
 ) -> Result<(), ZwiimError> {
+    send_tagged(db, connections, launcher, session_id, blocks, client_message_id, None).await
+}
+
+/// As [`send`], recording `action` on the turn's start checkpoint: the turn
+/// was started by the Host for that action, not typed by the user.
+pub(crate) async fn send_tagged<L: AgentLauncher>(
+    db: &AppDatabase,
+    connections: &ConnectionManager,
+    launcher: &L,
+    session_id: &str,
+    blocks: Vec<PromptInputBlock>,
+    client_message_id: Option<String>,
+    action: Option<&'static str>,
+) -> Result<(), ZwiimError> {
     if blocks.is_empty() {
         return Err(empty_prompt());
     }
@@ -394,7 +408,7 @@ pub async fn send<L: AgentLauncher>(
     // Branch A of `send_prompt_linked`: a freshly resumed connection adopts
     // this row; an already-linked one ignores both ids.
     let sent = connections
-        .send_prompt_linked_with_message_id(
+        .send_prompt_linked_tagged(
             db,
             &connection_id,
             blocks,
@@ -402,6 +416,7 @@ pub async fn send<L: AgentLauncher>(
             Some(row.id),
             None,
             client_message_id,
+            action,
         )
         .await;
     if let Err(e) = sent {
@@ -449,6 +464,41 @@ pub async fn cancel(
     match live_connection_id(&db.conn, connections, session_id).await? {
         Some(connection_id) => Ok(connections.cancel(&db.conn, &connection_id).await?),
         None => Ok(()),
+    }
+}
+
+/// Whether a session in folder `folder_id` other than row `except` has a
+/// turn running.
+pub(crate) async fn other_busy_in_folder(
+    db: &DatabaseConnection,
+    connections: &ConnectionManager,
+    folder_id: i32,
+    except: i32,
+) -> Result<bool, AppCommandError> {
+    let rows = conversation::Entity::find()
+        .filter(conversation::Column::FolderId.eq(folder_id))
+        .filter(conversation::Column::Id.ne(except))
+        .filter(conversation::Column::SessionId.is_not_null())
+        .filter(conversation::Column::DeletedAt.is_null())
+        .all(db)
+        .await
+        .map_err(db_err)?;
+    for row in rows {
+        if row_busy(connections, &row).await {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Whether the agent attached to session `row`, if any, is working.
+pub(crate) async fn row_busy(connections: &ConnectionManager, row: &conversation::Model) -> bool {
+    let Some(connection_id) = connection_for(connections, row).await else {
+        return false;
+    };
+    match connections.get_state(&connection_id).await {
+        Some(state) => is_busy(&*state.read().await),
+        None => false,
     }
 }
 
@@ -1560,7 +1610,7 @@ pub(crate) mod orchestration_tests {
         (wid, dir)
     }
 
-    fn fixture_git(dir: &Path, args: &[&str]) -> String {
+    pub(crate) fn fixture_git(dir: &Path, args: &[&str]) -> String {
         let out = std::process::Command::new("git")
             .args(args)
             .current_dir(dir)
@@ -1606,7 +1656,7 @@ pub(crate) mod orchestration_tests {
         .await;
     }
 
-    async fn settle() {
+    pub(crate) async fn settle() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
@@ -1616,7 +1666,7 @@ pub(crate) mod orchestration_tests {
 
     /// End `conn`'s turn with `stop_reason` and hand the turn-end event to
     /// the checkpoint tracker, as the Host's event bus does.
-    async fn end_turn_observed(connections: &ConnectionManager, conn: &str, stop_reason: &str) {
+    pub(crate) async fn end_turn_observed(connections: &ConnectionManager, conn: &str, stop_reason: &str) {
         let (state, emitter) = connections.get_state_and_emitter(conn).await.unwrap();
         let payload = AcpEvent::TurnComplete {
             session_id: "native".into(),

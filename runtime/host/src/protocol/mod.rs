@@ -154,6 +154,10 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
             post(http::workspace_remove_worktree),
         )
         .route("/workspace.continue", post(http::workspace_continue))
+        .route(
+            "/workspace.resolve_conflicts",
+            post(http::workspace_resolve_conflicts),
+        )
         .route("/files.read", post(http::files_read))
         .route("/files.write", post(http::files_write))
         .route("/files.create", post(http::files_create))

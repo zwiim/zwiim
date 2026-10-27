@@ -54,6 +54,11 @@ export interface HostState {
    * A workspace without an entry has nothing to compare with.
    */
   conflicts: Record<string, ConflictCheck>;
+  /**
+   * Workspaces whose conflicts a session's turn is resolving, to that
+   * session. The entry goes when the turn ends.
+   */
+  resolving: Record<string, string>;
   /** GitHub clones in flight or recently finished, by `clone_id`. */
   clones: Record<string, CloneJob>;
   /** Whether the host keeps its Mac awake, as the feed last said; null until it does. */
@@ -88,6 +93,7 @@ export function initialHostState(): HostState {
     diffRevision: {},
     prs: {},
     conflicts: {},
+    resolving: {},
     clones: {},
     keepAwake: null,
   };
@@ -167,6 +173,7 @@ export function reduceHost(state: HostState, action: HostAction): HostState {
         diffRevision,
         prs: action.snapshot.prs ?? {},
         conflicts: action.snapshot.conflicts ?? {},
+        resolving: action.snapshot.resolving ?? {},
         clones: Object.fromEntries((action.snapshot.clones ?? []).map((c) => [c.clone_id, c])),
         keepAwake: action.snapshot.keep_awake ?? null,
       };
@@ -195,12 +202,14 @@ function reduceFeedEvent(state: HostState, event: HostFeedEvent): HostState {
       const { [id]: _, ...sessionsByWorkspace } = state.sessionsByWorkspace;
       const { [id]: __, ...prs } = state.prs;
       const { [id]: ___, ...conflicts } = state.conflicts;
+      const { [id]: ____, ...resolving } = state.resolving;
       return {
         ...state,
         workspaces: (state.workspaces ?? []).filter((w) => w.workspace_id !== id),
         sessionsByWorkspace,
         prs,
         conflicts,
+        resolving,
       };
     }
     case "workspace.pr_changed": {
@@ -213,6 +222,11 @@ function reduceFeedEvent(state: HostState, event: HostFeedEvent): HostState {
       const { workspace_id, conflicts: check } = event.payload;
       const { [workspace_id]: _, ...conflicts } = state.conflicts;
       return { ...state, conflicts: check === null ? conflicts : { ...conflicts, [workspace_id]: check } };
+    }
+    case "workspace.resolving_changed": {
+      const { workspace_id, session_id } = event.payload;
+      const { [workspace_id]: _, ...resolving } = state.resolving;
+      return { ...state, resolving: session_id === null ? resolving : { ...resolving, [workspace_id]: session_id } };
     }
     case "workspace.diff_changed": {
       const id = event.payload.workspace_id;

@@ -218,6 +218,25 @@ describe("host feed reducers", () => {
     expect(s.conflicts).toEqual({});
   });
 
+  it("store_keeps_resolving_from_snapshot_and_event", () => {
+    let s = fromSnapshot({ workspaces: [ws("root"), ws("a"), ws("b")], resolving: { a: "s1" } });
+    expect(s.resolving).toEqual({ a: "s1" });
+
+    s = apply(s, { type: "workspace.resolving_changed", payload: { workspace_id: "b", session_id: "s2" } });
+    expect(s.resolving).toEqual({ a: "s1", b: "s2" });
+
+    // The turn ended: the entry goes.
+    s = apply(s, { type: "workspace.resolving_changed", payload: { workspace_id: "a", session_id: null } });
+    expect(s.resolving).toEqual({ b: "s2" });
+    s = apply(s, { type: "workspace.removed", payload: { workspace_id: "b" } });
+    expect(s.resolving).toEqual({});
+
+    // A Host that never resolves has none.
+    s = fromSnapshot({ workspaces: [ws("root")], resolving: { root: "s3" } }, s);
+    s = fromSnapshot({ workspaces: [ws("root")] }, s);
+    expect(s.resolving).toEqual({});
+  });
+
   it("workspace.diff_changed invalidates only that workspace's diff", () => {
     const s0 = fromSnapshot({ workspaces: [ws("root"), ws("a")] });
     const s = apply(s0, { type: "workspace.diff_changed", payload: { workspace_id: "a" } });

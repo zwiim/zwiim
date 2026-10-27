@@ -109,6 +109,9 @@ pub struct Checkpoint {
     /// `session_checkpoints` takes it in, on start checkpoints of prompts
     /// that had text.
     pub prompt_fingerprint: Option<String>,
+    /// The Host action the turn ran for (e.g. `resolve_conflicts`), on start
+    /// checkpoints of turns the Host started for one.
+    pub action: Option<String>,
 }
 
 /// What a turn changed between its start and end checkpoints.
@@ -230,11 +233,27 @@ pub async fn save(
     phase: Phase,
     prompt_fingerprint: Option<&str>,
 ) -> Saved {
+    save_tagged(root, key, phase, prompt_fingerprint, None).await
+}
+
+/// [`save`], recording the Host `action` the turn runs for.
+pub async fn save_tagged(
+    root: &Path,
+    key: &CheckpointKey,
+    phase: Phase,
+    prompt_fingerprint: Option<&str>,
+    action: Option<&str>,
+) -> Saved {
     let root = match session_root(root, &key.session_id) {
         Ok(root) => root,
         Err(reason) => return Saved::Skipped(reason),
     };
-    match tokio::time::timeout(BUDGET, save_in(root, key, phase, prompt_fingerprint)).await {
+    match tokio::time::timeout(
+        BUDGET,
+        save_in(root, key, phase, prompt_fingerprint, action),
+    )
+    .await
+    {
         Ok(Ok(oid)) => Saved::Ref { oid },
         Ok(Err(reason)) => Saved::Skipped(reason),
         Err(_) => Saved::Skipped(SkipReason::Timeout),
@@ -246,6 +265,7 @@ async fn save_in(
     key: &CheckpointKey,
     phase: Phase,
     prompt_fingerprint: Option<&str>,
+    action: Option<&str>,
 ) -> Result<String, SkipReason> {
     let snap = snapshot(root).await?;
     let subject = format!(
@@ -263,6 +283,9 @@ async fn save_in(
     snap.push_trailers(&mut trailers);
     if let Some(fp) = prompt_fingerprint.filter(|fp| !fp.contains('\n')) {
         trailers.push_str(&format!("Zwiim-Prompt: {fp}\n"));
+    }
+    if let Some(action) = action.filter(|a| !a.contains('\n')) {
+        trailers.push_str(&format!("Zwiim-Action: {action}\n"));
     }
     store(
         root,
@@ -557,6 +580,7 @@ pub async fn list(root: &Path, session_id: &str) -> Result<Vec<Checkpoint>, Skip
                 index_tree: trailer("Zwiim-Index-Tree")?,
                 worktree_tree: record[1].to_string(),
                 prompt_fingerprint: trailer("Zwiim-Prompt"),
+                action: trailer("Zwiim-Action"),
             })
         })
         .collect();

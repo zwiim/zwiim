@@ -89,7 +89,15 @@ use serde::{Deserialize, Serialize};
 /// conflict in, or `in_progress` with the merge or rebase stopped on them),
 /// or null when there is nothing to compare with; `host.snapshot` carries
 /// the latest per workspace as `conflicts`. Older clients ignore both.
-pub const PROTOCOL_REVISION: u32 = 12;
+///
+/// Revision 13 (`workspace.resolve_conflicts`): the op sends a session the
+/// Host's own text asking its agent to resolve a worktree's conflicts with
+/// its base (fetched first), and returns `{base, files}`. It refuses with
+/// `root_workspace`, `not_found`, `turn_in_progress` or `no_conflicts`. While
+/// that turn runs, `workspace.resolving_changed` names the session (null once
+/// the turn ends) and `host.snapshot` carries the pairs as `resolving`.
+/// Older clients ignore both.
+pub const PROTOCOL_REVISION: u32 = 13;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -130,6 +138,7 @@ pub const CAPABILITIES: &[&str] = &[
     "subagent.started_at",
     "background.tokens",
     "workspace.conflicts",
+    "workspace.resolve_conflicts",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -289,7 +298,14 @@ mod tests {
     fn conflicts_are_served() {
         assert!(CAPABILITIES.contains(&"workspace.conflicts"));
         // `workspace.conflicts_changed` and the snapshot's `conflicts`.
-        assert_eq!(PROTOCOL_REVISION, 12);
+        const _: () = assert!(PROTOCOL_REVISION >= 12);
+    }
+
+    #[test]
+    fn resolve_conflicts_is_served() {
+        assert!(CAPABILITIES.contains(&"workspace.resolve_conflicts"));
+        // `workspace.resolving_changed` and the snapshot's `resolving`.
+        assert_eq!(PROTOCOL_REVISION, 13);
     }
 
     #[test]

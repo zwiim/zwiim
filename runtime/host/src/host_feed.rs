@@ -111,6 +111,8 @@ pub struct HostSnapshot {
     pub clones: Vec<CloneJob>,
     /// What keeping the host awake is doing; `None` until it first looked.
     pub keep_awake: Option<KeepAwakeStatus>,
+    /// The session resolving each workspace's conflicts, while its turn runs.
+    pub resolving: BTreeMap<String, String>,
 }
 
 /// How long `git.pr { refresh }` waits for GitHub.
@@ -128,6 +130,7 @@ struct Projection {
     conflicts: BTreeMap<String, ConflictCheck>,
     clones: Vec<CloneJob>,
     keep_awake: Option<KeepAwakeStatus>,
+    resolving: BTreeMap<String, String>,
 }
 
 impl Projection {
@@ -147,6 +150,7 @@ impl Projection {
             conflicts: self.conflicts.clone(),
             clones: self.clones.clone(),
             keep_awake: self.keep_awake.clone(),
+            resolving: self.resolving.clone(),
         }
     }
 }
@@ -155,6 +159,8 @@ struct Shared {
     projection: Mutex<Projection>,
     tx: broadcast::Sender<Arc<HostEvent>>,
     prs: mpsc::UnboundedSender<PrCmd>,
+    /// `(workspace_id, session_id)` of each resolve turn sent.
+    resolves: mpsc::UnboundedSender<(String, String)>,
 }
 
 /// The host's feed. Started by its first subscriber; runs for the life of
@@ -252,6 +258,19 @@ impl HostFeed {
             let _ = shared.prs.send(PrCmd::Check(workspace_id.to_string()));
         }
     }
+
+    /// Session `session_id` was sent a turn resolving `workspace_id`'s
+    /// conflicts: publish it as resolving them until that turn ends.
+    pub async fn resolve_started(&self, state: &Arc<AppState>, workspace_id: &str, session_id: &str) {
+        match self.shared(state).await {
+            Ok(shared) => {
+                let _ = shared
+                    .resolves
+                    .send((workspace_id.to_string(), session_id.to_string()));
+            }
+            Err(e) => tracing::warn!("[host feed] start failed: {e}"),
+        }
+    }
 }
 
 async fn start(
@@ -303,10 +322,12 @@ async fn start(
     task.sync_conflict_targets();
 
     let (tx, _) = broadcast::channel(SUBSCRIBER_CAPACITY);
+    let (resolves, resolve_rx) = mpsc::unbounded_channel();
     let shared = Arc::new(Shared {
         projection: Mutex::new(task.projection.clone()),
         tx,
         prs: pr_cmd,
+        resolves,
     });
     tokio::spawn(task.run(
         shared.clone(),
@@ -314,6 +335,7 @@ async fn start(
         bus_rx,
         pr_rx,
         conflict_rx,
+        resolve_rx,
         clones_rx,
         keep_awake_rx,
     ));
@@ -453,6 +475,13 @@ fn conflicts_changed(workspace_id: &str, check: Option<&ConflictCheck>) -> (&'st
     )
 }
 
+fn resolving_changed(workspace_id: &str, session_id: Option<&str>) -> (&'static str, Value) {
+    (
+        "workspace.resolving_changed",
+        json!({ "workspace_id": workspace_id, "session_id": session_id }),
+    )
+}
+
 fn pr_changed(workspace_id: &str, entry: &PrEntry) -> (&'static str, Value) {
     (
         "workspace.pr_changed",
@@ -486,6 +515,7 @@ impl FeedTask {
         mut bus_rx: broadcast::Receiver<Arc<EventEnvelope>>,
         mut pr_rx: mpsc::UnboundedReceiver<PrResult>,
         mut conflict_rx: mpsc::UnboundedReceiver<ConflictResult>,
+        mut resolve_rx: mpsc::UnboundedReceiver<(String, String)>,
         mut clones_rx: tokio::sync::watch::Receiver<u64>,
         mut keep_awake_rx: tokio::sync::watch::Receiver<Option<KeepAwakeStatus>>,
     ) {
@@ -514,6 +544,10 @@ impl FeedTask {
                 }
                 Some(result) = conflict_rx.recv() => {
                     self.apply_conflicts(&shared, result);
+                    continue;
+                }
+                Some((workspace_id, session_id)) = resolve_rx.recv() => {
+                    self.apply_resolve_started(&shared, workspace_id, session_id).await;
                     continue;
                 }
                 r = keep_awake_rx.changed() => match r {
@@ -761,9 +795,27 @@ impl FeedTask {
             }
         }
 
+        // Resolving: over once its workspace leaves or its session's turn ends.
+        let mut resolving = old.resolving.clone();
+        let mut resolving_events = Vec::new();
+        for (id, session_id) in &old.resolving {
+            let now = workspaces.iter().find(|w| &w.workspace_id == id);
+            let running = match now {
+                Some(n) if !n.removed => self.session_busy(session_id).await,
+                _ => false,
+            };
+            if !running {
+                resolving.remove(id);
+                if now.is_some() {
+                    resolving_events.push(resolving_changed(id, None));
+                }
+            }
+        }
+
         let mut events = diff_events(old, &workspaces, &sessions, &terminals, &diffs);
         events.extend(pr_events);
         events.extend(conflict_events);
+        events.extend(resolving_events);
         events.extend(clone_events(&old.clones, &clones));
         self.projection = Projection {
             seq: old.seq,
@@ -774,6 +826,7 @@ impl FeedTask {
             clones,
             keep_awake: old.keep_awake.clone(),
             conflicts,
+            resolving,
         };
         self.publish(shared, events);
         self.sync_watchers().await;
@@ -856,6 +909,32 @@ impl FeedTask {
         }
         let event = conflicts_changed(&result.workspace_id, result.check.as_ref());
         self.publish(shared, vec![event]);
+    }
+
+    /// Publish `session_id` as resolving `workspace_id`'s conflicts if the
+    /// workspace is live and the session's turn still runs.
+    async fn apply_resolve_started(&mut self, shared: &Shared, workspace_id: String, session_id: String) {
+        let live = self
+            .projection
+            .workspaces
+            .iter()
+            .any(|w| w.workspace_id == workspace_id && !w.removed);
+        if !live
+            || self.projection.resolving.get(&workspace_id) == Some(&session_id)
+            || !self.session_busy(&session_id).await
+        {
+            return;
+        }
+        let event = resolving_changed(&workspace_id, Some(&session_id));
+        self.projection.resolving.insert(workspace_id, session_id);
+        self.publish(shared, vec![event]);
+    }
+
+    async fn session_busy(&self, session_id: &str) -> bool {
+        match session::resolve(&self.db, session_id).await {
+            Ok(row) => session::row_busy(&self.connections, &row).await,
+            Err(_) => false,
+        }
     }
 
     /// Publish what keeping the host awake does now, if that changed.
@@ -2581,5 +2660,70 @@ esac
         let (snapshot, _) = f.subscribe().await;
         let snapshot = serde_json::to_value(&snapshot).unwrap();
         assert!(snapshot["conflicts"].get(&wt.workspace_id).is_none(), "{snapshot}");
+    }
+
+    /// A session in the fixture's root workspace whose agent is attached and,
+    /// with `busy`, mid-turn.
+    async fn agent_session(f: &Fixture, busy: bool) -> String {
+        let (conv, sid) = f.new_session(f.folder_id).await;
+        attach_agent(f, &f.root).await;
+        let st = f.state.connection_manager.get_state(CONN).await.unwrap();
+        let mut s = st.write().await;
+        s.conversation_id = Some(conv);
+        s.turn_in_flight = busy;
+        sid
+    }
+
+    fn resolving_is(id: String, session: Value) -> impl Fn(&HostEvent) -> bool {
+        move |e| {
+            e.kind == "workspace.resolving_changed"
+                && e.payload["workspace_id"] == id.as_str()
+                && e.payload["session_id"] == session
+        }
+    }
+
+    #[tokio::test]
+    async fn resolving_published_while_turn_runs() {
+        let f = fixture().await;
+        let sid = agent_session(&f, true).await;
+        let (snapshot, mut feed) = f.subscribe().await;
+        assert!(snapshot.resolving.is_empty());
+
+        f.state.host_feed.resolve_started(&f.state, &f.root_id, &sid).await;
+        feed.until("resolving", resolving_is(f.root_id.clone(), json!(sid)))
+            .await;
+        let (snapshot, _) = f.subscribe().await;
+        assert_eq!(snapshot.resolving.get(&f.root_id), Some(&sid));
+    }
+
+    #[tokio::test]
+    async fn resolving_cleared_on_turn_end() {
+        let f = fixture().await;
+        let sid = agent_session(&f, true).await;
+        let (_, mut feed) = f.subscribe().await;
+        f.state.host_feed.resolve_started(&f.state, &f.root_id, &sid).await;
+        feed.until("resolving", resolving_is(f.root_id.clone(), json!(sid)))
+            .await;
+
+        turn_end(&f).await;
+        feed.until("cleared", resolving_is(f.root_id.clone(), Value::Null))
+            .await;
+        let (snapshot, _) = f.subscribe().await;
+        assert!(snapshot.resolving.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolve_started_on_idle_session_publishes_nothing() {
+        let f = fixture().await;
+        let sid = agent_session(&f, false).await;
+        let (_, mut feed) = f.subscribe().await;
+        f.state.host_feed.resolve_started(&f.state, &f.root_id, &sid).await;
+        let events = feed.drain(500).await;
+        assert!(
+            !events.iter().any(|e| e.kind == "workspace.resolving_changed"),
+            "{events:?}"
+        );
+        let (snapshot, _) = f.subscribe().await;
+        assert!(snapshot.resolving.is_empty());
     }
 }

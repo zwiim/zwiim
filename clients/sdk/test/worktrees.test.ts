@@ -207,6 +207,22 @@ describe("worktree operations", () => {
     expect(t.store.getState().workspaces).toEqual([root, next]);
   });
 
+  it("asks a session to resolve conflicts, as a mutating request", async () => {
+    const t = setup();
+    t.transport.handlers["workspace.resolve_conflicts"] = () => ({ base: "origin/main", files: ["a.txt"] });
+    expect(await t.controller.resolveConflicts("a", "s1")).toEqual({ base: "origin/main", files: ["a.txt"] });
+    let req = t.transport.requests.at(-1)!;
+    expect([req.op, req.params, req.options]).toEqual([
+      "workspace.resolve_conflicts",
+      { workspace_id: "a", session_id: "s1" },
+      { mutating: true },
+    ]);
+
+    await t.controller.resolveConflicts("a", "s1", "rebase");
+    req = t.transport.requests.at(-1)!;
+    expect(req.params).toEqual({ workspace_id: "a", session_id: "s1", strategy: "rebase" });
+  });
+
   it("surfaces busy and dirty refusals with their details", async () => {
     const t = setup();
     t.transport.handlers["workspace.remove_worktree"] = (p) => {

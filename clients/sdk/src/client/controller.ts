@@ -20,6 +20,8 @@ import type {
   PrMerged,
   PrState,
   PublishTarget,
+  ResolveStarted,
+  ResolveStrategy,
   SessionEvent,
   SessionOptions,
   SessionRevertResult,
@@ -348,6 +350,23 @@ export class HostController {
     const workspace = await this.client.request("workspace.continue", { workspace_id, number });
     this.store.dispatch({ type: "workspace_added", workspace });
     return workspace;
+  }
+
+  /**
+   * Ask session `session_id`'s agent to resolve the worktree's conflicts with
+   * its base, in a turn the Host writes. Never retried. The feed then names
+   * the session in `resolving` until the turn ends; merging stays the user's.
+   */
+  async resolveConflicts(
+    workspace_id: string,
+    session_id: string,
+    strategy?: ResolveStrategy,
+  ): Promise<ResolveStarted> {
+    return this.client.request("workspace.resolve_conflicts", {
+      workspace_id,
+      session_id,
+      ...(strategy ? { strategy } : {}),
+    });
   }
 
   /**

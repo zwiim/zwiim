@@ -22,12 +22,14 @@ use crate::commands::terminal::prepare_credential_env;
 use crate::db::entities::conversation::ConversationStatus;
 use crate::db::service::folder_service;
 use crate::git_harness::{self, GitCaller, GitHost, MergeMethod, PrMerged};
+use crate::harness::ResolveStrategy;
 use crate::models::agent::AgentType;
 use crate::pr_watch::PrEntry;
 use crate::session::{self, RequestAnswer, RuntimeLauncher};
 use crate::terminal::error::TerminalError;
 use crate::terminal::manager::SpawnOptions;
 use crate::web::auth::{ConnectionPath, Principal};
+use crate::workspace::resolve::{self, ResolveStarted};
 use crate::workspace::{self, WorkspaceInfo, WorktreeRemoved};
 use crate::workspace_browse::{self, BrowseEntry, BrowseListing};
 use crate::workspace_diff::{self, WorkspaceDiff};
@@ -1006,6 +1008,43 @@ pub async fn workspace_continue(
     .await?;
     state.host_feed.nudge_pr(&info.workspace_id);
     Ok(Json(info))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceResolveConflictsParams {
+    pub workspace_id: String,
+    /// The session whose agent resolves.
+    pub session_id: String,
+    /// Defaults to `merge`.
+    #[serde(default)]
+    pub strategy: Option<ResolveStrategy>,
+}
+
+/// Ask a session's agent to resolve a worktree's conflicts with its base.
+/// The agent pushes the result while the worktree's pull request is open.
+pub async fn workspace_resolve_conflicts(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<WorkspaceResolveConflictsParams>,
+) -> ZResult<ResolveStarted> {
+    let pr = state.host_feed.pr(&state, &p.workspace_id, false).await;
+    let push = resolve::pushes_to(pr.ok().and_then(|entry| entry.pr).map(|pr| pr.state));
+    let started = resolve::resolve_conflicts(
+        &state.db,
+        &state.connection_manager,
+        &RuntimeLauncher { state: &state },
+        &state.data_dir,
+        &p.workspace_id,
+        &p.session_id,
+        p.strategy.unwrap_or_default(),
+        push,
+    )
+    .await?;
+    state
+        .host_feed
+        .resolve_started(&state, &p.workspace_id, &p.session_id)
+        .await;
+    Ok(Json(started))
 }
 
 #[derive(Deserialize)]

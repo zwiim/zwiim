@@ -157,9 +157,17 @@ describe("evaluateCompatibility", () => {
   });
 
   it("speaks revision 12, which streams merge conflicts", () => {
-    expect(CLIENT_REVISION).toBe(12);
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(12);
     // The event and field are optional: a revision-11 Host is still compatible.
     expect(evaluateCompatibility(hello({ revision: 11, min_client_revision: 1 })).status).not.toBe("update_required");
+  });
+
+  it("speaks revision 13, which resolves merge conflicts", () => {
+    expect(CLIENT_REVISION).toBe(13);
+    expect(CLIENT_CAPABILITIES).toContain("workspace.resolve_conflicts");
+    const old = evaluateCompatibility(hello({ revision: 12, min_client_revision: 1, capabilities: ["workspace.conflicts"] }));
+    expect(old.status).not.toBe("update_required");
+    expect(hasCapability(old, "workspace.resolve_conflicts")).toBe(false);
   });
 
   it("a different protocol major is incompatible and names the older side", () => {
