@@ -11,7 +11,8 @@
 // A sub-agent launched to run in the background answers its launch at once,
 // so the launch reads finished while the sub-agent still works. Given the
 // session's background work (Host capability `session.background`), a card
-// whose launch is the `tool_call_id` of an outstanding task reads running.
+// whose launch is the `tool_call_id` of an outstanding task reads running,
+// and counts that task's tokens so far (Host capability `background.tokens`).
 //
 // A background sub-agent can keep working after its turn ended, and after the
 // transcript was loaded. What it does then arrives live, under a launch that
@@ -54,7 +55,10 @@ export interface SubagentCard<B> {
    * (Host capability `subagent.started_at`); null when the Host did not say.
    */
   started_at: number | null;
-  /** Tokens it spent, once its result says. */
+  /**
+   * Tokens it spent, once its result says; while it runs in the background,
+   * its task's count so far (Host capability `background.tokens`).
+   */
   tokens: number | null;
   /**
    * Tool calls the sub-agent itself made, not counting its sub-agents': its
@@ -65,11 +69,11 @@ export interface SubagentCard<B> {
   blocks: B[];
 }
 
-/** Launches of the background tasks still running. */
-function runningLaunches(background: SessionBackground | null | undefined): Set<string> {
-  const ids = new Set<string>();
+/** Launches of the background tasks still running, each with its task's tokens so far. */
+function runningLaunches(background: SessionBackground | null | undefined): Map<string, number | undefined> {
+  const ids = new Map<string, number | undefined>();
   if (!background || background.outstanding === 0) return ids;
-  for (const t of background.tasks) if (t.tool_call_id !== undefined) ids.add(t.tool_call_id);
+  for (const t of background.tasks) if (t.tool_call_id !== undefined) ids.set(t.tool_call_id, t.tokens);
   return ids;
 }
 
@@ -85,6 +89,7 @@ function card<B extends { type: string }>(
   info: SubagentInfo | undefined,
   status: SubagentCardStatus | null,
   blocks: readonly B[],
+  running?: { tokens: number | undefined },
 ): SubagentCard<B> {
   const ids = new Set<string>();
   for (const b of blocks) {
@@ -99,7 +104,7 @@ function card<B extends { type: string }>(
     status,
     duration_ms: info?.duration_ms ?? null,
     started_at: startedAt(info?.started_at),
-    tokens: info?.tokens ?? null,
+    tokens: running?.tokens ?? info?.tokens ?? null,
     tool_count: info?.tool_uses ?? ids.size,
     blocks: [...blocks],
   };
@@ -123,8 +128,9 @@ export function liveSubagentCards(
   const running = runningLaunches(background);
   const cardOf = (parent_id: string) => {
     const call = live.toolCalls[parent_id];
-    const status = running.has(parent_id) ? "in_progress" : (call?.status ?? null);
-    return card(parent_id, call?.subagent, status, groups[parent_id]?.blocks ?? []);
+    const task = running.has(parent_id) ? { tokens: running.get(parent_id) } : undefined;
+    const status = task ? "in_progress" : (call?.status ?? null);
+    return card(parent_id, call?.subagent, status, groups[parent_id]?.blocks ?? [], task);
   };
   const scope = blocks ?? live.message?.content ?? [];
   const cards: SubagentCard<LiveBlock>[] = [];
@@ -179,8 +185,9 @@ export function historySubagentCards(
   for (const b of blocks) if (b.type === "tool_result" && b.tool_call_id) results.set(b.tool_call_id, b);
   return blocks.filter(isLaunch).map((b) => {
     const result = results.get(b.tool_call_id);
+    const task = running.has(b.tool_call_id) ? { tokens: running.get(b.tool_call_id) } : undefined;
     let status: SubagentCardStatus | null;
-    if (running.has(b.tool_call_id)) {
+    if (task) {
       status = "in_progress";
     } else if (result?.background !== undefined) {
       // Not running and the transcript never said how it ended: it died
@@ -197,7 +204,7 @@ export function historySubagentCards(
         status = "interrupted";
       }
     }
-    return card(b.tool_call_id, b.subagent, status, b.subagent.blocks ?? []);
+    return card(b.tool_call_id, b.subagent, status, b.subagent.blocks ?? [], task);
   });
 }
 

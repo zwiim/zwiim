@@ -384,6 +384,51 @@ describe("background sub-agents", () => {
     // Still running in the background is not interrupted.
     expect(historySubagentCards(blocks, background("a"))[0]!.status).toBe("in_progress");
   });
+
+  const counting = (tool_call_id: string, tokens: number) => {
+    const b = background(tool_call_id);
+    return { ...b, tasks: b.tasks.map((t) => ({ ...t, tokens })) };
+  };
+
+  it("a running background card counts its task's tokens; a finished one keeps its total", () => {
+    const launched = [
+      ev(1, "agent.tool_call", call("agent", "Review", { subagent: { description: "Review the diff" } })),
+      ev(2, "agent.tool_call_update", { tool_call_id: "agent", title: null, status: "completed", content: null }),
+    ];
+    const v = launched.reduce(reduceSession, initialSessionView("s1"));
+    expect(liveSubagentCards(v.live, undefined, counting("agent", 48_210))[0]!.tokens).toBe(48_210);
+    // A Host that does not count them: nothing to show yet.
+    expect(liveSubagentCards(v.live, undefined, background("agent"))[0]!.tokens).toBeNull();
+
+    const done = [
+      ...launched,
+      ev(3, "agent.tool_call_update", {
+        tool_call_id: "agent",
+        title: null,
+        status: "completed",
+        content: null,
+        subagent: { tokens: 75_223, tool_uses: 42 },
+      }),
+    ].reduce(reduceSession, initialSessionView("s1"));
+    expect(liveSubagentCards(done.live, undefined, counting("other", 48_210))[0]!.tokens).toBe(75_223);
+  });
+
+  it("after reload too", () => {
+    const blocks = launch("agent", { background: null });
+    expect(historySubagentCards(blocks, counting("agent", 48_210))[0]!.tokens).toBe(48_210);
+    expect(historySubagentCards(blocks, background("agent"))[0]!.tokens).toBeNull();
+    const done: HistoryBlock[] = [
+      {
+        type: "tool_call",
+        tool_call_id: "agent",
+        title: "Agent",
+        input_preview: null,
+        status: "completed",
+        subagent: { tokens: 75_223 },
+      },
+    ];
+    expect(historySubagentCards(done, counting("other", 48_210))[0]!.tokens).toBe(75_223);
+  });
 });
 
 describe("sub-agents of earlier turns", () => {

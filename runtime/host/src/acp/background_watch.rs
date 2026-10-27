@@ -424,6 +424,9 @@ async fn emit_subagent_usage(
 ) {
     let ids = ws.tracked_subagent_ids();
     let pending = std::mem::take(&mut ws.pending_subagent_usage);
+    // A launch no longer tracked (gone, or now a background task) is no
+    // longer on its way out.
+    ws.finishing_subagents.retain(|id, _| ids.contains(id));
     if ids.is_empty() {
         return;
     }
@@ -479,6 +482,8 @@ struct TaskEntry {
     /// The launching tool call (the ack's `tool_result.tool_use_id`), which
     /// is the tool call id clients already hold for that card.
     tool_call_id: Option<String>,
+    /// A sub-agent's live context tokens, from its own transcript.
+    tokens: Option<u64>,
 }
 
 impl TaskEntry {
@@ -496,6 +501,7 @@ impl TaskEntry {
             started_at: Instant::now(),
             label,
             tool_call_id,
+            tokens: None,
         }
     }
 }
@@ -752,6 +758,17 @@ pub(crate) struct WatchState {
     /// Live sub-agent counts (tool call id, tokens) read this tick, drained by
     /// `run_watch` into gated `SubagentUsage` events.
     pending_subagent_usage: Vec<(String, u64)>,
+    /// Launches of the background tasks outstanding at the last fold of their
+    /// readings, so a task that left has its transcripts dropped.
+    background_launches: HashSet<String>,
+    /// Launches the session says are finished whose transcripts are still
+    /// read, with `main_reads` at the first such verdict. A background launch
+    /// answers at once, so it reads finished before the main transcript's ack
+    /// makes it a task: its transcripts go only once a later read of the
+    /// main transcript still has not made it one.
+    finishing_subagents: HashMap<String, u64>,
+    /// Ticks that got through the main transcript (read, or found unchanged).
+    main_reads: u64,
 }
 
 impl WatchState {
@@ -786,6 +803,9 @@ impl WatchState {
             subagent_tails: HashMap::new(),
             finished_subagent_files: HashSet::new(),
             pending_subagent_usage: Vec::new(),
+            background_launches: HashSet::new(),
+            finishing_subagents: HashMap::new(),
+            main_reads: 0,
         }
     }
 
@@ -858,14 +878,64 @@ impl WatchState {
         }
     }
 
-    /// The launches whose transcripts are being read and are named already.
+    /// The launches whose transcripts are being read and are named already,
+    /// but for those of outstanding background tasks: a background launch
+    /// answers at once, so its readings go on its task instead
+    /// (`fold_background_tokens`).
     fn tracked_subagent_ids(&self) -> Vec<String> {
+        let background: HashSet<&String> = self
+            .tasks
+            .values()
+            .filter_map(|t| t.tool_call_id.as_ref())
+            .collect();
         let ids: HashSet<&String> = self
             .subagent_tails
             .values()
             .filter_map(|t| t.tool_call_id.as_ref())
+            .filter(|id| !background.contains(id))
             .collect();
         ids.into_iter().cloned().collect()
+    }
+
+    /// Put each outstanding background sub-agent's reading on its task, and
+    /// stop reading the transcripts of launches whose task has left, so a
+    /// reading for a task no longer listed goes with it. Whether a task's
+    /// count changed, so the view is sent again.
+    fn fold_background_tokens(&mut self) -> bool {
+        let launches: HashSet<String> = self
+            .tasks
+            .values()
+            .filter_map(|t| t.tool_call_id.clone())
+            .collect();
+        let before = std::mem::replace(&mut self.background_launches, launches);
+        let gone: Vec<String> = before
+            .difference(&self.background_launches)
+            .cloned()
+            .collect();
+        for id in gone {
+            self.finish_subagent(&id);
+        }
+        let mut changed = false;
+        for task in self.tasks.values_mut() {
+            // A task resumed by `SendMessage` has no launch, so no reading.
+            let Some(id) = &task.tool_call_id else {
+                continue;
+            };
+            // Of several transcripts for one launch, the newest written is
+            // the one still running (path breaks a tie), so the count does
+            // not jump between them with map order.
+            let reading = self
+                .subagent_tails
+                .iter()
+                .filter(|(_, t)| t.tool_call_id.as_ref() == Some(id) && t.tokens.is_some())
+                .max_by_key(|(path, t)| (t.last_stat.and_then(|s| s.0), *path))
+                .and_then(|(_, t)| t.tokens);
+            if reading.is_some() && reading != task.tokens {
+                task.tokens = reading;
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// Fold the session's verdict on a launch back into its tails: a launch
@@ -880,8 +950,19 @@ impl WatchState {
         match verdict {
             SubagentUsageVerdict::Apply | SubagentUsageVerdict::Unchanged => {
                 tails.for_each(|t| t.accepted = true);
+                self.finishing_subagents.remove(tool_call_id);
             }
-            SubagentUsageVerdict::Finished => self.finish_subagent(tool_call_id),
+            // Its readings are refused from now on, so keeping the tails a
+            // little longer cannot touch the finish total.
+            SubagentUsageVerdict::Finished => {
+                let first = *self
+                    .finishing_subagents
+                    .entry(tool_call_id.to_string())
+                    .or_insert(self.main_reads);
+                if self.main_reads > first {
+                    self.finish_subagent(tool_call_id);
+                }
+            }
             SubagentUsageVerdict::Unknown => {
                 let mut gone = false;
                 for t in tails {
@@ -897,6 +978,7 @@ impl WatchState {
 
     /// Stop reading the transcripts of a launch that has its final result.
     pub(crate) fn finish_subagent(&mut self, tool_call_id: &str) {
+        self.finishing_subagents.remove(tool_call_id);
         let done: Vec<PathBuf> = self
             .subagent_tails
             .iter()
@@ -1136,6 +1218,7 @@ impl WatchState {
                 }
             }
         }
+        self.main_reads += 1;
 
         // Held-turn OVERLAY suppression: a turn #870 (claude-agent-acp v0.59.0)
         // is holding open for its own spawned sub-agents renders their follow-up
@@ -1171,10 +1254,15 @@ impl WatchState {
             !matches!(origin, Some(task_id) if self.current_turn_launched_ids.contains(&task_id))
         });
 
+        // After this tick's launches and settlements are accounted, so a
+        // launch read in the same batch as its first reading gets it.
+        let tokens_changed = self.fold_background_tokens();
+
         let outstanding = self.tasks.len() as u32;
         let accounting_changed =
             expired_any || self.last_emitted_outstanding != Some(outstanding);
-        if changed_turns.is_empty() && settled.is_empty() && !accounting_changed {
+        let quiet = changed_turns.is_empty() && settled.is_empty() && !accounting_changed;
+        if quiet && !tokens_changed {
             return None;
         }
         self.last_emitted_outstanding = Some(outstanding);
@@ -1186,6 +1274,7 @@ impl WatchState {
                 label: t.label.clone(),
                 state: "running".to_string(),
                 tool_call_id: t.tool_call_id.clone(),
+                tokens: t.tokens,
             })
             .collect();
         tasks.sort_by(|a, b| a.task_id.cmp(&b.task_id));
@@ -3801,7 +3890,9 @@ mod tests {
         assert_eq!(state.read().await.event_seq, seq + 1);
 
         // The launch finishes; the next reading is dropped, not sequenced,
-        // and the transcript is no longer tracked.
+        // and after one more read of the main transcript (a background launch
+        // would have become a task by then) the transcript is no longer
+        // tracked.
         state.write().await.apply_event(&AcpEvent::ToolCallUpdate {
             tool_call_id: "toolu_sub1".into(),
             title: None,
@@ -3822,6 +3913,10 @@ mod tests {
         let seq = state.read().await.event_seq;
         emit_subagent_usage(&state, &emitter, &mut ws).await;
         assert_eq!(tokens(&*state.read().await), Some(102));
+        assert_eq!(state.read().await.event_seq, seq);
+        assert_eq!(ws.subagent_tails.len(), 1);
+        tick_now(&mut ws, &PromptLedger::shared());
+        emit_subagent_usage(&state, &emitter, &mut ws).await;
         assert_eq!(state.read().await.event_seq, seq);
         assert!(ws.subagent_tails.is_empty());
         assert!(ws.finished_subagent_files.contains(&transcript));
@@ -4026,9 +4121,283 @@ mod tests {
             meta: None,
             images: None,
         });
-        tick_now(&mut ws, &PromptLedger::shared());
-        emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+        // Dropped after one more read of the main transcript.
+        for _ in 0..2 {
+            tick_now(&mut ws, &PromptLedger::shared());
+            emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+        }
         assert!(ws.subagent_tails.is_empty());
         assert!(ws.finished_subagent_files.contains(&transcript));
+    }
+
+    // --- live tokens of background sub-agents ---
+
+    /// A watch over a fresh session whose sub-agent transcript belongs to the
+    /// launch `agent_ack` answers (`toolu_01`).
+    fn background_fixture(dir: &tempfile::TempDir) -> (WatchState, PathBuf, PathBuf) {
+        let session = temp_session(dir);
+        write_lines(&session, &[]);
+        let subs = subagents_dir(&session);
+        write_subagent_meta(&subs, "a1", "toolu_01");
+        let transcript = subs.join("agent-a1.jsonl");
+        (
+            WatchState::with_file_for_test("s1", session.clone()),
+            session,
+            transcript,
+        )
+    }
+
+    fn task_tokens(event: Option<AcpEvent>) -> Vec<(String, Option<u64>)> {
+        match event {
+            Some(AcpEvent::BackgroundActivity { tasks, .. }) => {
+                tasks.into_iter().map(|t| (t.task_id, t.tokens)).collect()
+            }
+            other => panic!("expected BackgroundActivity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_background_launch_takes_live_tokens_from_its_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, session, transcript) = background_fixture(&dir);
+        let ledger = PromptLedger::shared();
+        write_lines(&session, &[&agent_ack("agent1")]);
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 1))],
+        );
+
+        assert_eq!(
+            task_tokens(tick_now(&mut ws, &ledger)),
+            vec![("agent1".to_string(), Some(102))]
+        );
+
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_2", "claude-haiku-4-5", (1, 0, 900, 1))],
+        );
+        assert_eq!(
+            task_tokens(tick_now(&mut ws, &ledger)),
+            vec![("agent1".to_string(), Some(902))]
+        );
+    }
+
+    #[test]
+    fn an_unchanged_background_reading_is_not_sent_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, session, transcript) = background_fixture(&dir);
+        let ledger = PromptLedger::shared();
+        write_lines(&session, &[&agent_ack("agent1")]);
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 1))],
+        );
+        assert!(tick_now(&mut ws, &ledger).is_some());
+
+        // Nothing new, then a new message holding the same count.
+        assert!(tick_now(&mut ws, &ledger).is_none());
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_2", "claude-haiku-4-5", (0, 1, 100, 1))],
+        );
+        assert!(tick_now(&mut ws, &ledger).is_none());
+    }
+
+    #[test]
+    fn a_settled_background_task_drops_its_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, session, transcript) = background_fixture(&dir);
+        let ledger = PromptLedger::shared();
+        write_lines(&session, &[&agent_ack("agent1")]);
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 1))],
+        );
+        tick_now(&mut ws, &ledger);
+        assert_eq!(ws.subagent_tails.len(), 1);
+
+        // Its last reading lands with the notification: the task is no
+        // longer listed, so the reading goes with it.
+        write_lines(&session, &[&notification("agent1", "completed")]);
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_2", "claude-haiku-4-5", (1, 0, 900, 1))],
+        );
+        assert!(task_tokens(tick_now(&mut ws, &ledger)).is_empty());
+        assert!(ws.subagent_tails.is_empty());
+        assert!(ws.finished_subagent_files.contains(&transcript));
+
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_3", "claude-haiku-4-5", (1, 0, 999, 1))],
+        );
+        assert!(tick_now(&mut ws, &ledger).is_none());
+        assert!(ws.subagent_tails.is_empty());
+    }
+
+    #[test]
+    fn an_expired_background_task_drops_its_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, session, transcript) = background_fixture(&dir);
+        let ledger = PromptLedger::shared();
+        write_lines(&session, &[&agent_ack("agent1")]);
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 1))],
+        );
+        tick_now(&mut ws, &ledger);
+        ws.tasks.get_mut("agent1").unwrap().started_at =
+            Instant::now() - Duration::from_secs(1 << 30);
+
+        assert!(task_tokens(tick_now(&mut ws, &ledger)).is_empty());
+        assert!(ws.subagent_tails.is_empty());
+        assert!(ws.finished_subagent_files.contains(&transcript));
+    }
+
+    #[tokio::test]
+    async fn a_background_launch_keeps_its_finish_total() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, session_file, transcript) = background_fixture(&dir);
+        let mut session = prompting_session();
+        session.apply_event(&subagent_launch("toolu_01"));
+        // The launch answers at once, already carrying a total.
+        session.apply_event(&AcpEvent::ToolCallUpdate {
+            tool_call_id: "toolu_01".into(),
+            title: None,
+            status: Some("completed".into()),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            raw_output_append: None,
+            locations: None,
+            meta: Some(
+                serde_json::json!({ "claudeCode": { "toolResponse": { "totalTokens": 777 } } }),
+            ),
+            images: None,
+        });
+        let state = Arc::new(RwLock::new(session));
+        let ledger = PromptLedger::shared();
+        write_lines(&session_file, &[&agent_ack("agent1")]);
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 1))],
+        );
+
+        let event = tick_now(&mut ws, &ledger);
+        assert_eq!(task_tokens(event), vec![("agent1".to_string(), Some(102))]);
+        let seq = state.read().await.event_seq;
+        emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+        // The reading is the task's: the launch's total is untouched and the
+        // transcript is still read although the launch has its result.
+        assert_eq!(state.read().await.event_seq, seq);
+        assert_eq!(
+            state.read().await.active_tool_calls["toolu_01"]
+                .subagent
+                .as_ref()
+                .and_then(|s| s.tokens),
+            Some(777)
+        );
+        assert_eq!(ws.subagent_tails.len(), 1);
+        assert!(ws.pending_subagent_usage.is_empty());
+    }
+
+    /// A session whose background launch `toolu_01` already answered: the
+    /// wire is ahead of the main transcript's ack.
+    fn answered_background_launch() -> Arc<RwLock<SessionState>> {
+        let mut session = prompting_session();
+        session.apply_event(&subagent_launch("toolu_01"));
+        session.apply_event(&AcpEvent::ToolCallUpdate {
+            tool_call_id: "toolu_01".into(),
+            title: None,
+            status: Some("completed".into()),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            raw_output_append: None,
+            locations: None,
+            meta: None,
+            images: None,
+        });
+        Arc::new(RwLock::new(session))
+    }
+
+    #[tokio::test]
+    async fn a_background_launch_answered_before_its_ack_is_read_still_takes_live_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, session_file, transcript) = background_fixture(&dir);
+        let state = answered_background_launch();
+        let ledger = PromptLedger::shared();
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 1))],
+        );
+
+        // The launch reads finished, but the main transcript has no ack yet:
+        // the transcript is kept for one more read of it.
+        assert!(tick_now(&mut ws, &ledger).is_none());
+        emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+        assert_eq!(ws.subagent_tails.len(), 1);
+
+        // The ack lands on the next tick: the reading goes on the task.
+        write_lines(&session_file, &[&agent_ack("agent1")]);
+        assert_eq!(
+            task_tokens(tick_now(&mut ws, &ledger)),
+            vec![("agent1".to_string(), Some(102))]
+        );
+        emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+        assert_eq!(ws.subagent_tails.len(), 1);
+        assert!(ws.finishing_subagents.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_tick_that_cannot_read_the_main_transcript_drops_no_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, session_file, transcript) = background_fixture(&dir);
+        let state = answered_background_launch();
+        let ledger = PromptLedger::shared();
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 1))],
+        );
+        tick_now(&mut ws, &ledger);
+        emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+
+        // The main transcript cannot be read this tick: the launch's second
+        // finished verdict says nothing new, so its transcript stays.
+        let moved = session_file.with_extension("moved");
+        std::fs::rename(&session_file, &moved).unwrap();
+        assert!(tick_now(&mut ws, &ledger).is_none());
+        emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+        assert_eq!(ws.subagent_tails.len(), 1);
+
+        std::fs::rename(&moved, &session_file).unwrap();
+        ws.file = Some(session_file.clone());
+        write_lines(&session_file, &[&agent_ack("agent1")]);
+        assert_eq!(
+            task_tokens(tick_now(&mut ws, &ledger)),
+            vec![("agent1".to_string(), Some(102))]
+        );
+    }
+
+    #[test]
+    fn a_launch_with_several_transcripts_reads_the_newest_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, session, _) = background_fixture(&dir);
+        write_lines(&session, &[&agent_ack("agent1")]);
+        tick_now(&mut ws, &PromptLedger::shared());
+        let now = std::time::SystemTime::now();
+        for (name, age, tokens) in [("old", 60, 111), ("new", 0, 222), ("older", 120, 333)] {
+            ws.subagent_tails.insert(
+                PathBuf::from(format!("agent-{name}.jsonl")),
+                SubagentTail {
+                    last_stat: Some((Some(now - Duration::from_secs(age)), 1)),
+                    tool_call_id: Some("toolu_01".into()),
+                    tokens: Some(tokens),
+                    ..Default::default()
+                },
+            );
+        }
+        assert!(ws.fold_background_tokens());
+        assert_eq!(ws.tasks["agent1"].tokens, Some(222));
     }
 }

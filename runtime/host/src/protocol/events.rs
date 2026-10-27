@@ -542,7 +542,8 @@ const BACKGROUND_LABEL_MAX_CHARS: usize = 200;
 
 /// A session's background work as clients see it: an opaque id per task
 /// (never the agent's own), a human label with host paths removed, its
-/// state and, when known, the tool call that launched it.
+/// state and, when known, the tool call that launched it and a background
+/// sub-agent's tokens so far.
 fn background(bg: &BackgroundView, root: Option<&str>) -> Value {
     json!({
         "outstanding": bg.outstanding,
@@ -558,6 +559,9 @@ fn background(bg: &BackgroundView, root: Option<&str>) -> Value {
                 });
                 if let Some(id) = &t.tool_call_id {
                     v["tool_call_id"] = json!(id);
+                }
+                if let Some(n) = t.tokens {
+                    v["tokens"] = json!(n);
                 }
                 v
             })
@@ -1976,6 +1980,7 @@ pub(crate) mod tests {
                 label: "Review the diff".into(),
                 state: "running".into(),
                 tool_call_id: Some("toolu_01Agent".into()),
+                tokens: Some(48_210),
             }],
         });
         state.apply_event(&AcpEvent::TurnComplete {
@@ -1998,6 +2003,7 @@ pub(crate) mod tests {
         assert!(task_id.starts_with("task-") && task_id.len() == 21, "{task_id}");
         assert_eq!(tasks[1]["label"], "Review the diff");
         assert_eq!(tasks[1]["tool_call_id"], "toolu_01Agent");
+        assert_eq!(tasks[1]["tokens"], 48_210);
         assert_ne!(tasks[1]["task_id"], shell["task_id"]);
         assert!(bg["waiting_since"].as_str().is_some(), "{bg}");
         let mut keys: Vec<_> = shell.as_object().unwrap().keys().cloned().collect();

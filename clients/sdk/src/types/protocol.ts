@@ -860,6 +860,12 @@ export interface BackgroundTask {
   state: string;
   /** The tool call that launched it, when the agent linked them. */
   tool_call_id?: string;
+  /**
+   * A background sub-agent's tokens so far, read from its own transcript.
+   * Absent until there is a reading, and from Hosts before revision 11
+   * (capability `background.tokens`).
+   */
+  tokens?: number;
 }
 
 /** The session's background work. */

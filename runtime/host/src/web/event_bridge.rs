@@ -693,6 +693,7 @@ mod tests {
                     label: "Review the diff".into(),
                     state: "running".into(),
                     tool_call_id: Some("toolu_01".into()),
+                    tokens: None,
                 }],
             },
         )
@@ -702,6 +703,28 @@ mod tests {
         assert_eq!(changes[2].1.outstanding, 1);
         assert_eq!(changes[2].1.tasks[0].label, "Review the diff");
         assert_eq!(state.read().await.to_snapshot().background, changes[2].1);
+
+        // A background sub-agent's new token reading is a change; the same
+        // reading again is not.
+        let reading = |tokens| AcpEvent::BackgroundActivity {
+            session_id: "s".into(),
+            turns: vec![],
+            outstanding: 1,
+            settled: vec![],
+            watermark: 0,
+            tasks: vec![crate::acp::types::BackgroundTaskView {
+                task_id: "a1".into(),
+                label: "Review the diff".into(),
+                state: "running".into(),
+                tool_call_id: Some("toolu_01".into()),
+                tokens: Some(tokens),
+            }],
+        };
+        emit_with_state(&state, &emitter, reading(48_210)).await;
+        emit_with_state(&state, &emitter, reading(48_210)).await;
+        let changes = background_changes(&*state.read().await);
+        assert_eq!(changes.len(), 4);
+        assert_eq!(changes[3].1.tasks[0].tokens, Some(48_210));
     }
 
     fn generation_changes(state: &SessionState) -> Vec<u64> {

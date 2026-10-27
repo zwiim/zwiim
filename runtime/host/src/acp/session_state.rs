@@ -1736,6 +1736,7 @@ impl SessionState {
                 },
                 state: t.state.clone(),
                 tool_call_id: t.tool_call_id.clone(),
+                tokens: None,
             })
             .collect();
         if self.background_outstanding > 0 {

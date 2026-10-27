@@ -298,6 +298,10 @@ pub struct BackgroundTaskView {
     /// The tool call that launched the task, when the agent linked them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// A background sub-agent's context tokens so far, read from its own
+    /// transcript (the finish total's formula, on its newest API call).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
 }
 
 /// The session's background work: how many launched tasks are still

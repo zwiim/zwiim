@@ -75,7 +75,14 @@ use serde::{Deserialize, Serialize};
 /// transcript in `session.history`. It is absent when the Host cannot tell.
 /// A client ticks a running sub-agent's elapsed time from it. Older clients
 /// ignore the field.
-pub const PROTOCOL_REVISION: u32 = 10;
+///
+/// Revision 11 (`background.tokens`): a background task in
+/// `session.background` carries `tokens` while it is a sub-agent the Host can
+/// read: its context tokens so far, counted like the launch's finished
+/// `subagent.tokens`. It is absent until the first reading, and the task
+/// leaves the list when it finishes, so the finished total is never
+/// overwritten. Older clients ignore the field.
+pub const PROTOCOL_REVISION: u32 = 11;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -114,6 +121,7 @@ pub const CAPABILITIES: &[&str] = &[
     "session.background",
     "github.auth",
     "subagent.started_at",
+    "background.tokens",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -260,7 +268,13 @@ mod tests {
     #[test]
     fn subagent_start_is_served() {
         assert!(CAPABILITIES.contains(&"subagent.started_at"));
-        assert_eq!(PROTOCOL_REVISION, 10);
+        const _: () = assert!(PROTOCOL_REVISION >= 10);
+    }
+
+    #[test]
+    fn background_tokens_are_served() {
+        assert!(CAPABILITIES.contains(&"background.tokens"));
+        assert_eq!(PROTOCOL_REVISION, 11);
     }
 
     #[test]

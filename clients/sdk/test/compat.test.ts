@@ -139,11 +139,21 @@ describe("evaluateCompatibility", () => {
   });
 
   it("speaks revision 10, which gives a sub-agent's start; an older Host is limited, not broken", () => {
-    expect(CLIENT_REVISION).toBe(10);
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(10);
     expect(CLIENT_CAPABILITIES).toContain("subagent.started_at");
     const old = evaluateCompatibility(hello({ revision: 9, min_client_revision: 1, capabilities: ["github.auth"] }));
     expect(old.status).not.toBe("update_required");
     expect(hasCapability(old, "subagent.started_at")).toBe(false);
+  });
+
+  it("speaks revision 11, which gives a background sub-agent's tokens; an older Host is limited, not broken", () => {
+    expect(CLIENT_REVISION).toBe(11);
+    expect(CLIENT_CAPABILITIES).toContain("background.tokens");
+    const old = evaluateCompatibility(
+      hello({ revision: 10, min_client_revision: 1, capabilities: ["subagent.started_at"] }),
+    );
+    expect(old.status).not.toBe("update_required");
+    expect(hasCapability(old, "background.tokens")).toBe(false);
   });
 
   it("a different protocol major is incompatible and names the older side", () => {
