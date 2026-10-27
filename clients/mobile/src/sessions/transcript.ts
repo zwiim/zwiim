@@ -13,6 +13,7 @@ import {
   liveSubagentCards,
   modelShortName,
   parseUnifiedDiff,
+  runText,
   subagentDescription,
   tokensText,
   toolChanges,
@@ -88,14 +89,30 @@ export type TranscriptRow =
   | { type: "agent"; key: string; text: string; streaming: boolean }
   | { type: "thought"; key: string; text: string; streaming: boolean }
   | { type: "tool"; key: string; tool: ToolItem }
-  | { type: "tools"; key: string; tools: ToolItem[] }
+  | { type: "tools"; key: string; rows: FoldedRow[] }
   | { type: "subagent"; key: string; agent: SubagentItem }
   | { type: "error"; key: string; message: string }
   | { type: "image"; key: string; image: AgentImage }
   | { type: "footer"; key: string; text: string; stopped: boolean; files: ChangedFile[] };
 
-/** Consecutive tool calls fold into one row from this many. */
+/** A row a run folds: a tool call or a sub-agent. */
+export type FoldedRow = Extract<TranscriptRow, { type: "tool" | "subagent" }>;
+
+/** Consecutive tool calls and sub-agents fold into one row from this many. */
 export const FOLD_AT = 3;
+
+/** What a folded run's row says: how many of each, how many failed, and whether one runs. */
+export function runSummary(rows: readonly FoldedRow[]): { text: string; failed: number; running: boolean } {
+  const state = (r: FoldedRow) => (r.type === "tool" ? r.tool.state : r.agent.state);
+  const agents = rows.filter((r) => r.type === "subagent").length;
+  return {
+    text: runText(rows.length - agents, agents),
+    failed: rows.filter((r) => state(r) === "failed").length,
+    running: rows.some((r) => state(r) === "running"),
+  };
+}
+
+const folds = (r: TranscriptRow | undefined): r is FoldedRow => r?.type === "tool" || r?.type === "subagent";
 
 const VERBS: Record<string, string> = {
   read: "Read",
@@ -475,17 +492,17 @@ function liveBlockRows(
   return rows;
 }
 
-/** Runs of `FOLD_AT` or more tool calls become one row. */
+/** Runs of `FOLD_AT` or more tool calls and sub-agents become one row. */
 function fold(rows: Piece[]): TranscriptRow[] {
   const out: TranscriptRow[] = [];
-  let run: Extract<Piece, { type: "tool" }>[] = [];
+  let run: FoldedRow[] = [];
   const flush = () => {
-    if (run.length >= FOLD_AT) out.push({ type: "tools", key: run[0]!.key, tools: run.map((r) => r.tool) });
+    if (run.length >= FOLD_AT) out.push({ type: "tools", key: run[0]!.key, rows: run });
     else out.push(...run);
     run = [];
   };
   for (const r of rows) {
-    if (r.type === "tool") run.push(r);
+    if (folds(r)) run.push(r);
     else {
       flush();
       out.push(r);
@@ -591,8 +608,8 @@ export function transcriptBuilder(): (view: SessionView | undefined) => Transcri
     const live: Piece[] = [];
     if (view.settled) live.push(...liveRows(view.settled, "settled", false, background, earlier));
     live.push(...liveRows(view.live, "live", running, background, earlier));
-    // A run of tool calls across the history's end and the live turn folds as one.
-    const joined = kept.pieces.at(-1)?.type === "tool" && live[0]?.type === "tool";
+    // A run of tool calls and sub-agents across the history's end and the live turn folds as one.
+    const joined = folds(kept.pieces.at(-1)) && folds(live[0]);
     const rows = joined ? fold([...kept.pieces, ...live]) : [...kept.rows, ...fold(live)];
     if (view.lastError) rows.push({ type: "error", key: "last-error", message: view.lastError.message });
     // A turn not yet in the history gets its time once the history has it.

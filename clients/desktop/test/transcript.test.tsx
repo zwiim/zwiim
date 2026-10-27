@@ -762,6 +762,173 @@ describe("tool runs", () => {
     expect(within(screen.getByTestId("tool-run")).getByText("3 tool calls").className).not.toContain("animate-shimmer");
     controller.dispose();
   });
+
+  it("folds sub-agents in with the tool calls, a failed one counted with the failed calls", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        turn("t1", "assistant", [
+          call("c1", "Read", "a.ts"),
+          result("c1", true),
+          {
+            type: "tool_call",
+            tool_call_id: "a1",
+            title: "Task",
+            input_preview: null,
+            status: "failed",
+            subagent: { description: "Dig", blocks: [{ type: "text", text: "dug in" }] },
+          },
+          call("c2", "Read", "b.ts"),
+          { type: "text", text: "Done." },
+        ]),
+      ],
+    });
+    const { controller } = await openSession(t);
+    const run = screen.getByTestId("tool-run");
+    const row = within(run).getAllByRole("button")[0]!;
+    expect(row.textContent).toBe("2 tool calls, 1 sub-agent 2 failed");
+    fireEvent.click(row);
+    // The card inside the fold still opens to what its sub-agent did.
+    const card = within(run).getByTestId("subagent-card");
+    fireEvent.click(card.querySelector<HTMLButtonElement>(":scope > button")!);
+    expect(within(card).getByTestId("subagent-body").textContent).toContain("dug in");
+    controller.dispose();
+  });
+
+  it("keeps a live fold shimmering while a sub-agent in it runs, its clock ticking", async () => {
+    const t = new FakeTransport();
+    const { controller, frame } = await openSession(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+    const ev = (seq: number, type: string, payload: object) =>
+      frame({ type: "event", event: { session_id: "s1", seq, type, payload } });
+    const tool = (id: string) => ({
+      tool_call_id: id,
+      title: `Read ${id}.ts`,
+      kind: "read",
+      status: "in_progress",
+      content: null,
+    });
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-10-24T10:00:30Z"));
+      await ev(2, "agent.tool_call", tool("a"));
+      await ev(3, "agent.tool_call", tool("b"));
+      await ev(4, "agent.tool_call", {
+        ...tool("fold1"),
+        title: "Agent",
+        kind: "other",
+        subagent: { description: "Survey", started_at: "2026-10-24T10:00:00.000Z" },
+      });
+      for (const [seq, id] of [
+        [5, "a"],
+        [6, "b"],
+      ] as const)
+        await ev(seq, "agent.tool_call_update", { tool_call_id: id, title: null, status: "completed", content: null });
+      const run = screen.getByTestId("tool-run");
+      const label = within(run).getByText("2 tool calls, 1 sub-agent");
+      expect(label.className).toContain("animate-shimmer");
+      const card = within(run).getByTestId("subagent-card");
+      expect(within(card).getByTestId("subagent-elapsed").textContent).toBe("30s");
+      act(() => void vi.advanceTimersByTime(2000));
+      expect(within(card).getByTestId("subagent-elapsed").textContent).toBe("32s");
+      await ev(7, "agent.tool_call_update", { tool_call_id: "fold1", title: null, status: "completed", content: null });
+      expect(within(run).getByText("2 tool calls, 1 sub-agent").className).not.toContain("animate-shimmer");
+    } finally {
+      vi.useRealTimers();
+    }
+    controller.dispose();
+  });
+
+  it("carries the running turn's run from the history on into the live turn, as one fold", async () => {
+    const t = new FakeTransport();
+    const user = turn("u1", "user", [{ type: "text", text: "go" }]);
+    const before = [call("c1", "Read", "a.ts"), result("c1"), call("c2", "Read", "b.ts"), result("c2")];
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [user, turn("a1", "assistant", before)],
+    });
+    const { controller, frame } = await openSession(t);
+    // Reopened mid-turn: the history holds the turn the agent is still running.
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+    expect(screen.queryByTestId("tool-run")).toBeNull();
+    const start = (seq: number, id: string) =>
+      frame({
+        type: "event",
+        event: {
+          session_id: "s1",
+          seq,
+          type: "agent.tool_call",
+          payload: { tool_call_id: id, title: `Read ${id}.ts`, kind: "read", status: "in_progress", content: null },
+        },
+      });
+    await start(2, "c3");
+    const run = screen.getByTestId("tool-run");
+    expect(within(screen.getByTestId("history")).getByTestId("tool-run")).toBe(run);
+    expect(within(run).getByText("3 tool calls").className).toContain("animate-shimmer");
+    expect(within(run).getAllByTestId("tool-call")).toHaveLength(3);
+    expect(within(screen.getByTestId("live-turn")).queryAllByTestId("tool-call")).toHaveLength(0);
+    const row = within(run).getAllByRole("button")[0]!;
+    fireEvent.click(row);
+
+    // It grows in place: the same row, still open.
+    await start(3, "c4");
+    expect(screen.getByTestId("tool-run")).toBe(run);
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    expect(row.textContent).toBe("4 tool calls");
+
+    // The turn ends and the history catches up: the fold is where it was, still open.
+    const after = [...before, call("c3", "Read", "c3.ts"), result("c3"), call("c4", "Read", "c4.ts"), result("c4")];
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [user, turn("a1", "assistant", after)],
+    });
+    await frame({
+      type: "event",
+      event: { session_id: "s1", seq: 4, type: "agent.turn_complete", payload: { stop_reason: "end_turn" } },
+    });
+    await act(() => tick());
+    const runs = screen.getAllByTestId("tool-run");
+    expect(runs).toHaveLength(1);
+    expect(within(runs[0]!).getAllByRole("button")[0]!.getAttribute("aria-expanded")).toBe("true");
+    expect(within(runs[0]!).getAllByTestId("tool-call")).toHaveLength(4);
+    controller.dispose();
+  });
+
+  it("does not carry a finished turn's run into the next one", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        turn("u1", "user", [{ type: "text", text: "go" }]),
+        turn("a1", "assistant", [call("c1", "Read", "a.ts"), call("c2", "Read", "b.ts")]),
+      ],
+    });
+    const { controller, frame } = await openSession(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "connected" }) });
+    await frame({
+      type: "event",
+      event: {
+        session_id: "s1",
+        seq: 2,
+        type: "agent.user_message",
+        payload: { message_id: "m2", blocks: [{ type: "text", text: "more" }] },
+      },
+    });
+    await frame({
+      type: "event",
+      event: {
+        session_id: "s1",
+        seq: 3,
+        type: "agent.tool_call",
+        payload: { tool_call_id: "c3", title: "Read c.ts", kind: "read", status: "in_progress", content: null },
+      },
+    });
+    expect(screen.queryByTestId("tool-run")).toBeNull();
+    expect(within(screen.getByTestId("history")).getAllByTestId("tool-call")).toHaveLength(2);
+    expect(within(screen.getByTestId("live-turn")).getAllByTestId("tool-call")).toHaveLength(1);
+    controller.dispose();
+  });
 });
 
 describe("changed files", () => {

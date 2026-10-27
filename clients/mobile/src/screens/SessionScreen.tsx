@@ -772,7 +772,23 @@ function Row({
     case "tool":
       return <ToolRow tool={row.tool} onPress={() => onTool(row.tool)} opens={opens(row.tool)} />;
     case "tools":
-      return <ToolGroup tools={row.tools} onOpen={onTool} opens={opens} />;
+      return (
+        <ToolGroup
+          rows={row.rows}
+          renderRow={(child) => (
+            <Row
+              row={child}
+              onTool={onTool}
+              toolFile={toolFile}
+              fileOf={fileOf}
+              onOpenFile={onOpenFile}
+              onOpenSent={onOpenSent}
+              onOpenImage={onOpenImage}
+              revertDisabled={revertDisabled}
+            />
+          )}
+        />
+      );
     case "subagent":
       return (
         <SubagentRow

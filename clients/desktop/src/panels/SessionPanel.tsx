@@ -39,6 +39,7 @@ import { useSlashMenu } from "./SlashCommands";
 import { AgentTerminalCard, AgentTerminalsContext } from "./AgentTerminal";
 import {
   BackgroundWaiting,
+  carriedBlocks,
   HistoryTurnView,
   KeptStateContext,
   LiveTurnView,
@@ -456,6 +457,8 @@ function OpenSession({
   const footers = useMemo(() => new Map((history ? turnGroups(history) : []).map((g) => [g.end, g])), [history]);
   // A prompt already in the history while the agent still answers it has no row yet.
   const runningEnd = running && !view?.live.userMessage && history?.length ? history.length - 1 : -1;
+  // A run of tool calls it ends with folds with the live reply's first ones there.
+  const carried = runningEnd >= 0 && view && !view.settled ? carriedBlocks(turns[runningEnd]!, view.live) : 0;
   // Each launch in the history, by its turn: a background sub-agent can keep
   // working after its turn, and its live work shows under its card there.
   const launchTurns = useMemo(
@@ -571,7 +574,8 @@ function OpenSession({
                       revertDisabled={running || !online}
                       background={view?.background ?? null}
                       ended={i !== runningEnd}
-                      live={lateTurns.has(i) ? view?.live : undefined}
+                      live={lateTurns.has(i) || (i === runningEnd && carried > 0) ? view?.live : undefined}
+                      carried={i === runningEnd ? carried : 0}
                     />
                   ))}
                 </div>
@@ -585,6 +589,7 @@ function OpenSession({
                 animate
                 background={view.background}
                 earlier={earlier}
+                from={carried}
               />
             )}
             {/* The turn is over but its background work is not: say so where the turn ended. */}
@@ -775,6 +780,7 @@ const HistoryRow = memo(function HistoryRow({
   background,
   ended,
   live,
+  carried,
 }: {
   index: number;
   measure(el: HTMLElement | null): void;
@@ -786,6 +792,8 @@ const HistoryRow = memo(function HistoryRow({
   ended: boolean;
   /** Only for a turn whose sub-agent is still adding to the live turn, so the rest do not redraw as it streams. */
   live: LiveTurn | undefined;
+  /** How many of the live turn's first blocks fold with this turn's last run, for the turn still running. */
+  carried: number;
 }) {
   const revert = useCallback(() => onRevert?.(index), [onRevert, index]);
   return (
@@ -797,6 +805,7 @@ const HistoryRow = memo(function HistoryRow({
         background={background}
         ended={ended}
         live={live}
+        carried={carried}
       />
       {group && <TurnFooter group={group} stateKey={`${turn.turn_id}/footer`} />}
     </div>

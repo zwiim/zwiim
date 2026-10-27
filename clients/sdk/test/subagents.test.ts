@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { applyEvent, initialSessionView, reduceSession, type SessionFrame } from "../src/state/session";
 import { historyLaunches, historySubagentCards, lateSubagentBlocks, liveSubagentCards } from "../src/subagents/cards";
-import { subagentDescription, tokensText, waitingText } from "../src/subagents/labels";
+import { runText, subagentDescription, tokensText, waitingText } from "../src/subagents/labels";
 import { modelShortName } from "../src/subagents/model";
 import type { HistoryBlock, HistoryTurn, SessionEvent, SessionSnapshot, ToolCall } from "../src/types/protocol";
 
@@ -495,5 +495,14 @@ describe("sub-agent labels", () => {
   it("counts background tasks in the singular and plural", () => {
     expect(waitingText(1)).toBe("Waiting on 1 background task");
     expect(waitingText(3)).toBe("Waiting on 3 background tasks");
+  });
+
+  it("names a folded run by its tool calls and sub-agents, in the singular and plural", () => {
+    expect(runText(3, 0)).toBe("3 tool calls");
+    expect(runText(1, 0)).toBe("1 tool call");
+    expect(runText(0, 3)).toBe("3 sub-agents");
+    expect(runText(2, 1)).toBe("2 tool calls, 1 sub-agent");
+    expect(runText(1, 2)).toBe("1 tool call, 2 sub-agents");
+    expect(runText(1, 1)).toBe("1 tool call, 1 sub-agent");
   });
 });

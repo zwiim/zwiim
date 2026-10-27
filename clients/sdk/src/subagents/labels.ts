@@ -32,3 +32,11 @@ export function tokensText(n: number): string {
   const count = n < 1000 ? String(Math.round(n)) : n < 999_500 ? short(n / 1000, "k") : short(n / 1_000_000, "M");
   return `${count} tokens`;
 }
+
+/** "3 tool calls", "2 sub-agents", "2 tool calls, 1 sub-agent": what a folded run holds. */
+export function runText(tools: number, subagents: number): string {
+  const calls = `${tools} ${tools === 1 ? "tool call" : "tool calls"}`;
+  const agents = `${subagents} ${subagents === 1 ? "sub-agent" : "sub-agents"}`;
+  if (subagents === 0) return calls;
+  return tools === 0 ? agents : `${calls}, ${agents}`;
+}

@@ -396,7 +396,10 @@ Top to bottom:
   - thoughts: collapsed single mono row `◦ Thinking…` (tap to expand, `mut`).
   - tool calls: one mono row each: status glyph (`✓` done, `✕` failed, breathing
     dot running), **kind** (`fg`), target (`mut`), diff counts in `done`/`err`.
-    Three or more consecutive tool calls fold into `▸ n tool calls`. Tap a row → tool detail sheet
+    Three or more consecutive tool calls and sub-agent cards fold into `▸ n tool calls`,
+    `▸ m sub-agents` or `▸ n tool calls, m sub-agents` (`1 tool call`, `1 sub-agent`), with
+    ` · n failed` counting failed sub-agents too and the breathing dot while any of them runs;
+    a run joins across the history's end into the live turn. Tap a row → tool detail sheet
     (command output, diff).
   - **since you left** divider: accent mono label with the count of events since
     the device last saw this session; auto-scroll lands on it on open.
@@ -714,11 +717,15 @@ glyph, a title, one line, one action.
   agent offers it; picking Auto takes one click, with no confirmation. The chip
   stays `brand` and the composer keeps its Auto note with **Ask first again**.
   The phone still says Unattended and asks first.
-- Desktop folds three or more consecutive tool calls into one row, as the
-  phone does: a layers icon, `n tool calls` (shimmering while one runs) and
-  `n failed` in `destructive`. It opens to the calls' own rows behind a left
-  rule, as a sub-agent card does, and a history run stays open as it was left.
-  A blank text between calls does not split a run; a reply does.
+- Desktop folds three or more consecutive tool calls and sub-agent cards into
+  one row, as the phone does: a layers icon, `n tool calls`, `m sub-agents` or
+  `n tool calls, m sub-agents` (shimmering while a call or a sub-agent runs) and
+  `n failed` in `destructive`, failed sub-agents counted with failed calls. It
+  opens to its own rows behind a left rule, as a sub-agent card does, and a
+  history run stays open as it was left. A blank text between calls does not
+  split a run; a reply, a thought or an image does. While a turn runs, a run
+  its history ends with folds on with the live reply's first calls as one row,
+  which keeps the history row's place and open state.
 - Desktop opens an agent's image from one place: the compact chip (image icon
   and name, no thumbnail) on the tool row that read it; click opens the picture
   in the preview panel. A workspace image linked in the agent's text shows

@@ -2,16 +2,18 @@
 // transcript's rows, the Now bar and the composer. They draw what they are
 // given; the screen decides what that is.
 
-import { useEffect, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
 import { basename, formatSize, revertWarning, type AgentImage, type AttachmentBlock, type ChangedFile, type RevertChoice } from "@zwiim/sdk";
 import type { PendingFile } from "../attachments/pending";
 import { revertCopy } from "../sessions/revert";
 import { useNow } from "../app/hooks";
 import {
+  runSummary,
   subagentLabel,
   subagentShown,
   subagentTime,
+  type FoldedRow,
   type SubagentItem,
   type ToolItem,
   type TranscriptRow,
@@ -388,20 +390,14 @@ export function ToolRow({ tool, onPress, opens }: { tool: ToolItem; onPress?(): 
   );
 }
 
-/** Three or more tool calls in a row: `▸ n tool calls`, open to list them. */
-export function ToolGroup({
-  tools,
-  onOpen,
-  opens,
-}: {
-  tools: ToolItem[];
-  onOpen(tool: ToolItem): void;
-  opens?(tool: ToolItem): boolean;
-}) {
+/**
+ * Three or more tool calls and sub-agents in a row: `▸ n tool calls, m
+ * sub-agents`, open to list them, each drawn by `renderRow`.
+ */
+export function ToolGroup({ rows, renderRow }: { rows: FoldedRow[]; renderRow(row: FoldedRow): ReactNode }) {
   const theme = useTheme();
   const [open, setOpen] = useState(false);
-  const running = tools.some((t) => t.state === "running");
-  const failed = tools.filter((t) => t.state === "failed").length;
+  const { text, failed, running } = runSummary(rows);
   return (
     <View>
       <Pressable
@@ -416,12 +412,12 @@ export function ToolGroup({
           {open ? "▾" : "▸"}
         </T>
         <T variant="mono" numberOfLines={1} style={styles.shrink}>
-          {`${tools.length} tool calls`}
+          {text}
           {failed ? <T variant="mono" color={theme.err}>{` · ${failed} failed`}</T> : null}
         </T>
         {running ? <StatusDot state="work" /> : null}
       </Pressable>
-      {open ? tools.map((t, i) => <ToolRow key={i} tool={t} onPress={() => onOpen(t)} opens={opens?.(t)} />) : null}
+      {open ? rows.map((r) => <Fragment key={r.key}>{renderRow(r)}</Fragment>) : null}
     </View>
   );
 }

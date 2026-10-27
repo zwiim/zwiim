@@ -30,6 +30,7 @@ import {
   lateSubagentBlocks,
   liveSubagentCards,
   modelShortName,
+  runText,
   subagentDescription,
   tokensText,
   turnDuration,
@@ -580,18 +581,29 @@ export const ToolCallView = memo(function ToolCallView(props: ToolCallProps) {
   );
 }, sameToolCall);
 
-/** One row of a reply; a tool call's says what its run's summary counts. */
+/** One row of a reply; a tool call's or sub-agent's says what its run's summary counts. */
 interface ReplyRow {
   node: React.ReactNode;
-  tool?: { failed: boolean; running: boolean };
+  tool?: { failed: boolean; running: boolean; subagent?: boolean };
 }
 
-/** Consecutive tool calls fold into one row from this many, as on the phone. */
+/** Consecutive tool calls and sub-agents fold into one row from this many, as on the phone. */
 const FOLD_AT = 3;
 
+/** A sub-agent card's row: it folds into a run as a tool call does. */
+const cardRow = (node: React.ReactNode, card: SubagentCard<unknown>): ReplyRow => ({
+  node,
+  tool: {
+    failed: card.status === "failed",
+    running: card.status === "in_progress" || card.status === "pending",
+    subagent: true,
+  },
+});
+
 /**
- * A reply's rows, each run of `FOLD_AT` or more tool calls folded into one
- * row. A run's open state is kept under `scope` and its first call's place.
+ * A reply's rows, each run of `FOLD_AT` or more tool calls and sub-agents
+ * folded into one row. A run's open state is kept under `scope` and its
+ * first row's place.
  */
 function foldRuns(rows: readonly (ReplyRow | null)[], scope?: string, className?: string): React.ReactNode[] {
   const out: React.ReactNode[] = [];
@@ -617,8 +629,9 @@ function foldRuns(rows: readonly (ReplyRow | null)[], scope?: string, className?
   return out;
 }
 
-/** A run of tool calls: `n tool calls` and how many failed, open to list them. */
+/** A run of tool calls and sub-agents: how many of each and how many failed, open to list them. */
 function ToolRun({ rows, stateKey, className }: { rows: readonly ReplyRow[]; stateKey?: string; className?: string }) {
+  const agents = rows.filter((r) => r.tool?.subagent).length;
   const failed = rows.filter((r) => r.tool?.failed).length;
   const running = rows.some((r) => r.tool?.running);
   return (
@@ -632,7 +645,7 @@ function ToolRun({ rows, stateKey, className }: { rows: readonly ReplyRow[]; sta
             <span
               className={cn("text-foreground/90 shrink-0", running && "animate-shimmer motion-reduce:animate-none")}
             >
-              {rows.length} tool calls
+              {runText(rows.length - agents, agents)}
             </span>
             {failed > 0 && (
               <span className="text-destructive flex shrink-0 items-center gap-0.5 text-xs">
@@ -864,6 +877,7 @@ export const HistoryTurnView = memo(function HistoryTurnView({
   background,
   ended = true,
   live,
+  carried,
 }: {
   turn: HistoryTurn;
   /** Offered on a message the Host can put the session back to. */
@@ -873,8 +887,10 @@ export const HistoryTurnView = memo(function HistoryTurnView({
   background?: SessionBackground | null;
   /** False while the turn may still be running: an unfinished sub-agent is not yet interrupted. */
   ended?: boolean;
-  /** The live turn, when a sub-agent this turn launched is still adding to it. */
+  /** The live turn, when a sub-agent this turn launched is still adding to it, or it carries on this turn's run. */
   live?: LiveTurn;
+  /** How many of the live turn's first blocks show here, folding with this turn's last run. */
+  carried?: number;
 }) {
   if (turn.role === "user") {
     const text = userText(turn.blocks);
@@ -904,15 +920,26 @@ export const HistoryTurnView = memo(function HistoryTurnView({
         scope={turn.turn_id}
         ended={ended}
         live={live}
+        carried={carried}
       />
     </div>
   );
 });
 
 /**
+ * Whether a result shows on its own row: one with a call is shown with it,
+ * and one without shows only its images or error.
+ */
+function shownResult(b: Extract<HistoryBlock, { type: "tool_result" }>, called: ReadonlySet<string>): boolean {
+  if (b.tool_call_id && called.has(b.tool_call_id)) return false;
+  return !!b.images?.length || !!(b.is_error && b.output_preview);
+}
+
+/**
  * A reply's blocks as the transcript shows them, or a sub-agent's: its
  * launches (the tool calls that started a sub-agent) as sub-agent cards. A
  * card ends with what its sub-agent did since the transcript was loaded.
+ * The live reply's first `carried` blocks follow, folding with its last run.
  */
 function HistoryBlocks({
   blocks,
@@ -920,6 +947,7 @@ function HistoryBlocks({
   scope,
   ended,
   live,
+  carried = 0,
 }: {
   blocks: readonly HistoryBlock[];
   background: SessionBackground | null;
@@ -927,6 +955,7 @@ function HistoryBlocks({
   scope: string;
   ended: boolean;
   live: LiveTurn | undefined;
+  carried?: number;
 }) {
   // A result is shown with its call; one without a call stands alone.
   const results = new Map<string, Extract<HistoryBlock, { type: "tool_result" }>>();
@@ -951,27 +980,26 @@ function HistoryBlocks({
           const images = results.get(card.parent_id)?.images;
           const key = `agent:${launches++}`;
           const stateKey = `${scope}/${key}`;
-          return {
-            node: (
-              <SubagentCardView key={key} card={card} title={b.title} images={images} stateKey={stateKey}>
-                {() => {
-                  const late = live ? lateSubagentBlocks(card, live) : [];
-                  return (
-                    <>
-                      <HistoryBlocks
-                        blocks={card.blocks}
-                        background={background}
-                        scope={stateKey}
-                        ended={ended && card.status !== "in_progress"}
-                        live={live}
-                      />
-                      {live && late.length > 0 && <LiveBlocks turn={live} blocks={late} background={background} />}
-                    </>
-                  );
-                }}
-              </SubagentCardView>
-            ),
-          };
+          return cardRow(
+            <SubagentCardView key={key} card={card} title={b.title} images={images} stateKey={stateKey}>
+              {() => {
+                const late = live ? lateSubagentBlocks(card, live) : [];
+                return (
+                  <>
+                    <HistoryBlocks
+                      blocks={card.blocks}
+                      background={background}
+                      scope={stateKey}
+                      ended={ended && card.status !== "in_progress"}
+                      live={live}
+                    />
+                    {live && late.length > 0 && <LiveBlocks turn={live} blocks={late} background={background} />}
+                  </>
+                );
+              }}
+            </SubagentCardView>,
+            card,
+          );
         }
         const r = b.tool_call_id ? results.get(b.tool_call_id) : undefined;
         // Agents' transcripts often omit the status; a result means it ran.
@@ -995,8 +1023,7 @@ function HistoryBlocks({
         };
       }
       case "tool_result":
-        if (b.tool_call_id && called.has(b.tool_call_id)) return null;
-        if (!b.images?.length && !(b.is_error && b.output_preview)) return null;
+        if (!shownResult(b, called)) return null;
         return {
           node: (
             <Fragment key={i}>
@@ -1019,6 +1046,14 @@ function HistoryBlocks({
         return null;
     }
   });
+  if (live && carried > 0) {
+    const more = live.message?.content.slice(0, carried) ?? [];
+    const cardView = liveCardView(live, background, ENTER);
+    const moreRows = liveRows(live, more, liveSubagentCards(live, more, background), cardView, ENTER);
+    // Keyed apart from the history's own rows.
+    for (const [i, r] of moreRows.entries())
+      rows.push(r && { ...r, node: <Fragment key={`live:${i}`}>{r.node}</Fragment> });
+  }
   return <>{foldRuns(rows, scope)}</>;
 }
 
@@ -1032,6 +1067,7 @@ export function LiveTurnView({
   animate,
   background,
   earlier,
+  from,
 }: {
   turn: LiveTurn;
   streaming?: boolean;
@@ -1040,6 +1076,8 @@ export function LiveTurnView({
   background?: SessionBackground | null;
   /** Launches in the history: their sub-agents' live work shows under their cards there. */
   earlier?: ReadonlySet<string>;
+  /** How many of its first blocks show in the history, folded with the run the turn there ends with. */
+  from?: number;
 }) {
   const text = turn.userMessage ? userText(turn.userMessage.blocks) : "";
   const enter = animate ? ENTER : undefined;
@@ -1047,7 +1085,7 @@ export function LiveTurnView({
   return (
     <div className="text-body flex flex-col gap-2.5" data-testid="live-turn">
       {turn.userMessage && <UserMessage text={text} blocks={turn.userMessage.blocks} className={enter} />}
-      <LiveBlocks turn={turn} background={background ?? null} enter={enter} earlier={earlier} />
+      <LiveBlocks turn={turn} background={background ?? null} enter={enter} earlier={earlier} from={from} />
       {streaming && <Working className={enter} turnId={turn.userMessage?.message_id} />}
     </div>
   );
@@ -1057,7 +1095,7 @@ export function LiveTurnView({
  * The live reply's blocks, or (given `blocks`) a sub-agent's: its launches
  * as sub-agent cards. The reply's also ends with any sub-agent whose launch
  * it does not hold, so nothing a sub-agent did is hidden, unless its launch
- * is in `earlier`.
+ * is in `earlier`. Its first `from` blocks show in the history instead.
  */
 function LiveBlocks({
   turn,
@@ -1065,21 +1103,33 @@ function LiveBlocks({
   background,
   enter,
   earlier,
+  from = 0,
 }: {
   turn: LiveTurn;
   blocks?: readonly LiveBlock[];
   background: SessionBackground | null;
   enter?: string;
   earlier?: ReadonlySet<string>;
+  from?: number;
 }) {
   const scope = blocks ?? turn.message?.content ?? [];
   const all = liveSubagentCards(turn, blocks, background, earlier);
-  const cards = new Map(all.map((c) => [c.parent_id, c]));
   const inScope = new Set(scope.flatMap((b) => (b.type === "tool_call" ? [b.tool_call_id] : [])));
   const orphans = all.filter((c) => !inScope.has(c.parent_id));
-  // Cards keep their open state by launch order within the turn, never by id.
+  const cardView = liveCardView(turn, background, enter);
+  const rows = liveRows(turn, scope, all, cardView, enter).map((r, i) => (i < from ? null : r));
+  return (
+    <>
+      {foldRuns(rows, undefined, enter)}
+      {orphans.map(cardView)}
+    </>
+  );
+}
+
+/** Draws a live turn's sub-agent cards; they keep their open state by launch order within the turn, never by id. */
+function liveCardView(turn: LiveTurn, background: SessionBackground | null, enter?: string) {
   let launches = 0;
-  const cardView = (card: SubagentCard<LiveBlock>) => (
+  return (card: SubagentCard<LiveBlock>) => (
     <SubagentCardView
       key={`agent:${launches++}`}
       className={enter}
@@ -1090,12 +1140,23 @@ function LiveBlocks({
       {() => <LiveBlocks turn={turn} blocks={card.blocks} background={background} />}
     </SubagentCardView>
   );
-  const rows = scope.map((b, i): ReplyRow | null => {
+}
+
+/** The rows of a live turn's `scope`, its launches drawn by `cardView`. */
+function liveRows(
+  turn: LiveTurn,
+  scope: readonly LiveBlock[],
+  all: readonly SubagentCard<LiveBlock>[],
+  cardView: (card: SubagentCard<LiveBlock>) => React.ReactNode,
+  enter?: string,
+): (ReplyRow | null)[] {
+  const cards = new Map(all.map((c) => [c.parent_id, c]));
+  return scope.map((b, i): ReplyRow | null => {
     if (b.type === "text") return b.text.trim() ? { node: <Markdown key={i} className={enter} text={b.text} /> } : null;
     if (b.type === "thought") return { node: <Thought key={i} className={enter} text={b.text} /> };
     if (b.type === "agent_image") return { node: <AgentImageChip key={i} path={b.path} name={b.name} /> };
     const card = cards.get(b.tool_call_id);
-    if (card) return { node: cardView(card) };
+    if (card) return cardRow(cardView(card), card);
     const tc: ToolCall | undefined = turn.toolCalls[b.tool_call_id];
     const status = tc?.status ?? null;
     return {
@@ -1115,12 +1176,32 @@ function LiveBlocks({
       },
     };
   });
-  return (
-    <>
-      {foldRuns(rows, undefined, enter)}
-      {orphans.map(cardView)}
-    </>
+}
+
+/**
+ * How many of the live reply's first blocks carry on the run of tool calls
+ * and sub-agents `turn` ends with: the history's turn the agent is still
+ * running, and those blocks fold with its run there. None when it ends
+ * otherwise.
+ */
+export function carriedBlocks(turn: HistoryTurn, live: LiveTurn): number {
+  if (turn.role === "user") return 0;
+  const called = new Set(
+    turn.blocks.flatMap((b) => (b.type === "tool_call" && b.tool_call_id ? [b.tool_call_id] : [])),
   );
+  // Its last block that shows as a row, as HistoryBlocks draws them.
+  const last = [...turn.blocks].reverse().find((b) => {
+    if (b.type === "text") return !!b.text.trim();
+    if (b.type === "tool_result") return shownResult(b, called);
+    return b.type === "thought" || b.type === "tool_call" || b.type === "agent_image";
+  });
+  if (last?.type !== "tool_call") return 0;
+  let n = 0;
+  for (const [i, b] of (live.message?.content ?? []).entries()) {
+    if (b.type === "tool_call") n = i + 1;
+    else if (b.type !== "text" || b.text.trim()) break;
+  }
+  return n;
 }
 
 /** When each live turn was first seen, so its timer survives a remount (switching sessions). */

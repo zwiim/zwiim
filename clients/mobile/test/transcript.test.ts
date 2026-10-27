@@ -22,6 +22,7 @@ import {
   duration,
   historyBefore,
   nowState,
+  runSummary,
   subagentShown,
   subagentTime,
   transcriptBuilder,
@@ -253,7 +254,12 @@ describe("sub-agent cards", () => {
     expect(types(v)).toEqual(["user", "agent", "subagent", "subagent"]);
     const first = agentOf(v);
     expect(first.tools).toBe(4);
-    const nested = first.rows.find((r): r is Extract<TranscriptRow, { type: "subagent" }> => r.type === "subagent")!;
+    // It folds with the three tool calls before it.
+    expect(first.rows.map((r) => r.type)).toEqual(["thought", "agent", "tools"]);
+    const run = first.rows.at(-1)!;
+    const nested = (run.type === "tools" ? run.rows : []).find(
+      (r): r is Extract<TranscriptRow, { type: "subagent" }> => r.type === "subagent",
+    )!;
     expect(nested.key).toBe("live:u1:agent0:agent0");
     expect(nested.agent).toMatchObject({ description: "Dig deeper", state: "running" });
     expect(nested.agent.rows).toEqual([expect.objectContaining({ type: "agent", text: "deep result" })]);
@@ -515,7 +521,13 @@ describe("transcript", () => {
         ]),
       ]),
     );
-    const tools = transcriptRows(v).flatMap((r) => (r.type === "tools" ? r.tools : r.type === "tool" ? [r.tool] : []));
+    const tools = transcriptRows(v).flatMap((r) =>
+      r.type === "tools"
+        ? r.rows.flatMap((t) => (t.type === "tool" ? [t.tool] : []))
+        : r.type === "tool"
+          ? [r.tool]
+          : [],
+    );
     expect(tools.map((t) => [t.verb, t.target, t.state, t.input])).toEqual([
       ["Run", "cargo test", "done", "cargo test"],
       ["Read", "src/lib.rs", "idle", '{\n  "file_path": "src/lib.rs"\n}'],
@@ -550,13 +562,46 @@ describe("transcript", () => {
     const rows = transcriptRows(v);
     expect(rows.map((r) => r.type)).toEqual(["user", "tools", "agent", "tool"]);
     const group = rows[1]!;
-    expect(group.type === "tools" && group.tools.map((t) => [t.verb, t.target, t.state])).toEqual([
+    expect(
+      group.type === "tools" && group.rows.map((t) => t.type === "tool" && [t.tool.verb, t.tool.target, t.tool.state]),
+    ).toEqual([
       [null, "Read src/a.ts", "done"],
       ["Read", "src/b.ts", "done"],
       ["Search", "grep foo", "failed"],
     ]);
     const edit = rows[3]!;
     expect(edit.type === "tool" && [edit.tool.added, edit.tool.removed]).toEqual([2, 1]);
+  });
+
+  it("folds sub-agents in with the tool calls, counting a failed one with the failed calls", () => {
+    const launch = (id: string, status: string) =>
+      ev("agent.tool_call", {
+        tool_call_id: id,
+        title: "Agent",
+        kind: "other",
+        status,
+        content: null,
+        subagent: { description: "Survey" },
+      } as never);
+    const v = view(
+      user("m1", "Look around"),
+      tool("t1", "Read src/a.ts", "read", "completed"),
+      launch("a1", "failed"),
+      tool("t2", "grep foo", "search", "failed"),
+    );
+    const rows = transcriptRows(play(v, delta("Found it")));
+    expect(rows.map((r) => r.type)).toEqual(["user", "tools", "agent"]);
+    const group = rows[1]!;
+    if (group.type !== "tools") throw new Error("not folded");
+    expect(group.rows.map((r) => r.type)).toEqual(["tool", "subagent", "tool"]);
+    expect(runSummary(group.rows)).toEqual({ text: "2 tool calls, 1 sub-agent", failed: 2, running: false });
+    // A running sub-agent keeps the fold running once its tool calls are done.
+    const busy = transcriptRows(play(v, launch("a2", "in_progress"))).find((r) => r.type === "tools");
+    expect(busy?.type === "tools" && runSummary(busy.rows)).toEqual({
+      text: "2 tool calls, 2 sub-agents",
+      failed: 2,
+      running: true,
+    });
   });
 
   it("says a stopped turn stopped before the history has it, and keeps saying so after", () => {
@@ -605,7 +650,11 @@ describe("transcript", () => {
     expect(rows[5]).toMatchObject({ text: `5s · ${clockTime("2026-09-26T10:10:05Z")}`, files: [] });
     // An edit row names its file, to open it.
     const tools = rows[1]!;
-    expect(tools.type === "tools" && tools.tools.map((t) => t.path)).toEqual(["src/a.ts", "src/b.ts", "src/a.ts"]);
+    expect(tools.type === "tools" && tools.rows.map((t) => t.type === "tool" && t.tool.path)).toEqual([
+      "src/a.ts",
+      "src/b.ts",
+      "src/a.ts",
+    ]);
   });
 
   it("has no row for the prompt the agent is still answering", () => {
@@ -767,6 +816,52 @@ describe("redrawing the transcript", () => {
     build(v1);
     expect(build(v2).map((r) => r.type)).toEqual(["tools"]);
     expect(build(v2)).toEqual(transcriptBuilder()(v2));
+  });
+
+  it("folds sub-agents into a run across the history's end and the live turn", () => {
+    const build = transcriptBuilder();
+    const midTurn = history([
+      turn("a1", "assistant", [
+        {
+          type: "tool_call",
+          tool_call_id: "t1",
+          title: "Read",
+          input_preview: '{"file_path":"src/a.ts"}',
+          status: null,
+        },
+        {
+          type: "tool_call",
+          tool_call_id: "s1",
+          title: "Task",
+          input_preview: null,
+          status: null,
+          subagent: { description: "Survey", blocks: [] },
+        },
+      ]),
+    ]);
+    const v1 = reduceSession(view(midTurn), snapshot("prompting"));
+    const v2 = play(v1, tool("t3", "Read src/c.ts", "read"));
+    const v3 = play(
+      v2,
+      ev("agent.tool_call", {
+        tool_call_id: "s2",
+        title: "Agent",
+        kind: "other",
+        status: "in_progress",
+        content: null,
+        subagent: { description: "Review" },
+      } as never),
+    );
+    build(v1);
+    const rows = build(v3);
+    expect(rows.map((r) => r.type)).toEqual(["tools"]);
+    expect(rows[0]!.type === "tools" && rows[0]!.rows.map((r) => r.type)).toEqual([
+      "tool",
+      "subagent",
+      "tool",
+      "subagent",
+    ]);
+    expect(rows).toEqual(transcriptBuilder()(v3));
   });
 });
 
