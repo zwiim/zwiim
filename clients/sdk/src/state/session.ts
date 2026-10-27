@@ -170,12 +170,29 @@ const blockText = (blocks: readonly { type: string; text?: string }[]) =>
  */
 export function historyCovers(turns: readonly HistoryTurn[], settled: LiveTurn): boolean {
   if (settled.userMessage === null) return true; // nothing to match against
-  const text = blockText(settled.userMessage.blocks);
-  let i = turns.length - 1;
-  while (i >= 0 && !(turns[i]!.role === "user" && blockText(turns[i]!.blocks) === text)) i--;
+  const i = sentAt(turns, settled.userMessage);
   if (i < 0) return false;
   if (settled.message === null) return true;
   return turns.slice(i + 1).some((t) => t.role === "assistant");
+}
+
+/** Where in `turns` the message sent live is: the last user turn with its text, or -1. */
+function sentAt(turns: readonly HistoryTurn[], message: PendingUserMessage): number {
+  const text = blockText(message.blocks);
+  let i = turns.length - 1;
+  while (i >= 0 && !(turns[i]!.role === "user" && blockText(turns[i]!.blocks) === text)) i--;
+  return i;
+}
+
+/** The reply in a loaded transcript to a message sent live, as `historyCovers` matches it. */
+export function historyReply(turns: readonly HistoryTurn[], message: PendingUserMessage): HistoryTurn | undefined {
+  const i = sentAt(turns, message);
+  if (i < 0) return undefined;
+  for (const t of turns.slice(i + 1)) {
+    if (t.role === "user") return undefined;
+    if (t.role === "assistant") return t;
+  }
+  return undefined;
 }
 
 export function initialSessionView(session_id: string): SessionView {

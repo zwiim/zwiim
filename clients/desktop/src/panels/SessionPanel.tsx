@@ -5,6 +5,7 @@ import {
   effortFor,
   hasCapability,
   historyLaunches,
+  historyReply,
   isClientError,
   offersChatRewind,
   optionUnavailableDetails,
@@ -17,6 +18,7 @@ import {
   type LiveTurn,
   type OpParams,
   type OptionsRequest,
+  type PendingUserMessage,
   type PromptBlock,
   type RevertChoice,
   type SessionBackground,
@@ -40,9 +42,12 @@ import { AgentTerminalCard, AgentTerminalsContext } from "./AgentTerminal";
 import {
   BackgroundWaiting,
   carriedBlocks,
+  continuedKeys,
   HistoryTurnView,
   KeptStateContext,
   LiveTurnView,
+  moveKept,
+  sentKeys,
   stopReasonText,
   TurnFooter,
   type KeptState,
@@ -415,6 +420,21 @@ function OpenSession({
   const scroller = useRef<HTMLDivElement>(null);
   const history = view?.history;
   const turns = history ?? NO_TURNS;
+  // What a new turn opens is kept under its message until the history has the
+  // turn, then under its reply there, before that reply's row first draws. A
+  // history read before the turn ended (back after it ended while away) waits
+  // for the fresh one.
+  const sent = useRef(new Map<string, PendingUserMessage>());
+  for (const t of [view?.settled, view?.live])
+    if (t?.userMessage) sent.current.set(t.userMessage.message_id, t.userMessage);
+  if (history && !view?.historyStale) {
+    for (const [id, message] of sent.current) {
+      if (id === view?.settled?.userMessage?.message_id || id === view?.live.userMessage?.message_id) continue;
+      const reply = historyReply(history, message);
+      if (reply) moveKept(kept, `live:${id}/`, `${reply.turn_id}/`);
+      sent.current.delete(id);
+    }
+  }
   // Only the history rows in and near view are mounted; the live turn and
   // what follows it always are.
   const list = useRef<HTMLDivElement>(null);
@@ -455,10 +475,20 @@ function OpenSession({
   const [optionsBusy, setOptionsBusy] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const footers = useMemo(() => new Map((history ? turnGroups(history) : []).map((g) => [g.end, g])), [history]);
-  // A prompt already in the history while the agent still answers it has no row yet.
-  const runningEnd = running && !view?.live.userMessage && history?.length ? history.length - 1 : -1;
-  // A run of tool calls it ends with folds with the live reply's first ones there.
-  const carried = runningEnd >= 0 && view && !view.settled ? carriedBlocks(turns[runningEnd]!, view.live) : 0;
+  // A prompt already in the history while the agent still answers it has no
+  // row yet, nor once it has finished until the history has the turn: that
+  // live turn carries on the history's last.
+  const tail = running ? view?.live : view?.settled;
+  // So while a finished turn the history lacks carries on it, the history's
+  // last turn reads unended too, with no footer.
+  const runningEnd = tail && !tail.userMessage && history?.length ? history.length - 1 : -1;
+  // A run of tool calls it ends with folds with the live reply's first ones
+  // there, and what that reply opens is kept as the history will key it;
+  // not when a finished turn the history lacks comes between them.
+  const continues = tail && runningEnd >= 0 && !(running && view?.settled) ? tail : undefined;
+  const carried = continues ? carriedBlocks(turns[runningEnd]!, continues) : 0;
+  const continued = continues ? turns[runningEnd] : undefined;
+  const keys = useMemo(() => continued && continuedKeys(continued), [continued]);
   // Each launch in the history, by its turn: a background sub-agent can keep
   // working after its turn, and its live work shows under its card there.
   const launchTurns = useMemo(
@@ -551,8 +581,9 @@ function OpenSession({
               </p>
             )}
             {empty && <p className="text-muted-foreground py-10 text-center">No messages yet.</p>}
-            {turns.length > 0 && (
-              <KeptStateContext.Provider value={kept}>
+            {/* What is open in the history and the live turn that carries on it. */}
+            <KeptStateContext.Provider value={kept}>
+              {turns.length > 0 && (
                 <div
                   ref={list}
                   className="flex flex-col gap-5"
@@ -574,24 +605,34 @@ function OpenSession({
                       revertDisabled={running || !online}
                       background={view?.background ?? null}
                       ended={i !== runningEnd}
-                      live={lateTurns.has(i) || (i === runningEnd && carried > 0) ? view?.live : undefined}
+                      live={lateTurns.has(i) ? view?.live : undefined}
+                      carry={i === runningEnd && carried > 0 ? continues : undefined}
                       carried={i === runningEnd ? carried : 0}
                     />
                   ))}
                 </div>
-              </KeptStateContext.Provider>
-            )}
-            {view?.settled && <LiveTurnView turn={view.settled} background={view.background} earlier={earlier} />}
-            {view && (
-              <LiveTurnView
-                turn={view.live}
-                streaming={running}
-                animate
-                background={view.background}
-                earlier={earlier}
-                from={carried}
-              />
-            )}
+              )}
+              {view?.settled && (
+                <LiveTurnView
+                  turn={view.settled}
+                  background={view.background}
+                  earlier={earlier}
+                  from={continues === view.settled ? carried : 0}
+                  keys={continues === view.settled ? keys : sentKeys(view.settled)}
+                />
+              )}
+              {view && (
+                <LiveTurnView
+                  turn={view.live}
+                  streaming={running}
+                  animate
+                  background={view.background}
+                  earlier={earlier}
+                  from={continues === view.live ? carried : 0}
+                  keys={continues === view.live ? keys : sentKeys(view.live)}
+                />
+              )}
+            </KeptStateContext.Provider>
             {/* The turn is over but its background work is not: say so where the turn ended. */}
             <BackgroundWaiting background={view?.background} className="animate-fade-in motion-reduce:animate-none" />
             {stopped && (
@@ -780,6 +821,7 @@ const HistoryRow = memo(function HistoryRow({
   background,
   ended,
   live,
+  carry,
   carried,
 }: {
   index: number;
@@ -792,7 +834,9 @@ const HistoryRow = memo(function HistoryRow({
   ended: boolean;
   /** Only for a turn whose sub-agent is still adding to the live turn, so the rest do not redraw as it streams. */
   live: LiveTurn | undefined;
-  /** How many of the live turn's first blocks fold with this turn's last run, for the turn still running. */
+  /** The live turn that carries on this one's run, running or just finished and not yet in the history. */
+  carry: LiveTurn | undefined;
+  /** How many of `carry`'s first blocks fold with this turn's last run. */
   carried: number;
 }) {
   const revert = useCallback(() => onRevert?.(index), [onRevert, index]);
@@ -805,6 +849,7 @@ const HistoryRow = memo(function HistoryRow({
         background={background}
         ended={ended}
         live={live}
+        carry={carry}
         carried={carried}
       />
       {group && <TurnFooter group={group} stateKey={`${turn.turn_id}/footer`} />}

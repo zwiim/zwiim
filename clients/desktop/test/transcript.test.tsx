@@ -929,6 +929,95 @@ describe("tool runs", () => {
     expect(within(screen.getByTestId("live-turn")).getAllByTestId("tool-call")).toHaveLength(1);
     controller.dispose();
   });
+
+  /** The history holds the turn the agent is still running, which ends with a call; the live reply goes on with more. */
+  async function runningTurn(t: FakeTransport, before: HistoryTurn["blocks"]) {
+    const user = turn("u1", "user", [{ type: "text", text: "go" }]);
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [user, turn("a1", "assistant", before)],
+    });
+    const opened = await openSession(t);
+    await opened.frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+    const start = (seq: number, id: string) =>
+      opened.frame({
+        type: "event",
+        event: {
+          session_id: "s1",
+          seq,
+          type: "agent.tool_call",
+          payload: { tool_call_id: id, title: `Read ${id}.ts`, kind: "read", status: "completed", content: "out" },
+        },
+      });
+    const history = (after: HistoryTurn["blocks"]) => (p: { session_id: string }) => ({
+      session_id: p.session_id,
+      turns: [user, turn("a1", "assistant", after)],
+    });
+    const finish = (seq: number) =>
+      opened.frame({
+        type: "event",
+        event: { session_id: "s1", seq, type: "agent.turn_complete", payload: { stop_reason: "end_turn" } },
+      });
+    return { ...opened, start, history, finish };
+  }
+  const expanded = (el: HTMLElement) => within(el).getAllByRole("button")[0]!.getAttribute("aria-expanded");
+
+  it("keeps a call opened live open as it folds and once the history has it", async () => {
+    const t = new FakeTransport();
+    const before = [call("c1", "Read", "a.ts"), result("c1")];
+    const { controller, start, history, finish } = await runningTurn(t, before);
+    await start(2, "c2");
+    fireEvent.click(within(screen.getAllByTestId("tool-call")[1]!).getAllByRole("button")[0]!);
+
+    // A third call folds the run: the call is still open inside it.
+    await start(3, "c3");
+    const run = screen.getByTestId("tool-run");
+    fireEvent.click(within(run).getAllByRole("button")[0]!);
+    expect(within(run).getAllByTestId("tool-call").map(expanded)).toEqual(["false", "true", "false"]);
+
+    t.handlers["session.history"] = history([
+      ...before,
+      call("c2", "Read", "c2.ts"),
+      result("c2"),
+      call("c3", "Read", "c3.ts"),
+      result("c3"),
+    ]);
+    await finish(4);
+    await act(() => tick());
+    const calls = within(screen.getByTestId("tool-run")).getAllByTestId("tool-call");
+    expect(calls.map(expanded)).toEqual(["false", "true", "false"]);
+    controller.dispose();
+  });
+
+  it("keeps the run carried on into a finished turn as one fold until the history has the turn", async () => {
+    const t = new FakeTransport();
+    const before = [call("c1", "Read", "a.ts"), result("c1"), call("c2", "Read", "b.ts"), result("c2")];
+    const { controller, start, history, finish } = await runningTurn(t, before);
+    await start(2, "c3");
+    const run = screen.getByTestId("tool-run");
+    const row = within(run).getAllByRole("button")[0]!;
+    fireEvent.click(row);
+
+    // The turn ends; the history is slow to come back.
+    let reload: () => void = () => {};
+    const slow = history([...before, call("c3", "Read", "c3.ts"), result("c3")]);
+    t.handlers["session.history"] = (p) => new Promise((done) => (reload = () => done(slow(p))));
+    await finish(3);
+    await act(() => tick());
+    expect(screen.getAllByTestId("tool-run")).toEqual([run]);
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    expect(within(run).getAllByTestId("tool-call")).toHaveLength(3);
+    for (const live of screen.queryAllByTestId("live-turn"))
+      expect(within(live).queryAllByTestId("tool-call")).toHaveLength(0);
+
+    await act(async () => reload());
+    await act(() => tick());
+    const runs = screen.getAllByTestId("tool-run");
+    expect(runs).toHaveLength(1);
+    expect(expanded(runs[0]!)).toBe("true");
+    expect(within(runs[0]!).getAllByTestId("tool-call")).toHaveLength(3);
+    controller.dispose();
+  });
 });
 
 describe("changed files", () => {
@@ -1478,6 +1567,160 @@ describe("sub-agent cards", () => {
     expect(screen.queryByText("orphan says")).toBeNull();
     fireEvent.click(row(orphan!));
     expect(within(orphan!).getByText("orphan says")).toBeTruthy();
+    controller.dispose();
+  });
+
+  it("folds a sub-agent whose launch is not in the reply with the run it follows", async () => {
+    const t = new FakeTransport();
+    const { controller, frame } = await openSession(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+    await frame(
+      event(2, "agent.tool_call", {
+        tool_call_id: "c1",
+        title: "Read a.ts",
+        kind: "read",
+        status: "completed",
+        content: null,
+      }),
+    );
+    await frame(
+      event(3, "agent.tool_call", {
+        tool_call_id: "c2",
+        title: "Read b.ts",
+        kind: "read",
+        status: "completed",
+        content: null,
+      }),
+    );
+    await frame(event(4, "agent.subagent_message_delta", { parent_id: "x9", text: "orphan says" }));
+    const run = screen.getByTestId("tool-run");
+    expect(within(run).getAllByRole("button")[0]!.textContent).toContain("2 tool calls, 1 sub-agent");
+    fireEvent.click(within(run).getAllByRole("button")[0]!);
+    expect(within(run).getAllByTestId("subagent-card")).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it("keeps a sub-agent opened live open once the history has its turn", async () => {
+    const t = new FakeTransport();
+    const user = turn("u1", "user", [{ type: "text", text: "go" }]);
+    const launched = (id: string, description: string): HistoryTurn["blocks"][number] => ({
+      type: "tool_call",
+      tool_call_id: id,
+      title: "Task",
+      input_preview: null,
+      status: "completed",
+      subagent: { description, blocks: [] },
+    });
+    const first = launched("h1", "Survey");
+    const said = { type: "text", text: "Surveyed." } as const;
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [user, turn("a1", "assistant", [first, said])],
+    });
+    const { controller, frame } = await openSession(t);
+    // The history holds the turn the agent is still running; it launches another.
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+    await frame(event(2, "agent.tool_call", launch("a2", { description: "Review the diff" })));
+    expect(cards()).toHaveLength(2);
+    fireEvent.click(row(cards()[1]!));
+    expect(row(cards()[1]!).getAttribute("aria-expanded")).toBe("true");
+
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [user, turn("a1", "assistant", [first, said, launched("a2", "Review the diff")])],
+    });
+    await frame(event(3, "agent.turn_complete", { stop_reason: "end_turn" }));
+    await act(() => tick());
+    const [kept, opened] = cards();
+    expect(cards()).toHaveLength(2);
+    expect(
+      screen.queryAllByTestId("live-turn").flatMap((l) => within(l).queryAllByTestId("subagent-card")),
+    ).toHaveLength(0);
+    expect(row(kept!).getAttribute("aria-expanded")).toBe("false");
+    expect(row(opened!).getAttribute("aria-expanded")).toBe("true");
+    controller.dispose();
+  });
+
+  // A new turn that reads a file and launches a sub-agent, both opened live;
+  // and the history once it has the turn.
+  async function openNewTurn() {
+    const t = new FakeTransport();
+    const before = [
+      turn("u1", "user", [{ type: "text", text: "go" }]),
+      turn("a1", "assistant", [{ type: "text", text: "Done." }]),
+    ];
+    t.handlers["session.history"] = (p) => ({ session_id: p.session_id, turns: before });
+    const { controller, frame } = await openSession(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "connected" }) });
+    await frame(event(2, "agent.user_message", { message_id: "m2", blocks: [{ type: "text", text: "review" }] }));
+    await frame(
+      event(3, "agent.tool_call", {
+        tool_call_id: "c1",
+        title: "Read a.ts",
+        kind: "read",
+        status: "completed",
+        content: "out",
+      }),
+    );
+    await frame(event(4, "agent.tool_call", launch("x1", { description: "Review the diff" })));
+    const call = () => within(screen.getAllByTestId("tool-call").at(-1)!).getAllByRole("button")[0]!;
+    fireEvent.click(call());
+    fireEvent.click(row(cards()[0]!));
+    expect(call().getAttribute("aria-expanded")).toBe("true");
+    expect(row(cards()[0]!).getAttribute("aria-expanded")).toBe("true");
+    const after = [
+      ...before,
+      turn("u2", "user", [{ type: "text", text: "review" }]),
+      turn("a2", "assistant", [
+        {
+          type: "tool_call",
+          tool_call_id: "c1",
+          title: "Read",
+          input_preview: '{"file_path":"a.ts"}',
+          status: "completed",
+        },
+        { type: "tool_result", tool_call_id: "c1", output_preview: "out", is_error: false },
+        {
+          type: "tool_call",
+          tool_call_id: "x1",
+          title: "Task",
+          input_preview: null,
+          status: "completed",
+          subagent: { description: "Review the diff", blocks: [] },
+        },
+      ]),
+    ];
+    return { t, controller, frame, call, after };
+  }
+
+  it("keeps a sub-agent and a call opened in a new turn open once the history has the turn", async () => {
+    const { t, controller, frame, call, after } = await openNewTurn();
+    t.handlers["session.history"] = (p) => ({ session_id: p.session_id, turns: after });
+    await frame(event(5, "agent.turn_complete", { stop_reason: "end_turn" }));
+    await act(() => tick());
+    expect(screen.queryAllByTestId("live-turn").flatMap((l) => within(l).queryAllByTestId("tool-call"))).toHaveLength(
+      0,
+    );
+    expect(screen.getByText("review")).toBeTruthy();
+    expect(call().getAttribute("aria-expanded")).toBe("true");
+    expect(row(cards()[0]!).getAttribute("aria-expanded")).toBe("true");
+    controller.dispose();
+  });
+
+  it("keeps what a new turn opened open when the turn ended while away", async () => {
+    const { t, controller, frame, call, after } = await openNewTurn();
+    // Back after the turn ended: the snapshot has no live turn, and the
+    // history on screen is behind until the fresh read arrives.
+    let read!: () => void;
+    t.handlers["session.history"] = (p) =>
+      new Promise((done) => (read = () => done({ session_id: p.session_id, turns: after })));
+    await frame({ type: "snapshot", epoch: "e2", event_seq: 9, snapshot: snapshot({ status: "connected" }) });
+    expect(screen.queryAllByTestId("tool-call")).toHaveLength(0);
+    await act(async () => read());
+    await act(() => tick());
+    expect(screen.getByText("review")).toBeTruthy();
+    expect(call().getAttribute("aria-expanded")).toBe("true");
+    expect(row(cards()[0]!).getAttribute("aria-expanded")).toBe("true");
     controller.dispose();
   });
 

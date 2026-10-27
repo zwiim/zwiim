@@ -162,7 +162,8 @@ type HistoryToolCall = Extract<HistoryBlock, { type: "tool_call" }>;
 type HistoryResult = Extract<HistoryBlock, { type: "tool_result" }>;
 type HistoryLaunch = HistoryToolCall & { tool_call_id: string; subagent: NonNullable<HistoryToolCall["subagent"]> };
 
-const isLaunch = (b: HistoryBlock): b is HistoryLaunch =>
+/** Whether a history block launches a sub-agent: it draws as a sub-agent card. */
+export const isLaunch = (b: HistoryBlock): b is HistoryLaunch =>
   b.type === "tool_call" && b.subagent !== undefined && b.tool_call_id !== null;
 
 const BACKGROUND_STATUS = { completed: "completed", failed: "failed", stopped: "interrupted" } as const;

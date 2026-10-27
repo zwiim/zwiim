@@ -26,8 +26,11 @@ import {
 } from "lucide-react";
 import {
   clockTime,
+  firstSeen,
   historySubagentCards,
+  isLaunch,
   lateSubagentBlocks,
+  launchFirstSeen,
   liveSubagentCards,
   modelShortName,
   runText,
@@ -104,15 +107,24 @@ const VERB_ICONS: Record<string, typeof Terminal> = {
 /**
  * What is open in a session's history (a card, a thought, a tool call), kept
  * above the transcript's rows so a row scrolled out of view and back opens as
- * it was left. Keyed by turn id and place within the turn; gone on reload.
+ * it was left. Keyed by turn id and place within the turn (a new turn's by
+ * the message it answers, until the history has it); gone on reload.
  */
 export type KeptState = Map<string, unknown>;
 export const KeptStateContext = createContext<KeptState | null>(null);
 
+/** Moves what is kept under the key prefix `from` to `to`. */
+export function moveKept(kept: KeptState, from: string, to: string) {
+  for (const [key, value] of [...kept]) {
+    if (!key.startsWith(from)) continue;
+    kept.delete(key);
+    kept.set(to + key.slice(from.length), value);
+  }
+}
+
 /**
  * `useState`, kept under `key` in the session's map when there is one: what
- * a history row holds outlives the row. Without a key (the live turn), plain
- * state.
+ * a history row holds outlives the row. Without a key, plain state.
  */
 function useKeptState<T>(key: string | undefined, initial: T): [T, (next: (prev: T) => T) => void] {
   const kept = useContext(KeptStateContext);
@@ -877,6 +889,7 @@ export const HistoryTurnView = memo(function HistoryTurnView({
   background,
   ended = true,
   live,
+  carry,
   carried,
 }: {
   turn: HistoryTurn;
@@ -887,9 +900,11 @@ export const HistoryTurnView = memo(function HistoryTurnView({
   background?: SessionBackground | null;
   /** False while the turn may still be running: an unfinished sub-agent is not yet interrupted. */
   ended?: boolean;
-  /** The live turn, when a sub-agent this turn launched is still adding to it, or it carries on this turn's run. */
+  /** The live turn, when a sub-agent this turn launched is still adding to it. */
   live?: LiveTurn;
-  /** How many of the live turn's first blocks show here, folding with this turn's last run. */
+  /** The live turn that carries on this turn's run, running or just finished. */
+  carry?: LiveTurn;
+  /** How many of `carry`'s first blocks show here, folding with this turn's last run. */
   carried?: number;
 }) {
   if (turn.role === "user") {
@@ -920,6 +935,7 @@ export const HistoryTurnView = memo(function HistoryTurnView({
         scope={turn.turn_id}
         ended={ended}
         live={live}
+        carry={carry}
         carried={carried}
       />
     </div>
@@ -939,7 +955,8 @@ function shownResult(b: Extract<HistoryBlock, { type: "tool_result" }>, called: 
  * A reply's blocks as the transcript shows them, or a sub-agent's: its
  * launches (the tool calls that started a sub-agent) as sub-agent cards. A
  * card ends with what its sub-agent did since the transcript was loaded.
- * The live reply's first `carried` blocks follow, folding with its last run.
+ * The first `carried` blocks of `carry`, the live reply, follow, folding
+ * with its last run.
  */
 function HistoryBlocks({
   blocks,
@@ -947,6 +964,7 @@ function HistoryBlocks({
   scope,
   ended,
   live,
+  carry,
   carried = 0,
 }: {
   blocks: readonly HistoryBlock[];
@@ -955,6 +973,7 @@ function HistoryBlocks({
   scope: string;
   ended: boolean;
   live: LiveTurn | undefined;
+  carry?: LiveTurn;
   carried?: number;
 }) {
   // A result is shown with its call; one without a call stands alone.
@@ -962,7 +981,9 @@ function HistoryBlocks({
   for (const b of blocks) if (b.type === "tool_result" && b.tool_call_id) results.set(b.tool_call_id, b);
   const called = new Set(blocks.flatMap((b) => (b.type === "tool_call" && b.tool_call_id ? [b.tool_call_id] : [])));
   const cards = new Map(historySubagentCards(blocks, background, ended).map((c) => [c.parent_id, c]));
-  // Cards keep their open state by launch order within the turn, never by id.
+  // Calls and cards keep their open state by order within the turn, never by
+  // id, so one opened live stays open once the history has it.
+  let tools = 0;
   let launches = 0;
   const rows = blocks.map((b, i): ReplyRow | null => {
     switch (b.type) {
@@ -1013,7 +1034,7 @@ function HistoryBlocks({
               output={r?.output_preview}
               isError={r?.is_error}
               images={r?.images}
-              stateKey={`${scope}/${i}`}
+              stateKey={`${scope}/tool:${tools++}`}
             />
           ),
           tool: {
@@ -1046,10 +1067,11 @@ function HistoryBlocks({
         return null;
     }
   });
-  if (live && carried > 0) {
-    const more = live.message?.content.slice(0, carried) ?? [];
-    const cardView = liveCardView(live, background, ENTER);
-    const moreRows = liveRows(live, more, liveSubagentCards(live, more, background), cardView, ENTER);
+  if (carry && carried > 0) {
+    const more = carry.message?.content.slice(0, carried) ?? [];
+    const keys = { scope, tools, launches };
+    const cardView = liveCardView(carry, background, ENTER, keys);
+    const moreRows = liveRows(carry, more, liveSubagentCards(carry, more, background), cardView, ENTER, keys);
     // Keyed apart from the history's own rows.
     for (const [i, r] of moreRows.entries())
       rows.push(r && { ...r, node: <Fragment key={`live:${i}`}>{r.node}</Fragment> });
@@ -1068,6 +1090,7 @@ export function LiveTurnView({
   background,
   earlier,
   from,
+  keys,
 }: {
   turn: LiveTurn;
   streaming?: boolean;
@@ -1078,6 +1101,8 @@ export function LiveTurnView({
   earlier?: ReadonlySet<string>;
   /** How many of its first blocks show in the history, folded with the run the turn there ends with. */
   from?: number;
+  /** Where it keeps what is open, as the history will key it. */
+  keys?: LiveKeys;
 }) {
   const text = turn.userMessage ? userText(turn.userMessage.blocks) : "";
   const enter = animate ? ENTER : undefined;
@@ -1085,7 +1110,7 @@ export function LiveTurnView({
   return (
     <div className="text-body flex flex-col gap-2.5" data-testid="live-turn">
       {turn.userMessage && <UserMessage text={text} blocks={turn.userMessage.blocks} className={enter} />}
-      <LiveBlocks turn={turn} background={background ?? null} enter={enter} earlier={earlier} from={from} />
+      <LiveBlocks turn={turn} background={background ?? null} enter={enter} earlier={earlier} from={from} keys={keys} />
       {streaming && <Working className={enter} turnId={turn.userMessage?.message_id} />}
     </div>
   );
@@ -1095,7 +1120,8 @@ export function LiveTurnView({
  * The live reply's blocks, or (given `blocks`) a sub-agent's: its launches
  * as sub-agent cards. The reply's also ends with any sub-agent whose launch
  * it does not hold, so nothing a sub-agent did is hidden, unless its launch
- * is in `earlier`. Its first `from` blocks show in the history instead.
+ * is in `earlier`; that card folds with a run it follows, as on the phone.
+ * Its first `from` blocks show in the history instead.
  */
 function LiveBlocks({
   turn,
@@ -1104,6 +1130,7 @@ function LiveBlocks({
   enter,
   earlier,
   from = 0,
+  keys,
 }: {
   turn: LiveTurn;
   blocks?: readonly LiveBlock[];
@@ -1111,46 +1138,63 @@ function LiveBlocks({
   enter?: string;
   earlier?: ReadonlySet<string>;
   from?: number;
+  keys?: LiveKeys;
 }) {
   const scope = blocks ?? turn.message?.content ?? [];
   const all = liveSubagentCards(turn, blocks, background, earlier);
   const inScope = new Set(scope.flatMap((b) => (b.type === "tool_call" ? [b.tool_call_id] : [])));
   const orphans = all.filter((c) => !inScope.has(c.parent_id));
-  const cardView = liveCardView(turn, background, enter);
-  const rows = liveRows(turn, scope, all, cardView, enter).map((r, i) => (i < from ? null : r));
-  return (
-    <>
-      {foldRuns(rows, undefined, enter)}
-      {orphans.map(cardView)}
-    </>
-  );
+  const cardView = liveCardView(turn, background, enter, keys);
+  const rows = liveRows(turn, scope, all, cardView, enter, keys).map((r, i) => (i < from ? null : r));
+  rows.push(...orphans.map((c) => cardRow(cardView(c), c)));
+  return <>{foldRuns(rows, undefined, enter)}</>;
 }
+
+/**
+ * Where a live reply keeps what is open, as the history keys its turn: the
+ * turn's id, and how many calls and sub-agents come before the reply's in it.
+ */
+export type LiveKeys = { scope: string; tools: number; launches: number };
 
 /** Draws a live turn's sub-agent cards; they keep their open state by launch order within the turn, never by id. */
-function liveCardView(turn: LiveTurn, background: SessionBackground | null, enter?: string) {
-  let launches = 0;
-  return (card: SubagentCard<LiveBlock>) => (
-    <SubagentCardView
-      key={`agent:${launches++}`}
-      className={enter}
-      card={card}
-      title={turn.toolCalls[card.parent_id]?.title}
-      images={turn.toolCalls[card.parent_id]?.images}
-    >
-      {() => <LiveBlocks turn={turn} blocks={card.blocks} background={background} />}
-    </SubagentCardView>
-  );
+function liveCardView(turn: LiveTurn, background: SessionBackground | null, enter?: string, keys?: LiveKeys) {
+  let launches = keys?.launches ?? 0;
+  return (card: SubagentCard<LiveBlock>) => {
+    const key = `agent:${launches++}`;
+    const stateKey = keys && `${keys.scope}/${key}`;
+    return (
+      <SubagentCardView
+        key={key}
+        className={enter}
+        card={card}
+        title={turn.toolCalls[card.parent_id]?.title}
+        images={turn.toolCalls[card.parent_id]?.images}
+        stateKey={stateKey}
+      >
+        {() => (
+          <LiveBlocks
+            turn={turn}
+            blocks={card.blocks}
+            background={background}
+            keys={stateKey ? { scope: stateKey, tools: 0, launches: 0 } : undefined}
+          />
+        )}
+      </SubagentCardView>
+    );
+  };
 }
 
-/** The rows of a live turn's `scope`, its launches drawn by `cardView`. */
+/** The rows of a live turn's `scope`, its launches drawn by `cardView`; its calls keep what is open under `keys`. */
 function liveRows(
   turn: LiveTurn,
   scope: readonly LiveBlock[],
   all: readonly SubagentCard<LiveBlock>[],
   cardView: (card: SubagentCard<LiveBlock>) => React.ReactNode,
   enter?: string,
+  keys?: LiveKeys,
 ): (ReplyRow | null)[] {
   const cards = new Map(all.map((c) => [c.parent_id, c]));
+  let tools = keys?.tools ?? 0;
   return scope.map((b, i): ReplyRow | null => {
     if (b.type === "text") return b.text.trim() ? { node: <Markdown key={i} className={enter} text={b.text} /> } : null;
     if (b.type === "thought") return { node: <Thought key={i} className={enter} text={b.text} /> };
@@ -1159,6 +1203,7 @@ function liveRows(
     if (card) return cardRow(cardView(card), card);
     const tc: ToolCall | undefined = turn.toolCalls[b.tool_call_id];
     const status = tc?.status ?? null;
+    const n = tools++;
     return {
       node: (
         <ToolCallView
@@ -1168,6 +1213,7 @@ function liveRows(
           status={status}
           output={typeof tc?.content === "string" ? tc.content : null}
           images={tc?.images}
+          stateKey={keys && `${keys.scope}/tool:${n}`}
         />
       ),
       tool: {
@@ -1204,21 +1250,21 @@ export function carriedBlocks(turn: HistoryTurn, live: LiveTurn): number {
   return n;
 }
 
+/** Where the live reply that carries on `turn` keeps what is open: after the turn's own calls and sub-agents. */
+export function continuedKeys(turn: HistoryTurn): LiveKeys | undefined {
+  if (turn.role === "user") return undefined;
+  const launches = turn.blocks.filter(isLaunch).length;
+  const calls = turn.blocks.filter((b) => b.type === "tool_call").length;
+  return { scope: turn.turn_id, tools: calls - launches, launches };
+}
+
+/** Where a new turn's live reply keeps what is open until the history has the turn: under the message it answers. */
+export function sentKeys(turn: LiveTurn): LiveKeys | undefined {
+  return turn.userMessage ? { scope: `live:${turn.userMessage.message_id}`, tools: 0, launches: 0 } : undefined;
+}
+
 /** When each live turn was first seen, so its timer survives a remount (switching sessions). */
 const turnStarts = new Map<string, number>();
-/** When each sub-agent launch was first seen, for a Host that does not say when it started. */
-const launchStarts = new Map<string, number>();
-
-/** When `id` was first seen, by `seen`'s record; now when it is new. Keeps the last 64. */
-function firstSeen(seen: Map<string, number>, id: string): number {
-  let at = seen.get(id);
-  if (at === undefined) {
-    at = Date.now();
-    seen.set(id, at);
-    if (seen.size > 64) seen.delete(seen.keys().next().value!);
-  }
-  return at;
-}
 
 function turnStart(id: string | undefined): number {
   return id ? firstSeen(turnStarts, id) : Date.now();
@@ -1229,7 +1275,7 @@ function turnStart(id: string | undefined): number {
  * when the Host says it started, else from when its launch was first seen.
  */
 function SubagentClock({ card }: { card: SubagentCard<unknown> }) {
-  const since = card.started_at ?? firstSeen(launchStarts, card.parent_id);
+  const since = card.started_at ?? launchFirstSeen(card.parent_id);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);

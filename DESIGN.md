@@ -399,7 +399,8 @@ Top to bottom:
     Three or more consecutive tool calls and sub-agent cards fold into `▸ n tool calls`,
     `▸ m sub-agents` or `▸ n tool calls, m sub-agents` (`1 tool call`, `1 sub-agent`), with
     ` · n failed` counting failed sub-agents too and the breathing dot while any of them runs;
-    a run joins across the history's end into the live turn. Tap a row → tool detail sheet
+    a run joins across the history's end into the live turn, and a sub-agent whose launch is
+    not in the reply shows last, folding with a run it follows. Tap a row → tool detail sheet
     (command output, diff).
   - **since you left** divider: accent mono label with the count of events since
     the device last saw this session; auto-scroll lands on it on open.
@@ -725,7 +726,12 @@ glyph, a title, one line, one action.
   history run stays open as it was left. A blank text between calls does not
   split a run; a reply, a thought or an image does. While a turn runs, a run
   its history ends with folds on with the live reply's first calls as one row,
-  which keeps the history row's place and open state.
+  which keeps the history row's place and open state, and stays one row once
+  the turn ends until the history has it. A call or sub-agent card opened in
+  a live reply, that one or a new turn's, stays open once the history has it,
+  folded or not. A
+  sub-agent whose launch is not in the reply shows last and folds with a run it
+  follows, as on the phone.
 - Desktop opens an agent's image from one place: the compact chip (image icon
   and name, no thumbnail) on the tool row that read it; click opens the picture
   in the preview panel. A workspace image linked in the agent's text shows

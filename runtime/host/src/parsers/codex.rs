@@ -3156,14 +3156,22 @@ impl CodexParser {
         let mut description = None;
         let mut model = None;
         let mut duration_ms: Option<u64> = None;
+        let mut started_at: Option<DateTime<Utc>> = None;
+        let mut header_seen = false;
         for line in self.rollout_lines(file).ok()? {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
                 continue;
             };
+            let kind = value.get("type").and_then(serde_json::Value::as_str);
+            // The child's own header stamps when the sub-agent started; any
+            // later record can be the parent's older history, in a fork.
+            if kind == Some("session_meta") && !header_seen {
+                header_seen = true;
+                started_at = parse_codex_timestamp(&value);
+            }
             let Some(payload) = value.get("payload") else {
                 continue;
             };
-            let kind = value.get("type").and_then(serde_json::Value::as_str);
             let payload_kind = payload.get("type").and_then(serde_json::Value::as_str);
             match (kind, payload_kind) {
                 (Some("session_meta"), _) if description.is_none() => {
@@ -3203,7 +3211,7 @@ impl CodexParser {
             model,
             prompt: None,
             duration_ms,
-            started_at: None,
+            started_at: started_at.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
             blocks,
         })
     }
@@ -14248,11 +14256,59 @@ mod tests {
     const SUBAGENT_CHILD: &str = "01a1521b-b7e5-7d62-aa83-c5fd5a5ea422";
     const SUBAGENT_PARENT_ROLLOUT: &str =
         include_str!("testdata/rollout-2026-10-19T08-31-45-01a1521b-a481-7ec3-b772-6670c440ba4b.jsonl");
+    const SUBAGENT_CHILD_ROLLOUT: &str = include_str!(
+        "testdata/rollout-2026-10-19T08-31-50-01a1521b-b7e5-7d62-aa83-c5fd5a5ea422.jsonl"
+    );
 
     #[test]
     fn codex_history_child_items_nest_under_launch() {
         let history = subagent_reload(SUBAGENT_PARENT_ROLLOUT, "subagent-reload");
         assert_subagent_reload(&history);
+    }
+
+    /// The recorded launch in a reloaded sub-agent session's history.
+    fn subagent_launch_block(history: &serde_json::Value) -> serde_json::Value {
+        history
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["blocks"].as_array())
+            .flatten()
+            .find(|b| {
+                b["type"] == "tool_call"
+                    && b["tool_call_id"] == "call_2579b398182848a9b1b816e082bd5f04"
+            })
+            .unwrap_or_else(|| panic!("launch in {history:#}"))
+            .clone()
+    }
+
+    /// A reloaded sub-agent reads as started when its own rollout opened, its
+    /// `session_meta` header's timestamp, as a Claude transcript's first entry
+    /// does.
+    #[test]
+    fn codex_history_subagent_started_at_is_its_rollout_start() {
+        let history = subagent_reload(SUBAGENT_PARENT_ROLLOUT, "subagent-reload-started");
+        let launch = subagent_launch_block(&history);
+        assert_eq!(
+            launch["subagent"]["started_at"], "2026-10-19T03:01:50.723Z",
+            "{launch:#}"
+        );
+    }
+
+    /// A child header without a timestamp leaves the start unknown rather than
+    /// taking a later record's, which in a forked child can be the parent's
+    /// older history.
+    #[test]
+    fn codex_history_subagent_without_a_header_stamp_has_no_start() {
+        let child =
+            SUBAGENT_CHILD_ROLLOUT.replacen(r#""timestamp":"2026-10-19T03:01:50.723Z","#, "", 1);
+        let history = subagent_reload_with_child(
+            SUBAGENT_PARENT_ROLLOUT,
+            &child,
+            "subagent-reload-no-header-stamp",
+        );
+        let launch = subagent_launch_block(&history);
+        assert!(launch["subagent"]["started_at"].is_null(), "{launch:#}");
     }
 
     /// The same session with its `wait_agent` answered in the legacy shape,
@@ -14376,17 +14432,18 @@ mod tests {
     /// The recorded sub-agent session reloaded from `parent` (its child
     /// rollout alongside) and projected as `session.history`.
     fn subagent_reload(parent: &str, tag: &str) -> serde_json::Value {
+        subagent_reload_with_child(parent, SUBAGENT_CHILD_ROLLOUT, tag)
+    }
+
+    /// As [`subagent_reload`], with `child` as the child's rollout.
+    fn subagent_reload_with_child(parent: &str, child: &str, tag: &str) -> serde_json::Value {
         const PARENT: &str = SUBAGENT_PARENT;
         const CHILD: &str = SUBAGENT_CHILD;
         let dir = temp_session_dir(tag);
         let parent_name = format!("rollout-2026-10-19T08-31-45-{PARENT}.jsonl");
         let child_name = format!("rollout-2026-10-19T08-31-50-{CHILD}.jsonl");
         fs::write(dir.join(&parent_name), parent).unwrap();
-        fs::write(
-            dir.join(&child_name),
-            include_str!("testdata/rollout-2026-10-19T08-31-50-01a1521b-b7e5-7d62-aa83-c5fd5a5ea422.jsonl"),
-        )
-        .unwrap();
+        fs::write(dir.join(&child_name), child).unwrap();
 
         let detail = CodexParser::with_base_dir(dir.clone())
             .parse_conversation_detail(&dir.join(&parent_name), PARENT)

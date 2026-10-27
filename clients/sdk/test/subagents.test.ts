@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { applyEvent, initialSessionView, reduceSession, type SessionFrame } from "../src/state/session";
 import { historyLaunches, historySubagentCards, lateSubagentBlocks, liveSubagentCards } from "../src/subagents/cards";
+import { firstSeen, launchFirstSeen } from "../src/subagents/clock";
 import { runText, subagentDescription, tokensText, waitingText } from "../src/subagents/labels";
 import { modelShortName } from "../src/subagents/model";
 import type { HistoryBlock, HistoryTurn, SessionEvent, SessionSnapshot, ToolCall } from "../src/types/protocol";
@@ -549,5 +550,56 @@ describe("sub-agent labels", () => {
     expect(runText(2, 1)).toBe("2 tool calls, 1 sub-agent");
     expect(runText(1, 2)).toBe("1 tool call, 2 sub-agents");
     expect(runText(1, 1)).toBe("1 tool call, 1 sub-agent");
+  });
+});
+
+describe("first seen", () => {
+  it("is when an id was first asked about, the same each time after, for the last 64", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const seen = new Map<string, number>();
+      vi.setSystemTime(new Date("2026-10-26T10:00:00Z"));
+      const first = firstSeen(seen, "seen-0");
+      expect(first).toBe(Date.parse("2026-10-26T10:00:00Z"));
+      vi.setSystemTime(new Date("2026-10-26T10:00:30Z"));
+      expect(firstSeen(seen, "seen-0")).toBe(first);
+      expect(firstSeen(seen, "seen-1")).toBe(Date.parse("2026-10-26T10:00:30Z"));
+      // 64 more ids later, the first is forgotten and new again.
+      for (let i = 2; i <= 65; i++) firstSeen(seen, `seen-${i}`);
+      vi.setSystemTime(new Date("2026-10-26T10:01:00Z"));
+      expect(firstSeen(seen, "seen-65")).toBe(Date.parse("2026-10-26T10:00:30Z"));
+      expect(firstSeen(seen, "seen-0")).toBe(Date.parse("2026-10-26T10:01:00Z"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps each record apart", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const turns = new Map<string, number>();
+      vi.setSystemTime(new Date("2026-10-26T10:00:00Z"));
+      expect(firstSeen(turns, "a")).toBe(Date.parse("2026-10-26T10:00:00Z"));
+      vi.setSystemTime(new Date("2026-10-26T10:00:30Z"));
+      expect(firstSeen(turns, "a")).toBe(Date.parse("2026-10-26T10:00:00Z"));
+      expect(firstSeen(new Map(), "a")).toBe(Date.parse("2026-10-26T10:00:30Z"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("dates a launch by when this client first saw it", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      // Ids no other test asks about: the launch record is shared.
+      const id = `launch-${crypto.randomUUID()}`;
+      vi.setSystemTime(new Date("2026-10-26T10:00:00Z"));
+      expect(launchFirstSeen(id)).toBe(Date.parse("2026-10-26T10:00:00Z"));
+      vi.setSystemTime(new Date("2026-10-26T10:00:30Z"));
+      expect(launchFirstSeen(id)).toBe(Date.parse("2026-10-26T10:00:00Z"));
+      expect(launchFirstSeen(`launch-${crypto.randomUUID()}`)).toBe(Date.parse("2026-10-26T10:00:30Z"));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

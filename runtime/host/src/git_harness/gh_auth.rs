@@ -523,6 +523,11 @@ async fn signed_in_login(program: &Path, cwd: &str) -> Login {
         Ok(out) => out,
         Err(e) => {
             tracing::warn!("[github-auth] gh auth status: {}", e.message);
+            // A check that never answered couldn't reach GitHub; it says
+            // nothing about the account.
+            if e.code == GitErrorCode::Timeout {
+                return Login::Unreachable;
+            }
             return Login::Out;
         }
     };
@@ -790,6 +795,34 @@ mod tests {
         auth.cancel(Some(&gh), &cwd(dir.path())).await;
     }
 
+    /// A link off GitHub on the code's own line is refused even though the
+    /// device address follows on the next line.
+    #[tokio::test]
+    async fn a_stray_link_on_the_code_line_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let login = "echo '! First copy your one-time code: 36BE-F43F https://evil.example/x' >&2; echo 'Open this URL to continue in your web browser: https://github.com/login/device' >&2; exec sleep 30";
+        let (gh, _) = gh(dir.path(), login);
+        let auth = quick();
+        let refused = auth.sign_in(Some(&gh), &cwd(dir.path())).await;
+        assert_eq!(refused.state, GithubAuthState::SignedOut);
+        assert_eq!(refused.error.as_deref(), Some(BAD_URL));
+        assert_eq!(refused.url, None);
+    }
+
+    /// A link on a line of its own between the code and the device address is
+    /// refused: once the code is out, the next link must be GitHub's.
+    #[tokio::test]
+    async fn a_stray_link_between_the_code_and_the_address_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let login = "echo '! First copy your one-time code: 36BE-F43F' >&2; echo 'See https://example.org/help' >&2; echo 'Open this URL to continue in your web browser: https://github.com/login/device' >&2; exec sleep 30";
+        let (gh, _) = gh(dir.path(), login);
+        let auth = quick();
+        let refused = auth.sign_in(Some(&gh), &cwd(dir.path())).await;
+        assert_eq!(refused.state, GithubAuthState::SignedOut);
+        assert_eq!(refused.error.as_deref(), Some(BAD_URL));
+        assert_eq!(refused.url, None);
+    }
+
     #[tokio::test]
     async fn a_cancelled_sign_ins_cleanup_leaves_a_newer_one() {
         let dir = tempfile::tempdir().unwrap();
@@ -922,6 +955,19 @@ mod tests {
             dir.path(),
             "\"auth status --json hosts\") echo 'error connecting to api.github.com' >&2; exit 1 ;;",
         );
+        let auth = quick();
+        assert_eq!(
+            auth.status(Some(&gh), &cwd(dir.path())).await,
+            GithubAuth::signed_out(Some(UNREACHABLE.to_string()))
+        );
+    }
+
+    /// A status check that never answers timed out reaching GitHub; it says
+    /// nothing about whether an account is signed in.
+    #[tokio::test(start_paused = true)]
+    async fn a_status_check_that_times_out_reads_unreachable() {
+        let dir = tempfile::tempdir().unwrap();
+        let (gh, _) = fake_gh(dir.path(), "\"auth status --json hosts\") exec sleep 30 ;;");
         let auth = quick();
         assert_eq!(
             auth.status(Some(&gh), &cwd(dir.path())).await,

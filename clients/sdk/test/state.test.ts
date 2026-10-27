@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { historyCovers, initialSessionView, reduceSession, type SessionFrame, type SessionView } from "../src/state/session";
+import {
+  historyCovers,
+  historyReply,
+  initialSessionView,
+  reduceSession,
+  type SessionFrame,
+  type SessionView,
+} from "../src/state/session";
 import { initialHostState, reduceHost } from "../src/state/store";
 import {
   applyTerminalEvent,
@@ -213,6 +220,15 @@ describe("historyCovers", () => {
   it("matches the latest occurrence of a repeated prompt", () => {
     const turns = [turn("user", "again"), turn("assistant", "1"), turn("user", "again")];
     expect(historyCovers(turns, settled("again", true))).toBe(false);
+  });
+
+  it("finds the reply to the latest occurrence, and none past the next message", () => {
+    const sent = settled("again", true).userMessage;
+    expect(historyReply([turn("user", "again"), turn("assistant", "1")], sent)?.turn_id).toBe("assistant1");
+    const turns = [turn("user", "again"), turn("assistant", "1"), turn("user", "again"), turn("assistant", "2")];
+    expect(historyReply(turns, sent)?.turn_id).toBe("assistant2");
+    expect(historyReply([turn("user", "again"), turn("user", "other"), turn("assistant", "1")], sent)).toBeUndefined();
+    expect(historyReply([turn("assistant", "1")], sent)).toBeUndefined();
   });
 });
 

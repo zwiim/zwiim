@@ -111,6 +111,9 @@ const MAX_EPISODE_MESSAGES: usize = 512;
 /// hard cap on per-tick work. Double the boundary threshold so normal
 /// boundary rotation always wins for multi-turn episodes.
 const FORCE_ROTATE_MESSAGES: usize = MAX_EPISODE_MESSAGES * 2;
+/// How much of a sub-agent transcript its first read covers: only its newest
+/// usage record matters, so a long one first seen mid-run is not read whole.
+const SUBAGENT_FIRST_READ_BYTES: u64 = 256 * 1024;
 
 /// How a transcript record supplied its turn-initiating text. Verbatim text
 /// can use the ledger's ordinary prefix match; a slash command reconstructed
@@ -449,7 +452,10 @@ async fn emit_subagent_usage(
             SubagentUsageVerdict::Finished | SubagentUsageVerdict::Unknown => {
                 ws.settle_subagent(&id, verdict);
             }
+            // Known and running: accepted even before its first reading, so
+            // a launch that ends before writing one is still let go.
             SubagentUsageVerdict::Apply | SubagentUsageVerdict::Unchanged => {
+                ws.settle_subagent(&id, verdict);
                 live.insert(id);
             }
         }
@@ -580,6 +586,35 @@ fn read_complete_lines(
     Ok(lines)
 }
 
+/// Where a first read of `path`'s last `window` of `len` bytes starts: just
+/// past the first newline at or before the window's start, so it begins on a
+/// full line. With no newline in the window it starts at `len`, and the rest
+/// of that long line reads as a fragment no parse accepts.
+fn recent_lines_start(path: &Path, len: u64, window: u64) -> std::io::Result<u64> {
+    // From the byte before the window, so a line starting right at it counts.
+    let from = len.saturating_sub(window + 1);
+    let mut f = std::fs::File::open(path)?;
+    f.seek(SeekFrom::Start(from))?;
+    let mut skipped = Vec::new();
+    std::io::BufReader::new(f)
+        .take(window + 1)
+        .read_until(b'\n', &mut skipped)?;
+    Ok(from + skipped.len() as u64)
+}
+
+/// Which file a path names now: its inode on unix. `None` elsewhere, where a
+/// replaced transcript is noticed only when it shrinks.
+#[cfg(unix)]
+fn file_identity(meta: &std::fs::Metadata) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Some(meta.ino())
+}
+
+#[cfg(not(unix))]
+fn file_identity(_meta: &std::fs::Metadata) -> Option<u64> {
+    None
+}
+
 /// Tail of one running sub-agent's own transcript
 /// (`<session>/subagents/agent-*.jsonl`), read for its live token count: the
 /// adapter reports a sub-agent's usage only when it finishes.
@@ -591,6 +626,9 @@ struct SubagentTail {
     carry: Vec<u8>,
     /// Last observed (mtime, len), so an unchanged file costs one `stat`.
     last_stat: Option<(Option<std::time::SystemTime>, u64)>,
+    /// The file read so far (see `file_identity`), so one replaced under the
+    /// same name is read again from its start even when it did not shrink.
+    identity: Option<u64>,
     /// The launch's tool call id, from the sibling `.meta.json` (`toolUseId`);
     /// `None` until that file is readable.
     tool_call_id: Option<String>,
@@ -599,8 +637,9 @@ struct SubagentTail {
     /// The count last queued for emission, so only a change is sent. Cleared
     /// when the session did not know the launch yet, so it is sent again.
     sent: Option<u64>,
-    /// The session has taken a reading for this launch, so a later "unknown"
-    /// means the launch is gone rather than not registered yet.
+    /// The session has known this launch as running on a verdict pass, so a
+    /// later "unknown" means the launch is gone rather than not registered
+    /// yet.
     accepted: bool,
 }
 
@@ -750,7 +789,7 @@ pub(crate) struct WatchState {
     pending_title: Option<String>,
     /// Sub-agent transcripts that changed since this watch began, keyed by
     /// path. A transcript last written before the epoch is left alone until it
-    /// changes, then read from its start.
+    /// changes, then read from its start (its recent lines, when long).
     subagent_tails: HashMap<PathBuf, SubagentTail>,
     /// Sub-agent transcripts whose launch has its final result: never read
     /// again, so a late write cannot revive a finished count.
@@ -761,8 +800,9 @@ pub(crate) struct WatchState {
     /// Launches of the background tasks outstanding at the last fold of their
     /// readings, so a task that left has its transcripts dropped.
     background_launches: HashSet<String>,
-    /// Launches the session says are finished whose transcripts are still
-    /// read, with `main_reads` at the first such verdict. A background launch
+    /// Launches the session says are finished (or no longer knows, having
+    /// accepted them) whose transcripts are still read, with `main_reads` at
+    /// the first such verdict. A background launch
     /// answers at once, so it reads finished before the main transcript's ack
     /// makes it a task: its transcripts go only once a later read of the
     /// main transcript still has not made it one.
@@ -842,12 +882,25 @@ impl WatchState {
             if tail.tool_call_id.is_none() {
                 tail.tool_call_id = subagent_tool_use_id(&path);
             }
-            if tail.last_stat != Some(stat) {
-                if stat.1 < tail.committed {
+            let identity = file_identity(&meta);
+            let replaced = tail.identity.is_some_and(|k| Some(k) != identity);
+            if tail.last_stat != Some(stat) || replaced {
+                if stat.1 < tail.committed || replaced {
                     // Rewritten out from under us: start the file over.
                     tail.committed = 0;
                     tail.carry.clear();
                     tail.tokens = None;
+                }
+                tail.identity = identity;
+                // Never read yet: only its recent lines matter.
+                if tail.committed == 0
+                    && tail.carry.is_empty()
+                    && stat.1 > SUBAGENT_FIRST_READ_BYTES
+                {
+                    match recent_lines_start(&path, stat.1, SUBAGENT_FIRST_READ_BYTES) {
+                        Ok(start) => tail.committed = start,
+                        Err(e) => tracing::debug!("[bg-watch] sub-agent read failed: {e}"),
+                    }
                 }
                 match read_complete_lines(&path, &mut tail.committed, &mut tail.carry) {
                     Ok(lines) => {
@@ -939,9 +992,10 @@ impl WatchState {
     }
 
     /// Fold the session's verdict on a launch back into its tails: a launch
-    /// that took a reading is accepted; one with its result, or one that was
-    /// accepted and is now unknown (its turn ended or was cancelled), stops
-    /// being read; one never yet known is retried on the next tick.
+    /// the session knows as running is accepted; one with its result, or one
+    /// that was accepted and is now unknown (its turn ended or was cancelled),
+    /// stops being read once a later read of the main transcript has not made
+    /// it a background task; one never yet known is retried on the next tick.
     fn settle_subagent(&mut self, tool_call_id: &str, verdict: SubagentUsageVerdict) {
         let tails = self
             .subagent_tails
@@ -954,25 +1008,32 @@ impl WatchState {
             }
             // Its readings are refused from now on, so keeping the tails a
             // little longer cannot touch the finish total.
-            SubagentUsageVerdict::Finished => {
-                let first = *self
-                    .finishing_subagents
-                    .entry(tool_call_id.to_string())
-                    .or_insert(self.main_reads);
-                if self.main_reads > first {
-                    self.finish_subagent(tool_call_id);
-                }
-            }
+            SubagentUsageVerdict::Finished => self.finish_after_a_main_read(tool_call_id),
             SubagentUsageVerdict::Unknown => {
                 let mut gone = false;
                 for t in tails {
                     gone |= t.accepted;
                     t.sent = None;
                 }
+                // A background launch's turn can end before its ack is read,
+                // so it waits for a read of the main transcript as finished
+                // does.
                 if gone {
-                    self.finish_subagent(tool_call_id);
+                    self.finish_after_a_main_read(tool_call_id);
                 }
             }
+        }
+    }
+
+    /// Stop reading a launch's transcripts once a read of the main transcript
+    /// after the first call has still not made it a background task.
+    fn finish_after_a_main_read(&mut self, tool_call_id: &str) {
+        let first = *self
+            .finishing_subagents
+            .entry(tool_call_id.to_string())
+            .or_insert(self.main_reads);
+        if self.main_reads > first {
+            self.finish_subagent(tool_call_id);
         }
     }
 
@@ -3638,6 +3699,82 @@ mod tests {
         std::mem::take(&mut ws.pending_subagent_usage)
     }
 
+    /// A transcript replaced by a new file (same name, longer, so it never
+    /// reads as shrunk) is read again from its start.
+    #[test]
+    fn a_replaced_subagent_transcript_is_read_from_its_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, _, transcript) = subagent_fixture(&dir);
+        let ledger = PromptLedger::shared();
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 1))],
+        );
+        tick_now(&mut ws, &ledger);
+        assert_eq!(drain_usage(&mut ws), vec![("toolu_sub1".to_string(), 102)]);
+
+        let replacement = transcript.with_extension("jsonl.new");
+        write_lines(
+            &replacement,
+            &[
+                &sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 500, 1)),
+                &sub_user_line(),
+            ],
+        );
+        std::fs::rename(&replacement, &transcript).unwrap();
+        tick_now(&mut ws, &ledger);
+        assert_eq!(drain_usage(&mut ws), vec![("toolu_sub1".to_string(), 502)]);
+    }
+
+    /// A transcript first seen already large is read from its last
+    /// [`SUBAGENT_FIRST_READ_BYTES`], starting at the first full line; later
+    /// reads carry on from there.
+    #[test]
+    fn a_large_subagent_transcript_is_first_read_from_its_recent_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, _, transcript) = subagent_fixture(&dir);
+        let ledger = PromptLedger::shared();
+        // The only usage line lies before the window.
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 1))],
+        );
+        let filler = sub_user_line();
+        let lines = vec![filler.as_str(); SUBAGENT_FIRST_READ_BYTES as usize / filler.len() + 2];
+        write_lines(&transcript, &lines);
+        let len = std::fs::metadata(&transcript).unwrap().len();
+        assert!(len > SUBAGENT_FIRST_READ_BYTES);
+
+        tick_now(&mut ws, &ledger);
+        assert!(drain_usage(&mut ws).is_empty());
+        let tail = &ws.subagent_tails[&transcript];
+        assert_eq!(tail.committed, len, "every line in the window was read");
+        assert!(tail.carry.is_empty());
+
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_2", "claude-haiku-4-5", (1, 0, 900, 1))],
+        );
+        tick_now(&mut ws, &ledger);
+        assert_eq!(drain_usage(&mut ws), vec![("toolu_sub1".to_string(), 902)]);
+    }
+
+    /// The first read of a large file starts just past the first newline in
+    /// its window, or at the window's start when a line begins exactly there.
+    #[test]
+    fn the_first_read_window_starts_at_a_full_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        std::fs::write(&path, b"aaaa\nbbbb\ncccc\n").unwrap();
+        // Window of 7 starts mid "bbbb": skip to "cccc".
+        assert_eq!(recent_lines_start(&path, 15, 7).unwrap(), 10);
+        // Window of 10 starts right at "bbbb".
+        assert_eq!(recent_lines_start(&path, 15, 10).unwrap(), 5);
+        // A window with no newline after its start reads nothing.
+        std::fs::write(&path, b"aaaa\nbbbbbbbbbb").unwrap();
+        assert_eq!(recent_lines_start(&path, 15, 7).unwrap(), 15);
+    }
+
     #[test]
     fn subagent_tokens_use_the_finish_formula_and_wait_for_a_partial_line() {
         let dir = tempfile::tempdir().unwrap();
@@ -3999,6 +4136,54 @@ mod tests {
         assert!(ws.pending_subagent_usage.is_empty());
     }
 
+    /// The session knowing a running launch accepts its tails on the verdict
+    /// pass, before any reading, so one that ends with its turn before its
+    /// first usage line is still dropped.
+    #[tokio::test]
+    async fn a_launch_that_ends_before_its_first_usage_line_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, _, transcript) = subagent_fixture(&dir);
+        let mut session = prompting_session();
+        session.apply_event(&subagent_launch("toolu_sub1"));
+        let state = Arc::new(RwLock::new(session));
+        let ledger = PromptLedger::shared();
+        write_lines(&transcript, &[&sub_user_line()]);
+        tick_now(&mut ws, &ledger);
+        assert!(ws.pending_subagent_usage.is_empty());
+        emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+        assert!(ws.subagent_tails[&transcript].accepted);
+
+        {
+            let mut s = state.write().await;
+            s.apply_event(&AcpEvent::ToolCallUpdate {
+                tool_call_id: "toolu_sub1".into(),
+                title: None,
+                status: Some("completed".into()),
+                content: None,
+                raw_input: None,
+                raw_output: None,
+                raw_output_append: None,
+                locations: None,
+                meta: None,
+                images: None,
+            });
+            s.apply_event(&AcpEvent::TurnComplete {
+                session_id: "s1".into(),
+                stop_reason: "end_turn".into(),
+                agent_type: "claude_code".into(),
+            });
+        }
+        // Kept for one more read of the main transcript, in case it is a
+        // background launch whose ack is still to come.
+        tick_now(&mut ws, &ledger);
+        emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+        assert_eq!(ws.subagent_tails.len(), 1);
+        tick_now(&mut ws, &ledger);
+        emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+        assert!(ws.subagent_tails.is_empty());
+        assert!(ws.finished_subagent_files.contains(&transcript));
+    }
+
     #[tokio::test]
     async fn a_launch_that_finishes_as_its_turn_ends_is_dropped() {
         let dir = tempfile::tempdir().unwrap();
@@ -4038,6 +4223,11 @@ mod tests {
             });
             assert!(!s.active_tool_calls.contains_key("toolu_sub1"));
         }
+        // Kept for one more read of the main transcript, in case it is a
+        // background launch whose ack is still to come.
+        tick_now(&mut ws, &ledger);
+        emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+        assert_eq!(ws.subagent_tails.len(), 1);
         tick_now(&mut ws, &ledger);
         emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
         assert!(ws.subagent_tails.is_empty());
@@ -4340,6 +4530,60 @@ mod tests {
 
         // The ack lands on the next tick: the reading goes on the task.
         write_lines(&session_file, &[&agent_ack("agent1")]);
+        assert_eq!(
+            task_tokens(tick_now(&mut ws, &ledger)),
+            vec![("agent1".to_string(), Some(102))]
+        );
+        emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+        assert_eq!(ws.subagent_tails.len(), 1);
+        assert!(ws.finishing_subagents.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_background_launch_whose_turn_ends_before_its_ack_is_read_still_takes_live_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ws, session_file, transcript) = background_fixture(&dir);
+        let mut session = prompting_session();
+        session.apply_event(&subagent_launch("toolu_01"));
+        let state = Arc::new(RwLock::new(session));
+        let ledger = PromptLedger::shared();
+        write_lines(&transcript, &[&sub_user_line()]);
+        tick_now(&mut ws, &ledger);
+        emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+        assert!(ws.subagent_tails[&transcript].accepted);
+
+        // The launch answers and its turn ends before the main transcript's
+        // ack is read: it reads unknown, and is kept for one more read.
+        {
+            let mut s = state.write().await;
+            s.apply_event(&AcpEvent::ToolCallUpdate {
+                tool_call_id: "toolu_01".into(),
+                title: None,
+                status: Some("completed".into()),
+                content: None,
+                raw_input: None,
+                raw_output: None,
+                raw_output_append: None,
+                locations: None,
+                meta: None,
+                images: None,
+            });
+            s.apply_event(&AcpEvent::TurnComplete {
+                session_id: "s1".into(),
+                stop_reason: "end_turn".into(),
+                agent_type: "claude_code".into(),
+            });
+        }
+        assert!(tick_now(&mut ws, &ledger).is_none());
+        emit_subagent_usage(&state, &EventEmitter::Noop, &mut ws).await;
+        assert_eq!(ws.subagent_tails.len(), 1);
+
+        // The ack lands on the next read: the launch is a task, with tokens.
+        write_lines(&session_file, &[&agent_ack("agent1")]);
+        write_lines(
+            &transcript,
+            &[&sub_assistant("msg_1", "claude-haiku-4-5", (1, 0, 100, 1))],
+        );
         assert_eq!(
             task_tokens(tick_now(&mut ws, &ledger)),
             vec![("agent1".to_string(), Some(102))]

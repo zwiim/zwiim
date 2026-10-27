@@ -66,5 +66,6 @@ export * from "./changes/paths";
 export * from "./subagents/cards";
 export * from "./subagents/model";
 export * from "./subagents/labels";
+export * from "./subagents/clock";
 export * from "./attachments";
 export * from "./files";

@@ -10,6 +10,7 @@ import {
   historyLaunches,
   historySubagentCards,
   lateSubagentBlocks,
+  launchFirstSeen,
   liveSubagentCards,
   modelShortName,
   parseUnifiedDiff,
@@ -255,20 +256,6 @@ type Piece = Exclude<TranscriptRow, { type: "tools" }>;
 
 const imageRows = (key: string, images: AgentImage[] | undefined): Piece[] =>
   (images ?? []).map((image, i) => ({ type: "image", key: `${key}:img${i}`, image }));
-
-/** When each sub-agent launch was first seen, for a Host that does not say when it started. */
-const launchStarts = new Map<string, number>();
-
-/** When the launch `id` was first seen; now when it is new. Keeps the last 64. */
-function launchFirstSeen(id: string): number {
-  let at = launchStarts.get(id);
-  if (at === undefined) {
-    at = Date.now();
-    launchStarts.set(id, at);
-    if (launchStarts.size > 64) launchStarts.delete(launchStarts.keys().next().value!);
-  }
-  return at;
-}
 
 /** A sub-agent's card: still going reads running, whether or not the turn is. */
 function subagentItem<B>(card: SubagentCard<B>, title: string | null, rows: TranscriptRow[]): SubagentItem {
