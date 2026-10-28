@@ -61,6 +61,15 @@ export interface SessionView {
   settled: LiveTurn | null;
   pendingRequest: AgentRequest | null;
   lastError: SessionErrorInfo | null;
+  /**
+   * Counts the errors `lastError` has held: it moves on for each error event
+   * and for any other error that replaces the one shown, and stays put when
+   * the same one is seen again. Clients key an error's card on it, so a new
+   * error gets a fresh card even if it reads the same as the last.
+   */
+  errorSerial: number;
+  /** The agent is reconnecting after losing its server. */
+  reconnecting: boolean;
   /** The context window as the agent last reported it; null until it does. */
   usage: Usage | null;
   /** The last finished turn's tokens as the agent reported them. */
@@ -95,7 +104,13 @@ export type SessionFrame =
   | { type: "event"; event: SessionEvent }
   | { type: "detached"; reason: DetachReason }
   | { type: "error"; error: WireError }
-  | { type: "history"; turns: HistoryTurn[]; generation?: number | null }
+  | {
+      type: "history";
+      turns: HistoryTurn[];
+      generation?: number | null;
+      /** The Host's saved can't-reach error; shown only while no live agent reports its own. */
+      lastError?: SessionErrorInfo | null;
+    }
   | { type: "options"; options: SessionOptions };
 
 const emptyTurn = (): LiveTurn => ({ userMessage: null, message: null, toolCalls: {} });
@@ -209,6 +224,8 @@ export function initialSessionView(session_id: string): SessionView {
     settled: null,
     pendingRequest: null,
     lastError: null,
+    errorSerial: 0,
+    reconnecting: false,
     usage: null,
     turnUsage: null,
     lastStopReason: null,
@@ -249,6 +266,7 @@ export function reduceSession(view: SessionView, frame: SessionFrame): SessionVi
         historyGeneration: frame.generation ?? null,
         historyStale: false,
         settled: null,
+        ...withError(view, historyLastError(view, frame.lastError ?? null)),
       };
     }
     case "options":
@@ -298,7 +316,8 @@ function applySnapshot(
     // finished while we were away is in the transcript.
     settled: null,
     pendingRequest: s.pending_request,
-    lastError: s.last_error,
+    ...withError(view, s.last_error),
+    reconnecting: s.reconnecting ?? false,
     usage: s.usage,
     turnUsage: s.turn_usage ?? null,
     // A freshly spawned agent may not have advertised its options yet; its
@@ -317,6 +336,30 @@ function applySnapshot(
   };
 }
 
+/** `view`'s error fields after `lastError` is read from the Host: a different error moves the serial on. */
+function withError(view: SessionView, lastError: SessionErrorInfo | null) {
+  const same = view.lastError?.message === lastError?.message && view.lastError?.code === lastError?.code;
+  return { lastError, errorSerial: same ? view.errorSerial : view.errorSerial + 1 };
+}
+
+/**
+ * The error to show after a history read. A live agent's snapshot is the
+ * authority, so a live view keeps its own. Otherwise the Host's saved error
+ * wins; with none saved, only a stale can't-reach error goes (a retry
+ * succeeded), so another error the user was looking at stays.
+ *
+ * The one exception is the first read after a teardown: the Host writes the
+ * saved turn just after the agent goes, so a read that beat it finds nothing,
+ * and the card the view had already shown must not drop. `historyStale` is
+ * still set from the detach until that first read lands.
+ */
+function historyLastError(view: SessionView, saved: SessionErrorInfo | null): SessionErrorInfo | null {
+  if (view.attach === "live") return view.lastError;
+  if (saved !== null) return saved;
+  if (view.attach === "detached" && view.historyStale) return view.lastError;
+  return view.lastError?.code === "agent_unreachable" ? null : view.lastError;
+}
+
 function applyDetached(view: SessionView, reason: DetachReason): SessionView {
   if (reason !== "session_not_live") {
     // Transient: the client re-attaches with its cursor.
@@ -333,6 +376,7 @@ function applyDetached(view: SessionView, reason: DetachReason): SessionView {
     live: emptyTurn(),
     settled: turnIsEmpty(view.live) ? view.settled : view.live,
     pendingRequest: null,
+    reconnecting: false,
     historyStale: true,
     // Its background work went with it.
     background: null,
@@ -438,6 +482,8 @@ export function applyEvent(view: SessionView, ev: SessionEvent): SessionView {
         settled: turnIsEmpty(own) ? view.settled : own,
         live: { ...earlier, userMessage: ev.payload },
         lastStopReason: null,
+        // A new prompt starts a new error scope on the Host too.
+        lastError: null,
         // Status travels only in snapshots; turn boundaries are its events.
         agentStatus: "prompting",
       };
@@ -473,13 +519,16 @@ export function applyEvent(view: SessionView, ev: SessionEvent): SessionView {
         live: earlier,
         settled: turnIsEmpty(own) ? view.settled : own,
         pendingRequest: null,
+        reconnecting: false,
         agentStatus: view.agentStatus === null ? null : "connected",
         lastStopReason: ev.payload.stop_reason,
         historyStale: true,
       };
     }
     case "agent.error":
-      return { ...next, lastError: ev.payload };
+      return { ...next, lastError: ev.payload, errorSerial: view.errorSerial + 1 };
+    case "session.reconnecting":
+      return { ...next, reconnecting: ev.payload.reconnecting };
     case "session.status":
       return { ...next, sessionStatus: ev.payload.status };
     case "session.options":

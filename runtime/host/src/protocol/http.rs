@@ -2130,11 +2130,61 @@ pub async fn session_history(
         }
         None => Default::default(),
     };
+    // The saved can't-reach turn, so a client that opens the session later
+    // still shows its error card. Only `{message, code}` leaves the Host, the
+    // message scrubbed like the live `agent.error`.
+    let row = session::resolve(&state.db.conn, &p.session_id).await?;
+    let last_error =
+        crate::db::service::conversation_service::unreachable_turn(&state.db.conn, row.id)
+            .await
+            .map_err(crate::app_error::AppCommandError::from)?
+            .map(|turn| {
+                json!({
+                    "message": super::events::scrub(&turn.message),
+                    "code": crate::unreachable::CODE,
+                })
+            });
     Ok(Json(json!({
         "session_id": p.session_id,
         "turns": super::events::project_history_with(&turns, root.as_deref(), &revertible),
         "history_generation": generation,
+        "last_error": last_error,
     })))
+}
+
+/// Send the session's saved can't-reach turn again, unchanged.
+pub async fn session_retry(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<SessionParams>,
+) -> ZResult<Value> {
+    crate::session_retry::retry(
+        &state.db,
+        &state.connection_manager,
+        &RuntimeLauncher { state: &state },
+        &p.session_id,
+    )
+    .await?;
+    Ok(Json(json!({ "session_id": p.session_id })))
+}
+
+/// `session.retry_in_new_chat`: the saved can't-reach turn as the first
+/// prompt of a new session, with a summary of this one's chat attached.
+pub async fn session_retry_in_new_chat(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<SessionParams>,
+) -> ZResult<Value> {
+    crate::session_retry::ensure_retryable(&state.db, &state.connection_manager, &p.session_id)
+        .await?;
+    let history = session::history(&state, &p.session_id).await?;
+    let session_id = crate::session_retry::retry_in_new_chat(
+        &state.db,
+        &state.connection_manager,
+        &RuntimeLauncher { state: &state },
+        &p.session_id,
+        &history,
+    )
+    .await?;
+    Ok(Json(json!({ "session_id": session_id })))
 }
 
 #[derive(Deserialize)]

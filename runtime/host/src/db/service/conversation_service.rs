@@ -121,6 +121,7 @@ async fn create_inner(
         pinned_at: Set(None),
         origin_cwd: Set(None),
         session_id: NotSet,
+        unreachable_turn: Set(None),
     };
     Ok(model.insert(conn).await?)
 }
@@ -563,6 +564,53 @@ pub async fn update_pin(
     Ok(())
 }
 
+/// Zwiim-owned: save (`Some`) or clear (`None`) the turn that failed because
+/// the agent couldn't reach its provider. Only `unreachable_turn` is written:
+/// a failed turn is not activity, so `updated_at` stays put.
+pub async fn set_unreachable_turn(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    turn: Option<&crate::session_retry::UnreachableTurn>,
+) -> Result<(), DbError> {
+    use sea_orm::sea_query::Expr;
+    let json = turn
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|e| DbError::Migration(format!("encode unreachable turn: {e}")))?;
+    conversation::Entity::update_many()
+        .col_expr(conversation::Column::UnreachableTurn, Expr::value(json))
+        .filter(conversation::Column::Id.eq(conversation_id))
+        .exec(conn)
+        .await?;
+    Ok(())
+}
+
+/// Zwiim-owned: the saved can't-reach turn of `conversation_id`, if any. A
+/// record that no longer decodes is logged and read as nothing to retry.
+pub async fn unreachable_turn(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+) -> Result<Option<crate::session_retry::UnreachableTurn>, DbError> {
+    let saved = conversation::Entity::find_by_id(conversation_id)
+        .select_only()
+        .column(conversation::Column::UnreachableTurn)
+        .into_tuple::<Option<String>>()
+        .one(conn)
+        .await?
+        .flatten();
+    Ok(saved.and_then(|json| {
+        serde_json::from_str(&json)
+            .inspect_err(|e| {
+                tracing::warn!(
+                    conversation_id,
+                    error = %e,
+                    "unreadable unreachable turn record"
+                );
+            })
+            .ok()
+    }))
+}
+
 /// Bind an agent session id (`external_id`) to a conversation row WITHOUT ever
 /// orphaning the session it was previously bound to.
 ///
@@ -970,6 +1018,7 @@ impl CarriedOverRow {
             pinned_at: Set(None),
             origin_cwd: Set(self.origin_cwd),
             session_id: NotSet,
+            unreachable_turn: Set(None),
         }
     }
 }
@@ -3390,5 +3439,51 @@ mod tests {
             !rows.iter().any(|r| r.title.as_deref() == Some("hide")),
             "loop row must be excluded"
         );
+    }
+
+    /// A saved can't-reach turn reads back with its Text and Image blocks
+    /// unchanged; clearing it reads back as nothing to retry.
+    #[tokio::test]
+    async fn unreachable_turn_round_trips_text_and_image_blocks() {
+        use crate::acp::types::PromptInputBlock;
+        use crate::session_retry::UnreachableTurn;
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/zwiim-unreachable-turn-round-trip").await;
+        let row = create(&db.conn, folder, AgentType::Codex, None, None)
+            .await
+            .expect("row");
+        assert!(unreachable_turn(&db.conn, row.id)
+            .await
+            .expect("read")
+            .is_none());
+
+        let turn = UnreachableTurn {
+            message: "Can't reach the agent's server.".into(),
+            blocks: vec![
+                PromptInputBlock::Text { text: "hi".into() },
+                PromptInputBlock::Image {
+                    data: "aGk=".into(),
+                    mime_type: "image/png".into(),
+                    uri: Some("file:///tmp/a.png".into()),
+                },
+            ],
+        };
+        set_unreachable_turn(&db.conn, row.id, Some(&turn))
+            .await
+            .expect("save");
+        let back = unreachable_turn(&db.conn, row.id)
+            .await
+            .expect("read")
+            .expect("saved");
+        assert_eq!(back.message, turn.message);
+        assert_eq!(back.blocks, turn.blocks);
+
+        set_unreachable_turn(&db.conn, row.id, None)
+            .await
+            .expect("clear");
+        assert!(unreachable_turn(&db.conn, row.id)
+            .await
+            .expect("read")
+            .is_none());
     }
 }

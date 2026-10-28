@@ -224,6 +224,23 @@ export class CurrentHost {
   }
 
   /**
+   * Send the turn that could not reach the agent's provider again. The Host
+   * answers on the session's stream, as for any message. Never retried.
+   */
+  async retrySession(session_id: string): Promise<void> {
+    const connection = this.#connection;
+    if (!connection) throw new ZwiimClientError("network", "Not connected to the host");
+    await connection.retrySession(session_id);
+  }
+
+  /** Carry that turn into a new session; resolves to the new session's id. Never retried. */
+  async retryInNewChat(session_id: string): Promise<string> {
+    const connection = this.#connection;
+    if (!connection) throw new ZwiimClientError("network", "Not connected to the host");
+    return (await connection.request("session.retry_in_new_chat", { session_id })).session_id;
+  }
+
+  /**
    * Stop a session's agent and its background work. The session and its
    * transcript stay; the host reports it not live, and the next send starts
    * the agent again. Never retried.

@@ -69,6 +69,15 @@ impl ZwiimError {
         )
     }
 
+    /// `session.retry` on a session with no saved can't-reach turn.
+    pub fn nothing_to_retry() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            "nothing_to_retry",
+            "There is no failed turn to retry",
+        )
+    }
+
     /// Another session's turn is running in the same worktree.
     pub fn worktree_busy() -> Self {
         Self::new(

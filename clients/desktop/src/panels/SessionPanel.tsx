@@ -37,6 +37,7 @@ import { cn } from "@/lib/utils";
 import { ContextRing } from "./ContextRing";
 import { ControlSelect, OptionsBar, UnattendedBanner } from "./OptionsBar";
 import { RequestCard } from "./RequestCard";
+import { UnreachableCard } from "./UnreachableCard";
 import { useSlashMenu } from "./SlashCommands";
 import { AgentTerminalCard, AgentTerminalsContext } from "./AgentTerminal";
 import {
@@ -404,6 +405,7 @@ function OpenSession({
   const summary = useHost((s) => s.sessionsByWorkspace[workspaceId]?.find((x) => x.session_id === sessionId));
   const agentName = useHost((s) => s.agents?.find((a) => a.agent === summary?.agent)?.name ?? null);
   const handOff = useHost((s) => hasCapability(s.connection.compat, "session.plan_hand_off"));
+  const canRetry = useHost((s) => hasCapability(s.connection.compat, "session.retry"));
   const compat = useHost((s) => s.connection.compat);
   // Before its agent announces them (or while it is away), the commands it
   // offered last.
@@ -625,6 +627,7 @@ function OpenSession({
                 <LiveTurnView
                   turn={view.live}
                   streaming={running}
+                  reconnecting={view.reconnecting}
                   animate
                   background={view.background}
                   earlier={earlier}
@@ -640,11 +643,21 @@ function OpenSession({
                 {stopped}
               </p>
             )}
-            {view?.lastError && (
-              <p className="text-destructive text-xs" role="alert">
-                {view.lastError.message}
-              </p>
-            )}
+            {view?.lastError &&
+              (view.lastError.code === "agent_unreachable" && canRetry ? (
+                <UnreachableCard
+                  key={view.errorSerial}
+                  agentName={agentName ?? summary?.agent ?? "Agent"}
+                  message={view.lastError.message}
+                  sessionId={sessionId}
+                  online={online}
+                  onStarted={onSessionStarted}
+                />
+              ) : (
+                <p className="text-destructive text-xs" role="alert">
+                  {view.lastError.message}
+                </p>
+              ))}
             {view?.pendingRequest && (
               <RequestCard
                 key={view.pendingRequest.request_id}

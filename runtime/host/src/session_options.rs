@@ -516,7 +516,7 @@ fn with_model_effort(
 
 /// Keep what a session of `agent` reported: the agent's catalog and what its
 /// current model offers.
-async fn remember_agent_report(db: &DatabaseConnection, agent: &str, reported: &[SessionConfigOptionInfo]) {
+pub(crate) async fn remember_agent_report(db: &DatabaseConnection, agent: &str, reported: &[SessionConfigOptionInfo]) {
     let catalog = merge_catalog(agent_catalog(db, agent).await, reported);
     write_json(db, &agent_key(agent), &catalog).await;
     let efforts = learn_model_effort(model_efforts(db, agent).await, reported);

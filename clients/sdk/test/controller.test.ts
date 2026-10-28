@@ -77,6 +77,53 @@ describe("HostController", () => {
     expect(block?.type === "tool_call" && block.status).toBe("in_progress");
   });
 
+  it("shows the saved can't-reach error of a session with no live agent", async () => {
+    const t = setup();
+    const saved = { message: "Can't reach the server", code: "agent_unreachable" };
+    t.transport.handlers["session.history"] = (p: { session_id: string }) => ({ session_id: p.session_id, turns: [], last_error: saved });
+    t.client.start();
+    await flush();
+    t.transport.channel.open();
+    await flush();
+    t.controller.openSession("s1");
+    await flush();
+    expect(t.store.getState().sessions.s1!.lastError).toEqual(saved);
+  });
+
+  it("re-attaches a detached session after a retry, so the new turn reaches the view", async () => {
+    const t = setup();
+    const saved = { message: "Can't reach the server", code: "agent_unreachable" };
+    t.transport.handlers["session.history"] = (p: { session_id: string }) => ({ session_id: p.session_id, turns: [], last_error: saved });
+    t.transport.handlers["session.retry"] = (p: { session_id: string }) => ({ session_id: p.session_id });
+    t.client.start();
+    await flush();
+    t.transport.channel.open();
+    await flush();
+    t.controller.openSession("s1");
+    await flush();
+    const ch = t.transport.channel;
+    ch.frame({ type: "detached", subscription_id: "sub-1", reason: "session_not_live" });
+    await flush();
+    expect(t.store.getState().sessions.s1!.lastError).toEqual(saved);
+    const before = ch.sent.length;
+    await t.controller.retrySession("s1");
+    expect(t.transport.requests.at(-1)).toMatchObject({ op: "session.retry", params: { session_id: "s1" }, options: { mutating: true } });
+    expect(ch.sent.slice(before)).toEqual([{ op: "session.subscribe", subscription_id: "sub-1", session_id: "s1" }]);
+    // The Host's snapshot, then the retried turn: its user message clears the card.
+    const snap = {
+      status: "connected", live_message: null, tool_calls: [], pending_request: null, pending_user_message: null,
+      last_error: null, usage: null, options: null, commands: [],
+    };
+    ch.frame({ type: "snapshot", subscription_id: "sub-1", session_id: "s1", epoch: "e", snapshot: snap as never, event_seq: 1 });
+    ch.frame({
+      type: "event",
+      subscription_id: "sub-1",
+      event: { session_id: "s1", seq: 2, type: "agent.user_message", payload: { message_id: "u2", blocks: [{ type: "text", text: "again" }] } },
+    });
+    await flush();
+    expect(t.store.getState().sessions.s1!.lastError).toBeNull();
+  });
+
   it("re-reads on reconnect a transcript no attach will report on", async () => {
     const t = setup();
     t.client.start();

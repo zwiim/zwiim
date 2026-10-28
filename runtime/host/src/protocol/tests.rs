@@ -87,6 +87,8 @@ const OPS: &[&str] = &[
     "session.list",
     "session.history",
     "session.revert",
+    "session.retry",
+    "session.retry_in_new_chat",
     "device.pair_invite",
     "device.list",
     "device.revoke",
@@ -2035,6 +2037,144 @@ async fn session_history_carries_the_history_generation() {
     assert!(history["history_generation"].as_u64().unwrap() > snap_gen);
 }
 
+/// Save a can't-reach turn of `blocks` on session `sid`.
+async fn save_unreachable_turn(h: &Host, sid: &str, blocks: Vec<PromptInputBlock>) {
+    let row = crate::session::resolve(&h.state.db.conn, sid)
+        .await
+        .unwrap();
+    crate::db::service::conversation_service::set_unreachable_turn(
+        &h.state.db.conn,
+        row.id,
+        Some(&crate::session_retry::UnreachableTurn {
+            message: "Can't reach the agent's server.".into(),
+            blocks,
+        }),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn session_retry_over_http() {
+    let h = host(false).await;
+    assert_eq!(
+        h.err("session.retry", json!({"session_id": "nope"}))
+            .await
+            .1,
+        "not_found"
+    );
+
+    let (sid, mut rx) = h.live_session().await;
+    assert_eq!(
+        h.err("session.retry", json!({"session_id": sid})).await,
+        (StatusCode::CONFLICT, "nothing_to_retry".into())
+    );
+
+    let blocks = vec![PromptInputBlock::Text { text: "hi".into() }];
+    save_unreachable_turn(&h, &sid, blocks.clone()).await;
+    let retried = h.ok("session.retry", json!({"session_id": sid})).await;
+    assert_eq!(retried, json!({"session_id": sid}));
+    match rx.recv().await {
+        Some(ConnectionCommand::Prompt { blocks: sent, .. }) => assert_eq!(sent, blocks),
+        _ => panic!("the saved turn reaches the agent"),
+    }
+    // Sent, so the record is gone.
+    let history = h.ok("session.history", json!({"session_id": sid})).await;
+    assert!(history["last_error"].is_null(), "{history}");
+}
+
+/// The op's refusals over HTTP. Its success path starts an agent, which only
+/// the orchestration tests can fake (`session_retry::tests`).
+#[tokio::test]
+async fn session_retry_in_new_chat_over_http() {
+    let h = host(false).await;
+    assert_eq!(
+        h.err("session.retry_in_new_chat", json!({"session_id": "nope"}))
+            .await
+            .1,
+        "not_found"
+    );
+
+    let (sid, _rx) = h.live_session().await;
+    assert_eq!(
+        h.err("session.retry_in_new_chat", json!({"session_id": sid})).await,
+        (StatusCode::CONFLICT, "nothing_to_retry".into())
+    );
+
+    save_unreachable_turn(&h, &sid, vec![PromptInputBlock::Text { text: "hi".into() }]).await;
+    let st = h.state.connection_manager.get_state(CONN).await.unwrap();
+    st.write().await.turn_in_flight = true;
+    assert_eq!(
+        h.err("session.retry_in_new_chat", json!({"session_id": sid}))
+            .await
+            .1,
+        "turn_in_progress"
+    );
+
+    // A session in a repository's root workspace has no worktree to start in.
+    let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::Codex).await;
+    let root_sid = session_id_of(&h.state, conv).await;
+    save_unreachable_turn(&h, &root_sid, vec![PromptInputBlock::Text { text: "hi".into() }]).await;
+    assert_eq!(
+        h.err("session.retry_in_new_chat", json!({"session_id": root_sid}))
+            .await
+            .1,
+        "root_workspace"
+    );
+}
+
+#[tokio::test]
+async fn history_carries_saved_last_error() {
+    let h = host(false).await;
+    let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::Codex).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let history = h.ok("session.history", json!({"session_id": sid})).await;
+    assert!(
+        history.get("last_error").is_some_and(Value::is_null),
+        "no record reads as null: {history}"
+    );
+
+    save_unreachable_turn(&h, &sid, vec![PromptInputBlock::Text { text: "hi".into() }]).await;
+    let history = h.ok("session.history", json!({"session_id": sid})).await;
+    assert_eq!(
+        history["last_error"],
+        json!({"message": "Can't reach the agent's server.", "code": "agent_unreachable"})
+    );
+    assert_no_internal_keys(&history);
+}
+
+/// The saved message is the agent's own text, kept raw; history scrubs it
+/// like the live `agent.error` does, so a host path or a refused key never
+/// reaches a client.
+#[tokio::test]
+async fn history_scrubs_saved_last_error() {
+    let h = host(false).await;
+    let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::Codex).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let raw = "Key sk-proj-abcdefgh1234 refused, see /Users/alice/.codex/config.toml";
+    crate::db::service::conversation_service::set_unreachable_turn(
+        &h.state.db.conn,
+        conv,
+        Some(&crate::session_retry::UnreachableTurn {
+            message: raw.into(),
+            blocks: vec![PromptInputBlock::Text { text: "hi".into() }],
+        }),
+    )
+    .await
+    .unwrap();
+
+    let history = h.ok("session.history", json!({"session_id": sid})).await;
+    assert_eq!(
+        history["last_error"]["message"],
+        "Key <redacted> refused, see <path>"
+    );
+    let stored = crate::db::service::conversation_service::unreachable_turn(&h.state.db.conn, conv)
+        .await
+        .unwrap()
+        .expect("record");
+    assert_eq!(stored.message, raw, "the stored text stays raw");
+}
+
 #[tokio::test]
 async fn session_revert_speaks_zwiim_only() {
     let h = host(false).await;
@@ -3037,6 +3177,7 @@ async fn ws_subscribe_snapshot_live_replay_and_epoch() {
             "options",
             "pending_request",
             "pending_user_message",
+            "reconnecting",
             "status",
             "tool_calls",
             "turn_usage",

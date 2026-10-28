@@ -18,6 +18,7 @@ import * as Haptics from "expo-haptics";
 import { randomUUID } from "expo-crypto";
 import {
   ATTACHMENT_GONE_MESSAGE,
+  hasCapability,
   isClientError,
   offersChatRewind,
   revertNotes,
@@ -60,6 +61,7 @@ import {
   Caret,
   Composer,
   ErrorRow,
+  UnreachableCard,
   FooterRow,
   NowAction,
   NowBar,
@@ -146,7 +148,8 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
 
   // The history's rows stay the same objects while only the live turn changes.
   const [build] = useState(transcriptBuilder);
-  const rows = useMemo(() => build(view), [build, view]);
+  const canRetry = hasCapability(connection?.compat ?? null, "session.retry");
+  const rows = useMemo(() => build(view, canRetry), [build, view, canRetry]);
   const text = connectionText(connection);
 
   let body;
@@ -168,6 +171,7 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
         view={view}
         rows={rows}
         hostName={name}
+        agentName={agent ?? "Agent"}
         connected={connected}
         onOptions={() => setOptionsOpen(true)}
         fileOf={fileOf}
@@ -350,6 +354,7 @@ function Live({
   view,
   rows,
   hostName,
+  agentName,
   connected,
   onOptions,
   fileOf,
@@ -360,6 +365,7 @@ function Live({
   view: SessionView | undefined;
   rows: TranscriptRow[];
   hostName: string;
+  agentName: string;
   connected: boolean;
   onOptions(): void;
   fileOf(path: string): string | null;
@@ -553,16 +559,23 @@ function Live({
   // cell reads them.
   const shownRows = useRef(rows);
   shownRows.current = rows;
+  // Send the failed turn again, or carry it into a new chat and open that.
+  const retryTurn = () => currentHost.retrySession(session_id);
+  const retryInNewChat = () => currentHost.retryInNewChat(session_id);
+  const openStarted = (id: string) => nav.replace("Session", { session_id: id, started: true });
   // The handlers are only called on a press, after a commit.
-  const latest = useRef({ onTool, openSent, openImage, askReset });
+  const latest = useRef({ onTool, openSent, openImage, askReset, retryTurn, retryInNewChat, openStarted });
   useLayoutEffect(() => {
-    latest.current = { onTool, openSent, openImage, askReset };
+    latest.current = { onTool, openSent, openImage, askReset, retryTurn, retryInNewChat, openStarted };
   });
   const [actions] = useState(() => ({
     onTool: (tool: ToolItem) => latest.current.onTool(tool),
     openSent: (file: AttachmentBlock) => latest.current.openSent(file),
     openImage: (path: string) => latest.current.openImage(path),
     askReset: (point: RevertPoint) => latest.current.askReset(point),
+    retryTurn: () => latest.current.retryTurn(),
+    retryInNewChat: () => latest.current.retryInNewChat(),
+    openStarted: (id: string) => latest.current.openStarted(id),
   }));
   const hasWorkspace = workspace_id !== null;
   // Each cell is memoized on its row and index, and its gap depends on the row
@@ -589,11 +602,19 @@ function Live({
             onOpenImage={hasWorkspace ? actions.openImage : undefined}
             onRevert={resettable ? actions.askReset : undefined}
             revertDisabled={running || !connected}
+            unreachable={{
+              agentName,
+              online: connected,
+              hostName,
+              onRetry: actions.retryTurn,
+              onRetryInNewChat: actions.retryInNewChat,
+              onStarted: actions.openStarted,
+            }}
           />
         </View>
       );
     },
-    [actions, toolFile, fileOf, onOpenFile, hasWorkspace, resettable, running, connected],
+    [actions, toolFile, fileOf, onOpenFile, hasWorkspace, resettable, running, connected, agentName, hostName],
   );
 
   const nowBar = (tick: number) => {
@@ -740,6 +761,7 @@ function Row({
   onOpenImage,
   onRevert,
   revertDisabled,
+  unreachable,
 }: {
   row: TranscriptRow;
   onTool(tool: ToolItem): void;
@@ -750,6 +772,15 @@ function Row({
   onOpenImage?(path: string): void;
   onRevert?(point: RevertPoint): void;
   revertDisabled: boolean;
+  /** What the can't-reach card needs; only the transcript's top level has one. */
+  unreachable?: {
+    agentName: string;
+    online: boolean;
+    hostName: string;
+    onRetry(): Promise<void>;
+    onRetryInNewChat(): Promise<string>;
+    onStarted(session_id: string): void;
+  };
 }) {
   const opens = (tool: ToolItem) => toolFile(tool) !== null;
   switch (row.type) {
@@ -811,6 +842,20 @@ function Row({
       return <AgentImageChip image={row.image} onPress={onOpenImage && (() => onOpenImage(row.image.path))} />;
     case "error":
       return <ErrorRow message={row.message} />;
+    case "unreachable":
+      return unreachable ? (
+        <UnreachableCard
+          agentName={unreachable.agentName}
+          message={row.message}
+          online={unreachable.online}
+          hostName={unreachable.hostName}
+          onRetry={unreachable.onRetry}
+          onRetryInNewChat={unreachable.onRetryInNewChat}
+          onStarted={unreachable.onStarted}
+        />
+      ) : (
+        <ErrorRow message={row.message} />
+      );
     case "footer":
       return <FooterRow text={row.text} stopped={row.stopped} files={row.files} fileOf={fileOf} onOpenFile={onOpenFile} />;
   }

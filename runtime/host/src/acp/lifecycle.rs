@@ -70,6 +70,7 @@ fn is_lifecycle_relevant(event: &AcpEvent) -> bool {
                 status: ConnectionStatus::Disconnected
             }
             | AcpEvent::Error { .. }
+            | AcpEvent::TurnUnreachable { .. }
     )
 }
 
@@ -344,6 +345,39 @@ pub(crate) async fn handle_event(
                 // local sidebar emit above is the whole behavior now.
             }
             Ok(())
+        }
+        // Zwiim-owned: save the failed turn so `session.retry` can send it
+        // again, even after this agent is gone.
+        AcpEvent::TurnUnreachable {
+            message,
+            blocks,
+            conversation_id,
+        } => {
+            let cid = match manager.get_state(&envelope.connection_id).await {
+                // This worker runs behind the event bus, so the next prompt may
+                // already be out, having cleared `last_error` and the record.
+                // Only save while the session still shows this failure, or a
+                // stale Retry would come back.
+                Some(state_arc) => {
+                    let state = state_arc.read().await;
+                    let failed = state.last_error.as_ref().and_then(|e| e.code.as_deref())
+                        == Some(crate::unreachable::CODE);
+                    state.conversation_id.filter(|_| failed)
+                }
+                // A terminal error tore the connection down before this landed
+                // (it rides behind that error, often on a fresh worker). No newer
+                // turn can run on a gone connection, so save it under the row it
+                // was derived for.
+                None => *conversation_id,
+            };
+            let Some(cid) = cid else {
+                return Ok(());
+            };
+            let turn = crate::session_retry::UnreachableTurn {
+                message: message.clone(),
+                blocks: blocks.clone(),
+            };
+            conversation_service::set_unreachable_turn(db_conn, cid, Some(&turn)).await
         }
         // Other events don't need cross-connection DB persistence today; extend
         // this dispatcher with new arms as the lifecycle scope grows.
@@ -1751,6 +1785,92 @@ mod tests {
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
+    }
+
+    /// Bind `c1` to a fresh row with `last_error` as given, and return the
+    /// row id with the manager holding that connection.
+    async fn unreachable_fixture(
+        db: &crate::db::AppDatabase,
+        last_error: Option<crate::acp::session_state::SessionLastError>,
+    ) -> (i32, ConnectionManager) {
+        let folder_id = test_helpers::seed_folder(db, "/tmp/test-unreachable-turn").await;
+        let conv_id = test_helpers::seed_conversation(db, folder_id, AgentType::Codex).await;
+        let conn = fake_connection_with_state("c1", Some(conv_id));
+        conn.state.write().await.last_error = last_error;
+        let mgr = ConnectionManager::new();
+        mgr.connections.lock().await.insert("c1".to_string(), conn);
+        (conv_id, mgr)
+    }
+
+    fn turn_unreachable_envelope(conversation_id: Option<i32>) -> EventEnvelope {
+        EventEnvelope {
+            seq: 1,
+            connection_id: "c1".to_string(),
+            payload: AcpEvent::TurnUnreachable {
+                message: "Can't reach the agent's server.".into(),
+                blocks: vec![crate::acp::types::PromptInputBlock::Text { text: "hi".into() }],
+                conversation_id,
+            },
+        }
+    }
+
+    #[test]
+    fn turn_unreachable_is_lifecycle_relevant() {
+        assert!(is_lifecycle_relevant(
+            &turn_unreachable_envelope(None).payload
+        ));
+    }
+
+    #[tokio::test]
+    async fn turn_unreachable_saves_record() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let (conv_id, mgr) = unreachable_fixture(
+            &db,
+            Some(crate::acp::session_state::SessionLastError {
+                message: "Can't reach the agent's server.".into(),
+                code: Some(crate::unreachable::CODE.to_string()),
+                details: None,
+            }),
+        )
+        .await;
+        handle_event(
+            &db.conn,
+            &mgr,
+            &turn_unreachable_envelope(Some(conv_id)),
+            None,
+        )
+        .await
+        .unwrap();
+        let saved = conversation_service::unreachable_turn(&db.conn, conv_id)
+            .await
+            .unwrap()
+            .expect("record saved");
+        assert_eq!(saved.message, "Can't reach the agent's server.");
+        assert_eq!(
+            saved.blocks,
+            vec![crate::acp::types::PromptInputBlock::Text { text: "hi".into() }]
+        );
+    }
+
+    /// The record is written off the event bus, so it can land after the next
+    /// prompt already cleared `last_error`. That late write must not bring a
+    /// stale Retry back.
+    #[tokio::test]
+    async fn late_unreachable_write_does_not_resurrect_cleared_record() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let (conv_id, mgr) = unreachable_fixture(&db, None).await;
+        handle_event(
+            &db.conn,
+            &mgr,
+            &turn_unreachable_envelope(Some(conv_id)),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(conversation_service::unreachable_turn(&db.conn, conv_id)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -3298,5 +3418,90 @@ mod tests {
 
         drop(bus);
         let _ = dispatcher.await;
+    }
+
+    /// A can't-reach turn that ends the connection: the derived
+    /// `TurnUnreachable` rides behind the terminal `Error`, so it reaches a
+    /// fresh worker after the cleanup guard removed the manager entry. The
+    /// record must still be saved.
+    #[tokio::test]
+    async fn dispatcher_saves_unreachable_turn_after_teardown() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/disp-unreachable").await;
+        let conv_id = test_helpers::seed_conversation(&db, folder_id, AgentType::Codex).await;
+        let conn = fake_connection_with_state("c-gone", Some(conv_id));
+        let message = "Can't reach the agent's server.";
+        conn.state.write().await.last_error = Some(crate::acp::session_state::SessionLastError {
+            message: message.into(),
+            code: Some(crate::unreachable::CODE.to_string()),
+            details: None,
+        });
+        // Derived from session state, the way the event bridge does it.
+        let unreachable = conn.state.read().await.unreachable_event(message.into());
+        let mgr = ConnectionManager::new();
+        mgr.connections
+            .lock()
+            .await
+            .insert("c-gone".to_string(), conn);
+
+        let metrics = Arc::new(EventBusMetrics::default());
+        let bus = Arc::new(InternalEventBus::new(metrics));
+        let dispatcher = tokio::spawn(lifecycle_subscriber_task(
+            db.conn.clone(),
+            mgr.clone_ref(),
+            bus.clone(),
+            None,
+        ));
+        let send = |seq: u64, payload: AcpEvent| {
+            bus.send(Arc::new(EventEnvelope {
+                seq,
+                connection_id: "c-gone".to_string(),
+                payload,
+            }));
+        };
+        send(
+            1,
+            AcpEvent::ConversationLinked {
+                conversation_id: conv_id,
+                folder_id,
+                parent_conversation_id: None,
+                parent_tool_use_id: None,
+            },
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // `ConnectionCleanupGuard` has run by the time the worker sees these.
+        mgr.connections.lock().await.remove("c-gone");
+        send(
+            2,
+            AcpEvent::Error {
+                message: message.into(),
+                agent_type: "codex".into(),
+                code: None,
+                details: None,
+                terminal: true,
+            },
+        );
+        send(3, unreachable);
+        send(
+            4,
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Disconnected,
+            },
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_millis(1000);
+        let saved = loop {
+            let saved = conversation_service::unreachable_turn(&db.conn, conv_id)
+                .await
+                .unwrap();
+            if saved.is_some() || std::time::Instant::now() >= deadline {
+                break saved;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        drop(bus);
+        let _ = dispatcher.await;
+        assert_eq!(saved.expect("record saved after teardown").message, message);
     }
 }

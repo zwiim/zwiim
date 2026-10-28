@@ -200,6 +200,8 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/session.list", post(http::session_list))
         .route("/session.history", post(http::session_history))
         .route("/session.revert", post(http::session_revert))
+        .route("/session.retry", post(http::session_retry))
+        .route("/session.retry_in_new_chat", post(http::session_retry_in_new_chat))
         .route("/ws", get(ws::ws_handler))
         .merge(local_authority)
         .fallback(unknown_operation)

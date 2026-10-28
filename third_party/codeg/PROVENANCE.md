@@ -1195,6 +1195,38 @@ Upstream-derived:
 | `commands/folders.rs` | `src-tauri/src/commands/folders.rs` | `save_file_content` refuses a stale etag with `FileChanged` instead of `InvalidInput`, so the Zwiim protocol can answer `file_changed` (409) and editors can offer a reload. |
 | `web/handlers/error.rs` | `src-tauri/src/web/handlers/error.rs` | `FileChanged` maps to 409. |
 
+## Can't-reach turns — classification and reconnecting
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `acp/types.rs` | `src-tauri/src/acp/types.rs` | `AcpEvent::TurnUnreachable` and `AcpEvent::ReconnectingChanged`, derived by the Host and never produced by an adapter. |
+| `acp/session_state.rs` | `src-tauri/src/acp/session_state.rs` | Turn flags (`turn_connection_retried`, `turn_unreachable`, `reconnecting`, `connection_retry_since`, plus a private deferred-error candidate); `derived_after` (classifies only while a turn runs; a retry-only plain error, raised while still reconnecting, waits for `TurnComplete` or a connection `Error`/`Disconnected` status; a terminal `Error` classifies at once) and `unreachable_event`; `apply_event` arms for the two new events (a classified turn keeps its `agent_unreachable` error); `reconnecting` on the snapshot. |
+| `web/event_bridge.rs` | `src-tauri/src/web/event_bridge.rs` | `emit_with_state_gated` applies and sequences the events `derived_after` returns, in the same lock, behind their cause. |
+| `lib.rs` | `src-tauri/src/lib.rs` | `pub mod unreachable;` (the Zwiim-owned classifier module). |
+| `acp/connection.rs` | `src-tauri/src/acp/connection.rs` | The prompt-cancel arm's body moved into `cancel_turn`, which takes the turn's stop reason. A Codex turn checks `connection_retry_since` every second (`UNREACHABLE_WATCHDOG_TICK`); after 60 s of retrying with no provider answer (`UNREACHABLE_WATCHDOG`), `unreachable_watchdog_fired` records `TurnUnreachable` and the turn is stopped through `cancel_turn` with `end_turn`. |
+
+Zwiim-owned: `unreachable.rs` (the classifier), the `agent.error` / `session.reconnecting` projections in `protocol/events.rs`.
+
+## Can't-reach turns — saved record and retry
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `db/migration/mod.rs` | `src-tauri/src/db/migration/mod.rs` | Registers `m20261027_000001_conversation_unreachable_turn` (Zwiim-owned; adds the nullable `conversation.unreachable_turn` text column). |
+| `db/entities/conversation.rs` | `src-tauri/src/db/entities/conversation.rs` | `unreachable_turn: Option<String>`, the saved can't-reach turn as JSON. |
+| `db/service/conversation_service.rs` | `src-tauri/src/db/service/conversation_service.rs` | `set_unreachable_turn` / `unreachable_turn` (write and read only that column; `updated_at` untouched); row inserts set `unreachable_turn` to NULL (a preserved sibling never carries the record). |
+| `db/service/import_service.rs` | `src-tauri/src/db/service/import_service.rs` | Imported rows set `unreachable_turn` to NULL. |
+| `acp/manager.rs` | `src-tauri/src/acp/manager.rs` | The preserved-sibling insert sets `unreachable_turn` to NULL. |
+| `acp/lifecycle.rs` | `src-tauri/src/acp/lifecycle.rs` | `TurnUnreachable` is lifecycle-relevant; its `handle_event` arm saves the message and blocks on the session row, only while the connection's `last_error` still carries `agent_unreachable` (a late write after the next prompt never brings a stale record back); once a terminal error has torn the connection down it saves under the event's `conversation_id`. |
+| `acp/types.rs` | `src-tauri/src/acp/types.rs` | `AcpEvent::TurnUnreachable` carries `conversation_id` (`#[serde(skip)]`, never serialized) so the record survives connection teardown. |
+| `acp/session_state.rs` | `src-tauri/src/acp/session_state.rs` | `unreachable_event` fills `conversation_id` from the session's bound row. |
+| `lib.rs` | `src-tauri/src/lib.rs` | `pub mod session_retry;` and `pub mod session_summary;` (Zwiim-owned). |
+
+Zwiim-owned: `session_retry.rs` (`UnreachableTurn`, `saved`, `retry`, `retry_in_new_chat`, `ensure_retryable`), `session_summary.rs` (the earlier-chat summary a new-chat retry attaches), `m20261027_000001_conversation_unreachable_turn.rs`, `session.rs` (`send_locked` split out of `send_tagged`; a dispatched prompt clears the record), the `session.retry` and `session.retry_in_new_chat` ops (`retry_in_new_chat` / `session_retry_in_new_chat`) and `session.history`'s `last_error` (message scrubbed via `protocol/events.rs` `scrub`, now `pub(crate)`) in `protocol/{http,mod}.rs`, `ZwiimError::nothing_to_retry` in `protocol/error.rs`.
+
 ## License obligations tracked
 
 - [x] Include Apache-2.0 license text (`third_party/codeg/LICENSE`).

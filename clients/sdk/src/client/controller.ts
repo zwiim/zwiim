@@ -508,6 +508,11 @@ export class HostController {
     await this.client.sendMessage(params);
   }
 
+  /** Send a session's failed can't-reach turn again; see `HostClient.retrySession`. */
+  async retrySession(session_id: string): Promise<void> {
+    await this.client.retrySession({ session_id });
+  }
+
   private async loadHistory(session_id: string): Promise<void> {
     if (!this.openSessions.has(session_id) || this.deleted.has(session_id)) return;
     if (this.historyInFlight.has(session_id)) {
@@ -519,7 +524,7 @@ export class HostController {
     try {
       do {
         this.historyDirty.delete(session_id);
-        const { turns, history_generation } = await this.client.request("session.history", { session_id });
+        const { turns, history_generation, last_error } = await this.client.request("session.history", { session_id });
         if (!this.openSessions.has(session_id)) return;
         const settled = this.store.getState().sessions[session_id]?.settled ?? null;
         const delay = HISTORY_SETTLE_DELAYS_MS[settleAttempt];
@@ -534,7 +539,7 @@ export class HostController {
         this.store.dispatch({
           type: "session_frame",
           session_id,
-          frame: { type: "history", turns, generation: history_generation ?? null },
+          frame: { type: "history", turns, generation: history_generation ?? null, lastError: last_error ?? null },
         });
       } while (this.historyDirty.has(session_id));
     } catch {

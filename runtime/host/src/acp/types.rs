@@ -703,6 +703,25 @@ pub enum AcpEvent {
         /// connected client learns that out-of-turn growth moved it.
         history_generation: u64,
     },
+    /// The turn ended because the agent can't reach its provider
+    /// ([`crate::unreachable`]). Never produced by an adapter: the event bridge
+    /// derives it from `SessionState` right behind the terminal error that
+    /// proved it. `blocks` is the failed user message, carried so the
+    /// lifecycle worker can save it for a retry after `pending_user_message`
+    /// is cleared; it never reaches a client. `conversation_id` is the row the
+    /// session was bound to when this was derived, so the worker can still save
+    /// the turn after a terminal error removed the connection; it is never
+    /// serialized.
+    TurnUnreachable {
+        message: String,
+        blocks: Vec<PromptInputBlock>,
+        #[serde(skip)]
+        conversation_id: Option<i32>,
+    },
+    /// The agent is retrying a lost provider connection (`true`), or the
+    /// provider answered again or the turn ended (`false`). Derived like
+    /// `BackgroundChanged`.
+    ReconnectingChanged { reconnecting: bool },
     /// A `delegate_to_agent` MCP tool call from the parent agent has spawned a
     /// child sub-session and the child's prompt is in flight. Emitted as soon
     /// as the broker registers the pending call. The frontend uses this to

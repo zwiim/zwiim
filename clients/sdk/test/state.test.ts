@@ -177,6 +177,152 @@ describe("session view", () => {
   });
 });
 
+describe("agent_unreachable and reconnecting", () => {
+  it("agent.error with agent_unreachable sets lastError", () => {
+    const v = run([
+      { type: "snapshot", epoch: "e1", seq: 1, snapshot: baseSnapshot },
+      { type: "event", event: ev(2, "agent.error", { message: "Can't reach the server", code: "agent_unreachable" }) },
+    ]);
+    expect(v.lastError).toEqual({ message: "Can't reach the server", code: "agent_unreachable" });
+  });
+
+  it("a new turn clears the error, as the Host does", () => {
+    for (const code of ["agent_unreachable", null]) {
+      const v = run([
+        { type: "snapshot", epoch: "e1", seq: 1, snapshot: baseSnapshot },
+        { type: "event", event: ev(2, "agent.error", { message: "boom", code }) },
+        { type: "event", event: ev(3, "agent.user_message", { message_id: "u2", blocks: [{ type: "text", text: "again" }] }) },
+      ]);
+      expect(v.lastError).toBeNull();
+    }
+  });
+
+  it("counts each new error, but not the same one seen again", () => {
+    const err = { message: "Can't reach the server", code: "agent_unreachable" };
+    expect(initialSessionView("s1").errorSerial).toBe(0);
+    // One error replaced by an identical one, with no clear observed between.
+    const twice = run([
+      { type: "snapshot", epoch: "e1", seq: 1, snapshot: baseSnapshot },
+      { type: "event", event: ev(2, "agent.error", err) },
+      { type: "event", event: ev(3, "agent.error", err) },
+    ]);
+    expect(twice.errorSerial).toBe(2);
+    // A snapshot or history read that reports the error already shown is the same error.
+    const same = reduceSession(twice, { type: "snapshot", epoch: "e1", seq: 3, snapshot: { ...baseSnapshot, last_error: { ...err } } });
+    expect(same.errorSerial).toBe(2);
+    const detached = reduceSession(twice, { type: "detached", reason: "session_not_live" });
+    expect(reduceSession(detached, { type: "history", turns: [], lastError: { ...err } }).errorSerial).toBe(2);
+    // A different error, or one after a clear, is a new one.
+    const other = reduceSession(twice, { type: "event", event: ev(4, "agent.error", { message: "boom", code: null }) });
+    expect(other.errorSerial).toBe(3);
+    const cleared = reduceSession(twice, { type: "event", event: ev(4, "agent.user_message", { message_id: "u2", blocks: [] }) });
+    expect(cleared.lastError).toBeNull();
+    expect(reduceSession(cleared, { type: "snapshot", epoch: "e1", seq: 4, snapshot: { ...baseSnapshot, last_error: err } }).errorSerial).toBe(3);
+  });
+
+  it("session.reconnecting toggles reconnecting", () => {
+    let v = run([
+      { type: "snapshot", epoch: "e1", seq: 1, snapshot: baseSnapshot },
+      { type: "event", event: ev(2, "session.reconnecting", { reconnecting: true }) },
+    ]);
+    expect(v.reconnecting).toBe(true);
+    v = reduceSession(v, { type: "event", event: ev(3, "session.reconnecting", { reconnecting: false }) });
+    expect(v.reconnecting).toBe(false);
+  });
+
+  it("snapshot reconnecting is read", () => {
+    expect(initialSessionView("s1").reconnecting).toBe(false);
+    let v = run([{ type: "snapshot", epoch: "e1", seq: 1, snapshot: { ...baseSnapshot, reconnecting: true } }]);
+    expect(v.reconnecting).toBe(true);
+    // An older Host omits the field.
+    v = run([{ type: "snapshot", epoch: "e2", seq: 1, snapshot: baseSnapshot }], v);
+    expect(v.reconnecting).toBe(false);
+  });
+
+  it("turn_complete clears reconnecting", () => {
+    const v = run([
+      { type: "snapshot", epoch: "e1", seq: 1, snapshot: { ...baseSnapshot, reconnecting: true } },
+      { type: "event", event: ev(2, "agent.turn_complete", { stop_reason: "end_turn" }) },
+    ]);
+    expect(v.reconnecting).toBe(false);
+  });
+
+  it("a null history error keeps a detached view's other errors", () => {
+    const detached = run([
+      { type: "snapshot", epoch: "e1", seq: 1, snapshot: baseSnapshot },
+      { type: "event", event: ev(2, "agent.error", { message: "Sign in again", code: "auth_required" }) },
+      { type: "detached", reason: "session_not_live" },
+    ]);
+    expect(detached.lastError).toEqual({ message: "Sign in again", code: "auth_required" });
+    const kept = { message: "Sign in again", code: "auth_required" };
+    expect(reduceSession(detached, { type: "history", turns: [], lastError: null }).lastError).toEqual(kept);
+    expect(reduceSession(detached, { type: "history", turns: [] }).lastError).toEqual(kept);
+  });
+
+  it("the first history read after a teardown keeps the can't-reach card the Host has not saved yet", () => {
+    const detached = run([
+      { type: "snapshot", epoch: "e1", seq: 1, snapshot: baseSnapshot },
+      { type: "event", event: ev(2, "agent.error", { message: "Can't reach the server", code: "agent_unreachable" }) },
+      { type: "detached", reason: "session_not_live" },
+    ]);
+    expect(detached.lastError?.code).toBe("agent_unreachable");
+    // The read beat the Host's write: nothing saved yet, so the card stays.
+    const kept = { message: "Can't reach the server", code: "agent_unreachable" };
+    expect(reduceSession(detached, { type: "history", turns: [], lastError: null }).lastError).toEqual(kept);
+    expect(reduceSession(detached, { type: "history", turns: [] }).lastError).toEqual(kept);
+  });
+
+  it("a later history read with nothing saved clears a stale agent_unreachable error", () => {
+    const saved = { message: "Can't reach the server", code: "agent_unreachable" };
+    const detached = run([
+      { type: "snapshot", epoch: "e1", seq: 1, snapshot: baseSnapshot },
+      { type: "event", event: ev(2, "agent.error", saved) },
+      { type: "detached", reason: "session_not_live" },
+    ]);
+    const first = reduceSession(detached, { type: "history", turns: [], lastError: null });
+    expect(reduceSession(first, { type: "history", turns: [], lastError: null }).lastError).toBeNull();
+    // A cold view whose card came from a saved turn: a retry elsewhere clears it.
+    const cold = reduceSession(initialSessionView("s1"), { type: "history", turns: [], lastError: saved });
+    expect(reduceSession(cold, { type: "history", turns: [], lastError: null }).lastError).toBeNull();
+  });
+
+  it("a detach that ends the agent clears reconnecting", () => {
+    const reconnecting = run([
+      { type: "snapshot", epoch: "e1", seq: 1, snapshot: { ...baseSnapshot, reconnecting: true } },
+    ]);
+    expect(reconnecting.reconnecting).toBe(true);
+    expect(reduceSession(reconnecting, { type: "detached", reason: "session_not_live" }).reconnecting).toBe(false);
+  });
+
+  it("a transient detach keeps reconnecting; the re-attach replays from the cursor", () => {
+    const reconnecting = run([
+      { type: "snapshot", epoch: "e1", seq: 1, snapshot: { ...baseSnapshot, reconnecting: true } },
+    ]);
+    for (const reason of ["lagged", "server_shutdown"] as const) {
+      expect(reduceSession(reconnecting, { type: "detached", reason }).reconnecting).toBe(true);
+    }
+  });
+
+  it("history_last_error_shows_when_detached", () => {
+    const saved = { message: "Can't reach the server", code: "agent_unreachable" };
+    const detached = run([
+      { type: "snapshot", epoch: "e1", seq: 1, snapshot: baseSnapshot },
+      { type: "detached", reason: "session_not_live" },
+    ]);
+    expect(detached.lastError).toBeNull();
+    expect(reduceSession(detached, { type: "history", turns: [], lastError: saved }).lastError).toEqual(saved);
+    // A history read that carries none clears it.
+    const withSaved = reduceSession(detached, { type: "history", turns: [], lastError: saved });
+    expect(reduceSession(withSaved, { type: "history", turns: [], lastError: null }).lastError).toBeNull();
+    // A live view keeps its snapshot's error.
+    const live = run([
+      { type: "snapshot", epoch: "e1", seq: 1, snapshot: { ...baseSnapshot, last_error: { message: "boom", code: null } } },
+      { type: "history", turns: [], lastError: saved },
+    ]);
+    expect(live.lastError).toEqual({ message: "boom", code: null });
+  });
+});
+
 describe("tool call images", () => {
   it("appends a message image to the live message", () => {
     const shot = { name: "ab.png", mime_type: "image/png", path: ".zwiim/images/ab.png" };

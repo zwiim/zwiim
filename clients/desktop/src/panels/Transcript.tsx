@@ -1086,6 +1086,7 @@ function HistoryBlocks({
 export function LiveTurnView({
   turn,
   streaming,
+  reconnecting,
   animate,
   background,
   earlier,
@@ -1094,6 +1095,8 @@ export function LiveTurnView({
 }: {
   turn: LiveTurn;
   streaming?: boolean;
+  /** The agent lost its server and is reconnecting: the working row says so. */
+  reconnecting?: boolean;
   animate?: boolean;
   /** The session's background work: a sub-agent still at it reads running. */
   background?: SessionBackground | null;
@@ -1111,7 +1114,7 @@ export function LiveTurnView({
     <div className="text-body flex flex-col gap-2.5" data-testid="live-turn">
       {turn.userMessage && <UserMessage text={text} blocks={turn.userMessage.blocks} className={enter} />}
       <LiveBlocks turn={turn} background={background ?? null} enter={enter} earlier={earlier} from={from} keys={keys} />
-      {streaming && <Working className={enter} turnId={turn.userMessage?.message_id} />}
+      {streaming && <Working className={enter} turnId={turn.userMessage?.message_id} reconnecting={reconnecting} />}
     </div>
   );
 }
@@ -1285,7 +1288,7 @@ function SubagentClock({ card }: { card: SubagentCard<unknown> }) {
 }
 
 /** While the agent works: four dots lighting in turn, and how long it has been at it. */
-function Working({ className, turnId }: { className?: string; turnId?: string }) {
+function Working({ className, turnId, reconnecting }: { className?: string; turnId?: string; reconnecting?: boolean }) {
   const [since] = useState(() => turnStart(turnId));
   const [now, setNow] = useState(since);
   useEffect(() => {
@@ -1295,7 +1298,7 @@ function Working({ className, turnId }: { className?: string; turnId?: string })
   return (
     <span className={cn("text-muted-foreground flex items-center gap-2 text-xs", className)} data-testid="working">
       <WorkingMark />
-      Working
+      {reconnecting ? "Reconnecting…" : "Working"}
       <span className="font-mono tabular-nums">{turnDuration(now - since)}</span>
     </span>
   );

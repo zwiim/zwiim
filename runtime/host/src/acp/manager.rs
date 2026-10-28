@@ -2594,6 +2594,7 @@ impl ConnectionManager {
                         pinned_at: Set(None),
                         origin_cwd: Set(None),
                         session_id: NotSet,
+                        unreachable_turn: Set(None),
                     };
                     let inserted = sibling.insert(txn).await?;
                     Ok((inserted.id, false))

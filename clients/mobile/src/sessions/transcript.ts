@@ -93,6 +93,8 @@ export type TranscriptRow =
   | { type: "tools"; key: string; rows: FoldedRow[] }
   | { type: "subagent"; key: string; agent: SubagentItem }
   | { type: "error"; key: string; message: string }
+  /** The agent could not reach its provider: the card offers to try again. */
+  | { type: "unreachable"; key: string; message: string }
   | { type: "image"; key: string; image: AgentImage }
   | { type: "footer"; key: string; text: string; stopped: boolean; files: ChangedFile[] };
 
@@ -537,9 +539,12 @@ export function historyBefore(history: readonly HistoryTurn[], view: Pick<Sessio
   return turns;
 }
 
-/** The transcript, oldest first. */
-export function transcriptRows(view: SessionView | undefined): TranscriptRow[] {
-  return transcriptBuilder()(view);
+/**
+ * The transcript, oldest first. `retry`: the Host can retry a can't-reach turn
+ * (capability `session.retry`), so that error gets its card; otherwise it is a plain error row.
+ */
+export function transcriptRows(view: SessionView | undefined, retry = false): TranscriptRow[] {
+  return transcriptBuilder()(view, retry);
 }
 
 /** What the history's rows depend on; the same inputs give the same rows. */
@@ -552,10 +557,10 @@ const sameInputs = (a: HistoryInputs, b: HistoryInputs) => a.length === b.length
  * while only the live turn changes, so a list drawing them redraws only the
  * live rows.
  */
-export function transcriptBuilder(): (view: SessionView | undefined) => TranscriptRow[] {
+export function transcriptBuilder(): (view: SessionView | undefined, retry?: boolean) => TranscriptRow[] {
   let kept: { inputs: HistoryInputs; pieces: Piece[]; rows: TranscriptRow[] } | null = null;
   let shown: { inputs: HistoryInputs; turns: HistoryTurn[]; launches: Map<string, number> } | null = null;
-  return (view) => {
+  return (view, retry = false) => {
     if (!view) return [];
     const running = view.agentStatus === "prompting";
     const busy = running || !!view.pendingRequest;
@@ -598,7 +603,10 @@ export function transcriptBuilder(): (view: SessionView | undefined) => Transcri
     // A run of tool calls and sub-agents across the history's end and the live turn folds as one.
     const joined = folds(kept.pieces.at(-1)) && folds(live[0]);
     const rows = joined ? fold([...kept.pieces, ...live]) : [...kept.rows, ...fold(live)];
-    if (view.lastError) rows.push({ type: "error", key: "last-error", message: view.lastError.message });
+    if (view.lastError) {
+      const unreachable = retry && view.lastError.code === "agent_unreachable";
+      rows.push({ type: unreachable ? "unreachable" : "error", key: unreachable ? `last-error-${view.errorSerial}` : "last-error", message: view.lastError.message });
+    }
     // A turn not yet in the history gets its time once the history has it.
     if (stopped && shownLive) rows.push({ type: "footer", key: "footer", text: stopped, stopped: true, files: [] });
     return rows;
@@ -666,6 +674,8 @@ export function nowState(view: SessionView | undefined, connected: boolean): Now
     default:
       return waiting(view.background);
   }
+  // The agent lost its server and is connecting again: not working on the turn.
+  if (view.reconnecting) return { type: "working", text: "Reconnecting…" };
   const calls = Object.values(view.live.toolCalls);
   for (let i = calls.length - 1; i >= 0; i--) {
     const tc = calls[i]!;

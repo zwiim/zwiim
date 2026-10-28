@@ -65,7 +65,7 @@ fn to_value<T: Serialize>(v: &T) -> Value {
 
 /// Agent-supplied free text can quote host paths or a refused API key; strip
 /// them like errors do.
-fn scrub(text: &str) -> String {
+pub(crate) fn scrub(text: &str) -> String {
     super::error::scrub_paths(&crate::redact::scrub_secrets(text))
 }
 
@@ -336,6 +336,15 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
             payload["history_generation"] = json!(history_generation);
             ("session.background", payload)
         }
+        // Derived behind the terminal error that proved it. The saved blocks
+        // never leave the Host: clients see only `{message, code}`.
+        AcpEvent::TurnUnreachable { message, .. } => (
+            "agent.error",
+            json!({ "message": scrub(message), "code": crate::unreachable::CODE }),
+        ),
+        AcpEvent::ReconnectingChanged { reconnecting } => {
+            ("session.reconnecting", json!({ "reconnecting": reconnecting }))
+        }
         _ => return None,
     })
 }
@@ -522,6 +531,7 @@ pub fn project_snapshot(s: &LiveSessionSnapshot, root: Option<&str>) -> Value {
             "message": scrub(&e.message),
             "code": e.code,
         })),
+        "reconnecting": s.reconnecting,
         "usage": s.usage.as_ref().map(|u| json!({ "used": u.used, "size": u.size })),
         "turn_usage": s.turn_usage.as_ref().map(|u| json!({
             "total_tokens": u.total_tokens,
@@ -1500,6 +1510,52 @@ pub(crate) mod tests {
         assert_eq!(v[0]["blocks"][0]["text"], "Here it is.\n\n\n**Create `hi.txt`**");
     }
 
+    /// The can't-reach classification reaches clients as an `agent.error` with
+    /// the Zwiim code; the saved message blocks never do.
+    #[test]
+    fn turn_unreachable_projects_as_agent_error() {
+        let v = project_envelope(
+            "s",
+            None,
+            &env(AcpEvent::TurnUnreachable {
+                message: "Can't reach the API server (ENOTFOUND), see /Users/me/.claude/log".into(),
+                blocks: vec![crate::acp::types::PromptInputBlock::Text { text: "secret".into() }],
+                conversation_id: Some(7),
+            }),
+        )
+        .expect("projected");
+        assert_eq!(v.kind, "agent.error");
+        let payload = v.payload.as_object().unwrap();
+        assert_eq!(payload.len(), 2, "{payload:?}");
+        assert_eq!(payload["code"], "agent_unreachable");
+        let message = payload["message"].as_str().unwrap();
+        assert!(message.contains("ENOTFOUND") && !message.contains("/Users/me"), "{message}");
+        assert!(!v.payload.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn reconnecting_projects() {
+        let v = project_envelope(
+            "s",
+            None,
+            &env(AcpEvent::ReconnectingChanged { reconnecting: true }),
+        )
+        .expect("projected");
+        assert_eq!(v.kind, "session.reconnecting");
+        assert_eq!(v.payload, json!({ "reconnecting": true }));
+
+        let mut state = SessionState::new(
+            "c".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "w".to_string(),
+            None,
+        );
+        assert_eq!(project_snapshot(&state.to_snapshot(), None)["reconnecting"], false);
+        state.apply_event(&AcpEvent::ReconnectingChanged { reconnecting: true });
+        assert_eq!(project_snapshot(&state.to_snapshot(), None)["reconnecting"], true);
+    }
+
     /// A provider's terminal failure reaches clients as `agent.error`, with the
     /// provider's words and paths scrubbed; a retry warning does not.
     #[test]
@@ -1936,6 +1992,7 @@ pub(crate) mod tests {
                 "options",
                 "pending_request",
                 "pending_user_message",
+                "reconnecting",
                 "status",
                 "tool_calls",
                 "turn_usage",

@@ -253,7 +253,7 @@ impl AgentLauncher for RuntimeLauncher<'_> {
 static SESSION_LOCKS: LazyLock<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
     LazyLock::new(Default::default);
 
-fn session_lock(session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+pub(crate) fn session_lock(session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
     let mut locks = SESSION_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
     // Drop locks nobody holds or waits on.
     locks.retain(|_, lock| Arc::strong_count(lock) > 1);
@@ -286,6 +286,34 @@ pub async fn start<L: AgentLauncher>(
     blocks: Vec<PromptInputBlock>,
     client_message_id: Option<String>,
     options: &OptionsRequest,
+) -> Result<String, ZwiimError> {
+    start_tracked(
+        db,
+        connections,
+        launcher,
+        workspace_id,
+        agent_type,
+        blocks,
+        client_message_id,
+        options,
+        &mut false,
+    )
+    .await
+}
+
+/// `start`, setting `dispatched` once the first prompt is on its way, so a
+/// caller can tell an error that left the agent running on its blocks from one
+/// that did not.
+pub(crate) async fn start_tracked<L: AgentLauncher>(
+    db: &AppDatabase,
+    connections: &ConnectionManager,
+    launcher: &L,
+    workspace_id: &str,
+    agent_type: AgentType,
+    blocks: Vec<PromptInputBlock>,
+    client_message_id: Option<String>,
+    options: &OptionsRequest,
+    dispatched: &mut bool,
 ) -> Result<String, ZwiimError> {
     if blocks.is_empty() {
         return Err(empty_prompt());
@@ -323,6 +351,7 @@ pub async fn start<L: AgentLauncher>(
     drop(launching);
     match sent {
         Ok(Some(conversation_id)) => {
+            *dispatched = true;
             let session_id = session_id_of(db, conversation_id).await?;
             if let Some(values) = preferred.filter(|v| !v.is_empty()) {
                 crate::session_options::remember_start(&db.conn, &session_id, values).await;
@@ -397,6 +426,31 @@ pub(crate) async fn send_tagged<L: AgentLauncher>(
     let row = resolve(&db.conn, session_id).await?;
     let lock = session_lock(session_id);
     let _guard = lock.lock().await;
+    send_locked(
+        db,
+        connections,
+        launcher,
+        &row,
+        blocks,
+        client_message_id,
+        action,
+    )
+    .await
+}
+
+/// The body of [`send_tagged`] for a caller already holding `row`'s session
+/// lock. Once the prompt is dispatched, any saved can't-reach turn is stale:
+/// it is cleared, and a failure to clear is logged rather than failing a
+/// prompt that already went out.
+pub(crate) async fn send_locked<L: AgentLauncher>(
+    db: &AppDatabase,
+    connections: &ConnectionManager,
+    launcher: &L,
+    row: &conversation::Model,
+    blocks: Vec<PromptInputBlock>,
+    client_message_id: Option<String>,
+    action: Option<&'static str>,
+) -> Result<(), ZwiimError> {
     // Held until the turn is under way, so no branch switch (Continue) lands
     // between its busy check and this turn starting. Never resume in a removed
     // worktree, nor anywhere else instead of it.
@@ -404,7 +458,7 @@ pub(crate) async fn send_tagged<L: AgentLauncher>(
     if folder.parent_id.is_none() {
         return Err(ZwiimError::root_workspace());
     }
-    let (connection_id, spawned) = ensure_live(db, connections, launcher, &row, &folder).await?;
+    let (connection_id, spawned) = ensure_live(db, connections, launcher, row, &folder).await?;
     // Branch A of `send_prompt_linked`: a freshly resumed connection adopts
     // this row; an already-linked one ignores both ids.
     let sent = connections
@@ -424,6 +478,17 @@ pub(crate) async fn send_tagged<L: AgentLauncher>(
             let _ = connections.disconnect(&connection_id).await;
         }
         return Err(e.into());
+    }
+    // Cleared after dispatch so a failed send keeps the Retry; a new turn can't
+    // fail as can't-reach (60s or more) before this runs, so it can't be erased.
+    if let Err(e) =
+        crate::db::service::conversation_service::set_unreachable_turn(&db.conn, row.id, None).await
+    {
+        tracing::warn!(
+            conversation_id = row.id,
+            error = %e,
+            "could not clear the saved unreachable turn"
+        );
     }
     Ok(())
 }
@@ -1386,6 +1451,8 @@ pub(crate) mod orchestration_tests {
 
     /// A connection and the `refs/zwiim` refs present when its prompt arrived.
     type RefsAtPrompt = (String, Vec<String>);
+    /// A connection and the blocks of a prompt it received.
+    type BlocksAtPrompt = (String, Vec<PromptInputBlock>);
     type ForkAsked = (String, Option<crate::acp::fork::ForkPoint>);
 
     /// Launches in-process fake agents: a live command channel whose commands
@@ -1399,6 +1466,8 @@ pub(crate) mod orchestration_tests {
         pub commands: Arc<std::sync::Mutex<Vec<(String, &'static str)>>>,
         /// The text of every prompt, per connection, in order.
         pub prompts: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+        /// Every prompt's blocks as the agent received them, per connection.
+        pub prompt_blocks: Arc<std::sync::Mutex<Vec<BlocksAtPrompt>>>,
         /// Every `SetConfigOption` as `(connection, config_id, value)`.
         pub config_sets: Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
         /// The `refs/zwiim` refs of the agent's repository at the moment each
@@ -1425,6 +1494,7 @@ pub(crate) mod orchestration_tests {
                 working_dirs: Default::default(),
                 commands: Default::default(),
                 prompts: Default::default(),
+                prompt_blocks: Default::default(),
                 config_sets: Default::default(),
                 refs_at_prompt: Default::default(),
                 forks: Default::default(),
@@ -1490,6 +1560,7 @@ pub(crate) mod orchestration_tests {
             self.resumed.lock().unwrap().push(resume_external_id);
             let log = self.commands.clone();
             let prompts = self.prompts.clone();
+            let prompt_blocks = self.prompt_blocks.clone();
             let config_sets = self.config_sets.clone();
             let refs_at_prompt = self.refs_at_prompt.clone();
             let forks = self.forks.clone();
@@ -1517,6 +1588,7 @@ pub(crate) mod orchestration_tests {
                                 .collect::<Vec<_>>()
                                 .join("\n");
                             prompts.lock().unwrap().push((conn.clone(), text));
+                            prompt_blocks.lock().unwrap().push((conn.clone(), blocks));
                             "prompt"
                         }
                         ConnectionCommand::SetConfigOption {

@@ -501,6 +501,7 @@ async fn import_one(
         pinned_at: Set(None),
         origin_cwd: Set(None),
         session_id: NotSet,
+        unreachable_turn: Set(None),
     };
     conv.insert(conn).await?;
     Ok(ImportOutcome::Imported)
@@ -949,6 +950,7 @@ mod tests {
             pinned_at: Set(None),
             origin_cwd: Set(None),
             session_id: NotSet,
+            unreachable_turn: Set(None),
         }
         .insert(&db.conn)
         .await
@@ -1237,6 +1239,7 @@ mod tests {
             pinned_at: Set(None),
             origin_cwd: Set(None),
             session_id: NotSet,
+            unreachable_turn: Set(None),
         }
         .insert(&db.conn)
         .await

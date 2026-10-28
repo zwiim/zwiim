@@ -488,6 +488,7 @@ where
         );
         s.apply_event(&payload);
         s.stamp_subagent_start(&mut payload);
+        let derived = s.derived_after(&payload);
         let mut envelopes = Vec::with_capacity(2);
         let mut sequence = |s: &mut SessionState, payload: AcpEvent| {
             s.event_seq += 1;
@@ -515,6 +516,14 @@ where
                 s.apply_event(&change);
                 sequence(&mut *s, change);
             }
+        }
+        // Reconnecting / can't-reach classification, derived from state: each
+        // event is applied and sequenced here, in the same critical section,
+        // so it lands behind the event that caused it (a background-view
+        // change for the same event may sit between the two).
+        for event in derived {
+            s.apply_event(&event);
+            sequence(&mut *s, event);
         }
         (envelopes, s.event_stream())
     };
@@ -820,6 +829,58 @@ mod tests {
         assert_eq!(starts.len(), 2);
         assert!(starts[0].is_string(), "{starts:?}");
         assert_eq!(starts[0], starts[1], "one start, replayed the same");
+    }
+
+    /// The can't-reach classification is sequenced in the same critical
+    /// section as the error that proved it, so a replay carries the pair.
+    #[tokio::test]
+    async fn derived_unreachable_is_sequenced_after_its_cause() {
+        let state = fresh_state();
+        let emitter = EventEmitter::Noop;
+        emit_with_state(
+            &state,
+            &emitter,
+            AcpEvent::StatusChanged {
+                status: crate::acp::types::ConnectionStatus::Prompting,
+            },
+        )
+        .await;
+        let before = state.read().await.event_seq;
+        emit_with_state(
+            &state,
+            &emitter,
+            AcpEvent::Error {
+                message: "API Error: Can't reach the API server (ENOTFOUND)".into(),
+                agent_type: "claude_code".into(),
+                code: None,
+                details: None,
+                terminal: false,
+            },
+        )
+        .await;
+        let s = state.read().await;
+        let events = s.recent_events_after(before).unwrap_or_default();
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[0].seq, before + 1);
+        assert!(matches!(&events[0].payload, AcpEvent::Error { code: None, .. }));
+        assert_eq!(events[1].seq, before + 2);
+        assert!(matches!(
+            &events[1].payload,
+            AcpEvent::TurnUnreachable { blocks, .. } if blocks.is_empty()
+        ));
+        assert_eq!(
+            s.last_error.as_ref().and_then(|e| e.code.as_deref()),
+            Some("agent_unreachable")
+        );
+        // What clients see: the provider's error, then the classified one.
+        let projected: Vec<_> = events
+            .iter()
+            .map(|e| crate::protocol::events::project_envelope("s", None, e).expect("projected"))
+            .collect();
+        assert_eq!(projected[0].kind, "agent.error");
+        assert!(projected[0].payload.get("code").is_none_or(|c| c != "agent_unreachable"));
+        assert_eq!(projected[1].kind, "agent.error");
+        assert_eq!(projected[1].payload["code"], "agent_unreachable");
     }
 
     /// Only events that feed the background view re-derive it. An unrelated

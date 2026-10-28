@@ -439,6 +439,19 @@ export class HostClient {
   }
 
   /**
+   * Send the turn that could not reach the agent's provider again. The Host
+   * starts the agent if it is gone, so a detached subscription re-attaches to
+   * see the turn; without that its events never reach the view. Never retried.
+   */
+  async retrySession(params: OpParams<"session.retry">): Promise<void> {
+    await this.request("session.retry", params);
+    const sub = this.sessions.get(params.session_id);
+    if (sub && (sub.state === "detached" || sub.state === "error")) {
+      this.attachSession(params.session_id);
+    }
+  }
+
+  /**
    * Take a session back to before a turn. A chat rewind resumes the agent of
    * a session that was not live, so a detached subscription re-attaches to
    * see the rewound transcript; after a files-only reset the agent stays

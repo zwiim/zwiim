@@ -327,6 +327,11 @@ export class HostConnection {
     await this.#live().sendMessage({ session_id, blocks, client_message_id });
   }
 
+  /** Send a session's failed can't-reach turn again (`session.retry`), re-attaching it if its agent was gone; never retried. */
+  async retrySession(session_id: string): Promise<void> {
+    await this.#live().retrySession(session_id);
+  }
+
   /** A request to the host, over the open connection only. */
   async request<O extends OpName>(op: O, params: OpParams<O>, opts?: { timeoutMs?: number }): Promise<OpResult<O>> {
     const client = this.#client;

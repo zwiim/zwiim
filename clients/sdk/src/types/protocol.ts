@@ -59,6 +59,10 @@ export type HostErrorCode =
   | "file_too_large_for_remote"
   /** `session.revert`: the turn has no saved state that is certainly its own. */
   | "checkpoint_unavailable"
+  /** `session.retry` / `session.retry_in_new_chat`: the session has no saved can't-reach turn to retry. */
+  | "nothing_to_retry"
+  /** `agent.error` code: the agent could not reach its provider's server. */
+  | "agent_unreachable"
   | "internal";
 
 export interface WireError {
@@ -834,6 +838,8 @@ export interface SessionSnapshot {
   pending_request: AgentRequest | null;
   pending_user_message: PendingUserMessage | null;
   last_error: SessionErrorInfo | null;
+  /** The agent is reconnecting after losing its server. Absent from Hosts before revision 14 (read as false). */
+  reconnecting?: boolean;
   usage: Usage | null;
   /** Null until the agent reports a finished turn's tokens. */
   turn_usage?: TurnUsage | null;
@@ -915,6 +921,8 @@ export type SessionEvent =
   | EventBase<"agent.turn_complete", { stop_reason: string | null }>
   | EventBase<"agent.error", SessionErrorInfo>
   | EventBase<"session.status", { status: SessionStatus }>
+  /** The agent started or stopped reconnecting after losing its server (revision 14). */
+  | EventBase<"session.reconnecting", { reconnecting: boolean }>
   | EventBase<"session.options", { options: SessionOptions }>
   | EventBase<"session.commands", { commands: SessionCommand[] }>
   | EventBase<"session.usage", Usage>
@@ -1001,6 +1009,11 @@ export interface SessionHistory {
    * Absent from older Hosts.
    */
   history_generation?: number | null;
+  /**
+   * The can't-reach error saved on a session with no live agent. Null when
+   * there is none. Absent from Hosts before revision 14.
+   */
+  last_error?: { message: string; code: "agent_unreachable" } | null;
 }
 
 // ─── pull requests ───────────────────────────────────────────────────────
@@ -1481,6 +1494,16 @@ export interface Operations {
   "session.list": [{ workspace_id: string }, SessionSummary[]];
   "session.history": [{ session_id: string }, SessionHistory];
   /**
+   * Run the turn that could not reach its server again in the same chat.
+   * Capability `session.retry`. `nothing_to_retry` when no such turn is saved.
+   */
+  "session.retry": [{ session_id: string }, { session_id: string }];
+  /**
+   * Retry in a new chat that starts with a summary of the earlier one.
+   * `session_id` is the NEW session. Capability `session.retry`.
+   */
+  "session.retry_in_new_chat": [{ session_id: string }, { session_id: string }];
+  /**
    * Take a session back to before user turn `turn_id`. `files` restores the
    * workspace files and staged changes the turn started with (HEAD and
    * ignored files are never touched). `chat` takes the conversation back to
@@ -1551,6 +1574,8 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "session.stop",
   "session.delete",
   "session.revert",
+  "session.retry",
+  "session.retry_in_new_chat",
   "session.respond",
   "device.pair",
   "device.revoke",

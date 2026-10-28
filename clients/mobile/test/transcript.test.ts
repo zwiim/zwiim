@@ -1225,3 +1225,50 @@ describe("resetting to a message", () => {
     c.close();
   });
 });
+
+// ─── the can't-reach error ───────────────────────────────────────────────
+
+describe("can't-reach error", () => {
+  const snap = (patch: Record<string, unknown>): SessionFrame => {
+    const f = snapshot("prompting") as Extract<SessionFrame, { type: "snapshot" }>;
+    return { ...f, snapshot: { ...f.snapshot, ...patch } } as SessionFrame;
+  };
+  const failed = (code: string) => reduceSession(initialSessionView("s1"), snap({ last_error: { message: "provider unreachable", code } }));
+
+  it("gives an unreachable row when the Host can retry", () => {
+    const v = failed("agent_unreachable");
+    expect(transcriptRows(v, true).at(-1)).toEqual({ type: "unreachable", key: "last-error-1", message: "provider unreachable" });
+    expect(transcriptBuilder()(v, true).at(-1)).toMatchObject({ type: "unreachable" });
+  });
+
+  it("keys the card on the error, so one replacing another gets a fresh card", () => {
+    const err = { message: "provider unreachable", code: "agent_unreachable" };
+    const once = failed("agent_unreachable");
+    // The same text again, with no clear seen between (user message and failure in one replay).
+    const twice = play(once, ev("agent.error", err));
+    const keyOf = (v: SessionView) => transcriptRows(v, true).at(-1)!.key;
+    expect(keyOf(twice)).not.toBe(keyOf(once));
+    // Reading the error already shown (a history read, a re-attach) keeps the card.
+    const reread = play(twice, snap({ last_error: { ...err } }));
+    expect(keyOf(reread)).toBe(keyOf(twice));
+  });
+
+  it("keeps the plain error row without the capability or for another code", () => {
+    const plain = { type: "error", key: "last-error", message: "provider unreachable" };
+    expect(transcriptRows(failed("agent_unreachable"), false).at(-1)).toEqual(plain);
+    expect(transcriptRows(failed("agent_unreachable")).at(-1)).toEqual(plain);
+    expect(transcriptRows(failed("internal"), true).at(-1)).toEqual(plain);
+  });
+
+  it("drops the card when a new turn starts", () => {
+    const v = play(failed("agent_unreachable"), user("u2", "again"));
+    expect(transcriptRows(v, true).some((r) => r.type === "unreachable" || r.type === "error")).toBe(false);
+  });
+
+  it("says Reconnecting… while the working agent reconnects", () => {
+    const v = reduceSession(initialSessionView("s1"), snap({ reconnecting: true }));
+    expect(nowState(v, true)).toEqual({ type: "working", text: "Reconnecting…" });
+    const back = reduceSession(initialSessionView("s1"), snap({ reconnecting: false }));
+    expect(nowState(back, true)).toEqual({ type: "working", text: "Working" });
+  });
+});

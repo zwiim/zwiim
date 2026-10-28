@@ -9485,6 +9485,151 @@ fn track_cancelled_prompt(
     })
 }
 
+/// How long a Codex turn may keep retrying its provider connection, with no
+/// provider answer in between, before the Host stops it as unreachable. Codex
+/// retries forever on its own and never reports an error.
+const UNREACHABLE_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How often a running Codex turn checks [`UNREACHABLE_WATCHDOG`].
+const UNREACHABLE_WATCHDOG_TICK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Whether a running turn has been retrying its connection for
+/// [`UNREACHABLE_WATCHDOG`]; if so, records the can't-reach error
+/// (`TurnUnreachable`, which also clears the retry clock so this fires once
+/// per turn) and returns true. The caller then stops the turn.
+async fn unreachable_watchdog_fired(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+) -> bool {
+    let (since, event) = {
+        let s = state.read().await;
+        match s.connection_retry_since {
+            Some(since) if s.turn_in_flight && since.elapsed() >= UNREACHABLE_WATCHDOG => (
+                since,
+                s.unreachable_event(crate::unreachable::CODEX_MESSAGE.to_string()),
+            ),
+            _ => return false,
+        }
+    };
+    // Gated: a provider answer that landed since the read cleared the clock,
+    // and that answer wins.
+    emit_with_state_gated(state, emitter, event, move |s| {
+        s.connection_retry_since == Some(since)
+    })
+    .await
+}
+
+/// Stop the running turn now, ending it with `stop_reason`: the user's Stop
+/// (`"cancelled"`) or the can't-reach watchdog (`"end_turn"`, so the error it
+/// just recorded isn't relabelled "Stopped"). Returns the tracked prompt
+/// response, which holds back the stopped turn's late prose.
+#[allow(clippy::too_many_arguments)]
+async fn cancel_turn(
+    cx: &ConnectionTo<Agent>,
+    sid: &SessionId,
+    conn_id: &str,
+    agent_type: AgentType,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    perms: &PendingPermissions,
+    terminal_runtime: &TerminalRuntime,
+    tracked_terminal_tool_calls: &mut HashMap<String, TrackedTerminalToolCall>,
+    delegation_injection: Option<&DelegationInjection>,
+    prompt_response: impl std::future::Future + Send + 'static,
+    stop_reason: &'static str,
+) -> CancelledPrompt {
+    // Send CancelNotification to agent to stop the current turn
+    let _ = cx.send_notification_to(Agent, CancelNotification::new(sid.clone()));
+    // Also terminate any command runtimes created for this
+    // session so cancellation does not hang on long-running
+    // terminal tools.
+    terminal_runtime
+        .release_all_for_session(sid.0.as_ref())
+        .await;
+    tracked_terminal_tool_calls.clear();
+    // Also cancel any pending permission requests
+    // (queued ones included), clearing the card
+    // that was on screen, and immediately emit
+    // TurnComplete so the frontend transitions out
+    // of "prompting" and the user can send new
+    // messages. Don't wait for the agent -- it may
+    // be slow to respond or not respond at all.
+    // One critical section for the same reason as
+    // the turn-end exits: a request admitted
+    // between the two would be published and then
+    // silently un-displayed by TurnComplete,
+    // wedging the queue.
+    drain_permissions_then_emit(
+        perms,
+        state,
+        emitter,
+        AcpEvent::TurnComplete {
+            session_id: sid.0.to_string(),
+            stop_reason: stop_reason.into(),
+            agent_type: agent_type.to_string(),
+        },
+    )
+    .await;
+    // Cascade-cancel any in-flight delegations owned by
+    // this parent connection. Idempotent with the
+    // cleanup-guard cancel_by_parent at the end of
+    // run_connection (#1: empty pending → no-op).
+    // Without this, a user-initiated cancel of a parent
+    // prompt mid-delegation would leave the child agent
+    // running indefinitely (broker no longer applies a
+    // timeout; only an MCP `notifications/cancelled` or
+    // a parent/child disconnect would otherwise tear
+    // the delegation down). Turn-scoped: the
+    // connection stays alive after a prompt cancel,
+    // so keep the parent's `consumed` tool_call
+    // memory (a re-emit must not mis-bind the next
+    // same-key delegation); the cleanup-guard
+    // teardown still clears everything when the
+    // connection finally goes away.
+    //
+    // Await inline so the fast tracker +
+    // parked-call drain is ordered before the
+    // next prompt (keeping it scoped to the
+    // just-ended turn); the broker backgrounds
+    // the slow child teardown internally, so the
+    // user-visible Cancel path doesn't wait on
+    // (potentially slow) child agent teardown.
+    // The user already saw the parent's
+    // TurnComplete above, and the broker's
+    // drain-first lock guarantees no double
+    // DelegationCompleted emit.
+    if let Some(inj) = delegation_injection {
+        inj.broker.cancel_by_parent_turn(conn_id).await;
+        // Reclaim any parked `ask_user_question` /
+        // Grok `exit_plan_mode` approval owned by this
+        // connection. Unlike `perms` (drained inline
+        // above), these registries live on the manager
+        // and are otherwise only drained on full
+        // connection teardown -- but a turn-scoped
+        // Cancel keeps the connection alive. Without
+        // this the entry lingers, and the
+        // one-pending-per-connection guard in
+        // `register_{question,plan_approval}` then
+        // silently rejects the NEXT one on this
+        // connection (its card never shows). Idempotent
+        // with the cleanup-guard drain (empty map ->
+        // no-op); the dropped sender declines the tool /
+        // replies disconnect, exactly like the
+        // permission drain above.
+        inj.questions.cancel_questions_by_parent(conn_id).await;
+        inj.plan_approvals
+            .cancel_plan_approvals_by_parent(conn_id)
+            .await;
+    }
+    // Keep the prompt response (so the SACP library
+    // doesn't log "receiver dropped" when the agent
+    // eventually responds): until it arrives, the
+    // agent's prose is this cancelled turn's tail.
+    track_cancelled_prompt(async move {
+        let _ = prompt_response.await;
+    })
+}
+
 /// Whether `update` is prose from a turn the user cancelled.
 ///
 /// Cancel emits `TurnComplete` without waiting for the agent, which can keep
@@ -10177,6 +10322,9 @@ async fn run_conversation_loop<'a>(
                 );
                 terminal_poll_interval
                     .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let mut unreachable_watchdog = tokio::time::interval(UNREACHABLE_WATCHDOG_TICK);
+                unreachable_watchdog
+                    .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 let mut disconnect_requested = false;
                 // What this turn was observed to produce. When an agent reports
                 // `EndTurn` having produced no real output, we synthesize an
@@ -10682,6 +10830,30 @@ async fn run_conversation_loop<'a>(
                             )
                             .await;
                         }
+                        // Codex retries an unreachable provider forever without
+                        // an error; stop the turn after a minute of that.
+                        _ = unreachable_watchdog.tick(), if agent_type == AgentType::Codex => {
+                            if unreachable_watchdog_fired(state, emitter).await {
+                                cancelled_prompt = Some(
+                                    cancel_turn(
+                                        &cx,
+                                        &sid,
+                                        conn_id,
+                                        agent_type,
+                                        state,
+                                        emitter,
+                                        perms,
+                                        terminal_runtime.as_ref(),
+                                        &mut tracked_terminal_tool_calls,
+                                        delegation_injection,
+                                        prompt_response,
+                                        "end_turn",
+                                    )
+                                    .await,
+                                );
+                                break;
+                            }
+                        }
                         cmd = cmd_rx.recv() => {
                             match cmd {
                                 Some(ConnectionCommand::RespondPermission {
@@ -10841,99 +11013,23 @@ async fn run_conversation_loop<'a>(
                                     );
                                 }
                                 Some(ConnectionCommand::Cancel) => {
-                                    // Send CancelNotification to agent to stop the current turn
-                                    let _ = cx.send_notification_to(
-                                        Agent,
-                                        CancelNotification::new(sid.clone()),
+                                    cancelled_prompt = Some(
+                                        cancel_turn(
+                                            &cx,
+                                            &sid,
+                                            conn_id,
+                                            agent_type,
+                                            state,
+                                            emitter,
+                                            perms,
+                                            terminal_runtime.as_ref(),
+                                            &mut tracked_terminal_tool_calls,
+                                            delegation_injection,
+                                            prompt_response,
+                                            "cancelled",
+                                        )
+                                        .await,
                                     );
-                                    // Also terminate any command runtimes created for this
-                                    // session so cancellation does not hang on long-running
-                                    // terminal tools.
-                                    terminal_runtime
-                                        .release_all_for_session(sid.0.as_ref())
-                                        .await;
-                                    tracked_terminal_tool_calls.clear();
-                                    // Also cancel any pending permission requests
-                                    // (queued ones included), clearing the card
-                                    // that was on screen, and immediately emit
-                                    // TurnComplete so the frontend transitions out
-                                    // of "prompting" and the user can send new
-                                    // messages. Don't wait for the agent -- it may
-                                    // be slow to respond or not respond at all.
-                                    // One critical section for the same reason as
-                                    // the turn-end exits: a request admitted
-                                    // between the two would be published and then
-                                    // silently un-displayed by TurnComplete,
-                                    // wedging the queue.
-                                    drain_permissions_then_emit(
-                                        perms,
-                                        state,
-                                        emitter,
-                                        AcpEvent::TurnComplete {
-                                            session_id: sid.0.to_string(),
-                                            stop_reason: "cancelled".into(),
-                                            agent_type: agent_type.to_string(),
-                                        },
-                                    )
-                                    .await;
-                                    // Cascade-cancel any in-flight delegations owned by
-                                    // this parent connection. Idempotent with the
-                                    // cleanup-guard cancel_by_parent at the end of
-                                    // run_connection (#1: empty pending → no-op).
-                                    // Without this, a user-initiated cancel of a parent
-                                    // prompt mid-delegation would leave the child agent
-                                    // running indefinitely (broker no longer applies a
-                                    // timeout; only an MCP `notifications/cancelled` or
-                                    // a parent/child disconnect would otherwise tear
-                                    // the delegation down). Turn-scoped: the
-                                    // connection stays alive after a prompt cancel,
-                                    // so keep the parent's `consumed` tool_call
-                                    // memory (a re-emit must not mis-bind the next
-                                    // same-key delegation); the cleanup-guard
-                                    // teardown still clears everything when the
-                                    // connection finally goes away.
-                                    //
-                                    // Await inline so the fast tracker +
-                                    // parked-call drain is ordered before the
-                                    // next prompt (keeping it scoped to the
-                                    // just-ended turn); the broker backgrounds
-                                    // the slow child teardown internally, so the
-                                    // user-visible Cancel path doesn't wait on
-                                    // (potentially slow) child agent teardown.
-                                    // The user already saw the parent's
-                                    // TurnComplete above, and the broker's
-                                    // drain-first lock guarantees no double
-                                    // DelegationCompleted emit.
-                                    if let Some(inj) = delegation_injection {
-                                        inj.broker.cancel_by_parent_turn(conn_id).await;
-                                        // Reclaim any parked `ask_user_question` /
-                                        // Grok `exit_plan_mode` approval owned by this
-                                        // connection. Unlike `perms` (drained inline
-                                        // above), these registries live on the manager
-                                        // and are otherwise only drained on full
-                                        // connection teardown -- but a turn-scoped
-                                        // Cancel keeps the connection alive. Without
-                                        // this the entry lingers, and the
-                                        // one-pending-per-connection guard in
-                                        // `register_{question,plan_approval}` then
-                                        // silently rejects the NEXT one on this
-                                        // connection (its card never shows). Idempotent
-                                        // with the cleanup-guard drain (empty map ->
-                                        // no-op); the dropped sender declines the tool /
-                                        // replies disconnect, exactly like the
-                                        // permission drain above.
-                                        inj.questions.cancel_questions_by_parent(conn_id).await;
-                                        inj.plan_approvals
-                                            .cancel_plan_approvals_by_parent(conn_id)
-                                            .await;
-                                    }
-                                    // Keep the prompt response (so the SACP library
-                                    // doesn't log "receiver dropped" when the agent
-                                    // eventually responds): until it arrives, the
-                                    // agent's prose is this cancelled turn's tail.
-                                    cancelled_prompt = Some(track_cancelled_prompt(async move {
-                                        let _ = prompt_response.await;
-                                    }));
                                     break;
                                 }
                                 Some(ConnectionCommand::Disconnect) | None => {
@@ -23469,6 +23565,251 @@ mod tests {
         tokio::time::advance(CANCELLED_TAIL_LIMIT).await;
         assert!(!is_cancelled_turn_prose(&mut cancelled, &message));
         assert!(cancelled.is_none());
+    }
+
+    // ── Codex can't-reach watchdog ──────────────────────────────────────────
+
+    fn watchdog_connection_warning(revision: u64) -> AcpEvent {
+        AcpEvent::SessionFailure {
+            record: SessionFailureRecord {
+                id: "conn-1".into(),
+                revision,
+                category: "connection".into(),
+                severity: "warning".into(),
+                title: "Reconnecting".into(),
+                details: None,
+                actions: vec![],
+                resolved: false,
+            },
+        }
+    }
+
+    /// A running turn on `agent_type`: the prompt is accepted and the user's
+    /// message is on record.
+    async fn watchdog_turn(agent_type: AgentType) -> Arc<RwLock<SessionState>> {
+        let mut st = SessionState::new(
+            "conn-watchdog".to_string(),
+            agent_type,
+            None,
+            "win".to_string(),
+            None,
+        );
+        st.turn_in_flight = true;
+        let state = Arc::new(RwLock::new(st));
+        let emitter = EventEmitter::Noop;
+        emit_with_state(
+            &state,
+            &emitter,
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Prompting,
+            },
+        )
+        .await;
+        emit_with_state(
+            &state,
+            &emitter,
+            AcpEvent::UserMessage {
+                message_id: "m1".into(),
+                blocks: vec![UserMessageBlock::Text { text: "hi".into() }],
+            },
+        )
+        .await;
+        state
+    }
+
+    /// Stop the turn with [`cancel_turn`] over a real client connection whose
+    /// agent end is a bare channel; returns the methods the agent received.
+    async fn cancel_turn_over_channel(
+        state: &Arc<RwLock<SessionState>>,
+        stop_reason: &'static str,
+    ) -> Vec<String> {
+        let (host_end, mut agent_end) = sacp::Channel::duplex();
+        let emitter = EventEmitter::Noop;
+        let perms: PendingPermissions = Arc::default();
+        let terminal_runtime = TerminalRuntime::with_base_env(BTreeMap::new());
+        let mut methods = Vec::new();
+        Client
+            .builder()
+            .connect_with(host_end, async |cx: ConnectionTo<Agent>| {
+                let mut tracked = HashMap::new();
+                let _cancelled = cancel_turn(
+                    &cx,
+                    &SessionId::new("s-watchdog"),
+                    "conn-watchdog",
+                    AgentType::Codex,
+                    state,
+                    &emitter,
+                    &perms,
+                    &terminal_runtime,
+                    &mut tracked,
+                    None,
+                    std::future::pending::<()>(),
+                    stop_reason,
+                )
+                .await;
+                // Wait for the notification to cross the wire before the
+                // connection closes.
+                let sent = tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    futures::StreamExt::next(&mut agent_end.rx),
+                )
+                .await;
+                if let Ok(Some(Ok(sacp::jsonrpcmsg::Message::Request(request)))) = sent {
+                    methods.push(request.method);
+                }
+                Ok(())
+            })
+            .await
+            .expect("client connection runs");
+        methods
+    }
+
+    fn watchdog_events(state: &SessionState) -> Vec<AcpEvent> {
+        state
+            .recent_events_after(0)
+            .expect("events recorded")
+            .iter()
+            .map(|e| e.payload.clone())
+            .collect()
+    }
+
+    fn unreachable_count(events: &[AcpEvent]) -> usize {
+        events
+            .iter()
+            .filter(|e| matches!(e, AcpEvent::TurnUnreachable { .. }))
+            .count()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn watchdog_cancels_after_60s_of_connection_warnings() {
+        let state = watchdog_turn(AgentType::Codex).await;
+        let emitter = EventEmitter::Noop;
+        emit_with_state(&state, &emitter, watchdog_connection_warning(1)).await;
+
+        tokio::time::advance(UNREACHABLE_WATCHDOG - std::time::Duration::from_secs(1)).await;
+        assert!(!unreachable_watchdog_fired(&state, &emitter).await, "59 s: not yet");
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        assert!(unreachable_watchdog_fired(&state, &emitter).await, "60 s: fires");
+        // What the tick arm does next.
+        let sent = cancel_turn_over_channel(&state, "end_turn").await;
+        assert_eq!(sent, vec!["session/cancel".to_string()]);
+
+        // Fires once per turn.
+        assert!(state.read().await.connection_retry_since.is_none());
+        tokio::time::advance(UNREACHABLE_WATCHDOG).await;
+        assert!(!unreachable_watchdog_fired(&state, &emitter).await);
+
+        let s = state.read().await;
+        let events = watchdog_events(&s);
+        assert_eq!(unreachable_count(&events), 1, "{events:?}");
+        let unreachable_at = events
+            .iter()
+            .position(|e| {
+                matches!(e, AcpEvent::TurnUnreachable { message, .. }
+                    if message == crate::unreachable::CODEX_MESSAGE)
+            })
+            .expect("TurnUnreachable with the Codex message");
+        let completes: Vec<(usize, &str)> = events
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| match e {
+                AcpEvent::TurnComplete { stop_reason, .. } => Some((i, stop_reason.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(completes.len(), 1, "{events:?}");
+        assert!(completes[0].0 > unreachable_at, "TurnComplete follows the error");
+        assert_eq!(completes[0].1, "end_turn", "no Stopped label");
+        assert_eq!(
+            s.last_error.as_ref().and_then(|e| e.code.as_deref()),
+            Some("agent_unreachable")
+        );
+        assert!(!s.turn_in_flight);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn chunk_at_59s_disarms_watchdog() {
+        let state = watchdog_turn(AgentType::Codex).await;
+        let emitter = EventEmitter::Noop;
+        emit_with_state(&state, &emitter, watchdog_connection_warning(1)).await;
+        tokio::time::advance(std::time::Duration::from_secs(59)).await;
+        emit_with_state(
+            &state,
+            &emitter,
+            AcpEvent::ContentDelta {
+                text: "back".into(),
+                parent_tool_use_id: None,
+            },
+        )
+        .await;
+        tokio::time::advance(UNREACHABLE_WATCHDOG).await;
+
+        assert!(!unreachable_watchdog_fired(&state, &emitter).await, "no cancel");
+        assert_eq!(unreachable_count(&watchdog_events(&*state.read().await)), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn turn_end_disarms_watchdog() {
+        let state = watchdog_turn(AgentType::Codex).await;
+        let emitter = EventEmitter::Noop;
+        emit_with_state(&state, &emitter, watchdog_connection_warning(1)).await;
+        emit_with_state(
+            &state,
+            &emitter,
+            AcpEvent::TurnComplete {
+                session_id: "s-watchdog".into(),
+                stop_reason: "end_turn".into(),
+                agent_type: AgentType::Codex.to_string(),
+            },
+        )
+        .await;
+        tokio::time::advance(UNREACHABLE_WATCHDOG * 2).await;
+
+        assert!(!unreachable_watchdog_fired(&state, &emitter).await, "nothing");
+        assert_eq!(unreachable_count(&watchdog_events(&*state.read().await)), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn claude_has_no_watchdog() {
+        let state = watchdog_turn(AgentType::ClaudeCode).await;
+        let emitter = EventEmitter::Noop;
+        emit_with_state(
+            &state,
+            &emitter,
+            AcpEvent::ClaudeSdkMessage {
+                session_id: "s-watchdog".into(),
+                message: serde_json::json!({ "type": "system", "subtype": "api_retry" }),
+            },
+        )
+        .await;
+        assert!(state.read().await.reconnecting, "the retry registered");
+        tokio::time::advance(UNREACHABLE_WATCHDOG * 2).await;
+
+        assert!(!unreachable_watchdog_fired(&state, &emitter).await, "no cancel");
+        assert_eq!(unreachable_count(&watchdog_events(&*state.read().await)), 0);
+    }
+
+    /// The user's Stop, after `cancel_turn` was pulled out of the Cancel arm:
+    /// the agent is told to cancel and the turn ends `"cancelled"`.
+    #[tokio::test(start_paused = true)]
+    async fn user_cancel_still_reports_cancelled() {
+        let state = watchdog_turn(AgentType::Codex).await;
+        let sent = cancel_turn_over_channel(&state, "cancelled").await;
+        assert_eq!(sent, vec!["session/cancel".to_string()]);
+
+        let s = state.read().await;
+        let events = watchdog_events(&s);
+        let reasons: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                AcpEvent::TurnComplete { stop_reason, .. } => Some(stop_reason.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reasons, vec!["cancelled"]);
+        assert_eq!(unreachable_count(&events), 0);
+        assert!(s.last_turn_ended_abnormally);
+        assert!(!s.turn_in_flight);
     }
 
     /// The frames below are a VERBATIM capture from a real `pi-acp@0.0.33`,

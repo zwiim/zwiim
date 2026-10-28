@@ -7,6 +7,16 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View, 
 import { basename, formatSize, revertWarning, type AgentImage, type AttachmentBlock, type ChangedFile, type RevertChoice } from "@zwiim/sdk";
 import type { PendingFile } from "../attachments/pending";
 import { revertCopy } from "../sessions/revert";
+import {
+  RETRY_LABEL,
+  RETRY_NEW_CHAT_LABEL,
+  RETRY_TARGET,
+  retryBusy,
+  retryColors,
+  retryTitle,
+  runRetry,
+  type RetryChoice,
+} from "../sessions/unreachable";
 import { useNow } from "../app/hooks";
 import {
   runSummary,
@@ -602,6 +612,73 @@ export function ErrorRow({ message }: { message: string }) {
   );
 }
 
+/**
+ * The agent could not reach its provider. The Host kept the failed turn, so
+ * it can be sent again here or carried into a new chat. Nothing runs until a
+ * button is tapped; both hold until the op answers, and while offline.
+ */
+export function UnreachableCard({
+  agentName,
+  message,
+  online,
+  hostName,
+  onRetry,
+  onRetryInNewChat,
+  onStarted,
+}: {
+  agentName: string;
+  message: string;
+  online: boolean;
+  hostName: string;
+  onRetry(): Promise<void>;
+  /** Starts the new chat; resolves to its session id. */
+  onRetryInNewChat(): Promise<string>;
+  /** Opens the chat that was started. Not part of the op: a throw is not a failed retry. */
+  onStarted(session_id: string): void;
+}) {
+  const theme = useTheme();
+  const color = retryColors(theme);
+  const [pending, setPending] = useState<RetryChoice | null>(null);
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const busy = retryBusy(pending, online);
+  const run = (which: RetryChoice) =>
+    void (which === "retry"
+      ? runRetry(which, onRetry, { pending: setPending, error: setRefusal }, { hostName })
+      : runRetry(which, onRetryInNewChat, { pending: setPending, error: setRefusal }, { hostName, after: onStarted }));
+  const button = (which: RetryChoice, label: string, testID: string) => (
+    <Pressable
+      testID={testID}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled: busy, busy: pending === which }}
+      disabled={busy}
+      onPress={() => run(which)}
+      style={({ pressed }) => [styles.retryButton, { opacity: busy ? 0.4 : pressed ? PRESSED_OPACITY : 1 }]}
+    >
+      {pending === which ? <ActivityIndicator color={color.action} size="small" /> : null}
+      <T color={color.action} style={styles.retryLabel}>
+        {label}
+      </T>
+    </Pressable>
+  );
+  return (
+    <View style={[styles.error, { backgroundColor: color.background, borderLeftColor: color.edge }]} testID="unreachable-card">
+      <T selectable>
+        {retryTitle(agentName, message)}
+      </T>
+      <View>
+        {button("retry", RETRY_LABEL, "unreachable-retry")}
+        {button("new_chat", RETRY_NEW_CHAT_LABEL, "unreachable-retry-new")}
+      </View>
+      {refusal ? (
+        <T variant="callout" color={color.refusal} testID="unreachable-refusal">
+          {refusal}
+        </T>
+      ) : null}
+    </View>
+  );
+}
+
 /** Files a turn's row shows before `+N more`, and how many each tap adds. */
 const FILES_SHOWN = 2;
 
@@ -931,6 +1008,9 @@ const styles = StyleSheet.create({
   outputContent: { padding: space.md },
   sheetBody: { gap: space.md },
   error: { borderRadius: radius.lg, borderLeftWidth: 3, padding: space.md, gap: space.xs },
+  // Left-aligned text, a full touch target tall.
+  retryButton: { minHeight: RETRY_TARGET, flexDirection: "row", alignItems: "center", gap: space.sm, alignSelf: "flex-start" },
+  retryLabel: { fontFamily: fonts.sansMedium },
   now: {
     height: 44,
     flexDirection: "row",

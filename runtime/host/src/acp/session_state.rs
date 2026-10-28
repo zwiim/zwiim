@@ -814,6 +814,29 @@ pub struct SessionState {
     /// like `turn_in_flight`.
     pub last_turn_ended_abnormally: bool,
 
+    /// This turn saw a connection retry (a Codex `connection` warning or a
+    /// Claude `api_retry` without an HTTP status), so a connection-flavoured
+    /// error that ends the turn means the provider is unreachable. Reset by
+    /// each new prompt. Backend-internal, like `turn_in_flight`.
+    pub turn_connection_retried: bool,
+    /// This turn's error was already classified `agent_unreachable`; the
+    /// duplicate terminal records an agent sends for one failure are not
+    /// classified again. Reset by each new prompt.
+    pub turn_unreachable: bool,
+    /// The agent is retrying a lost provider connection right now. Mirrors the
+    /// last `ReconnectingChanged` and rides on the snapshot.
+    pub reconnecting: bool,
+    /// When the first Codex connection warning of the turn arrived, while
+    /// only connection warnings have followed. Codex only: it drives the
+    /// watchdog that gives up on a turn that never reconnects. Backend-internal.
+    pub connection_retry_since: Option<tokio::time::Instant>,
+    /// A plain error that followed a connection retry: it classifies as
+    /// unreachable only if the turn then ends without the provider answering
+    /// (a recoverable error mid-turn, like a failed mode switch, does not).
+    /// Built when the error arrived, so it still carries the turn's blocks at
+    /// `TurnComplete`. Backend-internal.
+    unreachable_candidate: Option<AcpEvent>,
+
     /// True when the agent's effective settings changed after this connection
     /// was spawned — the running process is still on its launch-time config and
     /// needs a restart to pick up the change. Set/cleared by
@@ -908,6 +931,11 @@ impl SessionState {
             background_tasks: Vec::new(),
             emitted_background: BackgroundView::default(),
             last_turn_ended_abnormally: false,
+            turn_connection_retried: false,
+            turn_unreachable: false,
+            reconnecting: false,
+            connection_retry_since: None,
+            unreachable_candidate: None,
             config_stale: false,
             config_stale_kind: None,
             last_native_title: None,
@@ -965,6 +993,174 @@ impl SessionState {
             .is_none_or(|existing| record.revision > existing.revision)
     }
 
+    /// Events the Host derives from `payload` once it has been applied:
+    /// `ReconnectingChanged` when the agent starts or stops retrying its
+    /// provider connection, and `TurnUnreachable` when a terminal error is
+    /// classified as "can't reach the provider" ([`crate::unreachable`]).
+    /// The event bridge applies and sequences each one right behind its
+    /// cause, inside the same lock. Turn flags change here too, so a second
+    /// call for the same turn does not derive the same event again.
+    pub fn derived_after(&mut self, payload: &AcpEvent) -> Vec<AcpEvent> {
+        let mut derived = Vec::new();
+        match payload {
+            AcpEvent::SessionFailure { record } => {
+                if record.severity == "warning" && record.category == "connection" {
+                    self.note_connection_retry(&mut derived);
+                } else if let Some((_, message)) = record.as_error() {
+                    self.classify_error(&message, Some(&record.category), true, &mut derived);
+                } else if record.category != "unknown" {
+                    // An `unknown` warning is a notice; it says nothing about the connection.
+                    self.provider_answered(&mut derived);
+                }
+            }
+            AcpEvent::ClaudeSdkMessage { message, .. } => {
+                let is_retry = message.get("type").and_then(|v| v.as_str()) == Some("system")
+                    && message.get("subtype").and_then(|v| v.as_str()) == Some("api_retry");
+                // A status means the server answered, so it was reachable.
+                let has_status = message.get("error_status").is_some_and(|v| !v.is_null());
+                if is_retry && !has_status {
+                    self.note_connection_retry(&mut derived);
+                }
+            }
+            AcpEvent::Error {
+                message, terminal, ..
+            } => {
+                // A terminal error is the connection teardown: no TurnComplete
+                // follows, so it ends the turn itself.
+                self.classify_error(message, None, *terminal, &mut derived);
+            }
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Prompting,
+            } => self.provider_answered(&mut derived),
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Error | ConnectionStatus::Disconnected,
+            } => {
+                // Backstop: the connection is gone and no TurnComplete will
+                // flush a parked candidate.
+                self.flush_unreachable_candidate(&mut derived);
+                self.provider_answered(&mut derived);
+            }
+            AcpEvent::TurnComplete { .. } => {
+                // The turn ended with a retry-flavoured error still standing
+                // and no sign the provider answered since: that was the cause.
+                self.flush_unreachable_candidate(&mut derived);
+                self.turn_connection_retried = false;
+                self.provider_answered(&mut derived);
+            }
+            AcpEvent::ContentDelta { .. }
+            | AcpEvent::Thinking { .. }
+            | AcpEvent::ToolCall { .. }
+            | AcpEvent::PlanUpdate { .. } => self.provider_answered(&mut derived),
+            _ => {}
+        }
+        derived
+    }
+
+    /// The failed turn's message as a [`AcpEvent::TurnUnreachable`]: the
+    /// blocks come from the in-flight user message, empty when there is none.
+    pub fn unreachable_event(&self, message: String) -> AcpEvent {
+        use crate::acp::types::{PromptInputBlock, UserMessageBlock};
+        let blocks = self
+            .pending_user_message
+            .as_ref()
+            .map(|pending| {
+                pending
+                    .blocks
+                    .iter()
+                    .map(|block| match block {
+                        UserMessageBlock::Text { text } => {
+                            PromptInputBlock::Text { text: text.clone() }
+                        }
+                        UserMessageBlock::Image { data, mime_type } => PromptInputBlock::Image {
+                            data: data.clone(),
+                            mime_type: mime_type.clone(),
+                            uri: None,
+                        },
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        AcpEvent::TurnUnreachable {
+            message,
+            blocks,
+            conversation_id: self.conversation_id,
+        }
+    }
+
+    /// A connection retry signal: the agent lost its provider connection and
+    /// is trying again.
+    fn note_connection_retry(&mut self, derived: &mut Vec<AcpEvent>) {
+        if self.turn_unreachable {
+            return;
+        }
+        self.turn_connection_retried = true;
+        if self.agent_type == AgentType::Codex && self.connection_retry_since.is_none() {
+            self.connection_retry_since = Some(tokio::time::Instant::now());
+        }
+        if !self.reconnecting {
+            self.reconnecting = true;
+            derived.push(AcpEvent::ReconnectingChanged { reconnecting: true });
+        }
+    }
+
+    /// A sign the provider answered, or the turn ended: stop waiting on the
+    /// connection. Whether the turn saw a retry stays on record.
+    fn provider_answered(&mut self, derived: &mut Vec<AcpEvent>) {
+        self.connection_retry_since = None;
+        self.unreachable_candidate = None;
+        if self.reconnecting {
+            self.reconnecting = false;
+            derived.push(AcpEvent::ReconnectingChanged { reconnecting: false });
+        }
+    }
+
+    /// Emit a parked rule-2 candidate once the turn is known to be over.
+    fn flush_unreachable_candidate(&mut self, derived: &mut Vec<AcpEvent>) {
+        if let Some(event) = self.unreachable_candidate.take() {
+            if !self.turn_unreachable {
+                self.turn_unreachable = true;
+                derived.push(event);
+            }
+        }
+    }
+
+    /// An error arrived: classify it, once per turn, while a turn is running.
+    /// An errno in the message classifies at once. A retry alone (a dropped
+    /// connection after earlier retries) classifies at once only for a
+    /// terminal failure; a plain error waits for the turn's end, because it
+    /// may be recoverable mid-turn.
+    fn classify_error(
+        &mut self,
+        message: &str,
+        category: Option<&str>,
+        ends_turn: bool,
+        derived: &mut Vec<AcpEvent>,
+    ) {
+        let running = self.turn_in_flight || self.status == ConnectionStatus::Prompting;
+        if self.turn_unreachable || !running {
+            return;
+        }
+        if crate::unreachable::is_unreachable(message, category, false) {
+            self.turn_unreachable = true;
+            derived.push(self.unreachable_event(message.to_string()));
+            self.provider_answered(derived);
+        } else if self.turn_connection_retried
+            && crate::unreachable::is_unreachable(message, category, true)
+        {
+            if ends_turn {
+                self.turn_unreachable = true;
+                derived.push(self.unreachable_event(message.to_string()));
+                self.provider_answered(derived);
+            } else if self.reconnecting {
+                // Only while no provider answer has arrived since the retry;
+                // a late recoverable error after recovery is not the cause.
+                self.unreachable_candidate = Some(self.unreachable_event(message.to_string()));
+            }
+        } else if ends_turn {
+            self.provider_answered(derived);
+        }
+    }
+
     pub fn apply_event(&mut self, payload: &AcpEvent) {
         match payload {
             AcpEvent::SessionStarted { session_id } => {
@@ -1017,6 +1213,12 @@ impl SessionState {
                     // new error scope, so stale recoverable errors must not be
                     // resurrected by a later snapshot attach.
                     self.last_error = None;
+                    self.turn_connection_retried = false;
+                    self.turn_unreachable = false;
+                    self.connection_retry_since = None;
+                    self.unreachable_candidate = None;
+                    // `reconnecting` is cleared by `derived_after`, which
+                    // announces the change; a silent reset here would hide it.
                 }
                 self.status = status.clone();
             }
@@ -1513,11 +1715,15 @@ impl SessionState {
                 // after the connection task has cleaned up its map
                 // entry. The same payload is independently emitted
                 // through the event channel for live chat-side UX.
-                self.last_error = Some(SessionLastError {
-                    message: message.clone(),
-                    code: code.clone(),
-                    details: details.clone(),
-                });
+                // A turn already classified unreachable keeps that error: the
+                // duplicate terminal record that follows must not replace it.
+                if !self.turn_unreachable {
+                    self.last_error = Some(SessionLastError {
+                        message: message.clone(),
+                        code: code.clone(),
+                        details: details.clone(),
+                    });
+                }
             }
             AcpEvent::DelegationStarted {
                 parent_tool_use_id,
@@ -1652,7 +1858,8 @@ impl SessionState {
                         .insert(record.id.clone(), record.clone());
                     // A terminal failure ends the turn with no reply; a
                     // client attaching later must still see why.
-                    if let Some((code, message)) = record.as_error() {
+                    let terminal = record.as_error().filter(|_| !self.turn_unreachable);
+                    if let Some((code, message)) = terminal {
                         self.last_error = Some(SessionLastError {
                             message,
                             code: Some(code),
@@ -1689,6 +1896,19 @@ impl SessionState {
             }
             AcpEvent::BackgroundChanged { background, .. } => {
                 self.emitted_background = background.clone();
+            }
+            AcpEvent::TurnUnreachable { message, .. } => {
+                self.last_error = Some(SessionLastError {
+                    message: message.clone(),
+                    code: Some(crate::unreachable::CODE.to_string()),
+                    details: None,
+                });
+                self.turn_unreachable = true;
+                self.reconnecting = false;
+                self.connection_retry_since = None;
+            }
+            AcpEvent::ReconnectingChanged { reconnecting } => {
+                self.reconnecting = *reconnecting;
             }
             AcpEvent::ClaudeSdkMessage { .. }
             | AcpEvent::ConfigOptionRejected { .. }
@@ -2318,6 +2538,7 @@ impl SessionState {
             config_stale: self.config_stale,
             config_stale_kind: self.config_stale_kind,
             last_error: self.last_error.clone(),
+            reconnecting: self.reconnecting,
             session_failures: self.session_failures.values().cloned().collect(),
             async_tasks: self.async_tasks.values().cloned().collect(),
             goal_actions: self.goal_actions.clone(),
@@ -2481,6 +2702,10 @@ pub struct LiveSessionSnapshot {
     /// no error has occurred so older clients and common snapshots stay small.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<SessionLastError>,
+    /// The agent is retrying a lost provider connection (see
+    /// `SessionState.reconnecting`).
+    #[serde(default)]
+    pub reconnecting: bool,
     /// AIR typed session failure table (resolved entries and revision
     /// watermarks included — see `SessionState.session_failures`). A client
     /// attaching mid-session seeds its reducer from this and keeps applying
@@ -5299,5 +5524,459 @@ mod tests {
             !empty.contains("\"feedback\":"),
             "no-feedback snapshot must omit the notes array"
         );
+    }
+
+    fn connection_warning(revision: u64) -> AcpEvent {
+        AcpEvent::SessionFailure {
+            record: SessionFailureRecord {
+                id: "conn-1".into(),
+                revision,
+                category: "connection".into(),
+                severity: "warning".into(),
+                title: "Reconnecting".into(),
+                details: None,
+                actions: vec![],
+                resolved: false,
+            },
+        }
+    }
+
+    fn error_event(message: &str) -> AcpEvent {
+        AcpEvent::Error {
+            message: message.into(),
+            agent_type: "claude_code".into(),
+            code: None,
+            details: None,
+            terminal: false,
+        }
+    }
+
+    fn content_delta() -> AcpEvent {
+        AcpEvent::ContentDelta {
+            text: "hi".into(),
+            parent_tool_use_id: None,
+        }
+    }
+
+    fn prompting() -> AcpEvent {
+        AcpEvent::StatusChanged {
+            status: ConnectionStatus::Prompting,
+        }
+    }
+
+    /// Apply `event` the way the event bridge does, returning what it derived.
+    fn feed(s: &mut SessionState, event: AcpEvent) -> Vec<AcpEvent> {
+        s.apply_event(&event);
+        let derived = s.derived_after(&event);
+        for d in &derived {
+            s.apply_event(d);
+        }
+        derived
+    }
+
+    #[test]
+    fn codex_connection_warning_sets_reconnecting() {
+        let mut codex = SessionState::new(
+            "conn-codex".to_string(),
+            AgentType::Codex,
+            None,
+            "win-test".to_string(),
+            None,
+        );
+        let derived = feed(&mut codex, connection_warning(1));
+        assert!(matches!(
+            derived.as_slice(),
+            [AcpEvent::ReconnectingChanged { reconnecting: true }]
+        ));
+        assert!(codex.reconnecting && codex.turn_connection_retried);
+        assert!(codex.connection_retry_since.is_some());
+        assert!(codex.to_snapshot().reconnecting);
+
+        // A second warning is not news.
+        assert!(feed(&mut codex, connection_warning(2)).is_empty());
+
+        let derived = feed(&mut codex, content_delta());
+        assert!(matches!(
+            derived.as_slice(),
+            [AcpEvent::ReconnectingChanged { reconnecting: false }]
+        ));
+        assert!(!codex.reconnecting && codex.connection_retry_since.is_none());
+        assert!(codex.turn_connection_retried, "the turn still saw a retry");
+
+        // Claude has no watchdog: it reconnects, but no instant is kept.
+        let mut claude = fresh_state();
+        let derived = feed(&mut claude, connection_warning(1));
+        assert!(matches!(
+            derived.as_slice(),
+            [AcpEvent::ReconnectingChanged { reconnecting: true }]
+        ));
+        assert!(claude.connection_retry_since.is_none());
+    }
+
+    #[test]
+    fn notice_warning_keeps_reconnecting() {
+        let mut codex = SessionState::new(
+            "conn-codex".to_string(),
+            AgentType::Codex,
+            None,
+            "win-test".to_string(),
+            None,
+        );
+        feed(&mut codex, connection_warning(1));
+        let since = codex.connection_retry_since.expect("armed");
+        let notice = AcpEvent::SessionFailure {
+            record: SessionFailureRecord {
+                id: "s:notice:0:1".into(),
+                revision: 1,
+                category: "unknown".into(),
+                severity: "warning".into(),
+                title: "falling back to HTTP".into(),
+                details: None,
+                actions: vec![],
+                resolved: false,
+            },
+        };
+        assert!(
+            feed(&mut codex, notice).is_empty(),
+            "a notice is not a provider answer"
+        );
+        assert!(codex.reconnecting);
+        assert_eq!(
+            codex.connection_retry_since,
+            Some(since),
+            "the 60 s clock keeps running"
+        );
+    }
+
+    #[test]
+    fn claude_api_retry_without_status_sets_reconnecting() {
+        let retry = |status: serde_json::Value| AcpEvent::ClaudeSdkMessage {
+            session_id: "s".into(),
+            message: serde_json::json!({
+                "type": "system", "subtype": "api_retry", "error_status": status,
+            }),
+        };
+        let mut s = fresh_state();
+        assert!(feed(&mut s, retry(serde_json::json!(529))).is_empty());
+        assert!(!s.reconnecting && !s.turn_connection_retried);
+
+        let derived = feed(&mut s, retry(serde_json::Value::Null));
+        assert!(matches!(
+            derived.as_slice(),
+            [AcpEvent::ReconnectingChanged { reconnecting: true }]
+        ));
+        assert!(s.reconnecting && s.turn_connection_retried);
+        assert!(s.connection_retry_since.is_none());
+
+        // An absent status counts the same as a null one.
+        let mut s = fresh_state();
+        let bare = AcpEvent::ClaudeSdkMessage {
+            session_id: "s".into(),
+            message: serde_json::json!({ "type": "system", "subtype": "api_retry" }),
+        };
+        assert_eq!(feed(&mut s, bare).len(), 1);
+    }
+
+    #[test]
+    fn error_after_retry_derives_turn_unreachable() {
+        let mut s = fresh_state();
+        feed(&mut s, prompting());
+        feed(
+            &mut s,
+            AcpEvent::UserMessage {
+                message_id: "m1".into(),
+                blocks: vec![
+                    UserMessageBlock::Text { text: "hi".into() },
+                    UserMessageBlock::Image {
+                        data: "AAAA".into(),
+                        mime_type: "image/png".into(),
+                    },
+                ],
+            },
+        );
+        feed(&mut s, connection_warning(1));
+        assert!(s.reconnecting);
+
+        // A plain error might be recoverable mid-turn; the turn's end decides.
+        assert!(feed(&mut s, error_event("Connection dropped (ECONNRESET)")).is_empty());
+        let derived = feed(&mut s, turn_complete());
+        assert_eq!(derived.len(), 2, "{derived:?}");
+        match &derived[0] {
+            AcpEvent::TurnUnreachable {
+                message, blocks, ..
+            } => {
+                assert_eq!(message, "Connection dropped (ECONNRESET)");
+                assert_eq!(
+                    blocks,
+                    &vec![
+                        crate::acp::types::PromptInputBlock::Text { text: "hi".into() },
+                        crate::acp::types::PromptInputBlock::Image {
+                            data: "AAAA".into(),
+                            mime_type: "image/png".into(),
+                            uri: None,
+                        },
+                    ]
+                );
+            }
+            other => panic!("expected TurnUnreachable, got {other:?}"),
+        }
+        assert!(matches!(
+            derived[1],
+            AcpEvent::ReconnectingChanged { reconnecting: false }
+        ));
+        let last = s.last_error.as_ref().expect("last_error");
+        assert_eq!(last.code.as_deref(), Some("agent_unreachable"));
+        assert_eq!(last.message, "Connection dropped (ECONNRESET)");
+        assert!(!s.reconnecting);
+
+    }
+
+    fn user_hi() -> AcpEvent {
+        AcpEvent::UserMessage {
+            message_id: "m1".into(),
+            blocks: vec![UserMessageBlock::Text { text: "hi".into() }],
+        }
+    }
+
+    #[test]
+    fn terminal_error_after_retry_classifies_at_once_without_turn_complete() {
+        // A rejected prompt tears the connection down: Error{terminal} then
+        // StatusChanged{Error}, never a TurnComplete.
+        let mut s = fresh_state();
+        feed(&mut s, prompting());
+        feed(&mut s, user_hi());
+        feed(&mut s, connection_warning(1));
+
+        let mut terminal = error_event("Connection dropped (ECONNRESET)");
+        if let AcpEvent::Error { terminal: t, .. } = &mut terminal {
+            *t = true;
+        }
+        let derived = feed(&mut s, terminal);
+        assert_eq!(derived.len(), 2, "{derived:?}");
+        match &derived[0] {
+            AcpEvent::TurnUnreachable {
+                message, blocks, ..
+            } => {
+                assert_eq!(message, "Connection dropped (ECONNRESET)");
+                assert_eq!(
+                    blocks,
+                    &vec![crate::acp::types::PromptInputBlock::Text { text: "hi".into() }]
+                );
+            }
+            other => panic!("expected TurnUnreachable, got {other:?}"),
+        }
+        assert!(matches!(
+            derived[1],
+            AcpEvent::ReconnectingChanged { reconnecting: false }
+        ));
+        assert!(s.unreachable_candidate.is_none());
+    }
+
+    #[test]
+    fn parked_candidate_flushes_on_error_status() {
+        let mut s = fresh_state();
+        feed(&mut s, prompting());
+        feed(&mut s, user_hi());
+        feed(&mut s, connection_warning(1));
+        assert!(feed(&mut s, error_event("Connection dropped (ECONNRESET)")).is_empty());
+        assert!(s.unreachable_candidate.is_some());
+
+        let derived = feed(
+            &mut s,
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Error,
+            },
+        );
+        assert!(
+            matches!(derived.first(), Some(AcpEvent::TurnUnreachable { .. })),
+            "{derived:?}"
+        );
+        assert!(s.unreachable_candidate.is_none());
+        let last = s.last_error.as_ref().expect("last_error");
+        assert_eq!(last.code.as_deref(), Some("agent_unreachable"));
+    }
+
+    #[test]
+    fn late_recoverable_error_after_recovery_is_not_unreachable() {
+        // Retry, then the provider answers; a later recoverable error that
+        // matches the retry-flavoured rule must not flag a successful turn.
+        let mut s = fresh_state();
+        feed(&mut s, prompting());
+        feed(&mut s, user_hi());
+        feed(&mut s, connection_warning(1));
+        feed(&mut s, content_delta());
+        assert!(!s.reconnecting);
+
+        assert!(feed(&mut s, error_event("Connection dropped (ECONNRESET)")).is_empty());
+        assert!(s.unreachable_candidate.is_none());
+        let derived = feed(&mut s, turn_complete());
+        assert!(derived.is_empty(), "{derived:?}");
+        assert!(s
+            .last_error
+            .as_ref()
+            .map_or(true, |e| e.code.as_deref() != Some("agent_unreachable")));
+    }
+
+    fn turn_complete() -> AcpEvent {
+        AcpEvent::TurnComplete {
+            session_id: "s".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+        }
+    }
+
+    fn terminal_failure(title: &str) -> AcpEvent {
+        AcpEvent::SessionFailure {
+            record: SessionFailureRecord {
+                id: "f-term".into(),
+                revision: 1,
+                category: "connection".into(),
+                severity: "error".into(),
+                title: title.into(),
+                details: None,
+                actions: vec![],
+                resolved: false,
+            },
+        }
+    }
+
+    #[test]
+    fn terminal_failure_after_retry_classifies_at_once() {
+        let mut s = fresh_state();
+        feed(&mut s, prompting());
+        feed(&mut s, connection_warning(1));
+        let derived = feed(&mut s, terminal_failure("Connection dropped (ECONNRESET)"));
+        assert!(
+            matches!(
+                derived.as_slice(),
+                [
+                    AcpEvent::TurnUnreachable { .. },
+                    AcpEvent::ReconnectingChanged { reconnecting: false }
+                ]
+            ),
+            "{derived:?}"
+        );
+        // The turn's end does not replace it.
+        feed(&mut s, turn_complete());
+        assert_eq!(
+            s.last_error.as_ref().and_then(|e| e.code.as_deref()),
+            Some("agent_unreachable")
+        );
+    }
+
+    #[test]
+    fn recoverable_error_mid_turn_after_retry_is_not_unreachable() {
+        let mut s = fresh_state();
+        feed(&mut s, prompting());
+        feed(&mut s, connection_warning(1));
+        assert!(feed(&mut s, error_event("Failed to set mode: nope")).is_empty());
+        // The provider answered and the turn went on: nothing to classify.
+        feed(&mut s, content_delta());
+        assert!(feed(&mut s, turn_complete()).is_empty());
+        assert_ne!(
+            s.last_error.as_ref().and_then(|e| e.code.as_deref()),
+            Some("agent_unreachable")
+        );
+    }
+
+    #[test]
+    fn idle_error_after_a_retried_turn_is_not_unreachable() {
+        let mut s = fresh_state();
+        feed(&mut s, prompting());
+        feed(&mut s, connection_warning(1));
+        feed(&mut s, turn_complete());
+        assert!(!s.turn_connection_retried && s.connection_retry_since.is_none());
+        feed(
+            &mut s,
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Connected,
+            },
+        );
+        assert!(feed(&mut s, error_event("Failed to set mode: nope")).is_empty());
+        // Even an errno is ignored when no turn is running.
+        assert!(feed(&mut s, error_event("connect ECONNREFUSED 127.0.0.1")).is_empty());
+        assert_ne!(
+            s.last_error.as_ref().and_then(|e| e.code.as_deref()),
+            Some("agent_unreachable")
+        );
+    }
+
+    #[test]
+    fn new_prompt_while_reconnecting_announces_the_end_of_it() {
+        let mut s = fresh_state();
+        feed(&mut s, prompting());
+        feed(&mut s, connection_warning(1));
+        assert!(s.reconnecting);
+        let derived = feed(&mut s, prompting());
+        assert!(
+            matches!(
+                derived.as_slice(),
+                [AcpEvent::ReconnectingChanged { reconnecting: false }]
+            ),
+            "{derived:?}"
+        );
+        assert!(!s.reconnecting);
+    }
+
+    #[test]
+    fn lone_connection_drop_is_not_unreachable() {
+        let mut s = fresh_state();
+        feed(&mut s, prompting());
+        assert!(feed(&mut s, error_event("API Error: Connection dropped (ECONNRESET)")).is_empty());
+        assert_ne!(
+            s.last_error.as_ref().and_then(|e| e.code.as_deref()),
+            Some("agent_unreachable")
+        );
+    }
+
+    #[test]
+    fn unreachable_is_classified_once_per_turn() {
+        let mut s = fresh_state();
+        feed(&mut s, prompting());
+        let message = "API Error: Can't reach the API server (ENOTFOUND)";
+        let derived = feed(&mut s, error_event(message));
+        assert!(matches!(derived.as_slice(), [AcpEvent::TurnUnreachable { .. }]));
+
+        let derived = feed(
+            &mut s,
+            AcpEvent::SessionFailure {
+                record: SessionFailureRecord {
+                    id: "f-1".into(),
+                    revision: 1,
+                    category: "connection".into(),
+                    severity: "error".into(),
+                    title: message.into(),
+                    details: None,
+                    actions: vec![],
+                    resolved: false,
+                },
+            },
+        );
+        assert!(derived.is_empty(), "{derived:?}");
+        assert_eq!(
+            s.last_error.as_ref().and_then(|e| e.code.as_deref()),
+            Some("agent_unreachable"),
+            "the duplicate record must not replace it"
+        );
+    }
+
+    #[test]
+    fn prompting_resets_turn_flags() {
+        let mut s = SessionState::new(
+            "conn-codex".to_string(),
+            AgentType::Codex,
+            None,
+            "win-test".to_string(),
+            None,
+        );
+        feed(&mut s, connection_warning(1));
+        s.turn_unreachable = true;
+        assert!(s.turn_connection_retried && s.reconnecting && s.connection_retry_since.is_some());
+
+        feed(&mut s, prompting());
+        assert!(!s.turn_connection_retried);
+        assert!(!s.turn_unreachable);
+        assert!(!s.reconnecting);
+        assert!(s.connection_retry_since.is_none());
     }
 }

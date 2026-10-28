@@ -12,7 +12,7 @@ import { ZwiimClientError } from "../src/client/errors";
 import { HostClient } from "../src/client/host-client";
 import { initialHostState, reduceHost } from "../src/state/store";
 import { initialSessionView, reduceSession } from "../src/state/session";
-import type { HostFeedEvent, SessionEvent } from "../src/types/protocol";
+import { MUTATING_OPS, type HostFeedEvent, type SessionEvent } from "../src/types/protocol";
 import { FakeTransport, flush, hello } from "./fakes";
 
 const client = (over: Partial<ClientCompat> = {}): ClientCompat => ({
@@ -95,6 +95,16 @@ describe("evaluateCompatibility", () => {
     expect(hasCapability(c, "session.revert.chat")).toBe(false);
   });
 
+  it("speaks revision 14 and asks for session.retry", () => {
+    expect(CLIENT_REVISION).toBe(14);
+    expect(CLIENT_CAPABILITIES).toContain("session.retry");
+    // Repeating either would run the turn twice or open two chats.
+    expect(MUTATING_OPS.has("session.retry")).toBe(true);
+    expect(MUTATING_OPS.has("session.retry_in_new_chat")).toBe(true);
+    const old = evaluateCompatibility(hello({ revision: 13, min_client_revision: 1, capabilities: [] }));
+    expect(hasCapability(old, "session.retry")).toBe(false);
+  });
+
   it("asks for sub-agent nesting at the revision that brought parent_id", () => {
     expect(CLIENT_CAPABILITIES).toContain("agent.subagents");
     expect(CLIENT_REVISION).toBeGreaterThanOrEqual(4);
@@ -163,7 +173,7 @@ describe("evaluateCompatibility", () => {
   });
 
   it("speaks revision 13, which resolves merge conflicts", () => {
-    expect(CLIENT_REVISION).toBe(13);
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(13);
     expect(CLIENT_CAPABILITIES).toContain("workspace.resolve_conflicts");
     const old = evaluateCompatibility(hello({ revision: 12, min_client_revision: 1, capabilities: ["workspace.conflicts"] }));
     expect(old.status).not.toBe("update_required");

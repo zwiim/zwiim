@@ -97,7 +97,21 @@ use serde::{Deserialize, Serialize};
 /// that turn runs, `workspace.resolving_changed` names the session (null once
 /// the turn ends) and `host.snapshot` carries the pairs as `resolving`.
 /// Older clients ignore both.
-pub const PROTOCOL_REVISION: u32 = 13;
+///
+/// Revision 14 (`session.retry`): a turn that failed because the agent
+/// couldn't reach its server ends with `agent.error` code
+/// `agent_unreachable`, and `session.history` carries it as
+/// `last_error {message, code}` until another prompt goes out. While the
+/// agent is retrying its connection, `session.reconnecting` reports
+/// `{reconnecting}` and the session snapshot carries `reconnecting`.
+/// `session.retry` sends the failed message again in the same session;
+/// `session.retry_in_new_chat` sends it as the first prompt of a new session
+/// in the same workspace, with the same agent and options and an
+/// `earlier-chat-summary.md` attachment, and returns the new `session_id`.
+/// Both refuse with `not_found`, `turn_in_progress` or `nothing_to_retry`;
+/// the new-chat op also with `root_workspace`. Older clients ignore the
+/// fields and show the plain error line.
+pub const PROTOCOL_REVISION: u32 = 14;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -139,6 +153,7 @@ pub const CAPABILITIES: &[&str] = &[
     "background.tokens",
     "workspace.conflicts",
     "workspace.resolve_conflicts",
+    "session.retry",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -305,7 +320,15 @@ mod tests {
     fn resolve_conflicts_is_served() {
         assert!(CAPABILITIES.contains(&"workspace.resolve_conflicts"));
         // `workspace.resolving_changed` and the snapshot's `resolving`.
-        assert_eq!(PROTOCOL_REVISION, 13);
+        assert!(PROTOCOL_REVISION >= 13);
+    }
+
+    #[test]
+    fn compat_advertises_session_retry() {
+        assert!(CAPABILITIES.contains(&"session.retry"));
+        // `session.retry`, `session.retry_in_new_chat`, `last_error.code`
+        // `agent_unreachable` and the snapshot's `reconnecting`.
+        assert_eq!(PROTOCOL_REVISION, 14);
     }
 
     #[test]

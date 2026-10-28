@@ -79,6 +79,11 @@ pub struct Model {
     /// NULL for Delegate/Loop rows, which are internal and never client-facing.
     #[sea_orm(unique)]
     pub session_id: Option<String>,
+    /// Zwiim-owned: the turn that failed because the agent couldn't reach its
+    /// provider, as `session_retry::UnreachableTurn` JSON. NULL means nothing
+    /// to retry; the next prompt that goes out clears it.
+    #[sea_orm(column_type = "Text", nullable)]
+    pub unreachable_turn: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
