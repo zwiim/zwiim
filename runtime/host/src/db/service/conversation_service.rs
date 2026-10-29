@@ -122,6 +122,7 @@ async fn create_inner(
         origin_cwd: Set(None),
         session_id: NotSet,
         unreachable_turn: Set(None),
+        follow_ups: Set(None),
     };
     Ok(model.insert(conn).await?)
 }
@@ -611,6 +612,48 @@ pub async fn unreachable_turn(
     }))
 }
 
+/// Zwiim-owned: replace `conversation_id`'s queued follow-ups; an empty list
+/// clears them. Only `follow_ups` is written: queueing is not activity, so
+/// `updated_at` stays put.
+pub async fn set_follow_ups(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    queue: &[crate::follow_ups::FollowUp],
+) -> Result<(), DbError> {
+    use sea_orm::sea_query::Expr;
+    let json = if queue.is_empty() {
+        None
+    } else {
+        Some(
+            serde_json::to_string(queue)
+                .map_err(|e| DbError::Migration(format!("encode follow-ups: {e}")))?,
+        )
+    };
+    conversation::Entity::update_many()
+        .col_expr(conversation::Column::FollowUps, Expr::value(json))
+        .filter(conversation::Column::Id.eq(conversation_id))
+        .exec(conn)
+        .await?;
+    Ok(())
+}
+
+/// Zwiim-owned: `conversation_id`'s queued follow-ups, first to go out first.
+pub async fn follow_ups(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+) -> Result<Vec<crate::follow_ups::FollowUp>, DbError> {
+    let saved = conversation::Entity::find_by_id(conversation_id)
+        .select_only()
+        .column(conversation::Column::FollowUps)
+        .into_tuple::<Option<String>>()
+        .one(conn)
+        .await?
+        .flatten();
+    Ok(saved
+        .map(|json| crate::follow_ups::decode(conversation_id, &json))
+        .unwrap_or_default())
+}
+
 /// Bind an agent session id (`external_id`) to a conversation row WITHOUT ever
 /// orphaning the session it was previously bound to.
 ///
@@ -1019,6 +1062,7 @@ impl CarriedOverRow {
             origin_cwd: Set(self.origin_cwd),
             session_id: NotSet,
             unreachable_turn: Set(None),
+            follow_ups: Set(None),
         }
     }
 }

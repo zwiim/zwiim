@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::mpsc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
@@ -14,10 +15,20 @@ use crate::browser::services::ServiceWatch;
 use crate::browser::types::ServiceSource;
 use crate::web::event_bridge::EventEmitter;
 
-/// How much recent PTY output a terminal keeps for re-attaching viewers. Sized
-/// to cover a screenful of `ls -R` or a compile log, not a whole session: this
-/// is a "pick the pane back up where you left it" buffer, not a transcript.
-const SCROLLBACK_MAX_CHARS: usize = 128 * 1024;
+/// How much recent PTY output a terminal keeps for re-attaching viewers, in
+/// bytes, unless the user chose otherwise. Sized to cover a long compile log,
+/// not a whole session: this is a "pick the pane back up where you left it"
+/// buffer, not a transcript.
+pub const DEFAULT_SCROLLBACK_BYTES: usize = 1024 * 1024;
+
+/// The limit every terminal keeps to, set from the Host's settings. Read on
+/// each append, so a change applies to running terminals too.
+static SCROLLBACK_LIMIT: AtomicUsize = AtomicUsize::new(DEFAULT_SCROLLBACK_BYTES);
+
+/// Keep `bytes` of output per terminal from now on, or the default for `None`.
+pub fn set_scrollback_limit(bytes: Option<usize>) {
+    SCROLLBACK_LIMIT.store(bytes.unwrap_or(DEFAULT_SCROLLBACK_BYTES), Ordering::Relaxed);
+}
 
 /// Recent output of one terminal, kept so a viewer that mounts after the spawn
 /// (or re-mounts after its host view was unmounted — a canvas terminal card
@@ -31,7 +42,7 @@ const SCROLLBACK_MAX_CHARS: usize = 128 * 1024;
 #[derive(Default)]
 struct Scrollback {
     chunks: VecDeque<String>,
-    chars: usize,
+    bytes: usize,
     /// Chunks appended since the terminal spawned — the monotonic cursor the
     /// output events carry. Never reset, so it stays comparable across a
     /// re-attach.
@@ -42,12 +53,16 @@ impl Scrollback {
     /// Record a chunk and return the seq it was assigned (= the seq an event
     /// carrying this chunk must report).
     fn append(&mut self, data: &str) -> u64 {
+        self.append_within(data, SCROLLBACK_LIMIT.load(Ordering::Relaxed))
+    }
+
+    fn append_within(&mut self, data: &str, limit: usize) -> u64 {
         self.seq += 1;
-        self.chars += data.chars().count();
+        self.bytes += data.len();
         self.chunks.push_back(data.to_string());
-        while self.chars > SCROLLBACK_MAX_CHARS && self.chunks.len() > 1 {
+        while self.bytes > limit && self.chunks.len() > 1 {
             if let Some(old) = self.chunks.pop_front() {
-                self.chars = self.chars.saturating_sub(old.chars().count());
+                self.bytes = self.bytes.saturating_sub(old.len());
             }
         }
         self.seq
@@ -271,6 +286,8 @@ pub struct SpawnOptions {
     pub initial_command: Option<String>,
     pub extra_env: Option<HashMap<String, String>>,
     pub temp_files: Vec<std::path::PathBuf>,
+    /// What clients call the terminal; `Terminal` when not given.
+    pub title: Option<String>,
 }
 
 impl TerminalManager {
@@ -363,7 +380,7 @@ impl TerminalManager {
             write_tx,
             master: pair.master,
             _child: child,
-            title: "Terminal".to_string(),
+            title: opts.title.unwrap_or_else(|| "Terminal".to_string()),
             owner_window_label: opts.owner_window_label,
             working_dir: opts.working_dir.clone(),
             scrollback: scrollback.clone(),
@@ -778,7 +795,9 @@ fn thread_name_prefix(terminal_id: &str) -> String {
 mod tests {
     #[cfg(not(target_os = "windows"))]
     use super::{Arc, EventEmitter, SpawnOptions, TerminalManager};
-    use super::{thread_name_prefix, Scrollback, SCROLLBACK_MAX_CHARS};
+    use super::{thread_name_prefix, Scrollback};
+
+    const LIMIT: usize = 64 * 1024;
 
     #[test]
     fn scrollback_since_returns_only_newer_chunks() {
@@ -809,18 +828,14 @@ mod tests {
         // bytes, and cutting one mid-escape paints the replay with whatever the
         // truncated tail happens to mean.
         let mut buffer = Scrollback::default();
-        let chunk = "x".repeat(SCROLLBACK_MAX_CHARS / 2 + 1);
-        buffer.append(&chunk);
-        buffer.append(&chunk);
-        let seq = buffer.append("tail");
+        let chunk = "x".repeat(LIMIT / 2 + 1);
+        buffer.append_within(&chunk, LIMIT);
+        buffer.append_within(&chunk, LIMIT);
+        let seq = buffer.append_within("tail", LIMIT);
         let (data, read_seq) = buffer.read();
         assert_eq!(read_seq, seq, "eviction must not rewind the cursor");
         assert!(data.ends_with("tail"));
-        assert!(
-            data.chars().count() <= SCROLLBACK_MAX_CHARS,
-            "kept {} chars",
-            data.chars().count()
-        );
+        assert!(data.len() <= LIMIT, "kept {} bytes", data.len());
     }
 
     #[test]
@@ -828,11 +843,21 @@ mod tests {
         // A single chunk over the cap must not evict itself into an empty
         // buffer — the newest output is the part worth keeping.
         let mut buffer = Scrollback::default();
-        let huge = "y".repeat(SCROLLBACK_MAX_CHARS * 2);
-        buffer.append(&huge);
+        let huge = "y".repeat(LIMIT * 2);
+        buffer.append_within(&huge, LIMIT);
         let (data, seq) = buffer.read();
         assert_eq!(seq, 1);
-        assert_eq!(data.chars().count(), huge.chars().count());
+        assert_eq!(data.len(), huge.len());
+    }
+
+    #[test]
+    fn scrollback_counts_bytes_not_characters() {
+        // The setting is in bytes, so wide characters count for what they
+        // weigh: 3 bytes each here, over a limit 2 characters would fit.
+        let mut buffer = Scrollback::default();
+        buffer.append_within("€€", 8);
+        buffer.append_within("€€", 8);
+        assert_eq!(buffer.read().0, "€€");
     }
 
     #[test]
@@ -915,6 +940,7 @@ mod tests {
                     )),
                     extra_env: None,
                     temp_files: vec![],
+                    title: None,
                 },
                 emitter,
             )

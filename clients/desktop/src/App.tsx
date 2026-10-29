@@ -28,9 +28,12 @@ import {
 import { FileLinksContext } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
 import { useAccount } from "@/lib/account";
+import { stepZoom } from "@/lib/appearance";
+import { useTurnAlerts } from "@/lib/attention";
 import { bootHost, type BootOptions, type BootPhase } from "@/lib/boot";
 import type { NativeBridge } from "@/lib/bridge";
 import { errorMessage, HostProvider, useController, useHost, useOnline } from "@/lib/host-context";
+import { isModKey } from "@/lib/platform";
 import {
   connectionMode,
   hostChoice,
@@ -44,12 +47,14 @@ import {
   rememberSelection,
   rememberSidebar,
   rememberWelcomed,
+  rememberZoom,
   sidebarLayout,
   SIDEBAR_MAX,
   SIDEBAR_MIN,
   TERMINAL_MAX,
   TERMINAL_MIN,
   welcomed,
+  zoom,
   type HostChoice,
 } from "@/lib/prefs";
 import { usePresence } from "@/lib/presence";
@@ -65,7 +70,8 @@ import { HostPathDialog, HostPicker, PairDialog, type PairTarget } from "@/panel
 import { PrBanner } from "@/panels/PrBanner";
 import { SessionPanel } from "@/panels/SessionPanel";
 import { WorkingMark } from "@/components/WorkingMark";
-import { SettingsDialog, type SettingsTab } from "@/panels/Settings";
+import { SettingsDialog } from "@/panels/Settings";
+import { OpenSettingsContext, type SettingsTarget } from "@/settings/open";
 import { Sidebar, type ContinueRequest } from "@/panels/Sidebar";
 import { TerminalPanel } from "@/panels/TerminalPanel";
 import { AgentTerminalsContext, useAgentTerminalsState } from "@/panels/AgentTerminal";
@@ -264,9 +270,10 @@ export function Workbench({
   const publishable = useHost((s) => hasCapability(s.connection.compat, "workspace.publish"));
   const remote = choice.kind === "remote";
   const refusedCode = useHost((s) => (s.connection.status === "live" ? null : (s.connection.error?.code ?? null)));
-  /** The settings tab showing; null when settings are closed. */
-  const [settings, setSettings] = useState<SettingsTab | null>(null);
+  /** Where settings are open; null when they are closed. */
+  const [settings, setSettings] = useState<SettingsTarget | null>(null);
   const updates = useUpdates(bridge);
+  useTurnAlerts(bridge);
   /** A remote host's folder path being asked for, and where the answer goes. */
   const [askPath, setAskPath] = useState<((path: string | null) => void) | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
@@ -288,17 +295,31 @@ export function Workbench({
   const account = useAccount(bridge, { remote, onSignedOut });
   const remoteHostId = choice.kind === "remote" ? choice.hostId : null;
 
-  // ⌘, opens settings, as in any Mac app.
+  // ⌘, opens settings, as in any Mac app; Mod with = - 0 zooms the window where it can.
+  const zoomable = !!bridge.zoom;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === ",") {
         e.preventDefault();
-        setSettings((t) => t ?? "general");
+        setSettings((t) => t ?? { tab: "general" });
+        return;
       }
+      if (!zoomable || !isModKey(e) || e.altKey) return;
+      const next =
+        e.key === "=" || e.key === "+"
+          ? stepZoom(zoom(), 1)
+          : e.key === "-" || e.key === "_"
+            ? stepZoom(zoom(), -1)
+            : e.key === "0"
+              ? 1
+              : null;
+      if (next === null) return;
+      e.preventDefault();
+      rememberZoom(next);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [zoomable]);
 
   // The host no longer trusts this device (revoked): its pairing is void.
   useEffect(() => {
@@ -399,7 +420,7 @@ export function Workbench({
     if (hostId && restored.current) rememberSelection(hostId, { workspaceId, sessionId });
   }, [hostId, workspaceId, sessionId]);
 
-  return (
+  const view = (
     <div className="relative flex h-full">
       {showWelcome && account.status?.available && !account.account && (
         <Welcome
@@ -419,19 +440,24 @@ export function Workbench({
             account={account}
             remote={remote}
             updateHint={updates.hint}
-            onSettings={setSettings}
+            onSettings={(tab) => setSettings({ tab })}
             onCheckUpdates={updates.check}
           />
         }
         footer={
           <>
-            <UpdateCard bridge={bridge} updates={updates} remote={remote} onSeeChanges={() => setSettings("about")} />
+            <UpdateCard
+              bridge={bridge}
+              updates={updates}
+              remote={remote}
+              onSeeChanges={() => setSettings({ tab: "about" })}
+            />
             <div className="border-sidebar-border -mx-1.5 border-t px-1.5 pt-2">
               <ControlCenter
                 account={account}
                 remote={remote}
                 updateHint={updates.hint}
-                onSettings={setSettings}
+                onSettings={(tab) => setSettings({ tab })}
                 onCheckUpdates={updates.check}
               />
             </div>
@@ -485,8 +511,8 @@ export function Workbench({
           link={remote ? link : undefined}
           updateHint={updates.hint}
           workspaceId={workspaceId}
-          tab={settings}
-          onTab={setSettings}
+          target={settings}
+          onTarget={setSettings}
           onClose={() => setSettings(null)}
         />
       )}
@@ -508,7 +534,7 @@ export function Workbench({
                 role="status"
                 data-testid="removed-banner"
               >
-                This worktree was removed — its sessions are read-only.
+                This worktree was archived — its sessions are read-only.
               </p>
             )}
             {readOnlyRoot && (
@@ -605,11 +631,13 @@ export function Workbench({
           sessionId={sessionId}
           hiddenTerminals={agentTerminals.ids}
           showing={current}
+          remote={remote}
           onOpen={(kind, path) => openDoc({ kind, workspaceId: workspace.workspace_id, path })}
         />
       )}
     </div>
   );
+  return <OpenSettingsContext.Provider value={setSettings}>{view}</OpenSettingsContext.Provider>;
 }
 
 const NO_SESSIONS: SessionSummary[] = [];
@@ -879,6 +907,7 @@ function WorkspacePanel({
   sessionId,
   hiddenTerminals,
   showing,
+  remote,
   onOpen,
 }: {
   workspace: WorkspaceInfo;
@@ -888,6 +917,8 @@ function WorkspacePanel({
   hiddenTerminals: ReadonlySet<string>;
   /** The file showing in the middle, to mark it in its list. */
   showing: OpenDoc | null;
+  /** The host is on another computer, so its `localhost` is not this one's. */
+  remote: boolean;
   onOpen(kind: OpenDoc["kind"], path: string): void;
 }) {
   const [layout, setLayout] = useState(panelLayout);
@@ -1035,6 +1066,8 @@ function WorkspacePanel({
               <TerminalPanel
                 workspaceId={workspaceId}
                 hidden={hiddenTerminals}
+                remote={remote}
+                onStarted={() => setLayout((l) => (l.terminalCollapsed ? { ...l, terminalCollapsed: false } : l))}
                 leading={
                   <Button
                     size="icon-sm"

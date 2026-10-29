@@ -13,7 +13,8 @@ import { Markdown } from "@/components/Markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
-import { diffLayout, rememberDiffLayout, type DiffLayout } from "@/lib/prefs";
+import { diffLayout, markdownStyle, rememberDiffLayout, type DiffLayout } from "@/lib/prefs";
+import { usePref } from "@/lib/use-pref";
 import { cn } from "@/lib/utils";
 import { FileChanges } from "./FileChanges";
 
@@ -222,6 +223,7 @@ export function DiffView({ workspace, path }: { workspace: WorkspaceInfo; path: 
   const content = viewed?.kind === "lines" ? viewed.content : null;
   const markdown = isMarkdown(path) && file?.change !== "deleted";
   const showPreview = preview && markdown && content !== null;
+  const book = usePref(markdownStyle) === "book";
   const slash = path.lastIndexOf("/");
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="diff-view">
@@ -282,9 +284,12 @@ export function DiffView({ workspace, path }: { workspace: WorkspaceInfo; path: 
             No uncommitted changes — showing the file as it is now.
           </p>
         )}
-        {showPreview && <Markdown text={content} className="max-w-3xl px-6 py-4" />}
+        {showPreview && (
+          <Markdown text={content} className={book ? "markdown-book px-8 py-10" : "max-w-3xl px-6 py-4"} />
+        )}
         {viewed?.kind === "lines" && !showPreview && (
           <FileChanges
+            path={path}
             lines={viewed.lines}
             layout={layout}
             opened={opened}

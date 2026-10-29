@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CLIENT_CAPABILITIES, HostClient, HostController, type HostUpdateStatus } from "@zwiim/sdk";
 import type { DesktopUpdateStatus, DesktopUpdates, NativeBridge } from "@/lib/bridge";
 import { HostProvider } from "@/lib/host-context";
-import { AboutUpdates, HostLoginToggle } from "@/panels/About";
+import { AboutUpdates } from "@/panels/About";
+import { HostLoginToggle } from "@/settings/general";
+import { SETTINGS } from "@/settings/registry";
 import { UpdateCard, useUpdates } from "@/panels/UpdateCard";
 import { FakeTransport, hostHello, tick } from "./fakes";
 
@@ -71,7 +73,7 @@ async function mount(t: FakeTransport, b: NativeBridge, remote = false) {
   render(
     <HostProvider value={controller}>
       <AboutUpdates bridge={b} remote={remote} />
-      {!remote && <HostLoginToggle bridge={b} />}
+      {!remote && <HostLoginToggle bridge={b} setting={SETTINGS.find((x) => x.id === "host-login")!} />}
     </HostProvider>,
   );
   await tick();

@@ -201,6 +201,10 @@ pub fn build_delegation_stack(
     let authoring = crate::acp::chat_authoring::ChatAuthoringRuntimeConfig::new();
     let browser = crate::acp::browser_tools::BrowserToolsRuntimeConfig::new();
 
+    // The settings database too, for the user's preferences in each new
+    // connection's session instructions.
+    connection_manager.install_settings(db_conn.clone());
+
     // Install the injection on the manager so spawn_agent picks it up
     // without an extra parameter at every call site.
     connection_manager.install_delegation(DelegationInjection {

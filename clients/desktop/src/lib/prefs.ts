@@ -15,12 +15,21 @@ function read<T>(key: string, fallback: T): T {
   }
 }
 
+const listeners = new Set<() => void>();
+
 function write(key: string, value: unknown): void {
   try {
     window.localStorage.setItem(PREFIX + key, JSON.stringify(value));
   } catch {
     // Storage full or unavailable: preferences are best effort.
   }
+  for (const listener of listeners) listener();
+}
+
+/** Called after any preference is written here; returns the unsubscribe. */
+export function onPrefsChange(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
 }
 
 export interface LastSelection {
@@ -180,6 +189,107 @@ export function rememberTheme(value: Theme): void {
   write("theme", value);
 }
 
+/** How big the whole window draws, as its zoom factor. */
+export const ZOOM_LEVELS = [0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5] as const;
+
+export function zoom(): number {
+  const v = read<unknown>("zoom", 1);
+  return ZOOM_LEVELS.find((z) => z === v) ?? 1;
+}
+
+export function rememberZoom(value: number): void {
+  write("zoom", ZOOM_LEVELS.find((z) => z === value) ?? 1);
+}
+
+/** The longest font name kept. */
+export const MAX_FONT_NAME = 64;
+
+/** A font family's name as one CSS string can hold it: no quotes, backslashes or line breaks. */
+export function cleanFontName(name: string): string {
+  return name.replace(/["\\\r\n]/g, "").trim().slice(0, MAX_FONT_NAME);
+}
+
+/** The fonts code and the terminal use, by family name; empty for the app's own. */
+export interface Fonts {
+  code: string;
+  terminal: string;
+  /** The terminal's text size, in pixels. */
+  terminalSize: number;
+}
+
+export const TERMINAL_SIZE_MIN = 9;
+export const TERMINAL_SIZE_MAX = 24;
+export const TERMINAL_SIZE_DEFAULT = 12;
+
+export function fonts(): Fonts {
+  const v = read<Partial<Fonts>>("fonts", {});
+  const size = typeof v.terminalSize === "number" ? Math.round(v.terminalSize) : TERMINAL_SIZE_DEFAULT;
+  return {
+    code: typeof v.code === "string" ? cleanFontName(v.code) : "",
+    terminal: typeof v.terminal === "string" ? cleanFontName(v.terminal) : "",
+    terminalSize: Math.min(TERMINAL_SIZE_MAX, Math.max(TERMINAL_SIZE_MIN, size)),
+  };
+}
+
+export function rememberFonts(patch: Partial<Fonts>): void {
+  write("fonts", { ...fonts(), ...patch });
+}
+
+/** Whether code draws a font's ligatures, `!=` and `=>` as one glyph each. */
+export function codeLigatures(): boolean {
+  return read<unknown>("code_ligatures", true) !== false;
+}
+
+export function rememberCodeLigatures(on: boolean): void {
+  write("code_ligatures", on);
+}
+
+/** Whether the dark theme draws with less contrast: lifted greys, dimmer text. */
+export function softDark(): boolean {
+  return read<unknown>("soft_dark", false) === true;
+}
+
+export function rememberSoftDark(on: boolean): void {
+  write("soft_dark", on);
+}
+
+/** Done and failed in the usual green and red, or in colors told apart without red-green or blue-yellow vision. */
+export type ColorVision = "default" | "red_green" | "blue_yellow";
+
+export function colorVision(): ColorVision {
+  const v = read<unknown>("color_vision", "default");
+  return v === "red_green" || v === "blue_yellow" ? v : "default";
+}
+
+export function rememberColorVision(value: ColorVision): void {
+  write("color_vision", value);
+}
+
+/** The colors code draws in: Zwiim's own, or a well-known theme in its light or dark variant. */
+export type CodeTheme = "zwiim" | "github" | "one" | "catppuccin" | "vitesse" | "solarized" | "rose-pine";
+
+const CODE_THEME_IDS: readonly CodeTheme[] = ["zwiim", "github", "one", "catppuccin", "vitesse", "solarized", "rose-pine"];
+
+export function codeTheme(): CodeTheme {
+  const v = read<unknown>("code_theme", "zwiim");
+  return CODE_THEME_IDS.find((t) => t === v) ?? "zwiim";
+}
+
+export function rememberCodeTheme(value: CodeTheme): void {
+  write("code_theme", value);
+}
+
+/** How a markdown file's preview reads: like the transcript, or set as a book page. */
+export type MarkdownStyle = "default" | "book";
+
+export function markdownStyle(): MarkdownStyle {
+  return read<unknown>("markdown_style", "default") === "book" ? "book" : "default";
+}
+
+export function rememberMarkdownStyle(value: MarkdownStyle): void {
+  write("markdown_style", value);
+}
+
 /** How a changed file reads: one column, or old and new side by side. */
 export type DiffLayout = "unified" | "split";
 
@@ -189,4 +299,78 @@ export function diffLayout(): DiffLayout {
 
 export function rememberDiffLayout(value: DiffLayout): void {
   write("diff_layout", value);
+}
+
+/** Which key sends a message: Enter (Shift+Enter for a new line), or Mod+Enter (Enter for a new line). */
+export type SendKey = "enter" | "mod_enter";
+
+export function sendKey(): SendKey {
+  return read<unknown>("send_key", "enter") === "mod_enter" ? "mod_enter" : "enter";
+}
+
+export function rememberSendKey(value: SendKey): void {
+  write("send_key", value);
+}
+
+/** What sending does while an agent works: wait for its turn to end, or go into the turn. */
+export type FollowUpMode = "queue" | "steer";
+
+export function followUpMode(): FollowUpMode {
+  return read<unknown>("follow_up_mode", "queue") === "steer" ? "steer" : "queue";
+}
+
+export function rememberFollowUpMode(value: FollowUpMode): void {
+  write("follow_up_mode", value);
+}
+
+/** Whether a long paste into a composer goes with the message as a text file. */
+export function autoConvertLongText(): boolean {
+  return read<unknown>("auto_convert_long_text", true) !== false;
+}
+
+export function rememberAutoConvertLongText(on: boolean): void {
+  write("auto_convert_long_text", on);
+}
+
+/** Whether the context ring shows all the time; off, only once the window is nearly full. */
+export function alwaysShowContext(): boolean {
+  return read<unknown>("always_show_context", true) !== false;
+}
+
+export function rememberAlwaysShowContext(on: boolean): void {
+  write("always_show_context", on);
+}
+
+/** Whether a reply shows every tool call on its own row and its thinking open, folding nothing. */
+export function expandToolCalls(): boolean {
+  return read<unknown>("expand_tool_calls", false) === true;
+}
+
+export function rememberExpandToolCalls(on: boolean): void {
+  write("expand_tool_calls", on);
+}
+
+/** Whether a pull request waiting on checks offers Auto-merge. Off leaves plain Merge. */
+export function autoMergeButton(): boolean {
+  return read<unknown>("auto_merge_button", true) !== false;
+}
+
+export function rememberAutoMergeButton(on: boolean): void {
+  write("auto_merge_button", on);
+}
+
+/** What happens when an agent finishes a turn. */
+export interface TurnAlerts {
+  /** A system notification, while this window is not in front. */
+  notify: boolean;
+  sound: boolean;
+}
+
+export function turnAlerts(): TurnAlerts {
+  const v = read<Partial<TurnAlerts>>("turn_alerts", {});
+  return { notify: v.notify !== false, sound: v.sound === true };
+}
+
+export function rememberTurnAlerts(alerts: Partial<TurnAlerts>): void {
+  write("turn_alerts", { ...turnAlerts(), ...alerts });
 }

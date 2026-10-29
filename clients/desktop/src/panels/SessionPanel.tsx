@@ -11,6 +11,7 @@ import {
   optionUnavailableDetails,
   revertNotes,
   turnGroups,
+  type AgentDefaults,
   type AgentSummary,
   type AgentType,
   type ChoiceOption,
@@ -20,6 +21,7 @@ import {
   type OptionsRequest,
   type PendingUserMessage,
   type PromptBlock,
+  type QueuedFollowUp,
   type RevertChoice,
   type SessionBackground,
   type SessionCommand,
@@ -29,17 +31,23 @@ import {
 } from "@zwiim/sdk";
 import { PendingAttachments } from "@/attachments/AttachmentChip";
 import { RevertDialog } from "@/components/RevertDialog";
+import { pastedFiles } from "@/attachments/long-paste";
 import { UPLOAD_FAILED_MESSAGE, usePendingAttachments } from "@/attachments/usePendingAttachments";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
-import { agentChoices, rememberAgentChoices } from "@/lib/prefs";
+import { formatShortcut } from "@/lib/platform";
+import { agentChoices, autoConvertLongText, followUpMode, rememberAgentChoices, sendKey } from "@/lib/prefs";
+import { isOtherSendKey, isSendKey, sendShortcut } from "@/lib/send-key";
+import { usePref } from "@/lib/use-pref";
 import { cn } from "@/lib/utils";
 import { ContextRing } from "./ContextRing";
 import { ControlSelect, OptionsBar, UnattendedBanner } from "./OptionsBar";
 import { RequestCard } from "./RequestCard";
 import { UnreachableCard } from "./UnreachableCard";
+import { FollowUpQueue } from "./FollowUpQueue";
 import { useSlashMenu } from "./SlashCommands";
 import { AgentTerminalCard, AgentTerminalsContext } from "./AgentTerminal";
+import { SignInNeededCard } from "./SignInNeededCard";
 import {
   BackgroundWaiting,
   carriedBlocks,
@@ -76,29 +84,33 @@ export function offeredAgents(agents: readonly AgentSummary[]): AgentSummary[] {
 
 /**
  * What a new session of an agent starts with: the agent's advertised options,
- * the model/effort this client last chose for it (if still offered), and
- * explicit picks. Effort is the chosen model's own (`effortOn`; none on a
- * model without one). Mode starts at Auto (unattended) where the agent
- * offers it, else at the agent's own mode, unless picked.
+ * explicit picks, then the Host's defaults (shared by every device), then the
+ * model/effort this client last chose for it — each only while still
+ * offered. Effort is the chosen model's own (`effortOn`; none on a model
+ * without one). Mode starts at the Host's default mode, else at Auto
+ * (unattended) where the agent offers it, else at the agent's own mode,
+ * unless picked.
  */
 export function newSessionOptions(
   advertised: SessionOptions,
   remembered: { model: string | null; effort: string | null },
   picks: OptionsRequest,
   effortOn: (model: string | null) => ChoiceOption | null = () => advertised.effort,
+  hostDefaults?: AgentDefaults,
 ): { shown: SessionOptions; request: OptionsRequest } {
   const request: OptionsRequest = {};
   const choose = (key: "model" | "effort", option: ChoiceOption | null) => {
     if (!option) return null;
     // A new session starts from the agent's defaults, so the shown value is
     // always sent — even when it matches what the agent last reported.
-    const want = picks[key] ?? remembered[key];
-    const current = want && option.values.some((v) => v.value === want) ? want : option.current;
+    const offered = (v: string | null | undefined): v is string => !!v && option.values.some((o) => o.value === v);
+    const current = [picks[key], hostDefaults?.[key], remembered[key]].find(offered) ?? option.current;
     if (current) request[key] = current;
     return { ...option, current };
   };
   const mode = advertised.mode;
-  const wantMode = picks.mode ?? (mode?.available.includes("unattended") ? "unattended" : undefined);
+  const wantMode =
+    picks.mode ?? hostDefaults?.mode ?? (mode?.available.includes("unattended") ? "unattended" : undefined);
   if (mode && wantMode && wantMode !== mode.current && mode.available.includes(wantMode)) {
     request.mode = wantMode;
   }
@@ -114,13 +126,15 @@ export function newSessionOptions(
 }
 
 /**
- * The agent to preselect: the last one used if still usable, else the first
- * usable supported one, else the first usable one.
+ * The agent to preselect: the one picked here if still usable, else the
+ * Host's default agent, else the first usable supported one, else the first
+ * usable one.
  */
 export function defaultAgent(agents: AgentSummary[], preferred: string | null): string | null {
   const usable = agents.filter((a) => a.available);
   return (
     usable.find((a) => a.agent === preferred) ??
+    usable.find((a) => a.default) ??
     usable.find((a) => a.support === "supported") ??
     usable[0]
   )?.agent ?? null;
@@ -162,7 +176,13 @@ export function useNewSessionAgent() {
   const [picks, setPicks] = useState<OptionsRequest>({});
   const start =
     advertised && summary
-      ? newSessionOptions(advertised, agentChoices(summary.agent), picks, (model) => effortFor(summary, model))
+      ? newSessionOptions(
+          advertised,
+          agentChoices(summary.agent),
+          picks,
+          (model) => effortFor(summary, model),
+          summary.defaults,
+        )
       : null;
   return {
     agents,
@@ -284,7 +304,7 @@ export function SessionPanel(props: {
     if (removed) {
       return (
         <p className="text-muted-foreground p-6 text-center">
-          This worktree was removed. Its sessions stay readable, but no new work can start here.
+          This worktree was archived. Its sessions stay readable, but no new work can start here.
         </p>
       );
     }
@@ -406,6 +426,9 @@ function OpenSession({
   const agentName = useHost((s) => s.agents?.find((a) => a.agent === summary?.agent)?.name ?? null);
   const handOff = useHost((s) => hasCapability(s.connection.compat, "session.plan_hand_off"));
   const canRetry = useHost((s) => hasCapability(s.connection.compat, "session.retry"));
+  const canFollowUp = useHost((s) => hasCapability(s.connection.compat, "session.follow_ups"));
+  const canSteer = useHost((s) => hasCapability(s.connection.compat, "session.steer"));
+  const followUps = summary?.follow_ups ?? NO_FOLLOW_UPS;
   const compat = useHost((s) => s.connection.compat);
   // Before its agent announces them (or while it is away), the commands it
   // offered last.
@@ -417,6 +440,8 @@ function OpenSession({
   // The message a reset is being asked about, and what the last one left to say.
   const [resetting, setResetting] = useState<{ turnId: string; chat: boolean } | null>(null);
   const [resetNotes, setResetNotes] = useState<string[]>([]);
+  // A steer the agent could not take mid-turn, which waits instead.
+  const [steerQueued, setSteerQueued] = useState(false);
   // What is open in the history, kept while the session is open.
   const [kept] = useState<KeptState>(() => new Map());
   const scroller = useRef<HTMLDivElement>(null);
@@ -471,7 +496,10 @@ function OpenSession({
   // A starting agent may be about to run a queued first turn.
   const starting = view?.agentStatus === "connecting";
   useEffect(() => {
-    if (!running) setConfirmCancel(false);
+    if (!running) {
+      setConfirmCancel(false);
+      setSteerQueued(false);
+    }
   }, [running]);
   const stopped = running ? null : stopReasonText(view?.lastStopReason ?? null);
   const [optionsBusy, setOptionsBusy] = useState(false);
@@ -653,6 +681,8 @@ function OpenSession({
                   online={online}
                   onStarted={onSessionStarted}
                 />
+              ) : view.lastError.code === "turn_failed_auth_required" ? (
+                <SignInNeededCard key={view.errorSerial} message={view.lastError.message} />
               ) : (
                 <p className="text-destructive text-xs" role="alert">
                   {view.lastError.message}
@@ -703,20 +733,33 @@ function OpenSession({
           workspaceId={workspaceId}
           placeholder={
             removed
-              ? "This worktree was removed — the session is read-only"
+              ? "This worktree was archived — the session is read-only"
               : running
-                ? "Draft your next message while the agent works"
+                ? canFollowUp
+                  ? "Add a follow-up"
+                  : "Draft your next message while the agent works"
                 : "Send a message"
           }
-          // A running turn only holds the send back: the next message can be drafted.
+          // A running turn only holds the send back: the next message can be
+          // drafted, or with a host that keeps follow-ups, queued.
           disabled={removed || !online}
-          busy={running}
+          busy={running && !canFollowUp}
+          queueing={canFollowUp && (running || followUps.length > 0)}
+          steerable={canSteer && running}
           unattended={options?.mode?.current === "unattended"}
           commands={view?.commands ?? agentCommands}
           terminal={running ? null : terminal}
           notice={
             <>
               <AgentTerminalCard workspaceId={workspaceId} />
+              {canFollowUp && followUps.length > 0 && !removed && (
+                <FollowUpQueue sessionId={sessionId} items={followUps} running={running} disabled={!online} />
+              )}
+              {steerQueued && (
+                <p className="text-muted-foreground text-xs" role="status" data-testid="steer-queued">
+                  The agent could not take it mid-turn, so it waits in the queue.
+                </p>
+              )}
               {resetNotes.map((note) => (
                 <p key={note} className="text-muted-foreground text-xs" role="status" data-testid="reset-note">
                   {note}
@@ -793,9 +836,13 @@ function OpenSession({
               </button>
             )
           }
-          onSend={(blocks, client_message_id) => {
+          onSend={async (blocks, client_message_id, steer) => {
             setResetNotes([]);
-            return controller.sendMessage({ session_id: sessionId, blocks, client_message_id });
+            setSteerQueued(false);
+            const params = { session_id: sessionId, blocks, client_message_id };
+            if (!canFollowUp) return controller.sendMessage(params);
+            const outcome = await controller.sendFollowUp(steer ? { ...params, steer } : params);
+            setSteerQueued(steer && outcome === "queued");
           }}
         />
       )}
@@ -812,6 +859,7 @@ function OpenSession({
 }
 
 const NO_TURNS: readonly HistoryTurn[] = [];
+const NO_FOLLOW_UPS: readonly QueuedFollowUp[] = [];
 
 /** A history row's height until it is measured, the space between rows (gap-5), and the rows mounted past the view. */
 const ROW_ESTIMATE_PX = 160;
@@ -1030,6 +1078,13 @@ function Composer(props: {
   disabled?: boolean;
   /** The agent is working: the message can be written but not sent. */
   busy?: boolean;
+  /** Send queues the message behind the running turn or held follow-ups; send shows beside `action`. */
+  queueing?: boolean;
+  /**
+   * The running turn can take the message: send steers or queues as the user
+   * chose, and Mod+Shift+Enter does the other.
+   */
+  steerable?: boolean;
   /** Unattended is on: the frame says so. */
   unattended?: boolean;
   /** Above the composer: confirmations and errors. */
@@ -1044,11 +1099,14 @@ function Composer(props: {
   commands?: readonly SessionCommand[] | null;
   /** Where a command the agent does not run itself runs. */
   terminal?: AgentTerminal | null;
-  onSend(blocks: PromptBlock[], clientMessageId: string): Promise<void>;
+  /** `steer`: into the running turn rather than after it. */
+  onSend(blocks: PromptBlock[], clientMessageId: string, steer: boolean): Promise<void>;
 }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const sendMode = usePref(sendKey);
+  const steerFirst = usePref(followUpMode) === "steer";
   const area = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const attachments = usePendingAttachments();
@@ -1082,7 +1140,7 @@ function Composer(props: {
     el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_PX)}px`;
   }, [text]);
 
-  async function send() {
+  async function send(steer = !!props.steerable && steerFirst) {
     const trimmed = text.trim();
     const attaching = attachments.files.length > 0;
     if ((!trimmed && !attaching) || sending || props.busy) return;
@@ -1097,7 +1155,7 @@ function Composer(props: {
       }
       // Sent once, tagged so the host's echo of it can be recognised; on an
       // unknown outcome the text stays for the user to decide.
-      await props.onSend([...(trimmed ? [{ type: "text" as const, text: trimmed }] : []), ...files], crypto.randomUUID());
+      await props.onSend([...(trimmed ? [{ type: "text" as const, text: trimmed }] : []), ...files], crypto.randomUUID(), steer);
       setText("");
       attachments.clear();
     } catch (e) {
@@ -1107,6 +1165,12 @@ function Composer(props: {
       setSending(false);
     }
   }
+
+  const steering = !!props.steerable && steerFirst;
+  const sendLabel = steering ? "Steer" : props.queueing ? "Queue message" : "Send";
+  const sendTitle =
+    `${sendLabel} (${sendShortcut(sendMode)})` +
+    (props.steerable ? ` · ${steering ? "Queue" : "Steer"} (${formatShortcut("Mod+Shift+Enter")})` : "");
 
   function attach(files: Iterable<File>) {
     if (!canAttach) return;
@@ -1166,15 +1230,20 @@ function Composer(props: {
             }}
             onSelect={slash.track}
             onPaste={(e) => {
-              if (!canAttach || e.clipboardData.files.length === 0) return;
+              if (!canAttach) return;
+              const files = pastedFiles(e.clipboardData, autoConvertLongText());
+              if (!files) return;
               e.preventDefault();
-              attach(e.clipboardData.files);
+              attach(files);
             }}
             onKeyDown={(e) => {
               if (slash.onKeyDown(e)) return;
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              if (isSendKey(e, sendMode)) {
                 e.preventDefault();
                 void send();
+              } else if (props.steerable && isOtherSendKey(e)) {
+                e.preventDefault();
+                void send(!steerFirst);
               } else if (canAttach && e.key.toLowerCase() === "u" && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
                 fileInput.current?.click();
@@ -1197,7 +1266,7 @@ function Composer(props: {
               <Button
                 size="icon-sm"
                 variant="ghost"
-                title="Attach files (⌘U)"
+                title={`Attach files (${formatShortcut("Mod+U")})`}
                 aria-label="Attach files"
                 disabled={!canAttach || sending}
                 onClick={() => fileInput.current?.click()}
@@ -1207,14 +1276,15 @@ function Composer(props: {
             )}
             {props.leading}
             <div className="flex min-w-0 flex-1 items-center justify-end gap-0.5">{props.controls}</div>
-            {props.action || (
+            {props.action}
+            {(!props.action || props.queueing) && (
               <button
                 type="button"
                 className="bg-brand text-brand-foreground enabled:hover:bg-brand/88 disabled:bg-muted disabled:text-muted-foreground ease-std grid size-8 shrink-0 place-items-center rounded-full transition-[background-color,color,transform] duration-120 enabled:active:scale-[.96]"
-                onClick={send}
+                onClick={() => void send()}
                 disabled={props.disabled || props.busy || sending || (!text.trim() && attachments.files.length === 0)}
-                title="Send"
-                aria-label="Send"
+                title={sendTitle}
+                aria-label={sendLabel}
               >
                 {sending ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
               </button>

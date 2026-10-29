@@ -138,6 +138,30 @@ describe("session view", () => {
     expect(v.live.message?.content).toEqual([{ type: "text", text: "ok" }]);
   });
 
+  it("a steer splits the running turn there, still running", () => {
+    const steered = { message_id: "f1", blocks: [{ type: "text" as const, text: "use the cache" }] };
+    let v = run([
+      { type: "snapshot", epoch: "e1", seq: 1, snapshot: baseSnapshot },
+      { type: "history", turns: [] },
+      { type: "event", event: ev(2, "agent.steered", steered) },
+      { type: "event", event: ev(3, "agent.message_delta", { text: "ok" }) },
+    ]);
+    expect(v.settled?.userMessage?.message_id).toBe("u1");
+    expect(v.settled?.message?.content[0]).toEqual({ type: "text", text: "Hel" });
+    expect(v.live.userMessage).toEqual(steered);
+    expect(v.live.message?.content).toEqual([{ type: "text", text: "ok" }]);
+    expect(v.agentStatus).toBe("prompting");
+    expect(v.historyStale).toBe(false);
+
+    // Taken after the turn ended, it is in the transcript, not the live turn.
+    v = reduceSession(v, { type: "event", event: ev(4, "agent.turn_complete", { stop_reason: "end_turn" }) });
+    v = reduceSession(v, { type: "history", turns: [] });
+    const late = reduceSession(v, { type: "event", event: ev(5, "agent.steered", steered) });
+    expect(late.live).toBe(v.live);
+    expect(late.agentStatus).toBe("connected");
+    expect(late.historyStale).toBe(true);
+  });
+
   it("tracks the agent's working state across turns without a new snapshot", () => {
     const idle = { ...baseSnapshot, status: "connected" as const, live_message: null, tool_calls: [], pending_user_message: null };
     let v = run([{ type: "snapshot", epoch: "e1", seq: 1, snapshot: idle }]);

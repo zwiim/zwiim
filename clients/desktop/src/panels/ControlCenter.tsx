@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import type { AccountState } from "@/lib/account";
 import { errorMessage } from "@/lib/host-context";
+import { formatShortcut } from "@/lib/platform";
 import { usePresence } from "@/lib/presence";
 import { cn } from "@/lib/utils";
 import { Avatar } from "@/panels/Account";
@@ -139,7 +140,7 @@ export function ControlCenter({
           <button className={itemClass} role="menuitem" onClick={() => go("general")}>
             <Settings className="text-muted-foreground size-4" />
             <span className="flex-1">Settings</span>
-            <kbd className="text-muted-foreground font-sans text-2xs">⌘,</kbd>
+            <kbd className="text-muted-foreground font-sans text-2xs">{formatShortcut("Mod+,")}</kbd>
           </button>
           {!remote && (
             <button className={itemClass} role="menuitem" onClick={() => go("devices")}>

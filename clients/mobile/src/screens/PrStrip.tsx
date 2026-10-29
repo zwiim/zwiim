@@ -2,10 +2,14 @@
 // branch's pull request as the Host follows it on GitHub. One line: `#12`,
 // its status and checks; it opens the PR sheet (title, base ← head, each
 // check, Merge). Merge turns the sheet into its confirm, and the Host merges
-// at the head shown there or refuses. Once merged, Continue moves the worktree
-// to a new branch from the PR's base, and the strip goes. The phone never asks
-// GitHub. A branch that conflicts with its base says so on the strip (with or
-// without a PR), and the sheet hands the conflicts to the session's agent.
+// at the head shown there or refuses. While GitHub waits on checks or review,
+// Auto-merge (also confirmed) leaves the merge to GitHub, phone and Host asleep
+// or not; Cancel auto-merge stops it. Once merged, the user picks: Continue
+// moves the worktree to a new branch from the PR's base, and the strip goes;
+// Archive removes the worktree, its sessions staying readable. Nothing happens
+// by itself on merge. The phone never asks GitHub. A branch that conflicts with
+// its base says so on the strip (with or without a PR), and the sheet hands the
+// conflicts to the session's agent.
 
 import { useEffect, useState } from "react";
 import { Linking, Pressable, ScrollView, StyleSheet, View } from "react-native";
@@ -15,6 +19,7 @@ import {
   type CheckState,
   type Compatibility,
   type ConflictView,
+  type PrAutoMerge,
   type PrCheckItem,
   type PrEntry,
   type PrState,
@@ -25,7 +30,9 @@ import {
   continueError,
   continueLine,
   mergeError,
+  offersArchive,
   offersContinue,
+  prAuto,
   prErrorText,
   prLabel,
   prLook,
@@ -35,9 +42,10 @@ import {
   type PrTone,
 } from "../host/pr";
 import { githubSignInOffered } from "../host/github";
+import { archiveBusyText, removalError, removeWorktree } from "../host/removal";
 import { currentHost } from "../services";
 import { Button, Sheet, T } from "../ui/components";
-import { ChevronRight, GitBranchPlus, GitMerge, GitPullRequest, Icon } from "../ui/icons";
+import { Archive, ChevronRight, GitBranchPlus, GitMerge, GitPullRequest, Icon, X } from "../ui/icons";
 import { space, useTheme, type Palette } from "../ui/tokens";
 
 export const toneColor = (tone: PrTone, theme: Palette) =>
@@ -78,13 +86,30 @@ export function PrStrip({
   const [justMerged, setJustMerged] = useState<number | null>(null);
   /** The PR this phone just continued past, gone until the feed clears it. */
   const [continued, setContinued] = useState<number | null>(null);
+  /** Auto-merge as this phone just set it, shown until the feed says otherwise. */
+  const [autoSet, setAutoSet] = useState<{ number: number; auto: PrAutoMerge | null } | null>(null);
   const feedPr = entry?.pr ?? null;
   useEffect(() => {
     setJustMerged(null);
     setContinued(null);
   }, [workspace_id, feedPr?.number]);
+  useEffect(() => {
+    setAutoSet(null);
+  }, [workspace_id, feedPr?.number, feedPr?.merge.auto?.method, !!feedPr?.merge.auto]);
   const pr: PrState | null =
-    feedPr && justMerged === feedPr.number && feedPr.state !== "merged" ? { ...feedPr, state: "merged" } : feedPr;
+    feedPr && justMerged === feedPr.number && feedPr.state !== "merged"
+      ? { ...feedPr, state: "merged" }
+      : feedPr && autoSet?.number === feedPr.number
+        ? {
+            ...feedPr,
+            // Just turned off, it can go back on: it was waiting on GitHub's requirements.
+            merge: {
+              ...feedPr.merge,
+              auto: autoSet.auto,
+              auto_available: !autoSet.auto && (!!feedPr.merge.auto_available || !!feedPr.merge.auto),
+            },
+          }
+        : feedPr;
 
   // A continued PR is behind the worktree; its conflicts are the new branch's.
   const gone = !pr || (feedPr !== null && continued === feedPr.number);
@@ -163,8 +188,11 @@ export function PrStrip({
         hostName={hostName}
         conflicts={conflict}
         canContinue={offersContinue(pr, workspace, compat)}
+        canArchive={offersArchive(pr, workspace)}
+        compat={compat}
         signInOffered={githubSignInOffered(compat)}
         onMerged={setJustMerged}
+        onAutoSet={(number, auto) => setAutoSet({ number, auto })}
         onContinued={setContinued}
         onClose={() => setSheet(false)}
       />
@@ -180,8 +208,11 @@ function PrSheet({
   hostName,
   conflicts,
   canContinue,
+  canArchive,
+  compat,
   signInOffered,
   onMerged,
+  onAutoSet,
   onContinued,
   onClose,
 }: {
@@ -192,26 +223,37 @@ function PrSheet({
   hostName: string;
   conflicts: ConflictView | null;
   canContinue: boolean;
+  canArchive: boolean;
+  compat: Compatibility | null;
   /** A `gh_unauthenticated` refusal points to the Host tab's GitHub group. */
   signInOffered: boolean;
   onMerged(number: number): void;
+  onAutoSet(number: number, auto: PrAutoMerge | null): void;
   onContinued(number: number): void;
   onClose(): void;
 }) {
   const theme = useTheme();
-  const [confirm, setConfirm] = useState(false);
+  /** Which merge the sheet is asking about: now, or by GitHub once its requirements are met. */
+  const [confirm, setConfirm] = useState<"merge" | "auto" | null>(null);
   const [merging, setMerging] = useState(false);
   const [continuing, setContinuing] = useState(false);
+  const [archiving, setArchiving] = useState(false);
+  /** Uncommitted changes the Host said an archive discards, until confirmed or cancelled. */
+  const [discarding, setDiscarding] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const look = prLook(pr, connected);
+  const auto = prAuto(pr, compat);
+  const busy = merging || continuing || archiving;
   // A new head is a new pull request to judge.
   useEffect(() => {
     setError(null);
-    setConfirm(false);
+    setConfirm(null);
+    setDiscarding(null);
   }, [pr.head_sha, pr.state]);
 
   const close = () => {
-    setConfirm(false);
+    setConfirm(null);
+    setDiscarding(null);
     setError(null);
     onClose();
   };
@@ -223,10 +265,29 @@ function PrSheet({
       const merged = await currentHost.mergePr(workspace_id, pr, pr.merge.method ?? undefined);
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       onMerged(merged.number);
-      setConfirm(false);
+      setConfirm(null);
     } catch (e) {
       setError(mergeError(e, hostName, signInOffered));
-      setConfirm(false);
+      setConfirm(null);
+    } finally {
+      setMerging(false);
+    }
+  };
+
+  // Off needs no confirm: the PR just waits for a manual merge again.
+  const setAuto = async (enabled: boolean) => {
+    setMerging(true);
+    setError(null);
+    try {
+      const set = await currentHost.setPrAutoMerge(workspace_id, pr, enabled, enabled ? (pr.merge.method ?? undefined) : undefined);
+      if (set.outcome === "merged") {
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+        onMerged(set.number);
+      } else onAutoSet(set.number, set.outcome === "on" ? { method: set.method } : null);
+      setConfirm(null);
+    } catch (e) {
+      setError(mergeError(e, hostName, signInOffered));
+      setConfirm(null);
     } finally {
       setMerging(false);
     }
@@ -248,6 +309,70 @@ function PrSheet({
     }
   };
 
+  // One tap: sessions stay readable. Running work is refused; uncommitted changes ask first.
+  const archive = async (force = false) => {
+    setArchiving(true);
+    setError(null);
+    try {
+      const next = await removeWorktree(currentHost, workspace_id, force);
+      if (next.step === "removed") {
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+        close();
+      } else if (next.step === "busy") {
+        setDiscarding(null);
+        setError(archiveBusyText(next.busy));
+      } else setDiscarding(next.changes);
+    } catch (e) {
+      setDiscarding(null);
+      setError(removalError(e, hostName));
+    } finally {
+      setArchiving(false);
+    }
+  };
+
+  if (discarding !== null) {
+    return (
+      <Sheet visible={visible} onClose={close}>
+        <T variant="title">{discarding === 1 ? "Discard 1 uncommitted change?" : `Discard ${discarding} uncommitted changes?`}</T>
+        <T color={theme.mut} testID="pr-archive-body">
+          {`${pr.head} has changes that aren't committed. Archiving it anyway deletes them; committed work is kept.`}
+        </T>
+        <Button
+          tall
+          kind="destructive"
+          label="Discard and archive"
+          loading={archiving}
+          disabled={!connected}
+          onPress={() => void archive(true)}
+          testID="pr-archive-force"
+        />
+        <Button tall kind="secondary" label="Cancel" disabled={archiving} onPress={() => setDiscarding(null)} />
+      </Sheet>
+    );
+  }
+
+  if (confirm === "auto") {
+    return (
+      <Sheet visible={visible} onClose={close}>
+        <T variant="title">{`Auto-merge #${pr.number}?`}</T>
+        <T color={theme.mut} testID="pr-auto-confirm-body">
+          {`${look.method ?? "Merge"} into ${pr.base} once ${pr.checks.pending > 0 ? "checks pass" : "GitHub's requirements are met"}. GitHub merges it by itself, with ${hostName} asleep or not. Pushes you make before then are merged too, once they pass.`}
+        </T>
+        <Button
+          tall
+          kind="done"
+          label="Turn on auto-merge"
+          icon={GitMerge}
+          loading={merging}
+          disabled={!connected}
+          onPress={() => void setAuto(true)}
+          testID="pr-auto-confirm"
+        />
+        <Button tall kind="secondary" label="Cancel" onPress={() => setConfirm(null)} />
+      </Sheet>
+    );
+  }
+
   if (confirm) {
     return (
       <Sheet visible={visible} onClose={close}>
@@ -256,7 +381,7 @@ function PrSheet({
           {`${look.method ?? "Merge"} into ${pr.base} at ${shortSha(pr.head_sha)}. GitHub merges it now, and only if nothing changed since; the branch stays.`}
         </T>
         <Button tall kind="done" label="Merge" icon={GitMerge} loading={merging} onPress={() => void merge()} testID="pr-merge-confirm" />
-        <Button tall kind="secondary" label="Cancel" onPress={() => setConfirm(false)} />
+        <Button tall kind="secondary" label="Cancel" onPress={() => setConfirm(null)} />
       </Sheet>
     );
   }
@@ -292,29 +417,47 @@ function PrSheet({
         </T>
       ) : null}
       {look.settled ? (
-        canContinue ? (
-          <>
-            <T variant="callout" color={theme.mut} testID="pr-continue-line">
-              {continueLine(pr)}
-            </T>
+        <>
+          {canContinue ? (
+            <>
+              <T variant="callout" color={theme.mut} testID="pr-continue-line">
+                {continueLine(pr)}
+              </T>
+              <Button
+                tall
+                kind="primary"
+                label="Continue"
+                icon={GitBranchPlus}
+                loading={continuing}
+                disabled={!connected || busy}
+                onPress={() => void continueHere()}
+                testID="pr-continue"
+              />
+            </>
+          ) : null}
+          {canArchive ? (
             <Button
               tall
-              kind="primary"
-              label="Continue"
-              icon={GitBranchPlus}
-              loading={continuing}
-              disabled={!connected}
-              onPress={() => void continueHere()}
-              testID="pr-continue"
+              kind="secondary"
+              label="Archive"
+              icon={Archive}
+              loading={archiving}
+              disabled={!connected || busy}
+              onPress={() => void archive()}
+              testID="pr-archive"
             />
-          </>
-        ) : null
+          ) : null}
+        </>
       ) : (
         <>
           {conflicts ? (
             <ConflictBlock workspace_id={workspace_id} view={conflicts} hasPr connected={connected} hostName={hostName} />
           ) : null}
-          {conflicts?.line ? null : look.reason ? (
+          {conflicts?.line ? null : auto.on ? (
+            <T variant="callout" color={theme.mut} testID="pr-merge-reason">
+              {auto.line}
+            </T>
+          ) : look.reason ? (
             <T variant="callout" color={theme.mut} testID="pr-merge-reason">
               {look.reason}
             </T>
@@ -323,14 +466,35 @@ function PrSheet({
               {`${look.method} into ${pr.base}`}
             </T>
           ) : null}
-          {conflicts?.resolve ? null : (
+          {conflicts?.resolve ? null : auto.on ? (
+            <Button
+              tall
+              kind="secondary"
+              label="Cancel auto-merge"
+              icon={X}
+              loading={merging}
+              disabled={!connected}
+              onPress={() => void setAuto(false)}
+              testID="pr-auto-off"
+            />
+          ) : auto.offered ? (
+            <Button
+              tall
+              kind="done"
+              label="Auto-merge"
+              icon={GitMerge}
+              disabled={!connected}
+              onPress={() => setConfirm("auto")}
+              testID="pr-auto"
+            />
+          ) : (
             <Button
               tall
               kind="done"
               label="Merge"
               icon={GitMerge}
               disabled={!look.canMerge}
-              onPress={() => setConfirm(true)}
+              onPress={() => setConfirm("merge")}
               testID="pr-merge"
             />
           )}

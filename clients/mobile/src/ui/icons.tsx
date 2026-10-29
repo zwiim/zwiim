@@ -6,6 +6,7 @@
 import type { LucideIcon } from "lucide-react-native";
 
 export {
+  Archive,
   ArrowUp,
   Bot,
   Check,

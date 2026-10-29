@@ -61,6 +61,18 @@ pub async fn github_account(gh_path: Option<&Path>, cwd: &str) -> Result<GithubA
     })
 }
 
+/// The login `gh` was signed in as, from its own config: no network, so
+/// naming a branch never waits on GitHub. `None` when `gh` is missing or
+/// signed out.
+pub async fn github_login_local(gh_path: Option<&Path>, cwd: &str) -> Option<String> {
+    let args = ["config", "get", "-h", "github.com", "user"];
+    let out = gh(gh_path, cwd, "config get user", &args, GITHUB_READ)
+        .await
+        .ok()?;
+    let login = out.stdout.trim();
+    (!login.is_empty()).then(|| login.to_string())
+}
+
 /// `account`'s login, then its organizations in GitHub's order. Should the
 /// organizations not list, the login alone.
 pub async fn github_owners(

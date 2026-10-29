@@ -1,7 +1,8 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostClient, HostController, ZwiimClientError, type DiffFile, type WorkspaceInfo } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
+import { rememberMarkdownStyle } from "@/lib/prefs";
 import { DiffView } from "@/panels/DiffPanel";
 import { FakeTransport, tick } from "./fakes";
 
@@ -114,6 +115,14 @@ describe("file viewer", () => {
     cleanup();
     await mount(host({ file: changed("a.txt"), patch: "@@ -15 +15 @@\n-old 15\n+line 15\n" }, thirty), "a.txt");
     expect(screen.queryByRole("button", { name: /preview/i })).toBeNull();
+  });
+
+  it("sets a Markdown preview as a book page once that style is picked", async () => {
+    await mount(host({ file: changed("README.md"), patch: "@@ -1 +1 @@\n-# Old\n+# Title\n" }, "# Title\n"), "README.md");
+    fireEvent.click(screen.getByRole("button", { name: /preview/i }));
+    expect(screen.getByTestId("markdown").className).not.toContain("markdown-book");
+    act(() => rememberMarkdownStyle("book"));
+    expect(screen.getByTestId("markdown").className).toContain("markdown-book");
   });
 
   it("says a file too large to open is, with nothing to copy", async () => {

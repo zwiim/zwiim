@@ -8,6 +8,7 @@ import { fileIcon } from "@/panels/FilesPanel";
 import { AgentImageChip } from "@/attachments/AgentImageChip";
 import { isOpenableLink, openLink } from "@/lib/bridge";
 import { FileLinksContext } from "@/lib/file-links";
+import { HighlightedCode, languageId } from "@/lib/highlight";
 import { cn } from "@/lib/utils";
 
 /** A bare URL reads without its scheme; the full address stays in the tooltip. */
@@ -105,7 +106,9 @@ const components: Components = {
     // or a newline.
     const block = lang !== undefined || String(children).includes("\n");
     return block ? (
-      <code data-language={lang}>{children}</code>
+      <code data-language={lang}>
+        <HighlightedCode code={String(children)} lang={languageId(lang)} />
+      </code>
     ) : (
       <code className="bg-muted rounded-sm px-1.5 py-0.5 font-mono text-[0.85em]">{children}</code>
     );

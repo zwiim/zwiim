@@ -84,6 +84,11 @@ pub struct Model {
     /// to retry; the next prompt that goes out clears it.
     #[sea_orm(column_type = "Text", nullable)]
     pub unreachable_turn: Option<String>,
+    /// Zwiim-owned: prompts queued behind the running turn, as
+    /// `follow_ups::FollowUp` JSON, first to go out first. NULL means nothing
+    /// queued.
+    #[sea_orm(column_type = "Text", nullable)]
+    pub follow_ups: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

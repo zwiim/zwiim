@@ -1308,6 +1308,7 @@ mod tests {
                 &self.state.worktrees_dir,
                 &self.root_id,
                 None,
+                None,
             )
             .await
             .unwrap()
@@ -1356,6 +1357,7 @@ mod tests {
                         initial_command: None,
                         extra_env: None,
                         temp_files: vec![],
+                        title: None,
                     },
                     self.state.emitter.clone(),
                 )
@@ -1564,6 +1566,7 @@ mod tests {
             &f.state.terminal_manager,
             &kept.workspace_id,
             true,
+            None,
         )
         .await
         .unwrap();
@@ -1591,12 +1594,59 @@ mod tests {
             &f.state.terminal_manager,
             &gone.workspace_id,
             false,
+            None,
         )
         .await
         .unwrap();
         feed.until(
             "workspace.removed",
             is("workspace.removed", "workspace_id", gone.workspace_id.clone()),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn repository_removal_and_revival() {
+        let f = fixture().await;
+        let (_, mut feed) = f.subscribe().await;
+        let wt = f.create_worktree().await;
+        feed.until("worktree", workspace_is(wt.workspace_id.clone(), |_| true))
+            .await;
+        let (_, sid) = f.new_session(f.folder_of(&wt.workspace_id).await).await;
+        feed.until("session", session_is(sid.clone(), |_| true)).await;
+
+        // Removed: the root and its archived worktree leave the listing.
+        workspace::remove(
+            &f.state.db,
+            &f.state.emitter,
+            &f.state.connection_manager,
+            &f.state.terminal_manager,
+            &f.root_id,
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+        feed.until(
+            "root removed",
+            is("workspace.removed", "workspace_id", f.root_id.clone()),
+        )
+        .await;
+        feed.until(
+            "worktree removed",
+            is("workspace.removed", "workspace_id", wt.workspace_id.clone()),
+        )
+        .await;
+
+        // Re-added: the root back, its worktree back as removed, with its session.
+        workspace::add(&f.state.db, &f.state.emitter, &f.root, false, None)
+            .await
+            .unwrap();
+        feed.until("root revived", workspace_is(f.root_id.clone(), |_| true))
+            .await;
+        feed.until(
+            "worktree revived as removed",
+            workspace_is(wt.workspace_id.clone(), |w| w["removed"] == true),
         )
         .await;
     }
@@ -2243,6 +2293,7 @@ esac
             &host,
             &wt.workspace_id,
             12,
+            None,
         )
         .await
         .unwrap();

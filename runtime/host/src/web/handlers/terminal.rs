@@ -69,6 +69,7 @@ pub async fn terminal_spawn(
                 initial_command: params.initial_command,
                 extra_env,
                 temp_files: vec![],
+                title: None,
             },
             state.emitter.clone(),
         )

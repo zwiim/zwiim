@@ -4,6 +4,7 @@ import { HostClient, HostController } from "@zwiim/sdk";
 import { Workbench } from "@/App";
 import type { NativeBridge } from "@/lib/bridge";
 import { HostProvider } from "@/lib/host-context";
+import { deviceNoun } from "@/lib/platform";
 import { rememberWelcomed, theme } from "@/lib/prefs";
 import { FakeTransport, tick } from "./fakes";
 import { closeMenu, openMenu, openSettings } from "./ui";
@@ -40,6 +41,8 @@ async function mount(t = new FakeTransport(), native: NativeBridge = bridge()) {
   await tick();
   return controller;
 }
+
+const KEEP_REACHABLE = `Keep ${deviceNoun()} reachable`;
 
 const section = () => screen.getByRole("dialog", { name: "Settings" }).querySelector("h2")!.textContent;
 
@@ -127,10 +130,74 @@ describe("checking for updates", () => {
   });
 });
 
-describe("theme", () => {
-  it("follows the choice made in General and remembers it", async () => {
+describe("searching settings", () => {
+  const search = () => screen.getByRole("textbox", { name: "Search settings" }) as HTMLInputElement;
+  const results = () => screen.queryAllByRole("option").map((o) => o.textContent);
+
+  it("focuses the search on Mod+F and opens a setting picked with Enter, marking it", async () => {
     const c = await mount();
-    const dialog = openSettings("General");
+    const dialog = openSettings("Account");
+    fireEvent.keyDown(dialog.getByRole("navigation", { name: "Settings sections" }), { key: "f", ctrlKey: true });
+    expect(document.activeElement).toBe(search());
+    fireEvent.change(search(), { target: { value: "light" } });
+    expect(results()[0]).toBe("ThemeAppearance");
+    fireEvent.keyDown(search(), { key: "Enter" });
+    expect(section()).toBe("Appearance");
+    expect(search().value).toBe("");
+    expect(document.querySelector('[data-setting-id="theme"]')!.hasAttribute("data-flash")).toBe(true);
+    c.dispose();
+  });
+
+  it("moves through results with the arrows, wrapping at the ends", async () => {
+    const c = await mount();
+    openSettings("General");
+    fireEvent.change(search(), { target: { value: "sign in" } });
+    const options = () => screen.getAllByRole("option");
+    expect(options().length).toBeGreaterThan(1);
+    expect(options()[0]!.getAttribute("aria-selected")).toBe("true");
+    fireEvent.keyDown(search(), { key: "ArrowUp" });
+    expect(options().at(-1)!.getAttribute("aria-selected")).toBe("true");
+    fireEvent.keyDown(search(), { key: "ArrowDown" });
+    expect(options()[0]!.getAttribute("aria-selected")).toBe("true");
+    fireEvent.keyDown(search(), { key: "ArrowDown" });
+    expect(options()[1]!.getAttribute("aria-selected")).toBe("true");
+    c.dispose();
+  });
+
+  it("finds a tab by its keywords", async () => {
+    const c = await mount();
+    openSettings("General");
+    fireEvent.change(search(), { target: { value: "codex" } });
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Agents" }));
+    expect(section()).toBe("Agents");
+    c.dispose();
+  });
+
+  it("says when nothing matches", async () => {
+    const c = await mount();
+    openSettings("General");
+    fireEvent.change(search(), { target: { value: "zzqqxx" } });
+    expect(screen.getByText("No settings match.")).toBeTruthy();
+    c.dispose();
+  });
+
+  it("clears the query on Escape before closing", async () => {
+    const c = await mount();
+    openSettings("General");
+    fireEvent.change(search(), { target: { value: "dark" } });
+    fireEvent.keyDown(search(), { key: "Escape" });
+    expect(search().value).toBe("");
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBeTruthy();
+    fireEvent.keyDown(search(), { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Settings" })).toBeNull();
+    c.dispose();
+  });
+});
+
+describe("theme", () => {
+  it("follows the choice made in Appearance and remembers it", async () => {
+    const c = await mount();
+    const dialog = openSettings("Appearance");
     fireEvent.click(dialog.getByRole("radio", { name: "Dark" }));
     expect(document.documentElement.classList.contains("dark")).toBe(true);
     expect(theme()).toBe("dark");
@@ -178,7 +245,7 @@ describe("keeping the Mac reachable", () => {
     const c = await mount(t);
     const dialog = openSettings("General");
     await tick();
-    const group = dialog.getByRole("radiogroup", { name: "Keep this Mac reachable" });
+    const group = dialog.getByRole("radiogroup", { name: KEEP_REACHABLE });
     expect(group).toBeTruthy();
     expect(dialog.getByRole("radio", { name: "Always (recommended)" }).getAttribute("aria-checked")).toBe("true");
     fireEvent.click(dialog.getByRole("radio", { name: "Only while agents work" }));
@@ -304,7 +371,7 @@ describe("keeping the Mac reachable", () => {
     const c = await mount(t);
     openSettings("General");
     await tick();
-    expect(screen.queryByRole("radiogroup", { name: "Keep this Mac reachable" })).toBeNull();
+    expect(screen.queryByRole("radiogroup", { name: KEEP_REACHABLE })).toBeNull();
     c.dispose();
   });
 });

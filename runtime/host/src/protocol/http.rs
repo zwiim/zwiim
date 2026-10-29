@@ -21,7 +21,7 @@ use crate::commands::folders::{self as folder_commands, FileTreeNode};
 use crate::commands::terminal::prepare_credential_env;
 use crate::db::entities::conversation::ConversationStatus;
 use crate::db::service::folder_service;
-use crate::git_harness::{self, GitCaller, GitHost, MergeMethod, PrMerged};
+use crate::git_harness::{self, GitCaller, GitHost, MergeMethod, PrAutoMerged, PrMerged};
 use crate::harness::ResolveStrategy;
 use crate::models::agent::AgentType;
 use crate::pr_watch::PrEntry;
@@ -226,6 +226,17 @@ pub async fn host_update_set_channel(ZJson(p): ZJson<UpdateChannelParams>) -> ZR
         ZwiimError::internal()
     })?;
     Ok(Json(status))
+}
+
+/// `host.folders`: where this Host keeps its data, the worktrees it makes and
+/// the repositories it clones. Fixed for the Host's life, so a client can show
+/// them; they are changed by starting the Host with other ones.
+pub async fn host_folders(Extension(state): Extension<Arc<AppState>>) -> ZResult<Value> {
+    Ok(Json(json!({
+        "data": state.data_dir.to_string_lossy(),
+        "worktrees": state.worktrees_dir.to_string_lossy(),
+        "repositories": state.repos_dir.to_string_lossy(),
+    })))
 }
 
 /// `host.diagnostics`: what support needs to know about this Host — its
@@ -458,6 +469,59 @@ pub async fn device_revoke(
     ok()
 }
 
+// ─── settings ────────────────────────────────────────────────────────────
+
+pub async fn settings_get(Extension(state): Extension<Arc<AppState>>) -> ZResult<Value> {
+    let values = crate::settings::get(&state.db.conn).await?;
+    Ok(Json(json!({ "values": values })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsUpdateParams {
+    pub values: serde_json::Map<String, Value>,
+}
+
+pub async fn settings_update(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<SettingsUpdateParams>,
+) -> ZResult<Value> {
+    crate::settings::update(&state.db.conn, &p.values).await?;
+    settings_get(Extension(state)).await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepositorySettingsGetParams {
+    pub workspace_id: String,
+}
+
+/// The settings of the repository of a workspace: its own for a repository,
+/// the one it was made from for a worktree.
+pub async fn repository_settings_get(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<RepositorySettingsGetParams>,
+) -> ZResult<Value> {
+    let values = crate::repository_settings::get(&state.db.conn, &p.workspace_id).await?;
+    Ok(Json(json!({ "values": values })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepositorySettingsUpdateParams {
+    pub workspace_id: String,
+    pub values: serde_json::Map<String, Value>,
+}
+
+pub async fn repository_settings_update(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<RepositorySettingsUpdateParams>,
+) -> ZResult<Value> {
+    crate::repository_settings::update(&state.db.conn, &p.workspace_id, &p.values).await?;
+    let values = crate::repository_settings::get(&state.db.conn, &p.workspace_id).await?;
+    Ok(Json(json!({ "values": values })))
+}
+
 // ─── agent ───────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -487,6 +551,11 @@ pub struct AgentSummary {
     /// The slash commands it offered in its last session here; `null`
     /// before its first.
     pub commands: Option<Vec<crate::session_commands::SessionCommand>>,
+    /// Whether it is the agent new sessions start with (`defaults.agent`).
+    pub default: bool,
+    /// The Host's defaults this agent offers, already current in `options`
+    /// and `effort_by_model`; a field is `null` where none applies.
+    pub defaults: crate::settings::AgentDefaults,
 }
 
 /// The host's agents and whether each can be used. Detection only: nothing is
@@ -497,6 +566,7 @@ pub async fn agent_list(Extension(state): Extension<Arc<AppState>>) -> ZResult<V
         crate::db::service::agent_setting_service::list_map_by_agent_type(&state.db.conn)
             .await
             .map_err(db_error)?;
+    let default_agent = crate::settings::default_agent(&state.db.conn).await;
     let agents = crate::acp::registry::builtin_acp_agents();
     let checks = futures::future::join_all(
         agents
@@ -527,13 +597,23 @@ pub async fn agent_list(Extension(state): Extension<Arc<AppState>>) -> ZResult<V
             Ok(()) if !enabled => Some("disabled"),
             Ok(()) => None,
         };
-        let (options, effort_by_model, commands) = match crate::session_options::agent_name(agent) {
-            Some(name) => (
-                crate::session_options::for_new_session(&state.db.conn, &name).await,
-                crate::session_options::effort_by_model(&state.db.conn, &name).await,
-                crate::session_commands::for_new_session(&state.db.conn, &name).await,
-            ),
-            None => (None, Default::default(), None),
+        let (mut options, mut effort_by_model, commands, defaults) =
+            match crate::session_options::agent_name(agent) {
+                Some(name) => (
+                    crate::session_options::for_new_session(&state.db.conn, &name).await,
+                    crate::session_options::effort_by_model(&state.db.conn, &name).await,
+                    crate::session_commands::for_new_session(&state.db.conn, &name).await,
+                    crate::settings::agent_defaults(&state.db.conn, &name).await,
+                ),
+                None => (None, Default::default(), None, Default::default()),
+            };
+        let defaults = match options.as_mut() {
+            Some(o) => {
+                let offered = crate::settings::offered(&defaults, o, &effort_by_model);
+                crate::settings::apply(o, &mut effort_by_model, &offered);
+                offered
+            }
+            None => Default::default(),
         };
         // A supported agent that has not run here yet: learn its options so a
         // first session can choose them too.
@@ -554,6 +634,8 @@ pub async fn agent_list(Extension(state): Extension<Arc<AppState>>) -> ZResult<V
             options,
             effort_by_model,
             commands,
+            default: default_agent == Some(agent),
+            defaults,
         });
     }
     Ok(Json(out))
@@ -965,16 +1047,66 @@ pub async fn workspace_create_worktree(
     Extension(state): Extension<Arc<AppState>>,
     ZJson(p): ZJson<WorktreeCreateParams>,
 ) -> ZResult<WorkspaceInfo> {
-    Ok(Json(
-        workspace::create_worktree(
-            &state.db,
-            &state.emitter,
-            &state.worktrees_dir,
-            &p.workspace_id,
-            p.base.as_deref(),
-        )
-        .await?,
-    ))
+    let prefix =
+        crate::settings::branch_prefix(&state.db.conn, state.gh.as_deref(), &gh_cwd()).await;
+    let info = workspace::create_worktree(
+        &state.db,
+        &state.emitter,
+        &state.worktrees_dir,
+        &p.workspace_id,
+        p.base.as_deref(),
+        prefix.as_deref(),
+    )
+    .await?;
+    // The repository's setup script starts in its own terminal; neither the
+    // reply nor an agent started there waits for it.
+    workspace::scripts::setup_new_worktree(
+        &state.db.conn,
+        &state.terminal_manager,
+        &state.emitter,
+        &info.workspace_id,
+        prepare_credential_env(&state.data_dir),
+    )
+    .await;
+    Ok(Json(info))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunScriptParams {
+    pub workspace_id: String,
+    pub script: workspace::scripts::Script,
+}
+
+pub async fn workspace_run_script(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<RunScriptParams>,
+) -> ZResult<Value> {
+    let terminal_id = workspace::scripts::run_script(
+        &state.db.conn,
+        &state.terminal_manager,
+        &state.emitter,
+        &p.workspace_id,
+        p.script,
+        prepare_credential_env(&state.data_dir),
+    )
+    .await?;
+    Ok(Json(json!({ "terminal_id": terminal_id })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewsParams {
+    pub workspace_id: String,
+}
+
+pub async fn workspace_previews(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<PreviewsParams>,
+) -> ZResult<Value> {
+    let previews =
+        workspace::previews::previews(&state.db.conn, &state.terminal_manager, &p.workspace_id).await?;
+    Ok(Json(json!({ "previews": previews })))
 }
 
 #[derive(Deserialize)]
@@ -990,6 +1122,11 @@ pub async fn workspace_remove_worktree(
     Extension(state): Extension<Arc<AppState>>,
     ZJson(p): ZJson<WorktreeRemoveParams>,
 ) -> ZResult<WorktreeRemoved> {
+    let mut host = GitHost::new(&state.db.conn, &state.data_dir);
+    host.gh = state.gh.as_deref();
+    let delete_branch = crate::settings::delete_branch_on_remove(&state.db.conn)
+        .await
+        .then_some(&host);
     Ok(Json(
         workspace::remove_worktree(
             &state.db,
@@ -998,6 +1135,42 @@ pub async fn workspace_remove_worktree(
             &state.terminal_manager,
             &p.workspace_id,
             p.force,
+            delete_branch,
+        )
+        .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceRemoveParams {
+    pub workspace_id: String,
+    /// Discard the worktrees' uncommitted changes. Never overrides the
+    /// running-work guard.
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// Take a repository off the Host, archiving its worktrees. Its own folder
+/// is left as it is.
+pub async fn workspace_remove(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<WorkspaceRemoveParams>,
+) -> ZResult<workspace::WorkspaceRemoved> {
+    let mut host = GitHost::new(&state.db.conn, &state.data_dir);
+    host.gh = state.gh.as_deref();
+    let delete_branch = crate::settings::delete_branch_on_remove(&state.db.conn)
+        .await
+        .then_some(&host);
+    Ok(Json(
+        workspace::remove(
+            &state.db,
+            &state.emitter,
+            &state.connection_manager,
+            &state.terminal_manager,
+            &p.workspace_id,
+            p.force,
+            delete_branch,
         )
         .await?,
     ))
@@ -1018,6 +1191,8 @@ pub async fn workspace_continue(
     ZJson(p): ZJson<WorkspaceContinueParams>,
 ) -> ZResult<WorkspaceInfo> {
     let host = GitHost::new(&state.db.conn, &state.data_dir);
+    let prefix =
+        crate::settings::branch_prefix(&state.db.conn, state.gh.as_deref(), &gh_cwd()).await;
     let info = workspace::continue_after_merge(
         &state.db,
         &state.emitter,
@@ -1025,6 +1200,7 @@ pub async fn workspace_continue(
         &host,
         &p.workspace_id,
         p.number,
+        prefix.as_deref(),
     )
     .await?;
     state.host_feed.nudge_pr(&info.workspace_id);
@@ -1487,6 +1663,61 @@ pub async fn git_pr_merge(
     Ok(Json(result?))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitPrAutoMergeParams {
+    pub workspace_id: String,
+    pub number: u64,
+    /// On, so GitHub merges it once its requirements are met; or off.
+    pub enabled: bool,
+    /// The head commit the user saw; needed to turn auto-merge on.
+    #[serde(default)]
+    pub head_sha: Option<String>,
+    /// Defaults to the repository's preferred method.
+    #[serde(default)]
+    pub method: Option<MergeMethod>,
+}
+
+/// Turn auto-merge for the workspace's pull request on or off. GitHub does
+/// the merge, so it happens whether or not the Host is running.
+pub async fn git_pr_auto_merge(
+    Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+    ZJson(p): ZJson<GitPrAutoMergeParams>,
+) -> ZResult<PrAutoMerged> {
+    workspace::resolve(&state.db.conn, &p.workspace_id).await?;
+    let caller = GitCaller::new(Some(p.workspace_id.clone()), None)?;
+    let host = GitHost::new(&state.db.conn, &state.data_dir);
+    let result = git_harness::auto_merge_pr(
+        &host,
+        &caller,
+        p.number,
+        p.enabled,
+        p.head_sha.as_deref(),
+        p.method,
+    )
+    .await;
+    let by = match principal.as_deref() {
+        Some(Principal::Device(id)) => id.as_str(),
+        Some(Principal::Host) => "host",
+        None => "unknown",
+    };
+    let outcome = match &result {
+        Ok(done) => done.outcome.as_str(),
+        Err(e) => e.code.as_str(),
+    };
+    tracing::info!(
+        workspace_id = %p.workspace_id,
+        number = p.number,
+        enabled = p.enabled,
+        by,
+        outcome,
+        "[git] pull request auto-merge"
+    );
+    state.host_feed.nudge_pr(&p.workspace_id);
+    Ok(Json(result?))
+}
+
 // ─── github ──────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -1552,7 +1783,7 @@ pub async fn github_cancel_sign_in(
 }
 
 /// Where the Host runs read-only `gh` calls: the home directory, else temp.
-fn gh_cwd() -> String {
+pub(crate) fn gh_cwd() -> String {
     workspace::home_dir()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(std::env::temp_dir)
@@ -1708,6 +1939,9 @@ pub async fn terminal_spawn(
     if folder.parent_id.is_none() {
         return Err(ZwiimError::root_workspace());
     }
+    // The worktree's variables, beneath the Host's own (credentials).
+    let mut env = workspace::scripts::workspace_env(&state.db.conn, &folder).await;
+    env.extend(prepare_credential_env(&state.data_dir).unwrap_or_default());
     let root = folder.path;
     let terminal_id = state
         .terminal_manager
@@ -1718,8 +1952,9 @@ pub async fn terminal_spawn(
                 owner_window_label: "zwiim".to_string(),
                 shell: p.shell,
                 initial_command,
-                extra_env: prepare_credential_env(&state.data_dir),
+                extra_env: Some(env),
                 temp_files: vec![],
+                title: None,
             },
             state.emitter.clone(),
         )
@@ -1965,6 +2200,7 @@ pub async fn session_start(
         None
     };
     let blocks = prompt_blocks(p.blocks, root.as_deref().map(std::path::Path::new))?;
+    let options = with_start_defaults(&state.db.conn, p.agent, p.options).await;
     let session_id = session::start(
         &state.db,
         &state.connection_manager,
@@ -1973,10 +2209,30 @@ pub async fn session_start(
         p.agent,
         blocks,
         p.client_message_id,
-        &p.options,
+        &options,
     )
     .await?;
     Ok(Json(json!({ "session_id": session_id })))
+}
+
+/// `request` with what it leaves out taken from the Host's defaults for
+/// `agent`, where the agent offers them. Unchanged before the agent's first
+/// session here, when what it offers is not known.
+async fn with_start_defaults(
+    db: &sea_orm::DatabaseConnection,
+    agent: AgentType,
+    request: crate::session_options::OptionsRequest,
+) -> crate::session_options::OptionsRequest {
+    let Some(name) = crate::session_options::agent_name(agent) else {
+        return request;
+    };
+    let Some(options) = crate::session_options::for_new_session(db, &name).await else {
+        return request;
+    };
+    let efforts = crate::session_options::effort_by_model(db, &name).await;
+    let chosen = crate::settings::agent_defaults(db, &name).await;
+    let offered = crate::settings::offered(&chosen, &options, &efforts);
+    crate::settings::fill_start(&request, &offered, &options, &efforts)
 }
 
 #[derive(Deserialize)]
@@ -2009,6 +2265,124 @@ pub async fn session_send(
     )
     .await?;
     Ok(Json(json!({ "session_id": p.session_id })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionFollowUpParams {
+    pub session_id: String,
+    pub blocks: Vec<Block>,
+    #[serde(default)]
+    pub client_message_id: Option<String>,
+    /// Into the running turn, where the agent can take it.
+    #[serde(default)]
+    pub steer: bool,
+}
+
+/// A follow-up: sent now when the agent is idle and nothing is queued,
+/// otherwise queued behind what is; with `steer`, put into the running turn
+/// where the agent can take it.
+pub async fn session_follow_up(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<SessionFollowUpParams>,
+) -> ZResult<Value> {
+    let root = if has_attachments(&p.blocks) {
+        session::resolve(&state.db.conn, &p.session_id).await?;
+        session::workspace_dir(&state.db.conn, &p.session_id).await
+    } else {
+        None
+    };
+    let attachments = p
+        .blocks
+        .iter()
+        .filter(|b| !matches!(b, Block::Text { .. }))
+        .count();
+    let mut blocks = prompt_blocks(p.blocks, root.as_deref().map(std::path::Path::new))?;
+    // The first block is what the user typed, the part an edit replaces.
+    let text = match blocks.first() {
+        Some(PromptInputBlock::Text { text }) => {
+            let text = text.clone();
+            blocks.remove(0);
+            text
+        }
+        _ => String::new(),
+    };
+    let follow_up = crate::follow_ups::FollowUp::new(text, blocks, attachments);
+    let launcher = RuntimeLauncher { state: &state };
+    let (db, connections, emitter) = (&state.db, &state.connection_manager, &state.emitter);
+    let (session_id, client_message_id) = (&p.session_id, p.client_message_id);
+    let outcome = if p.steer {
+        crate::follow_ups::steer(
+            db,
+            connections,
+            &launcher,
+            emitter,
+            session_id,
+            follow_up,
+            client_message_id,
+        )
+        .await?
+    } else {
+        crate::follow_ups::add(
+            db,
+            connections,
+            &launcher,
+            emitter,
+            session_id,
+            follow_up,
+            client_message_id,
+        )
+        .await?
+    };
+    Ok(Json(json!({ "outcome": outcome })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FollowUpParams {
+    pub session_id: String,
+    pub follow_up_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FollowUpEditParams {
+    pub session_id: String,
+    pub follow_up_id: String,
+    pub text: String,
+}
+
+pub async fn session_follow_up_edit(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<FollowUpEditParams>,
+) -> ZResult<Value> {
+    crate::follow_ups::edit(&state.db, &state.emitter, &p.session_id, &p.follow_up_id, p.text).await?;
+    ok()
+}
+
+pub async fn session_follow_up_remove(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<FollowUpParams>,
+) -> ZResult<Value> {
+    crate::follow_ups::remove(&state.db, &state.emitter, &p.session_id, &p.follow_up_id).await?;
+    ok()
+}
+
+/// Send one queued follow-up now, or move it first while a turn runs.
+pub async fn session_follow_up_send(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<FollowUpParams>,
+) -> ZResult<Value> {
+    let outcome = crate::follow_ups::send_now(
+        &state.db,
+        &state.connection_manager,
+        &RuntimeLauncher { state: &state },
+        &state.emitter,
+        &p.session_id,
+        &p.follow_up_id,
+    )
+    .await?;
+    Ok(Json(json!({ "outcome": outcome })))
 }
 
 #[derive(Deserialize)]
@@ -2105,6 +2479,9 @@ pub struct SessionSummary {
     pub live: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Prompts queued behind the running turn; absent when none are.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub follow_ups: Vec<crate::follow_ups::Queued>,
 }
 
 impl From<session::SessionInfo> for SessionSummary {
@@ -2118,6 +2495,7 @@ impl From<session::SessionInfo> for SessionSummary {
             live: s.attached,
             created_at: s.created_at,
             updated_at: s.updated_at,
+            follow_ups: s.follow_ups,
         }
     }
 }

@@ -516,6 +516,10 @@ pub struct ConnectionManager {
     /// init. `Arc<OnceLock>` so the inner `Self` cloned from `clone_ref` sees
     /// the install too — the lock is set once at startup and never mutated.
     delegation_injection: Arc<std::sync::OnceLock<crate::acp::connection::DelegationInjection>>,
+    /// The database Host settings are read from, installed at bootstrap
+    /// (`install_settings`). `spawn_agent` reads the user's preferences for
+    /// each new connection's session instructions; without it they are empty.
+    settings_db: Arc<std::sync::OnceLock<DatabaseConnection>>,
     /// Per-agent-type serialization for `probe_agent_options`. Without
     /// this, rapid agent-tab clicks in the settings UI would fan out one
     /// real CLI process per click — each one running up to 60s. The
@@ -582,6 +586,7 @@ impl ConnectionManager {
             spawn_handshake_timeout: spawn_handshake_timeout_from_env(),
             terminal_shell_config: TerminalShellRuntimeConfig::new(),
             delegation_injection: Arc::new(std::sync::OnceLock::new()),
+            settings_db: Arc::new(std::sync::OnceLock::new()),
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
@@ -600,6 +605,7 @@ impl ConnectionManager {
             spawn_handshake_timeout: self.spawn_handshake_timeout,
             terminal_shell_config: self.terminal_shell_config.clone(),
             delegation_injection: self.delegation_injection.clone(),
+            settings_db: self.settings_db.clone(),
             probe_locks: self.probe_locks.clone(),
             pending_questions: self.pending_questions.clone(),
             pending_plan_approvals: self.pending_plan_approvals.clone(),
@@ -613,6 +619,11 @@ impl ConnectionManager {
     /// the unlikely event a second `build_delegation_stack` runs.
     pub fn install_delegation(&self, injection: crate::acp::connection::DelegationInjection) {
         let _ = self.delegation_injection.set(injection);
+    }
+
+    /// Set the settings database exactly once during bootstrap.
+    pub fn install_settings(&self, db: DatabaseConnection) {
+        let _ = self.settings_db.set(db);
     }
 
     fn delegation_snapshot(&self) -> Option<crate::acp::connection::DelegationInjection> {
@@ -639,6 +650,7 @@ impl ConnectionManager {
             spawn_handshake_timeout: timeout,
             terminal_shell_config: TerminalShellRuntimeConfig::new(),
             delegation_injection: Arc::new(std::sync::OnceLock::new()),
+            settings_db: Arc::new(std::sync::OnceLock::new()),
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
@@ -747,6 +759,37 @@ impl ConnectionManager {
         preferred_mode_id: Option<String>,
         preferred_config_values: BTreeMap<String, String>,
     ) -> Result<String, AcpError> {
+        self.spawn_agent_with_env(
+            agent_type,
+            working_dir,
+            session_id,
+            runtime_env,
+            BTreeMap::new(),
+            owner_window_label,
+            emitter,
+            preferred_mode_id,
+            preferred_config_values,
+        )
+        .await
+    }
+
+    /// Zwiim: [`Self::spawn_agent`] with `repository_env`, the variables the
+    /// user set for the repository, given to the agent and its terminals
+    /// beneath `runtime_env`. They never decide the Host's own policies or the
+    /// session's config fingerprint.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn spawn_agent_with_env(
+        &self,
+        agent_type: AgentType,
+        working_dir: Option<String>,
+        session_id: Option<String>,
+        runtime_env: BTreeMap<String, String>,
+        repository_env: BTreeMap<String, String>,
+        owner_window_label: String,
+        emitter: EventEmitter,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
+    ) -> Result<String, AcpError> {
         // Held for the whole establishment. A restore writing back to the
         // agents' own directories takes the write side, so it can never see an
         // empty connection list and then have one appear underneath it. Not
@@ -811,12 +854,17 @@ impl ConnectionManager {
         // installs the SessionStarted dedup signal on the state, registers
         // a cleanup hook, and returns the rx half of the signal. Any spawn
         // failure short-circuits before we touch the rx wait.
+        let preferences = match self.settings_db.get() {
+            Some(db) => crate::settings::user_preferences(db).await,
+            None => Default::default(),
+        };
         let session_started_rx = spawn_agent_connection(
             connection_id.clone(),
             agent_type,
             working_dir,
             session_id,
             runtime_env,
+            repository_env,
             owner_window_label,
             emitter,
             self.connections.clone(),
@@ -824,6 +872,7 @@ impl ConnectionManager {
             preferred_config_values,
             self.delegation_snapshot(),
             self.terminal_shell_config.clone(),
+            preferences,
         )
         .await?;
 
@@ -2598,6 +2647,7 @@ impl ConnectionManager {
                         origin_cwd: Set(None),
                         session_id: NotSet,
                         unreachable_turn: Set(None),
+                        follow_ups: Set(None),
                     };
                     let inserted = sibling.insert(txn).await?;
                     Ok((inserted.id, false))
@@ -4180,13 +4230,20 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
         )
         .await
         .map_err(|e| SpawnerError::Spawn(e.to_string()))?;
+        // A delegated agent works in its parent's repository, with its variables.
+        let repository_env =
+            crate::workspace::scripts::workspace_env_at(&self.db.conn, effective_working_dir.as_deref())
+                .await
+                .into_iter()
+                .collect();
 
         self.manager
-            .spawn_agent(
+            .spawn_agent_with_env(
                 agent_type,
                 effective_working_dir,
                 None,
                 runtime_env,
+                repository_env,
                 owner_window,
                 emitter,
                 preferred_mode_id,
@@ -4295,6 +4352,12 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
         )
         .await
         .map_err(|e| SpawnerError::Spawn(e.to_string()))?;
+        // A delegated agent works in its parent's repository, with its variables.
+        let repository_env =
+            crate::workspace::scripts::workspace_env_at(&self.db.conn, effective_working_dir.as_deref())
+                .await
+                .into_iter()
+                .collect();
 
         // Detect dedup reuse BEFORE spawning, with the SAME lookup
         // `spawn_agent` runs at its own entry: a live connection for this
@@ -4320,11 +4383,12 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
         // instead of minting a fresh one.
         let connection_id = self
             .manager
-            .spawn_agent(
+            .spawn_agent_with_env(
                 agent_type,
                 effective_working_dir,
                 Some(external_session_id.to_string()),
                 runtime_env,
+                repository_env,
                 owner_window,
                 emitter,
                 preferred_mode_id,

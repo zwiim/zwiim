@@ -35,6 +35,7 @@ const OPS: &[&str] = &[
     "host.diagnostics",
     "host.instructions",
     "host.instructions.set",
+    "host.folders",
     "agent.list",
     "agent.setup",
     "agent.auth_status",
@@ -51,6 +52,7 @@ const OPS: &[&str] = &[
     "workspace.tree",
     "workspace.create_worktree",
     "workspace.remove_worktree",
+    "workspace.remove",
     "workspace.continue",
     "workspace.resolve_conflicts",
     "files.read",
@@ -65,6 +67,7 @@ const OPS: &[&str] = &[
     "git.diff",
     "git.pr",
     "git.pr_merge",
+    "git.pr_auto_merge",
     "github.repo_available",
     "github.repos",
     "github.auth_status",
@@ -91,6 +94,16 @@ const OPS: &[&str] = &[
     "session.revert",
     "session.retry",
     "session.retry_in_new_chat",
+    "session.follow_up",
+    "session.follow_up_edit",
+    "session.follow_up_remove",
+    "session.follow_up_send",
+    "settings.get",
+    "settings.update",
+    "repository.settings.get",
+    "repository.settings.update",
+    "workspace.run_script",
+    "workspace.previews",
     "device.pair_invite",
     "device.list",
     "device.revoke",
@@ -1893,6 +1906,10 @@ async fn a_plain_folder_is_a_full_workspace_without_git() {
             "git.pr_merge",
             json!({"workspace_id": wid, "number": 1, "head_sha": "abc"}),
         ),
+        (
+            "git.pr_auto_merge",
+            json!({"workspace_id": wid, "number": 1, "enabled": false}),
+        ),
     ] {
         assert_eq!(
             h.err(op, body).await,
@@ -2436,6 +2453,29 @@ async fn pull_request_ops_answer_in_zwiim_shape() {
         .await,
         (StatusCode::BAD_REQUEST, "invalid_request".into())
     );
+    // Auto-merge says on or off, and turning it on names the head.
+    assert_eq!(
+        h.err("git.pr_auto_merge", json!({"workspace_id": wid, "number": 1}))
+            .await,
+        (StatusCode::BAD_REQUEST, "invalid_request".into())
+    );
+    assert_eq!(
+        h.err(
+            "git.pr_auto_merge",
+            json!({"workspace_id": wid, "number": 1, "enabled": true})
+        )
+        .await,
+        (StatusCode::BAD_REQUEST, "invalid_input".into())
+    );
+    assert_eq!(
+        h.err(
+            "git.pr_auto_merge",
+            json!({"workspace_id": "nope", "number": 1, "enabled": false})
+        )
+        .await
+        .1,
+        "not_found"
+    );
 }
 
 #[test]
@@ -2444,6 +2484,7 @@ fn git_errors_keep_their_codes_and_never_gh_s_words() {
     let cases = [
         (NotMergeable, StatusCode::CONFLICT, "not_mergeable"),
         (PrChanged, StatusCode::CONFLICT, "pr_changed"),
+        (AutoMergeDisabled, StatusCode::CONFLICT, "auto_merge_disabled"),
         (
             GhUnavailable,
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -2982,7 +3023,14 @@ async fn worktree_create_diff_and_guarded_removal() {
         .await;
     assert_eq!(
         removed,
-        json!({"workspace_id": wt_id, "parent_workspace_id": wid, "kept_sessions": 1})
+        json!({
+            "workspace_id": wt_id,
+            "parent_workspace_id": wid,
+            "kept_sessions": 1,
+            "branch": branch,
+            "branch_deleted": false,
+            "branch_kept_reason": null,
+        })
     );
     assert!(!terminal_ids(h.ok("terminal.list", json!({})).await).contains(&tid));
     assert!(!std::path::Path::new(&row.path).exists());
@@ -3038,6 +3086,139 @@ async fn worktree_create_diff_and_guarded_removal() {
         );
     }
     assert!(h.state.connection_manager.get_state(CONN).await.is_none());
+}
+
+#[tokio::test]
+async fn workspace_remove_archives_its_worktrees_and_re_add_revives_it() {
+    let h = host(false).await;
+    let wid = h.workspace_id.clone();
+    let made = h
+        .ok("workspace.create_worktree", json!({"workspace_id": wid}))
+        .await;
+    let made_id = made["workspace_id"].as_str().unwrap().to_string();
+    let listed_ids = |list: Value| -> Vec<String> {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["workspace_id"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // Only a repository is removed this way; a worktree is archived.
+    assert_eq!(
+        h.err("workspace.remove", json!({"workspace_id": made_id}))
+            .await
+            .1,
+        "invalid_input"
+    );
+    assert_eq!(
+        h.err(
+            "workspace.remove",
+            json!({"workspace_id": wid, "path": "/tmp/x"})
+        )
+        .await,
+        (StatusCode::BAD_REQUEST, "invalid_request".into())
+    );
+
+    // Busy: a live agent in the root refuses it, even forced.
+    let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let _rx = h
+        .state
+        .connection_manager
+        .insert_test_connection_live(
+            CONN,
+            AgentType::ClaudeCode,
+            Some(h.root.clone().into()),
+            h.state.emitter.clone(),
+        )
+        .await;
+    h.state
+        .connection_manager
+        .get_state(CONN)
+        .await
+        .unwrap()
+        .write()
+        .await
+        .conversation_id = Some(conv);
+    for force in [false, true] {
+        assert_eq!(
+            h.err_details(
+                "workspace.remove",
+                json!({"workspace_id": wid, "force": force})
+            )
+            .await,
+            (
+                StatusCode::CONFLICT,
+                "workspace_busy".into(),
+                Some(json!({"live_sessions": 1, "terminals": 0, "session_ids": [sid]}))
+            ),
+            "force={force}"
+        );
+    }
+    h.ok("session.stop", json!({"session_id": sid})).await;
+
+    // Dirty: a change in any worktree refuses it before anything is archived.
+    std::fs::write(std::path::Path::new(&h.wt).join("draft.txt"), "x").unwrap();
+    assert_eq!(
+        h.err_details("workspace.remove", json!({"workspace_id": wid}))
+            .await,
+        (
+            StatusCode::CONFLICT,
+            "workspace_dirty".into(),
+            Some(json!({"changes": 1}))
+        )
+    );
+    let live = listed_ids(h.ok("workspace.list", json!({})).await);
+    for id in [&wid, &h.wt_workspace_id, &made_id] {
+        assert!(live.contains(id), "{id} still live");
+    }
+
+    // Forced: every worktree archived, the root gone, its files untouched.
+    let tid = h
+        .ok(
+            "terminal.spawn",
+            json!({"workspace_id": made_id, "shell": "/bin/sh"}),
+        )
+        .await["terminal_id"]
+        .clone();
+    let removed = h
+        .ok(
+            "workspace.remove",
+            json!({"workspace_id": wid, "force": true}),
+        )
+        .await;
+    assert_eq!(
+        removed,
+        json!({"workspace_id": wid, "archived_worktrees": [h.wt_workspace_id, made_id]})
+    );
+    assert!(!h
+        .ok("terminal.list", json!({}))
+        .await
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["terminal_id"] == tid));
+    assert!(!std::path::Path::new(&h.wt).exists());
+    assert!(std::path::Path::new(&h.root).join(".git").exists());
+    let after = listed_ids(h.ok("workspace.list", json!({})).await);
+    for id in [&wid, &h.wt_workspace_id, &made_id] {
+        assert!(!after.contains(id), "{id} still listed");
+    }
+    assert_eq!(
+        h.err("workspace.open", json!({"workspace_id": wid}))
+            .await
+            .1,
+        "not_found"
+    );
+
+    // Added again: the same workspace, its sessions back with it.
+    let again = h.ok("workspace.add", json!({"path": h.root.clone()})).await;
+    assert_eq!(again["workspace_id"], wid.as_str());
+    assert_eq!(again["kind"], "root");
+    assert!(listed_ids(h.ok("workspace.list", json!({})).await).contains(&wid));
+    let sessions = h.ok("session.list", json!({"workspace_id": wid})).await;
+    assert_eq!(sessions[0]["session_id"], sid.as_str());
 }
 
 #[tokio::test]
@@ -3788,6 +3969,406 @@ fn claude_options(mode: &str, model: &str) -> Vec<crate::acp::types::SessionConf
         ]}},
     ]))
     .unwrap()
+}
+
+#[tokio::test]
+async fn settings_round_trip_and_refuse_what_they_do_not_know() {
+    let h = host(false).await;
+    let empty = h.ok("settings.get", json!({})).await;
+    assert_eq!(empty["values"]["defaults.agent"], Value::Null);
+    assert_eq!(empty["values"]["defaults.mode"], Value::Null);
+    let set = h
+        .ok(
+            "settings.update",
+            json!({"values": {"defaults.agent": "codex", "defaults.claude_code.model": "haiku"}}),
+        )
+        .await;
+    assert_eq!(set["values"]["defaults.agent"], "codex");
+    assert_eq!(set["values"]["defaults.claude_code.model"], "haiku");
+    let cleared = h
+        .ok("settings.update", json!({"values": {"defaults.agent": null}}))
+        .await;
+    assert_eq!(cleared["values"]["defaults.agent"], Value::Null);
+    assert_eq!(cleared["values"]["defaults.claude_code.model"], "haiku");
+    for bad in [
+        json!({"values": {"defaults.nope": "x"}}),
+        json!({"values": {"defaults.agent": "nobody"}}),
+        json!({"values": {"defaults.mode": "bypassPermissions"}}),
+        json!({"values": {"defaults.codex.effort": 3}}),
+    ] {
+        assert_eq!(h.err("settings.update", bad.clone()).await.1, "invalid_input", "{bad}");
+    }
+    // Nothing is written when one value is refused.
+    h.err(
+        "settings.update",
+        json!({"values": {"defaults.mode": "plan", "defaults.nope": "x"}}),
+    )
+    .await;
+    assert_eq!(h.ok("settings.get", json!({})).await["values"]["defaults.mode"], Value::Null);
+    assert_eq!(h.err("settings.update", json!({"values": {}, "x": 1})).await.1, "invalid_request");
+}
+
+#[tokio::test]
+async fn advanced_settings_take_effect_on_the_host() {
+    let h = host(false).await;
+    let empty = h.ok("settings.get", json!({})).await;
+    assert_eq!(empty["values"]["terminal.scrollback"], Value::Null);
+    assert_eq!(empty["values"]["git.push_sets_upstream"], Value::Null);
+    assert!(crate::settings::push_sets_upstream(&h.state.db.conn).await, "on until turned off");
+    let set = h
+        .ok(
+            "settings.update",
+            json!({"values": {"terminal.scrollback": 4 * 1024 * 1024, "git.push_sets_upstream": false}}),
+        )
+        .await;
+    assert_eq!(set["values"]["terminal.scrollback"], 4 * 1024 * 1024);
+    assert!(!crate::settings::push_sets_upstream(&h.state.db.conn).await);
+    for bad in [
+        json!({"values": {"terminal.scrollback": 0}}),
+        json!({"values": {"terminal.scrollback": "4MB"}}),
+        json!({"values": {"git.push_sets_upstream": "no"}}),
+    ] {
+        assert_eq!(h.err("settings.update", bad).await.1, "invalid_input");
+    }
+    h.ok("settings.update", json!({"values": {"terminal.scrollback": null}})).await;
+}
+
+#[tokio::test]
+async fn folders_are_where_the_host_keeps_things() {
+    let h = host(false).await;
+    // The one op whose answer is host paths, so it skips `call`'s leak check.
+    let res = h
+        .server
+        .post("/zwiim/v1/host.folders")
+        .authorization_bearer(HOST_TOKEN)
+        .json(&json!({}))
+        .await;
+    assert_eq!(res.status_code(), StatusCode::OK, "{}", res.text());
+    let f: Value = res.json();
+    assert_eq!(f["data"], h.state.data_dir.to_string_lossy().as_ref());
+    assert_eq!(f["worktrees"], h.state.worktrees_dir.to_string_lossy().as_ref());
+    assert_eq!(f["repositories"], h.state.repos_dir.to_string_lossy().as_ref());
+}
+
+#[tokio::test]
+async fn prompt_settings_keep_the_users_words() {
+    let h = host(false).await;
+    let pull_request = "Draft PRs only.\n\n1. Title them `area: change`.";
+    let set = h
+        .ok(
+            "settings.update",
+            json!({"values": {
+                "prompts.pull_request": pull_request,
+                "prompts.branch_name": "Start with the ticket number.",
+            }}),
+        )
+        .await;
+    assert_eq!(set["values"]["prompts.pull_request"], pull_request);
+    assert!(set["values"].get("prompts.general").is_none());
+    let prefs = crate::settings::user_preferences(&h.state.db.conn).await;
+    assert_eq!(prefs.pull_request.as_deref(), Some(pull_request));
+    for bad in [
+        json!({"values": {"prompts.pull_request": "  "}}),
+        json!({"values": {"prompts.general": "x"}}),
+        json!({"values": {"prompts.resolve_conflicts": "x"}}),
+        json!({"values": {"prompts.branch_name": "x".repeat(crate::settings::MAX_PROMPT + 1)}}),
+        json!({"values": {"prompts.code_review": "x"}}),
+    ] {
+        assert_eq!(h.err("settings.update", bad).await.1, "invalid_input");
+    }
+    let cleared = h
+        .ok("settings.update", json!({"values": {"prompts.pull_request": null}}))
+        .await;
+    assert_eq!(cleared["values"]["prompts.pull_request"], Value::Null);
+    assert_eq!(cleared["values"]["prompts.branch_name"], "Start with the ticket number.");
+}
+
+#[tokio::test]
+async fn git_settings_name_new_branches_and_delete_them_on_remove() {
+    let h = host(false).await;
+    let wid = h.workspace_id.clone();
+    for bad in [
+        json!({"values": {"git.branch_prefix": "none"}}),
+        json!({"values": {"git.branch_prefix_custom": "a b"}}),
+        json!({"values": {"git.delete_branch_on_remove": "yes"}}),
+    ] {
+        assert_eq!(
+            h.err("settings.update", bad.clone()).await.1,
+            "invalid_input",
+            "{bad}"
+        );
+    }
+    let set = h
+        .ok(
+            "settings.update",
+            json!({"values": {
+                "git.branch_prefix": "custom",
+                "git.branch_prefix_custom": "team/ashish/",
+                "git.delete_branch_on_remove": true,
+            }}),
+        )
+        .await;
+    assert_eq!(set["values"]["git.branch_prefix"], "custom");
+    assert_eq!(set["values"]["git.delete_branch_on_remove"], true);
+
+    let root = std::path::Path::new(&h.root);
+    let origin = root.parent().unwrap().join("origin.git");
+    git(root, &["init", "-q", "--bare", origin.to_str().unwrap()]);
+    git(root, &["remote", "add", "origin", origin.to_str().unwrap()]);
+    git(root, &["push", "-q", "origin", "main"]);
+    git(root, &["remote", "set-head", "origin", "main"]);
+
+    let wt = h
+        .ok("workspace.create_worktree", json!({"workspace_id": wid}))
+        .await;
+    let branch = wt["branch"].as_str().unwrap().to_string();
+    let city = branch.strip_prefix("team/ashish/").expect(&branch);
+    let row = crate::workspace::resolve(&h.state.db.conn, wt["workspace_id"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert!(row.path.ends_with(&format!("/{city}")), "{}", row.path);
+    git(
+        std::path::Path::new(&row.path),
+        &["push", "-q", "origin", &branch],
+    );
+
+    let removed = h
+        .ok(
+            "workspace.remove_worktree",
+            json!({"workspace_id": wt["workspace_id"]}),
+        )
+        .await;
+    assert_eq!(removed["branch"], branch.as_str());
+    assert_eq!(removed["branch_deleted"], true);
+    assert_eq!(removed["branch_kept_reason"], Value::Null);
+    assert_eq!(git_out(root, &["branch", "--list", &branch]), "");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn repository_scripts_run_around_a_worktrees_life() {
+    let h = host(false).await;
+    let wid = h.workspace_id.clone();
+    let none = h
+        .ok("repository.settings.get", json!({"workspace_id": wid}))
+        .await;
+    assert_eq!(
+        none,
+        json!({"values": {"scripts.setup": null, "scripts.run": null, "scripts.archive": null, "files.copy": null, "env": null, "preview.urls": null}})
+    );
+    for bad in [
+        json!({"workspace_id": wid, "values": {"scripts.deploy": "x"}}),
+        json!({"workspace_id": wid, "values": {"scripts.setup": "  "}}),
+        json!({"workspace_id": wid, "values": {"files.copy": ["#x"]}}),
+        json!({"workspace_id": wid, "values": {"env": {"ZWIIM_ROOT_PATH": "x"}}}),
+        json!({"workspace_id": wid, "values": {"env": {"A": 1}}}),
+        json!({"workspace_id": wid, "values": {"scripts.setup": "x".repeat(crate::repository_settings::MAX_SCRIPT + 1)}}),
+    ] {
+        assert_eq!(h.err("repository.settings.update", bad).await.1, "invalid_input");
+    }
+    assert_eq!(
+        h.err("repository.settings.update", json!({"workspace_id": wid, "values": {}, "x": 1}))
+            .await
+            .1,
+        "invalid_request"
+    );
+    assert_eq!(
+        h.err("repository.settings.get", json!({"workspace_id": "nope"})).await.1,
+        "not_found"
+    );
+
+    // Only the files the patterns pick are copied into a new worktree.
+    let root = std::path::Path::new(&h.root);
+    std::fs::write(root.join(".git/info/exclude"), "*.local\n.env\n").unwrap();
+    std::fs::write(root.join("keys.local"), "k").unwrap();
+    std::fs::write(root.join(".env"), "e").unwrap();
+    let set = h
+        .ok(
+            "repository.settings.update",
+            json!({"workspace_id": wid, "values": {
+                "scripts.setup": "echo \"$API_URL\" > setup-ran",
+                "scripts.archive": "echo archiving",
+                "files.copy": ["*.local"],
+                "env": {"API_URL": "http://localhost:4000"},
+            }}),
+        )
+        .await;
+    assert_eq!(set["values"]["scripts.setup"], "echo \"$API_URL\" > setup-ran");
+    assert_eq!(set["values"]["env"], json!({"API_URL": "http://localhost:4000"}));
+
+    // The setup script starts in a terminal of the new worktree, without
+    // holding up the reply.
+    let wt = h
+        .ok("workspace.create_worktree", json!({"workspace_id": wid}))
+        .await;
+    let wt_id = wt["workspace_id"].as_str().unwrap().to_string();
+    let wt_path = crate::workspace::resolve(&h.state.db.conn, &wt_id).await.unwrap().path;
+    let wt_path = std::path::Path::new(&wt_path);
+    assert!(wt_path.join("keys.local").exists() && !wt_path.join(".env").exists());
+    // The setup script sees the repository's variables.
+    let mut ran = String::new();
+    for _ in 0..100 {
+        ran = std::fs::read_to_string(wt_path.join("setup-ran")).unwrap_or_default();
+        if !ran.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(ran, "http://localhost:4000\n");
+    let list = h.ok("terminal.list", json!({})).await;
+    assert!(list
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["title"] == "Setup" && t["workspace_id"] == wt_id.as_str()), "{list}");
+    // A worktree reads and changes its repository's.
+    let through_worktree = h
+        .ok("repository.settings.get", json!({"workspace_id": wt_id}))
+        .await;
+    assert_eq!(through_worktree, set);
+
+    // The run script runs on asking, in the worktree's one `Run` terminal,
+    // with the worktree's own port; its terminals have it too.
+    let wait_for = |name: &'static str| async move {
+        for _ in 0..100 {
+            let read = std::fs::read_to_string(wt_path.join(name)).unwrap_or_default();
+            if !read.is_empty() {
+                return read;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        String::new()
+    };
+    let run = |script: &str| json!({"workspace_id": wt_id, "script": script});
+    let (_, code, details) = h.err_details("workspace.run_script", run("run")).await;
+    assert_eq!((code.as_str(), details), ("script_not_set", Some(json!({"script": "run"}))));
+    assert_eq!(
+        h.err("workspace.run_script", json!({"workspace_id": wid, "script": "setup"})).await.1,
+        "root_workspace"
+    );
+    assert_eq!(h.err("workspace.run_script", run("deploy")).await.1, "invalid_request");
+    h.ok(
+        "repository.settings.update",
+        json!({"workspace_id": wid, "values": {"scripts.run": "echo \"$ZWIIM_PORT\" > run-port; sleep 30"}}),
+    )
+    .await;
+    let first = h.ok("workspace.run_script", run("run")).await;
+    let port = wait_for("run-port").await;
+    assert!(port.trim().parse::<u16>().unwrap() >= 40_000, "{port}");
+    let again = h.ok("workspace.run_script", run("run")).await;
+    assert_ne!(first["terminal_id"], again["terminal_id"]);
+    h.ok(
+        "terminal.spawn",
+        json!({"workspace_id": wt_id, "initial_command": "echo \"$ZWIIM_PORT\" > term-port"}),
+    )
+    .await;
+    assert_eq!(wait_for("term-port").await, port);
+    // Setup again replaces the first `Setup` terminal too.
+    std::fs::remove_file(wt_path.join("setup-ran")).unwrap();
+    let setup = h.ok("workspace.run_script", run("setup")).await;
+    assert_eq!(wait_for("setup-ran").await, "http://localhost:4000\n");
+    let list = h.ok("terminal.list", json!({})).await;
+    let titled = |title: &str| {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| t["title"] == title && t["workspace_id"] == wt_id.as_str())
+            .map(|t| t["terminal_id"].clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(titled("Run"), vec![again["terminal_id"].clone()], "{list}");
+    assert_eq!(titled("Setup"), vec![setup["terminal_id"].clone()], "{list}");
+
+    // Its previews: the repository's URLs, with the worktree's ports.
+    h.ok(
+        "repository.settings.update",
+        json!({"workspace_id": wid, "values": {"preview.urls": [{"name": "App", "url": "http://localhost:$((ZWIIM_PORT + 1))"}]}}),
+    )
+    .await;
+    let app = port.trim().parse::<u16>().unwrap() + 1;
+    assert_eq!(
+        h.ok("workspace.previews", json!({"workspace_id": wt_id})).await,
+        json!({"previews": [{"name": "App", "url": format!("http://localhost:{app}")}]})
+    );
+    assert_eq!(
+        h.err("workspace.previews", json!({"workspace_id": wid})).await.1,
+        "root_workspace"
+    );
+
+    let removed = h
+        .ok("workspace.remove_worktree", json!({"workspace_id": wt_id, "force": true}))
+        .await;
+    assert_eq!(
+        removed["archive_script"],
+        json!({"exit_code": 0, "timed_out": false, "output": "archiving"})
+    );
+}
+
+#[tokio::test]
+async fn agent_list_shows_the_host_defaults_it_offers() {
+    let h = host(false).await;
+    crate::db::service::app_metadata_service::upsert_value(
+        &h.state.db.conn,
+        "zwiim.agent_options:claude_code",
+        &serde_json::to_string(&claude_options("default", "opus[1m]")).unwrap(),
+    )
+    .await
+    .unwrap();
+    let opus_effort = claude_options("default", "opus[1m]")
+        .into_iter()
+        .find(|o| o.id == "effort");
+    crate::db::service::app_metadata_service::upsert_value(
+        &h.state.db.conn,
+        "zwiim.agent_model_effort:claude_code",
+        &serde_json::to_string(&json!({"opus[1m]": opus_effort, "haiku": null})).unwrap(),
+    )
+    .await
+    .unwrap();
+    let claude = |list: Value| {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["agent"] == "claude_code")
+            .unwrap()
+            .clone()
+    };
+    let before = claude(h.ok("agent.list", json!({})).await);
+    assert_eq!(before["default"], false);
+    assert_eq!(before["defaults"], json!({"model": null, "effort": null, "mode": null}));
+
+    h.ok(
+        "settings.update",
+        json!({"values": {
+            "defaults.agent": "claude_code",
+            "defaults.mode": "plan",
+            "defaults.claude_code.effort": "low",
+        }}),
+    )
+    .await;
+    let listed = h.ok("agent.list", json!({})).await;
+    let codex = listed.as_array().unwrap().iter().find(|a| a["agent"] == "codex").unwrap();
+    assert_eq!(codex["default"], false);
+    assert_eq!(codex["defaults"]["mode"], Value::Null, "no catalog, nothing offered");
+    let now = claude(listed);
+    assert_eq!(now["default"], true);
+    assert_eq!(now["defaults"], json!({"model": null, "effort": "low", "mode": "plan"}));
+    assert_eq!(now["options"]["mode"]["current"], "plan");
+    assert_eq!(now["options"]["effort"]["current"], "low");
+    assert_eq!(now["effort_by_model"]["opus[1m]"]["current"], "low");
+
+    // Haiku offers no effort: the default effort does not apply on it, and a
+    // model the agent does not offer is ignored.
+    h.ok("settings.update", json!({"values": {"defaults.claude_code.model": "haiku"}}))
+        .await;
+    let on_haiku = claude(h.ok("agent.list", json!({})).await);
+    assert_eq!(on_haiku["defaults"], json!({"model": "haiku", "effort": null, "mode": "plan"}));
+    assert_eq!(on_haiku["options"]["model"]["current"], "haiku");
+    assert_eq!(on_haiku["options"]["effort"], Value::Null);
+    h.ok("settings.update", json!({"values": {"defaults.claude_code.model": "sonnet"}}))
+        .await;
+    let dropped = claude(h.ok("agent.list", json!({})).await);
+    assert_eq!(dropped["defaults"]["model"], Value::Null);
+    assert_eq!(dropped["options"]["model"]["current"], "opus[1m]");
 }
 
 #[tokio::test]
@@ -4920,4 +5501,260 @@ async fn an_attachment_alone_is_a_prompt() {
         panic!("no prompt");
     };
     assert!(matches!(&blocks[..], [PromptInputBlock::Text { text }] if text.starts_with(crate::attachments::NOTE_OPEN)));
+}
+
+/// The follow-ups queued on session `sid`, as `session.list` shows them.
+async fn follow_ups_of(h: &Host, sid: &str) -> Value {
+    let list = h
+        .ok("session.list", json!({"workspace_id": h.wt_workspace_id.clone()}))
+        .await;
+    let row = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["session_id"] == sid)
+        .expect("listed")
+        .clone();
+    row.get("follow_ups").cloned().unwrap_or(json!([]))
+}
+
+fn prompt_text(cmd: Option<ConnectionCommand>) -> String {
+    match cmd {
+        Some(ConnectionCommand::Prompt { blocks, .. }) => match &blocks[..] {
+            [PromptInputBlock::Text { text }, ..] => text.clone(),
+            other => panic!("prompt without text: {other:?}"),
+        },
+        _ => panic!("no prompt"),
+    }
+}
+
+#[tokio::test]
+async fn follow_up_goes_out_at_once_to_an_idle_session() {
+    let h = host(false).await;
+    let (sid, mut rx) = h.live_session().await;
+    let sent = h
+        .ok(
+            "session.follow_up",
+            json!({"session_id": sid, "blocks": [{"type": "text", "text": "next"}]}),
+        )
+        .await;
+    assert_eq!(sent, json!({"outcome": "sent"}));
+    assert_eq!(prompt_text(rx.recv().await), "next");
+    assert_eq!(follow_ups_of(&h, &sid).await, json!([]));
+
+    assert_eq!(
+        h.err("session.follow_up", json!({"session_id": sid, "blocks": []}))
+            .await
+            .1,
+        "invalid_input"
+    );
+    assert_eq!(
+        h.err(
+            "session.follow_up",
+            json!({"session_id": "nope", "blocks": [{"type": "text", "text": "x"}]})
+        )
+        .await
+        .1,
+        "not_found"
+    );
+}
+
+#[tokio::test]
+async fn follow_ups_queue_behind_a_running_turn_and_can_be_changed() {
+    let h = host(false).await;
+    let (sid, mut rx) = h.live_session().await;
+    let st = h.state.connection_manager.get_state(CONN).await.unwrap();
+    st.write().await.turn_in_flight = true;
+
+    for (text, image) in [("first", false), ("second", true), ("third", false)] {
+        let mut blocks = vec![json!({"type": "text", "text": text})];
+        if image {
+            blocks.push(json!({"type": "image", "data": "AAAA", "mime_type": "image/png"}));
+        }
+        let queued = h
+            .ok("session.follow_up", json!({"session_id": sid, "blocks": blocks}))
+            .await;
+        assert_eq!(queued, json!({"outcome": "queued"}));
+    }
+    assert!(rx.try_recv().is_err(), "nothing reaches the busy agent");
+    let queue = follow_ups_of(&h, &sid).await;
+    let texts: Vec<_> = queue.as_array().unwrap().iter().map(|f| f["text"].clone()).collect();
+    assert_eq!(texts, [json!("first"), json!("second"), json!("third")]);
+    assert_eq!(queue[1]["attachments"], 1);
+    let id = |i: usize| queue[i]["follow_up_id"].as_str().unwrap().to_string();
+
+    h.ok(
+        "session.follow_up_edit",
+        json!({"session_id": sid, "follow_up_id": id(0), "text": "first, edited"}),
+    )
+    .await;
+    // Text is all the first one has, so clearing it would leave nothing.
+    assert_eq!(
+        h.err(
+            "session.follow_up_edit",
+            json!({"session_id": sid, "follow_up_id": id(0), "text": "  "})
+        )
+        .await
+        .1,
+        "invalid_input"
+    );
+    assert_eq!(
+        h.err(
+            "session.follow_up_edit",
+            json!({"session_id": sid, "follow_up_id": "gone", "text": "x"})
+        )
+        .await
+        .1,
+        "not_found"
+    );
+    h.ok("session.follow_up_remove", json!({"session_id": sid, "follow_up_id": id(2)}))
+        .await;
+    // Already gone is fine: another device may have sent or removed it.
+    h.ok("session.follow_up_remove", json!({"session_id": sid, "follow_up_id": id(2)}))
+        .await;
+
+    // Sending one while the turn runs puts it first.
+    let moved = h
+        .ok("session.follow_up_send", json!({"session_id": sid, "follow_up_id": id(1)}))
+        .await;
+    assert_eq!(moved, json!({"outcome": "queued"}));
+    let queue = follow_ups_of(&h, &sid).await;
+    let texts: Vec<_> = queue.as_array().unwrap().iter().map(|f| f["text"].clone()).collect();
+    assert_eq!(texts, [json!("second"), json!("first, edited")]);
+
+    // Idle, it goes out now.
+    st.write().await.turn_in_flight = false;
+    let sent = h
+        .ok("session.follow_up_send", json!({"session_id": sid, "follow_up_id": id(0)}))
+        .await;
+    assert_eq!(sent, json!({"outcome": "sent"}));
+    assert_eq!(prompt_text(rx.recv().await), "first, edited");
+    let queue = follow_ups_of(&h, &sid).await;
+    assert_eq!(queue.as_array().unwrap().len(), 1);
+    assert_eq!(
+        h.err("session.follow_up_send", json!({"session_id": sid, "follow_up_id": id(0)}))
+            .await
+            .1,
+        "not_found"
+    );
+}
+
+#[tokio::test]
+async fn the_next_follow_up_goes_out_when_a_turn_ends() {
+    let h = host(false).await;
+    crate::follow_ups::spawn_tracker(h.state.clone());
+    let (sid, mut rx) = h.live_session().await;
+    let st = h.state.connection_manager.get_state(CONN).await.unwrap();
+    st.write().await.turn_in_flight = true;
+    for text in ["one", "two"] {
+        h.ok(
+            "session.follow_up",
+            json!({"session_id": sid, "blocks": [{"type": "text", "text": text}]}),
+        )
+        .await;
+    }
+
+    // A stopped turn holds the queue.
+    h.emit(AcpEvent::TurnComplete {
+        session_id: "agent-native".into(),
+        stop_reason: "cancelled".into(),
+        agent_type: "claude_code".into(),
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(rx.try_recv().is_err(), "held after a stop");
+    assert_eq!(follow_ups_of(&h, &sid).await.as_array().unwrap().len(), 2);
+
+    st.write().await.turn_in_flight = true;
+    h.emit(AcpEvent::TurnComplete {
+        session_id: "agent-native".into(),
+        stop_reason: "end_turn".into(),
+        agent_type: "claude_code".into(),
+    })
+    .await;
+    let next = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("the queue drains");
+    assert_eq!(prompt_text(next), "one");
+    for _ in 0..50 {
+        if follow_ups_of(&h, &sid).await.as_array().unwrap().len() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let queue = follow_ups_of(&h, &sid).await;
+    assert_eq!(queue[0]["text"], "two");
+    assert_eq!(queue.as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_steer_the_agent_cannot_take_goes_through_the_queue() {
+    let h = host(false).await;
+    let (sid, mut rx) = h.live_session().await;
+    let steer = |text: &str| json!({"session_id": sid, "blocks": [{"type": "text", "text": text}], "steer": true});
+
+    // Idle: there is no turn to steer, so it starts one.
+    assert_eq!(h.ok("session.follow_up", steer("now")).await, json!({"outcome": "sent"}));
+    assert_eq!(prompt_text(rx.recv().await), "now");
+
+    // Running, on an agent that cannot take messages mid-turn: it waits.
+    let st = h.state.connection_manager.get_state(CONN).await.unwrap();
+    st.write().await.turn_in_flight = true;
+    assert_eq!(h.ok("session.follow_up", steer("later")).await, json!({"outcome": "queued"}));
+    assert!(rx.try_recv().is_err());
+    assert_eq!(follow_ups_of(&h, &sid).await[0]["text"], "later");
+}
+
+#[tokio::test]
+async fn a_steer_goes_into_the_running_turn() {
+    use crate::acp::connection::SteerOutcome;
+    let h = host(true).await;
+    let (sid, mut rx) = h.live_session().await;
+    let st = h.state.connection_manager.get_state(CONN).await.unwrap();
+    {
+        let mut s = st.write().await;
+        s.turn_in_flight = true;
+        s.native_steering_available = true;
+    }
+    let mut ws = h.ws().await;
+    ws.send_json(&json!({"op": "session.subscribe", "subscription_id": "a", "session_id": sid}))
+        .await;
+    assert_eq!(recv(&mut ws).await["type"], "snapshot");
+
+    // The agent takes the first; its turn has settled by the second.
+    let agent = tokio::spawn(async move {
+        let mut outcomes = [SteerOutcome::Injected, SteerOutcome::PromptRequired].into_iter();
+        let mut sent = vec![];
+        while let Some(outcome) = outcomes.next() {
+            match rx.recv().await {
+                Some(ConnectionCommand::Steer { blocks, reply }) => {
+                    sent.push(blocks);
+                    let _ = reply.send(Ok(outcome));
+                }
+                _ => panic!("expected a steer"),
+            }
+        }
+        sent
+    });
+    let steer = |text: &str| json!({"session_id": sid, "blocks": [{"type": "text", "text": text}], "steer": true});
+    assert_eq!(
+        h.ok("session.follow_up", steer("use the cache")).await,
+        json!({"outcome": "steered"})
+    );
+    let ev = recv(&mut ws).await;
+    assert_eq!(ev["event"]["type"], "agent.steered", "{ev}");
+    assert_eq!(
+        ev["event"]["payload"]["blocks"],
+        json!([{"type": "text", "text": "use the cache"}])
+    );
+    assert_eq!(follow_ups_of(&h, &sid).await, json!([]));
+
+    // The turn ended before the agent took it: it keeps its place in line.
+    assert_eq!(
+        h.ok("session.follow_up", steer("and tests")).await,
+        json!({"outcome": "queued"})
+    );
+    assert_eq!(follow_ups_of(&h, &sid).await[0]["text"], "and tests");
+    let sent = agent.await.unwrap();
+    assert!(matches!(&sent[0][..], [PromptInputBlock::Text { text }] if text == "use the cache"));
 }

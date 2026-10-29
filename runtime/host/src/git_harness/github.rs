@@ -10,8 +10,8 @@ use serde::Deserialize;
 use super::error::{classify_gh, GitError, GitErrorCode};
 use super::local::{not_an_option, require_branch};
 use super::op::{
-    MergeMethod, PrCheck, PrComment, PrComments, PrCreated, PrMerged, PrReview, PrReviewComment,
-    PrSummary,
+    AutoMergeOutcome, MergeMethod, PrAutoMerged, PrCheck, PrComment, PrComments, PrCreated,
+    PrMerged, PrReview, PrReviewComment, PrSummary,
 };
 use super::pr_state::{
     MergeStatus, PrLifecycle, PrState, RawPr, RepoMergeSettings, PR_STATE_FIELDS, REPO_MERGE_FIELDS,
@@ -195,8 +195,9 @@ pub(super) async fn pr_state(
 /// Merges only what GitHub would merge right now: a pull request it reports
 /// not mergeable is refused before `gh` runs, the merge is pinned to the head
 /// it was checked at, and a merge `gh` queued for later instead (auto-merge)
-/// is turned off again and reported as `not_mergeable`. Keeps the head branch;
-/// never bypasses branch protection.
+/// is turned off again and reported as `not_mergeable` (an auto-merge the
+/// user turned on before stays on). Keeps the head branch; never bypasses
+/// branch protection.
 pub(super) async fn pr_merge(
     host: &GitHost<'_>,
     root: &str,
@@ -210,30 +211,15 @@ pub(super) async fn pr_merge(
         Some(n) => n.to_string(),
         None => pr_view(host, root, None).await?.number.to_string(),
     };
-    let mut pr = view_raw(host, root, &target).await?;
-    // GitHub works mergeability out lazily; the first read after a push is
-    // often UNKNOWN.
-    for _ in 0..UNKNOWN_RETRIES {
-        if pr.merge_status() != MergeStatus::Unknown || pr.lifecycle().is_final() {
-            break;
-        }
-        tokio::time::sleep(UNKNOWN_RETRY_DELAY).await;
-        pr = view_raw(host, root, &target).await?;
-    }
+    let pr = view_known(host, root, &target).await?;
     let number = pr.number;
-    if let Some(expected) = expected_head {
-        if pr.head_ref_oid != expected {
-            return Err(GitError::new(
-                GitErrorCode::PrChanged,
-                format!("Pull request #{number} has new commits; review them and merge again"),
-            ));
-        }
-    }
+    check_head(&pr, expected_head)?;
     let methods = merge_methods(host, root).await?;
     let method = method
         .or_else(|| methods.first().copied())
         .unwrap_or_default();
     let head = pr.head_ref_oid.clone();
+    let was_auto = pr.auto_merge_request.is_some();
     let state = pr.into_state(methods);
     if !state.merge.allowed {
         let why = match state.state {
@@ -269,6 +255,13 @@ pub(super) async fn pr_merge(
             merged_at: after.merged_at,
         });
     }
+    if after.auto_merge_request.is_some() && was_auto {
+        // The user's own auto-merge stays on.
+        return Err(GitError::new(
+            GitErrorCode::NotMergeable,
+            format!("Pull request #{number} is set to merge once GitHub's requirements are met"),
+        ));
+    }
     if after.auto_merge_request.is_some() {
         let disable = [
             "pr".to_string(),
@@ -295,6 +288,156 @@ pub(super) async fn pr_merge(
         GitErrorCode::NotMergeable,
         format!("GitHub did not merge pull request #{number}"),
     ))
+}
+
+/// Turn auto-merge for pull request `number` on (`enabled`), so GitHub
+/// merges it with `method` (else the repository's preferred one) once its
+/// requirements are met, or off. Turning it on is pinned to `expected_head`.
+///
+/// A pull request GitHub would merge already is merged now instead, through
+/// [`pr_merge`]'s checks. Only one that waits on required checks or review
+/// takes auto-merge: one that is behind its base, conflicted or a draft is
+/// refused as `not_mergeable`. Turning on or off what already is so is a
+/// no-op. Never bypasses branch protection.
+pub(super) async fn pr_auto_merge(
+    host: &GitHost<'_>,
+    root: &str,
+    number: u64,
+    enabled: bool,
+    method: Option<MergeMethod>,
+    expected_head: Option<&str>,
+) -> Result<PrAutoMerged, GitError> {
+    let target = number.to_string();
+    let pr = if enabled {
+        view_known(host, root, &target).await?
+    } else {
+        view_raw(host, root, &target).await?
+    };
+    let auto_method = |pr: &RawPr| {
+        pr.auto_merge_request
+            .as_ref()
+            .and_then(|a| a.merge_method.as_deref())
+            .and_then(MergeMethod::from_github)
+    };
+    let merged = |method| PrAutoMerged {
+        number,
+        outcome: AutoMergeOutcome::Merged,
+        method,
+    };
+    if pr.lifecycle() == PrLifecycle::Merged {
+        return Ok(merged(auto_method(&pr)));
+    }
+    if !enabled {
+        if pr.auto_merge_request.is_some() {
+            let args = [
+                "pr".to_string(),
+                "merge".to_string(),
+                target.clone(),
+                "--disable-auto".to_string(),
+            ];
+            gh(host, root, "pr merge --disable-auto", &args).await?;
+        }
+        return Ok(PrAutoMerged {
+            number,
+            outcome: AutoMergeOutcome::Off,
+            method: None,
+        });
+    }
+    check_head(&pr, expected_head)?;
+    if pr.auto_merge_request.is_some() {
+        return Ok(PrAutoMerged {
+            number,
+            outcome: AutoMergeOutcome::On,
+            method: auto_method(&pr),
+        });
+    }
+    let methods = merge_methods(host, root).await?;
+    let method = method
+        .or_else(|| methods.first().copied())
+        .unwrap_or_default();
+    let head = pr.head_ref_oid.clone();
+    let state = pr.into_state(methods);
+    if state.merge.allowed {
+        let done = pr_merge(host, root, Some(number), Some(method), expected_head).await?;
+        return Ok(merged(Some(done.method)));
+    }
+    if !state.merge.auto_available {
+        let why = match state.state {
+            PrLifecycle::Closed => "it is closed".to_string(),
+            _ => state
+                .merge
+                .reason
+                .clone()
+                .unwrap_or_else(|| "GitHub will not queue it".to_string()),
+        };
+        return Err(GitError::new(
+            GitErrorCode::NotMergeable,
+            format!("Auto-merge cannot be turned on for pull request #{number}: {why}"),
+        ));
+    }
+    let mut args = vec![
+        "pr".to_string(),
+        "merge".to_string(),
+        target.clone(),
+        "--auto".to_string(),
+        method.flag().to_string(),
+    ];
+    if !head.is_empty() {
+        args.extend(["--match-head-commit".to_string(), head]);
+    }
+    if let Err(e) = gh(host, root, "pr merge --auto", &args).await {
+        // Its checks finished between the read and the request: GitHub
+        // refuses to queue a pull request it would merge now.
+        let detail = e.detail.as_deref().unwrap_or_default().to_lowercase();
+        if detail.contains("is in clean status") || detail.contains("is in unstable status") {
+            let done = pr_merge(host, root, Some(number), Some(method), expected_head).await?;
+            return Ok(merged(Some(done.method)));
+        }
+        return Err(e);
+    }
+    let after = view_raw(host, root, &target).await?;
+    if after.lifecycle() == PrLifecycle::Merged {
+        return Ok(merged(Some(method)));
+    }
+    if after.auto_merge_request.is_some() {
+        return Ok(PrAutoMerged {
+            number,
+            outcome: AutoMergeOutcome::On,
+            method: auto_method(&after).or(Some(method)),
+        });
+    }
+    Err(GitError::new(
+        GitErrorCode::Failed,
+        format!("GitHub did not turn auto-merge on for pull request #{number}"),
+    ))
+}
+
+/// Refuse a pull request whose head moved from `expected`.
+fn check_head(pr: &RawPr, expected: Option<&str>) -> Result<(), GitError> {
+    match expected {
+        Some(expected) if pr.head_ref_oid != expected => Err(GitError::new(
+            GitErrorCode::PrChanged,
+            format!(
+                "Pull request #{} has new commits; review them and merge again",
+                pr.number
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// [`view_raw`], waiting out GitHub's lazy mergeability: the first read after
+/// a push is often UNKNOWN.
+async fn view_known(host: &GitHost<'_>, root: &str, target: &str) -> Result<RawPr, GitError> {
+    let mut pr = view_raw(host, root, target).await?;
+    for _ in 0..UNKNOWN_RETRIES {
+        if pr.merge_status() != MergeStatus::Unknown || pr.lifecycle().is_final() {
+            break;
+        }
+        tokio::time::sleep(UNKNOWN_RETRY_DELAY).await;
+        pr = view_raw(host, root, target).await?;
+    }
+    Ok(pr)
 }
 
 const UNKNOWN_RETRIES: usize = 3;

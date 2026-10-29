@@ -1,16 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import {
+  Archive,
   ChevronDown,
   ChevronRight,
+  Ellipsis,
   Folder,
   FolderGit2,
+  FolderMinus,
   FolderOpen,
   GitBranch,
   GitBranchPlus,
   GitMerge,
   History,
   Plus,
-  Trash2,
+  Settings2,
   X,
 } from "lucide-react";
 import {
@@ -32,6 +36,8 @@ import {
   type WorkspaceInfo,
   type WorkspaceInspection,
   type WorkspaceNode,
+  type ScriptRun,
+  type WorktreeRemoved,
 } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
@@ -39,6 +45,7 @@ import { rememberSidebarFolds, sidebarFolds, type SidebarFolds } from "@/lib/pre
 import { usePresence } from "@/lib/presence";
 import { WorkingMark } from "@/components/WorkingMark";
 import { cn } from "@/lib/utils";
+import { useOpenSettings } from "@/settings/open";
 import { moveMenuFocus } from "./ControlCenter";
 import { GithubCloneDialog, GithubMark, ProgressBar, cloneErrorLine } from "./GithubCloneDialog";
 import { GithubSignIn, useGithubSignInOffered } from "./Github";
@@ -85,14 +92,14 @@ const MENU_ITEM =
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
-/** "2 agents running, 1 terminal open — stop them to remove." */
-export function busyMessage(d: WorkspaceBusyDetails): string {
+/** "2 agents running, 1 terminal open — stop them to archive." */
+export function busyMessage(d: WorkspaceBusyDetails, verb = "archive"): string {
   const parts = [
     d.live_sessions > 0 && `${plural(d.live_sessions, "agent", "agents")} running`,
     d.terminals > 0 && `${plural(d.terminals, "terminal", "terminals")} open`,
   ].filter(Boolean);
   const one = d.live_sessions + d.terminals === 1;
-  return `${parts.join(", ") || "Work is still running"} — stop ${one ? "it" : "them"} to remove.`;
+  return `${parts.join(", ") || "Work is still running"} — stop ${one ? "it" : "them"} to ${verb}.`;
 }
 
 export function Sidebar(props: SidebarProps) {
@@ -103,6 +110,8 @@ export function Sidebar(props: SidebarProps) {
   // A Host from before publishing adds a picked folder as it is, as it always did.
   const publishable = useHost((s) => hasCapability(s.connection.compat, "workspace.publish"));
   const [error, setError] = useState<string | null>(null);
+  // What became of a removed worktree's branch, until dismissed.
+  const [note, setNote] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   // A folder the Host refused as too large: a picked path, or a root added without GitHub.
   const [large, setLarge] = useState<{ subject: PublishSubject; details: LargeFolderDetails } | null>(null);
@@ -416,6 +425,14 @@ export function Sidebar(props: SidebarProps) {
         </div>
       </div>
       {error && <p className="text-destructive px-2 text-xs">{error}</p>}
+      {note && (
+        <p className="text-muted-foreground flex items-start gap-1 px-2 text-xs" role="status">
+          <span className="min-w-0 flex-1">{note}</span>
+          <button aria-label="Dismiss" className="hover:text-foreground shrink-0" onClick={() => setNote(null)}>
+            <X className="size-3" />
+          </button>
+        </p>
+      )}
       {publishing && (
         <PublishDialog
           // A new folder never inherits an earlier dialog's state.
@@ -492,8 +509,10 @@ export function Sidebar(props: SidebarProps) {
               folded={folds.repositories}
               onFold={foldRepository}
               onError={setError}
+              onNote={setNote}
               opening={opening}
               onOpenRoot={openRoot}
+              onNewWorktree={(id) => void newWorktree(id)}
             />
           ))}
         </div>
@@ -586,9 +605,13 @@ type RowProps = SidebarProps & {
   folded: readonly string[];
   onFold(id: string, folded: boolean): void;
   onError(message: string | null): void;
+  /** What became of a removed worktree's branch. */
+  onNote(message: string | null): void;
   /** The root whose click is reading it or preparing its worktree. */
   opening: string | null;
   onOpenRoot(rootId: string): void;
+  /** A new worktree from the root's current branch, as a click on a root without one makes. */
+  onNewWorktree(rootId: string): void;
   /** A current Host: a root is selected only read-only, through its earlier-sessions row. */
   publishable: boolean;
 };
@@ -604,6 +627,7 @@ function WorkspaceRow(props: RowProps) {
   const nested = worktrees.length > 0 || earlier > 0;
   const [creating, setCreating] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [menu, setMenu] = useState(false);
   const folded = props.folded.includes(w.workspace_id);
   // Folded away, worktrees still show their working agents and selection on the repository.
   const hidden = folded ? worktrees : [];
@@ -693,16 +717,32 @@ function WorkspaceRow(props: RowProps) {
             <GitBranchPlus />
           </Button>
         )}
+        {isRoot && (
+          <RepositoryMenu
+            workspace={w}
+            open={menu}
+            onOpen={setMenu}
+            onNewWorktree={() => {
+              props.onError(null);
+              props.onNewWorktree(w.workspace_id);
+            }}
+            onNewWorktreeFrom={() => {
+              props.onError(null);
+              setCreating(true);
+            }}
+            onRemove={() => setRemoving(true)}
+          />
+        )}
         {!isRoot && !w.removed && (
           <Button
             className={HOVER_ACTION}
             size="icon-sm"
             variant="ghost"
-            title="Remove worktree"
+            title="Archive worktree"
             disabled={!online}
             onClick={() => setRemoving(true)}
           >
-            <Trash2 />
+            <Archive />
           </Button>
         )}
       </div>
@@ -717,7 +757,20 @@ function WorkspaceRow(props: RowProps) {
           onStarted={props.onSessionStarted}
         />
       )}
-      {removing && <RemoveWorktree workspace={w} onClose={() => setRemoving(false)} />}
+      {removing && isRoot && (
+        <RemoveWorkspace
+          workspace={w}
+          worktrees={worktrees.filter((n) => !n.workspace.removed).length}
+          onClose={() => setRemoving(false)}
+        />
+      )}
+      {removing && !isRoot && (
+        <RemoveWorktree
+          workspace={w}
+          onClose={() => setRemoving(false)}
+          onRemoved={(r) => props.onNote(removalNote(r))}
+        />
+      )}
       {nested && !folded && (
         <div className="border-sidebar-border animate-fade-in ml-[27px] flex flex-col gap-px border-l py-0.5 pl-1.5">
           {worktrees
@@ -746,7 +799,7 @@ function WorkspaceRow(props: RowProps) {
 const FOLDED_ROW =
   "text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex items-center gap-2 rounded-md px-2 py-1 text-left text-xs transition-colors";
 
-/** Removed worktrees keep their sessions' history, folded under one row. */
+/** Archived worktrees keep their sessions' history, folded under one row. */
 function RemovedWorktrees({ nodes, ...row }: RowProps & { nodes: WorkspaceNode[] }) {
   const holdsSelected = nodes.some((n) => n.workspace.workspace_id === row.workspaceId);
   const [open, setOpen] = useState(holdsSelected);
@@ -762,7 +815,7 @@ function RemovedWorktrees({ nodes, ...row }: RowProps & { nodes: WorkspaceNode[]
         onClick={() => setOpen(!open)}
       >
         {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-        {nodes.length} removed
+        {nodes.length} archived
       </button>
       {open && nodes.map((n) => <WorkspaceRow key={n.workspace.workspace_id} {...row} node={n} />)}
     </>
@@ -771,24 +824,80 @@ function RemovedWorktrees({ nodes, ...row }: RowProps & { nodes: WorkspaceNode[]
 
 type RemovePhase = { kind: "confirm" } | { kind: "dirty"; changes: number } | { kind: "busy"; message: string };
 
+/** What to say of a worktree just archived: how its archive script failed, and its branch; null when nothing. */
+export function removalNote(r: WorktreeRemoved): string | null {
+  const notes = [archiveFailure(r.archive_script), branchOutcome(r)].filter((n): n is string => n !== null);
+  return notes.length > 0 ? notes.join(" ") : null;
+}
+
+function archiveFailure(run: ScriptRun | null | undefined): string | null {
+  if (!run || run.exit_code === 0) return null;
+  if (run.timed_out) return "The archive script was stopped after 5 minutes.";
+  if (run.exit_code !== null) return `The archive script failed with exit code ${run.exit_code}.`;
+  return "The archive script did not finish.";
+}
+
+function branchOutcome(r: WorktreeRemoved): string | null {
+  if (r.branch_deleted && r.branch) return `Deleted branch ${r.branch}.`;
+  if (r.branch_kept_reason) return `Kept the branch: ${r.branch_kept_reason}.`;
+  return null;
+}
+
 /**
  * Removal as the host decides it: a plain request first; the host answers
  * `workspace_busy` (nothing to confirm — stop the work) or `workspace_dirty`
- * (confirm the loss, then force). Force never bypasses the busy guard.
+ * (confirm the loss, then force). Force never bypasses the busy guard. The
+ * host's Git settings decide whether the branch goes too; the host deletes it
+ * only when no work is lost, and says why it kept it otherwise.
  */
-function RemoveWorktree({ workspace, onClose }: { workspace: WorkspaceInfo; onClose(): void }) {
+function RemoveWorktree({
+  workspace,
+  onClose,
+  onRemoved,
+}: {
+  workspace: WorkspaceInfo;
+  onClose(): void;
+  onRemoved(removed: WorktreeRemoved): void;
+}) {
   const controller = useController();
   const online = useOnline();
+  const gitSettings = useHost((s) => hasCapability(s.connection.compat, "settings.git"));
   const [phase, setPhase] = useState<RemovePhase>({ kind: "confirm" });
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Whether the host deletes the branch too; unknown reads as kept.
+  const [deletes, setDeletes] = useState(false);
   const branch = worktreeLabel(workspace);
+
+  useEffect(() => {
+    if (!gitSettings) return;
+    let live = true;
+    controller.client.request("settings.get", {}).then(
+      (s) => live && setDeletes(s.values["git.delete_branch_on_remove"] === true),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [controller, gitSettings]);
+
+  const fate = deletes ? (
+    <>
+      Branch <span className="font-mono">{branch}</span> is deleted if its pull request merged or every commit is
+      pushed, and kept otherwise.
+    </>
+  ) : (
+    <>
+      Branch <span className="font-mono">{branch}</span> will be kept.
+    </>
+  );
 
   async function remove(force: boolean) {
     setPending(true);
     setError(null);
     try {
-      await controller.removeWorktree(workspace.workspace_id, { force });
+      const removed = await controller.removeWorktree(workspace.workspace_id, { force });
+      onRemoved(removed);
       onClose();
     } catch (e) {
       const busy = busyDetails(e);
@@ -805,14 +914,232 @@ function RemoveWorktree({ workspace, onClose }: { workspace: WorkspaceInfo; onCl
     <div className="bg-card animate-pop-in my-1 ml-2 flex flex-col gap-2 rounded-lg p-2.5 text-xs shadow-sm" role="alertdialog">
       {phase.kind === "confirm" && (
         <p>
-          Remove worktree <span className="font-mono">{branch}</span>? Branch{" "}
-          <span className="font-mono">{branch}</span> will be kept.
+          Archive worktree <span className="font-mono">{branch}</span>? {fate}
         </p>
       )}
       {phase.kind === "dirty" && (
         <p>
-          {plural(phase.changes, "uncommitted change", "uncommitted changes")} will be lost. Branch{" "}
-          <span className="font-mono">{branch}</span> will be kept.
+          {plural(phase.changes, "uncommitted change", "uncommitted changes")} will be lost. {fate}
+        </p>
+      )}
+      {phase.kind === "busy" && <p className="text-destructive">{phase.message}</p>}
+      {error && <p className="text-destructive">{error}</p>}
+      <div className="flex justify-end gap-1.5">
+        {/* Focus lands on the safe choice (DESIGN.md: never on the destructive one). */}
+        <Button size="xs" variant="ghost" autoFocus onClick={onClose}>
+          Cancel
+        </Button>
+        {phase.kind === "dirty" ? (
+          <Button size="xs" variant="destructive" disabled={pending || !online} onClick={() => remove(true)}>
+            Discard and archive
+          </Button>
+        ) : (
+          <Button size="xs" variant="destructive" disabled={pending || !online} onClick={() => remove(false)}>
+            {phase.kind === "busy" ? "Try again" : "Archive"}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A repository's `⋯`: a new worktree from its current branch or from one
+ * picked, its settings, and Remove. Drawn over the page so the scrolling
+ * list never clips it.
+ */
+function RepositoryMenu(props: {
+  workspace: WorkspaceInfo;
+  open: boolean;
+  onOpen(open: boolean): void;
+  onNewWorktree(): void;
+  onNewWorktreeFrom(): void;
+  onRemove(): void;
+}) {
+  const { workspace: w, open, onOpen } = props;
+  const online = useOnline();
+  const openSettings = useOpenSettings();
+  const configurable = useHost((s) => hasCapability(s.connection.compat, "repository.settings"));
+  const removable = useHost((s) => hasCapability(s.connection.compat, "workspace.remove"));
+  const root = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const presence = usePresence(open);
+
+  useEffect(() => {
+    if (!open) return;
+    list.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (!root.current?.contains(t) && !list.current?.contains(t)) onOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      onOpen(false);
+      root.current?.querySelector<HTMLElement>('[aria-haspopup="menu"]')?.focus();
+    };
+    window.addEventListener("pointerdown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open, onOpen]);
+
+  // Offline, none of its items could run.
+  useEffect(() => {
+    if (!online) onOpen(false);
+  }, [online, onOpen]);
+
+  function pick(run: () => void) {
+    onOpen(false);
+    run();
+  }
+
+  // Low in the list, the menu opens upward.
+  const up = anchor ? anchor.bottom > window.innerHeight * 0.6 : false;
+  const style: CSSProperties | undefined = anchor
+    ? {
+        left: anchor.right,
+        ...(up ? { bottom: window.innerHeight - anchor.top + 4 } : { top: anchor.bottom + 4 }),
+        transform: "translateX(-100%)",
+        transformOrigin: up ? "bottom right" : "top right",
+      }
+    : undefined;
+  const name = w.alias ?? w.name;
+  const configure = openSettings && configurable;
+  if (!w.is_git_repo && !configure && !removable) return null;
+
+  return (
+    <div ref={root} className={cn("flex", !open && HOVER_ACTION)}>
+      <Button
+        size="icon-sm"
+        variant="ghost"
+        title="Repository actions"
+        aria-label={`${name} actions`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={!online}
+        onClick={() => {
+          if (!open) setAnchor(root.current!.getBoundingClientRect());
+          onOpen(!open);
+        }}
+      >
+        <Ellipsis />
+      </Button>
+      {presence.mounted &&
+        createPortal(
+          <div
+            ref={list}
+            className="bg-card text-card-foreground ring-border presence-pop shadow-pop fixed z-50 w-52 rounded-xl p-1.5 ring-1"
+            style={style}
+            role="menu"
+            aria-label={`${name} actions`}
+            data-state={presence.state}
+            aria-hidden={!open || undefined}
+            inert={!open}
+            onKeyDown={moveMenuFocus}
+          >
+            {w.is_git_repo && (
+              <>
+                <button className={MENU_ITEM} role="menuitem" onClick={() => pick(props.onNewWorktree)}>
+                  <GitBranchPlus className="text-muted-foreground size-4" />
+                  New worktree
+                </button>
+                <button className={MENU_ITEM} role="menuitem" onClick={() => pick(props.onNewWorktreeFrom)}>
+                  <GitBranch className="text-muted-foreground size-4" />
+                  New worktree from…
+                </button>
+              </>
+            )}
+            {configure && (
+              <button
+                className={MENU_ITEM}
+                role="menuitem"
+                onClick={() => pick(() => openSettings({ tab: "repository", workspaceId: w.workspace_id }))}
+              >
+                <Settings2 className="text-muted-foreground size-4" />
+                Configuration
+              </button>
+            )}
+            {removable && (
+              <>
+                <div className="bg-border my-1 h-px" role="separator" />
+                <button className={cn(MENU_ITEM, "text-destructive")} role="menuitem" onClick={() => pick(props.onRemove)}>
+                  <FolderMinus className="size-4" />
+                  Remove
+                </button>
+              </>
+            )}
+          </div>,
+          document.body,
+        )}
+    </div>
+  );
+}
+
+/**
+ * Removing a repository from Zwiim, asked as a worktree's archive is: a plain
+ * request first, then the Host's `workspace_busy` (stop the work) or
+ * `workspace_dirty` (confirm the loss, then force). Its worktrees are archived
+ * and the row goes; the folder itself is never touched, and adding it again
+ * brings the repository back with its sessions.
+ */
+function RemoveWorkspace({
+  workspace,
+  worktrees,
+  onClose,
+}: {
+  workspace: WorkspaceInfo;
+  /** Worktrees not yet archived. */
+  worktrees: number;
+  onClose(): void;
+}) {
+  const controller = useController();
+  const online = useOnline();
+  const [phase, setPhase] = useState<RemovePhase>({ kind: "confirm" });
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const name = workspace.alias ?? workspace.name;
+  const folder = workspace.display_path ? (
+    <span className="font-mono">{workspace.display_path}</span>
+  ) : (
+    "its folder"
+  );
+
+  async function remove(force: boolean) {
+    setPending(true);
+    setError(null);
+    try {
+      await controller.removeWorkspace(workspace.workspace_id, { force });
+      onClose();
+    } catch (e) {
+      const busy = busyDetails(e);
+      const dirty = dirtyDetails(e);
+      if (busy) setPhase({ kind: "busy", message: busyMessage(busy, "remove") });
+      else if (dirty) setPhase({ kind: "dirty", changes: dirty.changes });
+      else setError(errorMessage(e));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div
+      className="bg-card animate-pop-in my-1 ml-2 flex flex-col gap-2 rounded-lg p-2.5 text-xs shadow-sm"
+      role="alertdialog"
+      aria-label={`Remove ${name}`}
+    >
+      {phase.kind === "confirm" && (
+        <p>
+          Remove <span className="font-medium">{name}</span>
+          {worktrees > 0 && <> and archive its {worktrees === 1 ? "worktree" : `${worktrees} worktrees`}</>}? Files in {folder}{" "}
+          are not changed. Add the folder again to bring it back.
+        </p>
+      )}
+      {phase.kind === "dirty" && (
+        <p>
+          {plural(phase.changes, "uncommitted change", "uncommitted changes")} in its worktrees will be lost.
         </p>
       )}
       {phase.kind === "busy" && <p className="text-destructive">{phase.message}</p>}

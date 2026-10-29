@@ -202,6 +202,9 @@ describe("the choices", () => {
     expect(agentNote(list[1]!)).toBe("not installed");
     expect(defaultAgent(list)).toBe("claude_code");
     expect(defaultAgent([list[0]!])).toBe("gemini");
+    // The host's default agent comes first while it can run.
+    expect(defaultAgent([CLAUDE, { ...agent("codex"), default: true }])).toBe("codex");
+    expect(defaultAgent([CLAUDE, { ...list[1]!, default: true }])).toBe("claude_code");
   });
 
   it("shows the pick while offered, else the agent's current", () => {
@@ -216,7 +219,7 @@ describe("the choices", () => {
 
   it("says why a start failed", () => {
     const err = (code: string) => new ZwiimClientError(code, "x");
-    expect(startError(err("workspace_removed"), "Studio", null)).toBe("That worktree was removed. Choose another workspace.");
+    expect(startError(err("workspace_removed"), "Studio", null)).toBe("That worktree was archived. Choose another workspace.");
     expect(startError(err("agent_not_installed"), "Studio", "Codex")).toBe("Codex isn't installed on Studio.");
     expect(startError(err("unknown_outcome"), "Studio", null)).toBe("Not sure the session started. Check Sessions before starting again.");
     expect(startError(err("network"), "Studio", null)).toBe("Not connected to Studio. Try again when it's back.");

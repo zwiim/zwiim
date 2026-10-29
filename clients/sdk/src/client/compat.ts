@@ -21,7 +21,7 @@ import { isClientError } from "./errors";
 export const PROTOCOL_MAJOR = 1;
 
 /** Protocol revision this client speaks. Bump with the Host's revision. */
-export const CLIENT_REVISION = 15;
+export const CLIENT_REVISION = 24;
 
 /** Oldest Host revision this client can work with. */
 export const MIN_HOST_REVISION = 1;
@@ -60,6 +60,18 @@ export const CLIENT_CAPABILITIES: readonly string[] = [
   "workspace.resolve_conflicts",
   "session.retry",
   "host.instructions",
+  "settings",
+  "settings.git",
+  "settings.prompts",
+  "repository.settings",
+  "workspace.run_script",
+  "workspace.previews",
+  "settings.advanced",
+  "host.folders",
+  "session.follow_ups",
+  "session.steer",
+  "git.pr_auto_merge",
+  "workspace.remove",
 ];
 
 /** What an app says about itself in `host.hello`. */

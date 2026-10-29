@@ -378,6 +378,7 @@ mod tests {
             &dir.path().join("worktrees"),
             &root_wid,
             None,
+            None,
         )
         .await
         .unwrap();

@@ -51,6 +51,9 @@ mod m20260924_000001_worktree_base;
 mod m20260926_000001_device_keys;
 mod m20261001_000001_clear_plaintext_credentials;
 mod m20261027_000001_conversation_unreachable_turn;
+mod m20261029_000001_repository_settings;
+mod m20261029_000002_worktree_port;
+mod m20261029_000003_conversation_follow_ups;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -108,6 +111,9 @@ impl MigratorTrait for Migrator {
             Box::new(m20260926_000001_device_keys::Migration),
             Box::new(m20261001_000001_clear_plaintext_credentials::Migration),
             Box::new(m20261027_000001_conversation_unreachable_turn::Migration),
+            Box::new(m20261029_000001_repository_settings::Migration),
+            Box::new(m20261029_000002_worktree_port::Migration),
+            Box::new(m20261029_000003_conversation_follow_ups::Migration),
         ]
     }
 }

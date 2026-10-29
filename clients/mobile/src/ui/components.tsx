@@ -119,7 +119,7 @@ export function Button({
   loading?: boolean;
   /** 48pt, as in sheets and bottom actions. */
   tall?: boolean;
-  /** Text color over media (the camera), for `ghost`. */
+  /** Text color for `ghost`: white over the camera, `err` for a removal. */
   color?: string;
   testID?: string;
 }) {

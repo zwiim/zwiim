@@ -17,6 +17,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::acp::feedback::FeedbackStatus;
 use crate::acp::git_tools;
 use crate::acp::plan_approval::PendingPlanApprovalState;
 use crate::acp::question::{PendingQuestionState, QuestionSpec};
@@ -174,6 +175,18 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
             "agent.user_message",
             json!({ "message_id": message_id, "blocks": user_blocks(blocks, root) }),
         ),
+        // A message the agent took into its running turn. One left for the
+        // agent to fetch is not shown: it may never be read.
+        AcpEvent::FeedbackSubmitted { item } if item.status == FeedbackStatus::Delivered => {
+            let text = [UserMessageBlock::Text {
+                text: item.text.clone(),
+            }];
+            let blocks = item.blocks.as_deref().unwrap_or(&text);
+            (
+                "agent.steered",
+                json!({ "message_id": item.id, "blocks": user_blocks(blocks, root) }),
+            )
+        }
         AcpEvent::ToolCall {
             tool_call_id,
             title,
@@ -1454,6 +1467,27 @@ pub(crate) mod tests {
         let v = pending_user_message(&pending, Some(root));
         assert_eq!(v["blocks"].as_array().unwrap().len(), 1);
         assert_eq!(v["blocks"][0]["type"], "attachment");
+    }
+
+    #[test]
+    fn a_delivered_steer_shows_and_a_pending_one_does_not() {
+        use crate::acp::feedback::FeedbackItem;
+        let at = chrono::Utc::now();
+        let delivered = AcpEvent::FeedbackSubmitted {
+            item: FeedbackItem::new_delivered("f1".into(), "use the cache".into(), at, None),
+        };
+        let (kind, payload) = project_event(&delivered, None).unwrap();
+        assert_eq!(kind, "agent.steered");
+        assert_eq!(
+            payload,
+            json!({"message_id": "f1", "blocks": [{"type": "text", "text": "use the cache"}]})
+        );
+        assert_no_internal_keys(&payload);
+
+        let pending = AcpEvent::FeedbackSubmitted {
+            item: FeedbackItem::new_pending("f2".into(), "later".into(), at),
+        };
+        assert!(project_event(&pending, None).is_none());
     }
 
     #[test]

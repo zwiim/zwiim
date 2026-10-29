@@ -52,10 +52,13 @@ export function offeredAgents(agents: readonly AgentSummary[] | null): AgentSumm
   return agents && agents.filter((a) => a.support === "supported");
 }
 
-/** The first supported agent the host can run, else the first it can run, in the host's order. */
+/**
+ * The host's default agent if it can run it, else the first supported agent
+ * it can run, else the first it can run, in the host's order.
+ */
 export function defaultAgent(agents: readonly AgentSummary[] | null): string | null {
   const usable = agents?.filter((a) => a.available) ?? [];
-  return (usable.find((a) => a.support === "supported") ?? usable[0])?.agent ?? null;
+  return (usable.find((a) => a.default) ?? usable.find((a) => a.support === "supported") ?? usable[0])?.agent ?? null;
 }
 
 /**
@@ -154,7 +157,7 @@ export function startParams({ target, agent, picks, prompt, files = [], client_m
 
 /** Why a start failed, and what to do. Nothing was created unless it says so. */
 export function startError(e: unknown, hostName: string, agentName: string | null): string {
-  if (isClientError(e, "workspace_removed")) return "That worktree was removed. Choose another workspace.";
+  if (isClientError(e, "workspace_removed")) return "That worktree was archived. Choose another workspace.";
   if (isClientError(e, "not_found")) return `That workspace is gone from ${hostName}. Choose another.`;
   if (isClientError(e, "agent_not_installed")) return `${agentName ?? "That agent"} isn't installed on ${hostName}.`;
   if (isClientError(e, "attachment_not_found")) return ATTACHMENT_GONE_MESSAGE;

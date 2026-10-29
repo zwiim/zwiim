@@ -16,6 +16,7 @@ import {
   type OpParams,
   type OpResult,
   type OptionsRequest,
+  type PrAutoMerged,
   type PrMerged,
   type PrState,
   type PromptBlock,
@@ -270,6 +271,16 @@ export class CurrentHost {
   }
 
   /**
+   * Leave the merge to GitHub once its requirements are met, pinned to the head
+   * the phone shows, or stop it. `merged` when GitHub would merge it now;
+   * `auto_merge_disabled` when the repository doesn't allow it. GitHub keeps it
+   * on across this user's later pushes. Never retried.
+   */
+  async setPrAutoMerge(workspace_id: string, pr: PrState, enabled: boolean, method?: MergeMethod): Promise<PrAutoMerged> {
+    return this.#opened().setPrAutoMerge(workspace_id, pr, enabled, method);
+  }
+
+  /**
    * Hand a worktree's merge conflicts to `session_id`: the Host checkpoints,
    * then starts a turn there that merges (or rebases) the base and resolves
    * them. It refuses while any agent works in the worktree or once nothing
@@ -376,6 +387,19 @@ export class CurrentHost {
     const parent = this.#state.store?.getState().workspaces?.find((w) => w.workspace_id === workspace_id)?.parent_workspace_id;
     await this.#opened().removeWorktree(workspace_id, opts);
     if (this.#state.workspaceId === workspace_id && parent) this.chooseWorkspace(parent);
+  }
+
+  /**
+   * Remove a workspace (a repository or a plain folder) and archive its
+   * worktrees; its folder on the host is left as it is. Refused like
+   * `removeWorktree`. Files moves to another workspace if it showed this one.
+   */
+  async removeWorkspace(workspace_id: string, opts: { force?: boolean } = {}): Promise<void> {
+    const open = (this.#state.store?.getState().workspaces ?? []).filter((w) => !w.removed);
+    const gone = new Set([workspace_id, ...open.filter((w) => w.parent_workspace_id === workspace_id).map((w) => w.workspace_id)]);
+    await this.#opened().removeWorkspace(workspace_id, opts);
+    const next = open.find((w) => w.kind === "root" && !gone.has(w.workspace_id));
+    if (this.#state.workspaceId !== null && gone.has(this.#state.workspaceId) && next) this.chooseWorkspace(next.workspace_id);
   }
 
   /** A terminal is on screen: its emulator, streamed until released. None before a connection opens. */

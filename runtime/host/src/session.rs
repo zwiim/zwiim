@@ -45,6 +45,9 @@ pub struct SessionInfo {
     pub attached: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Prompts queued behind the running turn, first to go out first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub follow_ups: Vec<crate::follow_ups::Queued>,
 }
 
 fn db_err(e: sea_orm::DbErr) -> AppCommandError {
@@ -116,7 +119,16 @@ fn to_info(
     workspace_id: Option<String>,
     attached: bool,
 ) -> Option<SessionInfo> {
+    let follow_ups = row
+        .follow_ups
+        .as_deref()
+        .map(|json| crate::follow_ups::decode(row.id, json))
+        .unwrap_or_default()
+        .iter()
+        .map(crate::follow_ups::Queued::from)
+        .collect();
     Some(SessionInfo {
+        follow_ups,
         session_id: row.session_id?,
         workspace_id,
         title: row.title,
@@ -197,14 +209,16 @@ pub async fn history_generation(state: &AppState, session_id: &str) -> Option<u6
 /// connection id. [`RuntimeLauncher`] is the production implementation; tests
 /// substitute one that registers a synthetic connection.
 pub trait AgentLauncher: Send + Sync {
-    /// `resume_external_id` is the agent-native session to load, `None` for a
-    /// brand-new agent session. `preferred` are native option values the agent
-    /// is set to before it is first used; values it no longer offers are
-    /// skipped.
+    /// `folder_id` is `working_dir`'s workspace, whose variables
+    /// (`crate::workspace::scripts::workspace_env`) the agent gets. `resume_external_id` is the
+    /// agent-native session to load, `None` for a brand-new agent session.
+    /// `preferred` are native option values the agent is set to before it is
+    /// first used; values it no longer offers are skipped.
     fn launch(
         &self,
         agent_type: AgentType,
         working_dir: String,
+        folder_id: i32,
         resume_external_id: Option<String>,
         preferred: BTreeMap<String, String>,
     ) -> impl Future<Output = Result<String, ZwiimError>> + Send;
@@ -221,6 +235,7 @@ impl AgentLauncher for RuntimeLauncher<'_> {
         &self,
         agent_type: AgentType,
         working_dir: String,
+        folder_id: i32,
         resume_external_id: Option<String>,
         preferred: BTreeMap<String, String>,
     ) -> Result<String, ZwiimError> {
@@ -232,14 +247,25 @@ impl AgentLauncher for RuntimeLauncher<'_> {
         )
         .await?;
         crate::commands::acp::verify_agent_installed(agent_type).await?;
+        let conn = &self.state.db.conn;
+        let repository_env = match crate::db::entities::folder::Entity::find_by_id(folder_id)
+            .one(conn)
+            .await
+        {
+            Ok(Some(workspace)) => crate::workspace::scripts::workspace_env(conn, &workspace).await,
+            _ => Default::default(),
+        }
+        .into_iter()
+        .collect();
         Ok(self
             .state
             .connection_manager
-            .spawn_agent(
+            .spawn_agent_with_env(
                 agent_type,
                 Some(working_dir),
                 resume_external_id,
                 runtime_env,
+                repository_env,
                 "zwiim".to_string(),
                 self.state.emitter.clone(),
                 None,
@@ -328,7 +354,7 @@ pub(crate) async fn start_tracked<L: AgentLauncher>(
     // `launching` is held through the first prompt, so the new agent's turn
     // is under way before anything can change the workspace's branch.
     let connection_id = launcher
-        .launch(agent_type, folder.path, None, preferred.clone().unwrap_or_default())
+        .launch(agent_type, folder.path, folder.id, None, preferred.clone().unwrap_or_default())
         .await?;
     if preferred.is_none() {
         if let Err(e) =
@@ -392,7 +418,13 @@ async fn ensure_live<L: AgentLauncher>(
         None => BTreeMap::new(),
     };
     let connection_id = launcher
-        .launch(agent_type, folder.path.clone(), row.external_id.clone(), preferred)
+        .launch(
+            agent_type,
+            folder.path.clone(),
+            folder.id,
+            row.external_id.clone(),
+            preferred,
+        )
         .await?;
     Ok((connection_id, true))
 }
@@ -1546,6 +1578,7 @@ pub(crate) mod orchestration_tests {
             &self,
             agent_type: AgentType,
             working_dir: String,
+            _folder_id: i32,
             resume_external_id: Option<String>,
             _preferred: BTreeMap<String, String>,
         ) -> Result<String, ZwiimError> {
@@ -2251,6 +2284,7 @@ pub(crate) mod orchestration_tests {
                 &self,
                 agent_type: AgentType,
                 _working_dir: String,
+                _folder_id: i32,
                 _resume: Option<String>,
                 _preferred: BTreeMap<String, String>,
             ) -> Result<String, ZwiimError> {
@@ -2629,6 +2663,7 @@ pub(crate) mod orchestration_tests {
             &self,
             _agent_type: AgentType,
             _working_dir: String,
+            _folder_id: i32,
             _resume_external_id: Option<String>,
             _preferred: BTreeMap<String, String>,
         ) -> Result<String, ZwiimError> {

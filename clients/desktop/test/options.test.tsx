@@ -134,6 +134,26 @@ describe("new session options", () => {
     expect(sonnet.request).toEqual({ model: "sonnet", effort: "high", mode: "unattended" });
   });
 
+  it("prefers picks, then the Host's defaults, then what this client remembered", () => {
+    const remembered = { model: "sonnet", effort: "high" };
+    const host = { model: "opus", effort: "low", mode: "plan" as const };
+    expect(newSessionOptions(opts(), remembered, {}, undefined, host).request).toEqual({
+      model: "opus",
+      effort: "low",
+      mode: "plan",
+    });
+    expect(newSessionOptions(opts(), remembered, { model: "sonnet", mode: "unattended" }, undefined, host).request).toEqual({
+      model: "sonnet",
+      effort: "low",
+      mode: "unattended",
+    });
+    // A Host default the agent no longer offers falls through to the remembered choice.
+    const gone = { model: "haiku", effort: null, mode: null };
+    expect(newSessionOptions(opts(), { model: "opus", effort: null }, {}, undefined, gone).request.model).toBe("opus");
+    // No Host mode: Auto where offered, as before.
+    expect(newSessionOptions(opts(), remembered, {}, undefined, gone).request.mode).toBe("unattended");
+  });
+
   it("sends the chosen options with the first message", async () => {
     rememberAgentChoices("claude_code", { model: "opus" });
     const t = new FakeTransport();

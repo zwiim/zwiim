@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Archive,
   Check,
   ChevronDown,
   ChevronRight,
@@ -13,7 +14,9 @@ import {
   X,
 } from "lucide-react";
 import {
+  busyDetails,
   conflictView,
+  dirtyDetails,
   hasCapability,
   resolveLabel,
   resolveRefusalText,
@@ -21,15 +24,20 @@ import {
   type ConflictView,
   type MergeMethod,
   type PrCheckItem,
+  type PrAutoMerge,
   type PrEntry,
   type PrState,
   type ResolveStrategy,
+
 } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { openLink } from "@/lib/bridge";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
+import { autoMergeButton } from "@/lib/prefs";
+import { usePref } from "@/lib/use-pref";
 import { cn } from "@/lib/utils";
 import { GithubSignIn, useGithubSignInOffered } from "./Github";
+import { busyMessage, removalNote } from "./Sidebar";
 
 /** What a merge does, as GitHub's own button says it. */
 export const METHOD_LABELS: Record<MergeMethod, string> = {
@@ -64,6 +72,8 @@ export function mergeErrorText(e: unknown, signInOffered = false): string {
       return "The pull request changed since you looked. Check it again before merging.";
     case "not_mergeable":
       return typeof details?.reason === "string" ? details.reason : "GitHub won't merge it right now.";
+    case "auto_merge_disabled":
+      return "Auto-merge is off for this repository on GitHub.";
     case "gh_unauthenticated":
     case "gh_unavailable":
       return prErrorText(code, "", signInOffered);
@@ -360,12 +370,16 @@ function BlockedReason({ view }: { view: ConflictView }) {
 
 /**
  * The workspace branch's pull request, as the Host follows it on GitHub:
- * number and title (opens it), status, checks (each opens its run), and Merge.
- * Once merged, Continue moves the worktree to a new branch from the PR's base.
+ * number and title (opens it), status, checks (each opens its run), and Merge,
+ * or Auto-merge while GitHub waits on checks or review (GitHub then merges it,
+ * with this device asleep or not).
+ * Once merged, Continue moves the worktree to a new branch from the PR's base,
+ * or Archive puts it away.
  * When the branch conflicts with its base, Merge becomes Merge conflicts, a
  * turn for the chat's agent. Nothing here asks GitHub or git; the Host's feed
  * keeps it current.
  * `sessionId`: the chat on screen, which resolves the conflicts when it is here.
+
  */
 export function PrBanner({ workspaceId, sessionId }: { workspaceId: string; sessionId?: string | null }) {
   const entry: PrEntry | undefined = useHost((s) => s.prs[workspaceId]);
@@ -373,12 +387,21 @@ export function PrBanner({ workspaceId, sessionId }: { workspaceId: string; sess
   const conflicts = useMemo(() => conflictView(state, workspaceId, sessionId), [state, workspaceId, sessionId]);
   const workspace = useHost((s) => s.workspaces?.find((w) => w.workspace_id === workspaceId));
   const continueOffered = useHost((s) => hasCapability(s.connection.compat, "workspace.continue"));
+  const autoOffered = useHost((s) => hasCapability(s.connection.compat, "git.pr_auto_merge"));
+  const autoButton = usePref(autoMergeButton);
   const signInOffered = useGithubSignInOffered();
   const controller = useController();
   const online = useOnline();
   const [open, setOpen] = useState(false);
   const [merging, setMerging] = useState(false);
+  /** Auto-merge being turned on or off. */
+  const [arming, setArming] = useState(false);
   const [continuing, setContinuing] = useState(false);
+  const [archiving, setArchiving] = useState(false);
+  /** Uncommitted changes the last archive would lose, awaiting a yes. */
+  const [discarding, setDiscarding] = useState<number | null>(null);
+  /** What became of the archived worktree's branch and archive script. */
+  const [archived, setArchived] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** The last merge was refused for want of a signed-in GitHub CLI. */
   const [signInNeeded, setSignInNeeded] = useState(false);
@@ -386,11 +409,23 @@ export function PrBanner({ workspaceId, sessionId }: { workspaceId: string; sess
   const [justMerged, setJustMerged] = useState<number | null>(null);
   /** The PR this client just continued past, hidden until the feed clears it. */
   const [continued, setContinued] = useState<number | null>(null);
+  /** Auto-merge as this client just set it, shown until the feed says otherwise. */
+  const [autoSet, setAutoSet] = useState<{ number: number; auto: PrAutoMerge | null } | null>(null);
   const feedPr = entry?.pr ?? null;
   const pr =
     feedPr && justMerged === feedPr.number && feedPr.state !== "merged"
       ? { ...feedPr, state: "merged" as const }
-      : feedPr;
+      : feedPr && autoSet?.number === feedPr.number
+        ? {
+            ...feedPr,
+            // Just turned off, it can go back on: it was waiting on GitHub's requirements.
+            merge: {
+              ...feedPr.merge,
+              auto: autoSet.auto,
+              auto_available: !autoSet.auto && (!!feedPr.merge.auto_available || !!feedPr.merge.auto),
+            },
+          }
+        : feedPr;
 
   // A new head is a new pull request to judge; an old refusal no longer applies.
   useEffect(() => {
@@ -400,7 +435,13 @@ export function PrBanner({ workspaceId, sessionId }: { workspaceId: string; sess
   useEffect(() => {
     setJustMerged(null);
     setContinued(null);
+    setDiscarding(null);
+    setArchived(null);
   }, [workspaceId, feedPr?.number]);
+  // The feed's word on auto-merge replaces what this client set.
+  useEffect(() => {
+    setAutoSet(null);
+  }, [workspaceId, feedPr?.number, feedPr?.merge.auto?.method, !!feedPr?.merge.auto]);
 
   const gone = !pr || (feedPr !== null && continued === feedPr.number);
   if (gone && conflicts) return <ConflictBanner workspaceId={workspaceId} view={conflicts} prError={entry?.error} />;
@@ -427,8 +468,15 @@ export function PrBanner({ workspaceId, sessionId }: { workspaceId: string; sess
   const method = pr.merge.method;
   const canMerge = online && !merging && pr.merge.allowed && !settled;
   const reason = !online ? "The Host is offline" : pr.merge.reason;
-  const canContinue =
-    pr.state === "merged" && workspace?.kind === "worktree" && !workspace.removed && continueOffered;
+  const liveWorktree = pr.state === "merged" && workspace?.kind === "worktree" && !workspace.removed;
+  const canContinue = liveWorktree && continueOffered;
+  const busy = merging || continuing || archiving;
+  /** GitHub merges it by itself once its requirements are met. Shown even with the button turned off, so it can be cancelled. */
+  const autoOn = !settled && autoOffered && !!pr.merge.auto;
+  const canAuto = !settled && autoOffered && autoButton && !pr.merge.allowed && !!pr.merge.auto_available;
+  const autoMethod = pr.merge.auto?.method ?? method;
+  const autoLine =
+    pr.checks.pending > 0 ? "Merges when checks pass" : "Merges when GitHub's requirements are met";
 
   async function merge() {
     setMerging(true);
@@ -446,6 +494,23 @@ export function PrBanner({ workspaceId, sessionId }: { workspaceId: string; sess
     }
   }
 
+  async function setAuto(enabled: boolean) {
+    setArming(true);
+    setError(null);
+    setSignInNeeded(false);
+    try {
+      // On is pinned to the head shown here; GitHub keeps it across this user's later pushes.
+      const set = await controller.setPrAutoMerge(workspaceId, pr!, enabled, enabled ? (method ?? undefined) : undefined);
+      if (set.outcome === "merged") setJustMerged(set.number);
+      else setAutoSet({ number: set.number, auto: set.outcome === "on" ? { method: set.method } : null });
+    } catch (e) {
+      setError(mergeErrorText(e, signInOffered));
+      setSignInNeeded(signInOffered && isGhUnauthenticated(e));
+    } finally {
+      setArming(false);
+    }
+  }
+
   async function continueHere() {
     setContinuing(true);
     setError(null);
@@ -458,6 +523,24 @@ export function PrBanner({ workspaceId, sessionId }: { workspaceId: string; sess
       setSignInNeeded(signInOffered && isGhUnauthenticated(e));
     } finally {
       setContinuing(false);
+    }
+  }
+
+  async function archive(force: boolean) {
+    setArchiving(true);
+    setError(null);
+    setSignInNeeded(false);
+    setDiscarding(null);
+    try {
+      setArchived(removalNote(await controller.removeWorktree(workspaceId, { force })));
+    } catch (e) {
+      const working = busyDetails(e);
+      const dirty = dirtyDetails(e);
+      if (working) setError(busyMessage(working));
+      else if (dirty) setDiscarding(dirty.changes);
+      else setError(errorMessage(e));
+    } finally {
+      setArchiving(false);
     }
   }
 
@@ -483,7 +566,7 @@ export function PrBanner({ workspaceId, sessionId }: { workspaceId: string; sess
                 size="xs"
                 variant="brand"
                 className="shrink-0"
-                disabled={!online || continuing}
+                disabled={!online || busy}
                 title={
                   online
                     ? `New branch from origin/${pr.base}, where #${pr.number} landed. Sessions and terminals stay here.`
@@ -495,9 +578,50 @@ export function PrBanner({ workspaceId, sessionId }: { workspaceId: string; sess
                 Continue
               </Button>
             )}
+            {liveWorktree && (
+              <Button
+                size="xs"
+                variant="secondary"
+                className="shrink-0"
+                disabled={!online || busy || discarding !== null}
+                title={online ? "Archive this worktree. Its sessions stay readable." : "The Host is offline"}
+                onClick={() => void archive(false)}
+              >
+                {archiving ? <Loader2 className="animate-spin" /> : <Archive />}
+                Archive
+              </Button>
+            )}
           </>
         ) : conflict?.resolve ? (
           <ResolveControls workspaceId={workspaceId} view={conflict} hasPr onError={setError} />
+        ) : autoOn ? (
+          <Button
+            size="xs"
+            variant="secondary"
+            className="shrink-0"
+            disabled={!online || arming}
+            title={online ? "Leave it for a manual merge" : "The Host is offline"}
+            onClick={() => void setAuto(false)}
+          >
+            {arming ? <Loader2 className="animate-spin" /> : <X />}
+            Cancel auto-merge
+          </Button>
+        ) : canAuto ? (
+          <Button
+            size="xs"
+            variant="done"
+            className="shrink-0"
+            disabled={!online || arming}
+            title={
+              online
+                ? `${method ? `${METHOD_LABELS[method]} once` : "GitHub merges it once"} ${pr.checks.pending > 0 ? "checks pass" : "GitHub's requirements are met"}, by GitHub itself. Pushes before then are merged too, once they pass.`
+                : "The Host is offline"
+            }
+            onClick={() => void setAuto(true)}
+          >
+            {arming ? <Loader2 className="animate-spin" /> : <GitMerge />}
+            Auto-merge
+          </Button>
         ) : (
           <Button
             size="xs"
@@ -538,9 +662,36 @@ export function PrBanner({ workspaceId, sessionId }: { workspaceId: string; sess
           <BlockedReason view={conflict} />
         </div>
       )}
-      {!settled && !pr.merge.allowed && reason && !conflict?.line && (
-        <p className="text-muted-foreground mt-1 pl-6 text-xs" data-testid="pr-reason">
-          {reason}
+      {conflict?.line ? null : autoOn ? (
+        <p className="text-muted-foreground mt-1 pl-6 text-xs" data-testid="pr-reason" title={autoMethod ? METHOD_LABELS[autoMethod] : undefined}>
+          {autoLine}
+        </p>
+      ) : (
+        !settled &&
+        !pr.merge.allowed &&
+        reason && (
+          <p className="text-muted-foreground mt-1 pl-6 text-xs" data-testid="pr-reason">
+            {reason}
+          </p>
+        )
+      )}
+      {discarding !== null && (
+        <div className="mt-1 flex items-center gap-1.5 pl-6 text-xs" role="alertdialog">
+          <p className="min-w-0 flex-1">
+            {discarding} uncommitted {discarding === 1 ? "change" : "changes"} will be lost.
+          </p>
+          {/* Focus lands on the safe choice (DESIGN.md: never on the destructive one). */}
+          <Button size="xs" variant="ghost" autoFocus onClick={() => setDiscarding(null)}>
+            Cancel
+          </Button>
+          <Button size="xs" variant="destructive" disabled={!online || archiving} onClick={() => void archive(true)}>
+            Discard and archive
+          </Button>
+        </div>
+      )}
+      {archived && (
+        <p className="text-muted-foreground mt-1 pl-6 text-xs" role="status">
+          {archived}
         </p>
       )}
       {error && (

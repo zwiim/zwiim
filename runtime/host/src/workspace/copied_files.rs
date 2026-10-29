@@ -1,15 +1,22 @@
-//! A new worktree gets the repository folder's Git-ignored `.env*` files,
-//! so it runs like the folder although Git never holds them.
+//! A new worktree gets the repository folder's Git-ignored files the user
+//! chose (`.env*` unless they chose others), so it runs like the folder
+//! although Git never holds them.
 
 use std::path::{Component, Path, PathBuf};
 
-/// Larger is not a settings file.
-const MAX_ENV_FILE_BYTES: u64 = 1024 * 1024;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
-/// Copy each ignored `.env*` regular file of `root` to the same place in
-/// `worktree`. Ignored directories (`node_modules/`) are not walked; an
-/// existing file is never overwritten; failures are logged and skipped.
-pub(super) async fn copy_env_files(root: &Path, worktree: &Path) {
+/// Larger is not a settings file.
+const MAX_COPIED_FILE_BYTES: u64 = 1024 * 1024;
+
+/// Copy each ignored regular file of `root` that `patterns` (`.gitignore`
+/// syntax, `!` excluding) select to the same place in `worktree`. Ignored
+/// directories (`node_modules/`) are not walked; an existing file is never
+/// overwritten; failures are logged and skipped.
+pub(super) async fn copy_ignored_files(root: &Path, worktree: &Path, patterns: &[String]) {
+    let Some(selected) = selector(root, patterns) else {
+        return;
+    };
     let mut cmd = crate::process::tokio_command("git");
     cmd.args([
         "ls-files",
@@ -43,14 +50,38 @@ pub(super) async fn copy_env_files(root: &Path, worktree: &Path) {
         }
     };
     let (root, worktree) = (root.to_path_buf(), worktree.to_path_buf());
-    if let Err(e) =
-        tokio::task::spawn_blocking(move || copy_listed(&root, &worktree, &listing)).await
+    if let Err(e) = tokio::task::spawn_blocking(move || {
+        copy_listed(&root, &worktree, &listing, &selected)
+    })
+    .await
     {
-        tracing::warn!("[worktree] copying .env files did not finish: {e}");
+        tracing::warn!("[worktree] copying ignored files did not finish: {e}");
     }
 }
 
-fn copy_listed(root: &Path, worktree: &Path, listing: &[u8]) {
+/// The matcher of `patterns`; `None` when none select anything.
+fn selector(root: &Path, patterns: &[String]) -> Option<Gitignore> {
+    if patterns.is_empty() {
+        return None;
+    }
+    let mut builder = GitignoreBuilder::new(root);
+    for pattern in patterns {
+        // Checked when saved; one that no longer compiles selects nothing.
+        if let Err(e) = builder.add_line(None, pattern) {
+            tracing::warn!("[worktree] skipping a file pattern: {e}");
+        }
+    }
+    match builder.build() {
+        Ok(selected) if selected.num_ignores() > 0 => Some(selected),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!("[worktree] file patterns did not compile: {e}");
+            None
+        }
+    }
+}
+
+fn copy_listed(root: &Path, worktree: &Path, listing: &[u8], selected: &Gitignore) {
     let inside = match worktree.canonicalize() {
         Ok(inside) => inside,
         Err(e) => {
@@ -76,11 +107,9 @@ fn copy_listed(root: &Path, worktree: &Path, listing: &[u8]) {
             continue;
         }
         let rel = Path::new(rel);
-        let env_named = rel
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with(".env"));
-        if !env_named || rel.components().any(|c| !matches!(c, Component::Normal(_))) {
+        if rel.components().any(|c| !matches!(c, Component::Normal(_)))
+            || !selected.matched_path_or_any_parents(rel, false).is_ignore()
+        {
             continue;
         }
         let from = root.join(rel);
@@ -88,17 +117,17 @@ fn copy_listed(root: &Path, worktree: &Path, listing: &[u8]) {
             Ok(meta) => meta,
             Err(e) => {
                 tracing::warn!(
-                    "[worktree] reading a .env file's metadata failed: {} ({e})",
+                    "[worktree] reading an ignored file's metadata failed: {} ({e})",
                     from.display()
                 );
                 continue;
             }
         };
-        if !meta.file_type().is_file() || meta.len() > MAX_ENV_FILE_BYTES {
+        if !meta.file_type().is_file() || meta.len() > MAX_COPIED_FILE_BYTES {
             continue;
         }
         if let Err(e) = copy_one(&from, &inside, rel) {
-            tracing::warn!("[worktree] copying a .env file failed: {e}");
+            tracing::warn!("[worktree] copying an ignored file failed: {e}");
         }
     }
 }
@@ -138,6 +167,10 @@ fn copy_one(from: &Path, inside: &Path, rel: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn env_files() -> Vec<String> {
+        vec![".env*".to_string()]
+    }
 
     fn git(dir: &Path, args: &[&str]) {
         let ok = std::process::Command::new("git")
@@ -195,7 +228,7 @@ mod tests {
         std::fs::write(wt.join(".env.keep"), "mine").unwrap();
         std::fs::write(root.join(".env.keep"), "theirs").unwrap();
 
-        copy_env_files(&root, &wt).await;
+        copy_ignored_files(&root, &wt, &env_files()).await;
 
         assert_eq!(std::fs::read_to_string(wt.join(".env")).unwrap(), "A=1");
         use std::os::unix::fs::PermissionsExt;
@@ -223,7 +256,7 @@ mod tests {
     }
 
     /// A real directory existed where the worktree's `linked/` is, at the
-    /// time `copy_env_files` starts walking it, then gets replaced by a
+    /// time `copy_ignored_files` starts walking it, then gets replaced by a
     /// symlink escaping the worktree — e.g. a racing process, or a prior
     /// partial checkout. The root has an ignored, *uncommitted* `linked/`
     /// directory of its own (never tracked), so a nested `.env` under it is
@@ -266,12 +299,12 @@ mod tests {
         );
         // The worktree never checked out `linked/` (root never committed
         // it). A real directory briefly exists there, then is replaced by a
-        // symlink escaping the worktree, before `copy_env_files` runs.
+        // symlink escaping the worktree, before `copy_ignored_files` runs.
         std::fs::create_dir(wt.join("linked")).unwrap();
         std::fs::remove_dir(wt.join("linked")).unwrap();
         std::os::unix::fs::symlink(&outside, wt.join("linked")).unwrap();
 
-        copy_env_files(&root, &wt).await;
+        copy_ignored_files(&root, &wt, &env_files()).await;
 
         assert!(
             !outside.join("sub").exists(),
@@ -280,11 +313,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn copies_what_the_patterns_select() {
+        let (dir, root, _) = repo();
+        std::fs::write(
+            root.join(".gitignore"),
+            ".env*\nnode_modules/\n*.local.json\nsecrets/\nbuild.log\n",
+        )
+        .unwrap();
+        std::fs::write(root.join(".env"), "A=1").unwrap();
+        std::fs::write(root.join(".env.example"), "A=").unwrap();
+        std::fs::write(root.join("apps/web/app.local.json"), "{}").unwrap();
+        std::fs::create_dir_all(root.join("secrets/ci")).unwrap();
+        std::fs::write(root.join("secrets/ci/key.pem"), "k").unwrap();
+        std::fs::write(root.join("build.log"), "log").unwrap();
+        // Selected but tracked: Git holds it, so the worktree already has it.
+        std::fs::write(root.join("apps/web/tracked.local.json"), "tracked").unwrap();
+        git(&root, &["add", "-f", "apps/web/tracked.local.json"]);
+        git(&root, &["commit", "-q", "-m", "tracked"]);
+        let wt = dir.path().join("wt");
+        git(
+            &root,
+            &["worktree", "add", "-q", "-b", "wt", wt.to_str().unwrap()],
+        );
+
+        let patterns = [".env*", "!.env.example", "*.local.json", "/secrets/"];
+        copy_ignored_files(&root, &wt, &patterns.map(String::from)).await;
+
+        assert_eq!(std::fs::read_to_string(wt.join(".env")).unwrap(), "A=1");
+        assert!(!wt.join(".env.example").exists());
+        assert_eq!(
+            std::fs::read_to_string(wt.join("apps/web/app.local.json")).unwrap(),
+            "{}"
+        );
+        // An ignored directory is listed whole and not walked, even when selected.
+        assert!(!wt.join("secrets").exists());
+        assert!(!wt.join("build.log").exists());
+        assert_eq!(
+            std::fs::read_to_string(wt.join("apps/web/tracked.local.json")).unwrap(),
+            "tracked"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_patterns_copy_nothing() {
+        let (dir, root, _) = repo();
+        std::fs::write(root.join(".env"), "A=1").unwrap();
+        let wt = dir.path().join("wt");
+        git(
+            &root,
+            &["worktree", "add", "-q", "-b", "wt", wt.to_str().unwrap()],
+        );
+        copy_ignored_files(&root, &wt, &[]).await;
+        copy_ignored_files(&root, &wt, &["!.env".to_string()]).await;
+        assert!(!wt.join(".env").exists());
+    }
+
+    #[tokio::test]
     async fn a_folder_that_is_not_a_repository_copies_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let wt = dir.path().join("wt");
         std::fs::create_dir(&wt).unwrap();
-        copy_env_files(dir.path(), &wt).await;
+        copy_ignored_files(dir.path(), &wt, &env_files()).await;
         assert_eq!(std::fs::read_dir(&wt).unwrap().count(), 0);
     }
 }

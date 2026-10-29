@@ -10,10 +10,12 @@ import {
   type SessionSnapshot,
   type WorkspaceInfo,
 } from "@zwiim/sdk";
+import { LONG_PASTE_CHARS, pastedFiles } from "@/attachments/long-paste";
 import { EMPTY_PENDING, needsUpload, pendingReducer, type PendingState } from "@/attachments/pending";
 import { UPLOAD_FAILED_MESSAGE } from "@/attachments/usePendingAttachments";
 import { FileLinksContext, type FileLinks } from "@/components/Markdown";
 import { HostProvider } from "@/lib/host-context";
+import { rememberAutoConvertLongText } from "@/lib/prefs";
 import { FileView } from "@/panels/FilesPanel";
 import { SessionPanel } from "@/panels/SessionPanel";
 import { FakeTransport, hostHello, tick } from "./fakes";
@@ -27,6 +29,7 @@ vi.mock("@/lib/bridge", async (original) => ({
 afterEach(() => {
   cleanup();
   opened.mockReset();
+  window.localStorage.clear();
 });
 
 const MB = 1024 * 1024;
@@ -125,18 +128,18 @@ describe("composer attachments", () => {
     const t = new FakeTransport();
     let n = 0;
     t.handlers["attachments.upload"] = (p) => ({ attachment_id: `id${++n}`, name: p.name, size: 4, mime_type: "x" });
-    t.handlers["session.send"] = (p) => ({ session_id: p.session_id });
+    t.handlers["session.follow_up"] = () => ({ outcome: "sent" });
     const controller = await openSession(t);
     attach(pdf(), xlsx());
     expect(within(screen.getByTestId("pending-attachments")).getAllByTestId("pending-attachment")).toHaveLength(2);
     fireEvent.change(screen.getByPlaceholderText(/^Send a message/), { target: { value: "read these" } });
     fireEvent.click(screen.getByLabelText("Send"));
-    await waitFor(() => expect(t.calls.some((c) => c.op === "session.send")).toBe(true));
+    await waitFor(() => expect(t.calls.some((c) => c.op === "session.follow_up")).toBe(true));
     expect(t.calls.filter((c) => c.op === "attachments.upload").map((c) => c.params)).toEqual([
       { workspace_id: "w1", name: "spec.pdf", data: "JVBERg==" },
       { workspace_id: "w1", name: "data.xlsx", data: "UEs=" },
     ]);
-    expect(t.calls.find((c) => c.op === "session.send")!.params.blocks).toEqual([
+    expect(t.calls.find((c) => c.op === "session.follow_up")!.params.blocks).toEqual([
       { type: "text", text: "read these" },
       { type: "attachment", attachment_id: "id1" },
       { type: "attachment", attachment_id: "id2" },
@@ -152,24 +155,24 @@ describe("composer attachments", () => {
       if (p.name === "data.xlsx" && fail) throw new ZwiimClientError("internal", "disk full", 500);
       return { attachment_id: p.name === "spec.pdf" ? "pdf1" : "xls1", name: p.name, size: 4, mime_type: "x" };
     };
-    t.handlers["session.send"] = (p) => ({ session_id: p.session_id });
+    t.handlers["session.follow_up"] = () => ({ outcome: "sent" });
     const controller = await openSession(t);
     attach(pdf(), xlsx());
     // Files alone can be sent.
     fireEvent.click(screen.getByLabelText("Send"));
     await waitFor(() => expect(screen.getByText(UPLOAD_FAILED_MESSAGE)).toBeTruthy());
     expect(screen.getByText("Upload failed")).toBeTruthy();
-    expect(t.calls.some((c) => c.op === "session.send")).toBe(false);
+    expect(t.calls.some((c) => c.op === "session.follow_up")).toBe(false);
 
     fail = false;
     fireEvent.click(screen.getByLabelText("Send"));
-    await waitFor(() => expect(t.calls.some((c) => c.op === "session.send")).toBe(true));
+    await waitFor(() => expect(t.calls.some((c) => c.op === "session.follow_up")).toBe(true));
     expect(t.calls.filter((c) => c.op === "attachments.upload").map((c) => c.params.name)).toEqual([
       "spec.pdf",
       "data.xlsx",
       "data.xlsx",
     ]);
-    expect(t.calls.find((c) => c.op === "session.send")!.params.blocks).toEqual([
+    expect(t.calls.find((c) => c.op === "session.follow_up")!.params.blocks).toEqual([
       { type: "attachment", attachment_id: "pdf1" },
       { type: "attachment", attachment_id: "xls1" },
     ]);
@@ -180,9 +183,9 @@ describe("composer attachments", () => {
     const t = new FakeTransport();
     let gone = true;
     t.handlers["attachments.upload"] = (p) => ({ attachment_id: "a1", name: p.name, size: 4, mime_type: "x" });
-    t.handlers["session.send"] = (p) => {
+    t.handlers["session.follow_up"] = () => {
       if (gone) throw new ZwiimClientError("attachment_not_found", "attachment a1 not found", 404);
-      return { session_id: p.session_id };
+      return { outcome: "sent" };
     };
     const controller = await openSession(t);
     attach(pdf());
@@ -190,8 +193,34 @@ describe("composer attachments", () => {
     await waitFor(() => expect(screen.getByText(ATTACHMENT_GONE_MESSAGE)).toBeTruthy());
     gone = false;
     fireEvent.click(screen.getByLabelText("Send"));
-    await waitFor(() => expect(t.calls.filter((c) => c.op === "session.send")).toHaveLength(2));
+    await waitFor(() => expect(t.calls.filter((c) => c.op === "session.follow_up")).toHaveLength(2));
     expect(t.calls.filter((c) => c.op === "attachments.upload")).toHaveLength(2);
+    controller.dispose();
+  });
+
+  it("attaches a long paste as a text file; a short one, or with the setting off, stays in the box", async () => {
+    const t = new FakeTransport();
+    t.handlers["attachments.upload"] = (p) => ({ attachment_id: "p1", name: p.name, size: 1, mime_type: "text/plain" });
+    t.handlers["session.follow_up"] = () => ({ outcome: "sent" });
+    const controller = await openSession(t);
+    const box = screen.getByPlaceholderText(/^Send a message/);
+    const long = "é".repeat(LONG_PASTE_CHARS + 1);
+    const paste = (text: string) =>
+      fireEvent.paste(box, { clipboardData: { files: [], getData: (type: string) => (type === "text/plain" ? text : "") } });
+
+    expect(paste("x".repeat(LONG_PASTE_CHARS))).toBe(true);
+    rememberAutoConvertLongText(false);
+    expect(paste(long)).toBe(true);
+    expect(screen.queryByTestId("pending-attachments")).toBeNull();
+
+    rememberAutoConvertLongText(true);
+    expect(paste(long)).toBe(false);
+    expect(within(screen.getByTestId("pending-attachment")).getByText("Pasted text.txt")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Send"));
+    await waitFor(() => expect(t.calls.some((c) => c.op === "session.follow_up")).toBe(true));
+    const upload = t.calls.find((c) => c.op === "attachments.upload")!.params;
+    expect(upload.name).toBe("Pasted text.txt");
+    expect(new TextDecoder().decode(Uint8Array.from(atob(upload.data as string), (c) => c.charCodeAt(0)))).toBe(long);
     controller.dispose();
   });
 
@@ -204,6 +233,19 @@ describe("composer attachments", () => {
     attach(pdf());
     expect(screen.queryByTestId("pending-attachments")).toBeNull();
     controller.dispose();
+  });
+});
+
+describe("pasted files", () => {
+  const clipboard = (text: string, files: File[] = []) =>
+    ({ files, getData: (type: string) => (type === "text/plain" ? text : "") }) as unknown as DataTransfer;
+
+  it("takes the clipboard's files first, else text over the limit as one file", () => {
+    expect(pastedFiles(clipboard("x".repeat(9000), [pdf()]), true)!.map((f) => f.name)).toEqual(["spec.pdf"]);
+    expect(pastedFiles(clipboard("x".repeat(LONG_PASTE_CHARS)), true)).toBeNull();
+    const [file] = pastedFiles(clipboard("x".repeat(LONG_PASTE_CHARS + 1)), true)!;
+    expect([file!.name, file!.type, file!.size]).toEqual(["Pasted text.txt", "text/plain", LONG_PASTE_CHARS + 1]);
+    expect(pastedFiles(clipboard("x".repeat(LONG_PASTE_CHARS + 1)), false)).toBeNull();
   });
 });
 

@@ -607,6 +607,27 @@ describe("HostController", () => {
     expect(t.transport.requests.at(-1)).toMatchObject({ op: "git.pr", params: { workspace_id: "a", refresh: true } });
   });
 
+  it("turns auto-merge on at the head the user saw, and off without one", async () => {
+    expect(MUTATING_OPS.has("git.pr_auto_merge")).toBe(true);
+    const t = setup();
+    t.transport.handlers["git.pr_auto_merge"] = (p) => ({
+      number: 7,
+      outcome: (p as { enabled: boolean }).enabled ? "on" : "off",
+      method: null,
+    });
+    const pr = { number: 7, head_sha: "abc123" } as PrState;
+    expect(await t.controller.setPrAutoMerge("a", pr, true)).toEqual({ number: 7, outcome: "on", method: null });
+    expect(t.transport.requests.at(-1)).toMatchObject({
+      op: "git.pr_auto_merge",
+      params: { workspace_id: "a", number: 7, enabled: true, head_sha: "abc123" },
+      options: { mutating: true },
+    });
+    await t.controller.setPrAutoMerge("a", pr, true, "squash");
+    expect(t.transport.requests.at(-1)?.params).toMatchObject({ method: "squash" });
+    expect((await t.controller.setPrAutoMerge("a", pr, false)).outcome).toBe("off");
+    expect(t.transport.requests.at(-1)?.params).toEqual({ workspace_id: "a", number: 7, enabled: false });
+  });
+
   it("never retries saving a file", () => {
     expect(MUTATING_OPS.has("files.write")).toBe(true);
     expect(MUTATING_OPS.has("files.read")).toBe(false);

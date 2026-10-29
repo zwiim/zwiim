@@ -1,9 +1,13 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { initialSessionView, type SessionView } from "@zwiim/sdk";
+import { rememberAlwaysShowContext } from "@/lib/prefs";
 import { ContextRing, contextRows, tokens } from "@/panels/ContextRing";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  window.localStorage.clear();
+});
 
 const reported: SessionView = {
   ...initialSessionView("s"),
@@ -67,6 +71,20 @@ describe("context ring", () => {
     const half = contextRows({ usage: { used: 5000, size: null }, turnUsage: null });
     expect(half.window.map((r) => r.value)).toEqual(["5,000", null, null]);
     expect(half.lastTurn).toBeNull();
+  });
+
+  it("shows only once the window is nearly full where it isn't always shown", () => {
+    rememberAlwaysShowContext(false);
+    const { rerender } = render(<ContextRing view={reported} agent="Claude Code" />);
+    expect(screen.queryByTestId("context-ring")).toBeNull();
+    rerender(<ContextRing view={initialSessionView("s")} agent="Claude Code" />);
+    expect(screen.queryByTestId("context-ring")).toBeNull();
+    rerender(<ContextRing view={{ ...reported, usage: { used: 700000, size: 1000000 } }} agent="Claude Code" />);
+    expect(screen.getByRole("button", { name: "Context: 70% in use" })).toBeTruthy();
+    rerender(<ContextRing view={reported} agent="Claude Code" />);
+    expect(screen.queryByTestId("context-ring")).toBeNull();
+    act(() => rememberAlwaysShowContext(true));
+    expect(screen.getByRole("button", { name: "Context: 4% in use" })).toBeTruthy();
   });
 
   it("formats counts", () => {

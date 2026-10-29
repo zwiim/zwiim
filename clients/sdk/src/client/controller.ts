@@ -10,16 +10,19 @@ import type {
   AgentSummary,
   AgentType,
   CloneStart,
+  FollowUpOutcome,
   GithubAuth,
   GithubRepoPage,
   HostOwner,
   MergeMethod,
   OpParams,
   OptionsRequest,
+  PrAutoMerged,
   PrEntry,
   PrMerged,
   PrState,
   PublishTarget,
+  RepositoryScript,
   ResolveStarted,
   ResolveStrategy,
   SessionEvent,
@@ -28,8 +31,10 @@ import type {
   WorkspaceDiff,
   WorkspaceInfo,
   WorkspaceInspection,
+  WorkspaceRemoved,
   WorktreeRemoved,
 } from "../types/protocol";
+import { SCRIPT_TERMINAL_TITLES } from "../types/protocol";
 import type { HostClient } from "./host-client";
 
 /** Waits before re-reading a transcript that does not yet hold a finished turn. */
@@ -341,6 +346,20 @@ export class HostController {
   }
 
   /**
+   * Remove a repository from the Host: archive each of its worktrees as
+   * `removeWorktree` does, then hide the root. Its folder is untouched, and
+   * adding the folder again brings back the same workspace with its sessions.
+   * Refused like `removeWorktree`, before anything is archived; the host feed
+   * then drops the root and its worktrees.
+   */
+  async removeWorkspace(workspace_id: string, opts: { force?: boolean } = {}): Promise<WorkspaceRemoved> {
+    return this.client.request("workspace.remove", {
+      workspace_id,
+      ...(opts.force ? { force: true } : {}),
+    });
+  }
+
+  /**
    * After pull request `number` merged, move the worktree in place to a new
    * branch from the PR's base; its sessions and terminals stay. Never
    * retried. The answer shows the new branch at once; the feed then clears the
@@ -436,6 +455,18 @@ export class HostController {
     return this.client.request("git.pr_merge", method === undefined ? params : { ...params, method });
   }
 
+  /**
+   * Turn GitHub's auto-merge for the workspace's pull request on, pinned to
+   * the head the user saw, or off. Never retried. GitHub does the merge; the
+   * feed's `workspace.pr_changed` brings it.
+   */
+  async setPrAutoMerge(workspace_id: string, pr: PrState, enabled: boolean, method?: MergeMethod): Promise<PrAutoMerged> {
+    const params = enabled
+      ? { workspace_id, number: pr.number, enabled, head_sha: pr.head_sha }
+      : { workspace_id, number: pr.number, enabled };
+    return this.client.request("git.pr_auto_merge", method === undefined ? params : { ...params, method });
+  }
+
   /** Ask the Host to look the pull request up on GitHub now. */
   async refreshPr(workspace_id: string): Promise<PrEntry> {
     return this.client.request("git.pr", { workspace_id, refresh: true });
@@ -508,6 +539,24 @@ export class HostController {
     await this.client.sendMessage(params);
   }
 
+  /** See `HostClient.sendFollowUp`. */
+  async sendFollowUp(params: OpParams<"session.follow_up">): Promise<FollowUpOutcome> {
+    return (await this.client.sendFollowUp(params)).outcome;
+  }
+
+  async editFollowUp(session_id: string, follow_up_id: string, text: string): Promise<void> {
+    await this.client.request("session.follow_up_edit", { session_id, follow_up_id, text });
+  }
+
+  async removeFollowUp(session_id: string, follow_up_id: string): Promise<void> {
+    await this.client.request("session.follow_up_remove", { session_id, follow_up_id });
+  }
+
+  /** See `HostClient.sendQueuedFollowUp`. */
+  async sendQueuedFollowUp(session_id: string, follow_up_id: string): Promise<FollowUpOutcome> {
+    return (await this.client.sendQueuedFollowUp({ session_id, follow_up_id })).outcome;
+  }
+
   /** Send a session's failed can't-reach turn again; see `HostClient.retrySession`. */
   async retrySession(session_id: string): Promise<void> {
     await this.client.retrySession({ session_id });
@@ -555,6 +604,24 @@ export class HostController {
   async spawnTerminal(workspace_id: string, agent?: { agent: AgentType; command?: string }): Promise<string> {
     const { terminal_id } = await this.client.request("terminal.spawn", { workspace_id, ...agent });
     this.store.dispatch({ type: "terminal", terminal_id, patch: { alive: true, workspace_id } });
+    return terminal_id;
+  }
+
+  /**
+   * Run a worktree's repository script in a new terminal, which takes the
+   * place of its live one of that script; the list then drops that one.
+   */
+  async runScript(workspace_id: string, script: RepositoryScript): Promise<string> {
+    const { terminal_id } = await this.client.request("workspace.run_script", { workspace_id, script });
+    const title = SCRIPT_TERMINAL_TITLES[script];
+    this.store.dispatch({ type: "terminal", terminal_id, patch: { alive: true, workspace_id, title } });
+    await this.refreshTerminals();
+    // The ones it replaced, still shown if attached, go with them.
+    for (const t of Object.values(this.store.getState().terminals)) {
+      if (t.terminal_id !== terminal_id && t.workspace_id === workspace_id && t.title === title && !t.alive) {
+        this.detachTerminal(t.terminal_id);
+      }
+    }
     return terminal_id;
   }
 

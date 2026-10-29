@@ -243,6 +243,23 @@ describe("controller: agents, options, ownership", () => {
     expect(t.store.getState().terminals.t2?.workspace_id).toBe("w2");
   });
 
+  it("runs a script in a terminal that replaces its last one", async () => {
+    const t = await live();
+    const run = (id: string) => ({ terminal_id: id, title: "Run", workspace_id: "w1" });
+    t.transport.handlers["terminal.list"] = () => [run("r1")];
+    await t.controller.refreshTerminals();
+    t.controller.attachTerminal("r1");
+    t.transport.handlers["workspace.run_script"] = () => ({ terminal_id: "r2" });
+    t.transport.handlers["terminal.list"] = () => [run("r2")];
+    expect(await t.controller.runScript("w1", "run")).toBe("r2");
+    expect(t.store.getState().terminals.r2).toMatchObject({ title: "Run", workspace_id: "w1", alive: true });
+    // Shown, it is not kept as ended: the new one takes its place.
+    expect(t.store.getState().terminals.r1).toBeUndefined();
+    const req = t.transport.requests.find((r) => r.op === "workspace.run_script");
+    expect(req?.params).toEqual({ workspace_id: "w1", script: "run" });
+    expect(req?.options?.mutating).toBe(true);
+  });
+
   it("commits once, as a mutation", async () => {
     const t = await live();
     t.transport.handlers["git.commit"] = () => ({ committed_files: 2 });

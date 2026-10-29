@@ -161,6 +161,16 @@ pub fn set_force_command_color(enabled: bool) {
 /// [`crate::acp::scratch_dir`], or `None` when isolation is off or the
 /// directory could not be created (then the child inherits the ambient temp
 /// dir, exactly as it did before).
+/// Zwiim: `over` laid over `under`, `over` winning a name both set.
+fn beneath(
+    under: &BTreeMap<String, String>,
+    over: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut env = under.clone();
+    env.extend(over.iter().map(|(k, v)| (k.clone(), v.clone())));
+    env
+}
+
 fn merge_agent_env(
     env: &[(&'static str, &'static str)],
     runtime_env: &BTreeMap<String, String>,
@@ -2311,6 +2321,7 @@ pub async fn spawn_agent_connection(
     working_dir: Option<String>,
     session_id: Option<String>,
     runtime_env: BTreeMap<String, String>,
+    repository_env: BTreeMap<String, String>,
     owner_window_label: String,
     emitter: EventEmitter,
     connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
@@ -2318,6 +2329,7 @@ pub async fn spawn_agent_connection(
     preferred_config_values: BTreeMap<String, String>,
     delegation_injection: Option<DelegationInjection>,
     terminal_shell_config: TerminalShellRuntimeConfig,
+    preferences: crate::harness::UserPreferences,
 ) -> Result<tokio::sync::oneshot::Receiver<()>, AcpError> {
     // Create the authoritative session state up front. Subsequent emit_with_state
     // calls write through this state and increment its seq counter so the first
@@ -2393,10 +2405,13 @@ pub async fn spawn_agent_connection(
     // by every way its session opens (new, load, resume, fork).
     let user = delegation_injection.as_ref().map(|i| i.user_instructions.as_ref());
     let instructions =
-        connection_instructions(&connection_id, agent_type, &launch_cwd, user).await;
+        connection_instructions(&connection_id, agent_type, &launch_cwd, user, preferences).await;
+    // Zwiim: the agent gets the repository's variables beneath its own; the
+    // policies and fingerprint below keep reading `runtime_env` alone.
+    let launch_env = beneath(&repository_env, &runtime_env);
     let agent = match build_agent(
         agent_type,
-        &runtime_env,
+        &launch_env,
         &launch_cwd,
         instructions.as_deref(),
         &stderr_tail,
@@ -2475,11 +2490,14 @@ pub async fn spawn_agent_connection(
     // `terminal/create` tool authenticate via the same helper path the
     // agent process uses, while keeping unrelated secrets scoped to the
     // agent and out of arbitrary shell commands it runs.
-    let mut terminal_base_env: BTreeMap<String, String> = runtime_env
+    let terminal_base_env: BTreeMap<String, String> = runtime_env
         .iter()
         .filter(|(k, _)| k.starts_with("GIT_CONFIG_"))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
+    // Zwiim: and the repository's variables, set by the user for exactly the
+    // commands run there.
+    let mut terminal_base_env = beneath(&repository_env, &terminal_base_env);
     // Also surface a zwiim-installed OfficeCLI on the terminal's PATH: agents run
     // office skills' `officecli …` through this `terminal/create` tool, not as a
     // child of the agent process, so the agent-env injection alone wouldn't reach
@@ -4337,13 +4355,16 @@ fn delivers_session_instructions(agent_type: AgentType) -> bool {
 }
 
 /// The harness's session instructions for connection `connection_id`,
-/// working in `cwd`, when its agent takes them. Every new, loaded, resumed
-/// and forked session on the connection runs with this text.
+/// working in `cwd` with the user's instructions from `user` and their Git
+/// `preferences`, when its agent takes them.
+/// Every new, loaded, resumed and forked session on the connection runs with
+/// this text.
 async fn connection_instructions(
     connection_id: &str,
     agent_type: AgentType,
     cwd: &Path,
     user: Option<&dyn UserInstructionsLookup>,
+    preferences: crate::harness::UserPreferences,
 ) -> Option<String> {
     if !delivers_session_instructions(agent_type) {
         return None;
@@ -4352,7 +4373,11 @@ async fn connection_instructions(
         Some(lookup) => lookup.for_cwd(cwd).await,
         None => Default::default(),
     };
-    let instructions = crate::harness::instruct(&crate::harness::gather(cwd, user).await);
+    let input = crate::harness::HarnessInput {
+        preferences,
+        ..crate::harness::gather(cwd, user).await
+    };
+    let instructions = crate::harness::instruct(&input);
     tracing::info!(
         connection_id,
         agent = ?agent_type,
@@ -19280,6 +19305,7 @@ mod tests {
                 default_branch: Some("origin/main".into()),
                 placeholder_branch: None,
             }),
+            preferences: Default::default(),
             user: Default::default(),
         })
         .text;
@@ -19310,11 +19336,27 @@ mod tests {
             crate::harness::instruct(&crate::harness::gather(dir.path(), Default::default()).await)
                 .text;
         assert_eq!(
-            connection_instructions("c", AgentType::ClaudeCode, dir.path(), None).await,
+            connection_instructions("c", AgentType::ClaudeCode, dir.path(), None, Default::default())
+                .await,
             Some(expected)
         );
+        // Git preferences need a checkout to apply to.
+        let init = std::process::Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        assert!(init.success());
+        let preferences = crate::harness::UserPreferences {
+            pull_request: Some("Draft PRs only.".into()),
+            ..Default::default()
+        };
+        let text = connection_instructions("c", AgentType::ClaudeCode, dir.path(), None, preferences.clone())
+            .await
+            .unwrap();
+        assert!(text.ends_with("Pull requests:\nDraft PRs only.\n"), "{text}");
         assert_eq!(
-            connection_instructions("c", AgentType::Grok, dir.path(), None).await,
+            connection_instructions("c", AgentType::Grok, dir.path(), None, preferences).await,
             None
         );
     }
@@ -19336,14 +19378,14 @@ mod tests {
     async fn connection_instructions_carry_the_users_text() {
         let dir = tempfile::tempdir().unwrap();
         let lookup = FixedUserInstructions(Default::default());
-        let text = connection_instructions("c", AgentType::Codex, dir.path(), Some(&lookup))
+        let text = connection_instructions("c", AgentType::Codex, dir.path(), Some(&lookup), Default::default())
             .await
             .unwrap();
         assert!(text.ends_with("\nAnswer in French.\n"), "{text}");
         assert_eq!(*lookup.0.lock().unwrap(), [dir.path().to_path_buf()]);
         // Agents that get no instructions aren't looked up for.
         assert_eq!(
-            connection_instructions("c", AgentType::Grok, dir.path(), Some(&lookup)).await,
+            connection_instructions("c", AgentType::Grok, dir.path(), Some(&lookup), Default::default()).await,
             None
         );
         assert_eq!(lookup.0.lock().unwrap().len(), 1);

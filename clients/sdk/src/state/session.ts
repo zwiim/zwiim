@@ -488,6 +488,18 @@ export function applyEvent(view: SessionView, ev: SessionEvent): SessionView {
         agentStatus: "prompting",
       };
     }
+    case "agent.steered": {
+      // The agent took it after its turn ended: the transcript has it.
+      if (view.agentStatus !== "prompting") return { ...next, historyStale: true };
+      // Mid-turn, what the agent says next answers it, so the turn splits
+      // here like at a new prompt, still running.
+      const [own, earlier] = settleTurn(live);
+      return {
+        ...next,
+        settled: turnIsEmpty(own) ? view.settled : own,
+        live: { ...earlier, userMessage: ev.payload },
+      };
+    }
     case "agent.tool_call":
       return { ...next, live: placeToolCall(live, ev.payload) };
     case "agent.tool_call_update": {

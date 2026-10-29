@@ -52,6 +52,20 @@
   --selection: rgba(26, 104, 179, 0.2);
   /* The terminal is dark in both themes. */
   --terminal: #0d0e10;
+  /* Zwiim code theme (Settings → Appearance → Code theme): the accent, teal and violet on graphite. */
+  --syntax-foreground: #101214;
+  --syntax-token-comment: #767a7e;
+  --syntax-token-keyword: #1a68b3;
+  --syntax-token-function: #0b0c0e;
+  --syntax-token-string: #11766a;
+  --syntax-token-string-expression: #11766a;
+  --syntax-token-constant: #6e46c2;
+  --syntax-token-parameter: #2f3337;
+  --syntax-token-punctuation: #5f6368;
+  --syntax-token-link: #1a68b3;
+  --syntax-token-inserted: var(--done);
+  --syntax-token-deleted: var(--destructive);
+  --syntax-token-changed: #1a68b3;
   font-family: var(--font-sans);
   font-feature-settings: "calt" 1, "cv11" 1, "ss03" 1;
   -webkit-font-smoothing: antialiased;
@@ -99,7 +113,71 @@
     0 0 0 1px rgba(255, 255, 255, 0.07), 0 14px 36px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
   --scrim: rgba(0, 0, 0, 0.5);
   --selection: rgba(108, 180, 240, 0.3);
+  --syntax-foreground: #d5d8db;
+  --syntax-token-comment: #75787c;
+  --syntax-token-keyword: #6cb4f0;
+  --syntax-token-function: #e6e8ea;
+  --syntax-token-string: #8fcfc4;
+  --syntax-token-string-expression: #8fcfc4;
+  --syntax-token-constant: #c4a7f0;
+  --syntax-token-parameter: #c8cbce;
+  --syntax-token-punctuation: #a3a6a9;
+  --syntax-token-link: #6cb4f0;
+  --syntax-token-changed: #6cb4f0;
   color-scheme: dark;
+}
+/*
+ * Softer dark (Settings → Appearance): the same graphite lifted a step and the
+ * text dimmed, body text 9.7:1 instead of 12.6:1. Accent and status colors
+ * keep their hues; the terminal keeps its own.
+ */
+.dark.soft-dark {
+  --background: #1c1f22;
+  --foreground: #c3c7ca;
+  --prose: #b3b7bb;
+  --prose-strong: #d0d3d6;
+  --card: #25282b;
+  --card-foreground: #c3c7ca;
+  --popover: #2a2d30;
+  --primary: #d0d3d6;
+  --primary-foreground: #1c1f22;
+  --secondary: #2f3235;
+  --secondary-foreground: #c3c7ca;
+  --muted-foreground: #979b9f;
+  --faint: #6f7377;
+  --accent-foreground: #c3c7ca;
+  --sidebar: #212427;
+  --sidebar-foreground: #c3c7ca;
+  --code: #171a1c;
+}
+/*
+ * Colors for color vision differences (Settings → Appearance). Each pair was
+ * picked by simulating the vision it serves, so done, failed and the accent
+ * stay apart where the usual green and red would merge.
+ * Red-green (deuteranopia, protanopia): teal and orange.
+ */
+:root[data-color-vision="red_green"] {
+  --done: #0b6e5a;
+  --destructive: #b25e00;
+  --add-bg: rgba(11, 110, 90, 0.1);
+  --del-bg: rgba(178, 94, 0, 0.1);
+}
+:root.dark[data-color-vision="red_green"] {
+  --done: #5ccfb0;
+  --done-foreground: #082820;
+  --destructive: #f39c3d;
+  --add-bg: rgba(92, 207, 176, 0.11);
+  --del-bg: rgba(243, 156, 61, 0.11);
+}
+/* Blue-yellow (tritanopia): red already reads; done moves to lime, away from the accent's blue. */
+:root[data-color-vision="blue_yellow"] {
+  --done: #6b7a00;
+  --add-bg: rgba(107, 122, 0, 0.1);
+}
+:root.dark[data-color-vision="blue_yellow"] {
+  --done: #b8e05a;
+  --done-foreground: #1f2a06;
+  --add-bg: rgba(184, 224, 90, 0.11);
 }
 
 @theme {
@@ -301,6 +379,27 @@
   .font-mono {
     font-feature-settings: "calt" 1;
   }
+  /* Code ligatures off (Settings → Appearance): every character its own glyph. */
+  .no-code-ligatures :is(code, kbd, pre, .font-mono) {
+    font-variant-ligatures: none;
+    font-feature-settings: "calt" 0, "liga" 0;
+  }
+  /*
+   * Syntax colors: each token carries its light and dark color, and the
+   * window's theme picks one. The code's own background stays `--code`.
+   */
+  .tok {
+    color: var(--tok-light);
+    font-style: var(--tok-light-font-style);
+    font-weight: var(--tok-light-font-weight);
+    text-decoration: var(--tok-light-text-decoration);
+  }
+  .dark .tok {
+    color: var(--tok-dark);
+    font-style: var(--tok-dark-font-style);
+    font-weight: var(--tok-dark-font-weight);
+    text-decoration: var(--tok-dark-text-decoration);
+  }
   ::selection {
     background: var(--selection);
   }
@@ -367,4 +466,49 @@
     transition-duration: 1ms !important;
     scroll-behavior: auto !important;
   }
+}
+/*
+ * Book markdown (Settings → Appearance): a markdown file's preview set as a
+ * page, in the system's serif at a reading measure with room between lines.
+ * Unlayered, so it outranks the renderer's own utilities; code stays mono.
+ */
+.markdown-book {
+  max-width: 40rem;
+  margin-inline: auto;
+  font-family: "Iowan Old Style", Charter, "Bitstream Charter", Georgia, Cambria, serif;
+  font-size: 1.0625rem;
+  font-feature-settings: normal;
+  line-height: 1.75;
+  hyphens: auto;
+  text-wrap: pretty;
+}
+.markdown-book :is(h1, h2, h3) {
+  line-height: 1.3;
+  letter-spacing: 0;
+}
+.markdown-book h1 {
+  margin: 2.5rem 0 1rem;
+  font-size: 1.75rem;
+}
+.markdown-book h2 {
+  margin: 2.25rem 0 0.75rem;
+  font-size: 1.375rem;
+}
+.markdown-book h3 {
+  margin: 1.75rem 0 0.5rem;
+  font-size: 1.125rem;
+  font-style: italic;
+  font-weight: 500;
+}
+.markdown-book p {
+  margin-block: 1em;
+}
+.markdown-book blockquote {
+  font-style: italic;
+}
+.markdown-book table {
+  font-family: var(--font-sans);
+}
+.markdown-book > :first-child {
+  margin-top: 0;
 }

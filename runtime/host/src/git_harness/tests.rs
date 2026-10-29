@@ -548,6 +548,11 @@ fn gh_failures_map_to_structured_codes() {
             "GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)",
             PrChanged,
         ),
+        (
+            Some(1),
+            "GraphQL: Auto merge is not allowed for this repository (enablePullRequestAutoMerge)",
+            AutoMergeDisabled,
+        ),
         (Some(1), "something unexpected", Failed),
     ];
     for (exit, stderr, want) in cases {
@@ -1753,6 +1758,195 @@ async fn a_merge_queued_for_later_is_turned_off_and_refused() {
 }
 
 #[tokio::test]
+async fn a_merge_keeps_the_users_own_auto_merge_on() {
+    let fx = workspace(true).await;
+    let (gh, calls) = merge_gh(
+        &fx,
+        &pr_state_json(5, "OPEN", "CLEAN", "h1", true),
+        &pr_state_json(5, "OPEN", "BLOCKED", "h1", true),
+    );
+    let err = merge_with(&fx, &gh, "h1").await.unwrap_err();
+    assert_eq!(err.code, GitErrorCode::NotMergeable);
+    let log = std::fs::read_to_string(&calls).unwrap();
+    assert!(!log.contains("--disable-auto"), "{log}");
+}
+
+async fn auto_merge_with(
+    fx: &Fixture,
+    gh: &Path,
+    enabled: bool,
+    head: Option<&str>,
+) -> Result<PrAutoMerged, GitError> {
+    let host = GitHost {
+        gh: Some(gh),
+        ..fx.host()
+    };
+    auto_merge_pr(&host, &fx.caller, 5, enabled, head, None).await
+}
+
+#[tokio::test]
+async fn auto_merge_is_queued_on_github_pinned_to_the_head() {
+    let fx = workspace(true).await;
+    let (gh, calls) = merge_gh(
+        &fx,
+        &pr_state_json(5, "OPEN", "BLOCKED", "h1", false),
+        &pr_state_json(5, "OPEN", "BLOCKED", "h1", true),
+    );
+    let on = auto_merge_with(&fx, &gh, true, Some("h1")).await.unwrap();
+    assert_eq!(on.outcome, AutoMergeOutcome::On);
+    // GitHub reports the method it queued.
+    assert_eq!(on.method, Some(MergeMethod::Squash));
+    let log = std::fs::read_to_string(&calls).unwrap();
+    let merge: Vec<&str> = log.lines().filter(|l| l.starts_with("pr merge")).collect();
+    assert_eq!(merge.len(), 1, "{log}");
+    assert!(
+        merge[0].starts_with("pr merge 5 --auto --merge --match-head-commit h1 |"),
+        "{log}"
+    );
+
+    // Turning it on again asks GitHub nothing more.
+    let (gh, calls) = merge_gh(
+        &fx,
+        &pr_state_json(5, "OPEN", "BLOCKED", "h1", true),
+        &pr_state_json(5, "OPEN", "BLOCKED", "h1", true),
+    );
+    let again = auto_merge_with(&fx, &gh, true, Some("h1")).await.unwrap();
+    assert_eq!(again.outcome, AutoMergeOutcome::On);
+    let log = std::fs::read_to_string(&calls).unwrap();
+    assert!(!log.contains("pr merge"), "{log}");
+}
+
+#[tokio::test]
+async fn auto_merge_needs_the_head_the_user_saw() {
+    let fx = workspace(true).await;
+    let view = pr_state_json(5, "OPEN", "BLOCKED", "new-head", false);
+    let (gh, calls) = merge_gh(&fx, &view, &view);
+    let err = auto_merge_with(&fx, &gh, true, Some("old-head"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, GitErrorCode::PrChanged);
+    for head in [None, Some(" ")] {
+        let err = auto_merge_with(&fx, &gh, true, head).await.unwrap_err();
+        assert_eq!(err.code, GitErrorCode::InvalidInput);
+    }
+    let log = std::fs::read_to_string(&calls).unwrap();
+    assert!(!log.contains("pr merge"), "{log}");
+}
+
+#[tokio::test]
+async fn auto_merge_on_a_mergeable_pull_request_merges_it_now() {
+    let fx = workspace(true).await;
+    let (gh, calls) = merge_gh(
+        &fx,
+        &pr_state_json(5, "OPEN", "CLEAN", "h1", false),
+        &pr_state_json(5, "MERGED", "UNKNOWN", "h1", false),
+    );
+    let done = auto_merge_with(&fx, &gh, true, Some("h1")).await.unwrap();
+    assert_eq!(done.outcome, AutoMergeOutcome::Merged);
+    assert_eq!(done.method, Some(MergeMethod::Merge));
+    let log = std::fs::read_to_string(&calls).unwrap();
+    assert!(log.contains("pr merge 5 --merge --match-head-commit h1"), "{log}");
+    assert!(!log.contains("--auto"), "{log}");
+}
+
+#[tokio::test]
+async fn auto_merge_is_refused_where_github_would_wait_forever() {
+    let fx = workspace(true).await;
+    for (status, state, why) in [
+        ("BEHIND", "OPEN", "Branch is behind main"),
+        ("DIRTY", "OPEN", "Merge conflicts"),
+        ("UNKNOWN", "OPEN", "Checking…"),
+        ("BLOCKED", "CLOSED", "closed"),
+    ] {
+        let view = pr_state_json(5, state, status, "h", false);
+        let (gh, calls) = merge_gh(&fx, &view, &view);
+        let err = auto_merge_with(&fx, &gh, true, Some("h"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, GitErrorCode::NotMergeable, "{status} {state}");
+        assert!(err.message.contains(why), "{}", err.message);
+        let log = std::fs::read_to_string(&calls).unwrap();
+        assert!(!log.contains("pr merge"), "{log}");
+    }
+}
+
+#[tokio::test]
+async fn auto_merge_follows_what_github_says() {
+    let fx = workspace(true).await;
+    let blocked = pr_state_json(5, "OPEN", "BLOCKED", "h1", false);
+    let merged = pr_state_json(5, "MERGED", "UNKNOWN", "h1", false);
+    let flag = fx.tmp.path().join("merged");
+    // The repository has auto-merge off.
+    let (gh, _) = fake_gh(
+        fx.tmp.path(),
+        &format!(
+            r#"
+"pr view"*) echo '{blocked}' ;;
+"repo view"*) echo '{REPO_JSON}' ;;
+"pr merge"*--auto*) echo 'GraphQL: Auto merge is not allowed for this repository (enablePullRequestAutoMerge)' >&2; exit 1 ;;
+*) echo "unexpected: $*" >&2; exit 1 ;;"#
+        ),
+    );
+    let err = auto_merge_with(&fx, &gh, true, Some("h1"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, GitErrorCode::AutoMergeDisabled);
+
+    // Checks finished between the read and the request: merged now instead.
+    let _ = std::fs::remove_file(fx.tmp.path().join("gh-calls"));
+    let (gh, calls) = fake_gh(
+        fx.tmp.path(),
+        &format!(
+            r#"
+"pr view"*) if [ -f '{flag}' ]; then echo '{merged}'; elif [ -f '{flag}.tried' ]; then echo '{clean}'; else echo '{blocked}'; fi ;;
+"repo view"*) echo '{REPO_JSON}' ;;
+"pr merge"*--auto*) touch '{flag}.tried'; echo 'GraphQL: Pull request Pull request is in clean status (enablePullRequestAutoMerge)' >&2; exit 1 ;;
+"pr merge"*) touch '{flag}' ;;
+*) echo "unexpected: $*" >&2; exit 1 ;;"#,
+            flag = flag.display(),
+            clean = pr_state_json(5, "OPEN", "CLEAN", "h1", false),
+        ),
+    );
+    let done = auto_merge_with(&fx, &gh, true, Some("h1")).await.unwrap();
+    assert_eq!(done.outcome, AutoMergeOutcome::Merged);
+    let log = std::fs::read_to_string(&calls).unwrap();
+    assert!(log.contains("pr merge 5 --merge --match-head-commit h1"), "{log}");
+}
+
+#[tokio::test]
+async fn auto_merge_turns_off_and_off_again_is_a_no_op() {
+    let fx = workspace(true).await;
+    let (gh, calls) = merge_gh(
+        &fx,
+        &pr_state_json(5, "OPEN", "BLOCKED", "h1", true),
+        &pr_state_json(5, "OPEN", "BLOCKED", "h1", false),
+    );
+    // Off needs no head.
+    let off = auto_merge_with(&fx, &gh, false, None).await.unwrap();
+    assert_eq!(off.outcome, AutoMergeOutcome::Off);
+    assert_eq!(off.method, None);
+    let log = std::fs::read_to_string(&calls).unwrap();
+    assert!(log.contains("pr merge 5 --disable-auto"), "{log}");
+
+    let (gh, calls) = merge_gh(
+        &fx,
+        &pr_state_json(5, "OPEN", "BLOCKED", "h1", false),
+        &pr_state_json(5, "OPEN", "BLOCKED", "h1", false),
+    );
+    let off = auto_merge_with(&fx, &gh, false, None).await.unwrap();
+    assert_eq!(off.outcome, AutoMergeOutcome::Off);
+    let log = std::fs::read_to_string(&calls).unwrap();
+    assert!(!log.contains("pr merge"), "{log}");
+
+    // GitHub merged it first: the user learns that rather than "off".
+    let view = pr_state_json(5, "MERGED", "UNKNOWN", "h1", true);
+    let (gh, _) = merge_gh(&fx, &view, &view);
+    let done = auto_merge_with(&fx, &gh, false, None).await.unwrap();
+    assert_eq!(done.outcome, AutoMergeOutcome::Merged);
+    assert_eq!(done.method, Some(MergeMethod::Squash));
+}
+
+#[tokio::test]
 async fn pr_state_follows_the_branch_and_no_pr_is_none() {
     let fx = workspace(true).await;
     let (gh, _) = fake_gh(
@@ -1841,12 +2035,52 @@ fn merge_state_maps_to_allowed_and_a_reason() {
     }
     let draft = raw_pr("OPEN", "DRAFT", true, json!([])).into_state(methods());
     assert_eq!(draft.state, PrLifecycle::Draft);
+    assert!(!draft.merge.auto_available);
     let none = raw_pr("OPEN", "CLEAN", false, json!([])).into_state(vec![]);
     assert!(!none.merge.allowed);
     assert_eq!(
         none.merge.reason.as_deref(),
         Some("The repository allows no merge method")
     );
+}
+
+#[test]
+fn auto_merge_is_offered_only_to_a_pull_request_waiting_on_requirements() {
+    let methods = || vec![MergeMethod::Squash];
+    for (status, available) in [
+        ("BLOCKED", true),
+        ("CLEAN", false),
+        ("UNSTABLE", false),
+        ("BEHIND", false),
+        ("DIRTY", false),
+        ("UNKNOWN", false),
+    ] {
+        let pr = raw_pr("OPEN", status, false, json!([])).into_state(methods());
+        assert_eq!(pr.merge.auto_available, available, "{status}");
+        assert_eq!(pr.merge.auto, None, "{status}");
+    }
+    assert!(!raw_pr("OPEN", "BLOCKED", false, json!([]))
+        .into_state(vec![])
+        .merge
+        .auto_available);
+
+    let mut raw = raw_pr("OPEN", "BLOCKED", false, json!([]));
+    raw.auto_merge_request = serde_json::from_value(json!({
+        "mergeMethod": "REBASE", "enabledAt": "2026-10-29T00:00:00Z", "enabledBy": {"login": "me"}
+    }))
+    .unwrap();
+    let on = raw.into_state(methods());
+    assert_eq!(
+        on.merge.auto,
+        Some(PrAutoMerge {
+            method: Some(MergeMethod::Rebase)
+        })
+    );
+    // Already on: nothing to offer.
+    assert!(!on.merge.auto_available);
+    let wire = serde_json::to_value(on).unwrap();
+    assert_eq!(wire["merge"]["auto"], json!({"method": "rebase"}));
+    assert_eq!(wire["merge"]["auto_available"], false);
 }
 
 #[test]

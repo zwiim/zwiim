@@ -147,7 +147,7 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
   let where: { text: string; color: string };
   if (target.kind === "ready") where = { text: target.label, color: theme.fg };
   else if (target.kind === "removed")
-    where = { text: target.label ? `${target.label} was removed` : "Workspace removed", color: theme.err };
+    where = { text: target.label ? `${target.label} was archived` : "Workspace removed", color: theme.err };
   else if (target.kind === "none") where = { text: "No workspaces yet", color: theme.mut };
   else where = { text: "Loading…", color: theme.mut };
 
@@ -253,7 +253,7 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
 
           {target.kind === "removed" ? (
             <T color={theme.mut} testID="new-session-removed">
-              The worktree chosen in Files was removed. Choose where this session runs.
+              The worktree chosen in Files was archived. Choose where this session runs.
             </T>
           ) : null}
           {noAgent ? (

@@ -286,6 +286,32 @@ describe("worktree operations", () => {
     expect(t.transport.requests.length - listsBefore).toBe(2);
   });
 
+  it("removes a repository once, as a mutation, following the feed", async () => {
+    const t = setup();
+    t.transport.handlers["workspace.list"] = () => [root, wt("a")];
+    t.transport.handlers["session.list"] = () => [];
+    t.transport.handlers["workspace.remove"] = (p) => {
+      if (!p.force) throw hostError("workspace_dirty", { changes: 2 });
+      t.transport.feedEvent("workspace.removed", { workspace_id: "a" });
+      t.transport.feedEvent("workspace.removed", { workspace_id: "root" });
+      return { workspace_id: "root", archived_worktrees: ["a"] };
+    };
+    await goLive(t);
+    const dirty = await t.controller.removeWorkspace("root").catch((e: ZwiimClientError) => e);
+    expect(dirtyDetails(dirty)).toEqual({ changes: 2 });
+    expect(await t.controller.removeWorkspace("root", { force: true })).toEqual({
+      workspace_id: "root",
+      archived_worktrees: ["a"],
+    });
+    const sent = t.transport.requests.filter((r) => r.op === "workspace.remove");
+    expect(sent.map((r) => [r.params, r.options])).toEqual([
+      [{ workspace_id: "root" }, { mutating: true }],
+      [{ workspace_id: "root", force: true }, { mutating: true }],
+    ]);
+    await flush();
+    expect(selectWorkspaceTree(t.store.getState())).toEqual([]);
+  });
+
   it("deletes a session once, following the feed", async () => {
     const t = setup();
     t.transport.handlers["workspace.list"] = () => [root, wt("a")];

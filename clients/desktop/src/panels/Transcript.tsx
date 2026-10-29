@@ -58,6 +58,8 @@ import { SentAttachments } from "@/attachments/AttachmentChip";
 import { FileLinksContext, Markdown } from "@/components/Markdown";
 import { basename, parseUnifiedDiff, type FileDiff } from "@/lib/diff";
 import { clipToolText, historyTool, liveTool, type ToolSummary } from "@/lib/tools";
+import { expandToolCalls } from "@/lib/prefs";
+import { usePref } from "@/lib/use-pref";
 import { cn } from "@/lib/utils";
 
 /** How an item that just arrived comes in (DESIGN.md, Motion: medium, ease-out). */
@@ -149,6 +151,7 @@ function Disclosure({
   children,
   label,
   stateKey,
+  initiallyOpen = false,
 }: {
   /** The row; given whether it is open when it shows something else then. */
   summary: React.ReactNode | ((open: boolean) => React.ReactNode);
@@ -156,8 +159,10 @@ function Disclosure({
   label?: string;
   /** Where its open state is kept, for a history row. */
   stateKey?: string;
+  /** Open until it is toggled. */
+  initiallyOpen?: boolean;
 }) {
-  const [open, setOpen] = useKeptState(stateKey, false);
+  const [open, setOpen] = useKeptState(stateKey, initiallyOpen);
   const id = useId();
   const expandable = Boolean(children);
   const content = typeof summary === "function" ? summary(open) : summary;
@@ -600,7 +605,7 @@ interface ReplyRow {
 }
 
 /** Consecutive tool calls and sub-agents fold into one row from this many, as on the phone. */
-const FOLD_AT = 3;
+export const FOLD_AT = 3;
 
 /** A sub-agent card's row: it folds into a run as a tool call does. */
 const cardRow = (node: React.ReactNode, card: SubagentCard<unknown>): ReplyRow => ({
@@ -614,14 +619,19 @@ const cardRow = (node: React.ReactNode, card: SubagentCard<unknown>): ReplyRow =
 
 /**
  * A reply's rows, each run of `FOLD_AT` or more tool calls and sub-agents
- * folded into one row. A run's open state is kept under `scope` and its
- * first row's place.
+ * folded into one row unless `expand`. A run's open state is kept under
+ * `scope` and its first row's place.
  */
-function foldRuns(rows: readonly (ReplyRow | null)[], scope?: string, className?: string): React.ReactNode[] {
+function foldRuns(
+  rows: readonly (ReplyRow | null)[],
+  expand: boolean,
+  scope?: string,
+  className?: string,
+): React.ReactNode[] {
   const out: React.ReactNode[] = [];
   let run: { row: ReplyRow; at: number }[] = [];
   const flush = () => {
-    if (run.length >= FOLD_AT) {
+    if (!expand && run.length >= FOLD_AT) {
       const key = `run:${run[0]!.at}`;
       out.push(
         <ToolRun key={key} rows={run.map((r) => r.row)} stateKey={scope && `${scope}/${key}`} className={className} />,
@@ -675,8 +685,9 @@ function ToolRun({ rows, stateKey, className }: { rows: readonly ReplyRow[]; sta
   );
 }
 
-/** Thinking: its first line on the row, all of it on expand. */
+/** Thinking: its first line on the row, all of it on expand (from the start where every tool call shows). */
 export function Thought({ text, className, stateKey }: { text: string; className?: string; stateKey?: string }) {
+  const expand = usePref(expandToolCalls);
   const body = text.trim();
   // Thinking often opens with a bold heading; the row shows its words.
   const preview = body
@@ -687,6 +698,7 @@ export function Thought({ text, className, stateKey }: { text: string; className
     <div className={cn("text-ui relative", className)} data-testid="thought">
       <Disclosure
         stateKey={stateKey}
+        initiallyOpen={expand}
         summary={(open) => (
           <>
             <Brain className="text-muted-foreground size-3.5 shrink-0" />
@@ -976,6 +988,7 @@ function HistoryBlocks({
   carry?: LiveTurn;
   carried?: number;
 }) {
+  const expand = usePref(expandToolCalls);
   // A result is shown with its call; one without a call stands alone.
   const results = new Map<string, Extract<HistoryBlock, { type: "tool_result" }>>();
   for (const b of blocks) if (b.type === "tool_result" && b.tool_call_id) results.set(b.tool_call_id, b);
@@ -1076,7 +1089,7 @@ function HistoryBlocks({
     for (const [i, r] of moreRows.entries())
       rows.push(r && { ...r, node: <Fragment key={`live:${i}`}>{r.node}</Fragment> });
   }
-  return <>{foldRuns(rows, scope)}</>;
+  return <>{foldRuns(rows, expand, scope)}</>;
 }
 
 /**
@@ -1143,6 +1156,7 @@ function LiveBlocks({
   from?: number;
   keys?: LiveKeys;
 }) {
+  const expand = usePref(expandToolCalls);
   const scope = blocks ?? turn.message?.content ?? [];
   const all = liveSubagentCards(turn, blocks, background, earlier);
   const inScope = new Set(scope.flatMap((b) => (b.type === "tool_call" ? [b.tool_call_id] : [])));
@@ -1150,7 +1164,7 @@ function LiveBlocks({
   const cardView = liveCardView(turn, background, enter, keys);
   const rows = liveRows(turn, scope, all, cardView, enter, keys).map((r, i) => (i < from ? null : r));
   rows.push(...orphans.map((c) => cardRow(cardView(c), c)));
-  return <>{foldRuns(rows, undefined, enter)}</>;
+  return <>{foldRuns(rows, expand, undefined, enter)}</>;
 }
 
 /**

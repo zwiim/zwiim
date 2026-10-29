@@ -18,6 +18,8 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 # Desktop self-update from signed GitHub Releases (see src/update.rs).
 tauri-plugin-updater = "2"
+# Notifications when an agent finishes (see src/notify.rs).
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "6"
@@ -31,6 +33,8 @@ sha2 = "0.10"
 rand = "0.8"
 # Hosts on the local network: mDNS discovery (see src/lan.rs).
 mdns-sd = "0.21"
+# Listing installed fonts for the Appearance settings (see src/fonts.rs).
+fontdb = "0.24"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

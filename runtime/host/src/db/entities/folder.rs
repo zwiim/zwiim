@@ -60,6 +60,10 @@ pub struct Model {
     /// Zwiim-owned: the commit a managed worktree's branch started at. The
     /// workspace diff is taken against its merge-base with HEAD. NULL for roots.
     pub base_commit: Option<String>,
+    /// Zwiim-owned: for a managed worktree, the first of the ports its
+    /// processes get as `ZWIIM_PORT` (see `crate::workspace::ports`). NULL
+    /// until something first starts there, and for roots.
+    pub port: Option<i32>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

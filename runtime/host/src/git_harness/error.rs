@@ -46,6 +46,8 @@ pub enum GitErrorCode {
     NotMergeable,
     /// The pull request's head moved since the caller looked at it.
     PrChanged,
+    /// The repository has "Allow auto-merge" off on GitHub.
+    AutoMergeDisabled,
     /// The operation ran past its time limit and was stopped.
     Timeout,
     /// Anything else Git or `gh` refused; see `detail`.
@@ -73,6 +75,7 @@ impl GitErrorCode {
             Self::GhUnauthenticated => "gh_unauthenticated",
             Self::NotMergeable => "not_mergeable",
             Self::PrChanged => "pr_changed",
+            Self::AutoMergeDisabled => "auto_merge_disabled",
             Self::Timeout => "timeout",
             Self::Failed => "failed",
         }
@@ -223,6 +226,10 @@ pub(super) fn classify_gh(op: &str, exit: Option<i32>, stderr: &str) -> GitError
         GitErrorCode::AlreadyExists
     } else if lower.contains("head branch was modified") {
         GitErrorCode::PrChanged
+    } else if lower.contains("auto merge is not allowed")
+        || lower.contains("auto-merge is not allowed")
+    {
+        GitErrorCode::AutoMergeDisabled
     } else if lower.contains("not mergeable")
         || lower.contains("merge conflict")
         || lower.contains("is not mergeable")
@@ -273,6 +280,7 @@ fn describe(code: GitErrorCode) -> &'static str {
         GitErrorCode::GhUnauthenticated => "the GitHub CLI is not logged in; run `gh auth login`",
         GitErrorCode::NotMergeable => "the pull request cannot be merged",
         GitErrorCode::PrChanged => "the pull request changed; review the new commits",
+        GitErrorCode::AutoMergeDisabled => "auto-merge is off for this repository on GitHub",
         GitErrorCode::Timeout => "timed out",
         GitErrorCode::Failed => "failed",
     }

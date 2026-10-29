@@ -125,6 +125,40 @@ export interface NativeBridge {
   hostLogin?: HostLogin;
   /** Only in the desktop app on macOS: keeping a closed laptop awake. */
   lidHelper?: LidHelper;
+  /** Only in the desktop app: the system's notifications. */
+  notifier?: Notifier;
+  /** Only in the desktop app: zooming the whole window, as a browser does. */
+  zoom?: WindowZoom;
+  /** Only in the desktop app: the fonts installed on this computer. */
+  fonts?: InstalledFonts;
+  /** Only in the desktop app: showing a folder of this computer. */
+  folders?: FolderReveal;
+}
+
+export interface FolderReveal {
+  /** Show folder `path` (absolute, on this computer) in the file manager. */
+  reveal(path: string): Promise<void>;
+}
+
+export interface WindowZoom {
+  /** 1 is actual size. */
+  set(factor: number): Promise<void>;
+}
+
+export interface FontFamily {
+  name: string;
+  /** Every character the same width, as code and terminals need. */
+  mono: boolean;
+}
+
+export interface InstalledFonts {
+  /** Each family once, sorted by name. */
+  list(): Promise<FontFamily[]>;
+}
+
+/** Shows a notification the way this platform does (Notification Center, a toast, a desktop notification). */
+export interface Notifier {
+  notify(title: string, body: string): Promise<void>;
 }
 
 /** Where registering the power helper left it. */
@@ -276,6 +310,30 @@ export function tauriBridge(): NativeBridge {
       async setup() {
         const { invoke } = await import("@tauri-apps/api/core");
         return invoke<LidHelperSetup>("lid_helper_setup");
+      },
+    },
+    notifier: {
+      async notify(title, body) {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("desktop_notify", { title, body });
+      },
+    },
+    zoom: {
+      async set(factor) {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("window_zoom", { factor });
+      },
+    },
+    fonts: {
+      async list() {
+        const { invoke } = await import("@tauri-apps/api/core");
+        return invoke<FontFamily[]>("installed_fonts");
+      },
+    },
+    folders: {
+      async reveal(path) {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("reveal_folder", { path });
       },
     },
     remote: {

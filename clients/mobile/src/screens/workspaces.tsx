@@ -3,8 +3,10 @@
 // the workspace sheet. Level one lists the host's workspaces (search, and New
 // workspace to browse the Mac); level two lists a workspace's root checkout
 // and worktrees (and New worktree). Choosing a row selects it; a worktree's
-// Remove asks the Host to remove it (RemoveWorktree). A plain folder (not a
+// Archive asks the Host to remove it (RemoveWorktree). A plain folder (not a
 // Git repository) has no worktrees: no worktree chip, no level two.
+// A workspace is removed (RemoveWorkspace) by long-pressing it at level one,
+// or from Remove workspace at level two; its folder on the Mac stays.
 //
 // New session picks where it starts from the same workspaces as one tree
 // (WorkspaceTree): each workspace a tile that opens to its root checkout and
@@ -12,8 +14,8 @@
 
 import { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
-import { selectWorkspaceTree, type WorkspaceInfo, type WorkspaceNode } from "@zwiim/sdk";
-import { useHostState, useWorkspace } from "../app/hooks";
+import { hasCapability, selectWorkspaceTree, type WorkspaceInfo, type WorkspaceNode } from "@zwiim/sdk";
+import { useCurrentHost, useHostState, useWorkspace } from "../app/hooks";
 import { useRootNavigation } from "../app/navigation";
 import {
   contextLabel,
@@ -35,13 +37,20 @@ import { radius, space, type, useTheme } from "../ui/tokens";
 import { CloneCards, GithubProjects, NewWorkspaceChooser, useCanClone, useStartedClones } from "./github";
 import { useHostName } from "./HostFrame";
 import { toneColor } from "./PrStrip";
-import { RemoveWorktree } from "./RemoveWorktree";
+import { RemoveWorkspace, RemoveWorktree } from "./RemoveWorktree";
 
 type Level =
   | { kind: "workspaces" }
   | { kind: "new" }
   | { kind: "github" }
-  | { kind: "worktrees"; root_id: string; fromList: boolean };
+  | { kind: "worktrees"; root_id: string; fromList: boolean }
+  | { kind: "remove"; root_id: string; back: Level };
+
+/** The Host removes whole workspaces (`workspace.remove`). */
+function useCanRemoveWorkspace(): boolean {
+  const { view } = useCurrentHost();
+  return hasCapability(view?.compat ?? null, "workspace.remove");
+}
 
 /** `[ zwiim ▾ ]  [ ⎇ fix-auth ▾ ]` for the selected worktree. */
 export function ContextBar() {
@@ -127,6 +136,7 @@ function WorkspaceSheet({ level, onLevel, selected }: { level: Level | null; onL
         <Workspaces
           selected={selected}
           onRoot={(root_id) => onLevel({ kind: "worktrees", root_id, fromList: true })}
+          onRemove={(root_id) => onLevel({ kind: "remove", root_id, back: level })}
           onNew={canClone ? () => onLevel({ kind: "new" }) : folder}
           onStarted={started}
           onClose={close}
@@ -145,8 +155,11 @@ function WorkspaceSheet({ level, onLevel, selected }: { level: Level | null; onL
           root_id={level.root_id}
           selected={selected}
           onBack={level.fromList ? () => onLevel({ kind: "workspaces" }) : undefined}
+          onRemove={() => onLevel({ kind: "remove", root_id: level.root_id, back: level })}
           onClose={close}
         />
+      ) : level?.kind === "remove" ? (
+        <RemoveRoot root_id={level.root_id} onDone={close} onCancel={() => onLevel(level.back)} />
       ) : null}
     </Sheet>
   );
@@ -156,22 +169,32 @@ function useTree(): WorkspaceNode[] {
   return selectWorkspaceTree(useHostState());
 }
 
-/** Level one: the host's workspaces, searchable. */
+/** A workspace's removal, in the sheet; nothing once the Host no longer lists it. */
+function RemoveRoot({ root_id, onDone, onCancel }: { root_id: string; onDone(): void; onCancel(): void }) {
+  const root = useTree().find((n) => n.workspace.workspace_id === root_id)?.workspace;
+  if (!root) return null;
+  return <RemoveWorkspace workspace={root} onDone={onDone} onCancel={onCancel} />;
+}
+
+/** Level one: the host's workspaces, searchable. Long-press removes one. */
 function Workspaces({
   selected,
   onRoot,
+  onRemove,
   onNew,
   onStarted,
   onClose,
 }: {
   selected: WorkspaceInfo;
   onRoot(root_id: string): void;
+  onRemove(root_id: string): void;
   onNew(): void;
   onStarted(clone_id: string): void;
   onClose(): void;
 }) {
   const theme = useTheme();
   const tree = useTree();
+  const canRemove = useCanRemoveWorkspace();
   const [query, setQuery] = useState("");
   const roots = workspaceRoots(tree, query);
   const selectedRoot = rootIdOf(selected);
@@ -218,7 +241,12 @@ function Workspaces({
               key={w.workspace_id}
               accessibilityRole="button"
               accessibilityState={{ selected: on }}
+              accessibilityActions={canRemove ? [{ name: "remove", label: "Remove workspace" }] : undefined}
+              onAccessibilityAction={(e) => {
+                if (e.nativeEvent.actionName === "remove") onRemove(w.workspace_id);
+              }}
               onPress={press}
+              onLongPress={canRemove ? () => onRemove(w.workspace_id) : undefined}
               style={({ pressed }) => [styles.option, (on || pressed) && { backgroundColor: theme.surface }]}
               testID={`workspace-${w.workspace_id}`}
             >
@@ -251,16 +279,19 @@ function Worktrees({
   root_id,
   selected,
   onBack,
+  onRemove,
   onClose,
 }: {
   root_id: string;
   selected: WorkspaceInfo;
   onBack?: () => void;
+  onRemove(): void;
   onClose(): void;
 }) {
   const theme = useTheme();
   const hostName = useHostName();
   const tree = useTree();
+  const canRemove = useCanRemoveWorkspace();
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [removing, setRemoving] = useState<WorkspaceInfo | null>(null);
@@ -329,13 +360,13 @@ function Worktrees({
                 {i > 0 ? (
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityLabel={`Remove ${w.branch ?? workspaceLabel(w)}`}
+                    accessibilityLabel={`Archive ${w.branch ?? workspaceLabel(w)}`}
                     onPress={() => setRemoving(w)}
                     hitSlop={8}
                     testID={`worktree-remove-${w.workspace_id}`}
                   >
-                    <T variant="callout" color={theme.err}>
-                      Remove
+                    <T variant="callout" color={theme.mut}>
+                      Archive
                     </T>
                   </Pressable>
                 ) : null}
@@ -361,6 +392,9 @@ function Worktrees({
           {workspaceLabel(root)} isn't a Git repository, so it can't have new worktrees.
         </T>
       )}
+      {canRemove ? (
+        <Button kind="ghost" color={theme.err} label="Remove workspace" onPress={onRemove} testID="workspace-remove" />
+      ) : null}
     </>
   );
 }

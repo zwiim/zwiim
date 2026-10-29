@@ -30,6 +30,7 @@ import {
   type OpParams,
   type OpResult,
   type OptionsRequest,
+  type PrAutoMerged,
   type PrMerged,
   type PrState,
   type PromptBlock,
@@ -248,6 +249,11 @@ export class HostConnection {
     await this.#live().removeWorktree(workspace_id, opts);
   }
 
+  /** Remove a workspace and archive its worktrees (`workspace.remove`); never retried. The host may refuse it. */
+  async removeWorkspace(workspace_id: string, opts: { force?: boolean } = {}): Promise<void> {
+    await this.#live().removeWorkspace(workspace_id, opts);
+  }
+
   /** Start a terminal in a workspace (`terminal.spawn`); never retried. */
   async spawnTerminal(workspace_id: string): Promise<string> {
     return this.#live().spawnTerminal(workspace_id);
@@ -313,6 +319,11 @@ export class HostConnection {
   /** Merge the workspace's pull request at the head shown (`git.pr_merge`); never retried. */
   async mergePr(workspace_id: string, pr: PrState, method?: MergeMethod): Promise<PrMerged> {
     return this.#live().mergePr(workspace_id, pr, method);
+  }
+
+  /** Turn GitHub's auto-merge on at the head shown, or off (`git.pr_auto_merge`); never retried. */
+  async setPrAutoMerge(workspace_id: string, pr: PrState, enabled: boolean, method?: MergeMethod): Promise<PrAutoMerged> {
+    return this.#live().setPrAutoMerge(workspace_id, pr, enabled, method);
   }
 
   /**

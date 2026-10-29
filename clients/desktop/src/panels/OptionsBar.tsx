@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { usePresence } from "@/lib/presence";
 import { cn } from "@/lib/utils";
 
-const MODE_LABEL: Record<SessionMode, string> = {
+export const MODE_LABEL: Record<SessionMode, string> = {
   normal: "Ask",
   plan: "Plan",
   unattended: "Auto",

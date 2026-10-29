@@ -14,10 +14,15 @@ import {
 } from "lucide-react";
 import { isClientError, type PromptBlock, type WorktreeBases } from "@zwiim/sdk";
 import { PendingAttachments } from "@/attachments/AttachmentChip";
+import { pastedFiles } from "@/attachments/long-paste";
 import { UPLOAD_FAILED_MESSAGE, usePendingAttachments } from "@/attachments/usePendingAttachments";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
+import { formatShortcut } from "@/lib/platform";
+import { autoConvertLongText, sendKey } from "@/lib/prefs";
+import { isSendKey } from "@/lib/send-key";
+import { usePref } from "@/lib/use-pref";
 import { cn } from "@/lib/utils";
 import { ControlSelect } from "./OptionsBar";
 import { NewSessionControls, NoAgents, startParams, useNewSessionAgent } from "./SessionPanel";
@@ -49,6 +54,7 @@ export function NewWorktree({
   const [bases, setBases] = useState<WorktreeBases | null>(null);
   const [base, setBase] = useState<string | null>(null);
   const [text, setText] = useState("");
+  const sendMode = usePref(sendKey);
   const [menu, setMenu] = useState(false);
   const [created, setCreated] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -172,13 +178,15 @@ export function NewWorktree({
           }}
           onSelect={slash.track}
           onPaste={(e) => {
-            if (!attachments.enabled || e.clipboardData.files.length === 0) return;
+            if (!attachments.enabled) return;
+            const files = pastedFiles(e.clipboardData, autoConvertLongText());
+            if (!files) return;
             e.preventDefault();
-            attach(e.clipboardData.files);
+            attach(files);
           }}
           onKeyDown={(e) => {
             if (slash.onKeyDown(e)) return;
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+            if (isSendKey(e, sendMode)) {
               e.preventDefault();
               void create();
             } else if (e.key === "Tab" && e.shiftKey && canPlan) {
@@ -333,7 +341,7 @@ function PlusMenu({
       >
         <Paperclip className="text-muted-foreground size-4" />
         <span className="flex-1">Add attachment</span>
-        <kbd className="text-muted-foreground font-sans text-xs">⌘U</kbd>
+        <kbd className="text-muted-foreground font-sans text-xs">{formatShortcut("Mod+U")}</kbd>
       </button>
       <button
         className={item}

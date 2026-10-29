@@ -30,6 +30,8 @@ pub async fn workspace_worktree_create(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<WorktreeCreateParams>,
 ) -> Result<Json<WorkspaceInfo>, AppCommandError> {
+    let gh_cwd = crate::protocol::http::gh_cwd();
+    let prefix = crate::settings::branch_prefix(&state.db.conn, state.gh.as_deref(), &gh_cwd).await;
     Ok(Json(
         workspace::create_worktree(
             &state.db,
@@ -37,6 +39,7 @@ pub async fn workspace_worktree_create(
             &state.worktrees_dir,
             &params.workspace_id,
             None,
+            prefix.as_deref(),
         )
         .await?,
     ))
@@ -64,6 +67,7 @@ pub async fn workspace_worktree_remove(
             &state.terminal_manager,
             &params.workspace_id,
             params.force,
+            None,
         )
         .await?,
     ))

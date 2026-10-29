@@ -300,6 +300,7 @@ mod tests {
             workspace_id: NotSet,
             base_branch: NotSet,
             base_commit: NotSet,
+            port: NotSet,
         }
         .insert(conn)
         .await

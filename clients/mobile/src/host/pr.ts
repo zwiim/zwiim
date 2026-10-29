@@ -2,8 +2,9 @@
 // Session strip → PR strip): what the strip, the branch chip's badge and the
 // PR sheet say about it, and a refused merge in words. The phone never asks
 // GitHub; the Host's feed keeps `HostState.prs` current, and Merge goes to the
-// Host pinned to the head shown here. Once merged, Continue moves the worktree
-// to a new branch from the PR's base.
+// Host pinned to the head shown here, or Auto-merge leaves the merge to GitHub
+// once its requirements are met. Once merged, Continue moves the worktree to a
+// new branch from the PR's base.
 
 import {
   hasCapability,
@@ -83,6 +84,25 @@ export function prLook(pr: PrState, connected: boolean): PrLook {
   };
 }
 
+export interface PrAutoLook {
+  /** GitHub merges it by itself once its requirements are met. */
+  on: boolean;
+  /** Auto-merge can be turned on: Merge is off while GitHub waits on checks or review. */
+  offered: boolean;
+  /** What GitHub waits for: `Merges when checks pass`. */
+  line: string;
+}
+
+/** Auto-merge on an open PR, on a Host that serves it (`git.pr_auto_merge`). */
+export function prAuto(pr: PrState, compat: Compatibility | null): PrAutoLook {
+  const served = pr.state !== "merged" && pr.state !== "closed" && hasCapability(compat, "git.pr_auto_merge");
+  return {
+    on: served && !!pr.merge.auto,
+    offered: served && !pr.merge.allowed && !pr.merge.auto && !!pr.merge.auto_available,
+    line: pr.checks.pending > 0 ? "Merges when checks pass" : "Merges when GitHub's requirements are met",
+  };
+}
+
 /** What a screen reader says for the strip: the counts only while open. */
 export function prLabel(number: number, look: PrLook): string {
   const label = `Pull request #${number}, ${look.status}`;
@@ -117,6 +137,7 @@ export function mergeError(e: unknown, hostName: string, signInOffered = false):
     const reason = (e as { details?: Record<string, unknown> }).details?.reason;
     return typeof reason === "string" ? reason : "GitHub won't merge it right now.";
   }
+  if (isClientError(e, "auto_merge_disabled")) return "Auto-merge is off for this repository on GitHub.";
   if (isClientError(e, "gh_unauthenticated") || isClientError(e, "gh_unavailable")) {
     return prErrorText((e as { code: string }).code, "", hostName, signInOffered);
   }
@@ -126,14 +147,13 @@ export function mergeError(e: unknown, hostName: string, signInOffered = false):
   return "Couldn't merge the pull request. Try again.";
 }
 
+/** Archive is for a merged PR in a worktree still on disk; every Host removes worktrees. */
+export const offersArchive = (pr: PrState, workspace: WorkspaceInfo | undefined): boolean =>
+  pr.state === "merged" && workspace?.kind === "worktree" && !workspace.removed;
+
 /** Continue is for a merged PR in a worktree still on disk, on a Host that serves it. */
 export function offersContinue(pr: PrState, workspace: WorkspaceInfo | undefined, compat: Compatibility | null): boolean {
-  return (
-    pr.state === "merged" &&
-    workspace?.kind === "worktree" &&
-    !workspace.removed &&
-    hasCapability(compat, "workspace.continue")
-  );
+  return offersArchive(pr, workspace) && hasCapability(compat, "workspace.continue");
 }
 
 /** What Continue does, above its button. */

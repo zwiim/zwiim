@@ -179,6 +179,7 @@ async fn add_folder_inner(
             workspace_id: NotSet,
             base_branch: NotSet,
             base_commit: NotSet,
+            port: NotSet,
         };
         active.insert(conn).await?
     };
@@ -260,6 +261,7 @@ pub async fn ensure_folder_for_path(
             workspace_id: NotSet,
             base_branch: NotSet,
             base_commit: NotSet,
+            port: NotSet,
         };
         active.insert(conn).await?
     };
@@ -303,6 +305,7 @@ pub async fn add_chat_folder(
         workspace_id: NotSet,
         base_branch: NotSet,
         base_commit: NotSet,
+        port: NotSet,
     };
     let model = active.insert(conn).await?;
     Ok(to_detail(model))

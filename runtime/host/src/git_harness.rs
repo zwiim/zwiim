@@ -49,8 +49,8 @@ use crate::app_error::AppErrorCode;
 use crate::db::entities::folder;
 
 pub use account::{
-    github_account, github_owners, github_repo_create, github_repo_exists, github_repos,
-    GithubAccount, GithubOwner, GithubOwnerKind, GithubRepoRow,
+    github_account, github_login_local, github_owners, github_repo_create, github_repo_exists,
+    github_repos, GithubAccount, GithubOwner, GithubOwnerKind, GithubRepoRow,
 };
 pub use clone::{github_repo_clone, ClonePhase, CloneRun};
 pub use conflicts::{
@@ -60,12 +60,14 @@ pub use conflicts::{
 pub use error::{GitError, GitErrorCode};
 pub use gh_auth::{GithubAuth, GithubAuthState, GithubSignIn};
 pub use op::{
-    BranchOutcome, CommitOutcome, FetchOutcome, GitOp, GitOpKind, GitOutcome, MergeMethod, PrCheck,
-    PrComment, PrComments, PrCreated, PrMerged, PrReview, PrReviewComment, PrSummary, PullMode,
-    PullOutcome, PushOutcome, StageOutcome, StatusEntry, StatusReport,
+    AutoMergeOutcome, BranchOutcome, CommitOutcome, FetchOutcome, GitOp, GitOpKind, GitOutcome,
+    MergeMethod, PrAutoMerged, PrCheck, PrComment, PrComments, PrCreated, PrMerged, PrReview,
+    PrReviewComment, PrSummary, PullMode, PullOutcome, PushOutcome, StageOutcome, StatusEntry,
+    StatusReport,
 };
 pub use pr_state::{
-    CheckState, MergeStatus, PrCheckItem, PrChecksSummary, PrLifecycle, PrMergeInfo, PrState,
+    CheckState, MergeStatus, PrAutoMerge, PrCheckItem, PrChecksSummary, PrLifecycle, PrMergeInfo,
+    PrState,
 };
 
 /// The `gh` the Host runs: `configured`, else the user's installed one.
@@ -228,6 +230,38 @@ pub async fn merge_pr(
     }
     .await;
     log_result("pr_merge", caller, started, result.as_ref().err());
+    if result.is_ok() {
+        announce(&caller.workspace_id, GitOpKind::PrMerge);
+    }
+    result
+}
+
+/// Turn auto-merge for pull request `number` on, pinned to `head_sha` — the
+/// commit the user saw — or off. `method` defaults to the repository's
+/// preferred one. One GitHub would merge now is merged instead.
+pub async fn auto_merge_pr(
+    host: &GitHost<'_>,
+    caller: &GitCaller,
+    number: u64,
+    enabled: bool,
+    head_sha: Option<&str>,
+    method: Option<MergeMethod>,
+) -> Result<PrAutoMerged, GitError> {
+    let started = Instant::now();
+    let result = async {
+        let head_sha = head_sha.filter(|h| !h.trim().is_empty());
+        if enabled && head_sha.is_none() {
+            return Err(GitError::new(
+                GitErrorCode::InvalidInput,
+                "Auto-merge needs the head commit it was reviewed at",
+            ));
+        }
+        let row = resolve_workspace(host.db, &caller.workspace_id).await?;
+        crate::git_repo::ensure_git_repo(&row.path).map_err(GitError::from_app)?;
+        github::pr_auto_merge(host, &row.path, number, enabled, method, head_sha).await
+    }
+    .await;
+    log_result("pr_auto_merge", caller, started, result.as_ref().err());
     if result.is_ok() {
         announce(&caller.workspace_id, GitOpKind::PrMerge);
     }

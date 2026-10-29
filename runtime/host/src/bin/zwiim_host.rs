@@ -317,6 +317,7 @@ async fn async_main() -> Exit {
     // `logging.level` now that the DB is open. Phase 3 (wiring the emitter)
     // happens once AppState exists, below.
     zwiim_host::logging::init::apply_persisted_level(&db.conn).await;
+    zwiim_host::settings::apply_terminal_scrollback(&db.conn).await;
 
     // Mint (first boot) or load the persistent host identity.
     let host_id = match zwiim_host::identity::host::ensure_host_id(&db.conn).await {
@@ -489,6 +490,8 @@ async fn async_main() -> Exit {
     zwiim_host::session_commands::spawn_tracker(state.clone());
     // Close each turn's Git checkpoint when the agent ends the turn.
     zwiim_host::session_checkpoints::spawn_tracker(state.clone());
+    // Send each session's next queued follow-up as its turn ends.
+    zwiim_host::follow_ups::spawn_tracker(state.clone());
     // Keep the Mac awake while an agent works.
     zwiim_host::power::spawn(state.clone());
 

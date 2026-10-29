@@ -209,6 +209,16 @@ impl MergeMethod {
             Self::Rebase => "--rebase",
         }
     }
+
+    /// GitHub's name for it: `MERGE`, `SQUASH` or `REBASE`.
+    pub(super) fn from_github(raw: &str) -> Option<Self> {
+        match raw {
+            "MERGE" => Some(Self::Merge),
+            "SQUASH" => Some(Self::Squash),
+            "REBASE" => Some(Self::Rebase),
+            _ => None,
+        }
+    }
 }
 
 /// What an operation did or found.
@@ -395,6 +405,35 @@ pub struct PrMerged {
     pub number: u64,
     pub method: MergeMethod,
     pub merged_at: Option<String>,
+}
+
+/// Where a pull request stands after turning auto-merge on or off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PrAutoMerged {
+    pub number: u64,
+    pub outcome: AutoMergeOutcome,
+    /// The method GitHub merges, or merged, with; `None` when off.
+    pub method: Option<MergeMethod>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoMergeOutcome {
+    /// GitHub merges it once its requirements are met.
+    On,
+    /// It was already mergeable, so it was merged now.
+    Merged,
+    Off,
+}
+
+impl AutoMergeOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Merged => "merged",
+            Self::Off => "off",
+        }
+    }
 }
 
 /// `{"login": "…"}` → `Some("…")`; GitHub sends `null` for deleted users.

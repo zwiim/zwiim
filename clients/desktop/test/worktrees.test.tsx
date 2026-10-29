@@ -7,11 +7,13 @@ import {
   ZwiimClientError,
   type SessionSummary,
   type WorkspaceInfo,
+  type WorkspaceInspection,
 } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
 import { DiffPanel, DiffView } from "@/panels/DiffPanel";
 import { SessionPanel } from "@/panels/SessionPanel";
-import { busyMessage, Sidebar, type SidebarProps } from "@/panels/Sidebar";
+import { busyMessage, removalNote, Sidebar, type SidebarProps } from "@/panels/Sidebar";
+import { OpenSettingsContext } from "@/settings/open";
 import { FakeTransport, hostHello, tick } from "./fakes";
 import { openProject } from "./ui";
 
@@ -126,11 +128,11 @@ describe("workspace tree", () => {
     expect(screen.getByTestId("workspace-root").contains(screen.getByTestId("workspace-a1b2c3d4"))).toBe(true);
     // Removed worktrees fold under one row until asked for.
     expect(screen.queryByTestId("workspace-gone0000")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "1 removed" }));
+    fireEvent.click(screen.getByRole("button", { name: "1 archived" }));
     const gone = screen.getByTestId("workspace-gone0000");
     expect(gone.textContent).toContain("repo-gone0000");
-    expect(gone.querySelector('[title="Remove worktree"]')).toBeNull();
-    expect(screen.getAllByTitle("Remove worktree")).toHaveLength(1);
+    expect(gone.querySelector('[title="Archive worktree"]')).toBeNull();
+    expect(screen.getAllByTitle("Archive worktree")).toHaveLength(1);
   });
 
   it("offers no worktrees for a plain folder, and leaves it out of the repository list", async () => {
@@ -310,7 +312,7 @@ describe("folding", () => {
     const { t } = treeHost();
     await mount(t, () => <Sidebar {...sidebarProps({ workspaceId: "gone0000" })} />);
     expect(screen.getByTestId("workspace-gone0000")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "1 removed" }).getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("button", { name: "1 archived" }).getAttribute("aria-expanded")).toBe("true");
   });
 });
 
@@ -328,7 +330,7 @@ describe("earlier sessions in the repository folder", () => {
     expect(screen.getByTestId("workspace-a1b2c3d4").compareDocumentPosition(row)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
-    expect(row.className).toBe(screen.getByRole("button", { name: "1 removed" }).className);
+    expect(row.className).toBe(screen.getByRole("button", { name: "1 archived" }).className);
     expect(row.querySelector("svg.lucide-history")).toBeTruthy();
     fireEvent.click(row);
     expect(props.onSelectWorkspace).toHaveBeenCalledTimes(1);
@@ -376,7 +378,7 @@ describe("earlier sessions in the repository folder", () => {
     ));
     expect(screen.getByText("This session ran in the repository folder.")).toBeTruthy();
     expect(screen.queryByPlaceholderText("Send a message")).toBeNull();
-    expect(screen.queryByTitle("Send")).toBeNull();
+    expect(screen.queryByLabelText("Send")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Continue in a new worktree" }));
     expect(onContinue).toHaveBeenCalledTimes(1);
     cleanup();
@@ -409,20 +411,74 @@ describe("worktree removal", () => {
       return { workspace_id: p.workspace_id, parent_workspace_id: "root", kept_sessions: 2 };
     };
     await mount(t, () => <Sidebar {...sidebarProps()} />);
-    fireEvent.click(screen.getByTitle("Remove worktree"));
+    fireEvent.click(screen.getByTitle("Archive worktree"));
     const dialog = screen.getByRole("alertdialog");
     expect(dialog.textContent).toContain("Branch zwiim/a1b2c3d4 will be kept.");
     expect(params).toEqual([]);
 
-    fireEvent.click(screen.getByText("Remove"));
+    fireEvent.click(screen.getByText("Archive"));
     await tick();
     expect(screen.getByRole("alertdialog").textContent).toContain(
       "3 uncommitted changes will be lost. Branch zwiim/a1b2c3d4 will be kept.",
     );
-    fireEvent.click(screen.getByText("Discard and remove"));
+    fireEvent.click(screen.getByText("Discard and archive"));
     await tick();
     expect(params).toEqual([{ workspace_id: "a1b2c3d4" }, { workspace_id: "a1b2c3d4", force: true }]);
     expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("says the branch goes when the host deletes it, and what became of it", async () => {
+    const { t } = treeHost();
+    t.handlers["settings.get"] = () => ({ values: { "git.delete_branch_on_remove": true } });
+    t.handlers["workspace.remove_worktree"] = (p) => ({
+      workspace_id: p.workspace_id,
+      parent_workspace_id: "root",
+      kept_sessions: 0,
+      branch: "zwiim/a1b2c3d4",
+      branch_deleted: false,
+      branch_kept_reason: "zwiim/a1b2c3d4 has commits that aren't pushed",
+    });
+    await mount(t, () => <Sidebar {...sidebarProps()} />);
+    fireEvent.click(screen.getByTitle("Archive worktree"));
+    await tick();
+    expect(screen.getByRole("alertdialog").textContent).toContain(
+      "Branch zwiim/a1b2c3d4 is deleted if its pull request merged or every commit is pushed, and kept otherwise.",
+    );
+    fireEvent.click(screen.getByText("Archive"));
+    await tick();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe(
+      "Kept the branch: zwiim/a1b2c3d4 has commits that aren't pushed.",
+    );
+    fireEvent.click(screen.getByLabelText("Dismiss"));
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("names a deleted branch, and keeps quiet for a host without Git settings", async () => {
+    expect(
+      removalNote({
+        workspace_id: "w",
+        parent_workspace_id: "root",
+        kept_sessions: 0,
+        branch: "ashish/pune",
+        branch_deleted: true,
+        branch_kept_reason: null,
+      }),
+    ).toBe("Deleted branch ashish/pune.");
+    expect(removalNote({ workspace_id: "w", parent_workspace_id: "root", kept_sessions: 0 })).toBeNull();
+  });
+
+  it("says how an archive script failed, before what became of the branch", () => {
+    const removed = { workspace_id: "w", parent_workspace_id: "root", kept_sessions: 0 };
+    const run = (exit_code: number | null, timed_out = false) => ({ exit_code, timed_out, output: "boom" });
+    expect(removalNote({ ...removed, archive_script: run(0) })).toBeNull();
+    expect(removalNote({ ...removed, archive_script: run(3), branch: "pune", branch_deleted: true })).toBe(
+      "The archive script failed with exit code 3. Deleted branch pune.",
+    );
+    expect(removalNote({ ...removed, archive_script: run(null, true) })).toBe(
+      "The archive script was stopped after 5 minutes.",
+    );
+    expect(removalNote({ ...removed, archive_script: run(null) })).toBe("The archive script did not finish.");
   });
 
   it("reports a busy worktree and never forces past it", async () => {
@@ -433,11 +489,11 @@ describe("worktree removal", () => {
       throw new ZwiimClientError("workspace_busy", "busy", 409, { live_sessions: 2, terminals: 1 });
     };
     await mount(t, () => <Sidebar {...sidebarProps()} />);
-    fireEvent.click(screen.getByTitle("Remove worktree"));
-    fireEvent.click(screen.getByText("Remove"));
+    fireEvent.click(screen.getByTitle("Archive worktree"));
+    fireEvent.click(screen.getByText("Archive"));
     await tick();
     expect(screen.getByRole("alertdialog").textContent).toContain(
-      "2 agents running, 1 terminal open — stop them to remove.",
+      "2 agents running, 1 terminal open — stop them to archive.",
     );
     fireEvent.click(screen.getByText("Try again"));
     await tick();
@@ -445,8 +501,144 @@ describe("worktree removal", () => {
   });
 
   it("phrases busy counts", () => {
-    expect(busyMessage({ live_sessions: 1, terminals: 0, session_ids: ["s1"] })).toBe("1 agent running — stop it to remove.");
-    expect(busyMessage({ live_sessions: 0, terminals: 2, session_ids: [] })).toBe("2 terminals open — stop them to remove.");
+    expect(busyMessage({ live_sessions: 1, terminals: 0, session_ids: ["s1"] })).toBe("1 agent running — stop it to archive.");
+    expect(busyMessage({ live_sessions: 0, terminals: 2, session_ids: [] })).toBe("2 terminals open — stop them to archive.");
+  });
+});
+
+describe("repository menu", () => {
+  const menuItems = () =>
+    within(screen.getByRole("menu", { name: "repo actions" }))
+      .getAllByRole("menuitem")
+      .map((i) => i.textContent);
+  const openActions = (name = "repo") => fireEvent.click(screen.getByRole("button", { name: `${name} actions` }));
+
+  it("makes a new worktree, opens one from a picked branch, and opens the repository's settings", async () => {
+    const { t } = treeHost();
+    const origin: WorkspaceInspection = { git: "origin", branch: "main", suggested_name: "repo", first_commit: null, github: null };
+    t.handlers["workspace.inspect"] = () => origin;
+    t.handlers["workspace.create_worktree"] = () => worktree("9f8e7d6c");
+    const opened = vi.fn();
+    const props = sidebarProps();
+    await mount(t, () => (
+      <OpenSettingsContext.Provider value={opened}>
+        <Sidebar {...props} />
+      </OpenSettingsContext.Provider>
+    ));
+    openActions();
+    expect(menuItems()).toEqual(["New worktree", "New worktree from…", "Configuration", "Remove"]);
+    expect(document.activeElement?.textContent).toBe("New worktree");
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Configuration" }));
+    expect(opened).toHaveBeenCalledWith({ tab: "repository", workspaceId: "root" });
+    expect(screen.queryByRole("menu")).toBeNull();
+
+    // One click, from the root's current branch, as a root without a worktree opens.
+    openActions();
+    fireEvent.click(screen.getByRole("menuitem", { name: "New worktree" }));
+    await tick();
+    expect(t.calls.find((c) => c.op === "workspace.create_worktree")?.params).toEqual({ workspace_id: "root" });
+    expect(props.onSelectWorkspace).toHaveBeenCalledWith("9f8e7d6c");
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    openActions();
+    fireEvent.click(screen.getByRole("menuitem", { name: "New worktree from…" }));
+    await tick();
+    const dialog = screen.getByRole("dialog", { name: "New worktree" });
+    expect((within(dialog).getByLabelText("Repository") as HTMLSelectElement).value).toBe("root");
+  });
+
+  it("closes on Escape, back on its button", async () => {
+    const { t } = treeHost();
+    await mount(t, () => <Sidebar {...sidebarProps()} />);
+    openActions();
+    expect(screen.getByRole("menu", { name: "repo actions" })).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "repo actions" }));
+  });
+
+  it("offers a plain folder only its removal, and nothing on a Host from before removal", async () => {
+    const { t } = treeHost();
+    const plain: WorkspaceInfo = { ...root, workspace_id: "plain", name: "notes", is_git_repo: false, branch: null };
+    t.handlers["workspace.list"] = () => [root, plain];
+    await mount(t, () => <Sidebar {...sidebarProps()} />);
+    // No settings dialog here: Configuration needs one.
+    openActions("notes");
+    expect(
+      within(screen.getByRole("menu", { name: "notes actions" }))
+        .getAllByRole("menuitem")
+        .map((i) => i.textContent),
+    ).toEqual(["Remove"]);
+    cleanup();
+
+    const old = treeHost().t;
+    old.handlers["workspace.list"] = () => [root, plain];
+    old.handlers["host.hello"] = () =>
+      hostHello({ capabilities: CLIENT_CAPABILITIES.filter((c) => c !== "workspace.remove") });
+    await mount(old, () => <Sidebar {...sidebarProps()} />);
+    expect(screen.queryByRole("button", { name: "notes actions" })).toBeNull();
+    openActions();
+    expect(menuItems()).toEqual(["New worktree", "New worktree from…"]);
+  });
+
+  it("confirms removal, then the loss of dirty changes before forcing", async () => {
+    const { t } = treeHost();
+    t.handlers["workspace.list"] = () => [
+      { ...root, display_path: "~/Projects/repo" },
+      worktree("a1b2c3d4"),
+      worktree("gone0000", { removed: true, branch: null }),
+    ];
+    const params: unknown[] = [];
+    t.handlers["workspace.remove"] = (p) => {
+      params.push(p);
+      if (!p.force) throw new ZwiimClientError("workspace_dirty", "dirty", 409, { changes: 3 });
+      return { workspace_id: "root", archived_worktrees: ["a1b2c3d4"] };
+    };
+    await mount(t, () => <Sidebar {...sidebarProps()} />);
+    openActions();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove" }));
+    const dialog = screen.getByRole("alertdialog", { name: "Remove repo" });
+    // The archived worktree is not counted again.
+    expect(dialog.textContent).toContain(
+      "Remove repo and archive its worktree? Files in ~/Projects/repo are not changed. Add the folder again to bring it back.",
+    );
+    expect(document.activeElement?.textContent).toBe("Cancel");
+    expect(params).toEqual([]);
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+    await tick();
+    expect(screen.getByRole("alertdialog").textContent).toContain("3 uncommitted changes in its worktrees will be lost.");
+    fireEvent.click(screen.getByRole("button", { name: "Discard and remove" }));
+    await tick();
+    expect(params).toEqual([{ workspace_id: "root" }, { workspace_id: "root", force: true }]);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("says a repository without worktrees keeps its folder, and never forces past running work", async () => {
+    const { t } = treeHost();
+    t.handlers["workspace.list"] = () => [root];
+    const params: unknown[] = [];
+    t.handlers["workspace.remove"] = (p) => {
+      params.push(p);
+      throw new ZwiimClientError("workspace_busy", "busy", 409, { live_sessions: 2, terminals: 1 });
+    };
+    await mount(t, () => <Sidebar {...sidebarProps()} />);
+    openActions();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove" }));
+    expect(screen.getByRole("alertdialog").textContent).toContain(
+      "Remove repo? Files in its folder are not changed. Add the folder again to bring it back.",
+    );
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Remove" }));
+    await tick();
+    expect(screen.getByRole("alertdialog").textContent).toContain(
+      "2 agents running, 1 terminal open — stop them to remove.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await tick();
+    expect(params).toEqual([{ workspace_id: "root" }, { workspace_id: "root" }]);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 });
 
@@ -718,11 +910,11 @@ describe("sessions and removed worktrees", () => {
     await mount(t, () => <SessionPanel workspaceId="gone0000" sessionId="s3" onSessionStarted={() => {}} />);
     expect(screen.getByTestId("transcript").textContent).toContain("old question");
     const composer = screen.getByPlaceholderText(
-      "This worktree was removed — the session is read-only",
+      "This worktree was archived — the session is read-only",
     ) as HTMLTextAreaElement;
     expect(composer.disabled).toBe(true);
-    expect((screen.getByTitle("Send") as HTMLButtonElement).disabled).toBe(true);
-    expect(t.calls.some((c) => c.op === "session.send")).toBe(false);
+    expect((screen.getByLabelText("Send") as HTMLButtonElement).disabled).toBe(true);
+    expect(t.calls.some((c) => c.op === "session.follow_up")).toBe(false);
     cleanup();
 
     await mount(t, () => <SessionPanel workspaceId="gone0000" sessionId={null} onSessionStarted={() => {}} />);
@@ -733,12 +925,12 @@ describe("sessions and removed worktrees", () => {
   it("shows a send rejected with workspace_removed", async () => {
     const t = new FakeTransport();
     t.handlers["workspace.list"] = () => [root, worktree("a1b2c3d4")];
-    t.handlers["session.send"] = () => {
+    t.handlers["session.follow_up"] = () => {
       throw new ZwiimClientError("workspace_removed", "The workspace was removed", 410);
     };
     await mount(t, () => <SessionPanel workspaceId="a1b2c3d4" sessionId="s1" onSessionStarted={() => {}} />);
     fireEvent.change(screen.getByPlaceholderText(/^Send a message/), { target: { value: "more" } });
-    fireEvent.click(screen.getByTitle("Send"));
+    fireEvent.click(screen.getByLabelText("Send"));
     await tick();
     expect(screen.getByRole("alert").textContent).toBe("The workspace was removed");
   });

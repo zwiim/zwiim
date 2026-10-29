@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { contextFraction, contextLeft, type SessionView } from "@zwiim/sdk";
+import { alwaysShowContext } from "@/lib/prefs";
 import { usePresence } from "@/lib/presence";
+import { usePref } from "@/lib/use-pref";
 import { cn } from "@/lib/utils";
 
 /** A token count in full, grouped: `46,210`. */
@@ -43,10 +45,14 @@ export function contextRows(view: Pick<SessionView, "usage" | "turnUsage"> | und
 const R = 6.5;
 const C = 2 * Math.PI * R;
 
+/** The share of the window in use from which the ring shows even where it isn't always shown. */
+export const CONTEXT_NEARLY_FULL = 0.7;
+
 /**
- * The share of the context window in use, as a ring beside send. Hover or
- * click shows the figures the agent reported; nothing is estimated, and a
- * figure it didn't report says so.
+ * The share of the context window in use, as a ring beside send: always, or
+ * (Settings) only once the window is nearly full. Hover or click shows the
+ * figures the agent reported; nothing is estimated, and a figure it didn't
+ * report says so.
  */
 export function ContextRing({ view, agent }: { view: SessionView | undefined; agent: string | null }) {
   const [hover, setHover] = useState(false);
@@ -55,6 +61,7 @@ export function ContextRing({ view, agent }: { view: SessionView | undefined; ag
   const leave = useRef<ReturnType<typeof setTimeout> | null>(null);
   const open = hover || pinned;
   const presence = usePresence(open);
+  const always = usePref(alwaysShowContext);
 
   const fraction = contextFraction(view?.usage);
   const percent = fraction === null ? "—" : `${Math.round(fraction * 100)}%`;
@@ -74,6 +81,7 @@ export function ContextRing({ view, agent }: { view: SessionView | undefined; ag
     if (leave.current) clearTimeout(leave.current);
   }, []);
 
+  if (!always && (fraction === null || fraction < CONTEXT_NEARLY_FULL)) return null;
   return (
     <div
       ref={root}

@@ -439,6 +439,31 @@ export class HostClient {
   }
 
   /**
+   * Send a follow-up: now when the agent is idle and nothing is queued, else
+   * queued behind what is. One that went out re-attaches like `sendMessage`.
+   * Never retried.
+   */
+  async sendFollowUp(params: OpParams<"session.follow_up">): Promise<OpResult<"session.follow_up">> {
+    const result = await this.request("session.follow_up", params);
+    if (result.outcome === "sent") this.reattachIfGone(params.session_id);
+    return result;
+  }
+
+  /** Send a queued follow-up now, or move it first while a turn runs. Never retried. */
+  async sendQueuedFollowUp(params: OpParams<"session.follow_up_send">): Promise<OpResult<"session.follow_up_send">> {
+    const result = await this.request("session.follow_up_send", params);
+    if (result.outcome === "sent") this.reattachIfGone(params.session_id);
+    return result;
+  }
+
+  private reattachIfGone(session_id: string): void {
+    const sub = this.sessions.get(session_id);
+    if (sub && (sub.state === "detached" || sub.state === "error")) {
+      this.attachSession(session_id);
+    }
+  }
+
+  /**
    * Send the turn that could not reach the agent's provider again. The Host
    * starts the agent if it is gone, so a detached subscription re-attaches to
    * see the turn; without that its events never reach the view. Never retried.

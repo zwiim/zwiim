@@ -5,7 +5,9 @@ import {
   continueError,
   continueLine,
   mergeError,
+  offersArchive,
   offersContinue,
+  prAuto,
   prBadge,
   prErrorText,
   prLabel,
@@ -123,6 +125,39 @@ describe("pull request errors in words", () => {
   });
 });
 
+describe("auto-merge", () => {
+  const host: Compatibility = { status: "compatible", hostRevision: 23, capabilities: ["git.pr_auto_merge"] };
+  const waiting = pr({
+    merge: { allowed: false, status: "blocked", reason: "Waiting", method: "squash", methods: ["squash"], auto: null, auto_available: true },
+  });
+  const queued = pr({ merge: { ...waiting.merge, auto: { method: "squash" }, auto_available: false } });
+
+  it("is offered while GitHub waits on its requirements, on a Host that serves it", () => {
+    expect(prAuto(waiting, host)).toEqual({ on: false, offered: true, line: "Merges when checks pass" });
+    expect(prAuto(waiting, { ...host, capabilities: ["git.pr"] }).offered).toBe(false);
+    expect(prAuto(waiting, null).offered).toBe(false);
+    // Mergeable now: Merge, not Auto-merge.
+    expect(prAuto(pr({ merge: { ...waiting.merge, allowed: true } }), host).offered).toBe(false);
+    expect(prAuto(pr({ merge: { ...waiting.merge, auto_available: false } }), host).offered).toBe(false);
+    // An older Host says nothing of auto-merge.
+    expect(prAuto(pr(), host)).toMatchObject({ on: false, offered: false });
+  });
+
+  it("says what GitHub waits for once on, and nothing once merged", () => {
+    expect(prAuto(queued, host)).toMatchObject({ on: true, offered: false, line: "Merges when checks pass" });
+    expect(prAuto(pr({ ...queued, checks: checks({ pending: 0, passed: 2 }) }), host).line).toBe(
+      "Merges when GitHub's requirements are met",
+    );
+    expect(prAuto(pr({ ...queued, state: "merged" }), host)).toMatchObject({ on: false, offered: false });
+  });
+
+  it("says when the repository has auto-merge off", () => {
+    expect(mergeError(new ZwiimClientError("auto_merge_disabled", "off", 409), "Studio Mac")).toBe(
+      "Auto-merge is off for this repository on GitHub.",
+    );
+  });
+});
+
 describe("resolving conflicts, errors in words", () => {
   it("says why the Host refused, or that it isn't connected", () => {
     const err = (code: string) => new ZwiimClientError(code as never, "m", 409);
@@ -171,6 +206,15 @@ describe("continuing after a merge", () => {
     expect(offersContinue(merged, undefined, host)).toBe(false);
     expect(offersContinue(merged, worktree(), serving(["git.pr"]))).toBe(false);
     expect(offersContinue(merged, worktree(), null)).toBe(false);
+  });
+
+  it("offers Archive on a merged PR in a live worktree, on any Host", () => {
+    expect(offersArchive(merged, worktree())).toBe(true);
+    expect(offersArchive(pr(), worktree())).toBe(false);
+    expect(offersArchive(pr({ state: "closed" }), worktree())).toBe(false);
+    expect(offersArchive(merged, worktree({ kind: "root", parent_workspace_id: null }))).toBe(false);
+    expect(offersArchive(merged, worktree({ removed: true }))).toBe(false);
+    expect(offersArchive(merged, undefined)).toBe(false);
   });
 
   it("says where the new branch starts, and what stays", () => {

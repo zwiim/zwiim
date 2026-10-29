@@ -8,6 +8,9 @@
 //!
 //! Continue names its new branch after the previous one instead
 //! (`fix-login` → `fix-login-v1`): a placeholder the agent renames.
+//!
+//! A branch prefix the user chose goes in front of the branch only
+//! (`ashish/pune`); the folder stays `pune`.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -51,16 +54,24 @@ pub(super) const CITIES: &[&str] = &[
 /// `pune/x`), the folder of every worktree git has registered (even one
 /// deleted by hand), every entry in `parent_dir`, and every workspace, live
 /// or removed, that was ever there.
+///
+/// With branch prefix `prefix` the name after it counts as well: `pune` is
+/// taken once `ashish/pune` or `ashish/pune/x` is.
 pub(super) async fn taken(
     conn: &DatabaseConnection,
     repo: &str,
     parent_dir: &Path,
+    prefix: Option<&str>,
 ) -> Result<HashSet<String>, AppCommandError> {
     let mut taken = HashSet::new();
+    let prefix = prefix.map(|p| format!("{}/", p.to_lowercase()));
 
     for name in refs(repo).await? {
         // `pune` can't sit beside `pune/x`.
-        taken.insert(name.split('/').next().unwrap_or(&name).to_string());
+        taken.insert(first_component(&name).to_string());
+        if let Some(rest) = prefix.as_deref().and_then(|p| name.strip_prefix(p)) {
+            taken.insert(first_component(rest).to_string());
+        }
     }
 
     let out = crate::process::tokio_command("git")
@@ -108,6 +119,19 @@ pub(super) async fn taken(
     }
 
     Ok(taken)
+}
+
+fn first_component(name: &str) -> &str {
+    name.split('/').next().unwrap_or(name)
+}
+
+/// Branch `name` under `prefix`: `ashish/pune`, or `pune` without one. A
+/// name already under it is left as it is, so Continue keeps one prefix.
+pub(super) fn prefixed(prefix: Option<&str>, name: &str) -> String {
+    match prefix {
+        Some(p) if !name.starts_with(&format!("{p}/")) => format!("{p}/{name}"),
+        _ => name.to_string(),
+    }
 }
 
 /// The name of every branch, remote-tracking branch (`origin/fix` as `fix`)
@@ -254,6 +278,18 @@ mod tests {
         assert_eq!(continued("fix-v", &set(&["fix-v"])), "fix-v-v1");
         assert_eq!(continued("fix-vx", &set(&["fix-vx"])), "fix-vx-v1");
         assert_eq!(continued("v1", &set(&["v1"])), "v1-v1");
+    }
+
+    #[test]
+    fn prefixed_puts_one_prefix_in_front() {
+        assert_eq!(prefixed(None, "pune"), "pune");
+        assert_eq!(prefixed(Some("ashish"), "pune"), "ashish/pune");
+        assert_eq!(prefixed(Some("ashish"), "ashish/pune-v1"), "ashish/pune-v1");
+        assert_eq!(
+            prefixed(Some("ashish"), "ashishk/fix"),
+            "ashish/ashishk/fix"
+        );
+        assert_eq!(prefixed(Some("team/web"), "fix"), "team/web/fix");
     }
 
     #[test]

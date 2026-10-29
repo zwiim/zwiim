@@ -95,8 +95,85 @@ describe("evaluateCompatibility", () => {
     expect(hasCapability(c, "session.revert.chat")).toBe(false);
   });
 
+  it("speaks revision 24 and asks to remove a repository", () => {
+    expect(CLIENT_REVISION).toBe(24);
+    expect(CLIENT_CAPABILITIES).toContain("workspace.remove");
+    const old = evaluateCompatibility(hello({ revision: 23, min_client_revision: 1, capabilities: ["git.pr_auto_merge"] }));
+    expect(hasCapability(old, "git.pr_auto_merge")).toBe(true);
+    expect(hasCapability(old, "workspace.remove")).toBe(false);
+  });
+
+  it("speaks revision 23 and asks for GitHub's auto-merge", () => {
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(23);
+    expect(CLIENT_CAPABILITIES).toContain("git.pr_auto_merge");
+    const old = evaluateCompatibility(hello({ revision: 22, min_client_revision: 1, capabilities: ["session.steer"] }));
+    expect(hasCapability(old, "session.steer")).toBe(true);
+    expect(hasCapability(old, "git.pr_auto_merge")).toBe(false);
+  });
+
+  it("speaks revision 22 and asks to steer a running turn", () => {
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(22);
+    expect(CLIENT_CAPABILITIES).toContain("session.steer");
+    const old = evaluateCompatibility(hello({ revision: 21, min_client_revision: 1, capabilities: ["session.follow_ups"] }));
+    expect(hasCapability(old, "session.follow_ups")).toBe(true);
+    expect(hasCapability(old, "session.steer")).toBe(false);
+  });
+
+  it("speaks revision 21 and asks for the Host's follow-up queue", () => {
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(21);
+    expect(CLIENT_CAPABILITIES).toContain("session.follow_ups");
+    const old = evaluateCompatibility(hello({ revision: 20, min_client_revision: 1, capabilities: ["host.folders"] }));
+    expect(hasCapability(old, "host.folders")).toBe(true);
+    expect(hasCapability(old, "session.follow_ups")).toBe(false);
+  });
+
+  it("speaks revision 20 and asks for the Host's advanced settings and folders", () => {
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(20);
+    expect(CLIENT_CAPABILITIES).toContain("settings.advanced");
+    expect(CLIENT_CAPABILITIES).toContain("host.folders");
+    const old = evaluateCompatibility(hello({ revision: 19, min_client_revision: 1, capabilities: ["repository.settings"] }));
+    expect(hasCapability(old, "repository.settings")).toBe(true);
+    expect(hasCapability(old, "settings.advanced")).toBe(false);
+  });
+
+  it("speaks revision 19 and asks for the Host's repository settings", () => {
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(19);
+    expect(CLIENT_CAPABILITIES).toContain("repository.settings");
+    expect(CLIENT_CAPABILITIES).toContain("workspace.run_script");
+    expect(CLIENT_CAPABILITIES).toContain("workspace.previews");
+    const old = evaluateCompatibility(hello({ revision: 18, min_client_revision: 1, capabilities: ["settings.prompts"] }));
+    expect(hasCapability(old, "settings.prompts")).toBe(true);
+    expect(hasCapability(old, "repository.settings")).toBe(false);
+  });
+
+  it("speaks revision 18 and asks for the Host's prompt settings", () => {
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(18);
+    expect(CLIENT_CAPABILITIES).toContain("settings.prompts");
+    const old = evaluateCompatibility(hello({ revision: 17, min_client_revision: 1, capabilities: ["settings.git"] }));
+    expect(hasCapability(old, "settings.git")).toBe(true);
+    expect(hasCapability(old, "settings.prompts")).toBe(false);
+  });
+
+  it("speaks revision 17 and asks for the Host's Git settings", () => {
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(17);
+    expect(CLIENT_CAPABILITIES).toContain("settings.git");
+    const old = evaluateCompatibility(hello({ revision: 16, min_client_revision: 1, capabilities: ["settings"] }));
+    expect(hasCapability(old, "settings")).toBe(true);
+    expect(hasCapability(old, "settings.git")).toBe(false);
+  });
+
+  it("speaks revision 16 and asks for the Host's settings", () => {
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(16);
+    expect(CLIENT_CAPABILITIES).toContain("settings");
+    // Setting a value twice leaves it set: safe to repeat.
+    expect(MUTATING_OPS.has("settings.update")).toBe(false);
+    const old = evaluateCompatibility(hello({ revision: 15, min_client_revision: 1, capabilities: ["host.instructions"] }));
+    expect(hasCapability(old, "host.instructions")).toBe(true);
+    expect(hasCapability(old, "settings")).toBe(false);
+  });
+
   it("speaks revision 15 and asks for host.instructions", () => {
-    expect(CLIENT_REVISION).toBe(15);
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(15);
     expect(CLIENT_CAPABILITIES).toContain("host.instructions");
     // Setting replaces one scope's texts; repeating it changes nothing.
     expect(MUTATING_OPS.has("host.instructions.set")).toBe(false);

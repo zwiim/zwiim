@@ -510,6 +510,8 @@ mod tests {
                 reason: None,
                 method: None,
                 methods: vec![],
+                auto: None,
+                auto_available: false,
             },
         }
     }

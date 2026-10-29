@@ -19,6 +19,7 @@ vi.mock("@xterm/xterm", () => ({
     onData() {
       return { dispose() {} };
     }
+    options: Record<string, unknown> = {};
     onResize() {
       return { dispose() {} };
     }
@@ -97,7 +98,7 @@ describe("slash menu", () => {
 
   it("offers the session's commands and writes the picked one into the message", async () => {
     const t = new FakeTransport();
-    t.handlers["session.send"] = (p) => ({ session_id: p.session_id });
+    t.handlers["session.follow_up"] = () => ({ outcome: "sent" });
     const { controller, frame } = await open(t);
     await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot(commands) });
     const box = screen.getByPlaceholderText(/^Send a message/) as HTMLTextAreaElement;
@@ -117,12 +118,12 @@ describe("slash menu", () => {
     fireEvent.keyDown(box, { key: "Enter" });
     expect(box.value).toBe("/review ");
     expect(screen.queryByRole("listbox", { name: "Commands" })).toBeNull();
-    expect(t.calls.some((c) => c.op === "session.send")).toBe(false);
+    expect(t.calls.some((c) => c.op === "session.follow_up")).toBe(false);
 
     fireEvent.change(box, { target: { value: "/review 12" } });
     fireEvent.keyDown(box, { key: "Enter" });
     await tick();
-    expect(t.calls.find((c) => c.op === "session.send")!.params.blocks).toEqual([{ type: "text", text: "/review 12" }]);
+    expect(t.calls.find((c) => c.op === "session.follow_up")!.params.blocks).toEqual([{ type: "text", text: "/review 12" }]);
     controller.dispose();
   });
 

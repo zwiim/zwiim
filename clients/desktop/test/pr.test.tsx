@@ -12,6 +12,7 @@ import {
 } from "@zwiim/sdk";
 import { openLink } from "@/lib/bridge";
 import { HostProvider } from "@/lib/host-context";
+import { rememberAutoMergeButton } from "@/lib/prefs";
 import { PrBanner } from "@/panels/PrBanner";
 import { FakeTransport, hostHello, tick } from "./fakes";
 
@@ -23,6 +24,7 @@ vi.mock("@/lib/bridge", async (actual) => ({
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  window.localStorage.clear();
   vi.mocked(openLink).mockClear();
 });
 
@@ -65,6 +67,7 @@ async function mount(t: FakeTransport, sessionId?: string) {
 
 const merge = () => screen.getByRole("button", { name: /Merge/ }) as HTMLButtonElement;
 const continueButton = () => screen.queryByRole("button", { name: /Continue/ }) as HTMLButtonElement | null;
+const archiveButton = () => screen.queryByRole("button", { name: "Archive" }) as HTMLButtonElement | null;
 
 const worktree = (extra: Partial<WorkspaceInfo> = {}): WorkspaceInfo => ({
   workspace_id: "a",
@@ -163,6 +166,143 @@ describe("pull request banner", () => {
     expect(screen.getByTestId("pr-status").textContent).toBe("Closed");
     await t.feedEvent("workspace.pr_changed", { workspace_id: "a", pr: null, error: null });
     expect(screen.queryByTestId("pr-banner")).toBeNull();
+  });
+
+  it("offers Auto-merge while GitHub waits on checks, then Cancel auto-merge", async () => {
+    const t = new FakeTransport();
+    const waiting = pr({
+      merge: {
+        allowed: false,
+        status: "blocked",
+        reason: "Waiting for required checks or review",
+        method: "squash",
+        methods: ["squash"],
+        auto: null,
+        auto_available: true,
+      },
+    });
+    const snapshot = t.snapshot.bind(t);
+    t.snapshot = () => ({ ...snapshot(), prs: { a: { pr: waiting, error: null } } });
+    t.handlers["git.pr_auto_merge"] = (p) =>
+      (p as { enabled: boolean }).enabled
+        ? { number: 12, outcome: "on", method: "squash" }
+        : { number: 12, outcome: "off", method: null };
+    await mount(t);
+
+    const auto = screen.getByRole("button", { name: "Auto-merge" }) as HTMLButtonElement;
+    expect(screen.queryByRole("button", { name: /^Merge/ })).toBeNull();
+    expect(auto.title).toBe(
+      "Squash and merge once checks pass, by GitHub itself. Pushes before then are merged too, once they pass.",
+    );
+    fireEvent.click(auto);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // Pinned to the head shown, with the method GitHub's own button would use.
+    expect(t.calls.find((c) => c.op === "git.pr_auto_merge")!.params).toEqual({
+      workspace_id: "a",
+      number: 12,
+      enabled: true,
+      head_sha: "abc123",
+      method: "squash",
+    });
+    // On as soon as the Host says so, before the feed catches up.
+    expect(screen.getByTestId("pr-reason").textContent).toBe("Merges when checks pass");
+    const queued = { ...waiting, merge: { ...waiting.merge, auto: { method: "squash" as const }, auto_available: false } };
+    await t.feedEvent("workspace.pr_changed", { workspace_id: "a", pr: queued, error: null });
+    expect(screen.getByTestId("pr-reason").textContent).toBe("Merges when checks pass");
+    // Checks done, still waiting on review.
+    await t.feedEvent("workspace.pr_changed", {
+      workspace_id: "a",
+      pr: { ...queued, checks: { ...queued.checks, passed: 2, pending: 0 } },
+      error: null,
+    });
+    expect(screen.getByTestId("pr-reason").textContent).toBe("Merges when GitHub's requirements are met");
+
+    fireEvent.click(screen.getByRole("button", { name: /Cancel auto-merge/ }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(t.calls.filter((c) => c.op === "git.pr_auto_merge").at(-1)!.params).toEqual({
+      workspace_id: "a",
+      number: 12,
+      enabled: false,
+    });
+    expect(screen.getByRole("button", { name: "Auto-merge" })).toBeTruthy();
+    expect(screen.getByTestId("pr-reason").textContent).toBe("Waiting for required checks or review");
+
+    // GitHub merging it brings the Continue | Archive choice as any merge does.
+    await t.feedEvent("workspace.pr_changed", { workspace_id: "a", pr: pr({ state: "merged" }), error: null });
+    expect(screen.getByTestId("pr-status").textContent).toBe("Merged");
+    expect(screen.queryByRole("button", { name: /auto-merge/i })).toBeNull();
+  });
+
+  it("merges at once a PR that became mergeable, and says when the repo has auto-merge off", async () => {
+    const t = new FakeTransport();
+    const waiting = pr({
+      merge: { allowed: false, status: "blocked", reason: "Waiting", method: "squash", methods: ["squash"], auto: null, auto_available: true },
+    });
+    const replies = [
+      () => {
+        throw new ZwiimClientError("auto_merge_disabled", "Auto-merge is off", 409);
+      },
+      () => ({ number: 12, outcome: "merged", method: "squash" }),
+    ];
+    t.handlers["git.pr_auto_merge"] = () => replies.shift()!();
+    await mount(t);
+    await t.feedEvent("workspace.pr_changed", { workspace_id: "a", pr: waiting, error: null });
+    fireEvent.click(screen.getByRole("button", { name: "Auto-merge" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("alert").textContent).toBe("Auto-merge is off for this repository on GitHub.");
+    fireEvent.click(screen.getByRole("button", { name: "Auto-merge" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("pr-status").textContent).toBe("Merged");
+  });
+
+  it("keeps Merge for a Host without auto-merge", async () => {
+    const t = new FakeTransport();
+    t.handlers["host.hello"] = () =>
+      hostHello({ capabilities: CLIENT_CAPABILITIES.filter((c) => c !== "git.pr_auto_merge") });
+    await mount(t);
+    await t.feedEvent("workspace.pr_changed", {
+      workspace_id: "a",
+      pr: pr({ merge: { allowed: false, status: "blocked", reason: "Waiting", method: "squash", methods: ["squash"], auto_available: true } }),
+      error: null,
+    });
+    expect(merge().disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Auto-merge" })).toBeNull();
+  });
+
+  it("leaves only Merge with Auto-merge turned off in Settings, yet still cancels one queued", async () => {
+    rememberAutoMergeButton(false);
+    const t = new FakeTransport();
+    t.handlers["git.pr_auto_merge"] = () => ({ number: 12, outcome: "off", method: null });
+    await mount(t);
+    const merge = { allowed: false, status: "blocked" as const, reason: "Waiting", method: "squash" as const, methods: ["squash" as const] };
+    await t.feedEvent("workspace.pr_changed", {
+      workspace_id: "a",
+      pr: pr({ merge: { ...merge, auto: null, auto_available: true } }),
+      error: null,
+    });
+    expect(screen.queryByRole("button", { name: "Auto-merge" })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Merge/ })).toBeTruthy();
+
+    // Turned on from another device: this one can still cancel it.
+    await t.feedEvent("workspace.pr_changed", {
+      workspace_id: "a",
+      pr: pr({ merge: { ...merge, auto: { method: "squash" }, auto_available: false } }),
+      error: null,
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Cancel auto-merge/ }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(t.calls.filter((c) => c.op === "git.pr_auto_merge").at(-1)!.params).toMatchObject({ enabled: false });
+    expect(screen.queryByRole("button", { name: "Auto-merge" })).toBeNull();
   });
 
   it("says when the PR moved since it was shown, or GitHub refuses", async () => {
@@ -337,6 +477,89 @@ describe("pull request banner", () => {
     }
     // Refused, the banner stays so the user can try again.
     expect(screen.getByTestId("pr-status").textContent).toBe("Merged");
+  });
+
+  it("archives a merged PR's worktree in one click, and says what became of its branch", async () => {
+    const t = mergedHost();
+    t.handlers["workspace.remove_worktree"] = (p) => ({
+      workspace_id: p.workspace_id,
+      parent_workspace_id: "root",
+      kept_sessions: 1,
+      branch: "zwiim/a",
+      branch_deleted: true,
+    });
+    await mount(t);
+    const archive = archiveButton()!;
+    expect(archive.disabled).toBe(false);
+    expect(continueButton()).toBeTruthy();
+    fireEvent.click(archive);
+    await tick();
+    expect(t.calls.filter((c) => c.op === "workspace.remove_worktree").map((c) => c.params)).toEqual([
+      { workspace_id: "a" },
+    ]);
+    expect(screen.getByRole("status").textContent).toBe("Deleted branch zwiim/a.");
+  });
+
+  it("asks before an archive loses uncommitted changes, and refuses while work runs", async () => {
+    const t = mergedHost();
+    const answers: (ZwiimClientError | null)[] = [
+      new ZwiimClientError("workspace_busy", "Workspace is busy", 409, { live_sessions: 1, terminals: 0, session_ids: ["s1"] }),
+      new ZwiimClientError("workspace_dirty", "Workspace has uncommitted changes", 409, { changes: 2 }),
+      new ZwiimClientError("workspace_dirty", "Workspace has uncommitted changes", 409, { changes: 2 }),
+      null,
+    ];
+    t.handlers["workspace.remove_worktree"] = (p) => {
+      const e = answers.shift();
+      if (e) throw e;
+      return { workspace_id: p.workspace_id, parent_workspace_id: "root", kept_sessions: 0 };
+    };
+    await mount(t);
+
+    fireEvent.click(archiveButton()!);
+    await tick();
+    expect(screen.getByRole("alert").textContent).toBe("1 agent running — stop it to archive.");
+
+    fireEvent.click(archiveButton()!);
+    await tick();
+    expect(screen.getByRole("alertdialog").textContent).toContain("2 uncommitted changes will be lost.");
+    expect(archiveButton()!.disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+
+    fireEvent.click(archiveButton()!);
+    await tick();
+    fireEvent.click(screen.getByRole("button", { name: "Discard and archive" }));
+    await tick();
+    expect(t.calls.filter((c) => c.op === "workspace.remove_worktree").map((c) => c.params.force)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      true,
+    ]);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("offers Archive only on a merged PR in a live worktree", async () => {
+    const closed = mergedHost();
+    closed.snapshot = () => ({ ...FakeTransport.prototype.snapshot.call(closed), prs: { a: { pr: pr({ state: "closed" }), error: null } } });
+    const cases: [string, FakeTransport][] = [
+      ["closed", closed],
+      ["root", mergedHost(worktree({ kind: "root", parent_workspace_id: null, base_branch: null }))],
+      ["archived", mergedHost(worktree({ removed: true, branch: null }))],
+    ];
+    for (const [name, t] of cases) {
+      await mount(t);
+      expect(archiveButton(), name).toBeNull();
+      cleanup();
+    }
+    // A Host without Continue still archives.
+    const older = mergedHost();
+    older.handlers["host.hello"] = () =>
+      hostHello({ capabilities: CLIENT_CAPABILITIES.filter((c) => c !== "workspace.continue") });
+    await mount(older);
+    expect(continueButton()).toBeNull();
+    expect(archiveButton()).toBeTruthy();
   });
 });
 

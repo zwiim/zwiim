@@ -134,6 +134,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/host.diagnostics", post(http::host_diagnostics))
         .route("/host.instructions", post(http::host_instructions))
         .route("/host.instructions.set", post(http::host_instructions_set))
+        .route("/host.folders", post(http::host_folders))
         .route("/host.update.check", post(http::host_update_check))
         .route("/host.update.apply", post(http::host_update_apply))
         .route("/agent.list", post(http::agent_list))
@@ -156,6 +157,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
             "/workspace.remove_worktree",
             post(http::workspace_remove_worktree),
         )
+        .route("/workspace.remove", post(http::workspace_remove))
         .route("/workspace.continue", post(http::workspace_continue))
         .route(
             "/workspace.resolve_conflicts",
@@ -176,6 +178,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/git.diff", post(http::git_diff))
         .route("/git.pr", post(http::git_pr))
         .route("/git.pr_merge", post(http::git_pr_merge))
+        .route("/git.pr_auto_merge", post(http::git_pr_auto_merge))
         .route("/github.repo_available", post(http::github_repo_available))
         .route("/github.repos", post(http::github_repos))
         .route("/github.auth_status", post(http::github_auth_status))
@@ -186,6 +189,8 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
             "/workspace.clone_cancel",
             post(http::workspace_clone_cancel),
         )
+        .route("/workspace.run_script", post(http::workspace_run_script))
+        .route("/workspace.previews", post(http::workspace_previews))
         .route("/terminal.spawn", post(http::terminal_spawn))
         .route("/terminal.write", post(http::terminal_write))
         .route("/terminal.resize", post(http::terminal_resize))
@@ -204,7 +209,21 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/session.history", post(http::session_history))
         .route("/session.revert", post(http::session_revert))
         .route("/session.retry", post(http::session_retry))
+        .route("/session.follow_up", post(http::session_follow_up))
+        .route("/session.follow_up_edit", post(http::session_follow_up_edit))
+        .route("/session.follow_up_remove", post(http::session_follow_up_remove))
+        .route("/session.follow_up_send", post(http::session_follow_up_send))
         .route("/session.retry_in_new_chat", post(http::session_retry_in_new_chat))
+        .route("/settings.get", post(http::settings_get))
+        .route("/settings.update", post(http::settings_update))
+        .route(
+            "/repository.settings.get",
+            post(http::repository_settings_get),
+        )
+        .route(
+            "/repository.settings.update",
+            post(http::repository_settings_update),
+        )
         .route("/ws", get(ws::ws_handler))
         .merge(local_authority)
         .fallback(unknown_operation)

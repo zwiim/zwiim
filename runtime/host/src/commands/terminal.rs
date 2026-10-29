@@ -99,6 +99,7 @@ pub async fn terminal_spawn(
             initial_command,
             extra_env,
             temp_files: vec![],
+            title: None,
         },
         EventEmitter::Tauri(app_handle),
     )

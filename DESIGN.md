@@ -73,7 +73,9 @@ process, or a clock, it is mono.
 colors. The accent is the only chromatic hue that is not a result: links, mentions,
 focus, selection, the primary action, the active tab and **needs you**. Working is
 not a color: it is a breathing neutral dot. Green and red mean done and failed.
-Amber and yellow are not used anywhere.
+Amber and yellow are not used anywhere. **Exception: syntax colors inside code**
+(Desktop code blocks, file viewer, diffs) come from the chosen code theme and may
+use any hue; they never leave the `code` surface and never carry status.
 
 | Token | Dark (default) | Light | Use |
 |---|---|---|---|
@@ -323,7 +325,8 @@ Approved layout (variant A):
   that offers it (R8.14).
   Unattended asks first ("Turn off approvals?") and shows in `need`. Then
   **First prompt** and a full-width **Start session** in the thumb zone. A
-  selected worktree that was removed shows `Workspace removed` in red and Start
+  selected worktree that was archived shows `zwiim · fix-auth was archived` in red
+  (`Workspace removed` when the Host no longer lists it) and Start
   stays disabled until another is picked; it never falls back to the root.
   Start opens the new session; a failure keeps the prompt and says why.
 - **Workspace tree** (New session's Workspace sheet): the Files sheet's look
@@ -379,7 +382,16 @@ Top to bottom:
   **Merge** (`done`) and **Cancel**. The Host merges at that head or refuses: a
   push since then reads "The pull request changed since you looked", a block
   reads GitHub's reason, both in `err` in the sheet. A success haptic, then the
-  strip reads `#12 Merged` at once. Once merged, in a worktree whose Host serves
+  strip reads `#12 Merged` at once. While GitHub waits on checks or review, on
+  a Host that serves it (protocol 22), **Auto-merge** (`done`, GitMerge) takes
+  Merge's place and also confirms first: "Auto-merge #12?" and "Squash and
+  merge into main once checks pass. GitHub merges it by itself, with Studio Mac
+  asleep or not. Pushes you make before then are merged too, once they pass.",
+  with **Turn on auto-merge** and **Cancel**. Once on, the merge line reads
+  "Merges when checks pass" (or "when GitHub's requirements are met" once no
+  check runs) and a `secondary` **Cancel auto-merge** (X) turns it off with no
+  confirm. A repository without auto-merge reads "Auto-merge is off for this
+  repository on GitHub." in `err`. Once merged, in a worktree whose Host serves
   it (V2.4), the merge line becomes "Start a new branch from main, where #12
   landed. Sessions stay; each agent is told on its next turn. The old branch
   stays." in `mut` and a 48pt **Continue** button in `accent` (GitBranchPlus),
@@ -389,6 +401,13 @@ Top to bottom:
   "Uncommitted changes here. Commit or discard them first.", "This branch has
   commits #12 didn't merge. Continue would leave them behind.", "#12 isn't
   merged on GitHub yet.", or the merge wording for GitHub and the connection.
+  Next to it (and on any Host, Continue or not) a 48pt **Archive** button
+  (`secondary`, Archive icon) removes the worktree in one tap; its sessions stay
+  readable. Nothing happens by itself on merge: the user picks. Running work is
+  refused in `err` ("1 agent running — stop it to archive."; the worktree sheet
+  stops agents). Uncommitted changes turn the sheet into "Discard n uncommitted
+  changes?" · **Discard and archive** (`destructive`) · **Cancel**. A success
+  haptic and the sheet closes.
 - **Transcript** (inverted `FlatList`, newest at the bottom):
   - user messages: right-aligned `surface` block, radius 16/16/4/16.
   - agent messages: full-width prose, no bubble, markdown rendered; inline code
@@ -503,17 +522,26 @@ view, and everything under the context chips belongs to that worktree.
   `⎇ fix-auth` with mono `from main@3f9e1a2`; last, **New worktree**
   (`secondary`, 48pt): one tap, created from the root's current branch and
   selected. Choosing another base stays a Desktop feature. Tapping a row
-  selects it and closes the sheet. Each worktree row has **Remove** (`err`
-  text, right), which turns the sheet into its confirm: "Remove ⎇ fix-auth?"
-  · **Remove worktree** (`destructive`) · **Cancel**. The Host answers:
+  selects it and closes the sheet. Each worktree row has **Archive** (`mut`
+  text, right), which turns the sheet into its confirm: "Archive ⎇ fix-auth?"
+  · **Archive** (`destructive`) · **Cancel**. The Host answers:
   agents or terminals running there → "Still running in ⎇ fix-auth", the
   sessions it names (dot, title, `agent · agent running`) plus mono
   `1 terminal running` / `1 agent starting`, a line that stopping an agent stops
-  its background work and keeps its session, and **Stop n agents and remove**
+  its background work and keeps its session, and **Stop n agents and archive**
   (only asks again once every stop succeeded; a remaining terminal keeps it
   blocked and says to kill it in Terminals, with **Check again**).
-  Uncommitted changes → "Discard n uncommitted changes?" · **Remove anyway**.
-  Removing the worktree Files shows moves Files to its workspace (R8.13).
+  Uncommitted changes → "Discard n uncommitted changes?" · **Discard and archive**.
+  Archiving the worktree Files shows moves Files to its workspace (R8.13). The
+  phone says "archive" for what the wire calls remove.
+  Last, **Remove workspace** (`ghost`, `err` text). It and a long-press on a
+  level-one row (also a screen-reader action, so plain folders have a way in)
+  turn the sheet into "Remove zwiim?" · "Its 2 worktrees are archived. Files in
+  `~/Projects/zwiim` on {Host} aren't changed. Add the folder again to bring it
+  back, sessions and all." · **Remove** (`destructive`) · **Cancel** (back to
+  where it came from). The Host answers as for Archive (**Stop n agents and
+  remove**, **Discard and remove**). Removing the workspace Files shows moves
+  Files to another workspace.
 - **Empty states:** no workspaces: "No workspaces yet" · "Add a folder on {Host}
   to work in it from here." · **New workspace**. Empty folder: `∅` "This folder
   is empty" · "archive/ has nothing in it on zwiim · fix-auth." · **Up one
@@ -744,20 +772,47 @@ glyph, a title, one line, one action.
   closed, the button gives way to `Merged` / `Closed`
   after the `#12` and title. Desktop merges on
   one click without a confirm: the button sits where the pointer already is
-  and the Host still refuses a head that moved. Once merged, in a worktree
+  and the Host still refuses a head that moved. While GitHub waits on checks or
+  review (protocol 22), **Auto-merge** (`done`) takes Merge's place, one click
+  too: GitHub merges it by itself once its requirements are met, Mac asleep or
+  not; its tooltip names the method and that pushes before then are merged too.
+  On, the reason line reads "Merges when checks pass" (or "when GitHub's
+  requirements are met" once no check runs) and a `secondary` **Cancel
+  auto-merge** (X) replaces the button. A PR that became mergeable meanwhile is
+  merged at once. Settings → Git → **Auto-merge** (this computer only, on by
+  default) turning it off leaves plain Merge; a Cancel auto-merge still shows
+  for one turned on elsewhere. Once merged, in a worktree
   whose Host serves it (V2.4), a small `brand` **Continue** (GitBranchPlus)
   follows `Merged`; its tooltip reads "New branch from origin/main, where #12
   landed. Sessions and terminals stay here." One click, no confirm, a spinner
   while the Host works; the banner then goes. The Host's refusal reads in
-  `destructive` under it, in the phone's words.
+  `destructive` under it, in the phone's words. Beside it, in any worktree, a
+  `secondary` **Archive** (Archive icon) puts the worktree away instead: one
+  click, a spinner, then what became of the branch in `mut`. Uncommitted
+  changes turn the line under it into "2 uncommitted changes will be lost."
+  · **Cancel** (focused) · **Discard and archive** (`destructive`); running
+  agents or terminals read in `destructive` ("1 agent running — stop it to
+  archive."). Nothing archives on merge by itself; the user picks.
 - Desktop's sidebar (UI refresh, design-shotgun A) stays uncolored. A
   **Workspaces** header folds the whole list and carries `+` to add a folder; a
   chevron on a repository folds its worktrees, and a folded repository still
-  shows its worktrees' working dot and selection. Removed worktrees fold under
-  one `N removed` row, opened automatically when one is selected. Worktree rows
+  shows its worktrees' working dot and selection. Hovering a worktree row shows
+  an Archive icon ("Archive worktree"), which opens its confirm with the
+  branch's fate. Archived worktrees fold under one `N archived` row, opened
+  automatically when one is selected; Desktop says "archived" for what the
+  wire calls removed. Worktree rows
   are one line (branch in mono, base in the tooltip); the repository name keeps
   its room and the branch beside it truncates first. Working is a pulsing
   neutral dot, not a color. Folds are remembered on the device.
+  Hovering a repository (or plain folder) row shows `⋯` ("{name} actions"),
+  a menu: **New worktree** (one click, from the current branch), **New
+  worktree from…** (the base picker), **Configuration** (Settings → Repository
+  for that repository, kept from tab to tab), a separator, then **Remove** in
+  `destructive`. Remove confirms in the row: "Remove zwiim and archive its 2
+  worktrees? Files in `~/Projects/zwiim` are not changed. Add the folder again
+  to bring it back." · **Cancel** (focused) · **Remove**; the Host's refusals
+  read as for Archive (**Discard and remove**). Adding the folder again brings
+  back the same workspace with its sessions.
 - Desktop's Files tree marks files and folders by type with Material Icon Theme
   icons (the pack's own SVGs and name tables, light variants in light theme;
   `third_party/material-icon-theme`), uses its open-folder icon when expanded, and opens a folder whose only entry is a
@@ -796,6 +851,41 @@ glyph, a title, one line, one action.
   never answered for the user. Offered only
   for agents the Host manages (Claude Code, Codex); the CLI uses its own
   sign-in.
+- Desktop's composers (session and new worktree) attach a paste of more than
+  5,000 characters as a text file instead of filling the box: a pending chip
+  "Pasted text.txt" with its size, uploaded on send like any file. Settings →
+  General → **Attach long pastes as a file** (on by default, offered when the
+  host takes attachments) turns it off. A paste with files attaches the files.
+- Desktop Settings → Appearance (this computer only, applied to the window root):
+  1. **Softer dark theme** (off): with dark on, surfaces lift (`background`
+     #1c1f22, `card` #25282b, `sidebar` #212427) and text dims (`foreground`
+     #c3c7ca, `muted-foreground` #979b9f), about 9.7:1 instead of 12.6:1.
+  2. **Color vision** (Default / Red-green / Blue-yellow) remaps only `done`,
+     `destructive` and the diff add/del tints. Red-green: done teal (#0b6e5a light,
+     #5ccfb0 dark), failed orange (#b25e00 / #f39c3d), chosen by simulating
+     protan/deutan vision (42–59 apart vs 10–26 for green/red). The orange is the
+     one sanctioned exception to "no amber": in this mode it means failed, and
+     needs-you stays the accent. Blue-yellow: done lime (#6b7a00 / #b8e05a) so it
+     leaves the blue accent; red stays.
+  3. **Code ligatures** (on): off sets `calt`/`liga` 0 on code, kbd, pre and
+     `.font-mono`. The terminal (xterm) never draws ligatures.
+  4. **Markdown files** (Default / Book): Book sets a markdown file's preview as a
+     page (40rem measure, serif, 1.0625rem/1.75, hyphenated). Chat is unchanged.
+  5. **Code theme** (Zwiim / GitHub / One / Catppuccin / Vitesse / Solarized /
+     Rosé Pine): syntax colors for transcript code blocks, the file viewer and
+     diffs. Each theme has a light and a dark variant and follows the window's
+     theme. The background stays `code`, and diff tints stay `add-bg`/`del-bg`.
+     Zwiim (default) is built from the palette: keywords `accent`, strings teal
+     (#8FCFC4 / #11766A), constants violet (#C4A7F0 / #6E46C2), comments `faint`
+     (light #767A7E for 4.5:1 on `code`), punctuation `mut`, names `prose-strong`.
+     No amber or green in Zwiim's theme, so color still reads as status outside code.
+     Code past 5,000 lines or 200k characters draws plain.
+- Desktop Settings → General, for the transcript (this computer only):
+  1. **Show every tool call** (off): no run of 3+ calls folds into one row, and
+     thinking starts open. Each call's own output still opens on click, so a
+     long command stays one row. A row closed by hand stays closed.
+  2. **Always show context usage** (on): off, the ring beside send appears only
+     from 70% full, when it starts to matter.
 
 ## Decisions Log
 
@@ -831,3 +921,11 @@ glyph, a title, one line, one action.
 | 2026-10-06 | Plain folders become repositories on add; a large folder asks first | Worktrees, Changes and every Git feature need a repository, and a plain folder had none of them. The Host commits the folder as "Initial Commit" with a basic `.gitignore` (written only if none exists) so secrets stay out; over 5,000 files or 500 MB the user confirms the count first, since a huge first commit is slow and easy to regret. A failed init fails the add, so a folder is never half-registered. Supersedes 2026-09-27's "Git stays optional" for new adds |
 | 2026-10-17 | Tide accent; amber removed; working is neutral (design-shotgun r2, A3) | One accent reads calmer than violet plus amber; a waiting agent is still the only accent-colored dot with a halo, while working breathes in grey so color means "look here". Desktop loads Inter + JetBrains Mono (the font was named but never loaded), gains a type scale, motion tokens, one focus ring and Material file icons. Supersedes 2026-09-26 "Keep Desktop Graphite + violet" and "Amber is the loudest color" |
 | 2026-10-17 | Desktop: Unattended renamed Auto and made the default, no confirmation | User call: approvals on every command slowed normal work. Auto is the label only (the wire keeps `unattended`); a new session starts in it where the agent offers it, and the brand chip plus the Ask first again note keep it visible and one click from leaving. Supersedes the desktop half of R8.15 "Unattended asks first" |
+| 2026-10-29 | Desktop: merged worktrees archive on the user's pick, not by themselves | User call: after a merge the banner offers Continue and Archive side by side and the user chooses; every worktree row archives from a hover icon. Desktop says "archive" everywhere (as the archive script already did) |
+| 2026-10-29 | Mobile matches: Archive beside Continue in the PR sheet; worktree rows say Archive | User call ("keep the same for the mobile also"): one vocabulary across clients. The worktree row's Archive drops `err` for `mut` since sessions stay readable; the confirm stays `destructive` because the checkout goes |
+| 2026-10-29 | Auto-merge: per-PR button, GitHub does the merge | User call: no clicking Merge after CI. GitHub's own auto-merge, not a Host watcher, so it lands with the Mac asleep; pinned to the head shown, then GitHub keeps it across the user's pushes (said in the tooltip / confirm). The per-PR button is the opt-in; a Settings → Git toggle (per device, on by default, user call) hides it, never Cancel. After it lands, the usual Continue or Archive pick |
+| 2026-10-29 | Desktop: long pastes attach as a text file | A log or file dump pasted into the box buries the message and is hard to edit around; as a chip it stays one removable item and the agent reads it as a file. 5,000 characters, client-only, a toggle to turn it off |
+| 2026-10-29 | Desktop appearance: softer dark, color vision, ligatures toggle, book markdown | Accessibility without a second theme: softer dark trades contrast for glare; color-vision modes recolor only the done/failed pair, picked by simulation rather than taste, so status stays readable for about 1 in 12 men. Orange allowed for failed in red-green mode only. Book style is for reading docs, so it stays out of the transcript. No code-theme picker: Desktop has no syntax colors to theme |
+| 2026-10-29 | Desktop code theme: syntax colors, Zwiim default plus six well-known themes | User call (D1 A, D2 A, D3 B): mono code blocks were hard to scan. Shiki with the JS regex engine (no wasm), grammars loaded on first use. Colors in code are exempt from "no amber" because they live only on the `code` surface and never mean status. Supersedes the 2026-10-29 "No code-theme picker" note |
+| 2026-10-29 | Desktop: Show every tool call (off) and Always show context usage (on) | Folding runs keeps a long turn readable, so it stays the default; people auditing an agent want every call in view. The ring stays always-on as before (DESIGN R8.15 put it there on purpose); the toggle is for those who only care once the window fills |
+| 2026-10-29 | Remove a whole workspace: Desktop ⋯ menu, phone long-press and level two | User call (D2 A): a repository with no worktrees left had no way out of the list. Remove hides the root and archives its worktrees through the Host (`workspace.remove`); the folder on disk is never touched, and re-adding it revives the same workspace and its sessions. The UI says "remove" here because nothing is archived for the root itself |

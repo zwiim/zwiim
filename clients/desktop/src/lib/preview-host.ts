@@ -3,6 +3,7 @@
 
 import type { FileReader } from "@zwiim/sdk";
 import { answerPreview, encodePreviewPath, type PreviewAnswer } from "@zwiim/preview";
+import { platform } from "@/lib/platform";
 
 interface PreviewRequest {
   request: number;
@@ -10,10 +11,8 @@ interface PreviewRequest {
   path: string;
 }
 
-const isWindows = () => /Windows/i.test(navigator.userAgent);
-
 /** Where `path` loads in preview `id`: its own origin, `http://zwiim-preview.<id>` on Windows. */
-export function previewUrl(id: string, path: string, windows = isWindows()): string {
+export function previewUrl(id: string, path: string, windows = platform() === "windows"): string {
   const origin = windows ? `http://zwiim-preview.${id}` : `zwiim-preview://${id}`;
   return `${origin}/${encodePreviewPath(path)}`;
 }

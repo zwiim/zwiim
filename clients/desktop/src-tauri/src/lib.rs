@@ -19,10 +19,13 @@ pub mod account;
 pub mod cloud;
 pub mod device;
 pub mod download;
+pub mod fonts;
 pub mod lan;
 pub mod lid_helper;
 pub mod login;
+pub mod notify;
 pub mod preview;
+pub mod reveal;
 pub mod update;
 
 use std::path::{Path, PathBuf};
@@ -326,6 +329,16 @@ async fn lan_close(links: tauri::State<'_, lan::Links>, id: u32) -> Result<(), S
     Ok(())
 }
 
+/// Zooms the whole page, as a browser does; the app remembers the level and
+/// sets it again at launch.
+#[tauri::command]
+fn window_zoom(window: tauri::WebviewWindow, factor: f64) -> Result<(), String> {
+    if !factor.is_finite() {
+        return Err("Not a zoom level".into());
+    }
+    window.set_zoom(factor.clamp(0.5, 2.0)).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let commands: fn(tauri::ipc::Invoke) -> bool = tauri::generate_handler![
@@ -358,10 +371,15 @@ pub fn run() {
         update::desktop_update_set_channel,
         login::host_login_status,
         login::host_login_set,
-        lid_helper::lid_helper_setup
+        lid_helper::lid_helper_setup,
+        notify::desktop_notify,
+        fonts::installed_fonts,
+        reveal::reveal_folder,
+        window_zoom
     ];
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(update::plugin())
         .register_asynchronous_uri_scheme_protocol("zwiim-preview", |ctx, request, responder| {
             let previews = ctx.app_handle().state::<preview::Previews>();

@@ -18,6 +18,7 @@ pub use super::folder_link::Entity as FolderLink;
 pub use super::model_provider::Entity as ModelProvider;
 pub use super::opened_tab::Entity as OpenedTab;
 pub use super::quick_message::Entity as QuickMessage;
+pub use super::repository_settings::Entity as RepositorySettings;
 pub use super::token_usage_sync::Entity as TokenUsageSync;
 pub use super::token_usage_turn::Entity as TokenUsageTurn;
 pub use super::work_task::Entity as WorkTask;

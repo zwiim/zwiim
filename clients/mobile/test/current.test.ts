@@ -3,7 +3,16 @@ import { describe, expect, it } from "vitest";
 import type { HostEntry } from "../src/account/hosts";
 import type { HostConnectionView } from "../src/host/connection";
 import { CurrentHost, type CurrentHostState } from "../src/host/current";
-import { otherBlockers, removeWorktree, stopAgentError, stopThenRemove } from "../src/host/removal";
+import {
+  archiveBusyText,
+  otherBlockers,
+  removalError,
+  removeWorkspace,
+  removeWorktree,
+  stopAgentError,
+  stopThenRemove,
+  workspaceRemovalError,
+} from "../src/host/removal";
 import { changeRequest } from "../src/sessions/controls";
 import { agentSignInRow, connectionText, hostProblem, hostRowState } from "../src/host/status";
 import { MemorySecureStore } from "../src/platform/memory-store";
@@ -970,6 +979,112 @@ describe("stopping agents and removing worktrees (R8.13)", () => {
   it("reads an agent not bound to a session yet as starting", () => {
     expect(otherBlockers({ live_sessions: 3, terminals: 2, session_ids: ["a"] })).toBe("2 agents starting · 2 terminals running");
     expect(otherBlockers({ live_sessions: 1, terminals: 0, session_ids: ["a"] })).toBeNull();
+  });
+
+  it("says what blocks an archive from the PR sheet, and that removing is archiving", () => {
+    expect(archiveBusyText({ live_sessions: 1, terminals: 0, session_ids: ["a"] })).toBe("1 agent running — stop it to archive.");
+    expect(archiveBusyText({ live_sessions: 2, terminals: 1, session_ids: ["a", "b"] })).toBe(
+      "2 agents running, 1 terminal open — stop them to archive.",
+    );
+    expect(archiveBusyText({ live_sessions: 0, terminals: 0, session_ids: [] })).toBe("Work is still running — stop them to archive.");
+    expect(removalError(new Error("boom"), "Studio Mac")).toBe("Couldn't archive the worktree. Try again.");
+  });
+});
+
+describe("removing a workspace", () => {
+  const info = (id: string, over: object = {}) => ({
+    workspace_id: id,
+    name: id,
+    alias: null,
+    kind: "root",
+    parent_workspace_id: null,
+    branch: "main",
+    is_git_repo: true,
+    base_branch: null,
+    base_commit: null,
+    removed: false,
+    display_path: null,
+    ...over,
+  });
+
+  /** A host with repository todo (worktree fix, agent a running there) and plain folder notes; Files on fix. */
+  async function host() {
+    const s = setup();
+    let running = true;
+    let changes = 3;
+    const summary = () => ({
+      session_id: "a",
+      workspace_id: "fix",
+      title: "Session a",
+      agent: "codex" as const,
+      status: "completed" as const,
+      live: running,
+      created_at: new Date(1_700_000_000_000).toISOString(),
+      updated_at: new Date(1_700_000_000_000).toISOString(),
+    });
+    const b = s.w.host.backend;
+    b.handlers["workspace.list"] = () => [
+      info("todo"),
+      info("fix", { kind: "worktree", parent_workspace_id: "todo", branch: "fix-auth", base_branch: "main" }),
+      info("notes", { is_git_repo: false, branch: null }),
+    ];
+    b.handlers["session.list"] = (p: { workspace_id: string }) => (p.workspace_id === "fix" ? [summary()] : []);
+    b.handlers["session.stop"] = () => {
+      running = false;
+      setTimeout(() => b.feedEvent("session.changed", { session: summary() }), 0);
+      return {};
+    };
+    // The host's guard: running agents refuse it, force or not; uncommitted changes unless forced.
+    b.handlers["workspace.remove"] = (p: { workspace_id: string; force?: boolean }) => {
+      if (running) throw new ZwiimClientError("workspace_busy", "busy", 409, { live_sessions: 1, terminals: 0, session_ids: ["a"] });
+      if (changes && !p.force) throw new ZwiimClientError("workspace_dirty", "dirty", 409, { changes });
+      changes = 0;
+      return { workspace_id: p.workspace_id, archived_worktrees: ["fix"] };
+    };
+    await pin(s);
+    const current = s.launch();
+    await current.open(s.entry);
+    await waitFor(() => (current.state.store?.getState().workspaces?.length ?? 0) === 3);
+    current.chooseWorkspace("fix");
+    const calls = () => b.requests.filter((r) => r.op === "session.stop" || r.op === "workspace.remove").map((r) => [r.op, r.params]);
+    return { current, calls };
+  }
+
+  it("stops the agents it names, discards changes only when asked, then moves Files to another workspace", async () => {
+    const { current, calls } = await host();
+    const first = await removeWorkspace(current, "todo");
+    expect(first).toEqual({ step: "busy", busy: { live_sessions: 1, terminals: 0, session_ids: ["a"] } });
+    if (first.step !== "busy") throw new Error("busy");
+    expect(await stopThenRemove(current, "todo", first.busy.session_ids, false, removeWorkspace)).toEqual({ step: "dirty", changes: 3 });
+    expect(current.state.workspaceId).toBe("fix");
+    expect(await removeWorkspace(current, "todo", true)).toEqual({ step: "removed" });
+    expect(calls()).toEqual([
+      ["workspace.remove", { workspace_id: "todo" }],
+      ["session.stop", { session_id: "a" }],
+      ["workspace.remove", { workspace_id: "todo" }],
+      ["workspace.remove", { workspace_id: "todo", force: true }],
+    ]);
+    expect(current.state.workspaceId).toBe("notes");
+    await current.clear();
+  });
+
+  it("leaves Files alone when it shows another workspace", async () => {
+    const { current } = await host();
+    current.chooseWorkspace("notes");
+    await current.stopSession("a");
+    expect(await removeWorkspace(current, "todo", true)).toEqual({ step: "removed" });
+    expect(current.state.workspaceId).toBe("notes");
+    await current.clear();
+  });
+
+  it("says why a workspace couldn't be removed", () => {
+    expect(workspaceRemovalError(new Error("boom"), "Studio Mac")).toBe("Couldn't remove the workspace. Try again.");
+    expect(workspaceRemovalError(new ZwiimClientError("invalid_input", "task", 422), "Studio Mac")).toBe(
+      "A to-do task is still working in one of its worktrees. Finish or cancel it first.",
+    );
+    expect(workspaceRemovalError(new ZwiimClientError("network", "down", 0), "Studio Mac")).toBe(
+      "Not connected to Studio Mac. Try again when it's back.",
+    );
   });
 });
 

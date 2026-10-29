@@ -52,6 +52,17 @@ pub struct GitFacts {
     pub placeholder_branch: Option<String>,
 }
 
+/// What the user asked of every agent about Git, in their own words, from
+/// the Host's settings. Each is trimmed and non-empty when present. Their
+/// general instructions are [`InstructionTexts`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UserPreferences {
+    /// For opening pull requests.
+    pub pull_request: Option<String>,
+    /// For naming branches.
+    pub branch_name: Option<String>,
+}
+
 /// What the harness knows about a session when it opens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HarnessInput {
@@ -60,6 +71,8 @@ pub struct HarnessInput {
     pub git: Option<GitFacts>,
     /// The user's own instructions for this session's root workspace.
     pub user: InstructionTexts,
+    /// Empty unless the connection's opener read them from the settings.
+    pub preferences: UserPreferences,
 }
 
 /// The instructions an agent session runs with, and their identity for logs.
@@ -78,6 +91,7 @@ pub async fn gather(cwd: &Path, user: InstructionTexts) -> HarnessInput {
         cwd: cwd.to_path_buf(),
         git: git_facts(cwd).await,
         user,
+        preferences: UserPreferences::default(),
     }
 }
 
@@ -110,8 +124,9 @@ async fn git_facts(cwd: &Path) -> Option<GitFacts> {
     })
 }
 
-/// The branch `cwd` is on, when that is the name the Host gave its folder
-/// and it was never pushed.
+/// The branch `cwd` is on, when that is the name the Host gave its folder,
+/// under a branch prefix or not (`pune`, `ashish/pune`), and it was never
+/// pushed.
 async fn placeholder_branch(cwd: &Path) -> Option<String> {
     let folder = cwd.file_name()?.to_str()?;
     if !crate::workspace::is_host_worktree_name(folder) {
@@ -125,7 +140,10 @@ async fn placeholder_branch(cwd: &Path) -> Option<String> {
         .ok()
         .filter(|out| out.status.success())?;
     let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if branch != folder {
+    let name = branch
+        .rsplit_once('/')
+        .map_or(branch.as_str(), |(_, name)| name);
+    if name != folder {
         return None;
     }
     // Pushed, as `git_branch_rename` judges it: renaming would orphan the
@@ -442,6 +460,7 @@ mod tests {
                 default_branch: Some("origin/main".into()),
                 placeholder_branch: Some("pune".into()),
             }),
+            preferences: UserPreferences::default(),
             user: Default::default(),
         }
     }
@@ -876,6 +895,16 @@ mod tests {
         assert!(instruct(&input).text.contains("placeholder branch `pune`"));
         // Renamed: no longer a placeholder.
         run(&pune, &["branch", "-m", "fix-login"]);
+        assert_eq!(gather(&pune, Default::default()).await.git.unwrap().placeholder_branch, None);
+        // Under a branch prefix, still the folder's name.
+        run(&pune, &["branch", "-m", "ashish/pune"]);
+        let input = gather(&pune, Default::default()).await;
+        assert_eq!(
+            input.git.as_ref().unwrap().placeholder_branch.as_deref(),
+            Some("ashish/pune")
+        );
+        assert!(instruct(&input).text.contains("keep `ashish/` in front"));
+        run(&pune, &["branch", "-m", "ashish/fix-login"]);
         assert_eq!(gather(&pune, Default::default()).await.git.unwrap().placeholder_branch, None);
         // A main checkout named and branched after a city is not a worktree.
         let agra = dir.path().join("agra");

@@ -562,6 +562,7 @@ mod tests {
             &self,
             _agent_type: AgentType,
             _working_dir: String,
+            _folder_id: i32,
             _resume_external_id: Option<String>,
             _preferred: std::collections::BTreeMap<String, String>,
         ) -> Result<String, ZwiimError> {

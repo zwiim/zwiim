@@ -29,11 +29,15 @@ export type HostErrorCode =
   | "repository_init_failed"
   | "workspace_removed"
   | "identity_unavailable"
+  /** `repository.settings.*`: the Host's keychain, which keeps environment variables, would not open. */
+  | "keychain_unavailable"
   | "cloud_unavailable"
   | "host_restarting"
   | "update_unavailable"
   | "not_mergeable"
   | "pr_changed"
+  /** `git.pr_auto_merge`: the repository has "Allow auto-merge" off on GitHub. */
+  | "auto_merge_disabled"
   /** `workspace.continue`: the pull request is not merged on GitHub. */
   | "pr_not_merged"
   /** `workspace.continue`: the branch moved past the merged head, so Continue would strand commits. */
@@ -44,8 +48,10 @@ export type HostErrorCode =
   | "github_unreachable"
   /** `workspace.resolve_conflicts`: the branch has no conflicts with its base (checked after a fetch). */
   | "no_conflicts"
-  /** `session.start` / `session.send` / `terminal.spawn` in a root: sessions run in a worktree. */
+  /** `session.start` / `session.send` / `terminal.spawn` / `workspace.run_script` in a root: sessions run in a worktree. */
   | "root_workspace"
+  /** `workspace.run_script`: the repository has no such script. Details `{ script }`. */
+  | "script_not_set"
   /** `workspace.add` with `publish`: GitHub did not take the repository. Details `{ created_on_github }`. */
   | "publish_failed"
   /** `attachments.upload`: the file is larger than 10 MB. */
@@ -379,6 +385,30 @@ export interface WorktreeRemoved {
   parent_workspace_id: string;
   /** Sessions that stay (read-only) on the removed worktree. */
   kept_sessions: number;
+  /** The branch the worktree had (revision 17); null when it had none. */
+  branch?: string | null;
+  /** The branch was deleted with it (`git.delete_branch_on_remove`). */
+  branch_deleted?: boolean;
+  /** Why deleting was asked for but the branch was kept: unpushed commits, the base branch. */
+  branch_kept_reason?: string | null;
+  /** How the repository's archive script ended, when one ran (revision 19). */
+  archive_script?: ScriptRun;
+}
+
+export interface WorkspaceRemoved {
+  workspace_id: string;
+  /** The worktrees archived with it, as `workspace.remove_worktree` does. */
+  archived_worktrees: string[];
+}
+
+/** How a repository script the Host ran ended. */
+export interface ScriptRun {
+  /** Null when it was stopped, killed or never started. */
+  exit_code: number | null;
+  /** Stopped after its time limit (5 minutes for an archive script). */
+  timed_out: boolean;
+  /** The end of what it printed, or why it could not start. */
+  output: string;
 }
 
 export interface WorkspaceDetail extends WorkspaceInfo {
@@ -623,6 +653,145 @@ export interface AgentSummary {
   effort_by_model: Record<string, ChoiceOption | null>;
   /** The slash commands it offered in its last session here; null before its first. */
   commands: SessionCommand[] | null;
+  /** It is the agent new sessions start with (`defaults.agent`). Capability `settings`. */
+  default?: boolean;
+  /**
+   * The Host's defaults this agent offers, already current in `options` and
+   * `effort_by_model`; null where none applies. Capability `settings`.
+   */
+  defaults?: AgentDefaults;
+}
+
+/** What a new session of an agent starts with unless the client picks otherwise. */
+export interface AgentDefaults {
+  model: string | null;
+  effort: string | null;
+  mode: SessionMode | null;
+}
+
+/**
+ * The Host's settings, shared by every device. Keys: `defaults.agent`,
+ * `defaults.mode`, `defaults.claude_code.model` / `.effort`,
+ * `defaults.codex.model` / `.effort`, and from revision 17 (capability
+ * `settings.git`) `git.branch_prefix` (`github` | `custom`),
+ * `git.branch_prefix_custom` and `git.delete_branch_on_remove` (a boolean),
+ * and from revision 18 (capability `settings.prompts`) the user's own
+ * instructions to agents for pull requests and branch names:
+ * `prompts.pull_request` and `prompts.branch_name`, each up to
+ * `MAX_PROMPT_BYTES` (their other instructions are `host.instructions`), and
+ * from revision 20 (capability `settings.advanced`)
+ * `terminal.scrollback`, the bytes of output each terminal keeps (within
+ * `SCROLLBACK_RANGE`; unset keeps `DEFAULT_SCROLLBACK_BYTES`), and
+ * `git.push_sets_upstream`, whether a plain `git push` in a worktree sets the
+ * branch's upstream (unset is on). Null when unset.
+ */
+export type HostSettingKey =
+  | "defaults.agent"
+  | "defaults.mode"
+  | "defaults.claude_code.model"
+  | "defaults.claude_code.effort"
+  | "defaults.codex.model"
+  | "defaults.codex.effort"
+  | "git.branch_prefix"
+  | "git.branch_prefix_custom"
+  | "git.delete_branch_on_remove"
+  | "prompts.pull_request"
+  | "prompts.branch_name"
+  | "terminal.scrollback"
+  | "git.push_sets_upstream";
+
+/** Longest `prompts.*` setting the Host accepts, in UTF-8 bytes. */
+export const MAX_PROMPT_BYTES = 8000;
+
+/** What `terminal.scrollback` can be, in bytes. */
+export const SCROLLBACK_RANGE = { min: 64 * 1024, max: 16 * 1024 * 1024 } as const;
+
+/** What a terminal keeps while `terminal.scrollback` is unset, in bytes. */
+export const DEFAULT_SCROLLBACK_BYTES = 1024 * 1024;
+
+/** `host.folders`: where the Host keeps its data, worktrees and clones (revision 20). */
+export interface HostFolders {
+  data: string;
+  worktrees: string;
+  repositories: string;
+}
+
+export interface HostSettings {
+  values: Partial<Record<HostSettingKey | (string & {}), string | number | boolean | null>>;
+}
+
+/**
+ * One repository's own settings, from revision 19 (capability
+ * `repository.settings`), shared by its worktrees; null when unset.
+ *
+ * 1. `scripts.setup`, run in a `Setup` terminal of each new worktree,
+ *    `scripts.run`, run on asking (`workspace.run_script`) in a `Run` terminal,
+ *    and `scripts.archive`, run before a worktree is removed: shell scripts up
+ *    to `MAX_SCRIPT_BYTES`. They, and the worktree's agents and terminals,
+ *    get `ZWIIM_PORT`, the first of ten ports of the worktree's own.
+ * 2. `files.copy`: `.gitignore`-style patterns picking the Git-ignored files of
+ *    the repository folder copied into each new worktree;
+ *    `DEFAULT_FILES_TO_COPY` when unset, nothing when empty.
+ * 3. `env`: variables every agent, terminal and script of the repository's
+ *    worktrees gets. Names match `[A-Za-z_][A-Za-z0-9_]*` and don't start with
+ *    `ZWIIM_`; values are one line. The Host keeps them in the OS keychain;
+ *    updating fails with `keychain_unavailable` when it can't be used.
+ * 4. `preview.urls`: where to open a worktree's servers (`workspace.previews`),
+ *    up to `MAX_PREVIEW_URLS` `http(s)` URLs, each with an optional name. In a
+ *    URL `$ZWIIM_PORT`, `${ZWIIM_PORT}` and `$((ZWIIM_PORT + n))` (n 0–9) become
+ *    the worktree's ports; nothing else is expanded. When unset, the servers
+ *    the worktree's terminals printed are opened.
+ */
+export type RepositorySettingKey =
+  | "scripts.setup"
+  | "scripts.run"
+  | "scripts.archive"
+  | "files.copy"
+  | "env"
+  | "preview.urls";
+
+/** A repository script run in a terminal of its own, titled `Setup` / `Run`. */
+export type RepositoryScript = "setup" | "run";
+
+/** The title of the terminal a repository script runs in, by which clients know it. */
+export const SCRIPT_TERMINAL_TITLES: Readonly<Record<RepositoryScript, string>> = { setup: "Setup", run: "Run" };
+
+/** Longest repository script the Host accepts, in UTF-8 bytes. */
+export const MAX_SCRIPT_BYTES = 16000;
+
+/** The files a new worktree gets while `files.copy` is unset. */
+export const DEFAULT_FILES_TO_COPY: readonly string[] = [".env*"];
+
+/** Most `files.copy` patterns, and longest one in UTF-8 bytes. */
+export const MAX_FILES_TO_COPY = 100;
+export const MAX_FILE_PATTERN_BYTES = 256;
+
+/** Longest `env` name, and most UTF-8 bytes of all names and values. */
+export const MAX_ENV_NAME_BYTES = 128;
+export const MAX_ENV_BYTES = 32000;
+
+/** Most `preview.urls`, longest URL and longest name, in UTF-8 bytes. */
+export const MAX_PREVIEW_URLS = 10;
+export const MAX_PREVIEW_URL_BYTES = 2048;
+export const MAX_PREVIEW_NAME_BYTES = 64;
+
+/** A place to open a worktree's server: as set, or detected (no name). */
+export interface Preview {
+  name?: string | null;
+  url: string;
+}
+
+export type RepositorySettingValue = string | string[] | Record<string, string> | Preview[] | null;
+
+export interface RepositorySettings {
+  values: {
+    "scripts.setup"?: string | null;
+    "scripts.run"?: string | null;
+    "scripts.archive"?: string | null;
+    "files.copy"?: string[] | null;
+    env?: Record<string, string> | null;
+    "preview.urls"?: Preview[] | null;
+  } & Partial<Record<string, RepositorySettingValue>>;
 }
 
 /** Persisted session status. */
@@ -640,7 +809,27 @@ export interface SessionSummary {
   live: boolean;
   created_at: string;
   updated_at: string;
+  /**
+   * Prompts queued behind the running turn, first to go out first; absent
+   * when none are. Capability `session.follow_ups`.
+   */
+  follow_ups?: QueuedFollowUp[];
 }
+
+/** A prompt waiting for the session's running turn to end. */
+export interface QueuedFollowUp {
+  follow_up_id: string;
+  /** What the user typed; the part an edit replaces. */
+  text: string;
+  /** How many images and files go with it. */
+  attachments: number;
+}
+
+/**
+ * `sent`: it went out as the next turn. `queued`: it waits in the queue.
+ * `steered`: it went into the agent's running turn.
+ */
+export type FollowUpOutcome = "sent" | "queued" | "steered";
 
 export type PromptBlock =
   | { type: "text"; text: string }
@@ -916,6 +1105,8 @@ export type SessionEvent =
   | EventBase<"agent.subagent_thought_delta", { parent_id: string; text: string }>
   | EventBase<"agent.message_image", AgentImage>
   | EventBase<"agent.user_message", PendingUserMessage>
+  /** A message the agent took into its running turn (revision 22). */
+  | EventBase<"agent.steered", PendingUserMessage>
   | EventBase<"agent.tool_call", ToolCall>
   | EventBase<"agent.tool_call_update", Omit<ToolCall, "kind">>
   | EventBase<"agent.request", AgentRequest>
@@ -1059,6 +1250,16 @@ export interface PrMergeInfo {
   /** The method a merge uses unless told otherwise. */
   method: MergeMethod | null;
   methods: MergeMethod[];
+  /** GitHub merges it by itself once its requirements are met; null when off. Revision 22+. */
+  auto?: PrAutoMerge | null;
+  /** Auto-merge can be turned on: open and waiting only on required checks or review. Revision 22+. */
+  auto_available?: boolean;
+}
+
+/** An auto-merge GitHub has queued for a pull request. */
+export interface PrAutoMerge {
+  /** How GitHub will merge it. */
+  method: MergeMethod | null;
 }
 
 /** A workspace branch's pull request as the Host last saw it on GitHub. */
@@ -1113,6 +1314,16 @@ export interface PrMerged {
   number: number;
   method: MergeMethod;
   merged_at: string | null;
+}
+
+/** `on`: GitHub merges it once its requirements are met. `merged`: it was mergeable, so it was merged now. */
+export type AutoMergeOutcome = "on" | "merged" | "off";
+
+export interface PrAutoMerged {
+  number: number;
+  outcome: AutoMergeOutcome;
+  /** The method GitHub merges, or merged, with; null when off. */
+  method: MergeMethod | null;
 }
 
 // ─── host state feed ─────────────────────────────────────────────────────
@@ -1380,6 +1591,8 @@ export interface Operations {
    */
   "host.update.set_channel": [{ channel: HostUpdateStatus["channel"] }, HostUpdateStatus];
   "host.diagnostics": [Record<string, never>, HostDiagnostics];
+  /** Where the Host keeps its data, worktrees and clones. Capability `host.folders`. */
+  "host.folders": [Record<string, never>, HostFolders];
   "agent.list": [Record<string, never>, AgentSummary[]];
   /** Install or repair a host-managed adapter in the background (local authority). */
   "agent.setup": [{ agent: AgentType }, AdapterStatus];
@@ -1457,9 +1670,20 @@ export interface Operations {
     { workspace_id: string; number: number; head_sha: string; method?: MergeMethod },
     PrMerged,
   ];
+  /**
+   * Turn GitHub's auto-merge on (pinned to `head_sha`) or off. `merged` when
+   * GitHub would merge it now; `not_mergeable` when behind, conflicted or a
+   * draft; `auto_merge_disabled` when the repository does not allow it.
+   * Revision 22+ (`git.pr_auto_merge`).
+   */
+  "git.pr_auto_merge": [
+    { workspace_id: string; number: number; enabled: boolean; head_sha?: string; method?: MergeMethod },
+    PrAutoMerged,
+  ];
   /** `base`: a branch from `git.branches`; the root's HEAD when absent. */
   "workspace.create_worktree": [{ workspace_id: string; base?: string }, WorkspaceInfo];
   "workspace.remove_worktree": [{ workspace_id: string; force?: boolean }, WorktreeRemoved];
+  "workspace.remove": [{ workspace_id: string; force?: boolean }, WorkspaceRemoved];
   /**
    * After its pull request `number` merged, move the worktree in place to a
    * new branch from the PR's base (capability `workspace.continue`).
@@ -1529,6 +1753,58 @@ export interface Operations {
    */
   "session.retry_in_new_chat": [{ session_id: string }, { session_id: string }];
   /**
+   * Send now when the agent is idle and nothing is queued, else queue behind
+   * what is. The Host sends the next one when a turn ends normally; a stopped
+   * or failed turn holds the queue. Capability `session.follow_ups`.
+   *
+   * `steer` puts it into the running turn instead when the agent can take a
+   * message mid-turn; otherwise it goes the usual way. Capability
+   * `session.steer`.
+   */
+  "session.follow_up": [
+    { session_id: string; blocks: PromptBlock[]; client_message_id?: string; steer?: boolean },
+    { outcome: FollowUpOutcome },
+  ];
+  /** Replace a queued follow-up's text. `not_found` once it has gone out. */
+  "session.follow_up_edit": [{ session_id: string; follow_up_id: string; text: string }, Record<string, never>];
+  /** Drop a queued follow-up; one already gone is not an error. */
+  "session.follow_up_remove": [{ session_id: string; follow_up_id: string }, Record<string, never>];
+  /** Send a queued follow-up now when idle (resuming a held queue), else move it first. */
+  "session.follow_up_send": [{ session_id: string; follow_up_id: string }, { outcome: FollowUpOutcome }];
+  /** The Host's settings. Capability `settings`. */
+  "settings.get": [Record<string, never>, HostSettings];
+  /**
+   * Set settings (a value) or clear them (null); others are left alone.
+   * `invalid_input` for an unknown key or a value it cannot hold, and then
+   * nothing is written. Capability `settings`.
+   */
+  "settings.update": [HostSettings, HostSettings];
+  /**
+   * The settings of a workspace's repository: its own for a repository, the
+   * one it was made from for a worktree. Capability `repository.settings`.
+   */
+  "repository.settings.get": [{ workspace_id: string }, RepositorySettings];
+  /**
+   * Set (a value) or clear (null) settings of a workspace's repository, as
+   * `settings.update` does. Capability `repository.settings`.
+   */
+  "repository.settings.update": [{ workspace_id: string } & RepositorySettings, RepositorySettings];
+  /**
+   * Run a worktree's repository script now, in a new terminal titled `Setup`
+   * or `Run` that replaces its live one of that title. `script_not_set` when
+   * the repository has none; `root_workspace` in a repository folder.
+   * Capability `workspace.run_script`.
+   */
+  "workspace.run_script": [{ workspace_id: string; script: RepositoryScript }, { terminal_id: string }];
+  /**
+   * Where to open a worktree's servers, the default first: the repository's
+   * `preview.urls` with the worktree's ports in them, else the servers its
+   * terminals printed that still answer, newest first. URLs are the Host's
+   * own (`localhost`), for a client on its machine. `root_workspace` in a
+   * repository folder. Capability `workspace.previews`.
+   */
+  "workspace.previews": [{ workspace_id: string }, { previews: Preview[] }];
+  /**
    * Take a session back to before user turn `turn_id`. `files` restores the
    * workspace files and staged changes the turn started with (HEAD and
    * ignored files are never touched). `chat` takes the conversation back to
@@ -1584,6 +1860,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "host.update.apply",
   "git.commit",
   "git.pr_merge",
+  "git.pr_auto_merge",
   "session.set_options",
   "workspace.add",
   "workspace.create_folder",
@@ -1591,9 +1868,11 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "attachments.upload",
   "files.write",
   "workspace.remove_worktree",
+  "workspace.remove",
   "workspace.continue",
   "workspace.resolve_conflicts",
   "terminal.spawn",
+  "workspace.run_script",
   "terminal.write",
   "terminal.resize",
   "terminal.kill",
@@ -1605,6 +1884,8 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "session.revert",
   "session.retry",
   "session.retry_in_new_chat",
+  "session.follow_up",
+  "session.follow_up_send",
   "session.respond",
   "device.pair",
   "device.revoke",

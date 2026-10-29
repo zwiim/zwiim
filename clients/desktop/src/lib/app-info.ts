@@ -4,13 +4,12 @@
 
 import type { ClientInfo } from "@zwiim/sdk";
 import pkg from "../../package.json";
+import { platform } from "@/lib/platform";
 
-function platform(): string | undefined {
-  const ua = typeof navigator === "undefined" ? "" : navigator.userAgent;
-  if (ua.includes("Mac")) return "macos";
-  if (ua.includes("Windows")) return "windows";
-  if (ua.includes("Linux")) return "linux";
-  return undefined;
-}
+const os = platform();
 
-export const DESKTOP_CLIENT: ClientInfo = { app: "desktop", version: pkg.version, platform: platform() };
+export const DESKTOP_CLIENT: ClientInfo = {
+  app: "desktop",
+  version: pkg.version,
+  platform: os === "unknown" ? undefined : os,
+};

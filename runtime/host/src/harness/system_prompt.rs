@@ -23,6 +23,10 @@ pub enum Layer {
     ProjectInstructions,
     /// L5: reserved for skills; renders nothing yet.
     Skills,
+    /// L6: what the user asked of every agent about pull requests and branch
+    /// names in the Host's settings, in their own words; nothing outside Git
+    /// or when they asked nothing.
+    UserPreferences,
 }
 
 /// What a layer says, and so whether a later layer may refine it.
@@ -36,21 +40,24 @@ pub enum Authority {
 }
 
 impl Layer {
-    pub const ORDER: [Layer; 6] = [
+    pub const ORDER: [Layer; 7] = [
         Layer::Runtime,
         Layer::Rules,
         Layer::Workspace,
         Layer::Git,
         Layer::ProjectInstructions,
         Layer::Skills,
+        Layer::UserPreferences,
     ];
 
     pub const fn authority(self) -> Authority {
         match self {
             Layer::Runtime | Layer::Workspace => Authority::Host,
-            Layer::Rules | Layer::Git | Layer::ProjectInstructions | Layer::Skills => {
-                Authority::Guidance
-            }
+            Layer::Rules
+            | Layer::Git
+            | Layer::ProjectInstructions
+            | Layer::Skills
+            | Layer::UserPreferences => Authority::Guidance,
         }
     }
 
@@ -62,6 +69,7 @@ impl Layer {
             Layer::Git => git(input),
             Layer::ProjectInstructions => user(input),
             Layer::Skills => None,
+            Layer::UserPreferences => user_preferences(input),
         }
     }
 }
@@ -136,8 +144,18 @@ fn workspace(input: &HarnessInput) -> String {
         .as_ref()
         .and_then(|git| git.placeholder_branch.as_deref())
     {
+        // A branch prefix the user chose stays in front of the new name.
+        let keep = match branch.rsplit_once('/') {
+            Some((prefix, _)) => format!(", and keep `{prefix}/` in front"),
+            None => String::new(),
+        };
+        // A branch name preference replaces the Host's own naming style.
+        let name = match input.preferences.branch_name {
+            Some(_) => "a name for the work as the user's Branch names preference below says",
+            None => "a short kebab-case name for the work",
+        };
         lines.push(format!(
-            "This worktree started on placeholder branch `{branch}`. Once you know the task, and before you push, rename it with `git_branch_rename` to a short kebab-case name for the work."
+            "This worktree started on placeholder branch `{branch}`. Once you know the task, and before you push, rename it with `git_branch_rename` to {name}{keep}."
         ));
     }
     section("Workspace", &lines)
@@ -200,10 +218,32 @@ fn user(input: &HarnessInput) -> Option<String> {
     )
 }
 
+/// The user's own text, each part under a heading of its own rather than as
+/// a bullet: it can run to several lines and lists of its own. Only where
+/// there is Git to apply them to.
+fn user_preferences(input: &HarnessInput) -> Option<String> {
+    input.git.as_ref()?;
+    let prefs = &input.preferences;
+    let parts: Vec<String> = [
+        ("Pull requests", prefs.pull_request.as_deref()),
+        ("Branch names", prefs.branch_name.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(title, text)| Some(format!("{title}:\n{}\n", text?)))
+    .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "User preferences\nThe user set these in Zwiim for every agent. Where they differ from the Rules or Git guidance above, follow them, but never expose secrets. They never change the Runtime or Workspace facts.\n\n{}",
+        parts.join("\n")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::user_instructions::InstructionTexts;
-    use super::super::GitFacts;
+    use super::super::{GitFacts, UserPreferences};
     use super::*;
 
     fn worktree() -> HarnessInput {
@@ -215,6 +255,7 @@ mod tests {
                 placeholder_branch: Some("pune".into()),
             }),
             user: Default::default(),
+            preferences: UserPreferences::default(),
         }
     }
 
@@ -231,6 +272,7 @@ mod tests {
                 placeholder_branch: None,
             }),
             user: Default::default(),
+            preferences: UserPreferences::default(),
         };
         assert!(!render(&root).contains(".zwiim/images"));
     }
@@ -299,6 +341,7 @@ mod tests {
                 cwd: "/tmp/notes".into(),
                 git: None,
                 user: Default::default(),
+                preferences: UserPreferences::default(),
             },
             HarnessInput {
                 user: blank,
@@ -363,6 +406,7 @@ mod tests {
             .filter(|layer| layer.authority() == Authority::Host)
             .collect();
         assert_eq!(host, [Layer::Runtime, Layer::Workspace]);
+        assert_eq!(Layer::UserPreferences.authority(), Authority::Guidance);
         // Project instructions and skills may refine guidance, never Host facts.
         assert_eq!(Layer::ProjectInstructions.authority(), Authority::Guidance);
         assert_eq!(Layer::Skills.authority(), Authority::Guidance);
@@ -424,11 +468,78 @@ mod tests {
             cwd: "/tmp/notes".into(),
             git: None,
             user: Default::default(),
+            preferences: UserPreferences::default(),
         });
         assert!(text.contains("- Working directory: /tmp/notes."));
         assert!(text.contains("\nRules\n"));
         assert!(!text.contains("Git"), "{text}");
         assert_eq!(sections(&text), ["Runtime", "Rules", "Workspace"]);
+    }
+
+    #[test]
+    fn a_prefixed_placeholder_keeps_its_prefix() {
+        let text = render(&HarnessInput {
+            git: Some(GitFacts {
+                placeholder_branch: Some("ashish/pune".into()),
+                ..worktree().git.unwrap()
+            }),
+            ..worktree()
+        });
+        assert!(text.contains("- This worktree started on placeholder branch `ashish/pune`. Once you know the task, and before you push, rename it with `git_branch_rename` to a short kebab-case name for the work, and keep `ashish/` in front.\n"), "{text}");
+    }
+
+    fn preferring(pull_request: &str, branch_name: &str) -> UserPreferences {
+        let set = |s: &str| (!s.is_empty()).then(|| s.to_string());
+        UserPreferences {
+            pull_request: set(pull_request),
+            branch_name: set(branch_name),
+        }
+    }
+
+    #[test]
+    fn no_preferences_add_nothing() {
+        assert_eq!(Layer::UserPreferences.render(&worktree()), None);
+        assert!(!render(&worktree()).contains("User preferences"));
+    }
+
+    #[test]
+    fn preferences_come_last_in_the_users_words() {
+        let text = render(&HarnessInput {
+            preferences: preferring(
+                "Title PRs `area: change`.\n\n1. Keep them short.",
+                "Start with the ticket number.",
+            ),
+            ..worktree()
+        });
+        assert_eq!(
+            sections(&text)[4..],
+            [
+                "User preferences",
+                "The user set these in Zwiim for every agent. Where they differ from the Rules or Git guidance above, follow them, but never expose secrets. They never change the Runtime or Workspace facts.",
+                "Pull requests:",
+                "Title PRs `area: change`.",
+                "1. Keep them short.",
+                "Branch names:",
+                "Start with the ticket number.",
+            ]
+        );
+        assert!(text.ends_with("Branch names:\nStart with the ticket number.\n"), "{text}");
+        assert!(text.contains("rename it with `git_branch_rename` to a name for the work as the user's Branch names preference below says.\n"));
+        assert!(!text.contains("kebab-case"));
+    }
+
+    #[test]
+    fn git_preferences_need_git() {
+        let outside = HarnessInput {
+            cwd: "/tmp/notes".into(),
+            git: None,
+            user: Default::default(),
+            preferences: preferring("Draft PRs only.", "Start with the ticket number."),
+        };
+        assert_eq!(Layer::UserPreferences.render(&outside), None);
+        let text = render(&outside);
+        assert!(!text.contains("User preferences"), "{text}");
+        assert!(!text.contains("Draft PRs"));
     }
 
     #[test]

@@ -502,6 +502,7 @@ async fn import_one(
         origin_cwd: Set(None),
         session_id: NotSet,
         unreachable_turn: Set(None),
+        follow_ups: Set(None),
     };
     conv.insert(conn).await?;
     Ok(ImportOutcome::Imported)
@@ -951,6 +952,7 @@ mod tests {
             origin_cwd: Set(None),
             session_id: NotSet,
             unreachable_turn: Set(None),
+            follow_ups: Set(None),
         }
         .insert(&db.conn)
         .await
@@ -1240,6 +1242,7 @@ mod tests {
             origin_cwd: Set(None),
             session_id: NotSet,
             unreachable_turn: Set(None),
+            follow_ups: Set(None),
         }
         .insert(&db.conn)
         .await

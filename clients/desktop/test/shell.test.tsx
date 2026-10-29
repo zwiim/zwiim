@@ -795,6 +795,11 @@ describe("agents Zwiim does not support yet", () => {
     expect(defaultAgent([...list], null)).toBe("claude_code");
     expect(defaultAgent([...list], "gemini")).toBe("gemini");
     expect(defaultAgent([list[0]], null)).toBe("gemini");
+    // The Host's default agent comes before the first supported one, after a pick here.
+    const codex = { ...agent("codex", "supported"), default: true };
+    expect(defaultAgent([list[2], codex], null)).toBe("codex");
+    expect(defaultAgent([list[2], codex], "claude_code")).toBe("claude_code");
+    expect(defaultAgent([list[2], { ...list[1], default: true }], null)).toBe("claude_code");
   });
 
   it("are not offered for a new session: only Claude Code and Codex are", () => {

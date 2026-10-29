@@ -286,6 +286,16 @@ impl ZwiimError {
         )
     }
 
+    /// The OS keychain, where the Host keeps secrets, would not open (often
+    /// locked); the host log says why.
+    pub fn keychain_unavailable() -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "keychain_unavailable",
+            "The keychain could not be used. Unlock it and try again.",
+        )
+    }
+
     /// The resource already exists, or is bound to something else.
     pub fn already_exists(message: impl Into<String>) -> Self {
         Self::new(StatusCode::CONFLICT, "already_exists", message)
@@ -332,6 +342,18 @@ impl ZwiimError {
             "root_workspace",
             "Sessions run in a worktree, not in the repository folder",
         )
+    }
+
+    /// The repository has no `script` (`setup` / `run`) to run; it is set
+    /// in its settings.
+    pub fn script_not_set(script: &str) -> Self {
+        let mut e = Self::new(
+            StatusCode::CONFLICT,
+            "script_not_set",
+            "The repository has no script for this",
+        );
+        e.details = Some(serde_json::json!({ "script": script }));
+        e
     }
 
     /// The workspace's branch merges cleanly with its base: nothing to
@@ -474,6 +496,11 @@ impl From<GitError> for ZwiimError {
                 err
             }
             GitErrorCode::PrChanged => Self::new(StatusCode::CONFLICT, "pr_changed", message),
+            GitErrorCode::AutoMergeDisabled => Self::new(
+                StatusCode::CONFLICT,
+                "auto_merge_disabled",
+                "Auto-merge is off for this repository on GitHub",
+            ),
             GitErrorCode::GhUnavailable => Self::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "gh_unavailable",

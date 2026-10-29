@@ -78,6 +78,19 @@ pub struct PrMergeInfo {
     pub method: Option<MergeMethod>,
     /// The methods the repository allows.
     pub methods: Vec<MergeMethod>,
+    /// GitHub merges it by itself once its requirements are met; `None` when
+    /// auto-merge is off.
+    pub auto: Option<PrAutoMerge>,
+    /// Auto-merge can be turned on: the pull request is open and waits only
+    /// on required checks or review.
+    pub auto_available: bool,
+}
+
+/// An auto-merge GitHub has queued for a pull request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PrAutoMerge {
+    /// How GitHub will merge it.
+    pub method: Option<MergeMethod>,
 }
 
 /// GitHub's `mergeStateStatus`.
@@ -142,12 +155,10 @@ impl RepoMergeSettings {
             MergeMethod::Merge => self.merge_commit_allowed,
             MergeMethod::Rebase => self.rebase_merge_allowed,
         };
-        let preferred = match self.viewer_default_merge_method.as_deref() {
-            Some("SQUASH") => Some(MergeMethod::Squash),
-            Some("MERGE") => Some(MergeMethod::Merge),
-            Some("REBASE") => Some(MergeMethod::Rebase),
-            _ => None,
-        };
+        let preferred = self
+            .viewer_default_merge_method
+            .as_deref()
+            .and_then(MergeMethod::from_github);
         let mut out: Vec<MergeMethod> = preferred.into_iter().filter(|m| allowed(*m)).collect();
         for m in [MergeMethod::Squash, MergeMethod::Merge, MergeMethod::Rebase] {
             if allowed(m) && !out.contains(&m) {
@@ -184,7 +195,16 @@ pub(super) struct RawPr {
     #[serde(default)]
     pub merged_at: Option<String>,
     #[serde(default)]
-    pub auto_merge_request: Option<serde_json::Value>,
+    pub auto_merge_request: Option<RawAutoMerge>,
+}
+
+/// `autoMergeRequest`: present while auto-merge is on.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct RawAutoMerge {
+    /// `MERGE`, `SQUASH` or `REBASE`.
+    #[serde(default)]
+    pub merge_method: Option<String>,
 }
 
 /// One rollup entry: a CheckRun (`status` + `conclusion`) or a commit
@@ -279,6 +299,13 @@ impl RawPr {
         let lifecycle = self.lifecycle();
         let status = self.merge_status();
         let allowed = !lifecycle.is_final() && status.allows_merge() && !methods.is_empty();
+        let auto = self.auto_merge_request.as_ref().map(|a| PrAutoMerge {
+            method: a.merge_method.as_deref().and_then(MergeMethod::from_github),
+        });
+        let auto_available = lifecycle == PrLifecycle::Open
+            && status == MergeStatus::Blocked
+            && !methods.is_empty()
+            && auto.is_none();
         let reason = if lifecycle.is_final() || allowed {
             None
         } else if methods.is_empty() && status.allows_merge() {
@@ -294,6 +321,8 @@ impl RawPr {
                 reason,
                 method: methods.first().copied(),
                 methods,
+                auto,
+                auto_available,
             },
             number: self.number,
             url: self.url,

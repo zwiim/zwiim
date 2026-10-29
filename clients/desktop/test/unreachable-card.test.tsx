@@ -3,8 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CLIENT_CAPABILITIES, HostClient, HostController, ZwiimClientError } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
 import { SessionPanel } from "@/panels/SessionPanel";
+import { SignInNeededCard } from "@/panels/SignInNeededCard";
 import { LiveTurnView } from "@/panels/Transcript";
 import { UnreachableCard } from "@/panels/UnreachableCard";
+import { OpenSettingsContext } from "@/settings/open";
 
 import { FakeTransport, hostHello, tick } from "./fakes";
 
@@ -279,6 +281,29 @@ describe("SessionPanel can't-reach error", () => {
     expect(screen.queryByTestId("unreachable-card")).toBeNull();
     expect(screen.getByRole("alert").textContent).toBe("provider unreachable");
     c2.dispose();
+  });
+});
+
+describe("SessionPanel sign-in-needed error", () => {
+  it("shows the sign-in card for turn_failed_auth_required", async () => {
+    const t = new FakeTransport();
+    const c = await mountPanel(t, { message: "Claude Code needs you to sign in", code: "turn_failed_auth_required" });
+    expect(screen.getByTestId("sign-in-needed-card").textContent).toContain("Claude Code needs you to sign in");
+    expect(screen.queryByTestId("unreachable-card")).toBeNull();
+    // No settings dialog above the panel here, so no way to open one.
+    expect(screen.queryByRole("button", { name: "Open settings →" })).toBeNull();
+    c.dispose();
+  });
+
+  it("opens settings at the agents", () => {
+    const open = vi.fn();
+    render(
+      <OpenSettingsContext.Provider value={open}>
+        <SignInNeededCard message="sign in" />
+      </OpenSettingsContext.Provider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open settings →" }));
+    expect(open).toHaveBeenCalledWith({ tab: "agents" });
   });
 });
 

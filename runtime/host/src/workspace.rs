@@ -34,11 +34,14 @@ use crate::terminal::manager::TerminalManager;
 use crate::web::event_bridge::EventEmitter;
 
 pub mod clone;
-mod env_files;
+mod copied_files;
 mod names;
+pub mod ports;
+pub mod previews;
 mod publish;
 mod repo_init;
 pub(crate) mod resolve;
+pub mod scripts;
 pub(crate) mod zwiim_dir;
 
 pub(crate) use publish::check_target;
@@ -88,6 +91,15 @@ pub struct WorktreeRemoved {
     pub parent_workspace_id: String,
     /// Sessions that stay attached to the removed workspace, readable only.
     pub kept_sessions: u32,
+    /// The branch the checkout was on, if any.
+    pub branch: Option<String>,
+    /// Whether that branch was deleted along with the checkout.
+    pub branch_deleted: bool,
+    /// Why a branch asked to be deleted was kept, to show the user.
+    pub branch_kept_reason: Option<String>,
+    /// How the repository's archive script ended, when one ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_script: Option<scripts::ScriptRun>,
 }
 
 fn not_found(workspace_id: &str) -> AppCommandError {
@@ -917,7 +929,8 @@ const NAME_ATTEMPTS: usize = 5;
 /// The host chooses both the branch and the directory, one name for both: an
 /// Indian city not yet used in the repo (`pune`, at
 /// `<worktrees_dir>/<repo>/pune`; see [`names`]); the client supplies
-/// neither. The branch starts at branch `base` when given, else at the
+/// neither. Branch prefix `prefix` goes in front of the branch only
+/// (`ashish/pune`). The branch starts at branch `base` when given, else at the
 /// origin's default branch (`origin/main` or `origin/master`, never a local
 /// `master`); only a repo with no `origin` remote starts at its local HEAD. A
 /// remote-tracking base is fetched first (best effort, see
@@ -932,6 +945,7 @@ pub async fn create_worktree(
     worktrees_dir: &Path,
     root_workspace_id: &str,
     base: Option<&str>,
+    prefix: Option<&str>,
 ) -> Result<WorkspaceInfo, AppCommandError> {
     let root = resolve(&db.conn, root_workspace_id).await?;
     if root.parent_id.is_some() {
@@ -980,19 +994,20 @@ pub async fn create_worktree(
     // a reason the names in use don't show: try another.
     let mut refused = HashSet::new();
     let (branch, worktree_path) = loop {
-        let mut taken = names::taken(&db.conn, &root.path, &parent_dir).await?;
+        let mut taken = names::taken(&db.conn, &root.path, &parent_dir, prefix).await?;
         taken.extend(refused.iter().cloned());
         let name = names::fresh(&taken);
+        let branch = names::prefixed(prefix, &name);
         let worktree_path = parent_dir.join(&name).to_string_lossy().into_owned();
         match folders::git_worktree_add(
             root.path.clone(),
-            name.clone(),
+            branch.clone(),
             worktree_path.clone(),
             Some(base_commit.clone()),
         )
         .await
         {
-            Ok(_) => break (name, worktree_path),
+            Ok(_) => break (branch, worktree_path),
             Err(e) if refused.len() + 1 >= NAME_ATTEMPTS => return Err(e),
             Err(_) => {
                 refused.insert(name);
@@ -1000,7 +1015,9 @@ pub async fn create_worktree(
         }
     };
 
-    env_files::copy_env_files(Path::new(&root.path), Path::new(&worktree_path)).await;
+    let patterns = crate::repository_settings::files_to_copy(&db.conn, root.id).await;
+    copied_files::copy_ignored_files(Path::new(&root.path), Path::new(&worktree_path), &patterns)
+        .await;
     zwiim_dir::prepare(Path::new(&worktree_path)).await;
 
     let registered = async {
@@ -1045,7 +1062,9 @@ pub async fn create_worktree(
 /// Then the checkout is removed and the folder converges without moving its
 /// sessions: they stay on the (soft-deleted) workspace, readable under the
 /// same `workspace_id`, and can never resume in another checkout. Tabs close,
-/// clients are told. The branch is kept so no commits are lost.
+/// clients are told. The branch is kept, unless `delete_branch` is given and
+/// no work would be lost (see [`delete_branch_if_safe`]); GitHub is asked
+/// through it.
 pub async fn remove_worktree(
     db: &AppDatabase,
     emitter: &EventEmitter,
@@ -1053,6 +1072,7 @@ pub async fn remove_worktree(
     terminals: &TerminalManager,
     workspace_id: &str,
     force: bool,
+    delete_branch: Option<&GitHost<'_>>,
 ) -> Result<WorktreeRemoved, ZwiimError> {
     let wt = resolve(&db.conn, workspace_id).await?;
     let Some(root_id) = wt.parent_id else {
@@ -1106,7 +1126,40 @@ pub async fn remove_worktree(
         }
     }
 
+    // Nothing refuses any more: the repository's archive script gets its last
+    // look at the checkout. Whatever it leaves there goes with it, as the
+    // checkout was clean, or to be discarded, before it ran.
+    let archive_script = match path.exists() {
+        true => match crate::repository_settings::script(
+            &db.conn,
+            root.id,
+            crate::repository_settings::ARCHIVE_SCRIPT,
+        )
+        .await
+        {
+            Some(script) => {
+                let env = scripts::ScriptEnv::load(&db.conn, &root, &wt).await;
+                let ran = scripts::run_archive(&script, &env, scripts::ARCHIVE_LIMIT).await;
+                if !ran.succeeded() {
+                    tracing::warn!(
+                        exit_code = ?ran.exit_code,
+                        timed_out = ran.timed_out,
+                        "[workspace] the archive script failed; removing the worktree anyway"
+                    );
+                }
+                Some(ran)
+            }
+            None => None,
+        },
+        false => None,
+    };
+
+    let branch = match path.exists() {
+        true => current_branch(&wt.path).await,
+        false => None,
+    };
     terminals.kill_under_dir(&spellings);
+    let force = force || archive_script.is_some();
     folders::remove_worktree_checkout(&root.path, &wt.path, force).await?;
     folders::converge_removed_worktree_folder(db, emitter, wt.id, None, &wt.path).await;
     prune_checkpoints(db, wt.id, Path::new(&root.path)).await;
@@ -1118,11 +1171,201 @@ pub async fn remove_worktree(
         .await
         .map_err(db_err)? as u32;
 
+    let (branch_deleted, branch_kept_reason) = match (delete_branch, &branch) {
+        (Some(host), Some(branch)) => {
+            let base = wt.base_branch.as_deref();
+            match delete_branch_if_safe(host, &root.path, &parent_workspace_id, branch, base).await
+            {
+                Ok(()) => (true, None),
+                Err(reason) => (false, Some(reason)),
+            }
+        }
+        _ => (false, None),
+    };
+
     Ok(WorktreeRemoved {
         workspace_id: workspace_id.to_string(),
         parent_workspace_id,
         kept_sessions,
+        branch,
+        branch_deleted,
+        branch_kept_reason,
+        archive_script,
     })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct WorkspaceRemoved {
+    pub workspace_id: String,
+    /// The worktrees archived along with it.
+    pub archived_worktrees: Vec<String>,
+}
+
+/// Remove root workspace `workspace_id` from the Host: archive each of its
+/// live worktrees as [`remove_worktree`] does, then hide the root. Nothing in
+/// the repository's own folder is touched, and adding that folder again
+/// revives the same workspace with its sessions and archived worktrees.
+///
+/// Refuses before archiving anything: `workspace_busy` while an agent runs in
+/// the root or any of its worktrees, `invalid_input` while a to-do task works
+/// in one, and, without `force`, `workspace_dirty` with the worktrees'
+/// uncommitted changes added up. Holds the root's gate throughout, so nothing
+/// starts there meanwhile; its terminals are killed.
+pub async fn remove(
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+    connections: &ConnectionManager,
+    terminals: &TerminalManager,
+    workspace_id: &str,
+    force: bool,
+    delete_branch: Option<&GitHost<'_>>,
+) -> Result<WorkspaceRemoved, ZwiimError> {
+    let root = resolve(&db.conn, workspace_id).await?;
+    if root.parent_id.is_some() {
+        return Err(ZwiimError::invalid_input(
+            "Choose a repository, not a worktree",
+        ));
+    }
+    let _exclusive = gate(root.id).write_owned().await;
+    // Re-read under the gate: a concurrent removal may have finished first.
+    let root = resolve(&db.conn, workspace_id).await?;
+    let worktrees = folder::Entity::find()
+        .filter(folder::Column::ParentId.eq(root.id))
+        .filter(folder::Column::Kind.eq(FolderKind::Regular))
+        .filter(folder::Column::DeletedAt.is_null())
+        .filter(folder::Column::WorkspaceId.is_not_null())
+        .order_by_asc(folder::Column::Id)
+        .all(&db.conn)
+        .await
+        .map_err(db_err)?;
+
+    let mut live = 0;
+    let mut session_ids = Vec::new();
+    for row in std::iter::once(&root).chain(&worktrees) {
+        let path = PathBuf::from(&row.path);
+        let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        let agents = connections
+            .live_in_folder(row.id, &[path.as_path(), canonical.as_path()])
+            .await;
+        live += agents.len();
+        session_ids.extend(session_ids_of(&db.conn, &agents).await?);
+    }
+    if live > 0 {
+        return Err(ZwiimError::workspace_busy(live, 0, session_ids));
+    }
+
+    let mut changes = 0;
+    for wt in &worktrees {
+        let busy =
+            crate::db::service::work_task_service::tasks_blocking_worktree_removal(&db.conn, wt.id)
+                .await
+                .map_err(AppCommandError::from)?;
+        if !busy.is_empty() {
+            return Err(ZwiimError::invalid_input(
+                "A to-do task is still working in a worktree — cancel or finish it first",
+            ));
+        }
+        if !force && Path::new(&wt.path).exists() {
+            changes += folders::git_status(wt.path.clone(), None).await?.len();
+        }
+    }
+    if changes > 0 {
+        return Err(ZwiimError::workspace_dirty(changes));
+    }
+
+    let mut archived_worktrees = Vec::new();
+    for wt in &worktrees {
+        let Some(id) = wt.workspace_id.as_deref() else { continue };
+        remove_worktree(db, emitter, connections, terminals, id, force, delete_branch).await?;
+        archived_worktrees.push(id.to_string());
+    }
+
+    let path = PathBuf::from(&root.path);
+    let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    terminals.kill_under_dir(&[path.as_path(), canonical.as_path()]);
+    folders::converge_removed_worktree_folder(db, emitter, root.id, None, &root.path).await;
+    if find(&db.conn, workspace_id)
+        .await?
+        .is_some_and(|row| row.deleted_at.is_none())
+    {
+        tracing::error!("[workspace] remove: the root could not be hidden");
+        return Err(ZwiimError::internal());
+    }
+
+    Ok(WorkspaceRemoved {
+        workspace_id: workspace_id.to_string(),
+        archived_worktrees,
+    })
+}
+
+/// Delete branch `branch` of repository `repo` (root workspace
+/// `root_workspace_id`), its checkout already removed, but only when no work
+/// is lost: every commit on it is on a remote, or GitHub says its pull
+/// request merged at exactly its tip (a squash or rebase merge leaves the
+/// commits off every remote). Never the worktree's base `base` or the
+/// origin's default branch. `Err` says why it was kept.
+async fn delete_branch_if_safe(
+    host: &GitHost<'_>,
+    repo: &str,
+    root_workspace_id: &str,
+    branch: &str,
+    base: Option<&str>,
+) -> Result<(), String> {
+    let default = origin_default_branch(repo).await;
+    let shared = [base, default.as_deref()]
+        .into_iter()
+        .flatten()
+        .any(|b| b.strip_prefix("origin/").unwrap_or(b) == branch);
+    if shared {
+        return Err(format!("{branch} is the base branch"));
+    }
+
+    let unpushed = crate::process::tokio_command("git")
+        .args([
+            "rev-list",
+            "--count",
+            &format!("refs/heads/{branch}"),
+            "--not",
+            "--remotes",
+        ])
+        .current_dir(repo)
+        .output()
+        .await
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .ok_or_else(|| format!("{branch} could not be checked"))?;
+    if unpushed != "0" {
+        let tip = branch_commit(repo, branch)
+            .await
+            .map_err(|_| format!("{branch} could not be checked"))?;
+        let caller = GitCaller::new(Some(root_workspace_id.to_string()), None)
+            .map_err(|_| format!("{branch} could not be checked"))?;
+        let merged = match git_harness::pr_state(host, &caller, branch).await {
+            Ok(Some(pr)) => pr.state == PrLifecycle::Merged && pr.head_sha == tip,
+            Ok(None) => false,
+            Err(_) => {
+                return Err(format!(
+                    "{branch} has commits that aren't pushed, and GitHub couldn't be asked whether they merged"
+                ))
+            }
+        };
+        if !merged {
+            return Err(format!("{branch} has commits that aren't pushed"));
+        }
+    }
+
+    let out = crate::process::tokio_command("git")
+        .args(["branch", "-D", branch])
+        .current_dir(repo)
+        .output()
+        .await
+        .map_err(|_| format!("{branch} could not be deleted"))?;
+    if !out.status.success() {
+        return Err(format!("{branch} could not be deleted"));
+    }
+    Ok(())
 }
 
 /// Drop the turn checkpoints of the sessions of removed worktree `folder_id`.
@@ -1157,8 +1400,9 @@ async fn prune_checkpoints(db: &AppDatabase, folder_id: i32, repo: &Path) {
 /// branch cut from the merged pull request's base as `origin` has it now, and
 /// that becomes the workspace's new base. The branch is a placeholder the
 /// agent renames: the previous branch with a `-v<n>` suffix (`fix-login`
-/// continues as `fix-login-v1`, `fix-login-v1` as `fix-login-v2`). A name
-/// that was the previous branch becomes the new one.
+/// continues as `fix-login-v1`, `fix-login-v1` as `fix-login-v2`), under
+/// branch prefix `prefix` when it isn't already (`ashish/fix-login-v1`). A
+/// name that was the previous branch becomes the new one.
 ///
 /// Holds the workspace's gate exclusively, so no agent prompt, launch or
 /// terminal spawn starts there meanwhile. Refuses — changing nothing — while
@@ -1175,6 +1419,7 @@ pub async fn continue_after_merge(
     host: &GitHost<'_>,
     workspace_id: &str,
     number: u64,
+    prefix: Option<&str>,
 ) -> Result<WorkspaceInfo, ZwiimError> {
     let wt = resolve(&db.conn, workspace_id).await?;
     if wt.parent_id.is_none() {
@@ -1251,10 +1496,11 @@ pub async fn continue_after_merge(
     // Git may refuse a free-looking name (a `fix-v1/x` ref, a race): try the
     // next one.
     let mut refused = HashSet::new();
+    let stem = names::prefixed(prefix, &previous);
     let branch = loop {
         let mut taken = names::refs(&wt.path).await?;
         taken.extend(refused.iter().cloned());
-        let branch = names::continued(&previous, &taken);
+        let branch = names::continued(&stem, &taken);
         let Err(e) = git_harness::execute(
             host,
             &caller,
@@ -1632,7 +1878,7 @@ mod tests {
         let db = fresh_in_memory_db().await;
         let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
 
-        let wt = create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None)
+        let wt = create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None, None)
             .await
             .expect("create");
 
@@ -1663,7 +1909,7 @@ mod tests {
         let db = fresh_in_memory_db().await;
         let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
 
-        let wt = create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None)
+        let wt = create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None, None)
             .await
             .expect("create");
 
@@ -1709,15 +1955,23 @@ mod tests {
         assert_eq!(again.base_commit.as_deref(), Some(root_head.as_str()));
 
         // Only a root workspace can spawn worktrees.
-        let err = create_worktree(&db, &EventEmitter::Noop, &worktrees, &wt.workspace_id, None)
-            .await
-            .expect_err("worktree of a worktree");
+        let err = create_worktree(
+            &db,
+            &EventEmitter::Noop,
+            &worktrees,
+            &wt.workspace_id,
+            None,
+            None,
+        )
+        .await
+        .expect_err("worktree of a worktree");
         assert!(matches!(err.code, AppErrorCode::InvalidInput));
         let err = create_worktree(
             &db,
             &EventEmitter::Noop,
             &worktrees,
             "no-such-workspace",
+            None,
             None,
         )
         .await
@@ -1734,7 +1988,7 @@ mod tests {
         git(Path::new(&repo), &["commit", "-q", "-m", "ignore"]);
         std::fs::write(Path::new(&repo).join(".env"), "A=1").unwrap();
 
-        let wt = create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None)
+        let wt = create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None, None)
             .await
             .unwrap();
 
@@ -1755,7 +2009,14 @@ mod tests {
         let feature = git(r, &["rev-parse", "HEAD"]);
         git(r, &["checkout", "-q", "main"]);
         let create = |base: &'static str| {
-            create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, Some(base))
+            create_worktree(
+                &db,
+                &EventEmitter::Noop,
+                &worktrees,
+                &root_wid,
+                Some(base),
+                None,
+            )
         };
 
         // Without a remote, the suggestion is the checked-out branch.
@@ -1803,7 +2064,8 @@ mod tests {
         // Local branches move on; the origin's do not.
         git(r, &["commit", "-q", "--allow-empty", "-m", "local only"]);
         git(r, &["branch", "master"]);
-        let create = || create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None);
+        let create =
+            || create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None, None);
 
         // No origin/HEAD: origin/main.
         let wt = create().await.expect("origin/main");
@@ -1868,7 +2130,7 @@ mod tests {
             commit
         };
         let create = |base: Option<&'static str>| {
-            create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, base)
+            create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, base, None)
         };
 
         let latest = push_elsewhere("pushed by someone else");
@@ -1899,8 +2161,8 @@ mod tests {
         let emitter = EventEmitter::Noop;
 
         let (a, b) = tokio::join!(
-            create_worktree(&db, &emitter, &worktrees, &root_wid, None),
-            create_worktree(&db, &emitter, &worktrees, &root_wid, None),
+            create_worktree(&db, &emitter, &worktrees, &root_wid, None, None),
+            create_worktree(&db, &emitter, &worktrees, &root_wid, None, None),
         );
         let (a, b) = (a.expect("a"), b.expect("b"));
         assert_ne!(a.workspace_id, b.workspace_id);
@@ -1959,12 +2221,13 @@ mod tests {
         folder_service::soft_delete_folder(&db.conn, removed)
             .await
             .unwrap();
-        let taken = names::taken(&db.conn, &repo, &parent).await.unwrap();
+        let taken = names::taken(&db.conn, &repo, &parent, None).await.unwrap();
         for name in held {
             assert!(taken.contains(name), "{name} is in use");
         }
         assert!(!taken.contains("surat"));
-        let create = || create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None);
+        let create =
+            || create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None, None);
 
         let wt = create().await.expect("the one free city");
         assert_eq!(wt.branch.as_deref(), Some("surat"));
@@ -1993,7 +2256,7 @@ mod tests {
         // Left behind by a git that crashed: `pune` can't be created.
         std::fs::write(r.join(".git/refs/heads/pune.lock"), "").unwrap();
 
-        let wt = create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None)
+        let wt = create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None, None)
             .await
             .expect("another name");
         let branch = wt.branch.unwrap();
@@ -2008,8 +2271,8 @@ mod tests {
         let emitter = EventEmitter::Noop;
 
         let (a, b) = tokio::join!(
-            create_worktree(&db, &emitter, &worktrees, &root_wid, None),
-            create_worktree(&db, &emitter, &worktrees, &root_wid, None),
+            create_worktree(&db, &emitter, &worktrees, &root_wid, None, None),
+            create_worktree(&db, &emitter, &worktrees, &root_wid, None, None),
         );
         let branches = [a.expect("a").branch.unwrap(), b.expect("b").branch.unwrap()];
         let (city, numbered): (Vec<_>, Vec<_>) = branches.iter().partition(|b| *b == "pune");
@@ -2028,6 +2291,7 @@ mod tests {
                     initial_command: None,
                     extra_env: None,
                     temp_files: Vec::new(),
+                    title: None,
                 },
                 EventEmitter::Noop,
             )
@@ -2043,7 +2307,7 @@ mod tests {
         let db = fresh_in_memory_db().await;
         let (_dir, _repo, root_wid, worktrees) = root_repo(&db).await;
         let emitter = EventEmitter::Noop;
-        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
+        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None, None)
             .await
             .unwrap();
         let idle_agents = ConnectionManager::new();
@@ -2068,6 +2332,7 @@ mod tests {
             &idle_terminals,
             &wt.workspace_id,
             true,
+            None,
         )
         .await
         .expect_err("agent guard");
@@ -2090,6 +2355,7 @@ mod tests {
             &terminals,
             &wt.workspace_id,
             false,
+            None,
         )
         .await
         .expect("removal kills the terminal");
@@ -2105,7 +2371,7 @@ mod tests {
         let db = fresh_in_memory_db().await;
         let (_dir, _repo, root_wid, worktrees) = root_repo(&db).await;
         let emitter = EventEmitter::Noop;
-        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
+        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None, None)
             .await
             .unwrap();
         let folder_id = resolve(&db.conn, &wt.workspace_id).await.unwrap().id;
@@ -2149,8 +2415,17 @@ mod tests {
                 ids,
             )
         };
-        let remove =
-            |force| remove_worktree(&db, &emitter, &agents, &terminals, &wt.workspace_id, force);
+        let remove = |force| {
+            remove_worktree(
+                &db,
+                &emitter,
+                &agents,
+                &terminals,
+                &wt.workspace_id,
+                force,
+                None,
+            )
+        };
 
         // The host names both sessions; force changes nothing.
         let mut both = sessions.clone();
@@ -2179,7 +2454,7 @@ mod tests {
     async fn busy_agents_counts_only_working_agents() {
         let db = fresh_in_memory_db().await;
         let (_dir, _repo, root_wid, worktrees) = root_repo(&db).await;
-        let wt = create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None)
+        let wt = create_worktree(&db, &EventEmitter::Noop, &worktrees, &root_wid, None, None)
             .await
             .unwrap();
         let folder = resolve(&db.conn, &wt.workspace_id).await.unwrap();
@@ -2242,7 +2517,7 @@ mod tests {
         let db = fresh_in_memory_db().await;
         let (_dir, _repo, root_wid, worktrees) = root_repo(&db).await;
         let emitter = EventEmitter::Noop;
-        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
+        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None, None)
             .await
             .unwrap();
         let agents = ConnectionManager::new();
@@ -2254,8 +2529,16 @@ mod tests {
             .unwrap();
         let done = std::sync::atomic::AtomicBool::new(false);
         let removal = async {
-            let r =
-                remove_worktree(&db, &emitter, &agents, &terminals, &wt.workspace_id, true).await;
+            let r = remove_worktree(
+                &db,
+                &emitter,
+                &agents,
+                &terminals,
+                &wt.workspace_id,
+                true,
+                None,
+            )
+            .await;
             done.store(true, std::sync::atomic::Ordering::SeqCst);
             r
         };
@@ -2290,6 +2573,7 @@ mod tests {
             &terminals,
             &wt.workspace_id,
             true,
+            None,
         )
         .await
         .expect("remove");
@@ -2300,11 +2584,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_branch_prefix_names_the_branch_and_leaves_the_folder_a_city() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
+        let parent = worktrees.join("repo");
+        let taken = names::taken(&db.conn, &repo, &parent, Some("ashish"))
+            .await
+            .unwrap();
+        let held: Vec<&str> = names::CITIES
+            .iter()
+            .copied()
+            .filter(|c| !taken.contains(*c))
+            .skip(1)
+            .collect();
+        let free = names::CITIES
+            .iter()
+            .find(|c| !held.contains(c))
+            .unwrap()
+            .to_string();
+        // Every city but one is held by a branch under the prefix.
+        for city in &held {
+            git(Path::new(&repo), &["branch", &format!("ashish/{city}")]);
+        }
+
+        let wt = create_worktree(
+            &db,
+            &EventEmitter::Noop,
+            &worktrees,
+            &root_wid,
+            None,
+            Some("ashish"),
+        )
+        .await
+        .expect("create");
+        assert_eq!(wt.branch, Some(format!("ashish/{free}")));
+        assert_eq!(Path::new(&wt.path), parent.join(&free));
+    }
+
+    #[tokio::test]
     async fn dirty_worktree_needs_force_and_keeps_its_branch() {
         let db = fresh_in_memory_db().await;
         let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
         let emitter = EventEmitter::Noop;
-        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
+        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None, None)
             .await
             .unwrap();
         let branch = wt.branch.clone().unwrap();
@@ -2318,6 +2640,7 @@ mod tests {
             &TerminalManager::new(),
             &wt.workspace_id,
             false,
+            None,
         )
         .await
         .expect_err("dirty");
@@ -2332,6 +2655,7 @@ mod tests {
             &TerminalManager::new(),
             &wt.workspace_id,
             true,
+            None,
         )
         .await
         .expect("forced");
@@ -2348,10 +2672,10 @@ mod tests {
         let db = fresh_in_memory_db().await;
         let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
         let emitter = EventEmitter::Noop;
-        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
+        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None, None)
             .await
             .unwrap();
-        let other = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
+        let other = create_worktree(&db, &emitter, &worktrees, &root_wid, None, None)
             .await
             .unwrap();
         let session_of = |wid: String| {
@@ -2386,6 +2710,7 @@ mod tests {
             &TerminalManager::new(),
             &wt.workspace_id,
             false,
+            None,
         )
         .await
         .expect("remove");
@@ -2408,13 +2733,13 @@ mod tests {
         let db = fresh_in_memory_db().await;
         let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
         let emitter = EventEmitter::Noop;
-        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
+        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None, None)
             .await
             .unwrap();
-        let other = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
+        let other = create_worktree(&db, &emitter, &worktrees, &root_wid, None, None)
             .await
             .unwrap();
-        let empty = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
+        let empty = create_worktree(&db, &emitter, &worktrees, &root_wid, None, None)
             .await
             .unwrap();
         let branch = git(Path::new(&wt.path), &["rev-parse", "--abbrev-ref", "HEAD"]);
@@ -2445,6 +2770,7 @@ mod tests {
             &TerminalManager::new(),
             &wt.workspace_id,
             false,
+            None,
         )
         .await
         .expect("remove");
@@ -2457,6 +2783,7 @@ mod tests {
             &TerminalManager::new(),
             &empty.workspace_id,
             false,
+            None,
         )
         .await
         .expect("remove empty");
@@ -2523,6 +2850,7 @@ mod tests {
             &TerminalManager::new(),
             &root_wid,
             false,
+            None,
         )
         .await
         .expect_err("root is not a worktree");
@@ -2536,7 +2864,7 @@ mod tests {
         let db = fresh_in_memory_db().await;
         let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
         let emitter = EventEmitter::Noop;
-        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
+        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None, None)
             .await
             .unwrap();
         assert_ne!(wt.path, repo);
@@ -2597,7 +2925,7 @@ mod tests {
         let db = fresh_in_memory_db().await;
         let (_dir, _repo, root_wid, worktrees) = root_repo(&db).await;
         let emitter = EventEmitter::Noop;
-        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None)
+        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None, None)
             .await
             .unwrap();
         let mgr = ConnectionManager::new();
@@ -2643,6 +2971,7 @@ mod tests {
             &TerminalManager::new(),
             &wt.workspace_id,
             true,
+            None,
         )
         .await
         .unwrap_err();
@@ -2660,6 +2989,7 @@ mod tests {
             &TerminalManager::new(),
             &wt.workspace_id,
             false,
+            None,
         )
         .await
         .expect("remove");
@@ -2817,5 +3147,114 @@ mod tests {
         assert!(!big.join(".git").exists() && !big.join(".gitignore").exists());
         assert_eq!(git(&repo, &["branch", "--show-current"]), "dev");
         assert!(!repo.join(".gitignore").exists());
+    }
+
+    async fn set_script(db: &AppDatabase, workspace_id: &str, key: &str, script: Option<&str>) {
+        let values = serde_json::Map::from_iter([(key.to_string(), script.into())]);
+        crate::repository_settings::update(&db.conn, workspace_id, &values)
+            .await
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn archive_script_runs_before_removal_and_never_stops_it() {
+        let db = fresh_in_memory_db().await;
+        let (dir, _repo, root_wid, worktrees) = root_repo(&db).await;
+        let emitter = EventEmitter::Noop;
+        let agents = ConnectionManager::new();
+        let terminals = TerminalManager::new();
+        let marker = dir.path().join("archived");
+        // Set through a worktree: it names its repository.
+        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None, None)
+            .await
+            .unwrap();
+        let script = format!(
+            "echo \"$ZWIIM_WORKSPACE_NAME $(ls)\" > '{}'; touch left-behind; echo failing; exit 4",
+            marker.display()
+        );
+        set_script(&db, &wt.workspace_id, crate::repository_settings::ARCHIVE_SCRIPT, Some(&script))
+            .await;
+        std::fs::write(Path::new(&wt.path).join("tracked-later"), "").unwrap();
+        git(Path::new(&wt.path), &["add", "tracked-later"]);
+        git(Path::new(&wt.path), &["commit", "-q", "-m", "x"]);
+
+        // It failed and left a file behind; the removal went on anyway.
+        let removed = remove_worktree(&db, &emitter, &agents, &terminals, &wt.workspace_id, false, None)
+            .await
+            .expect("removed");
+        assert!(!Path::new(&wt.path).exists());
+        let name = Path::new(&wt.path).file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            format!("{name} tracked-later\n")
+        );
+        let ran = removed.archive_script.expect("ran");
+        assert_eq!((ran.exit_code, ran.timed_out, ran.output.as_str()), (Some(4), false, "failing"));
+
+        // A dirty checkout is still refused before the script runs.
+        let dirty = create_worktree(&db, &emitter, &worktrees, &root_wid, None, None)
+            .await
+            .unwrap();
+        std::fs::remove_file(&marker).unwrap();
+        std::fs::write(Path::new(&dirty.path).join("mine"), "").unwrap();
+        let err = remove_worktree(&db, &emitter, &agents, &terminals, &dirty.workspace_id, false, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "workspace_dirty");
+        assert!(!marker.exists());
+
+        // Without a script, nothing runs.
+        set_script(&db, &root_wid, crate::repository_settings::ARCHIVE_SCRIPT, None).await;
+        let removed = remove_worktree(&db, &emitter, &agents, &terminals, &dirty.workspace_id, true, None)
+            .await
+            .unwrap();
+        assert!(removed.archive_script.is_none() && !marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn setup_script_starts_in_its_own_terminal_and_leaves_a_shell() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
+        let emitter = EventEmitter::Noop;
+        let terminals = TerminalManager::new();
+        let wt = create_worktree(&db, &emitter, &worktrees, &root_wid, None, None)
+            .await
+            .unwrap();
+        // No script: no terminal.
+        assert!(scripts::setup_new_worktree(&db.conn, &terminals, &emitter, &wt.workspace_id, None)
+            .await
+            .is_none());
+
+        set_script(
+            &db,
+            &root_wid,
+            crate::repository_settings::SETUP_SCRIPT,
+            Some("echo \"$ZWIIM_ROOT_PATH\" > setup-ran"),
+        )
+        .await;
+        // Only a worktree runs it, not its repository.
+        assert!(scripts::setup_new_worktree(&db.conn, &terminals, &emitter, &root_wid, None)
+            .await
+            .is_none());
+        let id = scripts::setup_new_worktree(&db.conn, &terminals, &emitter, &wt.workspace_id, None)
+            .await
+            .expect("started");
+        let listed = terminals.list_with_exit_check(None);
+        let setup = listed.iter().find(|t| t.id == id).expect("listed");
+        assert_eq!(setup.title, "Setup");
+
+        let ran = Path::new(&wt.path).join("setup-ran");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !(ran.exists() && terminals.output_since(&id, 0).is_some_and(|o| o.contains("Setup finished."))) {
+            assert!(std::time::Instant::now() < deadline, "setup never finished");
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(std::fs::read_to_string(&ran).unwrap(), format!("{repo}\n"));
+        // The user's shell stays on after it.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(terminals.list_with_exit_check(None).iter().any(|t| t.id == id));
+        terminals.kill_all();
     }
 }

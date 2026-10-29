@@ -3,7 +3,7 @@ import { Loader2 } from "lucide-react";
 import type { Compatibility, HostDiagnostics, HostUpdateApply, HostUpdateStatus } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { DESKTOP_CLIENT } from "@/lib/app-info";
-import type { DesktopUpdateStatus, HostLoginStatus, NativeBridge } from "@/lib/bridge";
+import type { DesktopUpdateStatus, NativeBridge } from "@/lib/bridge";
 import { errorMessage, updateRequiredMessage, useController, useHost } from "@/lib/host-context";
 
 /** While the pane is open, how often the host's update state is read. */
@@ -353,41 +353,6 @@ function BetaUpdatesToggle({ bridge, remote }: { bridge: NativeBridge; remote: b
         New features before everyone else, with rough edges.{" "}
         {remote ? "Applies to this app; the host keeps its own setting." : "Applies to this app and its host."}{" "}
         Turning it off keeps the version you have until a newer stable one ships.
-      </p>
-      {error && (
-        <p className="text-destructive" role="alert">
-          {error}
-        </p>
-      )}
-    </section>
-  );
-}
-
-/** Whether the host on this computer starts at login. Hidden where it cannot. */
-export function HostLoginToggle({ bridge }: { bridge: NativeBridge }) {
-  const login = bridge.hostLogin;
-  const [status, setStatus] = useState<HostLoginStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    login?.status().then(setStatus, () => {});
-  }, [login]);
-  if (!login || !status?.supported) return null;
-  return (
-    <section className="flex flex-col gap-1 rounded-md border p-3">
-      <label className="flex items-center gap-2">
-        <input
-          type="checkbox"
-          data-testid="host-login"
-          checked={status.enabled}
-          onChange={(e) => {
-            setError(null);
-            login.set(e.target.checked).then(setStatus, (err) => setError(errorMessage(err)));
-          }}
-        />
-        <span className="font-medium">Start the host when you log in</span>
-      </label>
-      <p className="text-muted-foreground">
-        So your other devices can reach this computer without opening the app. Takes effect at your next login.
       </p>
       {error && (
         <p className="text-destructive" role="alert">

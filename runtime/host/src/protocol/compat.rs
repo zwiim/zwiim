@@ -121,7 +121,107 @@ use serde::{Deserialize, Serialize};
 /// 8 KiB), `not_found` (no such root workspace) or `invalid_input`. A
 /// worktree uses its root's texts. New and resumed sessions get them; older
 /// clients simply don't offer the editor.
-pub const PROTOCOL_REVISION: u32 = 15;
+///
+/// Revision 16 (`settings`): `settings.get` returns the Host's settings as
+/// `{values}` (every key, `null` when unset); `settings.update` takes
+/// `{values}` (a value sets a key, `null` clears it), refuses an unknown key
+/// or a wrong value with `invalid_input`, and returns what `settings.get`
+/// does. The keys are `defaults.agent`, `defaults.mode` and
+/// `defaults.<agent>.model` / `.effort` for Claude Code and Codex. Each
+/// `agent.list` entry gains `default` (it is the default agent) and
+/// `defaults {model, effort, mode}` (the defaults it offers), and its
+/// `options` and `effort_by_model` show them current. `session.start` starts
+/// with them wherever its `options` leave a field out. Older clients ignore
+/// the fields and get the defaults on start all the same.
+///
+/// Revision 17 (`settings.git`): `settings` gains `git.branch_prefix`
+/// (`github` or `custom`), `git.branch_prefix_custom` and
+/// `git.delete_branch_on_remove` (a boolean). With a prefix, new worktree and
+/// Continue branches are named `<prefix>/<name>`; the folder stays `<name>`.
+/// `workspace.remove_worktree` returns `branch` (the branch the worktree had,
+/// or `null`), `branch_deleted`, and `branch_kept_reason` when deleting was
+/// asked for but its commits weren't safely on the remote. Older clients
+/// ignore the fields.
+///
+/// Revision 18 (`settings.prompts`): `settings` gains `prompts.pull_request`
+/// and `prompts.branch_name`, the user's own instructions to agents for
+/// opening pull requests and naming branches (text up to 8000 bytes). They
+/// join the session instructions of agent connections opened after they
+/// change, in a checkout with Git. The user's general and conflict-resolving
+/// instructions are `host.instructions`.
+///
+/// Revision 19 (`repository.settings`): `repository.settings.get` and
+/// `repository.settings.update` read and change one repository's own
+/// settings, by any of its workspaces: `scripts.setup`, run in a `Setup`
+/// terminal when a worktree of it is created, `scripts.run`, run on asking,
+/// and `scripts.archive`, run before one is removed (shell scripts up to
+/// 16000 bytes); `files.copy`, the patterns of ignored files a new worktree
+/// gets copies of; and `env`, variables for its worktrees' scripts,
+/// terminals and agents (kept in the Host's keychain).
+/// `workspace.remove_worktree` replies with `archive_script`, how it ended.
+/// `workspace.run_script {workspace_id, script: "setup" | "run"}` (capability
+/// `workspace.run_script`) starts a worktree's script in a terminal titled
+/// `Setup` or `Run`, replacing its live one of that title, and replies
+/// `{terminal_id}`; `script_not_set` when the repository has none. Clients
+/// know these terminals by those titles. Each worktree gets its own block of
+/// ten ports from `ZWIIM_PORT`, beside `ZWIIM_WORKSPACE_NAME`,
+/// `ZWIIM_WORKSPACE_PATH`, `ZWIIM_ROOT_PATH` and `ZWIIM_BASE_BRANCH`.
+/// `workspace.previews {workspace_id}` (capability `workspace.previews`)
+/// replies `{previews: [{name, url}]}`, where to open a worktree's servers,
+/// the default first: the repository's `preview.urls` (up to ten
+/// `{url, name?}`, http(s)) with `$ZWIIM_PORT` and `$((ZWIIM_PORT + n))`
+/// made the worktree's ports, or, unset, the loopback servers its terminals
+/// printed that still answer, newest first.
+///
+/// Revision 20 (`settings.advanced`): `settings` gains `terminal.scrollback`,
+/// the bytes of output each terminal keeps for `terminal.snapshot` (64 KiB to
+/// 16 MiB; unset keeps 1 MiB), and `git.push_sets_upstream` (a boolean; unset
+/// is on), whether a plain `git push` in a worktree's terminals, scripts and
+/// agents sets the branch's upstream. `host.folders` (capability
+/// `host.folders`) replies `{data, worktrees, repositories}`, the folders the
+/// Host keeps its data, worktrees and clones in.
+///
+/// Revision 21 (`session.follow_ups`): `session.follow_up {session_id, blocks,
+/// client_message_id?}` sends a prompt now when the agent is idle and nothing
+/// is queued, else queues it, replying `{outcome: "sent" | "queued"}`. The
+/// Host sends the first queued follow-up when a turn ends normally; a stopped
+/// or failed turn holds the queue. `session.follow_up_edit {session_id,
+/// follow_up_id, text}`, `session.follow_up_remove {session_id,
+/// follow_up_id}` and `session.follow_up_send {session_id, follow_up_id}`
+/// (send it now when idle, which resumes a held queue, else move it first;
+/// replies `{outcome}`) act on one queued follow-up. Sessions gain
+/// `follow_ups: [{follow_up_id, text, attachments}]`, absent when nothing is
+/// queued.
+///
+/// Revision 22 (`session.steer`): `session.follow_up` takes `steer: true`, to
+/// put the message into the agent's running turn rather than after it, and
+/// can reply `{outcome: "steered"}`. An agent that cannot take a message
+/// mid-turn, or one that is idle, gets it as without `steer`. A steered
+/// message arrives as `agent.steered {message_id, blocks}`, shaped like
+/// `agent.user_message`, while the turn it joined runs.
+///
+/// Revision 23 (`git.pr_auto_merge`): `git.pr_auto_merge {workspace_id,
+/// number, enabled, head_sha?, method?}` turns GitHub's auto-merge on
+/// (`head_sha` required; a pull request that moved since is `pr_changed`) or
+/// off, replying `{number, outcome: "on" | "merged" | "off", method}`. One
+/// GitHub would merge now is merged instead (`"merged"`); one behind its
+/// base, conflicted or a draft is `not_mergeable`; a repository with
+/// auto-merge off on GitHub is `auto_merge_disabled`. A pull request's
+/// `merge` gains `auto: {method} | null`, the queued auto-merge, and
+/// `auto_available`, true while it is open and waits only on required checks
+/// or review.
+///
+/// Revision 24 (`workspace.remove`): `workspace.remove {workspace_id,
+/// force?}` takes a repository off the Host: each of its worktrees is
+/// archived as by `workspace.remove_worktree`, then the repository is
+/// `workspace.removed`, its own folder untouched. It refuses before archiving
+/// anything, with `workspace_busy` (agents running in the repository or any
+/// worktree), `invalid_input` (a to-do task working in one) or, without
+/// `force`, `workspace_dirty` (the worktrees' uncommitted changes added up).
+/// Replies `{workspace_id, archived_worktrees}`. `workspace.add` with the
+/// same folder brings it back under the same `workspace_id`, with its
+/// sessions and archived worktrees.
+pub const PROTOCOL_REVISION: u32 = 24;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -165,6 +265,18 @@ pub const CAPABILITIES: &[&str] = &[
     "workspace.resolve_conflicts",
     "session.retry",
     "host.instructions",
+    "settings",
+    "settings.git",
+    "settings.prompts",
+    "repository.settings",
+    "workspace.run_script",
+    "workspace.previews",
+    "settings.advanced",
+    "host.folders",
+    "session.follow_ups",
+    "session.steer",
+    "git.pr_auto_merge",
+    "workspace.remove",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -346,6 +458,65 @@ mod tests {
     fn compat_advertises_host_instructions() {
         assert!(CAPABILITIES.contains(&"host.instructions"));
         assert!(PROTOCOL_REVISION >= 15);
+    }
+
+    #[test]
+    fn compat_advertises_settings() {
+        assert!(CAPABILITIES.contains(&"settings"));
+        // `settings.get` / `settings.update` and `agent.list`'s `default` and
+        // `defaults`.
+        assert!(PROTOCOL_REVISION >= 16);
+    }
+
+    #[test]
+    fn compat_advertises_git_settings() {
+        assert!(CAPABILITIES.contains(&"settings.git"));
+        // `git.*` settings and `workspace.remove_worktree`'s `branch`,
+        // `branch_deleted` and `branch_kept_reason`.
+        assert!(PROTOCOL_REVISION >= 17);
+    }
+
+    #[test]
+    fn compat_advertises_prompt_settings() {
+        assert!(CAPABILITIES.contains(&"settings.prompts"));
+        assert!(CAPABILITIES.contains(&"repository.settings"));
+        // `prompts.pull_request` and `prompts.branch_name`.
+        assert!(PROTOCOL_REVISION >= 19);
+    }
+
+    #[test]
+    fn compat_advertises_advanced_settings() {
+        assert!(CAPABILITIES.contains(&"settings.advanced"));
+        assert!(CAPABILITIES.contains(&"host.folders"));
+        // `terminal.scrollback`, `git.push_sets_upstream` and `host.folders`.
+        assert!(PROTOCOL_REVISION >= 20);
+    }
+
+    #[test]
+    fn compat_advertises_follow_ups() {
+        assert!(CAPABILITIES.contains(&"session.follow_ups"));
+        // `session.follow_up*` and sessions' `follow_ups`.
+        assert!(PROTOCOL_REVISION >= 21);
+    }
+
+    #[test]
+    fn compat_advertises_steer() {
+        assert!(CAPABILITIES.contains(&"session.steer"));
+        // `session.follow_up`'s `steer` and `agent.steered`.
+        assert!(PROTOCOL_REVISION >= 22);
+    }
+
+    #[test]
+    fn compat_advertises_auto_merge() {
+        assert!(CAPABILITIES.contains(&"git.pr_auto_merge"));
+        // `git.pr_auto_merge` and `merge.auto` / `merge.auto_available`.
+        assert!(PROTOCOL_REVISION >= 23);
+    }
+
+    #[test]
+    fn compat_advertises_workspace_removal() {
+        assert!(CAPABILITIES.contains(&"workspace.remove"));
+        assert_eq!(PROTOCOL_REVISION, 24);
     }
 
     #[test]

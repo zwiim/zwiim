@@ -132,6 +132,15 @@ impl Fx {
     }
 
     async fn run_in(&self, workspace_id: &str, number: u64) -> Result<WorkspaceInfo, ZwiimError> {
+        self.run_with(workspace_id, number, None).await
+    }
+
+    async fn run_with(
+        &self,
+        workspace_id: &str,
+        number: u64,
+        prefix: Option<&str>,
+    ) -> Result<WorkspaceInfo, ZwiimError> {
         let host = GitHost {
             db: &self.db.conn,
             data_dir: self.tmp.path(),
@@ -144,8 +153,34 @@ impl Fx {
             &host,
             workspace_id,
             number,
+            prefix,
         )
         .await
+    }
+
+    /// Remove the worktree, deleting its branch when that is safe.
+    async fn remove(&self) -> WorktreeRemoved {
+        let host = GitHost {
+            db: &self.db.conn,
+            data_dir: self.tmp.path(),
+            gh: Some(&self.gh),
+        };
+        remove_worktree(
+            &self.db,
+            &EventEmitter::Noop,
+            &self.connections,
+            &TerminalManager::new(),
+            &self.wt.workspace_id,
+            false,
+            Some(&host),
+        )
+        .await
+        .expect("remove")
+    }
+
+    fn has_branch(&self) -> bool {
+        let root = self.tmp.path().join("repo");
+        !git(&root, &["branch", "--list", &self.branch]).is_empty()
     }
 
     async fn snapshot(&self) -> Snapshot {
@@ -228,6 +263,7 @@ async fn merged_pr(base: &str) -> Fx {
         &t.join("worktrees"),
         &root_wid,
         Some(&format!("origin/{base}")),
+        None,
     )
     .await
     .unwrap();
@@ -687,4 +723,98 @@ async fn a_moved_new_branch_is_kept_when_switching_back() {
         git(&fx.path, &["log", "-1", "--format=%s", kept[0].as_str()]),
         "window"
     );
+}
+
+#[tokio::test]
+async fn a_branch_prefix_goes_in_front_of_the_continued_branch_once() {
+    let fx = merged_pr("main").await;
+
+    fx.run_with(&fx.wt.workspace_id, 12, Some("ashish"))
+        .await
+        .expect("continue");
+    assert_eq!(
+        git(&fx.path, &["branch", "--show-current"]),
+        format!("ashish/{}-v1", fx.branch)
+    );
+    // The folder keeps its city.
+    assert_eq!(
+        fx.path.file_name().unwrap().to_str(),
+        Some(fx.branch.as_str())
+    );
+}
+
+#[tokio::test]
+async fn removing_deletes_a_fully_pushed_branch() {
+    let fx = merged_pr("main").await;
+
+    let removed = fx.remove().await;
+    assert_eq!(removed.branch.as_deref(), Some(fx.branch.as_str()));
+    assert!(removed.branch_deleted);
+    assert_eq!(removed.branch_kept_reason, None);
+    assert!(!fx.has_branch());
+}
+
+#[tokio::test]
+async fn removing_deletes_a_merged_branch_whose_remote_copy_is_gone() {
+    let fx = merged_pr("main").await;
+    // GitHub deleted the head branch after merging; the root never fetched
+    // the merge, so the commit is on no remote branch it knows.
+    git(&fx.path, &["push", "-q", "origin", "--delete", &fx.branch]);
+
+    let removed = fx.remove().await;
+    assert!(removed.branch_deleted, "{:?}", removed.branch_kept_reason);
+    assert!(!fx.has_branch());
+}
+
+#[tokio::test]
+async fn removing_keeps_an_unpushed_branch_and_says_why() {
+    let fx = merged_pr("main").await;
+    std::fs::write(fx.path.join("more.txt"), "more\n").unwrap();
+    git(&fx.path, &["add", "more.txt"]);
+    git(&fx.path, &["commit", "-q", "-m", "more"]);
+
+    let removed = fx.remove().await;
+    assert!(!removed.branch_deleted);
+    assert_eq!(
+        removed.branch_kept_reason.as_deref(),
+        Some(format!("{} has commits that aren't pushed", fx.branch).as_str())
+    );
+    assert!(fx.has_branch());
+}
+
+#[tokio::test]
+async fn removing_keeps_a_branch_github_cannot_vouch_for() {
+    let fx = merged_pr("main").await;
+    git(&fx.path, &["push", "-q", "origin", "--delete", &fx.branch]);
+    fx.answer(12, "OPEN", &fx.feature_head.clone());
+
+    let removed = fx.remove().await;
+    assert!(!removed.branch_deleted);
+    assert!(removed
+        .branch_kept_reason
+        .unwrap()
+        .contains("has commits that aren't pushed"));
+    assert!(fx.has_branch());
+}
+
+#[tokio::test]
+async fn the_base_branch_is_never_deleted() {
+    let fx = merged_pr("main").await;
+    let host = GitHost {
+        db: &fx.db.conn,
+        data_dir: fx.tmp.path(),
+        gh: Some(&fx.gh),
+    };
+    let repo = fx.tmp.path().join("repo");
+
+    let kept = delete_branch_if_safe(
+        &host,
+        repo.to_str().unwrap(),
+        &fx.root_wid,
+        "main",
+        Some("origin/main"),
+    )
+    .await;
+    assert_eq!(kept, Err("main is the base branch".to_string()));
+    git(&repo, &["rev-parse", "--verify", "refs/heads/main"]);
 }

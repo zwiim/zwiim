@@ -13,11 +13,15 @@ import {
 } from "@zwiim/sdk";
 import { FileLinksContext, linkText, Markdown, workspaceFile, type FileLinks } from "@/components/Markdown";
 import { errorMessage, HostProvider } from "@/lib/host-context";
+import { rememberExpandToolCalls } from "@/lib/prefs";
 import { RequestCard } from "@/panels/RequestCard";
 import { SessionPanel } from "@/panels/SessionPanel";
 import { FakeTransport, hostHello, tick } from "./fakes";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  window.localStorage.clear();
+});
 
 const turn = (turn_id: string, role: string, blocks: HistoryTurn["blocks"]): HistoryTurn => ({
   turn_id,
@@ -445,14 +449,14 @@ describe("transcript", () => {
 
   it("tags each send with a client message id", async () => {
     const t = new FakeTransport();
-    t.handlers["session.send"] = (p) => ({ session_id: p.session_id });
+    t.handlers["session.follow_up"] = () => ({ outcome: "sent" });
     const { controller, frame } = await openSession(t);
     await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot() });
     const box = screen.getByPlaceholderText(/^Send a message/);
     fireEvent.change(box, { target: { value: "hello" } });
     fireEvent.keyDown(box, { key: "Enter" });
     await tick();
-    const sent = t.calls.find((c) => c.op === "session.send")!.params;
+    const sent = t.calls.find((c) => c.op === "session.follow_up")!.params;
     expect(sent.blocks).toEqual([{ type: "text", text: "hello" }]);
     expect(sent.client_message_id).toMatch(/^[0-9a-f-]{36}$/);
     controller.dispose();
@@ -735,6 +739,33 @@ describe("tool runs", () => {
     expect(row.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(row);
     expect(row.getAttribute("aria-expanded")).toBe("true");
+    controller.dispose();
+  });
+
+  it("folds nothing and opens thinking where every tool call shows", async () => {
+    rememberExpandToolCalls(true);
+    const t = new FakeTransport();
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        turn("t1", "assistant", [
+          { type: "thought", text: "Planning the fix" },
+          call("c1", "Read", "a.ts"),
+          call("c2", "Read", "b.ts"),
+          call("c3", "Read", "c.ts"),
+        ]),
+      ],
+    });
+    const { controller } = await openSession(t);
+    expect(screen.queryByTestId("tool-run")).toBeNull();
+    expect(screen.getAllByTestId("tool-call")).toHaveLength(3);
+    const thought = within(screen.getByTestId("thought")).getByRole("button");
+    expect(thought.getAttribute("aria-expanded")).toBe("true");
+    // Closed by hand, it stays closed; folding comes back when the setting goes off.
+    fireEvent.click(thought);
+    expect(thought.getAttribute("aria-expanded")).toBe("false");
+    act(() => rememberExpandToolCalls(false));
+    expect(screen.getByTestId("tool-run")).toBeTruthy();
     controller.dispose();
   });
 

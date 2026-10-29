@@ -238,7 +238,7 @@ export function fileProblem(e: unknown, hostName: string, what: "file" | "folder
     return { title: `Not connected to ${hostName}`, body: "Try again when it's back." };
   }
   if (isClientError(e, "workspace_removed")) {
-    return { title: "This worktree was removed", body: "Choose another workspace." };
+    return { title: "This worktree was archived", body: "Choose another workspace." };
   }
   if (isClientError(e, "not_found")) {
     return what === "folder"

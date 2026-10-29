@@ -521,12 +521,14 @@ impl CloneJobs {
                 .ok()
                 .and_then(|h| h.branch),
         };
+        let prefix = crate::settings::branch_prefix(&env.conn, env.gh.as_deref(), &root.path).await;
         match super::create_worktree(
             &db,
             &env.emitter,
             &env.worktrees_dir,
             &root.workspace_id,
             base.as_deref(),
+            prefix.as_deref(),
         )
         .await
         {
