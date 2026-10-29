@@ -3,6 +3,7 @@
 //! helper; otherwise Git uses the user's own helpers and SSH agent. Nothing
 //! ever prompts.
 
+use super::conflicts::{in_progress, ConflictState};
 use super::error::{GitError, GitErrorCode};
 use super::local::{config, current_branch, head, not_an_option, ok, require_branch};
 use super::op::{FetchOutcome, PullMode, PullOutcome, PushOutcome};
@@ -61,11 +62,25 @@ pub(super) async fn pull(
 /// its upstream's remote, else the default remote). The upstream is set
 /// whenever it is not already that branch, so a branch started from
 /// `origin/main` never pushes into main. Never forces.
+///
+/// Refused with [`GitErrorCode::Conflict`] while files are unmerged or a
+/// merge or rebase is stopped: what is committed is not the resolution yet.
+/// Conflict markers in committed files never block a push; they may be
+/// meant (fixtures, docs).
 pub(super) async fn push(
     host: &GitHost<'_>,
     root: &str,
     remote: Option<&str>,
 ) -> Result<PushOutcome, GitError> {
+    if let Some(ConflictState::InProgress { operation, files }) = in_progress(root).await? {
+        if !files.is_empty() || matches!(operation.as_str(), "merge" | "rebase") {
+            return Err(GitError::new(
+                GitErrorCode::Conflict,
+                "Finish resolving the conflicts before pushing",
+            )
+            .with_detail(&operation));
+        }
+    }
     let branch = require_branch(root).await?;
     let tracked_remote = config(root, &format!("branch.{branch}.remote")).await?;
     let tracked_ref = config(root, &format!("branch.{branch}.merge")).await?;

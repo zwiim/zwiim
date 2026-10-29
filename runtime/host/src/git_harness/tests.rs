@@ -2235,6 +2235,112 @@ async fn conflicts_base_needs_a_remote() {
     );
 }
 
+#[tokio::test]
+async fn push_refuses_unmerged_index() {
+    let fx = text_conflict().await;
+    git(&fx.root, &["checkout", "-q", "-b", "feat"]);
+    assert!(!git_may_fail(&fx.root, &["merge", "-q", "origin/main"]));
+    let bare = fx.tmp.path().join("origin.git");
+
+    assert_eq!(
+        code(fx.run(GitOp::Push { remote: None }).await),
+        GitErrorCode::Conflict
+    );
+    assert!(!git_may_fail(
+        &bare,
+        &["rev-parse", "-q", "--verify", "feat"]
+    ));
+
+    // Unmerged entries with no merge running block it too.
+    git(&fx.root, &["merge", "--abort"]);
+    write(&fx.root, "a.txt", "dirty\n");
+    git(&fx.root, &["stash", "-q"]);
+    git(&fx.root, &["reset", "-q", "--hard", "origin/main"]);
+    assert!(!git_may_fail(&fx.root, &["stash", "pop", "-q"]));
+    assert_eq!(
+        code(fx.run(GitOp::Push { remote: None }).await),
+        GitErrorCode::Conflict
+    );
+    assert!(!git_may_fail(
+        &bare,
+        &["rev-parse", "-q", "--verify", "feat"]
+    ));
+}
+
+#[tokio::test]
+async fn push_allows_committed_marker_fixture() {
+    let (fx, _) = conflict_fixture().await;
+    let bare = fx.tmp.path().join("origin.git");
+    git(&fx.root, &["checkout", "-q", "-b", "feat"]);
+    write(
+        &fx.root,
+        "fixture.txt",
+        "<<<<<<< ours\nmine\n=======\ntheirs\n>>>>>>> theirs\n",
+    );
+    commit_all(&fx.root, "marker fixture");
+
+    let GitOutcome::Push(pushed) = fx.run(GitOp::Push { remote: None }).await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(git(&bare, &["rev-parse", "feat"]), pushed.head);
+}
+
+#[tokio::test]
+async fn marker_scan_reads_resolved_file_contents() {
+    let (fx, _) = conflict_fixture().await;
+    let pair = "<<<<<<< HEAD\nmine\n=======\ntheirs\n>>>>>>> origin/main\n";
+    // Committed before the turn: still flagged, the scan reads contents.
+    write(&fx.root, "a.txt", pair);
+    commit_all(&fx.root, "markers in the start tree");
+    // Outside the resolved files: ignored.
+    write(&fx.root, "b.txt", pair);
+    // An opening marker with no closing one is not a leftover conflict.
+    write(&fx.root, "c.txt", "<<<<<<< just text\n");
+    // A file the resolution deleted is skipped.
+    let files: Vec<String> = ["a.txt", "c.txt", "gone.txt"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    assert_eq!(
+        leftover_markers(&fx.root, &files).await.unwrap(),
+        vec!["a.txt".to_string()]
+    );
+
+    // The marker length follows the `conflict-marker-size` attribute.
+    write(&fx.root, "d.txt", pair);
+    write(
+        &fx.root,
+        "e.txt",
+        "<<<<<<<<<< HEAD\nmine\n==========\ntheirs\n>>>>>>>>>> origin/main\n",
+    );
+    write(
+        &fx.root,
+        ".gitattributes",
+        "d.txt conflict-marker-size=10\ne.txt conflict-marker-size=10\n",
+    );
+    let files: Vec<String> = ["d.txt", "e.txt"].into_iter().map(String::from).collect();
+    assert_eq!(
+        leftover_markers(&fx.root, &files).await.unwrap(),
+        vec!["e.txt".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn marker_scan_skips_paths_outside_the_worktree() {
+    let (fx, _) = conflict_fixture().await;
+    let pair = "<<<<<<< HEAD\nmine\n=======\ntheirs\n>>>>>>> origin/main\n";
+    write(&fx.root, "a.txt", pair);
+    // A path leaving the worktree is skipped without failing the rest.
+    let files: Vec<String> = ["../x", "/etc/passwd", "a.txt"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    assert_eq!(
+        leftover_markers(&fx.root, &files).await.unwrap(),
+        vec!["a.txt".to_string()]
+    );
+}
+
 // ── boundary ────────────────────────────────────────────────────────────
 
 /// The Harness serves every agent integration and depends on none: no

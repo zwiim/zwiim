@@ -26,6 +26,7 @@ import {
   type MobileRelease,
 } from "../host/release";
 import { GithubSignInFlow, githubPage, githubSignInOffered } from "../host/github";
+import { instructionsOffered } from "../host/instructions";
 import { agentSignInRow, connectionText, hostProblem, reachabilityText } from "../host/status";
 import { appInfo } from "../platform/app-info";
 import { secureStore } from "../platform/native";
@@ -36,6 +37,7 @@ import { Folder, Icon, Laptop, MessagesSquare } from "../ui/icons";
 import { fonts, radius, space, type, useTheme } from "../ui/tokens";
 import { FilesTab } from "./FilesTab";
 import { HostFrame } from "./HostFrame";
+import { InstructionsGroup } from "./instructions";
 import { SessionsTab } from "./SessionsTab";
 
 const Tabs = createBottomTabNavigator<HostTabs>();
@@ -400,6 +402,10 @@ function HostTab() {
         </View>
 
         <AgentsGroup live={view?.active === "lan" || view?.active === "relay"} />
+
+        {instructionsOffered(view?.compat ?? null) ? (
+          <InstructionsGroup live={view?.active === "lan" || view?.active === "relay"} />
+        ) : null}
 
         {githubSignInOffered(view?.compat ?? null) ? (
           <GithubGroup host={hostName(host)} live={view?.active === "lan" || view?.active === "relay"} />

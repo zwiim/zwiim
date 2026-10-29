@@ -53,7 +53,10 @@ pub use account::{
     GithubAccount, GithubOwner, GithubOwnerKind, GithubRepoRow,
 };
 pub use clone::{github_repo_clone, ClonePhase, CloneRun};
-pub use conflicts::{check_conflicts, conflict_base, fetch_base, ConflictCheck, ConflictState};
+pub use conflicts::{
+    check_conflicts, check_merge, conflict_base, fetch_base, leftover_markers, note_markers,
+    noted_markers, ConflictCheck, ConflictState,
+};
 pub use error::{GitError, GitErrorCode};
 pub use gh_auth::{GithubAuth, GithubAuthState, GithubSignIn};
 pub use op::{

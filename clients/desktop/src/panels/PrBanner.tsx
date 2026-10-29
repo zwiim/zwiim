@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   ChevronDown,
@@ -12,7 +12,19 @@ import {
   Minus,
   X,
 } from "lucide-react";
-import { hasCapability, type CheckState, type MergeMethod, type PrCheckItem, type PrEntry, type PrState } from "@zwiim/sdk";
+import {
+  conflictView,
+  hasCapability,
+  resolveLabel,
+  resolveRefusalText,
+  type CheckState,
+  type ConflictView,
+  type MergeMethod,
+  type PrCheckItem,
+  type PrEntry,
+  type PrState,
+  type ResolveStrategy,
+} from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { openLink } from "@/lib/bridge";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
@@ -153,14 +165,212 @@ function CheckRow({ check }: { check: PrCheckItem }) {
   );
 }
 
+/** The conflict line; it opens the list of files git couldn't merge. */
+function ConflictLine({ view }: { view: ConflictView }) {
+  const [open, setOpen] = useState(false);
+  if (!view.line) return null;
+  return (
+    <>
+      <button
+        type="button"
+        className="hover:text-foreground flex items-center gap-0.5 text-left text-xs font-medium transition-colors"
+        aria-expanded={open}
+        disabled={view.files.length === 0}
+        onClick={() => setOpen((o) => !o)}
+      >
+        {view.line}
+        {view.files.length > 0 && (open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />)}
+      </button>
+      {open && (
+        <ul className="mt-1 max-h-48 overflow-y-auto font-mono text-2xs" aria-label="Conflicting files" data-testid="conflict-files">
+          {view.files.map((f) => (
+            <li key={f} className="text-muted-foreground truncate py-0.5" title={f}>
+              {f}
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
+/**
+ * The conflict button where Merge was: one tap hands the conflicts to the
+ * chat's agent, merging the base in; the menu beside it rebases instead.
+ * While that turn runs, it reads Resolving with a Cancel for the turn.
+ */
+function ResolveControls({
+  workspaceId,
+  view,
+  hasPr,
+  onError,
+}: {
+  workspaceId: string;
+  view: ConflictView;
+  hasPr: boolean;
+  onError(text: string | null): void;
+}) {
+  const controller = useController();
+  const online = useOnline();
+  const [sending, setSending] = useState(false);
+  const [menu, setMenu] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menu) return;
+    const close = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenu(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [menu]);
+  const action = view.resolve!;
+
+  async function resolve(strategy?: ResolveStrategy) {
+    if (action.state !== "ready") return;
+    setMenu(false);
+    setSending(true);
+    onError(null);
+    try {
+      await controller.resolveConflicts(workspaceId, action.session_id, strategy);
+    } catch (e) {
+      onError(resolveRefusalText(e) ?? errorMessage(e));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function cancel() {
+    if (action.state !== "resolving") return;
+    try {
+      await controller.client.request("session.cancel", { session_id: action.session_id });
+    } catch (e) {
+      onError(errorMessage(e));
+    }
+  }
+
+  const ready = action.state === "ready" && online && !sending;
+  const busy = action.state === "resolving" || sending;
+  const title = !online ? "The Host is offline" : action.state === "blocked" ? action.reason : undefined;
+  return (
+    <div className="flex shrink-0 items-center gap-1">
+      {action.state === "resolving" && (
+        <Button size="xs" variant="ghost" disabled={!online} onClick={() => void cancel()}>
+          Cancel
+        </Button>
+      )}
+      <div className="relative flex" ref={menuRef}>
+        <Button
+          size="xs"
+          variant="brand"
+          className={cn(action.state !== "resolving" && "rounded-r-none")}
+          disabled={!ready}
+          title={title}
+          onClick={() => void resolve()}
+        >
+          {busy ? <Loader2 className="animate-spin" /> : <GitMerge />}
+          {resolveLabel(action, hasPr)}
+        </Button>
+        {action.state !== "resolving" && (
+          <Button
+            size="xs"
+            variant="brand"
+            className="border-brand-foreground/20 rounded-l-none border-l px-1"
+            disabled={!ready}
+            aria-label="More ways to resolve"
+            aria-haspopup="menu"
+            aria-expanded={menu}
+            onClick={() => setMenu((m) => !m)}
+          >
+            <ChevronDown />
+          </Button>
+        )}
+        {menu && (
+          <div
+            role="menu"
+            className="bg-popover text-popover-foreground absolute top-full right-0 z-20 mt-1 min-w-40 rounded-md border p-1 shadow-md"
+            onKeyDown={(e) => e.key === "Escape" && setMenu(false)}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              className="hover:bg-muted w-full rounded-sm px-2 py-1 text-left text-xs"
+              title="Rebase this branch onto its base, resolving each commit"
+              onClick={() => void resolve("rebase")}
+            >
+              Rebase instead
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Conflicts on a branch with no pull request (or a root's): the line, and Resolve where it can run. */
+/** `prError`: why the Host can't follow this branch's pull request, if it can't. */
+function ConflictBanner({
+  workspaceId,
+  view,
+  prError,
+}: {
+  workspaceId: string;
+  view: ConflictView;
+  prError?: { code: string; message: string } | null;
+}) {
+  const signInOffered = useGithubSignInOffered();
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <section className="shrink-0 border-b px-3 py-2" aria-label="Merge conflicts" data-testid="pr-banner">
+      <div className="flex items-start gap-2">
+        <GitMerge className="text-muted-foreground mt-0.5 size-4 shrink-0" />
+        <div className="min-w-0 flex-1" data-testid="pr-conflicts">
+          <ConflictLine view={view} />
+          <BlockedReason view={view} />
+        </div>
+      </div>
+      {/* Its own row: the side panel is too narrow for the line, Cancel and Resolving side by side. */}
+      {view.resolve && (
+        <div className="mt-1.5 pl-6">
+          <ResolveControls workspaceId={workspaceId} view={view} hasPr={false} onError={setError} />
+        </div>
+      )}
+      {error && (
+        <p className="text-destructive mt-1 pl-6 text-xs" role="alert">
+          {error}
+        </p>
+      )}
+      {prError && (
+        <div className="text-muted-foreground mt-1.5 flex flex-col gap-2 pl-6 text-xs">
+          <span data-testid="pr-error">{prErrorText(prError.code, prError.message, signInOffered)}</span>
+          {prError.code === "gh_unauthenticated" && signInOffered && <GithubSignIn />}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function BlockedReason({ view }: { view: ConflictView }) {
+  if (view.resolve?.state !== "blocked") return null;
+  return (
+    <p className="text-muted-foreground mt-1 text-xs" data-testid="conflict-blocked">
+      {view.resolve.reason}
+    </p>
+  );
+}
+
 /**
  * The workspace branch's pull request, as the Host follows it on GitHub:
  * number and title (opens it), status, checks (each opens its run), and Merge.
  * Once merged, Continue moves the worktree to a new branch from the PR's base.
- * Nothing here asks GitHub; the Host's feed keeps it current.
+ * When the branch conflicts with its base, Merge becomes Merge conflicts, a
+ * turn for the chat's agent. Nothing here asks GitHub or git; the Host's feed
+ * keeps it current.
+ * `sessionId`: the chat on screen, which resolves the conflicts when it is here.
  */
-export function PrBanner({ workspaceId }: { workspaceId: string }) {
+export function PrBanner({ workspaceId, sessionId }: { workspaceId: string; sessionId?: string | null }) {
   const entry: PrEntry | undefined = useHost((s) => s.prs[workspaceId]);
+  const state = useHost((s) => s);
+  const conflicts = useMemo(() => conflictView(state, workspaceId, sessionId), [state, workspaceId, sessionId]);
   const workspace = useHost((s) => s.workspaces?.find((w) => w.workspace_id === workspaceId));
   const continueOffered = useHost((s) => hasCapability(s.connection.compat, "workspace.continue"));
   const signInOffered = useGithubSignInOffered();
@@ -192,6 +402,8 @@ export function PrBanner({ workspaceId }: { workspaceId: string }) {
     setContinued(null);
   }, [workspaceId, feedPr?.number]);
 
+  const gone = !pr || (feedPr !== null && continued === feedPr.number);
+  if (gone && conflicts) return <ConflictBanner workspaceId={workspaceId} view={conflicts} prError={entry?.error} />;
   if (!entry) return null;
   if (feedPr && continued === feedPr.number) return null;
   if (!pr) {
@@ -210,6 +422,8 @@ export function PrBanner({ workspaceId }: { workspaceId: string }) {
 
   const status = prStatus(pr);
   const settled = pr.state === "merged" || pr.state === "closed";
+  // A merged or closed PR has nothing left to merge; its conflicts don't matter.
+  const conflict = settled ? null : conflicts;
   const method = pr.merge.method;
   const canMerge = online && !merging && pr.merge.allowed && !settled;
   const reason = !online ? "The Host is offline" : pr.merge.reason;
@@ -282,6 +496,8 @@ export function PrBanner({ workspaceId }: { workspaceId: string }) {
               </Button>
             )}
           </>
+        ) : conflict?.resolve ? (
+          <ResolveControls workspaceId={workspaceId} view={conflict} hasPr onError={setError} />
         ) : (
           <Button
             size="xs"
@@ -316,7 +532,13 @@ export function PrBanner({ workspaceId }: { workspaceId: string }) {
           )}
         </div>
       )}
-      {!settled && !pr.merge.allowed && reason && (
+      {conflict && (
+        <div className="mt-1 pl-6" data-testid="pr-conflicts">
+          <ConflictLine view={conflict} />
+          <BlockedReason view={conflict} />
+        </div>
+      )}
+      {!settled && !pr.merge.allowed && reason && !conflict?.line && (
         <p className="text-muted-foreground mt-1 pl-6 text-xs" data-testid="pr-reason">
           {reason}
         </p>

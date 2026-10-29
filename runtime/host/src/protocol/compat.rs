@@ -111,7 +111,17 @@ use serde::{Deserialize, Serialize};
 /// Both refuse with `not_found`, `turn_in_progress` or `nothing_to_retry`;
 /// the new-chat op also with `root_workspace`. Older clients ignore the
 /// fields and show the plain error line.
-pub const PROTOCOL_REVISION: u32 = 14;
+///
+/// Revision 15 (`host.instructions`): the user's own instructions for their
+/// agents, one text for every session and one for resolving conflicts, each
+/// Host-wide and per root workspace. `host.instructions` returns
+/// `{host, workspaces}`; `host.instructions.set {scope: "host" | "workspace",
+/// workspace_id?, general?, resolve_conflicts?}` replaces one scope's texts
+/// and returns the same shape. It refuses with `too_large` (a text over
+/// 8 KiB), `not_found` (no such root workspace) or `invalid_input`. A
+/// worktree uses its root's texts. New and resumed sessions get them; older
+/// clients simply don't offer the editor.
+pub const PROTOCOL_REVISION: u32 = 15;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -154,6 +164,7 @@ pub const CAPABILITIES: &[&str] = &[
     "workspace.conflicts",
     "workspace.resolve_conflicts",
     "session.retry",
+    "host.instructions",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -328,7 +339,13 @@ mod tests {
         assert!(CAPABILITIES.contains(&"session.retry"));
         // `session.retry`, `session.retry_in_new_chat`, `last_error.code`
         // `agent_unreachable` and the snapshot's `reconnecting`.
-        assert_eq!(PROTOCOL_REVISION, 14);
+        assert!(PROTOCOL_REVISION >= 14);
+    }
+
+    #[test]
+    fn compat_advertises_host_instructions() {
+        assert!(CAPABILITIES.contains(&"host.instructions"));
+        assert!(PROTOCOL_REVISION >= 15);
     }
 
     #[test]

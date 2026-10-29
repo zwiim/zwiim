@@ -1065,14 +1065,18 @@ fn apply_codex_thinking_policy(
 /// Zwiim's session instructions for Codex. codex-acp sends `CODEX_CONFIG` as
 /// config overrides on every thread start, resume and fork, and
 /// `developer_instructions` reaches the model as developer instructions, which
-/// the transcript parser never shows. `developer_instructions` the user set in
-/// their own `CODEX_CONFIG` win (and the caller passes `None` when their
-/// `~/.codex/config.toml` sets them), and a `CODEX_CONFIG` that is not a JSON
-/// object is left as it is.
+/// the transcript parser never shows. Codex gets both texts: when the user set
+/// `developer_instructions` (in their own `CODEX_CONFIG`, or in
+/// `~/.codex/config.toml`, which the caller reads into `config_toml_instructions`),
+/// the value becomes Zwiim's text, then a line `User developer instructions:`,
+/// then the user's. `CODEX_CONFIG` overrides config.toml in Codex, so its text is
+/// the one kept when both set it. A `CODEX_CONFIG` that is not a JSON object, or
+/// whose `developer_instructions` is not a string, is left as it is.
 fn apply_codex_instructions_policy(
     agent_type: AgentType,
     merged: &mut Vec<(String, String)>,
     instructions: Option<&str>,
+    config_toml_instructions: Option<&str>,
 ) {
     const KEY: &str = "CODEX_CONFIG";
     const INSTRUCTIONS: &str = "developer_instructions";
@@ -1086,10 +1090,16 @@ fn apply_codex_instructions_policy(
         },
         None => serde_json::Map::new(),
     };
-    if config.contains_key(INSTRUCTIONS) {
-        return;
-    }
-    config.insert(INSTRUCTIONS.to_string(), serde_json::json!(instructions));
+    let user = match config.get(INSTRUCTIONS) {
+        Some(serde_json::Value::String(own)) => Some(own.clone()),
+        Some(_) => return,
+        None => config_toml_instructions.map(str::to_string),
+    };
+    let value = match user.filter(|u| !u.trim().is_empty()) {
+        Some(user) => format!("{instructions}\n\nUser developer instructions:\n{user}"),
+        None => instructions.to_string(),
+    };
+    config.insert(INSTRUCTIONS.to_string(), serde_json::json!(value));
     merged.retain(|(k, _)| k != KEY);
     merged.push((
         KEY.to_string(),
@@ -1910,7 +1920,14 @@ async fn build_agent(
                     && crate::commands::acp::codex_config_sets("model_reasoning_summary"),
             );
             // Codex takes Zwiim's instructions here, through `CODEX_CONFIG`.
-            apply_codex_instructions_policy(agent_type, &mut merged_env, instructions);
+            apply_codex_instructions_policy(
+                agent_type,
+                &mut merged_env,
+                instructions,
+                instructions
+                    .and(crate::commands::acp::codex_config_string("developer_instructions"))
+                    .as_deref(),
+            );
             // codex-acp 1.0.0 honors APP_SERVER_LOGS as a directory for its
             // adapter-side logs. Surface it only under ZWIIM_ACP_DEBUG so
             // default runs are unchanged; a directory-creation failure silently
@@ -2374,7 +2391,9 @@ pub async fn spawn_agent_connection(
     }
     // The harness's instructions for this connection, built once and shared
     // by every way its session opens (new, load, resume, fork).
-    let instructions = connection_instructions(&connection_id, agent_type, &launch_cwd).await;
+    let user = delegation_injection.as_ref().map(|i| i.user_instructions.as_ref());
+    let instructions =
+        connection_instructions(&connection_id, agent_type, &launch_cwd, user).await;
     let agent = match build_agent(
         agent_type,
         &runtime_env,
@@ -4311,16 +4330,10 @@ fn claude_raw_sdk_session_meta(
 
 /// Whether this launch delivers Zwiim's session instructions. Claude takes
 /// them in its session requests (`_meta.systemPrompt`), Codex at launch
-/// (`apply_codex_instructions_policy`). A user whose `~/.codex/config.toml`
-/// sets `developer_instructions` keeps them, and Codex then gets none of
-/// Zwiim's: a known limitation until project instructions decide precedence.
-/// Other agents have no channel for them.
-fn delivers_session_instructions(agent_type: AgentType, codex_user_instructions: bool) -> bool {
-    match agent_type {
-        AgentType::ClaudeCode => true,
-        AgentType::Codex => !codex_user_instructions,
-        _ => false,
-    }
+/// (`apply_codex_instructions_policy`), alongside any `developer_instructions`
+/// the user set. Other agents have no channel for them.
+fn delivers_session_instructions(agent_type: AgentType) -> bool {
+    matches!(agent_type, AgentType::ClaudeCode | AgentType::Codex)
 }
 
 /// The harness's session instructions for connection `connection_id`,
@@ -4330,13 +4343,16 @@ async fn connection_instructions(
     connection_id: &str,
     agent_type: AgentType,
     cwd: &Path,
+    user: Option<&dyn UserInstructionsLookup>,
 ) -> Option<String> {
-    let codex_user_instructions = agent_type == AgentType::Codex
-        && crate::commands::acp::codex_config_sets("developer_instructions");
-    if !delivers_session_instructions(agent_type, codex_user_instructions) {
+    if !delivers_session_instructions(agent_type) {
         return None;
     }
-    let instructions = crate::harness::instruct(&crate::harness::gather(cwd).await);
+    let user = match user {
+        Some(lookup) => lookup.for_cwd(cwd).await,
+        None => Default::default(),
+    };
+    let instructions = crate::harness::instruct(&crate::harness::gather(cwd, user).await);
     tracing::info!(
         connection_id,
         agent = ?agent_type,
@@ -4936,6 +4952,39 @@ pub struct DelegationInjection {
     /// through this, and the cleanup guard calls `cancel_plan_approvals_by_parent`
     /// on disconnect (mirroring the question teardown cascade).
     pub plan_approvals: Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
+    /// The user's own instructions for the session's root workspace, read at
+    /// launch so an edit applies to new and resumed sessions.
+    pub user_instructions: Arc<dyn UserInstructionsLookup>,
+}
+
+/// The user's instructions that apply to an agent launched in `cwd`.
+#[async_trait::async_trait]
+pub trait UserInstructionsLookup: Send + Sync {
+    async fn for_cwd(&self, cwd: &Path) -> crate::harness::InstructionTexts;
+}
+
+/// [`UserInstructionsLookup`] over the Host's instructions file: the
+/// Host-wide texts, then those of the root workspace whose directory (or a
+/// worktree's) is `cwd`. A database error drops only the workspace's texts.
+pub struct HostUserInstructionsLookup {
+    pub db: Arc<crate::db::AppDatabase>,
+    pub path: PathBuf,
+}
+
+#[async_trait::async_trait]
+impl UserInstructionsLookup for HostUserInstructionsLookup {
+    async fn for_cwd(&self, cwd: &Path) -> crate::harness::InstructionTexts {
+        let root = crate::workspace::root_workspace_id_for_dir(
+            &self.db.conn,
+            &cwd.to_string_lossy(),
+        )
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("[Harness] finding the workspace for {cwd:?} failed: {e}");
+            None
+        });
+        crate::harness::user_instructions::load(&self.path).for_root(root.as_deref())
+    }
 }
 
 /// Locate the `zwiim-mcp` companion binary across the supported deployment
@@ -19138,7 +19187,7 @@ mod tests {
 
         let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
         apply_codex_thinking_policy(AgentType::Codex, &mut env, false);
-        apply_codex_instructions_policy(AgentType::Codex, &mut env, Some("be kind"));
+        apply_codex_instructions_policy(AgentType::Codex, &mut env, Some("be kind"), None);
         let merged: serde_json::Value = serde_json::from_str(&config(&env)[0]).unwrap();
         assert_eq!(
             merged,
@@ -19146,36 +19195,81 @@ mod tests {
         );
         assert_eq!(config(&env).len(), 1, "no duplicate key");
 
-        // The user's own instructions win.
-        let own = r#"{"developer_instructions":"mine"}"#;
-        let mut chosen = vec![("CODEX_CONFIG".to_string(), own.to_string())];
-        apply_codex_instructions_policy(AgentType::Codex, &mut chosen, Some("be kind"));
-        assert_eq!(config(&chosen), [own]);
-
-        // Not JSON: left as it is.
-        let mut odd = vec![("CODEX_CONFIG".to_string(), "not json".to_string())];
-        apply_codex_instructions_policy(AgentType::Codex, &mut odd, Some("be kind"));
-        assert_eq!(config(&odd), ["not json"]);
-
         let mut none = vec![("PATH".to_string(), "/usr/bin".to_string())];
-        apply_codex_instructions_policy(AgentType::Codex, &mut none, None);
+        apply_codex_instructions_policy(AgentType::Codex, &mut none, None, None);
         assert!(config(&none).is_empty());
+    }
+
+    fn codex_config_values(env: &[(String, String)]) -> Vec<String> {
+        env.iter()
+            .filter(|(k, _)| k == "CODEX_CONFIG")
+            .map(|(_, v)| v.clone())
+            .collect()
+    }
+
+    #[test]
+    fn codex_user_codex_config_instructions_are_combined() {
+        let mut env = vec![(
+            "CODEX_CONFIG".to_string(),
+            r#"{"developer_instructions":"U","model":"m"}"#.to_string(),
+        )];
+        // CODEX_CONFIG overrides config.toml in Codex, so its text is the one kept.
+        apply_codex_instructions_policy(AgentType::Codex, &mut env, Some("Z"), Some("T"));
+        let values = codex_config_values(&env);
+        assert_eq!(values.len(), 1, "no duplicate key");
+        let merged: serde_json::Value = serde_json::from_str(&values[0]).unwrap();
+        assert_eq!(
+            merged,
+            serde_json::json!({
+                "developer_instructions": "Z\n\nUser developer instructions:\nU",
+                "model": "m",
+            })
+        );
+    }
+
+    #[test]
+    fn codex_config_toml_instructions_are_combined() {
+        let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
+        apply_codex_instructions_policy(AgentType::Codex, &mut env, Some("Z"), Some("T"));
+        let merged: serde_json::Value =
+            serde_json::from_str(&codex_config_values(&env)[0]).unwrap();
+        assert_eq!(
+            merged["developer_instructions"],
+            serde_json::json!("Z\n\nUser developer instructions:\nT")
+        );
+
+        // Blank user text adds nothing.
+        let mut blank = Vec::new();
+        apply_codex_instructions_policy(AgentType::Codex, &mut blank, Some("Z"), Some("  \n"));
+        let merged: serde_json::Value =
+            serde_json::from_str(&codex_config_values(&blank)[0]).unwrap();
+        assert_eq!(merged["developer_instructions"], serde_json::json!("Z"));
+    }
+
+    #[test]
+    fn codex_non_object_config_untouched() {
+        for raw in ["not json", "[1]", r#"{"developer_instructions":7}"#] {
+            let mut odd = vec![("CODEX_CONFIG".to_string(), raw.to_string())];
+            apply_codex_instructions_policy(AgentType::Codex, &mut odd, Some("Z"), Some("T"));
+            assert_eq!(codex_config_values(&odd), [raw]);
+        }
+    }
+
+    #[test]
+    fn claude_untouched() {
         for agent in [AgentType::ClaudeCode, AgentType::Grok] {
             let mut other = vec![("PATH".to_string(), "/usr/bin".to_string())];
-            apply_codex_instructions_policy(agent, &mut other, Some("be kind"));
-            assert!(config(&other).is_empty(), "{agent:?} is not codex");
+            apply_codex_instructions_policy(agent, &mut other, Some("Z"), Some("T"));
+            assert!(codex_config_values(&other).is_empty(), "{agent:?} is not codex");
         }
     }
 
     #[test]
     fn claude_and_codex_get_the_harness_instructions() {
-        assert!(delivers_session_instructions(AgentType::ClaudeCode, false));
-        assert!(delivers_session_instructions(AgentType::Codex, false));
-        // Known limitation: a user's own Codex `developer_instructions` win,
-        // and Codex then runs without Zwiim's.
-        assert!(!delivers_session_instructions(AgentType::Codex, true));
+        assert!(delivers_session_instructions(AgentType::ClaudeCode));
+        assert!(delivers_session_instructions(AgentType::Codex));
         for agent in [AgentType::Grok, AgentType::OpenClaw] {
-            assert!(!delivers_session_instructions(agent, false), "{agent:?}");
+            assert!(!delivers_session_instructions(agent), "{agent:?}");
         }
 
         let cwd = PathBuf::from("/w/repo/abc");
@@ -19186,6 +19280,7 @@ mod tests {
                 default_branch: Some("origin/main".into()),
                 placeholder_branch: None,
             }),
+            user: Default::default(),
         })
         .text;
 
@@ -19202,7 +19297,7 @@ mod tests {
         );
 
         let mut env = Vec::new();
-        apply_codex_instructions_policy(AgentType::Codex, &mut env, Some(&text));
+        apply_codex_instructions_policy(AgentType::Codex, &mut env, Some(&text), None);
         let config: serde_json::Value = serde_json::from_str(&env[0].1).unwrap();
         assert_eq!(env[0].0, "CODEX_CONFIG");
         assert_eq!(config["developer_instructions"], serde_json::json!(text));
@@ -19211,15 +19306,47 @@ mod tests {
     #[tokio::test]
     async fn connection_instructions_come_from_the_harness() {
         let dir = tempfile::tempdir().unwrap();
-        let expected = crate::harness::instruct(&crate::harness::gather(dir.path()).await).text;
+        let expected =
+            crate::harness::instruct(&crate::harness::gather(dir.path(), Default::default()).await)
+                .text;
         assert_eq!(
-            connection_instructions("c", AgentType::ClaudeCode, dir.path()).await,
+            connection_instructions("c", AgentType::ClaudeCode, dir.path(), None).await,
             Some(expected)
         );
         assert_eq!(
-            connection_instructions("c", AgentType::Grok, dir.path()).await,
+            connection_instructions("c", AgentType::Grok, dir.path(), None).await,
             None
         );
+    }
+
+    struct FixedUserInstructions(std::sync::Mutex<Vec<PathBuf>>);
+
+    #[async_trait::async_trait]
+    impl UserInstructionsLookup for FixedUserInstructions {
+        async fn for_cwd(&self, cwd: &Path) -> crate::harness::InstructionTexts {
+            self.0.lock().unwrap().push(cwd.to_path_buf());
+            crate::harness::InstructionTexts {
+                general: Some("Answer in French.".into()),
+                resolve_conflicts: None,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_instructions_carry_the_users_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let lookup = FixedUserInstructions(Default::default());
+        let text = connection_instructions("c", AgentType::Codex, dir.path(), Some(&lookup))
+            .await
+            .unwrap();
+        assert!(text.ends_with("\nAnswer in French.\n"), "{text}");
+        assert_eq!(*lookup.0.lock().unwrap(), [dir.path().to_path_buf()]);
+        // Agents that get no instructions aren't looked up for.
+        assert_eq!(
+            connection_instructions("c", AgentType::Grok, dir.path(), Some(&lookup)).await,
+            None
+        );
+        assert_eq!(lookup.0.lock().unwrap().len(), 1);
     }
 
     /// Every agent connection is made by `spawn_agent_connection`, which asks
@@ -25264,6 +25391,16 @@ mod tests {
                 as Arc<dyn crate::acp::question::SessionQuestionAccess>,
             plan_approvals: Arc::new(TestNoPlanApprovals)
                 as Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
+            user_instructions: Arc::new(TestNoUserInstructions),
+        }
+    }
+
+    struct TestNoUserInstructions;
+
+    #[async_trait::async_trait]
+    impl UserInstructionsLookup for TestNoUserInstructions {
+        async fn for_cwd(&self, _cwd: &Path) -> crate::harness::InstructionTexts {
+            Default::default()
         }
     }
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bot, Info, Monitor, Moon, Network, Settings2, Smartphone, Sun, UserRound, X } from "lucide-react";
+import { Bot, Info, Monitor, Moon, Network, ScrollText, Settings2, Smartphone, Sun, UserRound, X } from "lucide-react";
 import { reachability, type KeepAwakeMode, type KeepAwakeStatus, type Reachability } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
@@ -16,8 +16,9 @@ import { ConnectionModeChooser, type RemoteLink } from "@/panels/ConnectionStatu
 import { DevicesSettings } from "@/panels/Devices";
 import { GithubMark } from "@/panels/GithubCloneDialog";
 import { GithubSettings, useGithubSignInOffered } from "@/panels/Github";
+import { InstructionsSettings, useInstructionsOffered } from "@/panels/Instructions";
 
-export type SettingsTab = "general" | "account" | "agents" | "github" | "connection" | "devices" | "about";
+export type SettingsTab = "general" | "account" | "agents" | "instructions" | "github" | "connection" | "devices" | "about";
 
 interface TabInfo {
   id: SettingsTab;
@@ -38,6 +39,7 @@ export function SettingsDialog({
   account,
   link,
   updateHint,
+  workspaceId,
   tab,
   onTab,
   onClose,
@@ -47,15 +49,19 @@ export function SettingsDialog({
   account: AccountState;
   link?: RemoteLink;
   updateHint: boolean;
+  /** The workspace selected behind the dialog, whose repository's instructions it offers. */
+  workspaceId: string | null;
   tab: SettingsTab;
   onTab(tab: SettingsTab): void;
   onClose(): void;
 }) {
   const githubOffered = useGithubSignInOffered();
+  const instructionsOffered = useInstructionsOffered();
   const tabs: TabInfo[] = [
     { id: "general", label: "General", icon: Settings2, group: "Settings" },
     { id: "account", label: "Account", icon: UserRound, group: "Settings" },
     { id: "agents", label: "Agents", icon: Bot, group: "Host" },
+    ...(instructionsOffered ? [{ id: "instructions", label: "Instructions", icon: ScrollText, group: "Host" } as const] : []),
     ...(githubOffered ? [{ id: "github", label: "GitHub", icon: GithubMark, group: "Host" } as const] : []),
     ...(remote && link ? [{ id: "connection", label: "Connection", icon: Network, group: "Host" } as const] : []),
     ...(!remote ? [{ id: "devices", label: "Devices", icon: Smartphone, group: "Host" } as const] : []),
@@ -102,6 +108,7 @@ export function SettingsDialog({
           {current.id === "general" && <General bridge={bridge} remote={remote} />}
           {current.id === "account" && <AccountPanel state={account} />}
           {current.id === "agents" && <AgentsSettings remote={remote} />}
+          {current.id === "instructions" && <InstructionsSettings workspaceId={workspaceId} />}
           {current.id === "github" && <GithubSettings remote={remote} />}
           {current.id === "connection" && link && (
             <>

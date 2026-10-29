@@ -7,6 +7,7 @@ import {
   FolderOpen,
   GitBranch,
   GitBranchPlus,
+  GitMerge,
   History,
   Plus,
   Trash2,
@@ -14,6 +15,7 @@ import {
 } from "lucide-react";
 import {
   busyDetails,
+  conflictView,
   dirtyDetails,
   fullName,
   hasCapability,
@@ -610,6 +612,7 @@ function WorkspaceRow(props: RowProps) {
     hidden.some((n) => n.workspace.workspace_id === props.workspaceId) || (folded && earlierSelected);
   const base = baseLabel(w);
   const preparing = props.opening === w.workspace_id;
+  const conflicts = useHost((s) => conflictView(s, w.workspace_id)?.line ?? null);
 
   return (
     <div data-testid={`workspace-${w.workspace_id}`}>
@@ -664,6 +667,11 @@ function WorkspaceRow(props: RowProps) {
               <span className="text-muted-foreground min-w-0 truncate">Preparing workspace…</span>
             ) : (
               isRoot && w.branch && <span className="text-muted-foreground min-w-0 truncate font-mono">{w.branch}</span>
+            )}
+            {conflicts && (
+              <GitMerge className="text-brand size-3 shrink-0" role="img" aria-label={conflicts}>
+                <title>{conflicts}</title>
+              </GitMerge>
             )}
             {working > 0 && (
               <span className="sr-only">{working} working</span>

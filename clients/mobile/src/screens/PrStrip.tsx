@@ -4,12 +4,23 @@
 // check, Merge). Merge turns the sheet into its confirm, and the Host merges
 // at the head shown there or refuses. Once merged, Continue moves the worktree
 // to a new branch from the PR's base, and the strip goes. The phone never asks
-// GitHub.
+// GitHub. A branch that conflicts with its base says so on the strip (with or
+// without a PR), and the sheet hands the conflicts to the session's agent.
 
 import { useEffect, useState } from "react";
 import { Linking, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import * as Haptics from "expo-haptics";
-import type { CheckState, Compatibility, PrCheckItem, PrEntry, PrState, WorkspaceInfo } from "@zwiim/sdk";
+import {
+  resolveLabel,
+  type CheckState,
+  type Compatibility,
+  type ConflictView,
+  type PrCheckItem,
+  type PrEntry,
+  type PrState,
+  type ResolveStrategy,
+  type WorkspaceInfo,
+} from "@zwiim/sdk";
 import {
   continueError,
   continueLine,
@@ -18,7 +29,9 @@ import {
   prErrorText,
   prLabel,
   prLook,
+  resolveError,
   shortSha,
+  stopResolveError,
   type PrTone,
 } from "../host/pr";
 import { githubSignInOffered } from "../host/github";
@@ -46,6 +59,7 @@ export function PrStrip({
   entry,
   workspace,
   compat,
+  conflicts,
   connected,
   hostName,
 }: {
@@ -53,6 +67,8 @@ export function PrStrip({
   entry: PrEntry | undefined;
   workspace: WorkspaceInfo | undefined;
   compat: Compatibility | null;
+  /** The branch's conflicts with its base, or null when there are none to show. */
+  conflicts: ConflictView | null;
   connected: boolean;
   hostName: string;
 }) {
@@ -70,6 +86,36 @@ export function PrStrip({
   const pr: PrState | null =
     feedPr && justMerged === feedPr.number && feedPr.state !== "merged" ? { ...feedPr, state: "merged" } : feedPr;
 
+  // A continued PR is behind the worktree; its conflicts are the new branch's.
+  const gone = !pr || (feedPr !== null && continued === feedPr.number);
+  if (gone && conflicts) {
+    return (
+      <>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={conflictText(conflicts)}
+          onPress={() => setSheet(true)}
+          style={({ pressed }) => [styles.strip, { borderBottomColor: theme.line }, pressed && { backgroundColor: theme.surface }]}
+          testID="pr-strip"
+        >
+          <Icon icon={GitMerge} color={theme.accent} size={16} />
+          <T variant="callout" color={theme.fg} numberOfLines={1} style={styles.flex} testID="pr-strip-conflicts">
+            {conflictText(conflicts)}
+          </T>
+          <Icon icon={ChevronRight} color={theme.faint} size={16} />
+        </Pressable>
+        <Sheet visible={sheet} onClose={() => setSheet(false)}>
+          <T variant="title">Merge conflicts</T>
+          <ConflictBlock workspace_id={workspace_id} view={conflicts} hasPr={false} connected={connected} hostName={hostName} />
+          {entry?.error && (
+            <T variant="monoSm" color={theme.mut} testID="pr-strip-error">
+              {prErrorText(entry.error.code, entry.error.message, hostName, githubSignInOffered(compat))}
+            </T>
+          )}
+        </Sheet>
+      </>
+    );
+  }
   if (!entry) return null;
   if (feedPr && continued === feedPr.number) return null;
   if (!pr) {
@@ -86,11 +132,13 @@ export function PrStrip({
 
   const look = prLook(pr, connected);
   const color = toneColor(look.tone, theme);
+  // A merged or closed PR keeps Continue; its branch's conflicts no longer matter.
+  const conflict = look.settled ? null : conflicts;
   return (
     <>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={prLabel(pr.number, look)}
+        accessibilityLabel={conflict ? `${prLabel(pr.number, look)}, ${conflictText(conflict)}` : prLabel(pr.number, look)}
         onPress={() => setSheet(true)}
         style={({ pressed }) => [styles.strip, { borderBottomColor: theme.line }, pressed && { backgroundColor: theme.surface }]}
         testID="pr-strip"
@@ -101,8 +149,8 @@ export function PrStrip({
           {look.status}
         </T>
         {look.settled ? <View style={styles.flex} /> : (
-          <T variant="monoSm" color={theme.mut} numberOfLines={1} style={styles.flex}>
-            {look.checks}
+          <T variant="monoSm" color={theme.mut} numberOfLines={1} style={styles.flex} testID="pr-strip-checks">
+            {conflict ? conflictText(conflict) : look.checks}
           </T>
         )}
         <Icon icon={ChevronRight} color={theme.faint} size={16} />
@@ -113,6 +161,7 @@ export function PrStrip({
         workspace_id={workspace_id}
         connected={connected}
         hostName={hostName}
+        conflicts={conflict}
         canContinue={offersContinue(pr, workspace, compat)}
         signInOffered={githubSignInOffered(compat)}
         onMerged={setJustMerged}
@@ -129,6 +178,7 @@ function PrSheet({
   workspace_id,
   connected,
   hostName,
+  conflicts,
   canContinue,
   signInOffered,
   onMerged,
@@ -140,6 +190,7 @@ function PrSheet({
   workspace_id: string;
   connected: boolean;
   hostName: string;
+  conflicts: ConflictView | null;
   canContinue: boolean;
   /** A `gh_unauthenticated` refusal points to the Host tab's GitHub group. */
   signInOffered: boolean;
@@ -260,7 +311,10 @@ function PrSheet({
         ) : null
       ) : (
         <>
-          {look.reason ? (
+          {conflicts ? (
+            <ConflictBlock workspace_id={workspace_id} view={conflicts} hasPr connected={connected} hostName={hostName} />
+          ) : null}
+          {conflicts?.line ? null : look.reason ? (
             <T variant="callout" color={theme.mut} testID="pr-merge-reason">
               {look.reason}
             </T>
@@ -269,19 +323,124 @@ function PrSheet({
               {`${look.method} into ${pr.base}`}
             </T>
           ) : null}
-          <Button
-            tall
-            kind="done"
-            label="Merge"
-            icon={GitMerge}
-            disabled={!look.canMerge}
-            onPress={() => setConfirm(true)}
-            testID="pr-merge"
-          />
+          {conflicts?.resolve ? null : (
+            <Button
+              tall
+              kind="done"
+              label="Merge"
+              icon={GitMerge}
+              disabled={!look.canMerge}
+              onPress={() => setConfirm(true)}
+              testID="pr-merge"
+            />
+          )}
         </>
       )}
       <Button tall kind="secondary" label="Open on GitHub" onPress={() => open(pr.url)} testID="pr-open" />
     </Sheet>
+  );
+}
+
+/** The strip's one line: the conflicts, or the turn still resolving once they cleared. */
+const conflictText = (view: ConflictView) => view.line ?? "Resolving conflicts…";
+
+/**
+ * The conflict line, its files and the resolve buttons. No confirm: the Host
+ * checkpoints before the agent's turn, so the turn can be undone.
+ */
+function ConflictBlock({
+  workspace_id,
+  view,
+  hasPr,
+  connected,
+  hostName,
+}: {
+  workspace_id: string;
+  view: ConflictView;
+  /** `Merge conflicts` stands where Merge was; without a PR, `Resolve conflicts`. */
+  hasPr: boolean;
+  connected: boolean;
+  hostName: string;
+}) {
+  const theme = useTheme();
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const action = view.resolve;
+  const resolve = async (strategy?: ResolveStrategy) => {
+    if (action?.state !== "ready") return;
+    setStarting(true);
+    setError(null);
+    try {
+      await currentHost.resolveConflicts(workspace_id, action.session_id, strategy);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    } catch (e) {
+      setError(resolveError(e, hostName));
+    } finally {
+      setStarting(false);
+    }
+  };
+  const stop = async () => {
+    if (action?.state !== "resolving") return;
+    setError(null);
+    try {
+      await currentHost.cancel(action.session_id);
+    } catch (e) {
+      setError(stopResolveError(e, hostName));
+    }
+  };
+  return (
+    <>
+      {view.line ? (
+        <T variant="callout" color={theme.fg} testID="conflict-line">
+          {view.line}
+        </T>
+      ) : null}
+      {view.files.length > 0 ? (
+        <ScrollView style={styles.files} accessibilityLabel="Conflicting files" testID="conflict-files">
+          {view.files.map((f) => (
+            <T key={f} variant="mono" color={theme.mut} numberOfLines={1} ellipsizeMode="middle" style={styles.file}>
+              {f}
+            </T>
+          ))}
+        </ScrollView>
+      ) : null}
+      {action?.state === "blocked" ? (
+        <T variant="callout" color={theme.mut} testID="conflict-blocked">
+          {action.reason}
+        </T>
+      ) : null}
+      {error ? (
+        <T color={theme.err} testID="conflict-error">
+          {error}
+        </T>
+      ) : null}
+      {action ? (
+        <>
+          <Button
+            tall
+            kind="primary"
+            label={resolveLabel(action, hasPr)}
+            icon={GitMerge}
+            loading={starting}
+            disabled={action.state !== "ready" || !connected}
+            onPress={() => void resolve()}
+            testID="conflict-resolve"
+          />
+          {action.state === "resolving" ? (
+            <Button tall kind="secondary" label="Cancel" disabled={!connected} onPress={() => void stop()} testID="conflict-cancel" />
+          ) : (
+            <Button
+              tall
+              kind="secondary"
+              label="Rebase instead"
+              disabled={action.state !== "ready" || !connected || starting}
+              onPress={() => void resolve("rebase")}
+              testID="conflict-rebase"
+            />
+          )}
+        </>
+      ) : null}
+    </>
   );
 }
 
@@ -320,6 +479,8 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   statusRow: { flexDirection: "row", alignItems: "center", gap: space.sm },
   checks: { maxHeight: 240 },
+  files: { maxHeight: 160 },
+  file: { paddingVertical: space.xs },
   check: {
     minHeight: 44,
     flexDirection: "row",

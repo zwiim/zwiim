@@ -14,6 +14,7 @@ pub mod compat;
 pub mod error;
 pub mod events;
 pub mod http;
+pub mod instructions;
 pub mod ws;
 
 #[cfg(test)]
@@ -131,6 +132,8 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/host.lan_endpoint", post(http::host_lan_endpoint))
         .route("/host.update.status", post(http::host_update_status))
         .route("/host.diagnostics", post(http::host_diagnostics))
+        .route("/host.instructions", post(http::host_instructions))
+        .route("/host.instructions.set", post(http::host_instructions_set))
         .route("/host.update.check", post(http::host_update_check))
         .route("/host.update.apply", post(http::host_update_apply))
         .route("/agent.list", post(http::agent_list))

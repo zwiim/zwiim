@@ -33,6 +33,8 @@ const OPS: &[&str] = &[
     "host.update.apply",
     "host.update.set_channel",
     "host.diagnostics",
+    "host.instructions",
+    "host.instructions.set",
     "agent.list",
     "agent.setup",
     "agent.auth_status",
@@ -4590,6 +4592,50 @@ async fn unknown_request_fields_are_named() {
     assert_eq!(
         details,
         Some(json!({"reason": "unknown_field", "field": "from_a_newer_client"}))
+    );
+}
+
+#[tokio::test]
+async fn host_instructions_round_trip() {
+    let h = host(false).await;
+    assert_eq!(
+        h.ok("host.instructions", json!({})).await,
+        json!({"host": {"general": null, "resolve_conflicts": null}, "workspaces": {}})
+    );
+    h.ok(
+        "host.instructions.set",
+        json!({"scope": "host", "general": "Be brief."}),
+    )
+    .await;
+    let saved = h
+        .ok(
+            "host.instructions.set",
+            json!({"scope": "workspace", "workspace_id": h.workspace_id, "resolve_conflicts": "Keep ours."}),
+        )
+        .await;
+    assert_eq!(saved["host"]["general"], "Be brief.");
+    assert_eq!(
+        saved["workspaces"][&h.workspace_id]["resolve_conflicts"],
+        "Keep ours."
+    );
+    assert_eq!(h.ok("host.instructions", json!({})).await, saved);
+    // A worktree has no texts of its own; it uses its root's.
+    let (status, code) = h
+        .err(
+            "host.instructions.set",
+            json!({"scope": "workspace", "workspace_id": h.wt_workspace_id, "general": "x"}),
+        )
+        .await;
+    assert_eq!((status, code.as_str()), (StatusCode::NOT_FOUND, "not_found"));
+    let (status, code) = h
+        .err(
+            "host.instructions.set",
+            json!({"scope": "host", "general": "x".repeat(8 * 1024 + 1)}),
+        )
+        .await;
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::PAYLOAD_TOO_LARGE, "too_large")
     );
 }
 

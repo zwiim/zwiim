@@ -207,6 +207,24 @@ describe("the current host", () => {
     await current.clear();
   });
 
+  it("hands a worktree's conflicts to the session chosen to resolve them", async () => {
+    const s = setup();
+    await pin(s);
+    const asked: unknown[] = [];
+    s.w.host.backend.handlers["workspace.resolve_conflicts"] = (p: unknown) => (
+      asked.push(p),
+      { base: "origin/main", files: ["a"] }
+    );
+    const current = s.launch();
+    await current.open(s.entry);
+    await waitFor(() => current.state.view?.status === "live");
+
+    const started = await current.resolveConflicts("tree", "s1", "rebase");
+    expect(asked).toEqual([{ workspace_id: "tree", session_id: "s1", strategy: "rebase" }]);
+    expect(started.files).toEqual(["a"]);
+    await current.clear();
+  });
+
   it("forgets the pairing a host dropped, and asks to pair again", async () => {
     const s = setup({ trusted: false });
     await pin(s);

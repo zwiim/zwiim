@@ -364,6 +364,27 @@ pub async fn host_keep_awake_set(
     Ok(Json(json!(crate::power::set(&state, p).await?)))
 }
 
+// ─── user instructions ───────────────────────────────────────────────────
+//
+// The user's own text for their agents, Host-wide and per root workspace.
+
+pub async fn host_instructions(
+    Extension(state): Extension<Arc<AppState>>,
+) -> ZResult<crate::harness::user_instructions::UserInstructions> {
+    Ok(Json(crate::harness::user_instructions::load(
+        &state.instructions_path,
+    )))
+}
+
+pub async fn host_instructions_set(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<crate::protocol::instructions::InstructionsChange>,
+) -> ZResult<crate::harness::user_instructions::UserInstructions> {
+    Ok(Json(
+        crate::protocol::instructions::set(&state.db.conn, &state.instructions_path, p).await?,
+    ))
+}
+
 // ─── device ──────────────────────────────────────────────────────────────
 //
 // Pairing, listing and revocation require local host authority (see
@@ -1034,6 +1055,7 @@ pub async fn workspace_resolve_conflicts(
         &state.connection_manager,
         &RuntimeLauncher { state: &state },
         &state.data_dir,
+        &state.instructions_path,
         &p.workspace_id,
         &p.session_id,
         p.strategy.unwrap_or_default(),

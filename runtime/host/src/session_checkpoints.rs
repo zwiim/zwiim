@@ -28,7 +28,10 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::acp::types::{AcpEvent, ConnectionStatus, EventEnvelope, PromptInputBlock};
 use crate::app_state::AppState;
 use crate::git_harness::checkpoint::{self, Checkpoint, CheckpointKey, Phase, Saved};
+use crate::git_harness::{self, ConflictState};
+use crate::harness::unresolved_notice;
 use crate::models::message::{ContentBlock, MessageTurn, TurnRole};
+use crate::workspace::resolve::RESOLVE_ACTION;
 
 /// Turns of checkpoints kept per session.
 const KEEP_TURNS: u32 = 50;
@@ -37,8 +40,27 @@ const MAX_DELEGATION_DEPTH: usize = 8;
 
 /// The open turns, one per connection, with their start checkpoints. Cheap to
 /// clone; clones share state.
-#[derive(Clone, Default)]
-pub struct TurnCheckpoints(Arc<Mutex<Inner>>);
+#[derive(Clone)]
+pub struct TurnCheckpoints {
+    inner: Arc<Mutex<Inner>>,
+    /// Where the check a resolve turn left owed queues what the agent must
+    /// hear next turn: the connection manager's notices, by conversation id.
+    notices: Notices,
+}
+
+/// One-shot notices waiting for a conversation's next turn, by conversation id.
+pub(crate) type Notices = Arc<Mutex<HashMap<i32, Vec<String>>>>;
+
+/// What the Host started a turn for. The action goes on the turn's start
+/// checkpoint; a resolve turn's end is checked against `base` and `files`.
+#[derive(Debug, Clone)]
+pub(crate) struct TurnTag {
+    pub action: &'static str,
+    /// The base whose conflicts the turn resolves.
+    pub base: String,
+    /// The conflicted files the turn was sent for.
+    pub files: Vec<String>,
+}
 
 /// The checkpoints a chat rewind makes stale: those of session `session_id`
 /// at `root` from turn `from` on (see [`rewind_from`]).
@@ -58,6 +80,10 @@ struct Inner {
     /// The last turn number handed out, by session id. Keeps two children of
     /// one session from taking the same number.
     last_ordinal: HashMap<String, u32>,
+    /// Resolve turns that ended with conflicts left, by conversation id: the
+    /// conversation's next turn checks again and tells the agent what is still
+    /// left, so a revert or a fix by hand since leaves it unsaid.
+    owed: HashMap<i32, (PathBuf, TurnTag)>,
     /// Tests: the next start checkpoint signals the first and waits for the
     /// second before it is saved.
     #[cfg(test)]
@@ -73,6 +99,8 @@ struct OpenTurn {
     start_seq: u64,
     /// Why the start checkpoint was not taken, if it was not.
     start_skipped: Option<&'static str>,
+    /// Set when the Host started the turn.
+    tag: Option<TurnTag>,
 }
 
 struct Closing {
@@ -83,8 +111,16 @@ struct Closing {
 }
 
 impl TurnCheckpoints {
+    /// A tracker whose end checks queue into `notices`.
+    pub(crate) fn new(notices: Notices) -> Self {
+        Self {
+            inner: Arc::default(),
+            notices,
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, Inner> {
-        self.0.lock().unwrap_or_else(|p| p.into_inner())
+        self.inner.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     /// Take the start checkpoint of the turn `blocks` is about to begin on
@@ -97,12 +133,15 @@ impl TurnCheckpoints {
         working_dir: Option<&Path>,
         start_seq: u64,
         blocks: &[PromptInputBlock],
-        action: Option<&'static str>,
+        tag: Option<TurnTag>,
     ) {
         let (Some(conversation_id), Some(root)) = (conversation_id, working_dir) else {
             return;
         };
         self.settle(connection_id, conversation_id).await;
+        if crate::harness::takes_notices(blocks) {
+            self.queue_owed(conversation_id).await;
+        }
         if !crate::git_repo::is_git_repo(root) {
             tracing::debug!(
                 conversation_id,
@@ -162,6 +201,7 @@ impl TurnCheckpoints {
                 resume.notified().await;
             }
         }
+        let action = tag.as_ref().map(|t| t.action);
         let saved =
             checkpoint::save_tagged(root, &key, Phase::Start, fingerprint.as_deref(), action).await;
         log_saved(&key, Phase::Start, &saved);
@@ -180,6 +220,7 @@ impl TurnCheckpoints {
                 key,
                 start_seq,
                 start_skipped,
+                tag,
             },
         );
         tokio::spawn(async move { checkpoint::cap(&cap_root, &cap_session, KEEP_TURNS).await });
@@ -290,6 +331,22 @@ impl TurnCheckpoints {
         .await;
     }
 
+    /// Check again what the resolve turn `conversation_id` last ended left,
+    /// and queue the notice for what still is.
+    async fn queue_owed(&self, conversation_id: i32) {
+        let Some((root, tag)) = self.lock().owed.remove(&conversation_id) else {
+            return;
+        };
+        if let Some(notice) = unresolved_after(&root, &tag, false).await {
+            self.notices
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .entry(conversation_id)
+                .or_default()
+                .push(notice);
+        }
+    }
+
     fn take_open(&self, pick: impl Fn(&str, &OpenTurn) -> bool) -> Vec<(String, OpenTurn)> {
         let mut inner = self.lock();
         let ids: Vec<String> = inner
@@ -314,7 +371,7 @@ impl TurnCheckpoints {
         let reason = reason.to_string();
         let conversation_id = turn.conversation_id;
         let root = turn.root.clone();
-        let handle = tokio::spawn(end_turn(turn, reason));
+        let handle = tokio::spawn(end_turn(turn, reason, self.inner.clone()));
         let done = handle.map(|_| ()).boxed().shared();
         let mut inner = self.lock();
         inner.closing.retain(|c| c.done.peek().is_none());
@@ -348,8 +405,21 @@ impl TurnCheckpoints {
     }
 }
 
-/// Save `turn`'s end checkpoint and log what the turn changed.
-async fn end_turn(turn: OpenTurn, reason: String) {
+/// Check a resolve turn's result, save `turn`'s end checkpoint and log what
+/// the turn changed. A resolve turn that left conflicts owes its
+/// conversation's next turn a check.
+async fn end_turn(turn: OpenTurn, reason: String, inner: Arc<Mutex<Inner>>) {
+    if reason != "not_sent" {
+        if let Some(tag) = turn.tag.as_ref().filter(|t| t.action == RESOLVE_ACTION) {
+            if unresolved_after(&turn.root, tag, true).await.is_some() {
+                inner
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .owed
+                    .insert(turn.conversation_id, (turn.root.clone(), tag.clone()));
+            }
+        }
+    }
     let saved = checkpoint::save(&turn.root, &turn.key, Phase::End, None).await;
     log_saved(&turn.key, Phase::End, &saved);
     let interrupted = reason != "end_turn";
@@ -398,6 +468,93 @@ async fn end_turn(turn: OpenTurn, reason: String) {
             "[zwiim] turn changes unavailable"
         ),
     }
+}
+
+/// What a resolve turn left unresolved in `root`, as the notice its agent
+/// hears next turn: files still unmerged, conflict markers left in the
+/// files it was sent for, or a merge or rebase left to conclude. `None` when
+/// nothing is left, when the base merges
+/// cleanly, or when the agent never started the merge (the conflicts are
+/// still shown to the user). The markers found are noted so the workspace
+/// keeps showing those files as conflicts. At the turn's own end
+/// (`turn_end`), markers an earlier resolve turn already left are read as
+/// content the agent chose to keep, and the note is cleared.
+async fn unresolved_after(root: &Path, tag: &TurnTag, turn_end: bool) -> Option<String> {
+    let check = match git_harness::check_merge(root, &tag.base).await {
+        Ok(Some(check)) => check,
+        Ok(None) => return None,
+        Err(e) => {
+            tracing::debug!(
+                code = ?e.code,
+                "[zwiim] resolve turn end check skipped: {}",
+                e.message
+            );
+            return None;
+        }
+    };
+    let (operation, unmerged) = match check.state {
+        ConflictState::InProgress { operation, files } => (Some(operation), files),
+        ConflictState::Clean => (None, Vec::new()),
+        ConflictState::Conflicts { .. } => return None,
+    };
+    let scan: Vec<String> = tag
+        .files
+        .iter()
+        .filter(|f| !unmerged.contains(f))
+        .cloned()
+        .collect();
+    let markers = match git_harness::leftover_markers(root, &scan).await {
+        Ok(markers) => markers,
+        Err(e) => {
+            tracing::debug!(
+                code = ?e.code,
+                "[zwiim] resolve turn marker scan skipped: {}",
+                e.message
+            );
+            Vec::new()
+        }
+    };
+    // Markers an earlier resolve turn already left, and this one looked at
+    // and kept, are the files' content: stop showing them as conflicts.
+    let noted = match turn_end {
+        true => git_harness::noted_markers(root, &tag.base)
+            .await
+            .unwrap_or_default(),
+        false => Vec::new(),
+    };
+    let markers = if !markers.is_empty() && markers.iter().all(|f| noted.contains(f)) {
+        tracing::info!(
+            markers = markers.len(),
+            "[zwiim] resolve turn kept noted markers; reading them as content"
+        );
+        Vec::new()
+    } else {
+        markers
+    };
+    if let Err(e) = git_harness::note_markers(root, &tag.base, &markers).await {
+        tracing::debug!(
+            code = ?e.code,
+            "[zwiim] resolve turn marker note skipped: {}",
+            e.message
+        );
+    }
+    // A merge or rebase stopped with everything resolved still has to be
+    // concluded; the push gate refuses until it is.
+    let concluding = matches!(operation.as_deref(), Some("merge" | "rebase"));
+    if unmerged.is_empty() && markers.is_empty() && !concluding {
+        return None;
+    }
+    tracing::info!(
+        unmerged = unmerged.len(),
+        markers = markers.len(),
+        "[zwiim] resolve turn left conflicts"
+    );
+    Some(unresolved_notice(
+        &tag.base,
+        operation.as_deref(),
+        &unmerged,
+        &markers,
+    ))
 }
 
 fn log_saved(key: &CheckpointKey, phase: Phase, saved: &Saved) {
@@ -598,6 +755,16 @@ pub(crate) async fn start_checkpoint_of(
     let mut starts = start_checkpoints(root, session_id).await;
     let idx = *match_turns(turns, &starts).get(turn_id)?;
     Some(starts.swap_remove(idx))
+}
+
+/// The end checkpoint of the turn start checkpoint `start` opens, if the
+/// turn ended with one.
+pub(crate) async fn end_checkpoint_of(root: &Path, start: &Checkpoint) -> Option<Checkpoint> {
+    checkpoint::list(root, &start.key.session_id)
+        .await
+        .ok()?
+        .into_iter()
+        .find(|c| c.phase == Phase::End && c.key == start.key)
 }
 
 /// The first turn number a chat rewind to before user turn `turn_id` makes

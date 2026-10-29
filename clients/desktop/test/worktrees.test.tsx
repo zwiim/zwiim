@@ -162,6 +162,29 @@ describe("workspace tree", () => {
     expect(props.onSelectWorkspace).toHaveBeenCalledWith("a1b2c3d4");
   });
 
+  it("marks a worktree whose branch conflicts with its base", async () => {
+    const { t } = treeHost();
+    const snapshot = t.snapshot.bind(t);
+    const check = { base: "origin/main", base_sha: "b".repeat(40), head_sha: "h".repeat(40) };
+    t.snapshot = () => ({ ...snapshot(), conflicts: { a1b2c3d4: { ...check, state: "conflicts" as const, files: ["a", "b"] } } });
+    await mount(t, () => <Sidebar {...sidebarProps()} />);
+    const row = screen.getByTestId("workspace-a1b2c3d4");
+    expect(within(row).getByLabelText("2 files conflict with main")).toBeTruthy();
+    await t.feedEvent("workspace.conflicts_changed", { workspace_id: "a1b2c3d4", conflicts: { ...check, state: "clean" } });
+    expect(within(row).queryByLabelText("2 files conflict with main")).toBeNull();
+  });
+
+  it("marks no conflicts on a Host that doesn't check them", async () => {
+    const { t } = treeHost();
+    t.handlers["host.hello"] = () =>
+      hostHello({ capabilities: CLIENT_CAPABILITIES.filter((c) => c !== "workspace.conflicts") });
+    const snapshot = t.snapshot.bind(t);
+    const check = { base: "origin/main", base_sha: "b".repeat(40), head_sha: "h".repeat(40) };
+    t.snapshot = () => ({ ...snapshot(), conflicts: { a1b2c3d4: { ...check, state: "conflicts" as const, files: ["a"] } } });
+    await mount(t, () => <Sidebar {...sidebarProps()} />);
+    expect(screen.queryByLabelText("1 file conflicts with main")).toBeNull();
+  });
+
   it("creates a worktree from the dialog without a task, and selects it", async () => {
     const { t } = treeHost();
     t.handlers["workspace.create_worktree"] = () => worktree("9f8e7d6c");

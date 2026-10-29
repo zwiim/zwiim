@@ -4468,12 +4468,23 @@ pub(crate) fn codex_launch_initial_agent_mode() -> Option<String> {
 }
 
 /// Whether `~/.codex/config.toml` sets top-level `key` itself (e.g.
-/// `model_reasoning_summary`, `developer_instructions`), which Zwiim's launch
-/// default then leaves alone.
+/// `model_reasoning_summary`), which Zwiim's launch default then leaves alone.
 pub(crate) fn codex_config_sets(key: &str) -> bool {
     load_codex_config_toml_raw()
         .and_then(|raw| raw.parse::<toml::Table>().ok())
         .is_some_and(|table| table.contains_key(key))
+}
+
+/// The string `~/.codex/config.toml` sets for top-level `key`, if any (e.g. the
+/// user's own `developer_instructions`, which Zwiim's launch combines with its
+/// own). `CODEX_HOME` moves the file, as it does for Codex.
+pub(crate) fn codex_config_string(key: &str) -> Option<String> {
+    load_codex_config_toml_raw()
+        .and_then(|raw| raw.parse::<toml::Table>().ok())
+        .and_then(|mut table| match table.remove(key) {
+            Some(toml::Value::String(value)) => Some(value),
+            _ => None,
+        })
 }
 
 /// Merge the Grok panel's structured control values into the raw config.toml
@@ -16172,6 +16183,11 @@ wire_api = "chat"
         temp_env::with_var("CODEX_HOME", Some(dir.path()), || {
             assert!(codex_config_sets("developer_instructions"));
             assert!(!codex_config_sets("model_reasoning_summary"));
+            assert_eq!(
+                codex_config_string("developer_instructions").as_deref(),
+                Some("mine")
+            );
+            assert_eq!(codex_config_string("model_reasoning_summary"), None);
         });
         let empty = tempfile::tempdir().expect("tempdir");
         temp_env::with_var("CODEX_HOME", Some(empty.path()), || {

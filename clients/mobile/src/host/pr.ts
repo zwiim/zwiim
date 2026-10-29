@@ -8,6 +8,7 @@
 import {
   hasCapability,
   isClientError,
+  resolveRefusalText,
   type Compatibility,
   type MergeMethod,
   type PrEntry,
@@ -156,6 +157,20 @@ export function continueError(e: unknown, number: number, hostName: string, sign
     return mergeError(e, hostName, signInOffered);
   }
   return "Couldn't continue. Try again.";
+}
+
+/** A refused or failed conflict resolve, in words. */
+export function resolveError(e: unknown, hostName: string): string {
+  const refusal = resolveRefusalText(e);
+  if (refusal) return refusal;
+  if (isClientError(e, "network") || isClientError(e, "timeout")) return `Not connected to ${hostName}. Try again when it's back.`;
+  return "Couldn't resolve conflicts. Try again.";
+}
+
+/** Cancel on the resolving turn failed, in words. */
+export function stopResolveError(e: unknown, hostName: string): string {
+  if (isClientError(e, "network") || isClientError(e, "timeout")) return `Not connected to ${hostName}. Try again when it's back.`;
+  return "Couldn't stop resolving. Try again.";
 }
 
 /** The head commit as people read it: `abc1234`. */

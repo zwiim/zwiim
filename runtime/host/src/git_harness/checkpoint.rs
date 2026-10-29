@@ -16,7 +16,9 @@
 //! Host restart.
 //!
 //! [`restore`] puts a checkpoint's files and index back, saving the state it
-//! replaces first. It never moves HEAD.
+//! replaces first. It never moves HEAD; [`unwind_unpushed`] does, for a
+//! caller that asks, and [`abort_operation`] clears a merge or rebase in
+//! progress before it.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -416,13 +418,13 @@ async fn store(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Restored {
     /// HEAD is no longer the commit it was when the checkpoint was taken.
-    /// It was left where it is.
+    /// [`restore`] left it where it is.
     pub head_moved: bool,
 }
 
 /// Put the worktree and index at `root` back to `cp`. HEAD, branches,
 /// commits and ignored files are never touched: a turn's commits stay and
-/// show as undone changes.
+/// show as undone changes, unless [`unwind_unpushed`] moved HEAD back first.
 ///
 /// The state being replaced is saved first, as a recovery checkpoint at
 /// `refs/zwiim/checkpoints/<session_id>/revert-<unix_ms>`. It is not a turn
@@ -477,6 +479,95 @@ pub async fn restore(root: &Path, cp: &Checkpoint) -> Result<Restored, GitError>
     Ok(Restored {
         head_moved: head != cp.head,
     })
+}
+
+/// Abort a merge or rebase in progress at `root`, so a [`restore`] of `cp`
+/// that follows finds the repository idle. What the operation had staged or
+/// written so far is not kept. Any other operation is left for [`restore`]
+/// to refuse.
+///
+/// The caller holds the workspace exclusively.
+pub async fn abort_operation(root: &Path, cp: &Checkpoint) -> Result<(), GitError> {
+    let root = session_root(root, &cp.key.session_id).map_err(restore_error)?;
+    let out = git_ok(root, &["rev-parse", "--absolute-git-dir"], "locate git dir")
+        .await
+        .map_err(restore_error)?;
+    let git_dir = PathBuf::from(out.stdout.trim());
+    let args: &[&str] = match super::conflicts::operation(&git_dir) {
+        Some("merge") => &["merge", "--abort"],
+        Some("rebase") => &["rebase", "--abort"],
+        _ => return Ok(()),
+    };
+    let mut cmd = git(root);
+    cmd.args(args);
+    checked(run(cmd, RESTORE_BUDGET, "abort").await, "abort").map_err(restore_error)?;
+    Ok(())
+}
+
+/// Move the branch at `root` back to `cp`'s HEAD with `git reset --soft`,
+/// leaving the index and worktree, when the commits since were never pushed:
+/// HEAD is still `end_head`, where the turn `cp` starts ended, `cp`'s HEAD
+/// is an ancestor of it, and no commit after it is reachable from the
+/// branch's upstream (no upstream counts as never pushed). Whether it moved.
+///
+/// The caller holds the workspace exclusively.
+pub async fn unwind_unpushed(
+    root: &Path,
+    cp: &Checkpoint,
+    end_head: Option<&str>,
+) -> Result<bool, GitError> {
+    let root = session_root(root, &cp.key.session_id).map_err(restore_error)?;
+    let (Some(start), Some(now)) = (cp.head.as_deref(), head(root).await.map_err(restore_error)?)
+    else {
+        return Ok(false);
+    };
+    // A commit made since the turn ended is not the turn's to undo.
+    if start == now || end_head != Some(now.as_str()) {
+        return Ok(false);
+    }
+    let mut cmd = git(root);
+    cmd.args(["merge-base", "--is-ancestor", start, &now])
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    let out = run(cmd, BUDGET, "compare history").await?;
+    if !out.status.success() {
+        // Exit 1: not an ancestor. Anything else: a failure; both leave HEAD.
+        if out.status.code() != Some(1) {
+            return Err(restore_error(SkipReason::Failed(format!(
+                "compare history: {}",
+                out.text().trim()
+            ))));
+        }
+        return Ok(false);
+    }
+    let range = format!("{start}..{now}");
+    let mut cmd = git(root);
+    cmd.args(["rev-parse", "-q", "--verify", "@{upstream}"])
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    let upstream = run(cmd, BUDGET, "read upstream").await?;
+    if upstream.status.success() {
+        let upstream = format!("^{}", upstream.stdout.trim());
+        let all = git_ok(root, &["rev-list", "--count", &range], "count commits")
+            .await
+            .map_err(restore_error)?;
+        let unpushed = git_ok(
+            root,
+            &["rev-list", "--count", &range, &upstream],
+            "count commits",
+        )
+        .await
+        .map_err(restore_error)?;
+        if all.stdout.trim() != unpushed.stdout.trim() {
+            return Ok(false);
+        }
+    }
+    let mut cmd = git(root);
+    cmd.args(["reset", "--soft", start]);
+    checked(
+        run(cmd, RESTORE_BUDGET, "move HEAD back").await,
+        "move HEAD back",
+    )
+    .map_err(restore_error)?;
+    Ok(true)
 }
 
 fn restore_error(reason: SkipReason) -> GitError {

@@ -19,6 +19,8 @@ import {
   type PrMerged,
   type PrState,
   type PromptBlock,
+  type ResolveStarted,
+  type ResolveStrategy,
   type RequestAnswer,
   type SessionOptions,
   type SessionRevertResult,
@@ -265,6 +267,16 @@ export class CurrentHost {
    */
   async mergePr(workspace_id: string, pr: PrState, method?: MergeMethod): Promise<PrMerged> {
     return this.#opened().mergePr(workspace_id, pr, method);
+  }
+
+  /**
+   * Hand a worktree's merge conflicts to `session_id`: the Host checkpoints,
+   * then starts a turn there that merges (or rebases) the base and resolves
+   * them. It refuses while any agent works in the worktree or once nothing
+   * conflicts. Never retried.
+   */
+  async resolveConflicts(workspace_id: string, session_id: string, strategy?: ResolveStrategy): Promise<ResolveStarted> {
+    return this.#opened().resolveConflicts(workspace_id, session_id, strategy);
   }
 
   /**

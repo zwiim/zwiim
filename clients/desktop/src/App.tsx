@@ -484,6 +484,7 @@ export function Workbench({
           account={account}
           link={remote ? link : undefined}
           updateHint={updates.hint}
+          workspaceId={workspaceId}
           tab={settings}
           onTab={setSettings}
           onClose={() => setSettings(null)}
@@ -601,6 +602,7 @@ export function Workbench({
       {workspace && !readOnly && (
         <WorkspacePanel
           workspace={workspace}
+          sessionId={sessionId}
           hiddenTerminals={agentTerminals.ids}
           showing={current}
           onOpen={(kind, path) => openDoc({ kind, workspaceId: workspace.workspace_id, path })}
@@ -874,11 +876,14 @@ function DeleteSession({
  */
 function WorkspacePanel({
   workspace,
+  sessionId,
   hiddenTerminals,
   showing,
   onOpen,
 }: {
   workspace: WorkspaceInfo;
+  /** The chat on screen, which resolves the branch's conflicts. */
+  sessionId: string | null;
   /** Terminals shown over the composer, left out of the dock. */
   hiddenTerminals: ReadonlySet<string>;
   /** The file showing in the middle, to mark it in its list. */
@@ -924,7 +929,7 @@ function WorkspacePanel({
           inert={collapsed}
           data-testid="workspace-panel"
         >
-          <PrBanner workspaceId={workspaceId} />
+          <PrBanner workspaceId={workspaceId} sessionId={sessionId} />
           <nav className="flex h-11 shrink-0 items-center gap-1 border-b px-2" aria-label="Views">
             {TABS.map((t) => (
               <button

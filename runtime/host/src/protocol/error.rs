@@ -344,6 +344,11 @@ impl ZwiimError {
         )
     }
 
+    /// A text is over its size limit, e.g. an instruction text over 8 KiB.
+    pub fn too_large(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::PAYLOAD_TOO_LARGE, "too_large", message)
+    }
+
     /// An uploaded attachment is over `attachments::ATTACHMENT_MAX_BYTES`.
     pub fn attachment_too_large() -> Self {
         Self::new(

@@ -18,6 +18,7 @@ import * as Haptics from "expo-haptics";
 import { randomUUID } from "expo-crypto";
 import {
   ATTACHMENT_GONE_MESSAGE,
+  conflictView,
   hasCapability,
   isClientError,
   offersChatRewind,
@@ -231,6 +232,7 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
           entry={state.prs[worktree.workspace_id]}
           workspace={state.workspaces?.find((w) => w.workspace_id === worktree.workspace_id)}
           compat={connection?.compat ?? null}
+          conflicts={conflictView(state, worktree.workspace_id, session_id)}
           connected={connected}
           hostName={name}
         />

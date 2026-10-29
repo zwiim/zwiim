@@ -415,6 +415,7 @@ async fn async_main() -> Exit {
         &connection_manager,
         db.conn.clone(),
         data_dir.clone(),
+        zwiim_host::app_state::default_instructions_path(),
     );
     let state = Arc::new(AppState {
         db,
@@ -427,6 +428,7 @@ async fn async_main() -> Exit {
             .unwrap_or_else(|| data_dir.join("worktrees")),
         repos_dir: zwiim_host::app_state::default_repos_dir()
             .unwrap_or_else(|| data_dir.join("repos")),
+        instructions_path: zwiim_host::app_state::default_instructions_path(),
         data_dir,
         web_server_state: WebServerState::new(),
         workspace_transfer: Arc::new(

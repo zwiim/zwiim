@@ -63,6 +63,8 @@ export type HostErrorCode =
   | "nothing_to_retry"
   /** `agent.error` code: the agent could not reach its provider's server. */
   | "agent_unreachable"
+  /** `host.instructions.set`: an instruction text is larger than 8 KiB. */
+  | "too_large"
   | "internal";
 
 export interface WireError {
@@ -1249,6 +1251,29 @@ export interface HostUpdateStatus {
 
 export type HostRestartMode = "when_idle" | "now";
 
+/** The two texts a user can give their agents at one scope; null when unset. */
+export interface InstructionTexts {
+  /** Added to every session's instructions. */
+  general: string | null;
+  /** Added to the turn that asks an agent to resolve conflicts. */
+  resolve_conflicts: string | null;
+}
+
+/** `host.instructions`: Host-wide texts, and texts per root workspace keyed by `workspace_id`. */
+export interface UserInstructions {
+  host: InstructionTexts;
+  workspaces: Record<string, InstructionTexts>;
+}
+
+/** `host.instructions.set`: replaces both texts at one scope; absent or blank clears. At most 8 KiB each. */
+export interface InstructionsChange {
+  scope: "host" | "workspace";
+  /** Required for `workspace`, and must name a root workspace; absent for `host`. */
+  workspace_id?: string;
+  general?: string | null;
+  resolve_conflicts?: string | null;
+}
+
 /** `host.diagnostics`: facts for support. Never credentials, keys or paths. */
 export interface HostDiagnostics {
   version: string;
@@ -1540,6 +1565,10 @@ export interface Operations {
   "host.keep_awake.status": [Record<string, never>, KeepAwakeStatus];
   /** Local host authority only. Idempotent: sets, never toggles. */
   "host.keep_awake.set": [Partial<{ mode: KeepAwakeMode; on_battery: boolean; lid_closed: boolean }>, KeepAwakeStatus];
+  /** The user's instructions for their agents. Applies to new sessions, and to open ones after a few idle minutes. */
+  "host.instructions": [Record<string, never>, UserInstructions];
+  /** Idempotent: sets one scope's texts, never appends. */
+  "host.instructions.set": [InstructionsChange, UserInstructions];
 }
 
 export type OpName = keyof Operations;

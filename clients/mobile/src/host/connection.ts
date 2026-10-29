@@ -33,6 +33,8 @@ import {
   type PrMerged,
   type PrState,
   type PromptBlock,
+  type ResolveStarted,
+  type ResolveStrategy,
   type SessionOptions,
   type SessionRevertResult,
   type WorkspaceInfo,
@@ -301,6 +303,11 @@ export class HostConnection {
    */
   async continueWorkspace(workspace_id: string, number: number): Promise<WorkspaceInfo> {
     return this.#live().continueWorkspace(workspace_id, number);
+  }
+
+  /** Resolve a worktree's conflicts in a session's turn (`workspace.resolve_conflicts`); never retried. */
+  async resolveConflicts(workspace_id: string, session_id: string, strategy?: ResolveStrategy): Promise<ResolveStarted> {
+    return this.#live().resolveConflicts(workspace_id, session_id, strategy);
   }
 
   /** Merge the workspace's pull request at the head shown (`git.pr_merge`); never retried. */

@@ -186,6 +186,28 @@ pub async fn workspace_id_of(
         .and_then(|f| f.workspace_id))
 }
 
+/// The `workspace_id` of the root workspace that live workspace directory
+/// `dir` belongs to: a worktree's parent, or the workspace itself.
+pub async fn root_workspace_id_for_dir(
+    conn: &DatabaseConnection,
+    dir: &str,
+) -> Result<Option<String>, AppCommandError> {
+    let row = folder::Entity::find()
+        .filter(folder::Column::Path.eq(dir))
+        .filter(folder::Column::Kind.eq(FolderKind::Regular))
+        .filter(folder::Column::DeletedAt.is_null())
+        .one(conn)
+        .await
+        .map_err(db_err)?;
+    match row {
+        Some(row) => match row.parent_id {
+            Some(parent) => workspace_id_of(conn, parent).await,
+            None => Ok(row.workspace_id),
+        },
+        None => Ok(None),
+    }
+}
+
 // ─── launch / removal gate ───────────────────────────────────────────────
 
 /// Per-workspace gate that makes worktree removal atomic with respect to
@@ -1440,6 +1462,23 @@ mod tests {
     use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
     use crate::models::agent::AgentType;
     use crate::terminal::manager::SpawnOptions;
+
+    #[tokio::test]
+    async fn a_dir_names_its_root_workspace() {
+        let db = fresh_in_memory_db().await;
+        let wt = crate::db::test_helpers::seed_worktree_folder(&db, "/w/repo/pune").await;
+        let root = row(&db, wt).await.parent_id.unwrap();
+        let root_id = row(&db, root).await.workspace_id;
+        assert!(root_id.is_some());
+        assert_eq!(root_workspace_id_for_dir(&db.conn, "/w/repo/pune").await.unwrap(), root_id);
+        assert_eq!(
+            root_workspace_id_for_dir(&db.conn, "/w/repo/pune-root").await.unwrap(),
+            root_id
+        );
+        assert_eq!(root_workspace_id_for_dir(&db.conn, "/w/elsewhere").await.unwrap(), None);
+        folder_service::soft_delete_folder(&db.conn, wt).await.unwrap();
+        assert_eq!(root_workspace_id_for_dir(&db.conn, "/w/repo/pune").await.unwrap(), None);
+    }
 
     async fn row(db: &AppDatabase, id: i32) -> folder::Model {
         folder::Entity::find_by_id(id)

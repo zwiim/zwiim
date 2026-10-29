@@ -29,6 +29,9 @@ pub struct AppState {
     /// Where GitHub projects are cloned, as `<owner>/<name>` under it.
     /// Resolved once at startup by [`default_repos_dir`].
     pub repos_dir: PathBuf,
+    /// The user's instructions for their agents. Resolved once at startup by
+    /// [`default_instructions_path`].
+    pub instructions_path: PathBuf,
     pub web_server_state: WebServerState,
     pub workspace_transfer: Arc<WorkspaceTransferManager>,
     /// Multi-agent delegation broker. Spawned in both desktop and server
@@ -132,6 +135,7 @@ pub fn build_delegation_stack(
     connection_manager: &ConnectionManager,
     db_conn: sea_orm::DatabaseConnection,
     data_dir: PathBuf,
+    instructions_path: PathBuf,
 ) -> (
     Arc<DelegationBroker>,
     Arc<TokenRegistry>,
@@ -171,6 +175,10 @@ pub fn build_delegation_stack(
     let agent_availability =
         Arc::new(crate::acp::connection::DbAgentAvailabilityLookup { db: db_arc.clone() })
             as Arc<dyn crate::acp::connection::AgentAvailabilityLookup>;
+    let user_instructions = Arc::new(crate::acp::connection::HostUserInstructionsLookup {
+        db: db_arc.clone(),
+        path: instructions_path,
+    }) as Arc<dyn crate::acp::connection::UserInstructionsLookup>;
     let status_lookup = Arc::new(DbChildStatusLookup { db: db_arc }) as Arc<dyn ChildStatusLookup>;
     let meta_writer = Arc::new(ConnectionManagerMetaWriter {
         manager: cm_arc.clone(),
@@ -215,6 +223,7 @@ pub fn build_delegation_stack(
         plan_approvals: Arc::new(crate::acp::manager::ConnectionManagerPlanApprovalLookup {
             manager: Arc::new(connection_manager.clone_ref()),
         }) as Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
+        user_instructions,
     });
 
     (
@@ -237,6 +246,12 @@ pub fn default_worktrees_dir() -> Option<PathBuf> {
         Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
         _ => dirs::home_dir().map(|home| home.join("zwiim").join("worktrees")),
     }
+}
+
+/// Where the user's instructions for their agents are kept:
+/// `instructions.json` in the Zwiim home directory.
+pub fn default_instructions_path() -> PathBuf {
+    crate::paths::zwiim_home_dir().join("instructions.json")
 }
 
 /// Where GitHub projects are cloned: `ZWIIM_REPOS_DIR` when set, else
@@ -287,7 +302,12 @@ impl AppState {
             session_info_config,
             chat_authoring_config,
             browser_tools_config,
-        ) = build_delegation_stack(&connection_manager, db.conn.clone(), data_dir.clone());
+        ) = build_delegation_stack(
+            &connection_manager,
+            db.conn.clone(),
+            data_dir.clone(),
+            data_dir.join("instructions.json"),
+        );
 
         Self {
             db,
@@ -298,6 +318,7 @@ impl AppState {
             emitter,
             worktrees_dir: data_dir.join("worktrees"),
             repos_dir: data_dir.join("repos"),
+            instructions_path: data_dir.join("instructions.json"),
             data_dir,
             web_server_state: crate::web::WebServerState::new(),
             workspace_transfer: Arc::new(

@@ -846,6 +846,7 @@ pub(crate) async fn do_start_web_server_tauri(
         worktrees_dir: crate::app_state::default_worktrees_dir()
             .unwrap_or_else(|| data_dir.join("worktrees")),
         repos_dir: crate::app_state::default_repos_dir().unwrap_or_else(|| data_dir.join("repos")),
+        instructions_path: crate::app_state::default_instructions_path(),
         web_server_state: WebServerState::new(), // placeholder; not used by handlers
         // Reuse the manager Tauri registered and started, NOT a fresh one: a
         // fresh `ChatChannelManager` has an empty channel registry, so every

@@ -825,3 +825,120 @@ async fn restore_refuses_a_busy_repo() {
     );
     assert_eq!(zwiim_refs(&root).len(), 1);
 }
+
+// ── unwind ──────────────────────────────────────────────────────────────
+
+/// A turn that commits once, its start checkpoint and the HEAD it ended at.
+async fn committing_turn(root: &Path, session_id: &str) -> (checkpoint::Checkpoint, String) {
+    let turn = key(session_id, 1);
+    saved_oid(root, &turn, Phase::Start).await;
+    write(root, "a.txt", "committed by the turn\n");
+    git(root, &["commit", "-qam", "turn commit"]);
+    (
+        start_of(root, &turn).await,
+        git(root, &["rev-parse", "HEAD"]),
+    )
+}
+
+#[tokio::test]
+async fn unwind_moves_head_back_when_unpushed_past_the_upstream() {
+    let (tmp, root) = repo();
+    let remote = tmp.path().join("remote.git");
+    git(
+        tmp.path(),
+        &["init", "-q", "--bare", remote.to_str().unwrap()],
+    );
+    git(
+        &root,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git(&root, &["push", "-q", "-u", "origin", "main"]);
+    let start = git(&root, &["rev-parse", "HEAD"]);
+    let (cp, end) = committing_turn(&root, "s-unwind-up").await;
+
+    let moved = checkpoint::unwind_unpushed(&root, &cp, Some(&end)).await;
+    assert_eq!(moved, Ok(true));
+    assert_eq!(git(&root, &["rev-parse", "HEAD"]), start);
+    // Soft: the turn's change stays, staged.
+    assert_eq!(git(&root, &["status", "--porcelain"]), "M  a.txt");
+}
+
+#[tokio::test]
+async fn unwind_keeps_head_once_the_turn_is_pushed() {
+    let (tmp, root) = repo();
+    let remote = tmp.path().join("remote.git");
+    git(
+        tmp.path(),
+        &["init", "-q", "--bare", remote.to_str().unwrap()],
+    );
+    git(
+        &root,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git(&root, &["push", "-q", "-u", "origin", "main"]);
+    let (cp, end) = committing_turn(&root, "s-unwind-pushed").await;
+    git(&root, &["push", "-q"]);
+
+    let moved = checkpoint::unwind_unpushed(&root, &cp, Some(&end)).await;
+    assert_eq!(moved, Ok(false));
+    assert_eq!(git(&root, &["rev-parse", "HEAD"]), end);
+}
+
+#[tokio::test]
+async fn unwind_keeps_head_when_the_start_is_not_an_ancestor() {
+    let (_tmp, root) = repo();
+    let (cp, _) = committing_turn(&root, "s-unwind-rewrite").await;
+    // History rewritten under the turn: the start commit is gone from it.
+    git(&root, &["checkout", "-q", "--orphan", "other"]);
+    git(&root, &["commit", "-qm", "unrelated"]);
+    let now = git(&root, &["rev-parse", "HEAD"]);
+
+    let moved = checkpoint::unwind_unpushed(&root, &cp, Some(&now)).await;
+    assert_eq!(moved, Ok(false));
+    assert_eq!(git(&root, &["rev-parse", "HEAD"]), now);
+}
+
+#[tokio::test]
+async fn unwind_moves_a_detached_head_back() {
+    let (_tmp, root) = repo();
+    git(&root, &["checkout", "-q", "--detach"]);
+    let start = git(&root, &["rev-parse", "HEAD"]);
+    let (cp, end) = committing_turn(&root, "s-unwind-detached").await;
+
+    // No branch, so no upstream: nothing was pushed.
+    let moved = checkpoint::unwind_unpushed(&root, &cp, Some(&end)).await;
+    assert_eq!(moved, Ok(true));
+    assert_eq!(git(&root, &["rev-parse", "HEAD"]), start);
+    assert!(
+        git_raw(&root, &["symbolic-ref", "-q", "HEAD"])
+            .status
+            .code()
+            == Some(1)
+    );
+}
+
+#[tokio::test]
+async fn abort_operation_aborts_a_rebase_in_progress() {
+    let (_tmp, root) = repo();
+    git(&root, &["checkout", "-q", "-b", "side"]);
+    write(&root, "a.txt", "side\n");
+    git(&root, &["commit", "-qam", "side"]);
+    git(&root, &["checkout", "-q", "main"]);
+    write(&root, "a.txt", "main\n");
+    git(&root, &["commit", "-qam", "main"]);
+    git(&root, &["checkout", "-q", "side"]);
+    let side = git(&root, &["rev-parse", "HEAD"]);
+    let turn = key("s-abort-rebase", 1);
+    saved_oid(&root, &turn, Phase::Start).await;
+    assert!(!git_raw(&root, &["rebase", "-q", "main"]).status.success());
+    assert!(root.join(".git/rebase-merge").exists());
+
+    let cp = start_of(&root, &turn).await;
+    checkpoint::abort_operation(&root, &cp)
+        .await
+        .expect("abort");
+    assert!(!root.join(".git/rebase-merge").exists());
+    assert_eq!(git(&root, &["symbolic-ref", "--short", "HEAD"]), "side");
+    assert_eq!(git(&root, &["rev-parse", "HEAD"]), side);
+    assert_eq!(git(&root, &["status", "--porcelain"]), "");
+}

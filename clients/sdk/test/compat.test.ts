@@ -95,8 +95,17 @@ describe("evaluateCompatibility", () => {
     expect(hasCapability(c, "session.revert.chat")).toBe(false);
   });
 
+  it("speaks revision 15 and asks for host.instructions", () => {
+    expect(CLIENT_REVISION).toBe(15);
+    expect(CLIENT_CAPABILITIES).toContain("host.instructions");
+    // Setting replaces one scope's texts; repeating it changes nothing.
+    expect(MUTATING_OPS.has("host.instructions.set")).toBe(false);
+    const old = evaluateCompatibility(hello({ revision: 14, min_client_revision: 1, capabilities: [] }));
+    expect(hasCapability(old, "host.instructions")).toBe(false);
+  });
+
   it("speaks revision 14 and asks for session.retry", () => {
-    expect(CLIENT_REVISION).toBe(14);
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(14);
     expect(CLIENT_CAPABILITIES).toContain("session.retry");
     // Repeating either would run the turn twice or open two chats.
     expect(MUTATING_OPS.has("session.retry")).toBe(true);

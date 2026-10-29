@@ -43,10 +43,36 @@ pub struct ConflictCheck {
 }
 
 /// Where the repository at `root` stands against the remote-tracking ref
-/// `base` (`<remote>/<branch>`). `None` when `base`
+/// `base` (`<remote>/<branch>`): [`check_merge`], with files a resolve turn
+/// committed conflict markers in (see [`note_markers`]) kept as conflicts
+/// while they still hold them.
+pub async fn check_conflicts(root: &Path, base: &str) -> Result<Option<ConflictCheck>, GitError> {
+    let Some(mut check) = check_merge(root, base).await? else {
+        return Ok(None);
+    };
+    if check.state != ConflictState::Clean {
+        return Ok(Some(check));
+    }
+    let Some((noted_base, files)) = read_note(root).await? else {
+        return Ok(Some(check));
+    };
+    if noted_base != base {
+        return Ok(Some(check));
+    }
+    let markers = leftover_markers(root, &files).await?;
+    if markers.is_empty() {
+        note_markers(root, base, &[]).await?;
+    } else {
+        check.state = ConflictState::Conflicts { files: markers };
+    }
+    Ok(Some(check))
+}
+
+/// Where the repository at `root` stands against `base` by Git alone: a
+/// stopped operation, else a would-be merge. `None` when `base`
 /// or `HEAD` does not resolve to a commit, or this Git cannot run a
 /// would-be merge (`merge-tree --write-tree` needs Git 2.38).
-pub async fn check_conflicts(root: &Path, base: &str) -> Result<Option<ConflictCheck>, GitError> {
+pub async fn check_merge(root: &Path, base: &str) -> Result<Option<ConflictCheck>, GitError> {
     let root = utf8(root)?;
     not_an_option("base", base)?;
     // The full ref, so a local branch or tag named like `base` cannot stand
@@ -149,6 +175,143 @@ pub(super) fn operation(git_dir: &Path) -> Option<&'static str> {
     None
 }
 
+/// Files past this size are not scanned for markers.
+const MARKER_SCAN_MAX_BYTES: u64 = 8 << 20;
+
+/// The note in the git dir naming files a resolve turn left markers in.
+const MARKER_NOTE: &str = "zwiim-resolve-markers";
+
+/// Records that a resolve turn against `base` left conflict markers in
+/// `files`, so [`check_conflicts`] keeps showing them after the merge is
+/// committed. An empty `files` removes the note.
+pub async fn note_markers(root: &Path, base: &str, files: &[String]) -> Result<(), GitError> {
+    let path = note_path(root).await?;
+    let files: Vec<&str> = files
+        .iter()
+        .map(String::as_str)
+        .filter(|f| !f.contains('\n'))
+        .collect();
+    let written = if files.is_empty() {
+        match tokio::fs::remove_file(&path).await {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        }
+    } else {
+        tokio::fs::write(&path, format!("{base}\n{}\n", files.join("\n"))).await
+    };
+    written.map_err(|e| {
+        GitError::new(GitErrorCode::Failed, "Recording conflict markers failed")
+            .with_detail(&e.to_string())
+    })
+}
+
+/// The files the marker note lists against `base`; empty when there is no
+/// note or it was written against another base.
+pub async fn noted_markers(root: &Path, base: &str) -> Result<Vec<String>, GitError> {
+    Ok(match read_note(root).await? {
+        Some((noted, files)) if noted == base => files,
+        _ => Vec::new(),
+    })
+}
+
+/// The base and files of the marker note, `None` when there is none.
+async fn read_note(root: &Path) -> Result<Option<(String, Vec<String>)>, GitError> {
+    let Ok(text) = tokio::fs::read_to_string(note_path(root).await?).await else {
+        return Ok(None);
+    };
+    let mut lines = text.lines().filter(|l| !l.is_empty());
+    let Some(base) = lines.next() else {
+        return Ok(None);
+    };
+    Ok(Some((base.to_string(), lines.map(String::from).collect())))
+}
+
+async fn note_path(root: &Path) -> Result<std::path::PathBuf, GitError> {
+    let git_dir = ok(
+        "rev-parse",
+        read(
+            utf8(root)?,
+            &["rev-parse", "--absolute-git-dir"],
+            "git rev-parse",
+        )
+        .await?,
+    )?;
+    Ok(Path::new(git_dir.stdout.trim()).join(MARKER_NOTE))
+}
+
+/// Which of `files` (paths relative to `root`) still hold a conflict: a line
+/// opening one (`<<<<<<< `) and a later line closing it (`>>>>>>> `), the
+/// marker length taken from each file's `conflict-marker-size` attribute
+/// (default 7). Reads the worktree's contents, whatever the index or HEAD
+/// hold. Missing files, non-regular files, files past
+/// [`MARKER_SCAN_MAX_BYTES`] and paths leaving `root` are skipped.
+pub async fn leftover_markers(root: &Path, files: &[String]) -> Result<Vec<String>, GitError> {
+    // A path leaving the worktree is skipped; `git check-attr` would fail on it.
+    let files: Vec<&String> = files
+        .iter()
+        .filter(|f| {
+            let path = Path::new(f.as_str());
+            !path.is_absolute()
+                && !path
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+        })
+        .collect();
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+    let dir = utf8(root)?;
+    let mut args = vec!["check-attr", "-z", "conflict-marker-size", "--"];
+    args.extend(files.iter().map(|f| f.as_str()));
+    let attrs = ok("check-attr", read(dir, &args, "git check-attr").await?)?;
+    // `<path>\0<attribute>\0<value>\0`, per path.
+    let fields: Vec<&str> = attrs.stdout.split('\0').collect();
+    let size_of = |file: &str| {
+        fields
+            .chunks(3)
+            .find(|c| c.len() == 3 && c[0] == file)
+            .and_then(|c| c[2].parse::<usize>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(7)
+    };
+    let wanted: Vec<(String, usize)> = files.iter().map(|f| (f.to_string(), size_of(f))).collect();
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        wanted
+            .into_iter()
+            .filter(|(file, size)| {
+                let path = root.join(file);
+                let regular = std::fs::symlink_metadata(&path)
+                    .is_ok_and(|m| m.is_file() && m.len() <= MARKER_SCAN_MAX_BYTES);
+                regular && std::fs::read(&path).is_ok_and(|bytes| holds_markers(&bytes, *size))
+            })
+            .map(|(file, _)| file)
+            .collect()
+    })
+    .await
+    .map_err(|e| {
+        GitError::new(GitErrorCode::Failed, "Scanning for conflict markers failed")
+            .with_detail(&e.to_string())
+    })
+}
+
+/// A line of `size` `<` then a space, and a later line of `size` `>` then a
+/// space.
+fn holds_markers(bytes: &[u8], size: usize) -> bool {
+    let marker = |line: &[u8], c: u8| {
+        line.len() > size && line[..size].iter().all(|b| *b == c) && line[size] == b' '
+    };
+    let mut open = false;
+    for line in bytes.split(|b| *b == b'\n') {
+        if !open {
+            open = marker(line, b'<');
+        } else if marker(line, b'>') {
+            return true;
+        }
+    }
+    false
+}
+
 fn utf8(root: &Path) -> Result<&str, GitError> {
     root.to_str().ok_or_else(|| {
         GitError::new(
@@ -178,7 +341,7 @@ async fn commit(root: &str, rev: &str) -> Result<Option<String>, GitError> {
 }
 
 /// The stopped merge or rebase, or unmerged entries left by anything else.
-async fn in_progress(root: &str) -> Result<Option<ConflictState>, GitError> {
+pub(super) async fn in_progress(root: &str) -> Result<Option<ConflictState>, GitError> {
     let git_dir = ok(
         "rev-parse",
         read(root, &["rev-parse", "--absolute-git-dir"], "git rev-parse").await?,

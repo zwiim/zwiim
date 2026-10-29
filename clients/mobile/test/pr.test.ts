@@ -10,6 +10,8 @@ import {
   prErrorText,
   prLabel,
   prLook,
+  resolveError,
+  stopResolveError,
   shortSha,
 } from "../src/host/pr";
 
@@ -118,6 +120,26 @@ describe("pull request errors in words", () => {
     );
     expect(mergeError(err("network"), "Studio Mac")).toBe("Not connected to Studio Mac. Try again when it's back.");
     expect(mergeError(new Error("boom"), "Studio Mac")).toBe("Couldn't merge the pull request. Try again.");
+  });
+});
+
+describe("resolving conflicts, errors in words", () => {
+  it("says why the Host refused, or that it isn't connected", () => {
+    const err = (code: string) => new ZwiimClientError(code as never, "m", 409);
+    expect(resolveError(err("turn_in_progress"), "Studio Mac")).toBe(
+      "An agent is working here. Wait for it or stop it, then resolve conflicts.",
+    );
+    expect(resolveError(err("no_conflicts"), "Studio Mac")).toBe("Nothing to resolve: the branch merges cleanly now.");
+    expect(resolveError(err("network"), "Studio Mac")).toBe("Not connected to Studio Mac. Try again when it's back.");
+    expect(resolveError(err("timeout"), "Studio Mac")).toBe("Not connected to Studio Mac. Try again when it's back.");
+    expect(resolveError(new Error("boom"), "Studio Mac")).toBe("Couldn't resolve conflicts. Try again.");
+  });
+
+  it("says why stopping the resolving turn failed", () => {
+    expect(stopResolveError(new ZwiimClientError("network", "m", 0), "Studio Mac")).toBe(
+      "Not connected to Studio Mac. Try again when it's back.",
+    );
+    expect(stopResolveError(new Error("boom"), "Studio Mac")).toBe("Couldn't stop resolving. Try again.");
   });
 });
 

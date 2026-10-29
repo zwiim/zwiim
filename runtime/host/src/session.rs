@@ -28,6 +28,7 @@ use crate::db::AppDatabase;
 use crate::models::agent::AgentType;
 use crate::models::message::{MessageTurn, TurnRole};
 use crate::protocol::error::ZwiimError;
+use crate::session_checkpoints::TurnTag;
 use crate::session_options::{OptionsRequest, SessionOptions};
 use crate::web::event_bridge::EventEmitter;
 
@@ -409,8 +410,8 @@ pub async fn send<L: AgentLauncher>(
     send_tagged(db, connections, launcher, session_id, blocks, client_message_id, None).await
 }
 
-/// As [`send`], recording `action` on the turn's start checkpoint: the turn
-/// was started by the Host for that action, not typed by the user.
+/// As [`send`], for a turn the Host started rather than the user typed:
+/// `tag` goes on the turn's start checkpoint and its end is checked.
 pub(crate) async fn send_tagged<L: AgentLauncher>(
     db: &AppDatabase,
     connections: &ConnectionManager,
@@ -418,7 +419,7 @@ pub(crate) async fn send_tagged<L: AgentLauncher>(
     session_id: &str,
     blocks: Vec<PromptInputBlock>,
     client_message_id: Option<String>,
-    action: Option<&'static str>,
+    tag: Option<TurnTag>,
 ) -> Result<(), ZwiimError> {
     if blocks.is_empty() {
         return Err(empty_prompt());
@@ -433,7 +434,7 @@ pub(crate) async fn send_tagged<L: AgentLauncher>(
         &row,
         blocks,
         client_message_id,
-        action,
+        tag,
     )
     .await
 }
@@ -449,7 +450,7 @@ pub(crate) async fn send_locked<L: AgentLauncher>(
     row: &conversation::Model,
     blocks: Vec<PromptInputBlock>,
     client_message_id: Option<String>,
-    action: Option<&'static str>,
+    tag: Option<TurnTag>,
 ) -> Result<(), ZwiimError> {
     // Held until the turn is under way, so no branch switch (Continue) lands
     // between its busy check and this turn starting. Never resume in a removed
@@ -470,7 +471,7 @@ pub(crate) async fn send_locked<L: AgentLauncher>(
             Some(row.id),
             None,
             client_message_id,
-            action,
+            tag,
         )
         .await;
     if let Err(e) = sent {
@@ -710,7 +711,11 @@ pub fn can_rewind_chat(agent: AgentType) -> bool {
 /// With `files`, the workspace's files and staged changes return to the
 /// turn's start checkpoint; HEAD, branches and ignored files are never
 /// touched, and the state replaced is kept for recovery (see
-/// [`crate::git_harness::checkpoint::restore`]).
+/// [`crate::git_harness::checkpoint::restore`]). One exception: a turn the
+/// Host ran to resolve merge conflicts whose commits were never pushed has
+/// its branch moved back to where the turn started, so the merge it
+/// committed is undone too. A merge or rebase left in progress is aborted
+/// first; whatever the agent had resolved of it is not kept.
 ///
 /// With `chat`, the agent's session is forked just after the answer that
 /// preceded the turn and the session carries on from the fork: same
@@ -732,7 +737,7 @@ pub fn can_rewind_chat(agent: AgentType) -> bool {
 ///
 /// Refused with `turn_in_progress` while the session's turn runs,
 /// `workspace_busy` while another agent works in the workspace or the
-/// repository is mid-operation, and `checkpoint_unavailable` when the turn
+/// repository is mid-operation (other than a merge or rebase), and `checkpoint_unavailable` when the turn
 /// has no checkpoint that is certainly its own: a guessed state is never
 /// restored, nor a chat forked anywhere but exactly before the turn.
 pub async fn revert<L: AgentLauncher>(
@@ -897,24 +902,34 @@ async fn restore_files(
     let cp = crate::session_checkpoints::start_checkpoint_of(root, session_id, turns, turn_id)
         .await
         .ok_or_else(ZwiimError::checkpoint_unavailable)?;
-    let restored = crate::git_harness::checkpoint::restore(root, &cp)
-        .await
-        .map_err(|e| {
-            use crate::git_harness::GitErrorCode;
-            match e.code {
-                GitErrorCode::Conflict => ZwiimError::repository_busy(e.detail.as_deref()),
-                GitErrorCode::NotAGitRepository => ZwiimError::checkpoint_unavailable(),
-                _ => {
-                    tracing::warn!(
-                        code = e.code.as_str(),
-                        message = %e.message,
-                        detail = ?e.detail,
-                        "[zwiim] revert failed"
-                    );
-                    ZwiimError::internal()
-                }
+    let mapped = |e: crate::git_harness::GitError| {
+        use crate::git_harness::GitErrorCode;
+        match e.code {
+            GitErrorCode::Conflict => ZwiimError::repository_busy(e.detail.as_deref()),
+            GitErrorCode::NotAGitRepository => ZwiimError::checkpoint_unavailable(),
+            _ => {
+                tracing::warn!(
+                    code = e.code.as_str(),
+                    message = %e.message,
+                    detail = ?e.detail,
+                    "[zwiim] revert failed"
+                );
+                ZwiimError::internal()
             }
-        })?;
+        }
+    };
+    use crate::git_harness::checkpoint;
+    checkpoint::abort_operation(root, &cp)
+        .await
+        .map_err(mapped)?;
+    if cp.action.as_deref() == Some(crate::workspace::resolve::RESOLVE_ACTION) {
+        let end = crate::session_checkpoints::end_checkpoint_of(root, &cp).await;
+        let end_head = end.as_ref().and_then(|e| e.head.as_deref());
+        checkpoint::unwind_unpushed(root, &cp, end_head)
+            .await
+            .map_err(mapped)?;
+    }
+    let restored = checkpoint::restore(root, &cp).await.map_err(mapped)?;
     tracing::info!(
         session_id = %session_id,
         turn = cp.key.ordinal,
@@ -1572,14 +1587,17 @@ pub(crate) mod orchestration_tests {
             tokio::spawn(async move {
                 while let Some(cmd) = rx.recv().await {
                     let kind = match cmd {
-                        ConnectionCommand::Prompt { blocks, .. } => {
+                        ConnectionCommand::Prompt {
+                            blocks, notices, ..
+                        } => {
                             if Path::new(&working_dir).join(".git").exists() {
                                 refs_at_prompt
                                     .lock()
                                     .unwrap()
                                     .push((conn.clone(), zwiim_refs(Path::new(&working_dir))));
                             }
-                            let text = blocks
+                            // The text as the agent gets it, notices included.
+                            let text = crate::harness::compose_turn(blocks.clone(), &notices)
                                 .iter()
                                 .filter_map(|b| match b {
                                     PromptInputBlock::Text { text } => Some(text.as_str()),
@@ -2856,7 +2874,7 @@ pub(crate) mod orchestration_tests {
 
     /// The transcript of `prompts`, each answered: user turns `turn-0`,
     /// `turn-2`, ...
-    fn transcript(prompts: &[&str]) -> Vec<MessageTurn> {
+    pub(crate) fn transcript(prompts: &[&str]) -> Vec<MessageTurn> {
         use crate::models::message::{ContentBlock, TurnRole};
         let turn = |n: usize, role: TurnRole, text: &str| MessageTurn {
             id: format!("turn-{n}"),
@@ -2930,7 +2948,7 @@ pub(crate) mod orchestration_tests {
         sid
     }
 
-    async fn revert_turn(
+    pub(crate) async fn revert_turn(
         db: &AppDatabase,
         mgr: &ConnectionManager,
         sid: &str,
@@ -3071,16 +3089,17 @@ pub(crate) mod orchestration_tests {
         let sid = ran(&db, &mgr, &launcher, &wid, &dir, &["first"]).await;
         let turns = transcript(&["first"]);
 
-        // The repository is mid-merge.
+        // The repository is mid-cherry-pick (a merge or rebase is aborted
+        // instead: see revert_restores_over_merge_in_progress).
         let head = fixture_git(&dir, &["rev-parse", "HEAD"]);
-        std::fs::write(dir.join(".git/MERGE_HEAD"), head).unwrap();
+        std::fs::write(dir.join(".git/CHERRY_PICK_HEAD"), head).unwrap();
         let err = revert_turn(&db, &mgr, &sid, &turns, "turn-0")
             .await
             .unwrap_err();
         assert_eq!(err.code, "workspace_busy");
-        assert_eq!(err.details.as_ref().unwrap()["operation"], "merge");
+        assert_eq!(err.details.as_ref().unwrap()["operation"], "cherry_pick");
         assert_eq!(a_txt(&dir), "after first 0\n");
-        std::fs::remove_file(dir.join(".git/MERGE_HEAD")).unwrap();
+        std::fs::remove_file(dir.join(".git/CHERRY_PICK_HEAD")).unwrap();
 
         // Another session's agent is working in the workspace.
         let other = start(
@@ -3105,6 +3124,72 @@ pub(crate) mod orchestration_tests {
         assert_eq!(details["session_ids"], serde_json::json!([other]));
         assert_eq!(a_txt(&dir), "after first 0\n");
         assert_eq!(revert_refs(&dir, &sid), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn revert_restores_over_merge_in_progress() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = ran(&db, &mgr, &launcher, &wid, &dir, &["first"]).await;
+        fixture_git(&dir, &["commit", "-q", "-am", "first"]);
+        let start = fixture_git(&dir, &["rev-parse", "HEAD^{tree}"]);
+        // A branch that changes a.txt the other way.
+        fixture_git(&dir, &["checkout", "-q", "-b", "other", "HEAD~1"]);
+        std::fs::write(dir.join("a.txt"), "theirs\n").unwrap();
+        fixture_git(&dir, &["commit", "-q", "-am", "theirs"]);
+        fixture_git(&dir, &["checkout", "-q", "-"]);
+
+        // The second turn starts clean and ends mid-merge.
+        send(&db, &mgr, &launcher, &sid, text("second"), None)
+            .await
+            .unwrap();
+        settle().await;
+        let merge = std::process::Command::new("git")
+            .args(["merge", "-q", "other"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert!(!merge.status.success());
+        // The end checkpoint is skipped: the worktree is mid-merge.
+        end_turn_observed(&mgr, "fake-conn-1", "end_turn").await;
+        settle().await;
+
+        let turns = transcript(&["first", "second"]);
+        let out = revert_turn(&db, &mgr, &sid, &turns, "turn-2")
+            .await
+            .unwrap();
+        assert!(out.files_restored);
+        assert!(!out.head_moved);
+        assert!(!dir.join(".git/MERGE_HEAD").exists());
+        assert_eq!(fixture_git(&dir, &["status", "--porcelain"]), "");
+        assert_eq!(fixture_git(&dir, &["rev-parse", "HEAD^{tree}"]), start);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn revert_plain_turn_keeps_head() {
+        let db = fresh_in_memory_db().await;
+        let (wid, dir) = git_workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = ran(&db, &mgr, &launcher, &wid, &dir, &["first"]).await;
+        let before = fixture_git(&dir, &["rev-parse", "HEAD"]);
+        // The turn committed its change.
+        fixture_git(&dir, &["commit", "-q", "-am", "first"]);
+        let after = fixture_git(&dir, &["rev-parse", "HEAD"]);
+
+        let turns = transcript(&["first"]);
+        let out = revert_turn(&db, &mgr, &sid, &turns, "turn-0")
+            .await
+            .unwrap();
+        assert!(out.files_restored);
+        assert!(out.head_moved);
+        assert_eq!(fixture_git(&dir, &["rev-parse", "HEAD"]), after);
+        assert_ne!(after, before);
+        assert_eq!(a_txt(&dir), "one\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -542,7 +542,8 @@ pub struct ConnectionManager {
     /// One-shot Host notices waiting for a conversation's next accepted turn,
     /// keyed by conversation row id so they outlive an agent respawn. In
     /// memory only: a Host restart drops them.
-    notices: Arc<std::sync::Mutex<HashMap<i32, Vec<String>>>>,
+    /// Shared with `turn_checkpoints`, whose end checks queue into it.
+    notices: crate::session_checkpoints::Notices,
     /// Open per-turn Git checkpoints, shared by every clone.
     pub(crate) turn_checkpoints: crate::session_checkpoints::TurnCheckpoints,
 }
@@ -572,6 +573,7 @@ impl Default for ConnectionManager {
 
 impl ConnectionManager {
     pub fn new() -> Self {
+        let notices: crate::session_checkpoints::Notices = Arc::default();
         Self {
             connections: Arc::new(Mutex::new(HashMap::new())),
             external_restore_lock: Arc::new(tokio::sync::RwLock::new(())),
@@ -583,8 +585,8 @@ impl ConnectionManager {
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
-            notices: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            turn_checkpoints: Default::default(),
+            notices: notices.clone(),
+            turn_checkpoints: crate::session_checkpoints::TurnCheckpoints::new(notices),
         }
     }
 
@@ -628,6 +630,7 @@ impl ConnectionManager {
     /// Production code should use `new()`.
     #[cfg(test)]
     fn with_spawn_handshake_timeout(timeout: Duration) -> Self {
+        let notices: crate::session_checkpoints::Notices = Arc::default();
         Self {
             connections: Arc::new(Mutex::new(HashMap::new())),
             external_restore_lock: Arc::new(tokio::sync::RwLock::new(())),
@@ -639,8 +642,8 @@ impl ConnectionManager {
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
-            notices: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            turn_checkpoints: Default::default(),
+            notices: notices.clone(),
+            turn_checkpoints: crate::session_checkpoints::TurnCheckpoints::new(notices),
         }
     }
 
@@ -1263,9 +1266,9 @@ impl ConnectionManager {
         .await
     }
 
-    /// As [`send_prompt_linked_with_message_id`], recording `action` (a
-    /// Host-started turn such as `resolve_conflicts`) on the turn's start
-    /// checkpoint.
+    /// As [`send_prompt_linked_with_message_id`], for a turn the Host started
+    /// (such as `resolve_conflicts`): `tag` goes on its start checkpoint and
+    /// its end is checked.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn send_prompt_linked_tagged(
         &self,
@@ -1276,7 +1279,7 @@ impl ConnectionManager {
         conversation_id: Option<i32>,
         delegation: Option<crate::acp::delegation::spawner::DelegationLink>,
         client_message_id: Option<String>,
-        action: Option<&'static str>,
+        tag: Option<crate::session_checkpoints::TurnTag>,
     ) -> Result<Option<i32>, AcpError> {
         // Reject an empty prompt up front, BEFORE any side effects: linking /
         // creating the conversation row, flipping it to InProgress, or emitting
@@ -1746,7 +1749,7 @@ impl ConnectionManager {
                         working_dir.as_deref(),
                         start_seq,
                         &blocks,
-                        action,
+                        tag,
                     )
                     .await;
                 self.send_admitted_prompt(conn_id, blocks, user_message, admission)

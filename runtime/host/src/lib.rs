@@ -983,6 +983,7 @@ mod tauri_app {
                         &cm_state,
                         db_conn.clone(),
                         effective_data_dir.clone(),
+                        crate::app_state::default_instructions_path(),
                     );
                     app.manage(broker.clone());
                     app.manage(tokens.clone());

@@ -5,7 +5,9 @@ import {
   HostClient,
   HostController,
   ZwiimClientError,
+  type ConflictCheck,
   type PrState,
+  type SessionSummary,
   type WorkspaceInfo,
 } from "@zwiim/sdk";
 import { openLink } from "@/lib/bridge";
@@ -47,14 +49,14 @@ const pr = (extra: Partial<PrState> = {}): PrState => ({
   ...extra,
 });
 
-async function mount(t: FakeTransport) {
+async function mount(t: FakeTransport, sessionId?: string) {
   const client = new HostClient({ transport: t });
   const controller = new HostController(client);
   client.start();
   await tick();
   render(
     <HostProvider value={controller}>
-      <PrBanner workspaceId="a" />
+      <PrBanner workspaceId="a" sessionId={sessionId} />
     </HostProvider>,
   );
   await tick();
@@ -335,5 +337,180 @@ describe("pull request banner", () => {
     }
     // Refused, the banner stays so the user can try again.
     expect(screen.getByTestId("pr-status").textContent).toBe("Merged");
+  });
+});
+
+const shas = { base_sha: "b".repeat(40), head_sha: "h".repeat(40) };
+const conflicting = (files = ["src/app.ts", "README.md"]): ConflictCheck => ({
+  base: "origin/main",
+  ...shas,
+  state: "conflicts",
+  files,
+});
+const dirty = () =>
+  pr({ merge: { allowed: false, status: "dirty", reason: "Merge conflicts", method: "squash", methods: ["squash"] } });
+const summary = (id: string, extra: Partial<SessionSummary> = {}): SessionSummary => ({
+  session_id: id,
+  workspace_id: "a",
+  title: null,
+  agent: "codex",
+  status: "pending_review",
+  live: false,
+  created_at: "2026-10-29T00:00:00Z",
+  updated_at: "2026-10-29T00:00:00Z",
+  ...extra,
+});
+
+/** A Host whose worktree "a" conflicts with main. */
+function conflictHost({
+  check = conflicting(),
+  prState = dirty() as PrState | null,
+  sessions = [summary("s1")],
+  workspace = worktree(),
+  capabilities = [...CLIENT_CAPABILITIES],
+}: {
+  check?: ConflictCheck;
+  prState?: PrState | null;
+  sessions?: SessionSummary[];
+  workspace?: WorkspaceInfo;
+  capabilities?: string[];
+} = {}) {
+  const t = new FakeTransport();
+  t.handlers["host.hello"] = () => hostHello({ capabilities });
+  t.handlers["workspace.list"] = () => [workspace];
+  t.handlers["session.list"] = () => sessions;
+  t.handlers["workspace.resolve_conflicts"] = () => ({ base: "origin/main", files: check.state === "clean" ? [] : check.files });
+  t.handlers["session.cancel"] = () => ({});
+  const snapshot = t.snapshot.bind(t);
+  t.snapshot = () => ({
+    ...snapshot(),
+    prs: prState ? { a: { pr: prState, error: null } } : {},
+    conflicts: { a: check },
+  });
+  return t;
+}
+
+const resolveButton = () => screen.getByRole("button", { name: /^(Merge|Resolve|Resolving) conflicts/ }) as HTMLButtonElement;
+
+describe("merge conflicts", () => {
+  it("turns Merge into Merge conflicts, which hands them to the chat shown, then follows the turn", async () => {
+    const t = conflictHost({ sessions: [summary("s2"), summary("s1")] });
+    await mount(t, "s1");
+
+    expect(screen.getByTestId("pr-conflicts").textContent).toContain("2 files conflict with main");
+    // The one line replaces GitHub's generic reason.
+    expect(screen.queryByTestId("pr-reason")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Merge$/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /2 files conflict with main/ }));
+    expect(screen.getByTestId("conflict-files").textContent).toBe("src/app.tsREADME.md");
+
+    expect(resolveButton().textContent).toBe("Merge conflicts");
+    fireEvent.click(resolveButton());
+    await tick();
+    expect(t.calls.find((c) => c.op === "workspace.resolve_conflicts")!.params).toEqual({
+      workspace_id: "a",
+      session_id: "s1",
+    });
+
+    await t.feedEvent("workspace.resolving_changed", { workspace_id: "a", session_id: "s1" });
+    expect(resolveButton().textContent).toBe("Resolving conflicts…");
+    expect(resolveButton().disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await tick();
+    expect(t.calls.find((c) => c.op === "session.cancel")!.params).toEqual({ session_id: "s1" });
+
+    // Resolved: the button follows the PR again, and the user merges once more.
+    await t.feedEvent("workspace.conflicts_changed", { workspace_id: "a", conflicts: null });
+    await t.feedEvent("workspace.resolving_changed", { workspace_id: "a", session_id: null });
+    await t.feedEvent("workspace.pr_changed", { workspace_id: "a", pr: pr(), error: null });
+    expect(screen.queryByTestId("pr-conflicts")).toBeNull();
+    expect(screen.getByRole("button", { name: /^Merge$/ })).toBeTruthy();
+  });
+
+  it("resolves by rebasing from the secondary menu", async () => {
+    const t = conflictHost();
+    await mount(t);
+    fireEvent.click(screen.getByRole("button", { name: "More ways to resolve" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rebase instead" }));
+    await tick();
+    expect(t.calls.find((c) => c.op === "workspace.resolve_conflicts")!.params).toEqual({
+      workspace_id: "a",
+      session_id: "s1",
+      strategy: "rebase",
+    });
+  });
+
+  it("says a stopped merge is in progress", async () => {
+    const t = conflictHost({
+      check: { base: "origin/main", ...shas, state: "in_progress", operation: "merge", files: ["src/app.ts"] },
+    });
+    await mount(t);
+    expect(screen.getByTestId("pr-conflicts").textContent).toContain("Merge in progress: 1 file unresolved");
+    expect(resolveButton().textContent).toBe("Merge conflicts");
+  });
+
+  it("without a PR, offers Resolve conflicts", async () => {
+    const t = conflictHost({ prState: null });
+    await mount(t);
+    expect(screen.getByTestId("pr-conflicts").textContent).toContain("2 files conflict with main");
+    expect(resolveButton().textContent).toBe("Resolve conflicts");
+    fireEvent.click(resolveButton());
+    await tick();
+    expect(t.calls.some((c) => c.op === "workspace.resolve_conflicts")).toBe(true);
+  });
+
+  it("without a PR, still says why the pull request can't be followed", async () => {
+    const t = conflictHost({ prState: null });
+    await mount(t);
+    await t.feedEvent("workspace.pr_changed", {
+      workspace_id: "a",
+      pr: null,
+      error: { code: "gh_unauthenticated", message: "GitHub CLI on the Host is not logged in" },
+    });
+    expect(screen.getByTestId("pr-conflicts").textContent).toContain("2 files conflict with main");
+    expect(screen.getByTestId("pr-error").textContent).toBe("GitHub CLI on the Host isn't signed in.");
+    expect(screen.getByRole("button", { name: "Sign in to GitHub" })).toBeTruthy();
+  });
+
+  it("shows a root's conflicts with no button: no session runs there", async () => {
+    const t = conflictHost({ prState: null, workspace: worktree({ kind: "root", parent_workspace_id: null }) });
+    await mount(t);
+    expect(screen.getByTestId("pr-conflicts").textContent).toContain("2 files conflict with main");
+    expect(screen.queryByRole("button", { name: /Resolve conflicts|Merge conflicts/ })).toBeNull();
+  });
+
+  it("waits while an agent works here, and asks for a chat when there is none", async () => {
+    const busy = conflictHost({ sessions: [summary("s1", { live: true, status: "in_progress" })] });
+    await mount(busy);
+    expect(resolveButton().disabled).toBe(true);
+    expect(screen.getByTestId("conflict-blocked").textContent).toBe(
+      "An agent is working here. Wait for it or stop it, then resolve conflicts.",
+    );
+    cleanup();
+
+    await mount(conflictHost({ sessions: [] }));
+    expect(resolveButton().disabled).toBe(true);
+    expect(screen.getByTestId("conflict-blocked").textContent).toBe("Start a chat here first, then resolve conflicts.");
+  });
+
+  it("says why the Host refused to resolve", async () => {
+    const t = conflictHost();
+    t.handlers["workspace.resolve_conflicts"] = () => {
+      throw new ZwiimClientError("no_conflicts", "No conflicts", 409);
+    };
+    await mount(t);
+    fireEvent.click(resolveButton());
+    await tick();
+    expect(screen.getByRole("alert").textContent).toBe("Nothing to resolve: the branch merges cleanly now.");
+  });
+
+  it("on an older Host, leaves the banner as it was", async () => {
+    const t = conflictHost({
+      capabilities: CLIENT_CAPABILITIES.filter((c) => c !== "workspace.conflicts" && c !== "workspace.resolve_conflicts"),
+    });
+    await mount(t);
+    expect(screen.queryByTestId("pr-conflicts")).toBeNull();
+    expect(screen.getByRole("button", { name: /^Merge$/ }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByTestId("pr-reason").textContent).toBe("Merge conflicts");
   });
 });

@@ -9,9 +9,11 @@ use crate::acp::manager::ConnectionManager;
 use crate::acp::types::PromptInputBlock;
 use crate::db::AppDatabase;
 use crate::git_harness::{self, ConflictCheck, ConflictState, GitHost, PrLifecycle};
+use crate::harness::user_instructions;
 use crate::harness::{resolve_conflicts_prompt, ResolveFacts, ResolveStrategy};
 use crate::protocol::error::ZwiimError;
 use crate::session::{self, AgentLauncher};
+use crate::session_checkpoints::TurnTag;
 
 /// The conflicts the resolve turn was sent for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -38,6 +40,7 @@ pub(crate) async fn resolve_conflicts<L: AgentLauncher>(
     connections: &ConnectionManager,
     launcher: &L,
     data_dir: &Path,
+    instructions: &Path,
     workspace_id: &str,
     session_id: &str,
     strategy: ResolveStrategy,
@@ -87,13 +90,19 @@ pub(crate) async fn resolve_conflicts<L: AgentLauncher>(
         return Err(ZwiimError::worktree_busy());
     }
 
+    // A worktree uses its root workspace's texts.
+    let root_id = match folder.parent_id {
+        Some(parent) => super::workspace_id_of(&db.conn, parent).await?,
+        None => None,
+    };
+    let user = user_instructions::load(instructions).for_root(root_id.as_deref());
     let text = resolve_conflicts_prompt(&ResolveFacts {
         base: &base,
         files: &files,
         strategy,
         push,
         in_progress: in_progress.as_deref(),
-        user_addition: None,
+        user_addition: user.resolve_conflicts.as_deref(),
     });
     session::send_tagged(
         db,
@@ -102,7 +111,11 @@ pub(crate) async fn resolve_conflicts<L: AgentLauncher>(
         session_id,
         vec![PromptInputBlock::Text { text }],
         None,
-        Some(RESOLVE_ACTION),
+        Some(TurnTag {
+            action: RESOLVE_ACTION,
+            base: base.clone(),
+            files: files.clone(),
+        }),
     )
     .await?;
     tracing::info!(
@@ -124,9 +137,11 @@ mod tests {
     use crate::db::entities::folder;
     use crate::db::test_helpers::fresh_in_memory_db;
     use crate::git_harness::checkpoint;
+    use crate::harness::unresolved_notice;
     use crate::models::agent::AgentType;
     use crate::session::orchestration_tests::{
-        end_turn_observed, fixture_git, git_workspace, settle, text, FakeLauncher,
+        end_turn_observed, fixture_git, git_workspace, revert_turn, settle, text, transcript,
+        FakeLauncher,
     };
 
     struct Rig {
@@ -236,12 +251,382 @@ mod tests {
             mgr,
             launcher,
             &r.data_dir,
+            &r.data_dir.join("instructions.json"),
             &r.wid,
             sid,
             ResolveStrategy::Merge,
             true,
         )
         .await
+    }
+
+    /// `git merge -q origin/main` in `dir`; whether it succeeded.
+    fn merge_base(dir: &Path) -> bool {
+        std::process::Command::new("git")
+            .args(["merge", "-q", "origin/main"])
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    }
+
+    /// End the session's running turn and wait for its end checks. Returns
+    /// the session's conversation id.
+    async fn end_turn(r: &Rig, mgr: &ConnectionManager, sid: &str) -> i32 {
+        let conv = crate::session::resolve(&r.db.conn, sid).await.unwrap().id;
+        end_turn_observed(mgr, "fake-conn-1", "end_turn").await;
+        mgr.turn_checkpoints
+            .close_conversation(conv, "end_turn")
+            .await;
+        settle().await;
+        conv
+    }
+
+    /// The text of the resolve turn `resolve` sends in the rig.
+    fn resolve_text(in_progress: Option<&str>) -> String {
+        resolve_conflicts_prompt(&ResolveFacts {
+            base: "origin/main",
+            files: &["a.txt".to_string()],
+            strategy: ResolveStrategy::Merge,
+            push: true,
+            in_progress,
+            user_addition: None,
+        })
+    }
+
+    async fn state(r: &Rig) -> ConflictState {
+        git_harness::check_conflicts(&r.dir, "origin/main")
+            .await
+            .unwrap()
+            .unwrap()
+            .state
+    }
+
+    /// The prompt the agent gets when the session sends `next` now.
+    async fn next_prompt(
+        r: &Rig,
+        mgr: &ConnectionManager,
+        launcher: &FakeLauncher,
+        sid: &str,
+    ) -> String {
+        crate::session::send(&r.db, mgr, launcher, sid, text("next"), None)
+            .await
+            .unwrap();
+        settle().await;
+        launcher.prompts_for("fake-conn-1").last().unwrap().clone()
+    }
+
+    /// The prompt `next` composes into with `notices` appended.
+    fn next_with(notices: &[String]) -> String {
+        let composed = crate::harness::compose_turn(text("next"), notices);
+        let PromptInputBlock::Text { text } = &composed[0] else {
+            unreachable!()
+        };
+        text.clone()
+    }
+
+    #[tokio::test]
+    async fn reverted_resolve_turn_sends_no_notice() {
+        let r = rig(true).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = idle_session(&r, &mgr, &launcher).await;
+        resolve(&r, &mgr, &launcher, &sid).await.unwrap();
+        settle().await;
+        assert!(!merge_base(&r.dir));
+        end_turn(&r, &mgr, &sid).await;
+
+        let turns = transcript(&["first", &resolve_text(None)]);
+        revert_turn(&r.db, &mgr, &sid, &turns, "turn-2")
+            .await
+            .unwrap();
+        assert_eq!(next_prompt(&r, &mgr, &launcher, &sid).await, next_with(&[]));
+    }
+
+    #[tokio::test]
+    async fn resolve_turn_end_queues_notice_when_unresolved() {
+        let r = rig(true).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = idle_session(&r, &mgr, &launcher).await;
+        resolve(&r, &mgr, &launcher, &sid).await.unwrap();
+        settle().await;
+        // The agent started the merge and stopped on its conflicts.
+        assert!(!merge_base(&r.dir));
+        end_turn(&r, &mgr, &sid).await;
+
+        assert_eq!(
+            state(&r).await,
+            ConflictState::InProgress {
+                operation: "merge".into(),
+                files: vec!["a.txt".into()],
+            }
+        );
+        assert_eq!(
+            next_prompt(&r, &mgr, &launcher, &sid).await,
+            next_with(&[unresolved_notice(
+                "origin/main",
+                Some("merge"),
+                &["a.txt".into()],
+                &[]
+            )])
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_turn_end_queues_notice_when_merge_left_uncommitted() {
+        let r = rig(true).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = idle_session(&r, &mgr, &launcher).await;
+        resolve(&r, &mgr, &launcher, &sid).await.unwrap();
+        settle().await;
+        // The agent resolved and staged a.txt but never committed the merge.
+        assert!(!merge_base(&r.dir));
+        std::fs::write(r.dir.join("a.txt"), "both\n").unwrap();
+        fixture_git(&r.dir, &["add", "a.txt"]);
+        end_turn(&r, &mgr, &sid).await;
+
+        assert_eq!(
+            next_prompt(&r, &mgr, &launcher, &sid).await,
+            next_with(&[unresolved_notice("origin/main", Some("merge"), &[], &[])])
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_turn_end_quiet_when_resolved() {
+        let r = rig(true).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = idle_session(&r, &mgr, &launcher).await;
+        resolve(&r, &mgr, &launcher, &sid).await.unwrap();
+        settle().await;
+        assert!(!merge_base(&r.dir));
+        std::fs::write(r.dir.join("a.txt"), "merged\n").unwrap();
+        fixture_git(&r.dir, &["add", "a.txt"]);
+        fixture_git(&r.dir, &["commit", "-q", "--no-edit"]);
+        end_turn(&r, &mgr, &sid).await;
+
+        assert_eq!(state(&r).await, ConflictState::Clean);
+        assert_eq!(next_prompt(&r, &mgr, &launcher, &sid).await, next_with(&[]));
+    }
+
+    #[tokio::test]
+    async fn resolve_turn_end_flags_markers_in_resolved_files() {
+        let r = rig(true).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = idle_session(&r, &mgr, &launcher).await;
+        resolve(&r, &mgr, &launcher, &sid).await.unwrap();
+        settle().await;
+        // The agent committed the merge with the markers still in a.txt.
+        assert!(!merge_base(&r.dir));
+        fixture_git(&r.dir, &["add", "a.txt"]);
+        fixture_git(&r.dir, &["commit", "-q", "--no-edit"]);
+        end_turn(&r, &mgr, &sid).await;
+
+        assert_eq!(
+            next_prompt(&r, &mgr, &launcher, &sid).await,
+            next_with(&[unresolved_notice("origin/main", None, &[], &["a.txt".into()])])
+        );
+        // The merge tree reads clean, but the markers keep the workspace
+        // showing conflicts.
+        assert_eq!(
+            state(&r).await,
+            ConflictState::Conflicts {
+                files: vec!["a.txt".into()]
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn markers_a_second_resolve_keeps_read_as_content() {
+        let r = rig(true).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = idle_session(&r, &mgr, &launcher).await;
+        resolve(&r, &mgr, &launcher, &sid).await.unwrap();
+        settle().await;
+        assert!(!merge_base(&r.dir));
+        fixture_git(&r.dir, &["add", "a.txt"]);
+        fixture_git(&r.dir, &["commit", "-q", "--no-edit"]);
+        end_turn(&r, &mgr, &sid).await;
+        // The agent looks again and keeps the lines: they are the file's
+        // content, so the workspace stops showing conflicts.
+        resolve(&r, &mgr, &launcher, &sid).await.unwrap();
+        settle().await;
+        end_turn(&r, &mgr, &sid).await;
+
+        assert_eq!(state(&r).await, ConflictState::Clean);
+    }
+
+    #[tokio::test]
+    async fn markers_fixed_by_hand_read_clean() {
+        let r = rig(true).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = idle_session(&r, &mgr, &launcher).await;
+        resolve(&r, &mgr, &launcher, &sid).await.unwrap();
+        settle().await;
+        assert!(!merge_base(&r.dir));
+        fixture_git(&r.dir, &["add", "a.txt"]);
+        fixture_git(&r.dir, &["commit", "-q", "--no-edit"]);
+        end_turn(&r, &mgr, &sid).await;
+        // The user removes the markers and commits.
+        std::fs::write(r.dir.join("a.txt"), "both\n").unwrap();
+        fixture_git(&r.dir, &["commit", "-qam", "fix markers"]);
+
+        assert_eq!(state(&r).await, ConflictState::Clean);
+        assert_eq!(state(&r).await, ConflictState::Clean);
+    }
+
+    #[tokio::test]
+    async fn resolve_turn_end_names_a_file_deleted_on_one_side() {
+        let r = rig(false).await;
+        // origin/main deletes a.txt; feature edited it.
+        fixture_git(&r.upstream, &["rm", "-q", "a.txt"]);
+        fixture_git(&r.upstream, &["commit", "-q", "-m", "drop a"]);
+        fixture_git(&r.upstream, &["push", "-q", "origin", "main"]);
+        fixture_git(&r.dir, &["fetch", "-q", "origin"]);
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = idle_session(&r, &mgr, &launcher).await;
+        resolve(&r, &mgr, &launcher, &sid).await.unwrap();
+        settle().await;
+        // The agent started the merge and stopped on the delete.
+        assert!(!merge_base(&r.dir));
+        end_turn(&r, &mgr, &sid).await;
+
+        assert_eq!(
+            next_prompt(&r, &mgr, &launcher, &sid).await,
+            next_with(&[unresolved_notice(
+                "origin/main",
+                Some("merge"),
+                &["a.txt".into()],
+                &[]
+            )])
+        );
+    }
+
+    #[tokio::test]
+    async fn in_progress_resolve_turn_end_checks_without_checkpoint() {
+        let r = rig(true).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = idle_session(&r, &mgr, &launcher).await;
+        // The user's merge stopped on conflicts; the start checkpoint of the
+        // resolve turn is skipped.
+        assert!(!merge_base(&r.dir));
+        resolve(&r, &mgr, &launcher, &sid).await.unwrap();
+        settle().await;
+        end_turn(&r, &mgr, &sid).await;
+
+        let listed = checkpoint::list(&r.dir, &sid).await.unwrap();
+        assert!(
+            listed
+                .iter()
+                .all(|c| c.action.as_deref() != Some(RESOLVE_ACTION)),
+            "{listed:?}"
+        );
+        assert_eq!(
+            next_prompt(&r, &mgr, &launcher, &sid).await,
+            next_with(&[unresolved_notice(
+                "origin/main",
+                Some("merge"),
+                &["a.txt".into()],
+                &[]
+            )])
+        );
+    }
+
+    /// A rig whose resolve turn merged `origin/main` and committed the merge.
+    /// Returns the session and the commit the turn started on.
+    async fn resolved_merge(
+        r: &Rig,
+        mgr: &ConnectionManager,
+        launcher: &FakeLauncher,
+    ) -> (String, String) {
+        let sid = idle_session(r, mgr, launcher).await;
+        let start = fixture_git(&r.dir, &["rev-parse", "HEAD"])
+            .trim()
+            .to_string();
+        resolve(r, mgr, launcher, &sid).await.unwrap();
+        settle().await;
+        assert!(!merge_base(&r.dir));
+        std::fs::write(r.dir.join("a.txt"), "merged\n").unwrap();
+        fixture_git(&r.dir, &["add", "a.txt"]);
+        fixture_git(&r.dir, &["commit", "-q", "--no-edit"]);
+        end_turn(r, mgr, &sid).await;
+        (sid, start)
+    }
+
+    #[tokio::test]
+    async fn revert_resolve_turn_resets_unpushed_merge() {
+        let r = rig(true).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let (sid, start) = resolved_merge(&r, &mgr, &launcher).await;
+        let start_tree = fixture_git(&r.dir, &["rev-parse", &format!("{start}^{{tree}}")]);
+
+        let turns = transcript(&["first", &resolve_text(None)]);
+        let out = revert_turn(&r.db, &mgr, &sid, &turns, "turn-2")
+            .await
+            .unwrap();
+        assert!(out.files_restored);
+        assert!(!out.head_moved);
+        assert_eq!(fixture_git(&r.dir, &["rev-parse", "HEAD"]).trim(), start);
+        assert_eq!(fixture_git(&r.dir, &["status", "--porcelain"]), "");
+        assert_eq!(
+            fixture_git(&r.dir, &["rev-parse", "HEAD^{tree}"]),
+            start_tree
+        );
+    }
+
+    #[tokio::test]
+    async fn revert_resolve_turn_keeps_pushed_merge() {
+        let r = rig(true).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let (sid, start) = resolved_merge(&r, &mgr, &launcher).await;
+        fixture_git(&r.dir, &["push", "-q", "-u", "origin", "feature"]);
+        let merged = fixture_git(&r.dir, &["rev-parse", "HEAD"]);
+        assert_ne!(merged, start);
+
+        let turns = transcript(&["first", &resolve_text(None)]);
+        let out = revert_turn(&r.db, &mgr, &sid, &turns, "turn-2")
+            .await
+            .unwrap();
+        assert!(out.files_restored);
+        assert!(out.head_moved);
+        assert_eq!(fixture_git(&r.dir, &["rev-parse", "HEAD"]), merged);
+        assert_eq!(
+            std::fs::read_to_string(r.dir.join("a.txt")).unwrap(),
+            "ours\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn revert_resolve_turn_keeps_later_commits() {
+        let r = rig(true).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let (sid, _) = resolved_merge(&r, &mgr, &launcher).await;
+        // The user commits after the resolve turn, never pushing.
+        std::fs::write(r.dir.join("later.txt"), "later\n").unwrap();
+        fixture_git(&r.dir, &["add", "later.txt"]);
+        fixture_git(&r.dir, &["commit", "-q", "-m", "later"]);
+        let later = fixture_git(&r.dir, &["rev-parse", "HEAD"]);
+
+        let turns = transcript(&["first", &resolve_text(None)]);
+        let out = revert_turn(&r.db, &mgr, &sid, &turns, "turn-2")
+            .await
+            .unwrap();
+        assert!(out.files_restored);
+        assert!(out.head_moved);
+        assert_eq!(fixture_git(&r.dir, &["rev-parse", "HEAD"]), later);
     }
 
     #[test]
@@ -279,6 +664,52 @@ mod tests {
             push: true,
             in_progress: None,
             user_addition: None,
+        });
+        assert_eq!(
+            launcher.prompts_for("fake-conn-1"),
+            ["first", expected.as_str()]
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_prompt_includes_user_addition() {
+        let r = rig(true).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = idle_session(&r, &mgr, &launcher).await;
+        let row = folder::Entity::find()
+            .filter(folder::Column::WorkspaceId.eq(r.wid.as_str()))
+            .one(&r.db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        let root = crate::workspace::workspace_id_of(&r.db.conn, row.parent_id.unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let texts = |t: &str| crate::harness::InstructionTexts {
+            general: Some("Not for this turn.".into()),
+            resolve_conflicts: Some(t.into()),
+        };
+        crate::harness::user_instructions::save(
+            &r.data_dir.join("instructions.json"),
+            &crate::harness::user_instructions::UserInstructions {
+                host: texts("Keep our lockfile."),
+                workspaces: [(root, texts("Ask before deleting tests."))].into(),
+            },
+        )
+        .unwrap();
+
+        resolve(&r, &mgr, &launcher, &sid).await.unwrap();
+        settle().await;
+
+        let expected = resolve_conflicts_prompt(&ResolveFacts {
+            base: "origin/main",
+            files: &["a.txt".to_string()],
+            strategy: ResolveStrategy::Merge,
+            push: true,
+            in_progress: None,
+            user_addition: Some("Keep our lockfile.\n\nAsk before deleting tests."),
         });
         assert_eq!(
             launcher.prompts_for("fake-conn-1"),
@@ -497,6 +928,7 @@ mod tests {
             &mgr,
             &launcher,
             &r.data_dir,
+            &r.data_dir.join("instructions.json"),
             &other,
             &sid,
             ResolveStrategy::Merge,
