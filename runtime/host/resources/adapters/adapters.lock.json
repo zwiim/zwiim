@@ -39,51 +39,51 @@
   },
   "adapters": {
     "claude": {
-      "version": "0.81.2",
+      "version": "0.99.0",
       "entry": "node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js",
       "packages": [
         {
           "path": "node_modules/@agentclientprotocol/claude-agent-acp",
           "name": "@agentclientprotocol/claude-agent-acp",
-          "version": "0.81.2",
-          "url": "https://registry.npmjs.org/@agentclientprotocol/claude-agent-acp/-/claude-agent-acp-0.81.2.tgz",
-          "integrity": "sha512-/yvpesq8e6Jv8kl5PHEhwbKRVvzVudXD+ujC0q6PZFmrZK0+xPtiVQYtZIdlUtdhgNKBgBTsGwZkbb2Iw+rbjA==",
+          "version": "0.99.0",
+          "url": "https://registry.npmjs.org/@agentclientprotocol/claude-agent-acp/-/claude-agent-acp-0.99.0.tgz",
+          "integrity": "sha512-xT6Ajub9fa9LeMpQU6a+/nHEqI5lefvgWAP8liiD1EZBv3vTXKEnKq5mRpKCu2089CHpFXu7Y/PEHCH5iPWfPw==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCIEcSukJYzmrfuz89CdqhD/Z2I65NOh6MdvWf+rH+fOivAiEAo3b1sZ9VBE3m9FYI01zkLZ+vszN1I8ePBL7XuBKcfzk="
+            "sig": "MEYCIQDnHQ8o0UWKgenRLyK5XGomi3AKJ4I0RoA3dD9JDDrIXgIhAPcL+A3Fp4TJCEk4hbVDpohuJ2PzdUNm4cPFPaGNoy0/"
           }
         },
         {
           "path": "node_modules/@agentclientprotocol/sdk",
           "name": "@agentclientprotocol/sdk",
-          "version": "1.5.0",
-          "url": "https://registry.npmjs.org/@agentclientprotocol/sdk/-/sdk-1.5.0.tgz",
-          "integrity": "sha512-524jwbB2iYWA+kWWyv9fhKbhU89dH/lu9u5EXwVNmfYzopV8BujCDxByBDZhxRUkB7RWIJzISCnwivdDk+bdVg==",
+          "version": "2.1.0",
+          "url": "https://registry.npmjs.org/@agentclientprotocol/sdk/-/sdk-2.1.0.tgz",
+          "integrity": "sha512-IuKjJmHLPzbmbg26eK9Jopd8AVxgLuu8fX114YzYAU6tLYclCo2DUzLL4vbCpYGr9mzvs2T0kigE3ZCueL06tg==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCIF28JM9X79y4rteVPSeu7m8nm5+4nUM+k+MtCtc8/DykAiEAvduH7WdcISO6DW8xnOX9OxzuH8PVLIuUe0DsC8LjvXI="
+            "sig": "MEYCIQDzb8STk0ffMjcGflF7BsQFwd2mrXIzc28XVnJXXBaSCgIhAI+ye6LoDAZt0nfDpi7kQel9CsNViXhM2e0tA7+oPyIC"
           }
         },
         {
           "path": "node_modules/@anthropic-ai/claude-agent-sdk",
           "name": "@anthropic-ai/claude-agent-sdk",
-          "version": "0.3.280",
-          "url": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk/-/claude-agent-sdk-0.3.280.tgz",
-          "integrity": "sha512-aIQSTKcCJcOgi125GAGQaNZUYgxbEBQwV2Ac+Utp0+gGUjIEWjTqz4B8kXr9XjkcCTYiRUMTDsXPAUfIcBDjnw==",
+          "version": "0.3.312",
+          "url": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk/-/claude-agent-sdk-0.3.312.tgz",
+          "integrity": "sha512-Ilj5Agx3ak/Z0UPZNLS7+CTnYMa+Ijf8+FKelh9MKGRwHVYyfvmJgL0fsmooI78SdkZwqjI5a4CwOAsJurdjJA==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCIQDKCgcixjKJZyIhGMkQPy3lioG/prwUM5lNgVuT4QVLbQIga/MmUYptt3Tnjgq6NjzV6k7VvxnB5Ugp0DyfcrLl0XE="
+            "sig": "MEUCID26n7G97/3EGLCSvml4h0juS1TAk/uiNaiMwsFGrGJpAiEA1QigXkpr4ilprJjpZ6EpWaFs+cfS9qM0mem11kcKmv0="
           }
         },
         {
           "path": "node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64",
           "name": "@anthropic-ai/claude-agent-sdk-darwin-arm64",
-          "version": "0.3.280",
-          "url": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-darwin-arm64/-/claude-agent-sdk-darwin-arm64-0.3.280.tgz",
-          "integrity": "sha512-Yws14X5g5hgDtF565Tld/+dILAhH9QZpundjKMyO3dFasq9miXZlhU0NwXqwTO2xP0jDjJ54zduIiJwkcfcvGw==",
+          "version": "0.3.312",
+          "url": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-darwin-arm64/-/claude-agent-sdk-darwin-arm64-0.3.312.tgz",
+          "integrity": "sha512-AVmdMOuoeE3Y9f4wAIPcEAAS0OFaZw1L6l11YuyqfS0B/+DYxkWxS/ZYZ1NbUy57eaIW/vdEgz9Q5M99Pl6ZJw==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEQCIEUI/ourSKj5UkUjbpL+VH5P0LS7FhhQbD55iYWM6VOgAiAQ/Apw+D2Bs7dY6/vhoMiOYnQZhss5tUHRSBocJL8pUA=="
+            "sig": "MEUCIQDs457cvphPQHTca24B3FEUuJB7vDgcCZf5Nt9yy+CyuAIgB0NL4G6zb/FkwGG+SpX3DH0eH8LG9pJbpmwPd8ZQSgI="
           },
           "os": [
             "darwin"
@@ -95,12 +95,12 @@
         {
           "path": "node_modules/@anthropic-ai/claude-agent-sdk-darwin-x64",
           "name": "@anthropic-ai/claude-agent-sdk-darwin-x64",
-          "version": "0.3.280",
-          "url": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-darwin-x64/-/claude-agent-sdk-darwin-x64-0.3.280.tgz",
-          "integrity": "sha512-B1eLx/oZ5RL1c3a13nQ4cRUksWyhGcVNS5vbCHnOVu4Pz+dH0moZ+iY8VaE6FvikVAQwFEW6VDU00b6m3tYdsQ==",
+          "version": "0.3.312",
+          "url": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-darwin-x64/-/claude-agent-sdk-darwin-x64-0.3.312.tgz",
+          "integrity": "sha512-Dmxyil+GPzF1WENoFOi1Cx0roSdJA6HewGAfAFvsH5vYrzb6G0REGuoQQ0n3u8i8qFgtl1m/WSl4u5t+MdiHWA==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCIByHqNyNdEPgM1ZF693mZoUKkEjPmUsCxXtaXJfcmwiJAiEAjY4iNJ3VGZxn5iwQEGB4yy1s/dRCrb7gcElGtIDE93M="
+            "sig": "MEYCIQCZ4uaZv0J7EX1SZjPL1X2ei/IgzA883Yd3yoAfeOEJVwIhANpJB0mIZpFlTVn87Q5bEcgwO4X9rFHkq/Neo+ecoYul"
           },
           "os": [
             "darwin"
@@ -112,12 +112,12 @@
         {
           "path": "node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64",
           "name": "@anthropic-ai/claude-agent-sdk-linux-arm64",
-          "version": "0.3.280",
-          "url": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-linux-arm64/-/claude-agent-sdk-linux-arm64-0.3.280.tgz",
-          "integrity": "sha512-6s96OIvBHT2817hCFLIZ421JBpQnvrmZucpjlWsyCODKmwGsSxiEhlWqK2h5Q7lwS6F7bzeAhqjGvC7FzDl9Rw==",
+          "version": "0.3.312",
+          "url": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-linux-arm64/-/claude-agent-sdk-linux-arm64-0.3.312.tgz",
+          "integrity": "sha512-jebsXksKh7g7u1x+RxjYQXM50TCN0e7GthebXa+n5IebF3pPqtmyWGVIiEEjvpajn3P6Zh8BWUVuufUpXn8ccA==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEQCIDoYDJvpJvhQX1G45t50igtueWPnnKnMMS1HbGDoRhDJAiA3fNd/njZvvyPApWJvXDLnqA9rD+MNlz+YmanShnCyTQ=="
+            "sig": "MEQCIDw/Kf1NyyyMdNkkte4M6qdlbYEqXqIAAjdQOyS4rHmOAiA8sFvoOEl/qye/gCi1JVObrNXK7JL9QZDBYTyc5lpk6g=="
           },
           "os": [
             "linux"
@@ -132,12 +132,12 @@
         {
           "path": "node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64-musl",
           "name": "@anthropic-ai/claude-agent-sdk-linux-arm64-musl",
-          "version": "0.3.280",
-          "url": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-linux-arm64-musl/-/claude-agent-sdk-linux-arm64-musl-0.3.280.tgz",
-          "integrity": "sha512-uDh+Ggjb36l+jcVgaYxSziGHmBSSR3clqvGlQ0Bgc1v5dLF4igwqZ6ZPW/hS9dArG27fislIOetH1waEgIr+GA==",
+          "version": "0.3.312",
+          "url": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-linux-arm64-musl/-/claude-agent-sdk-linux-arm64-musl-0.3.312.tgz",
+          "integrity": "sha512-9GT0JzbfhODwsCO3MCg79wPH47qARCuKECcryeAJnVczplAlXSIiBw1+6UcqL5+0wSYFu6D/tvw/AiVy+PkHsg==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEYCIQCBF/qjaVm74/YA1OIJuSO6zHut8np/NDD9MGvs0VfxtwIhAPSG4hZMc8UpPM8XaS7gIS3sFH7ClZrNr8HCRdovyMNN"
+            "sig": "MEYCIQCNGuvA+9VBmCEXFglor+tO9e12dIcnFTwZyoao2oVuIgIhAOWNknxFxUi7PwsjbOoC0/2Ut58jvQOZ/AGDQIHrHzIC"
           },
           "os": [
             "linux"
@@ -152,12 +152,12 @@
         {
           "path": "node_modules/@anthropic-ai/claude-agent-sdk-linux-x64",
           "name": "@anthropic-ai/claude-agent-sdk-linux-x64",
-          "version": "0.3.280",
-          "url": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-linux-x64/-/claude-agent-sdk-linux-x64-0.3.280.tgz",
-          "integrity": "sha512-vpPyxYLy+zNc7LwQDWsZf0GZtTYa0PJLxzuv2vK9iV2dG+hrbRNTl35NSKKRR9rMj6RpKz0i2NLyVQ+D4mREgw==",
+          "version": "0.3.312",
+          "url": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-linux-x64/-/claude-agent-sdk-linux-x64-0.3.312.tgz",
+          "integrity": "sha512-UOsqza2uo5gqlX2OU72LhkQvIaNJKUQMJIi1poX2NtYqaWACqNo/TZPWfOBzxhyWmX8BLWaOlcuZGPLgcCJOTg==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCICEZ1aaxVYkW5m1Y9AvF2rwrNbKFdeI3dctUY59z4aP8AiEA8dZp24m3xJG7O2NUO2cpKHs+J//0w2aMD4vVCIn/ryM="
+            "sig": "MEYCIQC3SD1X43raC+/nK9DX5spbQpaJR0yheBV2FXQN/zEMmQIhAM2g/66YYQhVNaOTomD7ZLBvyesYCZ8hByY5y5SzOl/w"
           },
           "os": [
             "linux"
@@ -172,12 +172,12 @@
         {
           "path": "node_modules/@anthropic-ai/claude-agent-sdk-linux-x64-musl",
           "name": "@anthropic-ai/claude-agent-sdk-linux-x64-musl",
-          "version": "0.3.280",
-          "url": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-linux-x64-musl/-/claude-agent-sdk-linux-x64-musl-0.3.280.tgz",
-          "integrity": "sha512-IVbIgvi5C0sdLg/p9hpiVvAQ/ikvTKwOOEy5C1aT7w8XLqBgfpJbzzVuk06df1Q0HlILUmf63EKPmq48lbxtqA==",
+          "version": "0.3.312",
+          "url": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-linux-x64-musl/-/claude-agent-sdk-linux-x64-musl-0.3.312.tgz",
+          "integrity": "sha512-zM+PB6qVybdwtlqElXQ4+wCwk2v/jjT3Xau4foydzy/g5pGRTuGT3PTcfDLeG0j9zF8IxLaCQ/+Bl9MABPQD8g==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCICMgcN964pW/TMXQWBeB10P2cF5WNcruZ/+3kWstwn4yAiEA0pMhqZ16KQfIOfvgk5e0/gUWLE8e7GhroqIluoMykY8="
+            "sig": "MEYCIQCDvhWZxd+DC7xhvA+qEARqgnjKt2Ae0Mf2UPAC3aUZJgIhAM9OimThtbuefKstZvHhw/agfb3ZkRpRqZSX0MjGL0ve"
           },
           "os": [
             "linux"
@@ -192,12 +192,12 @@
         {
           "path": "node_modules/@anthropic-ai/claude-agent-sdk-win32-arm64",
           "name": "@anthropic-ai/claude-agent-sdk-win32-arm64",
-          "version": "0.3.280",
-          "url": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-win32-arm64/-/claude-agent-sdk-win32-arm64-0.3.280.tgz",
-          "integrity": "sha512-heTflHwciJF+Hrf7v0J53QBzD+9mxN9gt2VVmEJAN0+ejbPcOcqnGGZHvyc9aZUuGh5INN0ECaiL4Fn1X2vXQQ==",
+          "version": "0.3.312",
+          "url": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-win32-arm64/-/claude-agent-sdk-win32-arm64-0.3.312.tgz",
+          "integrity": "sha512-Li9CyzsC2mzGmF1wtt/R59ChBLww6nc2dLn6tb+bgTDcd6kqvW44x5rIH+lRmBcpTNHR/8VO/k+GlmnkxqeaQQ==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCIQC0/VA6CRDkUs1RL4aKGn0WlZS53gFavlXLOgDKE5NNjAIgJckFsfSHCsqMYkDmjgI3rnwXVXMEtXNx0orF0oQm/ck="
+            "sig": "MEYCIQC1l0vCHwSYMjpDJJTNAmeJCHhAOoifvYdzMRY0yn3V0AIhAJxFXso5tQefitoBW0lhziUfAAOumYNF9HYGXP4qI1G9"
           },
           "os": [
             "win32"
@@ -209,12 +209,12 @@
         {
           "path": "node_modules/@anthropic-ai/claude-agent-sdk-win32-x64",
           "name": "@anthropic-ai/claude-agent-sdk-win32-x64",
-          "version": "0.3.280",
-          "url": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-win32-x64/-/claude-agent-sdk-win32-x64-0.3.280.tgz",
-          "integrity": "sha512-N+Y1zJb19nx0oPTvzkl/E3ng9AtWGW+K4hySmSHCgYSsgIwfs1YzDj/F5eHDMrxgklTuzFp76TvL3S75z5ge+g==",
+          "version": "0.3.312",
+          "url": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-win32-x64/-/claude-agent-sdk-win32-x64-0.3.312.tgz",
+          "integrity": "sha512-9GgGHHFEQnXx6EPhkPplOw1ndqmys8+Z+uOR68EIQlXGZm+wE+BmfypyHAoZhjs4151iWdQgNzjDT7wet3crdw==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCIQDtZWrUwPhgLnA0IlPG5I3LYNAnb2z4JMIV9NUY3hZO7gIgSGQ0sS76dBS4A5E6r/loHL8GFb2LyXe2BiEdF/GUgnU="
+            "sig": "MEUCIGy35wlJ6h1C19UTZimqUH9RaVl6osAL6lNe/fqIav66AiEA/C4tOGjbwjTT2mDrFHtRDu2CRvt3JnlEAwXKUejbdwo="
           },
           "os": [
             "win32"
@@ -226,45 +226,56 @@
         {
           "path": "node_modules/@anthropic-ai/sdk",
           "name": "@anthropic-ai/sdk",
-          "version": "0.128.0",
-          "url": "https://registry.npmjs.org/@anthropic-ai/sdk/-/sdk-0.128.0.tgz",
-          "integrity": "sha512-tl5cBFZC1jVFrTuQyvQObA4WmuNgcYVeXfriqOumgtLAHUm4gPUj18YnszBW60v0PrjDB8nBDOC6wd9CmHQFlA==",
+          "version": "1.3.0",
+          "url": "https://registry.npmjs.org/@anthropic-ai/sdk/-/sdk-1.3.0.tgz",
+          "integrity": "sha512-k7z9BlLLPxfZH+ov7dS6EnaN/wiZeV8YNT1LZfrpAHIy7oY7pHr4UzirF9f2OlHtFEnRBOX+AZQ91Y5fK+TPTw==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEQCIE1GH1+udqNVU4acyTh36lQ6iPJ1Ch2zkpgNCac/Dw1nAiABuEBXNlFrTejhTWw5E0xB3Qj34C5VTzx+dL0n3fDaFQ=="
+            "sig": "MEUCIBth48ZIAWEtLZMqTqLUCMM26b/ywNJminBL4LZGVj91AiEAyod6V7QcaAc9x3UAFOZFzEZrqIsUmU/GFR3PxTNWQdA="
           }
         },
         {
           "path": "node_modules/@babel/runtime",
           "name": "@babel/runtime",
-          "version": "7.29.7",
-          "url": "https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.7.tgz",
-          "integrity": "sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw==",
+          "version": "7.29.10",
+          "url": "https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.10.tgz",
+          "integrity": "sha512-NpugTzbKgGrNe45Ui32cN8vCFFMxVtP/9rtfwv0nP5FRDAjvYBxJcLVpYA9mr1jxP6cnIT7x9LUzuDTbWYYNRA==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEQCIHBRHwaakBWxC/Jhsn1kmS/ZcbLzHVBzIv4jKqOuOFaYAiBrFE4jL5awfNXhzWKRdjpR6ggDXx3ApNGHE0pB2Az15Q=="
+            "sig": "MEUCIGxyXslYQqFRX2yJXePEaDLzYeP0q8uaz05sUIX63AvHAiEAuhceJbqXrpw1ABG6iO2Lwafzj4c4zXSMzfAbztsnTHg="
           }
         },
         {
           "path": "node_modules/@hono/node-server",
           "name": "@hono/node-server",
-          "version": "2.1.1",
-          "url": "https://registry.npmjs.org/@hono/node-server/-/node-server-2.1.1.tgz",
-          "integrity": "sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg==",
+          "version": "2.1.5",
+          "url": "https://registry.npmjs.org/@hono/node-server/-/node-server-2.1.5.tgz",
+          "integrity": "sha512-MgP/I06GdvsilDspMk/qmRzpk8LOUStP6jFAbSRi40W09DhoyUn+Mj7eyKICPqeYKybOjVFLVIAQzvu1bfIa7Q==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCIBC0NMCms2Tpy5abY1Xtj2Yqcq/MdRl5kEEtwZTPk1qvAiEA5n1oPfkwGwF+eOVa+VmebJy5Xx2bbLI8767cib9+MBQ="
+            "sig": "MEUCIQDTzd+sg8Qxvw9TtyTB/H60+CqUCVCvlhiibfEYI/HKRwIgJKYppdQ99BAL2svSwSJRLhbaS44YFcQbWGGxqAsW1GY="
           }
         },
         {
           "path": "node_modules/@modelcontextprotocol/sdk",
           "name": "@modelcontextprotocol/sdk",
-          "version": "1.30.1",
-          "url": "https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.30.1.tgz",
-          "integrity": "sha512-H2HxLvC3HDNybePJaLdSrU1hhUK5iQw+WvV1b01myFyI7sdVGe1u/IPTE5D9fGCiJDVtgMV/lmFkQXLmQyIFYA==",
+          "version": "1.32.2",
+          "url": "https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.32.2.tgz",
+          "integrity": "sha512-SWsVtH/0vULSQStoZ6xxH2K09Li8fXYTMC64ZeogCdpZ3XSi1eCPOByV1OpuJxuI3OcmHhosDWYyii07tpPsLw==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEQCIFsOQWm8zQwmAInHcKNzbp/w5BTwf6kcvRHdXlBZhRdGAiA3bXogtoDkUt8ho6AVJV88DFyZgknmQgQ5jDwOOGW2Kg=="
+            "sig": "MEUCIHLCNkKqhk+vWeY+gcWYLMO0j2NDW4ZnA+/e/SbwSgMiAiEA2eQi+6xIVV6gnbtqKuKkR4W5yTFiO0g/DZrDSWztp40="
+          }
+        },
+        {
+          "path": "node_modules/@opentelemetry/api",
+          "name": "@opentelemetry/api",
+          "version": "1.10.0",
+          "url": "https://registry.npmjs.org/@opentelemetry/api/-/api-1.10.0.tgz",
+          "integrity": "sha512-lMkyes8iHrG+mk6WH7X70MdCLI2RS0FwNBY1PyQ8UemaijE2m5mv5A0Niy3HtbYTFrgkUEQjFMXmSAk2hQDuPQ==",
+          "signature": {
+            "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
+            "sig": "MEUCIQDjRJQeP0zby8myjF+6EGD+9ybbatgURKrbwAmnwmkAPwIgPzrww8yp9yPg8vUDHaM7bJk9Pw/JavIIJkJ07EmeWkc="
           }
         },
         {
@@ -314,12 +325,12 @@
         {
           "path": "node_modules/body-parser",
           "name": "body-parser",
-          "version": "2.3.0",
-          "url": "https://registry.npmjs.org/body-parser/-/body-parser-2.3.0.tgz",
-          "integrity": "sha512-2cGmJupaNgg+QUwVLAucDuWuoMZ6EX9iHDRswZ5lsNYEmwPaRknMPCLZz07yTzVq/83p4o/wzbDZbBrTvGGTIw==",
+          "version": "2.4.0",
+          "url": "https://registry.npmjs.org/body-parser/-/body-parser-2.4.0.tgz",
+          "integrity": "sha512-Ifk1KcLrxaGt1occQagQNFNNOqRt1LFuehEnHHzB8Z6cRgIxRU1TBaiIsUiCdA+gy5PL7Y1IX31DNKkRmxtXjQ==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCIGCX/T+R3Ow5xMvv/aOjnxJzICVYKL27LzUlZ1M1lumsAiEAiCHyPGK5Gc8RIE0LeEq2hIbquM13SGshFkQRGb/5ju8="
+            "sig": "MEQCIA6c8Cf9d+zIJjrfrtDvepcZpRef95rxB4wRaHNB+gz5AiAshUr7gdLnSh7G+bU/wJ00pwfeWcQN7Oe42AeS7May9Q=="
           }
         },
         {
@@ -369,12 +380,12 @@
         {
           "path": "node_modules/content-disposition",
           "name": "content-disposition",
-          "version": "1.1.0",
-          "url": "https://registry.npmjs.org/content-disposition/-/content-disposition-1.1.0.tgz",
-          "integrity": "sha512-5jRCH9Z/+DRP7rkvY83B+yGIGX96OYdJmzngqnw2SBSxqCFPd0w2km3s5iawpGX8krnwSGmF0FW5Nhr0Hfai3g==",
+          "version": "2.0.1",
+          "url": "https://registry.npmjs.org/content-disposition/-/content-disposition-2.0.1.tgz",
+          "integrity": "sha512-e+H0ZXHSWYrENhQzw1LPuP4oF5MzVKmDU6d3hxlvaPEYLLg62MxtQNPRx4SYSuYJSBUgnQIG4HIN2tEtNv7Dog==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCIQDexFUaDbi91ciSC71itohsS6u05ESCTDppxQRQWJhUoQIgT0sBd9oCzA7EfZCZP7y5ewsza2NJjFaqq8zk3CwOUks="
+            "sig": "MEYCIQCLv+nkALT9s+ywgAM1eVFMDMyoUsENeBAr2tRwtBhRQgIhAKu9CHVbQMHkHQ/4aswKn3fyJtTDwLiiJaqNkBENTwbv"
           }
         },
         {
@@ -455,6 +466,17 @@
           }
         },
         {
+          "path": "node_modules/diff",
+          "name": "diff",
+          "version": "9.0.0",
+          "url": "https://registry.npmjs.org/diff/-/diff-9.0.0.tgz",
+          "integrity": "sha512-svtcdpS8CgJyqAjEQIXdb3OjhFVVYjzGAPO8WGCmRbrml64SPw/jJD4GoE98aR7r25A0XcgrK3F02yw9R/vhQw==",
+          "signature": {
+            "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
+            "sig": "MEUCID8x3Mlk9Yy4dvTKuivkAAHOUuwwQFStl4quk8tBCCm1AiEAz0i3eHNKDubOCuix0oMzvuexDFLFzwWoQL1FQbwcGKg="
+          }
+        },
+        {
           "path": "node_modules/dunder-proto",
           "name": "dunder-proto",
           "version": "1.0.1",
@@ -479,12 +501,12 @@
         {
           "path": "node_modules/encodeurl",
           "name": "encodeurl",
-          "version": "2.0.0",
-          "url": "https://registry.npmjs.org/encodeurl/-/encodeurl-2.0.0.tgz",
-          "integrity": "sha512-Q0n9HRi4m6JuGIV1eFlmvJB7ZEVxu93IrMyiMsGC0lrMJMWzRgx6WGquyfQgZVb31vhGgXnfmPNNXmxnOkRBrg==",
+          "version": "2.0.1",
+          "url": "https://registry.npmjs.org/encodeurl/-/encodeurl-2.0.1.tgz",
+          "integrity": "sha512-Ev/hIyePLZtpL98x562lvPtenrUfGr0lfaf44HFZ+hDEwso7ccV9QAZrEVLg0hxNAzygaAFxy2dYaAKKM0G06A==",
           "signature": {
-            "keyid": "SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA",
-            "sig": "MEUCIBOFos/fjObZakhslwkYNCRgy3lxta+k4AJdNDf+lDfaAiEArFwkiXZR7H08jnrMnVmch2fkcCs8hSToYkixEEgpsVA="
+            "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
+            "sig": "MEUCIQDcMaEQelYrMUcLMsxDG/G2MlpQqw35iKQp+sRimSa32QIgZLgwfqpmO74QjA5QdXU/ItIr8k4UGjRrbDlBVFyirzc="
           }
         },
         {
@@ -567,23 +589,34 @@
         {
           "path": "node_modules/express",
           "name": "express",
-          "version": "5.2.1",
-          "url": "https://registry.npmjs.org/express/-/express-5.2.1.tgz",
-          "integrity": "sha512-hIS4idWWai69NezIdRt2xFVofaF4j+6INOpJlVOLDO8zXGpUVEVzIYk12UUi2JzjEzWL3IOAxcTubgz9Po0yXw==",
+          "version": "5.3.0",
+          "url": "https://registry.npmjs.org/express/-/express-5.3.0.tgz",
+          "integrity": "sha512-qCqy1xSoaugxOD4IVHb1ZWdkvCF2W3aE2okKouWj8VwJ+ztskSiXoBnCSJqfKT+cVPJhuJqe9YLbY425+Zh00g==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEQCIFiG4BbRCfOtJiV9BkwAfmuZ6j6WDPSwLTUxm8z4HbwxAiBRQBV8eXLNJmyYnSS5oLT12Q44o71/CetyWd+uifoylA=="
+            "sig": "MEQCICHxm5Q3ouMkRSvPzBL4cd1e1inNV4jvmEskclN0pLl5AiAA2D5Tc8x4V1F3mmyvA+cVgJs6yQiGwONT44JG+yX29A=="
           }
         },
         {
           "path": "node_modules/express-rate-limit",
           "name": "express-rate-limit",
-          "version": "8.7.0",
-          "url": "https://registry.npmjs.org/express-rate-limit/-/express-rate-limit-8.7.0.tgz",
-          "integrity": "sha512-hOwV7WOxXfjRpAM1DSJWZDXx3GhplwD8IfwuwvogD8i1Qnkgosw/H45s4ZnFAUHDAhPjlY9hLBvJhKmGMyY26g==",
+          "version": "8.7.1",
+          "url": "https://registry.npmjs.org/express-rate-limit/-/express-rate-limit-8.7.1.tgz",
+          "integrity": "sha512-2FXbqkygil3mZiXzEtM0IjE/UBmBNot0J1GEVrJT4JbrvwOSoEtqtO+wHbiMQELWe1eNvHoYRg2dkjOid+6JkA==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCIQDupaMYRj0xRwM6NtO7SIfNDbATl2Z8GLhWK/QEwzZlGQIgP4TFNy+LU4ie4LRD+Gh5VsfmbRjtpOvAii2y8KSsw5I="
+            "sig": "MEQCICYxoZKFkBNyMD7yxic1i1aCBSwP5htX6p4aES+5/DGWAiBBEB9XvWVo71YdmBPUKFQJ9cfeL5E9qpfRLXBZ1t+x2Q=="
+          }
+        },
+        {
+          "path": "node_modules/express/node_modules/content-type",
+          "name": "content-type",
+          "version": "2.1.0",
+          "url": "https://registry.npmjs.org/content-type/-/content-type-2.1.0.tgz",
+          "integrity": "sha512-mj7UPXE0jaqaOsukNZRUEfEi2AcL7C/vwmwcHV0O97eO1E1pxBZuyjlZrx5seTaNBg1U6+o35wpa35Qfcc+7ag==",
+          "signature": {
+            "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
+            "sig": "MEQCIAesCKlTxK7DDJj+bRVxVqnPebCrDYKlCvXYXzC13PTbAiBzuJ2rrSEvAQKMfpV7FwOMi8eKomTRHVf5/y9ZnGl8sQ=="
           }
         },
         {
@@ -611,12 +644,12 @@
         {
           "path": "node_modules/fast-uri",
           "name": "fast-uri",
-          "version": "3.1.8",
-          "url": "https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.8.tgz",
-          "integrity": "sha512-GZMtZUTNRpOVIECoXwLNZS5xUGE+mVNbTB8h/7Rwh2TFWcBQiPzTgyZi05BF9UMZKkLJv8XBRJTlU7zg8+ZfMg==",
+          "version": "3.1.9",
+          "url": "https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.9.tgz",
+          "integrity": "sha512-hS/0Wt3Ya043oKXs0sIxrMpKQITXhMLIrVAKKXi4gozGC9v7YRWVnXIZzjNPTO02M9BdxLCWqK1yRXgNziVyJQ==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEQCIAFY8R/oklnujz86Qp91RCMZ7Q4UKVpOIyK6SVQucORxAiB3QAr2EGigSFZvLpNSMnMTSU+e6xRonnMOqbVfgCgmGw=="
+            "sig": "MEUCIHlOcZJWkzro+RMHTZPFoOfer8+uTqVue+z6sM/cSq0MAiEAkwrQDvF8xLxIrHqE1wk63NbDQfug6v+ksa0iJlTenrk="
           }
         },
         {
@@ -721,12 +754,12 @@
         {
           "path": "node_modules/hono",
           "name": "hono",
-          "version": "4.13.9",
-          "url": "https://registry.npmjs.org/hono/-/hono-4.13.9.tgz",
-          "integrity": "sha512-7dMkQmZoC4E6F7AtaQSPhlWAdnBti+j7rreMZl8QB4jFiEhP9TWbGWUMi8WYzBCgmgulxuvLQupKqo+Co6Omyg==",
+          "version": "4.13.14",
+          "url": "https://registry.npmjs.org/hono/-/hono-4.13.14.tgz",
+          "integrity": "sha512-yhRLQ21U6qa9Hsu2N7Qcbh8tE+WKEcoErjIo56LeSGiGXGp9sA7UpE86Ui9uexb61KakiGwuHMn2QdV7w6i6kQ==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCIEp4ebuo7KS9R//LplaqEeF4mdiBmx7BjYrQhviLG+pxAiEA6plsFLAl1dA7b7Y+m0QF08wz/FQAxRiypCXCrKsaWRo="
+            "sig": "MEQCIEfDwt+J/WVEiAbB+4NmnkX7JDa5zIo0D32kbwGjyuPmAiB2nE9gZYcdMtloTG0FeSbKfvUNtP7rOdlIurcxBWJC8w=="
           }
         },
         {
@@ -765,12 +798,12 @@
         {
           "path": "node_modules/ip-address",
           "name": "ip-address",
-          "version": "10.7.2",
-          "url": "https://registry.npmjs.org/ip-address/-/ip-address-10.7.2.tgz",
-          "integrity": "sha512-7H/2gFSIitxc0hG3nOI1glS8QLo/EHBFFLk8vEUjXY/xu0AdL8jZ9U1IzO2PUm0d2D/ofQcAifb0g6OBkt8U7w==",
+          "version": "10.7.5",
+          "url": "https://registry.npmjs.org/ip-address/-/ip-address-10.7.5.tgz",
+          "integrity": "sha512-t2v0rkILYv9WXmSL7TpAaU3HXgaFYOPUcH3QHgwQ++gpJuH3bqyMy4Fvt/DJCTKwzH3Cf+bAp5W/mFL39KPLzA==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCIEY/lXGfMK117zx3JEb2YWgdS0vg2p1zHp4DKfMMhsEKAiEAkShYYIDLI26jQErqOcTUajjXzhtXxFTYx7gbZKP1gx8="
+            "sig": "MEQCIEKoSYPhqcaGPeSsnetf/OqJfa22jOuu65/N5cLeqYJfAiAlLzP2M0SEs1RS+3vTJo301cxiH65NIC7HOVuBNBfNPg=="
           }
         },
         {
@@ -809,12 +842,12 @@
         {
           "path": "node_modules/jose",
           "name": "jose",
-          "version": "6.2.12",
-          "url": "https://registry.npmjs.org/jose/-/jose-6.2.12.tgz",
-          "integrity": "sha512-9NiFmJEex0sy2Dk58j2UGBSHgUs2ypF9eZSu4L6vjOX3Dp96Sw1F3uL+H+D1sx02jZZdzUT0HgvCy59CuvXcWw==",
+          "version": "6.2.14",
+          "url": "https://registry.npmjs.org/jose/-/jose-6.2.14.tgz",
+          "integrity": "sha512-3JasLuki1NRLQvY4wCoC37KZk4qxoBx2k2aFqLxT84IezqW0bkJKnNtxnZj/Fu1xsQivoc/lytxaRHJoGLjJ1A==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCIH54MZ3ab1LOZiKtOgPtjFeG0UvtzEibEczWh3i+t+AKAiEA6tx8srEcDiTxdNhgD1+HObbx+X9eP5Qinx/t0IFxQhM="
+            "sig": "MEQCIHwg7b7NteL7yMBYBuHkOT1Mf/MhmtPNOwAXnDa3Clh2AiBXipoBWvRLrnkbylySr7F9sKEU8rIBT2AYnV84YaNraA=="
           }
         },
         {
@@ -963,12 +996,12 @@
         {
           "path": "node_modules/on-finished",
           "name": "on-finished",
-          "version": "2.4.1",
-          "url": "https://registry.npmjs.org/on-finished/-/on-finished-2.4.1.tgz",
-          "integrity": "sha512-oVlzkg3ENAhCk2zdv7IJwd/QUD4z2RxRwpkcGY8psCVcCYZNq4wYnVWALHM+brtuJjePWiYF/ClmuDr8Ch5+kg==",
+          "version": "2.4.2",
+          "url": "https://registry.npmjs.org/on-finished/-/on-finished-2.4.2.tgz",
+          "integrity": "sha512-ATWUv387i+nLD49EiDoOft5scf32Vsdz3ktrQJG9bi7jRFmaXTssvyvj1EmeKVVgvesbqUtvQQvaS2TpTukAZQ==",
           "signature": {
-            "keyid": "SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA",
-            "sig": "MEUCIQDiPcGo1Tkzf6tLHsvjpwydBxqjowHpCDv58RQjMRI4/wIgNEQw1iuXRjGZUHtf+ByAxctdy94rKFjLrXX8lF/yUoQ="
+            "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
+            "sig": "MEYCIQDCddHkk/066NXvMwi/VfrGLwvnOnmJgxJaxiNRpIZ40gIhAMus9guV1dm27ERrzN1YCXv+qeAPMFCqhZcuKfgOr4p6"
           }
         },
         {
@@ -1040,12 +1073,12 @@
         {
           "path": "node_modules/qs",
           "name": "qs",
-          "version": "6.16.0",
-          "url": "https://registry.npmjs.org/qs/-/qs-6.16.0.tgz",
-          "integrity": "sha512-h6fhOIaRrID2CbEY2fqs+7t+UXZo+MLAnU5gRIq85uFtdiUPCdsApMlHhXogKVM4HM2DVbIjGNTTYH2OcmP1vA==",
+          "version": "6.17.1",
+          "url": "https://registry.npmjs.org/qs/-/qs-6.17.1.tgz",
+          "integrity": "sha512-jd3COkaKVgGUW+ZHyEHCG9bH7RoaaiWuMgzsIBjUMVjLAaWGWpoUAVwljVvBHxRu/2qEHnadLGZrkutYUBPQJA==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEQCIDcXxHA/2DS8Om9SgY8t+eqRdsYeC+Uc2+iEe3NXP0+XAiB0/3l9cWlRCjapUW22OkxtDy6cSfQ2/arNN4nxGUMEvQ=="
+            "sig": "MEQCIDycTkjqytQM6VkOv88FnETQ7Kx68srZZCe/UOJmIjEiAiBBDcrZHRBdnzoL6l+hwYMA9bKP9qDi/hOqzfmLzKzrvg=="
           }
         },
         {
@@ -1315,12 +1348,12 @@
         {
           "path": "node_modules/zod",
           "name": "zod",
-          "version": "4.6.5",
-          "url": "https://registry.npmjs.org/zod/-/zod-4.6.5.tgz",
-          "integrity": "sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==",
+          "version": "4.6.7",
+          "url": "https://registry.npmjs.org/zod/-/zod-4.6.7.tgz",
+          "integrity": "sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCIDtkjZOq6lmdtsdqBESzHORjYxE3jnbtCMlc6fp5KcXBAiEAx7qf7EGotCL3tQfTVb+gukRlzOmeGDbJR+8DrkwN+Vs="
+            "sig": "MEUCIQCwQ7Os025hoW1C24cDvgD4t5gynQpYlWHx1ok/Bke33AIgPP2J7w4z9B/fqA62pHpEBvjlB5ScCMm3c0adt03XQlY="
           }
         },
         {
@@ -1337,51 +1370,51 @@
       ]
     },
     "codex": {
-      "version": "1.13.1",
+      "version": "2.4.0",
       "entry": "node_modules/@agentclientprotocol/codex-acp/dist/index.js",
       "packages": [
         {
           "path": "node_modules/@agentclientprotocol/codex-acp",
           "name": "@agentclientprotocol/codex-acp",
-          "version": "1.13.1",
-          "url": "https://registry.npmjs.org/@agentclientprotocol/codex-acp/-/codex-acp-1.13.1.tgz",
-          "integrity": "sha512-NAbXTb6GRReox7B+8RN9VRB+sKUqFJh5Vg7Ex7RskYCO8EsYPJKN1WJvN7mOqjCKKK9lVDrNxtP7Bp/OUKPyAg==",
+          "version": "2.4.0",
+          "url": "https://registry.npmjs.org/@agentclientprotocol/codex-acp/-/codex-acp-2.4.0.tgz",
+          "integrity": "sha512-vpY1sFxVQ4t/5nq0XaiHOnXFitIhtaPEf+sVNSGxUuAS/c2p67o4PzW01vTsH88LH7tGRnv9N4WV4V8Jsag86A==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEQCICmMjg/jsi2+dQgJ2evWES/rjvhsvijE3gWdzpE+cS/oAiBy8FUutuSJqAksCegeCLT0rZPdzungvDcLYJwkVfcjqg=="
+            "sig": "MEUCICvrPIubxtmyefGuSG75I5B7RnCNC4Kb7fAAYPloK6cZAiEAlttrac/UWlfiKEr06v/l4IHRyFu5GBpCDLAOYf0CZ1o="
           }
         },
         {
           "path": "node_modules/@agentclientprotocol/sdk",
           "name": "@agentclientprotocol/sdk",
-          "version": "1.5.1",
-          "url": "https://registry.npmjs.org/@agentclientprotocol/sdk/-/sdk-1.5.1.tgz",
-          "integrity": "sha512-nSUIrC1fOR9+ppKfx9KdwjBBND2sAPzFHo4yVQrGbXZHnayUYpwL8CDVR5LSxbapY/oKMOzNP0wvwfyx3PS2KA==",
+          "version": "2.0.2",
+          "url": "https://registry.npmjs.org/@agentclientprotocol/sdk/-/sdk-2.0.2.tgz",
+          "integrity": "sha512-jLywRB42hZMRMc4aUgt0uRjkY9FQnMdybv4XgLl+ddi75QuJn8Vbl0+CHcVHJDC0+WDfi1KQXRWtHaR5vp6gHw==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCIQCsERRGy1BTi9OKZoy1mlUVHlyo9C2IpoMFYOUTBK5EOwIgYnAt6aDxiJs+N1dt80xiI8G41uwlEt8aJ9XOMVxHCmU="
+            "sig": "MEUCIQDQs4+RlQepcq3+xaE8PqUuE5UUdvcmRhmvHTOldXAvoQIgeKbP8kdjdcWlj4I4OKAigNQtaz5o2mZLWNctTjzX8a0="
           }
         },
         {
           "path": "node_modules/@openai/codex",
           "name": "@openai/codex",
-          "version": "0.156.1",
-          "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.156.1.tgz",
-          "integrity": "sha512-nI1iVl/n2SO2lSvlwEsJx63zdSI4C4Me2gR7AG0OWMJiGSakz2tY2hx43E39Zq5aEoeB5bZjJXzp5Sqhog6vyA==",
+          "version": "0.165.0",
+          "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.165.0.tgz",
+          "integrity": "sha512-aiwtQVp2KBhJld966CuU5bVfQ46VNB4mNTl6giX3WGZdt4euI3tv2RUqJpnupPNA8DXHg2z+RoQ0Zfw87dy8Lw==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEYCIQD/9dAj8bdIIdE5f04OfaLHNY59sgDEL1DmMYvEjZD12wIhAMsgp+bmjIdyA+TdhXYU+LTf1qGVI7MDIm2qoXdaXb4X"
+            "sig": "MEUCIDgQXNyMoHdrQOTPqD0AjgiKYEF2mjxr3QGjeFAhOte2AiEAwjIrVm2tLfWXygmb5sjjPG4wr7sfwzg9Oh46VW0bhcE="
           }
         },
         {
           "path": "node_modules/@openai/codex-darwin-arm64",
           "name": "@openai/codex",
-          "version": "0.156.1-darwin-arm64",
-          "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.156.1-darwin-arm64.tgz",
-          "integrity": "sha512-Jg6wbdV+wmMZczhwE74GSxOYEZlViKXn6KyCw/yfrz3PAKFD14xljuPopmdhWC1+8IKU2WdN5fdmXNPt2q4HPA==",
+          "version": "0.165.0-darwin-arm64",
+          "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.165.0-darwin-arm64.tgz",
+          "integrity": "sha512-MQ/Z0Xw9v08DHunnzodi9NwA844MI3+RO72IM8o0Lr/UemnlEoBMCxpojstxX6mf5ZQwUrIg0yekDd9cFZ29hg==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCIGZxHqkUOewDIA95DuD6GI+Qg/fcw2iFsAz5VhDutIsaAiEAuWzzWmCRdFtJCTn6Zu4twLcWLkeMQLcBWM6s/UGP+Nc="
+            "sig": "MEYCIQDap65Shy2yaXo0RrnUlboKzlctA+iOWn7rzkIpoQjcXQIhAIXS8LgevA7XtafKsafJH9UJUTxsUCVTSvZbb1yNzO5g"
           },
           "os": [
             "darwin"
@@ -1393,12 +1426,12 @@
         {
           "path": "node_modules/@openai/codex-darwin-x64",
           "name": "@openai/codex",
-          "version": "0.156.1-darwin-x64",
-          "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.156.1-darwin-x64.tgz",
-          "integrity": "sha512-BVjqNOoltWrnNUrgMRepvDIIBmd4XY+ikAE4pYVHlrwiizNlEWQuCQOTrFMJKp54LFRG8jDTjLZyYQ1QrliuOg==",
+          "version": "0.165.0-darwin-x64",
+          "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.165.0-darwin-x64.tgz",
+          "integrity": "sha512-mxMtlntnUq0Xb8rjvHph3Ws045Q82BLbeKRRdkN70Es9mho/D/Blh1ShZvzQOnsoeVw8lbV9fOLjW1vncoufKQ==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEYCIQC7NkTkgJ2n3voAzOxqgv3qS8s4Gztc1bZbGOroJftfCAIhAIEzytgxgPaN2Bq+pc418fg1ixkHdG8FVrVVVsyCXpp3"
+            "sig": "MEUCIQC3Y8wnBLiae7BFQ2y2VFzNknYuA5imH6ys4PNMJ3PhFAIgfgzzCcMoYsfA1KyPVPPsowOy8rpXt4cs/AoZcphyjKc="
           },
           "os": [
             "darwin"
@@ -1410,12 +1443,12 @@
         {
           "path": "node_modules/@openai/codex-linux-arm64",
           "name": "@openai/codex",
-          "version": "0.156.1-linux-arm64",
-          "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.156.1-linux-arm64.tgz",
-          "integrity": "sha512-sTEHk31C12dqzJdjZ2u9KLFCXKL04KyCM+QheSjdQI8uzmVJS7aEF2/qAqFxXwk/jwMzC9u7IihfoIlAGR6YsA==",
+          "version": "0.165.0-linux-arm64",
+          "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.165.0-linux-arm64.tgz",
+          "integrity": "sha512-qdrYdcabxn3biX2qTtb/GuuMk20ZAQYxcmY7lHcp6CkAzyqsXbL0vIJFwWJr83/pNM+CUZH4YaTPns2kN7ZIfA==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEYCIQCkm162Gjvhtxo0AMSe1MUOrF4NvyiSEzx+8LgqwnegaQIhAJp2Php6hF26jRXpmyazIwqih8TZzbFlFzWr3dFPuQtK"
+            "sig": "MEUCIFYCRO+s7hPzdrQpYZ2Af1etNEh172t9JGA1vdrkOC/EAiEA+zO3bEzicfhsTeuZY6LbzzwxdzUhFbTLfM/KsW8tEZk="
           },
           "os": [
             "linux"
@@ -1427,12 +1460,12 @@
         {
           "path": "node_modules/@openai/codex-linux-x64",
           "name": "@openai/codex",
-          "version": "0.156.1-linux-x64",
-          "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.156.1-linux-x64.tgz",
-          "integrity": "sha512-2ePo0wgOcnONKsuzp8vBjOmNY+IdsKaouaDDIdiKq9HOWNuV/GI22OeXft2A/1GaoL71ictO0/pLAsCEnQ6wew==",
+          "version": "0.165.0-linux-x64",
+          "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.165.0-linux-x64.tgz",
+          "integrity": "sha512-FotDc7bVHwaommtsdDP8PPrH0a5IwC/t8H/LhdEcH4EBqgeYFRCtptiHcuwgvNRCLbTbOyFE/Ur6GzYCljgaSQ==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEYCIQD36ApVpJiNGGuSJTMFKrTipEHzvZ+Fz7zcKEHuLuTi3wIhANj7kr2K1DIzhYKtM9q34VDjO3DN9lnruW+UplDUoBD+"
+            "sig": "MEUCIQCy3pedV2yArTf6R1E+mHlzCl3Ot7wp99KLGrvgeF0X5QIgBZou6q8fXqw7mXDsXu953XMUViOMq5QCE5yCC9HvCw8="
           },
           "os": [
             "linux"
@@ -1444,12 +1477,12 @@
         {
           "path": "node_modules/@openai/codex-win32-arm64",
           "name": "@openai/codex",
-          "version": "0.156.1-win32-arm64",
-          "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.156.1-win32-arm64.tgz",
-          "integrity": "sha512-e5DsyOHlKWulTBz/neIczpcYLQDqtaLtBj2lgncOgeQw5mlAQVZHlGvKsoKVcEPUKLb8opIMJBxXi6cz3JJ4hg==",
+          "version": "0.165.0-win32-arm64",
+          "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.165.0-win32-arm64.tgz",
+          "integrity": "sha512-6HLE44VQECPITRZN85NCV/w268Fw/083VKe+5ReOKO9wlL6Kyq1j1mLP2vZ3rmr0goG/HOykrJpZZT0aUD1ntg==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEYCIQDUnC/+HMI0LiEqgYOxJiHw7g5s+75crEWDCOmd7pQXGgIhALEuIrKMWFh3pOGzejyWDhwek/wftqHnZyq+ac3U/PCU"
+            "sig": "MEUCIQDGE5Tx+A9c4R9+VgtJfRuSDFbiiPv28UHwLyahrZwjBwIgbUYMiDtEcCEGBtag30al7j9lADFt8hG5OEbUkdQmtCw="
           },
           "os": [
             "win32"
@@ -1461,12 +1494,12 @@
         {
           "path": "node_modules/@openai/codex-win32-x64",
           "name": "@openai/codex",
-          "version": "0.156.1-win32-x64",
-          "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.156.1-win32-x64.tgz",
-          "integrity": "sha512-MJyLxbBs2zzp5kbaR/99Zwe7SmbrwUkveTcT+ayYlO48V0nYh0eU+h2lalBwvC7VJ/ya/bXnUtISJfJKhGCD/g==",
+          "version": "0.165.0-win32-x64",
+          "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.165.0-win32-x64.tgz",
+          "integrity": "sha512-f5LMyugPSnAovnTnR1N+SNHSTfWZ+ym5A4H3zZHz/zhuMGMGZD8IxUdlSUlEbiENYyPXrJ8G3Jh+CLyzTfQB6Q==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCICg1+xfaSx17CEBbnquYZN2hlLPXx8oTb7Wb6AMqP883AiEAmwtK3nimkC79hWNocB+oSiqSYjJnhXg/UXM0jkTsumE="
+            "sig": "MEUCIH+ELyye55ksPS/5NNJeR60QhcPj9kn0OC61MvzN2099AiEAmUom0/RQAIGQBam/wyVlHMSZrKGgAOZJlzVnNPHwlaY="
           },
           "os": [
             "win32"
@@ -1484,6 +1517,17 @@
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
             "sig": "MEYCIQDbbnEUAMebHfmryfMvXAeqi1J7Skkwcnf1t/Y5XcAwPAIhAI+Yy8HlbSj21LrtQ7ysX8h02FQXko+G7Z4fpVz6+oad"
+          }
+        },
+        {
+          "path": "node_modules/cross-spawn",
+          "name": "cross-spawn",
+          "version": "7.0.6",
+          "url": "https://registry.npmjs.org/cross-spawn/-/cross-spawn-7.0.6.tgz",
+          "integrity": "sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==",
+          "signature": {
+            "keyid": "SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA",
+            "sig": "MEUCIQCdXEXhFHQR/UhPwcpnO2Gp3L2/lh5roLTkR5Ozu5uwfQIgHOjOf19lt7Lxdfxw8kjmcjbwtpwAMrLNvYJqvlfkVss="
           }
         },
         {
@@ -1575,6 +1619,17 @@
           }
         },
         {
+          "path": "node_modules/isexe",
+          "name": "isexe",
+          "version": "2.0.0",
+          "url": "https://registry.npmjs.org/isexe/-/isexe-2.0.0.tgz",
+          "integrity": "sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==",
+          "signature": {
+            "keyid": "SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA",
+            "sig": "MEQCIADIHL0vHAyBDSHK5BeCzNQb3ooCTHoBU+bp0my0d0pwAiAEzxUmLzKn2xsUOTDZngxVYgQ+2BELnj8z+ZNAJWENzA=="
+          }
+        },
+        {
           "path": "node_modules/open",
           "name": "open",
           "version": "11.0.4",
@@ -1583,6 +1638,17 @@
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
             "sig": "MEUCIQDB4a0+0IW29RaN4lUITl1E7DKyIz5mf44P7oP0OJcdzAIgaNORduecV4XdjQlHItd2yQ3UnKPL5W2LTXcWttp//HE="
+          }
+        },
+        {
+          "path": "node_modules/path-key",
+          "name": "path-key",
+          "version": "3.1.1",
+          "url": "https://registry.npmjs.org/path-key/-/path-key-3.1.1.tgz",
+          "integrity": "sha512-ojmeN0qd+y0jszEtoY48r0Peq5dwMEkIlCOu6Q5f41lfkswXuKtYrhgoTpLnyIcHm24Uhqx+5Tqm2InSwLhE6Q==",
+          "signature": {
+            "keyid": "SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA",
+            "sig": "MEQCIAwOqg8TUPAYc0BU4fVgYQw5sg3cZlPq2S90+ei63ZrEAiAsWC5WjxqdP1lbFmNySWF/BHy6UfJwkONg7eFU55uHwA=="
           }
         },
         {
@@ -1608,6 +1674,28 @@
           }
         },
         {
+          "path": "node_modules/shebang-command",
+          "name": "shebang-command",
+          "version": "2.0.0",
+          "url": "https://registry.npmjs.org/shebang-command/-/shebang-command-2.0.0.tgz",
+          "integrity": "sha512-kHxr2zZpYtdmrN1qDjrrX/Z1rR1kG8Dx+gkpK1G4eXmvXswmcE1hTWBWYUzlraYw1/yZp6YuDY77YtvbN0dmDA==",
+          "signature": {
+            "keyid": "SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA",
+            "sig": "MEYCIQC25PLpUCo3H8DMi9MpLxwheAbym3M3S5MW5QaCZpOUEwIhAIka9U63aHBdDqIcMUiGesgVKHjIiySGTAsxdQJx7wSP"
+          }
+        },
+        {
+          "path": "node_modules/shebang-regex",
+          "name": "shebang-regex",
+          "version": "3.0.0",
+          "url": "https://registry.npmjs.org/shebang-regex/-/shebang-regex-3.0.0.tgz",
+          "integrity": "sha512-7++dFhtcx3353uBaq8DDR4NuxBetBzC7ZQOhmTQInHEd6bSrXdiEyzCvG07Z44UYdLShWUyXt5M/yhz8ekcb1A==",
+          "signature": {
+            "keyid": "SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA",
+            "sig": "MEUCIQD9D5iHzHiq8RRcvBjhnVc1TDXKPStoeEAQrqtkEg9qXAIgPFNBElrbSUhCoAjEd/BRJo48gQudG1I1KkUMNo6x+/E="
+          }
+        },
+        {
           "path": "node_modules/vscode-jsonrpc",
           "name": "vscode-jsonrpc",
           "version": "9.0.3",
@@ -1619,36 +1707,36 @@
           }
         },
         {
-          "path": "node_modules/wsl-utils",
-          "name": "wsl-utils",
-          "version": "1.0.0",
-          "url": "https://registry.npmjs.org/wsl-utils/-/wsl-utils-1.0.0.tgz",
-          "integrity": "sha512-Hl0ZOAs672vg+06kfujwRhoS6/jehvULrlFkuF2dRu6pHgA8U06h3xqNIqNNU1LTXPcedxByAR4GS6pwQK0mgA==",
+          "path": "node_modules/which",
+          "name": "which",
+          "version": "2.0.2",
+          "url": "https://registry.npmjs.org/which/-/which-2.0.2.tgz",
+          "integrity": "sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA==",
           "signature": {
-            "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEYCIQC6crbrz3x52WDnRLzeqqfNAgORX4m7kFvqJpy65Vo5zgIhAKEVBmSu1caalGoMszL+rMM8DPZmR709wapcE2AKMV1f"
+            "keyid": "SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA",
+            "sig": "MEYCIQDyPP0ND3fboT3W2mBlojUZmkvbY2KjDxGtB8vG07fjWAIhAPYfINxHQt1SI7Ic6dhnGscWdcYwLfGhKRrIcS6tW8Js"
           }
         },
         {
-          "path": "node_modules/wsl-utils/node_modules/powershell-utils",
-          "name": "powershell-utils",
-          "version": "0.1.0",
-          "url": "https://registry.npmjs.org/powershell-utils/-/powershell-utils-0.1.0.tgz",
-          "integrity": "sha512-dM0jVuXJPsDN6DvRpea484tCUaMiXWjuCn++HGTqUWzGDjv5tZkEZldAJ/UMlqRYGFrD/etByo4/xOuC/snX2A==",
+          "path": "node_modules/wsl-utils",
+          "name": "wsl-utils",
+          "version": "1.0.1",
+          "url": "https://registry.npmjs.org/wsl-utils/-/wsl-utils-1.0.1.tgz",
+          "integrity": "sha512-c16PKLIRxBYpR3jSWsdS7SFp0COm5SOQdiFjY818dYFHJbMGuLBszpF07LBWmOS1uzrHa9VGdynsEgoeKy0oOQ==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCIQDJNyNhovKY6yIoG6vV/qk6tH+bRQzdvdAd73Tl58SztgIgR25zFUuUv2uHazOrHGQ2kwS1zgnRMNvDoul9CoZkMKg="
+            "sig": "MEYCIQDy8h19kMaZNCqY3917+G0Pf5eiSUj7PLZpcZlpI/V8lAIhANwZQ0dOhfZ/MRkkiM6s67n7kpr9spy2SaVw6yI2aUdH"
           }
         },
         {
           "path": "node_modules/zod",
           "name": "zod",
-          "version": "4.6.5",
-          "url": "https://registry.npmjs.org/zod/-/zod-4.6.5.tgz",
-          "integrity": "sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==",
+          "version": "4.6.7",
+          "url": "https://registry.npmjs.org/zod/-/zod-4.6.7.tgz",
+          "integrity": "sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==",
           "signature": {
             "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
-            "sig": "MEUCIDtkjZOq6lmdtsdqBESzHORjYxE3jnbtCMlc6fp5KcXBAiEAx7qf7EGotCL3tQfTVb+gukRlzOmeGDbJR+8DrkwN+Vs="
+            "sig": "MEUCIQCwQ7Os025hoW1C24cDvgD4t5gynQpYlWHx1ok/Bke33AIgPP2J7w4z9B/fqA62pHpEBvjlB5ScCMm3c0adt03XQlY="
           }
         }
       ]

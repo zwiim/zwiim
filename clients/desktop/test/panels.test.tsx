@@ -186,6 +186,26 @@ describe("files panel", () => {
     expect(screen.queryByTestId("file-content")).toBeNull();
   });
 
+  it("previews a markdown file", async () => {
+    const t = new FakeTransport();
+    t.handlers["files.read"] = () => ({
+      path: "README.md",
+      content: "# Title\n\nBody\n",
+      etag: "e",
+      mtime_ms: null,
+      readonly: false,
+      line_ending: "lf",
+    });
+    await mount(t, <FileView workspaceId="w1" path="README.md" />);
+    await tick();
+    expect(screen.getByTestId("file-content")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    expect(screen.getByTestId("file-markdown").querySelector("h1")?.textContent).toBe("Title");
+    expect(screen.queryByTestId("file-content")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    expect(screen.getByTestId("file-content")).toBeTruthy();
+  });
+
   it("shows an empty workspace and a folder that failed to list", async () => {
     const t = new FakeTransport();
     t.handlers["workspace.tree"] = (p) => {

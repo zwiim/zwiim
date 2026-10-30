@@ -169,17 +169,78 @@ describe("the current host", () => {
     await current.open(s.entry);
     await waitFor(() => current.state.view?.status === "live");
 
-    await current.addWorkspaceAt(["Projects", "added"]);
-    await current.addWorkspaceAt(["Projects", "added"], { allowLarge: true });
-    expect(current.state.workspaceId).toBe("added");
-    await current.createWorktree("added");
+    // Added from Files, it opens in a new worktree, as Desktop opens a repository it adds.
+    expect((await current.addWorkspaceAt(["Projects", "added"], { allowLarge: true })).worktreeError).toBeNull();
     expect(current.state.workspaceId).toBe("tree");
-    expect(asked).toEqual([
-      { home_path: ["Projects", "added"] },
-      { home_path: ["Projects", "added"], allow_large: true },
-      { workspace_id: "added" },
-    ]);
+    expect(asked).toEqual([{ home_path: ["Projects", "added"], allow_large: true }, { workspace_id: "added" }]);
     await waitFor(() => chosenIn(s) === "tree");
+    asked.length = 0;
+    // If the worktree fails the workspace stays added, Files shows nothing of it yet, and the caller hears why.
+    const refused = new ZwiimClientError("internal", "no", 500);
+    s.w.host.backend.handlers["workspace.create_worktree"] = () => {
+      throw refused;
+    };
+    const added = await current.addWorkspaceAt(["Projects", "added"]);
+    expect(added.workspace.workspace_id).toBe("added");
+    expect(added.worktreeError).toMatchObject({ code: "internal" });
+    expect(current.state.workspaceId).toBe("added");
+    expect(asked).toEqual([{ home_path: ["Projects", "added"] }]);
+    await current.clear();
+  });
+
+  it("opens a worktree in a root, making a plain folder a repository first, as Desktop does", async () => {
+    const s = setup();
+    await pin(s);
+    const made = (id: string, over: object = {}) => ({
+      workspace_id: id,
+      name: id,
+      alias: null,
+      kind: "root",
+      parent_workspace_id: null,
+      branch: "main",
+      is_git_repo: true,
+      base_branch: null,
+      base_commit: null,
+      removed: false,
+      display_path: "~/Projects/" + id,
+      ...over,
+    });
+    const asked: [string, unknown][] = [];
+    const git: Record<string, string> = { notes: "none", fresh: "no_origin", repo: "origin" };
+    const first = { files: 3, bytes: 10, at_least: false, large: false };
+    // `first_commit` names what the first commit would hold: only an unborn repository has one.
+    const commits: Record<string, object | null> = { notes: first, fresh: first, repo: null };
+    s.w.host.backend.handlers["workspace.inspect"] = (p: { workspace_id: string }) => (
+      asked.push(["inspect", p]),
+      { git: git[p.workspace_id], branch: null, suggested_name: p.workspace_id, first_commit: commits[p.workspace_id] ?? null, github: null }
+    );
+    s.w.host.backend.handlers["workspace.add"] = (p: { workspace_id: string; allow_large?: boolean }) => {
+      asked.push(["add", p]);
+      if (!p.allow_large) throw new ZwiimClientError("large_folder", "big", 409, { files: 12431, bytes: 1_800_000_000, at_least: false });
+      return made(p.workspace_id);
+    };
+    s.w.host.backend.handlers["workspace.create_worktree"] = (p: { workspace_id: string }) => (
+      asked.push(["create", p]), made(`${p.workspace_id}-wt`, { kind: "worktree", parent_workspace_id: p.workspace_id })
+    );
+    const current = s.launch();
+    await current.open(s.entry);
+    await waitFor(() => current.state.view?.status === "live");
+
+    // A plain folder: the Host refuses a large one until the user says so, and nothing else happens.
+    await expect(current.openWorktree("notes")).rejects.toMatchObject({ code: "large_folder" });
+    expect(asked.map(([op]) => op)).toEqual(["inspect", "add"]);
+    asked.length = 0;
+    const wt = await current.openWorktree("notes", { allowLarge: true });
+    expect(wt.workspace_id).toBe("notes-wt");
+    expect(current.state.workspaceId).toBe("notes-wt");
+    expect(asked.map(([op]) => op)).toEqual(["inspect", "add", "create"]);
+    expect(asked[1]![1]).toEqual({ workspace_id: "notes", allow_large: true });
+    asked.length = 0;
+    // A repository with no commits makes its first one; one with commits only branches.
+    await current.openWorktree("fresh", { allowLarge: true, choose: false });
+    await current.openWorktree("repo", { choose: false });
+    expect(asked.map(([op]) => op)).toEqual(["inspect", "add", "create", "inspect", "create"]);
+    expect(current.state.workspaceId).toBe("notes-wt");
     await current.clear();
   });
 
@@ -678,7 +739,7 @@ describe("several sessions in one worktree (R8.11)", () => {
 
     const added = await current.addWorkspaceAt(["Projects", "notes"], { choose: false });
     const made = await current.createWorktree("todo", { choose: false });
-    expect([added.workspace_id, made.workspace_id]).toEqual(["notes", "new-tree"]);
+    expect([added.workspace.workspace_id, made.workspace_id]).toEqual(["notes", "new-tree"]);
     expect(current.state.workspaceId).toBe("ui");
     await new Promise((r) => setTimeout(r, 20));
     expect(chosenIn(s)).toBe("ui");

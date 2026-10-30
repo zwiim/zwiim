@@ -1180,9 +1180,31 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // (z) `permissions.disableBypassPermissionsMode` is honored (#1165):
             // bypass drops out of the advertised modes, and
             // `unattended_available` already reads those.
+            //
+            // 0.81.2 → 0.99.0 is taken for the model list again: the SDK moves
+            // to 0.3.312, whose CLI table carries `claude-opus-5-5`,
+            // `claude-sonnet-5-5`, `claude-haiku-5-5` and `claude-fable-5-1`.
+            // It also adds the AIR tool-call contract (`dist/tool-calls/*`),
+            // which Zwiim gets because it declares `_meta.jetbrains.air`:
+            //
+            // (a) A `tool_call_update` drops `_meta` keys an earlier frame
+            // already sent (`claudeCode.*`, `jetbrains.air.*`,
+            // `is_mcp_tool_call`, `terminal_info`); `claude_tool_frames` merges
+            // them back before anything reads them.
+            //
+            // (b) A permission request's tool call has no `kind`, and no
+            // `content` without the undeclared `diffPatch`; Edit/Write rawInput
+            // drops `old_string`/`new_string`/`content`. `claude_tool_frames`
+            // fills kind and the diff from the tool call's own frames, and
+            // `parse_claude_exit_plan_request` accepts the kind-less
+            // ExitPlanMode card (its option ids identify it).
+            //
+            // (c) The Agent hook response is only `{status, isAsync}`: live
+            // sub-agent duration and tool-use counts are gone (tokens still
+            // come from `background_watch`); history reads the transcript.
             distribution: AgentDistribution::Npx {
-                version: "0.81.2",
-                package: "@agentclientprotocol/claude-agent-acp@0.81.2",
+                version: "0.99.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.99.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -1677,12 +1699,35 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // compaction, terminal output deltas) sit behind capabilities Zwiim
             // does not advertise, and permission handling is unchanged. The
             // catalog gains `supports_reasoning_effort_updates` (a strict bool,
-            // now in `BOOL_FIELDS`) and `default_service_tier`. 2.0.0 is NOT
-            // taken: it drops `formatted_output` and moves mode, goal and
-            // permission metadata under the AIR extension Zwiim advertises.
+            // now in `BOOL_FIELDS`) and `default_service_tier`.
+            //
+            // 2.4.0: `@openai/codex` ^0.156.1 → ^0.165.0, which brings
+            // `gpt-6.1-sol` / `gpt-6.1-terra` (the offline snapshot is
+            // regenerated). Zwiim advertises `_meta.jetbrains.air`, so 2.x talks
+            // to it through the AIR tool call contract, and that costs code:
+            //
+            // (a) Command output. AIR clients get no `formatted_output` and no
+            // standard `content`; output only streams as
+            // `_meta.terminal_output_delta` when the client declares that
+            // capability, ending in `_meta.terminal_exit`. Zwiim declares it for
+            // Codex and folds the chunks back into the `formatted_output` JSON
+            // clients already render (`codex_terminal_output`). Read/search/list
+            // commands send their output as a plain `rawOutput` string, wrapped
+            // the same way (`codex_string_raw_output`).
+            //
+            // (b) Mode `kind`, goal and permission metadata move under
+            // `_meta.jetbrains.air` (`air_envelope`).
+            //
+            // (c) Plan review drops `_meta.codex.kind`; it is recognized by its
+            // `plan-review:` tool call id.
+            //
+            // (d) Modes become `read-only` (a real read-only sandbox),
+            // `workspace-write` (1.x's "ask for approval" `read-only`), `agent`
+            // and `agent-full-access`; `normal` now lands on `workspace-write`.
+            // No `engines.node`, so the 20.0.0 floor stays.
             distribution: AgentDistribution::Npx {
-                version: "1.13.1",
-                package: "@agentclientprotocol/codex-acp@1.13.1",
+                version: "2.4.0",
+                package: "@agentclientprotocol/codex-acp@2.4.0",
                 cmd: "codex-acp",
                 args: &[],
                 env: &[],
@@ -2862,8 +2907,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.81.2",
-            "@agentclientprotocol/claude-agent-acp@0.81.2",
+            "0.99.0",
+            "@agentclientprotocol/claude-agent-acp@0.99.0",
             Some("22.0.0"),
         );
         assert_npx_version(
@@ -2904,8 +2949,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Codex,
-            "1.13.1",
-            "@agentclientprotocol/codex-acp@1.13.1",
+            "2.4.0",
+            "@agentclientprotocol/codex-acp@2.4.0",
             Some("20.0.0"),
         );
         assert_npx_version(AgentType::Pi, "0.0.33", "pi-acp@0.0.33", Some("22.0.0"));

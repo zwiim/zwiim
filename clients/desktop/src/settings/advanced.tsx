@@ -1,6 +1,6 @@
 // The Advanced tab: how much terminal output the host keeps, whether a plain
-// `git push` from a worktree sets its upstream, and where the host keeps its
-// data. Agents run through the host, so there is no binary to point at here.
+// `git push` from a worktree sets its upstream, and where the host keeps
+// worktrees and repositories. Agents run through the host, so there is no binary to point at here.
 
 import { useCallback, useEffect, useState } from "react";
 import { DEFAULT_SCROLLBACK_BYTES, type HostFolders, type HostSettings } from "@zwiim/sdk";
@@ -105,7 +105,6 @@ export function AdvancedSettings({ bridge, remote }: { bridge: NativeBridge; rem
           <span className="text-ui">Folders</span>
           {(
             [
-              ["Data", folders.data],
               ["Worktrees", folders.worktrees],
               ["Repositories", folders.repositories],
             ] as const

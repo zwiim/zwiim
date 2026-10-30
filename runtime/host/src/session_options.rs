@@ -44,6 +44,10 @@ const EFFORT_CATEGORY: &str = "thought_level";
 const COLLABORATION_ID: &str = "collaboration_mode";
 const PLAN: &str = "plan";
 const FULL_ACCESS: &str = "full_access";
+/// codex-acp 2.x's "Workspace access" preset: workspace-write sandbox with the
+/// user approving, which 1.x called `read-only`. 2.x's `read-only` is a real
+/// read-only sandbox, so it must not be where `normal` lands.
+const CODEX_WORKSPACE_WRITE: &str = "workspace-write";
 
 // ─── Boundary shape ───────────────────────────────────────────────────────
 
@@ -217,15 +221,18 @@ impl<'a> Native<'a> {
     }
 
     /// The native value `normal` returns to: the remembered one while the agent
-    /// still offers it as a normal mode, else the agent's first `standard`
-    /// value, else its first value that is neither plan nor full access.
+    /// still offers it as a normal mode, else Codex's `workspace-write`, else
+    /// the agent's first `standard` value, else its first value that is neither
+    /// plan nor full access.
     fn normal_value(&self, remembered: Option<&str>) -> Option<&'a str> {
         let mode = self.mode.as_ref()?;
         let normal = |v: &SessionConfigSelectOptionInfo| is_normal_kind(v.kind.as_deref());
+        let standard = |v: &&SessionConfigSelectOptionInfo| v.kind.as_deref() == Some("standard");
         remembered
             .and_then(|r| mode.find(r))
             .filter(|v| normal(v))
-            .or_else(|| mode.values().find(|v| v.kind.as_deref() == Some("standard")))
+            .or_else(|| mode.find(CODEX_WORKSPACE_WRITE).filter(standard))
+            .or_else(|| mode.values().find(standard))
             .or_else(|| mode.values().find(|v| normal(v)))
             .map(|v| v.value.as_str())
     }
@@ -1033,28 +1040,25 @@ pub async fn sync_plan_exit(
     set_mode(connections, connection_id, |_| Some(target.to_string())).await;
 }
 
-/// After the user approved a Claude plan from the Zwiim plan card, return the
-/// agent to session `session_id`'s remembered normal mode (the card always
-/// exits plan through the adapter's default mode). Advisory, like
-/// `sync_plan_exit`.
+/// After the user approved a plan from the Zwiim plan card, move the agent to
+/// unattended (Auto) where it offers it, else to session `session_id`'s
+/// remembered normal mode, so the approved plan is implemented without
+/// further prompts. Advisory, like `sync_plan_exit`.
 pub async fn sync_plan_approve(
     db: &DatabaseConnection,
     connections: &ConnectionManager,
     connection_id: &str,
     session_id: &str,
-    agent: AgentType,
 ) {
-    let Some(fallback) = mode_after_plan_exit(agent, CLAUDE_EXIT_PLAN_DEFAULT) else {
-        return;
-    };
     let remembered = load(db, session_id).await.normal_mode;
     set_mode(connections, connection_id, |native| {
-        Some(
-            native
-                .normal_value(remembered.as_deref())
-                .unwrap_or(fallback)
-                .to_string(),
-        )
+        native
+            .mode
+            .as_ref()?
+            .by_kind(FULL_ACCESS)
+            .map(|v| v.value.as_str())
+            .or_else(|| native.normal_value(remembered.as_deref()))
+            .map(str::to_string)
     })
     .await;
 }
@@ -1284,7 +1288,14 @@ pub(crate) mod tests {
         ]
     }
 
-    /// Codex (`codex-acp` 1.12) as captured live.
+    /// `options` without their full-access mode value.
+    pub(crate) fn drop_full_access(options: &mut [SessionConfigOptionInfo]) {
+        if let SessionConfigKindInfo::Select(s) = &mut options[0].kind {
+            s.options.retain(|v| v.kind.as_deref() != Some(FULL_ACCESS));
+        }
+    }
+
+    /// Codex (`codex-acp` 2.4.0) as captured live.
     pub(crate) fn codex(mode: &str, collaboration: &str) -> Vec<SessionConfigOptionInfo> {
         vec![
             select(
@@ -1292,8 +1303,9 @@ pub(crate) mod tests {
                 "mode",
                 mode,
                 vec![
-                    value("read-only", "Ask for approval", Some("standard")),
-                    value("agent", "Approve for me", Some("auto_review")),
+                    value("read-only", "Read-only", Some("standard")),
+                    value("workspace-write", "Workspace access", Some("standard")),
+                    value("agent", "Auto review", Some("auto_review")),
                     value("agent-full-access", "Full access", Some("full_access")),
                 ],
             ),
@@ -1356,9 +1368,7 @@ pub(crate) mod tests {
     #[test]
     fn unattended_is_offered_only_with_a_full_access_value() {
         let mut options = claude("default");
-        if let SessionConfigKindInfo::Select(s) = &mut options[0].kind {
-            s.options.retain(|v| v.kind.as_deref() != Some(FULL_ACCESS));
-        }
+        drop_full_access(&mut options);
         let mode = project(&options).mode.unwrap();
         assert_eq!(mode.available, vec![Mode::Normal, Mode::Plan]);
         assert_eq!(
@@ -1412,6 +1422,12 @@ pub(crate) mod tests {
         assert_eq!(
             resolve(&codex("agent", "plan"), &req(Mode::Normal), None).unwrap(),
             sets(&[("collaboration_mode", "default")])
+        );
+        // Leaving full access without a remembered mode lands on "Workspace
+        // access", never on 2.x's real read-only sandbox listed before it.
+        assert_eq!(
+            resolve(&codex("agent-full-access", "default"), &req(Mode::Normal), None).unwrap(),
+            sets(&[("mode", "workspace-write")])
         );
     }
 

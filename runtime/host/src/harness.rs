@@ -350,6 +350,10 @@ pub struct ResolveFacts<'a> {
     pub push: bool,
     /// The operation already stopped on conflicts, if any.
     pub in_progress: Option<&'a str>,
+    /// GitHub reports the pull request conflicts with `base` while the branch
+    /// merges cleanly here: a resolution was likely never pushed. `files` is
+    /// empty.
+    pub github_only: bool,
     /// The user's own words for resolve turns, appended last.
     pub user_addition: Option<&'a str>,
 }
@@ -375,6 +379,22 @@ pub fn resolve_conflicts_prompt(facts: &ResolveFacts) -> String {
     let conflicts_with_base = format!("this branch conflicts with `{base}` in {listed}");
     // (what the files are, what to do, rebased, a commit results)
     let (about, start, rebased, commits) = match facts.in_progress {
+        Some(op @ ("merge" | "rebase" | "cherry_pick" | "revert")) if facts.files.is_empty() => {
+            let op = op.replace('_', "-");
+            let finish = match op.as_str() {
+                "merge" => "`git commit`".to_string(),
+                _ => format!("`git {op} --continue` until it is done"),
+            };
+            (
+                format!("a {op} is in progress and every conflict is already resolved"),
+                format!(
+                    "A {op} is in progress; finish it rather than starting another: check no \
+                     conflict markers are left, then run {finish}."
+                ),
+                op == "rebase",
+                true,
+            )
+        }
         Some("rebase") => (
             conflicts_with_base,
             format!(
@@ -411,6 +431,32 @@ pub fn resolve_conflicts_prompt(facts: &ResolveFacts) -> String {
             false,
             false,
         ),
+        None if facts.github_only => {
+            let about = format!(
+                "GitHub reports this branch's pull request conflicts with `{base}`, though it \
+                 merges cleanly here; the fix is likely not pushed yet"
+            );
+            match facts.strategy {
+                ResolveStrategy::Merge => (
+                    about,
+                    format!(
+                        "Commit any uncommitted changes first. Then run `git merge {base}`; if it \
+                         stops on conflicts, {resolve} and commit the merge."
+                    ),
+                    false,
+                    true,
+                ),
+                ResolveStrategy::Rebase => (
+                    about,
+                    format!(
+                        "Commit any uncommitted changes first. Then run `git rebase {base}`; at \
+                         any stop, {resolve}, `git add` it, and run `git rebase --continue`."
+                    ),
+                    true,
+                    true,
+                ),
+            }
+        }
         None => match facts.strategy {
             ResolveStrategy::Merge => (
                 conflicts_with_base,
@@ -633,6 +679,7 @@ mod tests {
             strategy,
             push,
             in_progress: None,
+            github_only: false,
             user_addition: None,
         }
     }
@@ -716,6 +763,36 @@ mod tests {
         }
     }
 
+    /// Every conflict is resolved but the operation never concluded: the text
+    /// says so, names no files, and finishes it.
+    #[test]
+    fn resolve_prompt_in_progress_without_conflicts_finishes() {
+        for (op, verb) in [
+            ("merge", "`git commit`"),
+            ("rebase", "`git rebase --continue`"),
+            ("cherry_pick", "`git cherry-pick --continue`"),
+            ("revert", "`git revert --continue`"),
+        ] {
+            let text = resolve_conflicts_prompt(&ResolveFacts {
+                in_progress: Some(op),
+                ..facts(&[], ResolveStrategy::Merge, true)
+            });
+            let op = op.replace('_', "-");
+            for part in [
+                format!("A {op} is in progress"),
+                "every conflict is already resolved".into(),
+                verb.into(),
+                "checks".into(),
+                "git push".into(),
+            ] {
+                assert!(text.contains(&part), "{op}: missing {part}: {text}");
+            }
+            assert!(!text.contains(" in ."), "{op}: no empty file list: {text}");
+            assert!(!text.contains("unmerged"), "{op}: {text}");
+            assert!(!text.contains("uncommitted"), "{op}: {text}");
+        }
+    }
+
     /// A cherry-pick, revert or leftover unmerged files did not come from the
     /// base: the text does not say so, and finishes the operation that did.
     #[test]
@@ -747,6 +824,33 @@ mod tests {
                 // Nothing was committed: there is nothing to push.
                 None => assert!(!text.contains("git push"), "{op}: {text}"),
             }
+        }
+    }
+
+    /// GitHub sees conflicts this clone does not: the text says so, merges or
+    /// rebases the base in anyway, and pushes so the pull request updates.
+    #[test]
+    fn resolve_prompt_github_only_pushes() {
+        for (strategy, start, push) in [
+            (
+                ResolveStrategy::Merge,
+                "git merge origin/main",
+                "`git push`",
+            ),
+            (
+                ResolveStrategy::Rebase,
+                "git rebase origin/main",
+                "git push --force-with-lease",
+            ),
+        ] {
+            let text = resolve_conflicts_prompt(&ResolveFacts {
+                github_only: true,
+                ..facts(&[], strategy, true)
+            });
+            for part in ["GitHub reports", "origin/main", start, "checks", push] {
+                assert!(text.contains(part), "missing {part}: {text}");
+            }
+            assert!(!text.contains(" in ."), "no empty file list: {text}");
         }
     }
 

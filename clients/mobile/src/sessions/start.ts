@@ -2,7 +2,9 @@
 // it runs, which agent, the options that agent offers, and the first prompt,
 // sent as one `session.start` the way Desktop sends it. The target is the
 // worktree chosen in Files, never quietly swapped for its root: a chosen
-// worktree that was removed asks for another choice instead.
+// worktree that was removed asks for another choice instead. Sessions never
+// run in a repository's root: chosen there, Start makes a new worktree first,
+// the way Desktop opens a repository.
 
 import {
   ATTACHMENT_GONE_MESSAGE,
@@ -10,6 +12,7 @@ import {
   isClientError,
   type AgentSummary,
   type ChoiceOption,
+  type HostState,
   type OpParams,
   type OptionsRequest,
   type PromptBlock,
@@ -26,21 +29,47 @@ export type StartTarget =
   | { kind: "none" }
   /** The chosen worktree was removed (or is gone): choose another. */
   | { kind: "removed"; label: string | null }
-  | { kind: "ready"; workspace: WorkspaceInfo; label: string };
+  | { kind: "ready"; workspace: WorkspaceInfo; label: string }
+  /** A root: Start makes a worktree from its branch (a plain folder becomes a repository first) and runs there. */
+  | { kind: "new_worktree"; root: WorkspaceInfo; label: string };
 
 /**
  * The workspace a new session starts in: the one chosen, while the host still
- * has it. Only when nothing was ever chosen does it default to the first root.
+ * has it. Only when nothing was ever chosen does it default: to the worktree
+ * Files shows, else a new worktree of the first root.
  */
 export function startTarget(workspaces: readonly WorkspaceInfo[] | null, chosen: string | null): StartTarget {
   if (workspaces === null) return { kind: "loading" };
   if (chosen !== null) {
     const w = workspaces.find((x) => x.workspace_id === chosen);
     if (!w || w.removed) return { kind: "removed", label: w ? contextText(contextLabel(workspaces, chosen)) : null };
-    return { kind: "ready", workspace: w, label: targetLabel(workspaces, w) };
+    return liveTarget(workspaces, w);
   }
-  const w = currentWorkspace(workspaces, null);
-  return w ? { kind: "ready", workspace: w, label: targetLabel(workspaces, w) } : { kind: "none" };
+  const w = currentWorkspace(workspaces, null) ?? workspaces.find((x) => !x.removed && x.kind === "root");
+  return w ? liveTarget(workspaces, w) : { kind: "none" };
+}
+
+/**
+ * Where New session starts when nothing was picked in it: where Files is. A
+ * chosen root stands for the worktree Files opens there, else a new one in
+ * it; a chosen worktree that was removed says so instead of moving elsewhere.
+ */
+export function filesTarget(
+  workspaces: readonly WorkspaceInfo[] | null,
+  chosen: string | null,
+  sessionsByWorkspace: HostState["sessionsByWorkspace"] = {},
+): StartTarget {
+  if (workspaces === null) return { kind: "loading" };
+  const w = workspaces.find((x) => x.workspace_id === chosen);
+  if (w?.removed && w.kind === "worktree") return startTarget(workspaces, chosen);
+  const open = currentWorkspace(workspaces, chosen, sessionsByWorkspace);
+  if (open) return startTarget(workspaces, open.workspace_id);
+  return startTarget(workspaces, w && !w.removed ? chosen : null);
+}
+
+function liveTarget(workspaces: readonly WorkspaceInfo[], w: WorkspaceInfo): StartTarget {
+  if (w.kind === "root") return { kind: "new_worktree", root: w, label: `${workspaceLabel(w)} · new worktree` };
+  return { kind: "ready", workspace: w, label: targetLabel(workspaces, w) };
 }
 
 function targetLabel(workspaces: readonly WorkspaceInfo[], w: WorkspaceInfo): string {
@@ -141,10 +170,16 @@ export interface StartInput {
   client_message_id: string;
 }
 
-/** The `session.start` request, or null while something is missing (a live target, a runnable agent, a prompt or a file). */
-export function startParams({ target, agent, picks, prompt, files = [], client_message_id }: StartInput): OpParams<"session.start"> | null {
+/** Whether Start can go: a live target (or a root to make a worktree in), a runnable agent, a prompt or a file. */
+export function canStart({ target, agent, prompt, files = [] }: StartInput): boolean {
+  return (target.kind === "ready" || target.kind === "new_worktree") && !!agent?.available && (!!prompt.trim() || files.length > 0);
+}
+
+/** The `session.start` request, or null while something is missing or the worktree isn't made yet. */
+export function startParams(input: StartInput): OpParams<"session.start"> | null {
+  const { target, agent, picks, prompt, files = [], client_message_id } = input;
+  if (target.kind !== "ready" || !agent || !canStart(input)) return null;
   const text = prompt.trim();
-  if (target.kind !== "ready" || !agent?.available || (!text && files.length === 0)) return null;
   const options = startOptions(startChoices(agent, picks), picks);
   return {
     workspace_id: target.workspace.workspace_id,
@@ -159,6 +194,7 @@ export function startParams({ target, agent, picks, prompt, files = [], client_m
 export function startError(e: unknown, hostName: string, agentName: string | null): string {
   if (isClientError(e, "workspace_removed")) return "That worktree was archived. Choose another workspace.";
   if (isClientError(e, "not_found")) return `That workspace is gone from ${hostName}. Choose another.`;
+  if (isClientError(e, "root_workspace")) return "Sessions run in a worktree, not the workspace folder. Choose a worktree.";
   if (isClientError(e, "agent_not_installed")) return `${agentName ?? "That agent"} isn't installed on ${hostName}.`;
   if (isClientError(e, "attachment_not_found")) return ATTACHMENT_GONE_MESSAGE;
   if (isClientError(e, "option_unavailable")) return "The agent no longer offers that option. Choose again.";

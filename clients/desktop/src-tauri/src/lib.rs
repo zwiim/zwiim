@@ -120,7 +120,7 @@ static SEEDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// first run, staged when newer than the installed Host (the running Host
 /// then reports that a restart finishes the update), ignored otherwise.
 /// A Desktop update therefore never downloads the Host a second time.
-fn seed_host() {
+pub(crate) fn seed_host() {
     let _held = SEEDING.lock().unwrap_or_else(|p| p.into_inner());
     let bin = host_binary();
     match Command::new(&bin)

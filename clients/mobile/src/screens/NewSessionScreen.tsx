@@ -5,14 +5,23 @@
 // `session.start`, as Desktop sends it; on success the new session replaces
 // this screen, on failure nothing is listed and the prompt stays. Where it
 // runs is picked from the workspace tree, which can also add a workspace
-// (Browse Mac) or a worktree to start in.
+// (Browse Mac) or a worktree to start in. Never a root: started there, a
+// worktree is made first, as Desktop does (a plain folder becomes a
+// repository, asking before a large first commit).
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { randomUUID } from "expo-crypto";
-import { isClientError, type PromptBlock, type SessionMode } from "@zwiim/sdk";
+import {
+  isClientError,
+  largeFolderDetails,
+  type LargeFolderDetails,
+  type PromptBlock,
+  type SessionMode,
+  type WorkspaceInfo,
+} from "@zwiim/sdk";
 import { pickFiles, pickPhotos } from "../attachments/native";
 import { UPLOAD_FAILED_MESSAGE } from "../attachments/pending";
 import { usePendingAttachments } from "../attachments/usePendingAttachments";
@@ -21,9 +30,11 @@ import type { RootStack } from "../app/navigation";
 import {
   MODE_LABELS,
   agentNote,
+  canStart,
   choiceLabel,
   choiceValue,
   defaultAgent,
+  filesTarget,
   modeChoosable,
   modeValue,
   offeredAgents,
@@ -39,9 +50,10 @@ import { Button, ScreenHeader, Sheet, T } from "../ui/components";
 import { Paperclip } from "../ui/icons";
 import { AttachSheet, PendingFiles } from "../ui/session";
 import { radius, space, type, useTheme } from "../ui/tokens";
+import { worktreeError } from "../host/workspace";
 import { useHostName } from "./HostFrame";
 import { GithubProjects, NewWorkspaceChooser, useCanClone, useStartedClones } from "./github";
-import { WorkspaceTree } from "./workspaces";
+import { LargeFolder, WorkspaceTree } from "./workspaces";
 
 type Picking = "workspace" | "agent" | "model" | "effort" | "mode" | "new" | "github" | null;
 
@@ -62,6 +74,7 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
   const [confirmUnattended, setConfirmUnattended] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [large, setLarge] = useState<LargeFolderDetails | null>(null);
   const [checking, setChecking] = useState(false);
   const [attaching, setAttaching] = useState(false);
   const attachments = usePendingAttachments(name);
@@ -77,7 +90,10 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
     if (added) setTargetId(added);
   }, [added]);
 
-  const target = startTarget(state.workspaces, targetId ?? workspaceId);
+  // Files' worktree (never a root), else the workspace chosen there.
+  const target = targetId
+    ? startTarget(state.workspaces, targetId)
+    : filesTarget(state.workspaces, workspaceId, state.sessionsByWorkspace);
   const agents = useMemo(() => offeredAgents(state.agents), [state.agents]);
   const agent = agents?.find((a) => a.agent === (agentId ?? defaultAgent(agents))) ?? null;
   const options = startChoices(agent, picks);
@@ -86,23 +102,49 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
   const chosen: PromptBlock[] = attachments.enabled
     ? attachments.files.map((f) => ({ type: "attachment", attachment_id: f.attachment_id ?? f.id }))
     : [];
-  const params = startParams({ target, agent, picks, prompt, files: chosen, client_message_id: "" });
+  const ready = canStart({ target, agent, picks, prompt, files: chosen, client_message_id: "" });
 
   const close = () => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Host"));
 
-  const start = async () => {
-    if (!params || starting || target.kind !== "ready") return;
+  const start = async (allowLarge = false) => {
+    if (!ready || starting || (target.kind !== "ready" && target.kind !== "new_worktree")) return;
     setStarting(true);
     setError(null);
-    try {
-      // The files go into the workspace the session runs in, before it starts.
-      const files = chosen.length > 0 ? await attachments.upload(target.workspace.workspace_id) : [];
-      if (files === null) {
-        setError(UPLOAD_FAILED_MESSAGE);
+    let workspace: WorkspaceInfo;
+    // A root: make a worktree first, as Desktop does (a plain folder becomes a
+    // repository). Once made it is the target, so trying again only starts the session.
+    if (target.kind === "new_worktree") {
+      try {
+        workspace = await currentHost.openWorktree(target.root.workspace_id, { choose: false, allowLarge });
+        setLarge(null);
+      } catch (e) {
+        const details = allowLarge ? null : largeFolderDetails(e);
+        setLarge(details);
+        if (!details) setError(worktreeError(e, target.root, name));
         setStarting(false);
         return;
       }
-      const request = startParams({ target, agent, picks, prompt, files, client_message_id: randomUUID() });
+      setTargetId(workspace.workspace_id);
+    } else {
+      workspace = target.workspace;
+    }
+    const made = target.kind === "new_worktree";
+    try {
+      // The files go into the workspace the session runs in, before it starts.
+      const files = chosen.length > 0 ? await attachments.upload(workspace.workspace_id) : [];
+      if (files === null) {
+        setError(made ? `The worktree was created. ${UPLOAD_FAILED_MESSAGE}` : UPLOAD_FAILED_MESSAGE);
+        setStarting(false);
+        return;
+      }
+      const request = startParams({
+        target: { kind: "ready", workspace, label: "" },
+        agent,
+        picks,
+        prompt,
+        files,
+        client_message_id: randomUUID(),
+      });
       if (!request) {
         setStarting(false);
         return;
@@ -113,7 +155,8 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
       else navigation.replace("Session", { session_id, started: true });
     } catch (e) {
       if (isClientError(e, "attachment_not_found")) attachments.forgetUploads();
-      setError(startError(e, name, agent?.name ?? null));
+      const text = startError(e, name, agent?.name ?? null);
+      setError(made ? `The worktree was created, but the session didn't start. ${text}` : text);
       setStarting(false);
     }
   };
@@ -145,7 +188,7 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
   };
 
   let where: { text: string; color: string };
-  if (target.kind === "ready") where = { text: target.label, color: theme.fg };
+  if (target.kind === "ready" || target.kind === "new_worktree") where = { text: target.label, color: theme.fg };
   else if (target.kind === "removed")
     where = { text: target.label ? `${target.label} was archived` : "Workspace removed", color: theme.err };
   else if (target.kind === "none") where = { text: "No workspaces yet", color: theme.mut };
@@ -318,14 +361,24 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
           ) : !live ? (
             <T color={theme.mut}>Not connected to {name}. Start when it's back.</T>
           ) : null}
-          <Button
-            tall
-            label="Start session"
-            loading={starting}
-            disabled={!params || !live}
-            onPress={() => void start()}
-            testID="new-session-start"
-          />
+          {large && target.kind === "new_worktree" ? (
+            <LargeFolder
+              root={target.root}
+              details={large}
+              adding={starting}
+              onCancel={() => setLarge(null)}
+              onAdd={() => void start(true)}
+            />
+          ) : (
+            <Button
+              tall
+              label="Start session"
+              loading={starting}
+              disabled={!ready || !live}
+              onPress={() => void start()}
+              testID="new-session-start"
+            />
+          )}
         </View>
       </KeyboardAvoidingView>
 
@@ -333,7 +386,7 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
       <Sheet visible={sheet !== null || picking === "workspace" || picking === "new" || picking === "github"} onClose={closeSheet}>
         {picking === "workspace" ? (
           <WorkspaceTree
-            selected={target.kind === "ready" ? target.workspace.workspace_id : null}
+            selected={target.kind === "ready" ? target.workspace.workspace_id : target.kind === "new_worktree" ? target.root.workspace_id : null}
             onChoose={(id) => {
               setTargetId(id);
               closeSheet();

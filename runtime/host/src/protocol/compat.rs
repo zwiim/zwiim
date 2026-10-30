@@ -221,7 +221,13 @@ use serde::{Deserialize, Serialize};
 /// Replies `{workspace_id, archived_worktrees}`. `workspace.add` with the
 /// same folder brings it back under the same `workspace_id`, with its
 /// sessions and archived worktrees.
-pub const PROTOCOL_REVISION: u32 = 24;
+///
+/// Revision 25 (`workspace.resolve_conflicts.github`):
+/// `workspace.resolve_conflicts` also starts a turn when the branch merges
+/// cleanly here but GitHub reports its open pull request conflicting (an
+/// unpushed resolution): the agent brings the base in and pushes. It replies
+/// `{base, files: []}`.
+pub const PROTOCOL_REVISION: u32 = 25;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -277,6 +283,7 @@ pub const CAPABILITIES: &[&str] = &[
     "session.steer",
     "git.pr_auto_merge",
     "workspace.remove",
+    "workspace.resolve_conflicts.github",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -516,7 +523,13 @@ mod tests {
     #[test]
     fn compat_advertises_workspace_removal() {
         assert!(CAPABILITIES.contains(&"workspace.remove"));
-        assert_eq!(PROTOCOL_REVISION, 24);
+        assert!(PROTOCOL_REVISION >= 24);
+    }
+
+    #[test]
+    fn compat_advertises_github_conflicts() {
+        assert!(CAPABILITIES.contains(&"workspace.resolve_conflicts.github"));
+        assert_eq!(PROTOCOL_REVISION, 25);
     }
 
     #[test]

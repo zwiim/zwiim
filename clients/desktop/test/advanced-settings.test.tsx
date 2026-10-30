@@ -115,7 +115,9 @@ describe("advanced settings", () => {
     await tick();
     const folders = within(dialog.getByText("Folders").closest("section")!);
     expect(folders.getByText(FOLDERS.worktrees)).toBeTruthy();
-    fireEvent.click(folders.getAllByRole("button", { name: "Show" })[1]!);
+    expect(folders.queryByText(FOLDERS.data)).toBeNull();
+    expect(folders.queryByText("Data")).toBeNull();
+    fireEvent.click(folders.getAllByRole("button", { name: "Show" })[0]!);
     expect(reveal).toHaveBeenCalledWith(FOLDERS.worktrees);
     c.dispose();
   });
@@ -124,7 +126,7 @@ describe("advanced settings", () => {
     const c = await mount(host());
     const dialog = openSettings("Advanced");
     await tick();
-    expect(dialog.getByText(FOLDERS.data)).toBeTruthy();
+    expect(dialog.getByText(FOLDERS.repositories)).toBeTruthy();
     expect(dialog.queryByRole("button", { name: "Show" })).toBeNull();
     c.dispose();
   });

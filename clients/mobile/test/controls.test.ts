@@ -3,13 +3,21 @@ import { describe, expect, it } from "vitest";
 import {
   agentName,
   changeRequest,
+  compactTokens,
   contextChip,
   contextFigures,
+  contextLine,
   contextSummary,
+  filterChoices,
   lockedNote,
+  needsConfirm,
   optionChips,
+  optionRows,
   optionsEditable,
   optionsError,
+  pageFor,
+  settleOptions,
+  SEARCH_FROM,
   tokens,
 } from "../src/sessions/controls";
 
@@ -45,15 +53,85 @@ describe("session controls", () => {
     expect(changeRequest({ mode: "plan" })).toEqual({ mode: "plan" });
   });
 
-  it("chips show the model's effort only while it offers one", () => {
-    expect(optionChips(claudeLike("opus[1m]", "high"))).toEqual({ mode: { mode: "normal", label: "Ask" }, model: "Opus 5 · High" });
+  it("chip reads mode, model and effort as one", () => {
+    expect(optionChips(claudeLike("opus[1m]", "high"))).toEqual({ mode: { mode: "normal", label: "Ask" }, text: "Ask · Opus 5 · High" });
     // After a switch to Haiku the Host reports no effort, so none is shown or sent.
-    expect(optionChips(claudeLike("haiku", null))).toEqual({ mode: { mode: "normal", label: "Ask" }, model: "Haiku 4.5" });
-    expect(optionChips(codexLike)).toEqual({ mode: { mode: "plan", label: "Plan" }, model: "GPT-5.3 Codex · Medium" });
+    expect(optionChips(claudeLike("haiku", null)).text).toBe("Ask · Haiku 4.5");
+    expect(optionChips(codexLike).text).toBe("Plan · GPT-5.3 Codex · Medium");
+    expect(optionChips(claudeLike("", null)).text).toBe("Ask · Default");
     expect(optionChips({ ...codexLike, mode: { current: "unattended", label: "Full access", available: ["normal", "unattended"] } }).mode)
       .toEqual({ mode: "unattended", label: "Unattended" });
-    expect(optionChips({ model: null, effort: null, mode: null })).toEqual({ mode: null, model: null });
-    expect(optionChips(null)).toEqual({ mode: null, model: null });
+    expect(optionChips({ model: null, effort: null, mode: null })).toEqual({ mode: null, text: null });
+    expect(optionChips(null)).toEqual({ mode: null, text: null });
+  });
+
+  it("summary rows open only what can change", () => {
+    expect(optionRows(claudeLike("opus[1m]", "high"), true)).toEqual([
+      { key: "mode", label: "Mode", value: "Ask", open: true },
+      { key: "model", label: "Model", value: "Opus 5", open: true },
+      { key: "effort", label: "Effort", value: "High", open: true },
+    ]);
+    // Codex offers one model: shown, not openable.
+    expect(optionRows(codexLike, true).find((r) => r.key === "model")).toEqual({ key: "model", label: "Model", value: "GPT-5.3 Codex", open: false });
+    expect(optionRows(claudeLike("haiku", null), true).map((r) => r.key)).toEqual(["mode", "model"]);
+    expect(optionRows(claudeLike("opus[1m]", "high"), false).every((r) => !r.open)).toBe(true);
+    expect(optionRows({ ...codexLike, mode: { current: "normal", label: "", available: ["normal"] } }, true)[0]?.open).toBe(false);
+    expect(optionRows(null, true)).toEqual([]);
+  });
+
+  it("summary rows keep an unlisted current value", () => {
+    expect(optionRows(claudeLike("opus-old", null), true)[1]?.value).toBe("opus-old");
+    expect(optionRows(claudeLike("", null), true)[1]?.value).toBe("Default");
+  });
+
+  it("a page that can no longer open falls back to the summary", () => {
+    const rows = optionRows(claudeLike("opus[1m]", "high"), true);
+    expect(pageFor("model", rows)).toBe("model");
+    expect(pageFor("root", rows)).toBe("root");
+    expect(pageFor("model", optionRows(claudeLike("opus[1m]", "high"), false))).toBe("root");
+    expect(pageFor("effort", optionRows(claudeLike("haiku", null), true))).toBe("root");
+    expect(pageFor("context", [])).toBe("context");
+  });
+
+  it("a page that fell back stays on the summary once its option unlocks", () => {
+    const locked = optionRows(claudeLike("opus[1m]", "high"), false);
+    const open = optionRows(claudeLike("opus[1m]", "high"), true);
+    const settled = settleOptions({ page: "model", query: "op" }, locked);
+    expect(settled).toEqual({ page: "root", query: "" });
+    expect(pageFor(settled.page, open)).toBe("root");
+    const kept = { page: "model" as const, query: "op" };
+    expect(settleOptions(kept, open)).toBe(kept);
+  });
+
+  it("asks first only before Unattended", () => {
+    expect(needsConfirm({ mode: "unattended" })).toBe(true);
+    expect(needsConfirm({ mode: "plan" })).toBe(false);
+    expect(needsConfirm({ model: "unattended" })).toBe(false);
+  });
+
+  it("filters models by name, id or description, in agent order", () => {
+    const v = [
+      { value: "opus", label: "Opus 5.5", description: "For complex work" },
+      { value: "claude-opus-4-8", label: "Opus 4.8", description: null },
+      { value: "haiku", label: "Haiku 5.5", description: "Fastest for quick answers" },
+    ];
+    expect(filterChoices(v, "  ")).toEqual(v);
+    expect(filterChoices(v, "OPUS").map((x) => x.value)).toEqual(["opus", "claude-opus-4-8"]);
+    expect(filterChoices(v, "4-8").map((x) => x.value)).toEqual(["claude-opus-4-8"]);
+    expect(filterChoices(v, "quick").map((x) => x.value)).toEqual(["haiku"]);
+    expect(filterChoices(v, "xyz")).toEqual([]);
+    expect(SEARCH_FROM).toBe(8);
+  });
+
+  it("context line is short and names what is missing", () => {
+    expect(compactTokens(950)).toBe("950");
+    expect(compactTokens(200_000)).toBe("200K");
+    expect(compactTokens(1_000_000)).toBe("1M");
+    expect(compactTokens(1_500_000)).toBe("1.5M");
+    expect(contextLine({ usage: { used: 46_000, size: 200_000 } } as never)).toBe("23% of 200K context");
+    expect(contextLine({ usage: { used: 37_738, size: null } } as never)).toBe("37,738 in use");
+    expect(contextLine({ usage: { used: null, size: 200_000 } } as never)).toBe("200K window");
+    expect(contextLine(undefined)).toBe("Context not reported");
   });
 
   it("changes only between turns, while connected, once the agent has reported its options", () => {

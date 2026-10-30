@@ -3,7 +3,7 @@
 // Node runtime and npm package trees the Host installs as its managed Claude
 // and Codex adapters.
 //
-//   node runtime/host/scripts/adapters-lock.mjs claude=0.81.2 codex=1.12.0
+//   node runtime/host/scripts/adapters-lock.mjs claude=0.99.0 codex=2.4.0
 //
 // For every package it records the tarball URL, the registry's sha512
 // integrity and the registry's ECDSA signature over

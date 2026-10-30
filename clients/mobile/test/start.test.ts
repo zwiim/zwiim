@@ -2,8 +2,10 @@ import { buildWorkspaceTree, ZwiimClientError, type AgentSummary, type SessionOp
 import { describe, expect, it } from "vitest";
 import {
   agentNote,
+  canStart,
   choiceValue,
   defaultAgent,
+  filesTarget,
   modeChoosable,
   modeValue,
   offeredAgents,
@@ -86,11 +88,52 @@ describe("a first prompt with files", () => {
   });
 });
 
+describe("New session's first target: the choice in Files", () => {
+  it("opens a chosen root on the worktree Files shows there, else a new worktree in that root", () => {
+    expect(filesTarget(LIST, "zwiim")).toMatchObject({ kind: "ready", workspace: { workspace_id: "fix" } });
+    expect(filesTarget([LIST[0]!], "zwiim")).toMatchObject({ kind: "new_worktree", root: { workspace_id: "zwiim" } });
+    expect(filesTarget(LIST, "notes")).toMatchObject({ kind: "new_worktree", root: { workspace_id: "notes" } });
+  });
+
+  it("says a chosen worktree was removed instead of swapping in another", () => {
+    expect(filesTarget(LIST, "old")).toEqual({ kind: "removed", label: "zwiim · old-branch" });
+    expect(filesTarget(LIST, "fix")).toMatchObject({ kind: "ready", workspace: { workspace_id: "fix" } });
+  });
+
+  it("defaults only when nothing known was chosen", () => {
+    expect(filesTarget(LIST, null)).toMatchObject({ kind: "ready", workspace: { workspace_id: "fix" } });
+    expect(filesTarget(LIST, "missing")).toMatchObject({ kind: "ready", workspace: { workspace_id: "fix" } });
+    expect(filesTarget(null, "fix")).toEqual({ kind: "loading" });
+  });
+});
+
 describe("where a new session starts", () => {
-  it("starts in the root checkout when the root is chosen", () => {
-    expect(ready("zwiim")).toMatchObject({ kind: "ready", workspace: { workspace_id: "zwiim" }, label: "zwiim · main" });
-    const params = startParams({ target: ready("zwiim"), agent: CLAUDE, picks: {}, prompt: "hi", client_message_id: "m" });
-    expect(params?.workspace_id).toBe("zwiim");
+  it("starts a repository's root in a new worktree, as Desktop does", () => {
+    const root = LIST[0]!;
+    expect(startTarget(LIST, "zwiim")).toEqual({ kind: "new_worktree", root, label: "zwiim · new worktree" });
+    // Nothing chosen: the worktree Files shows.
+    expect(startTarget(LIST, null)).toMatchObject({ kind: "ready", workspace: { workspace_id: "fix" } });
+    // With no worktree anywhere, the first root, in a new worktree.
+    expect(startTarget([root], null)).toEqual({ kind: "new_worktree", root, label: "zwiim · new worktree" });
+    // Start can go, but there is no worktree to send yet.
+    const input = { target: startTarget(LIST, "zwiim"), agent: CLAUDE, picks: {}, prompt: "hi", client_message_id: "m" };
+    expect(canStart(input)).toBe(true);
+    expect(startParams(input)).toBeNull();
+  });
+
+  it("starts a plain folder in a new worktree too: the Host runs nothing in a root", () => {
+    const notes = LIST.find((w) => w.workspace_id === "notes")!;
+    expect(startTarget(LIST, "notes")).toEqual({ kind: "new_worktree", root: notes, label: "notes · new worktree" });
+    expect(startTarget([notes], null)).toEqual({ kind: "new_worktree", root: notes, label: "notes · new worktree" });
+  });
+
+  it("can start only with a live target, a runnable agent and something to send", () => {
+    const base = { target: ready("fix"), agent: CLAUDE, picks: {}, prompt: "hi", client_message_id: "m" };
+    expect(canStart(base)).toBe(true);
+    expect(canStart({ ...base, target: startTarget(LIST, "old") })).toBe(false);
+    expect(canStart({ ...base, target: startTarget(null, null) })).toBe(false);
+    expect(canStart({ ...base, agent: null })).toBe(false);
+    expect(canStart({ ...base, prompt: " " })).toBe(false);
   });
 
   it("starts in the chosen worktree, labelled workspace · worktree", () => {
@@ -104,8 +147,8 @@ describe("where a new session starts", () => {
     expect(startTarget(LIST, "old")).toEqual({ kind: "removed", label: "zwiim · old-branch" });
     // Gone from the host entirely.
     expect(startTarget(LIST, "vanished")).toEqual({ kind: "removed", label: null });
-    // Only when nothing was ever chosen does it default to the first root.
-    expect(startTarget(LIST, null)).toMatchObject({ kind: "ready", workspace: { workspace_id: "zwiim" } });
+    // Only when nothing was ever chosen does it default, to the worktree Files shows.
+    expect(startTarget(LIST, null)).toMatchObject({ kind: "ready", workspace: { workspace_id: "fix" } });
     expect(startTarget(null, "fix")).toEqual({ kind: "loading" });
     expect(startTarget([], null)).toEqual({ kind: "none" });
   });
@@ -114,7 +157,7 @@ describe("where a new session starts", () => {
     const target = startTarget(LIST, "old");
     expect(startParams({ target, agent: CLAUDE, picks: {}, prompt: "hi", client_message_id: "m" })).toBeNull();
     const tree = buildWorkspaceTree({ workspaces: LIST, sessionsByWorkspace: {}, sessions: {} });
-    expect(worktreeChoices(tree, "zwiim").map((n) => n.workspace.workspace_id)).toEqual(["zwiim", "fix"]);
+    expect(worktreeChoices(tree, "zwiim").map((n) => n.workspace.workspace_id)).toEqual(["fix"]);
   });
 });
 
@@ -154,7 +197,7 @@ describe("the session.start request", () => {
     // Opus offers none: no Effort row, and none is sent even if one was picked.
     const opus = { model: "opus", effort: "high" };
     expect(startChoices(claude, opus)?.effort).toBeNull();
-    const params = startParams({ target: ready("zwiim"), agent: claude, picks: opus, prompt: "hi", client_message_id: "m" });
+    const params = startParams({ target: ready("fix"), agent: claude, picks: opus, prompt: "hi", client_message_id: "m" });
     expect(params?.options).toEqual({ model: "opus" });
     // Back on Sonnet the pick holds while that model offers it.
     expect(startOptions(startChoices(claude, { ...opus, model: "sonnet" }), { ...opus, model: "sonnet" })).toEqual({ model: "sonnet", effort: "high" });
@@ -163,12 +206,12 @@ describe("the session.start request", () => {
   });
 
   it("sends no options for an agent that hasn't advertised any", () => {
-    const params = startParams({ target: ready("zwiim"), agent: agent("codex"), picks: {}, prompt: "hi", client_message_id: "m" });
-    expect(params).toEqual({ workspace_id: "zwiim", agent: "codex", blocks: [{ type: "text", text: "hi" }], client_message_id: "m" });
+    const params = startParams({ target: ready("fix"), agent: agent("codex"), picks: {}, prompt: "hi", client_message_id: "m" });
+    expect(params).toEqual({ workspace_id: "fix", agent: "codex", blocks: [{ type: "text", text: "hi" }], client_message_id: "m" });
   });
 
   it("needs a runnable agent and a prompt", () => {
-    const base = { target: ready("zwiim"), picks: {}, client_message_id: "m" };
+    const base = { target: ready("fix"), picks: {}, client_message_id: "m" };
     expect(startParams({ ...base, agent: CLAUDE, prompt: "   " })).toBeNull();
     expect(startParams({ ...base, agent: null, prompt: "hi" })).toBeNull();
     expect(startParams({ ...base, agent: agent("gemini", { available: false, reason: "not_installed" }), prompt: "hi" })).toBeNull();
@@ -220,6 +263,7 @@ describe("the choices", () => {
   it("says why a start failed", () => {
     const err = (code: string) => new ZwiimClientError(code, "x");
     expect(startError(err("workspace_removed"), "Studio", null)).toBe("That worktree was archived. Choose another workspace.");
+    expect(startError(err("root_workspace"), "Studio", null)).toBe("Sessions run in a worktree, not the workspace folder. Choose a worktree.");
     expect(startError(err("agent_not_installed"), "Studio", "Codex")).toBe("Codex isn't installed on Studio.");
     expect(startError(err("unknown_outcome"), "Studio", null)).toBe("Not sure the session started. Check Sessions before starting again.");
     expect(startError(err("network"), "Studio", null)).toBe("Not connected to Studio. Try again when it's back.");

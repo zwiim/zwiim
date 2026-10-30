@@ -8,7 +8,9 @@ use serde::Serialize;
 use crate::acp::manager::ConnectionManager;
 use crate::acp::types::PromptInputBlock;
 use crate::db::AppDatabase;
-use crate::git_harness::{self, ConflictCheck, ConflictState, GitHost, PrLifecycle};
+use crate::git_harness::{
+    self, ConflictCheck, ConflictState, GitHost, MergeStatus, PrLifecycle, PrState,
+};
 use crate::harness::user_instructions;
 use crate::harness::{resolve_conflicts_prompt, ResolveFacts, ResolveStrategy};
 use crate::protocol::error::ZwiimError;
@@ -31,9 +33,38 @@ pub(crate) fn pushes_to(pr: Option<PrLifecycle>) -> bool {
     pr.is_some_and(|state| !state.is_final())
 }
 
+/// Whether GitHub reports the worktree's open pull request as conflicting
+/// with its base. It can while the branch merges cleanly here: the agent
+/// resolved the conflicts but never pushed.
+pub(crate) fn conflicts_on_github(pr: Option<&PrState>) -> bool {
+    pr.is_some_and(|pr| !pr.state.is_final() && pr.merge.status == MergeStatus::Dirty)
+}
+
+/// The remote-tracking ref of a pull request's base branch, fetching it from
+/// `origin` when this clone has never seen it.
+async fn pull_request_base(
+    host: &GitHost<'_>,
+    root: &Path,
+    branch: &str,
+) -> Result<Option<String>, ZwiimError> {
+    if let Some(base) = git_harness::conflict_base(root, true, Some(branch)).await? {
+        return Ok(Some(base));
+    }
+    let base = format!("origin/{branch}");
+    if let Err(e) = git_harness::fetch_base(host, root, &base).await {
+        tracing::debug!("[workspace] fetch of {base} failed: {}", e.message);
+        return Ok(None);
+    }
+    Ok(git_harness::conflict_base(root, true, Some(branch)).await?)
+}
+
 /// Send session `session_id` the Host's resolve text for workspace
 /// `workspace_id`'s conflicts with its base, checked against a fresh fetch
 /// of that base. `push` says whether the agent pushes the result.
+/// `github_conflicts`: the pull request's base branch while GitHub reports
+/// the pull request conflicting with it. The check and the turn then use that
+/// branch, and a branch that merges cleanly here still gets a turn that
+/// brings it in and pushes.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_conflicts<L: AgentLauncher>(
     db: &AppDatabase,
@@ -45,6 +76,7 @@ pub(crate) async fn resolve_conflicts<L: AgentLauncher>(
     session_id: &str,
     strategy: ResolveStrategy,
     push: bool,
+    github_conflicts: Option<&str>,
 ) -> Result<ResolveStarted, ZwiimError> {
     let folder = super::resolve(&db.conn, workspace_id).await?;
     if folder.parent_id.is_none() {
@@ -63,26 +95,36 @@ pub(crate) async fn resolve_conflicts<L: AgentLauncher>(
     }
 
     let root = Path::new(&folder.path);
-    let Some(base) = git_harness::conflict_base(root, true, folder.base_branch.as_deref()).await?
-    else {
-        return Err(ZwiimError::no_conflicts());
-    };
     let host = GitHost::new(&db.conn, data_dir);
+    let pr_base = match github_conflicts {
+        Some(branch) => pull_request_base(&host, root, branch).await?,
+        None => None,
+    };
+    let base = match pr_base {
+        Some(base) => base,
+        None => git_harness::conflict_base(root, true, folder.base_branch.as_deref())
+            .await?
+            .ok_or_else(ZwiimError::no_conflicts)?,
+    };
     if let Err(e) = git_harness::fetch_base(&host, root, &base).await {
         tracing::debug!(
             "[workspace] fetch of {base} before resolving failed: {}",
             e.message
         );
     }
-    let (files, in_progress) = match git_harness::check_conflicts(root, &base).await? {
+    let (files, in_progress, github_only) = match git_harness::check_conflicts(root, &base).await? {
         Some(ConflictCheck {
             state: ConflictState::Conflicts { files },
             ..
-        }) => (files, None),
+        }) => (files, None, false),
         Some(ConflictCheck {
             state: ConflictState::InProgress { operation, files },
             ..
-        }) if !files.is_empty() => (files, Some(operation)),
+        }) => (files, Some(operation), false),
+        Some(ConflictCheck {
+            state: ConflictState::Clean,
+            ..
+        }) if github_conflicts.is_some() => (Vec::new(), None, true),
         _ => return Err(ZwiimError::no_conflicts()),
     };
     // Another session may have started a turn during the fetch.
@@ -102,6 +144,7 @@ pub(crate) async fn resolve_conflicts<L: AgentLauncher>(
         strategy,
         push,
         in_progress: in_progress.as_deref(),
+        github_only,
         user_addition: user.resolve_conflicts.as_deref(),
     });
     session::send_tagged(
@@ -256,6 +299,7 @@ mod tests {
             sid,
             ResolveStrategy::Merge,
             true,
+            None,
         )
         .await
     }
@@ -293,6 +337,7 @@ mod tests {
             strategy: ResolveStrategy::Merge,
             push: true,
             in_progress,
+            github_only: false,
             user_addition: None,
         })
     }
@@ -663,6 +708,7 @@ mod tests {
             strategy: ResolveStrategy::Merge,
             push: true,
             in_progress: None,
+            github_only: false,
             user_addition: None,
         });
         assert_eq!(
@@ -709,6 +755,7 @@ mod tests {
             strategy: ResolveStrategy::Merge,
             push: true,
             in_progress: None,
+            github_only: false,
             user_addition: Some("Keep our lockfile.\n\nAsk before deleting tests."),
         });
         assert_eq!(
@@ -743,6 +790,39 @@ mod tests {
             strategy: ResolveStrategy::Merge,
             push: true,
             in_progress: Some("merge"),
+            github_only: false,
+            user_addition: None,
+        });
+        assert_eq!(
+            launcher.prompts_for("fake-conn-1"),
+            ["first", expected.as_str()]
+        );
+    }
+
+    /// The user resolved and staged every conflict but never committed the
+    /// merge: the turn finishes it instead of refusing.
+    #[tokio::test]
+    async fn resolve_finishes_a_merge_with_every_conflict_staged() {
+        let r = rig(true).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = idle_session(&r, &mgr, &launcher).await;
+        assert!(!merge_base(&r.dir));
+        std::fs::write(r.dir.join("a.txt"), "both\n").unwrap();
+        fixture_git(&r.dir, &["add", "a.txt"]);
+        assert!(r.dir.join(".git/MERGE_HEAD").exists());
+
+        let started = resolve(&r, &mgr, &launcher, &sid).await.unwrap();
+        settle().await;
+
+        assert_eq!(started.files, Vec::<String>::new());
+        let expected = resolve_conflicts_prompt(&ResolveFacts {
+            base: "origin/main",
+            files: &[],
+            strategy: ResolveStrategy::Merge,
+            push: true,
+            in_progress: Some("merge"),
+            github_only: false,
             user_addition: None,
         });
         assert_eq!(
@@ -776,6 +856,123 @@ mod tests {
         let err = resolve(&r, &mgr, &launcher, &sid).await.unwrap_err();
         assert_eq!(err.code, "no_conflicts");
         assert_eq!(launcher.prompts_for("fake-conn-1"), ["first"]);
+    }
+
+    /// The agent merged the base but never pushed: clean here, conflicting on
+    /// GitHub. The turn merges the base in (a no-op here) and pushes.
+    #[tokio::test]
+    async fn resolve_sends_github_only_conflicts() {
+        let r = rig(false).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = idle_session(&r, &mgr, &launcher).await;
+
+        let started = resolve_conflicts(
+            &r.db,
+            &mgr,
+            &launcher,
+            &r.data_dir,
+            &r.data_dir.join("instructions.json"),
+            &r.wid,
+            &sid,
+            ResolveStrategy::Merge,
+            true,
+            Some("main"),
+        )
+        .await
+        .unwrap();
+        settle().await;
+
+        assert_eq!(started.files, Vec::<String>::new());
+        let expected = resolve_conflicts_prompt(&ResolveFacts {
+            base: "origin/main",
+            files: &[],
+            strategy: ResolveStrategy::Merge,
+            push: true,
+            in_progress: None,
+            github_only: true,
+            user_addition: None,
+        });
+        assert_eq!(
+            launcher.prompts_for("fake-conn-1"),
+            ["first", expected.as_str()]
+        );
+    }
+
+    /// The pull request targets another branch than the worktree was made
+    /// from: GitHub's conflicts are with that branch, so the turn is too.
+    #[tokio::test]
+    async fn resolve_github_conflicts_against_the_pull_requests_base() {
+        let r = rig(false).await;
+        fixture_git(&r.upstream, &["checkout", "-q", "-b", "release"]);
+        commit_a(&r.upstream, "theirs\n");
+        fixture_git(&r.upstream, &["push", "-q", "origin", "release"]);
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = idle_session(&r, &mgr, &launcher).await;
+
+        let started = resolve_conflicts(
+            &r.db,
+            &mgr,
+            &launcher,
+            &r.data_dir,
+            &r.data_dir.join("instructions.json"),
+            &r.wid,
+            &sid,
+            ResolveStrategy::Merge,
+            true,
+            Some("release"),
+        )
+        .await
+        .unwrap();
+        settle().await;
+
+        let files = vec!["a.txt".to_string()];
+        assert_eq!(started.base, "origin/release");
+        assert_eq!(started.files, files);
+        let expected = resolve_conflicts_prompt(&ResolveFacts {
+            base: "origin/release",
+            files: &files,
+            strategy: ResolveStrategy::Merge,
+            push: true,
+            in_progress: None,
+            github_only: false,
+            user_addition: None,
+        });
+        assert_eq!(
+            launcher.prompts_for("fake-conn-1"),
+            ["first", expected.as_str()]
+        );
+    }
+
+    #[test]
+    fn conflicts_on_github_only_while_open_and_dirty() {
+        let pr = |state: PrLifecycle, status: MergeStatus| PrState {
+            number: 1,
+            url: String::new(),
+            title: String::new(),
+            state,
+            base: "main".into(),
+            head: "feature".into(),
+            head_sha: String::new(),
+            merged_at: None,
+            checks: Default::default(),
+            merge: crate::git_harness::PrMergeInfo {
+                allowed: false,
+                status,
+                reason: None,
+                method: None,
+                methods: Vec::new(),
+                auto: None,
+                auto_available: false,
+            },
+        };
+        let on_github = |state, status| conflicts_on_github(Some(&pr(state, status)));
+        assert!(on_github(PrLifecycle::Open, MergeStatus::Dirty));
+        assert!(on_github(PrLifecycle::Draft, MergeStatus::Dirty));
+        assert!(!on_github(PrLifecycle::Open, MergeStatus::Blocked));
+        assert!(!on_github(PrLifecycle::Closed, MergeStatus::Dirty));
+        assert!(!conflicts_on_github(None));
     }
 
     #[tokio::test]
@@ -933,6 +1130,7 @@ mod tests {
             &sid,
             ResolveStrategy::Merge,
             false,
+            None,
         )
         .await
         .unwrap_err();

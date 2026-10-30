@@ -4563,6 +4563,7 @@ async fn an_unsigned_unsupervised_host_reports_that_it_cannot_update() {
     // Test builds carry no release key.
     assert_eq!(status["unsupported_reason"], "unsigned_build", "{status}");
     assert_eq!(status["restart_required"], false);
+    assert_eq!(status["restart_pending"], false);
     assert_eq!(status["activity"]["state"], "idle");
     // Checking never reaches the network without a release key.
     let checked = h.ok("host.update.check", json!({})).await;

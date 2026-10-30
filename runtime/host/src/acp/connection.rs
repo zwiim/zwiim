@@ -33,6 +33,7 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 
 use crate::acp::agent_mentions::append_agent_routes;
 use crate::acp::background_watch;
+use crate::acp::claude_tool_frames;
 use crate::acp::codex_subagents;
 use crate::acp::error::AcpError;
 use crate::acp::file_system_runtime::{
@@ -3097,12 +3098,24 @@ async fn drain_permissions_locked(
 
 /// The agent's own classification of a mode or mode-like select value,
 /// `_meta.kind` (claude-agent-acp / codex-acp: `standard`, `plan`,
-/// `auto_review`, `full_access`). `None` when the agent sent none.
+/// `auto_review`, `full_access`). codex-acp 2.x sends it to AIR clients as
+/// `_meta.jetbrains.air.kind` instead. `None` when the agent sent none.
 fn meta_kind(meta: Option<&serde_json::Map<String, serde_json::Value>>) -> Option<String> {
-    meta?
-        .get("kind")?
+    meta.and_then(|m| m.get("kind"))
+        .or_else(|| air_envelope(meta)?.get("kind"))?
         .as_str()
         .map(str::to_string)
+}
+
+/// The `_meta.jetbrains.air` envelope, when well-formed (integer
+/// `version >= 1`). Zwiim advertises `clientCapabilities._meta.jetbrains.air`,
+/// so codex-acp 2.x moves mode kind, goal and permission metadata in here.
+fn air_envelope(
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<&serde_json::Value> {
+    let air = meta?.get("jetbrains")?.get("air")?;
+    let version = air.get("version").and_then(serde_json::Value::as_i64)?;
+    (version >= 1).then_some(air)
 }
 
 fn map_session_modes(mode_state: &SessionModeState) -> SessionModeStateInfo {
@@ -4469,6 +4482,12 @@ fn build_client_capabilities(
     if agent_type == AgentType::ClaudeCode {
         meta.insert("subagent-transcript".to_string(), serde_json::Value::Bool(true));
     }
+    // codex-acp 2.x sends an AIR client a command's output ONLY as
+    // `_meta.terminal_output_delta` chunks, and only to a client that declares
+    // this key; without it the output is dropped. See `codex_terminal_output`.
+    if agent_type == AgentType::Codex {
+        meta.insert("terminal_output_delta".to_string(), serde_json::Value::Bool(true));
+    }
     // claude-agent-acp 0.73.0 added "asyncTasks", and codex-acp 1.10.0 joined
     // it, so BOTH are advertised. It publishes the lifecycle of an agent's
     // NON-AGENT background work as `async_task_spawned` / `_progress` /
@@ -5604,6 +5623,9 @@ async fn run_connection(
     // runs before the per-session ones and moves them onto the root session,
     // marked with their launch (see `codex_subagents`).
     let child_router = Arc::clone(&state.read().await.codex_children);
+    // Claude's AIR frames: trimmed `_meta` merged back, and the permission
+    // card's missing kind / diff (see `claude_tool_frames`).
+    let claude_frames = claude_tool_frames::ClaudeToolFrames::shared();
 
     Client
         .builder()
@@ -5612,9 +5634,14 @@ async fn run_connection(
             Arc::clone(&child_router),
             agent_type == AgentType::Codex,
         ))
+        .with_handler(claude_tool_frames::ClaudeToolFramesHandler::new(
+            Arc::clone(&claude_frames),
+            agent_type == AgentType::ClaudeCode,
+        ))
         .on_receive_request(
             {
                 let emitter_inner = emitter_clone.clone();
+                let claude_frames = Arc::clone(&claude_frames);
                 let perms = perms.clone();
                 let perm_cwd = cwd_string.clone();
                 let state_inner = Arc::clone(&state);
@@ -5624,9 +5651,13 @@ async fn run_connection(
                 let perm_ask_access = native_ask_access.clone();
                 let perm_plan_access = grok_plan_access.clone();
                 let perm_conn_id = connection_id.clone();
-                async move |req: RequestPermissionRequest,
+                async move |mut req: RequestPermissionRequest,
                             responder: Responder<RequestPermissionResponse>,
                             _cx: ConnectionTo<Agent>| {
+                    claude_frames
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .fill_permission(&mut req.tool_call);
                     // An approval gating Zwiim's OWN ask tool is a dialog asking
                     // permission to show a dialog; allow it so the user sees only
                     // the interactive question card (see
@@ -7024,10 +7055,7 @@ async fn handle_grok_ask_user_question(
 /// outlives this turn and this connection, so it stays theirs to make. With no
 /// such option (an agent that offers only "always"), `None` keeps today's card.
 fn zwiim_ask_auto_allow_option(req: &RequestPermissionRequest) -> Option<String> {
-    let permission_title = req
-        .meta
-        .as_ref()
-        .and_then(|m| m.get("permission"))
+    let permission_title = permission_meta(req.meta.as_ref())
         .and_then(|p| p.get("title"))
         .and_then(serde_json::Value::as_str);
     let is_ask = [req.tool_call.fields.title.as_deref(), permission_title]
@@ -7258,15 +7286,18 @@ fn plan_review_to_bridge(agent_type: AgentType, req: &RequestPermissionRequest) 
     }
 }
 
-/// The adapter option answering a bridged plan review for `decision`.
+/// The adapter option answering a bridged plan review for `decision`;
+/// `bypass_offered` is whether Claude's request offered to leave plan mode
+/// straight into unattended.
 fn plan_review_option(
     agent_type: AgentType,
     decision: crate::acp::plan_approval::PlanApprovalDecision,
+    bypass_offered: bool,
 ) -> &'static str {
     if agent_type == AgentType::Codex {
         crate::acp::plan_approval::codex_plan_option(decision)
     } else {
-        crate::acp::plan_approval::claude_exit_plan_option(decision)
+        crate::acp::plan_approval::claude_exit_plan_option(decision, bypass_offered)
     }
 }
 
@@ -7310,7 +7341,7 @@ async fn try_bridge_plan_review(
     // Codex never announces its review tool call; seed it so the follow-up
     // `tool_call_update` merges into a titled card (see
     // `handle_permission_request`).
-    let codex_review = is_codex_plan_review(agent_type, req.meta.as_ref()).then(|| {
+    let codex_review = is_codex_plan_review(agent_type, req).then(|| {
         (
             Arc::clone(state),
             emitter.clone(),
@@ -7320,6 +7351,10 @@ async fn try_bridge_plan_review(
     if codex_review.is_some() {
         emit_codex_plan_review_tool_call(state, emitter, req).await;
     }
+    let bypass_offered = req
+        .options
+        .iter()
+        .any(|o| o.option_id.to_string() == crate::acp::plan_approval::CLAUDE_EXIT_PLAN_BYPASS);
     let access = Arc::clone(access);
     let connection_id = connection_id.to_string();
     tokio::spawn(async move {
@@ -7327,6 +7362,7 @@ async fn try_bridge_plan_review(
             access.as_ref(),
             &connection_id,
             agent_type,
+            bypass_offered,
             registered.answer_rx,
             abort_rx,
         )
@@ -7346,6 +7382,7 @@ async fn resolve_plan_review(
     access: &dyn crate::acp::plan_approval::SessionPlanApprovalAccess,
     connection_id: &str,
     agent_type: AgentType,
+    bypass_offered: bool,
     answer_rx: oneshot::Receiver<crate::acp::plan_approval::PlanApprovalAnswer>,
     abort_rx: oneshot::Receiver<()>,
 ) -> RequestPermissionOutcome {
@@ -7357,7 +7394,7 @@ async fn resolve_plan_review(
     };
     match answer {
         Some(answer) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
-            plan_review_option(agent_type, answer.decision),
+            plan_review_option(agent_type, answer.decision, bypass_offered),
         )),
         None => {
             access.cancel_plan_approvals_by_parent(connection_id).await;
@@ -7727,7 +7764,7 @@ async fn handle_permission_request(
     // is already in the transcript (codex emits the plan as an
     // `agent_message_chunk` before this) and the permission card renders it from
     // the request's own `rawInput.plan` — a third copy would be noise.
-    if is_codex_plan_review(agent_type, req.meta.as_ref()) {
+    if is_codex_plan_review(agent_type, &req) {
         emit_codex_plan_review_tool_call(state, emitter, &req).await;
     }
 
@@ -7768,7 +7805,7 @@ async fn handle_permission_request(
     hoist_request_permission_meta(&mut tool_call_value, req.meta.as_ref());
     // Zwiim: the plan codex asks about is already in the transcript, so the
     // card asks only the question rather than repeating it.
-    if is_codex_plan_review(agent_type, req.meta.as_ref()) {
+    if is_codex_plan_review(agent_type, &req) {
         drop_plan_copy(&mut tool_call_value);
     }
 
@@ -10434,6 +10471,7 @@ async fn run_conversation_loop<'a>(
                 // out-of-turn pump and its calls settle on the update that
                 // immediately follows, before any turn starts.
                 cb_state.pi_terminal_calls.clear();
+                cb_state.codex_terminal_output.clear();
                 // Grok's context ring needs the active model's window paired
                 // with the cumulative token count riding each update. Resolve it
                 // once here (the model can't change mid-turn) so the per-update
@@ -12502,7 +12540,10 @@ fn pi_terminal_meta_marks_bash(
     agent_type: AgentType,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> bool {
-    if agent_type != AgentType::Pi {
+    // codex-acp 2.x hosts its terminal the same way for AIR clients: the
+    // `Terminal` block names its own tool-call id and `_meta.terminal_info`
+    // marks it (see `codex_terminal_output`).
+    if !matches!(agent_type, AgentType::Pi | AgentType::Codex) {
         return false;
     }
     meta.is_some_and(|meta| meta.get("terminal_info").is_some_and(|v| v.is_object()))
@@ -12614,6 +12655,76 @@ fn pi_bash_terminal_chunk(
     let append = *has_emitted;
     *has_emitted = true;
     Some(build_emit_payload(&chunk, append))
+}
+
+/// codex-acp 2.x streams a command's output only on `_meta`: Zwiim is an AIR
+/// client (`clientCapabilities._meta.jetbrains.air`), so the adapter drops the
+/// 1.x `rawOutput.formatted_output` and sends `_meta.terminal_output_delta =
+/// {data, terminal_id}` chunks (because Zwiim also declares
+/// `_meta.terminal_output_delta`; without it an AIR client gets no output at
+/// all), then `_meta.terminal_exit = {exit_code, signal, terminal_id}` on the
+/// completion frame. A replayed command sends its whole output with the exit.
+///
+/// Collect the chunks per tool call and, at the exit, return the 1.x
+/// `{"formatted_output", "exit_code"}` raw result, which is what Zwiim clients
+/// read a command's output from. A call that `ended` (a final status) without
+/// an exit returns what it printed, with a null exit code. The buffer keeps a
+/// bounded tail, and the result goes through `build_emit_payload` for the
+/// single-event cap.
+fn codex_terminal_output(
+    agent_type: AgentType,
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+    tool_call_id: &str,
+    ended: bool,
+    buffers: &mut HashMap<String, String>,
+) -> Option<String> {
+    if agent_type != AgentType::Codex {
+        return None;
+    }
+    if let Some(data) = meta
+        .and_then(|meta| meta.get("terminal_output_delta"))
+        .and_then(|delta| delta.get("data"))
+        .and_then(serde_json::Value::as_str)
+    {
+        let buffer = buffers.entry(tool_call_id.to_string()).or_default();
+        buffer.push_str(data);
+        if buffer.len() > 2 * MAX_SINGLE_EMIT_BYTES {
+            let tail = truncate_tail_at_char_boundary(buffer, MAX_SINGLE_EMIT_BYTES);
+            *buffer = format!("{TRUNCATION_MARKER}{tail}");
+        }
+    }
+    let exit = meta
+        .and_then(|meta| meta.get("terminal_exit"))
+        .and_then(serde_json::Value::as_object);
+    let output = match exit {
+        Some(_) => buffers.remove(tool_call_id).unwrap_or_default(),
+        None if ended => buffers.remove(tool_call_id)?,
+        None => return None,
+    };
+    let (output, _) = build_emit_payload(&output, false);
+    Some(
+        serde_json::json!({
+            "formatted_output": output,
+            "exit_code": exit
+                .and_then(|exit| exit.get("exit_code").cloned())
+                .unwrap_or(serde_json::Value::Null),
+        })
+        .to_string(),
+    )
+}
+
+/// codex-acp 2.x sends a read, search or list command's output as a bare
+/// string `rawOutput`. Wrap it in the 1.x `{"formatted_output"}` shape Zwiim
+/// clients read a command's output from.
+fn codex_string_raw_output(
+    agent_type: AgentType,
+    raw_output: Option<&serde_json::Value>,
+) -> Option<String> {
+    if agent_type != AgentType::Codex {
+        return None;
+    }
+    let text = raw_output?.as_str()?;
+    Some(serde_json::json!({ "formatted_output": text }).to_string())
 }
 
 /// pi-acp titles a bash tool call `bashCommand(args) ?? toolName`. On the first
@@ -12994,17 +13105,8 @@ async fn settle_codex_plan_review_tool_call(
     .await;
 }
 
-fn is_codex_plan_review(
-    agent_type: AgentType,
-    meta: Option<&serde_json::Map<String, serde_json::Value>>,
-) -> bool {
-    if agent_type != AgentType::Codex {
-        return false;
-    }
-    meta.and_then(|m| m.get("codex"))
-        .and_then(|codex| codex.get("kind"))
-        .and_then(serde_json::Value::as_str)
-        == Some("plan_review")
+fn is_codex_plan_review(agent_type: AgentType, req: &RequestPermissionRequest) -> bool {
+    agent_type == AgentType::Codex && crate::acp::plan_approval::is_codex_plan_review_request(req)
 }
 
 /// Copy a permission request's REQUEST-level `_meta.permission` onto the card's
@@ -13056,7 +13158,7 @@ fn hoist_request_permission_meta(
     tool_call: &mut serde_json::Value,
     request_meta: Option<&serde_json::Map<String, serde_json::Value>>,
 ) {
-    let Some(permission) = request_meta.and_then(|m| m.get("permission")) else {
+    let Some(permission) = permission_meta(request_meta) else {
         return;
     };
     let Some(obj) = tool_call.as_object_mut() else {
@@ -13071,6 +13173,15 @@ fn hoist_request_permission_meta(
         return;
     };
     meta.entry("permission").or_insert_with(|| permission.clone());
+}
+
+/// A permission request's `_meta.permission` block, or
+/// `_meta.jetbrains.air.permission` where codex-acp 2.x puts it for AIR clients.
+fn permission_meta(
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<&serde_json::Value> {
+    meta.and_then(|m| m.get("permission"))
+        .or_else(|| air_envelope(meta)?.get("permission"))
 }
 
 /// True when an `initialize` response advertises the ACP steering extension —
@@ -13100,7 +13211,7 @@ fn init_advertises_steering(meta: Option<&serde_json::Map<String, serde_json::Va
 /// transition through both namespaces can never produce two goal cards.
 /// Non-integer or sub-1 versions fail closed onto the legacy channel.
 fn init_advertises_goal(meta: Option<&serde_json::Map<String, serde_json::Value>>) -> bool {
-    meta.and_then(|m| m.get("goal"))
+    goal_meta(meta)
         .and_then(|g| g.get("version"))
         .and_then(serde_json::Value::as_i64)
         .is_some_and(|version| version >= 1)
@@ -13122,7 +13233,7 @@ fn goal_advertised_control(
     if !init_advertises_goal(meta) {
         return None;
     }
-    let goal = meta?.get("goal")?;
+    let goal = goal_meta(meta)?;
     let method = goal
         .get("controlMethod")
         .and_then(serde_json::Value::as_str)
@@ -13141,6 +13252,16 @@ fn goal_advertised_control(
         })
         .unwrap_or_default();
     Some((method, actions))
+}
+
+/// The neutral goal block: `_meta.goal`, or `_meta.jetbrains.air.goal` where
+/// codex-acp 2.x puts it for AIR clients (same shape, both on `initialize` and
+/// on `session_info_update`).
+fn goal_meta(
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<&serde_json::Value> {
+    meta.and_then(|m| m.get("goal"))
+        .or_else(|| air_envelope(meta)?.get("goal"))
 }
 
 /// Resolve [`goal_advertised_control`]'s answer into what the session state
@@ -13178,11 +13299,10 @@ fn session_info_goal_value(
     neutral_goal_channel: bool,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Option<&serde_json::Value> {
-    let meta = meta?;
     if neutral_goal_channel {
-        meta.get("goal")
+        goal_meta(meta)
     } else {
-        meta.get("codex").and_then(|codex| codex.get("goal"))
+        meta?.get("codex").and_then(|codex| codex.get("goal"))
     }
 }
 
@@ -13698,6 +13818,10 @@ pub(crate) struct CodeBuddyLiveState {
     /// turn start — a bash call whose turn was canceled never sees a final
     /// status, and its lifecycle cannot span turns anyway.
     pi_terminal_calls: HashMap<String, bool>,
+    /// Codex command output collected from `_meta.terminal_output_delta` until
+    /// the call's `_meta.terminal_exit` (see `codex_terminal_output`). Dropped
+    /// at a final status and cleared at turn start, like `pi_terminal_calls`.
+    codex_terminal_output: HashMap<String, String>,
 }
 
 /// One announced-but-unpaired Grok `spawn_subagent` call. `description` /
@@ -15251,6 +15375,10 @@ pub(crate) async fn emit_conversation_update(
                 // OpenCode delivers every result on the completion update (see
                 // opencode_live_tool_output).
                 opencode_live_tool_output(&content, &tcu.fields.raw_output)
+            } else if let Some(text) =
+                codex_string_raw_output(agent_type, tcu.fields.raw_output.as_ref())
+            {
+                Some(text)
             } else {
                 json_value_to_text(&tcu.fields.raw_output)
                     .map(|text| unwrap_codebuddy_deferred_output(agent_type, &text).unwrap_or(text))
@@ -15283,6 +15411,27 @@ pub(crate) async fn emit_conversation_update(
                 Some((payload, append)) => (Some(payload), Some(append)),
                 None => (raw_output, raw_output_append),
             };
+            // codex-acp 2.x: the whole command output at the exit (or at a
+            // final status that comes without one), as a fresh (not appended)
+            // raw result. The completion frame carries no `rawOutput` of its
+            // own, so nothing is overwritten.
+            let ended = matches!(
+                tcu.fields.status,
+                Some(
+                    sacp::schema::ToolCallStatus::Completed
+                        | sacp::schema::ToolCallStatus::Failed
+                )
+            );
+            let (raw_output, raw_output_append) = match codex_terminal_output(
+                agent_type,
+                tcu.meta.as_ref(),
+                &tool_call_id,
+                ended,
+                &mut cb_state.codex_terminal_output,
+            ) {
+                Some(payload) => (Some(payload), Some(false)),
+                None => (raw_output, raw_output_append),
+            };
             let locations = tcu
                 .fields
                 .locations
@@ -15305,6 +15454,7 @@ pub(crate) async fn emit_conversation_update(
                 Some("completed" | "failed" | "cancelled" | "error")
             ) {
                 cb_state.pi_terminal_calls.remove(&tool_call_id);
+                cb_state.codex_terminal_output.remove(&tool_call_id);
             }
             // Symmetric with the ToolCall arm: an update may carry the terminal
             // status (and, on grok, usually re-carries the `x.ai/tool` meta).
@@ -16230,25 +16380,42 @@ mod tests {
 
     #[test]
     fn codex_plan_review_detected_only_for_codex_plan_review_meta() {
+        let req = |id: &str, meta: Option<serde_json::Value>| {
+            let req = RequestPermissionRequest::new(
+                SessionId::new("sess-1"),
+                sacp::schema::ToolCallUpdate::new(
+                    id.to_string(),
+                    sacp::schema::ToolCallUpdateFields::new(),
+                ),
+                vec![],
+            );
+            match meta {
+                Some(meta) => req.meta(meta_map(meta)),
+                None => req,
+            }
+        };
         // codex-acp #351: `_meta.codex.kind = "plan_review"` on the permission
         // REQUEST marks the Plan-mode review gate whose tool call was never
         // announced.
-        let review = meta_map(serde_json::json!({
+        let review = serde_json::json!({
             "codex": { "kind": "plan_review", "planItemId": "item-7" }
-        }));
-        assert!(is_codex_plan_review(AgentType::Codex, Some(&review)));
-        // Gated on Codex: an identical meta from another agent seeds nothing.
-        assert!(!is_codex_plan_review(AgentType::ClaudeCode, Some(&review)));
+        });
+        assert!(is_codex_plan_review(AgentType::Codex, &req("t1", Some(review.clone()))));
+        // codex-acp 2.x sends no request `_meta`; the tool call id marks it.
+        assert!(is_codex_plan_review(AgentType::Codex, &req("plan-review:item-7", None)));
+        // Gated on Codex: an identical request from another agent seeds nothing.
+        assert!(!is_codex_plan_review(AgentType::ClaudeCode, &req("t1", Some(review))));
+        assert!(!is_codex_plan_review(AgentType::ClaudeCode, &req("plan-review:item-7", None)));
         // Ordinary permission requests carry no meta at all.
-        assert!(!is_codex_plan_review(AgentType::Codex, None));
+        assert!(!is_codex_plan_review(AgentType::Codex, &req("command-7", None)));
         // Sibling `codex` keys and other `kind` values must not seed a card.
-        let other_kind = meta_map(serde_json::json!({ "codex": { "kind": "mcp_tool_call" } }));
-        assert!(!is_codex_plan_review(AgentType::Codex, Some(&other_kind)));
-        let sub = meta_map(serde_json::json!({ "codex": { "subagent": { "threadId": "t1" } } }));
-        assert!(!is_codex_plan_review(AgentType::Codex, Some(&sub)));
+        let other_kind = serde_json::json!({ "codex": { "kind": "mcp_tool_call" } });
+        assert!(!is_codex_plan_review(AgentType::Codex, &req("t1", Some(other_kind))));
+        let sub = serde_json::json!({ "codex": { "subagent": { "threadId": "t1" } } });
+        assert!(!is_codex_plan_review(AgentType::Codex, &req("t1", Some(sub))));
         // A non-string `kind` must not be coerced into a match.
-        let numeric = meta_map(serde_json::json!({ "codex": { "kind": 1 } }));
-        assert!(!is_codex_plan_review(AgentType::Codex, Some(&numeric)));
+        let numeric = serde_json::json!({ "codex": { "kind": 1 } });
+        assert!(!is_codex_plan_review(AgentType::Codex, &req("t1", Some(numeric))));
     }
 
     #[test]
@@ -17313,6 +17480,66 @@ mod tests {
         }
     }
 
+    #[test]
+    fn codex_2x_air_envelope_metadata_is_read_like_the_top_level_keys() {
+        // codex-acp 2.x answers an AIR client with kind, goal and permission
+        // under `_meta.jetbrains.air` instead of at the top of `_meta`.
+        let air = |inner: serde_json::Value| {
+            let mut envelope = serde_json::json!({ "version": 1 });
+            envelope
+                .as_object_mut()
+                .unwrap()
+                .extend(inner.as_object().unwrap().clone());
+            meta_map(serde_json::json!({ "jetbrains": { "air": envelope } }))
+        };
+
+        assert_eq!(
+            meta_kind(Some(&air(serde_json::json!({ "kind": "auto_review" })))),
+            Some("auto_review".to_string())
+        );
+        // The top-level key still wins where an adapter sends both.
+        let both = meta_map(serde_json::json!({
+            "kind": "standard",
+            "jetbrains": { "air": { "version": 1, "kind": "plan" } }
+        }));
+        assert_eq!(meta_kind(Some(&both)), Some("standard".to_string()));
+        // A malformed envelope is ignored.
+        let unversioned = meta_map(serde_json::json!({
+            "jetbrains": { "air": { "kind": "plan" } }
+        }));
+        assert_eq!(meta_kind(Some(&unversioned)), None);
+
+        let goal = air(serde_json::json!({ "goal": {
+            "version": 1,
+            "controlMethod": "_session/goal",
+            "actions": ["set", "clear"]
+        } }));
+        assert!(init_advertises_goal(Some(&goal)));
+        assert_eq!(
+            goal_advertised_control(Some(&goal)),
+            Some((
+                "_session/goal".to_string(),
+                vec!["set".to_string(), "clear".to_string()]
+            ))
+        );
+        let update = air(serde_json::json!({ "goal": { "objective": "ship it" } }));
+        assert_eq!(
+            session_info_goal_value(true, Some(&update)),
+            Some(&serde_json::json!({ "objective": "ship it" }))
+        );
+
+        let request_meta = air(serde_json::json!({ "permission": {
+            "version": 1,
+            "description": "Needs network access."
+        } }));
+        let mut tool_call = serde_json::json!({ "toolCallId": "command-7" });
+        hoist_request_permission_meta(&mut tool_call, Some(&request_meta));
+        assert_eq!(
+            tool_call["_meta"]["permission"]["description"],
+            serde_json::json!("Needs network access.")
+        );
+    }
+
     /// claude-agent-acp 0.78.0's permission request for an MCP tool, verified
     /// against `buildClaudePermissionPresentation` + `toolInfoFromToolUse`: an
     /// MCP tool falls through the tool switch, so BOTH the card title and the
@@ -17529,7 +17756,7 @@ mod tests {
                 })
                 .unwrap();
             let outcome =
-                resolve_plan_review(&access, "conn-1", agent_type, answer_rx, abort_rx).await;
+                resolve_plan_review(&access, "conn-1", agent_type, false, answer_rx, abort_rx).await;
             assert_eq!(selected_option(&outcome).as_deref(), Some(option));
             assert!(access.canceled.lock().unwrap().is_empty());
         }
@@ -17544,7 +17771,7 @@ mod tests {
         let (abort_tx, abort_rx) = oneshot::channel::<()>();
         drop(abort_tx);
         let outcome =
-            resolve_plan_review(&access, "conn-1", AgentType::Codex, answer_rx, abort_rx).await;
+            resolve_plan_review(&access, "conn-1", AgentType::Codex, false, answer_rx, abort_rx).await;
         assert!(matches!(outcome, RequestPermissionOutcome::Cancelled));
         assert_eq!(*access.canceled.lock().unwrap(), vec!["conn-1".to_string()]);
 
@@ -17555,7 +17782,7 @@ mod tests {
         let (_abort_tx, abort_rx) = oneshot::channel::<()>();
         drop(answer_tx);
         let outcome =
-            resolve_plan_review(&access, "conn-1", AgentType::Codex, answer_rx, abort_rx).await;
+            resolve_plan_review(&access, "conn-1", AgentType::Codex, false, answer_rx, abort_rx).await;
         assert!(matches!(outcome, RequestPermissionOutcome::Cancelled));
         assert_eq!(*access.canceled.lock().unwrap(), vec!["conn-1".to_string()]);
     }
@@ -19011,12 +19238,18 @@ mod tests {
         );
         assert!(claude.get("elicitation").is_none());
 
-        // Codex: form elicitation; its `_meta` carries ONLY the AIR
-        // advertisement (no subagent-transcript, which is claude's opt-in).
+        // Codex: form elicitation; its `_meta` carries the AIR advertisement
+        // and the command-output channel (no subagent-transcript, which is
+        // claude's opt-in).
         let codex = caps_of(AgentType::Codex);
         assert!(codex.get("elicitation").is_some());
         assert!(codex["_meta"].get("subagent-transcript").is_none());
         assert!(codex["_meta"].get("jetbrains").is_some());
+        assert_eq!(
+            codex["_meta"]["terminal_output_delta"],
+            serde_json::Value::Bool(true)
+        );
+        assert!(claude["_meta"].get("terminal_output_delta").is_none());
 
         // DeepSeek: form elicitation too — deepseek-acp routes its
         // ask_user_question + plan review through `elicitation/create` forms
@@ -22783,6 +23016,126 @@ mod tests {
         assert_eq!(
             raw_output.as_deref(),
             Some("[terminal exited: exit code: 0]")
+        );
+    }
+
+    /// codex-acp 2.x (AIR client): a command's output arrives only as
+    /// `_meta.terminal_output_delta` chunks and its exit as `_meta.terminal_exit`.
+    /// Clients get the whole output once, at the exit, in the 1.x
+    /// `{"formatted_output", "exit_code"}` shape they already read.
+    #[tokio::test]
+    async fn codex_terminal_output_delta_becomes_formatted_output_at_exit() {
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let mut open = pi_open_bash("exec-1", "ls");
+        open["rawInput"] = serde_json::json!({"command": "ls", "cwd": "/w"});
+        let (content, raw_input, _, _) =
+            pi_emit(AgentType::Codex, &mut cache, &mut cb, open).await;
+        assert!(content.is_none(), "the agent-hosted terminal is not ours: {content:?}");
+        assert_eq!(raw_input.as_deref(), Some(r#"{"command":"ls","cwd":"/w"}"#));
+
+        let delta = |data: &str| {
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "exec-1",
+                "_meta": {"terminal_output_delta": {"terminal_id": "exec-1", "data": data}},
+            })
+        };
+        let (_, _, raw_output, _) =
+            pi_emit(AgentType::Codex, &mut cache, &mut cb, delta("a.rs\n")).await;
+        assert!(raw_output.is_none(), "chunks are collected, not streamed: {raw_output:?}");
+
+        let (_, _, raw_output, append) = pi_emit(
+            AgentType::Codex,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "exec-1",
+                "status": "completed",
+                "_meta": {
+                    "terminal_output_delta": {"terminal_id": "exec-1", "data": "b.rs\n"},
+                    "terminal_exit": {"terminal_id": "exec-1", "exit_code": 0, "signal": null},
+                },
+            }),
+        )
+        .await;
+        let raw: serde_json::Value =
+            serde_json::from_str(raw_output.as_deref().expect("output at exit")).unwrap();
+        assert_eq!(
+            raw,
+            serde_json::json!({"formatted_output": "a.rs\nb.rs\n", "exit_code": 0})
+        );
+        assert_eq!(append, Some(false));
+        assert!(cb.codex_terminal_output.is_empty());
+        assert!(!cb.pi_terminal_calls.contains_key("exec-1"));
+    }
+
+    /// A command that ends without a `terminal_exit` (cancelled, failed) still
+    /// shows the output it printed, with no exit code.
+    #[tokio::test]
+    async fn codex_terminal_output_survives_an_end_without_exit() {
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        pi_emit(AgentType::Codex, &mut cache, &mut cb, pi_open_bash("exec-1", "cargo build")).await;
+        pi_emit(
+            AgentType::Codex,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "exec-1",
+                "_meta": {"terminal_output_delta": {"terminal_id": "exec-1", "data": "Compiling a\n"}},
+            }),
+        )
+        .await;
+
+        let (_, _, raw_output, append) = pi_emit(
+            AgentType::Codex,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "exec-1",
+                "status": "failed",
+            }),
+        )
+        .await;
+        let raw: serde_json::Value =
+            serde_json::from_str(raw_output.as_deref().expect("output kept at the end")).unwrap();
+        assert_eq!(
+            raw,
+            serde_json::json!({"formatted_output": "Compiling a\n", "exit_code": null})
+        );
+        assert_eq!(append, Some(false));
+        assert!(cb.codex_terminal_output.is_empty());
+    }
+
+    /// codex-acp 2.x sends a read, search or list command's output as a bare
+    /// string `rawOutput`; other agents' strings pass through unchanged.
+    #[tokio::test]
+    async fn codex_string_raw_output_is_wrapped_as_formatted_output() {
+        let update = serde_json::json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "exec-2",
+            "status": "completed",
+            "rawOutput": "src/a.rs:1:fn main",
+        });
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let (_, _, raw_output, _) =
+            pi_emit(AgentType::Codex, &mut cache, &mut cb, update.clone()).await;
+        assert_eq!(
+            raw_output.as_deref(),
+            Some(r#"{"formatted_output":"src/a.rs:1:fn main"}"#)
+        );
+        assert_eq!(
+            codex_string_raw_output(AgentType::ClaudeCode, Some(&serde_json::json!("x"))),
+            None
+        );
+        assert_eq!(
+            codex_string_raw_output(AgentType::Codex, Some(&serde_json::json!({"a": 1}))),
+            None
         );
     }
 

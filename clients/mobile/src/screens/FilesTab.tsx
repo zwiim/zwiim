@@ -33,7 +33,7 @@ import { fonts, radius, space, type, useTheme } from "../ui/tokens";
 import { Counts, letterColor, useChanges, type Changes } from "./FilesScreens";
 import { HostFrame, useHostName } from "./HostFrame";
 import { TerminalsDock } from "./TerminalScreens";
-import { ContextBar, NewWorkspaceButton } from "./workspaces";
+import { ContextBar, NewWorkspaceButton, NewWorktreeButton } from "./workspaces";
 
 /** Read again when the tab is shown again (not on first show: it has just been read). */
 function useRefocus(reload: () => void) {
@@ -49,6 +49,8 @@ function useRefocus(reload: () => void) {
 export function FilesTab() {
   const workspace = useWorkspace();
   const name = useHostName();
+  const { workspaces } = useHostState();
+  const hasRoot = (workspaces ?? []).some((w) => w.kind === "root" && !w.removed);
   return (
     <HostFrame fill>
       {workspace ? (
@@ -56,6 +58,13 @@ export function FilesTab() {
           <ContextBar />
           <Files key={workspace.workspace_id} workspace={workspace} />
         </>
+      ) : hasRoot ? (
+        <EmptyState
+          glyph="/"
+          title="No worktree open"
+          body="Choose a workspace to open a worktree in it."
+          action={<NewWorktreeButton />}
+        />
       ) : (
         <EmptyState
           glyph="/"

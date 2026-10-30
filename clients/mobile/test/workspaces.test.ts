@@ -10,6 +10,7 @@ import {
   terminalsIn,
   terminalSummary,
   worktreeChoices,
+  addedWithoutWorktree,
   worktreeError,
   workspaceRoots,
 } from "../src/host/workspace";
@@ -71,11 +72,11 @@ describe("the workspace picker", () => {
     expect(workspaceRoots(tree(), "").map((n) => n.workspace.workspace_id)).toEqual(["zwiim", "api", "notes"]);
   });
 
-  it("opens worktrees for a repository and chooses a plain folder directly", () => {
+  it("opens a workspace's worktrees, or straight into a new one when it has none", () => {
     const node = (id: string) => tree().find((n) => n.workspace.workspace_id === id)!;
     expect(hasWorktreeLevel(node("zwiim"))).toBe(true);
-    // A repository with no worktrees yet still opens: New worktree lives there.
-    expect(hasWorktreeLevel(node("api"))).toBe(true);
+    // No worktree yet, repository or plain folder: tapping it makes one, as Desktop's click does.
+    expect(hasWorktreeLevel(node("api"))).toBe(false);
     expect(hasWorktreeLevel(node("notes"))).toBe(false);
   });
 
@@ -88,9 +89,9 @@ describe("the workspace picker", () => {
     expect(ids("nothing")).toEqual([]);
   });
 
-  it("lists a root's checkout first, then its live worktrees", () => {
-    expect(worktreeChoices(tree(), "zwiim").map((n) => n.workspace.workspace_id)).toEqual(["zwiim", "fix", "mobile"]);
-    expect(worktreeChoices(tree(), "api").map((n) => n.workspace.workspace_id)).toEqual(["api"]);
+  it("lists a root's live worktrees, never the root: the Host runs nothing there", () => {
+    expect(worktreeChoices(tree(), "zwiim").map((n) => n.workspace.workspace_id)).toEqual(["fix", "mobile"]);
+    expect(worktreeChoices(tree(), "api")).toEqual([]);
     expect(worktreeChoices(tree(), "missing")).toEqual([]);
   });
 });
@@ -99,6 +100,7 @@ describe("the workspace tree", () => {
   it("opens on the workspace holding the choice, else the first", () => {
     expect(openTile(tree(), "fix")).toBe("zwiim");
     expect(openTile(tree(), "notes")).toBe("notes");
+    expect(openTile(tree(), "api")).toBe("api");
     expect(openTile(tree(), "old")).toBe("zwiim");
     expect(openTile(tree(), null)).toBe("zwiim");
     expect(openTile([], null)).toBeNull();
@@ -133,6 +135,14 @@ describe("new worktree errors", () => {
   });
   it("falls back to trying again", () => {
     expect(worktreeError(new Error("x"), root, "Studio Mac")).toBe("Couldn't create a worktree. Try again.");
+  });
+  it("says a folder was added even when its first worktree wasn't, and where to retry", () => {
+    expect(addedWithoutWorktree(new Error("x"), root, "Studio Mac")).toBe(
+      "Added zwiim, but couldn't create a worktree in it. Try New worktree in Files.",
+    );
+    expect(addedWithoutWorktree(new ZwiimClientError("network", "x"), root, "Studio Mac")).toBe(
+      "Added zwiim. Not connected to Studio Mac. Try again when it's back.",
+    );
   });
 });
 

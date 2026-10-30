@@ -4349,6 +4349,11 @@ pub(crate) fn grok_launch_permission_mode() -> Option<String> {
 /// | `agent` ("Approve for me", DEFAULT) | workspace-write | `auto_review` |
 /// | `agent-full-access` ("Full access") | danger-full-access | policy `never` |
 ///
+/// 2.x (pinned 2.4.0) renames `agent` to "Auto review", gives `read-only` a
+/// real read-only sandbox again, and adds `workspace-write` ("Workspace
+/// access": workspace-write sandbox, `user` reviewer). The default is still
+/// `agent`, and the mapping below is unchanged.
+///
 /// 1.7.0 redefined these. `read-only` used to carry a genuinely read-only
 /// sandbox; it now carries `workspaceWrite` like `agent`, and the two are
 /// separated by a new `approvalsReviewer` axis instead — `user` routes every

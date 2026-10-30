@@ -1,14 +1,14 @@
 // Settings as rows and the sheet list that picks one (New session, Session
 // options): a row names the setting with its value in mono and `›` when it can
 // change; the list is radio rows with the agent's descriptions under them. The
-// Session options sheet picks in place: a segmented control for a few short
-// values, grouped radio rows for a longer list.
+// Session options pages pick from grouped radio rows, the current one in a
+// tonal fill with an accent check.
 
 import type { LucideIcon } from "lucide-react-native";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { T } from "./components";
-import { ChevronRight, Icon } from "./icons";
-import { radius, space, useTheme } from "./tokens";
+import { Check, ChevronRight, Icon } from "./icons";
+import { fonts, radius, space, useTheme } from "./tokens";
 
 export interface Choice {
   value: string;
@@ -105,54 +105,7 @@ export function ChoiceList({
   );
 }
 
-/** A few short values side by side; the current one raised. */
-export function Segmented({
-  items,
-  current,
-  onChoose,
-  disabled,
-  testID,
-}: {
-  items: Choice[];
-  current: string | null;
-  onChoose(value: string): void;
-  disabled?: boolean;
-  testID: string;
-}) {
-  const theme = useTheme();
-  return (
-    <View accessibilityRole="radiogroup" style={[styles.seg, { backgroundColor: theme.surface }]} testID={testID}>
-      {items.map((item) => {
-        const on = item.value === current;
-        const off = disabled || item.disabled;
-        const color = on ? (item.tint ?? theme.fg) : off ? theme.faint : theme.mut;
-        return (
-          <Pressable
-            key={item.value}
-            accessibilityRole="radio"
-            accessibilityLabel={item.label}
-            accessibilityState={{ checked: on, disabled: off }}
-            disabled={off}
-            onPress={() => onChoose(item.value)}
-            style={({ pressed }) => [
-              styles.segItem,
-              on && { backgroundColor: theme.raised, borderColor: theme.line },
-              pressed && !on && { opacity: 0.7 },
-            ]}
-            testID={`${testID}-${item.value}`}
-          >
-            {item.icon ? <Icon icon={item.icon} color={color} size={15} /> : null}
-            <T variant="callout" color={color} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
-              {item.label}
-            </T>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-}
-
-/** A longer list picked in place: grouped rows, the current one in accent. */
+/** A list picked in place: grouped rows, the current one filled and checked. */
 export function RadioGroup({
   items,
   current,
@@ -183,13 +136,13 @@ export function RadioGroup({
             style={({ pressed }) => [
               styles.radio,
               { borderTopColor: theme.line, borderTopWidth: i === 0 ? 0 : StyleSheet.hairlineWidth },
-              pressed && { backgroundColor: theme.raised },
+              (on || pressed) && { backgroundColor: theme.raised },
             ]}
             testID={`${testID}-${item.value}`}
           >
-            <View style={styles.dotSlot}>{on && <View style={[styles.dot, { backgroundColor: theme.accent }]} />}</View>
+            {item.icon ? <Icon icon={item.icon} color={on ? (item.tint ?? theme.fg) : off ? theme.faint : theme.mut} size={16} /> : null}
             <View style={styles.flex}>
-              <T color={on ? theme.accent : off ? theme.faint : theme.fg} numberOfLines={1}>
+              <T color={off ? theme.faint : on ? (item.tint ?? theme.fg) : theme.fg} numberOfLines={1} style={on ? styles.strong : undefined}>
                 {item.label}
               </T>
               {item.detail ? (
@@ -198,6 +151,7 @@ export function RadioGroup({
                 </T>
               ) : null}
             </View>
+            {on ? <Icon icon={Check} color={theme.accent} size={16} /> : null}
           </Pressable>
         );
       })}
@@ -207,6 +161,7 @@ export function RadioGroup({
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
+  strong: { fontFamily: fonts.sansMedium },
   field: {
     minHeight: 52,
     paddingHorizontal: space.md,
@@ -222,19 +177,6 @@ const styles = StyleSheet.create({
   dotSlot: { width: 8, height: 8 },
   dot: { width: 8, height: 8, borderRadius: 4 },
   indent: { paddingLeft: space.lg },
-  seg: { flexDirection: "row", borderRadius: radius.md, padding: 3, gap: 3 },
-  segItem: {
-    flex: 1,
-    minHeight: 40,
-    borderRadius: radius.md - 2,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "transparent",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: space.sm,
-    paddingHorizontal: space.xs,
-  },
   group: { borderRadius: radius.lg, overflow: "hidden" },
   radio: { minHeight: 46, paddingHorizontal: space.md, paddingVertical: space.xs, flexDirection: "row", alignItems: "center", gap: space.sm },
 });

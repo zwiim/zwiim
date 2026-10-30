@@ -146,6 +146,9 @@ async fn a_running_turn_holds_a_when_idle_restart_until_it_ends() {
     assert_eq!(body["blockers"]["live_turns"], 1);
     assert_eq!(body["blockers"]["session_ids"], json!([sid]));
     assert!(h.state.lifecycle.restart_pending());
+    // A client that connects later learns the restart is already asked for.
+    let (_, update) = post(&h, "host.update.status", json!({})).await;
+    assert_eq!(update["restart_pending"], true);
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(h.state.lifecycle.requested(), None, "nothing interrupted");
     // New work is still accepted while the restart waits.

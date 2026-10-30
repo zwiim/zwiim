@@ -3,7 +3,7 @@ import { ZwiimClientError } from "../src/client/errors";
 import { conflictView, resolveLabel, resolveRefusalText } from "../src/state/conflicts";
 import { initialSessionView } from "../src/state/session";
 import { initialHostState, reduceHost, type HostState } from "../src/state/store";
-import type { ConflictCheck, SessionSummary, WorkspaceInfo } from "../src/types/protocol";
+import type { ConflictCheck, PrState, SessionSummary, WorkspaceInfo } from "../src/types/protocol";
 
 const root: WorkspaceInfo = {
   workspace_id: "root",
@@ -50,18 +50,34 @@ const inProgress = (operation: string, files: string[]): ConflictCheck => ({
 });
 const ALL = ["workspace.conflicts", "workspace.resolve_conflicts"];
 
+const pr = (extra: Partial<PrState> = {}, status: PrState["merge"]["status"] = "dirty"): PrState => ({
+  number: 7,
+  url: "https://github.com/o/r/pull/7",
+  title: "a",
+  state: "open",
+  base: "main",
+  head: "zwiim/a",
+  head_sha: "h".repeat(40),
+  merged_at: null,
+  checks: { passed: 0, failed: 0, pending: 0, skipped: 0, items: [] },
+  merge: { allowed: false, status, reason: "Merge conflicts", method: "squash", methods: ["squash"] },
+  ...extra,
+});
+
 function stateWith({
   check,
   sessions = [session("s1")],
   capabilities = ALL,
   resolving,
   workspace = wt,
+  pullRequest,
 }: {
   check?: ConflictCheck | null;
   sessions?: SessionSummary[];
   capabilities?: string[];
   resolving?: string;
   workspace?: WorkspaceInfo;
+  pullRequest?: PrState;
 }): HostState {
   let s = reduceHost(initialHostState(), { type: "workspaces", workspaces: [root, workspace] });
   s = reduceHost(s, { type: "sessions", workspace_id: workspace.workspace_id, sessions });
@@ -70,6 +86,7 @@ function stateWith({
     connection: { ...s.connection, status: "live", compat: { status: "compatible", hostRevision: 1, capabilities } },
     conflicts: check ? { [workspace.workspace_id]: check } : {},
     resolving: resolving ? { [workspace.workspace_id]: resolving } : {},
+    prs: pullRequest ? { [workspace.workspace_id]: { pr: pullRequest, error: null } } : {},
   };
 }
 
@@ -141,6 +158,35 @@ describe("conflict view", () => {
     // A live view is fresher than the summary.
     const idle = { ...busy, sessions: { s2: { ...initialSessionView("s2"), attach: "live" as const, agentStatus: "connected" as const } } };
     expect(conflictView(idle, "a", "s1")?.resolve).toEqual({ state: "ready", session_id: "s1" });
+  });
+
+  it("offers to resolve when only GitHub sees conflicts: the resolution was never pushed", () => {
+    const github = [...ALL, "workspace.resolve_conflicts.github"];
+    const clean: ConflictCheck = { base: "origin/main", ...shas, state: "clean" };
+    for (const check of [clean, null]) {
+      expect(conflictView(stateWith({ check, capabilities: github, pullRequest: pr() }), "a")).toEqual({
+        line: "Conflicts with main on GitHub",
+        files: [],
+        resolve: { state: "ready", session_id: "s1" },
+      });
+    }
+    const busy = stateWith({
+      check: clean,
+      capabilities: github,
+      pullRequest: pr(),
+      sessions: [session("s1", { status: "in_progress", live: true })],
+    });
+    expect(conflictView(busy, "a")?.resolve?.state).toBe("blocked");
+    // Not dirty, settled, or an older Host that would refuse with no_conflicts.
+    expect(conflictView(stateWith({ check: clean, capabilities: github, pullRequest: pr({}, "blocked") }), "a")).toBeNull();
+    expect(
+      conflictView(stateWith({ check: clean, capabilities: github, pullRequest: pr({ state: "merged" }) }), "a"),
+    ).toBeNull();
+    expect(conflictView(stateWith({ check: clean, pullRequest: pr() }), "a")).toBeNull();
+    // Local conflicts win: their files and line.
+    expect(
+      conflictView(stateWith({ check: conflicts(["x"]), capabilities: github, pullRequest: pr() }), "a")?.line,
+    ).toBe("1 file conflicts with main");
   });
 
   it("follows the session resolving, even once the conflicts have cleared", () => {

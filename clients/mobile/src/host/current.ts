@@ -6,6 +6,7 @@
 
 import {
   ZwiimClientError,
+  hasCapability,
   type CloneStart,
   type ConnectionMode,
   type GithubRepoPage,
@@ -323,17 +324,26 @@ export class CurrentHost {
   }
 
   /**
-   * Add a folder under the host's home as a workspace, and show it in Files.
-   * `choose: false` (New session) adds it without touching Files.
-   * `allowLarge`: the user confirmed a `large_folder` refusal.
+   * Add a folder under the host's home as a workspace (the Host makes a plain
+   * folder a repository with its first commit), and open it in Files in a new
+   * worktree, as Desktop opens a repository it adds. If the worktree fails the
+   * workspace stays added and `worktreeError` says why. `choose: false` (New
+   * session) adds it without touching Files. `allowLarge`: the user confirmed a
+   * `large_folder` refusal.
    */
   async addWorkspaceAt(
     home_path: string[],
     { choose = true, allowLarge = false }: { choose?: boolean; allowLarge?: boolean } = {},
-  ): Promise<WorkspaceInfo> {
+  ): Promise<{ workspace: WorkspaceInfo; worktreeError: unknown }> {
     const workspace = await this.#opened().addWorkspaceAt(home_path, { allowLarge });
-    if (choose) this.chooseWorkspace(workspace.workspace_id);
-    return workspace;
+    let worktreeError: unknown = null;
+    if (choose) {
+      this.chooseWorkspace(workspace.workspace_id);
+      await this.createWorktree(workspace.workspace_id).catch((e: unknown) => {
+        worktreeError = e;
+      });
+    }
+    return { workspace, worktreeError };
   }
 
   /**
@@ -344,6 +354,26 @@ export class CurrentHost {
     const workspace = await this.#opened().createWorktree(root_workspace_id);
     if (choose) this.chooseWorkspace(workspace.workspace_id);
     return workspace;
+  }
+
+  /**
+   * A new worktree of a root, as Desktop's click makes one: a plain folder or
+   * a repository with no commits is made a repository with its first commit
+   * first (locally; the phone has no publish dialog), then branched. A large
+   * folder is refused with `large_folder` until `allowLarge`.
+   */
+  async openWorktree(
+    root_workspace_id: string,
+    { choose = true, allowLarge = false }: { choose?: boolean; allowLarge?: boolean } = {},
+  ): Promise<WorkspaceInfo> {
+    const connection = this.#opened();
+    if (hasCapability(connection.view.compat, "workspace.publish")) {
+      const inspection = await connection.inspectRoot(root_workspace_id);
+      if (inspection.git === "none" || (inspection.git === "no_origin" && inspection.first_commit)) {
+        await connection.addRoot(root_workspace_id, { allowLarge });
+      }
+    }
+    return this.createWorktree(root_workspace_id, { choose });
   }
 
   /** One page of the Host's GitHub repositories; `refresh` skips the Host's cache. */

@@ -783,7 +783,7 @@ describe("sessions and removed worktrees", () => {
     const dialog = screen.getByRole("dialog", { name: "New worktree" });
     // The remote's default branch is preselected; the mode menu is not offered here.
     expect(within(dialog).getByLabelText("Base branch: origin/main")).toBeTruthy();
-    expect(within(dialog).queryByRole("button", { name: /^Mode:/ })).toBeNull();
+    expect(within(dialog).getByRole("button", { name: /^Session options:/ }).getAttribute("aria-label")).not.toMatch(/Ask|Plan|Auto/);
     fireEvent.click(within(dialog).getByLabelText("Base branch: origin/main"));
     expect(
       within(within(dialog).getByRole("listbox"))

@@ -29,7 +29,7 @@ use crate::models::agent::AgentType;
 use crate::models::message::{MessageTurn, TurnRole};
 use crate::protocol::error::ZwiimError;
 use crate::session_checkpoints::TurnTag;
-use crate::session_options::{OptionsRequest, SessionOptions};
+use crate::session_options::{Mode, OptionsRequest, SessionOptions};
 use crate::web::event_bridge::EventEmitter;
 
 #[derive(Debug, Clone, Serialize)]
@@ -1054,7 +1054,8 @@ pub struct RespondOutcome {
 /// request must be the one currently pending on that session's agent.
 ///
 /// A plan answer does more than reply to the agent:
-/// - `approve` (Claude) returns the agent to the session's normal mode;
+/// - `approve` moves the agent to unattended (Auto) where it offers it, else
+///   to the session's normal mode;
 /// - `request_changes` with feedback waits for the rejected turn to end, then
 ///   sends the feedback as the next user message;
 /// - `hand_off` starts a new session in the same workspace, seeded with the
@@ -1140,7 +1141,6 @@ pub async fn respond<L: AgentLauncher>(
                         connections,
                         &connection_id,
                         session_id,
-                        agent_type,
                     )
                     .await;
                 }
@@ -1191,7 +1191,8 @@ pub async fn respond<L: AgentLauncher>(
 }
 
 /// Hand a plan off: start a new session in the same workspace with the plan
-/// as its first prompt, then decline the plan here and stop this session.
+/// as its first prompt, in unattended (Auto) where the agent offers it, then
+/// decline the plan here and stop this session.
 #[allow(clippy::too_many_arguments)]
 async fn hand_off<L: AgentLauncher>(
     db: &AppDatabase,
@@ -1208,6 +1209,19 @@ async fn hand_off<L: AgentLauncher>(
     let workspace_id = crate::workspace::workspace_id_of(&db.conn, row.folder_id)
         .await?
         .ok_or_else(|| ZwiimError::not_found("Session has no workspace"))?;
+    let unattended = match connections.get_state(connection_id).await {
+        Some(state) => {
+            let options = state.read().await.config_options.clone().unwrap_or_default();
+            crate::session_options::project(&options)
+                .mode
+                .is_some_and(|m| m.available.contains(&Mode::Unattended))
+        }
+        None => false,
+    };
+    let options = OptionsRequest {
+        mode: unattended.then_some(Mode::Unattended),
+        ..OptionsRequest::default()
+    };
     let new_session_id = start(
         db,
         connections,
@@ -1218,7 +1232,7 @@ async fn hand_off<L: AgentLauncher>(
             text: format!("Implement the following plan:\n\n{plan_markdown}"),
         }],
         None,
-        &OptionsRequest::default(),
+        &options,
     )
     .await?;
     if let Err(e) = connections
@@ -2856,7 +2870,7 @@ pub(crate) mod orchestration_tests {
     }
 
     #[tokio::test]
-    async fn plan_approve_returns_claude_to_the_remembered_normal_mode() {
+    async fn plan_hand_off_starts_the_new_session_in_auto() {
         let db = fresh_in_memory_db().await;
         let wid = workspace(&db).await;
         let mgr = ConnectionManager::new();
@@ -2869,6 +2883,50 @@ pub(crate) mod orchestration_tests {
             .write()
             .await
             .config_options = Some(crate::session_options::tests::claude("plan"));
+        crate::db::service::app_metadata_service::upsert_value(
+            &db.conn,
+            "zwiim.agent_options:claude_code",
+            &serde_json::to_string(&crate::session_options::tests::claude("default")).unwrap(),
+        )
+        .await
+        .unwrap();
+        let p = mgr
+            .register_plan_approval(conn, "tc-plan".into(), "# Plan".into())
+            .await
+            .expect("registered");
+        ends_turn_on_cancel(&mgr, &launcher, conn);
+        let out = respond(
+            &db,
+            &mgr,
+            &launcher,
+            &sid,
+            &p.approval_id,
+            plan_answer(PlanApprovalDecision::HandOff, None),
+        )
+        .await
+        .unwrap();
+        let new_sid = out.handed_off_session_id.expect("handed off");
+        assert_eq!(
+            crate::session_options::preferred_values(&db.conn, &new_sid)
+                .await
+                .get("mode")
+                .map(String::as_str),
+            Some("bypassPermissions")
+        );
+    }
+
+    /// Answer a plan card with Approve on a session whose agent reports
+    /// `options`, then return the mode sets that followed.
+    async fn approved_mode_sets(
+        options: Vec<crate::acp::types::SessionConfigOptionInfo>,
+    ) -> Vec<(String, String, String)> {
+        let db = fresh_in_memory_db().await;
+        let wid = workspace(&db).await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = started(&db, &mgr, &launcher, &wid).await;
+        let conn = "fake-conn-1";
+        mgr.get_state(conn).await.unwrap().write().await.config_options = Some(options);
         crate::db::service::app_metadata_service::upsert_value(
             &db.conn,
             &format!("zwiim.session_options:{sid}"),
@@ -2895,10 +2953,32 @@ pub(crate) mod orchestration_tests {
             PlanApprovalDecision::Approve
         );
         settle().await;
+        let sets = launcher.config_sets.lock().unwrap().clone();
+        sets
+    }
+
+    #[tokio::test]
+    async fn plan_approve_moves_the_agent_to_auto() {
+        let set = |value: &str| ("fake-conn-1".to_string(), "mode".to_string(), value.to_string());
         assert_eq!(
-            *launcher.config_sets.lock().unwrap(),
+            approved_mode_sets(crate::session_options::tests::claude("plan")).await,
+            [set("bypassPermissions")]
+        );
+        assert_eq!(
+            approved_mode_sets(crate::session_options::tests::codex("workspace-write", "default"))
+                .await,
+            [set("agent-full-access")]
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_approve_without_auto_returns_to_the_remembered_normal_mode() {
+        let mut options = crate::session_options::tests::claude("plan");
+        crate::session_options::tests::drop_full_access(&mut options);
+        assert_eq!(
+            approved_mode_sets(options).await,
             [(
-                conn.to_string(),
+                "fake-conn-1".to_string(),
                 "mode".to_string(),
                 "acceptEdits".to_string()
             )]

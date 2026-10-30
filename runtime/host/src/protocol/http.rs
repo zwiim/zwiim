@@ -206,10 +206,13 @@ pub async fn host_restart(
     Ok(Json(json!({ "state": restart, "blockers": blockers })))
 }
 
-/// `host.update.status`: versions, what is available or staged, and how the
-/// last update went. Any paired device may ask.
-pub async fn host_update_status() -> ZResult<Value> {
-    Ok(Json(crate::update::service::status()))
+/// `host.update.status`: versions, what is available or staged, how the
+/// last update went, and whether a restart waits for the Host to be idle.
+/// Any paired device may ask.
+pub async fn host_update_status(Extension(state): Extension<Arc<AppState>>) -> ZResult<Value> {
+    let mut status = crate::update::service::status();
+    status["restart_pending"] = json!(state.lifecycle.restart_pending());
+    Ok(Json(status))
 }
 
 #[derive(Deserialize)]
@@ -1218,14 +1221,34 @@ pub struct WorkspaceResolveConflictsParams {
     pub strategy: Option<ResolveStrategy>,
 }
 
+/// How long a resolve waits for GitHub's current pull request state.
+const RESOLVE_PR_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Ask a session's agent to resolve a worktree's conflicts with its base.
-/// The agent pushes the result while the worktree's pull request is open.
+/// The agent pushes the result while the worktree's pull request is open, and
+/// is sent even when the branch merges cleanly here if GitHub reports that
+/// pull request conflicting.
 pub async fn workspace_resolve_conflicts(
     Extension(state): Extension<Arc<AppState>>,
     ZJson(p): ZJson<WorkspaceResolveConflictsParams>,
 ) -> ZResult<ResolveStarted> {
-    let pr = state.host_feed.pr(&state, &p.workspace_id, false).await;
-    let push = resolve::pushes_to(pr.ok().and_then(|entry| entry.pr).map(|pr| pr.state));
+    // What GitHub says now: a pull request opened, merged or made conflicting
+    // since the last poll changes whether and where the agent pushes. A slow
+    // answer falls back to the last one known.
+    let fresh = tokio::time::timeout(
+        RESOLVE_PR_WAIT,
+        state.host_feed.pr(&state, &p.workspace_id, true),
+    )
+    .await;
+    let entry = match fresh {
+        Ok(Ok(entry)) => Ok(entry),
+        _ => state.host_feed.pr(&state, &p.workspace_id, false).await,
+    };
+    let pr = entry.ok().and_then(|entry| entry.pr);
+    let push = resolve::pushes_to(pr.as_ref().map(|pr| pr.state));
+    let github_conflicts = resolve::conflicts_on_github(pr.as_ref())
+        .then(|| pr.as_ref().map(|pr| pr.base.as_str()))
+        .flatten();
     let started = resolve::resolve_conflicts(
         &state.db,
         &state.connection_manager,
@@ -1236,6 +1259,7 @@ pub async fn workspace_resolve_conflicts(
         &p.session_id,
         p.strategy.unwrap_or_default(),
         push,
+        github_conflicts,
     )
     .await?;
     state

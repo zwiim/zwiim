@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { X } from "lucide-react";
-import type { HostRestartMode, HostUpdateApply, HostUpdateStatus } from "@zwiim/sdk";
+import type { HostController, HostRestartMode, HostUpdateApply, HostUpdateStatus } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
-import type { DesktopUpdateStatus, NativeBridge } from "@/lib/bridge";
+import type { DesktopUpdates, DesktopUpdateStatus, NativeBridge } from "@/lib/bridge";
 import { errorMessage, updateRequiredMessage, useController, useHost } from "@/lib/host-context";
 import { blockersText, mb } from "@/panels/About";
 import { ProgressBar } from "@/panels/GithubCloneDialog";
@@ -113,10 +113,28 @@ export function downloadProgress(d: Downloading): { percent: number | null; labe
 const secondary = "h-7 px-2.5 text-xs";
 
 /**
- * An update that wants the user, above the account menu: a host restart into
- * a newer version (when idle or now), this app's update, or the host on this
- * computer being older than this app. The host decides when it restarts;
- * restarting it now stops running turns.
+ * Finish an installed Desktop update as one step: the host on this computer
+ * switches to the version that came with it (staged when the update
+ * installed) once its running work finishes, and this app relaunches now.
+ * A host that cannot switch, or a remote one, is left as it is.
+ */
+export async function restartIntoUpdate(controller: HostController, updates: DesktopUpdates, remote: boolean) {
+  if (!remote) {
+    const host = await controller.client.request("host.update.status", {}).catch(() => null);
+    if (host?.restart_required && !host.restart_pending) {
+      await controller.client.request("host.update.apply", { mode: "when_idle" }).catch(() => {});
+    }
+  }
+  await updates.restart();
+}
+
+/**
+ * An update that wants the user, above the account menu: this app's update
+ * (which brings the host's), the host's own, or the host on this computer
+ * being older than this app. One Update does all of it: this app downloads,
+ * installs and relaunches, and the host restarts once its running work
+ * finishes. Restarting the host now, which stops running turns, is offered
+ * only while it waits.
  */
 export function UpdateCard({
   bridge,
@@ -135,6 +153,8 @@ export function UpdateCard({
   const [applied, setApplied] = useState<HostUpdateApply | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Update was clicked while this app's update downloads: finish it once installed.
+  const [finishing, setFinishing] = useState(false);
 
   useEffect(() => setDismissed(null), [updates.checks]);
 
@@ -160,40 +180,34 @@ export function UpdateCard({
       setApplied(await controller.client.request("host.update.apply", { mode }));
     });
 
-  const hostActions = applied ? (
-    applied.state === "restart_pending" && (
-      <Button
-        className={secondary}
-        variant="brand"
-        disabled={busy}
-        title="Stops running turns and closes terminals"
-        onClick={() => void restartHost("now")}
-      >
-        Restart now
+  const h = updates.host;
+  // Asked of this host, here or by an earlier window of this app.
+  const waiting = applied ? applied.state === "restart_pending" : Boolean(h?.restart_pending);
+  const hostActions = waiting ? (
+    <Button
+      className={secondary}
+      variant="brand"
+      disabled={busy}
+      title="Stops running turns and closes terminals"
+      onClick={() => void restartHost("now")}
+    >
+      Restart now
+    </Button>
+  ) : (
+    !applied && (
+      <Button className={secondary} variant="brand" disabled={busy} onClick={() => void restartHost("when_idle")}>
+        Update
       </Button>
     )
-  ) : (
-    <>
-      <Button className={secondary} variant="outline" disabled={busy} onClick={() => void restartHost("when_idle")}>
-        Restart when idle
-      </Button>
-      <Button
-        className={secondary}
-        variant="brand"
-        disabled={busy}
-        title="Stops running turns and closes terminals"
-        onClick={() => void restartHost("now")}
-      >
-        Restart
-      </Button>
-    </>
   );
   const hostDetail = (fallback: string) =>
     applied?.state === "restart_pending"
       ? `The host restarts when ${blockersText(applied.blockers) || "its work"} finishes.`
       : applied?.state === "restarting"
         ? "Restarting the host…"
-        : fallback;
+        : waiting
+          ? "The host restarts when its running work finishes."
+          : fallback;
 
   const seeChanges = (
     <Button className={secondary} variant="outline" onClick={onSeeChanges}>
@@ -201,25 +215,43 @@ export function UpdateCard({
     </Button>
   );
 
-  const h = updates.host;
   const d = updates.desktop?.activity;
   const desktopUpdates = bridge.updates;
+
+  const state = d?.state;
+  useEffect(() => {
+    if (!finishing || state === "available" || state === "downloading") return;
+    setFinishing(false);
+    if (state === "ready" && desktopUpdates) void run(() => restartIntoUpdate(controller, desktopUpdates, remote));
+  }, [finishing, state, desktopUpdates, controller, remote]);
+
   let card: Card | null = null;
   const desktopActions =
-    desktopUpdates && d?.state === "ready" ? (
-      <Button className={secondary} variant="brand" disabled={busy} onClick={() => void run(() => desktopUpdates.restart())}>
-        Restart
-      </Button>
-    ) : desktopUpdates && d?.state === "available" ? (
+    desktopUpdates && (d?.state === "ready" || d?.state === "available") ? (
       <Button
         className={secondary}
         variant="brand"
         disabled={busy}
-        onClick={() => void run(async () => updates.setDesktop(await desktopUpdates.install()))}
+        onClick={() =>
+          void run(async () => {
+            if (d.state === "ready") return restartIntoUpdate(controller, desktopUpdates, remote);
+            setFinishing(true);
+            try {
+              updates.setDesktop(await desktopUpdates.install());
+            } catch (e) {
+              setFinishing(false);
+              throw e;
+            }
+          })
+        }
       >
         Update
       </Button>
     ) : null;
+  const desktopDetail = (version: string) =>
+    remote
+      ? `Zwiim Desktop ${version}.`
+      : `Zwiim ${version} for this app and its host. Sessions and workspaces are kept.`;
   const required = conn.status === "incompatible" && conn.compat?.status === "update_required" ? conn.compat : null;
   if (required?.update === "host" && !remote) {
     card = {
@@ -234,6 +266,20 @@ export function UpdateCard({
       actions: required.update === "client" && desktopActions,
       progress: required.update === "client" && d?.state === "downloading" ? downloadProgress(d) : undefined,
     };
+  } else if (desktopUpdates && (d?.state === "available" || d?.state === "downloading" || d?.state === "ready")) {
+    // This app's update brings the host's, so it covers a host update too.
+    card = {
+      key: `desktop:${d.version}`,
+      title: "New update available",
+      detail: desktopDetail(d.version),
+      actions: (
+        <>
+          {seeChanges}
+          {desktopActions}
+        </>
+      ),
+      progress: d.state === "downloading" ? downloadProgress(d) : undefined,
+    };
   } else if (h?.restart_required && h.staged) {
     card = {
       key: `host:${h.staged.version}`,
@@ -245,31 +291,6 @@ export function UpdateCard({
           {hostActions}
         </>
       ),
-    };
-  } else if (desktopUpdates && d?.state === "ready") {
-    card = {
-      key: `desktop-ready:${d.version}`,
-      title: "New update available",
-      detail: `Zwiim Desktop ${d.version} is installed. The host keeps running.`,
-      actions: (
-        <>
-          {seeChanges}
-          {desktopActions}
-        </>
-      ),
-    };
-  } else if (desktopUpdates && (d?.state === "available" || d?.state === "downloading")) {
-    card = {
-      key: `desktop:${d.version}`,
-      title: "New update available",
-      detail: `Zwiim Desktop ${d.version}.`,
-      actions: (
-        <>
-          {seeChanges}
-          {desktopActions}
-        </>
-      ),
-      progress: d.state === "downloading" ? downloadProgress(d) : undefined,
     };
   }
 

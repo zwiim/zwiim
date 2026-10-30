@@ -188,7 +188,7 @@ function Card({ b, onSeeChanges = () => {} }: { b: NativeBridge; onSeeChanges?: 
 const applies = (t: FakeTransport) => t.calls.filter((x) => x.op === "host.update.apply").map((x) => x.params);
 
 describe("update card", () => {
-  it("offers to restart an older host on this computer, when idle or now", async () => {
+  it("updates an older host on this computer once idle, or now while it waits", async () => {
     const t = new FakeTransport();
     t.handlers["host.hello"] = () => hostHello({ revision: 0 });
     t.handlers["host.update.apply"] = () => ({
@@ -205,9 +205,10 @@ describe("update card", () => {
     const card = screen.getByTestId("update-card");
     expect(card.textContent).toMatch(/older than this app/);
     expect(screen.queryByLabelText("Dismiss")).toBeNull();
-    fireEvent.click(screen.getByText("Restart when idle"));
+    fireEvent.click(screen.getByText("Update"));
     await tick();
     expect(card.textContent).toContain("The host restarts when 1 running turn finishes.");
+    expect(screen.queryByText("Update")).toBeNull();
     fireEvent.click(screen.getByText("Restart now"));
     await tick();
     expect(applies(t)).toEqual([{ mode: "when_idle" }, { mode: "now" }]);
@@ -232,18 +233,36 @@ describe("update card", () => {
     expect(card.textContent).toContain("Zwiim Host 0.3.0");
     fireEvent.click(screen.getByText("See changes"));
     expect(seen).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByText("Restart"));
+    fireEvent.click(screen.getByText("Update"));
     await tick();
-    expect(applies(t)).toEqual([{ mode: "now" }]);
+    expect(applies(t)).toEqual([{ mode: "when_idle" }]);
     expect(card.textContent).toContain("Restarting the host…");
     fireEvent.click(screen.getByLabelText("Dismiss"));
     expect(screen.queryByTestId("update-card")).toBeNull();
     controller.dispose();
   });
 
-  it("installs this app's update, then restarts into it", async () => {
+  it("shows a host update another window already asked for as waiting", async () => {
+    const t = new FakeTransport();
+    t.handlers["host.update.status"] = () =>
+      hostStatus({ staged: { version: "0.3.0", source: "bundle" }, restart_required: true, restart_pending: true });
+    const controller = await connect(t);
+    render(
+      <HostProvider value={controller}>
+        <Card b={bridge()} />
+      </HostProvider>,
+    );
+    await tick();
+    expect(screen.getByTestId("update-card").textContent).toContain("The host restarts when its running work finishes.");
+    expect(screen.queryByText("Update")).toBeNull();
+    expect(screen.getByText("Restart now")).toBeTruthy();
+    controller.dispose();
+  });
+
+  it("updates this app and its host with one click", async () => {
     const t = new FakeTransport();
     t.handlers["host.update.status"] = () => hostStatus();
+    t.handlers["host.update.apply"] = () => ({ version: "0.3.0", state: "restart_pending", blockers: {} });
     const controller = await connect(t);
     const u = desktopUpdates({
       version: "0.2.0",
@@ -265,14 +284,47 @@ describe("update card", () => {
       </HostProvider>
     );
     const { rerender } = render(view(u.current));
-    expect(screen.getByTestId("update-card").textContent).toContain("Zwiim Desktop 0.3.0");
+    expect(screen.getByTestId("update-card").textContent).toContain("Zwiim 0.3.0 for this app and its host");
     fireEvent.click(screen.getByText("Update"));
     await tick();
     expect(u.install).toHaveBeenCalledTimes(1);
     expect(setDesktop).toHaveBeenCalledWith(u.current);
+    // Installing staged the Host it brings; nothing more to click.
+    t.handlers["host.update.status"] = () =>
+      hostStatus({ staged: { version: "0.3.0", source: "bundle" }, restart_required: true });
     rerender(view({ ...u.current, activity: { state: "ready", version: "0.3.0" } }));
-    fireEvent.click(screen.getByText("Restart"));
     await tick();
+    expect(applies(t)).toEqual([{ mode: "when_idle" }]);
+    expect(u.restart).toHaveBeenCalledTimes(1);
+    controller.dispose();
+  });
+
+  it("leaves a remote host alone when this app updates", async () => {
+    const t = new FakeTransport();
+    t.handlers["host.update.status"] = () =>
+      hostStatus({ staged: { version: "0.3.0", source: "download" }, restart_required: true });
+    const controller = await connect(t);
+    const u = desktopUpdates({
+      version: "0.2.0",
+      supported: true,
+      unsupported_reason: null,
+      channel: "stable",
+      activity: { state: "ready", version: "0.3.0" },
+    });
+    render(
+      <HostProvider value={controller}>
+        <UpdateCard
+          bridge={bridge(u)}
+          updates={{ desktop: u.current, host: null, setDesktop: () => {}, hint: true, checks: 0, check: async () => true }}
+          remote
+          onSeeChanges={() => {}}
+        />
+      </HostProvider>,
+    );
+    expect(screen.getByTestId("update-card").textContent).toContain("Zwiim Desktop 0.3.0.");
+    fireEvent.click(screen.getByText("Update"));
+    await tick();
+    expect(applies(t)).toEqual([]);
     expect(u.restart).toHaveBeenCalledTimes(1);
     controller.dispose();
   });

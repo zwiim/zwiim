@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { DESKTOP_CLIENT } from "@/lib/app-info";
 import type { DesktopUpdateStatus, NativeBridge } from "@/lib/bridge";
 import { errorMessage, updateRequiredMessage, useController, useHost } from "@/lib/host-context";
+import { restartIntoUpdate } from "@/panels/UpdateCard";
 
 /** While the pane is open, how often the host's update state is read. */
 const POLL_MS = 3000;
@@ -50,7 +51,7 @@ export function mb(bytes: number) {
 export function AboutUpdates({ bridge, remote }: { bridge: NativeBridge; remote: boolean }) {
   return (
     <>
-      <DesktopSection bridge={bridge} />
+      <DesktopSection bridge={bridge} remote={remote} />
       <HostSection remote={remote} />
       <BetaUpdatesToggle bridge={bridge} remote={remote} />
       <DiagnosticsSection bridge={bridge} />
@@ -58,7 +59,8 @@ export function AboutUpdates({ bridge, remote }: { bridge: NativeBridge; remote:
   );
 }
 
-function DesktopSection({ bridge }: { bridge: NativeBridge }) {
+function DesktopSection({ bridge, remote }: { bridge: NativeBridge; remote: boolean }) {
+  const controller = useController();
   const updates = bridge.updates;
   const [status, setStatus] = useState<DesktopUpdateStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -106,7 +108,7 @@ function DesktopSection({ bridge }: { bridge: NativeBridge }) {
               {a?.state === "available" && `Version ${a.version} is available.`}
               {a?.state === "downloading" &&
                 `Downloading ${a.version}… ${mb(a.downloaded)}${a.total ? ` of ${mb(a.total)}` : ""}`}
-              {a?.state === "ready" && `Version ${a.version} is installed. Restart the app to use it; the host keeps running.`}
+              {a?.state === "ready" && `Version ${a.version} is installed. Restarting finishes it for this app and its host.`}
               {a?.state === "failed" && <span className="text-destructive">{a.message}</span>}
             </span>
             {(a?.state === "idle" || a?.state === "up_to_date" || a?.state === "failed") && (
@@ -122,7 +124,7 @@ function DesktopSection({ bridge }: { bridge: NativeBridge }) {
               </Button>
             )}
             {a?.state === "ready" && (
-              <Button size="xs" variant="brand" disabled={pending !== null} onClick={() => run("restart", () => updates.restart())}>
+              <Button size="xs" variant="brand" disabled={pending !== null} onClick={() => run("restart", () => restartIntoUpdate(controller, updates, remote))}>
                 {pending === "restart" && <Loader2 className="animate-spin" />}
                 Restart Zwiim
               </Button>

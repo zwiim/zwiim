@@ -215,12 +215,15 @@ Browse Mac's bottom bar. If the init fails, the add fails and nothing is
 registered.
 
 Plain folders can still exist, such as a large folder the start-up sweep
-skipped. A workspace that isn't a Git repository (a plain folder) is a full
-workspace: Browse, file previews, Terminals and sessions all work. It has no
-worktrees, so it has no worktree chip, no worktree sheet and no New worktree,
-and it reads as just its name (`notes`, never `notes · root`). Changes says
-"Not a Git repository" without asking Git. Running `git init` there turns it
-into a repository live.
+skipped. It reads as just its name (`notes`, never `notes · root`). The Host
+runs sessions and terminals only in worktrees, never in a root, so the phone
+never targets one. Files always shows a worktree; with none open it says "No
+worktree open" with a New worktree button. Choosing a workspace with live
+worktrees opens level two (its worktrees, no Root row); choosing one with none
+makes a worktree from its branch and opens it, as Desktop's click does. A plain
+folder, or a repository with no commits, becomes a repository with its first
+commit first, asking first when large. A workspace added from Files opens in a
+new worktree; if that fails it stays added.
 
 ## Screens
 
@@ -328,15 +331,21 @@ Approved layout (variant A):
   selected worktree that was archived shows `zwiim · fix-auth was archived` in red
   (`Workspace removed` when the Host no longer lists it) and Start
   stays disabled until another is picked; it never falls back to the root.
+  Sessions never run in a repository's root: when the target is one (Files
+  chose the root, or nothing was chosen), Workspace reads `zwiim · new worktree`
+  and Start makes a worktree from the root's branch, then starts there, as
+  Desktop's one click does. Once made, that worktree is the target, so a start
+  that fails after it says "The worktree was created, but the session didn't
+  start. …" and trying again only starts the session.
   Start opens the new session; a failure keeps the prompt and says why.
 - **Workspace tree** (New session's Workspace sheet): the Files sheet's look
   with both levels in one list. Head: **Workspace** · **New workspace** (Browse
   Mac, which comes back to New session with the added folder chosen), then
   search. Each Git workspace is a tile, `›` closed / `⌄` open, name (accent
   when it holds the choice), counts in mono, `~/…` path under it. Open, it
-  hangs its rows on a hairline under the chevron: **Root** `· ⎇ master`, each
-  live worktree `⎇ pune` with `from master@da336a4`, then
-  `+ New worktree` in accent (creates it and chooses it). The tile holding the
+  hangs its rows on a hairline under the chevron: each live worktree `⎇ pune`
+  with `from master@da336a4`, then `+ New worktree` in accent (creates it and
+  chooses it). No **Root** row: sessions don't run there. The tile holding the
   choice starts open (else the first); others open on tap, several at once. A
   plain folder has no tile: it is chosen directly, with a dot.
 
@@ -432,16 +441,17 @@ Top to bottom:
   - reconnecting: `Reconnecting… retry in 3s` (from `ConnectionState.retryInMs`)
   - idle / completed: bar hidden.
 - **Composer** (`surface`, radius 16): multiline input "Reply or steer…"
-  over one row: the session's chips, then round accent send (the Desktop
-  composer's shape). Chips are 28pt, radius 6, `raised` on the composer,
-  `monoSm` `mut`: mode (shield Ask, list-check Plan; Unattended is a solid
-  `need` chip in `need-ink`, and the whole composer takes a 1pt `need` border),
-  then the model with its effort and `⌄` (`Opus 5 · High`; effort only while
-  the model offers one), and at the right, beside send, a 20pt ring with the
-  share of the context window in use (`accent` arc on a `faint` track, `23%`;
-  a dashed `faint` ring and `—` until the agent reports both figures). While a
-  turn runs, a `monoSm` `faint` line under the input reads "Options change when
-  the turn ends" and the model chip dims. Every chip opens **Session options**
+  over one row: one options chip, then round accent send (the Desktop
+  composer's shape). The chip is 28pt, radius 6, `raised` on the composer,
+  `monoSm` `mut`: the mode's icon (shield Ask, list-check Plan) and the
+  session's options in one line, `Ask · Opus 5.5 · High ⌄` (each part only as
+  the agent offers it; effort only while the model offers one). Unattended
+  makes it a solid `need` chip in `need-ink`, and the whole composer takes a
+  1pt `need` border. At the right, beside send, a 20pt ring with the share of
+  the context window in use (`accent` arc on a `faint` track, `23%`; a dashed
+  `faint` ring and `—` until the agent reports both figures). While a turn
+  runs, a `monoSm` `faint` line under the input reads "Options change when the
+  turn ends" and the chip dims. The chip and the ring open **Session options**
   (R8.15).
   While a turn runs, send stays available only if the agent accepts it;
   on `turn_in_progress` show "The agent is still working. Stop it or wait."
@@ -450,27 +460,34 @@ Top to bottom:
   so switching tabs or worktrees keeps each draft; a send the Host takes clears
   only that session's draft, and a failed send keeps it (R8.12).
 
-**Session options sheet** (header `⋯` or any composer chip; R8.15): title and
-the agent's name in mono, then each option picked in place, only as the agent
-offers it: **Mode** as a segmented control (Ask / Plan / Unattended with their
-icons; Unattended's label turns `need` when chosen), **Model** as grouped radio
-rows (label, the agent's description in `mut`, current in `accent`), and
-**Effort** (only while the current model offers one) as a segmented control, or
-radio rows past five values. A pick is sent alone (`session.set_options` with
-that one option), and the controls then show what the Host reports, so a new
-model brings its own effort (or none) and never the old one. Unattended asks
-first ("Turn off approvals?"). While a turn runs, offline, or before the agent
-reports its options, the controls are read-only with the reason in `mut` under
-the title; refusals (`turn_in_progress`, `option_unavailable`) show in `err`. In
-Unattended a `need` note carries **Ask first again**. Below, **Context**: a 6pt
-accent bar (only with both figures) and one mono line, `37,738 of 1,000,000`
-with `962,262 left` at the right (a missing figure is named: `window not
-reported`, in `faint`). After a finished turn, a fold **Last turn · 87,352
-tokens ⌄** opens rows Input, Output, Cache read, Cache write, Reasoning, Total,
-values in mono with tabular numbers. A figure the agent didn't report reads
-`not reported` in `faint`; nothing is estimated, and Left is only `Window − In
-use` when both were reported. Footnote: "As ⟨agent⟩ reports them. Nothing here
-is estimated."
+**Session options sheet** (header `⋯`, the options chip or the ring; R8.15):
+title and the agent's name in mono, then one card of rows, only as the agent
+offers them: **Mode**, **Model** and **Effort** (only while the current model
+offers one), each its name, its value in mono and `›` when there is more than
+one to choose. In Unattended a `need` note carries **Ask first again**. Under
+the card, one mono context line (`23% of 1M context`, or the figure the agent
+reported, or `Context not reported`) with `›` opens the **Context** page.
+A row opens its page in the same sheet: `‹` back, the title, the agent's name
+in mono, then grouped radio rows, the current one in a tonal fill with an
+accent check. Mode lists Ask / Plan / Unattended with their icons and hints
+(Unattended's label turns `need` when chosen); Model is one flat list in the
+agent's order with the agent's description in `mut`, and from 8 models a
+"Search models" field that matches label, id or description (`No models match
+"…"` when none do); Effort lists the model's levels. A pick is sent alone
+(`session.set_options` with that one option) and returns to the rows, which
+then show what the Host reports, so a new model brings its own effort (or
+none) and never the old one. Unattended asks first ("Turn off approvals?").
+While a turn runs, offline, or before the agent reports its options, the rows
+are read-only with the reason in `mut` under the title, and an open page falls
+back to the rows; refusals (`turn_in_progress`, `option_unavailable`) show in
+`err`. The **Context** page: a 6pt accent bar (only with both figures) and one
+mono line, `37,738 of 1,000,000` with `962,262 left` at the right (a missing
+figure is named: `window not reported`, in `faint`). After a finished turn, a
+fold **Last turn · 87,352 tokens ⌄** opens rows Input, Output, Cache read,
+Cache write, Reasoning, Total, values in mono with tabular numbers. A figure
+the agent didn't report reads `not reported` in `faint`; nothing is estimated,
+and Left is only `Window − In use` when both were reported. Footnote: "As
+⟨agent⟩ reports them. Nothing here is estimated."
 
 **Request sheet** (shared by list and session): title from the request;
 - permission: command block or diff list (file header rows, unified diff in `code`,
@@ -741,10 +758,16 @@ glyph, a title, one line, one action.
   shows the window and last turn's tokens; a click pins them until Escape or a
   click elsewhere. Same rule as the phone: only reported figures, a missing one
   reads "not reported".
-- Desktop's composer mode menu reads Ask / Plan / **Auto** (Auto is the
-  `unattended` mode on the wire). A new session starts in Auto wherever the
-  agent offers it; picking Auto takes one click, with no confirmation. The chip
-  stays `brand` and the composer keeps its Auto note with **Ask first again**.
+- Desktop's composer carries one options chip, as the phone does: the mode's
+  icon and `Ask · Opus 5.5 · High ⌄`. It opens a menu of three rows, Mode,
+  Model and Effort, each with its value in mono and `›`; a row opens its
+  submenu to the right on click, hover or →, and ← or Escape steps back. Mode
+  reads Ask / Plan / **Auto** (Auto is the `unattended` mode on the wire);
+  Model lists the agent's models in its order with their descriptions, and
+  from 8 models a "Search models" field. A new session starts in Auto wherever
+  the agent offers it; picking Auto takes one click, with no confirmation. The
+  chip stays `brand` and the composer keeps its Auto note with **Ask first
+  again**.
   The phone still says Unattended and asks first.
 - Desktop folds three or more consecutive tool calls and sub-agent cards into
   one row, as the phone does: a layers icon, `n tool calls`, `m sub-agents` or
@@ -929,3 +952,6 @@ glyph, a title, one line, one action.
 | 2026-10-29 | Desktop code theme: syntax colors, Zwiim default plus six well-known themes | User call (D1 A, D2 A, D3 B): mono code blocks were hard to scan. Shiki with the JS regex engine (no wasm), grammars loaded on first use. Colors in code are exempt from "no amber" because they live only on the `code` surface and never mean status. Supersedes the 2026-10-29 "No code-theme picker" note |
 | 2026-10-29 | Desktop: Show every tool call (off) and Always show context usage (on) | Folding runs keeps a long turn readable, so it stays the default; people auditing an agent want every call in view. The ring stays always-on as before (DESIGN R8.15 put it there on purpose); the toggle is for those who only care once the window fills |
 | 2026-10-29 | Remove a whole workspace: Desktop ⋯ menu, phone long-press and level two | User call (D2 A): a repository with no worktrees left had no way out of the list. Remove hides the root and archives its worktrees through the Host (`workspace.remove`); the folder on disk is never touched, and re-adding it revives the same workspace and its sessions. The UI says "remove" here because nothing is archived for the root itself |
+| 2026-10-30 | Composer options as one chip; Session options as summary rows with pages (design-shotgun C) | Claude Code lists 12 models; the stacked sheet overflowed the phone and Desktop's selects were long flat lists. Three rows keep the sheet short and each list gets a page or submenu with search. Chosen over a Latest/Older split (B) because the Host flattens the agent's groups and nothing should guess which models are latest |
+| 2026-10-30 | Phone New session makes a worktree instead of starting in a root | User call (A): the Host refuses sessions in a repository root (`root_workspace`), and the phone showed that error. Desktop never targets a root; the phone now does what Desktop does, a new worktree from the root's branch, and its tree drops the Root row |
+| 2026-10-30 | Phone Files, Terminals and the workspace sheet never land in a root | The Host refuses terminals in a root and every session in a plain folder, yet the phone offered both. It now mirrors Desktop's openRoot/newWorktree: choosing a workspace opens a worktree (making a plain folder a repository first, with the large-folder ask), and adding one from Files opens it in a new worktree |

@@ -50,7 +50,8 @@ export function usePendingCount(): number {
 export function useWorkspace(): WorkspaceInfo | null {
   const { workspaceId } = useCurrentHost();
   const workspaces = useHostSelector((s) => s.workspaces);
-  return currentWorkspace(workspaces, workspaceId);
+  const sessions = useHostSelector((s) => s.sessionsByWorkspace);
+  return currentWorkspace(workspaces, workspaceId, sessions);
 }
 
 export interface Loaded<T> {

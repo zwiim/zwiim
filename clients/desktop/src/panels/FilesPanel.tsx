@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ExternalLink, ChevronRight, Loader2, Pencil, RefreshCw } from "lucide-react";
+import { ChevronDown, ExternalLink, ChevronRight, Eye, Loader2, Pencil, RefreshCw } from "lucide-react";
 import { FolderIcon, fileIcon } from "@/components/FileIcon";
 import {
   delimitedEditable,
@@ -13,10 +13,21 @@ import {
 } from "@zwiim/preview";
 import { readSheet, type Sheet } from "@zwiim/preview/sheet";
 import { renderWord } from "@zwiim/preview/word";
-import { hasCapability, readChunks, readFile, ZwiimClientError, type FileContent, type FileTreeNode } from "@zwiim/sdk";
+import {
+  hasCapability,
+  isMarkdown,
+  readChunks,
+  readFile,
+  ZwiimClientError,
+  type FileContent,
+  type FileTreeNode,
+} from "@zwiim/sdk";
+import { Markdown } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
 import { isTauri, openFileBytes } from "@/lib/bridge";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
+import { markdownStyle } from "@/lib/prefs";
+import { usePref } from "@/lib/use-pref";
 import { cn } from "@/lib/utils";
 import { ListSkeleton } from "./DiffPanel";
 import { HtmlView } from "./preview/HtmlView";
@@ -245,6 +256,8 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
   const delimiter = delimiterFor(name);
   const canWrite = useHost((s) => hasCapability(s.connection.compat, "files.write"));
   const dirty = useMemo(() => !!editing && serializeDelimited(editing.table) !== editing.source, [editing]);
+  const [preview, setPreview] = useState(false);
+  const book = usePref(markdownStyle) === "book";
 
   const refresh = useCallback(async () => {
     const load = ++loads.current;
@@ -355,6 +368,7 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
 
   const sheet = shown && "sheets" in shown ? shown.sheets[0] : undefined;
   const editable = !!delimiter && !!sheet && !sheet.truncated && canWrite;
+  const markdown = isMarkdown(path) && !!shown && "text" in shown;
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="file-view">
@@ -379,6 +393,16 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
               </button>
             ))}
           </div>
+        )}
+        {markdown && (
+          <Button
+            size="xs"
+            variant={preview ? "secondary" : "ghost"}
+            aria-pressed={preview}
+            onClick={() => setPreview((p) => !p)}
+          >
+            <Eye /> Preview
+          </Button>
         )}
         {shown && "text" in shown && <span className="shrink-0">read-only</span>}
         <Button
@@ -467,6 +491,13 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
       ) : shown && "image" in shown ? (
         <div className="min-h-0 flex-1 overflow-auto p-4">
           <img className="max-w-full rounded-md" src={shown.image} alt={name} data-testid="file-image" />
+        </div>
+      ) : shown && preview && markdown ? (
+        <div className="min-h-0 flex-1 overflow-auto" data-testid="file-markdown">
+          <Markdown
+            text={shown.text.content}
+            className={book ? "markdown-book px-8 py-10" : "max-w-3xl px-6 py-4"}
+          />
         </div>
       ) : shown ? (
         <FileText text={shown.text.content} />

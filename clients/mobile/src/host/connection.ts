@@ -39,6 +39,7 @@ import {
   type SessionOptions,
   type SessionRevertResult,
   type WorkspaceInfo,
+  type WorkspaceInspection,
 } from "@zwiim/sdk";
 import type { LanAccess, NetworkReachability } from "../platform/capabilities";
 import { SessionFollower } from "../sessions/follow";
@@ -222,6 +223,16 @@ export class HostConnection {
   /** Add the folder named by its folder names under the host's home (`workspace.add`); never retried. */
   async addWorkspaceAt(home_path: string[], opts: { allowLarge?: boolean } = {}): Promise<WorkspaceInfo> {
     return this.#live().addWorkspaceAt(home_path, opts);
+  }
+
+  /** What a root is on disk: Git state, and what a first commit would hold (`workspace.inspect`). */
+  async inspectRoot(workspace_id: string): Promise<WorkspaceInspection> {
+    return this.#live().inspectRoot(workspace_id);
+  }
+
+  /** Make a listed root a repository with a first commit (`workspace.add`); never retried. */
+  async addRoot(workspace_id: string, opts: { allowLarge?: boolean } = {}): Promise<WorkspaceInfo> {
+    return this.#live().addRoot(workspace_id, opts);
   }
 
   /** Create a worktree of a root workspace from its current branch; never retried. */

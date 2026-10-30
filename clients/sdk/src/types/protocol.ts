@@ -1449,6 +1449,8 @@ export interface HostUpdateStatus {
   /** Verified and installed next to the running version; a restart applies it. */
   staged: { version: string; source: "download" | "bundle" } | null;
   restart_required: boolean;
+  /** A restart was asked for and waits until the Host is idle. Absent from older Hosts. */
+  restart_pending?: boolean;
   /** The version on trial after an update, until it proves healthy. */
   trial: { version: string; from: string } | null;
   /** The version a failed update returns to. */

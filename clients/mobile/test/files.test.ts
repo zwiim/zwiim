@@ -283,12 +283,38 @@ describe("the workspace Files and Terminal show", () => {
     ...over,
   });
 
-  it("is the chosen one while listed, else the first root", () => {
-    const list = [ws("wt", { kind: "worktree" }), ws("a"), ws("b"), ws("gone", { removed: true })];
-    expect(currentWorkspace(list, "b")?.workspace_id).toBe("b");
-    expect(currentWorkspace(list, null)?.workspace_id).toBe("a");
-    expect(currentWorkspace(list, "gone")?.workspace_id).toBe("a");
-    expect(currentWorkspace(list, "missing")?.workspace_id).toBe("a");
+  it("is never a root: a chosen root opens its own worktree, if it has one", () => {
+    const wt = (id: string, root: string, over: Partial<WorkspaceInfo> = {}) =>
+      ws(id, { kind: "worktree", parent_workspace_id: root, ...over });
+    const list = [
+      ws("plain", { is_git_repo: false }),
+      ws("a"),
+      wt("a1", "a"),
+      wt("a2", "a"),
+      wt("a3", "a", { removed: true }),
+      ws("b"),
+      wt("b1", "b"),
+      wt("b2", "b", { removed: true }),
+      ws("gone", { removed: true }),
+    ];
+    const at = (updated_at: string) => [{ updated_at }] as never;
+    expect(currentWorkspace(list, "b1")?.workspace_id).toBe("b1");
+    // A root opens the worktree prompted last, else its last live one.
+    expect(currentWorkspace(list, "a")?.workspace_id).toBe("a2");
+    expect(currentWorkspace(list, "a", { a1: at("2026-10-30T10:00:00Z") })?.workspace_id).toBe("a1");
+    // A chosen root with no worktree shows none: never another workspace's worktree.
+    expect(currentWorkspace(list, "plain")).toBeNull();
+    // A removed worktree: its own root's.
+    expect(currentWorkspace(list, "a3")?.workspace_id).toBe("a2");
+    expect(currentWorkspace(list, "b2")?.workspace_id).toBe("b1");
+    // Nothing, or nothing live, chosen: the first root that has one.
+    expect(currentWorkspace(list, null)?.workspace_id).toBe("a2");
+    expect(currentWorkspace(list, "missing")?.workspace_id).toBe("a2");
+    expect(currentWorkspace(list, "gone")?.workspace_id).toBe("a2");
+    // A worktree whose root isn't listed still counts.
+    expect(currentWorkspace([ws("plain", { is_git_repo: false }), wt("x", "elsewhere")], null)?.workspace_id).toBe("x");
+    // Only roots without worktrees: nothing to show.
+    expect(currentWorkspace([ws("a"), ws("plain", { is_git_repo: false })], "a")).toBeNull();
     expect(currentWorkspace([], null)).toBeNull();
     expect(currentWorkspace(null, "a")).toBeNull();
   });

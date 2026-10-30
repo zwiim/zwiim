@@ -236,6 +236,10 @@ pub fn grok_exit_plan_disconnect_response() -> Value {
 
 /// Claude adapter option that leaves plan mode in the same conversation.
 pub const CLAUDE_EXIT_PLAN_DEFAULT: &str = "exit-plan-default";
+/// Claude adapter option that leaves plan mode straight into
+/// `bypassPermissions` (Zwiim's unattended mode); offered only where that mode
+/// is.
+pub const CLAUDE_EXIT_PLAN_BYPASS: &str = "exit-plan-bypass";
 /// Claude adapter option that keeps planning: deny + interrupt, so the turn
 /// ends cancelled and the session stays in plan mode.
 pub const CLAUDE_EXIT_PLAN_REJECT: &str = "reject";
@@ -256,8 +260,11 @@ pub fn parse_claude_exit_plan_request(req: &RequestPermissionRequest) -> Option<
         return None;
     }
     let tool_call = serde_json::to_value(&req.tool_call).ok()?;
-    if tool_call.get("kind").and_then(Value::as_str) != Some("switch_mode") {
-        return None;
+    // Adapter 0.99.0 drops `kind` from the permission tool call for AIR
+    // clients; the two option ids above already identify `ExitPlanMode`.
+    match tool_call.get("kind").and_then(Value::as_str) {
+        None | Some("switch_mode") => {}
+        Some(_) => return None,
     }
     let from_input = tool_call
         .get("rawInput")
@@ -283,10 +290,12 @@ pub fn parse_claude_exit_plan_request(req: &RequestPermissionRequest) -> Option<
 }
 
 /// The Claude adapter option answering a bridged `ExitPlanMode` for `decision`.
-/// Only Approve leaves plan mode; every other decision keeps planning (hand-off
-/// and adjustments continue from the Host, not inside this turn).
-pub fn claude_exit_plan_option(decision: PlanApprovalDecision) -> &'static str {
+/// Only Approve leaves plan mode, into unattended when the request offers it
+/// (`bypass_offered`); every other decision keeps planning (hand-off and
+/// adjustments continue from the Host, not inside this turn).
+pub fn claude_exit_plan_option(decision: PlanApprovalDecision, bypass_offered: bool) -> &'static str {
     match decision {
+        PlanApprovalDecision::Approve if bypass_offered => CLAUDE_EXIT_PLAN_BYPASS,
         PlanApprovalDecision::Approve => CLAUDE_EXIT_PLAN_DEFAULT,
         PlanApprovalDecision::RequestChanges
         | PlanApprovalDecision::Abandon
@@ -301,19 +310,26 @@ pub const CODEX_PLAN_IMPLEMENT: &str = "implement_plan";
 /// turn ends normally.
 pub const CODEX_PLAN_REVISE: &str = "revise_plan";
 
-/// The plan markdown of a Codex plan-review permission request, or `None` when
-/// `req` is not one Zwiim can bridge into the plan-approval card: the request
-/// `_meta.codex.kind` must be `plan_review`, the tool kind `switch_mode`, the
-/// options must include [`CODEX_PLAN_IMPLEMENT`] and [`CODEX_PLAN_REVISE`], and
-/// `rawInput.plan` must be non-empty. Bounded to [`MAX_PLAN_MARKDOWN_CHARS`].
-pub fn parse_codex_plan_review_request(req: &RequestPermissionRequest) -> Option<String> {
+/// Whether `req` is Codex's plan-review gate. codex-acp 1.x marks the request
+/// `_meta.codex.kind = "plan_review"`; 2.x sends no request `_meta` and is told
+/// apart by its `plan-review:<itemId>` tool call id.
+pub fn is_codex_plan_review_request(req: &RequestPermissionRequest) -> bool {
     let kind = req
         .meta
         .as_ref()
         .and_then(|m| m.get("codex"))
         .and_then(|codex| codex.get("kind"))
         .and_then(Value::as_str);
-    if kind != Some("plan_review") {
+    kind == Some("plan_review") || req.tool_call.tool_call_id.to_string().starts_with("plan-review:")
+}
+
+/// The plan markdown of a Codex plan-review permission request, or `None` when
+/// `req` is not one Zwiim can bridge into the plan-approval card: it must be a
+/// plan review ([`is_codex_plan_review_request`]), the tool kind `switch_mode`,
+/// the options must include [`CODEX_PLAN_IMPLEMENT`] and [`CODEX_PLAN_REVISE`],
+/// and `rawInput.plan` must be non-empty. Bounded to [`MAX_PLAN_MARKDOWN_CHARS`].
+pub fn parse_codex_plan_review_request(req: &RequestPermissionRequest) -> Option<String> {
+    if !is_codex_plan_review_request(req) {
         return None;
     }
     let has_option = |id: &str| req.options.iter().any(|o| o.option_id.to_string() == id);
@@ -530,6 +546,36 @@ mod tests {
         );
     }
 
+    /// claude-agent-acp 0.99.0's ExitPlanMode request to an AIR client, verified
+    /// against `permissions/presentation.js`: `{toolCallId, title, rawInput}`
+    /// with no `kind` and no content.
+    #[test]
+    fn claude_parse_accepts_the_0_99_0_air_card() {
+        let req = RequestPermissionRequest::new(
+            SessionId::new("sess-1"),
+            ToolCallUpdate::new(
+                "toolu_plan",
+                ToolCallUpdateFields::new()
+                    .title("Approve Plan".to_string())
+                    .raw_input(json!({ "plan": "# Plan\n- step" })),
+            ),
+            ["exit-plan-auto", "exit-plan-default", "reject"]
+                .iter()
+                .map(|id| {
+                    PermissionOption::new(
+                        id.to_string(),
+                        id.to_string(),
+                        PermissionOptionKind::AllowOnce,
+                    )
+                })
+                .collect(),
+        );
+        assert_eq!(
+            parse_claude_exit_plan_request(&req).as_deref(),
+            Some("# Plan\n- step")
+        );
+    }
+
     #[test]
     fn claude_parse_rejects_anything_else() {
         let missing_default = claude_exit_plan("plan", &["exit-plan-auto", "reject"]);
@@ -558,7 +604,11 @@ mod tests {
     #[test]
     fn claude_option_maps_every_decision() {
         assert_eq!(
-            claude_exit_plan_option(PlanApprovalDecision::Approve),
+            claude_exit_plan_option(PlanApprovalDecision::Approve, true),
+            "exit-plan-bypass"
+        );
+        assert_eq!(
+            claude_exit_plan_option(PlanApprovalDecision::Approve, false),
             "exit-plan-default"
         );
         for decision in [
@@ -566,7 +616,7 @@ mod tests {
             PlanApprovalDecision::Abandon,
             PlanApprovalDecision::HandOff,
         ] {
-            assert_eq!(claude_exit_plan_option(decision), "reject");
+            assert_eq!(claude_exit_plan_option(decision, true), "reject");
         }
     }
 
@@ -617,8 +667,11 @@ mod tests {
         assert!(parse_codex_plan_review_request(&missing_revise).is_none());
         let empty_plan = codex_plan_review("  ", CODEX_1_13_1_OPTIONS);
         assert!(parse_codex_plan_review_request(&empty_plan).is_none());
+        // codex-acp 2.x sends no request `_meta`; the `plan-review:` id marks it.
         let mut no_meta = codex_plan_review("plan", CODEX_1_13_1_OPTIONS);
         no_meta.meta = None;
+        assert_eq!(parse_codex_plan_review_request(&no_meta).as_deref(), Some("plan"));
+        no_meta.tool_call.tool_call_id = "switch-1".to_string().into();
         assert!(parse_codex_plan_review_request(&no_meta).is_none());
         let mut other_kind = codex_plan_review("plan", CODEX_1_13_1_OPTIONS);
         other_kind.tool_call.fields.kind = Some(ToolKind::Other);

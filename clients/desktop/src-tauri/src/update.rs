@@ -6,9 +6,10 @@
 //! reads a snapshot. Changed: the key and the endpoint are Zwiim's, compiled
 //! in by the release build; a build without the key never updates.
 //!
-//! Desktop updates Desktop only. The Host it bundles is handed to the Host's
-//! own installer on the next launch (`zwiim-host --seed`), which stages it
-//! without a second download; the Host decides when to switch to it.
+//! Desktop downloads Desktop only. The Host it bundles is handed to the Host's
+//! own installer (`zwiim-host --seed`) as soon as the update is installed, and
+//! again on the next launch, which stages it without a second download; the
+//! UI's one Update then asks the Host to switch once idle and relaunches.
 //!
 //! Channels: stable reads `<releases>/latest/download/latest.json`; beta
 //! reads `<releases>/download/beta/latest.json`, a release the release
@@ -332,6 +333,9 @@ pub async fn desktop_update_install(
                 )
                 .await
                 .map_err(|e| e.to_string())?;
+            // The installed bundle carries the next Host: stage it now, so
+            // the restart that applies this update can switch the Host too.
+            let _ = tauri::async_runtime::spawn_blocking(crate::seed_host).await;
             Ok::<_, String>(update.version)
         }
         .await;
@@ -343,7 +347,8 @@ pub async fn desktop_update_install(
     Ok(status_of(&state, state.channel(&app)))
 }
 
-/// Relaunch into the installed update. The Host keeps running.
+/// Relaunch into the installed update. The Host keeps running; the UI has
+/// already asked it to switch to the staged version once idle.
 #[tauri::command]
 pub fn desktop_update_restart(
     app: tauri::AppHandle,

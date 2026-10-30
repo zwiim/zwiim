@@ -1,18 +1,44 @@
 // The Host's hierarchy as the phone shows it (DESIGN.md, Workspace context):
-// a workspace (a root) and, inside it, the worktree Files works in (the root
-// checkout itself or one of its worktrees). Both levels come from the SDK's
+// a workspace (a root) and, inside it, the worktree Files works in. The root
+// itself is never a target: the Host runs sessions and terminals in worktrees. Both levels come from the SDK's
 // workspace tree; the selection is the leaf, the level above is derived.
 
-import { isClientError, type TerminalMeta, type WorkspaceInfo, type WorkspaceNode } from "@zwiim/sdk";
+import {
+  isClientError,
+  openTarget,
+  type HostState,
+  type TerminalMeta,
+  type WorkspaceInfo,
+  type WorkspaceNode,
+} from "@zwiim/sdk";
 
 export function workspaceLabel(w: WorkspaceInfo): string {
   return w.alias ?? w.name;
 }
 
-/** The worktree Files shows: the one chosen on this host while it still lists it, else its first root. */
-export function currentWorkspace(workspaces: readonly WorkspaceInfo[] | null, chosen: string | null): WorkspaceInfo | null {
-  const open = (workspaces ?? []).filter((w) => !w.removed);
-  return open.find((w) => w.workspace_id === chosen) ?? open.find((w) => w.kind === "root") ?? open[0] ?? null;
+/**
+ * The worktree Files shows, never a root (the Host runs nothing there): the
+ * chosen worktree while it is live; for a chosen root, the worktree it opens
+ * on (Desktop's `openTarget`), else none; for a removed worktree, its root's.
+ * Only with nothing live chosen: the first root's that has one, else any live
+ * worktree. Null when there is none to show.
+ */
+export function currentWorkspace(
+  workspaces: readonly WorkspaceInfo[] | null,
+  chosen: string | null,
+  sessionsByWorkspace: HostState["sessionsByWorkspace"] = {},
+): WorkspaceInfo | null {
+  const all = workspaces ?? [];
+  const open = all.filter((w) => !w.removed);
+  const state = { workspaces: open, sessionsByWorkspace };
+  const picked = all.find((w) => w.workspace_id === chosen);
+  const root = picked && (picked.removed ? open.find((w) => w.workspace_id === picked.parent_workspace_id) : picked);
+  if (root) return root.kind === "worktree" ? root : openTarget(state, root.workspace_id);
+  for (const r of open) {
+    const first = r.kind === "root" ? openTarget(state, r.workspace_id) : null;
+    if (first) return first;
+  }
+  return open.find((w) => w.kind === "worktree") ?? null;
 }
 
 /**
@@ -57,16 +83,15 @@ export function workspaceRoots(tree: readonly WorkspaceNode[], query: string): W
   });
 }
 
-/** A workspace with worktrees to choose between: a Git repository (or one that still lists worktrees). A plain folder is chosen directly. */
+/** A workspace with worktrees to choose between. One with none opens straight into a new worktree, as Desktop's click does. */
 export function hasWorktreeLevel(node: WorkspaceNode): boolean {
-  return node.workspace.is_git_repo || node.worktrees.some((n) => !n.workspace.removed);
+  return node.worktrees.some((n) => !n.workspace.removed);
 }
 
-/** Level two: a root's checkout first, then its live worktrees. */
+/** Level two: a root's live worktrees, never the root itself (the Host runs nothing there). */
 export function worktreeChoices(tree: readonly WorkspaceNode[], root_id: string): WorkspaceNode[] {
   const root = tree.find((n) => n.workspace.workspace_id === root_id);
-  if (!root) return [];
-  return [root, ...root.worktrees.filter((n) => !n.workspace.removed)];
+  return root ? root.worktrees.filter((n) => !n.workspace.removed) : [];
 }
 
 /** What a workspace row says after its name: "no Git", "2 worktrees", "1 working". */
@@ -90,7 +115,11 @@ export function worktreeBase(w: WorkspaceInfo): string | null {
 /** The workspace tile open when the tree opens: the one holding `selected` while it's live, else the first. */
 export function openTile(tree: readonly WorkspaceNode[], selected: string | null): string | null {
   const roots = workspaceRoots(tree, "");
-  const holds = roots.find((n) => worktreeChoices(tree, n.workspace.workspace_id).some((c) => c.workspace.workspace_id === selected));
+  const holds = roots.find(
+    (n) =>
+      n.workspace.workspace_id === selected ||
+      worktreeChoices(tree, n.workspace.workspace_id).some((c) => c.workspace.workspace_id === selected),
+  );
   return (holds ?? roots[0])?.workspace.workspace_id ?? null;
 }
 
@@ -113,4 +142,13 @@ export function worktreeError(e: unknown, root: WorkspaceInfo, hostName: string)
   if (isClientError(e, "network") || isClientError(e, "timeout")) return `Not connected to ${hostName}. Try again when it's back.`;
   if (isClientError(e, "unknown_outcome")) return "Not sure that went through. Refreshed from your Mac.";
   return "Couldn't create a worktree. Try again.";
+}
+
+/** Why a folder was added but Files has no worktree of it: the workspace stays, so say so first. */
+export function addedWithoutWorktree(e: unknown, root: WorkspaceInfo, hostName: string): string {
+  const said = worktreeError(e, root, hostName);
+  if (said === "Couldn't create a worktree. Try again.") {
+    return `Added ${workspaceLabel(root)}, but couldn't create a worktree in it. Try New worktree in Files.`;
+  }
+  return `Added ${workspaceLabel(root)}. ${said}`;
 }

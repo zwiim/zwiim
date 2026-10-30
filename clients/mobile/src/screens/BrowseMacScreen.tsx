@@ -27,6 +27,7 @@ import {
   samePath,
   upPath,
 } from "../files/browse";
+import { addedWithoutWorktree } from "../host/workspace";
 import { currentHost } from "../services";
 import { Banner, Button, EmptyState, ScreenHeader, Sheet, SkeletonRows, T } from "../ui/components";
 import { fonts, radius, space, type, useTheme } from "../ui/tokens";
@@ -74,11 +75,13 @@ export function BrowseMacScreen({ navigation, route }: NativeStackScreenProps<Ro
       // Back to the screen underneath, not a second one on top of Browse Mac.
       // For New session it is where the session starts; Files keeps its own selection.
       if (route.params?.then === "NewSession") {
-        const workspace = await currentHost.addWorkspaceAt(target, { choose: false, allowLarge });
+        const { workspace } = await currentHost.addWorkspaceAt(target, { choose: false, allowLarge });
         navigation.popTo("NewSession", { workspace_id: workspace.workspace_id });
       } else {
-        await currentHost.addWorkspaceAt(target, { allowLarge });
-        navigation.popTo("Host", { screen: "Files" });
+        const { workspace, worktreeError } = await currentHost.addWorkspaceAt(target, { allowLarge });
+        // Added, but no worktree to show: stay and say why rather than land on an empty Files.
+        if (worktreeError) setError(addedWithoutWorktree(worktreeError, workspace, hostName));
+        else navigation.popTo("Host", { screen: "Files" });
       }
       setLarge(null);
     } catch (e) {

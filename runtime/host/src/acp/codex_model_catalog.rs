@@ -635,10 +635,11 @@ mod tests {
         let models = snap();
         assert_eq!(
             models.len(),
-            11,
-            "snapshot should carry codex 0.156.1's catalog"
+            12,
+            "snapshot should carry codex 0.165.0's catalog"
         );
         assert!(models.iter().any(|m| slug_of(m) == Some("gpt-6-astra")));
+        assert!(models.iter().any(|m| slug_of(m) == Some("gpt-6.1-sol")));
         assert!(models.iter().any(|m| slug_of(m) == Some("gpt-6-luna")));
         assert!(models.iter().any(|m| slug_of(m) == Some("gpt-5.6-sol")));
         assert!(models.iter().any(|m| slug_of(m) == Some("gpt-5.5")));
@@ -680,7 +681,7 @@ mod tests {
                 "codex dropped {gone} — regenerate the snapshot"
             );
         }
-        assert_eq!(fallback_base_slug(&models).as_deref(), Some("gpt-6-astra"));
+        assert_eq!(fallback_base_slug(&models).as_deref(), Some("gpt-6.1-sol"));
     }
 
     #[test]
@@ -697,8 +698,8 @@ mod tests {
             default: None,
         };
         let cat = expand_to_catalog(&config, &snap());
-        // All 11 officials auto-included + 1 custom = 12.
-        assert_eq!(slugs(&cat).len(), 12);
+        // All 12 officials auto-included + 1 custom = 13.
+        assert_eq!(slugs(&cat).len(), 13);
         // Custom is first (top of picker) and forced list + api.
         let c = find(&cat, "gw/opus").expect("custom present");
         assert_eq!(c.get("visibility").unwrap(), "list");
@@ -736,18 +737,18 @@ mod tests {
     #[test]
     fn expand_keeps_hidden_officials_even_when_excluded() {
         let s = snap();
-        // gpt-5.4 is hidden since 0.147 (0.156.1 drops gpt-5.4-mini);
+        // The daybreak previews ship hidden (0.165.0 drops the hidden gpt-5.4);
         // codex-auto-review always is.
-        for slug in ["gpt-5.4", "codex-auto-review"] {
+        for slug in ["gpt-daybreak-blue-latest", "codex-auto-review"] {
             let hidden = s
                 .iter()
                 .find(|m| slug_of(m) == Some(slug))
                 .expect("in snapshot");
             assert_eq!(hidden.get("visibility").unwrap(), "hide", "{slug}");
         }
-        let cat = expand_to_catalog(&excluding(&["gpt-5.4", "codex-auto-review"]), &s);
+        let cat = expand_to_catalog(&excluding(&["gpt-daybreak-blue-latest", "codex-auto-review"]), &s);
         let out = slugs(&cat);
-        assert!(out.iter().any(|x| x == "gpt-5.4"));
+        assert!(out.iter().any(|x| x == "gpt-daybreak-blue-latest"));
         assert!(out.iter().any(|x| x == "codex-auto-review"));
         assert_eq!(out.len(), s.len(), "nothing dropped");
     }
@@ -757,13 +758,13 @@ mod tests {
         let s = snap();
         // Only stale removals of now-hidden officials → hand control back.
         assert!(is_effectively_empty(
-            &excluding(&["gpt-5.4", "codex-auto-review"]),
+            &excluding(&["gpt-daybreak-blue-latest", "codex-auto-review"]),
             &s
         ));
         // A removal that still applies keeps the takeover.
         assert!(!is_effectively_empty(&excluding(&["gpt-5.5"]), &s));
         // Mixed: the live one wins.
-        assert!(!is_effectively_empty(&excluding(&["gpt-5.4", "gpt-5.5"]), &s));
+        assert!(!is_effectively_empty(&excluding(&["gpt-daybreak-blue-latest", "gpt-5.5"]), &s));
         // A custom always counts.
         let with_custom = CodexModelConfig {
             customs: vec![CodexCustomEntry {
@@ -777,7 +778,7 @@ mod tests {
         };
         assert!(!is_effectively_empty(&with_custom, &s));
         // No snapshot → can't prove staleness, so don't discard the intent.
-        assert!(!is_effectively_empty(&excluding(&["gpt-5.4"]), &[]));
+        assert!(!is_effectively_empty(&excluding(&["gpt-daybreak-blue-latest"]), &[]));
         assert!(is_effectively_empty(&CodexModelConfig::default(), &s));
     }
 
@@ -969,7 +970,7 @@ mod tests {
         assert_eq!(cfg.default.as_deref(), Some("a"));
         // Legacy {models} → customs.
         let legacy = parse_model_config(Some(
-            r#"{"models":[{"slug":"x","base":"gpt-5.4","overrides":{"description":"d"}}],"default":"x"}"#,
+            r#"{"models":[{"slug":"x","base":"gpt-daybreak-blue-latest","overrides":{"description":"d"}}],"default":"x"}"#,
         ));
         assert_eq!(legacy.customs.len(), 1);
         assert_eq!(legacy.customs[0].slug, "x");
@@ -1046,7 +1047,7 @@ mod tests {
         assert!(find(&cat, "gpt-5.2").is_none());
         // …while hidden ones survive: they were never inferred-excluded, and
         // expansion would keep them regardless (they back codex internals).
-        assert!(find(&cat, "gpt-5.4").is_some());
+        assert!(find(&cat, "gpt-daybreak-blue-latest").is_some());
         assert!(find(&cat, "codex-auto-review").is_some());
     }
 

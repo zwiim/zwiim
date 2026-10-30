@@ -16,7 +16,10 @@ export type ResolveAction =
   | { state: "blocked"; reason: string };
 
 export interface ConflictView {
-  /** `3 files conflict with main`; null once cleared while a turn still resolves. */
+  /**
+   * `3 files conflict with main`, or `Conflicts with main on GitHub` when only
+   * GitHub sees them; null once cleared while a turn still resolves.
+   */
   line: string | null;
   files: string[];
   /** Null: nothing to resolve here (a root, an older Host, nothing unresolved). */
@@ -39,6 +42,18 @@ function conflictLine(check: Exclude<ConflictCheck, { state: "clean" }>): string
 }
 
 /**
+ * The base GitHub says the open pull request conflicts with, when the branch
+ * merges cleanly here: a resolution that was never pushed. The Host's resolve
+ * turn then brings the base in and pushes.
+ */
+function githubConflictBase(state: HostState, workspace_id: string): string | null {
+  if (!hasCapability(state.connection.compat, "workspace.resolve_conflicts.github")) return null;
+  const pr = state.prs[workspace_id]?.pr;
+  if (!pr || (pr.state !== "open" && pr.state !== "draft") || pr.merge.status !== "dirty") return null;
+  return pr.base;
+}
+
+/**
  * The conflicts of `workspace_id`, or null when there are none to show.
  * `shown`: the session on screen, resolved in when it is in this workspace;
  * otherwise the newest one is.
@@ -49,12 +64,14 @@ export function conflictView(state: HostState, workspace_id: string, shown?: str
   const check = state.conflicts[workspace_id];
   const resolving = state.resolving[workspace_id];
   const open = check && check.state !== "clean" ? check : null;
-  if (!open && !resolving) return null;
-  const view: ConflictView = { line: open ? conflictLine(open) : null, files: open?.files ?? [], resolve: null };
+  const github = open ? null : githubConflictBase(state, workspace_id);
+  if (!open && !github && !resolving) return null;
+  const line = open ? conflictLine(open) : github ? `Conflicts with ${github} on GitHub` : null;
+  const view: ConflictView = { line, files: open?.files ?? [], resolve: null };
   const workspace = state.workspaces?.find((w) => w.workspace_id === workspace_id);
   if (workspace?.kind !== "worktree" || !hasCapability(compat, "workspace.resolve_conflicts")) return view;
   if (resolving) return { ...view, resolve: { state: "resolving", session_id: resolving } };
-  if (view.files.length === 0) return view;
+  if (view.files.length === 0 && !github) return view;
   const sessions = state.sessionsByWorkspace[workspace_id] ?? [];
   if (sessions.some((s) => isSessionWorking(s, state.sessions[s.session_id]))) {
     return { ...view, resolve: { state: "blocked", reason: BUSY } };
