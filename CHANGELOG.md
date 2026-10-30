@@ -32,6 +32,52 @@ have their own versions and are listed under Compatibility.
 ### Known limitations
 - None.
 
+## [0.1.0-rc.12] - 2026-10-30
+
+### Added
+- When Claude Code or Codex can't reach its provider, the chat shows a can't-reach card with Retry (resend the turn in the same chat) and Retry in new chat (a new chat with a summary of the earlier one attached). The card outlives the agent process and a Host restart.
+- Instructions for your agents (Desktop Settings > Instructions, the phone's Host tab): general text and text for resolving conflicts, Host-wide or per repository, up to 8 KiB each.
+- Merge conflicts show on Desktop's pull request banner and the phone's PR strip as Merge conflicts / Resolve. Resolve starts a turn that asks the agent to fix them, including conflicts only GitHub sees, and a merge or rebase whose conflicts are all staged is finished.
+- A Settings dialog on Desktop with search: chat and turn alerts, default models, Git (branch prefix, delete the branch on remove), Prompts (how agents open pull requests and name branches), Repository (worktree scripts, copied files, env, ports, preview URLs), Appearance (zoom, code and terminal fonts, code themes, syntax colors, color vision, ligatures, markdown style) and Advanced.
+- Preview URLs open a worktree's app in the browser.
+- Follow-ups: queue a message behind a running turn, or steer it into the turn.
+- Auto-merge: GitHub merges a pull request once its checks pass.
+- After a pull request merges, Desktop and the phone offer Continue or Archive. Archiving is never automatic.
+- Remove a workspace (Desktop's repository ⋯ menu, the phone's worktree list): its worktrees are archived with their branches kept and the folder is left untouched. Adding the same folder again brings its sessions back.
+- One options chip in the composer (Desktop and phone) for Mode, Model and Effort.
+- Markdown files opened from the Files tab get a Preview toggle.
+
+### Changed
+- One Update button updates both the app and its Host.
+- Long pastes attach as a text file instead of filling the composer.
+- The phone never targets a repository root: New session in a Git root creates a worktree first, and Files, terminals and the workspace sheet always work in a worktree.
+- Codex always gets Zwiim's harness instructions; a user's own `developer_instructions` is appended instead of replacing them.
+- Approving a plan, or handing it off, moves the agent to Auto (full access).
+- The data folder setting is gone from Settings > Advanced.
+
+### Fixed
+- A turn could leave conflict markers in place and the harness pushed anyway; the Host now refuses to push while files are unmerged or a merge or rebase is in progress.
+- Codex commands that fail or are interrupted keep the output they printed.
+- Files and New session on the phone never swap in another workspace's worktree.
+
+### Security
+- File names in conflict prompts are quoted and escaped, and the conflict marker scan skips paths outside the worktree.
+- The can't-reach error is scrubbed before it is saved.
+
+### Compatibility
+- Protocol revision 25. New capabilities: `session.retry`, `host.instructions`, `settings`, `settings.git`, `settings.prompts`, `repository.settings`, `workspace.run_script`, `workspace.previews`, `settings.advanced`, `host.folders`, `session.follow_ups`, `session.steer`, `git.pr_auto_merge`, `workspace.remove`, `workspace.resolve_conflicts.github`.
+- Mobile: Android app 0.1.0 (version code 1) as `com.zwiim.mobile`, installed from the APK. iOS 0.1.0 (build 4) for TestFlight testers.
+
+### Provider changes
+- Claude ACP adapter pinned to 0.99.0, Codex ACP adapter to 2.4.0.
+
+### Migration notes
+- The Host database gains can't-reach turns, repository settings, worktree ports and follow-ups; it migrates on first start.
+
+### Known limitations
+- Codex command output appears when the command ends, not live.
+- Mobile dark text is #EDEFF0, not DESIGN.md's #DFE1E3.
+
 ## [0.1.0-rc.11] - 2026-10-27
 
 ### Added
