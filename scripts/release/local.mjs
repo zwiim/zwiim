@@ -128,7 +128,7 @@ function main() {
   const notarize = (file) => run("xcrun", ["notarytool", "submit", file, "--keychain-profile", "zwiim", "--wait"]);
 
   step("Build the Host");
-  run("cargo", ["build", "--release", "--locked", "-p", "zwiim-host", "--bin", "zwiim-host", "--bin", "zwiim-mcp", "-p", "zwiim-power-helper"]);
+  run("cargo", ["build", "--release", "--locked", "-p", "zwiim-host", "--bin", "zwiim-host", "--bin", "zwiim-mcp", "-p", "zwiim-power-helper", "--bin", "zwiim-power-helper"]);
   const info = JSON.parse(execFileSync("target/release/zwiim-host", ["--release-info"], { cwd: ROOT, encoding: "utf8" }));
   if (info.release_key !== true || info.team_id !== env.APPLE_TEAM_ID || info.version !== version) {
     fail("the Host was not built with the release key, Team ID and VERSION");

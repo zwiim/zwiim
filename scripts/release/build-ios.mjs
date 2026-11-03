@@ -39,7 +39,8 @@ function main() {
   const mobile = path.join(ROOT, "clients/mobile");
   const { expo } = JSON.parse(fs.readFileSync(path.join(mobile, "app.json"), "utf8"));
   const name = `Zwiim_${expo.version}_${expo.ios.buildNumber}`;
-  const env = { ...process.env, CI: "1", EXPO_NO_DOTENV: "1" };
+  // CocoaPods fails under a non-UTF-8 locale (a bare shell defaults to ASCII).
+  const env = { ...process.env, CI: "1", EXPO_NO_DOTENV: "1", LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" };
   const run = (cmd, argv, cwd) => execFileSync(cmd, argv, { cwd, env, stdio: "inherit" });
 
   run("node", ["scripts/check-production.mjs"], mobile);

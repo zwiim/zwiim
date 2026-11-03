@@ -113,7 +113,7 @@ jobs:
           rm "$RUNNER_TEMP/cert.p12"
 
       - name: Build the Host
-        run: cargo build --release --locked -p zwiim-host --bin zwiim-host --bin zwiim-mcp -p zwiim-power-helper
+        run: cargo build --release --locked -p zwiim-host --bin zwiim-host --bin zwiim-mcp -p zwiim-power-helper --bin zwiim-power-helper
       - name: The Host carries the release key and Team ID
         run: |
           target/release/zwiim-host --release-info | tee "$RUNNER_TEMP/release-info.json"
