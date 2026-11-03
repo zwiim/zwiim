@@ -369,7 +369,7 @@ function NewSession({ workspaceId, onStarted }: { workspaceId: string; onStarted
       </div>
       <Composer
         workspaceId={workspaceId}
-        placeholder="Describe the task"
+        placeholder="Describe the task. Ask for a task list to track progress"
         disabled={!online || agent === null}
         unattended={start?.shown.mode?.current === "unattended"}
         banner={start && <UnattendedBanner options={start.shown} disabled={!online} onChange={picker.pick} />}

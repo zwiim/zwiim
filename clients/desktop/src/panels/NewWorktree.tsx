@@ -167,7 +167,7 @@ export function NewWorktree({
         <textarea
           ref={area}
           className="placeholder:text-muted-foreground block min-h-36 w-full resize-none bg-transparent px-4 pt-3 pb-1 leading-relaxed outline-none"
-          placeholder="What do you want to work on?"
+          placeholder="What do you want to work on? Ask for a task list to track progress."
           aria-label="What do you want to work on?"
           autoFocus
           value={text}

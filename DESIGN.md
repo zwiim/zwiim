@@ -855,8 +855,8 @@ glyph, a title, one line, one action.
   folder is gone says so in Files ("This folder is no longer on the host") with
   the way back, instead of the host's red "Directory not found".
 - Desktop's slash menu (composer, `/name` opening the message) is named in the
-  placeholder ("Describe the task, or type / for commands", "Send a message, or
-  type / for commands") while it has anything to offer. It splits on the
+  placeholder ("Describe the task. Ask for a task list to track progress, or
+  type / for commands", "Send a message, or type / for commands") while it has anything to offer. It splits on the
   agent's own list. What it lists (skills, plugins, prompts) goes into the
   message, as before. A listed command whose screen is the CLI's (`/mcp`,
   `/model`, `/config`, `/status`) runs in the CLI from its own row, marked with
@@ -956,3 +956,4 @@ glyph, a title, one line, one action.
 | 2026-10-30 | Phone New session makes a worktree instead of starting in a root | User call (A): the Host refuses sessions in a repository root (`root_workspace`), and the phone showed that error. Desktop never targets a root; the phone now does what Desktop does, a new worktree from the root's branch, and its tree drops the Root row |
 | 2026-10-30 | Phone Files, Terminals and the workspace sheet never land in a root | The Host refuses terminals in a root and every session in a plain folder, yet the phone offered both. It now mirrors Desktop's openRoot/newWorktree: choosing a workspace opens a worktree (making a plain folder a repository first, with the large-folder ask), and adding one from Files opens it in a new worktree |
 | 2026-11-03 | PR check counts fold under the status on both clients | User call: `Checks running 2 running · 3 passed · 1 skipped` wrapped and crowded the strip. The status alone says how the PR stands; the counts and each check open from it (Desktop toggles them under the status, the phone shows them in the PR sheet). Screen readers still hear the counts on the phone strip |
+| 2026-11-03 | Starting composers hint at task lists | User call: nothing told people how to get the tasks strip. The agent makes the list, so the first-prompt placeholders on both clients (Desktop new session and new worktree, phone New session) add "Ask for a task list to track progress"; later replies keep their short placeholders |

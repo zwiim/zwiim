@@ -324,7 +324,7 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
           <TextInput
             value={prompt}
             onChangeText={setPrompt}
-            placeholder="What do you want to work on?"
+            placeholder="What do you want to work on? Ask for a task list to track progress."
             placeholderTextColor={theme.faint}
             multiline
             textAlignVertical="top"

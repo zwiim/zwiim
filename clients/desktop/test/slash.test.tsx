@@ -230,7 +230,7 @@ describe("slash commands in the embedded terminal", () => {
     );
     await tick();
     const box = screen.getByPlaceholderText(/^Describe the task/) as HTMLTextAreaElement;
-    expect(box.placeholder).toBe("Describe the task, or type / for commands");
+    expect(box.placeholder).toBe("Describe the task. Ask for a task list to track progress, or type / for commands");
     return { controller, box };
   }
 
