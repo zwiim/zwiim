@@ -95,8 +95,12 @@ describe("evaluateCompatibility", () => {
     expect(hasCapability(c, "session.revert.chat")).toBe(false);
   });
 
+  it("speaks revision 27", () => {
+    expect(CLIENT_REVISION).toBe(27);
+  });
+
   it("speaks revision 26 and shows plan progress and continuing a plan", () => {
-    expect(CLIENT_REVISION).toBe(26);
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(26);
     expect(CLIENT_CAPABILITIES).toContain("agent.progress");
     expect(CLIENT_CAPABILITIES).toContain("session.continue_plan");
     const old = evaluateCompatibility(hello({ revision: 25, min_client_revision: 1, capabilities: ["workspace.remove"] }));

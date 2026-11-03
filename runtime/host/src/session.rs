@@ -287,6 +287,58 @@ pub(crate) fn session_lock(session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
     locks.entry(session_id.to_string()).or_default().clone()
 }
 
+/// Sessions the Host is busy with outside a turn: those whose lock is held
+/// (starting a prompt, changing options, stopping, deleting, reverting,
+/// queueing or draining follow-ups).
+pub(crate) fn sessions_sending() -> Vec<String> {
+    let locks = SESSION_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+    locks
+        .iter()
+        .filter(|(_, lock)| lock.try_lock().is_err())
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+/// New sessions being started, by the workspace they start in. They have no
+/// session id yet, so they are only counted.
+static STARTING: LazyLock<std::sync::Mutex<HashMap<String, usize>>> =
+    LazyLock::new(Default::default);
+
+/// A new session being started in a workspace, counted until dropped.
+struct StartingGuard(String);
+
+impl StartingGuard {
+    fn new(workspace_id: &str) -> Self {
+        let mut starting = STARTING.lock().unwrap_or_else(|e| e.into_inner());
+        *starting.entry(workspace_id.to_string()).or_default() += 1;
+        Self(workspace_id.to_string())
+    }
+}
+
+impl Drop for StartingGuard {
+    fn drop(&mut self) {
+        let mut starting = STARTING.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = starting.get_mut(&self.0) {
+            *n -= 1;
+            if *n == 0 {
+                starting.remove(&self.0);
+            }
+        }
+    }
+}
+
+/// The workspaces new sessions are being started in, with how many each.
+pub(crate) fn workspaces_starting() -> Vec<(String, usize)> {
+    let starting = STARTING.lock().unwrap_or_else(|e| e.into_inner());
+    starting.iter().map(|(id, n)| (id.clone(), *n)).collect()
+}
+
+/// Hold a start in `workspace_id` for the caller's span (tests).
+#[cfg(test)]
+pub(crate) fn hold_start(workspace_id: &str) -> impl Drop {
+    StartingGuard::new(workspace_id)
+}
+
 fn empty_prompt() -> ZwiimError {
     ZwiimError::invalid_input("Prompt must contain at least one block")
 }
@@ -347,6 +399,9 @@ pub(crate) async fn start_tracked<L: AgentLauncher>(
     }
     let preferred =
         crate::session_options::preferred_for_start(&db.conn, agent_type, options).await?;
+    // Counted as starting (a when-idle restart waits) until the first prompt
+    // is sent.
+    let starting = StartingGuard::new(workspace_id);
     let (folder, launching) = crate::workspace::resolve_for_launch(&db.conn, workspace_id).await?;
     if folder.parent_id.is_none() {
         return Err(ZwiimError::root_workspace());
@@ -376,6 +431,7 @@ pub(crate) async fn start_tracked<L: AgentLauncher>(
         )
         .await;
     drop(launching);
+    drop(starting);
     match sent {
         Ok(Some(conversation_id)) => {
             *dispatched = true;

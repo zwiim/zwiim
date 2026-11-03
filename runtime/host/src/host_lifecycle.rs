@@ -14,9 +14,10 @@
 //!   away. Sessions, their transcripts and workspaces are kept; the next
 //!   `session.send` resumes a session on the new process.
 //! - **Restart.** `when_idle` waits until no turn runs, no request waits on
-//!   the user and no terminal is open, reporting `restart_pending` with what
-//!   blocks it until then. `now` is the forced restart: it drains at once, with
-//!   the semantics above. A supervised worker exits with
+//!   the user and no session is starting a prompt, reporting
+//!   `restart_pending` with what blocks it until then. Open terminals do not
+//!   hold it; the drain closes them. `now` is the forced restart: it drains at
+//!   once, with the semantics above. A supervised worker exits with
 //!   [`crate::update::runtime::EXIT_RESTART`] so the supervisor relaunches it;
 //!   an unsupervised one re-executes itself.
 
@@ -27,12 +28,12 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, Condition, ConnectionTrait, EntityTrait, QueryFilter};
 use serde::Serialize;
 use tokio::sync::Notify;
 
 use crate::app_state::AppState;
-use crate::db::entities::conversation;
+use crate::db::entities::{conversation, folder};
 
 /// Exit code of a Host that found another Host running on its data
 /// directory (`EX_CANTCREAT`). Never a failed upgrade: the supervisor
@@ -152,15 +153,21 @@ pub enum ShutdownKind {
 pub struct Blockers {
     pub live_turns: usize,
     pub pending_requests: usize,
+    /// Open terminals. Reported, but they do not hold a restart.
     pub terminals: usize,
-    /// Sessions whose agents are working (an agent not bound to a session
-    /// yet is only counted).
+    /// Sessions the Host is busy with outside a turn: starting a prompt or a
+    /// new session, or changing, stopping or reverting one. A new session is
+    /// only counted; it has no id yet.
+    pub starting: usize,
+    /// Sessions whose agents are working or that the Host is busy with (an
+    /// agent not bound to a session yet is only counted).
     pub session_ids: Vec<String>,
 }
 
 impl Blockers {
+    /// Nothing is working. Open terminals do not count.
     pub fn is_idle(&self) -> bool {
-        self.live_turns == 0 && self.pending_requests == 0 && self.terminals == 0
+        self.live_turns == 0 && self.pending_requests == 0 && self.starting == 0
     }
 }
 
@@ -296,15 +303,59 @@ pub async fn blockers(state: &AppState) -> Blockers {
         .terminal_manager
         .list_with_exit_check(Some(&state.emitter))
         .len();
-    if !conversation_ids.is_empty() {
-        b.session_ids = conversation::Entity::find()
-            .filter(conversation::Column::Id.is_in(conversation_ids))
+    // The session locks and the starts in flight are global (tests run Hosts
+    // side by side), so keep only this Host's. A database error counts them
+    // all: unsure never reads as idle.
+    let sending = crate::session::sessions_sending();
+    if !conversation_ids.is_empty() || !sending.is_empty() {
+        let rows = conversation::Entity::find()
+            .filter(
+                Condition::any()
+                    .add(conversation::Column::Id.is_in(conversation_ids))
+                    .add(conversation::Column::SessionId.is_in(sending.clone())),
+            )
             .filter(conversation::Column::SessionId.is_not_null())
             .all(&state.db.conn)
-            .await
-            .map(|rows| rows.into_iter().filter_map(|c| c.session_id).collect())
-            .unwrap_or_default();
+            .await;
+        match rows {
+            Ok(rows) => {
+                for session_id in rows.into_iter().filter_map(|c| c.session_id) {
+                    b.starting += usize::from(sending.contains(&session_id));
+                    b.session_ids.push(session_id);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("[lifecycle] listing busy sessions failed: {e}");
+                b.starting = sending.len();
+                b.session_ids = sending;
+            }
+        }
         b.session_ids.sort();
+        b.session_ids.dedup();
+    }
+    // New sessions being started have no id yet: counted, not listed.
+    let starts = crate::session::workspaces_starting();
+    if !starts.is_empty() {
+        let ids: Vec<String> = starts.iter().map(|(id, _)| id.clone()).collect();
+        let ours = folder::Entity::find()
+            .filter(folder::Column::WorkspaceId.is_in(ids))
+            .filter(folder::Column::DeletedAt.is_null())
+            .all(&state.db.conn)
+            .await;
+        match ours {
+            Ok(rows) => {
+                let ours: Vec<_> = rows.into_iter().filter_map(|f| f.workspace_id).collect();
+                b.starting += starts
+                    .iter()
+                    .filter(|(id, _)| ours.contains(id))
+                    .map(|(_, n)| n)
+                    .sum::<usize>();
+            }
+            Err(e) => {
+                tracing::warn!("[lifecycle] listing starting sessions failed: {e}");
+                b.starting += starts.iter().map(|(_, n)| n).sum::<usize>();
+            }
+        }
     }
     b
 }
@@ -319,8 +370,10 @@ pub enum RestartState {
     RestartPending,
 }
 
-/// Restart once nothing is running. Restarts at once when already idle;
-/// otherwise leaves a pending restart that fires when the blockers clear.
+/// Restart once no agent is working (running turns, requests waiting on the
+/// user, sessions starting a prompt); open terminals do not hold it and are
+/// closed by the drain. Restarts at once when already idle; otherwise leaves a
+/// pending restart that fires when the blockers clear.
 pub async fn restart_when_idle(state: &Arc<AppState>) -> (RestartState, Blockers) {
     let lifecycle = &state.lifecycle;
     if lifecycle.requested().is_some() {
@@ -334,24 +387,29 @@ pub async fn restart_when_idle(state: &Arc<AppState>) -> (RestartState, Blockers
     if !lifecycle.restart_pending.swap(true, Ordering::SeqCst) {
         let state = state.clone();
         tokio::spawn(async move {
+            // Idle on two ticks in a row: a finished turn hands over to the
+            // next queued prompt a moment later, and that gap reads as idle.
+            let mut idle_before = false;
             loop {
                 tokio::time::sleep(IDLE_POLL).await;
                 if state.lifecycle.requested().is_some() {
                     return;
                 }
-                if blockers(&state).await.is_idle() {
+                let idle = blockers(&state).await.is_idle();
+                if idle && idle_before {
                     tracing::info!("[lifecycle] host idle; restarting as requested");
                     state.lifecycle.request(ShutdownKind::Restart);
                     return;
                 }
+                idle_before = idle;
             }
         });
     }
     tracing::info!(
-        "[lifecycle] restart pending: {} turn(s), {} request(s), {} terminal(s) running",
+        "[lifecycle] restart pending: {} turn(s), {} request(s), {} session(s) starting",
         now.live_turns,
         now.pending_requests,
-        now.terminals
+        now.starting
     );
     (RestartState::RestartPending, now)
 }

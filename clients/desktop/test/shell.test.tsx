@@ -13,7 +13,7 @@ import { DESKTOP_CHECK_MS, UpdateCard, useUpdates } from "@/panels/UpdateCard";
 import pkg from "../package.json";
 import { FakeTransport, hostHello, tick } from "./fakes";
 
-const NO_UPDATES = { desktop: null, host: null, setDesktop: () => {}, hint: false, checks: 0, check: async () => false };
+const NO_UPDATES = { desktop: null, host: null, unified: false, setDesktop: () => {}, hint: false, checks: 0, check: async () => false };
 
 afterEach(cleanup);
 
@@ -104,7 +104,7 @@ describe("compatibility", () => {
 
 describe("desktop updates", () => {
   function Probe({ bridge }: { bridge: NativeBridge }) {
-    const updates = useUpdates(bridge);
+    const updates = useUpdates(bridge, false);
     return <span data-testid="desktop-update">{updates.desktop?.activity.state ?? "unknown"}</span>;
   }
 

@@ -129,7 +129,7 @@ async fn an_idle_host_restarts_at_once() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         body,
-        json!({"state": "restarting", "blockers": {"live_turns": 0, "pending_requests": 0, "terminals": 0, "session_ids": []}})
+        json!({"state": "restarting", "blockers": {"live_turns": 0, "pending_requests": 0, "terminals": 0, "starting": 0, "session_ids": []}})
     );
     assert_eq!(h.state.lifecycle.requested(), Some(ShutdownKind::Restart));
 }
@@ -196,7 +196,7 @@ async fn a_request_waiting_on_the_user_holds_a_when_idle_restart() {
 }
 
 #[tokio::test]
-async fn an_open_terminal_holds_a_when_idle_restart() {
+async fn an_open_terminal_does_not_hold_a_when_idle_restart() {
     let h = host(false).await;
     let (_, spawned) = post(
         &h,
@@ -206,22 +206,75 @@ async fn an_open_terminal_holds_a_when_idle_restart() {
     .await;
     let tid = spawned["terminal_id"].as_str().unwrap().to_string();
 
+    // Terminals are reported, but only running agents hold the restart.
     let (_, body) = post(&h, "host.restart", json!({})).await;
-    assert_eq!(body["state"], "restart_pending");
+    assert_eq!(body["state"], "restarting");
     assert_eq!(body["blockers"]["terminals"], 1);
+    assert_eq!(h.state.lifecycle.requested(), Some(ShutdownKind::Restart));
 
-    // Closing it lets the restart go ahead.
+    // Don't leave the shell running past the test.
     assert_eq!(
         post(&h, "terminal.kill", json!({"terminal_id": tid}))
             .await
             .0,
         StatusCode::OK
     );
+}
+
+#[tokio::test]
+async fn a_session_starting_a_prompt_holds_a_when_idle_restart() {
+    let h = host(false).await;
+    let (sid, _rx) = h.live_session().await;
+    let guard = crate::session::session_lock(&sid).lock_owned().await;
+
+    let (_, body) = post(&h, "host.restart", json!({"mode": "when_idle"})).await;
+    assert_eq!(body["state"], "restart_pending");
+    assert_eq!(body["blockers"]["starting"], 1);
+    assert_eq!(body["blockers"]["session_ids"], json!([sid]));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(h.state.lifecycle.requested(), None, "nothing interrupted");
+
+    drop(guard);
     let lc = h.state.lifecycle.clone();
     eventually("the restart", || {
         lc.requested() == Some(ShutdownKind::Restart)
     })
     .await;
+}
+
+#[tokio::test]
+async fn a_new_session_being_started_holds_a_when_idle_restart() {
+    let h = host(false).await;
+    let guard = crate::session::hold_start(&h.wt_workspace_id);
+
+    let (_, body) = post(&h, "host.restart", json!({"mode": "when_idle"})).await;
+    assert_eq!(body["state"], "restart_pending");
+    assert!(body["blockers"]["starting"].as_u64().unwrap() >= 1);
+    // It has no id yet: counted, not listed.
+    assert_eq!(body["blockers"]["session_ids"], json!([]));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(h.state.lifecycle.requested(), None, "nothing interrupted");
+
+    drop(guard);
+    let lc = h.state.lifecycle.clone();
+    eventually("the restart", || {
+        lc.requested() == Some(ShutdownKind::Restart)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn status_reports_blockers() {
+    let h = host(false).await;
+    let (sid, _rx) = h.live_session().await;
+    set_turn(&h, true).await;
+
+    let (status, body) = post(&h, "host.update.status", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["blockers"]["live_turns"], 1);
+    assert_eq!(body["blockers"]["session_ids"], json!([sid]));
+    assert_eq!(body["restart_pending"], false, "reading arms nothing");
+    assert!(!h.state.lifecycle.restart_pending());
 }
 
 #[tokio::test]

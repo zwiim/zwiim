@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import { DESKTOP_CLIENT } from "@/lib/app-info";
 import type { DesktopUpdateStatus, NativeBridge } from "@/lib/bridge";
 import { errorMessage, updateRequiredMessage, useController, useHost } from "@/lib/host-context";
-import { restartIntoUpdate } from "@/panels/UpdateCard";
+import { readyTarget, restartIntoUpdate, UpdateChoices } from "@/panels/UpdateCard";
+import { hostPreparedFor, isUnified, restartNow, useRestartPhase } from "@/panels/update-flow";
 
 /** While the pane is open, how often the host's update state is read. */
 const POLL_MS = 3000;
@@ -30,11 +31,13 @@ const REFUSED: Record<string, string> = {
   unsupported_platform: "No build of this release exists for this host's platform.",
 };
 
+/** What keeps a restart waiting. Open terminals do not: a restart closes them. */
 export function blockersText(b: HostUpdateApply["blockers"]): string {
+  const starting = b.starting ?? 0;
   const parts = [
     b.live_turns && `${b.live_turns} running turn${b.live_turns === 1 ? "" : "s"}`,
     b.pending_requests && `${b.pending_requests} waiting request${b.pending_requests === 1 ? "" : "s"}`,
-    b.terminals && `${b.terminals} open terminal${b.terminals === 1 ? "" : "s"}`,
+    starting && `${starting} starting agent${starting === 1 ? "" : "s"}`,
   ].filter(Boolean);
   return parts.join(", ");
 }
@@ -49,10 +52,29 @@ export function mb(bytes: number) {
  * switch). The host's answers are the truth shown here.
  */
 export function AboutUpdates({ bridge, remote }: { bridge: NativeBridge; remote: boolean }) {
+  const controller = useController();
+  const [status, setStatus] = useState<HostUpdateStatus | null>(null);
+  // True once the host's answer is in.
+  const read = useCallback(
+    () => controller.client.request("host.update.status", {}).then((s) => (setStatus(s), true), () => false),
+    [controller],
+  );
+  useEffect(() => {
+    void read();
+    const t = setInterval(() => void read(), POLL_MS);
+    return () => clearInterval(t);
+  }, [read]);
+
   return (
     <>
-      <DesktopSection bridge={bridge} remote={remote} />
-      <HostSection remote={remote} />
+      {status && isUnified(status, remote) ? (
+        <ZwiimSection bridge={bridge} host={status} refresh={read} />
+      ) : (
+        <>
+          <DesktopSection bridge={bridge} remote={remote} />
+          <HostSection remote={remote} status={status} setStatus={setStatus} />
+        </>
+      )}
       <BetaUpdatesToggle bridge={bridge} remote={remote} />
       <DiagnosticsSection bridge={bridge} />
     </>
@@ -144,24 +166,200 @@ function DesktopSection({ bridge, remote }: { bridge: NativeBridge; remote: bool
   );
 }
 
-function HostSection({ remote }: { remote: boolean }) {
+/**
+ * This app and the host on this computer, as one: they update together, so
+ * this is one box with one check and one Update. The host's facts are read-only
+ * lines; what it needs to restart is asked with the same choices as the card.
+ */
+function ZwiimSection({
+  bridge,
+  host,
+  refresh,
+}: {
+  bridge: NativeBridge;
+  host: HostUpdateStatus;
+  refresh(): Promise<boolean>;
+}) {
+  const controller = useController();
+  const updates = bridge.updates;
+  const hello = useHost((s) => s.host);
+  const compat = useHost((s) => s.connection.compat);
+  const phase = useRestartPhase();
+  const [status, setStatus] = useState<DesktopUpdateStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // The button clicked, until its call answers.
+  const [pending, setPending] = useState<"check" | "install" | "restart" | null>(null);
+
+  useEffect(() => {
+    if (!updates) return;
+    let stop = false;
+    const read = () => updates.status().then((s) => !stop && setStatus(s), () => {});
+    void read();
+    const t = setInterval(read, 1000);
+    return () => {
+      stop = true;
+      clearInterval(t);
+    };
+  }, [updates]);
+
+  const run = (label: "check" | "install" | "restart", f: () => Promise<DesktopUpdateStatus | void>) => {
+    setError(null);
+    setPending(label);
+    f()
+      .then(
+        (s) => s && setStatus(s),
+        (e) => setError(errorMessage(e)),
+      )
+      .finally(() => setPending(null));
+  };
+
+  const a = status?.activity;
+  const desktopVersion = status?.version ?? DESKTOP_CLIENT.version;
+  const last = host.last_result;
+  const installed = updates && a?.state === "ready" ? a : null;
+  // Installing this app's update stages the host that comes with it: read again,
+  // and only then say whether the host is ready, so a stale answer cannot send
+  // this app off alone.
+  const installedVersion = installed?.version;
+  const [readFor, setReadFor] = useState<string | null>(null);
+  useEffect(() => {
+    if (!installedVersion) return;
+    let stop = false;
+    void refresh().then((ok) => ok && !stop && setReadFor(installedVersion));
+    return () => {
+      stop = true;
+    };
+  }, [installedVersion, refresh]);
+  const ready = installed && readFor === installed.version ? installed : null;
+  // Restarting is under way, or waits for agents or for the user; else a ready update.
+  const target =
+    phase.kind !== "idle" && phase.target.host
+      ? phase.target
+      : ready && hostPreparedFor(host, ready.version)
+        ? readyTarget(host, updates!, ready.version)
+        : null;
+  const hostNotes = host.available?.notes;
+  return (
+    <section className="flex flex-col gap-1.5 rounded-md border p-3" data-testid="about-zwiim">
+      <div className="flex items-center gap-2">
+        <span className="font-medium">Zwiim</span>
+        <span className="text-muted-foreground font-mono" data-testid="about-versions">
+          {desktopVersion === host.version ? desktopVersion : `Desktop ${desktopVersion} · Host ${host.version}`}
+        </span>
+      </div>
+      <dl className="text-muted-foreground grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+        <dt>Protocol</dt>
+        <dd className="font-mono">{hello ? `${hello.protocol} · revision ${hello.revision ?? 0}` : "—"}</dd>
+        <dt>Compatibility</dt>
+        <dd data-testid="about-compat">{compat ? COMPAT[compat.status] : "—"}</dd>
+        <dt>Channel</dt>
+        <dd className="font-mono">{host.channel}</dd>
+      </dl>
+      {compat?.status === "update_required" && <p className="text-muted-foreground">{updateRequiredMessage(compat, false)}</p>}
+      {compat?.status === "limited" && (
+        <p className="text-muted-foreground">
+          Not available on this host: <span className="font-mono">{compat.missing.join(", ")}</span>
+        </p>
+      )}
+      {!host.supported && (
+        <p className="text-muted-foreground" data-testid="host-update-unsupported">
+          {UNSUPPORTED[host.unsupported_reason ?? ""] ?? "This host does not update itself."}
+        </p>
+      )}
+      {host.trial && (
+        <p className="text-muted-foreground" data-testid="host-update-trial">
+          Checking version {host.trial.version} after the update. If it fails, the host returns to {host.trial.from}.
+        </p>
+      )}
+      {last?.outcome === "rolled_back" && !host.trial && (
+        <p className="text-destructive" data-testid="host-update-rolled-back">
+          The update to {last.version} failed, so the host went back to {last.from}.
+          {last.reason ? ` ${last.reason}` : ""}
+        </p>
+      )}
+      {!updates ? null : !status ? null : !status.supported ? (
+        <p className="text-muted-foreground">This build was not made by the release pipeline, so it does not update itself.</p>
+      ) : (
+        <>
+          <div className="flex items-center gap-2">
+            <span className="text-muted-foreground min-w-0 flex-1">
+              {a?.state === "checking" && "Checking for updates…"}
+              {a?.state === "up_to_date" && "Up to date."}
+              {a?.state === "available" && `Version ${a.version} is available.`}
+              {a?.state === "downloading" &&
+                `Downloading ${a.version}… ${mb(a.downloaded)}${a.total ? ` of ${mb(a.total)}` : ""}`}
+              {a?.state === "failed" && "Couldn't reach the update server. Check your connection and try again."}
+            </span>
+            {(a?.state === "idle" || a?.state === "up_to_date" || a?.state === "failed") && (
+              <Button size="xs" variant="outline" disabled={pending !== null} onClick={() => run("check", () => updates.check())}>
+                {pending === "check" && <Loader2 className="animate-spin" />}
+                Check for updates
+              </Button>
+            )}
+            {a?.state === "available" && (
+              <Button size="xs" variant="brand" disabled={pending !== null} onClick={() => run("install", () => updates.install())}>
+                {pending === "install" && <Loader2 className="animate-spin" />}
+                Update
+              </Button>
+            )}
+          </div>
+          {a?.state === "failed" && <p className="text-muted-foreground font-mono break-words">{a.message}</p>}
+          {a?.state === "available" && a.notes && (
+            <p className="text-muted-foreground line-clamp-4 whitespace-pre-wrap">{a.notes}</p>
+          )}
+        </>
+      )}
+      {target ? (
+        <UpdateChoices target={target} blockers={host.blockers ?? null} />
+      ) : (
+        ready && (
+          <div className="flex flex-col gap-1.5">
+            <p className="text-muted-foreground">
+              {`Zwiim ${ready.version} is downloaded for this app, but its host couldn't be prepared (it stays on ${host.version}). Restart to update this app.`}
+            </p>
+            <div>
+              <Button
+                size="xs"
+                variant="brand"
+                disabled={pending !== null || phase.kind === "restarting"}
+                onClick={() => run("restart", () => restartNow(controller, readyTarget(host, updates!, ready.version)))}
+              >
+                {pending === "restart" && <Loader2 className="animate-spin" />}
+                Restart Zwiim
+              </Button>
+            </div>
+          </div>
+        )
+      )}
+      {hostNotes && hostNotes !== (a?.state === "available" ? a.notes : null) && (
+        <p className="text-muted-foreground line-clamp-6 whitespace-pre-wrap" data-testid="host-update-notes">
+          {hostNotes}
+        </p>
+      )}
+      {error && (
+        <p className="text-destructive" role="alert">
+          {error}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function HostSection({
+  remote,
+  status,
+  setStatus,
+}: {
+  remote: boolean;
+  status: HostUpdateStatus | null;
+  setStatus(status: HostUpdateStatus): void;
+}) {
   const controller = useController();
   const hello = useHost((s) => s.host);
   const compat = useHost((s) => s.connection.compat);
-  const [status, setStatus] = useState<HostUpdateStatus | null>(null);
   const [applied, setApplied] = useState<HostUpdateApply | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  const read = useCallback(
-    () => controller.client.request("host.update.status", {}).then(setStatus, () => {}),
-    [controller],
-  );
-  useEffect(() => {
-    void read();
-    const t = setInterval(() => void read(), POLL_MS);
-    return () => clearInterval(t);
-  }, [read]);
 
   async function run(label: string, f: () => Promise<void>) {
     setBusy(label);

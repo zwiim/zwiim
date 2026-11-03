@@ -184,8 +184,8 @@ pub struct HostRestartParams {
 #[derive(Deserialize, Default, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum RestartMode {
-    /// Once no turn runs, no request waits on the user and no terminal is
-    /// open.
+    /// Once no turn runs, no request waits on the user and no session is
+    /// starting a prompt; open terminals are closed.
     #[default]
     WhenIdle,
     /// At once: running turns are cancelled, waiting requests declined and
@@ -207,11 +207,13 @@ pub async fn host_restart(
 }
 
 /// `host.update.status`: versions, what is available or staged, how the
-/// last update went, and whether a restart waits for the Host to be idle.
+/// last update went, whether a restart waits for the Host to be idle, and
+/// what keeps it from restarting now.
 /// Any paired device may ask.
 pub async fn host_update_status(Extension(state): Extension<Arc<AppState>>) -> ZResult<Value> {
     let mut status = crate::update::service::status();
     status["restart_pending"] = json!(state.lifecycle.restart_pending());
+    status["blockers"] = json!(crate::host_lifecycle::blockers(&state).await);
     Ok(Json(status))
 }
 

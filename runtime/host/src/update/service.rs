@@ -223,24 +223,32 @@ pub fn start_background_checks() {
     tokio::spawn(async {
         tokio::time::sleep(FIRST_CHECK_DELAY).await;
         loop {
-            check_with(false).await;
+            check_with().await;
             tokio::time::sleep(CHECK_INTERVAL).await;
         }
     });
 }
 
 /// A Host that came in the Desktop app gets its next version from Desktop's
-/// own update; it downloads one itself only when someone asks.
+/// own update; it never downloads one itself, even when asked. It stages only
+/// the Host a Desktop bundle provided.
 fn bundled_with_desktop() -> bool {
     std::env::var(install::ENV_BUNDLED).is_ok_and(|v| v == "1")
 }
 
-/// `host.update.check`: look for a newer release and stage it.
-pub async fn check() -> Value {
-    check_with(true).await
+/// Whether this Host downloads its own next version. A bundled Host does not:
+/// Desktop's update ships it.
+pub(super) fn downloads_itself(bundled: bool) -> bool {
+    !bundled
 }
 
-async fn check_with(explicit: bool) -> Value {
+/// `host.update.check`: look for a newer release and stage it. A bundled Host
+/// stages only the Host its Desktop bundle provided.
+pub async fn check() -> Value {
+    check_with().await
+}
+
+async fn check_with() -> Value {
     if unsupported_reason().is_some() {
         return status();
     }
@@ -248,7 +256,7 @@ async fn check_with(explicit: bool) -> Value {
         return status();
     };
     with_engine(|e| e.activity = Activity::Checking);
-    let result = check_inner(explicit || !bundled_with_desktop()).await;
+    let result = check_inner(downloads_itself(bundled_with_desktop())).await;
     with_engine(|e| {
         e.last_checked = Some(chrono::Utc::now().to_rfc3339());
         e.activity = match result {

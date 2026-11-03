@@ -454,6 +454,15 @@ fn an_update_keeps_the_hosts_team_and_identifier() {
     assert!(signed_by(adhoc, team, Some(ID)).is_err());
 }
 
+#[test]
+fn a_bundled_host_never_downloads() {
+    // A Host in the Desktop app takes its next version from Desktop's update,
+    // even when someone asks; a standalone Host downloads its own.
+    use super::service::downloads_itself;
+    assert!(!downloads_itself(true));
+    assert!(downloads_itself(false));
+}
+
 // ─── Installer: versioned installs, trial, rollback ──────────────────────
 
 #[cfg(unix)]

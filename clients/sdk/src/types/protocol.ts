@@ -1497,6 +1497,8 @@ export interface HostUpdateStatus {
   restart_required: boolean;
   /** A restart was asked for and waits until the Host is idle. Absent from older Hosts. */
   restart_pending?: boolean;
+  /** What keeps the Host from restarting now. Absent from Hosts before revision 27. */
+  blockers?: HostUpdateApply["blockers"];
   /** The version on trial after an update, until it proves healthy. */
   trial: { version: string; from: string } | null;
   /** The version a failed update returns to. */
@@ -1581,6 +1583,8 @@ export interface HostUpdateApply {
     live_turns: number;
     pending_requests: number;
     terminals: number;
+    /** Sessions starting a prompt. Absent before revision 27. */
+    starting?: number;
     session_ids: string[];
   };
 }

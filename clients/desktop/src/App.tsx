@@ -272,7 +272,7 @@ export function Workbench({
   const refusedCode = useHost((s) => (s.connection.status === "live" ? null : (s.connection.error?.code ?? null)));
   /** Where settings are open; null when they are closed. */
   const [settings, setSettings] = useState<SettingsTarget | null>(null);
-  const updates = useUpdates(bridge);
+  const updates = useUpdates(bridge, remote);
   useTurnAlerts(bridge);
   /** A remote host's folder path being asked for, and where the answer goes. */
   const [askPath, setAskPath] = useState<((path: string | null) => void) | null>(null);

@@ -257,7 +257,14 @@ use serde::{Deserialize, Serialize};
 /// `session.retry_in_new_chat` carry on an unfinished plan the same way
 /// (a step note on the resent message, or a hand-over to the new session),
 /// unless the user has written since the plan stopped.
-pub const PROTOCOL_REVISION: u32 = 26;
+///
+/// Revision 27 (`host.update.status` blockers): the status gains `blockers`,
+/// what keeps the Host from restarting now (`live_turns`, `pending_requests`,
+/// `terminals`, `starting`, `session_ids`), and blockers gain `starting`, the
+/// sessions the Host is busy with outside a turn: starting a prompt or a new
+/// session, or changing, stopping or reverting one. A `when_idle` restart
+/// no longer waits for terminals; the restart closes them.
+pub const PROTOCOL_REVISION: u32 = 27;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -568,7 +575,13 @@ mod tests {
     fn compat_advertises_agent_progress() {
         assert!(CAPABILITIES.contains(&"agent.progress"));
         // `agent.progress` and the snapshot's `progress`.
-        assert_eq!(PROTOCOL_REVISION, 26);
+        assert!(PROTOCOL_REVISION >= 26);
+    }
+
+    #[test]
+    fn compat_reports_update_blockers() {
+        // `host.update.status` blockers and `starting`.
+        assert_eq!(PROTOCOL_REVISION, 27);
     }
 
     #[test]
