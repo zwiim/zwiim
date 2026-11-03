@@ -375,8 +375,8 @@ Top to bottom:
   a pull request: a GitPullRequest icon (GitMerge once merged) in the status
   tone, mono `#12`, the status in `callout` (`Checks running` `accent`,
   `Checks passed` `done`, `Checks failed` `err`, `Draft` / `Open` / `Closed`
-  `mut`, `Merged` `done`), mono `1 running · 2 passed` in `mut` while open,
-  `›`; its spoken label drops the counts once merged or closed. The Host follows the PR on GitHub and the strip only renders its feed;
+  `mut`, `Merged` `done`), `›`. The counts live in the sheet, not on the
+  strip; its spoken label says them while open and drops them once merged or closed. The Host follows the PR on GitHub and the strip only renders its feed;
   the phone never asks GitHub. When the Host's GitHub CLI is missing or signed
   out, the strip is one `mut` mono line saying so and what to run on the Mac.
   Tapping opens the **PR sheet**: title, mono `#12 · main ← fix-auth`, the
@@ -955,3 +955,4 @@ glyph, a title, one line, one action.
 | 2026-10-30 | Composer options as one chip; Session options as summary rows with pages (design-shotgun C) | Claude Code lists 12 models; the stacked sheet overflowed the phone and Desktop's selects were long flat lists. Three rows keep the sheet short and each list gets a page or submenu with search. Chosen over a Latest/Older split (B) because the Host flattens the agent's groups and nothing should guess which models are latest |
 | 2026-10-30 | Phone New session makes a worktree instead of starting in a root | User call (A): the Host refuses sessions in a repository root (`root_workspace`), and the phone showed that error. Desktop never targets a root; the phone now does what Desktop does, a new worktree from the root's branch, and its tree drops the Root row |
 | 2026-10-30 | Phone Files, Terminals and the workspace sheet never land in a root | The Host refuses terminals in a root and every session in a plain folder, yet the phone offered both. It now mirrors Desktop's openRoot/newWorktree: choosing a workspace opens a worktree (making a plain folder a repository first, with the large-folder ask), and adding one from Files opens it in a new worktree |
+| 2026-11-03 | PR check counts fold under the status on both clients | User call: `Checks running 2 running · 3 passed · 1 skipped` wrapped and crowded the strip. The status alone says how the PR stands; the counts and each check open from it (Desktop toggles them under the status, the phone shows them in the PR sheet). Screen readers still hear the counts on the phone strip |

@@ -394,34 +394,55 @@ fn is_zwiim_edit_temp_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn git_check_ignored_paths(
+/// How long `git check-ignore` may take. Past it the check fails and the
+/// caller refreshes as if the paths mattered.
+const CHECK_IGNORE_LIMIT: Duration = Duration::from_secs(10);
+
+async fn git_check_ignored_paths(
     repo_path: &str,
     paths: &[String],
 ) -> Result<HashSet<String>, AppCommandError> {
+    use tokio::io::AsyncWriteExt;
+
     if paths.is_empty() {
         return Ok(HashSet::new());
     }
 
-    let mut child = crate::process::std_command("git")
+    let mut child = crate::process::tokio_command("git")
         .arg("--no-optional-locks")
         .args(["check-ignore", "--stdin", "-z"])
         .current_dir(repo_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
         .map_err(AppCommandError::io)?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        for path in paths {
-            stdin
-                .write_all(path.as_bytes())
-                .map_err(AppCommandError::io)?;
-            stdin.write_all(&[0]).map_err(AppCommandError::io)?;
-        }
+    let mut input = Vec::new();
+    for path in paths {
+        input.extend_from_slice(path.as_bytes());
+        input.push(0);
     }
-
-    let output = child.wait_with_output().map_err(AppCommandError::io)?;
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    // Git answers as it reads, so stdin is fed while stdout is read: writing
+    // every path first fills the output pipe and both sides wait forever.
+    let feed = async move {
+        let written = stdin.write_all(&input).await;
+        drop(stdin);
+        written
+    };
+    let (written, output) = tokio::time::timeout(CHECK_IGNORE_LIMIT, async {
+        tokio::join!(feed, child.wait_with_output())
+    })
+    .await
+    .map_err(|_| {
+        AppCommandError::external_command(
+            "git check-ignore timed out",
+            format!("no answer within {}s", CHECK_IGNORE_LIMIT.as_secs()),
+        )
+    })?;
+    let output = output.map_err(AppCommandError::io)?;
 
     // Exit code 1 means "no matches", which is expected.
     if !output.status.success() && output.status.code() != Some(1) {
@@ -430,6 +451,8 @@ fn git_check_ignored_paths(
             String::from_utf8_lossy(&output.stderr).to_string(),
         ));
     }
+    // Git heard only some of the paths, so the answer is incomplete.
+    written.map_err(AppCommandError::io)?;
 
     let mut ignored = HashSet::new();
     for raw in output.stdout.split(|byte| *byte == 0) {
@@ -534,16 +557,10 @@ pub(crate) async fn should_refresh_git_status_for_paths(root_display: &str, chan
         return false;
     }
 
-    let repo_path = root_display.to_string();
-    let missing_for_check = missing.clone();
-    let ignored = match tokio::task::spawn_blocking(move || {
-        git_check_ignored_paths(&repo_path, &missing_for_check)
-    })
-    .await
-    {
-        Ok(Ok(ignored)) => ignored,
+    let ignored = match git_check_ignored_paths(root_display, &missing).await {
+        Ok(ignored) => ignored,
         // Fail safe: if detection fails, keep current behavior and refresh status.
-        _ => return true,
+        Err(_) => return true,
     };
 
     let results: Vec<(String, bool)> = missing
@@ -1682,6 +1699,31 @@ mod tests {
             batch.changed_paths.insert((*path).to_string());
         }
         batch
+    }
+
+    #[tokio::test]
+    async fn check_ignore_answers_more_paths_than_a_pipe_holds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let git = |args: &[&str]| {
+            let status = crate::process::std_command("git")
+                .args(args)
+                .current_dir(dir.path())
+                .status()
+                .expect("git");
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(dir.path().join(".gitignore"), "target/\n").expect("write .gitignore");
+        // A build's worth of ignored paths: far more output than a pipe buffers.
+        let paths: Vec<String> = (0..20_000)
+            .map(|i| format!("target/debug/deps/libsome_dependency_name-{i:08}.rlib"))
+            .collect();
+
+        let root = dir.path().to_string_lossy();
+        let ignored = git_check_ignored_paths(&root, &paths)
+            .await
+            .expect("git check-ignore must answer, not deadlock");
+        assert_eq!(ignored.len(), paths.len());
     }
 
     #[tokio::test]

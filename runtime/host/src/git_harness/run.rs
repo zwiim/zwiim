@@ -112,13 +112,17 @@ async fn run_inner(
     let group = GroupKill::new(child.id());
     let stdin = child.stdin.take();
 
-    let finished = tokio::time::timeout(limit, async move {
+    // Stdin is fed while the output is read: a child that answers as it
+    // reads would otherwise fill its output pipe and wait on us forever.
+    let feed = async move {
         if let (Some(mut stdin), Some(input)) = (stdin, input) {
             // A child that exits early closes the pipe; its status says why.
             let _ = stdin.write_all(input).await;
-            drop(stdin);
         }
-        child.wait_with_output().await
+    };
+    let finished = tokio::time::timeout(limit, async move {
+        let ((), output) = tokio::join!(feed, child.wait_with_output());
+        output
     })
     .await;
     match finished {

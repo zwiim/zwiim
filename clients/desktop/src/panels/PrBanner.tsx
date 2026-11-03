@@ -637,22 +637,23 @@ export function PrBanner({ workspaceId, sessionId }: { workspaceId: string; sess
         )}
       </div>
       {!settled && (
-        <div className="mt-1 flex items-center gap-2 pl-6 text-xs">
-          <span className={cn("font-medium", TONE[status.tone])} data-testid="pr-status">
-            {status.label}
-          </span>
+        <div className="mt-1 pl-6 text-xs">
+          {/* The status alone keeps the strip short; the counts and runs open under it. */}
           {pr.checks.items.length > 0 ? (
             <button
               type="button"
-              className="text-muted-foreground hover:text-foreground flex items-center gap-0.5 font-mono text-2xs transition-colors"
+              className={cn("flex items-center gap-0.5 font-medium transition-opacity hover:opacity-80", TONE[status.tone])}
               aria-expanded={open}
+              title={checksLine(pr)}
               onClick={() => setOpen((o) => !o)}
             >
-              {checksLine(pr)}
+              <span data-testid="pr-status">{status.label}</span>
               {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
             </button>
           ) : (
-            <span className="text-muted-foreground font-mono text-2xs">{checksLine(pr)}</span>
+            <span className={cn("font-medium", TONE[status.tone])} data-testid="pr-status">
+              {status.label}
+            </span>
           )}
         </div>
       )}
@@ -710,11 +711,16 @@ export function PrBanner({ workspaceId, sessionId }: { workspaceId: string; sess
         </div>
       )}
       {open && !settled && (
-        <ul className="mt-1 max-h-48 overflow-y-auto pl-4" aria-label="Checks">
-          {pr.checks.items.map((c, i) => (
-            <CheckRow key={`${c.workflow ?? ""}/${c.name}/${i}`} check={c} />
-          ))}
-        </ul>
+        <div className="mt-1 pl-4">
+          <p className="text-muted-foreground px-1.5 font-mono text-2xs" data-testid="pr-checks-line">
+            {checksLine(pr)}
+          </p>
+          <ul className="max-h-48 overflow-y-auto" aria-label="Checks">
+            {pr.checks.items.map((c, i) => (
+              <CheckRow key={`${c.workflow ?? ""}/${c.name}/${i}`} check={c} />
+            ))}
+          </ul>
+        </div>
       )}
     </section>
   );

@@ -2192,6 +2192,24 @@ async fn assert_gone(pid: i32) {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn a_run_reads_output_while_it_feeds_input() {
+    // `cat` echoes as it reads: more input than a pipe buffers only gets
+    // through if its output is drained at the same time.
+    let input = vec![b'x'; 1 << 20];
+    let out = run::run_with_input(
+        tokio::process::Command::new("cat"),
+        &input,
+        Duration::from_secs(10),
+        "cat",
+    )
+    .await
+    .unwrap();
+    assert!(out.status.success());
+    assert_eq!(out.stdout.len(), input.len());
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn a_timed_out_run_kills_its_whole_process_tree() {
     let tmp = tempfile::tempdir().unwrap();
     let (cmd, pidfile) = sleeper(tmp.path());

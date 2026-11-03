@@ -1,6 +1,6 @@
 // The PR strip (DESIGN.md, Screen 5): under the session strip, the worktree
-// branch's pull request as the Host follows it on GitHub. One line: `#12`,
-// its status and checks; it opens the PR sheet (title, base ← head, each
+// branch's pull request as the Host follows it on GitHub. One line: `#12` and
+// its status; it opens the PR sheet (title, base ← head, the check counts, each
 // check, Merge). Merge turns the sheet into its confirm, and the Host merges
 // at the head shown there or refuses. While GitHub waits on checks or review,
 // Auto-merge (also confirmed) leaves the merge to GitHub, phone and Host asleep
@@ -173,10 +173,13 @@ export function PrStrip({
         <T variant="callout" color={color} testID="pr-strip-status">
           {look.status}
         </T>
-        {look.settled ? <View style={styles.flex} /> : (
-          <T variant="monoSm" color={theme.mut} numberOfLines={1} style={styles.flex} testID="pr-strip-checks">
-            {conflict ? conflictText(conflict) : look.checks}
+        {/* The counts live in the sheet; a conflict stays here since it needs the user. */}
+        {conflict ? (
+          <T variant="monoSm" color={theme.mut} numberOfLines={1} style={styles.flex} testID="pr-strip-conflicts">
+            {conflictText(conflict)}
           </T>
+        ) : (
+          <View style={styles.flex} />
         )}
         <Icon icon={ChevronRight} color={theme.faint} size={16} />
       </Pressable>

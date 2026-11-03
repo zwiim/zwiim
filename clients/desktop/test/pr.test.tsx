@@ -110,8 +110,11 @@ describe("pull request banner", () => {
     expect(merge().disabled).toBe(false);
     expect(merge().title).toBe("Squash and merge");
 
+    // The counts stay folded under the status until it is opened.
+    expect(screen.queryByText("1 running · 1 passed")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Checks running" }));
+    expect(screen.getByTestId("pr-checks-line").textContent).toBe("1 running · 1 passed");
     // Each check opens its run on GitHub; so does the PR.
-    fireEvent.click(screen.getByRole("button", { name: /1 running · 1 passed/ }));
     fireEvent.click(screen.getByRole("button", { name: /CI \/ test/ }));
     expect(openLink).toHaveBeenLastCalledWith("https://github.com/o/r/actions/runs/2");
     fireEvent.click(screen.getByRole("button", { name: /Add the thing/ }));
