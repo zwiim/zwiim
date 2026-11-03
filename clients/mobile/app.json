@@ -17,7 +17,7 @@
         "NSBonjourServices": ["_zwiim._tcp"],
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "4"
+      "buildNumber": "5"
     },
     "android": {
       "package": "com.zwiim.mobile",

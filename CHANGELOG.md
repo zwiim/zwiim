@@ -32,6 +32,38 @@ have their own versions and are listed under Compatibility.
 ### Known limitations
 - None.
 
+## [0.1.0-rc.13] - 2026-11-03
+
+### Added
+- Task progress: when an agent keeps a task list (Claude Code's todos, Codex's plan, or Zwiim's progress tool for any other agent), Desktop shows it on the composer and the phone on its step meter, with each task and the current one. The list is saved in the worktree under `.zwiim/tasks`, so a dropped network, a closed laptop or a Host restart does not lose it.
+- Continue unfinished tasks: when an agent stops partway, Continue starts a new session in the same worktree, with the same or another agent, that gets the tasks and the earlier chat attached. Retry and Retry in new chat carry the unfinished tasks on.
+- The composers where a session starts say how to get a task list: "Ask for a task list to track progress".
+
+### Changed
+- Pull request check counts fold under the status on both clients: Desktop shows them when the status is clicked, the phone in the PR sheet.
+- Zwiim's own tools show in the transcript by what they do, not by their MCP name.
+
+### Fixed
+- The Host feed could freeze when a worktree changed many ignored files (`target/`, `node_modules/`): new sessions never reached the session list, so new session tabs disappeared, and pull request state stopped, so the Merge strip never showed. Git commands that take input now read their output while it is written, with a time limit.
+
+### Security
+- None.
+
+### Compatibility
+- Protocol revision 26. New capabilities: `agent.progress`, `session.continue_plan`.
+- Mobile: Android app 0.1.0 (version code 1) as `com.zwiim.mobile`, installed from the APK. iOS 0.1.0 (build 5) for TestFlight testers.
+
+### Provider changes
+- None.
+
+### Migration notes
+- None.
+
+### Known limitations
+- An agent shows a task list only when it keeps one; ask for one in the prompt.
+- Codex command output appears when the command ends, not live.
+- Mobile dark text is #EDEFF0, not DESIGN.md's #DFE1E3.
+
 ## [0.1.0-rc.12] - 2026-10-30
 
 ### Added
