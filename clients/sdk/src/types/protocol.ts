@@ -1022,6 +1022,42 @@ export interface TurnUsage {
   cached_write_tokens: number | null;
 }
 
+/** One step of the agent's plan. */
+export type StepStatus = "pending" | "in_progress" | "completed";
+
+export interface ProgressStep {
+  title: string;
+  status: StepStatus;
+}
+
+/** The steps an agent is working through (`agent.progress`, revision 26). */
+export interface Progress {
+  steps: ProgressStep[];
+  completed: number;
+  total: number;
+}
+
+/** The newest plan a session saved, as `session.history` sends it (revision 26). */
+export interface SavedPlan extends Progress {
+  plan_id: string;
+  agent: AgentType;
+  /** How the plan's turn ended; `running` while it still runs. */
+  state: "running" | "completed" | "interrupted" | "cancelled";
+  /** A new session can finish it (`session.continue_plan`). */
+  resumable: boolean;
+}
+
+/** The plan a session was started to finish, and where it came from (revision 26). */
+export interface PlanContinues {
+  session_id: string;
+  plan_id: string;
+  /** Absent from links saved before the Host recorded it. */
+  agent?: AgentType | null;
+  completed?: number;
+  total?: number;
+  title?: string | null;
+}
+
 export interface SessionSnapshot {
   status: AgentStatus;
   live_message: LiveMessage | null;
@@ -1047,6 +1083,8 @@ export interface SessionSnapshot {
    * revision 5.
    */
   history_generation?: number;
+  /** The turn's current steps; null when it has none. Absent from Hosts before revision 26. */
+  progress?: Progress | null;
 }
 
 /** One task the agent launched to run in the background. */
@@ -1113,6 +1151,8 @@ export type SessionEvent =
   | EventBase<"agent.request_resolved", { kind: RequestKind; request_id: string }>
   | EventBase<"agent.turn_complete", { stop_reason: string | null }>
   | EventBase<"agent.error", SessionErrorInfo>
+  /** The agent's step list changed (revision 26). */
+  | EventBase<"agent.progress", Progress>
   | EventBase<"session.status", { status: SessionStatus }>
   /** The agent started or stopped reconnecting after losing its server (revision 14). */
   | EventBase<"session.reconnecting", { reconnecting: boolean }>
@@ -1207,6 +1247,12 @@ export interface SessionHistory {
    * there is none. Absent from Hosts before revision 14.
    */
   last_error?: { message: string; code: "agent_unreachable" } | null;
+  /** The newest saved plan. Absent from Hosts before revision 26 (capability `agent.progress`). */
+  progress?: SavedPlan | null;
+  /** The plan this session was started to finish. Absent before revision 26. */
+  continues?: PlanContinues | null;
+  /** The new session that took this session's plan over. Absent before revision 26. */
+  continued_in?: { session_id: string } | null;
 }
 
 // ─── pull requests ───────────────────────────────────────────────────────
@@ -1755,6 +1801,13 @@ export interface Operations {
    */
   "session.retry_in_new_chat": [{ session_id: string }, { session_id: string }];
   /**
+   * Start a new session, with `agent` (the session's own when absent), that
+   * finishes this session's newest plan. `session_id` is the NEW session.
+   * Capability `session.continue_plan`. `nothing_to_continue` when there is
+   * no plan to carry on.
+   */
+  "session.continue_plan": [{ session_id: string; agent?: AgentType }, { session_id: string; plan_id: string }];
+  /**
    * Send now when the agent is idle and nothing is queued, else queue behind
    * what is. The Host sends the next one when a turn ends normally; a stopped
    * or failed turn holds the queue. Capability `session.follow_ups`.
@@ -1886,6 +1939,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "session.revert",
   "session.retry",
   "session.retry_in_new_chat",
+  "session.continue_plan",
   "session.follow_up",
   "session.follow_up_send",
   "session.respond",

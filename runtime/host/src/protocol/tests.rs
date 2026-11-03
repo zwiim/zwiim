@@ -94,6 +94,7 @@ const OPS: &[&str] = &[
     "session.revert",
     "session.retry",
     "session.retry_in_new_chat",
+    "session.continue_plan",
     "session.follow_up",
     "session.follow_up_edit",
     "session.follow_up_remove",
@@ -2162,6 +2163,319 @@ async fn history_carries_saved_last_error() {
     assert_no_internal_keys(&history);
 }
 
+/// The newest saved plan comes back in history, titles relativized like the
+/// live `agent.progress`. A plan saved as running with no turn running was
+/// cut short by a Host that stopped, so it reads as interrupted.
+#[tokio::test]
+async fn history_carries_saved_plan() {
+    use crate::acp::progress::{ProgressStep, StepStatus};
+    use crate::session_plans::{PlanRecord, PlanState};
+
+    let h = host(false).await;
+    let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::Codex).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let history = h.ok("session.history", json!({"session_id": sid})).await;
+    assert!(
+        history.get("progress").is_some_and(Value::is_null),
+        "no plan reads as null: {history}"
+    );
+
+    let root = crate::session::workspace_dir(&h.state.db.conn, &sid)
+        .await
+        .expect("workspace dir");
+    let record = PlanRecord {
+        v: 1,
+        plan_id: "7d0f9a3c-0000-4000-8000-000000000001".into(),
+        session_id: sid.clone(),
+        agent: AgentType::Codex,
+        revision: 3,
+        state: PlanState::Running,
+        steps: vec![
+            ProgressStep {
+                title: format!("Edit {root}/src/main.rs"),
+                status: StepStatus::Completed,
+            },
+            ProgressStep {
+                title: "Run tests".into(),
+                status: StepStatus::InProgress,
+            },
+        ],
+        created_at_ms: 1,
+        updated_at_ms: 2,
+    };
+    crate::session_plans::save(std::path::Path::new(&root), &record)
+        .await
+        .unwrap();
+
+    let history = h.ok("session.history", json!({"session_id": sid})).await;
+    assert_eq!(
+        history["progress"],
+        json!({
+            "plan_id": record.plan_id,
+            "state": "interrupted",
+            "agent": "codex",
+            "steps": [
+                {"title": "Edit src/main.rs", "status": "completed"},
+                {"title": "Run tests", "status": "in_progress"},
+            ],
+            "total": 2,
+            "completed": 1,
+            "resumable": true,
+        })
+    );
+    assert_no_internal_keys(&history);
+}
+
+/// A stopped plan with steps left reads as resumable; once a new session
+/// takes it over, history says which one and the plan is no longer offered.
+#[tokio::test]
+async fn history_reports_resumable_and_continued_in() {
+    use crate::acp::progress::{ProgressStep, StepStatus};
+    use crate::session_plans::{ContinuedIn, PlanRecord, PlanState};
+
+    let h = host(false).await;
+    let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::Codex).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let next = seed_conversation(&h.state.db, h.folder_id, AgentType::Codex).await;
+    let next_sid = session_id_of(&h.state, next).await;
+    let root = crate::session::workspace_dir(&h.state.db.conn, &sid)
+        .await
+        .expect("workspace dir");
+    let root = std::path::Path::new(&root);
+    let record = PlanRecord {
+        v: 1,
+        plan_id: "7d0f9a3c-0000-4000-8000-000000000003".into(),
+        session_id: sid.clone(),
+        agent: AgentType::Codex,
+        revision: 3,
+        state: PlanState::Interrupted,
+        steps: vec![
+            ProgressStep {
+                title: "Edit".into(),
+                status: StepStatus::Completed,
+            },
+            ProgressStep {
+                title: "Run tests".into(),
+                status: StepStatus::Pending,
+            },
+        ],
+        created_at_ms: 1,
+        updated_at_ms: 2,
+    };
+    crate::session_plans::save(root, &record).await.unwrap();
+
+    let history = h.ok("session.history", json!({"session_id": sid})).await;
+    assert_eq!(history["progress"]["resumable"], json!(true));
+    assert!(history["continued_in"].is_null());
+
+    crate::session_plans::save_continued_in(
+        root,
+        &sid,
+        &ContinuedIn {
+            session_id: next_sid.clone(),
+            plan_id: record.plan_id.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    let history = h.ok("session.history", json!({"session_id": sid})).await;
+    assert_eq!(history["progress"]["resumable"], json!(false));
+    assert_eq!(history["continued_in"], json!({"session_id": next_sid}));
+    assert_no_internal_keys(&history);
+}
+
+/// The op's refusals over HTTP, and the link history reports. Its success
+/// path starts an agent, which only the orchestration tests can fake
+/// (`session_continue::tests`).
+#[tokio::test]
+async fn session_continue_plan_over_http() {
+    use crate::acp::progress::{ProgressStep, StepStatus};
+    use crate::session_plans::{PlanLink, PlanRecord, PlanState};
+
+    let unfinished = |sid: &str| PlanRecord {
+        v: 1,
+        plan_id: "7d0f9a3c-0000-4000-8000-000000000002".into(),
+        session_id: sid.to_string(),
+        agent: AgentType::ClaudeCode,
+        revision: 2,
+        state: PlanState::Interrupted,
+        steps: vec![ProgressStep {
+            title: "Run tests".into(),
+            status: StepStatus::Pending,
+        }],
+        created_at_ms: 1,
+        updated_at_ms: 2,
+    };
+    let h = host(false).await;
+    assert_eq!(
+        h.err("session.continue_plan", json!({"session_id": "nope"}))
+            .await
+            .1,
+        "not_found"
+    );
+
+    let (sid, _rx) = h.live_session().await;
+    assert_eq!(
+        h.err("session.continue_plan", json!({"session_id": sid})).await,
+        (StatusCode::CONFLICT, "nothing_to_continue".into())
+    );
+    assert_eq!(
+        h.err(
+            "session.continue_plan",
+            json!({"session_id": sid, "agent": "nope"})
+        )
+        .await
+        .1,
+        "invalid_request"
+    );
+
+    let root = crate::session::workspace_dir(&h.state.db.conn, &sid)
+        .await
+        .expect("workspace dir");
+    let root = std::path::Path::new(&root);
+    crate::session_plans::save(root, &unfinished(&sid))
+        .await
+        .unwrap();
+    let st = h.state.connection_manager.get_state(CONN).await.unwrap();
+    st.write().await.turn_in_flight = true;
+    assert_eq!(
+        h.err("session.continue_plan", json!({"session_id": sid}))
+            .await
+            .1,
+        "turn_in_progress"
+    );
+
+    // A session in a repository's root workspace has no worktree to start in.
+    let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::Codex).await;
+    let root_sid = session_id_of(&h.state, conv).await;
+    let root_dir = crate::session::workspace_dir(&h.state.db.conn, &root_sid)
+        .await
+        .expect("workspace dir");
+    crate::session_plans::save(std::path::Path::new(&root_dir), &unfinished(&root_sid))
+        .await
+        .unwrap();
+    assert_eq!(
+        h.err("session.continue_plan", json!({"session_id": root_sid}))
+            .await
+            .1,
+        "root_workspace"
+    );
+
+    // History names the plan a session continues.
+    let history = h.ok("session.history", json!({"session_id": sid})).await;
+    assert!(history.get("continues").is_some_and(Value::is_null));
+    let link = PlanLink {
+        session_id: root_sid.clone(),
+        plan_id: "7d0f9a3c-0000-4000-8000-000000000002".into(),
+        agent: Some(AgentType::Codex),
+        completed: 1,
+        total: 3,
+        title: Some("Fix the leak".into()),
+    };
+    crate::session_plans::save_link(root, &sid, &link)
+        .await
+        .unwrap();
+    let history = h.ok("session.history", json!({"session_id": sid})).await;
+    assert_eq!(
+        history["continues"],
+        json!({
+            "session_id": root_sid,
+            "plan_id": link.plan_id,
+            "agent": "codex",
+            "completed": 1,
+            "total": 3,
+            "title": "Fix the leak",
+        })
+    );
+    assert_no_internal_keys(&history);
+}
+
+/// Taking a plan over changes the old session (its panel stops offering
+/// Continue), so every device is told. The success path starts an agent,
+/// which this harness cannot fake, so this drives the two steps the handler
+/// takes after the new session exists: the old session's bump and the
+/// announcement.
+#[tokio::test]
+async fn continue_emits_session_changed_for_old_session() {
+    let h = host(true).await;
+    let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let (mut ws, _) = h.feed().await;
+
+    crate::db::service::conversation_service::touch(&h.state.db.conn, conv)
+        .await
+        .unwrap();
+    crate::protocol::http::announce_session_changed(&h.state, conv).await;
+    let changed = event_is("session.changed", |p| p["session"]["session_id"] == sid.as_str());
+    h.host_event(&mut ws, "old session changed", &changed).await;
+}
+
+/// The new session is titled after it exists, so the handler announces it
+/// again: the announcement reads the row when it is sent and carries the
+/// "(continued)" title, not the one the session started with.
+#[tokio::test]
+async fn continue_announces_the_new_sessions_title() {
+    let h = host(true).await;
+    let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::Codex).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let (mut ws, _) = h.feed().await;
+
+    crate::db::service::conversation_service::update_title(
+        &h.state.db.conn,
+        conv,
+        "Fix the leak (continued)".into(),
+    )
+    .await
+    .unwrap();
+    crate::protocol::http::announce_session_changed(&h.state, conv).await;
+    let titled = event_is("session.changed", |p| {
+        p["session"]["session_id"] == sid.as_str()
+            && p["session"]["title"] == "Fix the leak (continued)"
+    });
+    h.host_event(&mut ws, "new session titled", &titled).await;
+}
+
+/// `session.retry_in_new_chat` and `session.continue_plan` announce the old
+/// and the new session together, so every device's list shows the new title
+/// and where the old chat's plan went. The success path starts an agent,
+/// which this harness cannot fake, so this drives the announcement the
+/// handlers make once the new session exists.
+#[tokio::test]
+async fn announcing_two_sessions_tells_every_device_about_both() {
+    let h = host(true).await;
+    let old = seed_conversation(&h.state.db, h.folder_id, AgentType::Codex).await;
+    let old_sid = session_id_of(&h.state, old).await;
+    let new = seed_conversation(&h.state.db, h.folder_id, AgentType::Codex).await;
+    let new_sid = session_id_of(&h.state, new).await;
+    let (mut ws, _) = h.feed().await;
+
+    // The feed only tells devices about a session whose listing changed.
+    crate::db::service::conversation_service::touch(&h.state.db.conn, old)
+        .await
+        .unwrap();
+    crate::db::service::conversation_service::update_title(
+        &h.state.db.conn,
+        new,
+        "Fix the leak (continued)".into(),
+    )
+    .await
+    .unwrap();
+    crate::protocol::http::announce_sessions_changed(
+        &h.state,
+        &[old_sid.as_str(), new_sid.as_str()],
+    )
+    .await;
+
+    // Both arrive, in whichever order the list is sorted.
+    let seen = std::cell::RefCell::new(std::collections::HashSet::new());
+    let both = event_is("session.changed", |p| {
+        let id = p["session"]["session_id"].as_str().unwrap().to_string();
+        seen.borrow_mut().insert(id);
+        seen.borrow().contains(&old_sid) && seen.borrow().contains(&new_sid)
+    });
+    h.host_event(&mut ws, "both sessions changed", &both).await;
+}
+
 /// The saved message is the agent's own text, kept raw; history scrubs it
 /// like the live `agent.error` does, so a host path or a refused key never
 /// reaches a client.
@@ -3360,6 +3674,7 @@ async fn ws_subscribe_snapshot_live_replay_and_epoch() {
             "options",
             "pending_request",
             "pending_user_message",
+            "progress",
             "reconnecting",
             "status",
             "tool_calls",

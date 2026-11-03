@@ -135,12 +135,20 @@ export class HostController {
         if (state.status === "live" && was !== "live") void this.refreshAll();
       },
       hello: (hello) => this.store.dispatch({ type: "host", hello }),
-      feed: (update) =>
+      feed: (update) => {
         this.store.dispatch(
           update.type === "snapshot"
             ? { type: "host_snapshot", snapshot: update.snapshot }
             : { type: "host_event", event: update.event },
-        ),
+        );
+        // Another device changed the open session (a plan continued in a new
+        // chat, say): its saved plan and links are only in the history. Reads
+        // coalesce in `loadHistory`; the read can raise one more change (a
+        // first title or model), after which none.
+        if (update.type === "event" && update.event.type === "session.changed") {
+          void this.loadHistory(update.event.payload.session.session_id);
+        }
+      },
       session: (session_id, frame) => {
         this.store.dispatch({ type: "session_frame", session_id, frame });
         if (carriesOptions(frame)) this.bumpOptions(session_id);
@@ -573,7 +581,7 @@ export class HostController {
     try {
       do {
         this.historyDirty.delete(session_id);
-        const { turns, history_generation, last_error } = await this.client.request("session.history", { session_id });
+        const { turns, history_generation, last_error, progress, continues, continued_in } = await this.client.request("session.history", { session_id });
         if (!this.openSessions.has(session_id)) return;
         const settled = this.store.getState().sessions[session_id]?.settled ?? null;
         const delay = HISTORY_SETTLE_DELAYS_MS[settleAttempt];
@@ -588,7 +596,15 @@ export class HostController {
         this.store.dispatch({
           type: "session_frame",
           session_id,
-          frame: { type: "history", turns, generation: history_generation ?? null, lastError: last_error ?? null },
+          frame: {
+            type: "history",
+            turns,
+            generation: history_generation ?? null,
+            lastError: last_error ?? null,
+            savedPlan: progress ?? null,
+            continues: continues ?? null,
+            continuedIn: continued_in?.session_id ?? null,
+          },
         });
       } while (this.historyDirty.has(session_id));
     } catch {

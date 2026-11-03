@@ -3253,6 +3253,39 @@ impl ConnectionManager {
             .map(|conn| (conn.state.clone(), conn.emitter.clone()))
     }
 
+    /// Publish `progress` as the live step list of `conn_id`'s current turn.
+    /// It takes the same slot as a native agent plan, so whichever reported
+    /// last is what clients see.
+    ///
+    /// Gated on `turn_in_flight` in the same critical section as the apply
+    /// (via the gated emit): a report racing `TurnComplete` cannot land on a
+    /// finished turn.
+    pub async fn report_progress(
+        &self,
+        conn_id: &str,
+        progress: crate::acp::progress::Progress,
+    ) -> crate::acp::progress::ProgressAck {
+        use crate::acp::progress::ProgressAck;
+
+        let Some((state, emitter)) = self.get_state_and_emitter(conn_id).await else {
+            return ProgressAck::rejected("This session is no longer connected.");
+        };
+        let applied = emit_with_state_gated(
+            &state,
+            &emitter,
+            AcpEvent::PlanUpdate {
+                entries: progress.into_plan_entries(),
+            },
+            |s| s.turn_in_flight,
+        )
+        .await;
+        if applied {
+            ProgressAck::recorded()
+        } else {
+            ProgressAck::rejected("No turn is running, so there is no progress to show.")
+        }
+    }
+
     /// Wait (bounded) for the connected agent to say what a prompt may carry.
     ///
     /// `spawn_agent` returns as soon as the process is up and registered: it
@@ -4536,6 +4569,28 @@ impl SessionQuestionAccess for ConnectionManagerQuestionLookup {
     async fn cancel_questions_by_parent(&self, parent_connection_id: &str) {
         self.manager
             .cancel_questions_by_parent(parent_connection_id)
+            .await
+    }
+}
+
+/// Production impl of [`crate::acp::progress::SessionProgressAccess`] for the
+/// delegation listener's `update_progress` arm. Mirrors
+/// `ConnectionManagerQuestionLookup` so the listener stays unit-testable with
+/// an in-memory stub.
+#[derive(Clone)]
+pub struct ConnectionManagerProgressLookup {
+    pub manager: Arc<ConnectionManager>,
+}
+
+#[async_trait::async_trait]
+impl crate::acp::progress::SessionProgressAccess for ConnectionManagerProgressLookup {
+    async fn report_progress(
+        &self,
+        parent_connection_id: &str,
+        progress: crate::acp::progress::Progress,
+    ) -> crate::acp::progress::ProgressAck {
+        self.manager
+            .report_progress(parent_connection_id, progress)
             .await
     }
 }
@@ -8731,6 +8786,66 @@ mod tests {
         let captured = s.last_error.as_ref().unwrap();
         assert_eq!(captured.message, "second failure");
         assert!(captured.code.is_none());
+    }
+
+    // --- progress: update_progress publishes on the live turn ----------
+
+    fn one_step_progress(title: &str) -> crate::acp::progress::Progress {
+        crate::acp::progress::Progress::new(vec![crate::acp::progress::ProgressStep {
+            title: title.into(),
+            status: crate::acp::progress::StepStatus::InProgress,
+        }])
+        .unwrap()
+    }
+
+    fn live_plan(s: &crate::acp::SessionState) -> Option<serde_json::Value> {
+        s.live_message.as_ref().and_then(|live| {
+            live.content.iter().find_map(|block| match block {
+                crate::acp::session_state::LiveContentBlock::Plan { entries } => {
+                    Some(entries.clone())
+                }
+                _ => None,
+            })
+        })
+    }
+
+    #[tokio::test]
+    async fn report_progress_publishes_the_plan_mid_turn() {
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection("c1", AgentType::Codex, None, EventEmitter::Noop)
+            .await;
+        let state = mgr.get_state("c1").await.unwrap();
+        state.write().await.turn_in_flight = true;
+        let seq_before = state.read().await.event_seq;
+
+        let ack = mgr.report_progress("c1", one_step_progress("Build")).await;
+
+        assert!(ack.recorded);
+        let s = state.read().await;
+        assert_eq!(s.event_seq, seq_before + 1);
+        let plan = live_plan(&s).expect("plan block");
+        assert_eq!(plan[0]["content"], "Build");
+        assert_eq!(plan[0]["status"], "in_progress");
+    }
+
+    #[tokio::test]
+    async fn report_progress_rejected_when_no_turn_in_flight() {
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection("c1", AgentType::Codex, None, EventEmitter::Noop)
+            .await;
+
+        let ack = mgr.report_progress("c1", one_step_progress("Build")).await;
+
+        assert!(!ack.recorded);
+        let state = mgr.get_state("c1").await.unwrap();
+        assert!(live_plan(&*state.read().await).is_none());
+    }
+
+    #[tokio::test]
+    async fn report_progress_rejected_for_missing_connection() {
+        let mgr = ConnectionManager::new();
+        let ack = mgr.report_progress("nope", one_step_progress("Build")).await;
+        assert!(!ack.recorded);
     }
 
     // --- live feedback: submit gate + consume drain --------------------

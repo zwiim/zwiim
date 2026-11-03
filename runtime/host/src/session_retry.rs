@@ -7,6 +7,13 @@
 //! goes out clears the record. `session.retry_in_new_chat` sends them
 //! instead as the first prompt of a new session, with a summary of the old
 //! chat attached; the old session keeps its record.
+//!
+//! When the session's newest plan still has steps to do and no session has
+//! taken it over, and the user has not moved on since (no message of theirs
+//! after the plan, besides the one that failed), both carry the plan on:
+//! `session.retry` adds the plan's steps to the resent message, and
+//! `session.retry_in_new_chat` hands the plan over as `session.continue_plan`
+//! does, after the failed message.
 
 use std::path::Path;
 
@@ -20,12 +27,14 @@ use crate::db::entities::conversation;
 use crate::db::service::conversation_service;
 use crate::db::AppDatabase;
 use crate::models::agent::AgentType;
-use crate::models::message::MessageTurn;
+use crate::models::message::{MessageTurn, TurnRole};
 use crate::protocol::error::ZwiimError;
 use crate::session::{
     connection_for, resolve, send_locked, session_lock, start_tracked, AgentLauncher,
 };
+use crate::session_continue::{hand_over, step_lines};
 use crate::session_options::OptionsRequest;
+use crate::session_plans::{self, PlanRecord};
 use crate::session_summary;
 
 /// A turn that failed because the agent couldn't reach its provider: the
@@ -55,19 +64,77 @@ async fn saved_for(db: &AppDatabase, conversation_id: i32) -> Result<Unreachable
 /// Send session `session_id`'s saved can't-reach turn again, in the same
 /// session, resuming its agent if it is gone. Refused with `turn_in_progress`
 /// while a turn runs and `nothing_to_retry` without a saved turn. Sending it
-/// clears the record.
+/// clears the record. While the session's newest plan has steps to do, the
+/// message goes with a note listing them. `history` is the session's turns.
 pub async fn retry<L: AgentLauncher>(
     db: &AppDatabase,
     connections: &ConnectionManager,
     launcher: &L,
     session_id: &str,
+    history: &[MessageTurn],
 ) -> Result<(), ZwiimError> {
     let row = resolve(&db.conn, session_id).await?;
     let lock = session_lock(session_id);
     let _guard = lock.lock().await;
     refuse_turn_in_progress(connections, &row).await?;
     let turn = saved_for(db, row.id).await?;
-    send_locked(db, connections, launcher, &row, turn.blocks, None, None).await
+    let mut blocks = turn.blocks;
+    match crate::session::workspace_dir(&db.conn, session_id).await {
+        Some(workspace_dir) => {
+            let root = Path::new(&workspace_dir);
+            if let Some(plan) = unfinished_plan(db, root, session_id, history, &blocks).await {
+                blocks.push(PromptInputBlock::Text {
+                    text: plan_note(&plan, &workspace_dir),
+                });
+            }
+        }
+        None => tracing::warn!(
+            session_id,
+            "[zwiim] session has no workspace directory, so a plan is not carried on with the retry"
+        ),
+    }
+    send_locked(db, connections, launcher, &row, blocks, None, None).await
+}
+
+/// Session `session_id`'s newest plan, when it has steps to do, no session
+/// has taken it over and the user has not moved on: no message of theirs
+/// came after the plan, other than `failed` (the message that could not be
+/// sent), which `history` may already hold. The plan's state and whether
+/// the session is unreachable do not matter: a can't-reach turn is why this
+/// is asked.
+async fn unfinished_plan(
+    db: &AppDatabase,
+    root: &Path,
+    session_id: &str,
+    history: &[MessageTurn],
+    failed: &[PromptInputBlock],
+) -> Option<PlanRecord> {
+    let plan = session_plans::latest(root, session_id)
+        .await
+        .filter(PlanRecord::is_unfinished)?;
+    let moved_on = session_summary::without_failed_turns(history, failed)
+        .iter()
+        .any(|turn| {
+            matches!(turn.role, TurnRole::User)
+                && turn.timestamp.timestamp_millis() > plan.updated_at_ms
+        });
+    if moved_on {
+        return None;
+    }
+    session_plans::continued_in(&db.conn, root, session_id, &plan.plan_id)
+        .await
+        .is_none()
+        .then_some(plan)
+}
+
+/// What a resent message says about the plan that is still to be finished,
+/// with step titles relative to the workspace `root`.
+fn plan_note(plan: &PlanRecord, root: &str) -> String {
+    format!(
+        "This chat has tasks that are not finished:\n\n{}\n\n\
+         After answering the message above, carry on from the first task not done.",
+        step_lines(plan, Some(root)).join("\n")
+    )
 }
 
 /// Whether `retry_in_new_chat` would pass its first two refusals now, so a
@@ -88,6 +155,8 @@ pub async fn ensure_retryable(
 /// turn plus a summary of `history` (the old session's chat) as an
 /// attachment. Refused as `retry` is, and with `root_workspace` where no new
 /// session can start. The old session, and its saved turn, stay as they are.
+/// While the session's newest plan has steps to do, the new chat is instead
+/// started as `session_continue::hand_over` does, after the saved turn.
 /// Returns the new `session_id`.
 pub async fn retry_in_new_chat<L: AgentLauncher>(
     db: &AppDatabase,
@@ -111,29 +180,32 @@ pub async fn retry_in_new_chat<L: AgentLauncher>(
     let agent_type: AgentType =
         serde_json::from_value(serde_json::Value::String(row.agent_type.clone()))
             .map_err(|_| ZwiimError::internal())?;
-    let current = match crate::session_options::read(&db.conn, connections, &row, session_id).await
-    {
-        Some(current) => current,
-        None => {
-            tracing::warn!(
-                session_id,
-                "[zwiim] session options unknown, so the new chat starts on the agent's defaults"
-            );
-            Default::default()
-        }
-    };
-    let options = OptionsRequest {
-        model: current.model.map(|m| m.current),
-        effort: current.effort.map(|e| e.current),
-        mode: current.mode.map(|m| m.current),
-    };
+    let options = carried_options(db, connections, &row, session_id).await;
+    let root = Path::new(&folder.path);
+
+    if let Some(plan) = unfinished_plan(db, root, session_id, history, &turn.blocks).await {
+        return hand_over(
+            db,
+            connections,
+            launcher,
+            &row,
+            &workspace_id,
+            root,
+            &plan,
+            history,
+            agent_type,
+            &options,
+            turn.blocks,
+        )
+        .await;
+    }
 
     let summary = session_summary::build(
         &session_summary::turns_from_history(history),
         &agent_type.to_string(),
         &turn.blocks,
+        session_summary::SummaryKind::Unreachable,
     );
-    let root = Path::new(&folder.path);
     let stored = attachments::store(root, session_summary::SUMMARY_FILE, summary.as_bytes()).await?;
     let path = attachments::resolve(root, &stored.attachment_id)?;
     let mut blocks = turn.blocks;
@@ -163,8 +235,33 @@ pub async fn retry_in_new_chat<L: AgentLauncher>(
     started
 }
 
+/// The model, effort and mode in effect for session `row`, for a new chat
+/// with the same agent. The agent's defaults when they are unknown.
+pub(crate) async fn carried_options(
+    db: &AppDatabase,
+    connections: &ConnectionManager,
+    row: &conversation::Model,
+    session_id: &str,
+) -> OptionsRequest {
+    let current = match crate::session_options::read(&db.conn, connections, row, session_id).await {
+        Some(current) => current,
+        None => {
+            tracing::warn!(
+                session_id,
+                "[zwiim] session options unknown, so the new chat starts on the agent's defaults"
+            );
+            Default::default()
+        }
+    };
+    OptionsRequest {
+        model: current.model.map(|m| m.current),
+        effort: current.effort.map(|e| e.current),
+        mode: current.mode.map(|m| m.current),
+    }
+}
+
 /// `turn_in_progress` while session `row` has a turn running.
-async fn refuse_turn_in_progress(
+pub(crate) async fn refuse_turn_in_progress(
     connections: &ConnectionManager,
     row: &conversation::Model,
 ) -> Result<(), ZwiimError> {
@@ -249,7 +346,7 @@ mod tests {
         let blocks = vec![PromptInputBlock::Text { text: "hi".into() }, image()];
         save(&db, &sid, blocks.clone()).await;
 
-        retry(&db, &mgr, &launcher, &sid).await.unwrap();
+        retry(&db, &mgr, &launcher, &sid, &[]).await.unwrap();
         settle().await;
 
         let sent = launcher.prompt_blocks.lock().unwrap().clone();
@@ -265,7 +362,7 @@ mod tests {
         let launcher = FakeLauncher::new(mgr.clone_ref());
         let sid = idle_session(&db, &mgr, &launcher).await;
 
-        let err = retry(&db, &mgr, &launcher, &sid).await.unwrap_err();
+        let err = retry(&db, &mgr, &launcher, &sid, &[]).await.unwrap_err();
         assert_eq!(err.code, "nothing_to_retry");
         assert_eq!(err.status, axum::http::StatusCode::CONFLICT);
         assert_eq!(launcher.prompts_for("fake-conn-1"), ["hi"]);
@@ -281,7 +378,7 @@ mod tests {
         let sid = idle_session(&db, &mgr, &launcher).await;
         save(&db, &sid, Vec::new()).await;
 
-        let err = retry(&db, &mgr, &launcher, &sid).await.unwrap_err();
+        let err = retry(&db, &mgr, &launcher, &sid, &[]).await.unwrap_err();
         assert_eq!(err.code, "nothing_to_retry");
         assert_eq!(saved(&db, &sid).await.unwrap_err().code, "nothing_to_retry");
         assert_eq!(launcher.prompts_for("fake-conn-1"), ["hi"]);
@@ -308,7 +405,7 @@ mod tests {
         settle().await;
         save(&db, &sid, text("again")).await;
 
-        let err = retry(&db, &mgr, &launcher, &sid).await.unwrap_err();
+        let err = retry(&db, &mgr, &launcher, &sid, &[]).await.unwrap_err();
         assert_eq!(err.code, "turn_in_progress");
         assert!(
             record(&db, &sid).await.is_some(),
@@ -330,7 +427,7 @@ mod tests {
         let external_id = resolve(&db.conn, &sid).await.unwrap().external_id;
 
         assert_eq!(saved(&db, &sid).await.unwrap().blocks, text("again"));
-        retry(&db, &mgr, &launcher, &sid).await.unwrap();
+        retry(&db, &mgr, &launcher, &sid, &[]).await.unwrap();
         settle().await;
 
         assert_eq!(launcher.launches.load(Ordering::SeqCst), 2);
@@ -363,7 +460,8 @@ mod tests {
 
     // ── retry in a new chat ─────────────────────────────────────────────
 
-    fn transcript(pairs: &[(TurnRole, &str)]) -> Vec<MessageTurn> {
+    /// Turn `i` is stamped `base_ms + i` milliseconds after the epoch.
+    fn transcript_at(base_ms: i64, pairs: &[(TurnRole, &str)]) -> Vec<MessageTurn> {
         pairs
             .iter()
             .enumerate()
@@ -371,7 +469,7 @@ mod tests {
                 id: format!("turn-{i}"),
                 role: role.clone(),
                 blocks: vec![ContentBlock::Text { text: t.to_string() }],
-                timestamp: chrono::Utc::now(),
+                timestamp: chrono::DateTime::from_timestamp_millis(base_ms + i as i64).unwrap(),
                 usage: None,
                 duration_ms: None,
                 model: None,
@@ -379,6 +477,10 @@ mod tests {
                 agent_message_id: None,
             })
             .collect()
+    }
+
+    fn transcript(pairs: &[(TurnRole, &str)]) -> Vec<MessageTurn> {
+        transcript_at(0, pairs)
     }
 
     fn old_history() -> Vec<MessageTurn> {
@@ -632,6 +734,296 @@ mod tests {
         assert_eq!(err.code, "turn_in_progress");
         assert_eq!(launcher.launches.load(Ordering::SeqCst), 1);
         assert!(record(&db, &old).await.is_some());
+    }
+
+    // ── plan-aware retry ────────────────────────────────────────────────
+
+    use crate::acp::progress::{ProgressStep, StepStatus};
+    use crate::session_plans::{self, PlanRecord, PlanState};
+
+    /// Save a plan for session `sid` with steps `statuses` (titled
+    /// "step N"), and where it lives.
+    async fn save_plan(db: &AppDatabase, sid: &str, statuses: &[StepStatus]) -> PlanRecord {
+        let steps = statuses
+            .iter()
+            .enumerate()
+            .map(|(i, status)| ProgressStep {
+                title: format!("step {}", i + 1),
+                status: *status,
+            })
+            .collect();
+        save_plan_steps(db, sid, steps).await
+    }
+
+    async fn save_plan_steps(db: &AppDatabase, sid: &str, steps: Vec<ProgressStep>) -> PlanRecord {
+        let plan = PlanRecord {
+            v: 1,
+            plan_id: uuid::Uuid::new_v4().to_string(),
+            session_id: sid.to_string(),
+            agent: AgentType::Codex,
+            revision: 2,
+            state: PlanState::Interrupted,
+            steps,
+            created_at_ms: 1,
+            updated_at_ms: PLAN_AT_MS,
+        };
+        let root = crate::session::workspace_dir(&db.conn, sid).await.unwrap();
+        session_plans::save(Path::new(&root), &plan).await.unwrap();
+        plan
+    }
+
+    /// When test plans were last updated: after `old_history()`'s turns,
+    /// before `later_history()`'s.
+    const PLAN_AT_MS: i64 = 10;
+
+    const UNFINISHED: [StepStatus; 3] = [
+        StepStatus::Completed,
+        StepStatus::InProgress,
+        StepStatus::Pending,
+    ];
+
+    #[tokio::test]
+    async fn retry_adds_plan_note_when_plan_unfinished() {
+        let db = fresh_db().await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = idle_session(&db, &mgr, &launcher).await;
+        let blocks = vec![PromptInputBlock::Text { text: "hi".into() }, image()];
+        save(&db, &sid, blocks.clone()).await;
+        save_plan(&db, &sid, &UNFINISHED).await;
+
+        retry(&db, &mgr, &launcher, &sid, &[]).await.unwrap();
+        settle().await;
+
+        let sent = launcher.prompt_blocks.lock().unwrap().clone();
+        let (_, last) = sent.last().unwrap().clone();
+        assert_eq!(last.len(), blocks.len() + 1, "{last:?}");
+        assert_eq!(last[..blocks.len()], blocks[..]);
+        let PromptInputBlock::Text { text: note } = &last[blocks.len()] else {
+            panic!("note block: {:?}", last[blocks.len()]);
+        };
+        assert!(note.contains("1. [done] step 1"), "{note}");
+        assert!(note.contains("2. [in progress] step 2"), "{note}");
+        assert!(note.contains("3. [to do] step 3"), "{note}");
+        assert!(note.contains("carry on from the first task not done"), "{note}");
+        assert!(record(&db, &sid).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn retry_without_plan_is_unchanged() {
+        let db = fresh_db().await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = idle_session(&db, &mgr, &launcher).await;
+        let blocks = vec![PromptInputBlock::Text { text: "hi".into() }, image()];
+        save(&db, &sid, blocks.clone()).await;
+        // A plan with every step done is not one to carry on.
+        save_plan(&db, &sid, &[StepStatus::Completed, StepStatus::Completed]).await;
+
+        retry(&db, &mgr, &launcher, &sid, &[]).await.unwrap();
+        settle().await;
+
+        let sent = launcher.prompt_blocks.lock().unwrap().clone();
+        assert_eq!(sent.last().unwrap().1, blocks);
+    }
+
+    #[tokio::test]
+    async fn retry_in_new_chat_hands_over_plan() {
+        let db = fresh_db().await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let old = idle_session(&db, &mgr, &launcher).await;
+        let old_row = resolve(&db.conn, &old).await.unwrap();
+        conversation_service::update_title(&db.conn, old_row.id, "Fix login".into())
+            .await
+            .unwrap();
+        let blocks = vec![PromptInputBlock::Text { text: "fix the bug".into() }, image()];
+        save(&db, &old, blocks.clone()).await;
+        let plan = save_plan(&db, &old, &UNFINISHED).await;
+
+        let new = retry_in_new_chat(&db, &mgr, &launcher, &old, &old_history())
+            .await
+            .unwrap();
+        settle().await;
+
+        let sent = launcher.prompt_blocks.lock().unwrap().clone();
+        let (conn, first) = sent.last().unwrap().clone();
+        assert_eq!(conn, "fake-conn-2");
+        assert_eq!(first.len(), blocks.len() + 1, "{first:?}");
+        assert_eq!(first[..blocks.len()], blocks[..]);
+        let PromptInputBlock::Text { text: handover } = &first[blocks.len()] else {
+            panic!("hand-over block: {:?}", first[blocks.len()]);
+        };
+        assert!(handover.contains("2. [in progress] step 2"), "{handover}");
+        let files: Vec<&str> = handover.lines().filter_map(|l| l.strip_prefix("- ")).collect();
+        assert_eq!(files.len(), 2, "{handover}");
+        assert!(files[0].ends_with("/tasks.md"), "{handover}");
+        assert!(files[1].ends_with("/previous-session.md"), "{handover}");
+        assert!(!handover.contains("earlier-chat-summary.md"), "{handover}");
+
+        let new_row = resolve(&db.conn, &new).await.unwrap();
+        assert_eq!(new_row.agent_type, old_row.agent_type);
+        assert_eq!(new_row.title.as_deref(), Some("Fix login (continued)"));
+        let root = crate::session::workspace_dir(&db.conn, &old).await.unwrap();
+        assert_eq!(
+            session_plans::continued_in(&db.conn, Path::new(&root), &old, &plan.plan_id).await,
+            Some(new)
+        );
+        assert!(record(&db, &old).await.is_some(), "the old session keeps its card");
+    }
+
+    #[tokio::test]
+    async fn retry_in_new_chat_plain_when_plan_continued() {
+        let db = fresh_db().await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let old = idle_session(&db, &mgr, &launcher).await;
+        save(&db, &old, text("please fix the login page")).await;
+        let plan = save_plan(&db, &old, &UNFINISHED).await;
+        // Another session already took the plan over.
+        let taker = idle_session(&db, &mgr, &launcher).await;
+        let root = crate::session::workspace_dir(&db.conn, &old).await.unwrap();
+        session_plans::save_continued_in(
+            Path::new(&root),
+            &old,
+            &session_plans::ContinuedIn {
+                session_id: taker,
+                plan_id: plan.plan_id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let new = retry_in_new_chat(&db, &mgr, &launcher, &old, &old_history())
+            .await
+            .unwrap();
+        settle().await;
+
+        let sent = launcher.prompt_blocks.lock().unwrap().clone();
+        let first = &sent.last().unwrap().1;
+        let PromptInputBlock::Text { text: note } = first.last().unwrap() else {
+            panic!("note block");
+        };
+        assert!(note.contains("earlier-chat-summary.md"), "{note}");
+        assert!(!note.contains("tasks.md"), "{note}");
+        let row = resolve(&db.conn, &new).await.unwrap();
+        assert_eq!(row.title.as_deref(), Some("please fix the login page"));
+    }
+
+    /// The user spoke again after the plan (the last message is the one that
+    /// failed to send): they moved on from it.
+    fn later_history() -> Vec<MessageTurn> {
+        let mut turns = transcript_at(
+            PLAN_AT_MS,
+            &[
+                (TurnRole::User, "hi"),
+                (TurnRole::Assistant, "hello there"),
+                (TurnRole::User, "forget that, fix the README"),
+                (TurnRole::Assistant, "done"),
+                (TurnRole::User, "fix the bug"),
+            ],
+        );
+        // The plan was made during the first turn; the redirect is after it.
+        turns[0].timestamp = chrono::DateTime::from_timestamp_millis(PLAN_AT_MS - 5).unwrap();
+        turns
+    }
+
+    #[tokio::test]
+    async fn retry_skips_plan_the_user_moved_on_from() {
+        let db = fresh_db().await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = idle_session(&db, &mgr, &launcher).await;
+        let blocks = text("fix the bug");
+        save(&db, &sid, blocks.clone()).await;
+        save_plan(&db, &sid, &UNFINISHED).await;
+
+        retry(&db, &mgr, &launcher, &sid, &later_history())
+            .await
+            .unwrap();
+        settle().await;
+
+        let sent = launcher.prompt_blocks.lock().unwrap().clone();
+        assert_eq!(sent.last().unwrap().1, blocks, "no plan note");
+    }
+
+    /// The agent wrote the failed message to its transcript, after the plan:
+    /// that message alone is not the user moving on.
+    #[tokio::test]
+    async fn retry_keeps_plan_when_only_the_failed_message_is_newer() {
+        let db = fresh_db().await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = idle_session(&db, &mgr, &launcher).await;
+        let blocks = text("fix the bug");
+        save(&db, &sid, blocks.clone()).await;
+        save_plan(&db, &sid, &UNFINISHED).await;
+        let mut history = old_history();
+        history[2].timestamp = chrono::DateTime::from_timestamp_millis(PLAN_AT_MS + 5).unwrap();
+
+        retry(&db, &mgr, &launcher, &sid, &history).await.unwrap();
+        settle().await;
+
+        let sent = launcher.prompt_blocks.lock().unwrap().clone();
+        assert_eq!(sent.last().unwrap().1.len(), blocks.len() + 1, "plan note added");
+    }
+
+    #[tokio::test]
+    async fn retry_note_shows_step_paths_relative_to_the_workspace() {
+        let db = fresh_db().await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let sid = idle_session(&db, &mgr, &launcher).await;
+        save(&db, &sid, text("hi")).await;
+        let root = crate::session::workspace_dir(&db.conn, &sid).await.unwrap();
+        save_plan_steps(
+            &db,
+            &sid,
+            vec![ProgressStep {
+                title: format!("edit {root}/src/a.rs"),
+                status: StepStatus::InProgress,
+            }],
+        )
+        .await;
+
+        retry(&db, &mgr, &launcher, &sid, &[]).await.unwrap();
+        settle().await;
+
+        let sent = launcher.prompt_blocks.lock().unwrap().clone();
+        let PromptInputBlock::Text { text: note } = sent.last().unwrap().1.last().unwrap() else {
+            panic!("note block");
+        };
+        assert!(note.contains("1. [in progress] edit src/a.rs"), "{note}");
+        assert!(!note.contains(&root), "{note}");
+    }
+
+    #[tokio::test]
+    async fn retry_in_new_chat_plain_when_the_user_moved_on_from_the_plan() {
+        let db = fresh_db().await;
+        let mgr = ConnectionManager::new();
+        let launcher = FakeLauncher::new(mgr.clone_ref());
+        let old = idle_session(&db, &mgr, &launcher).await;
+        save(&db, &old, text("fix the bug")).await;
+        let plan = save_plan(&db, &old, &UNFINISHED).await;
+
+        let new = retry_in_new_chat(&db, &mgr, &launcher, &old, &later_history())
+            .await
+            .unwrap();
+        settle().await;
+
+        let sent = launcher.prompt_blocks.lock().unwrap().clone();
+        let PromptInputBlock::Text { text: note } = sent.last().unwrap().1.last().unwrap() else {
+            panic!("note block");
+        };
+        assert!(note.contains("earlier-chat-summary.md"), "{note}");
+        assert!(!note.contains("tasks.md"), "{note}");
+        let root = crate::session::workspace_dir(&db.conn, &old).await.unwrap();
+        assert_eq!(
+            session_plans::continued_in(&db.conn, Path::new(&root), &old, &plan.plan_id).await,
+            None,
+            "the old plan was not handed over"
+        );
+        assert_eq!(resolve(&db.conn, &new).await.unwrap().title.as_deref(), Some("fix the bug"));
     }
 
     async fn fresh_db() -> AppDatabase {

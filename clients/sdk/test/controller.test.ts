@@ -77,6 +77,124 @@ describe("HostController", () => {
     expect(block?.type === "tool_call" && block.status).toBe("in_progress");
   });
 
+  it("puts the saved plan and its links from session.history on the view", async () => {
+    const t = setup();
+    const progress = {
+      steps: [{ title: "Read", status: "completed" }, { title: "Fix", status: "pending" }],
+      total: 2,
+      completed: 1,
+      plan_id: "p1",
+      agent: "claude_code",
+      state: "interrupted",
+      resumable: true,
+    };
+    const continues = { session_id: "s0", plan_id: "p0", agent: "codex", completed: 1, total: 3, title: "Old" };
+    t.transport.handlers["session.history"] = (p: { session_id: string }) => ({
+      session_id: p.session_id,
+      turns: [],
+      progress,
+      continues,
+      continued_in: { session_id: "s2" },
+    });
+    t.client.start();
+    await flush();
+    t.transport.channel.open();
+    await flush();
+    t.controller.openSession("s1");
+    await flush();
+    const view = t.store.getState().sessions.s1!;
+    expect(view.savedPlan).toEqual(progress);
+    expect(view.continues).toEqual(continues);
+    expect(view.continuedIn).toBe("s2");
+  });
+
+  it("reads a session.history without plan fields as no plan", async () => {
+    const t = setup();
+    t.transport.handlers["session.history"] = (p: { session_id: string }) => ({ session_id: p.session_id, turns: [] });
+    t.client.start();
+    await flush();
+    t.transport.channel.open();
+    await flush();
+    t.controller.openSession("s1");
+    await flush();
+    const view = t.store.getState().sessions.s1!;
+    expect(view.history).toEqual([]);
+    expect(view.savedPlan).toBeNull();
+    expect(view.continues).toBeNull();
+    expect(view.continuedIn).toBeNull();
+  });
+
+  describe("session.changed for the open session", () => {
+    const changed = (id: string) => ({
+      session_id: id,
+      workspace_id: "w1",
+      title: "Fix login (continued)",
+      agent: "claude_code" as const,
+      status: "pending_review" as const,
+      live: false,
+      created_at: "2026-09-24T00:00:00Z",
+      updated_at: "2026-09-24T00:00:01Z",
+    });
+
+    async function openedSession() {
+      const t = setup();
+      let continuedIn: { session_id: string } | undefined;
+      t.transport.handlers["session.history"] = (p: { session_id: string }) => ({
+        session_id: p.session_id,
+        turns: [],
+        continued_in: continuedIn,
+      });
+      t.client.start();
+      await flush();
+      t.transport.channel.open();
+      await flush();
+      t.controller.openSession("s1");
+      await flush();
+      return { t, continueElsewhere: () => (continuedIn = { session_id: "s2" }) };
+    }
+
+    it("re-reads that session's history, so another device's Continue shows here", async () => {
+      const { t, continueElsewhere } = await openedSession();
+      expect(t.store.getState().sessions.s1!.continuedIn).toBeNull();
+      const reads = t.transport.count("session.history");
+
+      continueElsewhere();
+      t.transport.feedEvent("session.changed", { session: changed("s1") });
+      await flush();
+
+      expect(t.transport.count("session.history")).toBe(reads + 1);
+      expect(t.store.getState().sessions.s1!.continuedIn).toBe("s2");
+    });
+
+    it("reads once for a burst of changes", async () => {
+      const { t } = await openedSession();
+      const reads = t.transport.count("session.history");
+
+      for (let i = 0; i < 5; i++) t.transport.feedEvent("session.changed", { session: changed("s1") });
+      await flush();
+
+      // The first read, and one more for everything that landed during it.
+      expect(t.transport.count("session.history")).toBeLessThanOrEqual(reads + 2);
+      expect(t.transport.count("session.history")).toBeGreaterThan(reads);
+    });
+
+    it("does not read a session that is not open, and a read raises no further read", async () => {
+      const { t } = await openedSession();
+      const reads = t.transport.count("session.history");
+
+      t.transport.feedEvent("session.changed", { session: changed("other") });
+      await flush();
+      expect(t.transport.count("session.history")).toBe(reads);
+
+      // The history read itself dispatches no feed event, so a change is
+      // answered by exactly one read and then the client is quiet.
+      t.transport.feedEvent("session.changed", { session: changed("s1") });
+      await flush();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(t.transport.count("session.history")).toBe(reads + 1);
+    });
+  });
+
   it("shows the saved can't-reach error of a session with no live agent", async () => {
     const t = setup();
     const saved = { message: "Can't reach the server", code: "agent_unreachable" };

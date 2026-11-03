@@ -185,6 +185,18 @@ pub async fn update_title(
     Ok(())
 }
 
+/// Bump `updated_at` to now and change nothing else: the session was acted
+/// on (its plan was taken over) without its own content changing.
+pub async fn touch(conn: &DatabaseConnection, conversation_id: i32) -> Result<(), DbError> {
+    use sea_orm::sea_query::Expr;
+    conversation::Entity::update_many()
+        .col_expr(conversation::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(conversation::Column::Id.eq(conversation_id))
+        .exec(conn)
+        .await?;
+    Ok(())
+}
+
 /// Auto-derive counterpart to [`update_title`]: write `title` ONLY when the row
 /// is not user-locked and the value actually changed. Never sets `title_locked`
 /// (the title stays eligible for future auto-refreshes, e.g. when an agent like

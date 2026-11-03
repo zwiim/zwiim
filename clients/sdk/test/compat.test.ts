@@ -95,8 +95,17 @@ describe("evaluateCompatibility", () => {
     expect(hasCapability(c, "session.revert.chat")).toBe(false);
   });
 
+  it("speaks revision 26 and shows plan progress and continuing a plan", () => {
+    expect(CLIENT_REVISION).toBe(26);
+    expect(CLIENT_CAPABILITIES).toContain("agent.progress");
+    expect(CLIENT_CAPABILITIES).toContain("session.continue_plan");
+    const old = evaluateCompatibility(hello({ revision: 25, min_client_revision: 1, capabilities: ["workspace.remove"] }));
+    expect(hasCapability(old, "agent.progress")).toBe(false);
+    expect(hasCapability(old, "session.continue_plan")).toBe(false);
+  });
+
   it("speaks revision 25 and resolves conflicts only GitHub sees", () => {
-    expect(CLIENT_REVISION).toBe(25);
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(25);
     expect(CLIENT_CAPABILITIES).toContain("workspace.resolve_conflicts.github");
     const old = evaluateCompatibility(hello({ revision: 24, min_client_revision: 1, capabilities: ["workspace.remove"] }));
     expect(hasCapability(old, "workspace.remove")).toBe(true);

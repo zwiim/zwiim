@@ -52,6 +52,21 @@ const NAME_VERBS: Record<string, string> = {
   view_image: "View",
 };
 
+/**
+ * Zwiim's own tools, as the agent names them: `mcp__zwiim-mcp__<tool>`, or
+ * `mcp.zwiim-mcp.<tool>` in a Codex title. Read by what they do, never by
+ * that name.
+ */
+const ZWIIM_TOOLS: Record<string, string> = {
+  update_progress: "Updated tasks",
+};
+
+/** What one of Zwiim's own tools does, or null for any other tool. */
+function zwiimTool(name: string): string | null {
+  const m = /^mcp(?:__|\.)zwiim-mcp(?:__|\.)(\w+)$/.exec(name.trim());
+  return m ? (ZWIIM_TOOLS[m[1]!] ?? null) : null;
+}
+
 const TARGET_KEYS = [
   "command",
   "cmd",
@@ -139,7 +154,7 @@ export function historyTool(name: string, input: string | null): ToolSummary {
   } catch {
     // Not JSON (or cut short): shown as it is.
   }
-  const verb = NAME_VERBS[name.toLowerCase()] ?? name;
+  const verb = zwiimTool(name) ?? NAME_VERBS[name.toLowerCase()] ?? name;
   if (!args) {
     const target = firstLine(input ?? "");
     return { verb, target, input: input?.trim() === target ? null : input };
@@ -181,6 +196,8 @@ const CODEX_TITLES: [RegExp, string][] = [
 /** A live call: the agent's title ("Read src/a.ts", "`ls -la`") and kind. */
 export function liveTool(title: string | null, kind: string | null | undefined): ToolSummary {
   const t = unquote(title ?? "");
+  const own = zwiimTool(t);
+  if (own) return { verb: own, target: "", input: null };
   const summary = (verb: string, whole: string): ToolSummary => ({
     verb,
     target: firstLine(whole),

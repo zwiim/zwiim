@@ -54,7 +54,7 @@ use crate::acp::delegation::transport::{
     client_feedback_round_trip, client_git_round_trip, client_resume_task_round_trip,
     client_round_trip,
     client_session_round_trip, client_status_round_trip, client_task_complete_round_trip,
-    client_task_progress_round_trip, BrokerAskRequest, BrokerBrowserActRequest, BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest,
+    client_task_progress_round_trip, client_update_progress_round_trip, BrokerAskRequest, BrokerBrowserActRequest, BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest,
     BrokerBrowserEvalRequest, BrokerBrowserSnapshotRequest, BrokerBrowserTabOpRequest,
     BrokerBrowserTabsRequest,
     BrokerCancelRequest,
@@ -62,8 +62,9 @@ use crate::acp::delegation::transport::{
     BrokerCreateWorkTaskRequest, BrokerFeedbackRequest, BrokerGitRequest, BrokerRequest,
     BrokerResponse,
     BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
-    BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
+    BrokerTaskCompleteRequest, BrokerTaskProgressRequest, BrokerUpdateProgressRequest,
 };
+use crate::acp::progress::Progress;
 use crate::acp::question::parse_questions;
 use crate::acp::session_info::MAX_SESSION_MESSAGES;
 use crate::models::AutomationAction;
@@ -188,6 +189,10 @@ pub struct CompanionFeatures {
     /// when the agent runs under its own sandbox (`ZWIIM_ACP_HOST_TOOLS=agent`),
     /// because the Harness runs on the user's machine outside it.
     pub git: bool,
+    /// `update_progress` — publish the agent's step list (done / running /
+    /// remaining) to the user's session. Only surfaces Zwiim's own state, so
+    /// the parent turns it on for every agent, sandboxed or not.
+    pub progress: bool,
 }
 
 impl CompanionFeatures {
@@ -210,6 +215,7 @@ impl CompanionFeatures {
                 browser: false,
                 browser_eval: false,
                 git: false,
+                progress: false,
             };
         };
         let mut f = Self {
@@ -223,6 +229,7 @@ impl CompanionFeatures {
             browser: false,
             browser_eval: false,
             git: false,
+            progress: false,
         };
         for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
             match tok {
@@ -236,6 +243,7 @@ impl CompanionFeatures {
                 "browser" => f.browser = true,
                 "browser_eval" => f.browser_eval = true,
                 "git" => f.git = true,
+                "progress" => f.progress = true,
                 _ => {}
             }
         }
@@ -251,6 +259,7 @@ impl CompanionFeatures {
             "task_progress" | "task_complete" => self.tasks,
             "create_automation" => self.automations,
             "create_work_task" => self.taskboard,
+            "update_progress" => self.progress,
             "browser_list_tabs" | "browser_snapshot" | "browser_console_messages"
             | "browser_screenshot" | "browser_click" | "browser_hover" | "browser_type"
             | "browser_press_key" | "browser_select_option" | "browser_open_tab"
@@ -862,6 +871,20 @@ async fn build_tools_call_spawn(
             let round_trip =
                 Box::pin(async move { client_browser_tab_op_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_browser_tab_op_result).await
+        }
+        "update_progress" => {
+            let progress = match Progress::from_tool_arguments(&arguments) {
+                Ok(progress) => progress,
+                Err(message) => return LineAction::Respond(err(id, -32602, message)),
+            };
+            let req = BrokerUpdateProgressRequest {
+                token: ctx.token.clone(),
+                steps: progress.steps,
+            };
+            // No external_handle: a report has nothing to cancel broker-side.
+            let round_trip =
+                Box::pin(async move { client_update_progress_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_task_ack).await
         }
         "task_progress" => {
             let message = arguments
@@ -2625,6 +2648,7 @@ mod tests {
             browser: false,
             browser_eval: false,
             git: false,
+            progress: false,
         })
     }
 
@@ -3219,6 +3243,7 @@ mod tests {
         browser: false,
     browser_eval: false,
     git: false,
+    progress: false,
     };
     const BOTH: CompanionFeatures = CompanionFeatures {
         delegation: true,
@@ -3231,6 +3256,7 @@ mod tests {
         browser: false,
     browser_eval: false,
     git: false,
+    progress: false,
     };
     const ASK_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -3243,6 +3269,7 @@ mod tests {
         browser: false,
     browser_eval: false,
     git: false,
+    progress: false,
     };
     const SESSIONS_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -3255,6 +3282,7 @@ mod tests {
         browser: false,
     browser_eval: false,
     git: false,
+    progress: false,
     };
 
     fn list_tool_names(action: LineAction) -> Vec<String> {
@@ -3596,6 +3624,7 @@ mod tests {
         browser: false,
     browser_eval: false,
     git: false,
+    progress: false,
     };
     const TASKBOARD_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -3608,6 +3637,7 @@ mod tests {
         browser: false,
     browser_eval: false,
     git: false,
+    progress: false,
     };
 
     /// The two authoring groups gate independently: enabling one must not
@@ -3705,6 +3735,78 @@ mod tests {
             })
             .to_string();
             let resp = unwrap_respond(dispatch_with_features(TASKBOARD_ONLY, &line).await);
+            let e = resp.error.expect("bad arguments must be rejected");
+            assert_eq!(e.code, -32602);
+            assert!(e.message.contains(expect), "got: {}", e.message);
+        }
+    }
+
+    const PROGRESS_ONLY: CompanionFeatures = CompanionFeatures {
+        delegation: false,
+        feedback: false,
+        ask: false,
+        sessions: false,
+        tasks: false,
+        automations: false,
+        taskboard: false,
+        browser: false,
+        browser_eval: false,
+        git: false,
+        progress: true,
+    };
+
+    fn update_progress_call(arguments: Value) -> String {
+        json!({
+            "jsonrpc": "2.0", "id": 45, "method": "tools/call",
+            "params": { "name": "update_progress", "arguments": arguments }
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn update_progress_listed_only_with_the_progress_group() {
+        let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let names = list_tool_names(dispatch_for_test(list).await);
+        assert!(!names.contains(&"update_progress".to_string()));
+
+        let names = list_tool_names(dispatch_with_features(PROGRESS_ONLY, list).await);
+        assert_eq!(names, vec!["update_progress".to_string()]);
+        assert!(CompanionFeatures::parse(Some("git,progress")).progress);
+    }
+
+    #[tokio::test]
+    async fn update_progress_rejected_as_unknown_when_feature_off() {
+        let line = update_progress_call(json!({
+            "steps": [{ "title": "a", "status": "pending" }]
+        }));
+        let resp = unwrap_respond(dispatch_for_test(&line).await);
+        assert!(resp.error.unwrap().message.contains("unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn update_progress_spawns_when_valid_and_enabled() {
+        let line = update_progress_call(json!({
+            "steps": [
+                { "title": "Read the code", "status": "completed" },
+                { "title": "Write the fix", "status": "in_progress" },
+            ]
+        }));
+        assert!(matches!(
+            dispatch_with_features(PROGRESS_ONLY, &line).await,
+            LineAction::Spawn(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn update_progress_bad_arguments_rejected_synchronously() {
+        for (args, expect) in [
+            (json!({}), "steps"),
+            (json!({ "steps": [] }), "at least one step"),
+            (json!({ "steps": [{ "title": " ", "status": "pending" }] }), "title"),
+            (json!({ "steps": [{ "title": "a", "status": "done" }] }), "status"),
+        ] {
+            let resp =
+                unwrap_respond(dispatch_with_features(PROGRESS_ONLY, &update_progress_call(args)).await);
             let e = resp.error.expect("bad arguments must be rejected");
             assert_eq!(e.code, -32602);
             assert!(e.message.contains(expect), "got: {}", e.message);
@@ -4132,6 +4234,7 @@ mod tests {
         browser: true,
         browser_eval: false,
         git: false,
+        progress: false,
     };
 
     /// The browser group with `browser_eval` on top, which is the only way
@@ -4934,6 +5037,7 @@ mod tests {
         browser: false,
         browser_eval: false,
         git: true,
+        progress: false,
     };
 
     fn git_call(name: &str, arguments: Value) -> String {

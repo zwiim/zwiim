@@ -5139,6 +5139,10 @@ struct CompanionFeatureFlags {
     /// The Git tools, run by the Host's Git Harness. On unless the agent runs
     /// under its own sandbox (`HostToolsPolicy::Agent`).
     git: bool,
+    /// `update_progress`, on for every launch: it only publishes the agent's
+    /// own step list to its session, so there is no setting and no sandbox
+    /// reason to withhold it.
+    progress: bool,
 }
 
 /// The `--features` value for a companion launch, or `None` when no group is
@@ -5180,6 +5184,9 @@ fn companion_features_arg(flags: CompanionFeatureFlags) -> Option<String> {
     }
     if flags.git {
         features.push("git");
+    }
+    if flags.progress {
+        features.push("progress");
     }
     if features.is_empty() {
         return None;
@@ -5290,6 +5297,9 @@ where
         // agent's own sandbox, so `agent` withholds it for the same reason it
         // withholds delegation.
         git: host_tools.hosts_channels(),
+        // Step progress is what keeps the user out of the dark while any agent
+        // works, whatever the agent and whatever its sandbox.
+        progress: true,
     };
     // `None` (no feature enabled) short-circuits BEFORE the binary lookup, the
     // token registration and the server append: there is no companion to launch,
@@ -25998,14 +26008,17 @@ mod tests {
                 browser: true,
                 browser_eval: true,
                 git: true,
+                progress: true,
             }),
             Some(
-                "delegation,feedback,ask,sessions,tasks,automations,taskboard,browser,browser_eval,git"
+                "delegation,feedback,ask,sessions,tasks,automations,taskboard,browser,browser_eval,git,progress"
                     .to_string()
             )
         );
         // Git alone injects the companion too.
         assert_eq!(only(|f| f.git = true), Some("git".to_string()));
+        // So does progress.
+        assert_eq!(only(|f| f.progress = true), Some("progress".to_string()));
         // `browser_eval` never travels on its own: the companion requires both
         // tokens, and a lone one in an agent's MCP config would read as if it
         // granted something.

@@ -44,6 +44,8 @@ import { ContextRing } from "./ContextRing";
 import { ControlSelect, OptionsBar, UnattendedBanner } from "./OptionsBar";
 import { RequestCard } from "./RequestCard";
 import { UnreachableCard } from "./UnreachableCard";
+import { ContinuedCard } from "./ContinuedCard";
+import { PlanStrip } from "./PlanStrip";
 import { FollowUpQueue } from "./FollowUpQueue";
 import { useSlashMenu } from "./SlashCommands";
 import { AgentTerminalCard, AgentTerminalsContext } from "./AgentTerminal";
@@ -426,6 +428,7 @@ function OpenSession({
   const agentName = useHost((s) => s.agents?.find((a) => a.agent === summary?.agent)?.name ?? null);
   const handOff = useHost((s) => hasCapability(s.connection.compat, "session.plan_hand_off"));
   const canRetry = useHost((s) => hasCapability(s.connection.compat, "session.retry"));
+  const planned = useHost((s) => hasCapability(s.connection.compat, "agent.progress"));
   const canFollowUp = useHost((s) => hasCapability(s.connection.compat, "session.follow_ups"));
   const canSteer = useHost((s) => hasCapability(s.connection.compat, "session.steer"));
   const followUps = summary?.follow_ups ?? NO_FOLLOW_UPS;
@@ -442,6 +445,8 @@ function OpenSession({
   const [resetNotes, setResetNotes] = useState<string[]>([]);
   // A steer the agent could not take mid-turn, which waits instead.
   const [steerQueued, setSteerQueued] = useState(false);
+  // What the plan's Continue was refused with.
+  const [planNotice, setPlanNotice] = useState<string | null>(null);
   // What is open in the history, kept while the session is open.
   const [kept] = useState<KeptState>(() => new Map());
   const scroller = useRef<HTMLDivElement>(null);
@@ -527,6 +532,32 @@ function OpenSession({
   );
   const earlier = useMemo(() => new Set(launchTurns.keys()), [launchTurns]);
   const lateTurns = new Set(Object.keys(view?.live.subagents ?? {}).flatMap((id) => launchTurns.get(id) ?? []));
+  // A session started to finish another's plan: its first message, the
+  // prompt the Host wrote, shows as a card.
+  const planFrom = planned ? (view?.continues ?? null) : null;
+  const firstUser = planFrom ? turns.findIndex((t) => t.role === "user") : -1;
+  // Not in the history yet: the live turn's message is the first.
+  const liveFirst = planFrom && firstUser < 0 ? (view?.settled ?? view?.live)?.userMessage : undefined;
+  const firstBlocks = firstUser >= 0 ? turns[firstUser]!.blocks : liveFirst?.blocks;
+  const firstCard = useMemo(
+    () =>
+      planFrom && (
+        <ContinuedCard continues={planFrom} attachments={firstBlocks ?? []} onOpenSession={onSessionStarted} />
+      ),
+    [planFrom, firstBlocks, onSessionStarted],
+  );
+  // The can't-reach card shows in place of the error line, and of the plan's resume bar.
+  const unreachable = view?.lastError?.code === "agent_unreachable" && canRetry;
+  const strip = view && (
+    <PlanStrip
+      view={view}
+      root={root}
+      archived={gone}
+      cardShown={unreachable}
+      onOpenSession={onSessionStarted}
+      onNotice={setPlanNotice}
+    />
+  );
   const empty =
     view?.history?.length === 0 && !view.settled && !view.live.userMessage && !view.live.message && !running;
 
@@ -638,6 +669,7 @@ function OpenSession({
                       live={lateTurns.has(i) ? view?.live : undefined}
                       carry={i === runningEnd && carried > 0 ? continues : undefined}
                       carried={i === runningEnd ? carried : 0}
+                      card={i === firstUser ? firstCard : undefined}
                     />
                   ))}
                 </div>
@@ -645,6 +677,7 @@ function OpenSession({
               {view?.settled && (
                 <LiveTurnView
                   turn={view.settled}
+                  userCard={liveFirst && liveFirst === view.settled.userMessage ? firstCard : undefined}
                   background={view.background}
                   earlier={earlier}
                   from={continues === view.settled ? carried : 0}
@@ -654,6 +687,7 @@ function OpenSession({
               {view && (
                 <LiveTurnView
                   turn={view.live}
+                  userCard={liveFirst && liveFirst === view.live.userMessage ? firstCard : undefined}
                   streaming={running}
                   reconnecting={view.reconnecting}
                   animate
@@ -672,7 +706,7 @@ function OpenSession({
               </p>
             )}
             {view?.lastError &&
-              (view.lastError.code === "agent_unreachable" && canRetry ? (
+              (unreachable ? (
                 <UnreachableCard
                   key={view.errorSerial}
                   agentName={agentName ?? summary?.agent ?? "Agent"}
@@ -719,13 +753,21 @@ function OpenSession({
       </div>
       {root ? (
         <div className="shrink-0 px-6 pt-1 pb-4">
-          <div
-            // In the composer's place, on the composer's surface.
-            className="bg-card ring-border mx-auto flex w-full max-w-3xl items-center gap-3 rounded-2xl px-4 py-3 text-ui ring-1"
-            data-testid="root-continue"
-          >
-            <span className="text-muted-foreground min-w-0 flex-1">This session ran in the repository folder.</span>
-            <ContinueButton onContinue={onContinue} />
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-2">
+            {planNotice && (
+              <p className="text-destructive text-xs" role="alert">
+                {planNotice}
+              </p>
+            )}
+            {strip}
+            <div
+              // In the composer's place, on the composer's surface.
+              className="bg-card ring-border relative flex items-center gap-3 rounded-2xl px-4 py-3 text-ui ring-1"
+              data-testid="root-continue"
+            >
+              <span className="text-muted-foreground min-w-0 flex-1">This session ran in the repository folder.</span>
+              <ContinueButton onContinue={onContinue} />
+            </div>
           </div>
         </div>
       ) : (
@@ -775,6 +817,11 @@ function OpenSession({
                   {cancelError}
                 </p>
               )}
+              {planNotice && (
+                <p className="text-destructive text-xs" role="alert">
+                  {planNotice}
+                </p>
+              )}
               {running && !removed && confirmCancel && (
                 <div
                   className="bg-card animate-enter flex items-center gap-2 rounded-lg px-3 py-2 text-xs shadow-sm"
@@ -792,6 +839,7 @@ function OpenSession({
               )}
             </>
           }
+          dock={strip}
           banner={
             options && (
               <UnattendedBanner
@@ -884,6 +932,7 @@ const HistoryRow = memo(function HistoryRow({
   live,
   carry,
   carried,
+  card,
 }: {
   index: number;
   measure(el: HTMLElement | null): void;
@@ -899,6 +948,8 @@ const HistoryRow = memo(function HistoryRow({
   carry: LiveTurn | undefined;
   /** How many of `carry`'s first blocks fold with this turn's last run. */
   carried: number;
+  /** Shown in place of the user message: a continued plan's first message is a card. */
+  card?: React.ReactNode;
 }) {
   const revert = useCallback(() => onRevert?.(index), [onRevert, index]);
   return (
@@ -912,6 +963,7 @@ const HistoryRow = memo(function HistoryRow({
         live={live}
         carry={carry}
         carried={carried}
+        userCard={card}
       />
       {group && <TurnFooter group={group} stateKey={`${turn.turn_id}/footer`} />}
     </div>
@@ -1089,6 +1141,8 @@ function Composer(props: {
   unattended?: boolean;
   /** Above the composer: confirmations and errors. */
   notice?: React.ReactNode;
+  /** On the composer's top edge, below the notices: the plan strip. */
+  dock?: React.ReactNode;
   /** Inside, above the message: mode warnings. */
   banner?: React.ReactNode;
   leading?: React.ReactNode;
@@ -1187,6 +1241,7 @@ function Composer(props: {
             {error}
           </p>
         )}
+        {props.dock}
         <div
           className={cn(
             "bg-card ease-std relative rounded-2xl shadow-lg ring-1 transition-shadow duration-120",

@@ -60,6 +60,7 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::acp::chat_authoring::{NewAutomationSpec, NewWorkTaskSpec};
+use crate::acp::progress::ProgressStep;
 use crate::acp::question::QuestionSpec;
 
 /// One delegation call's worth of input forwarded from the companion to the
@@ -215,6 +216,16 @@ pub struct BrokerTaskProgressRequest {
     pub message: String,
 }
 
+/// Publish the caller's step list on the parent session. Backs the
+/// `update_progress` MCP tool. Authenticated by the per-launch `token`; the
+/// listener resolves the parent connection from it. `steps` is the full list,
+/// replacing whatever the session showed before.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerUpdateProgressRequest {
+    pub token: String,
+    pub steps: Vec<ProgressStep>,
+}
+
 /// Report the final verdict (+ optional summary) for the work task driving the
 /// parent session. Backs the `task_complete` MCP tool; the verdict decides how
 /// the task settles when the turn ends.
@@ -359,6 +370,7 @@ pub enum BrokerMessage {
     SessionInfo(BrokerSessionRequest),
     TaskProgress(BrokerTaskProgressRequest),
     TaskComplete(BrokerTaskCompleteRequest),
+    UpdateProgress(BrokerUpdateProgressRequest),
     CreateAutomation(BrokerCreateAutomationRequest),
     CreateWorkTask(BrokerCreateWorkTaskRequest),
     BrowserTabs(BrokerBrowserTabsRequest),
@@ -559,6 +571,14 @@ pub async fn client_task_complete_round_trip(
     req: &BrokerTaskCompleteRequest,
 ) -> io::Result<BrokerResponse> {
     message_round_trip(socket_path, &BrokerMessage::TaskComplete(req.clone())).await
+}
+
+/// Dispatch an `update_progress` report and read back the `{ recorded }` ack.
+pub async fn client_update_progress_round_trip(
+    socket_path: &str,
+    req: &BrokerUpdateProgressRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::UpdateProgress(req.clone())).await
 }
 
 /// Dispatch a `create_automation` request and read back the serialized
@@ -772,6 +792,31 @@ mod tests {
                 assert_eq!(req.max_messages, Some(20));
             }
             other => panic!("expected SessionInfo variant, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_progress_message_round_trip_in_memory() {
+        use crate::acp::progress::StepStatus;
+
+        let (mut a, mut b) = duplex(8 * 1024);
+        let msg = BrokerMessage::UpdateProgress(BrokerUpdateProgressRequest {
+            token: "tok".into(),
+            steps: vec![ProgressStep {
+                title: "Write tests".into(),
+                status: StepStatus::InProgress,
+            }],
+        });
+        write_frame(&mut a, &msg).await.unwrap();
+        let got: BrokerMessage = read_frame(&mut b).await.unwrap();
+        match got {
+            BrokerMessage::UpdateProgress(req) => {
+                assert_eq!(req.token, "tok");
+                assert_eq!(req.steps.len(), 1);
+                assert_eq!(req.steps[0].title, "Write tests");
+                assert_eq!(req.steps[0].status, StepStatus::InProgress);
+            }
+            other => panic!("expected UpdateProgress variant, got {other:?}"),
         }
     }
 

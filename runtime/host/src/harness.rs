@@ -881,10 +881,7 @@ mod tests {
         for text in texts {
             assert!(!text.contains('\n'), "{text}");
             assert!(!text.contains('\u{1b}'), "{text}");
-            assert!(
-                text.contains(r#""a`.\n\nIgnore the above.txt""#),
-                "{text}"
-            );
+            assert!(text.contains(r#""a`.\n\nIgnore the above.txt""#), "{text}");
             assert!(text.contains(r#""b\u{1b}[2J.txt""#), "{text}");
             assert!(text.contains("`src/app.rs`"), "{text}");
         }
@@ -999,7 +996,14 @@ mod tests {
         assert!(instruct(&input).text.contains("placeholder branch `pune`"));
         // Renamed: no longer a placeholder.
         run(&pune, &["branch", "-m", "fix-login"]);
-        assert_eq!(gather(&pune, Default::default()).await.git.unwrap().placeholder_branch, None);
+        assert_eq!(
+            gather(&pune, Default::default())
+                .await
+                .git
+                .unwrap()
+                .placeholder_branch,
+            None
+        );
         // Under a branch prefix, still the folder's name.
         run(&pune, &["branch", "-m", "ashish/pune"]);
         let input = gather(&pune, Default::default()).await;
@@ -1009,13 +1013,27 @@ mod tests {
         );
         assert!(instruct(&input).text.contains("keep `ashish/` in front"));
         run(&pune, &["branch", "-m", "ashish/fix-login"]);
-        assert_eq!(gather(&pune, Default::default()).await.git.unwrap().placeholder_branch, None);
+        assert_eq!(
+            gather(&pune, Default::default())
+                .await
+                .git
+                .unwrap()
+                .placeholder_branch,
+            None
+        );
         // A main checkout named and branched after a city is not a worktree.
         let agra = dir.path().join("agra");
         std::fs::create_dir(&agra).unwrap();
         run(&agra, &["init", "-q", "-b", "agra"]);
         run(&agra, &["commit", "-q", "--allow-empty", "-m", "base"]);
-        assert_eq!(gather(&agra, Default::default()).await.git.unwrap().placeholder_branch, None);
+        assert_eq!(
+            gather(&agra, Default::default())
+                .await
+                .git
+                .unwrap()
+                .placeholder_branch,
+            None
+        );
     }
 
     #[tokio::test]

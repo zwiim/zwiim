@@ -2,10 +2,30 @@
 // transcript's rows, the Now bar and the composer. They draw what they are
 // given; the screen decides what that is.
 
-import { Fragment, useEffect, useState, type ReactNode } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
-import { basename, formatSize, revertWarning, type AgentImage, type AttachmentBlock, type ChangedFile, type RevertChoice } from "@zwiim/sdk";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { ActivityIndicator, Animated, PanResponder, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
+import {
+  basename,
+  formatSize,
+  revertWarning,
+  type AgentImage,
+  type AgentType,
+  type AttachmentBlock,
+  type ChangedFile,
+  type ProgressStep,
+  type RevertChoice,
+} from "@zwiim/sdk";
 import type { PendingFile } from "../attachments/pending";
+import {
+  CONTINUE_NOTE,
+  continuedInLabel,
+  continuingLabel,
+  doneCount,
+  fromLabel,
+  pipWindow,
+  stoppedTitle,
+  type PipState,
+} from "../sessions/plan";
 import { revertCopy } from "../sessions/revert";
 import {
   RETRY_LABEL,
@@ -28,7 +48,7 @@ import {
   type ToolItem,
   type TranscriptRow,
 } from "../sessions/transcript";
-import { Button, Sheet, StatusDot, T, useReduceMotion } from "./components";
+import { Button, Sheet, StatusDot, T, useBreathing, useReduceMotion } from "./components";
 import { ArrowUp, Bot, CircleAlert, FileText, Icon, Image, Paperclip, RotateCcw, X } from "./icons";
 import { fonts, PRESSED_OPACITY, radius, space, type, useTheme } from "./tokens";
 
@@ -83,24 +103,30 @@ export function UserMessage({
           <T selectable>{text}</T>
         </View>
       ) : null}
-      {onRevert ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Reset to here"
-          accessibilityState={{ disabled: !!revertDisabled }}
-          disabled={revertDisabled}
-          onPress={onRevert}
-          hitSlop={REVERT_SLOP}
-          style={({ pressed }) => [styles.revert, { opacity: revertDisabled ? 0.4 : pressed ? PRESSED_OPACITY : 1 }]}
-          testID="user-reset"
-        >
-          <Icon icon={RotateCcw} color={theme.mut} size={13} />
-          <T variant="callout" color={theme.mut}>
-            Reset to here
-          </T>
-        </Pressable>
-      ) : null}
+      {onRevert ? <RevertAction onPress={onRevert} disabled={revertDisabled} /> : null}
     </View>
+  );
+}
+
+/** "Reset to here", under a message the Host can put the session back to. */
+export function RevertAction({ onPress, disabled }: { onPress(): void; disabled?: boolean }) {
+  const theme = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Reset to here"
+      accessibilityState={{ disabled: !!disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      hitSlop={REVERT_SLOP}
+      style={({ pressed }) => [styles.revert, { opacity: disabled ? 0.4 : pressed ? PRESSED_OPACITY : 1 }]}
+      testID="user-reset"
+    >
+      <Icon icon={RotateCcw} color={theme.mut} size={13} />
+      <T variant="callout" color={theme.mut}>
+        Reset to here
+      </T>
+    </Pressable>
   );
 }
 
@@ -865,6 +891,381 @@ export function NowAction({
   );
 }
 
+/** The color of a step's pip: done green, the one in hand muted, the stop an accent ring, the rest faint. */
+function pipColor(state: PipState, theme: ReturnType<typeof useTheme>): string {
+  return state === "done" ? theme.done : state === "current" ? theme.mut : state === "stopped" ? theme.accent : theme.faint;
+}
+
+/** The pip of the step in hand: a `mut` dot that breathes like the working mark, without its halo. */
+function CurrentPip() {
+  const theme = useTheme();
+  const opacity = useBreathing(true);
+  return <Animated.View style={[styles.pip, { backgroundColor: theme.mut, opacity }]} testID="pip-current" />;
+}
+
+/** One pip per step. Stopped is a hollow accent ring (not an error); pending a hollow faint one. */
+function Pips({ states }: { states: readonly PipState[] }) {
+  const theme = useTheme();
+  return (
+    <View style={styles.pips} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+      {pipWindow(states).map((state, i) =>
+        state === "current" ? (
+          <CurrentPip key={i} />
+        ) : (
+          <View
+            key={i}
+            style={[
+              styles.pip,
+              state === "stopped" || state === "pending"
+                ? { borderWidth: 1.5, borderColor: pipColor(state, theme) }
+                : { backgroundColor: pipColor(state, theme) },
+            ]}
+            testID={`pip-${state}`}
+          />
+        ),
+      )}
+    </View>
+  );
+}
+
+/**
+ * The plan's steps, one row each: a mark, then the title. The step the agent
+ * is on, or stopped at, reads in full color; the one in hand shows `activity`
+ * (what the agent is doing) under its title.
+ */
+export function StepList({
+  steps,
+  states,
+  activity,
+}: {
+  steps: readonly ProgressStep[];
+  states: readonly PipState[];
+  activity?: string | null;
+}) {
+  const theme = useTheme();
+  return (
+    <View style={styles.steps} testID="step-list">
+      {steps.map((step, i) => {
+        const state = states[i] ?? "pending";
+        const here = state === "current";
+        return (
+          <View key={i} style={styles.step} testID={here ? "step-row-current" : "step-row"}>
+            <T variant="mono" color={pipColor(state, theme)} style={styles.glyph}>
+              {state === "done" ? "✓" : state === "stopped" ? "◯" : here ? "●" : "○"}
+            </T>
+            <View style={styles.shrink}>
+              <T color={state === "pending" ? theme.mut : theme.fg} style={here ? styles.stepHere : undefined}>
+                {step.title}
+              </T>
+              {here && activity ? (
+                <T variant="mono" color={theme.mut} numberOfLines={1} testID="step-activity">
+                  {activity}
+                </T>
+              ) : null}
+            </View>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+/**
+ * The plan's status while the agent works through it, in the Now bar's place,
+ * two lines. First: the pips, `N of M`, the time, and Stop. Second: the step in
+ * hand, then what the agent is doing, in mono. A tap or a swipe up opens the steps.
+ */
+export function StepMeter({
+  title,
+  activity,
+  count,
+  time,
+  states,
+  action,
+  onOpen,
+}: {
+  title: string;
+  activity?: string | null;
+  count: string;
+  time?: string | null;
+  states: readonly PipState[];
+  action?: ReactNode;
+  onOpen(): void;
+}) {
+  const theme = useTheme();
+  const open = useRef(onOpen);
+  useEffect(() => {
+    open.current = onOpen;
+  });
+  const swipe = useRef(
+    PanResponder.create({
+      // Capture: the body's Pressable would otherwise keep a vertical drag as its own.
+      onMoveShouldSetPanResponderCapture: (_, g) => g.dy < -10 && Math.abs(g.dy) > 2 * Math.abs(g.dx),
+      onPanResponderRelease: (_, g) => {
+        if (g.dy < -24) open.current();
+      },
+    }),
+  ).current;
+  return (
+    <View
+      style={[styles.meter, { backgroundColor: theme.surface }]}
+      testID="step-meter"
+      accessibilityLiveRegion="polite"
+      {...swipe.panHandlers}
+    >
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${title}. ${count}. Show tasks`}
+        onPress={onOpen}
+        style={styles.meterBody}
+        testID="step-meter-open"
+      >
+        <View style={styles.meterTop}>
+          <Pips states={states} />
+          <T variant="mono" color={theme.mut} style={styles.tabular} testID="step-meter-count">
+            {count}
+          </T>
+          {time ? (
+            <T variant="mono" color={theme.mut} style={styles.tabular} testID="now-time">
+              {time}
+            </T>
+          ) : null}
+        </View>
+        <View style={styles.meterLine}>
+          <T variant="callout" numberOfLines={1} style={styles.meterTitle} testID="step-meter-title">
+            {title}
+          </T>
+          {activity ? (
+            <T variant="mono" color={theme.mut} numberOfLines={1} style={styles.shrink} testID="step-meter-activity">
+              {activity}
+            </T>
+          ) : null}
+        </View>
+      </Pressable>
+      {/* Beside the body, level with its first line. */}
+      {action ? <View style={styles.meterAction}>{action}</View> : null}
+    </View>
+  );
+}
+
+/** The steps of the plan in a sheet, opened from the meter. */
+export function StepSheet({
+  visible,
+  onClose,
+  count,
+  steps,
+  states,
+  activity,
+}: {
+  visible: boolean;
+  onClose(): void;
+  count: string;
+  steps: readonly ProgressStep[];
+  states: readonly PipState[];
+  activity?: string | null;
+}) {
+  const theme = useTheme();
+  return (
+    <Sheet visible={visible} onClose={onClose}>
+      <T variant="title">Tasks</T>
+      <T variant="mono" color={theme.mut} style={styles.tabular}>
+        {count}
+      </T>
+      <ScrollView style={styles.stepScroll}>
+        <StepList steps={steps} states={states} activity={activity} />
+      </ScrollView>
+      <Button tall kind="secondary" label="Close" onPress={onClose} />
+    </Sheet>
+  );
+}
+
+/**
+ * A plan the agent stopped part way, over the composer: where it stopped, the
+ * count, the pips (a tap lists the steps), the agent to continue with, and
+ * Continue. Continue starts a new session; nothing happens until it is tapped.
+ * `reason` says why it cannot run here, and `error` why the last tap did not.
+ */
+export function ResumePanel({
+  heading,
+  count,
+  steps,
+  states,
+  choices,
+  picked,
+  onPick,
+  label,
+  pending,
+  disabled,
+  reason,
+  onContinue,
+}: {
+  heading: string;
+  count: string;
+  steps: readonly ProgressStep[];
+  states: readonly PipState[];
+  /** The agents to continue with, the session's own first; chips show when there is a choice. */
+  choices: readonly { agent: AgentType; name: string }[];
+  picked: AgentType;
+  onPick(agent: AgentType): void;
+  label: string;
+  pending: boolean;
+  disabled: boolean;
+  reason: string | null;
+  onContinue(): void;
+}) {
+  const theme = useTheme();
+  const [listed, setListed] = useState(false);
+  return (
+    <View style={[styles.resume, { backgroundColor: theme.surface }]} testID="resume-panel">
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${heading}. ${count}. ${listed ? "Hide" : "Show"} tasks`}
+        accessibilityState={{ expanded: listed }}
+        onPress={() => setListed((v) => !v)}
+        style={({ pressed }) => [styles.resumeHead, { opacity: pressed ? PRESSED_OPACITY : 1 }]}
+        testID="resume-steps"
+      >
+        <View style={styles.meterLine}>
+          <View style={[styles.stopMark, { borderColor: theme.accent }]} />
+          <T style={[styles.shrink, styles.resumeTitle]} numberOfLines={listed ? undefined : 1} testID="resume-title">
+            {heading}
+          </T>
+        </View>
+        <View style={styles.meterLine}>
+          <Pips states={states} />
+          <T variant="mono" color={theme.mut} style={styles.tabular} testID="resume-count">
+            {count}
+          </T>
+        </View>
+      </Pressable>
+      {listed ? (
+        <ScrollView style={styles.stepScroll}>
+          <StepList steps={steps} states={states} />
+        </ScrollView>
+      ) : null}
+      {choices.length > 1 ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips} testID="resume-agents">
+          {choices.map((c) => {
+            const on = c.agent === picked;
+            return (
+              <Pressable
+                key={c.agent}
+                accessibilityRole="radio"
+                accessibilityLabel={c.name}
+                accessibilityState={{ selected: on, disabled: pending }}
+                disabled={pending}
+                onPress={() => onPick(c.agent)}
+                hitSlop={{ top: 4, bottom: 4 }}
+                style={({ pressed }) => [
+                  styles.agentChip,
+                  { borderColor: on ? theme.accent : theme.lineStrong, opacity: pressed ? PRESSED_OPACITY : 1 },
+                ]}
+                testID={`resume-agent-${c.agent}`}
+              >
+                <T variant="callout" color={on ? theme.accent : theme.fg}>
+                  {c.name}
+                </T>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      ) : null}
+      <Button tall kind="primary" label={label} loading={pending} disabled={disabled} onPress={onContinue} testID="resume-continue" />
+      {reason ? (
+        <T variant="callout" color={theme.mut} testID="resume-reason">
+          {reason}
+        </T>
+      ) : (
+        <T variant="callout" color={theme.mut} testID="resume-note">
+          {CONTINUE_NOTE}
+        </T>
+      )}
+    </View>
+  );
+}
+
+/**
+ * The first message of a session that finishes another's plan: the long
+ * prompt the Host wrote is not shown. This card stands in for it, with the
+ * files it carried and a way back to where the plan came from. The message's
+ * own actions stay under it.
+ */
+export function ContinuedCard({
+  agentName,
+  completed,
+  total,
+  files,
+  from,
+  onOpenFile,
+  onOpenFrom,
+  revert,
+}: {
+  agentName: string | null;
+  completed?: number;
+  total?: number;
+  files: readonly AttachmentBlock[];
+  /** The old session's title, or null for none; `onOpenFrom` is absent when the store no longer lists it. */
+  from: string | null;
+  onOpenFile?(file: AttachmentBlock): void;
+  onOpenFrom?(): void;
+  revert?: ReactNode;
+}) {
+  const theme = useTheme();
+  const head = continuingLabel(agentName, completed, total);
+  return (
+    <View style={styles.rowGap}>
+      <View style={[styles.continued, { backgroundColor: theme.surface }]} testID="continued-card">
+        <T style={styles.resumeTitle} selectable>
+          {head}
+        </T>
+        {files.length > 0 ? (
+          <View style={styles.continuedFiles}>
+            {files.map((f) => (
+              <SentFileChip key={f.attachment_id} file={f} onPress={onOpenFile ? () => onOpenFile(f) : undefined} />
+            ))}
+          </View>
+        ) : null}
+        {onOpenFrom ? (
+          <Pressable
+            accessibilityRole="link"
+            accessibilityLabel={fromLabel(from)}
+            onPress={onOpenFrom}
+            style={({ pressed }) => [styles.linkRow, { opacity: pressed ? PRESSED_OPACITY : 1 }]}
+            testID="continued-from"
+          >
+            <T variant="callout" color={theme.accent}>
+              {fromLabel(from)}
+            </T>
+          </Pressable>
+        ) : (
+          <T variant="callout" color={theme.mut} testID="continued-from">
+            {fromLabel(from)}
+          </T>
+        )}
+      </View>
+      {revert}
+    </View>
+  );
+}
+
+/** Where this session's plan went, in place of the resume panel. */
+export function ContinuedInRow({ title, onOpen }: { title: string | null | undefined; onOpen(): void }) {
+  const theme = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="link"
+      accessibilityLabel={continuedInLabel(title)}
+      onPress={onOpen}
+      style={({ pressed }) => [styles.continuedIn, { opacity: pressed ? PRESSED_OPACITY : 1 }]}
+      testID="continued-in"
+    >
+      <T variant="callout" color={theme.mut} numberOfLines={1}>
+        {continuedInLabel(title)}
+      </T>
+    </Pressable>
+  );
+}
+
 /**
  * The message box: multiline input over a row of the session's controls and
  * the round accent send. An accent border marks an unattended session.
@@ -1027,6 +1428,37 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  // One row that never wraps; `pipWindow` keeps it short, the clip is the backstop.
+  pips: { flexDirection: "row", flexWrap: "nowrap", alignItems: "center", gap: space.xs, flexShrink: 1, overflow: "hidden" },
+  pip: { width: 8, height: 8, borderRadius: radius.full, flexShrink: 0 },
+  steps: { gap: space.xs },
+  step: { minHeight: 32, flexDirection: "row", alignItems: "flex-start", gap: space.sm, paddingTop: space.xs },
+  stepHere: { fontFamily: fonts.sansMedium },
+  stepScroll: { flexGrow: 0, maxHeight: 220 },
+  // 64pt: 4 above, a 32pt first line (level with Stop), 2, a 22pt second line, 4 below.
+  meter: { height: 64, flexDirection: "row", alignItems: "flex-start", paddingLeft: space.lg, paddingRight: space.sm, gap: space.sm },
+  meterBody: { flex: 1, minWidth: 0, height: 64, paddingVertical: space.xs, gap: space.xxs },
+  meterTop: { height: 32, flexDirection: "row", alignItems: "center", gap: space.sm },
+  meterAction: { marginTop: space.xs, height: 32, justifyContent: "center" },
+  meterTitle: { flexShrink: 0, maxWidth: "60%" },
+  meterLine: { flexDirection: "row", alignItems: "center", gap: space.sm },
+  resume: { marginHorizontal: space.md, borderRadius: radius.xl, padding: space.md, gap: space.sm },
+  resumeHead: { minHeight: 44, justifyContent: "center", gap: space.xs },
+  resumeTitle: { fontFamily: fonts.sansMedium },
+  stopMark: { width: 10, height: 10, borderRadius: radius.full, borderWidth: 1.5 },
+  chips: { gap: space.sm },
+  agentChip: {
+    height: 36,
+    paddingHorizontal: space.md,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  continued: { borderRadius: radius.xl, padding: space.md, gap: space.sm },
+  continuedFiles: { flexDirection: "row", flexWrap: "wrap", gap: space.xs },
+  linkRow: { minHeight: 44, justifyContent: "center", alignSelf: "flex-start" },
+  continuedIn: { minHeight: 44, justifyContent: "center", paddingHorizontal: space.lg },
   composer: {
     marginHorizontal: space.md,
     marginTop: space.sm,

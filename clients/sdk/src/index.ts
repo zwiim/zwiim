@@ -58,6 +58,7 @@ export * from "./state/workspaces";
 export * from "./state/conflicts";
 export * from "./state/options";
 export * from "./state/usage";
+export * from "./state/plan";
 export * from "./state/clones";
 export * from "./state/keep-awake";
 export * from "./state/instructions";

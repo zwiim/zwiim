@@ -98,6 +98,7 @@ const VERB_ICONS: Record<string, typeof Terminal> = {
   Think: Brain,
   Agent: Bot,
   Todos: ListTodo,
+  "Updated tasks": ListTodo,
   "Chat compacted": ListCollapse,
   List: FolderOpen,
   View: Image,
@@ -903,6 +904,7 @@ export const HistoryTurnView = memo(function HistoryTurnView({
   live,
   carry,
   carried,
+  userCard,
 }: {
   turn: HistoryTurn;
   /** Offered on a message the Host can put the session back to. */
@@ -918,13 +920,15 @@ export const HistoryTurnView = memo(function HistoryTurnView({
   carry?: LiveTurn;
   /** How many of `carry`'s first blocks show here, folding with this turn's last run. */
   carried?: number;
+  /** Shown in place of a user message: a continued plan's first message is a card. */
+  userCard?: React.ReactNode;
 }) {
   if (turn.role === "user") {
-    const text = userText(turn.blocks);
-    if (!turn.revertible || !onRevert) return <UserMessage text={text} blocks={turn.blocks} />;
+    const message = userCard ?? <UserMessage text={userText(turn.blocks)} blocks={turn.blocks} />;
+    if (!turn.revertible || !onRevert) return message;
     return (
       <div className="group/reset flex flex-col gap-2.5">
-        <UserMessage text={text} blocks={turn.blocks} />
+        {message}
         <button
           type="button"
           className="text-muted-foreground enabled:hover:text-foreground enabled:hover:bg-accent ease-std -mt-1 flex items-center gap-1 self-end rounded-md px-1.5 py-0.5 text-xs opacity-0 transition-[opacity,color,background-color] duration-120 group-focus-within/reset:opacity-100 group-hover/reset:opacity-100 focus-visible:opacity-100 disabled:opacity-0 disabled:group-hover/reset:opacity-50"
@@ -1105,6 +1109,7 @@ export function LiveTurnView({
   earlier,
   from,
   keys,
+  userCard,
 }: {
   turn: LiveTurn;
   streaming?: boolean;
@@ -1119,13 +1124,15 @@ export function LiveTurnView({
   from?: number;
   /** Where it keeps what is open, as the history will key it. */
   keys?: LiveKeys;
+  /** Shown in place of its message: a continued plan's first message is a card. */
+  userCard?: React.ReactNode;
 }) {
   const text = turn.userMessage ? userText(turn.userMessage.blocks) : "";
   const enter = animate ? ENTER : undefined;
   if (!turn.userMessage && !turn.message && !streaming) return null;
   return (
     <div className="text-body flex flex-col gap-2.5" data-testid="live-turn">
-      {turn.userMessage && <UserMessage text={text} blocks={turn.userMessage.blocks} className={enter} />}
+      {turn.userMessage && (userCard ?? <UserMessage text={text} blocks={turn.userMessage.blocks} className={enter} />)}
       <LiveBlocks turn={turn} background={background ?? null} enter={enter} earlier={earlier} from={from} keys={keys} />
       {streaming && <Working className={enter} turnId={turn.userMessage?.message_id} reconnecting={reconnecting} />}
     </div>
@@ -1283,7 +1290,8 @@ export function sentKeys(turn: LiveTurn): LiveKeys | undefined {
 /** When each live turn was first seen, so its timer survives a remount (switching sessions). */
 const turnStarts = new Map<string, number>();
 
-function turnStart(id: string | undefined): number {
+/** When the live turn for `id` began, as its working row counts; the plan strip counts from the same moment. */
+export function turnStart(id: string | undefined): number {
   return id ? firstSeen(turnStarts, id) : Date.now();
 }
 

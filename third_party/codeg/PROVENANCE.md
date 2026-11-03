@@ -1227,6 +1227,47 @@ Upstream-derived:
 
 Zwiim-owned: `session_retry.rs` (`UnreachableTurn`, `saved`, `retry`, `retry_in_new_chat`, `ensure_retryable`), `session_summary.rs` (the earlier-chat summary a new-chat retry attaches), `m20261027_000001_conversation_unreachable_turn.rs`, `session.rs` (`send_locked` split out of `send_tagged`; a dispatched prompt clears the record), the `session.retry` and `session.retry_in_new_chat` ops (`retry_in_new_chat` / `session_retry_in_new_chat`) and `session.history`'s `last_error` (message scrubbed via `protocol/events.rs` `scrub`, now `pub(crate)`) in `protocol/{http,mod}.rs`, `ZwiimError::nothing_to_retry` in `protocol/error.rs`.
 
+## Agent progress — `update_progress` and `agent.progress`
+
+Zwiim-owned, no Codeg code copied: `acp/progress.rs` (`Progress`, `ProgressStep`, `StepStatus`, `ProgressAck`, `SessionProgressAccess`: validation limits, conversion to and from plan entries, the client shape); the `agent.progress` event and the snapshot's `progress` in `protocol/events.rs`; protocol revision 26 and the `agent.progress` capability in `protocol/compat.rs`.
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `acp/delegation/tool_schema.json` | `src-tauri/src/acp/delegation/tool_schema.json` | `update_progress` tool: `steps: [{title, status}]`, the full list each call. |
+| `acp/delegation/companion.rs` | `src-tauri/src/acp/delegation/companion.rs` | `progress` feature group (`CompanionFeatures.progress`, `--features progress`) gating `update_progress`. The `tools/call` arm validates the steps (`-32602` on bad arguments), sends `BrokerMessage::UpdateProgress` and renders the ack like the task-report ack. |
+| `acp/delegation/transport.rs` | `src-tauri/src/acp/delegation/transport.rs` | `BrokerUpdateProgressRequest { token, steps }`, the `BrokerMessage::UpdateProgress` variant, and `client_update_progress_round_trip`. |
+| `acp/delegation/listener.rs` | `src-tauri/src/acp/delegation/listener.rs` | `progress: Arc<dyn SessionProgressAccess>` field and constructor parameter. The `UpdateProgress` arm resolves the token to its parent connection (an invalid token is rejected), validates the steps again, and reports through `SessionProgressAccess`. |
+| `acp/delegation/service.rs` | `src-tauri/src/acp/delegation/service.rs` | Test stub implements `SessionProgressAccess`. |
+| `acp/manager.rs` | `src-tauri/src/acp/manager.rs` | `report_progress` emits the steps as `AcpEvent::PlanUpdate` only while a turn is in flight (`emit_with_state_gated`); `ConnectionManagerProgressLookup` implements `SessionProgressAccess`. |
+| `acp/connection.rs` | `src-tauri/src/acp/connection.rs` | `CompanionFeatureFlags.progress` (appended to `--features` as `progress`), on for every launch. |
+| `acp/mod.rs` | `src-tauri/src/acp/mod.rs` | `pub mod progress`. |
+| `bin/zwiim_host.rs` | `src-tauri/src/bin/codeg_server.rs` | Passes `ConnectionManagerProgressLookup` to the delegation listener. |
+| `lib.rs` | `src-tauri/src/lib.rs` | Same for the desktop listener path. |
+| `bin/zwiim_mcp.rs` | `src-tauri/src/bin/codeg_mcp.rs` | Doc and `--help` name the `progress` group. |
+
+## Saved tasks — `.zwiim/tasks/`
+
+Zwiim-owned, no Codeg code copied: `session_plans.rs` (`PlanRecord`, `PlanState`, `save` with its final-plan refusal, `latest`, `PlanTracker` on the Host event bus, `saved_progress`); `TASKS` in `workspace/zwiim_dir.rs`; `session.history`'s `progress` in `protocol/http.rs` (projected by `saved_plan` in `protocol/events.rs`); the revision 26 note in `protocol/compat.rs`.
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `lib.rs` | `src-tauri/src/lib.rs` | `pub mod session_plans`. |
+| `bin/zwiim_host.rs` | `src-tauri/src/bin/codeg_server.rs` | Starts `session_plans::spawn_tracker`. |
+
+## Continuing a plan — `session.continue_plan`
+
+Zwiim-owned, no Codeg code copied: `session_continue.rs` (`continue_plan`, `Continued`, the continuation prompt); `PlanLink`, `save_link`, `link` and `PlanRecord::is_unfinished` in `session_plans.rs` (the `continues` file in a session's tasks directory); `carried_options` split out of `retry_in_new_chat` and `refuse_turn_in_progress` made `pub(crate)` in `session_retry.rs`; the `session.continue_plan` op (`session_continue_plan`) and `session.history`'s `continues` in `protocol/{http,mod}.rs`; `ZwiimError::nothing_to_continue` in `protocol/error.rs`; the `session.continue_plan` capability and revision 26 note in `protocol/compat.rs`.
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `lib.rs` | `src-tauri/src/lib.rs` | `pub mod session_continue`. |
+
 ## License obligations tracked
 
 - [x] Include Apache-2.0 license text (`third_party/codeg/LICENSE`).

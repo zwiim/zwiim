@@ -55,12 +55,14 @@ export function useReduceMotion(): boolean {
 
 export type DotState = "need" | "work" | "idle" | "done" | "err" | "off";
 
-/** A status dot; `work` is neutral and breathes (static under Reduce Motion). */
-export function StatusDot({ state }: { state: DotState }) {
-  const theme = useTheme();
+/**
+ * The breathing opacity (.55 to 1 on a 1.6s loop) shared by the working marks;
+ * a steady 1 when not `active` or under Reduce Motion.
+ */
+export function useBreathing(active: boolean): Animated.Value {
   const reduce = useReduceMotion();
   const opacity = useRef(new Animated.Value(1)).current;
-  const breathing = state === "work" && !reduce;
+  const breathing = active && !reduce;
   useEffect(() => {
     if (!breathing) {
       opacity.setValue(1);
@@ -76,6 +78,13 @@ export function StatusDot({ state }: { state: DotState }) {
     loop.start();
     return () => loop.stop();
   }, [breathing, opacity]);
+  return opacity;
+}
+
+/** A status dot; `work` is neutral and breathes (static under Reduce Motion). */
+export function StatusDot({ state }: { state: DotState }) {
+  const theme = useTheme();
+  const opacity = useBreathing(state === "work");
   const color = { need: theme.need, work: theme.mut, idle: theme.faint, done: theme.done, err: theme.err, off: theme.faint }[
     state
   ];

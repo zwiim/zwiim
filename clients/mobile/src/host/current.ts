@@ -7,6 +7,7 @@
 import {
   ZwiimClientError,
   hasCapability,
+  type AgentType,
   type CloneStart,
   type ConnectionMode,
   type GithubRepoPage,
@@ -242,6 +243,22 @@ export class CurrentHost {
     const connection = this.#connection;
     if (!connection) throw new ZwiimClientError("network", "Not connected to the host");
     return (await connection.request("session.retry_in_new_chat", { session_id })).session_id;
+  }
+
+  /**
+   * Start a new session that finishes the plan this session stopped part way,
+   * with another agent if asked (omit it for the session's own); resolves to
+   * the new session's id. Never retried.
+   */
+  async continuePlan(session_id: string, agent?: AgentType): Promise<string> {
+    const connection = this.#connection;
+    if (!connection) throw new ZwiimClientError("network", "Not connected to the host");
+    return (await connection.request("session.continue_plan", agent ? { session_id, agent } : { session_id })).session_id;
+  }
+
+  /** Read the session's history again, so the screen shows what the Host holds now. */
+  reloadSession(session_id: string): void {
+    this.#connection?.reloadSession(session_id);
   }
 
   /**

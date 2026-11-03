@@ -10,7 +10,7 @@
 // the composer (and the header's `⋯`) open Session options: the model, effort
 // and mode the Host reports, changed between turns, and the agent's context.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { FlatList, Keyboard, KeyboardAvoidingView, Platform, Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -19,13 +19,19 @@ import { randomUUID } from "expo-crypto";
 import {
   ATTACHMENT_GONE_MESSAGE,
   conflictView,
+  derivePlanUi,
   hasCapability,
   isClientError,
+  meterTakesNowBar,
   offersChatRewind,
   revertNotes,
   workspaceFile,
   type AgentRequest,
+  type AgentType,
   type AttachmentBlock,
+  type PlanContinues,
+  type PlanUi,
+  type SavedPlan,
   type RevertChoice,
   type SessionView,
   waitingText,
@@ -49,7 +55,20 @@ import {
   type RevertPoint,
   type TranscriptRow,
 } from "../sessions/transcript";
+import {
+  continueBlock,
+  continueLabel,
+  doneCount,
+  listedTitle,
+  nowActivity,
+  pipStates,
+  planNowState,
+  planSlot,
+  runContinue,
+  stoppedTitle,
+} from "../sessions/plan";
 import { canReset, oneReset, revertError } from "../sessions/revert";
+import { offeredAgents } from "../sessions/start";
 import { stopAgentError } from "../host/removal";
 import { agentName, lockedNote } from "../sessions/controls";
 import { currentHost } from "../services";
@@ -61,12 +80,18 @@ import {
   AttachSheet,
   Caret,
   Composer,
+  ContinuedCard,
+  ContinuedInRow,
   ErrorRow,
   UnreachableCard,
   FooterRow,
   NowAction,
   NowBar,
+  ResumePanel,
+  RevertAction,
   RevertSheet,
+  StepMeter,
+  StepSheet,
   SubagentRow,
   ThoughtRow,
   ToolGroup,
@@ -111,6 +136,8 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
   const back = () => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Host"));
   // An edited file opens on its own screen while its worktree is still there.
   const workspace = state.workspaces?.find((w) => w.workspace_id === item?.workspace_id && !w.removed) ?? null;
+  // Continue is refused in the repository folder and in an archived worktree, which `workspace` leaves out.
+  const blocked = continueBlock(state.workspaces?.find((w) => w.workspace_id === item?.workspace_id));
   const fileOf = useCallback((path: string) => (workspace ? workspaceFile(path, workspace) : null), [workspace]);
   const openFile = useCallback(
     (path: string) => {
@@ -178,6 +205,7 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
         fileOf={fileOf}
         onOpenFile={openFile}
         resettable={canReset(workspace)}
+        continueBlocked={blocked}
       />
     );
   }
@@ -362,6 +390,7 @@ function Live({
   fileOf,
   onOpenFile,
   resettable,
+  continueBlocked,
 }: {
   item: SessionItem;
   view: SessionView | undefined;
@@ -373,6 +402,8 @@ function Live({
   fileOf(path: string): string | null;
   onOpenFile(path: string): void;
   resettable: boolean;
+  /** Why Continue cannot run in this session's workspace; null when it can. */
+  continueBlocked: string | null;
 }) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
@@ -383,6 +414,16 @@ function Live({
   const running = turnRunning(view);
   const now = nowState(view, connected);
   const request = view?.pendingRequest ?? null;
+  // The plan's meter, resume panel and links; nothing of it on a Host without progress.
+  const showsPlan = hasCapability(connection?.compat ?? null, "agent.progress");
+  const canContinue = hasCapability(connection?.compat ?? null, "session.continue_plan");
+  const ui: PlanUi = showsPlan && view ? derivePlanUi(view) : { kind: "none" };
+  const [stepsOpen, setStepsOpen] = useState(false);
+  // A plan the Host said there is nothing to continue for, until history says otherwise.
+  const [gonePlan, setGonePlan] = useState<string | null>(null);
+  const continues = showsPlan ? view?.continues ?? null : null;
+  const firstUserKey = useMemo(() => (continues ? rows.find((r) => r.type === "user")?.key ?? null : null), [continues, rows]);
+  const cardShown = useMemo(() => rows.some((r) => r.type === "unreachable"), [rows]);
   const ticking = running || now?.type === "reconnecting" || now?.type === "waiting" || request !== null;
 
   // The running turn's timer, from when this phone first saw it.
@@ -565,10 +606,12 @@ function Live({
   const retryTurn = () => currentHost.retrySession(session_id);
   const retryInNewChat = () => currentHost.retryInNewChat(session_id);
   const openStarted = (id: string) => nav.replace("Session", { session_id: id, started: true });
+  // A session this plan came from or went to opens over this one, so Back returns here.
+  const openLinked = (id: string) => nav.push("Session", { session_id: id });
   // The handlers are only called on a press, after a commit.
-  const latest = useRef({ onTool, openSent, openImage, askReset, retryTurn, retryInNewChat, openStarted });
+  const latest = useRef({ onTool, openSent, openImage, askReset, retryTurn, retryInNewChat, openStarted, openLinked });
   useLayoutEffect(() => {
-    latest.current = { onTool, openSent, openImage, askReset, retryTurn, retryInNewChat, openStarted };
+    latest.current = { onTool, openSent, openImage, askReset, retryTurn, retryInNewChat, openStarted, openLinked };
   });
   const [actions] = useState(() => ({
     onTool: (tool: ToolItem) => latest.current.onTool(tool),
@@ -578,6 +621,7 @@ function Live({
     retryTurn: () => latest.current.retryTurn(),
     retryInNewChat: () => latest.current.retryInNewChat(),
     openStarted: (id: string) => latest.current.openStarted(id),
+    openLinked: (id: string) => latest.current.openLinked(id),
   }));
   const hasWorkspace = workspace_id !== null;
   // Each cell is memoized on its row and index, and its gap depends on the row
@@ -604,6 +648,7 @@ function Live({
             onOpenImage={hasWorkspace ? actions.openImage : undefined}
             onRevert={resettable ? actions.askReset : undefined}
             revertDisabled={running || !connected}
+            continued={continues && row.key === firstUserKey ? { continues, onOpenSession: actions.openLinked } : undefined}
             unreachable={{
               agentName,
               online: connected,
@@ -616,7 +661,7 @@ function Live({
         </View>
       );
     },
-    [actions, toolFile, fileOf, onOpenFile, hasWorkspace, resettable, running, connected, agentName, hostName],
+    [actions, toolFile, fileOf, onOpenFile, hasWorkspace, resettable, running, connected, agentName, hostName, continues, firstUserKey],
   );
 
   const nowBar = (tick: number) => {
@@ -625,6 +670,20 @@ function Live({
       <NowAction kind="inverse" label="Stop" onPress={() => void stop()} loading={stopping} disabled={!connected} testID="now-stop" />
     ) : null;
     const time = started ? clock(tick - started) : null;
+    if (ui.kind === "working" && meterTakesNowBar(ui, planNowState(now))) {
+      const step = ui.current === null ? undefined : ui.progress.steps[ui.current];
+      return (
+        <StepMeter
+          title={step?.title ?? "Working"}
+          activity={nowActivity(now)}
+          count={`${ui.progress.completed} of ${ui.progress.total}`}
+          time={time}
+          states={pipStates(ui)}
+          action={stopButton}
+          onOpen={() => setStepsOpen(true)}
+        />
+      );
+    }
     switch (now.type) {
       case "working":
         return <NowBar tone="plain" dot="work" text={now.text} time={time} action={stopButton} />;
@@ -650,6 +709,9 @@ function Live({
     }
   };
   const newestFirst = useMemo(() => [...rows].reverse(), [rows]);
+  useEffect(() => {
+    if (ui.kind !== "working") setStepsOpen(false);
+  }, [ui.kind]);
 
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : "height"}>
@@ -698,6 +760,24 @@ function Live({
         pointerEvents={connected ? "auto" : "none"}
       >
         <Ticking on={ticking}>{nowBar}</Ticking>
+        {!now && view ? (
+          <PlanSlot
+            view={view}
+            ui={ui}
+            showsPlan={showsPlan}
+            own={item.agent}
+            canContinue={canContinue}
+            blocked={continueBlocked}
+            cardShown={cardShown}
+            connected={connected}
+            hostName={hostName}
+            gone={gonePlan}
+            onGone={setGonePlan}
+            onOpenSession={actions.openLinked}
+            onStarted={actions.openStarted}
+            onNotice={setNotice}
+          />
+        ) : null}
         {notice ? (
           <T variant="callout" color={theme.err} style={styles.notice} testID="session-notice">
             {notice}
@@ -729,6 +809,16 @@ function Live({
       </View>
       <AttachSheet visible={attaching} onClose={() => setAttaching(false)} onPick={pick} onClosed={openPicker} />
       <ToolSheet tool={tool} onClose={() => setTool(null)} />
+      {ui.kind === "working" ? (
+        <StepSheet
+          visible={stepsOpen}
+          onClose={() => setStepsOpen(false)}
+          count={`${ui.progress.completed} of ${ui.progress.total}`}
+          steps={ui.progress.steps}
+          states={pipStates(ui)}
+          activity={nowActivity(now)}
+        />
+      ) : null}
       <RevertSheet
         visible={resetting !== null}
         chat={resetting?.chat ?? false}
@@ -753,6 +843,171 @@ function Live({
 
 const rowKey = (row: TranscriptRow) => row.key;
 
+/**
+ * The first message of a session that finishes another's plan, as a card. It
+ * links back to the old session only while the store still lists it; the
+ * message keeps its own "Reset to here".
+ */
+function ContinuedFirst({
+  continues,
+  files,
+  onOpenFile,
+  onOpenSession,
+  onRevert,
+  revertDisabled,
+}: {
+  continues: PlanContinues;
+  files: AttachmentBlock[];
+  onOpenFile?(file: AttachmentBlock): void;
+  onOpenSession(id: string): void;
+  onRevert?(): void;
+  revertDisabled: boolean;
+}) {
+  const state = useHostState();
+  const listed = listedTitle(state.sessionsByWorkspace, continues.session_id);
+  return (
+    <ContinuedCard
+      agentName={continues.agent ? agentName(state.agents, continues.agent) : null}
+      completed={continues.completed}
+      total={continues.total}
+      files={files}
+      from={continues.title || listed || null}
+      onOpenFile={onOpenFile}
+      onOpenFrom={listed !== undefined ? () => onOpenSession(continues.session_id) : undefined}
+      revert={onRevert ? <RevertAction onPress={onRevert} disabled={revertDisabled} /> : undefined}
+    />
+  );
+}
+
+/**
+ * Over the composer while the agent is idle: where the plan went, or the
+ * resume panel when it stopped part way. Nothing once the plan is done.
+ */
+function PlanSlot({
+  view,
+  ui,
+  showsPlan,
+  own,
+  canContinue,
+  blocked,
+  cardShown,
+  connected,
+  hostName,
+  gone,
+  onGone,
+  onOpenSession,
+  onStarted,
+  onNotice,
+}: {
+  view: SessionView;
+  ui: PlanUi;
+  showsPlan: boolean;
+  own: string | null;
+  canContinue: boolean;
+  blocked: string | null;
+  /** The can't-reach card shows: it is the only card, so there is no resume panel. */
+  cardShown: boolean;
+  connected: boolean;
+  hostName: string;
+  gone: string | null;
+  onGone(plan_id: string): void;
+  onOpenSession(id: string): void;
+  onStarted(id: string): void;
+  /** Where a failed Continue is said: the screen's notice above the composer. */
+  onNotice: Dispatch<SetStateAction<string | null>>;
+}) {
+  const state = useHostState();
+  const slot = planSlot({ ui, showsPlan, canContinue, cardShown, gone });
+  if (slot === "continued" && ui.kind === "continued") {
+    const id = ui.sessionId;
+    return <ContinuedInRow title={listedTitle(state.sessionsByWorkspace, id)} onOpen={() => onOpenSession(id)} />;
+  }
+  if (slot !== "resume" || ui.kind !== "stopped") return null;
+  return (
+    <ResumeSlot
+      key={ui.plan.plan_id}
+      session_id={view.session_id}
+      plan={ui.plan}
+      stoppedAt={ui.stoppedAt}
+      own={(own ?? ui.plan.agent) as AgentType}
+      blocked={blocked}
+      connected={connected}
+      hostName={hostName}
+      onGone={() => onGone(ui.plan.plan_id)}
+      onStarted={onStarted}
+      onNotice={onNotice}
+    />
+  );
+}
+
+function ResumeSlot({
+  session_id,
+  plan,
+  stoppedAt,
+  own,
+  blocked,
+  connected,
+  hostName,
+  onGone,
+  onStarted,
+  onNotice,
+}: {
+  session_id: string;
+  plan: SavedPlan;
+  stoppedAt: number;
+  own: AgentType;
+  blocked: string | null;
+  connected: boolean;
+  hostName: string;
+  onGone(): void;
+  onStarted(id: string): void;
+  onNotice: Dispatch<SetStateAction<string | null>>;
+}) {
+  const state = useHostState();
+  // The session's own agent first and chosen; the others the new-session list offers and can run.
+  const choices = [
+    { agent: own, name: agentName(state.agents, own) ?? own },
+    ...(offeredAgents(state.agents) ?? [])
+      .filter((a) => a.agent !== own && a.available)
+      .map((a) => ({ agent: a.agent, name: a.name })),
+  ];
+  const [picked, setPicked] = useState<AgentType>(own);
+  const [pending, setPending] = useState(false);
+  // The notice this Continue set, if it is still showing: it goes with the panel (or the next tap), others stay.
+  const said = useRef<string | null>(null);
+  const say = (text: string | null) => {
+    const mine = said.current;
+    said.current = text;
+    onNotice((cur) => (text ?? (cur === mine ? null : cur)));
+  };
+  const sayRef = useRef(say);
+  useEffect(() => {
+    sayRef.current = say;
+  });
+  useEffect(() => () => sayRef.current(null), []);
+  const run = async () => {
+    const id = await runContinue(currentHost, { session_id, agent: own }, picked, { pending: setPending, error: say, gone: onGone }, hostName);
+    // Outside the op: a throwing callback is not the Host refusing.
+    if (id) onStarted(id);
+  };
+  return (
+    <ResumePanel
+      heading={stoppedTitle(stoppedAt + 1, plan.steps[stoppedAt]?.title)}
+      count={doneCount(plan.completed, plan.total)}
+      steps={plan.steps}
+      states={pipStates({ kind: "stopped", plan, stoppedAt })}
+      choices={choices}
+      picked={picked}
+      onPick={setPicked}
+      label={continueLabel(picked === own, choices.find((c) => c.agent === picked)?.name ?? picked)}
+      pending={pending}
+      disabled={!connected || blocked !== null}
+      reason={blocked}
+      onContinue={() => void run()}
+    />
+  );
+}
+
 function Row({
   row,
   onTool,
@@ -763,6 +1018,7 @@ function Row({
   onOpenImage,
   onRevert,
   revertDisabled,
+  continued,
   unreachable,
 }: {
   row: TranscriptRow;
@@ -774,6 +1030,8 @@ function Row({
   onOpenImage?(path: string): void;
   onRevert?(point: RevertPoint): void;
   revertDisabled: boolean;
+  /** Set on the first message of a session that continues a plan: it shows as a card. */
+  continued?: { continues: PlanContinues; onOpenSession(id: string): void };
   /** What the can't-reach card needs; only the transcript's top level has one. */
   unreachable?: {
     agentName: string;
@@ -788,6 +1046,18 @@ function Row({
   switch (row.type) {
     case "user": {
       const point = row.revert;
+      if (continued) {
+        return (
+          <ContinuedFirst
+            continues={continued.continues}
+            files={row.files}
+            onOpenFile={onOpenSent}
+            onOpenSession={continued.onOpenSession}
+            onRevert={point && onRevert ? () => onRevert(point) : undefined}
+            revertDisabled={revertDisabled}
+          />
+        );
+      }
       return (
         <UserMessage
           text={row.text}

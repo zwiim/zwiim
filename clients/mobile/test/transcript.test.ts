@@ -518,6 +518,7 @@ describe("transcript", () => {
           { type: "tool_call", tool_call_id: "t2", title: "Read", input_preview: '{"file_path":"src/lib.rs"}', status: null },
           { type: "tool_call", tool_call_id: "t3", title: "TodoWrite", input_preview: '{"todos":[]}', status: null },
           { type: "tool_call", tool_call_id: "t4", title: "ExitPlanMode", input_preview: '{"plan":"Do it"}', status: null },
+          { type: "tool_call", tool_call_id: "t5", title: "mcp__zwiim-mcp__update_progress", input_preview: '{"steps":[]}', status: null },
         ]),
       ]),
     );
@@ -534,6 +535,8 @@ describe("transcript", () => {
       [null, "TodoWrite", "idle", '{\n  "todos": []\n}'],
       // Its verb says it all, as it reads live.
       [null, "Exited Plan Mode", "idle", '{\n  "plan": "Do it"\n}'],
+      // Zwiim's own tool reads by what it does, never by its MCP name.
+      [null, "Updated tasks", "idle", '{\n  "steps": []\n}'],
     ]);
   });
 
@@ -548,6 +551,12 @@ describe("transcript", () => {
     ]);
     const t = rows[2]!;
     expect(t.type === "tool" && t.tool).toMatchObject({ verb: "Run", target: "cargo test", state: "running" });
+  });
+
+  it("names Zwiim's own tool by what it does while it runs", () => {
+    const v = view(user("m1", "Plan it"), tool("t1", "mcp__zwiim-mcp__update_progress", "other"));
+    const t = transcriptRows(v)[1]!;
+    expect(t.type === "tool" && t.tool).toMatchObject({ verb: null, target: "Updated tasks", state: "running" });
   });
 
   it("folds three or more tool calls in a row", () => {

@@ -3,9 +3,10 @@
 //! (`delegate_to_agent` etc.), `check_user_feedback` (pull the user's mid-turn
 //! steering notes), `ask_user_question` (block on a multiple-choice card), and
 //! `get_session_info` (resolve a referenced session by id), plus the
-//! chat-authoring tools (`create_automation` / `create_work_task`), gated by the
+//! chat-authoring tools (`create_automation` / `create_work_task`) and
+//! `update_progress` (show the user the agent's steps), gated by the
 //! `--features` groups (`delegation` / `feedback` / `ask` / `sessions` /
-//! `tasks` / `automations` / `taskboard`).
+//! `tasks` / `automations` / `taskboard` / `progress`).
 //!
 //! The agent's MCP config (injected by Zwiim via `load_mcp_servers_for_agent`)
 //! spawns this binary with three required flags:
@@ -130,7 +131,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--help" | "-h" => {
                 println!(
-                    "zwiim-mcp --parent-connection-id <uuid> --socket-path <path> --token <secret> [--parent-pid <pid>] [--features delegation,feedback,ask,sessions,tasks] [--custom-agents custom:<id>,...] [--disabled-agents <agent>,...]"
+                    "zwiim-mcp --parent-connection-id <uuid> --socket-path <path> --token <secret> [--parent-pid <pid>] [--features delegation,feedback,ask,sessions,tasks,progress] [--custom-agents custom:<id>,...] [--disabled-agents <agent>,...]"
                 );
                 std::process::exit(0);
             }

@@ -523,7 +523,10 @@ mod tests {
                 "Start with the ticket number.",
             ]
         );
-        assert!(text.ends_with("Branch names:\nStart with the ticket number.\n"), "{text}");
+        assert!(
+            text.ends_with("Branch names:\nStart with the ticket number.\n"),
+            "{text}"
+        );
         assert!(text.contains("rename it with `git_branch_rename` to a name for the work as the user's Branch names preference below says.\n"));
         assert!(!text.contains("kebab-case"));
     }

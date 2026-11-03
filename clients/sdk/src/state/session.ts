@@ -11,6 +11,9 @@ import type {
   LiveBlock,
   LiveMessage,
   PendingUserMessage,
+  PlanContinues,
+  Progress,
+  SavedPlan,
   SessionBackground,
   SessionCommand,
   SessionErrorInfo,
@@ -95,6 +98,14 @@ export interface SessionView {
    * it has only been waiting on it. Null until the Host reports it.
    */
   background: SessionBackground | null;
+  /** The running turn's steps; null between turns and on a Host without `agent.progress`. */
+  progress: Progress | null;
+  /** The newest saved plan, as the last history read reported it. */
+  savedPlan: SavedPlan | null;
+  /** The plan this session was started to finish. */
+  continues: PlanContinues | null;
+  /** The new session that took this session's plan over. */
+  continuedIn: string | null;
 }
 
 export type SessionFrame =
@@ -110,6 +121,10 @@ export type SessionFrame =
       generation?: number | null;
       /** The Host's saved can't-reach error; shown only while no live agent reports its own. */
       lastError?: SessionErrorInfo | null;
+      /** The saved plan and its links, as `session.history` sends them. */
+      savedPlan?: SavedPlan | null;
+      continues?: PlanContinues | null;
+      continuedIn?: string | null;
     }
   | { type: "options"; options: SessionOptions };
 
@@ -235,6 +250,10 @@ export function initialSessionView(session_id: string): SessionView {
     historyGeneration: null,
     historyStale: true,
     background: null,
+    progress: null,
+    savedPlan: null,
+    continues: null,
+    continuedIn: null,
   };
 }
 
@@ -266,6 +285,9 @@ export function reduceSession(view: SessionView, frame: SessionFrame): SessionVi
         historyGeneration: frame.generation ?? null,
         historyStale: false,
         settled: null,
+        savedPlan: frame.savedPlan ?? null,
+        continues: frame.continues ?? null,
+        continuedIn: frame.continuedIn ?? null,
         ...withError(view, historyLastError(view, frame.lastError ?? null)),
       };
     }
@@ -333,6 +355,7 @@ function applySnapshot(
       s.history_generation === undefined ||
       s.history_generation !== view.historyGeneration,
     background: s.background ?? null,
+    progress: s.progress ?? null,
   };
 }
 
@@ -380,6 +403,8 @@ function applyDetached(view: SessionView, reason: DetachReason): SessionView {
     historyStale: true,
     // Its background work went with it.
     background: null,
+    // Its turn is over; the saved plan comes from the next history read.
+    progress: null,
   };
 }
 
@@ -486,6 +511,8 @@ export function applyEvent(view: SessionView, ev: SessionEvent): SessionView {
         lastError: null,
         // Status travels only in snapshots; turn boundaries are its events.
         agentStatus: "prompting",
+        // The last turn's steps do not carry into this one.
+        progress: null,
       };
     }
     case "agent.steered": {
@@ -533,12 +560,16 @@ export function applyEvent(view: SessionView, ev: SessionEvent): SessionView {
         pendingRequest: null,
         reconnecting: false,
         agentStatus: view.agentStatus === null ? null : "connected",
+        // The turn is over; what it left is the saved plan, read with history.
+        progress: null,
         lastStopReason: ev.payload.stop_reason,
         historyStale: true,
       };
     }
     case "agent.error":
       return { ...next, lastError: ev.payload, errorSerial: view.errorSerial + 1 };
+    case "agent.progress":
+      return { ...next, progress: ev.payload };
     case "session.reconnecting":
       return { ...next, reconnecting: ev.payload.reconnecting };
     case "session.status":

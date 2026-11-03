@@ -6,6 +6,10 @@
 //! can't reach its server): each turn's user message and the agent's final
 //! reply, with everything in between collapsed to a count, capped per
 //! message and per file.
+//!
+//! A stopped plan continued in a new chat gets the same kind of file
+//! ([`SummaryKind::PlanStopped`]), but there the agent works fine, so each
+//! tool call is listed instead of counted.
 
 use crate::acp::types::PromptInputBlock;
 use crate::attachments::split_note;
@@ -14,14 +18,28 @@ use crate::models::message::{ContentBlock, MessageTurn, TurnRole};
 /// The summary's file name, as the new chat's attachment.
 pub const SUMMARY_FILE: &str = "earlier-chat-summary.md";
 
+/// The file name of the old chat when a stopped plan is continued, as the
+/// new chat's attachment.
+pub const PREVIOUS_SESSION_FILE: &str = "previous-session.md";
+
 const TITLE: &str = "# Earlier chat";
 const INTRO: &str = "This chat continues an earlier one that stopped because the agent couldn't reach its server. The last message below is the one that failed; it is repeated in the new chat.";
+const PLAN_STOPPED_INTRO: &str = "This chat continues an earlier one whose tasks stopped before they were finished. The tasks are in tasks.md.";
 const OMITTED: &str = "_(earlier turns omitted)_";
 const CUT: &str = "… [cut]";
 /// Characters kept of any one message.
 const MESSAGE_MAX_CHARS: usize = 10_000;
 /// Characters the whole file may hold.
 const FILE_MAX_CHARS: usize = 200_000;
+
+/// Why the old chat is being summarized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SummaryKind {
+    /// The agent couldn't reach its server; the failed message is repeated.
+    Unreachable,
+    /// A plan stopped before it was finished; every tool call is listed.
+    PlanStopped,
+}
 
 /// One turn of the old chat: what the user sent and what the agent did.
 #[derive(Debug, Clone, Default)]
@@ -57,9 +75,53 @@ pub fn turns_from_history(turns: &[MessageTurn]) -> Vec<SummaryTurn> {
     out
 }
 
+/// `history` without its trailing turns that are the `failed` message: some
+/// agents write the user message to their transcript before failing to send
+/// it, once per failed try. Marks and system turns after it go too.
+pub fn without_failed_turns<'a>(
+    history: &'a [MessageTurn],
+    failed: &[PromptInputBlock],
+) -> &'a [MessageTurn] {
+    let failed_text = failed_user_text(failed);
+    let failed_message = render_failed(failed).into_iter().next();
+    let mut turns = history;
+    while let Some((last, earlier)) = turns.split_last() {
+        let is_failed = match last.role {
+            TurnRole::System => true,
+            TurnRole::User => {
+                user_text(&last.blocks) == failed_text
+                    && (!failed_text.is_empty() || render_user(&last.blocks) == failed_message)
+            }
+            TurnRole::Assistant => false,
+        };
+        if !is_failed {
+            break;
+        }
+        turns = earlier;
+    }
+    turns
+}
+
+/// The last non-empty text of the last agent turn in `history`, trimmed.
+pub fn last_reply(history: &[MessageTurn]) -> Option<String> {
+    let turn = history
+        .iter()
+        .rev()
+        .find(|t| matches!(t.role, TurnRole::Assistant))?;
+    turn.blocks.iter().rev().find_map(|b| match b {
+        ContentBlock::Text { text } if !text.trim().is_empty() => Some(text.trim().to_string()),
+        _ => None,
+    })
+}
+
 /// The summary file of `turns`, by `agent` (its display name), ending with
-/// the `failed` message.
-pub fn build(turns: &[SummaryTurn], agent: &str, failed: &[PromptInputBlock]) -> String {
+/// the `failed` message when there is one.
+pub fn build(
+    turns: &[SummaryTurn],
+    agent: &str,
+    failed: &[PromptInputBlock],
+    kind: SummaryKind,
+) -> String {
     let failed_text = failed_user_text(failed);
     let failed_message = render_failed(failed).into_iter().next();
     let mut turns = turns;
@@ -70,19 +132,25 @@ pub fn build(turns: &[SummaryTurn], agent: &str, failed: &[PromptInputBlock]) ->
         // rendered message must match, or any unanswered empty-text turn would.
         let same_message = user_text(&last.user) == failed_text
             && (!failed_text.is_empty() || render_user(&last.user) == failed_message);
-        if !(agent_lines(last).is_empty() && same_message) {
+        if kind == SummaryKind::PlanStopped || !(agent_lines(last, kind).is_empty() && same_message)
+        {
             break;
         }
         turns = earlier;
     }
 
-    let header = format!("{TITLE}\n{INTRO}");
-    let failed_section = section("## You (failed to send)", &render_failed(failed));
-    let sections: Vec<String> = turns.iter().map(|t| render_turn(t, agent)).collect();
+    let header = match kind {
+        SummaryKind::Unreachable => format!("{TITLE}\n{INTRO}"),
+        SummaryKind::PlanStopped => format!("{TITLE}\n\n{PLAN_STOPPED_INTRO}"),
+    };
+    // A stopped plan has no failed message to repeat.
+    let failed_section = (kind == SummaryKind::Unreachable)
+        .then(|| section("## You (failed to send)", &render_failed(failed)));
+    let sections: Vec<String> = turns.iter().map(|t| render_turn(t, agent, kind)).collect();
 
     let mut parts = vec![header];
-    // Header, separator, failed section and the final newline.
-    let fixed = chars(&parts[0]) + 2 + chars(&failed_section) + 1;
+    // Header, the failed section with its separator, and the final newline.
+    let fixed = chars(&parts[0]) + failed_section.as_ref().map_or(0, |f| chars(f) + 2) + 1;
     let total: usize = sections.iter().map(|s| chars(s) + 2).sum();
     if fixed + total <= FILE_MAX_CHARS || sections.len() <= 1 {
         parts.extend(sections);
@@ -105,7 +173,7 @@ pub fn build(turns: &[SummaryTurn], agent: &str, failed: &[PromptInputBlock]) ->
         parts.push(OMITTED.to_string());
         parts.extend(tail);
     }
-    parts.push(failed_section);
+    parts.extend(failed_section);
     let mut out = parts.join("\n\n");
     out.push('\n');
     out
@@ -116,7 +184,7 @@ fn chars(s: &str) -> usize {
 }
 
 /// `text`, cut to the per-message cap.
-fn capped(text: &str) -> String {
+pub(crate) fn capped(text: &str) -> String {
     if chars(text) <= MESSAGE_MAX_CHARS {
         return text.to_string();
     }
@@ -238,9 +306,17 @@ fn render_failed(blocks: &[PromptInputBlock]) -> Vec<String> {
         .collect()
 }
 
-/// The agent's key messages of `turn`: the elided marker, the final reply
-/// (or `[Stopped]`), and the error it ended with.
-fn agent_lines(turn: &SummaryTurn) -> Vec<String> {
+/// The agent's key messages of `turn`. `Unreachable` keeps the elided marker,
+/// the final reply (or `[Stopped]`) and the error it ended with. `PlanStopped`
+/// keeps every reply and tool call in order, then `[Stopped]` and the error.
+fn agent_lines(turn: &SummaryTurn, kind: SummaryKind) -> Vec<String> {
+    match kind {
+        SummaryKind::Unreachable => unreachable_agent_lines(turn),
+        SummaryKind::PlanStopped => plan_stopped_agent_lines(turn),
+    }
+}
+
+fn unreachable_agent_lines(turn: &SummaryTurn) -> Vec<String> {
     // Assistant messages and tool calls count; thinking and results don't.
     let counted: Vec<Option<&str>> = turn
         .agent
@@ -276,12 +352,39 @@ fn agent_lines(turn: &SummaryTurn) -> Vec<String> {
     lines
 }
 
-fn render_turn(turn: &SummaryTurn, agent: &str) -> String {
+/// ImageGeneration blocks are left out on purpose.
+fn plan_stopped_agent_lines(turn: &SummaryTurn) -> Vec<String> {
+    let mut lines: Vec<String> = turn
+        .agent
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } if !text.trim().is_empty() => Some(capped(text.trim())),
+            ContentBlock::ToolUse {
+                tool_name,
+                input_preview,
+                ..
+            } => Some(capped(&match input_preview.as_deref().map(str::trim) {
+                Some(preview) if !preview.is_empty() => format!("{tool_name} {preview}"),
+                _ => tool_name.clone(),
+            })),
+            _ => None,
+        })
+        .collect();
+    if turn.stopped {
+        lines.push("[Stopped]".to_string());
+    }
+    if let Some(error) = &turn.error {
+        lines.push(format!("[Error: {}]", capped(error)));
+    }
+    lines
+}
+
+fn render_turn(turn: &SummaryTurn, agent: &str, kind: SummaryKind) -> String {
     let mut sections = Vec::new();
     if let Some(user) = render_user(&turn.user) {
         sections.push(section("## You", &[user]));
     }
-    let lines = agent_lines(turn);
+    let lines = agent_lines(turn, kind);
     if !lines.is_empty() {
         sections.push(section(&format!("## {agent}"), &lines));
     }
@@ -338,7 +441,12 @@ mod tests {
 
     #[test]
     fn starts_with_title_and_intro() {
-        let out = build(&[turn("hi", vec![text("hello")])], AGENT, &failed("again"));
+        let out = build(
+            &[turn("hi", vec![text("hello")])],
+            AGENT,
+            &failed("again"),
+            SummaryKind::Unreachable,
+        );
         let mut lines = out.lines();
         assert_eq!(lines.next(), Some("# Earlier chat"));
         assert_eq!(
@@ -364,7 +472,7 @@ mod tests {
                 text("c"),
             ],
         );
-        let out = build(&[busy], AGENT, &failed("next"));
+        let out = build(&[busy], AGENT, &failed("next"), SummaryKind::Unreachable);
         assert!(
             out.contains("## Codex CLI\n\n[3 messages elided]\n\nc"),
             "{out}"
@@ -372,7 +480,12 @@ mod tests {
         assert!(!out.contains("\n\na\n"));
         assert!(!out.contains("\n\nb\n"));
 
-        let single = build(&[turn("go", vec![text("only")])], AGENT, &failed("next"));
+        let single = build(
+            &[turn("go", vec![text("only")])],
+            AGENT,
+            &failed("next"),
+            SummaryKind::Unreachable,
+        );
         assert!(single.contains("## Codex CLI\n\nonly"));
         assert!(!single.contains("elided"));
 
@@ -380,6 +493,7 @@ mod tests {
             &[turn("go", vec![tool_use(), text("done")])],
             AGENT,
             &failed("next"),
+            SummaryKind::Unreachable,
         );
         assert!(two.contains("[1 message elided]\n\ndone"), "{two}");
     }
@@ -387,7 +501,12 @@ mod tests {
     #[test]
     fn cuts_long_message() {
         let long = "x".repeat(10_001);
-        let out = build(&[turn("go", vec![text(&long)])], AGENT, &failed("next"));
+        let out = build(
+            &[turn("go", vec![text(&long)])],
+            AGENT,
+            &failed("next"),
+            SummaryKind::Unreachable,
+        );
         assert!(out.contains(&format!("{}… [cut]", "x".repeat(10_000))));
         assert!(!out.contains(&"x".repeat(10_001)));
     }
@@ -396,7 +515,7 @@ mod tests {
     fn stopped_turn_shows_stopped() {
         let mut stopped = turn("go", vec![tool_use(), text("partial reply")]);
         stopped.stopped = true;
-        let out = build(&[stopped], AGENT, &failed("next"));
+        let out = build(&[stopped], AGENT, &failed("next"), SummaryKind::Unreachable);
         assert!(out.contains("## You\n\ngo"));
         assert!(
             out.contains("## Codex CLI\n\n[2 messages elided]\n\n[Stopped]"),
@@ -409,7 +528,7 @@ mod tests {
     fn turn_error_is_kept() {
         let mut errored = turn("go", vec![text("reply")]);
         errored.error = Some("x".into());
-        let out = build(&[errored], AGENT, &failed("next"));
+        let out = build(&[errored], AGENT, &failed("next"), SummaryKind::Unreachable);
         assert!(out.contains("reply\n\n[Error: x]"), "{out}");
     }
 
@@ -419,6 +538,7 @@ mod tests {
             &[turn("hi", vec![text("hello")])],
             AGENT,
             &failed("please retry"),
+            SummaryKind::Unreachable,
         );
         assert!(
             out.trim_end()
@@ -431,14 +551,24 @@ mod tests {
     #[test]
     fn failed_message_already_in_history_is_not_repeated() {
         let turns = vec![turn("hi", vec![text("hello")]), turn("fix the bug", vec![])];
-        let out = build(&turns, AGENT, &failed("fix the bug"));
+        let out = build(
+            &turns,
+            AGENT,
+            &failed("fix the bug"),
+            SummaryKind::Unreachable,
+        );
         assert_eq!(out.matches("fix the bug").count(), 1, "{out}");
         assert!(out.contains("## You (failed to send)\n\nfix the bug"));
         assert!(out.contains("## You\n\nhi"));
 
         // An earlier turn with the same text that the agent answered stays.
         let answered = vec![turn("fix the bug", vec![text("done")])];
-        let out = build(&answered, AGENT, &failed("fix the bug"));
+        let out = build(
+            &answered,
+            AGENT,
+            &failed("fix the bug"),
+            SummaryKind::Unreachable,
+        );
         assert_eq!(out.matches("fix the bug").count(), 2);
     }
 
@@ -464,7 +594,7 @@ mod tests {
             mime_type: "image/png".into(),
             uri: None,
         }];
-        let out = build(&turns, AGENT, &failed);
+        let out = build(&turns, AGENT, &failed, SummaryKind::Unreachable);
         assert!(out.contains("[file: a.txt]"), "{out}");
         assert_eq!(out.matches("[image]").count(), 1, "{out}");
         assert!(out.contains("## You (failed to send)\n\n[image]"), "{out}");
@@ -485,7 +615,7 @@ mod tests {
             mime_type: None,
             description: None,
         }];
-        let out = build(&turns, AGENT, &failed);
+        let out = build(&turns, AGENT, &failed, SummaryKind::Unreachable);
         assert_eq!(out.matches("[file: a.txt]").count(), 1, "{out}");
     }
 
@@ -505,7 +635,7 @@ mod tests {
                 blob: None,
             },
         ];
-        let out = build(&[], AGENT, &failed);
+        let out = build(&[], AGENT, &failed, SummaryKind::Unreachable);
         assert!(out.contains("[file: my fileé.txt]"), "{out}");
         assert!(out.contains("[file: other one.txt]"), "{out}");
     }
@@ -514,7 +644,7 @@ mod tests {
     fn long_error_keeps_its_closing_bracket() {
         let mut errored = turn("go", vec![text("reply")]);
         errored.error = Some("e".repeat(MESSAGE_MAX_CHARS + 50));
-        let out = build(&[errored], AGENT, &failed("next"));
+        let out = build(&[errored], AGENT, &failed("next"), SummaryKind::Unreachable);
         assert!(
             out.contains(&format!(
                 "[Error: {}… [cut]]",
@@ -534,7 +664,7 @@ mod tests {
             agent: vec![text("seen")],
             ..Default::default()
         };
-        let out = build(&[t], AGENT, &failed("next"));
+        let out = build(&[t], AGENT, &failed("next"), SummaryKind::Unreachable);
         assert!(out.contains("[file: my fileé.txt]"), "{out}");
         assert!(out.contains("[file: bad%FF.txt]"), "{out}");
     }
@@ -548,7 +678,12 @@ mod tests {
             turn("fix the bug", vec![]),
             turn("fix the bug", vec![]),
         ];
-        let out = build(&turns, AGENT, &failed("fix the bug"));
+        let out = build(
+            &turns,
+            AGENT,
+            &failed("fix the bug"),
+            SummaryKind::Unreachable,
+        );
         assert_eq!(out.matches("fix the bug").count(), 1, "{out}");
         assert!(out.contains("## You (failed to send)\n\nfix the bug"));
         assert!(out.contains("## You\n\nhi"));
@@ -559,7 +694,7 @@ mod tests {
         // Turns that fill the file to exactly the cap before the final
         // newline: the newline must not push it one past.
         let fail = failed("the failed one");
-        let base = chars(&build(&[], AGENT, &fail));
+        let base = chars(&build(&[], AGENT, &fail, SummaryKind::Unreachable));
         let mut turns = Vec::new();
         let mut used = base;
         let mut i = 0;
@@ -568,20 +703,25 @@ mod tests {
             if FILE_MAX_CHARS + 1 - used <= MESSAGE_MAX_CHARS {
                 // Tune the last turn so the untrimmed file is cap + 1.
                 let q = format!("question {i}");
-                let prefix = chars(&render_turn(&turn(&q, vec![text("r")]), AGENT)) + 2 - 1;
+                let prefix = chars(&render_turn(
+                    &turn(&q, vec![text("r")]),
+                    AGENT,
+                    SummaryKind::Unreachable,
+                )) + 2
+                    - 1;
                 let k = FILE_MAX_CHARS + 1 - used - prefix;
                 assert!(k <= MESSAGE_MAX_CHARS, "{k}");
                 let last = turn(&q, vec![text(&"r".repeat(k))]);
-                used += chars(&render_turn(&last, AGENT)) + 2;
+                used += chars(&render_turn(&last, AGENT, SummaryKind::Unreachable)) + 2;
                 turns.push(last);
                 break;
             }
             let t = turn(&format!("question {i}"), vec![text(&"r".repeat(9_000))]);
-            used += chars(&render_turn(&t, AGENT)) + 2;
+            used += chars(&render_turn(&t, AGENT, SummaryKind::Unreachable)) + 2;
             turns.push(t);
         }
         assert_eq!(used, FILE_MAX_CHARS + 1);
-        let out = build(&turns, AGENT, &fail);
+        let out = build(&turns, AGENT, &fail, SummaryKind::Unreachable);
         assert!(
             out.chars().count() <= FILE_MAX_CHARS,
             "{}",
@@ -595,7 +735,12 @@ mod tests {
         let turns: Vec<SummaryTurn> = (1..=50)
             .map(|i| turn(&format!("question {i}"), vec![text(&"r".repeat(9_000))]))
             .collect();
-        let out = build(&turns, AGENT, &failed("the failed one"));
+        let out = build(
+            &turns,
+            AGENT,
+            &failed("the failed one"),
+            SummaryKind::Unreachable,
+        );
         assert!(out.chars().count() <= 200_000, "{}", out.chars().count());
         let first = out.find("question 1\n").expect("first turn kept");
         let gap = out.find("_(earlier turns omitted)_").expect("gap marked");
@@ -621,12 +766,151 @@ mod tests {
             agent: vec![text("seen")],
             ..Default::default()
         };
-        let out = build(&[t], AGENT, &failed("next"));
+        let out = build(&[t], AGENT, &failed("next"), SummaryKind::Unreachable);
         assert!(out.contains("look at these"));
         assert!(out.contains("[file: a.txt]"), "{out}");
         assert!(out.contains("[image]"));
         assert!(!out.contains("zwiim-attachments"));
         assert!(!out.contains("/r/.zwiim"));
+    }
+
+    fn history_turn(role: TurnRole, blocks: Vec<ContentBlock>) -> MessageTurn {
+        MessageTurn {
+            id: "t".into(),
+            role,
+            blocks,
+            timestamp: chrono::Utc::now(),
+            usage: None,
+            duration_ms: None,
+            model: None,
+            completed_at: None,
+            agent_message_id: None,
+        }
+    }
+
+    fn tool(name: &str, preview: Option<&str>) -> ContentBlock {
+        ContentBlock::ToolUse {
+            tool_use_id: None,
+            tool_name: name.into(),
+            input_preview: preview.map(Into::into),
+            status: None,
+            meta: None,
+        }
+    }
+
+    fn plan_stopped(turns: &[SummaryTurn]) -> String {
+        build(turns, AGENT, &[], SummaryKind::PlanStopped)
+    }
+
+    #[test]
+    fn unreachable_kind_is_unchanged() {
+        let busy = turn("go", vec![text("a"), tool_use(), text("c")]);
+        let out = build(&[busy], AGENT, &failed("next"), SummaryKind::Unreachable);
+        assert_eq!(
+            out,
+            "# Earlier chat\nThis chat continues an earlier one that stopped because the agent couldn't reach its server. The last message below is the one that failed; it is repeated in the new chat.\n\n## You\n\ngo\n\n## Codex CLI\n\n[2 messages elided]\n\nc\n\n## You (failed to send)\n\nnext\n"
+        );
+        // Empty `failed` still gets its (empty) section, as before.
+        let out = build(&[], AGENT, &[], SummaryKind::Unreachable);
+        assert!(out.ends_with("\n\n## You (failed to send)\n"), "{out}");
+    }
+
+    #[test]
+    fn plan_stopped_has_its_own_intro() {
+        let out = plan_stopped(&[turn("hi", vec![text("hello")])]);
+        assert!(out.starts_with("# Earlier chat\n\n"), "{out}");
+        assert!(out.contains(
+            "This chat continues an earlier one whose tasks stopped before they were finished. The tasks are in tasks.md."
+        ));
+        assert!(!out.contains("couldn't reach its server"));
+    }
+
+    #[test]
+    fn plan_stopped_lists_tool_calls() {
+        let t = turn(
+            "fix it",
+            vec![
+                tool("Edit", Some("transport/lan.ts")),
+                tool("Bash", Some("npm test -- lan")),
+                text("Fixing it now."),
+            ],
+        );
+        let out = plan_stopped(&[t]);
+        assert!(out.contains("Edit transport/lan.ts\n"), "{out}");
+        assert!(out.contains("Bash npm test -- lan\n"), "{out}");
+        assert!(out.contains("Fixing it now."), "{out}");
+        assert!(!out.contains("elided"), "{out}");
+    }
+
+    #[test]
+    fn plan_stopped_tool_without_preview() {
+        let out = plan_stopped(&[turn("go", vec![tool("Read", None)])]);
+        assert!(out.contains("## Codex CLI\n\nRead\n"), "{out}");
+    }
+
+    #[test]
+    fn plan_stopped_keeps_replies_in_order_with_stop_and_error() {
+        let mut t = turn(
+            "go",
+            vec![text("first"), tool("Bash", Some("ls")), text("second")],
+        );
+        t.stopped = true;
+        t.error = Some("boom".into());
+        let out = plan_stopped(&[t]);
+        assert!(
+            out.contains("first\n\nBash ls\n\nsecond\n\n[Stopped]\n\n[Error: boom]"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn plan_stopped_caps_a_tool_line() {
+        let long = "x".repeat(MESSAGE_MAX_CHARS + 1);
+        let out = plan_stopped(&[turn("go", vec![tool("Bash", Some(&long))])]);
+        assert!(!out.contains(&long));
+        assert!(out.contains("… [cut]"));
+    }
+
+    #[test]
+    fn empty_failed_omits_failed_section() {
+        let out = plan_stopped(&[turn("hi", vec![text("hello")])]);
+        assert!(!out.contains("You (failed to send)"));
+        assert!(out.ends_with("hello\n"), "{out}");
+    }
+
+    #[test]
+    fn plan_stopped_keeps_file_cap() {
+        let turns: Vec<SummaryTurn> = (1..=300)
+            .map(|i| turn(&format!("question {i}"), vec![text(&"r".repeat(2_000))]))
+            .collect();
+        let out = plan_stopped(&turns);
+        assert!(
+            out.chars().count() <= FILE_MAX_CHARS,
+            "{}",
+            out.chars().count()
+        );
+        assert!(out.contains("_(earlier turns omitted)_"));
+        assert!(out.contains("question 300\n"));
+    }
+
+    #[test]
+    fn last_reply_is_last_assistant_text() {
+        let history = vec![
+            history_turn(TurnRole::User, vec![text("a")]),
+            history_turn(
+                TurnRole::Assistant,
+                vec![text("x"), tool_use(), text("  y \n"), text("  ")],
+            ),
+            history_turn(TurnRole::User, vec![text("b")]),
+        ];
+        assert_eq!(last_reply(&history), Some("y".to_string()));
+    }
+
+    #[test]
+    fn last_reply_none_without_assistant() {
+        let history = vec![history_turn(TurnRole::User, vec![text("a")])];
+        assert_eq!(last_reply(&history), None);
+        assert_eq!(last_reply(&[]), None);
     }
 
     #[test]

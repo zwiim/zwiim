@@ -1,6 +1,6 @@
-//! The worktree's `.zwiim/` folder: user uploads and agent images. Created
-//! with the worktree, excluded from Git before it exists, so it is visible in
-//! the file tree but can never be staged.
+//! The worktree's `.zwiim/` folder: user uploads, agent images and saved
+//! tasks. Created with the worktree, excluded from Git before it exists, so
+//! it is visible in the file tree but can never be staged.
 
 use std::path::Path;
 
@@ -10,6 +10,8 @@ use crate::commands::folder_links;
 pub(crate) const ATTACHMENTS: &str = ".zwiim/attachments";
 /// Images agents captured or generated.
 pub(crate) const IMAGES: &str = ".zwiim/images";
+/// Each session's saved tasks (`crate::session_plans`), created on first save.
+pub(crate) const TASKS: &str = ".zwiim/tasks";
 
 /// Best-effort: a failure is logged and the worktree is still created.
 /// `attachments::store` and `agent_images::save` create the folders lazily

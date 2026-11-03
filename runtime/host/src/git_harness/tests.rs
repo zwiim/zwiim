@@ -1845,7 +1845,10 @@ async fn auto_merge_on_a_mergeable_pull_request_merges_it_now() {
     assert_eq!(done.outcome, AutoMergeOutcome::Merged);
     assert_eq!(done.method, Some(MergeMethod::Merge));
     let log = std::fs::read_to_string(&calls).unwrap();
-    assert!(log.contains("pr merge 5 --merge --match-head-commit h1"), "{log}");
+    assert!(
+        log.contains("pr merge 5 --merge --match-head-commit h1"),
+        "{log}"
+    );
     assert!(!log.contains("--auto"), "{log}");
 }
 
@@ -1910,7 +1913,10 @@ async fn auto_merge_follows_what_github_says() {
     let done = auto_merge_with(&fx, &gh, true, Some("h1")).await.unwrap();
     assert_eq!(done.outcome, AutoMergeOutcome::Merged);
     let log = std::fs::read_to_string(&calls).unwrap();
-    assert!(log.contains("pr merge 5 --merge --match-head-commit h1"), "{log}");
+    assert!(
+        log.contains("pr merge 5 --merge --match-head-commit h1"),
+        "{log}"
+    );
 }
 
 #[tokio::test]
@@ -2059,10 +2065,12 @@ fn auto_merge_is_offered_only_to_a_pull_request_waiting_on_requirements() {
         assert_eq!(pr.merge.auto_available, available, "{status}");
         assert_eq!(pr.merge.auto, None, "{status}");
     }
-    assert!(!raw_pr("OPEN", "BLOCKED", false, json!([]))
-        .into_state(vec![])
-        .merge
-        .auto_available);
+    assert!(
+        !raw_pr("OPEN", "BLOCKED", false, json!([]))
+            .into_state(vec![])
+            .merge
+            .auto_available
+    );
 
     let mut raw = raw_pr("OPEN", "BLOCKED", false, json!([]));
     raw.auto_merge_request = serde_json::from_value(json!({
@@ -2377,7 +2385,10 @@ async fn conflicts_base_is_the_remote_tracking_ref() {
 #[tokio::test]
 async fn conflicts_none_without_base() {
     let fx = workspace(true).await;
-    assert_eq!(check_conflicts(&fx.root, "origin/main").await.unwrap(), None);
+    assert_eq!(
+        check_conflicts(&fx.root, "origin/main").await.unwrap(),
+        None
+    );
 }
 
 #[tokio::test]
@@ -2425,7 +2436,9 @@ async fn conflicts_fetch_base_updates_the_tracking_ref() {
     write(&other, "a.txt", "theirs\n");
     commit_all(&other, "upstream");
     git(&other, &["push", "-q"]);
-    fetch_base(&fx.host(), &fx.root, "origin/main").await.unwrap();
+    fetch_base(&fx.host(), &fx.root, "origin/main")
+        .await
+        .unwrap();
     assert_eq!(
         git(&fx.root, &["rev-parse", "origin/main"]),
         git(&other, &["rev-parse", "HEAD"])
@@ -2450,7 +2463,10 @@ async fn conflicts_base_of_a_root_is_its_upstream() {
 async fn conflicts_base_of_a_worktree_is_its_remote_base_branch() {
     let (fx, _) = conflict_fixture().await;
     let base = |b: Option<&'static str>| conflict_base(&fx.root, true, b);
-    assert_eq!(base(Some("main")).await.unwrap(), Some("origin/main".into()));
+    assert_eq!(
+        base(Some("main")).await.unwrap(),
+        Some("origin/main".into())
+    );
     assert_eq!(
         base(Some("origin/main")).await.unwrap(),
         Some("origin/main".into())

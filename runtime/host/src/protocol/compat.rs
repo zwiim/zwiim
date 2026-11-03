@@ -227,7 +227,37 @@ use serde::{Deserialize, Serialize};
 /// cleanly here but GitHub reports its open pull request conflicting (an
 /// unpushed resolution): the agent brings the base in and pushes. It replies
 /// `{base, files: []}`.
-pub const PROTOCOL_REVISION: u32 = 25;
+///
+/// Revision 26 (`agent.progress`): the steps an agent is working through.
+/// `agent.progress {steps: [{title, status}], total, completed}`, `status`
+/// one of `pending | in_progress | completed`, carries the whole list each
+/// time and replaces the previous one. It comes from the agent's own plan or
+/// from Zwiim's `update_progress` tool, the same shape either way. The
+/// session snapshot gains `progress`, the running turn's latest list or
+/// `null`. `session.history` gains `progress`, the session's newest saved
+/// plan or `null`: the same shape plus `plan_id`, `agent` and `state`, one
+/// of `running | completed | interrupted | cancelled`. A plan that is not
+/// running never changes again.
+/// `session.continue_plan {session_id, agent?}` (capability
+/// `session.continue_plan`) starts a new session in the same workspace, with
+/// `agent` or the session's own, to finish the session's newest plan, and
+/// returns `{session_id, plan_id}`: the new session and the plan it carries
+/// on. It refuses with `not_found`, `turn_in_progress`, `nothing_to_continue`
+/// (no plan, every step done, or a new session already took it over) or
+/// `root_workspace`. A plan is continued once: the new session's
+/// `session.history` carries `continues {session_id, plan_id, agent,
+/// completed, total, title}`, else `null`, and the old session's carries
+/// `continued_in {session_id}`, else `null`, until the new session is
+/// deleted. `progress.resumable` says whether a client may offer Continue:
+/// the plan stopped short with steps left, the chat has not moved on and no
+/// new session took it over. Continuing attaches the plan as `tasks.md` and
+/// the old chat as `previous-session.md` to the new session's first prompt,
+/// titles that session `<old title> (continued)` and announces the old
+/// session in `session.changed`. `session.retry` and
+/// `session.retry_in_new_chat` carry on an unfinished plan the same way
+/// (a step note on the resent message, or a hand-over to the new session),
+/// unless the user has written since the plan stopped.
+pub const PROTOCOL_REVISION: u32 = 26;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -284,6 +314,8 @@ pub const CAPABILITIES: &[&str] = &[
     "git.pr_auto_merge",
     "workspace.remove",
     "workspace.resolve_conflicts.github",
+    "agent.progress",
+    "session.continue_plan",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -529,7 +561,14 @@ mod tests {
     #[test]
     fn compat_advertises_github_conflicts() {
         assert!(CAPABILITIES.contains(&"workspace.resolve_conflicts.github"));
-        assert_eq!(PROTOCOL_REVISION, 25);
+        assert!(PROTOCOL_REVISION >= 25);
+    }
+
+    #[test]
+    fn compat_advertises_agent_progress() {
+        assert!(CAPABILITIES.contains(&"agent.progress"));
+        // `agent.progress` and the snapshot's `progress`.
+        assert_eq!(PROTOCOL_REVISION, 26);
     }
 
     #[test]

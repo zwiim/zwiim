@@ -20,19 +20,22 @@ use sha2::{Digest, Sha256};
 use crate::acp::feedback::FeedbackStatus;
 use crate::acp::git_tools;
 use crate::acp::plan_approval::PendingPlanApprovalState;
+use crate::acp::progress::Progress;
 use crate::acp::question::{PendingQuestionState, QuestionSpec};
 use crate::acp::session_state::{
     LiveContentBlock, LiveMessage, LiveSessionSnapshot, PendingPermissionState,
     PendingUserMessage, SubagentInfo, ToolCallOutput, ToolCallState,
 };
 use crate::acp::types::{
-    AcpEvent, BackgroundView, EventEnvelope, PermissionOptionInfo, UserMessageBlock,
+    AcpEvent, BackgroundView, EventEnvelope, PermissionOptionInfo, PlanEntryInfo,
+    UserMessageBlock,
 };
 use crate::models::agent::AgentType;
 use crate::parsers::claude::BACKGROUND_TASK_MARKER;
 use crate::models::message::{
     AgentExecutionStats, ContentBlock, ImageData, MessageTurn, TurnRole,
 };
+use crate::session_plans::PlanRecord;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionEvent {
@@ -72,7 +75,7 @@ pub(crate) fn scrub(text: &str) -> String {
 
 /// Paths under `root` (the session's workspace directory) become relative to
 /// it; `root` itself becomes `.`.
-fn relativize(text: &str, root: Option<&str>) -> String {
+pub(crate) fn relativize(text: &str, root: Option<&str>) -> String {
     match root.map(|r| r.trim_end_matches('/')).filter(|r| !r.is_empty()) {
         Some(root) => text.replace(&format!("{root}/"), "").replace(root, "."),
         None => text.to_string(),
@@ -358,6 +361,9 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
         AcpEvent::ReconnectingChanged { reconnecting } => {
             ("session.reconnecting", json!({ "reconnecting": reconnecting }))
         }
+        // A native agent plan and an `update_progress` report both arrive
+        // here; clients see one shape either way.
+        AcpEvent::PlanUpdate { entries } => ("agent.progress", progress(entries, root)),
         _ => return None,
     })
 }
@@ -557,6 +563,43 @@ pub fn project_snapshot(s: &LiveSessionSnapshot, root: Option<&str>) -> Value {
         "commands": crate::session_commands::project(&s.available_commands),
         "background": background(&s.background, root),
         "history_generation": s.history_generation,
+        "progress": s.live_message.as_ref().and_then(|m| live_progress(m, root)),
+    })
+}
+
+/// The agent's step list as clients see it: titles workspace-relative,
+/// priority dropped, counts computed once here.
+fn progress(entries: &[PlanEntryInfo], root: Option<&str>) -> Value {
+    let mut progress = Progress::from_plan_entries(entries);
+    for step in &mut progress.steps {
+        step.title = relativize(&step.title, root);
+    }
+    progress.to_client_json()
+}
+
+/// A saved plan as `session.history` sends it: the live `progress` shape
+/// plus which plan it is, who made it and how its turn ended.
+pub(super) fn saved_plan(record: &PlanRecord, root: Option<&str>) -> Value {
+    let mut progress = record.progress();
+    for step in &mut progress.steps {
+        step.title = relativize(&step.title, root);
+    }
+    let mut value = progress.to_client_json();
+    value["plan_id"] = json!(record.plan_id);
+    value["state"] = json!(record.state);
+    value["agent"] = json!(record.agent);
+    value
+}
+
+/// The turn's current step list, read back from the live message's plan
+/// block, so a client that connects mid-turn sees it without replay.
+fn live_progress(m: &LiveMessage, root: Option<&str>) -> Option<Value> {
+    m.content.iter().rev().find_map(|block| match block {
+        LiveContentBlock::Plan { entries } => {
+            let entries: Vec<PlanEntryInfo> = serde_json::from_value(entries.clone()).ok()?;
+            Some(progress(&entries, root))
+        }
+        _ => None,
     })
 }
 
@@ -1979,6 +2022,62 @@ pub(crate) mod tests {
         assert_eq!(snap["turn_usage"]["cached_read_tokens"], Value::Null);
     }
 
+    fn plan_entry(content: &str, status: &str) -> PlanEntryInfo {
+        PlanEntryInfo {
+            content: content.into(),
+            priority: "high".into(),
+            status: status.into(),
+        }
+    }
+
+    #[test]
+    fn plan_update_projects_as_agent_progress() {
+        let event = AcpEvent::PlanUpdate {
+            entries: vec![
+                plan_entry("Read /w/p/src/main.rs", "completed"),
+                plan_entry("Fix the bug", "in_progress"),
+                plan_entry("Run tests", "pending"),
+            ],
+        };
+        let v = project_envelope("s", Some("/w/p"), &env(event)).unwrap();
+        assert_eq!(v.kind, "agent.progress");
+        assert_eq!(
+            v.payload,
+            json!({
+                "steps": [
+                    { "title": "Read src/main.rs", "status": "completed" },
+                    { "title": "Fix the bug", "status": "in_progress" },
+                    { "title": "Run tests", "status": "pending" },
+                ],
+                "total": 3,
+                "completed": 1,
+            })
+        );
+        assert_no_internal_keys(&v.payload);
+        assert!(!v.payload.to_string().contains("priority"));
+    }
+
+    #[test]
+    fn snapshot_carries_the_live_progress() {
+        let mut state = SessionState::new(
+            "conn".into(),
+            AgentType::ClaudeCode,
+            Some("/w/p".into()),
+            "w".into(),
+            None,
+        );
+        assert_eq!(project_snapshot(&state.to_snapshot(), None)["progress"], Value::Null);
+        state.apply_event(&AcpEvent::PlanUpdate {
+            entries: vec![plan_entry("a", "completed"), plan_entry("b", "pending")],
+        });
+        let snap = project_snapshot(&state.to_snapshot(), None);
+        assert_eq!(snap["progress"]["total"], 2);
+        assert_eq!(snap["progress"]["completed"], 1);
+        assert_eq!(snap["progress"]["steps"][1], json!({ "title": "b", "status": "pending" }));
+        // The plan block itself still stays out of the live message.
+        assert!(!snap["live_message"].to_string().contains("\"b\""));
+    }
+
     #[test]
     fn internal_events_are_not_projected() {
         for event in [
@@ -2026,6 +2125,7 @@ pub(crate) mod tests {
                 "options",
                 "pending_request",
                 "pending_user_message",
+                "progress",
                 "reconnecting",
                 "status",
                 "tool_calls",

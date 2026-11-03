@@ -285,6 +285,17 @@ mod tests {
     }
 
     #[async_trait]
+    impl crate::acp::progress::SessionProgressAccess for Stub {
+        async fn report_progress(
+            &self,
+            _parent_connection_id: &str,
+            _progress: crate::acp::progress::Progress,
+        ) -> crate::acp::progress::ProgressAck {
+            crate::acp::progress::ProgressAck::rejected("unreachable")
+        }
+    }
+
+    #[async_trait]
     impl ParentSessionLookup for Stub {
         async fn current_conversation_id(&self, _parent_connection_id: &str) -> Option<i32> {
             None
@@ -501,6 +512,7 @@ mod tests {
         let listener = DelegationListener::new(
             broker,
             Arc::new(TokenRegistry::default()),
+            Arc::new(Stub),
             Arc::new(Stub),
             Arc::new(Stub),
             Arc::new(Stub),

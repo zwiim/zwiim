@@ -115,7 +115,11 @@ pub(super) async fn push(
 
 /// A `git` command for talking to `remote`: ssh never asks, and a stored
 /// account is supplied when one matches.
-pub(super) async fn remote_git(host: &GitHost<'_>, root: &str, remote: &str) -> tokio::process::Command {
+pub(super) async fn remote_git(
+    host: &GitHost<'_>,
+    root: &str,
+    remote: &str,
+) -> tokio::process::Command {
     let mut cmd = run::git(root);
     if std::env::var_os("GIT_SSH_COMMAND").is_none() {
         cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");

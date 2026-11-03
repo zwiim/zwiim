@@ -78,6 +78,16 @@ impl ZwiimError {
         )
     }
 
+    /// `session.continue_plan` on a session with no saved plan, or one whose
+    /// steps are all done.
+    pub fn nothing_to_continue() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            "nothing_to_continue",
+            "There are no unfinished tasks to continue",
+        )
+    }
+
     /// Another session's turn is running in the same worktree.
     pub fn worktree_busy() -> Self {
         Self::new(

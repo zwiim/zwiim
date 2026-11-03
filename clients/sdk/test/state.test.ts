@@ -14,7 +14,7 @@ import {
   initialTerminalCursor,
   MAX_PENDING_EVENTS,
 } from "../src/state/terminal";
-import type { HistoryTurn, SessionEvent, SessionSnapshot, TerminalEvent } from "../src/types/protocol";
+import type { HistoryTurn, Progress, SessionEvent, SessionSnapshot, TerminalEvent } from "../src/types/protocol";
 
 const ev = (seq: number, type: SessionEvent["type"], payload: unknown): SessionEvent =>
   ({ session_id: "s1", seq, type, payload }) as SessionEvent;
@@ -126,6 +126,74 @@ describe("session view", () => {
     expect(v.settled).toBeNull();
     expect(v.historyStale).toBe(false);
     expect(v.history).toEqual(turns);
+  });
+
+  it("agent.progress sets the steps, a snapshot carries them, and the turn ending clears them", () => {
+    const progress: Progress = {
+      steps: [
+        { title: "Read", status: "completed" },
+        { title: "Fix", status: "in_progress" },
+      ],
+      total: 2,
+      completed: 1,
+    };
+    let v = run([
+      { type: "snapshot", epoch: "e1", seq: 1, snapshot: baseSnapshot },
+      { type: "event", event: ev(2, "agent.progress", progress) },
+    ]);
+    expect(v.progress).toEqual(progress);
+    // A client that attaches mid-turn gets them from the snapshot.
+    expect(run([{ type: "snapshot", epoch: "e1", seq: 1, snapshot: { ...baseSnapshot, progress } }]).progress).toEqual(progress);
+    expect(run([{ type: "snapshot", epoch: "e1", seq: 1, snapshot: baseSnapshot }]).progress).toBeNull();
+    v = reduceSession(v, { type: "event", event: ev(3, "agent.turn_complete", { stop_reason: "end_turn" }) });
+    expect(v.progress).toBeNull();
+    // So does the agent going away.
+    const live = run([
+      { type: "snapshot", epoch: "e1", seq: 1, snapshot: { ...baseSnapshot, progress } },
+      { type: "detached", reason: "session_not_live" },
+    ]);
+    expect(live.progress).toBeNull();
+  });
+
+  it("a new prompt drops the last turn's steps, but a steer keeps them", () => {
+    const progress: Progress = { steps: [{ title: "Read", status: "in_progress" }], total: 1, completed: 0 };
+    const prompt = { message_id: "u2", blocks: [{ type: "text", text: "next" }] };
+    let v = run([
+      { type: "snapshot", epoch: "e1", seq: 1, snapshot: { ...baseSnapshot, progress } },
+      { type: "event", event: ev(2, "agent.turn_complete", { stop_reason: "end_turn" }) },
+      // A stray late report after the turn ended.
+      { type: "event", event: ev(3, "agent.progress", progress) },
+    ]);
+    expect(v.progress).toEqual(progress);
+    v = reduceSession(v, { type: "event", event: ev(4, "agent.user_message", prompt) });
+    expect(v.progress).toBeNull();
+    v = run(
+      [
+        { type: "event", event: ev(5, "agent.progress", progress) },
+        { type: "event", event: ev(6, "agent.steered", prompt) },
+      ],
+      v,
+    );
+    expect(v.progress).toEqual(progress);
+  });
+
+  it("a history frame sets the saved plan and its links, and clears them when absent", () => {
+    const savedPlan = {
+      steps: [{ title: "Read", status: "completed" as const }, { title: "Fix", status: "pending" as const }],
+      total: 2,
+      completed: 1,
+      plan_id: "p1",
+      agent: "claude_code",
+      state: "interrupted" as const,
+      resumable: true,
+    };
+    const continues = { session_id: "s0", plan_id: "p0", agent: null, completed: 1, total: 3, title: "Old" };
+    let v = run([{ type: "history", turns: [], savedPlan, continues, continuedIn: "s2" }]);
+    expect(v.savedPlan).toEqual(savedPlan);
+    expect(v.continues).toEqual(continues);
+    expect(v.continuedIn).toBe("s2");
+    v = reduceSession(v, { type: "history", turns: [] });
+    expect(v).toMatchObject({ savedPlan: null, continues: null, continuedIn: null });
   });
 
   it("a user message starts a fresh live turn", () => {

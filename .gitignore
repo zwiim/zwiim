@@ -15,3 +15,6 @@ clients/desktop/public/pdfjs/
 # Release builds (scripts/release)
 /dist/
 clients/mobile/modules/zwiim-preview/android/src/main/assets/zwiim-preview/
+
+# Superpowers scratch (subagent ledgers, briefs, reviews)
+/.superpowers/

@@ -197,6 +197,11 @@ export class HostConnection {
     else this.#shown.delete(session_id);
   }
 
+  /** Read a shown session's history again, for when the Host refused something its view still offered. */
+  reloadSession(session_id: string): void {
+    this.#controller?.openSession(session_id);
+  }
+
   /**
    * A terminal is on screen: stream it into its emulator, on this and later
    * connections, until every view holding it has let go.

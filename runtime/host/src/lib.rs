@@ -57,6 +57,8 @@ pub mod session;
 pub mod session_checkpoints;
 pub mod session_commands;
 pub mod session_options;
+pub mod session_continue;
+pub mod session_plans;
 pub mod session_retry;
 pub mod session_summary;
 pub mod repository_settings;
@@ -1092,6 +1094,11 @@ mod tauri_app {
                             }),
                             data_dir: effective_data_dir.clone(),
                         }),
+                        std::sync::Arc::new(
+                            crate::acp::manager::ConnectionManagerProgressLookup {
+                                manager: std::sync::Arc::new(cm_state.clone_ref()),
+                            },
+                        ),
                     );
                     // Bind through the service handle rather than a bare
                     // `listener.run` spawn: it keeps the bind error and the

@@ -275,6 +275,46 @@
     }
   },
   {
+    "name": "update_progress",
+    "description": "Show the user the steps you are working through, so they can see what is done, what is running now and what remains. Call it once you have a plan, then again whenever a step starts or finishes. Send the full list every time: each call replaces the previous one. Keep exactly one step in_progress while you work, and mark every step completed when you are done. Skip this tool if you already keep a built-in plan or todo list, which the user sees the same way.",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "steps"
+      ],
+      "properties": {
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "description": "Every step of the work, in order.",
+          "items": {
+            "type": "object",
+            "required": [
+              "title",
+              "status"
+            ],
+            "properties": {
+              "title": {
+                "type": "string",
+                "maxLength": 200,
+                "description": "Short description of the step, e.g. 'Add the login form'."
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "in_progress",
+                  "completed"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
     "name": "task_progress",
     "description": "Report a short progress milestone for the work task you are executing. It shows up on the task's board card and timeline in real time, so the user can follow along without opening the session. Call it at meaningful checkpoints — finished exploring, tests passing, starting the refactor — not for every small step. Fire-and-forget: it never blocks your work and returns immediately.",
     "inputSchema": {

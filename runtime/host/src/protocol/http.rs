@@ -2568,11 +2568,50 @@ pub async fn session_history(
                     "code": crate::unreachable::CODE,
                 })
             });
+    // The newest saved plan, so a client that comes back after a drop or a
+    // Host restart still sees how far the agent got, and whether it can be
+    // continued (`session.continue_plan`).
+    let mut continued_in = None;
+    let progress = match &root {
+        Some(dir) => {
+            let dir = std::path::Path::new(dir);
+            match crate::session_plans::saved_progress(&state, &row, dir).await {
+                Some(record) => {
+                    continued_in = crate::session_plans::continued_in(
+                        &state.db.conn,
+                        dir,
+                        &p.session_id,
+                        &record.plan_id,
+                    )
+                    .await;
+                    let resumable = crate::session_plans::is_resumable(
+                        &record,
+                        &turns,
+                        last_error.is_some(),
+                        continued_in.is_some(),
+                    );
+                    let mut value = super::events::saved_plan(&record, root.as_deref());
+                    value["resumable"] = json!(resumable);
+                    Some(value)
+                }
+                None => None,
+            }
+        }
+        None => None,
+    };
+    // The plan this session was started to finish (`session.continue_plan`).
+    let continues = match &root {
+        Some(dir) => crate::session_plans::link(std::path::Path::new(dir), &p.session_id).await,
+        None => None,
+    };
     Ok(Json(json!({
         "session_id": p.session_id,
         "turns": super::events::project_history_with(&turns, root.as_deref(), &revertible),
         "history_generation": generation,
         "last_error": last_error,
+        "progress": progress,
+        "continues": continues,
+        "continued_in": continued_in.map(|session_id| json!({ "session_id": session_id })),
     })))
 }
 
@@ -2581,11 +2620,15 @@ pub async fn session_retry(
     Extension(state): Extension<Arc<AppState>>,
     ZJson(p): ZJson<SessionParams>,
 ) -> ZResult<Value> {
+    crate::session_retry::ensure_retryable(&state.db, &state.connection_manager, &p.session_id)
+        .await?;
+    let history = session::history(&state, &p.session_id).await?;
     crate::session_retry::retry(
         &state.db,
         &state.connection_manager,
         &RuntimeLauncher { state: &state },
         &p.session_id,
+        &history,
     )
     .await?;
     Ok(Json(json!({ "session_id": p.session_id })))
@@ -2608,7 +2651,65 @@ pub async fn session_retry_in_new_chat(
         &history,
     )
     .await?;
+    // When a plan was handed over, the old session says where it went and
+    // the new one has its "(continued)" title; otherwise this only lists the
+    // new session afresh.
+    announce_sessions_changed(&state, &[p.session_id.as_str(), session_id.as_str()]).await;
     Ok(Json(json!({ "session_id": session_id })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionContinuePlanParams {
+    pub session_id: String,
+    /// The agent to carry on with; the session's own when absent.
+    #[serde(default)]
+    pub agent: Option<AgentType>,
+}
+
+/// `session.continue_plan`: a new session, with any agent, that finishes
+/// this session's newest plan.
+pub async fn session_continue_plan(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<SessionContinuePlanParams>,
+) -> ZResult<Value> {
+    let history = session::history(&state, &p.session_id).await?;
+    let continued = crate::session_continue::continue_plan(
+        &state.db,
+        &state.connection_manager,
+        &RuntimeLauncher { state: &state },
+        &p.session_id,
+        p.agent,
+        &history,
+    )
+    .await?;
+    // The old session now says where its plan went; the new one has its
+    // "(continued)" title.
+    announce_sessions_changed(&state, &[p.session_id.as_str(), continued.session_id.as_str()])
+        .await;
+    Ok(Json(json!({
+        "session_id": continued.session_id,
+        "plan_id": continued.plan_id,
+    })))
+}
+
+/// Tell every device that each of `session_ids` changed.
+pub(crate) async fn announce_sessions_changed(state: &AppState, session_ids: &[&str]) {
+    for session_id in session_ids {
+        if let Ok(row) = session::resolve(&state.db.conn, session_id).await {
+            announce_session_changed(state, row.id).await;
+        }
+    }
+}
+
+/// Tell every device that session `conversation_id` changed.
+pub(crate) async fn announce_session_changed(state: &AppState, conversation_id: i32) {
+    crate::commands::conversations::emit_conversation_upsert(
+        &state.emitter,
+        &state.db.conn,
+        conversation_id,
+    )
+    .await;
 }
 
 #[derive(Deserialize)]

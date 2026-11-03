@@ -490,6 +490,8 @@ async fn async_main() -> Exit {
     zwiim_host::session_commands::spawn_tracker(state.clone());
     // Close each turn's Git checkpoint when the agent ends the turn.
     zwiim_host::session_checkpoints::spawn_tracker(state.clone());
+    // Save each turn's plan in its worktree, so it outlives the Host.
+    zwiim_host::session_plans::spawn_tracker(state.clone());
     // Send each session's next queued follow-up as its turn ends.
     zwiim_host::follow_ups::spawn_tracker(state.clone());
     // Keep the Mac awake while an agent works.
@@ -593,6 +595,9 @@ async fn async_main() -> Exit {
                     conn: state.db.conn.clone(),
                 }),
                 data_dir: state.data_dir.clone(),
+            }),
+            Arc::new(zwiim_host::acp::manager::ConnectionManagerProgressLookup {
+                manager: Arc::new(state.connection_manager.clone_ref()),
             }),
         );
         // Bind through the service handle rather than a bare `listener.run`

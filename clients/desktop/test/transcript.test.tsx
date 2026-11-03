@@ -95,14 +95,24 @@ describe("transcript", () => {
           { type: "tool_call", tool_call_id: "c2", title: "Read", input_preview: "x.txt", status: "completed" },
           { type: "tool_result", tool_call_id: "c2", output_preview: "no such file", is_error: true },
           { type: "tool_call", tool_call_id: "c3", title: "ExitPlanMode", input_preview: '{"plan":"# Plan"}', status: null },
+          {
+            type: "tool_call",
+            tool_call_id: "c4",
+            title: "mcp__zwiim-mcp__update_progress",
+            input_preview: '{"steps":[{"title":"Add the form","status":"in_progress"}]}',
+            status: null,
+          },
         ]),
       ],
     });
     const { controller } = await openSession(t);
     const calls = screen.getAllByTestId("tool-call");
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
     // Named as Claude titles it live.
     expect(calls[2]!.textContent).toContain("Exited Plan Mode");
+    // Zwiim's own tool reads by what it does, never by its MCP name.
+    expect(calls[3]!.textContent).toContain("Updated tasks");
+    expect(calls[3]!.textContent).not.toContain("zwiim-mcp");
     const row = within(calls[0]!).getByRole("button");
     expect(row.textContent).toContain("Run");
     expect(row.querySelector("code")?.textContent).toBe("ls src");
@@ -166,6 +176,23 @@ describe("transcript", () => {
       ["del", "-old"],
       ["add", "+new"],
     ]);
+    controller.dispose();
+  });
+
+  it("names Zwiim's own tool by what it does while it runs", async () => {
+    const t = new FakeTransport();
+    const { controller, frame } = await openSession(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+    await frame({
+      type: "event",
+      event: {
+        session_id: "s1",
+        seq: 2,
+        type: "agent.tool_call",
+        payload: { tool_call_id: "p", title: "mcp__zwiim-mcp__update_progress", kind: "other", status: "in_progress", content: null },
+      },
+    });
+    expect(screen.getByTestId("tool-call").textContent).toBe("Updated tasksrunning");
     controller.dispose();
   });
 

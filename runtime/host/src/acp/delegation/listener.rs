@@ -29,13 +29,14 @@ use crate::acp::delegation::transport::{
     BrokerCommitFeedbackRequest, BrokerFeedbackRequest, BrokerMessage, BrokerRequest,
     BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerGitRequest, BrokerResponse,
     BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
-    BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
+    BrokerTaskCompleteRequest, BrokerTaskProgressRequest, BrokerUpdateProgressRequest,
 };
 use crate::acp::delegation::types::{
     DelegationRequest, DelegationTaskReport, ResumeDelegationRequest, TaskStatus,
 };
 use crate::acp::feedback::{PendingFeedback, SessionFeedbackAccess};
 use crate::acp::git_tools::GitToolAccess;
+use crate::acp::progress::{Progress, ProgressAck, SessionProgressAccess};
 use crate::acp::question::{QuestionOutcome, SessionQuestionAccess};
 #[cfg(unix)]
 use crate::acp::scratch_dir::SUN_PATH_CAP;
@@ -167,6 +168,10 @@ pub struct DelegationListener {
     /// the delegation arms: the workspace comes from the connection, never
     /// from the companion.
     pub git: Arc<dyn GitToolAccess>,
+    /// Publishes the `update_progress` step list on the parent connection's
+    /// session. Parent-scoped like the delegation arms: the session comes from
+    /// the token, never from the companion.
+    pub progress: Arc<dyn SessionProgressAccess>,
 }
 
 impl DelegationListener {
@@ -182,6 +187,7 @@ impl DelegationListener {
         authoring: Arc<dyn ChatAuthoringAccess>,
         browser: Arc<dyn BrowserToolAccess>,
         git: Arc<dyn GitToolAccess>,
+        progress: Arc<dyn SessionProgressAccess>,
     ) -> Arc<Self> {
         Arc::new(Self {
             broker,
@@ -194,6 +200,7 @@ impl DelegationListener {
             authoring,
             browser,
             git,
+            progress,
         })
     }
 
@@ -561,6 +568,9 @@ impl DelegationListener {
             }
             BrokerMessage::TaskComplete(req) => {
                 task_ack_response(self.process_task_complete(req).await)?
+            }
+            BrokerMessage::UpdateProgress(req) => {
+                progress_ack_response(self.process_update_progress(req).await)?
             }
             BrokerMessage::CreateAutomation(req) => {
                 // A bounded DB write. Like SessionInfo it never long-polls, so
@@ -1015,6 +1025,23 @@ impl DelegationListener {
             .await
     }
 
+    /// Validate the token and the steps, then publish them on the parent
+    /// connection's session. The companion validated already; the steps are
+    /// checked again here because the socket, not the companion, is the trust
+    /// boundary.
+    async fn process_update_progress(&self, req: BrokerUpdateProgressRequest) -> ProgressAck {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
+            return ProgressAck::rejected("invalid token");
+        };
+        let progress = match Progress::new(req.steps) {
+            Ok(progress) => progress,
+            Err(reason) => return ProgressAck::rejected(&reason),
+        };
+        self.progress
+            .report_progress(&entry.parent_connection_id, progress)
+            .await
+    }
+
     /// Resolve the caller's [`AuthoringContext`] from its per-launch token: the
     /// conversation it is currently in (for defaulting the target project) plus
     /// the working directory recorded at injection. `None` when the token is
@@ -1285,6 +1312,16 @@ const CAPTURE_RESPONSE_MAX_BYTES: usize = super::transport::MAX_FRAME_BYTES - 64
 /// `TaskProgress` / `TaskComplete` arms — the companion renders it into the
 /// tool result.
 fn task_ack_response(ack: TaskReportAck) -> std::io::Result<BrokerResponse> {
+    Ok(BrokerResponse {
+        outcome: serde_json::to_value(&ack).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
+        })?,
+    })
+}
+
+/// Serialize a [`ProgressAck`] into a [`BrokerResponse`] for the
+/// `UpdateProgress` arm.
+fn progress_ack_response(ack: ProgressAck) -> std::io::Result<BrokerResponse> {
     Ok(BrokerResponse {
         outcome: serde_json::to_value(&ack).map_err(|e| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
@@ -1715,6 +1752,23 @@ mod tests {
         }
     }
 
+    /// Progress stub. Records every `(parent_connection_id, progress)` it was
+    /// handed and accepts it.
+    #[derive(Default)]
+    struct StubProgress {
+        reports: tokio::sync::Mutex<Vec<(String, Progress)>>,
+    }
+    #[async_trait]
+    impl SessionProgressAccess for StubProgress {
+        async fn report_progress(&self, parent: &str, progress: Progress) -> ProgressAck {
+            self.reports
+                .lock()
+                .await
+                .push((parent.to_string(), progress));
+            ProgressAck::recorded()
+        }
+    }
+
     /// No-engine stub: every report is rejected, mirroring a process without a
     /// running task engine.
     struct StubTaskTools;
@@ -1808,6 +1862,7 @@ mod tests {
             Arc::new(StubAuthoring::default()),
             Arc::new(NoBrowserTabs),
             Arc::new(StubGit::default()),
+            Arc::new(StubProgress::default()),
         )
     }
 
@@ -1832,6 +1887,7 @@ mod tests {
             Arc::new(StubAuthoring::default()),
             Arc::new(NoBrowserTabs),
             Arc::new(StubGit::default()),
+            Arc::new(StubProgress::default()),
         )
     }
 
@@ -1857,6 +1913,7 @@ mod tests {
             Arc::new(StubAuthoring::default()),
             Arc::new(NoBrowserTabs),
             Arc::new(StubGit::default()),
+            Arc::new(StubProgress::default()),
         )
     }
 
@@ -1881,6 +1938,7 @@ mod tests {
             Arc::new(StubAuthoring::default()),
             Arc::new(NoBrowserTabs),
             Arc::new(StubGit::default()),
+            Arc::new(StubProgress::default()),
         )
     }
 
@@ -1900,6 +1958,30 @@ mod tests {
             Arc::new(StubAuthoring::default()),
             Arc::new(NoBrowserTabs),
             git,
+            Arc::new(StubProgress::default()),
+        )
+    }
+
+    fn make_progress_listener(
+        tokens: Arc<TokenRegistry>,
+        progress: Arc<StubProgress>,
+    ) -> Arc<DelegationListener> {
+        let broker = Arc::new(DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            Arc::new(AlwaysRootLookup) as Arc<dyn ConversationDepthLookup>,
+        ));
+        DelegationListener::new(
+            broker,
+            tokens,
+            Arc::new(StaticParentLookup(Some(1))),
+            Arc::new(StubFeedback::default()),
+            Arc::new(StubQuestion::default()),
+            Arc::new(StubSessionInfo::default()),
+            Arc::new(StubTaskTools),
+            Arc::new(StubAuthoring::default()),
+            Arc::new(NoBrowserTabs),
+            Arc::new(StubGit::default()),
+            progress,
         )
     }
 
@@ -1926,6 +2008,7 @@ mod tests {
             authoring,
             Arc::new(NoBrowserTabs),
             Arc::new(StubGit::default()),
+            Arc::new(StubProgress::default()),
         )
     }
 
@@ -1951,6 +2034,7 @@ mod tests {
             Arc::new(StubAuthoring::default()),
             browser,
             Arc::new(StubGit::default()),
+            Arc::new(StubProgress::default()),
         )
     }
 
@@ -3683,6 +3767,125 @@ mod tests {
         assert!(git.calls.lock().await.is_empty());
     }
 
+    async fn progress_round_trip(
+        listener: Arc<DelegationListener>,
+        token: &str,
+        steps: Vec<crate::acp::progress::ProgressStep>,
+    ) -> BrokerResponse {
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let msg = BrokerMessage::UpdateProgress(BrokerUpdateProgressRequest {
+            token: token.into(),
+            steps,
+        });
+        write_frame(&mut client, &msg).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+        resp
+    }
+
+    fn progress_step(
+        title: &str,
+        status: crate::acp::progress::StepStatus,
+    ) -> crate::acp::progress::ProgressStep {
+        crate::acp::progress::ProgressStep {
+            title: title.into(),
+            status,
+        }
+    }
+
+    /// A progress report is published for the token's parent connection,
+    /// with its titles normalised.
+    #[tokio::test]
+    async fn update_progress_reports_for_the_tokens_parent_connection() {
+        use crate::acp::progress::StepStatus;
+
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let progress = Arc::new(StubProgress::default());
+        let listener = make_progress_listener(tokens, progress.clone());
+
+        let resp = progress_round_trip(
+            listener,
+            "tok",
+            vec![
+                progress_step(" Plan ", StepStatus::Completed),
+                progress_step("Build", StepStatus::InProgress),
+            ],
+        )
+        .await;
+
+        assert_eq!(resp.outcome, json!({ "recorded": true }));
+        let reports = progress.reports.lock().await;
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].0, "parent-conn");
+        assert_eq!(
+            reports[0].1.steps,
+            vec![
+                progress_step("Plan", StepStatus::Completed),
+                progress_step("Build", StepStatus::InProgress),
+            ]
+        );
+    }
+
+    /// An unknown token is rejected and nothing is published.
+    #[tokio::test]
+    async fn update_progress_with_an_invalid_token_is_rejected() {
+        use crate::acp::progress::StepStatus;
+
+        let progress = Arc::new(StubProgress::default());
+        let listener = make_progress_listener(Arc::new(TokenRegistry::default()), progress.clone());
+
+        let resp = progress_round_trip(
+            listener,
+            "forged",
+            vec![progress_step("a", StepStatus::Pending)],
+        )
+        .await;
+
+        assert_eq!(resp.outcome, json!({ "recorded": false, "note": "invalid token" }));
+        assert!(progress.reports.lock().await.is_empty());
+    }
+
+    /// Steps that bypass the companion's validation are still checked here.
+    #[tokio::test]
+    async fn update_progress_revalidates_steps_at_the_socket() {
+        use crate::acp::progress::StepStatus;
+
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let progress = Arc::new(StubProgress::default());
+        let listener = make_progress_listener(tokens, progress.clone());
+
+        let resp = progress_round_trip(
+            listener,
+            "tok",
+            vec![progress_step("   ", StepStatus::Pending)],
+        )
+        .await;
+
+        assert_eq!(resp.outcome["recorded"], false);
+        assert!(progress.reports.lock().await.is_empty());
+    }
+
     /// Git access over a real database and repository, for one conversation:
     /// everything `HostGitTools` does except reading the live connection.
     struct DbGit {
@@ -3776,6 +3979,7 @@ mod tests {
                             planning,
                         },
                     }),
+                    Arc::new(StubProgress::default()),
                 );
                 let bound = DelegationListener::bind(&sock).await.unwrap();
                 tokio::spawn(listener.accept_loop(bound, sock)).abort_handle()
