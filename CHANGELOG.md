@@ -32,6 +32,37 @@ have their own versions and are listed under Compatibility.
 ### Known limitations
 - None.
 
+## [0.1.0-rc.14] - 2026-11-05
+
+### Added
+- Session fork: start a new session from any finished exchange, on Desktop and the phone, from the branch icon after the turn's time. The fork stays in the same worktree or gets a new one holding the files as they were at that turn. The agent carries the chat over where it can; otherwise the new session starts from a summary up to that turn. The original session is left as it was, and the draft in the composer moves to the fork.
+- Workspace groups: gather repositories into named groups on Desktop and the phone, one level deep. Desktop moves rows by drag and from their menus, with Undo; the phone moves them from a long press. The layout lives on the Host, so every client shows the same one; folds stay on each device.
+
+### Changed
+- One update for Desktop and its Host: Settings has one Zwiim box with one check and one Update. Update readies both, then Restart now or Restart when idle. Restart when idle waits for running agents only; open terminals are closed by the restart and no longer hold it. A Host bundled with Desktop now gets its updates only through Desktop.
+
+### Fixed
+- Starting a new session could be cut off by a restart when idle, because the Host read as idle while the first prompt was being sent.
+
+### Security
+- None.
+
+### Compatibility
+- Protocol revision 29. New capabilities: `workspace.layout`, `session.fork`. Older Hosts keep the flat workspace list and offer no fork.
+- Mobile: Android app 0.1.0 (version code 1) as `com.zwiim.mobile`, installed from the APK. iOS 0.1.0 (build 5) for TestFlight testers.
+
+### Provider changes
+- None.
+
+### Migration notes
+- The upgrade sets the sidebar's order of repositories and worktrees once, to the order they were added, so a sidebar that sorted by recent use will look different. This cannot be undone by going back to an earlier version.
+
+### Known limitations
+- iOS build 5 predates this release: workspace groups and session fork are in the Android app and Desktop, not yet on TestFlight.
+- An agent shows a task list only when it keeps one; ask for one in the prompt.
+- Codex command output appears when the command ends, not live.
+- Mobile dark text is #EDEFF0, not DESIGN.md's #DFE1E3.
+
 ## [0.1.0-rc.13] - 2026-11-03
 
 ### Added

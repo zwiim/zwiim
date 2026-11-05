@@ -147,6 +147,8 @@ function build(src, v, pubkey) {
   const out = path.join(WORK, `bin-${v}`);
   fs.mkdirSync(out, { recursive: true });
   for (const b of ["zwiim-host", "zwiim-mcp"]) fs.copyFileSync(path.join(TARGET_DIR, "debug", b), path.join(out, b));
+  // The archive carries `gh`; a stub keeps the rehearsal off the network.
+  fs.writeFileSync(path.join(out, "gh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   const reported = run(path.join(out, "zwiim-host"), ["--version"]);
   if (reported !== v) throw new Error(`built ${reported}, wanted ${v}`);
   return out;
@@ -162,7 +164,7 @@ function startServer() {
   const server = http.createServer((req, res) => {
     const url = decodeURIComponent(req.url.split("?")[0]);
     let file = null;
-    const m = url.match(/^\/releases\/latest\/download\/([^/]+)$/);
+    const m = url.match(/^\/releases\/(?:latest\/download|download\/beta)\/([^/]+)$/);
     if (m && latest) file = path.join(SITE, `v${latest}`, m[1]);
     const d = url.match(/^\/releases\/download\/(v[^/]+)\/([^/]+)$/);
     if (d) file = path.join(SITE, d[1], d[2]);
