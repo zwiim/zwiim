@@ -54,6 +54,7 @@ mod m20261027_000001_conversation_unreachable_turn;
 mod m20261029_000001_repository_settings;
 mod m20261029_000002_worktree_port;
 mod m20261029_000003_conversation_follow_ups;
+mod m20261104_000001_workspace_group_ids;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -114,6 +115,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261029_000001_repository_settings::Migration),
             Box::new(m20261029_000002_worktree_port::Migration),
             Box::new(m20261029_000003_conversation_follow_ups::Migration),
+            Box::new(m20261104_000001_workspace_group_ids::Migration),
         ]
     }
 }

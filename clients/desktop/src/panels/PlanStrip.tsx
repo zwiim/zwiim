@@ -16,6 +16,7 @@ import { errorMessage, useController, useHost, useOnline } from "@/lib/host-cont
 import { cn } from "@/lib/utils";
 
 import { ContinuedInRow } from "./ContinuedCard";
+import { focusMenu } from "./ControlCenter";
 import { offeredAgents } from "./SessionPanel";
 import { turnStart } from "./Transcript";
 
@@ -338,7 +339,7 @@ function Popover({
   const close = useRef(onClose);
   close.current = onClose;
   useEffect(() => {
-    ref.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    focusMenu(ref.current);
     const outside = (e: PointerEvent) => {
       if (!ref.current?.parentElement?.contains(e.target as Node)) close.current("outside");
     };
@@ -356,9 +357,10 @@ function Popover({
     <div
       ref={ref}
       role={role}
+      tabIndex={role === "menu" ? -1 : undefined}
       aria-label={label}
       className={cn(
-        "bg-popover text-foreground shadow-pop animate-pop-in absolute bottom-full z-20 mb-2 origin-bottom rounded-xl border",
+        "bg-popover text-foreground shadow-pop animate-pop-in absolute bottom-full z-20 mb-2 origin-bottom rounded-xl border outline-none",
         className,
       )}
     >

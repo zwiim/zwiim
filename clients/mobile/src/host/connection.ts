@@ -38,7 +38,9 @@ import {
   type ResolveStrategy,
   type SessionOptions,
   type SessionRevertResult,
+  type WorkspaceGroup,
   type WorkspaceInfo,
+  type WorkspaceLayout,
   type WorkspaceInspection,
 } from "@zwiim/sdk";
 import type { LanAccess, NetworkReachability } from "../platform/capabilities";
@@ -268,6 +270,31 @@ export class HostConnection {
   /** Remove a workspace and archive its worktrees (`workspace.remove`); never retried. The host may refuse it. */
   async removeWorkspace(workspace_id: string, opts: { force?: boolean } = {}): Promise<void> {
     await this.#live().removeWorkspace(workspace_id, opts);
+  }
+
+  /** Make a workspace group (`workspace.group_create`). The layout follows on the feed. */
+  async createWorkspaceGroup(name: string): Promise<WorkspaceGroup> {
+    return this.#live().createWorkspaceGroup(name);
+  }
+
+  /** Rename a workspace group (`workspace.group_rename`). */
+  async renameWorkspaceGroup(group_id: string, name: string): Promise<void> {
+    await this.#live().renameWorkspaceGroup(group_id, name);
+  }
+
+  /** Delete a workspace group (`workspace.group_delete`); its repositories stay, in place. */
+  async deleteWorkspaceGroup(group_id: string): Promise<void> {
+    await this.#live().deleteWorkspaceGroup(group_id);
+  }
+
+  /** Send the workspace layout (`workspace.layout_set`). The Host reconciles it and answers on the feed. */
+  async setWorkspaceLayout(layout: WorkspaceLayout): Promise<void> {
+    await this.#live().setWorkspaceLayout(layout);
+  }
+
+  /** What the next layout write builds on. The feed's layout trails an answered write. */
+  latestLayout(): WorkspaceLayout | null {
+    return this.#controller?.latestLayout() ?? this.#store.getState().layout;
   }
 
   /** Start a terminal in a workspace (`terminal.spawn`); never retried. */

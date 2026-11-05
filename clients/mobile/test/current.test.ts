@@ -1,4 +1,4 @@
-import { ZwiimClientError, type CloneJob, type ConnectionMode } from "@zwiim/sdk";
+import { ZwiimClientError, type CloneJob, type ConnectionMode, type WorkspaceLayout } from "@zwiim/sdk";
 import { describe, expect, it } from "vitest";
 import type { HostEntry } from "../src/account/hosts";
 import type { HostConnectionView } from "../src/host/connection";
@@ -312,6 +312,18 @@ describe("the current host", () => {
     await current.clear();
   });
 
+  it("forgets the folded groups of a host that dropped this phone", async () => {
+    const s = setup({ trusted: false });
+    await pin(s);
+    await s.prefs.setFoldedGroups(s.entry.host_id, ["g1"]);
+    const current = s.launch();
+    await current.open(s.entry);
+    await waitFor(() => current.state.host?.paired === false);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(await s.prefs.foldedGroups()).toEqual({});
+    await current.clear();
+  });
+
   it("can't open a host this phone isn't paired with", async () => {
     const s = setup();
     const current = s.launch();
@@ -341,6 +353,7 @@ describe("the current host", () => {
       openError: null,
       store: null,
       workspaceId: null,
+      foldedGroups: [],
       dismissedClones: new Set(),
     });
     expect(await s.prefs.lastHost()).toBeNull();
@@ -444,6 +457,7 @@ describe("how the connection reads", () => {
       openError: null,
       store: null,
       workspaceId: null,
+      foldedGroups: [],
       dismissedClones: new Set(),
       ...over,
     });
@@ -1049,6 +1063,214 @@ describe("stopping agents and removing worktrees (R8.13)", () => {
     );
     expect(archiveBusyText({ live_sessions: 0, terminals: 0, session_ids: [] })).toBe("Work is still running — stop them to archive.");
     expect(removalError(new Error("boom"), "Studio Mac")).toBe("Couldn't archive the worktree. Try again.");
+  });
+});
+
+describe("workspace groups", () => {
+  const LAYOUT: WorkspaceLayout = {
+    entries: [
+      { kind: "group", group_id: "g1", name: "backend", workspaces: [{ workspace_id: "api", worktrees: [] }] },
+      { kind: "workspace", workspace_id: "web", worktrees: [] },
+    ],
+  };
+
+  async function host() {
+    const s = setup();
+    const b = s.w.host.backend;
+    await pin(s);
+    const current = s.launch();
+    await current.open(s.entry);
+    await waitFor(() => (current.state.view?.events ?? 0) > 0); // the snapshot
+    b.feedEvent("workspace.layout", { layout: LAYOUT });
+    await waitFor(() => current.state.store?.getState().layout != null);
+    const sent = () => b.requests.filter((r) => r.op.startsWith("workspace.layout") || r.op.startsWith("workspace.group")).map((r) => [r.op, r.params]);
+    return { s, b, current, sent };
+  }
+
+  it("moves from the layout as it stands, and sends nothing for a void move", async () => {
+    const { b, current, sent } = await host();
+    b.handlers["workspace.layout_set"] = () => ({});
+    await current.moveInLayout({ kind: "workspace", id: "web" }, { at: "into", group_id: "g1" });
+    await current.moveInLayout({ kind: "workspace", id: "gone" }, { at: "end" });
+    expect(sent()).toEqual([
+      [
+        "workspace.layout_set",
+        {
+          entries: [
+            {
+              kind: "group",
+              group_id: "g1",
+              workspaces: [
+                { workspace_id: "api", worktrees: [] },
+                { workspace_id: "web", worktrees: [] },
+              ],
+            },
+          ],
+        },
+      ],
+    ]);
+    await current.clear();
+  });
+
+  describe("two moves close together", () => {
+    const WEB_INTO_GROUP = { source: { kind: "workspace", id: "web" }, target: { at: "into", group_id: "g1" } } as const;
+    const API_TO_END = { source: { kind: "workspace", id: "api" }, target: { at: "end" } } as const;
+    const BOTH_MOVED = {
+      entries: [
+        { kind: "group", group_id: "g1", workspaces: [{ workspace_id: "web", worktrees: [] }] },
+        { kind: "workspace", workspace_id: "api", worktrees: [] },
+      ],
+    };
+    const layouts = (b: { requests: { op: string; params: unknown }[] }) => b.requests.filter((r) => r.op === "workspace.layout_set").map((r) => r.params);
+
+    it("sends one at a time, the second built on the first", async () => {
+      const { b, current } = await host();
+      let answer = () => {};
+      const answered = new Promise<void>((r) => (answer = r));
+      b.handlers["workspace.layout_set"] = async () => (await answered, {});
+      const first = current.moveInLayout(WEB_INTO_GROUP.source, WEB_INTO_GROUP.target);
+      const second = current.moveInLayout(API_TO_END.source, API_TO_END.target);
+      await new Promise((r) => setTimeout(r, 5));
+      expect(layouts(b)).toHaveLength(1);
+      answer();
+      await Promise.all([first, second]);
+      expect(layouts(b)[1]).toEqual(BOTH_MOVED);
+      await current.clear();
+    });
+
+    it("keeps the first when the second follows its answer and the feed has not caught up", async () => {
+      const { b, current } = await host();
+      b.handlers["workspace.layout_set"] = () => ({});
+      await current.moveInLayout(WEB_INTO_GROUP.source, WEB_INTO_GROUP.target);
+      await current.moveInLayout(API_TO_END.source, API_TO_END.target);
+      expect(layouts(b)[1]).toEqual(BOTH_MOVED);
+      await current.clear();
+    });
+
+    it("still sends the second when the first is refused, without what was refused", async () => {
+      const { b, current } = await host();
+      let refuse = true;
+      b.handlers["workspace.layout_set"] = () => {
+        if (refuse) {
+          refuse = false;
+          throw new ZwiimClientError("invalid_input", "No");
+        }
+        return {};
+      };
+      const first = current.moveInLayout(WEB_INTO_GROUP.source, WEB_INTO_GROUP.target);
+      const second = current.moveInLayout(API_TO_END.source, API_TO_END.target);
+      await expect(first).rejects.toThrow("No");
+      await second;
+      expect(layouts(b)[1]).toEqual({
+        entries: [
+          { kind: "group", group_id: "g1", workspaces: [] },
+          { kind: "workspace", workspace_id: "web", worktrees: [] },
+          { kind: "workspace", workspace_id: "api", worktrees: [] },
+        ],
+      });
+      await current.clear();
+    });
+
+    it("steps from where the last step left the row, and stops at the end", async () => {
+      const { b, current } = await host();
+      b.handlers["workspace.layout_set"] = () => ({});
+      await Promise.all([current.stepInLayout({ kind: "group", id: "g1" }, 1), current.stepInLayout({ kind: "group", id: "g1" }, 1)]);
+      expect(layouts(b)).toEqual([
+        {
+          entries: [
+            { kind: "workspace", workspace_id: "web", worktrees: [] },
+            { kind: "group", group_id: "g1", workspaces: [{ workspace_id: "api", worktrees: [] }] },
+          ],
+        },
+      ]);
+      await current.clear();
+    });
+  });
+
+  it("makes a group and moves into it before the layout lists it", async () => {
+    const { b, current, sent } = await host();
+    b.handlers["workspace.group_create"] = (p: { name: string }) => ({ group_id: "g9", name: p.name });
+    b.handlers["workspace.layout_set"] = () => ({});
+    await current.moveToNewGroup({ kind: "workspace", id: "web" }, "tools");
+    expect(sent()).toEqual([
+      ["workspace.group_create", { name: "tools" }],
+      [
+        "workspace.layout_set",
+        {
+          entries: [
+            { kind: "group", group_id: "g1", workspaces: [{ workspace_id: "api", worktrees: [] }] },
+            { kind: "group", group_id: "g9", workspaces: [{ workspace_id: "web", worktrees: [] }] },
+          ],
+        },
+      ],
+    ]);
+    await current.clear();
+  });
+
+  describe("a move into a new group that doesn't land", () => {
+    const WEB = { kind: "workspace", id: "web" } as const;
+    const creates = (b: { requests: { op: string }[] }) => b.requests.filter((r) => r.op === "workspace.group_create");
+
+    it("moves into the group the failed try made instead of making it twice", async () => {
+      const { b, current, sent } = await host();
+      b.handlers["workspace.group_create"] = (p: { name: string }) => ({ group_id: "g9", name: p.name });
+      b.handlers["workspace.layout_set"] = () => {
+        throw new Error("down");
+      };
+      await expect(current.moveToNewGroup(WEB, "tools")).rejects.toThrow();
+      b.feedEvent("workspace.layout", { layout: { entries: [...LAYOUT.entries, { kind: "group", group_id: "g9", name: "tools", workspaces: [] }] } });
+      await waitFor(() => current.state.store?.getState().layout?.entries.length === 3);
+      b.handlers["workspace.layout_set"] = () => ({});
+      await current.moveToNewGroup(WEB, "tools");
+      expect(creates(b)).toHaveLength(1);
+      expect(sent().at(-1)).toEqual([
+        "workspace.layout_set",
+        {
+          entries: [
+            { kind: "group", group_id: "g1", workspaces: [{ workspace_id: "api", worktrees: [] }] },
+            { kind: "group", group_id: "g9", workspaces: [{ workspace_id: "web", worktrees: [] }] },
+          ],
+        },
+      ]);
+      await current.clear();
+    });
+
+    it("fails rather than report a move that sent nothing", async () => {
+      const { b, current } = await host();
+      b.handlers["workspace.group_create"] = (p: { name: string }) => ({ group_id: "g9", name: p.name });
+      await expect(current.moveToNewGroup({ kind: "workspace", id: "gone" }, "tools")).rejects.toThrow();
+      await current.clear();
+    });
+
+    it("leaves a group with something in it to the Host to refuse", async () => {
+      const { b, current } = await host();
+      b.handlers["workspace.group_create"] = () => {
+        throw new Error("taken");
+      };
+      await expect(current.moveToNewGroup(WEB, "backend")).rejects.toThrow();
+      expect(creates(b)).toHaveLength(1);
+      await current.clear();
+    });
+  });
+
+  it("keeps folds on the phone, per host, and forgets deleted groups", async () => {
+    const { s, b, current } = await host();
+    current.foldGroup("g1", true);
+    expect(current.state.foldedGroups).toEqual(["g1"]);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(await s.prefs.foldedGroups()).toEqual({ [s.entry.host_id]: ["g1"] });
+    expect(b.requests.some((r) => r.op === "workspace.layout_set")).toBe(false);
+    await current.clear();
+
+    const again = s.launch();
+    await again.open(s.entry);
+    expect(again.state.foldedGroups).toEqual(["g1"]);
+    await waitFor(() => (again.state.view?.events ?? 0) > 0);
+    b.feedEvent("workspace.layout", { layout: { entries: [{ kind: "group", group_id: "g2", name: "x", workspaces: [] }] } });
+    await waitFor(() => again.state.store?.getState().layout != null);
+    again.foldGroup("g2", true);
+    expect(again.state.foldedGroups).toEqual(["g2"]);
+    await again.clear();
   });
 });
 

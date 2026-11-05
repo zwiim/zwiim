@@ -21,7 +21,7 @@ import { usePresence } from "@/lib/presence";
 import { usePref } from "@/lib/use-pref";
 import { cn } from "@/lib/utils";
 import { useOpenSettings } from "@/settings/open";
-import { moveMenuFocus } from "./ControlCenter";
+import { focusMenu, moveMenuFocus } from "./ControlCenter";
 
 /**
  * Sends keystrokes one request at a time so they reach the PTY in order,
@@ -402,7 +402,7 @@ function OpenPreview({
   }, [menu]);
 
   useEffect(() => {
-    if (menu && items) list.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    if (menu && items) focusMenu(list.current);
   }, [menu, items]);
 
   async function open() {
@@ -473,9 +473,10 @@ function OpenPreview({
         createPortal(
           <div
             ref={list}
-            className="bg-card text-card-foreground ring-border presence-pop shadow-pop fixed z-50 w-72 rounded-xl p-1.5 ring-1"
+            className="bg-card text-card-foreground ring-border presence-pop shadow-pop fixed z-50 w-72 rounded-xl p-1.5 ring-1 outline-none"
             style={style}
             role="menu"
+            tabIndex={-1}
             aria-label="Previews"
             data-state={presence.state}
             aria-hidden={!menu || undefined}

@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   Archive,
+  ArrowDown,
+  ArrowUp,
   ChevronDown,
   ChevronRight,
   Ellipsis,
@@ -12,9 +14,13 @@ import {
   GitBranch,
   GitBranchPlus,
   GitMerge,
+  GripVertical,
   History,
+  ListPlus,
+  Pencil,
   Plus,
   Settings2,
+  Trash2,
   X,
 } from "lucide-react";
 import {
@@ -22,6 +28,7 @@ import {
   conflictView,
   dirtyDetails,
   fullName,
+  groupOf,
   hasCapability,
   isActive,
   largeFolderDetails,
@@ -29,9 +36,12 @@ import {
   openTarget,
   progressLabel,
   sameRepo,
-  selectWorkspaceTree,
+  selectSidebarTree,
   type CloneJob,
   type LargeFolderDetails,
+  type LayoutRef,
+  type SidebarEntry,
+  type WorkspaceGroup,
   type WorkspaceBusyDetails,
   type WorkspaceInfo,
   type WorkspaceInspection,
@@ -41,12 +51,22 @@ import {
 } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
+import {
+  endZone,
+  groupZone,
+  lineAt,
+  repositoryZone,
+  useLayoutMoves,
+  worktreeZone,
+  type LayoutMoves,
+  type SidebarNote,
+} from "@/lib/layout-moves";
 import { rememberSidebarFolds, sidebarFolds, type SidebarFolds } from "@/lib/prefs";
 import { usePresence } from "@/lib/presence";
 import { WorkingMark } from "@/components/WorkingMark";
 import { cn } from "@/lib/utils";
 import { useOpenSettings } from "@/settings/open";
-import { moveMenuFocus } from "./ControlCenter";
+import { focusMenu, moveMenuFocus } from "./ControlCenter";
 import { GithubCloneDialog, GithubMark, ProgressBar, cloneErrorLine } from "./GithubCloneDialog";
 import { GithubSignIn, useGithubSignInOffered } from "./Github";
 import { NewWorktree } from "./NewWorktree";
@@ -105,13 +125,13 @@ export function busyMessage(d: WorkspaceBusyDetails, verb = "archive"): string {
 export function Sidebar(props: SidebarProps) {
   const controller = useController();
   const online = useOnline();
-  const tree = useHost(selectWorkspaceTree);
+  const entries = useHost(selectSidebarTree);
   const loaded = useHost((s) => s.workspaces !== null);
   // A Host from before publishing adds a picked folder as it is, as it always did.
   const publishable = useHost((s) => hasCapability(s.connection.compat, "workspace.publish"));
   const [error, setError] = useState<string | null>(null);
-  // What became of a removed worktree's branch, until dismissed.
-  const [note, setNote] = useState<string | null>(null);
+  // What became of a removed worktree's branch, or a move, until dismissed.
+  const [note, setNote] = useState<SidebarNote | null>(null);
   const [adding, setAdding] = useState(false);
   // A folder the Host refused as too large: a picked path, or a root added without GitHub.
   const [large, setLarge] = useState<{ subject: PublishSubject; details: LargeFolderDetails } | null>(null);
@@ -127,6 +147,11 @@ export function Sidebar(props: SidebarProps) {
 
   // A Host from before cloning has only folders to add: `+` picks one at once.
   const cloneable = useHost((s) => hasCapability(s.connection.compat, "workspace.clone"));
+  // A Host from before groups keeps its flat list and has no group to add.
+  const groupable = useHost((s) => hasCapability(s.connection.compat, "workspace.layout"));
+  // The new group's name, in a draft row at the end of the list; `for` moves there once made.
+  const [drafting, setDrafting] = useState<{ for?: { source: LayoutRef; label: string } } | null>(null);
+  const moves = useLayoutMoves({ entries, groupable, onNote: setNote, onUnfold: (id) => foldGroup(id, false) });
   const clones = useHost((s) => s.clones);
   const [menu, setMenu] = useState(false);
   const menuRoot = useRef<HTMLDivElement>(null);
@@ -147,7 +172,7 @@ export function Sidebar(props: SidebarProps) {
 
   useEffect(() => {
     if (!menu) return;
-    menuList.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    focusMenu(menuList.current);
     const onDown = (e: PointerEvent) => {
       if (!menuRoot.current?.contains(e.target as Node)) setMenu(false);
     };
@@ -169,6 +194,14 @@ export function Sidebar(props: SidebarProps) {
     if (!online || busy) setMenu(false);
   }, [online, busy]);
 
+  // A selection made inside a folded group opens it, also when the feed lists the selection later;
+  // folding one around the selection stays folded.
+  const held = entries.find((e) => e.kind === "group" && holdsWorkspace(e.repos, props.workspaceId));
+  const heldGroup = held?.kind === "group" ? held.group.group_id : null;
+  useEffect(() => {
+    if (heldGroup) foldGroup(heldGroup, false);
+  }, [props.workspaceId, heldGroup]);
+
   // A clone this window started has ended: done selects its worktree and closes the dialog.
   useEffect(() => {
     const ended = started.map((id) => clones[id]).filter((j): j is CloneJob => j !== undefined && !isActive(j));
@@ -178,6 +211,7 @@ export function Sidebar(props: SidebarProps) {
     const last = done[done.length - 1];
     if (!last) return;
     fold({
+      ...folds,
       workspaces: false,
       repositories: folds.repositories.filter((r) => !done.some((j) => j.workspace_id === r)),
     });
@@ -194,6 +228,12 @@ export function Sidebar(props: SidebarProps) {
     if (folds.repositories.includes(id) === folded) return;
     const repositories = folds.repositories.filter((r) => r !== id);
     fold({ ...folds, repositories: folded ? [...repositories, id] : repositories });
+  }
+
+  function foldGroup(id: string, folded: boolean) {
+    if (folds.groups.includes(id) === folded) return;
+    const groups = folds.groups.filter((g) => g !== id);
+    fold({ ...folds, groups: folded ? [...groups, id] : groups });
   }
 
   async function addWorkspace() {
@@ -235,7 +275,7 @@ export function Sidebar(props: SidebarProps) {
   async function openFirstWorktree(rootId: string) {
     try {
       // The new repository shows even if the list or the repository was folded away.
-      fold({ workspaces: false, repositories: folds.repositories.filter((r) => r !== rootId) });
+      fold({ ...folds, workspaces: false, repositories: folds.repositories.filter((r) => r !== rootId) });
       const worktree = await controller.createWorktree(rootId);
       props.onSelectWorkspace(worktree.workspace_id);
     } catch (e) {
@@ -362,6 +402,23 @@ export function Sidebar(props: SidebarProps) {
     }
   }
 
+  const rowProps = {
+    ...props,
+    publishable,
+    folded: folds.repositories,
+    onFold: foldRepository,
+    onError: setError,
+    onNote: (text: string | null) => setNote(text === null ? null : { text }),
+    moves,
+    onMoveToNewGroup: (source: LayoutRef, label: string) => {
+      setError(null);
+      setDrafting({ for: { source, label } });
+    },
+    opening,
+    onOpenRoot: openRoot,
+    onNewWorktree: (id: string) => void newWorktree(id),
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-1.5">
       <div className="flex items-center pr-1">
@@ -378,7 +435,7 @@ export function Sidebar(props: SidebarProps) {
             className="text-muted-foreground"
             size="icon-sm"
             variant="ghost"
-            title="Add workspace"
+            title={cloneable ? "Add" : "Add workspace"}
             aria-haspopup={cloneable ? "menu" : undefined}
             aria-expanded={cloneable ? menu : undefined}
             onClick={() => (cloneable ? setMenu((m) => !m) : void addWorkspace())}
@@ -389,9 +446,10 @@ export function Sidebar(props: SidebarProps) {
           {menuPresence.mounted && (
             <div
               ref={menuList}
-              className="bg-card text-card-foreground ring-border presence-pop shadow-pop absolute top-full right-0 z-40 mt-1 w-52 origin-top-right rounded-xl p-1.5 ring-1"
+              className="bg-card text-card-foreground ring-border presence-pop shadow-pop absolute top-full right-0 z-40 mt-1 w-52 origin-top-right rounded-xl p-1.5 ring-1 outline-none"
               role="menu"
-              aria-label="Add workspace"
+              tabIndex={-1}
+              aria-label="Add"
               data-state={menuPresence.state}
               aria-hidden={!menu || undefined}
               inert={!menu}
@@ -420,15 +478,47 @@ export function Sidebar(props: SidebarProps) {
                 <GithubMark className="text-muted-foreground" />
                 Open GitHub project
               </button>
+              {groupable && (
+                <button
+                  className={MENU_ITEM}
+                  role="menuitem"
+                  onClick={() => {
+                    setMenu(false);
+                    setError(null);
+                    // The draft row shows even if the list was folded away.
+                    if (folds.workspaces) fold({ ...folds, workspaces: false });
+                    setDrafting({});
+                  }}
+                >
+                  <ListPlus className="text-muted-foreground size-4" />
+                  New group
+                </button>
+              )}
             </div>
           )}
         </div>
       </div>
       {error && <p className="text-destructive px-2 text-xs">{error}</p>}
       {note && (
-        <p className="text-muted-foreground flex items-start gap-1 px-2 text-xs" role="status">
-          <span className="min-w-0 flex-1">{note}</span>
-          <button aria-label="Dismiss" className="hover:text-foreground shrink-0" onClick={() => setNote(null)}>
+        <p
+          className={cn("flex items-start gap-1 px-2 text-xs", note.alert ? "text-destructive" : "text-muted-foreground")}
+          role={note.alert ? "alert" : "status"}
+        >
+          <span className="min-w-0 flex-1">{note.text}</span>
+          {note.undo && (
+            <button
+              className="hover:text-foreground -my-1 shrink-0 py-1 font-medium disabled:opacity-50"
+              disabled={!moves.canDrag}
+              onClick={note.undo}
+            >
+              Undo
+            </button>
+          )}
+          <button
+            aria-label="Dismiss"
+            className="hover:text-foreground -m-1 flex size-6 shrink-0 items-center justify-center"
+            onClick={() => setNote(null)}
+          >
             <X className="size-3" />
           </button>
         </p>
@@ -484,8 +574,12 @@ export function Sidebar(props: SidebarProps) {
       )}
       {!folds.workspaces && (
         <div
-          className="animate-fade-in -mx-1 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-1"
+          className="animate-fade-in -mx-2 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2"
           data-testid="workspace-tree"
+          onDragOver={moves.clearOver}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) moves.clearOver();
+          }}
         >
           {!loaded && <p className="text-muted-foreground px-2 text-xs">Loading…</p>}
           {pending.map((job) => (
@@ -497,26 +591,377 @@ export function Sidebar(props: SidebarProps) {
               onDismiss={() => setDismissed((d) => [...d, job.clone_id])}
             />
           ))}
-          {loaded && tree.length === 0 && pending.length === 0 && (
+          {loaded && entries.length === 0 && pending.length === 0 && !drafting && (
             <p className="text-muted-foreground px-2 text-xs">No workspaces yet. Add a folder with +.</p>
           )}
-          {tree.map((node) => (
-            <WorkspaceRow
-              key={node.workspace.workspace_id}
-              node={node}
-              {...props}
-              publishable={publishable}
-              folded={folds.repositories}
-              onFold={foldRepository}
+          {moves.entries.map((entry) =>
+            entry.kind === "group" ? (
+              <GroupRow
+                key={entry.group.group_id}
+                entry={entry}
+                workspaceId={props.workspaceId}
+                folded={folds.groups.includes(entry.group.group_id)}
+                onFold={foldGroup}
+                onError={setError}
+                onDeleted={() => setNote(null)}
+                moves={moves}
+              >
+                {entry.repos.map((node) => (
+                  <WorkspaceRow key={node.workspace.workspace_id} {...rowProps} node={node} grouped />
+                ))}
+              </GroupRow>
+            ) : (
+              <WorkspaceRow key={entry.node.workspace.workspace_id} {...rowProps} node={entry.node} />
+            ),
+          )}
+          {drafting && (
+            <GroupName
+              label="New group name"
+              initial=""
+              onCommit={async (name) => {
+                const moving = drafting.for;
+                if (moving) await moves.moveToNewGroup(moving.source, moving.label, name);
+                else await controller.createWorkspaceGroup(name);
+              }}
               onError={setError}
-              onNote={setNote}
-              opening={opening}
-              onOpenRoot={openRoot}
-              onNewWorktree={(id) => void newWorktree(id)}
+              onClose={() => setDrafting(null)}
             />
-          ))}
+          )}
+          {moves.canMove && (
+            <div aria-hidden className="relative min-h-6 shrink-0 flex-1" data-layout-end {...moves.dropProps(endZone)}>
+              {moves.over?.at === "end" && <DropLine side="before" />}
+            </div>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Whether `id` is one of these repositories or a worktree of one. */
+function holdsWorkspace(repos: WorkspaceNode[], id: string | null): boolean {
+  return repos.some(
+    (r) => r.workspace.workspace_id === id || r.worktrees.some((n) => n.workspace.workspace_id === id),
+  );
+}
+
+/** Where a drag would land between rows. Rows sit in their container, so it starts at their level. */
+function DropLine({ side }: { side: "before" | "after" }) {
+  return (
+    <div
+      aria-hidden
+      className={cn(
+        "bg-ring pointer-events-none absolute inset-x-0 z-10 h-0.5 rounded-full",
+        side === "before" ? "-top-px" : "-bottom-px",
+      )}
+      data-drop={side}
+    />
+  );
+}
+
+/** The sign that a row drags, in the sidebar's left edge so it costs the row no width. */
+function DragGrip() {
+  return (
+    <GripVertical
+      aria-hidden
+      className={cn(HOVER_ACTION, "text-muted-foreground absolute top-1/2 -left-1.5 size-3 -translate-y-1/2 cursor-grab")}
+    />
+  );
+}
+
+/** Move up and Move down, which stay in the row's container and disable at its ends. */
+function MoveItems(props: { moves: LayoutMoves; source: LayoutRef; label: string; onPick(): void }) {
+  const { moves, source, label } = props;
+  const item = (by: -1 | 1, name: string, icon: ReactNode) => (
+    <button
+      className={MENU_ITEM}
+      role="menuitem"
+      disabled={!moves.canDrag || !moves.canStep(source, by)}
+      onClick={() => {
+        props.onPick();
+        moves.step(source, label, by);
+      }}
+    >
+      {icon}
+      {name}
+    </button>
+  );
+  return (
+    <>
+      {item(-1, "Move up", <ArrowUp className="text-muted-foreground size-4" />)}
+      {item(1, "Move down", <ArrowDown className="text-muted-foreground size-4" />)}
+    </>
+  );
+}
+
+/**
+ * A group's name being typed: Enter or leaving the field commits, Esc or an
+ * empty or unchanged name closes. A refused name stays to be fixed.
+ */
+function GroupName(props: {
+  label: string;
+  initial: string;
+  onCommit(name: string): Promise<unknown>;
+  onError(message: string | null): void;
+  onClose(): void;
+}) {
+  const online = useOnline();
+  const input = useRef<HTMLInputElement>(null);
+  // Esc unmounts the field, which must not read as leaving it.
+  const settled = useRef(false);
+  const [name, setName] = useState(props.initial);
+
+  useEffect(() => {
+    input.current?.select();
+    input.current?.scrollIntoView?.({ block: "nearest" });
+  }, []);
+
+  useEffect(() => {
+    if (!online) props.onClose();
+  }, [online]);
+
+  async function commit() {
+    if (settled.current) return;
+    settled.current = true;
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === props.initial) return props.onClose();
+    props.onError(null);
+    try {
+      await props.onCommit(trimmed);
+      props.onClose();
+    } catch (e) {
+      settled.current = false;
+      props.onError(errorMessage(e));
+    }
+  }
+
+  return (
+    <input
+      ref={input}
+      autoFocus
+      className="bg-sidebar-accent focus-visible:ring-ring text-ui h-7 w-full min-w-0 rounded-md px-2 font-semibold outline-none focus-visible:ring-1"
+      aria-label={props.label}
+      maxLength={64}
+      value={name}
+      onChange={(e) => setName(e.target.value)}
+      onBlur={() => void commit()}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") void commit();
+        if (e.key !== "Escape") return;
+        settled.current = true;
+        props.onClose();
+      }}
+    />
+  );
+}
+
+/**
+ * A group and, unfolded, its members. The whole row folds it. Folded, it shows
+ * its members' working agents and the selection, as a folded repository does.
+ */
+function GroupRow(props: {
+  entry: Extract<SidebarEntry, { kind: "group" }>;
+  workspaceId: string | null;
+  folded: boolean;
+  onFold(id: string, folded: boolean): void;
+  onError(message: string | null): void;
+  onDeleted(): void;
+  moves: LayoutMoves;
+  children: ReactNode;
+}) {
+  const { entry, folded, moves } = props;
+  const { group, repos } = entry;
+  const source: LayoutRef = { kind: "group", id: group.group_id };
+  const firstMember = !folded && repos[0] ? repos[0].workspace.workspace_id : null;
+  const line = lineAt(moves.over, source);
+  const into = moves.over?.at === "into" && moves.over.group_id === group.group_id;
+  const controller = useController();
+  const [menu, setMenu] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const row = useRef<HTMLButtonElement>(null);
+  const wasRenaming = useRef(false);
+  const holdsSelected = folded && holdsWorkspace(repos, props.workspaceId);
+  const working = folded ? entry.working : 0;
+
+  // Focus left with the name field, unless the click that closed it took it elsewhere.
+  useEffect(() => {
+    if (wasRenaming.current && !renaming && document.activeElement === document.body) row.current?.focus();
+    wasRenaming.current = renaming;
+  }, [renaming]);
+
+  async function remove() {
+    props.onError(null);
+    try {
+      await controller.deleteWorkspaceGroup(group.group_id);
+      props.onDeleted();
+    } catch (e) {
+      props.onError(errorMessage(e));
+    }
+  }
+
+  return (
+    <div
+      className="relative"
+      data-testid={`group-${group.group_id}`}
+      {...moves.dropProps(groupZone(group.group_id, firstMember ? { kind: "workspace", id: firstMember } : null))}
+    >
+      {renaming ? (
+        <GroupName
+          label={`Rename ${group.name}`}
+          initial={group.name}
+          onCommit={(name) => controller.renameWorkspaceGroup(group.group_id, name)}
+          onError={props.onError}
+          onClose={() => setRenaming(false)}
+        />
+      ) : (
+        <div
+          className={cn(
+            "group hover:bg-sidebar-accent relative flex items-center rounded-md pr-1 transition-colors",
+            holdsSelected && "bg-sidebar-accent",
+            into && "bg-sidebar-accent ring-ring ring-1",
+            moves.canDrag && "cursor-grab",
+          )}
+          {...moves.dragProps(source, group.name)}
+        >
+          {moves.canDrag && <DragGrip />}
+          <button
+            ref={row}
+            className="flex min-w-0 flex-1 items-center gap-1 py-1.5 pr-1 text-left"
+            data-row={group.group_id}
+            title={group.name}
+            aria-expanded={!folded}
+            onClick={() => props.onFold(group.group_id, !folded)}
+          >
+            <span className="text-muted-foreground flex w-5 shrink-0 items-center justify-center">
+              {folded ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+            </span>
+            <span className="text-muted-foreground text-ui min-w-0 truncate font-semibold">{group.name}</span>
+            <span className="text-muted-foreground ml-auto flex shrink-0 items-center gap-1.5 text-2xs">
+              {working > 0 && (
+                <>
+                  <WorkingMark />
+                  <span className="sr-only">{working} working</span>
+                </>
+              )}
+              {repos.length}
+            </span>
+          </button>
+          <RowMenu label={`${group.name} actions`} title="Group actions" open={menu} onOpen={setMenu}>
+            <button
+              className={MENU_ITEM}
+              role="menuitem"
+              onClick={() => {
+                setMenu(false);
+                setRenaming(true);
+              }}
+            >
+              <Pencil className="text-muted-foreground size-4" />
+              Rename
+            </button>
+            {moves.canMove && (
+              <MoveItems moves={moves} source={source} label={group.name} onPick={() => setMenu(false)} />
+            )}
+            <div className="bg-border my-1 h-px" role="separator" />
+            <button
+              className={cn(MENU_ITEM, "text-destructive")}
+              role="menuitem"
+              onClick={() => {
+                setMenu(false);
+                if (repos.length > 0) setDeleting(true);
+                else void remove();
+              }}
+            >
+              <Trash2 className="size-4" />
+              Delete group
+            </button>
+          </RowMenu>
+        </div>
+      )}
+      {deleting && (
+        <DeleteGroup
+          group={group}
+          members={repos.length}
+          onDeleted={props.onDeleted}
+          onClose={() => {
+            setDeleting(false);
+            row.current?.focus();
+          }}
+        />
+      )}
+      {!folded && (
+        <div className="flex flex-col gap-px pl-3">
+          {props.children}
+          {repos.length === 0 && (
+            <p className="text-muted-foreground py-1 pl-5 text-xs">Drag here, or use Move to group</p>
+          )}
+        </div>
+      )}
+      {line && <DropLine side={line} />}
+    </div>
+  );
+}
+
+/** Deleting a group with members, asked in its row. Its members stay where they are, ungrouped. */
+function DeleteGroup({
+  group,
+  members,
+  onDeleted,
+  onClose,
+}: {
+  group: WorkspaceGroup;
+  members: number;
+  onDeleted(): void;
+  onClose(): void;
+}) {
+  const controller = useController();
+  const online = useOnline();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  async function remove() {
+    setPending(true);
+    setError(null);
+    try {
+      await controller.deleteWorkspaceGroup(group.group_id);
+      onDeleted();
+      onClose();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div
+      className="bg-card animate-pop-in my-1 ml-2 flex flex-col gap-2 rounded-lg p-2.5 text-xs shadow-sm"
+      role="alertdialog"
+      aria-label={`Delete ${group.name}`}
+    >
+      <p>
+        Delete <span className="font-medium">{group.name}</span>?{" "}
+        {members === 1 ? "Its repository moves" : `Its ${members} repositories move`} to the top level, in place.
+        Nothing on disk changes.
+      </p>
+      {error && <p className="text-destructive">{error}</p>}
+      <div className="flex justify-end gap-1.5">
+        {/* Focus lands on the safe choice (DESIGN.md: never on the destructive one). */}
+        <Button size="xs" variant="ghost" autoFocus onClick={onClose}>
+          Cancel
+        </Button>
+        <Button size="xs" variant="destructive" disabled={pending || !online} onClick={() => void remove()}>
+          Delete
+        </Button>
+      </div>
     </div>
   );
 }
@@ -607,6 +1052,11 @@ type RowProps = SidebarProps & {
   onError(message: string | null): void;
   /** What became of a removed worktree's branch. */
   onNote(message: string | null): void;
+  moves: LayoutMoves;
+  /** "New group..." from a repository's menu. */
+  onMoveToNewGroup(source: LayoutRef, label: string): void;
+  /** A repository in a group, or a worktree of one. */
+  grouped?: boolean;
   /** The root whose click is reading it or preparing its worktree. */
   opening: string | null;
   onOpenRoot(rootId: string): void;
@@ -637,15 +1087,29 @@ function WorkspaceRow(props: RowProps) {
   const base = baseLabel(w);
   const preparing = props.opening === w.workspace_id;
   const conflicts = useHost((s) => conflictView(s, w.workspace_id)?.line ?? null);
+  const { moves } = props;
+  const standalone = isRoot && w.kind === "worktree";
+  const source: LayoutRef = { kind: isRoot ? "workspace" : "worktree", id: w.workspace_id, standalone };
+  const label = isRoot ? (w.alias ?? w.name) : worktreeLabel(w);
+  const movable = moves.canMove && !w.removed;
+  const line = lineAt(moves.over, source);
 
   return (
-    <div data-testid={`workspace-${w.workspace_id}`}>
+    <div
+      className="relative"
+      data-testid={`workspace-${w.workspace_id}`}
+      {...(!w.removed &&
+        moves.dropProps(isRoot ? repositoryZone(source, props.grouped ?? false) : worktreeZone(source)))}
+    >
       <div
         className={cn(
-          "group hover:bg-sidebar-accent flex items-center rounded-md pr-1 transition-colors",
+          "group hover:bg-sidebar-accent relative flex items-center rounded-md pr-1 transition-colors",
           (selected || holdsSelected) && "bg-sidebar-accent",
+          movable && moves.canDrag && "cursor-grab",
         )}
+        {...(!w.removed && moves.dragProps(source, label))}
       >
+        {movable && moves.canDrag && <DragGrip />}
         {isRoot &&
           (nested ? (
             <button
@@ -662,6 +1126,7 @@ function WorkspaceRow(props: RowProps) {
         <button
           className={cn("text-ui flex min-w-0 flex-1 items-center gap-2 py-1.5 pr-1 text-left", !isRoot && "pl-2")}
           aria-current={selected || undefined}
+          data-row={w.workspace_id}
           title={base ?? undefined}
           onClick={() => (isRoot ? props.onOpenRoot(w.workspace_id) : props.onSelectWorkspace(w.workspace_id))}
         >
@@ -684,7 +1149,7 @@ function WorkspaceRow(props: RowProps) {
               w.removed && "text-muted-foreground line-through",
             )}
           >
-            {isRoot ? (w.alias ?? w.name) : worktreeLabel(w)}
+            {label}
           </span>
           <span className="ml-auto flex min-w-0 items-center gap-1.5 text-2xs font-normal">
             {preparing ? (
@@ -731,7 +1196,14 @@ function WorkspaceRow(props: RowProps) {
               setCreating(true);
             }}
             onRemove={() => setRemoving(true)}
+            moves={moves}
+            onMoveToNewGroup={() => props.onMoveToNewGroup(source, label)}
           />
+        )}
+        {!isRoot && movable && (
+          <RowMenu label={`${label} actions`} title="Worktree actions" open={menu} onOpen={setMenu}>
+            <MoveItems moves={moves} source={source} label={label} onPick={() => setMenu(false)} />
+          </RowMenu>
         )}
         {!isRoot && !w.removed && (
           <Button
@@ -791,6 +1263,7 @@ function WorkspaceRow(props: RowProps) {
           )}
         </div>
       )}
+      {line && <DropLine side={line} />}
     </div>
   );
 }
@@ -943,24 +1416,16 @@ function RemoveWorktree({
   );
 }
 
-/**
- * A repository's `⋯`: a new worktree from its current branch or from one
- * picked, its settings, and Remove. Drawn over the page so the scrolling
- * list never clips it.
- */
-function RepositoryMenu(props: {
-  workspace: WorkspaceInfo;
+/** A row's `⋯`, drawn over the page so the scrolling list never clips it. */
+function RowMenu(props: {
+  label: string;
+  title: string;
   open: boolean;
   onOpen(open: boolean): void;
-  onNewWorktree(): void;
-  onNewWorktreeFrom(): void;
-  onRemove(): void;
+  children: ReactNode;
 }) {
-  const { workspace: w, open, onOpen } = props;
+  const { open, onOpen } = props;
   const online = useOnline();
-  const openSettings = useOpenSettings();
-  const configurable = useHost((s) => hasCapability(s.connection.compat, "repository.settings"));
-  const removable = useHost((s) => hasCapability(s.connection.compat, "workspace.remove"));
   const root = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
@@ -968,7 +1433,7 @@ function RepositoryMenu(props: {
 
   useEffect(() => {
     if (!open) return;
-    list.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    focusMenu(list.current);
     const onDown = (e: PointerEvent) => {
       const t = e.target as Node;
       if (!root.current?.contains(t) && !list.current?.contains(t)) onOpen(false);
@@ -991,11 +1456,6 @@ function RepositoryMenu(props: {
     if (!online) onOpen(false);
   }, [online, onOpen]);
 
-  function pick(run: () => void) {
-    onOpen(false);
-    run();
-  }
-
   // Low in the list, the menu opens upward.
   const up = anchor ? anchor.bottom > window.innerHeight * 0.6 : false;
   const style: CSSProperties | undefined = anchor
@@ -1006,17 +1466,14 @@ function RepositoryMenu(props: {
         transformOrigin: up ? "bottom right" : "top right",
       }
     : undefined;
-  const name = w.alias ?? w.name;
-  const configure = openSettings && configurable;
-  if (!w.is_git_repo && !configure && !removable) return null;
 
   return (
     <div ref={root} className={cn("flex", !open && HOVER_ACTION)}>
       <Button
         size="icon-sm"
         variant="ghost"
-        title="Repository actions"
-        aria-label={`${name} actions`}
+        title={props.title}
+        aria-label={props.label}
         aria-haspopup="menu"
         aria-expanded={open}
         disabled={!online}
@@ -1031,50 +1488,145 @@ function RepositoryMenu(props: {
         createPortal(
           <div
             ref={list}
-            className="bg-card text-card-foreground ring-border presence-pop shadow-pop fixed z-50 w-52 rounded-xl p-1.5 ring-1"
+            className="bg-card text-card-foreground ring-border presence-pop shadow-pop fixed z-50 w-52 rounded-xl p-1.5 ring-1 outline-none"
             style={style}
             role="menu"
-            aria-label={`${name} actions`}
+            tabIndex={-1}
+            aria-label={props.label}
             data-state={presence.state}
             aria-hidden={!open || undefined}
             inert={!open}
             onKeyDown={moveMenuFocus}
           >
-            {w.is_git_repo && (
-              <>
-                <button className={MENU_ITEM} role="menuitem" onClick={() => pick(props.onNewWorktree)}>
-                  <GitBranchPlus className="text-muted-foreground size-4" />
-                  New worktree
-                </button>
-                <button className={MENU_ITEM} role="menuitem" onClick={() => pick(props.onNewWorktreeFrom)}>
-                  <GitBranch className="text-muted-foreground size-4" />
-                  New worktree from…
-                </button>
-              </>
-            )}
-            {configure && (
-              <button
-                className={MENU_ITEM}
-                role="menuitem"
-                onClick={() => pick(() => openSettings({ tab: "repository", workspaceId: w.workspace_id }))}
-              >
-                <Settings2 className="text-muted-foreground size-4" />
-                Configuration
-              </button>
-            )}
-            {removable && (
-              <>
-                <div className="bg-border my-1 h-px" role="separator" />
-                <button className={cn(MENU_ITEM, "text-destructive")} role="menuitem" onClick={() => pick(props.onRemove)}>
-                  <FolderMinus className="size-4" />
-                  Remove
-                </button>
-              </>
-            )}
+            {props.children}
           </div>,
           document.body,
         )}
     </div>
+  );
+}
+
+/** A repository's `⋯`: a new worktree from its current branch or from one picked, its settings, its place in the list, and Remove. */
+function RepositoryMenu(props: {
+  workspace: WorkspaceInfo;
+  open: boolean;
+  onOpen(open: boolean): void;
+  onNewWorktree(): void;
+  onNewWorktreeFrom(): void;
+  onRemove(): void;
+  moves: LayoutMoves;
+  onMoveToNewGroup(): void;
+}) {
+  const { workspace: w, onOpen, moves } = props;
+  const openSettings = useOpenSettings();
+  const configurable = useHost((s) => hasCapability(s.connection.compat, "repository.settings"));
+  const removable = useHost((s) => hasCapability(s.connection.compat, "workspace.remove"));
+
+  function pick(run: () => void) {
+    onOpen(false);
+    run();
+  }
+
+  const name = w.alias ?? w.name;
+  const configure = openSettings && configurable;
+  if (!w.is_git_repo && !configure && !removable && !moves.canMove) return null;
+  const standalone = w.kind === "worktree";
+  const source: LayoutRef = { kind: "workspace", id: w.workspace_id, standalone };
+  const home = moves.layout ? groupOf(moves.layout, source) : null;
+
+  return (
+    <RowMenu label={`${name} actions`} title="Repository actions" open={props.open} onOpen={onOpen}>
+      {w.is_git_repo && (
+        <>
+          <button className={MENU_ITEM} role="menuitem" onClick={() => pick(props.onNewWorktree)}>
+            <GitBranchPlus className="text-muted-foreground size-4" />
+            New worktree
+          </button>
+          <button className={MENU_ITEM} role="menuitem" onClick={() => pick(props.onNewWorktreeFrom)}>
+            <GitBranch className="text-muted-foreground size-4" />
+            New worktree from…
+          </button>
+        </>
+      )}
+      {configure && (
+        <button
+          className={MENU_ITEM}
+          role="menuitem"
+          onClick={() => pick(() => openSettings({ tab: "repository", workspaceId: w.workspace_id }))}
+        >
+          <Settings2 className="text-muted-foreground size-4" />
+          Configuration
+        </button>
+      )}
+      {moves.canMove && (
+        <>
+          {(w.is_git_repo || configure) && <div className="bg-border my-1 h-px" role="separator" />}
+          {!standalone && (
+            <>
+              <div role="group" aria-label="Move to group">
+                <p className="text-muted-foreground text-2xs px-2.5 py-1 font-semibold tracking-wide uppercase">
+                  Move to group
+                </p>
+                <div className="max-h-40 overflow-y-auto">
+                  {moves.groups.map((g) => (
+                    <button
+                      key={g.group_id}
+                      className={MENU_ITEM}
+                      role="menuitem"
+                      disabled={!moves.canDrag || g.group_id === home}
+                      onClick={() =>
+                        pick(() =>
+                          void moves.move(
+                            source,
+                            name,
+                            { at: "into", group_id: g.group_id },
+                            { targetName: g.name, focus: true },
+                          ),
+                        )
+                      }
+                    >
+                      <span className="min-w-0 truncate pl-[26px]">{g.name}</span>
+                    </button>
+                  ))}
+                </div>
+                <button
+                  className={MENU_ITEM}
+                  role="menuitem"
+                  disabled={!moves.canDrag || !home}
+                  onClick={() =>
+                    pick(() => {
+                      if (home) void moves.move(source, name, { at: "after", ref: { kind: "group", id: home } }, { focus: true });
+                    })
+                  }
+                >
+                  <span className="pl-[26px]">No group</span>
+                </button>
+                <button
+                  className={MENU_ITEM}
+                  role="menuitem"
+                  disabled={!moves.canDrag}
+                  onClick={() => pick(props.onMoveToNewGroup)}
+                >
+                  <ListPlus className="text-muted-foreground size-4" />
+                  New group...
+                </button>
+              </div>
+              <div className="bg-border my-1 h-px" role="separator" />
+            </>
+          )}
+          <MoveItems moves={moves} source={source} label={name} onPick={() => onOpen(false)} />
+        </>
+      )}
+      {removable && (
+        <>
+          <div className="bg-border my-1 h-px" role="separator" />
+          <button className={cn(MENU_ITEM, "text-destructive")} role="menuitem" onClick={() => pick(props.onRemove)}>
+            <FolderMinus className="size-4" />
+            Remove
+          </button>
+        </>
+      )}
+    </RowMenu>
   );
 }
 

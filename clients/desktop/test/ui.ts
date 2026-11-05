@@ -19,9 +19,12 @@ export function openSettings(section: string) {
   return dialog;
 }
 
+/** The Workspaces `+`: "Add" for its menu, "Add workspace" where it opens a folder at once. */
+export const addButton = () => screen.getByTitle(/^Add( workspace)?$/) as HTMLButtonElement;
+
 /** Pick a folder from the Workspaces `+`: through its menu when the Host can clone, else at once. */
 export function openProject() {
-  fireEvent.click(screen.getByTitle("Add workspace"));
-  const menu = screen.queryByRole("menu", { name: "Add workspace" });
+  fireEvent.click(addButton());
+  const menu = screen.queryByRole("menu", { name: "Add" });
   if (menu) fireEvent.click(within(menu).getByRole("menuitem", { name: "Open project" }));
 }

@@ -533,7 +533,19 @@ view, and everything under the context chips belongs to that worktree.
   workspace: accent dot when selected, `alias ?? name` (`headline`), mono
   `~/Projects/zwiim`, and `2 worktrees · 1 working` when non-zero (a plain
   folder adds `no Git`). Tapping a repository moves to level 2 (does not select
-  yet); tapping a plain folder selects it and closes the sheet.
+  yet); tapping a plain folder selects it and closes the sheet. Workspaces in a
+  group sit under its header: chevron, muted semibold name, count. Tapping the
+  header folds it, kept on the phone; members carry the `branch` left rule, so
+  an ungrouped repository after a group never reads as a member. An empty group
+  says "No workspaces in this group". Search stays flat, with no move actions.
+  Moving happens by menu, never by drag on the phone: long-press a row (also
+  screen-reader actions, so plain folders have a way in) for its actions level:
+  **Move to group** (the groups, **No group**, **New group...**), **Move up**,
+  **Move down**, last **Remove** in `err`. A header's actions are **Rename**,
+  **Move up**, **Move down**, **Delete** in `err`. The sheet stays open between
+  moves, and the actions level names where the row sits ("backend · 2 of 3"),
+  so a move shows there. **New session**'s picker keeps the same groups and
+  order.
 - **Worktree sheet (level 2):** back chevron (when entered from level 1) and
   the workspace name; first row **Root** `· ⎇ main`, then each live worktree
   `⎇ fix-auth` with mono `from main@3f9e1a2`; last, **New worktree**
@@ -551,9 +563,8 @@ view, and everything under the context chips belongs to that worktree.
   Uncommitted changes → "Discard n uncommitted changes?" · **Discard and archive**.
   Archiving the worktree Files shows moves Files to its workspace (R8.13). The
   phone says "archive" for what the wire calls remove.
-  Last, **Remove workspace** (`ghost`, `err` text). It and a long-press on a
-  level-one row (also a screen-reader action, so plain folders have a way in)
-  turn the sheet into "Remove zwiim?" · "Its 2 worktrees are archived. Files in
+  Last, **Remove workspace** (`ghost`, `err` text). It and a level-one row's
+  **Remove** turn the sheet into "Remove zwiim?" · "Its 2 worktrees are archived. Files in
   `~/Projects/zwiim` on {Host} aren't changed. Add the folder again to bring it
   back, sessions and all." · **Remove** (`destructive`) · **Cancel** (back to
   where it came from). The Host answers as for Archive (**Stop n agents and
@@ -836,6 +847,42 @@ glyph, a title, one line, one action.
   to bring it back." · **Cancel** (focused) · **Remove**; the Host's refusals
   read as for Archive (**Discard and remove**). Adding the folder again brings
   back the same workspace with its sessions.
+- Desktop's sidebar groups repositories and plain folders, one level deep, in
+  one mixed order with ungrouped rows. The layout lives on the Host, so every
+  device shows the same organization; folds stay on the device. The header's `+`
+  menu is titled "Add" and offers **New group**: a draft row at the end of the
+  list, scrolled into view. Enter commits, Esc or an empty name cancels.
+  A group row is a chevron, a muted semibold name that truncates with a tooltip,
+  and a trailing member count. No icon, `Folder` already means plain folder. The
+  whole row folds; folded, it rolls up working and selection the way a folded
+  repository does. Hover `⋯`: **Rename**, **Move up**, **Move down**,
+  **Delete group**. Members indent at most 12px with no second rule, so worktree
+  rows survive the 200px minimum width. An empty group, unfolded, says "Drag
+  here, or use Move to group"; it outlives its last repository. Deleting an empty
+  group is immediate. Otherwise it confirms in the row: "Delete backend? Its 2
+  repositories move to the top level, in place. Nothing on disk changes." ·
+  **Cancel** (focused) · **Delete**.
+  Dragging uses a hover grip and `cursor-grab`; the drag image is the row alone,
+  never an expanded subtree, and Esc cancels. Repositories and plain folders
+  drag into, out of and between groups and reorder; groups reorder at top level;
+  worktrees reorder inside their repository; sessions do not drag. The top 25%
+  of a row inserts above, the bottom 25% below, the middle 50% of a group row
+  means into, and a zone under the list means the end of the top level. An
+  insertion line indented to its level, or a neutral fill with a 1px `ring`
+  outline on a group for "into". Never a `brand` fill, which means selection or
+  needs you. An invalid target shows nothing. Reorders settle at once, with no
+  animation. Any drop, add or selection inside a folded group unfolds it.
+  A move shows at once and reverts on error; errors read in the note row with
+  `role="alert"`. A target that went away reads "backend was deleted on another
+  device. api stayed put." A move reads "Moved api to backend" · **Undo** in the
+  note row (`role="status"`); Undo moves it back on the latest layout, so it
+  never erases later work. Rows drag only while online and not mid-write; going
+  offline cancels a drag and writes never queue.
+  Everything has a menu path. The repository `⋯` adds **Move to group** (the
+  groups, **No group**, **New group...**), **Move up**, **Move down**, and
+  worktree rows gain a `⋯` with **Move up** and **Move down**. Moves stay within
+  their container, a move past a group hops it whole, items disable at the ends,
+  and focus returns to the moved row.
 - Desktop's Files tree marks files and folders by type with Material Icon Theme
   icons (the pack's own SVGs and name tables, light variants in light theme;
   `third_party/material-icon-theme`), uses its open-folder icon when expanded, and opens a folder whose only entry is a
@@ -957,3 +1004,4 @@ glyph, a title, one line, one action.
 | 2026-10-30 | Phone Files, Terminals and the workspace sheet never land in a root | The Host refuses terminals in a root and every session in a plain folder, yet the phone offered both. It now mirrors Desktop's openRoot/newWorktree: choosing a workspace opens a worktree (making a plain folder a repository first, with the large-folder ask), and adding one from Files opens it in a new worktree |
 | 2026-11-03 | PR check counts fold under the status on both clients | User call: `Checks running 2 running · 3 passed · 1 skipped` wrapped and crowded the strip. The status alone says how the PR stands; the counts and each check open from it (Desktop toggles them under the status, the phone shows them in the PR sheet). Screen readers still hear the counts on the phone strip |
 | 2026-11-03 | Starting composers hint at task lists | User call: nothing told people how to get the tasks strip. The agent makes the list, so the first-prompt placeholders on both clients (Desktop new session and new worktree, phone New session) add "Ask for a task list to track progress"; later replies keep their short placeholders |
+| 2026-11-05 | Workspace groups: Host-owned, one level, drag on Desktop, menus on the phone | User call (D1 A, D2 A, D3 A), from feedback asking for a "backend" folder and drag for everything. The word is "group" because "plain folder" already means a non-Git workspace. The layout lives on the Host so Desktop and phone agree; folds stay device-local. No icon or color, so the sidebar stays uncolored and a group never reads as a repository. A drop target is neutral with a `ring`, because `brand` fill means selection or needs you. Long-press on a phone row now opens an actions level instead of jumping to Remove, the only way to give move a home without native gesture dependencies. |

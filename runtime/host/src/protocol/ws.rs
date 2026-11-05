@@ -222,6 +222,7 @@ fn host_snapshot_frame(snapshot: HostSnapshot) -> Value {
         "epoch": snapshot.epoch,
         "seq": snapshot.seq,
         "workspaces": snapshot.workspaces,
+        "layout": snapshot.layout,
         "sessions": snapshot.sessions,
         "terminals": snapshot.terminals,
         "prs": snapshot.prs,

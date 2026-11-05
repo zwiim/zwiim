@@ -125,6 +125,7 @@ export class VaultSecureStore implements SecureStore {
 const MODES = "connection-modes";
 const LAST_HOST = "last-host";
 const WORKSPACES = "workspaces";
+const FOLDED_GROUPS = "folded-groups";
 const isWorkspaceId = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(v);
 const isMode = (v: unknown): v is ConnectionMode => v === "auto" || v === "local" || v === "cloud";
 
@@ -177,5 +178,23 @@ export class VaultPreferences implements Preferences {
     else if (isWorkspaceId(workspace_id)) chosen[hostId] = workspace_id;
     else return;
     await this.#vault.setItemAsync(WORKSPACES, JSON.stringify(chosen));
+  }
+
+  /** Unreadable entries read as absent. */
+  async foldedGroups(): Promise<Record<string, string[]>> {
+    const o = parse(await this.#vault.getItemAsync(FOLDED_GROUPS)) ?? {};
+    const folded: Record<string, string[]> = {};
+    for (const [hostId, ids] of Object.entries(o)) {
+      if (isHostId(hostId) && Array.isArray(ids)) folded[hostId] = ids.filter(isWorkspaceId);
+    }
+    return folded;
+  }
+
+  async setFoldedGroups(hostId: string, group_ids: readonly string[]): Promise<void> {
+    if (!isHostId(hostId)) throw new Error("Not a host id");
+    const folded = await this.foldedGroups();
+    if (group_ids.length) folded[hostId] = group_ids.filter(isWorkspaceId);
+    else delete folded[hostId];
+    await this.#vault.setItemAsync(FOLDED_GROUPS, JSON.stringify(folded));
   }
 }

@@ -14,7 +14,7 @@ import { HostProvider } from "@/lib/host-context";
 import { PublishDialog, type PublishDialogProps } from "@/panels/PublishDialog";
 import { Sidebar, type SidebarProps } from "@/panels/Sidebar";
 import { FakeTransport, hostHello, tick } from "./fakes";
-import { openProject } from "./ui";
+import { addButton, openProject } from "./ui";
 
 afterEach(() => {
   cleanup();
@@ -1297,7 +1297,7 @@ describe("Adding a folder from the sidebar", () => {
   it("offers no second pick while the publish dialog is open", async () => {
     const t = sidebarHost(plain());
     const props = await mountSidebar(t);
-    const add = screen.getByTitle("Add workspace") as HTMLButtonElement;
+    const add = addButton();
     await pick();
     expect(dialog()).toBeTruthy();
     expect(add.disabled).toBe(true);
@@ -1497,7 +1497,7 @@ describe("Adding a folder from the sidebar", () => {
     expect(dialog()).toBeNull();
     expect(screen.getByText("no such folder")).toBeTruthy();
     expect(adds(t)).toEqual([]);
-    expect((screen.getByTitle("Add workspace") as HTMLButtonElement).disabled).toBe(false);
+    expect((addButton()).disabled).toBe(false);
   });
 
   it("adds at once on a Host without publishing, selecting the root as before; no inspect", async () => {
@@ -1724,7 +1724,7 @@ describe("Opening a repository from the sidebar", () => {
     await openRoot();
     expect(inspects(t)).toHaveLength(1);
     // Nor can + start a second read meanwhile.
-    expect((screen.getByTitle("Add workspace") as HTMLButtonElement).disabled).toBe(true);
+    expect((addButton()).disabled).toBe(true);
 
     await act(async () => read(plain()));
     await tick();
@@ -1738,7 +1738,7 @@ describe("Opening a repository from the sidebar", () => {
     const t = rootHost(plain());
     let picked: (p: string | null) => void = () => {};
     await mountSidebar(t, { pickFolder: vi.fn(() => new Promise<string | null>((resolve) => (picked = resolve))) });
-    const add = screen.getByTitle("Add workspace") as HTMLButtonElement;
+    const add = addButton();
     openProject();
     await tick();
     expect(add.disabled).toBe(true);

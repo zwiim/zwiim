@@ -158,6 +158,10 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
             post(http::workspace_remove_worktree),
         )
         .route("/workspace.remove", post(http::workspace_remove))
+        .route("/workspace.group_create", post(http::workspace_group_create))
+        .route("/workspace.group_rename", post(http::workspace_group_rename))
+        .route("/workspace.group_delete", post(http::workspace_group_delete))
+        .route("/workspace.layout_set", post(http::workspace_layout_set))
         .route("/workspace.continue", post(http::workspace_continue))
         .route(
             "/workspace.resolve_conflicts",

@@ -1268,6 +1268,19 @@ Upstream-derived:
 |---|---|---|
 | `lib.rs` | `src-tauri/src/lib.rs` | `pub mod session_continue`. |
 
+## Workspace groups — `workspace.layout`
+
+Zwiim-owned, no Codeg code copied: `workspace/layout.rs` (`WorkspaceLayout`, reading it, the tolerant `layout_set` reconcile, `group_create`, `group_rename`, `group_delete`); the `workspace.group_*` and `workspace.layout_set` routes and the `workspace.layout` capability in `protocol/`; `HostSnapshot.layout` and the `workspace.layout` event in `host_feed.rs`; migration `m20261104_000001_workspace_group_ids.rs`, which gives each group an opaque `public_id` and sets `folder.sort_order = id` once so the list does not reshuffle (one-way: `schema_guard` refuses the database on an older Host, so rollback needs a snapshot from before the update); `state/layout.ts` in the SDK; group rendering, drag and Move to group in the Desktop sidebar; the phone's groups, folds and `WorkspaceActions.tsx`.
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `db/entities/folder_group.rs` | `src-tauri/src/db/entities/folder_group.rs` | `public_id`, minted in `before_save` on insert. |
+| `db/service/folder_group_service.rs` | `src-tauri/src/db/service/folder_group_service.rs` | `public_id: NotSet` on create; `apply_sidebar_layout` generic over `ConnectionTrait` so it runs in a transaction. |
+| `db/service/folder_service.rs` | `src-tauri/src/db/service/folder_service.rs` | `assign_folder_positions` generic over `ConnectionTrait`, same reason. |
+| `db/migration/mod.rs` | `src-tauri/src/db/migration/mod.rs` | Registers the migration. |
+
 ## License obligations tracked
 
 - [x] Include Apache-2.0 license text (`third_party/codeg/LICENSE`).

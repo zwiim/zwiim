@@ -21,6 +21,10 @@ pub struct Model {
     /// Position among TOP-LEVEL siblings, sharing one numeric space with the
     /// `sort_order` of ungrouped folders so the two interleave in the sidebar.
     pub sort_order: i32,
+    /// Opaque id clients address the group by. Nullable like `folder.workspace_id`
+    /// so the column can be added and backfilled; every row has one.
+    #[sea_orm(unique)]
+    pub public_id: Option<String>,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
 }
@@ -37,4 +41,15 @@ impl Related<super::folder::Entity> for Entity {
     }
 }
 
-impl ActiveModelBehavior for ActiveModel {}
+#[async_trait::async_trait]
+impl ActiveModelBehavior for ActiveModel {
+    async fn before_save<C>(mut self, _db: &C, insert: bool) -> Result<Self, DbErr>
+    where
+        C: ConnectionTrait,
+    {
+        if insert && self.public_id.is_not_set() {
+            self.public_id = sea_orm::ActiveValue::Set(Some(uuid::Uuid::new_v4().to_string()));
+        }
+        Ok(self)
+    }
+}

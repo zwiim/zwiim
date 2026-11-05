@@ -7,12 +7,14 @@
 // Host to remove it (RemoveWorktree). A workspace with no worktree opens
 // straight into a new one, as Desktop's click does: a plain folder (or one
 // with nothing committed) is made a repository first, asking before a large
-// first commit. A workspace is removed (RemoveWorkspace) by long-pressing it
-// at level one, or from Remove workspace at level two; its folder stays.
+// first commit. Level one shows the Host's groups; long-pressing a row or a
+// group header opens its actions (WorkspaceActions: moving, and Remove). A
+// Host from before groups long-presses straight to RemoveWorkspace. Remove
+// workspace at level two does the same; the folder stays.
 //
 // New session picks where it starts from the same workspaces as one tree
 // (WorkspaceTree): each workspace a tile that opens to its worktrees and New
-// worktree, so every choice is one sheet and a tap away.
+// worktree, under the same groups, so every choice is one sheet and a tap away.
 
 import { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
@@ -20,8 +22,12 @@ import {
   hasCapability,
   largeFolderDetails,
   largeFolderText,
+  selectSidebarTree,
   selectWorkspaceTree,
+  stepTarget,
   type LargeFolderDetails,
+  type LayoutRef,
+  type SidebarEntry,
   type WorkspaceInfo,
   type WorkspaceNode,
 } from "@zwiim/sdk";
@@ -34,11 +40,11 @@ import {
   rootIdOf,
   workspaceCounts,
   workspaceLabel,
-  workspaceRoots,
   worktreeBase,
   worktreeChoices,
   worktreeError,
 } from "../host/workspace";
+import { pickerSections, workspaceSections } from "../host/layout";
 import { prBadge } from "../host/pr";
 import { currentHost } from "../services";
 import { Button, Chip, Sheet, T } from "../ui/components";
@@ -48,18 +54,27 @@ import { CloneCards, GithubProjects, NewWorkspaceChooser, useCanClone, useStarte
 import { useHostName } from "./HostFrame";
 import { toneColor } from "./PrStrip";
 import { RemoveWorkspace, RemoveWorktree } from "./RemoveWorktree";
+import { Failure, GroupActions, moveStep, RepositoryActions, useLayoutWrite, type GroupStep, type RepositoryStep } from "./WorkspaceActions";
 
 type Level =
   | { kind: "workspaces" }
   | { kind: "new" }
   | { kind: "github" }
   | { kind: "worktrees"; root_id: string; fromList: boolean }
+  | { kind: "actions"; root_id: string; step: RepositoryStep }
+  | { kind: "group"; group_id: string; step: GroupStep }
   | { kind: "remove"; root_id: string; back: Level };
 
 /** The Host removes whole workspaces (`workspace.remove`). */
 function useCanRemoveWorkspace(): boolean {
   const { view } = useCurrentHost();
   return hasCapability(view?.compat ?? null, "workspace.remove");
+}
+
+/** The Host keeps a workspace layout (`workspace.layout`). */
+function useCanArrange(): boolean {
+  const { view } = useCurrentHost();
+  return hasCapability(view?.compat ?? null, "workspace.layout");
 }
 
 /** `[ zwiim ▾ ]  [ ⎇ fix-auth ▾ ]` for the selected worktree. */
@@ -213,6 +228,7 @@ export function LargeFolder({
 function WorkspaceSheet({ level, onLevel, selected }: { level: Level | null; onLevel(level: Level | null): void; selected: WorkspaceInfo | null }) {
   const nav = useRootNavigation();
   const canClone = useCanClone();
+  const canRemove = useCanRemoveWorkspace();
   const close = () => onLevel(null);
   // CurrentHost selects a done clone's worktree; close only if the sheet is
   // still showing the New workspace flow (not reopened for something else).
@@ -230,6 +246,8 @@ function WorkspaceSheet({ level, onLevel, selected }: { level: Level | null; onL
           selected={selected}
           onRoot={(root_id) => onLevel({ kind: "worktrees", root_id, fromList: true })}
           onRemove={(root_id) => onLevel({ kind: "remove", root_id, back: level })}
+          onActions={(root_id, step) => onLevel({ kind: "actions", root_id, step })}
+          onGroup={(group_id, step) => onLevel({ kind: "group", group_id, step })}
           onNew={canClone ? () => onLevel({ kind: "new" }) : folder}
           onStarted={started}
           onClose={close}
@@ -251,6 +269,16 @@ function WorkspaceSheet({ level, onLevel, selected }: { level: Level | null; onL
           onRemove={() => onLevel({ kind: "remove", root_id: level.root_id, back: level })}
           onClose={close}
         />
+      ) : level?.kind === "actions" ? (
+        <RepositoryActions
+          root_id={level.root_id}
+          step={level.step}
+          canRemove={canRemove}
+          onBack={() => onLevel({ kind: "workspaces" })}
+          onRemove={() => onLevel({ kind: "remove", root_id: level.root_id, back: { ...level, step: "menu" } })}
+        />
+      ) : level?.kind === "group" ? (
+        <GroupActions group_id={level.group_id} step={level.step} onBack={() => onLevel({ kind: "workspaces" })} />
       ) : level?.kind === "remove" ? (
         <RemoveRoot root_id={level.root_id} onDone={close} onCancel={() => onLevel(level.back)} />
       ) : null}
@@ -269,11 +297,13 @@ function RemoveRoot({ root_id, onDone, onCancel }: { root_id: string; onDone(): 
   return <RemoveWorkspace workspace={root} onDone={onDone} onCancel={onCancel} />;
 }
 
-/** Level one: the host's workspaces, searchable. Long-press removes one. */
+/** Level one: the host's workspaces in their groups, searchable. Long-press opens a row's actions. */
 function Workspaces({
   selected,
   onRoot,
   onRemove,
+  onActions,
+  onGroup,
   onNew,
   onStarted,
   onClose,
@@ -281,15 +311,20 @@ function Workspaces({
   selected: WorkspaceInfo | null;
   onRoot(root_id: string): void;
   onRemove(root_id: string): void;
+  onActions(root_id: string, step: RepositoryStep): void;
+  onGroup(group_id: string, step: GroupStep): void;
   onNew(): void;
   onStarted(clone_id: string): void;
   onClose(): void;
 }) {
   const theme = useTheme();
-  const tree = useTree();
+  const state = useHostState();
+  const { foldedGroups } = useCurrentHost();
   const canRemove = useCanRemoveWorkspace();
+  const canArrange = useCanArrange();
+  const arrange = useLayoutWrite();
   const [query, setQuery] = useState("");
-  const roots = workspaceRoots(tree, query);
+  const sections = workspaceSections(selectSidebarTree(state), query);
   const selectedRoot = selected ? rootIdOf(selected) : null;
   const worktree = useOpenWorktree(true, onClose);
   if (worktree.large) {
@@ -302,6 +337,130 @@ function Workspaces({
       />
     );
   }
+  // Arranging is the Host's layout, and search stays flat: no moves there.
+  const layout = canArrange && !query.trim() ? state.layout : null;
+  const stepActions = (ref: LayoutRef) =>
+    layout
+      ? [
+          ...(stepTarget(layout, ref, -1) ? [{ name: "up", label: "Move up" }] : []),
+          ...(stepTarget(layout, ref, 1) ? [{ name: "down", label: "Move down" }] : []),
+        ]
+      : [];
+  const step = (ref: LayoutRef, action: string) => {
+    if (layout && (action === "up" || action === "down")) moveStep(ref, action === "up" ? -1 : 1, arrange);
+  };
+  const row = (node: WorkspaceNode) => {
+    const w = node.workspace;
+    const on = w.workspace_id === selectedRoot;
+    const counts = workspaceCounts(node);
+    const creating = worktree.creating === w.workspace_id;
+    const ref: LayoutRef = { kind: "workspace", id: w.workspace_id };
+    // One with worktrees opens them; one with none opens a new one.
+    const press = hasWorktreeLevel(node) ? () => onRoot(w.workspace_id) : () => worktree.open(w);
+    return (
+      <Pressable
+        key={w.workspace_id}
+        accessibilityRole="button"
+        accessibilityState={{ selected: on }}
+        accessibilityActions={[
+          ...(layout ? [{ name: "move", label: "Move to group" }, ...stepActions(ref)] : []),
+          ...(canRemove ? [{ name: "remove", label: "Remove workspace" }] : []),
+        ]}
+        onAccessibilityAction={(e) => {
+          const action = e.nativeEvent.actionName;
+          if (action === "move") onActions(w.workspace_id, "move");
+          if (action === "remove") onRemove(w.workspace_id);
+          step(ref, action);
+        }}
+        disabled={worktree.creating !== null}
+        onPress={press}
+        onLongPress={layout ? () => onActions(w.workspace_id, "menu") : canRemove ? () => onRemove(w.workspace_id) : undefined}
+        style={({ pressed }) => [styles.option, (on || pressed) && { backgroundColor: theme.surface }]}
+        testID={`workspace-${w.workspace_id}`}
+      >
+        <View style={styles.optionHead}>
+          <View style={[styles.dot, { backgroundColor: on ? theme.accent : "transparent" }]} />
+          <T variant="headline" color={on ? theme.accent : theme.fg} numberOfLines={1} style={styles.flex}>
+            {workspaceLabel(w)}
+          </T>
+          {creating ? (
+            <T variant="monoSm" color={theme.mut}>
+              Creating worktree…
+            </T>
+          ) : counts.length ? (
+            <T variant="monoSm" color={theme.mut}>
+              {counts.join(" · ")}
+            </T>
+          ) : null}
+        </View>
+        {w.display_path ? (
+          <T variant="monoSm" color={theme.mut} numberOfLines={1} ellipsizeMode="head" style={styles.indent}>
+            {w.display_path}
+          </T>
+        ) : null}
+        {worktree.error?.root_id === w.workspace_id ? (
+          <T color={theme.err} style={styles.indent} testID="workspace-worktree-error">
+            {worktree.error.text}
+          </T>
+        ) : null}
+      </Pressable>
+    );
+  };
+  const group = ({ group, repos, working }: Extract<SidebarEntry, { kind: "group" }>) => {
+    const id = group.group_id;
+    const ref: LayoutRef = { kind: "group", id };
+    const folded = foldedGroups.includes(id);
+    const holds = repos.some((n) => n.workspace.workspace_id === selectedRoot);
+    return (
+      <View key={id}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: !folded }}
+          accessibilityActions={
+            layout ? [{ name: "rename", label: "Rename" }, ...stepActions(ref), { name: "delete", label: "Delete group" }] : []
+          }
+          onAccessibilityAction={(e) => {
+            const action = e.nativeEvent.actionName;
+            if (action === "rename" || action === "delete") onGroup(id, action);
+            step(ref, action);
+          }}
+          onPress={() => currentHost.foldGroup(id, !folded)}
+          onLongPress={layout ? () => onGroup(id, "menu") : undefined}
+          style={({ pressed }) => [styles.option, pressed && { backgroundColor: theme.surface }]}
+          testID={`group-${id}`}
+        >
+          <View style={styles.optionHead}>
+            <View style={styles.lead}>
+              <Icon icon={folded ? ChevronRight : ChevronDown} color={theme.mut} size={16} />
+            </View>
+            <T variant="headline" color={theme.mut} numberOfLines={1} style={styles.flex}>
+              {group.name}
+            </T>
+            {folded && holds ? <View style={[styles.dot, { backgroundColor: theme.accent }]} /> : null}
+            {folded && working ? (
+              <T variant="monoSm" color={theme.mut}>
+                {working} working
+              </T>
+            ) : null}
+            <T variant="monoSm" color={theme.mut}>
+              {repos.length}
+            </T>
+          </View>
+        </Pressable>
+        {folded ? null : (
+          <View style={[styles.branch, { borderLeftColor: theme.line }]}>
+            {repos.length ? (
+              repos.map(row)
+            ) : (
+              <T color={theme.mut} style={styles.groupNote}>
+                No workspaces in this group
+              </T>
+            )}
+          </View>
+        )}
+      </View>
+    );
+  };
   return (
     <>
       <View style={styles.head}>
@@ -323,62 +482,14 @@ function Workspaces({
         accessibilityLabel="Search workspaces"
         testID="workspace-search"
       />
+      <Failure text={arrange.error} />
       <ScrollView keyboardShouldPersistTaps="handled">
-        {roots.length === 0 ? (
+        {sections.length === 0 ? (
           <T color={theme.mut} style={styles.none}>
             No workspace matches “{query.trim()}”.
           </T>
         ) : null}
-        {roots.map((node) => {
-          const w = node.workspace;
-          const on = w.workspace_id === selectedRoot;
-          const counts = workspaceCounts(node);
-          const creating = worktree.creating === w.workspace_id;
-          // One with worktrees opens them; one with none opens a new one.
-          const press = hasWorktreeLevel(node) ? () => onRoot(w.workspace_id) : () => worktree.open(w);
-          return (
-            <Pressable
-              key={w.workspace_id}
-              accessibilityRole="button"
-              accessibilityState={{ selected: on }}
-              accessibilityActions={canRemove ? [{ name: "remove", label: "Remove workspace" }] : undefined}
-              onAccessibilityAction={(e) => {
-                if (e.nativeEvent.actionName === "remove") onRemove(w.workspace_id);
-              }}
-              disabled={worktree.creating !== null}
-              onPress={press}
-              onLongPress={canRemove ? () => onRemove(w.workspace_id) : undefined}
-              style={({ pressed }) => [styles.option, (on || pressed) && { backgroundColor: theme.surface }]}
-              testID={`workspace-${w.workspace_id}`}
-            >
-              <View style={styles.optionHead}>
-                <View style={[styles.dot, { backgroundColor: on ? theme.accent : "transparent" }]} />
-                <T variant="headline" color={on ? theme.accent : theme.fg} numberOfLines={1} style={styles.flex}>
-                  {workspaceLabel(w)}
-                </T>
-                {creating ? (
-                  <T variant="monoSm" color={theme.mut}>
-                    Creating worktree…
-                  </T>
-                ) : counts.length ? (
-                  <T variant="monoSm" color={theme.mut}>
-                    {counts.join(" · ")}
-                  </T>
-                ) : null}
-              </View>
-              {w.display_path ? (
-                <T variant="monoSm" color={theme.mut} numberOfLines={1} ellipsizeMode="head" style={styles.indent}>
-                  {w.display_path}
-                </T>
-              ) : null}
-              {worktree.error?.root_id === w.workspace_id ? (
-                <T color={theme.err} style={styles.indent} testID="workspace-worktree-error">
-                  {worktree.error.text}
-                </T>
-              ) : null}
-            </Pressable>
-          );
-        })}
+        {sections.map((entry) => (entry.kind === "repo" ? row(entry.node) : group(entry)))}
       </ScrollView>
     </>
   );
@@ -514,12 +625,13 @@ export function WorkspaceTree({
 }) {
   const theme = useTheme();
   const hostName = useHostName();
-  const tree = useTree();
+  const state = useHostState();
+  const tree = selectWorkspaceTree(state);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set([openTile(tree, selected)].filter((id) => id !== null)));
   // Files keeps its own selection: the new worktree is only this choice.
   const worktree = useOpenWorktree(false, (w) => onChoose(w.workspace_id));
-  const roots = workspaceRoots(tree, query).filter((n) => onNewWorkspace || hasWorktreeLevel(n));
+  const sections = pickerSections(workspaceSections(selectSidebarTree(state), query), (n) => !!onNewWorkspace || hasWorktreeLevel(n));
 
   const toggle = (id: string) =>
     setOpen((was) => {
@@ -535,6 +647,100 @@ export function WorkspaceTree({
   const creating = worktree.creating;
   const error = worktree.error;
 
+  const tile = (node: WorkspaceNode) => {
+    const w = node.workspace;
+    const choices = worktreeChoices(tree, w.workspace_id);
+    const holds = choices.some((c) => c.workspace.workspace_id === selected);
+    const counts = workspaceCounts(node);
+    const expanded = open.has(w.workspace_id);
+    return (
+      <View key={w.workspace_id}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded }}
+          onPress={() => toggle(w.workspace_id)}
+          style={({ pressed }) => [styles.option, pressed && { backgroundColor: theme.surface }]}
+          testID={`tree-${w.workspace_id}`}
+        >
+          <View style={styles.optionHead}>
+            <View style={styles.lead}>
+              <Icon icon={expanded ? ChevronDown : ChevronRight} color={theme.mut} size={16} />
+            </View>
+            <T variant="headline" color={holds ? theme.accent : theme.fg} numberOfLines={1} style={styles.flex}>
+              {workspaceLabel(w)}
+            </T>
+            {counts.length ? (
+              <T variant="monoSm" color={theme.mut}>
+                {counts.join(" · ")}
+              </T>
+            ) : null}
+          </View>
+          {w.display_path ? (
+            <T variant="monoSm" color={theme.mut} numberOfLines={1} ellipsizeMode="head" style={styles.treeIndent}>
+              {w.display_path}
+            </T>
+          ) : null}
+        </Pressable>
+        {expanded ? (
+          <View style={[styles.branch, { borderLeftColor: theme.line }]}>
+            {choices.map((child) => {
+              const c = child.workspace;
+              const on = c.workspace_id === selected;
+              const base = worktreeBase(c);
+              return (
+                <Pressable
+                  key={c.workspace_id}
+                  accessibilityRole="radio"
+                  accessibilityState={{ checked: on }}
+                  onPress={() => onChoose(c.workspace_id)}
+                  style={({ pressed }) => [styles.leaf, (on || pressed) && { backgroundColor: theme.surface }]}
+                  testID={`tree-leaf-${c.workspace_id}`}
+                >
+                  <View style={styles.optionHead}>
+                    <View style={[styles.dot, { backgroundColor: on ? theme.accent : "transparent" }]} />
+                    <T variant="mono" color={on ? theme.accent : theme.fg} numberOfLines={1} style={styles.flex}>
+                      ⎇ {c.branch ?? workspaceLabel(c)}
+                    </T>
+                    {child.working ? (
+                      <T variant="monoSm" color={theme.mut}>
+                        {child.working} working
+                      </T>
+                    ) : null}
+                  </View>
+                  {base ? (
+                    <T variant="monoSm" color={theme.mut} numberOfLines={1} style={styles.indent}>
+                      from {base}
+                    </T>
+                  ) : null}
+                </Pressable>
+              );
+            })}
+            {onNewWorkspace ? (
+              <Pressable
+                accessibilityRole="button"
+                disabled={creating !== null}
+                onPress={() => worktree.open(w)}
+                style={({ pressed }) => [styles.leaf, pressed && { backgroundColor: theme.surface }]}
+                testID={`tree-new-worktree-${w.workspace_id}`}
+              >
+                <View style={styles.optionHead}>
+                  <Icon icon={Plus} color={creating === w.workspace_id ? theme.faint : theme.accent} size={16} />
+                  <T variant="headline" color={creating === w.workspace_id ? theme.faint : theme.accent}>
+                    {creating === w.workspace_id ? "Creating worktree…" : "New worktree"}
+                  </T>
+                </View>
+              </Pressable>
+            ) : null}
+            {error?.root_id === w.workspace_id ? (
+              <T color={theme.err} style={styles.leafNote} testID="tree-worktree-error">
+                {error.text}
+              </T>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
+    );
+  };
   return (
     <>
       <View style={styles.head}>
@@ -558,7 +764,7 @@ export function WorkspaceTree({
         />
       ) : null}
       <ScrollView keyboardShouldPersistTaps="handled">
-        {roots.length === 0 ? (
+        {sections.length === 0 ? (
           <T color={theme.mut} style={styles.none}>
             {query.trim()
               ? `No workspace matches “${query.trim()}”.`
@@ -567,100 +773,18 @@ export function WorkspaceTree({
                 : `No worktrees on ${hostName} yet.`}
           </T>
         ) : null}
-        {roots.map((node) => {
-          const w = node.workspace;
-          const choices = worktreeChoices(tree, w.workspace_id);
-          const holds = choices.some((c) => c.workspace.workspace_id === selected);
-          const counts = workspaceCounts(node);
-          const expanded = open.has(w.workspace_id);
-          return (
-            <View key={w.workspace_id}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ expanded }}
-                onPress={() => toggle(w.workspace_id)}
-                style={({ pressed }) => [styles.option, pressed && { backgroundColor: theme.surface }]}
-                testID={`tree-${w.workspace_id}`}
-              >
-                <View style={styles.optionHead}>
-                  <View style={styles.lead}>
-                    <Icon icon={expanded ? ChevronDown : ChevronRight} color={theme.mut} size={16} />
-                  </View>
-                  <T variant="headline" color={holds ? theme.accent : theme.fg} numberOfLines={1} style={styles.flex}>
-                    {workspaceLabel(w)}
-                  </T>
-                  {counts.length ? (
-                    <T variant="monoSm" color={theme.mut}>
-                      {counts.join(" · ")}
-                    </T>
-                  ) : null}
-                </View>
-                {w.display_path ? (
-                  <T variant="monoSm" color={theme.mut} numberOfLines={1} ellipsizeMode="head" style={styles.treeIndent}>
-                    {w.display_path}
-                  </T>
-                ) : null}
-              </Pressable>
-              {expanded ? (
-                <View style={[styles.branch, { borderLeftColor: theme.line }]}>
-                  {choices.map((child) => {
-                    const c = child.workspace;
-                    const on = c.workspace_id === selected;
-                    const base = worktreeBase(c);
-                    return (
-                      <Pressable
-                        key={c.workspace_id}
-                        accessibilityRole="radio"
-                        accessibilityState={{ checked: on }}
-                        onPress={() => onChoose(c.workspace_id)}
-                        style={({ pressed }) => [styles.leaf, (on || pressed) && { backgroundColor: theme.surface }]}
-                        testID={`tree-leaf-${c.workspace_id}`}
-                      >
-                        <View style={styles.optionHead}>
-                          <View style={[styles.dot, { backgroundColor: on ? theme.accent : "transparent" }]} />
-                          <T variant="mono" color={on ? theme.accent : theme.fg} numberOfLines={1} style={styles.flex}>
-                            ⎇ {c.branch ?? workspaceLabel(c)}
-                          </T>
-                          {child.working ? (
-                            <T variant="monoSm" color={theme.mut}>
-                              {child.working} working
-                            </T>
-                          ) : null}
-                        </View>
-                        {base ? (
-                          <T variant="monoSm" color={theme.mut} numberOfLines={1} style={styles.indent}>
-                            from {base}
-                          </T>
-                        ) : null}
-                      </Pressable>
-                    );
-                  })}
-                  {onNewWorkspace ? (
-                    <Pressable
-                      accessibilityRole="button"
-                      disabled={creating !== null}
-                      onPress={() => worktree.open(w)}
-                      style={({ pressed }) => [styles.leaf, pressed && { backgroundColor: theme.surface }]}
-                      testID={`tree-new-worktree-${w.workspace_id}`}
-                    >
-                      <View style={styles.optionHead}>
-                        <Icon icon={Plus} color={creating === w.workspace_id ? theme.faint : theme.accent} size={16} />
-                        <T variant="headline" color={creating === w.workspace_id ? theme.faint : theme.accent}>
-                          {creating === w.workspace_id ? "Creating worktree…" : "New worktree"}
-                        </T>
-                      </View>
-                    </Pressable>
-                  ) : null}
-                  {error?.root_id === w.workspace_id ? (
-                    <T color={theme.err} style={styles.leafNote} testID="tree-worktree-error">
-                      {error.text}
-                    </T>
-                  ) : null}
-                </View>
-              ) : null}
+        {sections.map((entry) =>
+          entry.kind === "repo" ? (
+            tile(entry.node)
+          ) : (
+            <View key={entry.group.group_id} testID={`tree-group-${entry.group.group_id}`}>
+              <T variant="headline" color={theme.mut} numberOfLines={1} style={styles.groupLabel}>
+                {entry.group.name}
+              </T>
+              <View style={[styles.branch, { borderLeftColor: theme.line }]}>{entry.repos.map(tile)}</View>
             </View>
-          );
-        })}
+          ),
+        )}
       </ScrollView>
     </>
   );
@@ -681,6 +805,8 @@ const styles = StyleSheet.create({
   treeIndent: { paddingLeft: 16 + space.sm },
   branch: { marginLeft: space.md + space.sm, paddingLeft: space.xs, borderLeftWidth: StyleSheet.hairlineWidth },
   leaf: { minHeight: 44, borderRadius: radius.md, paddingHorizontal: space.sm, paddingVertical: space.xs, gap: space.xxs, justifyContent: "center" },
+  groupNote: { paddingLeft: space.xs, paddingVertical: space.sm },
+  groupLabel: { paddingHorizontal: space.md, paddingTop: space.sm, paddingBottom: space.xxs },
   leafNote: { paddingHorizontal: space.sm, paddingVertical: space.xs },
   confirm: { gap: space.sm },
   strong: { fontFamily: fonts.sansSemi },

@@ -17,6 +17,7 @@ import type {
   SessionSummary,
   TerminalInfo,
   WorkspaceInfo,
+  WorkspaceLayout,
 } from "../types/protocol";
 import { initialSessionView, reduceSession, type SessionFrame, type SessionView } from "./session";
 
@@ -36,6 +37,8 @@ export interface HostState {
   /** The host's agents and whether each can be used; null until loaded. */
   agents: AgentSummary[] | null;
   workspaces: WorkspaceInfo[] | null;
+  /** How the workspaces are arranged; null until the feed says, and on older Hosts. */
+  layout: WorkspaceLayout | null;
   sessionsByWorkspace: Record<string, SessionSummary[]>;
   sessions: Record<string, SessionView>;
   terminals: Record<string, TerminalMeta>;
@@ -87,6 +90,7 @@ export function initialHostState(): HostState {
     host: null,
     agents: null,
     workspaces: null,
+    layout: null,
     sessionsByWorkspace: {},
     sessions: {},
     terminals: {},
@@ -168,6 +172,7 @@ export function reduceHost(state: HostState, action: HostAction): HostState {
       return {
         ...state,
         workspaces,
+        layout: action.snapshot.layout ?? null,
         sessionsByWorkspace,
         terminals: listTerminals(state.terminals, terminals),
         diffRevision,
@@ -197,6 +202,8 @@ function reduceFeedEvent(state: HostState, event: HostFeedEvent): HostState {
           : { ...state.sessionsByWorkspace, [id]: [] },
       };
     }
+    case "workspace.layout":
+      return { ...state, layout: event.payload.layout };
     case "workspace.removed": {
       const id = event.payload.workspace_id;
       const { [id]: _, ...sessionsByWorkspace } = state.sessionsByWorkspace;

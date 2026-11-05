@@ -395,6 +395,35 @@ export interface WorktreeRemoved {
   archive_script?: ScriptRun;
 }
 
+/** A named group of repositories. One level: a group never holds a group. */
+export interface WorkspaceGroup {
+  group_id: string;
+  name: string;
+}
+
+/** A repository and its live worktrees, in order. */
+export interface LayoutWorkspace {
+  workspace_id: string;
+  worktrees: string[];
+}
+
+export type LayoutEntry =
+  | (WorkspaceGroup & { kind: "group"; workspaces: LayoutWorkspace[] })
+  | (LayoutWorkspace & { kind: "workspace" });
+
+/**
+ * How the Host arranges its workspaces. `workspace.list` stays flat; all order
+ * comes from here. Removed worktrees are never in it.
+ */
+export interface WorkspaceLayout {
+  entries: LayoutEntry[];
+}
+
+/** What `workspace.layout_set` takes: a `LayoutEntry` without the group's name. */
+export type LayoutEntryInput =
+  | { kind: "group"; group_id: string; workspaces: LayoutWorkspace[] }
+  | (LayoutWorkspace & { kind: "workspace" });
+
 export interface WorkspaceRemoved {
   workspace_id: string;
   /** The worktrees archived with it, as `workspace.remove_worktree` does. */
@@ -1382,6 +1411,7 @@ export type HostFeedEvent = { seq: number } & (
   | { type: "workspace.changed"; payload: { workspace: WorkspaceInfo } }
   | { type: "workspace.removed"; payload: { workspace_id: string } }
   | { type: "workspace.diff_changed"; payload: { workspace_id: string } }
+  | { type: "workspace.layout"; payload: { layout: WorkspaceLayout } }
   | { type: "session.changed"; payload: { session: SessionSummary } }
   | { type: "session.removed"; payload: { session_id: string; workspace_id: string } }
   | { type: "terminal.changed"; payload: { terminal: TerminalInfo } }
@@ -1401,6 +1431,8 @@ export interface HostSnapshot {
   /** The last event already reflected here; the next event is `seq + 1`. */
   seq: number;
   workspaces: WorkspaceInfo[];
+  /** How the workspaces are arranged (older Hosts omit it). */
+  layout?: WorkspaceLayout;
   sessions: SessionSummary[];
   terminals: TerminalInfo[];
   /** Workspaces whose branch has a pull request (or whose PR lookup failed). */
@@ -1736,6 +1768,10 @@ export interface Operations {
   "workspace.create_worktree": [{ workspace_id: string; base?: string }, WorkspaceInfo];
   "workspace.remove_worktree": [{ workspace_id: string; force?: boolean }, WorktreeRemoved];
   "workspace.remove": [{ workspace_id: string; force?: boolean }, WorkspaceRemoved];
+  "workspace.group_create": [{ name: string }, WorkspaceGroup];
+  "workspace.group_rename": [{ group_id: string; name: string }, WorkspaceGroup];
+  "workspace.group_delete": [{ group_id: string }, Record<string, never>];
+  "workspace.layout_set": [{ entries: LayoutEntryInput[] }, Record<string, never>];
   /**
    * After its pull request `number` merged, move the worktree in place to a
    * new branch from the PR's base (capability `workspace.continue`).
@@ -1928,6 +1964,10 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "files.write",
   "workspace.remove_worktree",
   "workspace.remove",
+  "workspace.group_create",
+  "workspace.group_rename",
+  "workspace.group_delete",
+  "workspace.layout_set",
   "workspace.continue",
   "workspace.resolve_conflicts",
   "terminal.spawn",

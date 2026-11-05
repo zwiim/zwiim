@@ -10,6 +10,7 @@ import type {
   OpName,
   ServerFrame,
   Transport,
+  WorkspaceLayout,
 } from "@zwiim/sdk";
 
 /** A current Host's `host.hello`: same protocol revision, every capability. */
@@ -49,6 +50,8 @@ export class FakeTransport implements Transport {
   sent: ClientMessage[] = [];
   feedSeq = 0;
   clones: CloneJob[] = [];
+  /** Absent, as a Host from before groups sends it. */
+  layout: WorkspaceLayout | undefined;
   async request(op: OpName, params: unknown) {
     this.calls.push({ op, params });
     const h = this.handlers[op];
@@ -85,6 +88,7 @@ export class FakeTransport implements Transport {
       ),
       terminals: h["terminal.list"]!({}),
       clones: this.clones,
+      ...(this.layout ? { layout: this.layout } : {}),
     };
   }
   /** Publish the next host feed event, as another client's change would. */

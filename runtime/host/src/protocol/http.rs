@@ -1148,6 +1148,67 @@ pub async fn workspace_remove_worktree(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct WorkspaceGroupCreateParams {
+    pub name: String,
+}
+
+pub async fn workspace_group_create(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<WorkspaceGroupCreateParams>,
+) -> ZResult<workspace::layout::WorkspaceGroup> {
+    Ok(Json(
+        workspace::layout::create_group(&state.db, &state.emitter, &p.name).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceGroupRenameParams {
+    pub group_id: String,
+    pub name: String,
+}
+
+pub async fn workspace_group_rename(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<WorkspaceGroupRenameParams>,
+) -> ZResult<workspace::layout::WorkspaceGroup> {
+    Ok(Json(
+        workspace::layout::rename_group(&state.db, &state.emitter, &p.group_id, &p.name).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceGroupDeleteParams {
+    pub group_id: String,
+}
+
+pub async fn workspace_group_delete(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<WorkspaceGroupDeleteParams>,
+) -> ZResult<Value> {
+    workspace::layout::delete_group(&state.db, &state.emitter, &p.group_id).await?;
+    ok()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceLayoutSetParams {
+    pub entries: Vec<workspace::layout::LayoutEntryInput>,
+}
+
+/// Returns nothing: an HTTP reply can land after a newer feed event and put old
+/// order back. The feed is the only source of layout.
+pub async fn workspace_layout_set(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<WorkspaceLayoutSetParams>,
+) -> ZResult<Value> {
+    workspace::layout::set(&state.db, &state.emitter, p.entries).await?;
+    ok()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceRemoveParams {
     pub workspace_id: String,
     /// Discard the worktrees' uncommitted changes. Never overrides the

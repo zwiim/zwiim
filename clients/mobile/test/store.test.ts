@@ -139,6 +139,20 @@ describe("VaultPreferences", () => {
     await expect(after.setWorkspace("bad id", "w1")).rejects.toThrow("Not a host id");
   });
 
+  it("keeps the groups folded on each host", async () => {
+    const vault = new MapVault();
+    const before = new VaultPreferences(vault);
+    expect(await before.foldedGroups()).toEqual({});
+    await before.setFoldedGroups("host-1", ["g1", "g2"]);
+    await before.setFoldedGroups("host-2", ["g3"]);
+    await before.setFoldedGroups("host-2", []);
+    const after = new VaultPreferences(vault);
+    expect(await after.foldedGroups()).toEqual({ "host-1": ["g1", "g2"] });
+    vault.items.set("folded-groups", JSON.stringify({ "host-1": ["g1", 7, "../x"], "host-2": "g2", "bad id": ["g3"] }));
+    expect(await after.foldedGroups()).toEqual({ "host-1": ["g1"] });
+    await expect(after.setFoldedGroups("bad id", [])).rejects.toThrow("Not a host id");
+  });
+
   it("reads damaged entries as absent", async () => {
     const vault = new MapVault();
     const prefs = new VaultPreferences(vault);

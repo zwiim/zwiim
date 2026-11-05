@@ -67,6 +67,9 @@ export interface Preferences {
   /** The worktree chosen in Files on each host; absent means its default. */
   workspaces(): Promise<Record<string, string>>;
   setWorkspace(hostId: string, workspace_id: string | null): Promise<void>;
+  /** The workspace groups folded on this phone, for each host. */
+  foldedGroups(): Promise<Record<string, string[]>>;
+  setFoldedGroups(hostId: string, group_ids: readonly string[]): Promise<void>;
 }
 
 /** Finding hosts on the local network and dialing them: the SDK's LAN inputs. */

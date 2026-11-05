@@ -29,8 +29,10 @@ import type {
   SessionOptions,
   SessionRevertResult,
   WorkspaceDiff,
+  WorkspaceGroup,
   WorkspaceInfo,
   WorkspaceInspection,
+  WorkspaceLayout,
   WorkspaceRemoved,
   WorktreeRemoved,
 } from "../types/protocol";
@@ -122,6 +124,8 @@ export class HostController {
    */
   private readonly optionsRevision = new Map<string, number>();
   private readonly terminalListeners = new Set<(id: string, out: TerminalOutput) => void>();
+  /** The last write the Host answered, and the layout the feed held then. */
+  private answeredLayout: { layout: WorkspaceLayout; over: WorkspaceLayout | null } | null = null;
 
   constructor(
     readonly client: HostClient,
@@ -365,6 +369,44 @@ export class HostController {
       workspace_id,
       ...(opts.force ? { force: true } : {}),
     });
+  }
+
+  /** A new group, at the end of the top level. The feed then shows it. */
+  async createWorkspaceGroup(name: string): Promise<WorkspaceGroup> {
+    return this.client.request("workspace.group_create", { name });
+  }
+
+  async renameWorkspaceGroup(group_id: string, name: string): Promise<WorkspaceGroup> {
+    return this.client.request("workspace.group_rename", { group_id, name });
+  }
+
+  /** Delete a group. Its repositories move to the top level, in its place. */
+  async deleteWorkspaceGroup(group_id: string): Promise<void> {
+    await this.client.request("workspace.group_delete", { group_id });
+  }
+
+  /**
+   * Ask the Host to arrange its workspaces like `layout`. Answers nothing: a
+   * response can land after a newer feed event, so only the feed moves
+   * `state.layout`.
+   */
+  async setWorkspaceLayout(layout: WorkspaceLayout): Promise<void> {
+    const entries = layout.entries.map((e) =>
+      e.kind === "group"
+        ? { kind: e.kind, group_id: e.group_id, workspaces: e.workspaces }
+        : e,
+    );
+    await this.client.request("workspace.layout_set", { entries });
+    this.answeredLayout = { layout, over: this.store.getState().layout };
+  }
+
+  /**
+   * What the next move builds on. The feed's layout trails an answered write,
+   * and the first layout after the answer has that write in it.
+   */
+  latestLayout(): WorkspaceLayout | null {
+    const stored = this.store.getState().layout;
+    return this.answeredLayout?.over === stored ? this.answeredLayout.layout : stored;
   }
 
   /**

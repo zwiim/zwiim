@@ -55,6 +55,7 @@ export * from "./state/session";
 export * from "./state/terminal";
 export * from "./state/store";
 export * from "./state/workspaces";
+export * from "./state/layout";
 export * from "./state/conflicts";
 export * from "./state/options";
 export * from "./state/usage";

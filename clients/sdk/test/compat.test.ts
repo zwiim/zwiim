@@ -95,8 +95,13 @@ describe("evaluateCompatibility", () => {
     expect(hasCapability(c, "session.revert.chat")).toBe(false);
   });
 
+  it("speaks revision 28 and arranges workspaces", () => {
+    expect(CLIENT_REVISION).toBe(28);
+    expect(CLIENT_CAPABILITIES).toContain("workspace.layout");
+  });
+
   it("speaks revision 27", () => {
-    expect(CLIENT_REVISION).toBe(27);
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(27);
   });
 
   it("speaks revision 26 and shows plan progress and continuing a plan", () => {

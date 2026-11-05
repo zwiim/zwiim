@@ -21,8 +21,8 @@
 use chrono::Utc;
 use sea_orm::sea_query::Expr;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, DatabaseConnection, EntityTrait,
-    QueryFilter, QueryOrder, QuerySelect, Set,
+    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, ConnectionTrait, DatabaseConnection,
+    EntityTrait, QueryFilter, QueryOrder, QuerySelect, Set,
 };
 
 use crate::db::entities::folder;
@@ -97,6 +97,7 @@ pub async fn create_folder_group(
         name: Set(name),
         color: Set(color.unwrap_or_else(|| DEFAULT_FOLDER_COLOR.to_string())),
         sort_order: Set(next_order),
+        public_id: NotSet,
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -173,8 +174,8 @@ pub async fn delete_folder_group(conn: &DatabaseConnection, id: i32) -> Result<b
 ///
 /// Deliberately does no reads: everything needed is in `entries`, so there is
 /// no read-then-write inside one transaction to upgrade into `SQLITE_BUSY`.
-pub async fn apply_sidebar_layout(
-    conn: &DatabaseConnection,
+pub async fn apply_sidebar_layout<C: ConnectionTrait>(
+    conn: &C,
     entries: Vec<SidebarLayoutEntry>,
 ) -> Result<(), DbError> {
     if entries.is_empty() {

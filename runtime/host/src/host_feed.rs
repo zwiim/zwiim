@@ -55,9 +55,10 @@ use crate::session;
 use crate::terminal::manager::TerminalManager;
 use crate::web::event_bridge::{
     EventEmitter, WebEvent, CONVERSATIONS_BULK_CHANGED_EVENT, CONVERSATION_CHANGED_EVENT,
-    FOLDER_CHANGED_EVENT,
+    FOLDER_CHANGED_EVENT, FOLDER_GROUP_CHANGED_EVENT,
 };
 use crate::workspace::clone::{CloneJob, CloneJobs, CloneState};
+use crate::workspace::layout::{self, WorkspaceLayout};
 use crate::workspace::{self, WorkspaceInfo, WorkspaceKind};
 use crate::workspace_state;
 
@@ -72,6 +73,9 @@ const MAX_INPUTS_PER_PASS: usize = 4096;
 /// Its `Disconnected` status is broadcast just before the manager drops it.
 const DEPARTURE_POLL: Duration = Duration::from_millis(20);
 const DEPARTURE_MAX_POLLS: u32 = 250;
+
+/// How long after a failed layout read it is tried again.
+const LAYOUT_RETRY: Duration = Duration::from_secs(1);
 
 const WORKSPACE_STATE_EVENT: &str = "folder://workspace-state-event";
 const TERMINAL_EXIT_PREFIX: &str = "terminal://exit/";
@@ -99,6 +103,8 @@ pub struct HostSnapshot {
     pub epoch: String,
     pub seq: u64,
     pub workspaces: Vec<WorkspaceInfo>,
+    /// How the listed workspaces are arranged.
+    pub layout: WorkspaceLayout,
     pub sessions: Vec<SessionSummary>,
     pub terminals: Vec<TerminalSummary>,
     /// The pull request of each workspace that has one (or cannot see them).
@@ -123,6 +129,7 @@ struct Projection {
     seq: u64,
     /// In `workspace.list` order.
     workspaces: Vec<WorkspaceInfo>,
+    layout: WorkspaceLayout,
     /// `session.list` of each listed workspace.
     sessions: HashMap<String, Vec<SessionSummary>>,
     terminals: BTreeMap<String, TerminalSummary>,
@@ -139,6 +146,7 @@ impl Projection {
             epoch: epoch.to_string(),
             seq: self.seq,
             workspaces: self.workspaces.clone(),
+            layout: self.layout.clone(),
             sessions: self
                 .workspaces
                 .iter()
@@ -305,8 +313,10 @@ async fn start(
         conflict_cmd,
         conflict_targets: Vec::new(),
         clones: state.clones.clone(),
+        layout_retrying: false,
     };
     task.projection.workspaces = workspace::list(&task.db).await?;
+    task.projection.layout = layout::read(&task.db).await?;
     task.projection.clones = task.clones.list();
     task.projection.keep_awake = keep_awake_rx.borrow_and_update().clone();
     let ids: Vec<String> = task
@@ -342,10 +352,18 @@ async fn start(
     Ok(shared)
 }
 
+/// A re-read a pass arranged for later.
+enum Recheck {
+    Sessions,
+    Layout,
+}
+
 /// What a pass has to re-read.
 #[derive(Default)]
 struct Stale {
     workspaces: bool,
+    /// Groups or order moved; nothing a workspace lists changed.
+    layout: bool,
     sessions: bool,
     terminals: bool,
     /// Watcher batches per workspace: the changed paths, or `None` when the
@@ -363,6 +381,7 @@ struct Stale {
 impl Stale {
     fn any(&self) -> bool {
         self.workspaces
+            || self.layout
             || self.sessions
             || self.terminals
             || self.all_diffs
@@ -374,6 +393,7 @@ impl Stale {
 
     fn everything(&mut self) {
         self.workspaces = true;
+        self.layout = true;
         self.sessions = true;
         self.terminals = true;
         self.all_diffs = true;
@@ -403,6 +423,8 @@ struct FeedTask {
     /// What the conflict watcher was last told to follow.
     conflict_targets: Vec<ConflictTarget>,
     clones: Arc<CloneJobs>,
+    /// A failed layout read is waiting to be tried again.
+    layout_retrying: bool,
 }
 
 /// Spellings a watcher event may name `path` by: as given and canonical.
@@ -519,7 +541,7 @@ impl FeedTask {
         mut clones_rx: tokio::sync::watch::Receiver<u64>,
         mut keep_awake_rx: tokio::sync::watch::Receiver<Option<KeepAwakeStatus>>,
     ) {
-        let (recheck_tx, mut recheck_rx) = mpsc::unbounded_channel::<()>();
+        let (recheck_tx, mut recheck_rx) = mpsc::unbounded_channel::<Recheck>();
         let mut stale = Stale::default();
         loop {
             tokio::select! {
@@ -533,7 +555,7 @@ impl FeedTask {
                     Err(RecvError::Lagged(_)) => stale.everything(),
                     Err(RecvError::Closed) => return,
                 },
-                Some(()) = recheck_rx.recv() => stale.sessions = true,
+                Some(recheck) = recheck_rx.recv() => self.note_recheck(recheck, &mut stale),
                 r = clones_rx.changed() => match r {
                     Ok(()) => stale.clones = true,
                     Err(_) => return,
@@ -576,8 +598,8 @@ impl FeedTask {
                     Err(TryRecvError::Closed) => return,
                 }
             }
-            while recheck_rx.try_recv().is_ok() {
-                stale.sessions = true;
+            while let Ok(recheck) = recheck_rx.try_recv() {
+                self.note_recheck(recheck, &mut stale);
             }
             if clones_rx.has_changed().unwrap_or(false) {
                 clones_rx.borrow_and_update();
@@ -590,6 +612,16 @@ impl FeedTask {
         }
     }
 
+    fn note_recheck(&mut self, recheck: Recheck, stale: &mut Stale) {
+        match recheck {
+            Recheck::Sessions => stale.sessions = true,
+            Recheck::Layout => {
+                self.layout_retrying = false;
+                stale.layout = true;
+            }
+        }
+    }
+
     fn note_web(&self, ev: &WebEvent, stale: &mut Stale) {
         match ev.channel.as_str() {
             FOLDER_CHANGED_EVENT | CONVERSATIONS_BULK_CHANGED_EVENT => {
@@ -597,6 +629,7 @@ impl FeedTask {
                 stale.sessions = true;
             }
             CONVERSATION_CHANGED_EVENT => stale.sessions = true,
+            FOLDER_GROUP_CHANGED_EVENT => stale.layout = true,
             WORKSPACE_STATE_EVENT => {
                 let Some(root) = ev.payload.get("root_path").and_then(Value::as_str) else {
                     return;
@@ -633,7 +666,12 @@ impl FeedTask {
 
     /// Re-read what `stale` names, diff it against the projection, publish
     /// the changes.
-    async fn pass(&mut self, shared: &Shared, stale: Stale, recheck: &mpsc::UnboundedSender<()>) {
+    async fn pass(
+        &mut self,
+        shared: &Shared,
+        stale: Stale,
+        recheck: &mpsc::UnboundedSender<Recheck>,
+    ) {
         let old = &self.projection;
 
         // Clones: a job that just finished added workspaces, so relist in
@@ -682,6 +720,25 @@ impl FeedTask {
             match workspace::list(&self.db).await {
                 Ok(list) => workspaces = list,
                 Err(e) => tracing::warn!("[host feed] workspace list failed: {e}"),
+            }
+        }
+
+        // Layout: a relist can add or remove what it holds.
+        let mut layout = old.layout.clone();
+        if stale.layout || relist {
+            match layout::read(&self.db).await {
+                Ok(read) => layout = read,
+                Err(e) => {
+                    tracing::warn!("[host feed] workspace layout failed: {e}");
+                    // The flag that asked for this read is spent.
+                    if !std::mem::replace(&mut self.layout_retrying, true) {
+                        let recheck = recheck.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(LAYOUT_RETRY).await;
+                            let _ = recheck.send(Recheck::Layout);
+                        });
+                    }
+                }
             }
         }
 
@@ -816,10 +873,14 @@ impl FeedTask {
         events.extend(pr_events);
         events.extend(conflict_events);
         events.extend(resolving_events);
+        if layout != old.layout {
+            events.push(("workspace.layout", json!({ "layout": layout })));
+        }
         events.extend(clone_events(&old.clones, &clones));
         self.projection = Projection {
             seq: old.seq,
             workspaces,
+            layout,
             sessions,
             terminals,
             prs,
@@ -855,7 +916,7 @@ impl FeedTask {
                     }
                     tokio::time::sleep(DEPARTURE_POLL).await;
                 }
-                let _ = recheck.send(());
+                let _ = recheck.send(Recheck::Sessions);
             });
         }
     }
@@ -1167,6 +1228,7 @@ fn diff_events(
 mod tests {
     use std::path::{Path, PathBuf};
 
+    use sea_orm::{ActiveModelTrait, Set};
     use tokio::sync::broadcast::Receiver;
 
     use super::*;
@@ -1175,12 +1237,14 @@ mod tests {
         update_conversation_status_core, update_conversation_title_core,
     };
     use crate::commands::folders::{converge_removed_worktree_folder, emit_folder_deleted};
-    use crate::db::service::folder_service;
+    use crate::db::entities::folder;
+    use crate::db::service::{folder_group_service, folder_service};
     use crate::db::test_helpers::{seed_conversation, seed_folder};
     use crate::models::agent::AgentType;
     use crate::protocol::events::tests::assert_no_internal_keys;
     use crate::terminal::manager::SpawnOptions;
-    use crate::web::event_bridge::emit_with_state;
+    use crate::web::event_bridge::{self, emit_with_state};
+    use crate::workspace::layout::LayoutEntry;
     use crate::conflict_watch::ConflictPolicy;
     use crate::git_harness::ConflictState;
 
@@ -1966,6 +2030,145 @@ mod tests {
         feed.until("recovered session", session_is(sid, |_| true)).await;
     }
 
+    /// The one group of a `workspace.layout`.
+    fn group_in(ev: &HostEvent) -> &Value {
+        ev.payload["layout"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["kind"] == "group")
+            .expect("a group")
+    }
+
+    #[tokio::test]
+    async fn snapshot_carries_the_layout() {
+        let f = fixture().await;
+        let wt = f.create_worktree().await;
+        let group = layout::create_group(&f.state.db, &f.state.emitter, "backend").await.unwrap();
+
+        let (snapshot, _feed) = f.subscribe().await;
+        assert_eq!(snapshot.layout, layout::read(&f.state.db.conn).await.unwrap());
+        let json = serde_json::to_string(&snapshot.layout).unwrap();
+        assert!(json.contains(&group.group_id) && json.contains(&wt.workspace_id), "{json}");
+    }
+
+    #[tokio::test]
+    async fn a_group_change_publishes_the_layout_without_a_relist() {
+        let f = fixture().await;
+        let (_, mut feed) = f.subscribe().await;
+
+        // Announced by nothing: a relist would publish it.
+        let mut row: folder::ActiveModel = folder::Entity::find_by_id(f.folder_id)
+            .one(&f.state.db.conn)
+            .await
+            .unwrap()
+            .unwrap()
+            .into();
+        row.name = Set("renamed unannounced".into());
+        row.update(&f.state.db.conn).await.unwrap();
+
+        let group = layout::create_group(&f.state.db, &f.state.emitter, "backend").await.unwrap();
+        let ev = feed.until("layout", |e| e.kind == "workspace.layout").await;
+        assert_eq!(group_in(&ev)["group_id"], group.group_id.as_str());
+        let quiet = feed.drain(1000).await;
+        assert!(quiet.iter().all(|e| e.kind != "workspace.changed"), "{quiet:?}");
+    }
+
+    #[tokio::test]
+    async fn a_group_rename_publishes_the_layout() {
+        let f = fixture().await;
+        let group = layout::create_group(&f.state.db, &f.state.emitter, "backend").await.unwrap();
+        let (_, mut feed) = f.subscribe().await;
+
+        layout::rename_group(&f.state.db, &f.state.emitter, &group.group_id, "services")
+            .await
+            .unwrap();
+        let ev = feed.until("layout", |e| e.kind == "workspace.layout").await;
+        assert_eq!(group_in(&ev)["name"], "services");
+    }
+
+    #[tokio::test]
+    async fn worktree_order_publishes_the_layout() {
+        let f = fixture().await;
+        let first = f.create_worktree().await;
+        let second = f.create_worktree().await;
+        let (snapshot, mut feed) = f.subscribe().await;
+        let LayoutEntry::Workspace(root) = &snapshot.layout.entries[0] else {
+            panic!("{:?}", snapshot.layout);
+        };
+        assert_eq!(root.worktrees, [first.workspace_id.clone(), second.workspace_id.clone()]);
+
+        let entries = serde_json::from_value(json!([{
+            "kind": "workspace",
+            "workspace_id": f.root_id,
+            "worktrees": [second.workspace_id, first.workspace_id],
+        }]))
+        .unwrap();
+        layout::set(&f.state.db, &f.state.emitter, entries).await.unwrap();
+        let ev = feed.until("layout", |e| e.kind == "workspace.layout").await;
+        assert_eq!(
+            ev.payload["layout"]["entries"][0]["worktrees"],
+            json!([second.workspace_id, first.workspace_id])
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_layout_publishes_nothing() {
+        let f = fixture().await;
+        let (_, mut feed) = f.subscribe().await;
+
+        event_bridge::emit_event(
+            &f.state.emitter,
+            FOLDER_GROUP_CHANGED_EVENT,
+            event_bridge::FolderGroupChange::Layout,
+        );
+        let quiet = feed.drain(1000).await;
+        assert!(quiet.is_empty(), "{quiet:?}");
+    }
+
+    #[tokio::test]
+    async fn a_lost_layout_input_is_recovered_by_a_full_reread() {
+        let f = fixture().await;
+        let (_, mut feed) = f.subscribe().await;
+        // A write that announces nothing; only the lag brings it back.
+        let group = folder_group_service::create_folder_group(&f.state.db.conn, "backend".into(), None)
+            .await
+            .unwrap();
+        for _ in 0..5000 {
+            f.state.event_broadcaster.send("noise://tick", &json!({}));
+        }
+        let ev = feed.until("layout", |e| e.kind == "workspace.layout").await;
+        assert_eq!(group_in(&ev)["name"], group.name.as_str());
+    }
+
+    #[tokio::test]
+    async fn a_failed_layout_read_is_tried_again() {
+        use sea_orm::ConnectionTrait;
+        let f = fixture().await;
+        let (_, mut feed) = f.subscribe().await;
+        // A write that announces nothing, so only a retry can bring it back.
+        let group = folder_group_service::create_folder_group(&f.state.db.conn, "backend".into(), None)
+            .await
+            .unwrap();
+        let conn = &f.state.db.conn;
+        conn.execute_unprepared("ALTER TABLE folder_group RENAME TO folder_group_away")
+            .await
+            .unwrap();
+        event_bridge::emit_event(
+            &f.state.emitter,
+            FOLDER_GROUP_CHANGED_EVENT,
+            event_bridge::FolderGroupChange::Layout,
+        );
+        let quiet = feed.drain(200).await;
+        assert!(quiet.iter().all(|e| e.kind != "workspace.layout"), "{quiet:?}");
+        conn.execute_unprepared("ALTER TABLE folder_group_away RENAME TO folder_group")
+            .await
+            .unwrap();
+
+        let ev = feed.until("layout", |e| e.kind == "workspace.layout").await;
+        assert_eq!(group_in(&ev)["name"], group.name.as_str());
+    }
+
     #[tokio::test]
     async fn seq_is_contiguous_and_a_restart_is_a_new_epoch() {
         let f = fixture().await;
@@ -2356,6 +2559,7 @@ esac
         let order = ["queued", "cloning", "adding", "done"];
         let mut seen: Vec<&str> = Vec::new();
         let mut listed = std::collections::HashSet::new();
+        let mut laid_out = String::new();
         let done = loop {
             let ev = feed.next().await;
             match ev.kind {
@@ -2367,6 +2571,7 @@ esac
                             .to_string(),
                     );
                 }
+                "workspace.layout" => laid_out = ev.payload["layout"].to_string(),
                 "clone.changed" if ev.payload["clone"]["clone_id"] == id.as_str() => {
                     let state = ev.payload["clone"]["state"].as_str().unwrap();
                     assert_ne!(state, "failed", "{}", ev.payload);
@@ -2394,6 +2599,9 @@ esac
             listed.contains(done["worktree_id"].as_str().unwrap()),
             "{done}"
         );
+        // And both had a place in the layout by then.
+        assert!(laid_out.contains(done["workspace_id"].as_str().unwrap()), "{laid_out}");
+        assert!(laid_out.contains(done["worktree_id"].as_str().unwrap()), "{laid_out}");
         // A fresh snapshot carries the finished job (reconnect recovery).
         let (snapshot, _again) = f.subscribe().await;
         assert_eq!(snapshot.clones.len(), 1);

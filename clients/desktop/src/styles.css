@@ -408,6 +408,10 @@
     outline: 2px solid var(--ring);
     outline-offset: 2px;
   }
+  /* Menu items read as things to press; a disabled one stays the arrow. */
+  [role^="menuitem"]:not(:disabled) {
+    cursor: pointer;
+  }
   ::-webkit-scrollbar {
     width: 10px;
     height: 10px;

@@ -1,8 +1,14 @@
-// The workspace tree — roots, their worktrees, and each workspace's sessions
-// with a working-agent count — derived from the host state feed's workspaces
-// and sessions and live session views. Nothing here is stored separately.
+// The workspace tree — groups, roots, their worktrees, and each workspace's
+// sessions with a working-agent count — derived from the host state feed's
+// workspaces, layout and sessions and live session views. Nothing here is
+// stored separately.
 
-import type { SessionSummary, WorkspaceInfo } from "../types/protocol";
+import type {
+  LayoutWorkspace,
+  SessionSummary,
+  WorkspaceGroup,
+  WorkspaceInfo,
+} from "../types/protocol";
 import type { SessionView } from "./session";
 import type { HostState } from "./store";
 
@@ -25,9 +31,15 @@ export function isSessionWorking(summary: SessionSummary, view?: SessionView): b
   return summary.live && summary.status === "in_progress";
 }
 
-export function buildWorkspaceTree(
-  state: Pick<HostState, "workspaces" | "sessionsByWorkspace" | "sessions">,
-): WorkspaceNode[] {
+/** What the sidebar lists, in Host order. */
+export type SidebarEntry =
+  | { kind: "group"; group: WorkspaceGroup; repos: WorkspaceNode[]; working: number }
+  | { kind: "repo"; node: WorkspaceNode };
+
+type TreeState = Pick<HostState, "workspaces" | "sessionsByWorkspace" | "sessions"> &
+  Partial<Pick<HostState, "layout">>;
+
+function listedRoots(state: TreeState): WorkspaceNode[] {
   const node = (workspace: WorkspaceInfo): WorkspaceNode => {
     const sessions = state.sessionsByWorkspace[workspace.workspace_id] ?? null;
     const working = (sessions ?? []).filter((s) =>
@@ -46,6 +58,47 @@ export function buildWorkspaceTree(
     else roots.push(n);
   }
   return roots;
+}
+
+/** `node` with its worktrees in `order`; ones `order` does not name go last. */
+function ordered(node: WorkspaceNode, order: string[]): WorkspaceNode {
+  const at = new Map(order.map((id, i) => [id, i]));
+  const rank = (n: WorkspaceNode) => at.get(n.workspace.workspace_id) ?? order.length;
+  return { ...node, worktrees: [...node.worktrees].sort((a, b) => rank(a) - rank(b)) };
+}
+
+const rollup = (repos: WorkspaceNode[]) =>
+  repos.reduce((n, r) => n + r.working + r.worktrees.reduce((m, w) => m + w.working, 0), 0);
+
+/**
+ * The tree in the Host's layout. With no layout the list stays flat. A listed
+ * row the layout does not name yet goes last in its place, so a
+ * `workspace.changed` that arrives ahead of the layout hides nothing.
+ */
+export function buildSidebarTree(state: TreeState): SidebarEntry[] {
+  const roots = listedRoots(state);
+  const layout = state.layout;
+  if (!layout) return roots.map((node) => ({ kind: "repo", node }));
+  const unplaced = new Map(roots.map((n) => [n.workspace.workspace_id, n]));
+  const take = (w: LayoutWorkspace): WorkspaceNode[] => {
+    const node = unplaced.get(w.workspace_id);
+    if (!node) return [];
+    unplaced.delete(w.workspace_id);
+    return [ordered(node, w.worktrees)];
+  };
+  const entries = layout.entries.flatMap((e): SidebarEntry[] => {
+    if (e.kind === "workspace") return take(e).map((node) => ({ kind: "repo", node }));
+    const repos = e.workspaces.flatMap(take);
+    const group = { group_id: e.group_id, name: e.name };
+    return [{ kind: "group", group, repos, working: rollup(repos) }];
+  });
+  for (const node of unplaced.values()) entries.push({ kind: "repo", node });
+  return entries;
+}
+
+/** Every repository in sidebar order, without its groups. */
+export function buildWorkspaceTree(state: TreeState): WorkspaceNode[] {
+  return buildSidebarTree(state).flatMap((e) => (e.kind === "group" ? e.repos : [e.node]));
 }
 
 /**
@@ -73,12 +126,23 @@ export function openTarget(
   return best ?? worktrees.at(-1) ?? null;
 }
 
-let memo: { key: unknown[]; tree: WorkspaceNode[] } | null = null;
+let memo: { key: unknown[]; entries: SidebarEntry[]; tree: WorkspaceNode[] } | null = null;
+
+function selectTrees(state: HostState) {
+  const key = [state.workspaces, state.layout, state.sessionsByWorkspace, state.sessions];
+  if (memo && memo.key.every((k, i) => k === key[i])) return memo;
+  const entries = buildSidebarTree(state);
+  const tree = entries.flatMap((e) => (e.kind === "group" ? e.repos : [e.node]));
+  memo = { key, entries, tree };
+  return memo;
+}
+
+/** `buildSidebarTree`, returning the same array while its inputs are unchanged. */
+export function selectSidebarTree(state: HostState): SidebarEntry[] {
+  return selectTrees(state).entries;
+}
 
 /** `buildWorkspaceTree`, returning the same array while its inputs are unchanged. */
 export function selectWorkspaceTree(state: HostState): WorkspaceNode[] {
-  const key = [state.workspaces, state.sessionsByWorkspace, state.sessions];
-  if (memo && memo.key.every((k, i) => k === key[i])) return memo.tree;
-  memo = { key, tree: buildWorkspaceTree(state) };
-  return memo.tree;
+  return selectTrees(state).tree;
 }

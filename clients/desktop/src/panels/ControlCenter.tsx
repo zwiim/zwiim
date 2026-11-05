@@ -41,6 +41,15 @@ export function moveMenuFocus(e: ReactKeyboardEvent<HTMLElement>) {
   items[next].focus();
 }
 
+// Whether the last click came from a pointer: pressing Enter or Space on a button clicks it with detail 0.
+let clickedByPointer = false;
+window.addEventListener("click", (e) => (clickedByPointer = e.detail > 0), true);
+
+/** Focus for a menu that just opened: its first item from the keyboard; from a pointer, the menu, so no item wears the keyboard ring. */
+export function focusMenu(menu: HTMLElement | null) {
+  (clickedByPointer ? menu : menu?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)'))?.focus();
+}
+
 /**
  * The sidebar's footer: who is signed in, and a menu up from it to settings,
  * this host's devices, versions, checking for updates and signing in or out.
@@ -81,7 +90,7 @@ export function ControlCenter({
 
   useEffect(() => {
     if (!open) return;
-    menu.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus();
+    focusMenu(menu.current);
     const onDown = (e: PointerEvent) => {
       if (!root.current?.contains(e.target as Node)) setOpen(false);
     };
@@ -122,12 +131,13 @@ export function ControlCenter({
         <div
           ref={menu}
           className={cn(
-            "bg-card text-card-foreground ring-border presence-pop shadow-pop absolute z-30 flex flex-col gap-px rounded-xl p-1.5 ring-1",
+            "bg-card text-card-foreground ring-border presence-pop shadow-pop absolute z-30 flex flex-col gap-px rounded-xl p-1.5 ring-1 outline-none",
             compact
               ? "bottom-0 left-full ml-2.5 w-64 origin-bottom-left"
               : "right-0 bottom-full left-0 mb-1.5 origin-bottom",
           )}
           role="menu"
+          tabIndex={-1}
           aria-label="Account and settings"
           data-state={presence.state}
           aria-hidden={!open || undefined}

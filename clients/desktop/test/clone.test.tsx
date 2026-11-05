@@ -422,11 +422,11 @@ async function mountSidebar(t: FakeTransport, props: Partial<SidebarProps> = {})
   return all;
 }
 
-const plusMenu = () => screen.queryByRole("menu", { name: "Add workspace" });
+const plusMenu = () => screen.queryByRole("menu", { name: "Add" });
 const githubDialog = () => screen.queryByRole("dialog", { name: "Open GitHub project" });
 
 async function openGithub() {
-  fireEvent.click(screen.getByTitle("Add workspace"));
+  fireEvent.click(screen.getByTitle("Add"));
   fireEvent.click(within(plusMenu()!).getByRole("menuitem", { name: "Open GitHub project" }));
   await tick();
 }
@@ -435,9 +435,9 @@ describe("The Workspaces + menu", () => {
   it("offers Open project and Open GitHub project", async () => {
     const t = cloneHost();
     const props = await mountSidebar(t);
-    fireEvent.click(screen.getByTitle("Add workspace"));
+    fireEvent.click(screen.getByTitle("Add"));
     const items = within(plusMenu()!).getAllByRole("menuitem").map((i) => i.textContent);
-    expect(items).toEqual(["Open project", "Open GitHub project"]);
+    expect(items).toEqual(["Open project", "Open GitHub project", "New group"]);
 
     fireEvent.click(within(plusMenu()!).getByRole("menuitem", { name: "Open project" }));
     await tick();
@@ -463,11 +463,11 @@ describe("The Workspaces + menu", () => {
 
   it("closes on Escape and on a click elsewhere", async () => {
     await mountSidebar(cloneHost());
-    fireEvent.click(screen.getByTitle("Add workspace"));
+    fireEvent.click(screen.getByTitle("Add"));
     expect(plusMenu()).toBeTruthy();
     fireEvent.keyDown(window, { key: "Escape" });
     expect(plusMenu()).toBeNull();
-    fireEvent.click(screen.getByTitle("Add workspace"));
+    fireEvent.click(screen.getByTitle("Add"));
     expect(plusMenu()).toBeTruthy();
     fireEvent.pointerDown(document.body);
     expect(plusMenu()).toBeNull();

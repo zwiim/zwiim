@@ -35,6 +35,7 @@ use crate::web::event_bridge::EventEmitter;
 
 pub mod clone;
 mod copied_files;
+pub mod layout;
 mod names;
 pub mod ports;
 pub mod previews;

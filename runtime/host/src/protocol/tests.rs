@@ -53,6 +53,10 @@ const OPS: &[&str] = &[
     "workspace.create_worktree",
     "workspace.remove_worktree",
     "workspace.remove",
+    "workspace.group_create",
+    "workspace.group_rename",
+    "workspace.group_delete",
+    "workspace.layout_set",
     "workspace.continue",
     "workspace.resolve_conflicts",
     "files.read",
@@ -533,6 +537,84 @@ async fn malformed_requests_are_normalized() {
         .1,
         "invalid_input"
     );
+}
+
+#[tokio::test]
+async fn workspace_groups_organize_without_leaking_rows() {
+    let h = host(false).await;
+    let root = h.ok("workspace.add", json!({"path": h.root.clone()})).await;
+    let workspace_id = root["workspace_id"].as_str().unwrap();
+
+    let group = h
+        .ok("workspace.group_create", json!({"name": " backend "}))
+        .await;
+    assert_eq!(group["name"], "backend");
+    let group_id = group["group_id"].as_str().unwrap();
+    assert_eq!(group.as_object().unwrap().len(), 2, "{group}");
+
+    let renamed = h
+        .ok(
+            "workspace.group_rename",
+            json!({"group_id": group_id, "name": "services"}),
+        )
+        .await;
+    assert_eq!(renamed["group_id"], group_id);
+    assert_eq!(renamed["name"], "services");
+
+    let saved = h
+        .ok(
+            "workspace.layout_set",
+            json!({"entries": [{"kind": "group", "group_id": group_id, "workspaces": [
+                {"workspace_id": workspace_id, "worktrees": []},
+            ]}]}),
+        )
+        .await;
+    assert_eq!(saved, json!({}), "the feed alone carries layout");
+
+    let deleted = h
+        .ok("workspace.group_delete", json!({"group_id": group_id}))
+        .await;
+    assert_eq!(deleted, json!({}));
+    let (status, _) = h
+        .err("workspace.group_delete", json!({"group_id": group_id}))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn workspace_layout_refuses_mistakes_by_name() {
+    let h = host(false).await;
+    let root = h.ok("workspace.add", json!({"path": h.root.clone()})).await;
+    let workspace_id = root["workspace_id"].as_str().unwrap();
+
+    let (status, code) = h.err("workspace.group_create", json!({"name": " "})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(code, "invalid_input");
+
+    let (status, code) = h
+        .err(
+            "workspace.layout_set",
+            json!({"entries": [
+                {"kind": "workspace", "workspace_id": workspace_id, "worktrees": []},
+                {"kind": "workspace", "workspace_id": workspace_id, "worktrees": []},
+            ]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(code, "invalid_input");
+
+    // `name` is the read shape. A nested stray field is named too.
+    for entries in [
+        json!([{"kind": "group", "group_id": "g", "name": "n", "workspaces": []}]),
+        json!([{"kind": "group", "group_id": "g", "workspaces": [
+            {"workspace_id": workspace_id, "worktrees": [], "extra": 1},
+        ]}]),
+    ] {
+        let (status, _) = h
+            .err("workspace.layout_set", json!({"entries": entries}))
+            .await;
+        assert!(status.is_client_error(), "{status}");
+    }
 }
 
 #[tokio::test]
@@ -4228,6 +4310,30 @@ async fn host_feed_carries_legacy_mutations() {
     assert_eq!(
         fa["event"]["payload"]["session"]["workspace_id"],
         h.workspace_id.as_str()
+    );
+}
+
+#[tokio::test]
+async fn host_feed_snapshot_carries_the_layout() {
+    let h = host(true).await;
+    let group = h
+        .ok("workspace.group_create", json!({"name": "backend"}))
+        .await;
+
+    let (_ws, snapshot) = h.feed().await;
+
+    let entries = snapshot["layout"]["entries"].as_array().unwrap();
+    assert!(
+        entries
+            .iter()
+            .any(|e| e["group_id"] == group["group_id"] && e["name"] == "backend"),
+        "{snapshot}"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|e| e["workspace_id"] == json!(h.workspace_id)),
+        "{snapshot}"
     );
 }
 

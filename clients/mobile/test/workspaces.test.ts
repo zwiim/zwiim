@@ -1,5 +1,14 @@
-import { buildWorkspaceTree, ZwiimClientError, type TerminalMeta, type WorkspaceInfo } from "@zwiim/sdk";
+import {
+  buildSidebarTree,
+  buildWorkspaceTree,
+  ZwiimClientError,
+  type SidebarEntry,
+  type TerminalMeta,
+  type WorkspaceInfo,
+  type WorkspaceLayout,
+} from "@zwiim/sdk";
 import { describe, expect, it } from "vitest";
+import { deleteGroupText, layoutError, layoutPlace, layoutPlaceText, pickerSections, withGroup, workspaceSections } from "../src/host/layout";
 import {
   contextLabel,
   contextText,
@@ -160,5 +169,71 @@ describe("terminals by worktree", () => {
     const tests = { ...term("t", "fix"), title: "tests", alive: false };
     expect(terminalSummary([dev, tests], "fix-auth")).toBe("dev running · tests exited");
     expect(terminalSummary([], "fix-auth")).toBe("none in fix-auth");
+  });
+});
+
+describe("groups on the phone", () => {
+  const LAYOUT: WorkspaceLayout = {
+    entries: [
+      { kind: "group", group_id: "g1", name: "backend", workspaces: [{ workspace_id: "api", worktrees: [] }, { workspace_id: "zwiim", worktrees: [] }] },
+      { kind: "group", group_id: "g2", name: "empty", workspaces: [] },
+      { kind: "workspace", workspace_id: "notes", worktrees: [] },
+    ],
+  };
+  const sidebar = () => buildSidebarTree({ workspaces: LIST, sessionsByWorkspace: {}, sessions: {}, layout: LAYOUT });
+  const names = (entries: SidebarEntry[]) =>
+    entries.map((e) => (e.kind === "group" ? [e.group.name, e.repos.map((n) => n.workspace.workspace_id)] : e.node.workspace.workspace_id));
+
+  it("lists groups in the Host's order, empty ones too", () => {
+    expect(names(workspaceSections(sidebar(), ""))).toEqual([["backend", ["api", "zwiim"]], ["empty", []], "notes"]);
+  });
+
+  it("stays flat while searching", () => {
+    expect(names(workspaceSections(sidebar(), "ap"))).toEqual(["api"]);
+    expect(names(workspaceSections(sidebar(), "   "))).toEqual(names(workspaceSections(sidebar(), "")));
+  });
+
+  it("leaves out removed roots", () => {
+    const all = LIST.map((w) => (w.workspace_id === "api" ? { ...w, removed: true } : w));
+    const entries = buildSidebarTree({ workspaces: all, sessionsByWorkspace: {}, sessions: {}, layout: LAYOUT });
+    expect(names(workspaceSections(entries, ""))).toEqual([["backend", ["zwiim"]], ["empty", []], "notes"]);
+  });
+
+  it("drops a group with nothing to pick in New session, keeping the order", () => {
+    const listed = (id: string) => (n: { workspace: WorkspaceInfo }) => n.workspace.workspace_id !== id;
+    expect(names(pickerSections(sidebar(), listed("api")))).toEqual([["backend", ["zwiim"]], "notes"]);
+    expect(names(pickerSections(sidebar(), listed("notes")))).toEqual([["backend", ["api", "zwiim"]]]);
+  });
+
+  it("says where a row sits", () => {
+    const place = (kind: "group" | "workspace", id: string) => layoutPlace(LAYOUT, { kind, id });
+    expect(layoutPlaceText(place("workspace", "zwiim")!)).toBe("backend · 2 of 2");
+    expect(layoutPlaceText(place("workspace", "notes")!)).toBe("Top level · 3 of 3");
+    expect(layoutPlaceText(place("group", "g2")!)).toBe("Top level · 2 of 3");
+    expect(place("workspace", "gone")).toBeNull();
+  });
+
+  it("says what deleting a group does, as Desktop does", () => {
+    expect(deleteGroupText(0)).toBe("Nothing on disk changes.");
+    expect(deleteGroupText(1)).toBe("Its repository moves to the top level, in place. Nothing on disk changes.");
+    expect(deleteGroupText(2)).toBe("Its 2 repositories move to the top level, in place. Nothing on disk changes.");
+  });
+
+  it("words a refused or lost layout write", () => {
+    expect(layoutError(new ZwiimClientError("unknown_outcome", "x"), "Studio Mac")).toBe(
+      "Not sure that went through. Check Studio Mac before trying again.",
+    );
+    expect(layoutError(new ZwiimClientError("network", "x"), "Studio Mac")).toBe("Not connected to Studio Mac. Try again when it's back.");
+    expect(layoutError(new ZwiimClientError("timeout", "x"), "Studio Mac")).toBe("Not connected to Studio Mac. Try again when it's back.");
+    expect(layoutError(new ZwiimClientError("invalid_input", "Name is too long"), "Studio Mac")).toBe("Name is too long");
+    expect(layoutError(new Error("x"), "Studio Mac")).toBe("Couldn't make that change. Try again.");
+  });
+
+  it("adds a group the layout does not list yet, once", () => {
+    const made = { group_id: "g9", name: "new" };
+    const added = withGroup(LAYOUT, made);
+    expect(added.entries.at(-1)).toEqual({ kind: "group", ...made, workspaces: [] });
+    expect(withGroup(added, made)).toBe(added);
+    expect(withGroup(LAYOUT, undefined)).toBe(LAYOUT);
   });
 });

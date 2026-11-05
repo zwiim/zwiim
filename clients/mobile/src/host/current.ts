@@ -7,12 +7,16 @@
 import {
   ZwiimClientError,
   hasCapability,
+  moveInLayout,
+  stepTarget,
   type AgentType,
   type CloneStart,
   type ConnectionMode,
   type GithubRepoPage,
   type HostHello,
   type HostStore,
+  type LayoutRef,
+  type LayoutTarget,
   type MergeMethod,
   type OpName,
   type OpParams,
@@ -27,12 +31,15 @@ import {
   type RequestAnswer,
   type SessionOptions,
   type SessionRevertResult,
+  type WorkspaceGroup,
   type WorkspaceInfo,
+  type WorkspaceLayout,
 } from "@zwiim/sdk";
 import type { HostEntry } from "../account/hosts";
 import type { Preferences, SecureStore } from "../platform/capabilities";
 import { settleClones } from "./clone";
 import { errorInfo, type ErrorInfo, type HostConnection, type HostConnectionView, type TerminalHold } from "./connection";
+import { emptyGroup, withGroup } from "./layout";
 
 export interface CurrentHostState {
   host: HostEntry | null;
@@ -46,6 +53,8 @@ export interface CurrentHostState {
   store: HostStore | null;
   /** The worktree Files shows (a root or one of its worktrees), once chosen; kept per host. */
   workspaceId: string | null;
+  /** The workspace groups folded on this phone. */
+  foldedGroups: readonly string[];
   /** Failed clones whose card was dismissed on this phone. */
   dismissedClones: ReadonlySet<string>;
 }
@@ -64,6 +73,7 @@ const EMPTY: CurrentHostState = {
   openError: null,
   store: null,
   workspaceId: null,
+  foldedGroups: [],
   dismissedClones: new Set(),
 };
 
@@ -71,6 +81,8 @@ export class CurrentHost {
   readonly #deps: CurrentHostDeps;
   #state: CurrentHostState = EMPTY;
   #connection: HostConnection | null = null;
+  /** Settles when the layout writes asked for so far are answered, refused or not. */
+  #layoutWrites: Promise<void> = Promise.resolve();
   /** Bumped on every open, so a late result of an earlier one is dropped. */
   #run = 0;
   /** `host.hello` was asked on this live connection. */
@@ -119,9 +131,14 @@ export class CurrentHost {
     const run = ++this.#run;
     this.#set({ ...EMPTY, host, dismissedClones: sameHost ? this.#state.dismissedClones : EMPTY.dismissedClones });
     await this.#deps.prefs.setLastHost({ host_id: host.host_id, name: host.name });
-    const [modes, chosen] = await Promise.all([this.#deps.prefs.connectionModes(), this.#deps.prefs.workspaces()]);
+    const [modes, chosen, folded] = await Promise.all([
+      this.#deps.prefs.connectionModes(),
+      this.#deps.prefs.workspaces(),
+      this.#deps.prefs.foldedGroups(),
+    ]);
     const mode = modes[host.host_id] ?? "auto";
     if (run === this.#run && this.#state.workspaceId === null) this.#set({ workspaceId: chosen[host.host_id] ?? null });
+    if (run === this.#run) this.#set({ foldedGroups: folded[host.host_id] ?? [] });
     let connection: HostConnection;
     try {
       connection = await this.#deps.open(host.host_id, mode);
@@ -449,6 +466,81 @@ export class CurrentHost {
     if (this.#state.workspaceId !== null && gone.has(this.#state.workspaceId) && next) this.chooseWorkspace(next.workspace_id);
   }
 
+  /** Fold or open a workspace group on this phone. Groups since deleted are forgotten here. */
+  foldGroup(group_id: string, folded: boolean): void {
+    const listed = this.#state.store?.getState().layout?.entries ?? [];
+    const others = this.#state.foldedGroups.filter(
+      (id) => id !== group_id && listed.some((e) => e.kind === "group" && e.group_id === id),
+    );
+    const foldedGroups = folded ? [...others, group_id] : others;
+    this.#set({ foldedGroups });
+    const host = this.#state.host;
+    if (host) void this.#deps.prefs.setFoldedGroups(host.host_id, foldedGroups).catch(() => {});
+  }
+
+  /** Make a workspace group. It lands at the end of the top level. */
+  async createWorkspaceGroup(name: string): Promise<WorkspaceGroup> {
+    return this.#opened().createWorkspaceGroup(name);
+  }
+
+  async renameWorkspaceGroup(group_id: string, name: string): Promise<void> {
+    await this.#opened().renameWorkspaceGroup(group_id, name);
+  }
+
+  /** Delete a workspace group; its repositories stay on the host, in place. */
+  async deleteWorkspaceGroup(group_id: string): Promise<void> {
+    await this.#opened().deleteWorkspaceGroup(group_id);
+  }
+
+  /**
+   * Build a layout write once those before it are answered, and send it. The
+   * Host takes a whole layout, so each one has to carry the one before. Says
+   * whether anything went out.
+   */
+  #writeLayout(build: (layout: WorkspaceLayout) => WorkspaceLayout | null): Promise<boolean> {
+    const write = this.#layoutWrites.then(async () => {
+      const layout = this.#connection?.latestLayout();
+      const next = layout && build(layout);
+      if (next) await this.#opened().setWorkspaceLayout(next);
+      return Boolean(next);
+    });
+    this.#layoutWrites = write.then(
+      () => {},
+      () => {},
+    );
+    return write;
+  }
+
+  /**
+   * Move something in the workspace layout, from the layout as it stands then.
+   * A move that is void by then sends nothing. The feed brings the result.
+   */
+  async moveInLayout(source: LayoutRef, target: LayoutTarget): Promise<void> {
+    await this.#writeLayout((layout) => moveInLayout(layout, source, target));
+  }
+
+  /** Move up (-1) or down (1) past the neighbor there is by then; nothing at the ends. */
+  async stepInLayout(source: LayoutRef, by: -1 | 1): Promise<void> {
+    await this.#writeLayout((layout) => {
+      const target = stepTarget(layout, source, by);
+      return target && moveInLayout(layout, source, target);
+    });
+  }
+
+  /**
+   * Make a group and move `source` into it, ahead of the layout that lists it.
+   * These are two writes: when the move fails the group stays, and the next try
+   * moves into it. A move that sent nothing is a failure, or the sheet would
+   * close on an empty group.
+   */
+  async moveToNewGroup(source: LayoutRef, name: string): Promise<void> {
+    const layout = this.#connection?.latestLayout();
+    const group = (layout && emptyGroup(layout, name)) ?? (await this.createWorkspaceGroup(name));
+    const target: LayoutTarget = { at: "into", group_id: group.group_id };
+    const sent = await this.#writeLayout((latest) => moveInLayout(withGroup(latest, group), source, target));
+    if (!sent) throw new Error(`Nothing moved into ${name}`);
+  }
+
   /** A terminal is on screen: its emulator, streamed until released. None before a connection opens. */
   openTerminal(terminal_id: string): TerminalHold | null {
     return this.#connection?.openTerminal(terminal_id) ?? null;
@@ -506,7 +598,10 @@ export class CurrentHost {
     if (view.error?.code === "device_refused" && host.paired) {
       this.#set({ host: { ...host, paired: false } });
       void this.#deps.store.forgetHost(host.host_id);
-      void this.#deps.prefs.setWorkspace(host.host_id, null).catch(() => {});
+      void this.#deps.prefs
+        .setWorkspace(host.host_id, null)
+        .then(() => this.#deps.prefs.setFoldedGroups(host.host_id, []))
+        .catch(() => {});
     }
   }
 

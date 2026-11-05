@@ -50,10 +50,11 @@ export function rememberSelection(hostId: string, selection: LastSelection): voi
   write(`last.${hostId}`, selection);
 }
 
-/** What the sidebar folds away: every workspace, and repositories whose worktrees are hidden. */
+/** What the sidebar folds away: every workspace, repositories whose worktrees are hidden, and groups. */
 export interface SidebarFolds {
   workspaces: boolean;
   repositories: string[];
+  groups: string[];
 }
 
 export function sidebarFolds(): SidebarFolds {
@@ -61,6 +62,7 @@ export function sidebarFolds(): SidebarFolds {
   return {
     workspaces: v.workspaces === true,
     repositories: Array.isArray(v.repositories) ? v.repositories.filter((id) => typeof id === "string") : [],
+    groups: Array.isArray(v.groups) ? v.groups.filter((id) => typeof id === "string") : [],
   };
 }
 

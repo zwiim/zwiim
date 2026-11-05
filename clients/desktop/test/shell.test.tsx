@@ -523,7 +523,7 @@ describe("workbench", () => {
       await tick();
       expect(screen.getByTestId("offline-banner").textContent).toContain("Changes are disabled");
       expect(send().disabled).toBe(true);
-      expect((screen.getByTitle("Add workspace") as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByTitle("Add") as HTMLButtonElement).disabled).toBe(true);
       c.dispose();
     } finally {
       vi.useRealTimers();

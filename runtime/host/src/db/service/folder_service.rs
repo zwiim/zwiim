@@ -609,8 +609,8 @@ pub async fn list_live_chat_folder_paths(
 /// sidebar is rewritten on every drop, and this keeps that a single round trip.
 /// Every interpolated value is an `i32` (or the formatted timestamp), so there
 /// is no injection surface.
-pub(crate) async fn assign_folder_positions(
-    conn: &DatabaseConnection,
+pub(crate) async fn assign_folder_positions<C: ConnectionTrait>(
+    conn: &C,
     assignments: &[(i32, i32, Option<i32>)],
 ) -> Result<(), DbError> {
     if assignments.is_empty() {

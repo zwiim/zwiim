@@ -264,7 +264,16 @@ use serde::{Deserialize, Serialize};
 /// sessions the Host is busy with outside a turn: starting a prompt or a new
 /// session, or changing, stopping or reverting one. A `when_idle` restart
 /// no longer waits for terminals; the restart closes them.
-pub const PROTOCOL_REVISION: u32 = 27;
+///
+/// Revision 28 (`workspace.layout`): groups organize workspaces, one level
+/// deep. `workspace.group_create {name}` and `workspace.group_rename
+/// {group_id, name}` return `{group_id, name}`, `workspace.group_delete
+/// {group_id}` leaves the group's workspaces in its place, and
+/// `workspace.layout_set {entries}` saves the order of groups, repositories
+/// and worktrees. It reconciles rather than refuses: ids that are gone drop
+/// out, rows it does not name go to the end of their container, and only a
+/// structural mistake is an error. `workspace.list` keeps its order.
+pub const PROTOCOL_REVISION: u32 = 28;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -323,6 +332,7 @@ pub const CAPABILITIES: &[&str] = &[
     "workspace.resolve_conflicts.github",
     "agent.progress",
     "session.continue_plan",
+    "workspace.layout",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -581,7 +591,14 @@ mod tests {
     #[test]
     fn compat_reports_update_blockers() {
         // `host.update.status` blockers and `starting`.
-        assert_eq!(PROTOCOL_REVISION, 27);
+        assert!(PROTOCOL_REVISION >= 27);
+    }
+
+    #[test]
+    fn compat_advertises_workspace_layout() {
+        assert!(CAPABILITIES.contains(&"workspace.layout"));
+        // `workspace.group_*` and `workspace.layout_set`.
+        assert_eq!(PROTOCOL_REVISION, 28);
     }
 
     #[test]
