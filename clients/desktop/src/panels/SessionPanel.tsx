@@ -697,8 +697,8 @@ function OpenSession({
                 <Loader2 className="size-3 animate-spin" /> Loading the conversation…
               </p>
             )}
-            {empty && <p className="text-muted-foreground py-10 text-center">No messages yet.</p>}
             {view?.forkedFrom && <ForkedFromRow from={view.forkedFrom} onOpenSession={onOpenSession} />}
+            {empty && <p className="text-muted-foreground py-10 text-center">No messages yet.</p>}
             {/* What is open in the history and the live turn that carries on it. */}
             <KeptStateContext.Provider value={kept}>
               {turns.length > 0 && (

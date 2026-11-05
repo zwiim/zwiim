@@ -1358,6 +1358,15 @@ describe("changed files", () => {
       client.controller.dispose();
     });
 
+    it("opens an idle fork with where it came from, then that it's empty", async () => {
+      const t = new FakeTransport();
+      t.handlers["session.history"] = (p) => ({ session_id: p.session_id, turns: [], forked_from: { session_id: "s0", title: "Old work" } });
+      const { controller } = await openSession(t);
+      const position = screen.getByTestId("forked-from").compareDocumentPosition(screen.getByText("No messages yet."));
+      expect(position & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      controller.dispose();
+    });
+
     it("names a source that isn't listed in plain text", async () => {
       const t = new FakeTransport();
       t.handlers["session.history"] = (p) => ({ session_id: p.session_id, turns: [], forked_from: { session_id: "s0", title: null } });

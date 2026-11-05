@@ -777,7 +777,10 @@ function Live({
         {loading ? (
           <SkeletonRows />
         ) : empty ? (
-          <EmptyState glyph="≡" title="No messages yet" body={`Send a message to start the agent on ${hostName}.`} />
+          <>
+            {view?.forkedFrom ? <ForkedFrom from={view.forkedFrom} onOpenSession={actions.openLinked} /> : null}
+            <EmptyState glyph="≡" title="No messages yet" body={`Send a message to start the agent on ${hostName}.`} />
+          </>
         ) : (
           <FlatList
             inverted
