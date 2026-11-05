@@ -6,12 +6,14 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Animated, PanResponder, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
 import {
   basename,
+  FORK_LABELS,
   formatSize,
   revertWarning,
   type AgentImage,
   type AgentType,
   type AttachmentBlock,
   type ChangedFile,
+  type ForkTarget,
   type ProgressStep,
   type RevertChoice,
 } from "@zwiim/sdk";
@@ -26,6 +28,7 @@ import {
   stoppedTitle,
   type PipState,
 } from "../sessions/plan";
+import { forkedFromLabel, type TurnFork } from "../sessions/fork";
 import { revertCopy } from "../sessions/revert";
 import {
   RETRY_LABEL,
@@ -49,7 +52,7 @@ import {
   type TranscriptRow,
 } from "../sessions/transcript";
 import { Button, Sheet, StatusDot, T, useBreathing, useReduceMotion } from "./components";
-import { ArrowUp, Bot, CircleAlert, FileText, Icon, Image, Paperclip, RotateCcw, X } from "./icons";
+import { ArrowUp, Bot, CircleAlert, FileText, GitFork, Icon, Image, Paperclip, RotateCcw, X } from "./icons";
 import { fonts, PRESSED_OPACITY, radius, space, type, useTheme } from "./tokens";
 
 /** The streaming caret: blinks once a second (static under Reduce Motion). */
@@ -719,12 +722,20 @@ export function FooterRow({
   files,
   fileOf,
   onOpenFile,
+  fork,
+  forkDisabled,
+  onFork,
 }: {
   text: string;
   stopped: boolean;
   files: ChangedFile[];
   fileOf(path: string): string | null;
   onOpenFile(path: string): void;
+  /** Absent when the Host offers no fork of this turn. */
+  fork?: TurnFork | null;
+  /** Why the actions are off; null when they're on. */
+  forkDisabled?: string | null;
+  onFork?(fork: TurnFork): void;
 }) {
   const theme = useTheme();
   const [shown, setShown] = useState(FILES_SHOWN);
@@ -739,6 +750,20 @@ export function FooterRow({
         <T variant="mono" color={theme.mut} style={[styles.shrink, styles.tabular]} testID="turn-time">
           {text}
         </T>
+        {fork && onFork ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Fork"
+            accessibilityHint={forkDisabled ?? undefined}
+            accessibilityState={{ disabled: !!forkDisabled }}
+            disabled={!!forkDisabled}
+            onPress={() => onFork(fork)}
+            style={({ pressed }) => [styles.forkIcon, { opacity: forkDisabled ? 0.4 : pressed ? PRESSED_OPACITY : 1 }]}
+            testID="fork-open"
+          >
+            <Icon icon={GitFork} color={theme.mut} size={18} />
+          </Pressable>
+        ) : null}
       </View>
       {files.length ? (
         <View style={styles.fileChips}>
@@ -770,6 +795,86 @@ export function FooterRow({
         </View>
       ) : null}
     </View>
+  );
+}
+
+/** The fork options a turn offers, then the word a fork needs first, or why one was refused. */
+export function ForkSheet({
+  visible,
+  choices,
+  onPick,
+  target,
+  note,
+  error,
+  forking,
+  disabled,
+  onFork,
+  onClose,
+}: {
+  visible: boolean;
+  /** Set while choosing: what the turn offers. */
+  choices: readonly ForkTarget[] | null;
+  onPick(target: ForkTarget): void;
+  target: ForkTarget;
+  note: string | null;
+  error: string | null;
+  forking: boolean;
+  /** Offline or busy: the fork waits. */
+  disabled?: boolean;
+  onFork(): void;
+  onClose(): void;
+}) {
+  const theme = useTheme();
+  return (
+    <Sheet visible={visible} onClose={onClose}>
+      <T variant="title">{choices ? "Fork" : FORK_LABELS[target]}</T>
+      {note ? (
+        <T color={theme.mut} testID="fork-note">
+          {note}
+        </T>
+      ) : null}
+      {error ? (
+        <T color={theme.err} testID="fork-error">
+          {error}
+        </T>
+      ) : null}
+      {choices ? (
+        choices.map((choice) => (
+          <Button key={choice} tall label={FORK_LABELS[choice]} disabled={disabled} onPress={() => onPick(choice)} testID={`fork-${choice}`} />
+        ))
+      ) : (
+        <Button tall label={FORK_LABELS[target]} loading={forking} disabled={disabled} onPress={onFork} testID="fork-confirm" />
+      )}
+      <Button tall kind="secondary" label="Cancel" onPress={onClose} />
+    </Sheet>
+  );
+}
+
+/** Over a forked session's first message: where it came from. */
+export function ForkedFromRow({ title, onOpen }: { title: string | null; onOpen?(): void }) {
+  const theme = useTheme();
+  const label = forkedFromLabel(title);
+  if (!onOpen) {
+    return (
+      <View style={styles.linkRow} testID="forked-from">
+        <T variant="callout" color={theme.mut}>
+          {label}
+        </T>
+      </View>
+    );
+  }
+  return (
+    <Pressable
+      accessibilityRole="link"
+      accessibilityLabel={label}
+      onPress={onOpen}
+      style={({ pressed }) => [styles.linkRow, { opacity: pressed ? PRESSED_OPACITY : 1 }]}
+      testID="forked-from"
+    >
+      <T variant="callout" color={theme.accent}>
+        {label}
+      </T>
+    </Pressable>
   );
 }
 
@@ -1458,6 +1563,7 @@ const styles = StyleSheet.create({
   continued: { borderRadius: radius.xl, padding: space.md, gap: space.sm },
   continuedFiles: { flexDirection: "row", flexWrap: "wrap", gap: space.xs },
   linkRow: { minHeight: 44, justifyContent: "center", alignSelf: "flex-start" },
+  forkIcon: { minWidth: 44, minHeight: 44, justifyContent: "center" },
   continuedIn: { minHeight: 44, justifyContent: "center", paddingHorizontal: space.lg },
   composer: {
     marginHorizontal: space.md,

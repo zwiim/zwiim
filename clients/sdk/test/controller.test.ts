@@ -108,6 +108,19 @@ describe("HostController", () => {
     expect(view.continuedIn).toBe("s2");
   });
 
+  it("keeps the session a fork came from", async () => {
+    const t = setup();
+    const forked_from = { session_id: "s0", title: "Old" };
+    t.transport.handlers["session.history"] = (p: { session_id: string }) => ({ session_id: p.session_id, turns: [], forked_from });
+    t.client.start();
+    await flush();
+    t.transport.channel.open();
+    await flush();
+    t.controller.openSession("s1");
+    await flush();
+    expect(t.store.getState().sessions.s1!.forkedFrom).toEqual(forked_from);
+  });
+
   it("reads a session.history without plan fields as no plan", async () => {
     const t = setup();
     t.transport.handlers["session.history"] = (p: { session_id: string }) => ({ session_id: p.session_id, turns: [] });
@@ -630,6 +643,16 @@ describe("HostController", () => {
 
     await t.controller.revertSession("s1", "turn-0", { files: true });
     expect(t.transport.requests.at(-1)?.params).toEqual({ session_id: "s1", turn_id: "turn-0", files: true, chat: false });
+  });
+
+  it("forks a turn once, never retried", async () => {
+    const t = setup();
+    t.transport.handlers["session.fork"] = () => ({ session_id: "s2", workspace_id: "w1" });
+    const out = await t.controller.forkSession("s1", "turn-2", "current");
+    expect(out).toEqual({ session_id: "s2", workspace_id: "w1" });
+    expect(t.transport.requests.at(-1)?.params).toEqual({ session_id: "s1", turn_id: "turn-2", target: "current" });
+    expect(t.transport.requests.at(-1)?.options).toEqual({ mutating: true });
+    expect(MUTATING_OPS.has("session.fork")).toBe(true);
   });
 
   it("adds a workspace by its folder names under the host's home", async () => {

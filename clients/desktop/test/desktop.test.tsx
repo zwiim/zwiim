@@ -4,6 +4,8 @@ import { HostClient, HostController, ZwiimClientError } from "@zwiim/sdk";
 import { bootHost, type BootPhase } from "@/lib/boot";
 import type { DiscoveredHost, NativeBridge } from "@/lib/bridge";
 import { HostProvider } from "@/lib/host-context";
+import type { PendingFile } from "@/attachments/pending";
+import { keepForkedDraft } from "@/panels/forkedDraft";
 import { RequestCard } from "@/panels/RequestCard";
 import { SessionPanel } from "@/panels/SessionPanel";
 import { InputQueue } from "@/panels/TerminalPanel";
@@ -173,7 +175,45 @@ describe("RequestCard", () => {
   });
 });
 
+const pendingFile = (name: string): PendingFile => ({
+  id: name,
+  name,
+  size: 1,
+  mime_type: "text/plain",
+  file: new Blob(["x"]),
+  status: "ready",
+});
+
 describe("SessionPanel", () => {
+  it("opens a fork with the draft left in its source", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.history"] = (p) => ({ session_id: p.session_id, turns: [] });
+    const client = new HostClient({ transport: t });
+    const controller = new HostController(client);
+    client.start();
+    await tick();
+    keepForkedDraft("s2", { text: "half a thought", files: [pendingFile("notes.txt")] });
+
+    const panel = (id: string) => (
+      <HostProvider value={controller}>
+        <SessionPanel workspaceId="w1" sessionId={id} onSessionStarted={() => {}} />
+      </HostProvider>
+    );
+    const { rerender } = render(panel("s2"));
+    await tick();
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox").value).toBe("half a thought");
+    expect(screen.getByText("notes.txt")).toBeTruthy();
+
+    rerender(panel("s1"));
+    await tick();
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox").value).toBe("");
+    expect(screen.queryByText("notes.txt")).toBeNull();
+    rerender(panel("s2"));
+    await tick();
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox").value).toBe("");
+    expect(screen.queryByText("notes.txt")).toBeNull();
+  });
+
   it("opens the session a plan was handed off to", async () => {
     const t = new FakeTransport();
     t.handlers["session.history"] = (p) => ({ session_id: p.session_id, turns: [] });

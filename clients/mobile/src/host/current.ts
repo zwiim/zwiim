@@ -20,6 +20,7 @@ import {
   type MergeMethod,
   type OpName,
   type OpParams,
+  type ForkTarget,
   type OpResult,
   type OptionsRequest,
   type PrAutoMerged,
@@ -294,6 +295,11 @@ export class CurrentHost {
    */
   async revertSession(session_id: string, turn_id: string, what: { files: boolean; chat: boolean }): Promise<SessionRevertResult> {
     return this.#opened().revertSession(session_id, turn_id, what);
+  }
+
+  /** Start a new session from one of a session's turns. Never retried. */
+  async forkSession(session_id: string, turn_id: string, target: ForkTarget): Promise<OpResult<"session.fork">> {
+    return this.#opened().forkSession(session_id, turn_id, target);
   }
 
   /**

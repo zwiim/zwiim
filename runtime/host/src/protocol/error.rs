@@ -176,6 +176,26 @@ impl ZwiimError {
         )
     }
 
+    /// The turn can't be forked: it is not the end of a finished exchange of
+    /// the session, as a turn id gone stale after a rewind is not.
+    pub fn fork_unavailable() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            "fork_unavailable",
+            "This turn can't be forked",
+        )
+    }
+
+    /// The transcript a forked session's first message had to carry is gone.
+    /// Sent once: the next message goes on without it.
+    pub fn transcript_missing() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            "transcript_missing",
+            "This session's transcript is gone. Send again to go on without it",
+        )
+    }
+
     /// The Host is draining to stop or restart; retry once it is back.
     pub fn host_restarting() -> Self {
         let mut e = Self::new(

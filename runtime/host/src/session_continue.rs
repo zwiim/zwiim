@@ -244,13 +244,13 @@ pub(crate) async fn hand_over<L: AgentLauncher>(
 }
 
 /// Save `bytes` as attachment `name` in `root`, and where it is.
-async fn store(root: &Path, name: &str, bytes: &[u8]) -> Result<std::path::PathBuf, ZwiimError> {
+pub(crate) async fn store(root: &Path, name: &str, bytes: &[u8]) -> Result<std::path::PathBuf, ZwiimError> {
     let stored = attachments::store(root, name, bytes).await?;
     attachments::resolve(root, &stored.attachment_id)
 }
 
 /// Take attachments back out (best effort).
-async fn remove_attachments(paths: &[std::path::PathBuf]) {
+pub(crate) async fn remove_attachments(paths: &[std::path::PathBuf]) {
     for dir in paths.iter().filter_map(|path| path.parent()) {
         let _ = tokio::fs::remove_dir_all(dir).await;
     }

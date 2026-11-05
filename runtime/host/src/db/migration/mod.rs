@@ -55,6 +55,8 @@ mod m20261029_000001_repository_settings;
 mod m20261029_000002_worktree_port;
 mod m20261029_000003_conversation_follow_ups;
 mod m20261104_000001_workspace_group_ids;
+mod m20261105_000001_session_forks;
+mod m20261105_000002_session_fork_first_message;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -116,6 +118,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20261029_000002_worktree_port::Migration),
             Box::new(m20261029_000003_conversation_follow_ups::Migration),
             Box::new(m20261104_000001_workspace_group_ids::Migration),
+            Box::new(m20261105_000001_session_forks::Migration),
+            Box::new(m20261105_000002_session_fork_first_message::Migration),
         ]
     }
 }

@@ -58,6 +58,7 @@ pub mod session_checkpoints;
 pub mod session_commands;
 pub mod session_options;
 pub mod session_continue;
+pub mod session_fork;
 pub mod session_plans;
 pub mod session_retry;
 pub mod session_summary;

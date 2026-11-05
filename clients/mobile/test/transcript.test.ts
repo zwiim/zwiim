@@ -3,10 +3,14 @@ import {
   clockTime,
   decodeServerFrame,
   evaluateCompatibility,
+  FORK_BUSY_NOTE,
+  FORK_OFFLINE_NOTE,
+  FORK_OLDER_TURN_NOTE,
   initialSessionView,
   offersChatRewind,
   reduceSession,
   ZwiimClientError,
+  type ForkTarget,
   type HistoryTurn,
   type SessionEvent,
   type SessionFrame,
@@ -34,6 +38,7 @@ import {
   type TranscriptRow,
 } from "../src/sessions/transcript";
 import { canReset, oneReset, revertCopy, revertError } from "../src/sessions/revert";
+import { forkDisabledNote, forkError, forkNote, forkedFromLabel, forkedSendError } from "../src/sessions/fork";
 import { waitFor, world } from "./support";
 
 // ─── building views the way the SDK does ─────────────────────────────────
@@ -1115,6 +1120,76 @@ describe("files sent with a message", () => {
     // Different files, same (empty) text: a different message.
     const other = view(history([turn("u0", "user", [pdf])]), ev("agent.user_message", { message_id: "m1", blocks: [sheet] }));
     expect(historyBefore(other.history!, other)).toHaveLength(1);
+  });
+});
+
+describe("forking from a turn", () => {
+  const err = (code: ConstructorParameters<typeof ZwiimClientError>[0]) => new ZwiimClientError(code, "m");
+  const said = (id: string, text: string) => turn(id, "user", [{ type: "text", text }]);
+  const answered = (id: string, fork_targets?: ForkTarget[]) => ({
+    ...turn(id, "assistant", [{ type: "text", text: "Done." }], "2026-09-26T10:00:00Z", "2026-09-26T10:00:01Z"),
+    ...(fork_targets ? { fork_targets } : {}),
+  });
+  const forks = (v: SessionView) => transcriptRows(v).flatMap((r) => (r.type === "footer" ? [r.fork] : []));
+  const both: ForkTarget[] = ["current", "new_worktree"];
+
+  it("offers each finished turn as the Host offers it, the latest not older", () => {
+    const v = play(view(), history([said("u1", "One"), answered("a1", both), said("u2", "Two"), answered("a2", ["new_worktree"])]));
+    expect(forks(v)).toEqual([
+      { turn_id: "a1", targets: both, older: true },
+      { turn_id: "a2", targets: ["new_worktree"], older: false },
+    ]);
+  });
+
+  it("offers nothing the Host doesn't", () => {
+    expect(forks(play(view(), history([said("u1", "One"), answered("a1")])))).toEqual([null]);
+  });
+
+  it("forks from the turn the Host offers when a system turn ends the group", () => {
+    const v = play(view(), history([said("u1", "One"), answered("a1", both), turn("s1", "system", [{ type: "text", text: "Note" }])]));
+    expect(forks(v)).toEqual([{ turn_id: "a1", targets: both, older: false }]);
+  });
+
+  it("marks the turn older once a newer one finishes", () => {
+    const build = transcriptBuilder();
+    const first = play(view(), history([said("u1", "One"), answered("a1", both)]));
+    const footer = (v: SessionView) => build(v).find((r) => r.type === "footer" && r.fork?.turn_id === "a1");
+    expect(footer(first)).toMatchObject({ fork: { older: false } });
+    const next = play(first, history([said("u1", "One"), answered("a1", both), said("u2", "Two"), answered("a2", both)]));
+    expect(footer(next)).toMatchObject({ fork: { older: true } });
+  });
+
+  it("warns before forking an older turn in place, and only then", () => {
+    const fork = (older: boolean) => ({ turn_id: "a1", targets: both, older });
+    expect(forkNote(fork(true), "current")).toBe(FORK_OLDER_TURN_NOTE);
+    expect(forkNote(fork(true), "new_worktree")).toBeNull();
+    expect(forkNote(fork(false), "current")).toBeNull();
+  });
+
+  it("says why forking is off", () => {
+    expect(forkDisabledNote(false, false)).toBe(FORK_OFFLINE_NOTE);
+    expect(forkDisabledNote(false, true)).toBe(FORK_OFFLINE_NOTE);
+    expect(forkDisabledNote(true, true)).toBe(FORK_BUSY_NOTE);
+    expect(forkDisabledNote(true, false)).toBeNull();
+  });
+
+  it("words a failed fork", () => {
+    expect(forkError(err("fork_unavailable"), "Mac")).toBe("This turn can't be forked.");
+    expect(forkError(err("checkpoint_unavailable"), "Mac")).toBe("The files at this point are no longer available.");
+    expect(forkError(err("unknown_outcome"), "Mac")).toBe("Not sure the fork went through. Check your sessions on Mac before trying again.");
+    expect(forkError(err("network"), "Mac")).toBe("Not connected to Mac. Try again when it's back.");
+    expect(forkError(err("timeout"), "Mac")).toBe("Not connected to Mac. Try again when it's back.");
+    expect(forkError(new Error("x"), "Mac")).toBe("Couldn't fork. Try again.");
+  });
+
+  it("says how to go on when a fork's transcript is gone", () => {
+    expect(forkedSendError(err("transcript_missing"))).toBe("This session's transcript is gone. Send again to go on without it.");
+    expect(forkedSendError(err("network"))).toBeNull();
+  });
+
+  it("names the session a fork came from, gone or not", () => {
+    expect(forkedFromLabel("Fix login")).toBe("Forked from Fix login");
+    expect(forkedFromLabel(null)).toBe("Forked from a session that is gone");
   });
 });
 

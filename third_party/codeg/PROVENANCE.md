@@ -1281,6 +1281,25 @@ Upstream-derived:
 | `db/service/folder_service.rs` | `src-tauri/src/db/service/folder_service.rs` | `assign_folder_positions` generic over `ConnectionTrait`, same reason. |
 | `db/migration/mod.rs` | `src-tauri/src/db/migration/mod.rs` | Registers the migration. |
 
+## Session fork — `session.fork`
+
+Zwiim-owned, no Codeg code copied: `session_fork.rs` (`fork`, the native and transcript paths, the `session_forks` record, and what its first message owes: `pending_transcript`, `transcript_sent`, `notice_owed`, `pending_options`), `db/entities/session_fork.rs`, `db/migration/m20261105_000001_session_forks.rs`, `db/migration/m20261105_000002_session_fork_first_message.rs`, `checkpoint::materialize` and `WorktreeStart` in `git_harness/checkpoint.rs` and `workspace.rs`, `SummaryKind::Forked` in `session_summary.rs`, `FORK_NOTICE` in `harness.rs`, the `session.fork` route and `fork_targets`/`forked_from` in `protocol/`.
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `acp/fork.rs` | `src-tauri/src/acp/fork.rs` | `LaunchIntent` (`New`, `Resume`, `Fork`), `ForkRefusal` and `fork_refusal`, typed so a fresh connection's refusal falls back to the transcript path. |
+| `acp/connection.rs` | `src-tauri/src/acp/connection.rs` | Spawning takes `LaunchIntent` instead of an optional session id; the `Fork` arm forks in the target directory, attaches through `attach_forked_session` and answers once attached. |
+| `acp/manager.rs` | `src-tauri/src/acp/manager.rs` | `link_forked_session` gives a fork on a fresh connection its own idle titled row; connect paths carry `LaunchIntent`; `queue_notice` skips a notice already queued. |
+| `acp/lifecycle.rs` | `src-tauri/src/acp/lifecycle.rs` | A turn that stops on `end_turn` calls `session_fork::turn_ended_well`, which clears a transcript that turn carried. |
+| `acp/error.rs` | `src-tauri/src/acp/error.rs` | `ForkRefused`. |
+| `lib.rs` | `src-tauri/src/lib.rs` | `pub mod session_fork`. |
+| `db/migration/mod.rs` | `src-tauri/src/db/migration/mod.rs` | Registers the migration. |
+| `db/entities/mod.rs` | `src-tauri/src/db/entities/mod.rs` | Registers the entity. |
+
+Known limits in V1: inherited turns have no checkpoints, so aren't revertible; a fork in a new worktree loses attachment chips on inherited turns; plans, queued follow-ups and background tasks aren't carried; a transcript stays in the attachments directory if its fork never sends a message; the legacy `/api/acp_fork` route is untouched.
+
 ## License obligations tracked
 
 - [x] Include Apache-2.0 license text (`third_party/codeg/LICENSE`).

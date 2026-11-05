@@ -256,6 +256,12 @@ pub fn strip_notices(text: &mut String) -> bool {
 /// agent's own plan-mode instructions and it starts editing.
 pub const PLAN_MODE_NOTICE: &str = "Plan mode is on. Do not edit files or run commands that change anything, even if the message above asks you to implement. Read what you need, then present your plan in a <proposed_plan> block and wait for approval.";
 
+/// What an agent is told when it was forked from an earlier turn of a session
+/// and its workspace kept the files as they are now.
+pub const FORK_NOTICE: &str = "Zwiim: this session was forked from an earlier turn of another \
+     session. The chat stops at that turn, but the workspace kept the files as they are now, so \
+     they may hold later changes. Read a file before relying on what the chat says about it.";
+
 /// What an agent is told after its workspace continued past merged pull
 /// request `number` onto `branch`, cut from `base_branch` at `base_commit`.
 pub fn continuation_notice(

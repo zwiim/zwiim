@@ -35,6 +35,7 @@ use crate::parsers::claude::BACKGROUND_TASK_MARKER;
 use crate::models::message::{
     AgentExecutionStats, ContentBlock, ImageData, MessageTurn, TurnRole,
 };
+use crate::session_fork::ForkTarget;
 use crate::session_plans::PlanRecord;
 
 #[derive(Debug, Clone, Serialize)]
@@ -1107,6 +1108,17 @@ pub fn project_history_with(turns: &[MessageTurn], root: Option<&str>, revertibl
     )
 }
 
+/// Add `fork_targets` to the projected turns that have targets; the rest stay
+/// as they are.
+pub fn with_fork_targets(history: &mut Value, targets: &HashMap<String, Vec<ForkTarget>>) {
+    let Value::Array(turns) = history else { return };
+    for turn in turns {
+        if let Some(allowed) = turn["turn_id"].as_str().and_then(|id| targets.get(id)) {
+            turn["fork_targets"] = json!(allowed);
+        }
+    }
+}
+
 /// Codex's transcript wraps a plan in `<proposed_plan>` tags that its live
 /// stream leaves out; the plan reads the same either way.
 fn without_plan_tags(text: &str) -> String {
@@ -1275,6 +1287,23 @@ pub(crate) mod tests {
             Value::Array(items) => items.iter().for_each(assert_no_internal_keys),
             _ => {}
         }
+    }
+
+    #[test]
+    fn only_the_turns_a_fork_can_start_from_carry_targets() {
+        let mut history = json!([{"turn_id": "turn-0"}, {"turn_id": "turn-1"}]);
+        let targets = HashMap::from([(
+            "turn-1".to_string(),
+            vec![ForkTarget::Current, ForkTarget::NewWorktree],
+        )]);
+        with_fork_targets(&mut history, &targets);
+        assert_eq!(
+            history,
+            json!([
+                {"turn_id": "turn-0"},
+                {"turn_id": "turn-1", "fork_targets": ["current", "new_worktree"]},
+            ])
+        );
     }
 
     #[test]

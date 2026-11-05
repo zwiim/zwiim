@@ -298,6 +298,9 @@ pub(crate) async fn handle_event(
                 )
                 .await;
             }
+            if stop_reason == "end_turn" {
+                crate::session_fork::turn_ended_well(db_conn, cid).await;
+            }
 
             // If this conversation was spawned by a delegation, resolve the
             // pending broker call. The broker maps the outcome onto the

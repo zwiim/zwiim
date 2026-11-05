@@ -457,9 +457,26 @@ pub async fn restore(root: &Path, cp: &Checkpoint) -> Result<Restored, GitError>
     .await
     .map_err(restore_error)?;
 
-    // The worktree first, through the index: files the checkpoint has are
-    // written, tracked files it lacks are removed. Then files no index entry
-    // names (ignored ones excepted), then the index the checkpoint had.
+    write_files(root, cp).await?;
+    let head = head(root).await.map_err(restore_error)?;
+    Ok(Restored {
+        head_moved: head != cp.head,
+    })
+}
+
+/// Put a fresh checkout at `root` at `cp`, with no recovery checkpoint: the
+/// checkout has nothing to recover, and `cp` may belong to another worktree
+/// of the same repository. HEAD and ignored files, `.zwiim/` among them, are
+/// not touched.
+pub async fn materialize(root: &Path, cp: &Checkpoint) -> Result<(), GitError> {
+    let root = session_root(root, &cp.key.session_id).map_err(restore_error)?;
+    write_files(root, cp).await
+}
+
+/// The worktree first, through the index: files the checkpoint has are
+/// written, tracked files it lacks are removed. Then files no index entry
+/// names (ignored ones excepted), then the index the checkpoint had.
+async fn write_files(root: &str, cp: &Checkpoint) -> Result<(), GitError> {
     for (args, what) in [
         (
             vec!["read-tree", "--reset", "-u", cp.worktree_tree.as_str()],
@@ -475,10 +492,7 @@ pub async fn restore(root: &Path, cp: &Checkpoint) -> Result<Restored, GitError>
         cmd.args(&args);
         checked(run(cmd, RESTORE_BUDGET, what).await, what).map_err(restore_error)?;
     }
-    let head = head(root).await.map_err(restore_error)?;
-    Ok(Restored {
-        head_moved: head != cp.head,
-    })
+    Ok(())
 }
 
 /// Abort a merge or rebase in progress at `root`, so a [`restore`] of `cp`

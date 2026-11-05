@@ -2667,14 +2667,19 @@ pub async fn session_history(
         Some(dir) => crate::session_plans::link(std::path::Path::new(dir), &p.session_id).await,
         None => None,
     };
+    let mut projected = super::events::project_history_with(&turns, root.as_deref(), &revertible);
+    let fork_targets = crate::session_fork::fork_targets(&state.db, &row, &turns).await;
+    super::events::with_fork_targets(&mut projected, &fork_targets);
+    let forked_from = crate::session_fork::forked_from(&state.db.conn, &p.session_id).await;
     Ok(Json(json!({
         "session_id": p.session_id,
-        "turns": super::events::project_history_with(&turns, root.as_deref(), &revertible),
+        "turns": projected,
         "history_generation": generation,
         "last_error": last_error,
         "progress": progress,
         "continues": continues,
         "continued_in": continued_in.map(|session_id| json!({ "session_id": session_id })),
+        "forked_from": forked_from,
     })))
 }
 
@@ -2773,6 +2778,27 @@ pub(crate) async fn announce_session_changed(state: &AppState, conversation_id: 
         conversation_id,
     )
     .await;
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionForkParams {
+    pub session_id: String,
+    pub turn_id: String,
+    pub target: crate::session_fork::ForkTarget,
+}
+
+/// Start a new session from a finished exchange of this one. The original
+/// session is left as it was.
+pub async fn session_fork(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<SessionForkParams>,
+) -> ZResult<Value> {
+    let forked = crate::session_fork::fork(state, p.session_id, p.turn_id, p.target).await?;
+    Ok(Json(json!({
+        "session_id": forked.session_id,
+        "workspace_id": forked.workspace_id,
+    })))
 }
 
 #[derive(Deserialize)]

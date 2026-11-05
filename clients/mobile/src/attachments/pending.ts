@@ -77,6 +77,20 @@ export function pendingReducer(state: PendingState, action: PendingAction): Pend
   }
 }
 
+/** The files left in a session's composer when it forked, for the fork's composer. */
+const forkedFiles = new Map<string, PendingFile[]>();
+
+export function keepForkedFiles(session_id: string, files: PendingFile[]): void {
+  if (files.length > 0) forkedFiles.set(session_id, files);
+}
+
+/** The files waiting for `session_id`; they are handed over once. */
+export function takeForkedFiles(session_id: string): PendingFile[] {
+  const files = forkedFiles.get(session_id) ?? [];
+  forkedFiles.delete(session_id);
+  return files;
+}
+
 /** Whether `file` still needs uploading to `workspace_id`. */
 export function needsUpload(file: PendingFile, workspace_id: string): boolean {
   return file.status !== "uploaded" || file.workspace_id !== workspace_id;

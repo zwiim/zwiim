@@ -491,6 +491,11 @@ export class HostClient {
     return result;
   }
 
+  /** Fork a session from one of its turns. Never retried. */
+  async forkSession(params: OpParams<"session.fork">): Promise<OpResult<"session.fork">> {
+    return this.request("session.fork", params);
+  }
+
   private sendSubscribe(sub: SessionSub): void {
     if (this.stateValue.status !== "live" || !this.channel) return;
     this.emit((l) => l.session?.(sub.session_id, { type: "attaching" }));

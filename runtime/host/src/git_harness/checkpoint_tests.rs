@@ -942,3 +942,80 @@ async fn abort_operation_aborts_a_rebase_in_progress() {
     assert_eq!(git(&root, &["rev-parse", "HEAD"]), side);
     assert_eq!(git(&root, &["status", "--porcelain"]), "");
 }
+
+// ── materialize ─────────────────────────────────────────────────────────
+
+/// `checkpoint::materialize` puts another checkout at `cp`: files, new files
+/// and the index, but no recovery ref, and it leaves HEAD and the source
+/// checkout alone.
+#[tokio::test]
+async fn materialize_writes_a_checkpoint_into_another_worktree() {
+    let (tmp, root) = repo();
+    write(&root, "a.txt", "edited\n");
+    write(&root, "staged.txt", "staged\n");
+    git(&root, &["add", "staged.txt"]);
+    write(&root, "untracked.txt", "new\n");
+    write(&root, "ignored.txt", "ignored in source\n");
+    let turn = key("s-mat", 1);
+    let saved = checkpoint::save(&root, &turn, Phase::End, None).await;
+    assert!(matches!(saved, Saved::Ref { .. }), "{saved:?}");
+    let cp = checkpoint::list(&root, "s-mat")
+        .await
+        .expect("list")
+        .into_iter()
+        .next()
+        .expect("one checkpoint");
+    let before = worktree_bytes(&root);
+
+    let other = tmp.path().join("other");
+    git(
+        &root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "fork",
+            other.to_str().unwrap(),
+        ],
+    );
+    write(&other, "stale.txt", "made by the worktree\n");
+    std::fs::write(root.join(".git/info/exclude"), "/.zwiim/\n").unwrap();
+    write(&other, ".zwiim/attachments/kept.txt", "kept\n");
+    let refs_before = zwiim_refs(&root);
+    let head_before = git(&other, &["rev-parse", "HEAD"]);
+
+    checkpoint::materialize(&other, &cp)
+        .await
+        .expect("materialize");
+
+    assert_eq!(
+        std::fs::read_to_string(other.join("a.txt")).unwrap(),
+        "edited\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(other.join("untracked.txt")).unwrap(),
+        "new\n"
+    );
+    assert!(
+        !other.join("stale.txt").exists(),
+        "files not in the checkpoint go"
+    );
+    assert_eq!(
+        std::fs::read_to_string(other.join(".zwiim/attachments/kept.txt")).unwrap(),
+        "kept\n"
+    );
+    assert!(
+        !other.join("ignored.txt").exists(),
+        "ignored files are not in a checkpoint"
+    );
+    let staged = git(&other, &["diff", "--cached", "--name-only"]);
+    assert_eq!(
+        staged.trim(),
+        "staged.txt",
+        "the checkpoint's index comes too"
+    );
+    assert_eq!(git(&other, &["rev-parse", "HEAD"]), head_before);
+    assert_eq!(zwiim_refs(&root), refs_before, "no recovery ref");
+    assert_eq!(worktree_bytes(&root), before, "source untouched");
+}

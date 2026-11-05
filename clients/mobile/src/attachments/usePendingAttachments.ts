@@ -4,16 +4,17 @@ import { hasCapability, uploadAttachment, type PromptBlock } from "@zwiim/sdk";
 import { useCurrentHost } from "../app/hooks";
 import { currentHost } from "../services";
 import { readBase64 } from "./native";
-import { EMPTY_PENDING, pendingReducer, uploadError, uploadPending, type PickedFile } from "./pending";
+import { pendingReducer, uploadError, uploadPending, type PendingFile, type PickedFile } from "./pending";
 
 /**
  * The files chosen for the next message, and their upload into the workspace
- * the message goes to. `enabled` is false against a Host without attachments.
+ * the message goes to. `initial` are files already chosen, carried from another
+ * composer. `enabled` is false against a Host without attachments.
  */
-export function usePendingAttachments(hostName: string) {
+export function usePendingAttachments(hostName: string, initial: PendingFile[] = []) {
   const { view } = useCurrentHost();
   const enabled = hasCapability(view?.compat ?? null, "attachments");
-  const [state, dispatch] = useReducer(pendingReducer, EMPTY_PENDING);
+  const [state, dispatch] = useReducer(pendingReducer, { files: initial, errors: [] });
   const current = useRef(state);
   current.current = state;
 

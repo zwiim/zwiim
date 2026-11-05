@@ -36,6 +36,7 @@ use crate::acp::background_watch;
 use crate::acp::claude_tool_frames;
 use crate::acp::codex_subagents;
 use crate::acp::error::AcpError;
+use crate::acp::fork::{fork_refusal, LaunchIntent};
 use crate::acp::file_system_runtime::{
     FileSystemRuntime, FileSystemRuntimeError, FsAccessPolicy, FS_POLICY_ENV,
 };
@@ -2320,7 +2321,7 @@ pub async fn spawn_agent_connection(
     connection_id: String,
     agent_type: AgentType,
     working_dir: Option<String>,
-    session_id: Option<String>,
+    intent: LaunchIntent,
     runtime_env: BTreeMap<String, String>,
     repository_env: BTreeMap<String, String>,
     owner_window_label: String,
@@ -2569,7 +2570,7 @@ pub async fn spawn_agent_connection(
             conn_id.clone(),
             agent_type,
             working_dir,
-            session_id,
+            intent,
             cmd_rx,
             emitter_clone.clone(),
             Arc::clone(&state_clone),
@@ -5496,7 +5497,7 @@ fn canonical_spec_to_mcp_server(name: &str, spec: &serde_json::Value) -> Result<
         connection_id = %connection_id,
         agent_type = ?agent_type,
         working_dir = ?working_dir,
-        session_id = ?session_id,
+        session_id = ?intent.resume_id(),
     )
 )]
 async fn run_connection(
@@ -5504,7 +5505,7 @@ async fn run_connection(
     connection_id: String,
     agent_type: AgentType,
     working_dir: Option<String>,
-    session_id: Option<String>,
+    intent: LaunchIntent,
     mut cmd_rx: mpsc::Receiver<ConnectionCommand>,
     emitter: EventEmitter,
     state: Arc<RwLock<SessionState>>,
@@ -6234,6 +6235,62 @@ async fn run_connection(
             )
             .await;
 
+            let session_id = match intent {
+                LaunchIntent::New => None,
+                LaunchIntent::Resume(sid) => Some(sid),
+                LaunchIntent::Fork {
+                    source,
+                    point,
+                    reply,
+                } => {
+                    let custom_agent = transcript_dir_for(agent_type).is_some();
+                    if let Some(refusal) =
+                        fork_refusal(supports_fork, supports_resume, custom_agent)
+                    {
+                        let _ = reply.send(Err(AcpError::ForkRefused(refusal)));
+                        return Ok(());
+                    }
+                    let source = SessionId::new(source);
+                    let forked = crate::acp::fork::fork_session(
+                        &cx,
+                        &source,
+                        &cwd_string,
+                        point.as_ref(),
+                    )
+                    .await;
+                    let (fork_resp, fork_models_raw) = match forked {
+                        Ok(forked) => forked,
+                        Err(e) => {
+                            let _ = reply.send(Err(e));
+                            return Ok(());
+                        }
+                    };
+                    return Box::pin(attach_forked_session(
+                        cx.clone(),
+                        fork_resp,
+                        fork_models_raw,
+                        Some(reply),
+                        preferred_mode_id.as_deref(),
+                        &preferred_config_values,
+                        &conn_id,
+                        &emitter_clone,
+                        &state,
+                        agent_type,
+                        &perms,
+                        &mut cmd_rx,
+                        terminal_runtime.clone(),
+                        &cwd,
+                        &cwd_string,
+                        supports_resume,
+                        &mcp_servers,
+                        instructions.as_deref(),
+                        &prompt_ledger,
+                        delegation_injection.as_ref(),
+                        &stderr_tail,
+                    ))
+                    .await;
+                }
+            };
             if let Some(sid) = session_id {
                 // Prefer session/resume when the agent advertises the
                 // capability: it restores session context WITHOUT replaying
@@ -9253,6 +9310,67 @@ async fn handle_fork_or_exit(
             original_session_id: fork_info.original_session_id,
         }));
 
+    attach_forked_session(
+        cx,
+        fork_resp,
+        fork_models_raw,
+        None,
+        inherited_mode_id.as_deref(),
+        &inherited_config_values,
+        conn_id,
+        emitter,
+        state,
+        agent_type,
+        perms,
+        cmd_rx,
+        terminal_runtime,
+        cwd,
+        cwd_string,
+        supports_resume,
+        mcp_servers,
+        instructions,
+        prompt_ledger,
+        delegation_injection,
+        stderr_tail,
+    )
+    .await
+}
+
+/// Make a forked session real on the agent, attach it, and run it until the
+/// conversation ends or forks again.
+///
+/// `fresh_reply` is set when the fork opened this connection. Then nothing is
+/// running here to fall back to: a failed resume is answered and ends the
+/// connection, and the answer waits until the session is attached so whoever
+/// is waiting can prompt on it. Without it the fork is a rewind of the
+/// session this connection was already running, whose caller was answered
+/// before the resume.
+#[allow(clippy::too_many_arguments)]
+async fn attach_forked_session(
+    cx: ConnectionTo<Agent>,
+    fork_resp: sacp::schema::ForkSessionResponse,
+    fork_models_raw: Option<serde_json::Value>,
+    mut fresh_reply: Option<oneshot::Sender<Result<String, AcpError>>>,
+    inherited_mode_id: Option<&str>,
+    inherited_config_values: &BTreeMap<String, String>,
+    conn_id: &str,
+    emitter: &EventEmitter,
+    state: &Arc<RwLock<SessionState>>,
+    agent_type: AgentType,
+    perms: &PendingPermissions,
+    cmd_rx: &mut mpsc::Receiver<ConnectionCommand>,
+    terminal_runtime: Arc<TerminalRuntime>,
+    cwd: &std::path::Path,
+    cwd_string: &str,
+    supports_resume: bool,
+    mcp_servers: &[McpServer],
+    instructions: Option<&str>,
+    prompt_ledger: &background_watch::PromptLedger,
+    delegation_injection: Option<&DelegationInjection>,
+    stderr_tail: &Arc<StderrTail>,
+) -> Result<(), sacp::Error> {
+    let new_sid = fork_resp.session_id.0.to_string();
+
     // Make the forked session REAL on the agent before anything prompts on it.
     //
     // `session/fork` hands back a session id, but on both adapters that
@@ -9293,6 +9411,12 @@ async fn handle_fork_or_exit(
         match send_resume_session(&cx, resume_req).await {
             Ok(pair) => Some(pair),
             Err(e) => {
+                if let Some(reply) = fresh_reply.take() {
+                    let _ = reply.send(Err(AcpError::protocol(format!(
+                        "session/resume on the forked session failed: {e}"
+                    ))));
+                    return Ok(());
+                }
                 tracing::warn!(
                     "[ACP] session/resume on the forked session failed ({e}); \
                      attaching to the fork response as-is"
@@ -9356,8 +9480,8 @@ async fn handle_fork_or_exit(
         agent_type,
         grok_meta.as_ref(),
         grok_model_specs.as_ref(),
-        inherited_mode_id.as_deref(),
-        &inherited_config_values,
+        inherited_mode_id,
+        inherited_config_values,
         initial_config_options.unwrap_or_default(),
     )
     .await;
@@ -9372,6 +9496,13 @@ async fn handle_fork_or_exit(
             .and_then(current_model_id_from_opts)
     );
     emit_selectors_ready(state, emitter).await;
+
+    // Nobody left to hand the session to means nobody can ever use it.
+    if let Some(reply) = fresh_reply {
+        if reply.send(Ok(new_sid.clone())).is_err() {
+            return Ok(());
+        }
+    }
 
     let loop_result = run_conversation_loop(
         &mut session,
@@ -26475,5 +26606,226 @@ mod tests {
         let mut untyped = serde_json::json!({"configOptions": [{"id": "weird"}]});
         strip_unknown_config_options(&mut untyped, "session/new");
         assert_eq!(untyped["configOptions"].as_array().unwrap().len(), 1);
+    }
+}
+
+/// A fork on a fresh connection, against a real agent process speaking ACP.
+#[cfg(all(test, unix))]
+mod fresh_fork_tests {
+    use super::*;
+    use crate::acp::fork::{ForkPoint, ForkRefusal};
+    use serde_json::{json, Value};
+
+    /// Flags in argv say what it advertises and which method fails.
+    const AGENT: &str = r#"
+import json, sys
+log = open(sys.argv[1], "a", buffering=1)
+flags = sys.argv[2:]
+capabilities = {}
+if "no-fork" not in flags:
+    capabilities["fork"] = {}
+if "no-resume" not in flags:
+    capabilities["resume"] = {}
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    if method is None or "id" not in message:
+        continue
+    log.write(json.dumps({"method": method, "params": message.get("params")}) + "\n")
+    answer = {"jsonrpc": "2.0", "id": message["id"]}
+    if f"{method}-invalid" in flags:
+        answer["error"] = {"code": -32602, "message": "no such message"}
+    elif f"{method}-fails" in flags:
+        answer["error"] = {"code": -32603, "message": "boom"}
+    elif method == "initialize":
+        answer["result"] = {
+            "protocolVersion": 1,
+            "agentCapabilities": {"sessionCapabilities": capabilities},
+        }
+    elif method == "session/fork":
+        answer["result"] = {"sessionId": "s2"}
+    elif method == "session/resume":
+        answer["result"] = {}
+    else:
+        answer["error"] = {"code": -32601, "message": "not handled"}
+    print(json.dumps(answer), flush=True)
+"#;
+
+    struct Fork {
+        answer: Result<String, AcpError>,
+        external_id: Option<String>,
+        methods: Vec<Value>,
+        target: String,
+    }
+
+    impl Fork {
+        fn calls(&self, method: &str) -> Vec<&Value> {
+            self.methods
+                .iter()
+                .filter(|m| m["method"] == method)
+                .map(|m| &m["params"])
+                .collect()
+        }
+
+        fn refusal(&self) -> ForkRefusal {
+            match self.answer {
+                Err(AcpError::ForkRefused(refusal)) => refusal,
+                ref other => panic!("expected a refusal, got {other:?}"),
+            }
+        }
+    }
+
+    async fn fork(agent_type: AgentType, flags: &[&str], point: Option<ForkPoint>) -> Fork {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("agent.py");
+        std::fs::write(&script, AGENT).unwrap();
+        let log = dir.path().join("wire.log");
+        let script = script.to_string_lossy().to_string();
+        let log_arg = log.to_string_lossy().to_string();
+        let mut args = vec!["python3", &script, &log_arg];
+        args.extend_from_slice(flags);
+        let agent = AcpAgent::from_args(&args).unwrap();
+
+        let target = dir.path().to_string_lossy().to_string();
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let state = Arc::new(RwLock::new(SessionState::new(
+            "fresh-fork".into(),
+            agent_type,
+            Some(dir.path().to_path_buf()),
+            "test-window".into(),
+            None,
+        )));
+        let (reply, answer) = oneshot::channel();
+        let intent = LaunchIntent::Fork {
+            source: "s1".into(),
+            point,
+            reply,
+        };
+        let policy = FsAccessPolicy::strict(dir.path());
+        let working_dir = Some(target.clone());
+        let thread_state = Arc::clone(&state);
+        let runtime = tokio::runtime::Handle::current();
+        let connection = std::thread::Builder::new()
+            .stack_size(ACP_CONNECTION_STACK_SIZE)
+            .spawn(move || {
+                runtime.block_on(run_connection(
+                    agent,
+                    "fresh-fork".into(),
+                    agent_type,
+                    working_dir,
+                    intent,
+                    cmd_rx,
+                    EventEmitter::Noop,
+                    thread_state,
+                    BTreeMap::new(),
+                    TerminalShellRuntimeConfig::new(),
+                    None,
+                    BTreeMap::new(),
+                    None,
+                    policy,
+                    HostToolsPolicy::Default,
+                    false,
+                    Arc::new(StderrTail::new()),
+                    None,
+                ))
+            })
+            .unwrap();
+
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(20), answer)
+            .await
+            .expect("the connection answers")
+            .expect("the reply is sent");
+        let external_id = state.read().await.external_id.clone();
+        let _ = cmd_tx.send(ConnectionCommand::Disconnect).await;
+        tokio::task::spawn_blocking(move || connection.join().unwrap().map_err(|e| e.to_string()))
+            .await
+            .unwrap()
+            .expect("the connection ends cleanly");
+
+        let methods = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        Fork {
+            answer,
+            external_id,
+            methods,
+            target,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn forks_in_the_target_directory_and_answers_once_attached() {
+        let fork = fork(AgentType::ClaudeCode, &[], None).await;
+
+        assert_eq!(fork.answer.as_deref().unwrap(), "s2");
+        assert_eq!(fork.external_id.as_deref(), Some("s2"));
+        let forks = fork.calls("session/fork");
+        assert_eq!(forks.len(), 1);
+        assert_eq!(forks[0]["sessionId"], "s1");
+        assert_eq!(forks[0]["cwd"], json!(fork.target));
+        let resumes = fork.calls("session/resume");
+        assert_eq!(resumes.len(), 1);
+        assert_eq!(resumes[0]["sessionId"], "s2");
+        assert_eq!(resumes[0]["cwd"], json!(fork.target));
+        assert!(fork.calls("session/new").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_agent_without_fork_is_refused_before_anything_is_sent() {
+        let fork = fork(AgentType::ClaudeCode, &["no-fork"], None).await;
+
+        assert_eq!(fork.refusal(), ForkRefusal::NotSupported);
+        assert!(fork.calls("session/fork").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_agent_without_resume_is_refused_before_anything_is_sent() {
+        let fork = fork(AgentType::ClaudeCode, &["no-resume"], None).await;
+
+        assert_eq!(fork.refusal(), ForkRefusal::NoResume);
+        assert!(fork.calls("session/fork").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_custom_agent_is_refused_before_anything_is_sent() {
+        let custom = AgentType::custom("script-agent").unwrap();
+        let fork = fork(custom, &[], None).await;
+
+        assert_eq!(fork.refusal(), ForkRefusal::CustomAgent);
+        assert!(fork.calls("session/fork").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_fork_answers_with_the_error() {
+        let fork = fork(AgentType::ClaudeCode, &["session/fork-fails"], None).await;
+
+        assert!(matches!(fork.answer, Err(AcpError::Protocol(_))));
+        assert!(fork.calls("session/resume").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_rejected_fork_point_stays_typed() {
+        let point = ForkPoint {
+            message_id: "m1".into(),
+            message_fingerprint: None,
+            message_occurrence: None,
+        };
+        let fork = fork(
+            AgentType::ClaudeCode,
+            &["session/fork-invalid"],
+            Some(point),
+        )
+        .await;
+
+        assert!(matches!(fork.answer, Err(AcpError::ForkPointRejected(_))));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_resume_of_the_fork_is_fatal() {
+        let fork = fork(AgentType::ClaudeCode, &["session/resume-fails"], None).await;
+
+        assert!(matches!(fork.answer, Err(AcpError::Protocol(_))));
     }
 }

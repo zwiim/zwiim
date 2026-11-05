@@ -2233,6 +2233,48 @@ impl ClaudeRecordAccumulator {
     }
 }
 
+/// Give the last reply a native fork copied its source's time. Claude stamps
+/// that record with the moment of the fork; the source session keeps the real
+/// one. With the source gone the stamp stands.
+fn restore_forked_reply_time(messages: &mut [UnifiedMessage], bytes: &[u8], path: &Path) {
+    let reply = bytes
+        .rsplit(|b| *b == b'\n')
+        .filter_map(|line| std::str::from_utf8(line).ok())
+        .filter(|line| line.contains("\"forkedFrom\""))
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|value| value.get("type").and_then(|t| t.as_str()) == Some("assistant"));
+    let Some(reply) = reply else {
+        return;
+    };
+    let text = |value: &serde_json::Value, pointer: &str| value.pointer(pointer)?.as_str().map(String::from);
+    let (Some(uuid), Some(source_id), Some(source_uuid)) = (
+        text(&reply, "/uuid"),
+        text(&reply, "/forkedFrom/sessionId"),
+        text(&reply, "/forkedFrom/messageUuid"),
+    ) else {
+        return;
+    };
+    if !is_safe_subagent_id(&source_id) {
+        return;
+    }
+    let Ok(source) = fs::read_to_string(path.with_file_name(format!("{source_id}.jsonl"))) else {
+        return;
+    };
+    let copied_at = source
+        .lines()
+        .filter(|line| line.contains(&source_uuid))
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|value| text(value, "/uuid").as_deref() == Some(source_uuid.as_str()))
+        .and_then(|value| parse_timestamp(&value));
+    let Some(copied_at) = copied_at else {
+        return;
+    };
+    if let Some(message) = messages.iter_mut().rev().find(|m| m.id == uuid) {
+        message.timestamp = copied_at;
+        message.completed_at = Some(copied_at);
+    }
+}
+
 impl ClaudeParser {
     fn parse_conversation_detail(
         &self,
@@ -2264,7 +2306,7 @@ impl ClaudeParser {
         acc.finalize_background_lifecycle();
 
         let ClaudeRecordAccumulator {
-            messages,
+            mut messages,
             cwd,
             git_branch,
             model,
@@ -2275,6 +2317,7 @@ impl ClaudeParser {
             last_timestamp,
             ..
         } = acc;
+        restore_forked_reply_time(&mut messages, &bytes, path);
 
         let folder_path = cwd.clone();
         let folder_name = folder_path.as_ref().map(|p| folder_name_from_path(p));
@@ -3162,6 +3205,64 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+
+    fn forked_session_lines(reply_at: &str) -> String {
+        let prompt = r#"{"type":"user","timestamp":"2026-09-05T03:40:00.000Z","uuid":"u1","message":{"role":"user","content":"go"}}"#;
+        let reply = format!(
+            r#"{{"type":"assistant","timestamp":"{reply_at}","uuid":"f1","forkedFrom":{{"sessionId":"sess-source","messageUuid":"a1"}},"message":{{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{{"type":"text","text":"done"}}]}}}}"#
+        );
+        format!("{prompt}\n{reply}\n")
+    }
+
+    /// Claude stamps the last reply a fork of an older turn copies with the
+    /// moment of the fork, which would stretch that turn by however long the
+    /// source sat idle.
+    #[test]
+    fn a_forked_reply_keeps_the_time_of_the_reply_it_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("-Users-test-proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let source = r#"{"type":"assistant","timestamp":"2026-09-05T03:40:02.000Z","uuid":"a1","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"done"}]}}"#;
+        std::fs::write(proj.join("sess-source.jsonl"), format!("{source}\n")).unwrap();
+        std::fs::write(
+            proj.join("sess-fork.jsonl"),
+            forked_session_lines("2026-09-05T06:41:00.000Z"),
+        )
+        .unwrap();
+
+        let parser = ClaudeParser::with_base_dir(dir.path().to_path_buf());
+        let detail = parser.get_conversation("sess-fork").unwrap();
+        let reply = detail
+            .turns
+            .iter()
+            .find(|t| matches!(t.role, TurnRole::Assistant))
+            .unwrap();
+
+        assert_eq!(reply.completed_at.unwrap().to_rfc3339(), "2026-09-05T03:40:02+00:00");
+        assert_eq!(reply.duration_ms, Some(2_000));
+    }
+
+    #[test]
+    fn a_forked_reply_whose_source_is_gone_keeps_its_own_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("-Users-test-proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(
+            proj.join("sess-fork.jsonl"),
+            forked_session_lines("2026-09-05T03:40:03.000Z"),
+        )
+        .unwrap();
+
+        let parser = ClaudeParser::with_base_dir(dir.path().to_path_buf());
+        let detail = parser.get_conversation("sess-fork").unwrap();
+        let reply = detail
+            .turns
+            .iter()
+            .find(|t| matches!(t.role, TurnRole::Assistant))
+            .unwrap();
+
+        assert_eq!(reply.duration_ms, Some(3_000));
+    }
 
     /// A resume replays the surviving history into the SAME transcript,
     /// boundary records included — byte-identical, original uuid and timestamp

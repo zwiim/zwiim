@@ -95,9 +95,13 @@ describe("evaluateCompatibility", () => {
     expect(hasCapability(c, "session.revert.chat")).toBe(false);
   });
 
-  it("speaks revision 28 and arranges workspaces", () => {
-    expect(CLIENT_REVISION).toBe(28);
+  it("arranges workspaces", () => {
     expect(CLIENT_CAPABILITIES).toContain("workspace.layout");
+  });
+
+  it("speaks revision 29 and forks sessions", () => {
+    expect(CLIENT_REVISION).toBe(29);
+    expect(CLIENT_CAPABILITIES).toContain("session.fork");
   });
 
   it("speaks revision 27", () => {

@@ -23,7 +23,7 @@ from the list). Mockups: `~/.gstack/projects/Ashish1101-zwiim-v1/designs/mobile-
 - Mobile is a projection of Host state. It never owns workspace/session/agent state.
 - Only design against capabilities the SDK exposes (`clients/sdk`). No push
   notifications (no push infrastructure exists), no file editing, no git write
-  actions beyond what the protocol offers, no session fork (not a protocol op yet).
+  actions beyond what the protocol offers.
 - "What happened while I was away" is tracked **on the device** (last-seen event
   `seq` per session, stored locally). It needs no Host change.
 
@@ -488,6 +488,28 @@ Cache write, Reasoning, Total, values in mono with tabular numbers. A figure
 the agent didn't report reads `not reported` in `faint`; nothing is estimated,
 and Left is only `Window − In use` when both were reported. Footnote: "As
 ⟨agent⟩ reports them. Nothing here is estimated."
+
+**Forking from a turn**: right after a finished turn's time, a fork icon in
+`mut`, a 44pt target labelled **Fork** (nothing on a Host without `session.fork`). Off
+at 40% while the agent runs or offline, with the reason as the accessibility
+hint. A tap opens a sheet with **Fork here** and **Fork to new worktree**, as
+the Host offers them through the turn's `fork_targets`. Picking one forks and
+opens the new session over this one, with a success haptic, so Back returns to
+the source, which keeps running. Forking an older turn in place asks first in
+the same sheet: the files stay as they are now and the new session is told so.
+A refusal shows there too, in `err`. A fork opens in the same place every time:
+titled **Fork of ⟨title⟩**, idle, with the source's model, permission and thinking
+options, and whatever was in the source's composer already typed or attached. No
+agent turn runs on its own. Where the agent can't take the chat over, a `Transcript
+of ⟨title⟩.md` goes with the first message; a new worktree always works this way.
+It stays pending until a turn that carried it ends well. If the file is gone the
+send is refused once, in `err`, and sending again goes on without it.
+A fork's transcript opens with **Forked
+from ⟨title⟩**, `accent` and linking back while the store lists the source,
+`mut` otherwise. Desktop keeps the icon in the same place, ahead of the file
+chips, and shows the options in a popover on hover or click: a click pins it until Escape, a click
+elsewhere or a pick. While forking is off the options stay there, disabled,
+with the reason as a tooltip, as is the older-turn note.
 
 **Request sheet** (shared by list and session): title from the request;
 - permission: command block or diff list (file header rows, unified diff in `code`,
@@ -1005,3 +1027,6 @@ glyph, a title, one line, one action.
 | 2026-11-03 | PR check counts fold under the status on both clients | User call: `Checks running 2 running · 3 passed · 1 skipped` wrapped and crowded the strip. The status alone says how the PR stands; the counts and each check open from it (Desktop toggles them under the status, the phone shows them in the PR sheet). Screen readers still hear the counts on the phone strip |
 | 2026-11-03 | Starting composers hint at task lists | User call: nothing told people how to get the tasks strip. The agent makes the list, so the first-prompt placeholders on both clients (Desktop new session and new worktree, phone New session) add "Ask for a task list to track progress"; later replies keep their short placeholders |
 | 2026-11-05 | Workspace groups: Host-owned, one level, drag on Desktop, menus on the phone | User call (D1 A, D2 A, D3 A), from feedback asking for a "backend" folder and drag for everything. The word is "group" because "plain folder" already means a non-Git workspace. The layout lives on the Host so Desktop and phone agree; folds stay device-local. No icon or color, so the sidebar stays uncolored and a group never reads as a repository. A drop target is neutral with a `ring`, because `brand` fill means selection or needs you. Long-press on a phone row now opens an actions level instead of jumping to Remove, the only way to give move a home without native gesture dependencies. |
+| 2026-11-05 | Fork under each finished turn; older in-place fork confirms on the phone | Plan: both clients offer the Host's `fork_targets` under the turn's footer. A fork in place of an older turn leaves the agent behind the files, and a phone has no tooltip for that, so it asks in a sheet first |
+| 2026-11-05 | A fork opens idle and carries the draft | User call: a fork should cost nothing until the user speaks. No automatic turn; the chat reaches the agent natively, or as a transcript file with the first message. The composer draft and options come along, so a fork carries on from where the user was. |
+| 2026-11-05 | Fork options sit behind an icon | User call: two text actions under every turn were too loud. A fork icon stands in for them. Desktop opens a popover on hover or click, the phone has no hover so a tap opens the fork sheet, which also carries the older-turn word so two sheets never run in sequence. |

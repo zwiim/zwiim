@@ -6,10 +6,86 @@
 
 use sacp::schema::{ForkSessionRequest, ForkSessionResponse, SessionId};
 use sacp::{Agent, ConnectionTo, UntypedMessage};
+use tokio::sync::oneshot;
 
 use crate::acp::error::AcpError;
 use crate::models::agent::AgentType;
 use crate::models::message::{ContentBlock, MessageTurn, TurnRole};
+
+/// Which agent session a new connection opens.
+#[derive(Debug)]
+pub enum LaunchIntent {
+    /// A brand-new agent session.
+    New,
+    /// The agent session with this native id.
+    Resume(String),
+    /// A fork of the agent session `source`, in this connection's working
+    /// directory. `reply` answers with the new native id once the session is
+    /// attached and ready to prompt. A dropped sender means the connection died
+    /// first.
+    Fork {
+        source: String,
+        point: Option<ForkPoint>,
+        reply: oneshot::Sender<Result<String, AcpError>>,
+    },
+}
+
+impl LaunchIntent {
+    /// The session this connection itself will hold, which is what a live
+    /// connection can be reused for. `source` of a fork is not that session.
+    pub fn resume_id(&self) -> Option<&str> {
+        match self {
+            Self::Resume(id) => Some(id),
+            Self::New | Self::Fork { .. } => None,
+        }
+    }
+}
+
+impl From<Option<String>> for LaunchIntent {
+    fn from(resume: Option<String>) -> Self {
+        resume.map_or(Self::New, Self::Resume)
+    }
+}
+
+/// Why a fresh connection will not fork its session natively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForkRefusal {
+    /// The agent does not advertise `session/fork`.
+    NotSupported,
+    /// The agent does not advertise `session/resume`, and a forked session
+    /// keeps the source's MCP servers until it is resumed here.
+    NoResume,
+    /// Zwiim records a custom agent's transcript itself, and a fork's transcript
+    /// starts empty: the chat would be gone from the new session.
+    CustomAgent,
+}
+
+impl std::fmt::Display for ForkRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NotSupported => "the agent cannot fork a session",
+            Self::NoResume => "the agent cannot resume a forked session",
+            Self::CustomAgent => "a custom agent's transcript does not carry across a fork",
+        })
+    }
+}
+
+/// Whether a fresh connection can fork, from what the agent advertised.
+pub fn fork_refusal(
+    supports_fork: bool,
+    supports_resume: bool,
+    custom_agent: bool,
+) -> Option<ForkRefusal> {
+    if !supports_fork {
+        Some(ForkRefusal::NotSupported)
+    } else if !supports_resume {
+        Some(ForkRefusal::NoResume)
+    } else if custom_agent {
+        Some(ForkRefusal::CustomAgent)
+    } else {
+        None
+    }
+}
 
 /// Where in the history to fork, for the agents that can honour it.
 ///
@@ -49,7 +125,7 @@ use crate::models::message::{ContentBlock, MessageTurn, TurnRole};
 ///
 /// All three strip a trailing `:segment:<n>` before matching, so ids must not
 /// carry one.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForkPoint {
     pub message_id: String,
     pub message_fingerprint: Option<String>,
@@ -250,6 +326,39 @@ fn fork_error(e: sacp::Error, pointed: bool) -> AcpError {
 mod tests {
     use super::*;
     use chrono::Utc;
+
+    #[test]
+    fn only_a_resume_can_reuse_a_live_connection() {
+        let (reply, _rx) = oneshot::channel();
+        let fork = LaunchIntent::Fork {
+            source: "s1".into(),
+            point: None,
+            reply,
+        };
+        assert_eq!(fork.resume_id(), None);
+        assert_eq!(LaunchIntent::New.resume_id(), None);
+        assert_eq!(LaunchIntent::Resume("s1".into()).resume_id(), Some("s1"));
+    }
+
+    #[test]
+    fn a_fresh_fork_needs_fork_and_resume_on_a_built_in_agent() {
+        assert_eq!(fork_refusal(true, true, false), None);
+        assert_eq!(
+            fork_refusal(false, true, false),
+            Some(ForkRefusal::NotSupported)
+        );
+        assert_eq!(fork_refusal(true, false, false), Some(ForkRefusal::NoResume));
+        assert_eq!(
+            fork_refusal(true, true, true),
+            Some(ForkRefusal::CustomAgent)
+        );
+    }
+
+    #[test]
+    fn a_refusal_has_a_stable_code() {
+        let error = AcpError::ForkRefused(ForkRefusal::NoResume);
+        assert_eq!(error.code(), Some("fork_refused"));
+    }
 
     fn turn(id: &str, role: TurnRole, text: &str, agent_message_id: Option<&str>) -> MessageTurn {
         MessageTurn {

@@ -4,7 +4,9 @@ import {
   EMPTY_PENDING,
   fileNameOf,
   needsUpload,
+  keepForkedFiles,
   pendingReducer,
+  takeForkedFiles,
   uploadError,
   uploadPending,
   type PendingAction,
@@ -21,6 +23,16 @@ const picked = (id: string, size = 1000, name = `${id}.pdf`) => ({
   uri: `file:///cache/${name}`,
 });
 const add = (state: PendingState, ...files: ReturnType<typeof picked>[]) => pendingReducer(state, { type: "add", files });
+
+describe("files left in a session that forked", () => {
+  it("wait for the fork's composer, once", () => {
+    const files = add(EMPTY_PENDING, picked("a")).files;
+    keepForkedFiles("s2", files);
+    expect(takeForkedFiles("s1")).toEqual([]);
+    expect(takeForkedFiles("s2")).toEqual(files);
+    expect(takeForkedFiles("s2")).toEqual([]);
+  });
+});
 
 describe("files chosen for a message", () => {
   it("refuses files over 10 MB and more than 10 per message, keeping the rest", () => {

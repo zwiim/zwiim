@@ -87,3 +87,36 @@ export function ContinuedInRow({ sessionId, onOpenSession }: { sessionId: string
     </button>
   );
 }
+
+/** Above a forked session's chat: where it came from, a link while that session is listed. */
+export function ForkedFromRow({
+  from,
+  onOpenSession,
+}: {
+  from: { session_id: string; title?: string | null };
+  onOpenSession?(workspaceId: string, id: string): void;
+}) {
+  const workspaceId = useHost((s) => {
+    for (const [id, list] of Object.entries(s.sessionsByWorkspace)) {
+      if (list.some((x) => x.session_id === from.session_id)) return id;
+    }
+    return null;
+  });
+  const listed = useSessionTitle(from.session_id);
+  const label = `Forked from ${from.title || listed || "a session that is gone"}`;
+  return (
+    <p className="text-muted-foreground text-xs" data-testid="forked-from">
+      {workspaceId !== null && onOpenSession ? (
+        <button
+          type="button"
+          className="hover:text-foreground underline-offset-2 transition-colors hover:underline"
+          onClick={() => onOpenSession(workspaceId, from.session_id)}
+        >
+          {label}
+        </button>
+      ) : (
+        label
+      )}
+    </p>
+  );
+}

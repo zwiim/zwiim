@@ -16,6 +16,7 @@ use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOr
 use serde::{Deserialize, Serialize};
 
 use crate::acp::error::AcpError;
+use crate::acp::fork::LaunchIntent;
 use crate::acp::manager::ConnectionManager;
 use crate::acp::plan_approval::{PlanApprovalAnswer, PlanApprovalDecision};
 use crate::acp::question::{QuestionAnswer, QuestionAnswerItem};
@@ -210,8 +211,8 @@ pub async fn history_generation(state: &AppState, session_id: &str) -> Option<u6
 /// substitute one that registers a synthetic connection.
 pub trait AgentLauncher: Send + Sync {
     /// `folder_id` is `working_dir`'s workspace, whose variables
-    /// (`crate::workspace::scripts::workspace_env`) the agent gets. `resume_external_id` is the
-    /// agent-native session to load, `None` for a brand-new agent session.
+    /// (`crate::workspace::scripts::workspace_env`) the agent gets. `intent` is
+    /// the agent session to open.
     /// `preferred` are native option values the agent is set to before it is
     /// first used; values it no longer offers are skipped.
     fn launch(
@@ -219,7 +220,7 @@ pub trait AgentLauncher: Send + Sync {
         agent_type: AgentType,
         working_dir: String,
         folder_id: i32,
-        resume_external_id: Option<String>,
+        intent: LaunchIntent,
         preferred: BTreeMap<String, String>,
     ) -> impl Future<Output = Result<String, ZwiimError>> + Send;
 }
@@ -236,13 +237,17 @@ impl AgentLauncher for RuntimeLauncher<'_> {
         agent_type: AgentType,
         working_dir: String,
         folder_id: i32,
-        resume_external_id: Option<String>,
+        intent: LaunchIntent,
         preferred: BTreeMap<String, String>,
     ) -> Result<String, ZwiimError> {
+        let existing_session = match &intent {
+            LaunchIntent::New => None,
+            LaunchIntent::Resume(id) | LaunchIntent::Fork { source: id, .. } => Some(id.as_str()),
+        };
         let runtime_env = crate::commands::acp::build_session_runtime_env(
             &self.state.db,
             agent_type,
-            resume_external_id.as_deref(),
+            existing_session,
             &self.state.data_dir,
         )
         .await?;
@@ -263,7 +268,7 @@ impl AgentLauncher for RuntimeLauncher<'_> {
             .spawn_agent_with_env(
                 agent_type,
                 Some(working_dir),
-                resume_external_id,
+                intent,
                 runtime_env,
                 repository_env,
                 "zwiim".to_string(),
@@ -305,10 +310,10 @@ static STARTING: LazyLock<std::sync::Mutex<HashMap<String, usize>>> =
     LazyLock::new(Default::default);
 
 /// A new session being started in a workspace, counted until dropped.
-struct StartingGuard(String);
+pub(crate) struct StartingGuard(String);
 
 impl StartingGuard {
-    fn new(workspace_id: &str) -> Self {
+    pub(crate) fn new(workspace_id: &str) -> Self {
         let mut starting = STARTING.lock().unwrap_or_else(|e| e.into_inner());
         *starting.entry(workspace_id.to_string()).or_default() += 1;
         Self(workspace_id.to_string())
@@ -343,7 +348,7 @@ fn empty_prompt() -> ZwiimError {
     ZwiimError::invalid_input("Prompt must contain at least one block")
 }
 
-async fn session_id_of(db: &AppDatabase, conversation_id: i32) -> Result<String, ZwiimError> {
+pub(crate) async fn session_id_of(db: &AppDatabase, conversation_id: i32) -> Result<String, ZwiimError> {
     conversation::Entity::find_by_id(conversation_id)
         .one(&db.conn)
         .await
@@ -409,7 +414,13 @@ pub(crate) async fn start_tracked<L: AgentLauncher>(
     // `launching` is held through the first prompt, so the new agent's turn
     // is under way before anything can change the workspace's branch.
     let connection_id = launcher
-        .launch(agent_type, folder.path, folder.id, None, preferred.clone().unwrap_or_default())
+        .launch(
+            agent_type,
+            folder.path,
+            folder.id,
+            LaunchIntent::New,
+            preferred.clone().unwrap_or_default(),
+        )
         .await?;
     if preferred.is_none() {
         if let Err(e) =
@@ -478,7 +489,7 @@ async fn ensure_live<L: AgentLauncher>(
             agent_type,
             folder.path.clone(),
             folder.id,
-            row.external_id.clone(),
+            row.external_id.clone().into(),
             preferred,
         )
         .await?;
@@ -536,7 +547,7 @@ pub(crate) async fn send_locked<L: AgentLauncher>(
     connections: &ConnectionManager,
     launcher: &L,
     row: &conversation::Model,
-    blocks: Vec<PromptInputBlock>,
+    mut blocks: Vec<PromptInputBlock>,
     client_message_id: Option<String>,
     tag: Option<TurnTag>,
 ) -> Result<(), ZwiimError> {
@@ -547,7 +558,11 @@ pub(crate) async fn send_locked<L: AgentLauncher>(
     if folder.parent_id.is_none() {
         return Err(ZwiimError::root_workspace());
     }
+    let owed = crate::session_fork::prepare_message(db, connections, row, &mut blocks).await?;
     let (connection_id, spawned) = ensure_live(db, connections, launcher, row, &folder).await?;
+    if spawned {
+        crate::session_fork::apply_held_options(connections, &connection_id, &owed).await;
+    }
     // Branch A of `send_prompt_linked`: a freshly resumed connection adopts
     // this row; an already-linked one ignores both ids.
     let sent = connections
@@ -568,6 +583,7 @@ pub(crate) async fn send_locked<L: AgentLauncher>(
         }
         return Err(e.into());
     }
+    crate::session_fork::message_sent(db, row, &owed, spawned).await;
     // Cleared after dispatch so a failed send keeps the Retry; a new turn can't
     // fail as can't-reach (60s or more) before this runs, so it can't be erased.
     if let Err(e) =
@@ -1563,7 +1579,7 @@ pub(crate) mod orchestration_tests {
     use crate::db::test_helpers::{fresh_in_memory_db, seed_worktree_folder};
     use crate::web::event_bridge::{emit_with_state, EventEmitter};
     use std::path::Path;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
     /// A connection and the `refs/zwiim` refs present when its prompt arrived.
@@ -1571,6 +1587,8 @@ pub(crate) mod orchestration_tests {
     /// A connection and the blocks of a prompt it received.
     type BlocksAtPrompt = (String, Vec<PromptInputBlock>);
     type ForkAsked = (String, Option<crate::acp::fork::ForkPoint>);
+    /// Where a fork's answer goes.
+    type ForkReply = tokio::sync::oneshot::Sender<Result<String, crate::acp::error::AcpError>>;
 
     /// Launches in-process fake agents: a live command channel whose commands
     /// are recorded, and an agent-native session id like a real ACP handshake.
@@ -1599,6 +1617,18 @@ pub(crate) mod orchestration_tests {
         pub fork_point_rejected: Arc<std::sync::atomic::AtomicBool>,
         /// When set, an agent answers a fork only once this is notified.
         pub fork_gate: Arc<std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>>,
+        /// Every launch that forks, as `(source, point, directory)`.
+        pub fork_launches: std::sync::Mutex<Vec<(String, Option<crate::acp::fork::ForkPoint>, String)>>,
+        /// A forking connection dies without answering.
+        pub fork_lost: AtomicBool,
+        /// A forking connection never answers.
+        pub fork_hangs: AtomicBool,
+        /// Answers of forks that hang, held so they never resolve.
+        pub fork_unanswered: std::sync::Mutex<Vec<ForkReply>>,
+        /// No agent starts.
+        pub launch_fails: AtomicBool,
+        /// What agents advertise as soon as they start.
+        pub advertises: std::sync::Mutex<Option<Vec<crate::acp::types::SessionConfigOptionInfo>>>,
         pub delay: Duration,
     }
 
@@ -1618,6 +1648,12 @@ pub(crate) mod orchestration_tests {
                 fork_fails: Default::default(),
                 fork_point_rejected: Default::default(),
                 fork_gate: Default::default(),
+                fork_launches: Default::default(),
+                fork_lost: Default::default(),
+                fork_hangs: Default::default(),
+                fork_unanswered: Default::default(),
+                launch_fails: Default::default(),
+                advertises: Default::default(),
                 delay: Duration::ZERO,
             }
         }
@@ -1649,10 +1685,14 @@ pub(crate) mod orchestration_tests {
             agent_type: AgentType,
             working_dir: String,
             _folder_id: i32,
-            resume_external_id: Option<String>,
+            intent: LaunchIntent,
             _preferred: BTreeMap<String, String>,
         ) -> Result<String, ZwiimError> {
             tokio::time::sleep(self.delay).await;
+            if self.launch_fails.load(Ordering::SeqCst) {
+                return Err(ZwiimError::internal());
+            }
+            let resume_external_id = intent.resume_id().map(str::to_string);
             let n = self.launches.fetch_add(1, Ordering::SeqCst) + 1;
             let id = format!("fake-conn-{n}");
             self.working_dirs.lock().unwrap().push(working_dir.clone());
@@ -1668,14 +1708,50 @@ pub(crate) mod orchestration_tests {
             let native = resume_external_id
                 .clone()
                 .unwrap_or_else(|| format!("native-{n}"));
-            self.connections
-                .get_state(&id)
-                .await
-                .expect("state")
-                .write()
-                .await
-                .external_id = Some(native);
+            {
+                let state = self.connections.get_state(&id).await.expect("state");
+                let mut state = state.write().await;
+                state.external_id = Some(native);
+                if let Some(options) = self.advertises.lock().unwrap().clone() {
+                    state.config_options = Some(options);
+                    state.selectors_ready = true;
+                }
+            }
             self.resumed.lock().unwrap().push(resume_external_id);
+            if let LaunchIntent::Fork {
+                source,
+                point,
+                reply,
+            } = intent
+            {
+                self.fork_launches
+                    .lock()
+                    .unwrap()
+                    .push((source, point, working_dir.clone()));
+                if self.fork_hangs.load(Ordering::SeqCst) {
+                    self.fork_unanswered.lock().unwrap().push(reply);
+                } else if self.fork_fails.load(Ordering::SeqCst) {
+                    let _ = reply.send(Err(crate::acp::error::AcpError::ForkRefused(
+                        crate::acp::fork::ForkRefusal::NotSupported,
+                    )));
+                } else if self.fork_point_rejected.load(Ordering::SeqCst) {
+                    let _ = reply.send(Err(crate::acp::error::AcpError::ForkPointRejected(
+                        "no such message".to_string(),
+                    )));
+                } else if self.fork_lost.load(Ordering::SeqCst) {
+                    drop(reply);
+                } else {
+                    let forked = format!("native-fork-{n}");
+                    self.connections
+                        .get_state(&id)
+                        .await
+                        .expect("state")
+                        .write()
+                        .await
+                        .external_id = Some(forked.clone());
+                    let _ = reply.send(Ok(forked));
+                }
+            }
             let log = self.commands.clone();
             let prompts = self.prompts.clone();
             let prompt_blocks = self.prompt_blocks.clone();
@@ -1719,7 +1795,21 @@ pub(crate) mod orchestration_tests {
                             config_sets
                                 .lock()
                                 .unwrap()
-                                .push((conn.clone(), config_id, value_id));
+                                .push((conn.clone(), config_id.clone(), value_id.clone()));
+                            // Like an agent: it holds the value from here on.
+                            if let Some(state) = connections.get_state(&conn).await {
+                                let mut state = state.write().await;
+                                let option = state
+                                    .config_options
+                                    .iter_mut()
+                                    .flatten()
+                                    .find(|o| o.id == config_id);
+                                if let Some(crate::acp::types::SessionConfigKindInfo::Select(select)) =
+                                    option.map(|o| &mut o.kind)
+                                {
+                                    select.current_value = value_id;
+                                }
+                            }
                             "other"
                         }
                         ConnectionCommand::Cancel => "cancel",
@@ -1853,7 +1943,7 @@ pub(crate) mod orchestration_tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    fn checkpoint_ref(sid: &str, turn: u32, phase: &str) -> String {
+    pub(crate) fn checkpoint_ref(sid: &str, turn: u32, phase: &str) -> String {
         format!("refs/zwiim/checkpoints/{sid}/{turn}/{phase}")
     }
 
@@ -2355,7 +2445,7 @@ pub(crate) mod orchestration_tests {
                 agent_type: AgentType,
                 _working_dir: String,
                 _folder_id: i32,
-                _resume: Option<String>,
+                _intent: LaunchIntent,
                 _preferred: BTreeMap<String, String>,
             ) -> Result<String, ZwiimError> {
                 self.0
@@ -2734,7 +2824,7 @@ pub(crate) mod orchestration_tests {
             _agent_type: AgentType,
             _working_dir: String,
             _folder_id: i32,
-            _resume_external_id: Option<String>,
+            _intent: LaunchIntent,
             _preferred: BTreeMap<String, String>,
         ) -> Result<String, ZwiimError> {
             Err(ZwiimError::session_not_live())
@@ -3072,7 +3162,7 @@ pub(crate) mod orchestration_tests {
 
     /// A Codex session in the Git workspace `dir` that ran `prompts` to the
     /// end. During turn `k` the agent writes `a.txt` as `after <prompt> <k>`.
-    async fn ran(
+    pub(crate) async fn ran(
         db: &AppDatabase,
         mgr: &ConnectionManager,
         launcher: &FakeLauncher,
@@ -3084,7 +3174,7 @@ pub(crate) mod orchestration_tests {
     }
 
     /// [`ran`] with an `agent` session, on `launcher`'s first connection.
-    async fn ran_as(
+    pub(crate) async fn ran_as(
         db: &AppDatabase,
         mgr: &ConnectionManager,
         launcher: &FakeLauncher,

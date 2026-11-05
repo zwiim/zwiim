@@ -24,11 +24,13 @@ import {
   isClientError,
   meterTakesNowBar,
   offersChatRewind,
+  offersFork,
   revertNotes,
   workspaceFile,
   type AgentRequest,
   type AgentType,
   type AttachmentBlock,
+  type ForkTarget,
   type PlanContinues,
   type PlanUi,
   type SavedPlan,
@@ -37,7 +39,7 @@ import {
   waitingText,
 } from "@zwiim/sdk";
 import { pickFiles, pickPhotos } from "../attachments/native";
-import { UPLOAD_FAILED_MESSAGE } from "../attachments/pending";
+import { keepForkedFiles, takeForkedFiles, UPLOAD_FAILED_MESSAGE } from "../attachments/pending";
 import { usePendingAttachments } from "../attachments/usePendingAttachments";
 import { fileScreen, openTarget } from "../preview/model";
 import { useCurrentHost, useHostState, useNow } from "../app/hooks";
@@ -67,6 +69,7 @@ import {
   runContinue,
   stoppedTitle,
 } from "../sessions/plan";
+import { forkDisabledNote, forkedSendError, forkError, forkNote, type TurnFork } from "../sessions/fork";
 import { canReset, oneReset, revertError } from "../sessions/revert";
 import { offeredAgents } from "../sessions/start";
 import { stopAgentError } from "../host/removal";
@@ -85,6 +88,8 @@ import {
   ErrorRow,
   UnreachableCard,
   FooterRow,
+  ForkedFromRow,
+  ForkSheet,
   NowAction,
   NowBar,
   ResumePanel,
@@ -356,6 +361,8 @@ function useKeyboardShown(): boolean {
 }
 
 function sendError(e: unknown, hostName: string): string {
+  const refused = forkedSendError(e);
+  if (refused) return refused;
   if (isClientError(e, "attachment_not_found")) return ATTACHMENT_GONE_MESSAGE;
   if (isClientError(e, "turn_in_progress")) return "The agent is still working. Stop it or wait.";
   if (isClientError(e, "unknown_outcome")) return "Not sure that went through. Refreshed from your Mac.";
@@ -450,7 +457,14 @@ function Live({
   const [resetError, setResetError] = useState<string | null>(null);
   const [resetNotes, setResetNotes] = useState<string[]>([]);
   const [runReset] = useState(() => oneReset<void>());
-  const attachments = usePendingAttachments(hostName);
+  // The fork a sheet is up for, and the one taken at a time.
+  const [forkPick, setForkPick] = useState<TurnFork | null>(null);
+  const [forkAsk, setForkAsk] = useState<{ turn_id: string; target: ForkTarget; note: string | null } | null>(null);
+  const [forkBusy, setForkBusy] = useState(false);
+  const [forkFailed, setForkFailed] = useState<string | null>(null);
+  const [runFork] = useState(() => oneReset<void>());
+  const [startingFiles] = useState(() => takeForkedFiles(session_id));
+  const attachments = usePendingAttachments(hostName, startingFiles);
   const workspace_id = item.workspace_id;
   const canAttach = attachments.enabled && workspace_id !== null;
 
@@ -568,6 +582,42 @@ function Live({
     });
   };
 
+  const fork = (turn_id: string, target: ForkTarget) =>
+    runFork(async () => {
+      setForkBusy(true);
+      setForkFailed(null);
+      try {
+        const forked = await currentHost.forkSession(session_id, turn_id, target);
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setForkAsk(null);
+        currentHost.setDraft(forked.session_id, draft);
+        keepForkedFiles(forked.session_id, attachments.files);
+        openForked(forked.session_id);
+      } catch (e) {
+        setForkAsk((asked) => asked ?? { turn_id, target, note: null });
+        setForkFailed(forkError(e, hostName));
+      } finally {
+        setForkBusy(false);
+      }
+    });
+  const pickFork = (turn: TurnFork) => {
+    setForkFailed(null);
+    setForkPick(turn);
+  };
+  const askFork = (turn: TurnFork, target: ForkTarget) => {
+    setForkPick(null);
+    setForkFailed(null);
+    const note = forkNote(turn, target);
+    if (note) setForkAsk({ turn_id: turn.turn_id, target, note });
+    else void fork(turn.turn_id, target);
+  };
+  const closeFork = () => {
+    if (forkBusy) return;
+    setForkPick(null);
+    setForkAsk(null);
+    setForkFailed(null);
+  };
+
   const stop = async () => {
     setStopping(true);
     setNotice(null);
@@ -608,22 +658,27 @@ function Live({
   const openStarted = (id: string) => nav.replace("Session", { session_id: id, started: true });
   // A session this plan came from or went to opens over this one, so Back returns here.
   const openLinked = (id: string) => nav.push("Session", { session_id: id });
+  // The same, for a session the Host's feed may not list yet.
+  const openForked = (id: string) => nav.push("Session", { session_id: id, started: true });
   // The handlers are only called on a press, after a commit.
-  const latest = useRef({ onTool, openSent, openImage, askReset, retryTurn, retryInNewChat, openStarted, openLinked });
+  const latest = useRef({ onTool, openSent, openImage, askReset, pickFork, retryTurn, retryInNewChat, openStarted, openLinked });
   useLayoutEffect(() => {
-    latest.current = { onTool, openSent, openImage, askReset, retryTurn, retryInNewChat, openStarted, openLinked };
+    latest.current = { onTool, openSent, openImage, askReset, pickFork, retryTurn, retryInNewChat, openStarted, openLinked };
   });
   const [actions] = useState(() => ({
     onTool: (tool: ToolItem) => latest.current.onTool(tool),
     openSent: (file: AttachmentBlock) => latest.current.openSent(file),
     openImage: (path: string) => latest.current.openImage(path),
     askReset: (point: RevertPoint) => latest.current.askReset(point),
+    pickFork: (turn: TurnFork) => latest.current.pickFork(turn),
     retryTurn: () => latest.current.retryTurn(),
     retryInNewChat: () => latest.current.retryInNewChat(),
     openStarted: (id: string) => latest.current.openStarted(id),
     openLinked: (id: string) => latest.current.openLinked(id),
   }));
   const hasWorkspace = workspace_id !== null;
+  const canFork = hasWorkspace && offersFork(connection?.compat ?? null);
+  const forkDisabled = forkDisabledNote(connected, running || forkBusy);
   // Each cell is memoized on its row and index, and its gap depends on the row
   // below it. That holds because a change to a row's neighbour always changes
   // the row's index or identity: rows are added only at the newest end (every
@@ -648,6 +703,8 @@ function Live({
             onOpenImage={hasWorkspace ? actions.openImage : undefined}
             onRevert={resettable ? actions.askReset : undefined}
             revertDisabled={running || !connected}
+            onFork={canFork ? actions.pickFork : undefined}
+            forkDisabled={forkDisabled}
             continued={continues && row.key === firstUserKey ? { continues, onOpenSession: actions.openLinked } : undefined}
             unreachable={{
               agentName,
@@ -661,7 +718,7 @@ function Live({
         </View>
       );
     },
-    [actions, toolFile, fileOf, onOpenFile, hasWorkspace, resettable, running, connected, agentName, hostName, continues, firstUserKey],
+    [actions, toolFile, fileOf, onOpenFile, hasWorkspace, resettable, canFork, forkDisabled, running, connected, agentName, hostName, continues, firstUserKey],
   );
 
   const nowBar = (tick: number) => {
@@ -751,6 +808,9 @@ function Live({
                 ) : null}
               </View>
             }
+            ListFooterComponent={
+              view?.forkedFrom ? <ForkedFrom from={view.forkedFrom} onOpenSession={actions.openLinked} /> : null
+            }
             testID="transcript"
           />
         )}
@@ -828,6 +888,18 @@ function Live({
         onReset={(choice) => void reset(choice)}
         onClose={closeReset}
       />
+      <ForkSheet
+        visible={forkPick !== null || forkAsk !== null}
+        choices={forkPick?.targets ?? null}
+        onPick={(target) => forkPick && askFork(forkPick, target)}
+        target={forkAsk?.target ?? "current"}
+        note={forkAsk?.note ?? null}
+        error={forkFailed}
+        forking={forkBusy}
+        disabled={!connected || running}
+        onFork={() => forkAsk && void fork(forkAsk.turn_id, forkAsk.target)}
+        onClose={closeFork}
+      />
       {request ? (
         <RequestSheet
           visible={reviewing && connected}
@@ -875,6 +947,24 @@ function ContinuedFirst({
       onOpenFile={onOpenFile}
       onOpenFrom={listed !== undefined ? () => onOpenSession(continues.session_id) : undefined}
       revert={onRevert ? <RevertAction onPress={onRevert} disabled={revertDisabled} /> : undefined}
+    />
+  );
+}
+
+/** Above a forked session's first message. Links back only while the store lists its source. */
+function ForkedFrom({
+  from,
+  onOpenSession,
+}: {
+  from: { session_id: string; title?: string | null };
+  onOpenSession(id: string): void;
+}) {
+  const state = useHostState();
+  const listed = listedTitle(state.sessionsByWorkspace, from.session_id);
+  return (
+    <ForkedFromRow
+      title={from.title || listed || null}
+      onOpen={listed !== undefined ? () => onOpenSession(from.session_id) : undefined}
     />
   );
 }
@@ -1018,6 +1108,8 @@ function Row({
   onOpenImage,
   onRevert,
   revertDisabled,
+  onFork,
+  forkDisabled,
   continued,
   unreachable,
 }: {
@@ -1030,6 +1122,8 @@ function Row({
   onOpenImage?(path: string): void;
   onRevert?(point: RevertPoint): void;
   revertDisabled: boolean;
+  onFork?(fork: TurnFork): void;
+  forkDisabled?: string | null;
   /** Set on the first message of a session that continues a plan: it shows as a card. */
   continued?: { continues: PlanContinues; onOpenSession(id: string): void };
   /** What the can't-reach card needs; only the transcript's top level has one. */
@@ -1129,7 +1223,18 @@ function Row({
         <ErrorRow message={row.message} />
       );
     case "footer":
-      return <FooterRow text={row.text} stopped={row.stopped} files={row.files} fileOf={fileOf} onOpenFile={onOpenFile} />;
+      return (
+        <FooterRow
+          text={row.text}
+          stopped={row.stopped}
+          files={row.files}
+          fileOf={fileOf}
+          onOpenFile={onOpenFile}
+          fork={row.fork}
+          forkDisabled={forkDisabled}
+          onFork={onFork}
+        />
+      );
   }
 }
 

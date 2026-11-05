@@ -584,6 +584,10 @@ export function Workbench({
                       workspaceId={workspaceId}
                       sessionId={sessionId}
                       onSessionStarted={setSessionId}
+                onOpenSession={(wid, id) => {
+                  setWorkspaceId(wid);
+                  selectSession(id);
+                }}
                       onContinue={
                         readOnlyRoot
                           ? () =>

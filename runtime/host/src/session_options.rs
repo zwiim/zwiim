@@ -100,7 +100,7 @@ pub struct SessionOptions {
 }
 
 /// A requested change; absent fields are left alone.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OptionsRequest {
     #[serde(default)]

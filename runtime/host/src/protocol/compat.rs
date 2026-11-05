@@ -273,7 +273,16 @@ use serde::{Deserialize, Serialize};
 /// and worktrees. It reconciles rather than refuses: ids that are gone drop
 /// out, rows it does not name go to the end of their container, and only a
 /// structural mistake is an error. `workspace.list` keeps its order.
-pub const PROTOCOL_REVISION: u32 = 28;
+///
+/// Revision 29 (`session.fork`): `session.fork {session_id, turn_id, target}`
+/// starts a new session from a finished exchange, in the same worktree
+/// (`current`) or in a new one holding the files as they were at that turn
+/// (`new_worktree`), and returns `{session_id, workspace_id}`. The original
+/// session is left as it was. `session.history` gains `fork_targets` on the
+/// turns that can be forked and `forked_from {session_id, title}`; a refused
+/// fork is `fork_unavailable`. `session.send` to a fork whose transcript file
+/// is gone is refused once with `transcript_missing`.
+pub const PROTOCOL_REVISION: u32 = 29;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -333,6 +342,7 @@ pub const CAPABILITIES: &[&str] = &[
     "agent.progress",
     "session.continue_plan",
     "workspace.layout",
+    "session.fork",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -598,7 +608,14 @@ mod tests {
     fn compat_advertises_workspace_layout() {
         assert!(CAPABILITIES.contains(&"workspace.layout"));
         // `workspace.group_*` and `workspace.layout_set`.
-        assert_eq!(PROTOCOL_REVISION, 28);
+        assert!(PROTOCOL_REVISION >= 28);
+    }
+
+    #[test]
+    fn compat_advertises_session_fork() {
+        assert!(CAPABILITIES.contains(&"session.fork"));
+        // `session.fork`, `fork_targets` and `forked_from`.
+        assert_eq!(PROTOCOL_REVISION, 29);
     }
 
     #[test]

@@ -10,12 +10,14 @@ import type {
   AgentSummary,
   AgentType,
   CloneStart,
+  ForkTarget,
   FollowUpOutcome,
   GithubAuth,
   GithubRepoPage,
   HostOwner,
   MergeMethod,
   OpParams,
+  OpResult,
   OptionsRequest,
   PrAutoMerged,
   PrEntry,
@@ -485,6 +487,16 @@ export class HostController {
     });
   }
 
+  /**
+   * Start a new session from turn `turn_id` (one whose history turn lists
+   * `target` in `fork_targets`), leaving this one as it is. Refused with
+   * `turn_in_progress`, `workspace_busy`, `checkpoint_unavailable`,
+   * `root_workspace` or `fork_unavailable`. Never retried.
+   */
+  async forkSession(session_id: string, turn_id: string, target: ForkTarget): Promise<OpResult<"session.fork">> {
+    return this.client.forkSession({ session_id, turn_id, target });
+  }
+
   /** Stage and commit `files` (repo-relative). Never retried. */
   async commit(workspace_id: string, message: string, files: string[]): Promise<number> {
     const { committed_files } = await this.client.request("git.commit", { workspace_id, message, files });
@@ -623,7 +635,7 @@ export class HostController {
     try {
       do {
         this.historyDirty.delete(session_id);
-        const { turns, history_generation, last_error, progress, continues, continued_in } = await this.client.request("session.history", { session_id });
+        const { turns, history_generation, last_error, progress, continues, continued_in, forked_from } = await this.client.request("session.history", { session_id });
         if (!this.openSessions.has(session_id)) return;
         const settled = this.store.getState().sessions[session_id]?.settled ?? null;
         const delay = HISTORY_SETTLE_DELAYS_MS[settleAttempt];
@@ -646,6 +658,7 @@ export class HostController {
             savedPlan: progress ?? null,
             continues: continues ?? null,
             continuedIn: continued_in?.session_id ?? null,
+            forkedFrom: forked_from ?? null,
           },
         });
       } while (this.historyDirty.has(session_id));

@@ -318,6 +318,15 @@ describe("session subscriptions", () => {
     ]);
   });
 
+  it("forks a session once, never retried", async () => {
+    const t = setup();
+    t.transport.handlers["session.fork"] = () => ({ session_id: "s2", workspace_id: "w2" });
+    const params = { session_id: "s1", turn_id: "turn-2", target: "new_worktree" } as const;
+    await expect(t.client.forkSession(params)).resolves.toEqual({ session_id: "s2", workspace_id: "w2" });
+    expect(t.transport.requests.at(-1)?.params).toEqual(params);
+    expect(t.transport.requests.at(-1)?.options).toEqual({ mutating: true });
+  });
+
   it("leaves a detached session detached after a revert that did not take the chat back", async () => {
     const t = setup();
     const results = [

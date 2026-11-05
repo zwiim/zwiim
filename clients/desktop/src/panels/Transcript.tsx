@@ -10,6 +10,7 @@ import {
   FilePlus2,
   FileText,
   FolderOpen,
+  GitFork,
   Globe,
   Image,
   Keyboard,
@@ -27,6 +28,8 @@ import {
 import {
   clockTime,
   firstSeen,
+  FORK_LABELS,
+  FORK_OLDER_TURN_NOTE,
   historySubagentCards,
   isLaunch,
   lateSubagentBlocks,
@@ -40,6 +43,7 @@ import {
   workspaceFile,
   type AgentImage,
   type ChangedFile,
+  type ForkTarget,
   type HistoryBlock,
   type HistoryTurn,
   type LiveBlock,
@@ -58,6 +62,7 @@ import { SentAttachments } from "@/attachments/AttachmentChip";
 import { FileLinksContext, Markdown } from "@/components/Markdown";
 import { basename, parseUnifiedDiff, type FileDiff } from "@/lib/diff";
 import { clipToolText, historyTool, liveTool, type ToolSummary } from "@/lib/tools";
+import { usePresence } from "@/lib/presence";
 import { expandToolCalls } from "@/lib/prefs";
 import { usePref } from "@/lib/use-pref";
 import { cn } from "@/lib/utils";
@@ -1371,14 +1376,28 @@ export function BackgroundWaiting({
 /** Files a turn's row shows at first, and how many more each click reveals. */
 const FOOTER_FILES = 2;
 
-/** Under a finished turn: how long it ran, when it ended, and the files it changed. */
+/** A turn's fork actions, as the Host offers them. */
+export interface TurnFork {
+  turnId: string;
+  targets: readonly ForkTarget[];
+  /** Whether a later turn follows this one. */
+  older: boolean;
+  disabledReason: string | null;
+  /** Why the Host refused this turn's last fork. */
+  error: string | null;
+  onFork(turnId: string, target: ForkTarget): void;
+}
+
+/** Under a finished turn: how long it ran, when it ended, the files it changed, and how to fork it. */
 export const TurnFooter = memo(function TurnFooter({
   group,
   stateKey,
+  fork,
 }: {
   group: TurnGroup;
   /** Where how many files it shows is kept. */
   stateKey?: string;
+  fork?: TurnFork;
 }) {
   const [shown, setShown] = useKeptState(stateKey, FOOTER_FILES);
   const time = [
@@ -1389,7 +1408,7 @@ export const TurnFooter = memo(function TurnFooter({
     .join(" · ");
   const files = group.files;
   const rest = files.slice(shown);
-  if (!time && files.length === 0) return null;
+  if (!time && files.length === 0 && !fork) return null;
   const more =
     "bg-muted hover:bg-accent hover:text-foreground flex items-center gap-1.5 rounded-md px-1.5 py-0.5 transition-colors";
   return (
@@ -1402,6 +1421,7 @@ export const TurnFooter = memo(function TurnFooter({
           {time}
         </span>
       )}
+      {fork && <ForkMenu fork={fork} />}
       {files.slice(0, shown).map((f) => (
         <FileChip key={f.path} file={f} />
       ))}
@@ -1422,9 +1442,101 @@ export const TurnFooter = memo(function TurnFooter({
           </button>
         )
       )}
+      {fork?.error && (
+        <p className="text-destructive basis-full" role="alert">
+          {fork.error}
+        </p>
+      )}
     </div>
   );
 });
+
+/** A turn's fork icon. Hover or click shows the options the Host offers; a click pins them until Escape, a click elsewhere or a pick. */
+function ForkMenu({ fork }: { fork: TurnFork }) {
+  const [hover, setHover] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const leave = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const open = hover || pinned;
+  const presence = usePresence(open);
+  const close = () => {
+    setPinned(false);
+    setHover(false);
+  };
+
+  useEffect(() => {
+    if (!pinned) return;
+    const away = (e: PointerEvent) => {
+      if (!root.current?.contains(e.target as Node)) setPinned(false);
+    };
+    document.addEventListener("pointerdown", away);
+    return () => document.removeEventListener("pointerdown", away);
+  }, [pinned]);
+
+  // On the document, ahead of everything else: a hover opens this with the focus anywhere.
+  useEffect(() => {
+    if (!open) return;
+    const escape = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      close();
+    };
+    document.addEventListener("keydown", escape, true);
+    return () => document.removeEventListener("keydown", escape, true);
+  }, [open]);
+
+  useEffect(() => () => {
+    if (leave.current) clearTimeout(leave.current);
+  }, []);
+
+  return (
+    <div
+      ref={root}
+      className="relative"
+      onMouseEnter={() => {
+        if (leave.current) clearTimeout(leave.current);
+        setHover(true);
+      }}
+      onMouseLeave={() => {
+        leave.current = setTimeout(() => setHover(false), 120);
+      }}
+    >
+      <button
+        type="button"
+        aria-label="Fork"
+        aria-expanded={open}
+        onClick={() => setPinned((p) => !p)}
+        className="hover:text-foreground hover:bg-muted focus-visible:ring-ring/50 flex size-6 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
+      >
+        <GitFork className="size-3.5" />
+      </button>
+      {presence.mounted && (
+        <div
+          className="bg-card text-card-foreground presence-pop shadow-pop absolute bottom-full left-0 z-20 mb-1 flex w-max origin-bottom-left flex-col rounded-lg border p-1 font-sans"
+          data-state={presence.state}
+          aria-hidden={!open || undefined}
+          inert={!open}
+        >
+          {fork.targets.map((target) => (
+            <button
+              key={target}
+              type="button"
+              className="hover:bg-muted rounded-sm px-2 py-1 text-left text-xs disabled:opacity-60 disabled:hover:bg-transparent"
+              disabled={fork.disabledReason !== null}
+              title={fork.disabledReason ?? (fork.older && target === "current" ? FORK_OLDER_TURN_NOTE : undefined)}
+              onClick={() => {
+                close();
+                fork.onFork(fork.turnId, target);
+              }}
+            >
+              {FORK_LABELS[target]}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** A file a turn changed; opens it whole when it is inside the workspace. */
 function FileChip({ file }: { file: ChangedFile }) {

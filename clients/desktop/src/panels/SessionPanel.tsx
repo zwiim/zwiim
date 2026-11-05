@@ -3,11 +3,16 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown, ArrowUp, GitBranch, GitBranchPlus, Loader2, Paperclip, Square } from "lucide-react";
 import {
   effortFor,
+  FORK_BUSY_NOTE,
+  FORK_OFFLINE_NOTE,
+  forkRefusalText,
+  forkTurnOf,
   hasCapability,
   historyLaunches,
   historyReply,
   isClientError,
   offersChatRewind,
+  offersFork,
   optionUnavailableDetails,
   revertNotes,
   turnGroups,
@@ -15,6 +20,7 @@ import {
   type AgentSummary,
   type AgentType,
   type ChoiceOption,
+  type ForkTarget,
   type HistoryTurn,
   type LiveTurn,
   type OpParams,
@@ -44,7 +50,8 @@ import { ContextRing } from "./ContextRing";
 import { ControlSelect, OptionsBar, UnattendedBanner } from "./OptionsBar";
 import { RequestCard } from "./RequestCard";
 import { UnreachableCard } from "./UnreachableCard";
-import { ContinuedCard } from "./ContinuedCard";
+import { ContinuedCard, ForkedFromRow } from "./ContinuedCard";
+import { dropForkedDraft, EMPTY_DRAFT, forkedDraft, keepForkedDraft, type ComposerDraft } from "./forkedDraft";
 import { PlanStrip } from "./PlanStrip";
 import { FollowUpQueue } from "./FollowUpQueue";
 import { useSlashMenu } from "./SlashCommands";
@@ -61,6 +68,7 @@ import {
   sentKeys,
   stopReasonText,
   TurnFooter,
+  type TurnFork,
   type KeptState,
 } from "./Transcript";
 
@@ -284,6 +292,8 @@ export function SessionPanel(props: {
   workspaceId: string;
   sessionId: string | null;
   onSessionStarted(id: string): void;
+  /** A session that may be in another workspace: a fork, or the one it came from. */
+  onOpenSession?(workspaceId: string, id: string): void;
   /** A repository-folder session's Continue: a new worktree for its root. */
   onContinue?(): void;
 }) {
@@ -321,6 +331,7 @@ export function SessionPanel(props: {
       root={root}
       onContinue={props.onContinue}
       onSessionStarted={props.onSessionStarted}
+      onOpenSession={props.onOpenSession}
     />
   );
 }
@@ -409,6 +420,7 @@ function OpenSession({
   root,
   onContinue,
   onSessionStarted,
+  onOpenSession,
 }: {
   workspaceId: string;
   sessionId: string;
@@ -418,6 +430,7 @@ function OpenSession({
   onContinue?(): void;
   /** A plan was handed off to a new session in this workspace. */
   onSessionStarted(id: string): void;
+  onOpenSession?(workspaceId: string, id: string): void;
 }) {
   // Neither a removed worktree nor the repository folder takes new work.
   const removed = gone || root;
@@ -431,6 +444,7 @@ function OpenSession({
   const planned = useHost((s) => hasCapability(s.connection.compat, "agent.progress"));
   const canFollowUp = useHost((s) => hasCapability(s.connection.compat, "session.follow_ups"));
   const canSteer = useHost((s) => hasCapability(s.connection.compat, "session.steer"));
+  const canFork = useHost((s) => offersFork(s.connection.compat));
   const followUps = summary?.follow_ups ?? NO_FOLLOW_UPS;
   const compat = useHost((s) => s.connection.compat);
   // Before its agent announces them (or while it is away), the commands it
@@ -443,6 +457,9 @@ function OpenSession({
   // The message a reset is being asked about, and what the last one left to say.
   const [resetting, setResetting] = useState<{ turnId: string; chat: boolean } | null>(null);
   const [resetNotes, setResetNotes] = useState<string[]>([]);
+  // A fork on its way, and which turn's the Host last refused.
+  const [forking, setForking] = useState(false);
+  const [forkError, setForkError] = useState<{ turnId: string; message: string } | null>(null);
   // A steer the agent could not take mid-turn, which waits instead.
   const [steerQueued, setSteerQueued] = useState(false);
   // What the plan's Continue was refused with.
@@ -510,6 +527,45 @@ function OpenSession({
   const [optionsBusy, setOptionsBusy] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const footers = useMemo(() => new Map((history ? turnGroups(history) : []).map((g) => [g.end, g])), [history]);
+  const lastFooter = useMemo(() => Math.max(-1, ...footers.keys()), [footers]);
+  const composerDraft = useRef(EMPTY_DRAFT);
+  const [startingDraft] = useState(() => forkedDraft(sessionId));
+  useEffect(() => dropForkedDraft(sessionId), [sessionId]);
+  const fork = useCallback(
+    async (turnId: string, target: ForkTarget) => {
+      setForking(true);
+      setForkError(null);
+      try {
+        const forked = await controller.forkSession(sessionId, turnId, target);
+        keepForkedDraft(forked.session_id, composerDraft.current);
+        onOpenSession?.(forked.workspace_id, forked.session_id);
+      } catch (e) {
+        setForkError({ turnId, message: forkRefusalText(e) ?? errorMessage(e) });
+      } finally {
+        setForking(false);
+      }
+    },
+    [controller, sessionId, onOpenSession],
+  );
+  const forkDisabled = !online ? FORK_OFFLINE_NOTE : running || forking ? FORK_BUSY_NOTE : null;
+  // One object per turn while nothing about forking changes, so streaming leaves the rows memoized.
+  const forks = useMemo(() => {
+    const out = new Map<number, TurnFork>();
+    if (!canFork || removed || !history) return out;
+    for (const [end, group] of footers) {
+      const forkTurn = forkTurnOf(history, group);
+      if (!forkTurn) continue;
+      out.set(end, {
+        turnId: forkTurn.turn_id,
+        targets: forkTurn.fork_targets!,
+        older: end !== lastFooter,
+        disabledReason: forkDisabled,
+        error: forkError?.turnId === forkTurn.turn_id ? forkError.message : null,
+        onFork: fork,
+      });
+    }
+    return out;
+  }, [canFork, removed, history, footers, lastFooter, forkDisabled, forkError, fork]);
   // A prompt already in the history while the agent still answers it has no
   // row yet, nor once it has finished until the history has the turn: that
   // live turn carries on the history's last.
@@ -642,6 +698,7 @@ function OpenSession({
               </p>
             )}
             {empty && <p className="text-muted-foreground py-10 text-center">No messages yet.</p>}
+            {view?.forkedFrom && <ForkedFromRow from={view.forkedFrom} onOpenSession={onOpenSession} />}
             {/* What is open in the history and the live turn that carries on it. */}
             <KeptStateContext.Provider value={kept}>
               {turns.length > 0 && (
@@ -662,6 +719,7 @@ function OpenSession({
                       measure={rows.measureElement}
                       turn={turns[i]!}
                       group={i !== runningEnd ? footers.get(i) : undefined}
+                      fork={forks.get(i)}
                       onRevert={removed ? undefined : askReset}
                       revertDisabled={running || !online}
                       background={view?.background ?? null}
@@ -773,6 +831,8 @@ function OpenSession({
       ) : (
         <Composer
           workspaceId={workspaceId}
+          initialDraft={startingDraft}
+          draftRef={composerDraft}
           placeholder={
             removed
               ? "This worktree was archived — the session is read-only"
@@ -925,6 +985,7 @@ const HistoryRow = memo(function HistoryRow({
   measure,
   turn,
   group,
+  fork,
   onRevert,
   revertDisabled,
   background,
@@ -938,6 +999,7 @@ const HistoryRow = memo(function HistoryRow({
   measure(el: HTMLElement | null): void;
   turn: HistoryTurn;
   group: TurnGroup | undefined;
+  fork: TurnFork | undefined;
   onRevert?(index: number): void;
   revertDisabled: boolean;
   background: SessionBackground | null;
@@ -965,7 +1027,7 @@ const HistoryRow = memo(function HistoryRow({
         carried={carried}
         userCard={card}
       />
-      {group && <TurnFooter group={group} stateKey={`${turn.turn_id}/footer`} />}
+      {group && <TurnFooter group={group} stateKey={`${turn.turn_id}/footer`} fork={fork} />}
     </div>
   );
 });
@@ -1127,6 +1189,10 @@ function Composer(props: {
   /** Where attached files are uploaded. */
   workspaceId: string;
   placeholder: string;
+  /** What the message and its files start as. */
+  initialDraft?: ComposerDraft;
+  /** Kept up to date with the message and its files, for the panel to read. */
+  draftRef?: React.RefObject<ComposerDraft>;
   disabled?: boolean;
   /** The agent is working: the message can be written but not sent. */
   busy?: boolean;
@@ -1156,14 +1222,18 @@ function Composer(props: {
   /** `steer`: into the running turn rather than after it. */
   onSend(blocks: PromptBlock[], clientMessageId: string, steer: boolean): Promise<void>;
 }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(props.initialDraft?.text ?? "");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sendMode = usePref(sendKey);
   const steerFirst = usePref(followUpMode) === "steer";
   const area = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
-  const attachments = usePendingAttachments();
+  const attachments = usePendingAttachments(props.initialDraft?.files);
+  const { draftRef } = props;
+  useEffect(() => {
+    if (draftRef) draftRef.current = { text, files: attachments.files };
+  }, [draftRef, text, attachments.files]);
   const canAttach = attachments.enabled && !props.disabled && !sending;
   const agentTerminal = props.terminal;
   const slash = useSlashMenu({

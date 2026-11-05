@@ -99,6 +99,7 @@ const OPS: &[&str] = &[
     "session.retry",
     "session.retry_in_new_chat",
     "session.continue_plan",
+    "session.fork",
     "session.follow_up",
     "session.follow_up_edit",
     "session.follow_up_remove",
@@ -447,7 +448,7 @@ async fn every_operation_requires_auth_and_rejects_in_zwiim_shape() {
         (StatusCode::METHOD_NOT_ALLOWED, json!("method_not_allowed"))
     );
     assert_eq!(
-        h.err("session.fork", json!({})).await,
+        h.err("session.teleport", json!({})).await,
         (StatusCode::NOT_FOUND, "unknown_operation".into())
     );
     // Legacy `/api` keeps its own shape.
@@ -2635,6 +2636,86 @@ async fn session_revert_speaks_zwiim_only() {
         h.err("session.revert", json!({"session_id": sid, "turn_id": "t"}))
             .await,
         (StatusCode::BAD_REQUEST, "invalid_request".into())
+    );
+}
+
+/// The op's refusals over HTTP. Its success path starts an agent, which only
+/// the orchestration tests can fake (`session_fork::tests`).
+#[tokio::test]
+async fn session_fork_speaks_zwiim_only() {
+    let h = host(false).await;
+    let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let fork = |session_id: &str, target: &str| {
+        json!({"session_id": session_id, "turn_id": "turn-404", "target": target})
+    };
+    assert_eq!(
+        h.err("session.fork", fork(&sid, "current")).await,
+        (StatusCode::CONFLICT, "fork_unavailable".into())
+    );
+    assert_eq!(
+        h.err("session.fork", fork(&sid, "new_worktree")).await,
+        (StatusCode::CONFLICT, "fork_unavailable".into())
+    );
+    assert_eq!(
+        h.err("session.fork", fork("nope", "current")).await,
+        (StatusCode::NOT_FOUND, "not_found".into())
+    );
+    assert_eq!(
+        h.err("session.fork", fork(&sid, "elsewhere")).await,
+        (StatusCode::BAD_REQUEST, "invalid_request".into())
+    );
+    assert_eq!(
+        h.err(
+            "session.fork",
+            json!({"session_id": sid, "turn_id": "t", "target": "current", "ordinal": 1})
+        )
+        .await,
+        (StatusCode::BAD_REQUEST, "invalid_request".into())
+    );
+}
+
+#[tokio::test]
+async fn history_names_the_session_a_fork_came_from() {
+    use sea_orm::{ActiveModelTrait, Set};
+
+    let h = host(false).await;
+    let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
+    let source = session_id_of(&h.state, conv).await;
+    crate::db::service::conversation_service::update_title(&h.state.db.conn, conv, "Fix the leak".into())
+        .await
+        .unwrap();
+    let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+
+    let history = h.ok("session.history", json!({"session_id": sid})).await;
+    assert!(history["forked_from"].is_null(), "{history}");
+
+    crate::db::entities::session_fork::ActiveModel {
+        session_id: Set(sid.clone()),
+        source_session_id: Set(source.clone()),
+        source_turn_id: Set("turn-1".into()),
+        created_at: Set(chrono::Utc::now()),
+        pending_transcript: Set(None),
+        transcript_sent: Set(false),
+        notice_owed: Set(false),
+        pending_options: Set(None),
+    }
+    .insert(&h.state.db.conn)
+    .await
+    .unwrap();
+    let history = h.ok("session.history", json!({"session_id": sid})).await;
+    assert_eq!(
+        history["forked_from"],
+        json!({"session_id": source, "title": "Fix the leak"})
+    );
+
+    // A source that is gone keeps its id, for a client to say so, and no title.
+    h.ok("session.delete", json!({"session_id": source})).await;
+    let history = h.ok("session.history", json!({"session_id": sid})).await;
+    assert_eq!(
+        history["forked_from"],
+        json!({"session_id": source, "title": null})
     );
 }
 

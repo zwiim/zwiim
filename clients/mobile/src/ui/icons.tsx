@@ -24,6 +24,7 @@ export {
   Folder,
   Gauge,
   GitBranchPlus,
+  GitFork,
   GitMerge,
   GitPullRequest,
   Image,

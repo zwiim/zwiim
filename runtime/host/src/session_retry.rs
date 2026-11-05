@@ -665,7 +665,7 @@ mod tests {
             _agent_type: AgentType,
             _working_dir: String,
             _folder_id: i32,
-            _resume_external_id: Option<String>,
+            _intent: crate::acp::fork::LaunchIntent,
             _preferred: std::collections::BTreeMap<String, String>,
         ) -> Result<String, ZwiimError> {
             Err(ZwiimError::agent_not_installed())

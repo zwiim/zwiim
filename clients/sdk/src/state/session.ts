@@ -106,6 +106,8 @@ export interface SessionView {
   continues: PlanContinues | null;
   /** The new session that took this session's plan over. */
   continuedIn: string | null;
+  /** The session this one was forked from; `title` is null once it is gone. */
+  forkedFrom: { session_id: string; title?: string | null } | null;
 }
 
 export type SessionFrame =
@@ -125,6 +127,7 @@ export type SessionFrame =
       savedPlan?: SavedPlan | null;
       continues?: PlanContinues | null;
       continuedIn?: string | null;
+      forkedFrom?: { session_id: string; title?: string | null } | null;
     }
   | { type: "options"; options: SessionOptions };
 
@@ -254,6 +257,7 @@ export function initialSessionView(session_id: string): SessionView {
     savedPlan: null,
     continues: null,
     continuedIn: null,
+    forkedFrom: null,
   };
 }
 
@@ -288,6 +292,7 @@ export function reduceSession(view: SessionView, frame: SessionFrame): SessionVi
         savedPlan: frame.savedPlan ?? null,
         continues: frame.continues ?? null,
         continuedIn: frame.continuedIn ?? null,
+        forkedFrom: frame.forkedFrom ?? null,
         ...withError(view, historyLastError(view, frame.lastError ?? null)),
       };
     }

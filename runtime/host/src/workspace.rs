@@ -28,7 +28,9 @@ use crate::db::entities::conversation;
 use crate::db::entities::folder::{self, FolderKind};
 use crate::db::error::DbError;
 use crate::db::AppDatabase;
-use crate::git_harness::{self, GitCaller, GitError, GitErrorCode, GitHost, GitOp, PrLifecycle};
+use crate::git_harness::{
+    self, checkpoint, GitCaller, GitError, GitErrorCode, GitHost, GitOp, PrLifecycle,
+};
 use crate::protocol::error::ZwiimError;
 use crate::terminal::manager::TerminalManager;
 use crate::web::event_bridge::EventEmitter;
@@ -922,6 +924,38 @@ pub async fn worktree_bases(repo: &str) -> Result<WorktreeBases, AppCommandError
     })
 }
 
+/// The commit and branch a worktree from `base` starts at; see
+/// [`create_worktree`].
+async fn branch_start(
+    repo: &str,
+    base: Option<&str>,
+) -> Result<(String, Option<String>), AppCommandError> {
+    Ok(match base {
+        Some(base) => {
+            refresh_remote_base(repo, base).await;
+            (branch_commit(repo, base).await?, Some(base.to_string()))
+        }
+        None => match origin_default_branch(repo).await {
+            Some(default) => {
+                refresh_remote_base(repo, &default).await;
+                (branch_commit(repo, &default).await?, Some(default))
+            }
+            None if has_origin(repo).await => {
+                return Err(AppCommandError::invalid_input(
+                    "The origin remote has no default branch here; fetch origin or choose a branch to start from",
+                ));
+            }
+            None => (
+                head_commit(repo).await?,
+                folders::resolve_git_head(repo)
+                    .await
+                    .ok()
+                    .and_then(|h| h.branch),
+            ),
+        },
+    })
+}
+
 /// Names [`create_worktree`] and [`continue_after_merge`] try before giving up.
 const NAME_ATTEMPTS: usize = 5;
 
@@ -948,6 +982,50 @@ pub async fn create_worktree(
     base: Option<&str>,
     prefix: Option<&str>,
 ) -> Result<WorkspaceInfo, AppCommandError> {
+    create_worktree_at(
+        db,
+        emitter,
+        worktrees_dir,
+        root_workspace_id,
+        WorktreeStart::Branch(base),
+        prefix,
+    )
+    .await
+}
+
+/// Where [`create_worktree_at`] starts a worktree.
+pub(crate) enum WorktreeStart<'a> {
+    /// Branch `base`, else the default; see [`create_worktree`].
+    Branch(Option<&'a str>),
+    /// The files of `checkpoint`, on a branch from the commit they were on,
+    /// or `base_commit` where that is gone. No fetch. The base is the
+    /// source's, so the worktree's diff keeps the source's earlier commits.
+    Fork {
+        checkpoint: &'a checkpoint::Checkpoint,
+        base_branch: Option<&'a str>,
+        base_commit: Option<&'a str>,
+    },
+}
+
+/// A commit in `repo`, when `oid` is one.
+async fn commit_in_repo(repo: &str, oid: &str) -> bool {
+    crate::process::tokio_command("git")
+        .args(["cat-file", "-e", &format!("{oid}^{{commit}}")])
+        .current_dir(repo)
+        .output()
+        .await
+        .is_ok_and(|out| out.status.success())
+}
+
+/// [`create_worktree`] from `start`.
+pub(crate) async fn create_worktree_at(
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+    worktrees_dir: &Path,
+    root_workspace_id: &str,
+    start: WorktreeStart<'_>,
+    prefix: Option<&str>,
+) -> Result<WorkspaceInfo, AppCommandError> {
     let root = resolve(&db.conn, root_workspace_id).await?;
     if root.parent_id.is_some() {
         return Err(AppCommandError::invalid_input(
@@ -956,32 +1034,32 @@ pub async fn create_worktree(
         .with_detail(root_workspace_id.to_string()));
     }
     crate::git_repo::ensure_git_repo(&root.path)?;
-    let (base_commit, base_branch) = match base {
-        Some(base) => {
-            refresh_remote_base(&root.path, base).await;
+    let (start_commit, base_commit, base_branch, checkpoint) = match start {
+        WorktreeStart::Branch(base) => {
+            let (commit, branch) = branch_start(&root.path, base).await?;
+            (commit.clone(), commit, branch, None)
+        }
+        WorktreeStart::Fork {
+            checkpoint,
+            base_branch,
+            base_commit,
+        } => {
+            let head = match checkpoint.head.as_deref() {
+                Some(head) if commit_in_repo(&root.path, head).await => Some(head),
+                _ => None,
+            };
+            let Some(start) = head.or(base_commit) else {
+                return Err(AppCommandError::invalid_input(
+                    "No commit to start the worktree from",
+                ));
+            };
             (
-                branch_commit(&root.path, base).await?,
-                Some(base.to_string()),
+                start.to_string(),
+                base_commit.unwrap_or(start).to_string(),
+                base_branch.map(str::to_string),
+                Some(checkpoint),
             )
         }
-        None => match origin_default_branch(&root.path).await {
-            Some(default) => {
-                refresh_remote_base(&root.path, &default).await;
-                (branch_commit(&root.path, &default).await?, Some(default))
-            }
-            None if has_origin(&root.path).await => {
-                return Err(AppCommandError::invalid_input(
-                    "The origin remote has no default branch here; fetch origin or choose a branch to start from",
-                ));
-            }
-            None => (
-                head_commit(&root.path).await?,
-                folders::resolve_git_head(&root.path)
-                    .await
-                    .ok()
-                    .and_then(|h| h.branch),
-            ),
-        },
     };
 
     let repo_name = Path::new(&root.path)
@@ -1004,7 +1082,7 @@ pub async fn create_worktree(
             root.path.clone(),
             branch.clone(),
             worktree_path.clone(),
-            Some(base_commit.clone()),
+            Some(start_commit.clone()),
         )
         .await
         {
@@ -1022,6 +1100,14 @@ pub async fn create_worktree(
     zwiim_dir::prepare(Path::new(&worktree_path)).await;
 
     let registered = async {
+        if let Some(cp) = checkpoint {
+            checkpoint::materialize(Path::new(&worktree_path), cp)
+                .await
+                .map_err(|e| {
+                    AppCommandError::invalid_input("Could not write the turn's files")
+                        .with_detail(e.message)
+                })?;
+        }
         let detail = folders::open_worktree_folder_core(db, worktree_path.clone(), root.id).await?;
         let row = folder::Entity::find_by_id(detail.id)
             .one(&db.conn)
@@ -1902,6 +1988,137 @@ mod tests {
             tree.iter()
                 .any(|n| matches!(n, folders::FileTreeNode::Dir { name, .. } if name == ".zwiim")),
             "tree lists .zwiim"
+        );
+    }
+
+    /// A checkpoint of `repo` holding edited `a.txt`, then `a.txt` moved on,
+    /// with HEAD at a second commit. Returns it with the first commit.
+    async fn fork_checkpoint(repo: &str) -> (checkpoint::Checkpoint, String) {
+        let repo = Path::new(repo);
+        let first = git(repo, &["rev-parse", "HEAD"]).trim().to_string();
+        std::fs::write(repo.join("a.txt"), "at the turn\n").unwrap();
+        git(repo, &["add", "a.txt"]);
+        git(repo, &["commit", "-q", "-m", "second"]);
+        std::fs::write(repo.join("b.txt"), "uncommitted\n").unwrap();
+        let key = checkpoint::CheckpointKey {
+            session_id: "s-fork".into(),
+            ordinal: 1,
+        };
+        checkpoint::save(repo, &key, checkpoint::Phase::End, None).await;
+        std::fs::write(repo.join("a.txt"), "later\n").unwrap();
+        std::fs::remove_file(repo.join("b.txt")).unwrap();
+        let cp = checkpoint::list(repo, "s-fork").await.unwrap().remove(0);
+        (cp, first)
+    }
+
+    #[tokio::test]
+    async fn fork_worktree_starts_at_the_checkpoint_and_keeps_the_source_base() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
+        let (cp, first) = fork_checkpoint(&repo).await;
+
+        let wt = create_worktree_at(
+            &db,
+            &EventEmitter::Noop,
+            &worktrees,
+            &root_wid,
+            WorktreeStart::Fork {
+                checkpoint: &cp,
+                base_branch: Some("main"),
+                base_commit: Some(&first),
+            },
+            None,
+        )
+        .await
+        .expect("create");
+
+        let wt_path = Path::new(&wt.path);
+        assert_eq!(
+            std::fs::read_to_string(wt_path.join("a.txt")).unwrap(),
+            "at the turn\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(wt_path.join("b.txt")).unwrap(),
+            "uncommitted\n"
+        );
+        assert!(wt_path.join(".zwiim/attachments").is_dir());
+        assert_eq!(
+            git(wt_path, &["rev-parse", "HEAD"]).trim(),
+            cp.head.as_deref().unwrap()
+        );
+        let stored = folder::Entity::find()
+            .filter(folder::Column::Path.eq(wt.path.as_str()))
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.base_commit.as_deref(), Some(first.as_str()));
+        assert_eq!(stored.base_branch.as_deref(), Some("main"));
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&repo).join("a.txt")).unwrap(),
+            "later\n",
+            "the source's files stay"
+        );
+    }
+
+    #[tokio::test]
+    async fn fork_worktree_falls_back_to_base_when_the_checkpoint_head_is_gone() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
+        let (mut cp, first) = fork_checkpoint(&repo).await;
+        cp.head = Some("1".repeat(40));
+
+        let wt = create_worktree_at(
+            &db,
+            &EventEmitter::Noop,
+            &worktrees,
+            &root_wid,
+            WorktreeStart::Fork {
+                checkpoint: &cp,
+                base_branch: None,
+                base_commit: Some(&first),
+            },
+            None,
+        )
+        .await
+        .expect("create");
+
+        assert_eq!(
+            git(Path::new(&wt.path), &["rev-parse", "HEAD"]).trim(),
+            first
+        );
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&wt.path).join("a.txt")).unwrap(),
+            "at the turn\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn fork_worktree_with_no_commit_to_start_from_leaves_nothing() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, root_wid, worktrees) = root_repo(&db).await;
+        let (mut cp, _) = fork_checkpoint(&repo).await;
+        cp.head = None;
+
+        let err = create_worktree_at(
+            &db,
+            &EventEmitter::Noop,
+            &worktrees,
+            &root_wid,
+            WorktreeStart::Fork {
+                checkpoint: &cp,
+                base_branch: None,
+                base_commit: None,
+            },
+            None,
+        )
+        .await
+        .expect_err("refused");
+
+        assert!(matches!(err.code, AppErrorCode::InvalidInput), "{err:?}");
+        assert_eq!(
+            git(Path::new(&repo), &["worktree", "list"]).lines().count(),
+            1
         );
     }
 

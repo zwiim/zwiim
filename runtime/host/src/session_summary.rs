@@ -9,7 +9,8 @@
 //!
 //! A stopped plan continued in a new chat gets the same kind of file
 //! ([`SummaryKind::PlanStopped`]), but there the agent works fine, so each
-//! tool call is listed instead of counted.
+//! tool call is listed instead of counted. So is a fork of a session whose
+//! agent cannot fork ([`SummaryKind::Forked`]), cut at the forked turn.
 
 use crate::acp::types::PromptInputBlock;
 use crate::attachments::split_note;
@@ -25,6 +26,7 @@ pub const PREVIOUS_SESSION_FILE: &str = "previous-session.md";
 const TITLE: &str = "# Earlier chat";
 const INTRO: &str = "This chat continues an earlier one that stopped because the agent couldn't reach its server. The last message below is the one that failed; it is repeated in the new chat.";
 const PLAN_STOPPED_INTRO: &str = "This chat continues an earlier one whose tasks stopped before they were finished. The tasks are in tasks.md.";
+const FORKED_INTRO: &str = "This chat branches off an earlier chat. Below is that chat up to the point it was forked; anything that happened after that point is not part of this chat.";
 const OMITTED: &str = "_(earlier turns omitted)_";
 const CUT: &str = "… [cut]";
 /// Characters kept of any one message.
@@ -39,6 +41,8 @@ pub enum SummaryKind {
     Unreachable,
     /// A plan stopped before it was finished; every tool call is listed.
     PlanStopped,
+    /// A session was forked here; every tool call is listed.
+    Forked,
 }
 
 /// One turn of the old chat: what the user sent and what the agent did.
@@ -102,6 +106,12 @@ pub fn without_failed_turns<'a>(
     turns
 }
 
+/// `history` up to and including `turn_id`, or `None` when it isn't there.
+pub fn through_turn<'a>(history: &'a [MessageTurn], turn_id: &str) -> Option<&'a [MessageTurn]> {
+    let at = history.iter().position(|t| t.id == turn_id)?;
+    Some(&history[..=at])
+}
+
 /// The last non-empty text of the last agent turn in `history`, trimmed.
 pub fn last_reply(history: &[MessageTurn]) -> Option<String> {
     let turn = history
@@ -132,7 +142,7 @@ pub fn build(
         // rendered message must match, or any unanswered empty-text turn would.
         let same_message = user_text(&last.user) == failed_text
             && (!failed_text.is_empty() || render_user(&last.user) == failed_message);
-        if kind == SummaryKind::PlanStopped || !(agent_lines(last, kind).is_empty() && same_message)
+        if kind != SummaryKind::Unreachable || !(agent_lines(last, kind).is_empty() && same_message)
         {
             break;
         }
@@ -142,8 +152,9 @@ pub fn build(
     let header = match kind {
         SummaryKind::Unreachable => format!("{TITLE}\n{INTRO}"),
         SummaryKind::PlanStopped => format!("{TITLE}\n\n{PLAN_STOPPED_INTRO}"),
+        SummaryKind::Forked => format!("{TITLE}\n\n{FORKED_INTRO}"),
     };
-    // A stopped plan has no failed message to repeat.
+    // A stopped plan or a fork has no failed message to repeat.
     let failed_section = (kind == SummaryKind::Unreachable)
         .then(|| section("## You (failed to send)", &render_failed(failed)));
     let sections: Vec<String> = turns.iter().map(|t| render_turn(t, agent, kind)).collect();
@@ -308,11 +319,12 @@ fn render_failed(blocks: &[PromptInputBlock]) -> Vec<String> {
 
 /// The agent's key messages of `turn`. `Unreachable` keeps the elided marker,
 /// the final reply (or `[Stopped]`) and the error it ended with. `PlanStopped`
-/// keeps every reply and tool call in order, then `[Stopped]` and the error.
+/// and `Forked` keep every reply and tool call in order, then `[Stopped]` and
+/// the error.
 fn agent_lines(turn: &SummaryTurn, kind: SummaryKind) -> Vec<String> {
     match kind {
         SummaryKind::Unreachable => unreachable_agent_lines(turn),
-        SummaryKind::PlanStopped => plan_stopped_agent_lines(turn),
+        SummaryKind::PlanStopped | SummaryKind::Forked => plan_stopped_agent_lines(turn),
     }
 }
 
@@ -936,5 +948,66 @@ mod tests {
         assert_eq!(turns.len(), 2);
         assert_eq!(user_text(&turns[0].agent), "a\n\nb");
         assert!(turns[1].agent.is_empty());
+    }
+
+    fn history() -> Vec<MessageTurn> {
+        [
+            ("u1", TurnRole::User, "first"),
+            ("a1", TurnRole::Assistant, "one"),
+            ("u2", TurnRole::User, "second"),
+            ("a2", TurnRole::Assistant, "two"),
+            ("u3", TurnRole::User, "third"),
+            ("a3", TurnRole::Assistant, "three"),
+        ]
+        .map(|(id, role, body)| MessageTurn {
+            id: id.into(),
+            role,
+            blocks: vec![text(body)],
+            timestamp: Default::default(),
+            usage: None,
+            duration_ms: None,
+            model: None,
+            completed_at: None,
+            agent_message_id: None,
+        })
+        .to_vec()
+    }
+
+    #[test]
+    fn a_fork_summary_stops_at_the_turn_it_forks() {
+        let history = history();
+        let kept = through_turn(&history, "a2").unwrap();
+        let out = build(&turns_from_history(kept), AGENT, &[], SummaryKind::Forked);
+
+        assert!(out.contains("second") && out.contains("two"), "{out}");
+        assert!(!out.contains("third") && !out.contains("three"), "{out}");
+    }
+
+    #[test]
+    fn a_fork_of_the_last_turn_keeps_everything() {
+        let history = history();
+        assert_eq!(through_turn(&history, "a3").unwrap().len(), history.len());
+    }
+
+    #[test]
+    fn an_unknown_turn_cuts_nothing() {
+        assert!(through_turn(&history(), "gone").is_none());
+    }
+
+    #[test]
+    fn a_fork_summary_says_it_is_a_fork_and_lists_tool_calls() {
+        let t = turn("go", vec![tool("Bash", Some("ls")), text("done")]);
+        let out = build(&[t], AGENT, &[], SummaryKind::Forked);
+
+        assert!(out.starts_with("# Earlier chat\n\n"), "{out}");
+        assert!(out.contains("branches off an earlier chat"), "{out}");
+        assert!(out.contains("Bash"), "{out}");
+        assert!(!out.contains("failed to send"), "{out}");
+    }
+
+    #[test]
+    fn a_fork_summary_keeps_an_unanswered_last_turn() {
+        let out = build(&[turn("go", vec![])], AGENT, &[], SummaryKind::Forked);
+        assert!(out.contains("go"), "{out}");
     }
 }

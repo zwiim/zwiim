@@ -19,6 +19,7 @@ use crate::acp::feedback::{
     bounded_feedback_batch, FeedbackItem, FeedbackStatus, PendingFeedback,
     SessionFeedbackAccess, MAX_FEEDBACK_CHARS, MAX_FEEDBACK_RESPONSE_BYTES,
 };
+use crate::acp::fork::LaunchIntent;
 use crate::acp::plan_approval::{
     PlanApprovalAnswer, RegisteredPlanApproval, SessionPlanApprovalAccess,
 };
@@ -762,7 +763,7 @@ impl ConnectionManager {
         self.spawn_agent_with_env(
             agent_type,
             working_dir,
-            session_id,
+            session_id.into(),
             runtime_env,
             BTreeMap::new(),
             owner_window_label,
@@ -782,7 +783,7 @@ impl ConnectionManager {
         &self,
         agent_type: AgentType,
         working_dir: Option<String>,
-        session_id: Option<String>,
+        intent: LaunchIntent,
         runtime_env: BTreeMap<String, String>,
         repository_env: BTreeMap<String, String>,
         owner_window_label: String,
@@ -813,8 +814,8 @@ impl ConnectionManager {
         // `find_connection_for_reuse`. Skipped entirely when `session_id`
         // is None (fresh sessions can't dedup — by design — since the
         // agent assigns the id).
-        let session_id_for_log = session_id.clone();
-        let dedup_lock = if let Some(sid) = session_id.as_deref() {
+        let session_id_for_log = intent.resume_id().map(str::to_string);
+        let dedup_lock = if let Some(sid) = intent.resume_id() {
             let key = SpawnDedupKey {
                 agent_type,
                 working_dir: working_dir_path.clone(),
@@ -833,13 +834,13 @@ impl ConnectionManager {
         };
 
         if let Some(existing) = self
-            .find_connection_for_reuse(agent_type, working_dir_path.as_ref(), session_id.as_deref())
+            .find_connection_for_reuse(agent_type, working_dir_path.as_ref(), intent.resume_id())
             .await
         {
             tracing::info!(
                 "[ACP] reusing connection id={} for session_id={}",
                 existing,
-                session_id.as_deref().unwrap_or("")
+                session_id_for_log.as_deref().unwrap_or("")
             );
             return Ok(existing);
         }
@@ -862,7 +863,7 @@ impl ConnectionManager {
             connection_id.clone(),
             agent_type,
             working_dir,
-            session_id,
+            intent,
             runtime_env,
             repository_env,
             owner_window_label,
@@ -1200,12 +1201,14 @@ impl ConnectionManager {
 
     /// Queue `text` for conversation `conversation_id`'s next accepted turn.
     /// It reaches the agent once, appended to that turn; the user's own
-    /// message, its broadcast and history never show it.
+    /// message, its broadcast and history never show it. One already queued
+    /// isn't queued twice, so a refused send can queue it again.
     pub fn queue_notice(&self, conversation_id: i32, text: String) {
-        self.lock_notices()
-            .entry(conversation_id)
-            .or_default()
-            .push(text);
+        let mut notices = self.lock_notices();
+        let queue = notices.entry(conversation_id).or_default();
+        if !queue.contains(&text) {
+            queue.push(text);
+        }
     }
 
     fn lock_notices(&self) -> std::sync::MutexGuard<'_, HashMap<i32, Vec<String>>> {
@@ -2188,6 +2191,82 @@ impl ConnectionManager {
             Some(cut),
         )
         .await
+    }
+
+    /// Give a session forked on a fresh connection its row.
+    ///
+    /// A deliberate exception to "no row before the first prompt", like a fork
+    /// through a transcript: the user asked for this session and it opens idle,
+    /// waiting for them. The title is locked first, so no upsert ever carries a derived one.
+    pub async fn link_forked_session(
+        &self,
+        db: &AppDatabase,
+        conn_id: &str,
+        folder_id: i32,
+        title: &str,
+        model: Option<&str>,
+    ) -> Result<i32, AcpError> {
+        let (state, emitter) = self
+            .get_state_and_emitter(conn_id)
+            .await
+            .ok_or_else(|| AcpError::ConnectionNotFound(conn_id.into()))?;
+        let prompt_lock = self.clone_prompt_lock(conn_id).await?;
+        let _prompt_guard = prompt_lock.lock_owned().await;
+        let (agent_type, external_id) = {
+            let state = state.read().await;
+            (state.agent_type, state.external_id.clone())
+        };
+        let external_id = external_id
+            .ok_or_else(|| AcpError::protocol("forked session has no id".to_string()))?;
+
+        let row = conversation_service::create_with_delegation(
+            &db.conn,
+            folder_id,
+            agent_type,
+            Some(title.to_string()),
+            None,
+            None,
+        )
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+        let filled = async {
+            conversation_service::update_status(
+                &db.conn,
+                row.id,
+                ConversationStatus::PendingReview,
+            )
+            .await?;
+            conversation_service::lock_title(&db.conn, row.id).await?;
+            if let Some(model) = model {
+                conversation_service::seed_model_if_empty(&db.conn, row.id, model).await?;
+            }
+            conversation_service::bind_external_id(&db.conn, row.id, &external_id, &[]).await
+        }
+        .await;
+        if let Err(e) = filled {
+            if let Err(cleanup) = conversation_service::soft_delete(&db.conn, row.id).await {
+                tracing::warn!(
+                    conversation_id = row.id,
+                    error = %cleanup,
+                    "[manager] failed to drop the row of a fork that could not be linked"
+                );
+            }
+            return Err(AcpError::protocol(e.to_string()));
+        }
+
+        emit_with_state(
+            &state,
+            &emitter,
+            AcpEvent::ConversationLinked {
+                conversation_id: row.id,
+                folder_id,
+                parent_conversation_id: None,
+                parent_tool_use_id: None,
+            },
+        )
+        .await;
+        crate::commands::conversations::emit_conversation_upsert(&emitter, &db.conn, row.id).await;
+        Ok(row.id)
     }
 
     async fn fork_at(
@@ -4274,7 +4353,7 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
             .spawn_agent_with_env(
                 agent_type,
                 effective_working_dir,
-                None,
+                LaunchIntent::New,
                 runtime_env,
                 repository_env,
                 owner_window,
@@ -4419,7 +4498,7 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
             .spawn_agent_with_env(
                 agent_type,
                 effective_working_dir,
-                Some(external_session_id.to_string()),
+                LaunchIntent::Resume(external_session_id.to_string()),
                 runtime_env,
                 repository_env,
                 owner_window,
@@ -5336,6 +5415,65 @@ mod tests {
         let mut rx = loop_stub.await.unwrap();
         assert!(matches!(rx.try_recv(), Ok(ConnectionCommand::Cancel)));
         assert!(rx.try_recv().is_err(), "nothing else is enqueued");
+    }
+
+    #[tokio::test]
+    async fn a_forked_session_gets_an_idle_titled_row_of_its_own() {
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder = test_helpers::seed_folder(&db, "/tmp/fork").await;
+        let source = test_helpers::seed_conversation(&db, folder, AgentType::ClaudeCode).await;
+        let row_of = |id: i32| conversation::Entity::find_by_id(id).one(&db.conn);
+        let source_before = row_of(source).await.unwrap().unwrap();
+        let mgr = ConnectionManager::new();
+        for id in ["source", "fork"] {
+            mgr.insert_test_connection(id, AgentType::ClaudeCode, None, EventEmitter::Noop)
+                .await;
+        }
+        let (source_state, _) = mgr.get_state_and_emitter("source").await.unwrap();
+        source_state.write().await.conversation_id = Some(source);
+        source_state.write().await.external_id = Some("s1".into());
+        let (fork_state, _) = mgr.get_state_and_emitter("fork").await.unwrap();
+        fork_state.write().await.external_id = Some("s2".into());
+
+        let row = mgr
+            .link_forked_session(&db, "fork", folder, "Source (fork)", Some("sonnet"))
+            .await
+            .unwrap();
+
+        let forked = row_of(row).await.unwrap().unwrap();
+        assert_ne!(row, source);
+        assert_eq!(forked.status, ConversationStatus::PendingReview);
+        assert_eq!(forked.title.as_deref(), Some("Source (fork)"));
+        assert!(forked.title_locked);
+        assert_eq!(forked.external_id.as_deref(), Some("s2"));
+        assert_eq!(forked.model.as_deref(), Some("sonnet"));
+        assert_eq!(fork_state.read().await.conversation_id, Some(row));
+
+        let source_after = row_of(source).await.unwrap().unwrap();
+        assert_eq!(source_after.status, source_before.status);
+        assert_eq!(source_after.external_id, source_before.external_id);
+        assert_eq!(source_after.updated_at, source_before.updated_at);
+        assert_eq!(source_state.read().await.conversation_id, Some(source));
+        assert_eq!(source_state.read().await.external_id.as_deref(), Some("s1"));
+    }
+
+    #[tokio::test]
+    async fn a_fork_without_a_session_leaves_no_row() {
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder = test_helpers::seed_folder(&db, "/tmp/fork").await;
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection("fork", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+
+        let linked = mgr
+            .link_forked_session(&db, "fork", folder, "Source (fork)", None)
+            .await;
+
+        assert!(linked.is_err());
+        let rows = conversation::Entity::find().all(&db.conn).await.unwrap();
+        assert!(rows.is_empty());
     }
 
     #[tokio::test]

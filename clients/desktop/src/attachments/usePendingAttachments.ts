@@ -1,7 +1,7 @@
 import { useCallback, useReducer, useRef } from "react";
 import { hasCapability, uploadAttachment, type PromptBlock } from "@zwiim/sdk";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
-import { EMPTY_PENDING, needsUpload, pendingReducer } from "./pending";
+import { needsUpload, pendingReducer, type PendingFile } from "./pending";
 
 /** What to say when a send stopped because a file did not upload. */
 export const UPLOAD_FAILED_MESSAGE = "A file did not upload. Send again to retry it, or remove it.";
@@ -21,12 +21,13 @@ export function readBase64(file: Blob): Promise<string> {
 
 /**
  * The files chosen for the next message, and their upload into the workspace
- * the message goes to. `enabled` is false against a Host without attachments.
+ * the message goes to. `initial` are files already chosen, carried from another
+ * composer. `enabled` is false against a Host without attachments.
  */
-export function usePendingAttachments() {
+export function usePendingAttachments(initial: PendingFile[] = []) {
   const controller = useController();
   const enabled = useHost((s) => hasCapability(s.connection.compat, "attachments"));
-  const [state, dispatch] = useReducer(pendingReducer, EMPTY_PENDING);
+  const [state, dispatch] = useReducer(pendingReducer, { files: initial, errors: [] });
   const current = useRef(state);
   current.current = state;
 

@@ -3,10 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CLIENT_CAPABILITIES,
   clockTime,
+  FORK_OLDER_TURN_NOTE,
   HostClient,
   HostController,
   ZwiimClientError,
   type AgentRequest,
+  type ForkTarget,
   type HistoryTurn,
   type SessionSnapshot,
   type WorkspaceInfo,
@@ -14,6 +16,7 @@ import {
 import { FileLinksContext, linkText, Markdown, workspaceFile, type FileLinks } from "@/components/Markdown";
 import { errorMessage, HostProvider } from "@/lib/host-context";
 import { rememberExpandToolCalls } from "@/lib/prefs";
+import { dropForkedDraft, forkedDraft } from "@/panels/forkedDraft";
 import { RequestCard } from "@/panels/RequestCard";
 import { SessionPanel } from "@/panels/SessionPanel";
 import { FakeTransport, hostHello, tick } from "./fakes";
@@ -47,12 +50,12 @@ const snapshot = (extra: Partial<SessionSnapshot> = {}): SessionSnapshot => ({
   ...extra,
 });
 
-async function openSession(t: FakeTransport, links?: FileLinks) {
+async function openSession(t: FakeTransport, links?: FileLinks, onOpenSession?: (workspaceId: string, id: string) => void) {
   const client = new HostClient({ transport: t });
   const controller = new HostController(client);
   client.start();
   await tick();
-  const panel = <SessionPanel workspaceId="w1" sessionId="s1" onSessionStarted={() => {}} />;
+  const panel = <SessionPanel workspaceId="w1" sessionId="s1" onSessionStarted={() => {}} onOpenSession={onOpenSession} />;
   render(
     <HostProvider value={controller}>
       {links ? <FileLinksContext.Provider value={links}>{panel}</FileLinksContext.Provider> : panel}
@@ -1159,6 +1162,210 @@ describe("changed files", () => {
     expect(within(second!).queryAllByTestId("turn-file")).toHaveLength(0);
     expect(within(second!).queryByRole("button")).toBeNull();
     controller.dispose();
+  });
+
+  describe("forking a turn", () => {
+    const forkable = (targets: ForkTarget[] = ["current", "new_worktree"]) =>
+      history([
+        at(turn("u1", "user", [{ type: "text", text: "go" }]), "2026-10-06T06:32:00Z"),
+        { ...at(turn("a1", "assistant", [{ type: "text", text: "ok" }]), "", ""), fork_targets: targets },
+        at(turn("u2", "user", [{ type: "text", text: "more" }]), "2026-10-06T06:42:00Z"),
+        { ...at(turn("a2", "assistant", [{ type: "text", text: "done" }]), "", ""), fork_targets: targets },
+      ]);
+
+    /** Opens the turn's fork icon, then finds one of its options. */
+    const forkOption = (footer: HTMLElement, name: string) => {
+      const icon = within(footer).getByRole("button", { name: "Fork" });
+      if (icon.getAttribute("aria-expanded") !== "true") fireEvent.click(icon);
+      return within(footer).getByRole("button", { name }) as HTMLButtonElement;
+    };
+
+    it("offers what the Host offers, even with no time or files to show", async () => {
+      const t = new FakeTransport();
+      t.handlers["session.history"] = forkable(["new_worktree"]);
+      const { controller } = await openSession(t);
+      const [first] = screen.getAllByTestId("turn-footer");
+      expect(forkOption(first!, "Fork to new worktree")).not.toBeNull();
+      expect(within(first!).queryByRole("button", { name: "Fork here" })).toBeNull();
+      controller.dispose();
+    });
+
+    it("puts the fork icon right after the time, ahead of the files", async () => {
+      const t = new FakeTransport();
+      t.handlers["session.history"] = history([
+        at(turn("u1", "user", [{ type: "text", text: "go" }]), "2026-10-06T06:32:00Z"),
+        {
+          ...at(turn("a1", "assistant", edit("c1", "/Users/me/zwiim/worktrees/zwiim/a9b70af5/src/a.ts")), "", "2026-10-06T06:32:12Z"),
+          fork_targets: ["current", "new_worktree"],
+        },
+      ]);
+      const { controller } = await openSession(t);
+      const [first] = screen.getAllByTestId("turn-footer");
+      const icon = within(first!).getByRole("button", { name: "Fork" });
+      expect(within(first!).getByTestId("turn-time").nextElementSibling).toBe(icon.parentElement);
+      expect(icon.compareDocumentPosition(within(first!).getByTestId("turn-file")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      controller.dispose();
+    });
+
+    it("keeps the options behind the fork icon until it is hovered, and away again after", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const t = new FakeTransport();
+      t.handlers["session.history"] = forkable();
+      const { controller } = await openSession(t);
+      const [first] = screen.getAllByTestId("turn-footer");
+      const icon = within(first!).getByRole("button", { name: "Fork" });
+      expect(within(first!).queryByRole("button", { name: "Fork here" })).toBeNull();
+      expect(first!.textContent).not.toContain("Fork here");
+      fireEvent.mouseEnter(icon.parentElement!);
+      expect(within(first!).getByRole("button", { name: "Fork here" })).not.toBeNull();
+      expect(within(first!).getByRole("button", { name: "Fork to new worktree" })).not.toBeNull();
+      fireEvent.mouseLeave(icon.parentElement!);
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+      expect(within(first!).queryByRole("button", { name: "Fork here" })).toBeNull();
+      vi.useRealTimers();
+      controller.dispose();
+    });
+
+    it("pins the options on a click, until Escape or a pick", async () => {
+      const t = new FakeTransport();
+      t.handlers["session.history"] = forkable();
+      t.handlers["session.fork"] = () => ({ session_id: "s2", workspace_id: "w2" });
+      const { controller } = await openSession(t);
+      const [first] = screen.getAllByTestId("turn-footer");
+      const icon = within(first!).getByRole("button", { name: "Fork" });
+      fireEvent.click(icon);
+      expect(icon.getAttribute("aria-expanded")).toBe("true");
+      fireEvent.keyDown(icon, { key: "Escape" });
+      expect(icon.getAttribute("aria-expanded")).toBe("false");
+      fireEvent.click(icon);
+      await act(async () => {
+        fireEvent.click(within(first!).getByRole("button", { name: "Fork here" }));
+      });
+      expect(icon.getAttribute("aria-expanded")).toBe("false");
+      controller.dispose();
+    });
+
+    it("closes on Escape wherever the focus is", async () => {
+      const t = new FakeTransport();
+      t.handlers["session.history"] = forkable();
+      const { controller } = await openSession(t);
+      const [first] = screen.getAllByTestId("turn-footer");
+      const icon = within(first!).getByRole("button", { name: "Fork" });
+      fireEvent.click(icon);
+      fireEvent.keyDown(document.body, { key: "Escape" });
+      expect(icon.getAttribute("aria-expanded")).toBe("false");
+      controller.dispose();
+    });
+
+    it("hides the actions from a Host that doesn't fork", async () => {
+      const t = new FakeTransport();
+      t.handlers["host.hello"] = () => hostHello({ capabilities: CLIENT_CAPABILITIES.filter((c) => c !== "session.fork") });
+      t.handlers["session.history"] = forkable();
+      const { controller } = await openSession(t);
+      expect(screen.queryByRole("button", { name: "Fork" })).toBeNull();
+      controller.dispose();
+    });
+
+    it("opens the new session where the Host put it", async () => {
+      const t = new FakeTransport();
+      t.handlers["session.history"] = forkable();
+      t.handlers["session.fork"] = () => ({ session_id: "s2", workspace_id: "w2" });
+      const open = vi.fn();
+      const { controller } = await openSession(t, undefined, open);
+      const [first] = screen.getAllByTestId("turn-footer");
+      const option = forkOption(first!, "Fork to new worktree");
+      await act(async () => {
+        fireEvent.click(option);
+      });
+      expect(t.calls.at(-1)?.params).toEqual({ session_id: "s1", turn_id: "a1", target: "new_worktree" });
+      expect(open).toHaveBeenCalledWith("w2", "s2");
+      controller.dispose();
+    });
+
+    it("hands what's typed to the session it opens", async () => {
+      const t = new FakeTransport();
+      t.handlers["session.history"] = forkable();
+      t.handlers["session.fork"] = () => ({ session_id: "s9", workspace_id: "w2" });
+      const { controller } = await openSession(t, undefined, vi.fn());
+      fireEvent.change(screen.getByRole("textbox"), { target: { value: "half a thought" } });
+      fireEvent.change(screen.getByTestId("attachment-input"), { target: { files: [new File(["x"], "notes.txt")] } });
+      const [first] = screen.getAllByTestId("turn-footer");
+      const option = forkOption(first!, "Fork here");
+      await act(async () => {
+        fireEvent.click(option);
+      });
+      const kept = forkedDraft("s9");
+      expect(kept.text).toBe("half a thought");
+      expect(kept.files.map((f) => f.name)).toEqual(["notes.txt"]);
+      dropForkedDraft("s9");
+      controller.dispose();
+    });
+
+    it("says why the Host refused, under the turn", async () => {
+      const t = new FakeTransport();
+      t.handlers["session.history"] = forkable();
+      t.handlers["session.fork"] = () => {
+        throw new ZwiimClientError("fork_unavailable", "x", 409);
+      };
+      const open = vi.fn();
+      const { controller } = await openSession(t, undefined, open);
+      const [first, second] = screen.getAllByTestId("turn-footer");
+      const option = forkOption(first!, "Fork here");
+      await act(async () => {
+        fireEvent.click(option);
+      });
+      expect(within(first!).getByRole("alert").textContent).toBe("This turn can't be forked.");
+      expect(within(second!).queryByRole("alert")).toBeNull();
+      expect(open).not.toHaveBeenCalled();
+      controller.dispose();
+    });
+
+    it("keeps the actions visible but off while the agent runs, and says why", async () => {
+      const t = new FakeTransport();
+      t.handlers["session.history"] = forkable();
+      const { controller, frame } = await openSession(t);
+      await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+      const [first] = screen.getAllByTestId("turn-footer");
+      const here = forkOption(first!, "Fork here");
+      expect(here.disabled).toBe(true);
+      expect(here.title).toBe("Wait for the agent to finish.");
+      controller.dispose();
+    });
+
+    it("warns only on an older turn that the files stay as they are", async () => {
+      const t = new FakeTransport();
+      t.handlers["session.history"] = forkable();
+      const { controller } = await openSession(t);
+      const [first, second] = screen.getAllByTestId("turn-footer");
+      expect(forkOption(first!, "Fork here").title).toBe(FORK_OLDER_TURN_NOTE);
+      expect(forkOption(second!, "Fork here").title).toBe("");
+      controller.dispose();
+    });
+
+    it("links to the session a fork came from, in its own workspace", async () => {
+      const t = new FakeTransport();
+      t.handlers["session.history"] = (p) => ({ session_id: p.session_id, turns: [], forked_from: { session_id: "s0", title: "Old work" } });
+      t.handlers["session.list"] = () => [{ session_id: "s0", title: "Old work" }];
+      const open = vi.fn();
+      const client = await openSession(t, undefined, open);
+      await act(async () => {
+        await client.controller.refreshSessions("w1");
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Forked from Old work" }));
+      expect(open).toHaveBeenCalledWith("w1", "s0");
+      client.controller.dispose();
+    });
+
+    it("names a source that isn't listed in plain text", async () => {
+      const t = new FakeTransport();
+      t.handlers["session.history"] = (p) => ({ session_id: p.session_id, turns: [], forked_from: { session_id: "s0", title: null } });
+      const { controller } = await openSession(t);
+      expect(screen.getByTestId("forked-from").textContent).toBe("Forked from a session that is gone");
+      expect(screen.queryByRole("button", { name: /Forked from/ })).toBeNull();
+      controller.dispose();
+    });
   });
 
   it("has no row yet for the turn the agent is still answering", async () => {

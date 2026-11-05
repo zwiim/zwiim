@@ -7,6 +7,7 @@
 
 import {
   clockTime,
+  forkTurnOf,
   historyLaunches,
   historySubagentCards,
   lateSubagentBlocks,
@@ -34,6 +35,8 @@ import {
   type ToolCall,
   type ToolCallStatus,
 } from "@zwiim/sdk";
+
+import type { TurnFork } from "./fork";
 
 export type ToolState = "running" | "done" | "failed" | "idle";
 
@@ -96,7 +99,7 @@ export type TranscriptRow =
   /** The agent could not reach its provider: the card offers to try again. */
   | { type: "unreachable"; key: string; message: string }
   | { type: "image"; key: string; image: AgentImage }
-  | { type: "footer"; key: string; text: string; stopped: boolean; files: ChangedFile[] };
+  | { type: "footer"; key: string; text: string; stopped: boolean; files: ChangedFile[]; fork: TurnFork | null };
 
 /** A row a run folds: a tool call or a sub-agent. */
 export type FoldedRow = Extract<TranscriptRow, { type: "tool" | "subagent" }>;
@@ -623,7 +626,7 @@ export function transcriptBuilder(): (view: SessionView | undefined, retry?: boo
       rows.push({ type: unreachable ? "unreachable" : "error", key: unreachable ? `last-error-${view.errorSerial}` : "last-error", message: view.lastError.message });
     }
     // A turn not yet in the history gets its time once the history has it.
-    if (stopped && shownLive) rows.push({ type: "footer", key: "footer", text: stopped, stopped: true, files: [] });
+    if (stopped && shownLive) rows.push({ type: "footer", key: "footer", text: stopped, stopped: true, files: [], fork: null });
     return rows;
   };
 }
@@ -638,7 +641,8 @@ function historyPieces(
   background: SessionBackground | null,
 ): Piece[] {
   // Under each answered prompt: how long it ran, when it ended, what it changed.
-  const groups = new Map(turnGroups(turns).map((g) => [g.end, g]));
+  const answered = turnGroups(turns);
+  const groups = new Map(answered.map((g) => [g.end, g]));
   const pieces: Piece[] = [];
   turns.forEach((turn, i) => {
     const last = i === turns.length - 1 && !shownLive;
@@ -650,7 +654,9 @@ function historyPieces(
     const time = [g.durationMs !== null ? turnDuration(g.durationMs) : "", g.completedAt ? clockTime(g.completedAt) : ""];
     const stop = last ? stopped : null;
     const text = [stop, ...time].filter(Boolean).join(" · ");
-    pieces.push({ type: "footer", key: `footer:${turn.turn_id}`, text, stopped: !!stop, files: g.files });
+    const from = forkTurnOf(turns, g);
+    const fork = from && { turn_id: from.turn_id, targets: from.fork_targets!, older: g !== answered.at(-1) };
+    pieces.push({ type: "footer", key: `footer:${turn.turn_id}`, text, stopped: !!stop, files: g.files, fork });
   });
   return pieces;
 }

@@ -65,6 +65,10 @@ export type HostErrorCode =
   | "file_too_large_for_remote"
   /** `session.revert`: the turn has no saved state that is certainly its own. */
   | "checkpoint_unavailable"
+  /** `session.fork`: this turn can't be forked now; re-read the session's history. */
+  | "fork_unavailable"
+  /** `session.send`: a forked session's transcript file is gone; sending again goes on without it. */
+  | "transcript_missing"
   /** `session.retry` / `session.retry_in_new_chat`: the session has no saved can't-reach turn to retry. */
   | "nothing_to_retry"
   /** `agent.error` code: the agent could not reach its provider's server. */
@@ -1230,6 +1234,9 @@ export type HistoryBlock =
       background?: "completed" | "failed" | "stopped" | null;
     };
 
+/** Where a forked session runs: this worktree, or a new one holding the files as at the turn. */
+export type ForkTarget = "current" | "new_worktree";
+
 export interface HistoryTurn {
   turn_id: string;
   role: string;
@@ -1238,6 +1245,11 @@ export interface HistoryTurn {
    * started with. Absent on agent turns and from older Hosts.
    */
   revertible?: boolean;
+  /**
+   * Set only on the last agent turn of a finished exchange: where
+   * `session.fork` can start from here. Absent from Hosts before revision 29.
+   */
+  fork_targets?: ForkTarget[];
   blocks: HistoryBlock[];
   timestamp: string;
   completed_at: string | null;
@@ -1282,6 +1294,8 @@ export interface SessionHistory {
   continues?: PlanContinues | null;
   /** The new session that took this session's plan over. Absent before revision 26. */
   continued_in?: { session_id: string } | null;
+  /** The session this one was forked from; `title` is null once it is gone. Absent before revision 29. */
+  forked_from?: { session_id: string; title?: string | null } | null;
 }
 
 // ─── pull requests ───────────────────────────────────────────────────────
@@ -1848,6 +1862,15 @@ export interface Operations {
    */
   "session.continue_plan": [{ session_id: string; agent?: AgentType }, { session_id: string; plan_id: string }];
   /**
+   * Start a new session from a turn with `fork_targets`, leaving this session
+   * as it was. `session_id` is the NEW session. Capability `session.fork`.
+   * `fork_unavailable` when the turn can't be forked to `target` now.
+   */
+  "session.fork": [
+    { session_id: string; turn_id: string; target: ForkTarget },
+    { session_id: string; workspace_id: string },
+  ];
+  /**
    * Send now when the agent is idle and nothing is queued, else queue behind
    * what is. The Host sends the next one when a turn ends normally; a stopped
    * or failed turn holds the queue. Capability `session.follow_ups`.
@@ -1984,6 +2007,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "session.retry",
   "session.retry_in_new_chat",
   "session.continue_plan",
+  "session.fork",
   "session.follow_up",
   "session.follow_up_send",
   "session.respond",
