@@ -196,6 +196,9 @@ fn main() -> ExitCode {
         }
     };
 
+    #[cfg(unix)]
+    zwiim_host::process::link_shipped_gh(&resolved_data_dir);
+
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

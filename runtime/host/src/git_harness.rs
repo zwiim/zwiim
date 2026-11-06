@@ -70,9 +70,15 @@ pub use pr_state::{
     PrState,
 };
 
-/// The `gh` the Host runs: `configured`, else the user's installed one.
+/// The `gh` the Host runs: `configured`, else the one shipped with it, else
+/// the user's installed one.
 pub fn find_gh(configured: Option<&Path>) -> Result<PathBuf, GitError> {
     run::find_gh(configured)
+}
+
+/// The `gh` shipped with the Host, if it is there.
+pub fn shipped_gh() -> Option<PathBuf> {
+    run::shipped_gh()
 }
 
 /// The Host services the Harness runs against.

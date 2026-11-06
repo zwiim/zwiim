@@ -15,6 +15,7 @@ have their own versions and are listed under Compatibility.
 - A fork now works the same for every agent: a `Transcript of <title>.md` chip waits at the top of the composer, holding the chat under `User` and `Assistant` headings. Open it to read it, remove it with its X, or send it alone. The Host holds it, so it survives a restart and shows on the phone too. `Fork here` is now `Fork to new tab`.
 - Desktop: the fork icon opens its menu on a click, not when the mouse passes over it.
 - A fork that hasn't started says where it is: `New chat in <workspace>`, or for a new worktree what was created and how many files were copied.
+- Agents run the GitHub CLI that ships with Zwiim, and a terminal falls back to it when you have no `gh` of your own. Terminals still prefer yours.
 
 ### Fixed
 - None.
@@ -32,7 +33,7 @@ have their own versions and are listed under Compatibility.
 - `session_forks` gains `worktree_files`, added by migration on Host start.
 
 ### Known limitations
-- None.
+- An agent that runs commands through a login shell can still get your own `gh`, because your shell profile reorders `PATH`.
 
 ## [0.1.0-rc.14] - 2026-11-05
 

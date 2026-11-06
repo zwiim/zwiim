@@ -1,6 +1,7 @@
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 #[cfg(windows)]
@@ -564,6 +565,65 @@ pub(crate) fn prepend_to_path(dir: &std::path::Path) {
     std::env::set_var("PATH", new_path);
 }
 
+/// Set by [`link_shipped_gh`]; a Host with no `gh` of its own leaves it unset.
+static SHIPPED_GH_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Put the `gh` shipped with this Host at a path that survives updates, in a
+/// folder of its own so a child's `PATH` picks up nothing else. Called once
+/// when the Host starts, which also repoints it at the running version.
+#[cfg(unix)]
+pub fn link_shipped_gh(data_dir: &std::path::Path) {
+    let Some(gh) = crate::git_harness::shipped_gh() else {
+        return;
+    };
+    let bin = crate::update::install::root(data_dir).join("bin");
+    match link_gh(&gh, &bin) {
+        Ok(dir) => {
+            let _ = SHIPPED_GH_DIR.set(dir);
+        }
+        // The Host's own calls don't go through this link; only a child's
+        // `gh` is affected, and that falls back to the user's.
+        Err(e) => tracing::warn!("[SERVER] Could not link the shipped gh: {e}"),
+    }
+}
+
+/// Link `bin/gh` to `gh` in one step, so a child never finds it missing.
+#[cfg(unix)]
+fn link_gh(gh: &std::path::Path, bin: &std::path::Path) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(bin)?;
+    let temp = bin.join(format!(".gh-{}", std::process::id()));
+    let _ = std::fs::remove_file(&temp);
+    std::os::unix::fs::symlink(gh, &temp)?;
+    std::fs::rename(&temp, bin.join(crate::update::install::GH_BIN))?;
+    Ok(bin.to_path_buf())
+}
+
+/// The folder [`link_shipped_gh`] set up, once it has.
+pub(crate) fn shipped_gh_dir() -> Option<&'static std::path::Path> {
+    SHIPPED_GH_DIR.get().map(PathBuf::as_path)
+}
+
+fn path_without(path: &OsStr, dir: &std::path::Path) -> Vec<PathBuf> {
+    std::env::split_paths(path)
+        .filter(|entry| !entry.as_os_str().is_empty() && entry != dir)
+        .collect()
+}
+
+/// `path` with `dir` first, for a child that must get the shipped `gh`.
+pub(crate) fn gh_first_on_path(path: &OsStr, dir: &std::path::Path) -> OsString {
+    let entries = std::iter::once(dir.to_path_buf()).chain(path_without(path, dir));
+    std::env::join_paths(entries).unwrap_or_else(|_| path.to_owned())
+}
+
+/// `path` with `dir` last, for a child that should keep the user's own `gh`
+/// and fall back to the shipped one.
+pub(crate) fn gh_last_on_path(path: &OsStr, dir: &std::path::Path) -> OsString {
+    let entries = path_without(path, dir)
+        .into_iter()
+        .chain(std::iter::once(dir.to_path_buf()));
+    std::env::join_paths(entries).unwrap_or_else(|_| path.to_owned())
+}
+
 /// Return the user-local npm prefix directory (`~/.zwiim/npm-global/`).
 ///
 /// Used as a fallback when `npm install -g` fails with EACCES because the
@@ -653,9 +713,66 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_lines_lossy, spawn_retrying_exec_busy, spawn_retrying_exec_busy_within};
+    use super::{
+        collect_lines_lossy, gh_first_on_path, gh_last_on_path, spawn_retrying_exec_busy,
+        spawn_retrying_exec_busy_within,
+    };
+    use std::ffi::OsStr;
     use std::io::Cursor;
+    use std::path::Path;
     use std::time::Duration;
+
+    #[cfg(unix)]
+    #[test]
+    fn gh_first_puts_the_folder_ahead_of_everything() {
+        let path = gh_first_on_path(OsStr::new("/usr/bin:/bin"), Path::new("/data/bin"));
+        assert_eq!(path, "/data/bin:/usr/bin:/bin");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gh_last_leaves_the_users_folders_ahead() {
+        let path = gh_last_on_path(OsStr::new("/usr/bin:/bin"), Path::new("/data/bin"));
+        assert_eq!(path, "/usr/bin:/bin:/data/bin");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gh_folder_is_moved_rather_than_repeated() {
+        let dir = Path::new("/data/bin");
+        let already = OsStr::new("/data/bin:/usr/bin:/data/bin:/bin");
+        assert_eq!(gh_first_on_path(already, dir), "/data/bin:/usr/bin:/bin");
+        assert_eq!(gh_last_on_path(already, dir), "/usr/bin:/bin:/data/bin");
+    }
+
+    #[test]
+    fn gh_folder_alone_when_path_is_empty() {
+        let dir = Path::new("/data/bin");
+        assert_eq!(gh_first_on_path(OsStr::new(""), dir), "/data/bin");
+        assert_eq!(gh_last_on_path(OsStr::new(""), dir), "/data/bin");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_gh_and_repoints_it_at_the_running_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let (old, new) = (dir.path().join("old/gh"), dir.path().join("new/gh"));
+        for gh in [&old, &new] {
+            std::fs::create_dir_all(gh.parent().unwrap()).unwrap();
+            std::fs::write(gh, b"").unwrap();
+        }
+        let bin = dir.path().join("data/runtime/bin");
+
+        assert_eq!(super::link_gh(&old, &bin).unwrap(), bin);
+        assert_eq!(std::fs::read_link(bin.join("gh")).unwrap(), old);
+        assert_eq!(super::link_gh(&new, &bin).unwrap(), bin);
+        assert_eq!(std::fs::read_link(bin.join("gh")).unwrap(), new);
+        assert_eq!(
+            std::fs::read_dir(&bin).unwrap().count(),
+            1,
+            "no temp link left"
+        );
+    }
 
     #[tokio::test]
     async fn collect_lines_lossy_preserves_lines_around_invalid_utf8() {

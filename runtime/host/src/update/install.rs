@@ -10,6 +10,7 @@
 //!   state.json            current, previous, staged, trial, blocked, seen, last
 //!   channel.json          the release channel this Host follows
 //!   versions/<v>/         zwiim-host, zwiim-mcp
+//!   bin/gh                link to the running version's gh, for child processes
 //!   .staging-*  .trash-*  in-flight work, swept on the next run
 //! ```
 //!

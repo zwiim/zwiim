@@ -193,8 +193,7 @@ fn find_gh_from(
             Err(gh_unavailable())
         };
     }
-    let shipped = host_dir.map(|dir| dir.join(crate::update::install::GH_BIN));
-    if let Some(path) = shipped.filter(|p| is_executable(p)) {
+    if let Some(path) = host_dir.and_then(shipped_gh_in) {
         return Ok(path);
     }
     if let Ok(path) = which::which("gh") {
@@ -210,6 +209,15 @@ fn find_gh_from(
     .find(|p| p.is_file())
     .map(Path::to_path_buf)
     .ok_or_else(gh_unavailable)
+}
+
+/// The `gh` shipped next to the Host executable, if it is there.
+pub(super) fn shipped_gh() -> Option<std::path::PathBuf> {
+    shipped_gh_in(crate::update::runtime::self_exe().parent()?)
+}
+
+fn shipped_gh_in(host_dir: &Path) -> Option<std::path::PathBuf> {
+    Some(host_dir.join(crate::update::install::GH_BIN)).filter(|p| is_executable(p))
 }
 
 fn is_executable(path: &Path) -> bool {

@@ -218,6 +218,7 @@ fn merge_agent_env_with_color(
     // even when Zwiim installed the binary outside the user's shell PATH — the
     // Windows self-managed dir, or `~/.local/bin` under a GUI launch.
     prepend_officecli_path(&mut merged);
+    prepend_gh_path(&mut merged, crate::process::shipped_gh_dir());
 
     // LAST, after `runtime_env`, and that ordering is the whole fix rather than
     // a style choice. A self-extracting agent binary resolves its unpack
@@ -1215,6 +1216,20 @@ fn prepend_officecli_path(env: &mut BTreeMap<String, String>) {
     // OfficeCLI / office tools are deferred product — not carried in this
     // build, so there is no install dir to prepend to the agent PATH.
     let _ = env;
+}
+
+/// Put the `gh` shipped with this Host first on an agent's `PATH`, the same two
+/// places as [`prepend_officecli_path`]: what an agent does on GitHub should
+/// not depend on which `gh`, if any, the user has installed.
+fn prepend_gh_path(env: &mut BTreeMap<String, String>, dir: Option<&Path>) {
+    let Some(dir) = dir else { return };
+    let path = env
+        .get("PATH")
+        .map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os("PATH"))
+        .unwrap_or_default();
+    let path = crate::process::gh_first_on_path(&path, dir);
+    env.insert("PATH".to_string(), path.to_string_lossy().into_owned());
 }
 
 /// The two actions codex's bespoke `_codex/session/goal_control` request
@@ -2505,6 +2520,7 @@ pub async fn spawn_agent_connection(
     // child of the agent process, so the agent-env injection alone wouldn't reach
     // them right after install (before install.ps1's User-PATH change lands).
     prepend_officecli_path(&mut terminal_base_env);
+    prepend_gh_path(&mut terminal_base_env, crate::process::shipped_gh_dir());
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<ConnectionCommand>(32);
     let conn_id = connection_id.clone();
@@ -15871,6 +15887,30 @@ pub(crate) async fn emit_conversation_update(
 mod tests {
     use super::*;
     use sacp::schema::{Diff, SessionConfigId};
+
+    #[cfg(unix)]
+    #[test]
+    fn an_agents_path_starts_with_the_shipped_gh() {
+        let mut env = BTreeMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())]);
+        prepend_gh_path(&mut env, Some(Path::new("/data/bin")));
+        assert_eq!(env["PATH"], "/data/bin:/usr/bin:/bin");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_agent_with_no_path_of_its_own_keeps_the_hosts() {
+        let mut env = BTreeMap::new();
+        prepend_gh_path(&mut env, Some(Path::new("/data/bin")));
+        let path = std::env::var("PATH").unwrap();
+        assert_eq!(env["PATH"], format!("/data/bin:{path}"));
+    }
+
+    #[test]
+    fn an_agents_env_is_untouched_without_a_shipped_gh() {
+        let mut env = BTreeMap::new();
+        prepend_gh_path(&mut env, None);
+        assert!(env.is_empty());
+    }
 
     #[test]
     fn codex_signs_in_with_the_api_key_only_without_another_login() {

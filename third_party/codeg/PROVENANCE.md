@@ -1299,6 +1299,21 @@ Upstream-derived:
 
 Known limits in V1: inherited turns have no checkpoints, so aren't revertible; a fork in a new worktree loses attachment chips on inherited turns; plans, queued follow-ups and background tasks aren't carried; a transcript stays in the attachments directory if its fork never sends a message; the legacy `/api/acp_fork` route is untouched.
 
+## Shipped GitHub CLI on child PATHs
+
+`gh` itself is the upstream `cli/cli` binary, fetched by `scripts/gh/fetch.mjs`.
+
+Zwiim-owned: `git_harness::shipped_gh`.
+
+Upstream-derived:
+
+| Zwiim path | Upstream path | Modifications |
+|---|---|---|
+| `process.rs` | `src-tauri/src/process.rs` | `link_shipped_gh` keeps `<data>/runtime/bin/gh` pointing at the running version's `gh`; `gh_first_on_path`, `gh_last_on_path`. |
+| `acp/connection.rs` | `src-tauri/src/acp/connection.rs` | `prepend_gh_path` puts that folder first on the agent's and the ACP terminal's `PATH`. |
+| `terminal/manager.rs` | `src-tauri/src/terminal/manager.rs` | `append_gh_path` puts it last on a terminal's `PATH`. |
+| `bin/zwiim_host.rs` | `src-tauri/src/bin/codeg_server.rs` | Links the shipped `gh` once the data directory is locked. |
+
 ## License obligations tracked
 
 - [x] Include Apache-2.0 license text (`third_party/codeg/LICENSE`).

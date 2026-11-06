@@ -190,6 +190,15 @@ fn detect_posix_shell_flavor(shell: &str) -> PosixShellFlavor {
     }
 }
 
+/// Put the `gh` shipped with this Host last on a terminal's `PATH`: a terminal
+/// is the user's own, so their `gh` wins and ours is only there if they have none.
+fn append_gh_path(cmd: &mut CommandBuilder, dir: Option<&std::path::Path>) {
+    let Some(dir) = dir else { return };
+    let path = cmd.get_env("PATH").unwrap_or_default();
+    let path = crate::process::gh_last_on_path(path, dir);
+    cmd.env("PATH", path);
+}
+
 fn configure_shell_command(cmd: &mut CommandBuilder, shell: &str, initial_command: Option<&str>) {
     #[cfg(target_os = "windows")]
     {
@@ -349,6 +358,7 @@ impl TerminalManager {
                 cmd.env(key, value);
             }
         }
+        append_gh_path(&mut cmd, crate::process::shipped_gh_dir());
 
         let child = pair
             .slave
@@ -795,9 +805,29 @@ fn thread_name_prefix(terminal_id: &str) -> String {
 mod tests {
     #[cfg(not(target_os = "windows"))]
     use super::{Arc, EventEmitter, SpawnOptions, TerminalManager};
-    use super::{thread_name_prefix, Scrollback};
+    use super::{append_gh_path, thread_name_prefix, CommandBuilder, Scrollback};
 
     const LIMIT: usize = 64 * 1024;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_terminals_path_ends_with_the_shipped_gh() {
+        let mut cmd = CommandBuilder::new("sh");
+        cmd.env("PATH", "/opt/homebrew/bin:/usr/bin");
+        append_gh_path(&mut cmd, Some(std::path::Path::new("/data/bin")));
+        assert_eq!(
+            cmd.get_env("PATH").unwrap(),
+            "/opt/homebrew/bin:/usr/bin:/data/bin"
+        );
+    }
+
+    #[test]
+    fn a_terminals_path_is_untouched_without_a_shipped_gh() {
+        let mut cmd = CommandBuilder::new("sh");
+        cmd.env("PATH", "/usr/bin");
+        append_gh_path(&mut cmd, None);
+        assert_eq!(cmd.get_env("PATH").unwrap(), "/usr/bin");
+    }
 
     #[test]
     fn scrollback_since_returns_only_newer_chunks() {
