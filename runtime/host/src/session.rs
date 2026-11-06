@@ -242,7 +242,7 @@ impl AgentLauncher for RuntimeLauncher<'_> {
     ) -> Result<String, ZwiimError> {
         let existing_session = match &intent {
             LaunchIntent::New => None,
-            LaunchIntent::Resume(id) | LaunchIntent::Fork { source: id, .. } => Some(id.as_str()),
+            LaunchIntent::Resume(id) => Some(id.as_str()),
         };
         let runtime_env = crate::commands::acp::build_session_runtime_env(
             &self.state.db,
@@ -520,12 +520,12 @@ pub(crate) async fn send_tagged<L: AgentLauncher>(
     client_message_id: Option<String>,
     tag: Option<TurnTag>,
 ) -> Result<(), ZwiimError> {
-    if blocks.is_empty() {
-        return Err(empty_prompt());
-    }
     let row = resolve(&db.conn, session_id).await?;
     let lock = session_lock(session_id);
     let _guard = lock.lock().await;
+    if blocks.is_empty() && !crate::session_fork::holds_transcript(&db.conn, &row).await {
+        return Err(empty_prompt());
+    }
     send_locked(
         db,
         connections,
@@ -1587,8 +1587,6 @@ pub(crate) mod orchestration_tests {
     /// A connection and the blocks of a prompt it received.
     type BlocksAtPrompt = (String, Vec<PromptInputBlock>);
     type ForkAsked = (String, Option<crate::acp::fork::ForkPoint>);
-    /// Where a fork's answer goes.
-    type ForkReply = tokio::sync::oneshot::Sender<Result<String, crate::acp::error::AcpError>>;
 
     /// Launches in-process fake agents: a live command channel whose commands
     /// are recorded, and an agent-native session id like a real ACP handshake.
@@ -1617,14 +1615,6 @@ pub(crate) mod orchestration_tests {
         pub fork_point_rejected: Arc<std::sync::atomic::AtomicBool>,
         /// When set, an agent answers a fork only once this is notified.
         pub fork_gate: Arc<std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>>,
-        /// Every launch that forks, as `(source, point, directory)`.
-        pub fork_launches: std::sync::Mutex<Vec<(String, Option<crate::acp::fork::ForkPoint>, String)>>,
-        /// A forking connection dies without answering.
-        pub fork_lost: AtomicBool,
-        /// A forking connection never answers.
-        pub fork_hangs: AtomicBool,
-        /// Answers of forks that hang, held so they never resolve.
-        pub fork_unanswered: std::sync::Mutex<Vec<ForkReply>>,
         /// No agent starts.
         pub launch_fails: AtomicBool,
         /// What agents advertise as soon as they start.
@@ -1648,10 +1638,6 @@ pub(crate) mod orchestration_tests {
                 fork_fails: Default::default(),
                 fork_point_rejected: Default::default(),
                 fork_gate: Default::default(),
-                fork_launches: Default::default(),
-                fork_lost: Default::default(),
-                fork_hangs: Default::default(),
-                fork_unanswered: Default::default(),
                 launch_fails: Default::default(),
                 advertises: Default::default(),
                 delay: Duration::ZERO,
@@ -1718,40 +1704,6 @@ pub(crate) mod orchestration_tests {
                 }
             }
             self.resumed.lock().unwrap().push(resume_external_id);
-            if let LaunchIntent::Fork {
-                source,
-                point,
-                reply,
-            } = intent
-            {
-                self.fork_launches
-                    .lock()
-                    .unwrap()
-                    .push((source, point, working_dir.clone()));
-                if self.fork_hangs.load(Ordering::SeqCst) {
-                    self.fork_unanswered.lock().unwrap().push(reply);
-                } else if self.fork_fails.load(Ordering::SeqCst) {
-                    let _ = reply.send(Err(crate::acp::error::AcpError::ForkRefused(
-                        crate::acp::fork::ForkRefusal::NotSupported,
-                    )));
-                } else if self.fork_point_rejected.load(Ordering::SeqCst) {
-                    let _ = reply.send(Err(crate::acp::error::AcpError::ForkPointRejected(
-                        "no such message".to_string(),
-                    )));
-                } else if self.fork_lost.load(Ordering::SeqCst) {
-                    drop(reply);
-                } else {
-                    let forked = format!("native-fork-{n}");
-                    self.connections
-                        .get_state(&id)
-                        .await
-                        .expect("state")
-                        .write()
-                        .await
-                        .external_id = Some(forked.clone());
-                    let _ = reply.send(Ok(forked));
-                }
-            }
             let log = self.commands.clone();
             let prompts = self.prompts.clone();
             let prompt_blocks = self.prompt_blocks.clone();

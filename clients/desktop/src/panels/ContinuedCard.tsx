@@ -1,4 +1,4 @@
-import type { AttachmentBlock, PlanContinues } from "@zwiim/sdk";
+import type { AttachmentBlock, ForkWorktree, PlanContinues } from "@zwiim/sdk";
 import { ArrowRight } from "lucide-react";
 
 import { SentChip } from "@/attachments/AttachmentChip";
@@ -118,5 +118,35 @@ export function ForkedFromRow({
         label
       )}
     </p>
+  );
+}
+
+/** A fork nobody has written in yet: the worktree it made, or where the new chat is. */
+export function ForkStart({ workspaceId, worktree }: { workspaceId: string; worktree?: ForkWorktree | null }) {
+  const name = useHost((s) => s.workspaces?.find((w) => w.workspace_id === workspaceId)?.name);
+  if (!worktree) {
+    return (
+      <p className="text-muted-foreground py-10 text-center" data-testid="fork-start">
+        New chat{name && <> in <span className="text-foreground/90 font-mono">{name}</span></>}
+      </p>
+    );
+  }
+  const copied = `${worktree.files.toLocaleString("en-US")} ${worktree.files === 1 ? "file" : "files"}`;
+  return (
+    <div className="bg-card flex flex-col gap-1 rounded-xl px-4 py-3" data-testid="fork-worktree">
+      <p className="text-ui font-medium">
+        You're in a new copy of {worktree.repository} called <span className="font-mono">{worktree.name}</span>
+      </p>
+      <p className="text-muted-foreground text-xs">
+        {worktree.branch ? (
+          <>
+            Created <span className="font-mono">{worktree.branch}</span> and copied{" "}
+          </>
+        ) : (
+          "Copied "
+        )}
+        <span className="font-mono tabular-nums">{copied}</span>
+      </p>
+    </div>
   );
 }

@@ -204,7 +204,11 @@ pub struct Split {
 /// `.zwiim/attachments/<id>/`. With `root`, the path must be in it and the
 /// block carries the file's current `size`.
 fn attachment_block(line: &str, root: Option<&str>) -> Option<Value> {
-    let path = line.strip_prefix("- ")?.trim_end();
+    block_of_path(line.strip_prefix("- ")?.trim_end(), root)
+}
+
+/// The `attachment` block of the file at `path`, as [`attachment_block`] says.
+pub fn block_of_path(path: &str, root: Option<&str>) -> Option<Value> {
     let marker = format!("/{DIR}/");
     let at = path.rfind(&marker)?;
     let rest = &path[at + marker.len()..];

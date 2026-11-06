@@ -1186,7 +1186,7 @@ describe("changed files", () => {
       const { controller } = await openSession(t);
       const [first] = screen.getAllByTestId("turn-footer");
       expect(forkOption(first!, "Fork to new worktree")).not.toBeNull();
-      expect(within(first!).queryByRole("button", { name: "Fork here" })).toBeNull();
+      expect(within(first!).queryByRole("button", { name: "Fork to new tab" })).toBeNull();
       controller.dispose();
     });
 
@@ -1207,28 +1207,30 @@ describe("changed files", () => {
       controller.dispose();
     });
 
-    it("keeps the options behind the fork icon until it is hovered, and away again after", async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true });
+    it("keeps the options behind the fork icon until it is clicked, whatever the mouse does", async () => {
       const t = new FakeTransport();
       t.handlers["session.history"] = forkable();
       const { controller } = await openSession(t);
       const [first] = screen.getAllByTestId("turn-footer");
       const icon = within(first!).getByRole("button", { name: "Fork" });
-      expect(within(first!).queryByRole("button", { name: "Fork here" })).toBeNull();
-      expect(first!.textContent).not.toContain("Fork here");
+      expect(first!.textContent).not.toContain("Fork to new tab");
       fireEvent.mouseEnter(icon.parentElement!);
-      expect(within(first!).getByRole("button", { name: "Fork here" })).not.toBeNull();
+      expect(icon.getAttribute("aria-expanded")).toBe("false");
+      expect(within(first!).queryByRole("button", { name: "Fork to new tab" })).toBeNull();
+      fireEvent.click(icon);
+      expect(within(first!).getByRole("button", { name: "Fork to new tab" })).not.toBeNull();
       expect(within(first!).getByRole("button", { name: "Fork to new worktree" })).not.toBeNull();
       fireEvent.mouseLeave(icon.parentElement!);
-      await act(async () => {
-        vi.advanceTimersByTime(200);
-      });
-      expect(within(first!).queryByRole("button", { name: "Fork here" })).toBeNull();
-      vi.useRealTimers();
+      expect(icon.getAttribute("aria-expanded")).toBe("true");
+      fireEvent.click(icon);
+      expect(icon.getAttribute("aria-expanded")).toBe("false");
+      fireEvent.click(icon);
+      fireEvent.pointerDown(document.body);
+      expect(icon.getAttribute("aria-expanded")).toBe("false");
       controller.dispose();
     });
 
-    it("pins the options on a click, until Escape or a pick", async () => {
+    it("keeps the options open until Escape or a pick", async () => {
       const t = new FakeTransport();
       t.handlers["session.history"] = forkable();
       t.handlers["session.fork"] = () => ({ session_id: "s2", workspace_id: "w2" });
@@ -1241,7 +1243,7 @@ describe("changed files", () => {
       expect(icon.getAttribute("aria-expanded")).toBe("false");
       fireEvent.click(icon);
       await act(async () => {
-        fireEvent.click(within(first!).getByRole("button", { name: "Fork here" }));
+        fireEvent.click(within(first!).getByRole("button", { name: "Fork to new tab" }));
       });
       expect(icon.getAttribute("aria-expanded")).toBe("false");
       controller.dispose();
@@ -1292,7 +1294,7 @@ describe("changed files", () => {
       fireEvent.change(screen.getByRole("textbox"), { target: { value: "half a thought" } });
       fireEvent.change(screen.getByTestId("attachment-input"), { target: { files: [new File(["x"], "notes.txt")] } });
       const [first] = screen.getAllByTestId("turn-footer");
-      const option = forkOption(first!, "Fork here");
+      const option = forkOption(first!, "Fork to new tab");
       await act(async () => {
         fireEvent.click(option);
       });
@@ -1312,7 +1314,7 @@ describe("changed files", () => {
       const open = vi.fn();
       const { controller } = await openSession(t, undefined, open);
       const [first, second] = screen.getAllByTestId("turn-footer");
-      const option = forkOption(first!, "Fork here");
+      const option = forkOption(first!, "Fork to new tab");
       await act(async () => {
         fireEvent.click(option);
       });
@@ -1328,7 +1330,7 @@ describe("changed files", () => {
       const { controller, frame } = await openSession(t);
       await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
       const [first] = screen.getAllByTestId("turn-footer");
-      const here = forkOption(first!, "Fork here");
+      const here = forkOption(first!, "Fork to new tab");
       expect(here.disabled).toBe(true);
       expect(here.title).toBe("Wait for the agent to finish.");
       controller.dispose();
@@ -1339,8 +1341,8 @@ describe("changed files", () => {
       t.handlers["session.history"] = forkable();
       const { controller } = await openSession(t);
       const [first, second] = screen.getAllByTestId("turn-footer");
-      expect(forkOption(first!, "Fork here").title).toBe(FORK_OLDER_TURN_NOTE);
-      expect(forkOption(second!, "Fork here").title).toBe("");
+      expect(forkOption(first!, "Fork to new tab").title).toBe(FORK_OLDER_TURN_NOTE);
+      expect(forkOption(second!, "Fork to new tab").title).toBe("");
       controller.dispose();
     });
 
@@ -1362,8 +1364,47 @@ describe("changed files", () => {
       const t = new FakeTransport();
       t.handlers["session.history"] = (p) => ({ session_id: p.session_id, turns: [], forked_from: { session_id: "s0", title: "Old work" } });
       const { controller } = await openSession(t);
-      const position = screen.getByTestId("forked-from").compareDocumentPosition(screen.getByText("No messages yet."));
+      const position = screen.getByTestId("forked-from").compareDocumentPosition(screen.getByTestId("fork-start"));
       expect(position & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(screen.queryByText("No messages yet.")).toBeNull();
+      controller.dispose();
+    });
+
+    it("says what a fork to a worktree made", async () => {
+      const t = new FakeTransport();
+      const worktree = { repository: "zwiim", name: "manali", branch: "manali-v2", files: 1234 };
+      t.handlers["session.history"] = (p) => ({ session_id: p.session_id, turns: [], forked_from: { session_id: "s0", title: "Old work", worktree } });
+      const { controller } = await openSession(t);
+      const card = screen.getByTestId("fork-worktree");
+      expect(card.textContent).toContain("You're in a new copy of zwiim called manali");
+      expect(card.textContent).toContain("Created manali-v2 and copied 1,234 files");
+      controller.dispose();
+    });
+
+    it("sends a fork's waiting transcript on its own, and lets it be taken back", async () => {
+      const t = new FakeTransport();
+      const transcript = { type: "attachment", path: "/w/.zwiim/attachments/a/Transcript of Old work.md", name: "Transcript of Old work.md", size: 2048 };
+      t.handlers["session.history"] = (p) => ({ session_id: p.session_id, turns: [], forked_from: { session_id: "s0", title: "Old work" }, pending_transcript: transcript });
+      const removed: unknown[] = [];
+      const sent: unknown[] = [];
+      t.handlers["session.transcript_remove"] = (p) => (removed.push(p), {});
+      t.handlers["session.send"] = (p) => (sent.push(p), {});
+      const { controller } = await openSession(t);
+      expect(screen.getByTestId("pending-transcript").textContent).toContain("Transcript of Old work.md");
+
+      const send = screen.getByRole<HTMLButtonElement>("button", { name: /send/i });
+      expect(send.disabled).toBe(false);
+      await act(async () => {
+        fireEvent.click(send);
+      });
+      expect(sent).toHaveLength(1);
+      expect((sent[0] as { blocks: unknown[] }).blocks).toEqual([]);
+
+      const remove = screen.getByRole("button", { name: "Remove Transcript of Old work.md" });
+      expect(remove.className).not.toMatch(/opacity-0|w-0|group-/);
+      fireEvent.click(remove);
+      await act(async () => {});
+      expect(removed).toEqual([{ session_id: "s1" }]);
       controller.dispose();
     });
 

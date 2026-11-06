@@ -8,6 +8,7 @@ import {
   forkRefusalText,
   isClientError,
   type ForkTarget,
+  type ForkWorktree,
 } from "@zwiim/sdk";
 
 /** A turn's fork actions, as the Host offers them. */
@@ -41,6 +42,15 @@ export function forkError(e: unknown, hostName: string): string {
 /** What to say when the Host refused a fork's first message; null for any other failure. */
 export function forkedSendError(e: unknown): string | null {
   return isClientError(e, "transcript_missing") ? "This session's transcript is gone. Send again to go on without it." : null;
+}
+
+/** What a fork to a new worktree made, for the screen before its first message. */
+export function forkWorktreeLines(w: ForkWorktree): { title: string; detail: string } {
+  const files = `${w.files.toLocaleString("en-US")} ${w.files === 1 ? "file" : "files"}`;
+  return {
+    title: `You're in a new copy of ${w.repository} called ${w.name}`,
+    detail: w.branch ? `Created ${w.branch} and copied ${files}` : `Copied ${files}`,
+  };
 }
 
 /** The link back from a fork; `title` is null when the session is gone or untitled. */

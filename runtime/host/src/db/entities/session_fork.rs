@@ -20,6 +20,8 @@ pub struct Model {
     /// The options asked for, as JSON, when the agent's choices weren't known
     /// yet: applied when it first starts.
     pub pending_options: Option<String>,
+    /// How many files the new worktree started with; `None` for a fork in place.
+    pub worktree_files: Option<i64>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

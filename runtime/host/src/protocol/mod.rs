@@ -220,6 +220,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/session.retry_in_new_chat", post(http::session_retry_in_new_chat))
         .route("/session.continue_plan", post(http::session_continue_plan))
         .route("/session.fork", post(http::session_fork))
+        .route("/session.transcript_remove", post(http::session_transcript_remove))
         .route("/settings.get", post(http::settings_get))
         .route("/settings.update", post(http::settings_update))
         .route(

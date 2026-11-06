@@ -10,7 +10,7 @@ import { revertRefusalText } from "./revert";
 
 /** What each fork action is called. */
 export const FORK_LABELS: Record<ForkTarget, string> = {
-  current: "Fork here",
+  current: "Fork to new tab",
   new_worktree: "Fork to new worktree",
 };
 

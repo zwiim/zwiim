@@ -14,6 +14,7 @@ import {
   type AttachmentBlock,
   type ChangedFile,
   type ForkTarget,
+  type ForkWorktree,
   type ProgressStep,
   type RevertChoice,
 } from "@zwiim/sdk";
@@ -28,7 +29,7 @@ import {
   stoppedTitle,
   type PipState,
 } from "../sessions/plan";
-import { forkedFromLabel, type TurnFork } from "../sessions/fork";
+import { forkedFromLabel, forkWorktreeLines, type TurnFork } from "../sessions/fork";
 import { revertCopy } from "../sessions/revert";
 import {
   RETRY_LABEL,
@@ -290,24 +291,71 @@ function PendingFileChip({ file, disabled, onRemove }: { file: PendingFile; disa
   );
 }
 
+/** A fork's transcript waiting for the next message: tap to read it, X takes it back. */
+function TranscriptChip({
+  file,
+  disabled,
+  onOpen,
+  onRemove,
+}: {
+  file: AttachmentBlock;
+  disabled?: boolean;
+  onOpen?(): void;
+  onRemove(): void;
+}) {
+  const theme = useTheme();
+  return (
+    <View style={[styles.fileChip, styles.pendingChip, { backgroundColor: theme.raised, borderColor: "transparent" }]} testID="pending-transcript">
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Open ${file.name}`}
+        disabled={!onOpen}
+        onPress={onOpen}
+        hitSlop={8}
+        style={({ pressed }) => [styles.transcriptOpen, { opacity: pressed ? PRESSED_OPACITY : 1 }]}
+      >
+        <Icon icon={FileText} color={theme.mut} size={13} />
+        <T variant="caption" numberOfLines={1} style={styles.shrink}>
+          {file.name}
+        </T>
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Remove ${file.name}`}
+        disabled={disabled}
+        onPress={onRemove}
+        // A 13pt mark; the slop makes it a 44pt target.
+        hitSlop={16}
+        testID="transcript-remove"
+      >
+        <Icon icon={X} color={theme.mut} size={13} />
+      </Pressable>
+    </View>
+  );
+}
+
 /** The files chosen for a message, with why any were refused. */
 export function PendingFiles({
+  transcript,
   files,
   errors,
   disabled,
   onRemove,
 }: {
+  /** A fork's transcript, ahead of the files. */
+  transcript?: ReactNode;
   files: readonly PendingFile[];
   errors: readonly string[];
   disabled?: boolean;
   onRemove(id: string): void;
 }) {
   const theme = useTheme();
-  if (files.length === 0 && errors.length === 0) return null;
+  if (!transcript && files.length === 0 && errors.length === 0) return null;
   return (
     <View style={styles.rowGap}>
-      {files.length > 0 ? (
+      {transcript || files.length > 0 ? (
         <View style={styles.pendingFiles} testID="pending-attachments">
+          {transcript}
           {files.map((f) => (
             <PendingFileChip key={f.id} file={f} disabled={disabled} onRemove={() => onRemove(f.id)} />
           ))}
@@ -850,6 +898,27 @@ export function ForkSheet({
   );
 }
 
+/** A fork nobody has written in yet: the worktree it made, or where the new chat is. */
+export function ForkStart({ worktree, workspaceName }: { worktree?: ForkWorktree | null; workspaceName?: string }) {
+  const theme = useTheme();
+  if (!worktree) {
+    return (
+      <T variant="callout" color={theme.mut} style={styles.forkStart} testID="fork-start">
+        {workspaceName ? `New chat in ${workspaceName}` : "New chat"}
+      </T>
+    );
+  }
+  const { title, detail } = forkWorktreeLines(worktree);
+  return (
+    <View style={[styles.forkCard, { backgroundColor: theme.surface }]} testID="fork-worktree">
+      <T variant="body">{title}</T>
+      <T variant="monoSm" color={theme.mut}>
+        {detail}
+      </T>
+    </View>
+  );
+}
+
 /** Over a forked session's first message: where it came from. */
 export function ForkedFromRow({ title, onOpen }: { title: string | null; onOpen?(): void }) {
   const theme = useTheme();
@@ -1389,6 +1458,9 @@ export function Composer({
   fileErrors = [],
   onAttach,
   onRemoveFile,
+  transcript,
+  onOpenTranscript,
+  onRemoveTranscript,
 }: {
   value: string;
   onChange(text: string): void;
@@ -1408,9 +1480,13 @@ export function Composer({
   /** Shows the paperclip; absent when the Host takes no attachments. */
   onAttach?(): void;
   onRemoveFile?(id: string): void;
+  /** A fork's transcript: goes with the next message, or as the message. */
+  transcript?: AttachmentBlock | null;
+  onOpenTranscript?(): void;
+  onRemoveTranscript?(): void;
 }) {
   const theme = useTheme();
-  const can = !disabled && !sending && (value.trim().length > 0 || files.length > 0);
+  const can = !disabled && !sending && (value.trim().length > 0 || files.length > 0 || !!transcript);
   return (
     <View
       style={[
@@ -1419,7 +1495,22 @@ export function Composer({
       ]}
       testID="composer"
     >
-      <PendingFiles files={files} errors={fileErrors} disabled={sending} onRemove={(id) => onRemoveFile?.(id)} />
+      <PendingFiles
+        transcript={
+          transcript ? (
+            <TranscriptChip
+              file={transcript}
+              disabled={disabled || sending}
+              onOpen={onOpenTranscript}
+              onRemove={() => onRemoveTranscript?.()}
+            />
+          ) : null
+        }
+        files={files}
+        errors={fileErrors}
+        disabled={sending}
+        onRemove={(id) => onRemoveFile?.(id)}
+      />
       <TextInput
         value={value}
         onChangeText={onChange}
@@ -1563,6 +1654,9 @@ const styles = StyleSheet.create({
   continued: { borderRadius: radius.xl, padding: space.md, gap: space.sm },
   continuedFiles: { flexDirection: "row", flexWrap: "wrap", gap: space.xs },
   linkRow: { minHeight: 44, justifyContent: "center", alignSelf: "flex-start" },
+  forkStart: { textAlign: "center", paddingVertical: space.xl },
+  forkCard: { gap: space.xxs, borderRadius: radius.xl, paddingHorizontal: space.lg, paddingVertical: space.md, margin: space.md },
+  transcriptOpen: { flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 1 },
   forkIcon: { minWidth: 44, minHeight: 44, justifyContent: "center" },
   continuedIn: { minHeight: 44, justifyContent: "center", paddingHorizontal: space.lg },
   composer: {

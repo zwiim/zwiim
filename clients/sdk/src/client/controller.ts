@@ -497,6 +497,11 @@ export class HostController {
     return this.client.forkSession({ session_id, turn_id, target });
   }
 
+  /** Take a fork's waiting transcript back; the session's `session.changed` updates the view. Never retried. */
+  async removeTranscript(session_id: string): Promise<void> {
+    await this.client.removeTranscript({ session_id });
+  }
+
   /** Stage and commit `files` (repo-relative). Never retried. */
   async commit(workspace_id: string, message: string, files: string[]): Promise<number> {
     const { committed_files } = await this.client.request("git.commit", { workspace_id, message, files });
@@ -635,7 +640,7 @@ export class HostController {
     try {
       do {
         this.historyDirty.delete(session_id);
-        const { turns, history_generation, last_error, progress, continues, continued_in, forked_from } = await this.client.request("session.history", { session_id });
+        const { turns, history_generation, last_error, progress, continues, continued_in, forked_from, pending_transcript } = await this.client.request("session.history", { session_id });
         if (!this.openSessions.has(session_id)) return;
         const settled = this.store.getState().sessions[session_id]?.settled ?? null;
         const delay = HISTORY_SETTLE_DELAYS_MS[settleAttempt];
@@ -659,6 +664,7 @@ export class HostController {
             continues: continues ?? null,
             continuedIn: continued_in?.session_id ?? null,
             forkedFrom: forked_from ?? null,
+            pendingTranscript: pending_transcript ?? null,
           },
         });
       } while (this.historyDirty.has(session_id));

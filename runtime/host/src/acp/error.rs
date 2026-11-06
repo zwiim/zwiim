@@ -74,9 +74,6 @@ pub enum AcpError {
     /// the agent's sanitized answer.
     #[error("the agent could not fork at that message: {0}")]
     ForkPointRejected(String),
-    /// A fresh connection will not fork natively. The caller falls back.
-    #[error("{0}")]
-    ForkRefused(crate::acp::fork::ForkRefusal),
 }
 
 impl AcpError {
@@ -125,7 +122,6 @@ impl AcpError {
             Self::McpRejectedByAgent(_) => Some("mcp_rejected_by_agent"),
             Self::CodexSignInFailed => Some("agent_sign_in_failed"),
             Self::ForkPointRejected(_) => Some("fork_point_rejected"),
-            Self::ForkRefused(_) => Some("fork_refused"),
             Self::Protocol(_) => None,
         }
     }

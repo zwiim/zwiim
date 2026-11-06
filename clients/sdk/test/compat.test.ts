@@ -99,9 +99,10 @@ describe("evaluateCompatibility", () => {
     expect(CLIENT_CAPABILITIES).toContain("workspace.layout");
   });
 
-  it("speaks revision 29 and forks sessions", () => {
-    expect(CLIENT_REVISION).toBe(29);
+  it("speaks revision 30, forks sessions and takes a transcript back", () => {
+    expect(CLIENT_REVISION).toBe(30);
     expect(CLIENT_CAPABILITIES).toContain("session.fork");
+    expect(CLIENT_CAPABILITIES).toContain("session.transcript_remove");
   });
 
   it("speaks revision 27", () => {

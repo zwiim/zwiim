@@ -1451,61 +1451,40 @@ export const TurnFooter = memo(function TurnFooter({
   );
 });
 
-/** A turn's fork icon. Hover or click shows the options the Host offers; a click pins them until Escape, a click elsewhere or a pick. */
+/** A turn's fork icon. A click shows the options the Host offers, until a second click, Escape, a click elsewhere or a pick. */
 function ForkMenu({ fork }: { fork: TurnFork }) {
-  const [hover, setHover] = useState(false);
-  const [pinned, setPinned] = useState(false);
+  const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
-  const leave = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const open = hover || pinned;
   const presence = usePresence(open);
-  const close = () => {
-    setPinned(false);
-    setHover(false);
-  };
 
   useEffect(() => {
-    if (!pinned) return;
+    if (!open) return;
     const away = (e: PointerEvent) => {
-      if (!root.current?.contains(e.target as Node)) setPinned(false);
+      if (!root.current?.contains(e.target as Node)) setOpen(false);
     };
     document.addEventListener("pointerdown", away);
     return () => document.removeEventListener("pointerdown", away);
-  }, [pinned]);
+  }, [open]);
 
-  // On the document, ahead of everything else: a hover opens this with the focus anywhere.
+  // On the document, ahead of everything else: the focus may be anywhere.
   useEffect(() => {
     if (!open) return;
     const escape = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.stopPropagation();
-      close();
+      setOpen(false);
     };
     document.addEventListener("keydown", escape, true);
     return () => document.removeEventListener("keydown", escape, true);
   }, [open]);
 
-  useEffect(() => () => {
-    if (leave.current) clearTimeout(leave.current);
-  }, []);
-
   return (
-    <div
-      ref={root}
-      className="relative"
-      onMouseEnter={() => {
-        if (leave.current) clearTimeout(leave.current);
-        setHover(true);
-      }}
-      onMouseLeave={() => {
-        leave.current = setTimeout(() => setHover(false), 120);
-      }}
-    >
+    <div ref={root} className="relative">
       <button
         type="button"
         aria-label="Fork"
         aria-expanded={open}
-        onClick={() => setPinned((p) => !p)}
+        onClick={() => setOpen((o) => !o)}
         className="hover:text-foreground hover:bg-muted focus-visible:ring-ring/50 flex size-6 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-2"
       >
         <GitFork className="size-3.5" />
@@ -1525,7 +1504,7 @@ function ForkMenu({ fork }: { fork: TurnFork }) {
               disabled={fork.disabledReason !== null}
               title={fork.disabledReason ?? (fork.older && target === "current" ? FORK_OLDER_TURN_NOTE : undefined)}
               onClick={() => {
-                close();
+                setOpen(false);
                 fork.onFork(fork.turnId, target);
               }}
             >

@@ -1007,6 +1007,20 @@ pub(crate) enum WorktreeStart<'a> {
     },
 }
 
+/// How many files worktree `dir` holds, ignored ones too. Zwiim's own folder
+/// doesn't count. `None` when git can't say.
+pub(crate) async fn file_count(dir: &Path) -> Option<i64> {
+    let out = crate::process::tokio_command("git")
+        .args(["ls-files", "-z", "--cached", "--others", "--", ".", ":!.zwiim"])
+        .current_dir(dir)
+        .output()
+        .await
+        .ok()?;
+    out.status
+        .success()
+        .then(|| out.stdout.iter().filter(|byte| **byte == 0).count() as i64)
+}
+
 /// A commit in `repo`, when `oid` is one.
 async fn commit_in_repo(repo: &str, oid: &str) -> bool {
     crate::process::tokio_command("git")
@@ -1734,7 +1748,7 @@ async fn compensate(
 }
 
 /// The branch checked out in `path`; `None` when detached.
-async fn current_branch(path: &str) -> Option<String> {
+pub(crate) async fn current_branch(path: &str) -> Option<String> {
     folders::resolve_git_head(path)
         .await
         .ok()

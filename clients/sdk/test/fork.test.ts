@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { turnGroups } from "../src/changes/turns";
 import { CLIENT_CAPABILITIES, evaluateCompatibility } from "../src/client/compat";
 import { ZwiimClientError, type ClientErrorCode } from "../src/client/errors";
-import { forkRefusalText, forkTurnOf, offersFork } from "../src/client/fork";
+import { FORK_LABELS, forkRefusalText, forkTurnOf, offersFork } from "../src/client/fork";
+import { initialSessionView, waitingTranscript, type SessionView } from "../src/state/session";
 import type { ForkTarget, HistoryTurn } from "../src/types/protocol";
 import { hello } from "./fakes";
 
@@ -64,5 +65,32 @@ describe("forkRefusalText", () => {
   it("leaves other failures to the app", () => {
     expect(forkRefusalText(refusal("internal"))).toBeNull();
     expect(forkRefusalText(new Error("offline"))).toBeNull();
+  });
+});
+
+describe("the composer's waiting transcript", () => {
+  const pendingTranscript = {
+    type: "attachment" as const,
+    attachment_id: "a1",
+    name: "Transcript of Old.md",
+    mime_type: "text/markdown",
+    path: ".zwiim/attachments/a1/Transcript of Old.md",
+  };
+  const view: SessionView = { ...initialSessionView("s1"), pendingTranscript };
+
+  it("names the two ways to fork", () => {
+    expect(FORK_LABELS).toEqual({ current: "Fork to new tab", new_worktree: "Fork to new worktree" });
+  });
+
+  it("shows until a turn takes the message that carries it", () => {
+    expect(waitingTranscript(view)).toEqual(pendingTranscript);
+    expect(waitingTranscript({ ...view, agentStatus: "prompting" })).toBeNull();
+    expect(waitingTranscript({ ...view, live: { ...view.live, userMessage: { blocks: [] } as never } })).toBeNull();
+    expect(waitingTranscript({ ...view, settled: view.live })).toBeNull();
+  });
+
+  it("is nothing without a transcript or a view", () => {
+    expect(waitingTranscript(initialSessionView("s1"))).toBeNull();
+    expect(waitingTranscript(undefined)).toBeNull();
   });
 });

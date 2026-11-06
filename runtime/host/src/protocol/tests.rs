@@ -100,6 +100,7 @@ const OPS: &[&str] = &[
     "session.retry_in_new_chat",
     "session.continue_plan",
     "session.fork",
+    "session.transcript_remove",
     "session.follow_up",
     "session.follow_up_edit",
     "session.follow_up_remove",
@@ -2676,6 +2677,53 @@ async fn session_fork_speaks_zwiim_only() {
 }
 
 #[tokio::test]
+async fn transcript_remove_speaks_zwiim_only() {
+    let h = host(false).await;
+    let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+
+    let history = h.ok("session.history", json!({"session_id": sid})).await;
+    assert!(history["pending_transcript"].is_null(), "{history}");
+    h.ok("session.transcript_remove", json!({"session_id": sid})).await;
+    assert_eq!(
+        h.err("session.transcript_remove", json!({"session_id": "nope"})).await,
+        (StatusCode::NOT_FOUND, "not_found".into())
+    );
+}
+
+/// The chip lives in `session.history`, which devices reread on `session.changed`,
+/// and the feed only sends that for a summary that differs.
+#[tokio::test]
+async fn transcript_remove_tells_every_device() {
+    use sea_orm::{ActiveModelTrait, Set};
+
+    let h = host(true).await;
+    let source = seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
+    let source = session_id_of(&h.state, source).await;
+    let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    crate::db::entities::session_fork::ActiveModel {
+        session_id: Set(sid.clone()),
+        source_session_id: Set(source),
+        source_turn_id: Set("turn-1".into()),
+        created_at: Set(chrono::Utc::now()),
+        pending_transcript: Set(Some("/nowhere/Transcript of Old work.md".into())),
+        transcript_sent: Set(false),
+        notice_owed: Set(false),
+        pending_options: Set(None),
+        worktree_files: Set(None),
+    }
+    .insert(&h.state.db.conn)
+    .await
+    .unwrap();
+    let (mut ws, _) = h.feed().await;
+
+    h.ok("session.transcript_remove", json!({"session_id": sid})).await;
+    let changed = event_is("session.changed", |p| p["session"]["session_id"] == sid.as_str());
+    h.host_event(&mut ws, "transcript taken back", &changed).await;
+}
+
+#[tokio::test]
 async fn history_names_the_session_a_fork_came_from() {
     use sea_orm::{ActiveModelTrait, Set};
 
@@ -2700,6 +2748,7 @@ async fn history_names_the_session_a_fork_came_from() {
         transcript_sent: Set(false),
         notice_owed: Set(false),
         pending_options: Set(None),
+        worktree_files: Set(None),
     }
     .insert(&h.state.db.conn)
     .await

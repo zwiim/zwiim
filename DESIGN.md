@@ -492,7 +492,7 @@ and Left is only `Window − In use` when both were reported. Footnote: "As
 **Forking from a turn**: right after a finished turn's time, a fork icon in
 `mut`, a 44pt target labelled **Fork** (nothing on a Host without `session.fork`). Off
 at 40% while the agent runs or offline, with the reason as the accessibility
-hint. A tap opens a sheet with **Fork here** and **Fork to new worktree**, as
+hint. A tap opens a sheet with **Fork to new tab** and **Fork to new worktree**, as
 the Host offers them through the turn's `fork_targets`. Picking one forks and
 opens the new session over this one, with a success haptic, so Back returns to
 the source, which keeps running. Forking an older turn in place asks first in
@@ -500,10 +500,17 @@ the same sheet: the files stay as they are now and the new session is told so.
 A refusal shows there too, in `err`. A fork opens in the same place every time:
 titled **Fork of ⟨title⟩**, idle, with the source's model, permission and thinking
 options, and whatever was in the source's composer already typed or attached. No
-agent turn runs on its own. Where the agent can't take the chat over, a `Transcript
-of ⟨title⟩.md` goes with the first message; a new worktree always works this way.
-It stays pending until a turn that carried it ends well. If the file is gone the
-send is refused once, in `err`, and sending again goes on without it.
+agent turn runs on its own. Every fork, on every agent, carries the chat the same
+way: a `Transcript of ⟨title⟩.md` chip waits at the top of the composer, ahead of any
+files, its full name and no size. Its file labels each side **User** and **Assistant**.
+Tapping it opens the markdown; its X takes it back for good; send is on with the
+chip alone. The Host holds the chip, so it survives a restart and shows on every
+client. After a send it is a normal sent chip on the message, and it stays pending
+until a turn that carried it ends well. If the file is gone the send is refused
+once, in `err`, and sending again goes on without it. Until the first message the
+transcript shows **New chat in ⟨workspace⟩** in place of **No messages yet**. A fork
+to a new worktree shows a card there instead: **You're in a new copy of ⟨repository⟩
+called ⟨name⟩**, then `Created ⟨branch⟩ and copied ⟨n⟩ files`, mono.
 A fork's transcript opens with **Forked
 from ⟨title⟩**, `accent` and linking back while the store lists the source,
 `mut` otherwise. Desktop keeps the icon in the same place, ahead of the file
@@ -1030,3 +1037,6 @@ glyph, a title, one line, one action.
 | 2026-11-05 | Fork under each finished turn; older in-place fork confirms on the phone | Plan: both clients offer the Host's `fork_targets` under the turn's footer. A fork in place of an older turn leaves the agent behind the files, and a phone has no tooltip for that, so it asks in a sheet first |
 | 2026-11-05 | A fork opens idle and carries the draft | User call: a fork should cost nothing until the user speaks. No automatic turn; the chat reaches the agent natively, or as a transcript file with the first message. The composer draft and options come along, so a fork carries on from where the user was. |
 | 2026-11-05 | Fork options sit behind an icon | User call: two text actions under every turn were too loud. A fork icon stands in for them. Desktop opens a popover on hover or click, the phone has no hover so a tap opens the fork sheet, which also carries the older-turn word so two sheets never run in sequence. |
+| 2026-11-06 | Every fork carries a visible transcript | User call: the chat should reach the fork the same way for every agent, and the user should see and control it. Agent-native fork is gone from `session.fork`; chat rewind keeps it. The transcript is a chip in the composer, owned by the Host, with an X and a preview. **Fork here** became **Fork to new tab** to say where the fork lands. A worktree fork says what it made |
+| 2026-11-06 | A fork's transcript chip is bordered, with its icon in a cell of its own | Asked for by the user, to read as one attached file. An exception to surfaces separating by tone: other chips keep `bg-muted`. Full name, no size; the X always shows, so removing it is a plain click |
+| 2026-11-06 | Desktop's fork icon opens on a click only | User call: a menu that opens as the mouse passes gets in the way. A click opens it, and it stays until a second click, Escape, a click elsewhere or a pick. Replaces the hover in the 2026-11-05 row. |

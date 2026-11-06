@@ -496,6 +496,11 @@ export class HostClient {
     return this.request("session.fork", params);
   }
 
+  /** Take a fork's waiting transcript back. Never retried. */
+  async removeTranscript(params: OpParams<"session.transcript_remove">): Promise<void> {
+    await this.request("session.transcript_remove", params);
+  }
+
   private sendSubscribe(sub: SessionSub): void {
     if (this.stateValue.status !== "live" || !this.channel) return;
     this.emit((l) => l.session?.(sub.session_id, { type: "attaching" }));

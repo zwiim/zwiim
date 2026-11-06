@@ -17,6 +17,7 @@ import {
   revertNotes,
   turnGroups,
   type AgentDefaults,
+  type AttachmentBlock,
   type AgentSummary,
   type AgentType,
   type ChoiceOption,
@@ -34,8 +35,9 @@ import {
   type SessionOptions,
   type SessionView,
   type TurnGroup,
+  waitingTranscript,
 } from "@zwiim/sdk";
-import { PendingAttachments } from "@/attachments/AttachmentChip";
+import { PendingAttachments, TranscriptChip } from "@/attachments/AttachmentChip";
 import { RevertDialog } from "@/components/RevertDialog";
 import { pastedFiles } from "@/attachments/long-paste";
 import { UPLOAD_FAILED_MESSAGE, usePendingAttachments } from "@/attachments/usePendingAttachments";
@@ -50,7 +52,7 @@ import { ContextRing } from "./ContextRing";
 import { ControlSelect, OptionsBar, UnattendedBanner } from "./OptionsBar";
 import { RequestCard } from "./RequestCard";
 import { UnreachableCard } from "./UnreachableCard";
-import { ContinuedCard, ForkedFromRow } from "./ContinuedCard";
+import { ContinuedCard, ForkedFromRow, ForkStart } from "./ContinuedCard";
 import { dropForkedDraft, EMPTY_DRAFT, forkedDraft, keepForkedDraft, type ComposerDraft } from "./forkedDraft";
 import { PlanStrip } from "./PlanStrip";
 import { FollowUpQueue } from "./FollowUpQueue";
@@ -698,7 +700,12 @@ function OpenSession({
               </p>
             )}
             {view?.forkedFrom && <ForkedFromRow from={view.forkedFrom} onOpenSession={onOpenSession} />}
-            {empty && <p className="text-muted-foreground py-10 text-center">No messages yet.</p>}
+            {empty &&
+              (view.forkedFrom ? (
+                <ForkStart workspaceId={workspaceId} worktree={view.forkedFrom.worktree} />
+              ) : (
+                <p className="text-muted-foreground py-10 text-center">No messages yet.</p>
+              ))}
             {/* What is open in the history and the live turn that carries on it. */}
             <KeptStateContext.Provider value={kept}>
               {turns.length > 0 && (
@@ -833,6 +840,8 @@ function OpenSession({
           workspaceId={workspaceId}
           initialDraft={startingDraft}
           draftRef={composerDraft}
+          transcript={waitingTranscript(view)}
+          onRemoveTranscript={() => controller.removeTranscript(sessionId)}
           placeholder={
             removed
               ? "This worktree was archived — the session is read-only"
@@ -948,7 +957,8 @@ function OpenSession({
             setResetNotes([]);
             setSteerQueued(false);
             const params = { session_id: sessionId, blocks, client_message_id };
-            if (!canFollowUp) return controller.sendMessage(params);
+            // No blocks: a fork's transcript alone, to an agent that is idle.
+            if (!canFollowUp || blocks.length === 0) return controller.sendMessage(params);
             const outcome = await controller.sendFollowUp(steer ? { ...params, steer } : params);
             setSteerQueued(steer && outcome === "queued");
           }}
@@ -1193,6 +1203,9 @@ function Composer(props: {
   initialDraft?: ComposerDraft;
   /** Kept up to date with the message and its files, for the panel to read. */
   draftRef?: React.RefObject<ComposerDraft>;
+  /** A fork's transcript: goes with the next message, or as the message. */
+  transcript?: AttachmentBlock | null;
+  onRemoveTranscript?(): Promise<void>;
   disabled?: boolean;
   /** The agent is working: the message can be written but not sent. */
   busy?: boolean;
@@ -1267,7 +1280,7 @@ function Composer(props: {
   async function send(steer = !!props.steerable && steerFirst) {
     const trimmed = text.trim();
     const attaching = attachments.files.length > 0;
-    if ((!trimmed && !attaching) || sending || props.busy) return;
+    if ((!trimmed && !attaching && !props.transcript) || sending || props.busy) return;
     setSending(true);
     setError(null);
     try {
@@ -1295,6 +1308,15 @@ function Composer(props: {
   const sendTitle =
     `${sendLabel} (${sendShortcut(sendMode)})` +
     (props.steerable ? ` · ${steering ? "Queue" : "Steer"} (${formatShortcut("Mod+Shift+Enter")})` : "");
+
+  async function removeTranscript() {
+    setError(null);
+    try {
+      await props.onRemoveTranscript?.();
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
 
   function attach(files: Iterable<File>) {
     if (!canAttach) return;
@@ -1333,7 +1355,16 @@ function Composer(props: {
           {slash.menu}
           {props.banner}
           <PendingAttachments
-            className="px-3 pt-3"
+            className="px-4 pt-3"
+            leading={
+              props.transcript && (
+                <TranscriptChip
+                  block={props.transcript}
+                  disabled={props.disabled || sending}
+                  onRemove={() => void removeTranscript()}
+                />
+              )
+            }
             files={attachments.files}
             errors={attachments.errors}
             disabled={sending}
@@ -1407,7 +1438,7 @@ function Composer(props: {
                 type="button"
                 className="bg-brand text-brand-foreground enabled:hover:bg-brand/88 disabled:bg-muted disabled:text-muted-foreground ease-std grid size-8 shrink-0 place-items-center rounded-full transition-[background-color,color,transform] duration-120 enabled:active:scale-[.96]"
                 onClick={() => void send()}
-                disabled={props.disabled || props.busy || sending || (!text.trim() && attachments.files.length === 0)}
+                disabled={props.disabled || props.busy || sending || (!text.trim() && attachments.files.length === 0 && !props.transcript)}
                 title={sendTitle}
                 aria-label={sendLabel}
               >

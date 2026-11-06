@@ -4,6 +4,8 @@
 // authoritative on the client.
 
 import type {
+  AttachmentBlock,
+  ForkedFrom,
   AgentRequest,
   AgentStatus,
   DetachReason,
@@ -106,8 +108,10 @@ export interface SessionView {
   continues: PlanContinues | null;
   /** The new session that took this session's plan over. */
   continuedIn: string | null;
-  /** The session this one was forked from; `title` is null once it is gone. */
-  forkedFrom: { session_id: string; title?: string | null } | null;
+  /** The session this one was forked from. */
+  forkedFrom: ForkedFrom | null;
+  /** The transcript the next message carries, as the last history read reported it; see `waitingTranscript`. */
+  pendingTranscript: AttachmentBlock | null;
 }
 
 export type SessionFrame =
@@ -127,7 +131,8 @@ export type SessionFrame =
       savedPlan?: SavedPlan | null;
       continues?: PlanContinues | null;
       continuedIn?: string | null;
-      forkedFrom?: { session_id: string; title?: string | null } | null;
+      forkedFrom?: ForkedFrom | null;
+      pendingTranscript?: AttachmentBlock | null;
     }
   | { type: "options"; options: SessionOptions };
 
@@ -258,7 +263,15 @@ export function initialSessionView(session_id: string): SessionView {
     continues: null,
     continuedIn: null,
     forkedFrom: null,
+    pendingTranscript: null,
   };
+}
+
+/** The transcript to show in the composer: none once a turn has taken the message that carries it. */
+export function waitingTranscript(view: SessionView | undefined): AttachmentBlock | null {
+  if (!view?.pendingTranscript) return null;
+  if (view.agentStatus === "prompting" || view.live.userMessage || view.settled) return null;
+  return view.pendingTranscript;
 }
 
 export function reduceSession(view: SessionView, frame: SessionFrame): SessionView {
@@ -293,6 +306,7 @@ export function reduceSession(view: SessionView, frame: SessionFrame): SessionVi
         continues: frame.continues ?? null,
         continuedIn: frame.continuedIn ?? null,
         forkedFrom: frame.forkedFrom ?? null,
+        pendingTranscript: frame.pendingTranscript ?? null,
         ...withError(view, historyLastError(view, frame.lastError ?? null)),
       };
     }

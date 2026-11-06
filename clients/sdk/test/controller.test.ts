@@ -121,6 +121,58 @@ describe("HostController", () => {
     expect(t.store.getState().sessions.s1!.forkedFrom).toEqual(forked_from);
   });
 
+  it("keeps a fork's worktree and its waiting transcript, until the Host drops the transcript", async () => {
+    const t = setup();
+    const forked_from = { session_id: "s0", title: "Old", worktree: { repository: "repo", name: "manali", branch: "manali", files: 12 } };
+    const pending_transcript = {
+      type: "attachment",
+      attachment_id: "a1",
+      name: "Transcript of Old.md",
+      mime_type: "text/markdown",
+      size: 40,
+      path: ".zwiim/attachments/a1/Transcript of Old.md",
+    };
+    let waiting: typeof pending_transcript | null = pending_transcript;
+    t.transport.handlers["session.history"] = (p: { session_id: string }) => ({
+      session_id: p.session_id,
+      turns: [],
+      forked_from,
+      pending_transcript: waiting,
+    });
+    t.transport.handlers["session.transcript_remove"] = () => {
+      waiting = null;
+      return {};
+    };
+    t.client.start();
+    await flush();
+    t.transport.channel.open();
+    await flush();
+    t.controller.openSession("s1");
+    await flush();
+    const view = () => t.store.getState().sessions.s1!;
+    expect(view().forkedFrom).toEqual(forked_from);
+    expect(view().pendingTranscript).toEqual(pending_transcript);
+
+    await t.controller.removeTranscript("s1");
+    expect(t.transport.requests.at(-1)?.params).toEqual({ session_id: "s1" });
+    expect(t.transport.requests.at(-1)?.options).toEqual({ mutating: true });
+    expect(MUTATING_OPS.has("session.transcript_remove")).toBe(true);
+    t.transport.feedEvent("session.changed", {
+      session: {
+        session_id: "s1",
+        workspace_id: "w1",
+        title: "Fork",
+        agent: "claude_code",
+        status: "pending_review",
+        live: false,
+        created_at: "2026-09-24T00:00:00Z",
+        updated_at: "2026-09-24T00:00:01Z",
+      },
+    });
+    await flush();
+    expect(view().pendingTranscript).toBeNull();
+  });
+
   it("reads a session.history without plan fields as no plan", async () => {
     const t = setup();
     t.transport.handlers["session.history"] = (p: { session_id: string }) => ({ session_id: p.session_id, turns: [] });

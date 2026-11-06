@@ -392,13 +392,18 @@ fn plan_stopped_agent_lines(turn: &SummaryTurn) -> Vec<String> {
 }
 
 fn render_turn(turn: &SummaryTurn, agent: &str, kind: SummaryKind) -> String {
+    // A fork's transcript is read as a chat, not as this agent's own past.
+    let (user_heading, agent_heading) = match kind {
+        SummaryKind::Forked => ("## User".to_string(), "## Assistant".to_string()),
+        _ => ("## You".to_string(), format!("## {agent}")),
+    };
     let mut sections = Vec::new();
     if let Some(user) = render_user(&turn.user) {
-        sections.push(section("## You", &[user]));
+        sections.push(section(&user_heading, &[user]));
     }
     let lines = agent_lines(turn, kind);
     if !lines.is_empty() {
-        sections.push(section(&format!("## {agent}"), &lines));
+        sections.push(section(&agent_heading, &lines));
     }
     sections.join("\n\n")
 }
@@ -1003,6 +1008,16 @@ mod tests {
         assert!(out.contains("branches off an earlier chat"), "{out}");
         assert!(out.contains("Bash"), "{out}");
         assert!(!out.contains("failed to send"), "{out}");
+    }
+
+    #[test]
+    fn a_fork_summary_labels_both_sides_of_the_chat() {
+        let t = turn("go", vec![text("done")]);
+        let out = build(&[t], AGENT, &[], SummaryKind::Forked);
+
+        assert!(out.contains("## User\n\ngo"), "{out}");
+        assert!(out.contains("## Assistant\n\ndone"), "{out}");
+        assert!(!out.contains(AGENT), "{out}");
     }
 
     #[test]

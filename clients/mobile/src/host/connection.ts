@@ -394,6 +394,11 @@ export class HostConnection {
     await this.#live().sendMessage({ session_id, blocks, client_message_id });
   }
 
+  /** Take a fork's waiting transcript back; its next message goes without it. */
+  async removeTranscript(session_id: string): Promise<void> {
+    await this.#live().removeTranscript(session_id);
+  }
+
   /** Send a session's failed can't-reach turn again (`session.retry`), re-attaching it if its agent was gone; never retried. */
   async retrySession(session_id: string): Promise<void> {
     await this.#live().retrySession(session_id);

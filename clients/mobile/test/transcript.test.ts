@@ -38,7 +38,7 @@ import {
   type TranscriptRow,
 } from "../src/sessions/transcript";
 import { canReset, oneReset, revertCopy, revertError } from "../src/sessions/revert";
-import { forkDisabledNote, forkError, forkNote, forkedFromLabel, forkedSendError } from "../src/sessions/fork";
+import { forkDisabledNote, forkError, forkNote, forkedFromLabel, forkedSendError, forkWorktreeLines } from "../src/sessions/fork";
 import { waitFor, world } from "./support";
 
 // ─── building views the way the SDK does ─────────────────────────────────
@@ -1124,6 +1124,15 @@ describe("files sent with a message", () => {
 });
 
 describe("forking from a turn", () => {
+  it("says what a fork to a worktree made", () => {
+    const worktree = { repository: "zwiim", name: "manali", branch: "manali-v2", files: 1234 };
+    expect(forkWorktreeLines(worktree)).toEqual({
+      title: "You're in a new copy of zwiim called manali",
+      detail: "Created manali-v2 and copied 1,234 files",
+    });
+    expect(forkWorktreeLines({ ...worktree, branch: null, files: 1 }).detail).toBe("Copied 1 file");
+  });
+
   const err = (code: ConstructorParameters<typeof ZwiimClientError>[0]) => new ZwiimClientError(code, "m");
   const said = (id: string, text: string) => turn(id, "user", [{ type: "text", text }]);
   const answered = (id: string, fork_targets?: ForkTarget[]) => ({

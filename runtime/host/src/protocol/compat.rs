@@ -282,7 +282,14 @@ use serde::{Deserialize, Serialize};
 /// turns that can be forked and `forked_from {session_id, title}`; a refused
 /// fork is `fork_unavailable`. `session.send` to a fork whose transcript file
 /// is gone is refused once with `transcript_missing`.
-pub const PROTOCOL_REVISION: u32 = 29;
+///
+/// 30: every fork opens idle holding a transcript of the chat up to its turn.
+/// `session.history` gains `pending_transcript`, the `attachment` block its
+/// next message will carry, and `forked_from.worktree {repository, name, branch,
+/// files}` on a fork to a new worktree. `session.transcript_remove` takes the
+/// transcript back out, for every device, and `session.send` takes no blocks
+/// while a session holds one.
+pub const PROTOCOL_REVISION: u32 = 30;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -343,6 +350,7 @@ pub const CAPABILITIES: &[&str] = &[
     "session.continue_plan",
     "workspace.layout",
     "session.fork",
+    "session.transcript_remove",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -615,7 +623,14 @@ mod tests {
     fn compat_advertises_session_fork() {
         assert!(CAPABILITIES.contains(&"session.fork"));
         // `session.fork`, `fork_targets` and `forked_from`.
-        assert_eq!(PROTOCOL_REVISION, 29);
+        assert!(PROTOCOL_REVISION >= 29);
+    }
+
+    #[test]
+    fn compat_advertises_session_transcript_remove() {
+        assert!(CAPABILITIES.contains(&"session.transcript_remove"));
+        // `pending_transcript`, `forked_from.worktree` and the op itself.
+        assert_eq!(PROTOCOL_REVISION, 30);
     }
 
     #[test]

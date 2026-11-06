@@ -12,7 +12,9 @@ have their own versions and are listed under Compatibility.
 - None.
 
 ### Changed
-- None.
+- A fork now works the same for every agent: a `Transcript of <title>.md` chip waits at the top of the composer, holding the chat under `User` and `Assistant` headings. Open it to read it, remove it with its X, or send it alone. The Host holds it, so it survives a restart and shows on the phone too. `Fork here` is now `Fork to new tab`.
+- Desktop: the fork icon opens its menu on a click, not when the mouse passes over it.
+- A fork that hasn't started says where it is: `New chat in <workspace>`, or for a new worktree what was created and how many files were copied.
 
 ### Fixed
 - None.
@@ -21,13 +23,13 @@ have their own versions and are listed under Compatibility.
 - None.
 
 ### Compatibility
-- None.
+- Protocol revision 30. New capability: `session.transcript_remove`. Older Hosts keep sending the transcript with the first message, with no chip.
 
 ### Provider changes
 - None.
 
 ### Migration notes
-- None.
+- `session_forks` gains `worktree_files`, added by migration on Host start.
 
 ### Known limitations
 - None.

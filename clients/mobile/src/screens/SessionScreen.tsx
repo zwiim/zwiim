@@ -31,12 +31,14 @@ import {
   type AgentType,
   type AttachmentBlock,
   type ForkTarget,
+  type ForkWorktree,
   type PlanContinues,
   type PlanUi,
   type SavedPlan,
   type RevertChoice,
   type SessionView,
   waitingText,
+  waitingTranscript,
 } from "@zwiim/sdk";
 import { pickFiles, pickPhotos } from "../attachments/native";
 import { keepForkedFiles, takeForkedFiles, UPLOAD_FAILED_MESSAGE } from "../attachments/pending";
@@ -89,6 +91,7 @@ import {
   UnreachableCard,
   FooterRow,
   ForkedFromRow,
+  ForkStart,
   ForkSheet,
   NowAction,
   NowBar,
@@ -467,6 +470,7 @@ function Live({
   const attachments = usePendingAttachments(hostName, startingFiles);
   const workspace_id = item.workspace_id;
   const canAttach = attachments.enabled && workspace_id !== null;
+  const transcript = waitingTranscript(view);
 
   // Stop holds until the host ends the turn.
   useEffect(() => {
@@ -495,10 +499,19 @@ function Live({
     if (!request) setReviewing(false);
   }, [request]);
 
+  const removeTranscript = async () => {
+    setNotice(null);
+    try {
+      await currentHost.removeTranscript(session_id);
+    } catch (e) {
+      setNotice(sendError(e, hostName));
+    }
+  };
+
   const send = async () => {
     const text = draft.trim();
     const withFiles = canAttach && attachments.files.length > 0;
-    if ((!text && !withFiles) || sending) return;
+    if ((!text && !withFiles && !transcript) || sending) return;
     const id = randomUUID();
     setSending(true);
     setNotice(null);
@@ -779,7 +792,11 @@ function Live({
         ) : empty ? (
           <>
             {view?.forkedFrom ? <ForkedFrom from={view.forkedFrom} onOpenSession={actions.openLinked} /> : null}
-            <EmptyState glyph="≡" title="No messages yet" body={`Send a message to start the agent on ${hostName}.`} />
+            {view?.forkedFrom ? (
+              <ForkOpening worktree={view.forkedFrom.worktree} workspace_id={workspace_id} />
+            ) : (
+              <EmptyState glyph="≡" title="No messages yet" body={`Send a message to start the agent on ${hostName}.`} />
+            )}
           </>
         ) : (
           <FlatList
@@ -868,6 +885,9 @@ function Live({
           fileErrors={canAttach ? attachments.errors : []}
           onAttach={canAttach ? () => setAttaching(true) : undefined}
           onRemoveFile={attachments.remove}
+          transcript={transcript}
+          onOpenTranscript={transcript && workspace_id ? () => openSent(transcript) : undefined}
+          onRemoveTranscript={() => void removeTranscript()}
         />
       </View>
       <AttachSheet visible={attaching} onClose={() => setAttaching(false)} onPick={pick} onClosed={openPicker} />
@@ -970,6 +990,13 @@ function ForkedFrom({
       onOpen={listed !== undefined ? () => onOpenSession(from.session_id) : undefined}
     />
   );
+}
+
+/** A fork nobody has written in yet, named for the workspace it is in. */
+function ForkOpening({ worktree, workspace_id }: { worktree?: ForkWorktree | null; workspace_id: string | null }) {
+  const state = useHostState();
+  const workspaceName = state.workspaces?.find((w) => w.workspace_id === workspace_id)?.name;
+  return <ForkStart worktree={worktree} workspaceName={workspaceName} />;
 }
 
 /**

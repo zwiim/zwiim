@@ -2671,6 +2671,13 @@ pub async fn session_history(
     let fork_targets = crate::session_fork::fork_targets(&state.db, &row, &turns).await;
     super::events::with_fork_targets(&mut projected, &fork_targets);
     let forked_from = crate::session_fork::forked_from(&state.db.conn, &p.session_id).await;
+    let pending_transcript = crate::session_fork::pending_transcript(
+        &state.db.conn,
+        &state.connection_manager,
+        &row,
+        root.as_deref(),
+    )
+    .await;
     Ok(Json(json!({
         "session_id": p.session_id,
         "turns": projected,
@@ -2680,6 +2687,7 @@ pub async fn session_history(
         "continues": continues,
         "continued_in": continued_in.map(|session_id| json!({ "session_id": session_id })),
         "forked_from": forked_from,
+        "pending_transcript": pending_transcript,
     })))
 }
 
@@ -2799,6 +2807,16 @@ pub async fn session_fork(
         "session_id": forked.session_id,
         "workspace_id": forked.workspace_id,
     })))
+}
+
+/// Take the waiting transcript out of a forked session, for every device.
+pub async fn session_transcript_remove(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<SessionParams>,
+) -> ZResult<Value> {
+    crate::session_fork::remove_transcript(&state.db, &state.connection_manager, &p.session_id).await?;
+    announce_sessions_changed(&state, &[&p.session_id]).await;
+    ok()
 }
 
 #[derive(Deserialize)]

@@ -1237,6 +1237,21 @@ export type HistoryBlock =
 /** Where a forked session runs: this worktree, or a new one holding the files as at the turn. */
 export type ForkTarget = "current" | "new_worktree";
 
+/** What a fork to a new worktree made. `files` counts the files in the copy. */
+export interface ForkWorktree {
+  repository: string;
+  name: string;
+  branch?: string | null;
+  files: number;
+}
+
+/** The session a fork came from; `title` is null once it is gone. `worktree` only on a fork that made one. */
+export interface ForkedFrom {
+  session_id: string;
+  title?: string | null;
+  worktree?: ForkWorktree | null;
+}
+
 export interface HistoryTurn {
   turn_id: string;
   role: string;
@@ -1294,8 +1309,13 @@ export interface SessionHistory {
   continues?: PlanContinues | null;
   /** The new session that took this session's plan over. Absent before revision 26. */
   continued_in?: { session_id: string } | null;
-  /** The session this one was forked from; `title` is null once it is gone. Absent before revision 29. */
-  forked_from?: { session_id: string; title?: string | null } | null;
+  /** The session this one was forked from. Absent before revision 29. */
+  forked_from?: ForkedFrom | null;
+  /**
+   * The transcript the next message carries, until a turn delivers it; a
+   * message can be sent with this alone. Absent before revision 30.
+   */
+  pending_transcript?: AttachmentBlock | null;
 }
 
 // ─── pull requests ───────────────────────────────────────────────────────
@@ -1871,6 +1891,11 @@ export interface Operations {
     { session_id: string; workspace_id: string },
   ];
   /**
+   * Take a fork's waiting transcript back: the session starts without it.
+   * Capability `session.transcript_remove`.
+   */
+  "session.transcript_remove": [{ session_id: string }, Record<string, never>];
+  /**
    * Send now when the agent is idle and nothing is queued, else queue behind
    * what is. The Host sends the next one when a turn ends normally; a stopped
    * or failed turn holds the queue. Capability `session.follow_ups`.
@@ -2008,6 +2033,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "session.retry_in_new_chat",
   "session.continue_plan",
   "session.fork",
+  "session.transcript_remove",
   "session.follow_up",
   "session.follow_up_send",
   "session.respond",

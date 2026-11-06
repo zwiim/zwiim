@@ -95,6 +95,48 @@ export function SentChip({ block }: { block: AttachmentBlock }) {
   );
 }
 
+/** A fork's transcript waiting for the next message: opens in a tab, and the X takes it back. */
+export function TranscriptChip({
+  block,
+  disabled,
+  onRemove,
+}: {
+  block: AttachmentBlock;
+  disabled?: boolean;
+  onRemove(): void;
+}) {
+  const links = useContext(FileLinksContext);
+  const { icon: Icon, color } = fileIcon(block.name);
+  return (
+    <span
+      className="bg-background border-border flex h-7 max-w-full min-w-0 items-center rounded-md border text-xs"
+      title={block.path}
+      data-testid="pending-transcript"
+    >
+      <button
+        type="button"
+        className="hover:text-foreground flex h-full min-w-0 items-center transition-colors"
+        disabled={!links}
+        onClick={() => links?.open(block.path)}
+      >
+        <span className="border-border flex h-full shrink-0 items-center border-r px-1.5">
+          <Icon className={cn("size-3.5", color)} />
+        </span>
+        <span className="text-foreground min-w-0 truncate px-2">{block.name}</span>
+      </button>
+      <button
+        type="button"
+        className="text-muted-foreground hover:text-foreground mr-1.5 shrink-0 disabled:opacity-50"
+        aria-label={`Remove ${block.name}`}
+        disabled={disabled}
+        onClick={onRemove}
+      >
+        <X className="size-3" />
+      </button>
+    </span>
+  );
+}
+
 /** The files a user message carried, above its text. */
 export function SentAttachments({ blocks, className }: { blocks: readonly { type: string }[]; className?: string }) {
   const files = blocks.filter((b): b is AttachmentBlock => b.type === "attachment");
@@ -113,23 +155,27 @@ export function SentAttachments({ blocks, className }: { blocks: readonly { type
 
 /** The pending files under a composer's message, with what was refused. */
 export function PendingAttachments({
+  leading,
   files,
   errors,
   disabled,
   onRemove,
   className,
 }: {
+  /** A chip that is not a chosen file, ahead of the files. */
+  leading?: React.ReactNode;
   files: readonly PendingFile[];
   errors: readonly string[];
   disabled?: boolean;
   onRemove(id: string): void;
   className?: string;
 }) {
-  if (files.length === 0 && errors.length === 0) return null;
+  if (!leading && files.length === 0 && errors.length === 0) return null;
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
-      {files.length > 0 && (
+      {(leading || files.length > 0) && (
         <div className="flex flex-wrap items-center gap-1.5" data-testid="pending-attachments">
+          {leading}
           {files.map((f) => (
             <PendingChip key={f.id} file={f} disabled={disabled} onRemove={() => onRemove(f.id)} />
           ))}

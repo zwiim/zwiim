@@ -2,24 +2,20 @@
 //!
 //! `session.fork` starts a new session from a finished exchange of an existing
 //! one, in the same worktree or in a new one holding the files as they were at
-//! that turn. The original session is left as it was and keeps running. The
-//! agent carries the chat over itself where it can; otherwise the new session
-//! opens idle, with a transcript of the chat up to that turn attached to its
-//! first message. A new worktree always takes the transcript. No agent is
-//! named here: which way a fork goes follows from what the agent answers.
+//! that turn. The original session is left as it was and keeps running. Every
+//! fork goes the same way, whatever the agent: the new session opens idle with
+//! a transcript of the chat up to that turn, which its first message carries.
+//! No agent starts until that message.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use sea_orm::sea_query::Expr;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::oneshot;
 
-use crate::acp::fork::{resolve_fork_point, LaunchIntent};
 use crate::acp::manager::ConnectionManager;
 use crate::acp::types::PromptInputBlock;
 use crate::app_state::AppState;
@@ -33,10 +29,7 @@ use crate::harness::{takes_notices, FORK_NOTICE};
 use crate::models::agent::AgentType;
 use crate::models::message::{MessageTurn, TurnRole};
 use crate::protocol::error::ZwiimError;
-use crate::session::{
-    history, resolve, row_busy, session_id_of, session_lock, AgentLauncher, RuntimeLauncher,
-    StartingGuard,
-};
+use crate::session::{history, resolve, row_busy, session_lock, StartingGuard};
 use crate::session_checkpoints::match_turns;
 use crate::session_continue::{remove_attachments, store};
 use crate::session_options::{apply_on_start, preferred_for_start, remember_start, OptionsRequest};
@@ -45,13 +38,6 @@ use crate::session_summary::{self, SummaryKind};
 use crate::terminal::manager::TerminalManager;
 use crate::web::event_bridge::EventEmitter;
 use crate::workspace::{self, WorktreeStart};
-
-/// How long an agent gets to answer a fork once it has started. Past it the
-/// fork takes a transcript, so a stuck agent never holds up a client.
-#[cfg(not(test))]
-const FORK_TIMEOUT: Duration = Duration::from_secs(60);
-#[cfg(test)]
-const FORK_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// Where a fork's new session runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -176,14 +162,101 @@ pub(crate) async fn fork_targets(
 }
 
 /// The session `session_id` was forked from, `None` when it is no fork. A
-/// source that is gone keeps its id and loses its title.
+/// source that is gone keeps its id and loses its title. A fork to a new
+/// worktree also says what was created.
 pub(crate) async fn forked_from(conn: &DatabaseConnection, session_id: &str) -> Option<Value> {
     let link = session_fork::Entity::find_by_id(session_id).one(conn).await.ok()??;
     let title = resolve(conn, &link.source_session_id).await.ok().and_then(|row| row.title);
-    Some(json!({ "session_id": link.source_session_id, "title": title }))
+    let mut from = json!({ "session_id": link.source_session_id, "title": title });
+    if let Some(files) = link.worktree_files {
+        if let Some(worktree) = new_worktree(conn, session_id, files).await {
+            from["worktree"] = worktree;
+        }
+    }
+    Some(from)
 }
 
-/// What stays the same whichever way a fork carries the chat over.
+/// The worktree session `session_id` was forked into, holding `files` files.
+async fn new_worktree(conn: &DatabaseConnection, session_id: &str, files: i64) -> Option<Value> {
+    let row = resolve(conn, session_id).await.ok()?;
+    let worktree = folder::Entity::find_by_id(row.folder_id).one(conn).await.ok()??;
+    let repository = folder::Entity::find_by_id(worktree.parent_id?).one(conn).await.ok()??;
+    Some(json!({
+        "repository": repository.name,
+        "branch": workspace::current_branch(&worktree.path).await,
+        "name": worktree.alias.unwrap_or(worktree.name),
+        "files": files,
+    }))
+}
+
+/// The transcript the next message of forked session `row` will carry, as an
+/// `attachment` block. None while the turn carrying it runs, nor once its file
+/// is gone.
+pub(crate) async fn pending_transcript(
+    conn: &DatabaseConnection,
+    connections: &ConnectionManager,
+    row: &conversation::Model,
+    root: Option<&str>,
+) -> Option<Value> {
+    let session_id = row.session_id.as_deref()?;
+    let link = session_fork::Entity::find_by_id(session_id).one(conn).await.ok()??;
+    let path = link.pending_transcript?;
+    if link.transcript_sent && row_busy(connections, row).await {
+        return None;
+    }
+    crate::attachments::block_of_path(&path, root).filter(|block| block.get("size").is_some())
+}
+
+/// Whether forked session `row` holds a transcript, which makes a message on
+/// its own: a send with nothing typed.
+pub(crate) async fn holds_transcript(conn: &DatabaseConnection, row: &conversation::Model) -> bool {
+    let Some(session_id) = row.session_id.as_deref() else {
+        return false;
+    };
+    let link = session_fork::Entity::find_by_id(session_id).one(conn).await;
+    matches!(link, Ok(Some(link)) if link.pending_transcript.is_some())
+}
+
+/// Take the transcript back out of forked session `session_id`: its next
+/// message starts the agent with no history, so the warning about the files
+/// goes too. Refused with `turn_in_progress` while a turn runs, which may be
+/// carrying it. A session holding none stays as it is.
+pub async fn remove_transcript(
+    db: &AppDatabase,
+    connections: &ConnectionManager,
+    session_id: &str,
+) -> Result<(), ZwiimError> {
+    let row = resolve(&db.conn, session_id).await?;
+    let lock = session_lock(session_id);
+    let _guard = lock.lock().await;
+    let link = session_fork::Entity::find_by_id(session_id)
+        .one(&db.conn)
+        .await
+        .map_err(|_| ZwiimError::internal())?;
+    let Some(link) = link else {
+        return Ok(());
+    };
+    let Some(path) = link.pending_transcript.as_deref().map(PathBuf::from) else {
+        return Ok(());
+    };
+    if row_busy(connections, &row).await {
+        return Err(ZwiimError::turn_in_progress());
+    }
+    let mut removed = link_of(&link);
+    removed.pending_transcript = Set(None);
+    removed.transcript_sent = Set(false);
+    removed.notice_owed = Set(false);
+    removed.update(&db.conn).await.map_err(|_| ZwiimError::internal())?;
+    remove_attachments(&[path]).await;
+    // The summary holds no transcript, and devices only reread the history
+    // when the summary differs.
+    conversation_service::touch(&db.conn, row.id)
+        .await
+        .map_err(|_| ZwiimError::internal())?;
+    Ok(())
+}
+
+/// What a fork carries over, and where to.
 struct Transfer<'a> {
     row: &'a conversation::Model,
     turns: &'a [MessageTurn],
@@ -193,13 +266,15 @@ struct Transfer<'a> {
     /// The workspace the new session runs in.
     workspace_id: &'a str,
     folder: &'a folder::Model,
-    /// Whether the agent may carry the chat over itself. A new worktree always
-    /// takes the transcript: agents keep their chats by folder.
-    native: bool,
+    /// Whether the new session shares the source's worktree, so its files are
+    /// the latest ones and not the forked turn's.
+    in_place: bool,
+    /// How many files a new worktree started with.
+    worktree_files: Option<i64>,
 }
 
 /// Fork session `row` at `turn_id` into `target`. On success the new session
-/// is idle, unless it went through a summary, whose reading is its first turn.
+/// is idle.
 ///
 /// Refused with `turn_in_progress` while the source works, `fork_unavailable`
 /// when `turn_id` doesn't end an exchange, `root_workspace` for `Current` where
@@ -207,9 +282,8 @@ struct Transfer<'a> {
 /// are gone. A failed fork to a new worktree takes the worktree back out.
 ///
 /// The caller holds session `row`'s lock.
-async fn fork_locked<L: AgentLauncher>(
+async fn fork_locked(
     host: &ForkHost<'_>,
-    launcher: &L,
     row: &conversation::Model,
     turns: &[MessageTurn],
     turn_id: &str,
@@ -241,9 +315,10 @@ async fn fork_locked<L: AgentLauncher>(
                 tail,
                 workspace_id: &workspace_id,
                 folder: &folder,
-                native: true,
+                in_place: true,
+                worktree_files: None,
             };
-            let session_id = carry_over(host, launcher, &transfer).await?;
+            let session_id = carry_over(host, &transfer).await?;
             Forked {
                 session_id,
                 workspace_id,
@@ -268,6 +343,7 @@ async fn fork_locked<L: AgentLauncher>(
             )
             .await?;
             let new_folder = workspace::resolve(&host.db.conn, &info.workspace_id).await?;
+            let worktree_files = workspace::file_count(Path::new(&new_folder.path)).await;
             let transfer = Transfer {
                 row,
                 turns,
@@ -275,9 +351,10 @@ async fn fork_locked<L: AgentLauncher>(
                 tail,
                 workspace_id: &info.workspace_id,
                 folder: &new_folder,
-                native: false,
+                in_place: false,
+                worktree_files,
             };
-            match carry_over(host, launcher, &transfer).await {
+            match carry_over(host, &transfer).await {
                 Ok(session_id) => Forked {
                     session_id,
                     workspace_id: info.workspace_id,
@@ -361,31 +438,6 @@ async fn take_back(host: &ForkHost<'_>, workspace_id: &str, branch: Option<&str>
     }
 }
 
-/// Start the new session, through the agent if it can fork, else idle with a
-/// transcript. Returns its `session_id`.
-async fn carry_over<L: AgentLauncher>(
-    host: &ForkHost<'_>,
-    launcher: &L,
-    transfer: &Transfer<'_>,
-) -> Result<String, ZwiimError> {
-    let row = transfer.row;
-    let agent: AgentType = serde_json::from_value(serde_json::Value::String(row.agent_type.clone()))
-        .map_err(|_| ZwiimError::internal())?;
-    let source_session_id = row.session_id.as_deref().ok_or_else(ZwiimError::internal)?;
-    let options = carried_options(host.db, host.connections, row, source_session_id).await;
-    let title = match &row.title {
-        Some(title) => format!("Fork of {title}"),
-        None => "Forked session".to_string(),
-    };
-    if let Some(session_id) = fork_natively(host, launcher, transfer, agent, &options, &title).await? {
-        if let Err(e) = record_link(host.db, transfer, &session_id, None, None).await {
-            tracing::warn!(error = %e, "could not record where a forked session came from");
-        }
-        return Ok(session_id);
-    }
-    fork_from_transcript(host, transfer, agent, &options, &title).await
-}
-
 /// Record where forked session `session_id` came from and what its first
 /// messages owe its agent: the `transcript`, the JSON `options` no launch has
 /// applied yet, and, for an older turn whose worktree kept the later files, the
@@ -394,7 +446,7 @@ async fn record_link(
     db: &AppDatabase,
     transfer: &Transfer<'_>,
     session_id: &str,
-    transcript: Option<String>,
+    transcript: String,
     options: Option<String>,
 ) -> Result<(), DbError> {
     let source_session_id = transfer
@@ -407,122 +459,34 @@ async fn record_link(
         source_session_id: Set(source_session_id),
         source_turn_id: Set(transfer.turn_id.to_string()),
         created_at: Set(chrono::Utc::now()),
-        pending_transcript: Set(transcript),
+        pending_transcript: Set(Some(transcript)),
         transcript_sent: Set(false),
-        notice_owed: Set(transfer.native && !transfer.tail),
+        notice_owed: Set(transfer.in_place && !transfer.tail),
         pending_options: Set(options),
+        worktree_files: Set(transfer.worktree_files),
     };
     link.insert(&db.conn).await?;
     Ok(())
 }
 
-/// Have the agent fork its own chat. `Ok(None)` means it would not or could
-/// not, with nothing left behind. Everything else about the new connection
-/// that fails is a real failure.
-async fn fork_natively<L: AgentLauncher>(
-    host: &ForkHost<'_>,
-    launcher: &L,
-    transfer: &Transfer<'_>,
-    agent: AgentType,
-    options: &OptionsRequest,
-    title: &str,
-) -> Result<Option<String>, ZwiimError> {
-    if !transfer.native {
-        return Ok(None);
-    }
-    let Some(source) = transfer.row.external_id.clone() else {
-        return Ok(None);
+/// Open the new idle session, holding a transcript of the chat up to the forked
+/// turn for its first message to carry. Returns its `session_id`.
+async fn carry_over(host: &ForkHost<'_>, transfer: &Transfer<'_>) -> Result<String, ZwiimError> {
+    let row = transfer.row;
+    let agent: AgentType = serde_json::from_value(serde_json::Value::String(row.agent_type.clone()))
+        .map_err(|_| ZwiimError::internal())?;
+    let source_session_id = row.session_id.as_deref().ok_or_else(ZwiimError::internal)?;
+    let options = carried_options(host.db, host.connections, row, source_session_id).await;
+    let title = match &row.title {
+        Some(title) => format!("Fork of {title}"),
+        None => "Forked session".to_string(),
     };
-    let point = if transfer.tail {
-        None
-    } else {
-        match resolve_fork_point(transfer.turns, transfer.turn_id, agent) {
-            Some(point) => Some(point),
-            None => return Ok(None),
-        }
-    };
-    let preferred = preferred_for_start(&host.db.conn, agent, options).await?;
-    let target = transfer.folder;
-    // Counted as starting, and the worktree stays put, until the row is linked.
-    let _starting = StartingGuard::new(transfer.workspace_id);
-    let (_, _launching) = workspace::begin_launch(&host.db.conn, target.id).await?;
-    let (reply, answer) = oneshot::channel();
-    let launched = launcher
-        .launch(
-            agent,
-            target.path.clone(),
-            target.id,
-            LaunchIntent::Fork {
-                source,
-                point,
-                reply,
-            },
-            preferred.clone().unwrap_or_default(),
-        )
-        .await;
-    let connection_id = match launched {
-        Ok(connection_id) => connection_id,
-        Err(e) => {
-            tracing::warn!(code = e.code, "agent did not start for a fork");
-            return Ok(None);
-        }
-    };
-    let refused = match tokio::time::timeout(FORK_TIMEOUT, answer).await {
-        Ok(Ok(Ok(_))) => None,
-        Ok(Ok(Err(e))) => Some(e.to_string()),
-        Ok(Err(_)) => Some("connection closed".to_string()),
-        Err(_) => Some("timed out".to_string()),
-    };
-    if let Some(reason) = refused {
-        tracing::info!(reason, "agent did not fork; using a transcript");
-        let _ = host.connections.disconnect(&connection_id).await;
-        return Ok(None);
-    }
-    if preferred.is_none() {
-        if let Err(e) = apply_on_start(host.connections, &connection_id, options).await {
-            let _ = host.connections.disconnect(&connection_id).await;
-            return Err(e);
-        }
-    }
-    let linked = host
-        .connections
-        .link_forked_session(
-            host.db,
-            &connection_id,
-            target.id,
-            title,
-            options.model.as_deref(),
-        )
-        .await;
-    let conversation_id = match linked {
-        Ok(id) => id,
-        Err(e) => {
-            let _ = host.connections.disconnect(&connection_id).await;
-            return Err(e.into());
-        }
-    };
-    let session_id = session_id_of(host.db, conversation_id).await?;
-    if let Some(values) = preferred.filter(|values| !values.is_empty()) {
-        remember_start(&host.db.conn, &session_id, values).await;
-    }
-    Ok(Some(session_id))
-}
-
-/// Open a new idle session holding a transcript of the chat up to the forked
-/// turn, for its first message to carry. No agent starts until that message.
-async fn fork_from_transcript(
-    host: &ForkHost<'_>,
-    transfer: &Transfer<'_>,
-    agent: AgentType,
-    options: &OptionsRequest,
-    title: &str,
-) -> Result<String, ZwiimError> {
     let chat = session_summary::through_turn(transfer.turns, transfer.turn_id)
         .ok_or_else(ZwiimError::fork_unavailable)?;
-    let preferred = preferred_for_start(&host.db.conn, agent, options).await?;
+    let preferred = preferred_for_start(&host.db.conn, agent, &options).await?;
     // The agent has never said what it takes here, so its first launch applies them.
     let held_options = if preferred.is_none() {
-        Some(serde_json::to_string(options).map_err(|_| ZwiimError::internal())?)
+        Some(serde_json::to_string(&options).map_err(|_| ZwiimError::internal())?)
     } else {
         None
     };
@@ -541,7 +505,7 @@ async fn fork_from_transcript(
     let (_, _launching) = workspace::begin_launch(&host.db.conn, transfer.folder.id).await?;
     let root = Path::new(&transfer.folder.path);
     let path = store(root, &file_name, transcript.as_bytes()).await?;
-    let opened = open_idle(host, transfer, agent, options, title, &path, held_options).await;
+    let opened = open_idle(host, transfer, agent, &options, &title, &path, held_options).await;
     let (conversation_id, session_id) = match opened {
         Ok(opened) => opened,
         Err(e) => {
@@ -588,7 +552,7 @@ async fn open_idle(
             .clone()
             .ok_or_else(|| DbError::NotFound("a forked session's id".into()))?;
         let held = transcript.to_string_lossy().into_owned();
-        record_link(host.db, transfer, &session_id, Some(held), held_options).await?;
+        record_link(host.db, transfer, &session_id, held, held_options).await?;
         Ok::<_, DbError>(session_id)
     }
     .await;
@@ -734,8 +698,8 @@ pub(crate) async fn turn_ended_well(conn: &DatabaseConnection, conversation_id: 
     }
 }
 
-/// Fork session `session_id` at `turn_id`, on its own task: a fork makes a
-/// worktree and maybe an agent, so a client that goes away mustn't stop it halfway.
+/// Fork session `session_id` at `turn_id`, on its own task: a fork may make a
+/// worktree, so a client that goes away mustn't stop it halfway.
 pub async fn fork(
     state: Arc<AppState>,
     session_id: String,
@@ -772,8 +736,7 @@ async fn run(
         worktrees_dir: &state.worktrees_dir,
         prefix: prefix.as_deref(),
     };
-    let launcher = RuntimeLauncher { state: &state };
-    let forked = fork_locked(&host, &launcher, &row, &turns, &turn_id, target).await?;
+    let forked = fork_locked(&host, &row, &turns, &turn_id, target).await?;
     drop(guard);
     if target == ForkTarget::NewWorktree {
         // The repository's setup script starts in its own terminal; neither
@@ -896,7 +859,7 @@ mod tests {
             worktrees_dir: &f.worktrees,
             prefix: None,
         };
-        fork_locked(&host, &f.launcher, &row, turns, turn_id, target).await
+        fork_locked(&host, &row, turns, turn_id, target).await
     }
 
     /// The transcript session `session_id` is still to hand its agent.
@@ -938,10 +901,9 @@ mod tests {
         handle_event(&f.db.conn, &f.mgr, &envelope, None).await.unwrap();
     }
 
-    /// A fork of `turn_id` in the same worktree, which the agent refused.
+    /// A fork of `turn_id` in the same worktree.
     async fn idle_fork(f: &Fixture, turn_id: &str) -> Forked {
         let (sid, turns) = ran_two(f).await;
-        f.launcher.fork_fails.store(true, Ordering::SeqCst);
         fork_it(f, &sid, &turns, turn_id, ForkTarget::Current)
             .await
             .unwrap()
@@ -967,7 +929,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn latest_turn_forks_natively_in_the_same_worktree() {
+    async fn latest_turn_opens_idle_in_the_same_worktree() {
         let f = forkable().await;
         let (sid, turns) = ran_two(&f).await;
         let source = resolve(&f.db.conn, &sid).await.unwrap();
@@ -978,21 +940,17 @@ mod tests {
 
         assert_eq!(forked.workspace_id, f.wid);
         assert_ne!(forked.session_id, sid);
-        let asked = f.launcher.fork_launches.lock().unwrap().clone();
-        assert_eq!(asked.len(), 1);
-        assert_eq!(asked[0].0, source.external_id.clone().unwrap());
-        assert_eq!(asked[0].1, None, "the latest turn is the whole chat");
-        assert_eq!(asked[0].2, f.wt.to_str().unwrap());
+        assert!(f.mgr.get_state("fake-conn-2").await.is_none(), "no agent yet");
 
         let new_row = resolve(&f.db.conn, &forked.session_id).await.unwrap();
         assert_eq!(new_row.folder_id, source.folder_id);
-        assert_eq!(new_row.external_id.as_deref(), Some("native-fork-2"));
+        assert_eq!(new_row.external_id, None);
         assert_eq!(
             new_row.title,
             source.title.as_ref().map(|title| format!("Fork of {title}"))
         );
-        assert!(f.launcher.prompts_for("fake-conn-2").is_empty());
-        assert_eq!(pending(&f, &forked.session_id).await, None);
+        let path = pending(&f, &forked.session_id).await.unwrap();
+        assert!(path.starts_with(f.wt.to_str().unwrap()), "{path}");
 
         let after = resolve(&f.db.conn, &sid).await.unwrap();
         assert_eq!(after.title, source.title);
@@ -1006,31 +964,6 @@ mod tests {
             .expect("recorded");
         assert_eq!(link.source_session_id, sid);
         assert_eq!(link.source_turn_id, "turn-3");
-    }
-
-    #[tokio::test]
-    async fn older_turn_names_its_point_and_warns_about_the_files() {
-        let f = forkable().await;
-        let (sid, turns) = ran_two(&f).await;
-
-        let forked = fork_it(&f, &sid, &turns, "turn-1", ForkTarget::Current)
-            .await
-            .unwrap();
-
-        let asked = f.launcher.fork_launches.lock().unwrap().clone();
-        assert!(asked[0].1.is_some(), "an older turn is pointed at");
-        send(
-            &f.db,
-            &f.mgr,
-            &f.launcher,
-            &forked.session_id,
-            text("go on"),
-            None,
-        )
-        .await
-        .unwrap();
-        let prompts = f.launcher.prompts_for("fake-conn-2");
-        assert!(prompts.join("\n").contains("forked from an earlier turn"));
     }
 
     #[tokio::test]
@@ -1057,19 +990,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refusal_opens_an_idle_session_with_the_chat_up_to_the_turn() {
+    async fn transcript_holds_the_chat_up_to_the_turn() {
         let f = forkable().await;
         let (sid, turns) = ran_two(&f).await;
         let source = resolve(&f.db.conn, &sid).await.unwrap();
         let source_title = source.title.clone().unwrap();
-        f.launcher.fork_fails.store(true, Ordering::SeqCst);
 
         let forked = fork_it(&f, &sid, &turns, "turn-1", ForkTarget::Current)
             .await
             .unwrap();
 
-        assert!(f.mgr.get_state("fake-conn-2").await.is_none(), "closed");
-        assert!(f.mgr.get_state("fake-conn-3").await.is_none(), "no agent yet");
         let new_row = resolve(&f.db.conn, &forked.session_id).await.unwrap();
         assert_eq!(new_row.external_id, None);
         assert_eq!(new_row.title, Some(format!("Fork of {source_title}")));
@@ -1087,7 +1017,6 @@ mod tests {
     async fn first_message_carries_the_transcript_once() {
         let f = forkable().await;
         let (sid, turns) = ran_two(&f).await;
-        f.launcher.fork_fails.store(true, Ordering::SeqCst);
         let forked = fork_it(&f, &sid, &turns, "turn-3", ForkTarget::Current)
             .await
             .unwrap();
@@ -1095,10 +1024,10 @@ mod tests {
 
         say(&f, &forked.session_id, "go on").await.unwrap();
         assert_eq!(pending(&f, &forked.session_id).await, Some(path.clone()));
-        finish_turn(&f, "fake-conn-3", "end_turn").await;
+        finish_turn(&f, "fake-conn-2", "end_turn").await;
         say(&f, &forked.session_id, "and on").await.unwrap();
 
-        let prompts = f.launcher.prompts_for("fake-conn-3");
+        let prompts = f.launcher.prompts_for("fake-conn-2");
         assert_eq!(prompts.len(), 2);
         assert!(prompts[0].contains("go on") && prompts[0].contains(&path));
         assert!(!prompts[1].contains(&path));
@@ -1111,7 +1040,6 @@ mod tests {
     async fn failed_first_message_keeps_the_transcript() {
         let f = forkable().await;
         let (sid, turns) = ran_two(&f).await;
-        f.launcher.fork_fails.store(true, Ordering::SeqCst);
         let forked = fork_it(&f, &sid, &turns, "turn-3", ForkTarget::Current)
             .await
             .unwrap();
@@ -1123,7 +1051,7 @@ mod tests {
 
         f.launcher.launch_fails.store(false, Ordering::SeqCst);
         say(&f, &forked.session_id, "go on").await.unwrap();
-        let prompts = f.launcher.prompts_for("fake-conn-3");
+        let prompts = f.launcher.prompts_for("fake-conn-2");
         assert!(prompts[0].contains(&path));
     }
 
@@ -1134,14 +1062,94 @@ mod tests {
         let path = pending(&f, &forked.session_id).await.unwrap();
 
         say(&f, &forked.session_id, "go on").await.unwrap();
-        finish_turn(&f, "fake-conn-3", "refusal").await;
+        finish_turn(&f, "fake-conn-2", "refusal").await;
         assert_eq!(pending(&f, &forked.session_id).await, Some(path.clone()));
         say(&f, &forked.session_id, "again").await.unwrap();
-        finish_turn(&f, "fake-conn-3", "end_turn").await;
+        finish_turn(&f, "fake-conn-2", "end_turn").await;
         assert_eq!(pending(&f, &forked.session_id).await, None);
 
-        let prompts = f.launcher.prompts_for("fake-conn-3");
+        let prompts = f.launcher.prompts_for("fake-conn-2");
         assert!(prompts[1].contains(&path));
+    }
+
+    /// What clients are told session `session_id`'s next message will carry.
+    async fn waiting(f: &Fixture, session_id: &str, workspace: &str) -> Option<Value> {
+        let row = resolve(&f.db.conn, session_id).await.unwrap();
+        let target = workspace::resolve(&f.db.conn, workspace).await.unwrap();
+        pending_transcript(&f.db.conn, &f.mgr, &row, Some(&target.path)).await
+    }
+
+    #[tokio::test]
+    async fn transcript_shows_as_an_attachment_until_a_turn_delivers_it() {
+        let f = forkable().await;
+        let forked = idle_fork(&f, "turn-3").await;
+        let block = waiting(&f, &forked.session_id, &forked.workspace_id).await.unwrap();
+        assert_eq!(block["type"], "attachment");
+        assert_eq!(block["mime_type"], "text/markdown");
+        assert!(block["name"].as_str().unwrap().starts_with("Transcript of "), "{block}");
+        assert!(block["path"].as_str().unwrap().starts_with(".zwiim/attachments/"), "{block}");
+        assert!(block["size"].as_u64().unwrap() > 0, "{block}");
+
+        say(&f, &forked.session_id, "go on").await.unwrap();
+        assert_eq!(waiting(&f, &forked.session_id, &forked.workspace_id).await, None, "on its way");
+        finish_turn(&f, "fake-conn-2", "refusal").await;
+        assert_eq!(
+            waiting(&f, &forked.session_id, &forked.workspace_id).await,
+            Some(block),
+            "back for the next message"
+        );
+
+        say(&f, &forked.session_id, "again").await.unwrap();
+        finish_turn(&f, "fake-conn-2", "end_turn").await;
+        assert_eq!(waiting(&f, &forked.session_id, &forked.workspace_id).await, None);
+    }
+
+    #[tokio::test]
+    async fn transcript_is_a_message_on_its_own() {
+        let f = forkable().await;
+        let forked = idle_fork(&f, "turn-3").await;
+        let path = pending(&f, &forked.session_id).await.unwrap();
+
+        send(&f.db, &f.mgr, &f.launcher, &forked.session_id, Vec::new(), None)
+            .await
+            .unwrap();
+
+        assert!(f.launcher.prompts_for("fake-conn-2")[0].contains(&path));
+    }
+
+    #[tokio::test]
+    async fn removed_transcript_is_gone_for_good() {
+        let f = forkable().await;
+        let (sid, turns) = ran_two(&f).await;
+        let forked = fork_it(&f, &sid, &turns, "turn-1", ForkTarget::Current)
+            .await
+            .unwrap();
+        let path = pending(&f, &forked.session_id).await.unwrap();
+
+        remove_transcript(&f.db, &f.mgr, &forked.session_id).await.unwrap();
+        remove_transcript(&f.db, &f.mgr, &forked.session_id).await.unwrap();
+
+        assert_eq!(pending(&f, &forked.session_id).await, None);
+        assert!(!Path::new(&path).exists(), "the file goes with it");
+        let nothing = send(&f.db, &f.mgr, &f.launcher, &forked.session_id, Vec::new(), None).await;
+        assert_eq!(nothing.unwrap_err().code, "invalid_input");
+
+        say(&f, &forked.session_id, "start over").await.unwrap();
+        let prompt = f.launcher.prompts_for("fake-conn-2").join("\n");
+        assert!(!prompt.contains(&path), "{prompt}");
+        assert!(!prompt.contains("forked from an earlier turn"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn turn_under_way_keeps_its_transcript() {
+        let f = forkable().await;
+        let forked = idle_fork(&f, "turn-3").await;
+        say(&f, &forked.session_id, "go on").await.unwrap();
+
+        let refused = remove_transcript(&f.db, &f.mgr, &forked.session_id).await;
+
+        assert_eq!(refused.unwrap_err().code, "turn_in_progress");
+        assert!(pending(&f, &forked.session_id).await.is_some());
     }
 
     #[tokio::test]
@@ -1151,12 +1159,12 @@ mod tests {
         let path = pending(&f, &forked.session_id).await.unwrap();
 
         say(&f, &forked.session_id, "/compact").await.unwrap();
-        finish_turn(&f, "fake-conn-3", "end_turn").await;
+        finish_turn(&f, "fake-conn-2", "end_turn").await;
         assert_eq!(pending(&f, &forked.session_id).await, Some(path.clone()));
         assert!(link(&f, &forked.session_id).await.notice_owed);
         say(&f, &forked.session_id, "go on").await.unwrap();
 
-        let prompts = f.launcher.prompts_for("fake-conn-3");
+        let prompts = f.launcher.prompts_for("fake-conn-2");
         assert!(!prompts[0].contains(&path));
         assert!(!prompts[0].contains("forked from an earlier turn"));
         assert!(prompts[1].contains(&path));
@@ -1187,7 +1195,7 @@ mod tests {
         f.launcher.launch_fails.store(false, Ordering::SeqCst);
         say(&f, &forked.session_id, "go on").await.unwrap();
 
-        let prompts = f.launcher.prompts_for("fake-conn-3");
+        let prompts = f.launcher.prompts_for("fake-conn-2");
         assert_eq!(prompts[0].matches("forked from an earlier turn").count(), 1);
     }
 
@@ -1201,10 +1209,10 @@ mod tests {
         let err = say(&f, &forked.session_id, "go on").await.unwrap_err();
         assert_eq!(err.code, "transcript_missing");
         assert_eq!(pending(&f, &forked.session_id).await, None);
-        assert!(f.launcher.prompts_for("fake-conn-3").is_empty());
+        assert!(f.launcher.prompts_for("fake-conn-2").is_empty());
 
         say(&f, &forked.session_id, "go on").await.unwrap();
-        assert!(!f.launcher.prompts_for("fake-conn-3")[0].contains(&path));
+        assert!(!f.launcher.prompts_for("fake-conn-2")[0].contains(&path));
     }
 
     /// Run `claude` on mode `plan` with no agent report on this Host, so a
@@ -1221,7 +1229,6 @@ mod tests {
     async fn options_of_an_unknown_agent_wait_for_the_first_launch() {
         let f = forkable().await;
         let (sid, turns) = on_plan_mode(&f).await;
-        f.launcher.fork_fails.store(true, Ordering::SeqCst);
         let forked = fork_it(&f, &sid, &turns, "turn-3", ForkTarget::NewWorktree)
             .await
             .unwrap();
@@ -1239,7 +1246,6 @@ mod tests {
     async fn options_the_agent_lost_never_hold_up_the_first_message() {
         let f = forkable().await;
         let (sid, turns) = on_plan_mode(&f).await;
-        f.launcher.fork_fails.store(true, Ordering::SeqCst);
         let forked = fork_it(&f, &sid, &turns, "turn-3", ForkTarget::NewWorktree)
             .await
             .unwrap();
@@ -1256,7 +1262,6 @@ mod tests {
         let f = forkable().await;
         let (sid, turns) = on_plan_mode(&f).await;
         crate::session_options::remember_agent_report(&f.db.conn, "claude_code", &claude("default")).await;
-        f.launcher.fork_fails.store(true, Ordering::SeqCst);
 
         let forked = fork_it(&f, &sid, &turns, "turn-3", ForkTarget::NewWorktree)
             .await
@@ -1271,14 +1276,13 @@ mod tests {
     async fn older_turn_warns_about_the_files_on_the_first_message() {
         let f = forkable().await;
         let (sid, turns) = ran_two(&f).await;
-        f.launcher.fork_fails.store(true, Ordering::SeqCst);
         let forked = fork_it(&f, &sid, &turns, "turn-1", ForkTarget::Current)
             .await
             .unwrap();
 
         say(&f, &forked.session_id, "go on").await.unwrap();
 
-        let prompts = f.launcher.prompts_for("fake-conn-3");
+        let prompts = f.launcher.prompts_for("fake-conn-2");
         assert!(prompts.join("\n").contains("forked from an earlier turn"));
     }
 
@@ -1290,7 +1294,6 @@ mod tests {
         conversation_service::update_title(&f.db.conn, id, "fix/auth".into())
             .await
             .unwrap();
-        f.launcher.fork_fails.store(true, Ordering::SeqCst);
 
         let forked = fork_it(&f, &sid, &turns, "turn-3", ForkTarget::Current)
             .await
@@ -1298,71 +1301,6 @@ mod tests {
 
         let path = pending(&f, &forked.session_id).await.unwrap();
         assert!(path.ends_with("/Transcript of fixauth.md"), "{path}");
-    }
-
-    #[tokio::test]
-    async fn turn_with_no_point_opens_idle() {
-        let f = forkable().await;
-        let prompts = ["one", "two"];
-        let sid = ran_as(
-            &f.db,
-            &f.mgr,
-            &f.launcher,
-            &f.wid,
-            &f.wt,
-            AgentType::Gemini,
-            &prompts,
-        )
-        .await;
-
-        let forked = fork_it(&f, &sid, &transcript(&prompts), "turn-1", ForkTarget::Current)
-            .await
-            .unwrap();
-
-        assert!(f.launcher.fork_launches.lock().unwrap().is_empty());
-        assert!(f.mgr.get_state("fake-conn-2").await.is_none());
-        assert!(pending(&f, &forked.session_id).await.is_some());
-    }
-
-    #[tokio::test]
-    async fn rejected_point_opens_idle() {
-        let f = forkable().await;
-        let (sid, turns) = ran_two(&f).await;
-        f.launcher.fork_point_rejected.store(true, Ordering::SeqCst);
-
-        let forked = fork_it(&f, &sid, &turns, "turn-1", ForkTarget::Current)
-            .await
-            .unwrap();
-
-        assert!(f.mgr.get_state("fake-conn-2").await.is_none());
-        assert!(pending(&f, &forked.session_id).await.is_some());
-    }
-
-    #[tokio::test]
-    async fn agent_that_never_answers_opens_idle() {
-        let f = forkable().await;
-        let (sid, turns) = ran_two(&f).await;
-        f.launcher.fork_hangs.store(true, Ordering::SeqCst);
-
-        let forked = fork_it(&f, &sid, &turns, "turn-3", ForkTarget::Current)
-            .await
-            .unwrap();
-
-        assert!(f.mgr.get_state("fake-conn-2").await.is_none());
-        assert!(pending(&f, &forked.session_id).await.is_some());
-    }
-
-    #[tokio::test]
-    async fn connection_lost_before_answering_opens_idle() {
-        let f = forkable().await;
-        let (sid, turns) = ran_two(&f).await;
-        f.launcher.fork_lost.store(true, Ordering::SeqCst);
-
-        let forked = fork_it(&f, &sid, &turns, "turn-3", ForkTarget::Current)
-            .await
-            .unwrap();
-
-        assert!(pending(&f, &forked.session_id).await.is_some());
     }
 
     #[tokio::test]
@@ -1389,7 +1327,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn new_worktree_always_takes_the_transcript() {
+    async fn new_worktree_holds_its_own_transcript() {
         let f = forkable().await;
         let (sid, turns) = ran_two(&f).await;
 
@@ -1397,7 +1335,6 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(f.launcher.fork_launches.lock().unwrap().is_empty());
         assert!(f.mgr.get_state("fake-conn-2").await.is_none());
         let target = workspace::resolve(&f.db.conn, &forked.workspace_id)
             .await
@@ -1408,6 +1345,36 @@ mod tests {
         say(&f, &forked.session_id, "go on").await.unwrap();
 
         assert!(f.launcher.prompts_for("fake-conn-2")[0].contains(&path));
+    }
+
+    #[tokio::test]
+    async fn new_worktree_says_what_was_created() {
+        let f = forkable().await;
+        let (sid, turns) = ran_two(&f).await;
+
+        let forked = fork_it(&f, &sid, &turns, "turn-3", ForkTarget::NewWorktree)
+            .await
+            .unwrap();
+
+        let target = workspace::resolve(&f.db.conn, &forked.workspace_id)
+            .await
+            .unwrap();
+        let from = forked_from(&f.db.conn, &forked.session_id).await.unwrap();
+        let worktree = &from["worktree"];
+        assert_eq!(worktree["repository"], "repo", "{from}");
+        assert_eq!(worktree["name"], target.alias.unwrap_or(target.name), "{from}");
+        assert!(worktree["branch"].is_string(), "{from}");
+        assert_eq!(worktree["files"], 1, "only a.txt, and not Zwiim's own folder: {from}");
+    }
+
+    #[tokio::test]
+    async fn fork_in_place_creates_nothing_to_report() {
+        let f = forkable().await;
+        let forked = idle_fork(&f, "turn-3").await;
+
+        let from = forked_from(&f.db.conn, &forked.session_id).await.unwrap();
+
+        assert!(from.get("worktree").is_none(), "{from}");
     }
 
     #[tokio::test]
@@ -1456,7 +1423,6 @@ mod tests {
 
         assert_eq!(err.code, "checkpoint_unavailable");
         assert_eq!(worktree_count(&f), 2);
-        assert!(f.launcher.fork_launches.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1531,7 +1497,7 @@ mod tests {
             prefix: None,
         };
 
-        let err = fork_locked(&host, &f.launcher, &row, &turns, "turn-3", ForkTarget::Current)
+        let err = fork_locked(&host, &row, &turns, "turn-3", ForkTarget::Current)
             .await
             .unwrap_err();
 
@@ -1567,7 +1533,6 @@ mod tests {
     async fn transcript_that_cannot_be_held_for_later_is_not_left_behind() {
         let f = forkable().await;
         let (sid, turns) = ran_two(&f).await;
-        f.launcher.fork_fails.store(true, Ordering::SeqCst);
         f.db.conn
             .execute_unprepared("DROP TABLE session_forks")
             .await
@@ -1587,11 +1552,11 @@ mod tests {
         let (sid, turns) = ran_two(&f).await;
         f.mgr.disconnect("fake-conn-1").await.unwrap();
 
-        fork_it(&f, &sid, &turns, "turn-3", ForkTarget::Current)
+        let forked = fork_it(&f, &sid, &turns, "turn-3", ForkTarget::Current)
             .await
             .unwrap();
 
-        assert_eq!(f.launcher.fork_launches.lock().unwrap().len(), 1);
+        assert!(pending(&f, &forked.session_id).await.is_some());
     }
 
     #[tokio::test]

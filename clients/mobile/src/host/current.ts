@@ -218,6 +218,12 @@ export class CurrentHost {
    * echoes it on the session's stream. Once the host takes it, that session's
    * draft is cleared (unless more was typed since); a failed send keeps it.
    */
+  async removeTranscript(session_id: string): Promise<void> {
+    const connection = this.#connection;
+    if (!connection) throw new ZwiimClientError("network", "Not connected to the host");
+    await connection.removeTranscript(session_id);
+  }
+
   async send(session_id: string, text: string, client_message_id: string, files: PromptBlock[] = []): Promise<void> {
     const connection = this.#connection;
     if (!connection) throw new ZwiimClientError("network", "Not connected to the host");
