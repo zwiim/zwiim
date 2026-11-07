@@ -99,8 +99,12 @@ describe("evaluateCompatibility", () => {
     expect(CLIENT_CAPABILITIES).toContain("workspace.layout");
   });
 
-  it("speaks revision 30, forks sessions and takes a transcript back", () => {
-    expect(CLIENT_REVISION).toBe(30);
+  it("speaks revision 31 and guards hidden files", () => {
+    expect(CLIENT_REVISION).toBe(31);
+    expect(CLIENT_CAPABILITIES).toContain("files.guard_hidden");
+  });
+
+  it("forks sessions and takes a transcript back", () => {
     expect(CLIENT_CAPABILITIES).toContain("session.fork");
     expect(CLIENT_CAPABILITIES).toContain("session.transcript_remove");
   });

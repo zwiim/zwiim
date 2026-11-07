@@ -1767,7 +1767,7 @@ export interface Operations {
    * `file_ranges`). Over the Cloud relay files past 10 MB are refused with
    * `file_too_large_for_remote`.
    */
-  "files.download": [{ workspace_id: string; path: string; offset?: number; length?: number }, FileDownload];
+  "files.download": [{ workspace_id: string; path: string; offset?: number; length?: number; guard_hidden?: boolean }, FileDownload];
   /** Store a file (base64, up to 10 MB) in the workspace for an `attachment` prompt block. */
   "attachments.upload": [{ workspace_id: string; name: string; data: string }, UploadedAttachment];
   "git.status": [{ workspace_id: string; show_all_untracked?: boolean }, GitStatusEntry[]];

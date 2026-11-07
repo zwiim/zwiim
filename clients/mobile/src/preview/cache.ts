@@ -59,9 +59,10 @@ export async function serveRequest(
   client: FileReader,
   workspaceId: string,
   previewId: string,
+  entry: string,
   req: { requestId: string; method: string; path: string },
 ): Promise<void> {
-  const answer = await answerPreview(client, workspaceId, req.method, req.path);
+  const answer = await answerPreview(client, workspaceId, req.method, req.path, entry);
   if (answer.status === 301) return respondPreview(req.requestId, { status: 301, location: answer.location });
   if (answer.status !== 200) return respondPreview(req.requestId, { status: answer.status, text: answer.text });
   const target = new File(previewDir(previewId), `r-${req.requestId}`);

@@ -1416,6 +1416,22 @@ pub struct FileDownloadParams {
     pub offset: Option<u64>,
     #[serde(default)]
     pub length: Option<u64>,
+    /// Refuse a symlink that resolves to a hidden file `path` doesn't name.
+    #[serde(default)]
+    pub guard_hidden: bool,
+}
+
+/// Whether `target`, what `path` resolved to under `root`, is hidden when
+/// `path` doesn't say so. Page code can't see that from the path alone: a repo
+/// can commit `notes.txt -> .env`.
+fn link_reaches_hidden(root: &std::path::Path, target: &std::path::Path, path: &str) -> bool {
+    let Ok(resolved) = target.strip_prefix(root) else {
+        return true;
+    };
+    resolved != std::path::Path::new(path)
+        && resolved
+            .components()
+            .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
 }
 
 /// Any file in the workspace as base64: whole (up to 10 MB), or a range of
@@ -1439,6 +1455,9 @@ pub async fn files_download(
         return Err(not_found());
     };
     if !target.starts_with(&root) || !target.is_file() {
+        return Err(not_found());
+    }
+    if p.guard_hidden && link_reaches_hidden(&root, &target, &p.path) {
         return Err(not_found());
     }
     let size = std::fs::metadata(&target).map_err(|_| not_found())?.len();

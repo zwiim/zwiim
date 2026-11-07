@@ -150,7 +150,7 @@ export function PreviewScreen({ route, navigation }: NativeStackScreenProps<Root
         key={previewId}
         style={styles.view}
         source={loaded.source}
-        onRequest={(e) => void serveRequest(hostReader(), workspace_id, previewId, e.nativeEvent)}
+        onRequest={(e) => void serveRequest(hostReader(), workspace_id, previewId, path, e.nativeEvent)}
         onFailed={(e) => setLoaded({ state: "failed", error: new Error(e.nativeEvent.message) })}
       />
     );

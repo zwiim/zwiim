@@ -1,6 +1,6 @@
 import { hasFileRanges, isClientError, readChunks, type FileChunk, type FileReader } from "@zwiim/sdk";
 import { previewStatus } from "./errors";
-import { encodePreviewPath, resolvePreviewPath } from "./path";
+import { encodePreviewPath, previewMayRead, resolvePreviewPath } from "./path";
 
 export type PreviewAnswer =
   | { status: 200; mime_type: string; size: number; body: AsyncIterable<Uint8Array> }
@@ -9,17 +9,18 @@ export type PreviewAnswer =
 
 const TEXT = { 404: "Not found", 405: "Method not allowed", 413: "Too large to load here", 502: "Couldn't read this file from the Host" } as const;
 
-/** Answer one request a preview page made for `rawPath` (URL path, maybe with a query). */
+/** Answer one request a preview page made for `rawPath` (URL path, maybe with a query); `entry` is the file the user opened. */
 export async function answerPreview(
   client: FileReader,
   workspaceId: string,
   method: string,
   rawPath: string,
+  entry = "",
 ): Promise<PreviewAnswer> {
   if (method !== "GET" && method !== "HEAD") return { status: 405, text: TEXT[405] };
   const path = resolvePreviewPath(rawPath);
-  if (path === null) return { status: 404, text: TEXT[404] };
-  const chunks = readChunks(client, workspaceId, path);
+  if (path === null || !previewMayRead(path, entry)) return { status: 404, text: TEXT[404] };
+  const chunks = readChunks(client, workspaceId, path, { guardHidden: path !== entry });
   let first: IteratorResult<FileChunk>;
   try {
     first = await chunks.next();

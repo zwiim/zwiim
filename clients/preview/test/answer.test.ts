@@ -37,6 +37,30 @@ describe("answerPreview", () => {
     expect(await text(await answerPreview(client, "w1", "GET", "/empty.html"))).toMatchObject({ status: 200, size: 0, s: "" });
   });
 
+  it("never asks the Host for a hidden file a page names", async () => {
+    const { client, calls } = host({ ".env": "secret", ".git/config": "secret", "a.html": "ok" });
+    for (const path of ["/.env", "/%2Eenv", "/.git/config", "/a/../.env", "/.env?x=1"]) {
+      expect(await answerPreview(client, "w1", "GET", path, "a.html")).toMatchObject({ status: 404 });
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("opens a page in a hidden folder with its own files", async () => {
+    const { client } = host({ ".site/a.html": "page", ".site/a.css": "css", ".env": "secret" });
+    expect(await text(await answerPreview(client, "w1", "GET", "/.site/a.html", ".site/a.html"))).toMatchObject({ status: 200, s: "page" });
+    expect(await text(await answerPreview(client, "w1", "GET", "/.site/a.css", ".site/a.html"))).toMatchObject({ status: 200, s: "css" });
+    expect(await answerPreview(client, "w1", "GET", "/.env", ".site/a.html")).toMatchObject({ status: 404 });
+  });
+
+  it("guards what a page loads, not the page that was opened", async () => {
+    const { client, calls } = host({ "a.html": "page", "b.css": "css" });
+    (client.state as any).compat.capabilities = ["file_ranges", "files.guard_hidden"];
+    await text(await answerPreview(client, "w1", "GET", "/a.html", "a.html"));
+    await text(await answerPreview(client, "w1", "GET", "/b.css", "a.html"));
+    expect(calls.find((c) => c.path === "a.html")).not.toHaveProperty("guard_hidden");
+    expect(calls.find((c) => c.path === "b.css")).toMatchObject({ guard_hidden: true });
+  });
+
   it("answers HEAD with no body", async () => {
     const { client } = host({ "a.html": "abc" });
     expect(await text(await answerPreview(client, "w1", "HEAD", "/a.html"))).toMatchObject({ status: 200, size: 3, s: "" });

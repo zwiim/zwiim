@@ -27,6 +27,18 @@ export function resolvePreviewPath(urlPath: string): string | null {
   return out.join("/");
 }
 
+/**
+ * Whether a preview page may read `path` when `entry` is the file the user
+ * opened. Hidden files and folders are out of reach, so a page can't read
+ * `.env` or `.git`. What the user opened is in reach, with what sits beside it.
+ */
+export function previewMayRead(path: string, entry: string): boolean {
+  if (path === entry) return true;
+  const dir = entry.slice(0, entry.lastIndexOf("/") + 1);
+  const rest = path.startsWith(dir) ? path.slice(dir.length) : path;
+  return !rest.split("/").some((part) => part.startsWith("."));
+}
+
 /** A workspace path as a URL path (no leading slash), each segment percent-encoded. */
 export function encodePreviewPath(path: string): string {
   return path.split("/").map(encodeURIComponent).join("/");

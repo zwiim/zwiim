@@ -289,7 +289,12 @@ use serde::{Deserialize, Serialize};
 /// files}` on a fork to a new worktree. `session.transcript_remove` takes the
 /// transcript back out, for every device, and `session.send` takes no blocks
 /// while a session holds one.
-pub const PROTOCOL_REVISION: u32 = 30;
+///
+/// 31 (`files.guard_hidden`): `files.download` takes `guard_hidden`, which
+/// refuses a symlink that resolves to a hidden file the path did not name. An
+/// HTML preview page's requests carry it. Older Hosts refuse the field, so a
+/// client sends it only to a Host that offers this.
+pub const PROTOCOL_REVISION: u32 = 31;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -321,6 +326,7 @@ pub const CAPABILITIES: &[&str] = &[
     "workspace.clone",
     "attachments",
     "file_ranges",
+    "files.guard_hidden",
     "session.plan_hand_off",
     "session.revert",
     "session.revert.chat",
@@ -495,6 +501,12 @@ mod tests {
     }
 
     #[test]
+    fn hidden_file_guard_is_served() {
+        assert!(CAPABILITIES.contains(&"files.guard_hidden"));
+        assert_eq!(PROTOCOL_REVISION, 31);
+    }
+
+    #[test]
     fn subagent_start_is_served() {
         assert!(CAPABILITIES.contains(&"subagent.started_at"));
         const _: () = assert!(PROTOCOL_REVISION >= 10);
@@ -630,7 +642,7 @@ mod tests {
     fn compat_advertises_session_transcript_remove() {
         assert!(CAPABILITIES.contains(&"session.transcript_remove"));
         // `pending_transcript`, `forked_from.worktree` and the op itself.
-        assert_eq!(PROTOCOL_REVISION, 30);
+        const _: () = assert!(PROTOCOL_REVISION >= 30);
     }
 
     #[test]

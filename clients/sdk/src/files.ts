@@ -2,6 +2,7 @@
 // `file_ranges`, else in one whole-file call (up to 10 MB).
 
 import { UPLOAD_TIMEOUT_MS } from "./attachments";
+import { hasCapability } from "./client/compat";
 import type { ConnectionState } from "./client/connection";
 import type { HostClient } from "./client/host-client";
 
@@ -34,10 +35,19 @@ export function decodeBase64(data: string): Uint8Array {
   return out;
 }
 
-/** The file front to back. A file that shrinks while read ends early; one that grows ends at its new size. */
-export async function* readChunks(client: FileReader, workspaceId: string, path: string): AsyncGenerator<FileChunk> {
+/**
+ * The file front to back. A file that shrinks while read ends early; one that grows ends at its new size.
+ * `guardHidden` refuses a symlink to a hidden file, on a Host that offers it: an older one refuses the field.
+ */
+export async function* readChunks(
+  client: FileReader,
+  workspaceId: string,
+  path: string,
+  opts: { guardHidden?: boolean } = {},
+): AsyncGenerator<FileChunk> {
+  const guard = opts.guardHidden && hasCapability(client.state.compat, "files.guard_hidden") ? { guard_hidden: true } : {};
   if (!hasFileRanges(client)) {
-    const f = await client.request("files.download", { workspace_id: workspaceId, path }, { timeoutMs: UPLOAD_TIMEOUT_MS });
+    const f = await client.request("files.download", { workspace_id: workspaceId, path, ...guard }, { timeoutMs: UPLOAD_TIMEOUT_MS });
     yield { name: f.name, mime_type: f.mime_type, size: f.size, offset: 0, bytes: decodeBase64(f.data) };
     return;
   }
@@ -45,7 +55,7 @@ export async function* readChunks(client: FileReader, workspaceId: string, path:
   for (;;) {
     const f = await client.request(
       "files.download",
-      { workspace_id: workspaceId, path, offset, length: RANGE_BYTES },
+      { workspace_id: workspaceId, path, offset, length: RANGE_BYTES, ...guard },
       { timeoutMs: RANGE_TIMEOUT_MS },
     );
     const bytes = decodeBase64(f.data);

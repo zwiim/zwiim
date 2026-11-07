@@ -25,7 +25,7 @@ export function HtmlView({
   useEffect(() => {
     let gone = false;
     let opened: string | null = null;
-    openPreview(controller.client, workspaceId).then(
+    openPreview(controller.client, workspaceId, path).then(
       (got) => {
         opened = got;
         if (gone) void closePreview(got);
@@ -38,7 +38,7 @@ export function HtmlView({
       if (opened) void closePreview(opened);
       setId(null);
     };
-  }, [controller, workspaceId, onError]);
+  }, [controller, workspaceId, path, onError]);
   if (!id) return <PreviewLoading />;
   return (
     <iframe

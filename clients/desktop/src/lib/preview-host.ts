@@ -17,13 +17,13 @@ export function previewUrl(id: string, path: string, windows = platform() === "w
   return `${origin}/${encodePreviewPath(path)}`;
 }
 
-/** Open a preview origin for `workspaceId`; its id. */
-export async function openPreview(client: FileReader, workspaceId: string): Promise<string> {
+/** Open a preview origin for `entry` in `workspaceId`; its id. */
+export async function openPreview(client: FileReader, workspaceId: string, entry: string): Promise<string> {
   const { Channel, invoke } = await import("@tauri-apps/api/core");
   const channel = new Channel<PreviewRequest>();
   channel.onmessage = (req) => void reply(req);
   async function reply({ request, method, path }: PreviewRequest) {
-    let answer: PreviewAnswer = await answerPreview(client, workspaceId, method, path);
+    let answer: PreviewAnswer = await answerPreview(client, workspaceId, method, path, entry);
     let body: Uint8Array = new Uint8Array();
     if (answer.status === 200) {
       try {

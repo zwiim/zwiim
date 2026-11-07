@@ -29,6 +29,21 @@ function fakeHost(file: Uint8Array, ranges = true) {
 const pattern = (n: number) => Uint8Array.from({ length: n }, (_, i) => i % 251);
 
 describe("file reads", () => {
+  it("asks for the hidden-file guard only from a Host that offers it", async () => {
+    const read = async (capabilities: string[], opts?: { guardHidden: boolean }) => {
+      const { client, calls } = fakeHost(pattern(4));
+      (client.state as any).compat.capabilities = capabilities;
+      for await (const _ of readChunks(client, "w1", "f.bin", opts)) void _;
+      return calls[0].params;
+    };
+    expect(await read(["file_ranges", "files.guard_hidden"], { guardHidden: true })).toMatchObject({ guard_hidden: true });
+    expect(await read(["files.guard_hidden"], { guardHidden: true })).toMatchObject({ guard_hidden: true });
+    // An older Host refuses a field it doesn't know.
+    expect(await read(["file_ranges"], { guardHidden: true })).not.toHaveProperty("guard_hidden");
+    expect(await read([], { guardHidden: true })).not.toHaveProperty("guard_hidden");
+    expect(await read(["file_ranges", "files.guard_hidden"])).not.toHaveProperty("guard_hidden");
+  });
+
   it("decodes base64", () => {
     expect([...decodeBase64("AAEC/w==")]).toEqual([0, 1, 2, 255]);
     expect(decodeBase64("").length).toBe(0);

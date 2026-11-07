@@ -5905,6 +5905,35 @@ async fn files_download_stays_inside_the_workspace() {
     }
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn files_download_guard_keeps_a_link_away_from_hidden_files() {
+    use std::os::unix::fs::symlink;
+    let h = host(false).await;
+    let wid = h.wt_workspace_id.clone();
+    let wt = std::path::Path::new(&h.wt);
+    std::fs::write(wt.join(".env"), "secret").unwrap();
+    std::fs::create_dir(wt.join(".keys")).unwrap();
+    std::fs::write(wt.join(".keys/a"), "secret").unwrap();
+    std::fs::write(wt.join("plain.txt"), "plain").unwrap();
+    symlink(".env", wt.join("env.txt")).unwrap();
+    symlink(".keys", wt.join("keys")).unwrap();
+    symlink("plain.txt", wt.join("same.txt")).unwrap();
+    let guarded = |path: &str| json!({"workspace_id": wid, "path": path, "guard_hidden": true});
+
+    for path in ["env.txt", "keys/a"] {
+        let (status, _) = h.err("files.download", guarded(path)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+    }
+    // The client decides what a path may name; the guard is about what a link
+    // turns it into. So a hidden path asked for by name still reads.
+    for path in ["plain.txt", "same.txt", ".env", ".keys/a"] {
+        h.ok("files.download", guarded(path)).await;
+    }
+    // Every other caller keeps following links.
+    h.ok("files.download", json!({"workspace_id": wid, "path": "env.txt"})).await;
+}
+
 #[tokio::test]
 async fn files_download_reads_ranges_past_the_whole_file_cap() {
     let h = host(false).await;

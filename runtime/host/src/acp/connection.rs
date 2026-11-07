@@ -7081,6 +7081,11 @@ async fn handle_grok_ask_user_question(
 /// The ACP `toolCall.name` field would be the exact answer but is UNSTABLE and
 /// dropped by the schema crate Zwiim pins, so it is not available here.
 ///
+/// A name is not enough on its own: a shell tool's title is the command, which
+/// the model writes. So the call has to have the ask tool's shape too, a `kind`
+/// no other than `other` and a `questions` array in its input. A host that
+/// sends neither just keeps today's card.
+///
 /// Only an `allow_once` option is ever selected. An `allow_always` writes a
 /// durable permission rule into the user's own agent settings — a decision that
 /// outlives this turn and this connection, so it stays theirs to make. With no
@@ -7093,7 +7098,13 @@ fn zwiim_ask_auto_allow_option(req: &RequestPermissionRequest) -> Option<String>
         .into_iter()
         .flatten()
         .any(crate::acp::question::is_zwiim_ask_tool_name);
-    if !is_ask {
+    let fields = &req.tool_call.fields;
+    let has_questions = fields.raw_input.as_ref().is_some_and(|input| {
+        input
+            .get("questions")
+            .is_some_and(serde_json::Value::is_array)
+    });
+    if !is_ask || !has_questions || !matches!(fields.kind, None | Some(ToolKind::Other)) {
         return None;
     }
     req.options
@@ -18010,6 +18021,43 @@ mod tests {
         bare.meta = None;
         assert_eq!(
             zwiim_ask_auto_allow_option(&bare).as_deref(),
+            Some("allow-once")
+        );
+    }
+
+    /// A title is what the tool's caller wrote, so a shell tool can carry the
+    /// ask tool's exact name. Only the call's shape tells them apart.
+    #[test]
+    fn zwiim_ask_auto_allow_option_refuses_a_call_that_is_only_titled_like_the_ask_tool() {
+        let shaped = |kind: Option<ToolKind>, raw_input: Option<serde_json::Value>| {
+            let mut req = claude_mcp_permission_request(
+                "mcp__zwiim-mcp__ask_user_question",
+                claude_permission_options(),
+            );
+            req.tool_call.fields.kind = kind;
+            req.tool_call.fields.raw_input = raw_input;
+            req
+        };
+        let shell = serde_json::json!({ "command": "mcp__zwiim-mcp__ask_user_question" });
+        for req in [
+            shaped(Some(ToolKind::Execute), Some(shell.clone())),
+            shaped(Some(ToolKind::Other), Some(shell.clone())),
+            shaped(None, Some(shell)),
+            shaped(
+                Some(ToolKind::Execute),
+                Some(serde_json::json!({ "questions": [] })),
+            ),
+            shaped(
+                Some(ToolKind::Other),
+                Some(serde_json::json!({ "questions": "x" })),
+            ),
+            shaped(Some(ToolKind::Other), None),
+        ] {
+            assert!(zwiim_ask_auto_allow_option(&req).is_none(), "{req:?}");
+        }
+        let no_kind = shaped(None, Some(serde_json::json!({ "questions": [] })));
+        assert_eq!(
+            zwiim_ask_auto_allow_option(&no_kind).as_deref(),
             Some("allow-once")
         );
     }
