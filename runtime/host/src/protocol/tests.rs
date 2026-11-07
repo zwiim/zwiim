@@ -109,6 +109,7 @@ const OPS: &[&str] = &[
     "settings.update",
     "repository.settings.get",
     "repository.settings.update",
+    "repository.settings.import",
     "workspace.run_script",
     "workspace.previews",
     "device.pair_invite",

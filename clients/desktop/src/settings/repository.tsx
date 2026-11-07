@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   DEFAULT_FILES_TO_COPY,
+  hasCapability,
   MAX_ENV_BYTES,
   MAX_ENV_NAME_BYTES,
   MAX_FILE_PATTERN_BYTES,
@@ -116,20 +117,42 @@ function Scripts({ repoId }: { repoId: string }) {
   const [values, setValues] = useState<Values | null>(null);
   const [drafts, setDrafts] = useState<Partial<Record<RepositorySettingKey, string>>>({});
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const canImport = useHost((s) =>
+    hasCapability(s.connection.compat, "repository.settings_import"),
+  );
+
+  const load = useCallback((kept: Values) => {
+    setValues(kept);
+    setDrafts({
+      ...Object.fromEntries(SCRIPTS.map((p) => [p.key, text(kept[p.key])])),
+      "files.copy": filesToCopy(kept).join("\n"),
+      env: formatEnv(kept.env ?? {}),
+    });
+  }, []);
 
   useEffect(() => {
     controller.client.request("repository.settings.get", { workspace_id: repoId }).then(
-      (s) => {
-        setValues(s.values);
-        setDrafts({
-          ...Object.fromEntries(SCRIPTS.map((p) => [p.key, text(s.values[p.key])])),
-          "files.copy": filesToCopy(s.values).join("\n"),
-          env: formatEnv(s.values.env ?? {}),
-        });
-      },
+      (s) => load(s.values),
       (e) => setError(errorMessage(e)),
     );
-  }, [controller, repoId]);
+  }, [controller, repoId, load]);
+
+  const importScripts = () => {
+    setError(null);
+    setNotice(null);
+    controller.client
+      .request("repository.settings.import", { workspace_id: repoId })
+      .then((s) => {
+        load(s.values);
+        setNotice(
+          s.imported.length === 0
+            ? "Nothing imported: these scripts are already set."
+            : `Imported ${s.imported.length === 1 ? "1 script" : `${s.imported.length} scripts`}. Check them before creating a worktree.`,
+        );
+      })
+      .catch((e) => setError(errorMessage(e)));
+  };
 
   const update = useCallback(
     (patch: Values) => {
@@ -158,6 +181,16 @@ function Scripts({ repoId }: { repoId: string }) {
 
   return (
     <>
+      {canImport && (
+        <div className="flex items-center justify-between gap-3 border-b pb-3">
+          <span className="text-muted-foreground">
+            {notice ?? "Fill empty scripts from this repository's Conductor settings."}
+          </span>
+          <Button variant="outline" size="sm" disabled={!online} onClick={importScripts}>
+            Import from Conductor
+          </Button>
+        </div>
+      )}
       {SCRIPTS.map((p) => {
         const draft = draftOf(p.key);
         const over = encoder.encode(draft.trim()).length > MAX_SCRIPT_BYTES;

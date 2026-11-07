@@ -206,7 +206,7 @@ fn read_host_from_stdin() -> String {
 
 /// Look up a (username, token) pair for the given host using the Zwiim
 /// database in `app_data_dir` plus whichever token store is active for this
-/// build (OS keyring on desktop, `tokens.json` on server).
+/// Host (the OS keychain, or `tokens.json` under `ZWIIM_HOST_KEY_STORE=file`).
 ///
 /// Returns:
 ///   - `Ok(Some((u, p)))` when a matching account + token are found.

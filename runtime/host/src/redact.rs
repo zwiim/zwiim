@@ -1,4 +1,4 @@
-//! Provider API keys out of text the Host passes on: client-facing errors and
+//! Provider API keys and access tokens out of text the Host passes on: client-facing errors and
 //! history, logs, and diagnostics.
 //!
 //! The Host never puts a key it holds into a message, but vendors do: a refused
@@ -15,14 +15,31 @@ use tracing_subscriber::fmt::MakeWriter;
 
 const REDACTED: &str = "<redacted>";
 
+/// How the credentials vendors issue begin.
+const KEY_PREFIXES: &[&str] = &[
+    "sk-",
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+    "xoxb-",
+    "xoxp-",
+];
+
+fn next_key(text: &str) -> Option<usize> {
+    KEY_PREFIXES.iter().filter_map(|p| text.find(p)).min()
+}
+
 /// `text` with every key-shaped word replaced by `<redacted>`.
 pub fn scrub_secrets(text: &str) -> Cow<'_, str> {
-    if !text.contains("sk-") {
+    if next_key(text).is_none() {
         return Cow::Borrowed(text);
     }
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
-    while let Some(at) = rest.find("sk-") {
+    while let Some(at) = next_key(rest) {
         // Only at the start of a word: `task-` or `disk-` are not keys.
         let starts_word = rest[..at]
             .chars()
@@ -49,7 +66,7 @@ fn is_key_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '*' | '.')
 }
 
-/// `sk-` then enough key material to be one; a trailing `.` ends a sentence.
+/// A prefix then enough key material to be one; a trailing `.` ends a sentence.
 fn looks_like_key(word: &str) -> bool {
     word.trim_end_matches('.').len() >= 8
 }
@@ -107,12 +124,25 @@ mod tests {
     }
 
     #[test]
+    fn access_tokens_are_redacted() {
+        assert_eq!(
+            scrub_secrets("push failed for ghp_0123456789abcdef and github_pat_11ABC_def"),
+            "push failed for <redacted> and <redacted>"
+        );
+        assert_eq!(
+            scrub_secrets("token=gho_0123456789abcdef; slack xoxb-1234-5678"),
+            "token=<redacted>; slack <redacted>"
+        );
+    }
+
+    #[test]
     fn ordinary_text_is_left_alone() {
         let plain = "the task-runner hit disk-full; see sk- for details";
         assert_eq!(scrub_secrets(plain), plain);
         assert_eq!(scrub_secrets("no keys here"), "no keys here");
         assert_eq!(scrub_secrets("sk-short"), "<redacted>");
         assert_eq!(scrub_secrets("sk-a"), "sk-a");
+        assert_eq!(scrub_secrets("the ghp_ prefix"), "the ghp_ prefix");
     }
 
     #[test]

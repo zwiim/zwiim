@@ -99,8 +99,12 @@ describe("evaluateCompatibility", () => {
     expect(CLIENT_CAPABILITIES).toContain("workspace.layout");
   });
 
-  it("speaks revision 31 and guards hidden files", () => {
-    expect(CLIENT_REVISION).toBe(31);
+  it("speaks revision 32 and imports repository scripts", () => {
+    expect(CLIENT_REVISION).toBe(32);
+    expect(CLIENT_CAPABILITIES).toContain("repository.settings_import");
+  });
+
+  it("guards hidden files", () => {
     expect(CLIENT_CAPABILITIES).toContain("files.guard_hidden");
   });
 

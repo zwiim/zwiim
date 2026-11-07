@@ -226,8 +226,8 @@ pub const UPLOAD_MAX_BYTES: u64 = 20 * 1024 * 1024;
 /// `uploads_root/`. Per-file `UPLOAD_MAX_BYTES` bounds one payload; this
 /// bounds long-term accumulation so a compromised or shared token can't
 /// repeatedly upload small files until the host runs out of disk. Unset
-/// or `0` disables the cap — preserves the original "no GC" behavior
-/// for operators who want it.
+/// is [`DEFAULT_UPLOAD_MAX_TOTAL_BYTES`]; `0` disables the cap for operators
+/// who want the original "no GC" behavior.
 ///
 /// The check is intentionally conservative: it fires before any bytes
 /// are streamed to disk, assuming the worst-case `UPLOAD_MAX_BYTES`.
@@ -239,6 +239,9 @@ pub const UPLOAD_MAX_BYTES: u64 = 20 * 1024 * 1024;
 /// past `cap` because each one decrements the in-flight headroom seen
 /// by the next.
 const UPLOAD_TOTAL_BYTES_ENV: &str = "ZWIIM_UPLOAD_MAX_TOTAL_BYTES";
+
+/// The total-size cap when the operator sets none.
+const DEFAULT_UPLOAD_MAX_TOTAL_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 
 /// Opt-in fail-closed mode for the quota config. When truthy and
 /// `ZWIIM_UPLOAD_MAX_TOTAL_BYTES` parses as `Invalid`, startup aborts
@@ -253,7 +256,7 @@ const UPLOAD_STRICT_ENV: &str = "ZWIIM_UPLOAD_QUOTA_STRICT";
 /// off" from "operator typo silently disabled the cap".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UploadQuotaConfig {
-    /// Env var unset; cap disabled by default.
+    /// Env var unset; [`DEFAULT_UPLOAD_MAX_TOTAL_BYTES`] applies.
     Unset,
     /// Env var present but `0` (or only whitespace); cap explicitly off.
     Disabled,
@@ -269,10 +272,11 @@ pub enum UploadQuotaConfig {
 }
 
 impl UploadQuotaConfig {
-    /// Active cap, if any. Returns `None` for `Unset`, `Disabled`, and
-    /// `Invalid` — all three mean "no quota enforcement this run".
+    /// Active cap, if any. Returns `None` for `Disabled` and `Invalid` —
+    /// both mean "no quota enforcement this run".
     pub fn cap_bytes(&self) -> Option<u64> {
         match self {
+            UploadQuotaConfig::Unset => Some(DEFAULT_UPLOAD_MAX_TOTAL_BYTES),
             UploadQuotaConfig::Enabled(c) => Some(*c),
             _ => None,
         }
@@ -361,7 +365,7 @@ pub fn log_upload_quota_config_at_startup() {
     match &config {
         UploadQuotaConfig::Unset => {
             tracing::info!(
-                "[uploads] {UPLOAD_TOTAL_BYTES_ENV} unset → total-size cap disabled (set to a byte count to enable)"
+                "[uploads] {UPLOAD_TOTAL_BYTES_ENV} unset → default total-size cap: {DEFAULT_UPLOAD_MAX_TOTAL_BYTES} bytes"
             );
         }
         UploadQuotaConfig::Disabled => {
@@ -1250,8 +1254,11 @@ mod tests {
     }
 
     #[test]
-    fn upload_quota_config_cap_bytes_active_only_when_enabled() {
-        assert_eq!(UploadQuotaConfig::Unset.cap_bytes(), None);
+    fn upload_quota_config_cap_bytes_active_unless_turned_off() {
+        assert_eq!(
+            UploadQuotaConfig::Unset.cap_bytes(),
+            Some(DEFAULT_UPLOAD_MAX_TOTAL_BYTES)
+        );
         assert_eq!(UploadQuotaConfig::Disabled.cap_bytes(), None);
         assert_eq!(UploadQuotaConfig::Enabled(42).cap_bytes(), Some(42));
         assert_eq!(

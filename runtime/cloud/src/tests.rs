@@ -707,3 +707,14 @@ async fn connections_beyond_the_limit_are_closed_on_arrival() {
     drop(a);
     wait_until("a free slot", async || health().await.is_ok_and(|s| s == 200)).await;
 }
+
+#[tokio::test]
+async fn an_account_over_its_request_rate_gets_a_429_and_others_do_not() {
+    let cloud = TestCloud::start_limited(fast(), Limits { max_requests_per_account: 2, ..Limits::default() }).await;
+    assert_eq!(cloud.get(HOSTS_PATH, Some(&jwt("alice"))).await.0, 200);
+    assert_eq!(cloud.get(HOSTS_PATH, Some(&jwt("alice"))).await.0, 200);
+    let (status, body) = cloud.get(HOSTS_PATH, Some(&jwt("alice"))).await;
+    assert_eq!(status, 429);
+    assert_eq!(body["error"]["code"], "rate_limited");
+    assert_eq!(cloud.get(HOSTS_PATH, Some(&jwt("bob"))).await.0, 200);
+}

@@ -1,5 +1,4 @@
 // Modified from upstream Apache-2.0 source; see NOTICE.
-#[cfg(feature = "tauri-runtime")]
 const SERVICE_NAME: &str = "zwiim";
 
 fn token_key(account_id: &str) -> String {
@@ -45,7 +44,7 @@ pub fn delete_token(account_id: &str) -> Result<(), String> {
     }
 }
 
-// ── Server mode: file-based token store ──
+// ── Host: OS keychain, or the file store a headless Host opts into ──
 
 #[cfg(not(feature = "tauri-runtime"))]
 fn tokens_file_path() -> std::path::PathBuf {
@@ -185,23 +184,160 @@ fn write_tokens_at(
     }
 }
 
+/// Whether credentials live in the OS keychain. This is the choice the Host's
+/// own keys make: the keychain, unless `ZWIIM_HOST_KEY_STORE=file` opts a
+/// headless Host into `tokens.json`. Unit tests never touch the real keychain.
+#[cfg(not(feature = "tauri-runtime"))]
+fn uses_keychain() -> bool {
+    let selected = std::env::var(crate::identity::host_keys::KEY_STORE_ENV).ok();
+    !cfg!(test) && selected.as_deref().map(str::trim) != Some("file")
+}
+
+#[cfg(not(feature = "tauri-runtime"))]
+fn keychain_entry(key: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(SERVICE_NAME, key).map_err(|e| format!("keyring init error: {e}"))
+}
+
+#[cfg(not(feature = "tauri-runtime"))]
+fn keychain_get(key: &str) -> Result<Option<String>, String> {
+    match keychain_entry(key)?.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("keyring get error: {e}")),
+    }
+}
+
+#[cfg(not(feature = "tauri-runtime"))]
+fn keychain_set(key: &str, value: &str) -> Result<(), String> {
+    keychain_entry(key)?
+        .set_password(value)
+        .map_err(|e| format!("keyring set error: {e}"))
+}
+
+#[cfg(not(feature = "tauri-runtime"))]
+fn keychain_delete(key: &str) -> Result<(), String> {
+    match keychain_entry(key)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(format!("keyring delete error: {e}")),
+    }
+}
+
+/// Drop `key` from `tokens.json`, without creating the file when it has none.
+#[cfg(not(feature = "tauri-runtime"))]
+fn remove_from_file(key: &str) -> Result<(), String> {
+    let path = tokens_file_path();
+    let mut tokens = read_tokens_at_checked(&path)?;
+    if tokens.remove(key).is_some() {
+        write_tokens_at(&path, &tokens)?;
+    }
+    Ok(())
+}
+
+/// The keychain first, then `tokens.json`: a credential stays readable until
+/// [`migrate_file_store`] has moved it, even if the keychain refuses it. A
+/// keychain failure is only reported when the file has no answer either.
+#[cfg(not(feature = "tauri-runtime"))]
+fn store_get(key: &str) -> Result<Option<String>, String> {
+    let keychain = if uses_keychain() { keychain_get(key) } else { Ok(None) };
+    if matches!(keychain, Ok(Some(_))) {
+        return keychain;
+    }
+    let from_file = read_tokens_at_checked(&tokens_file_path())?.remove(key);
+    from_file.map_or(keychain, |value| Ok(Some(value)))
+}
+
+#[cfg(not(feature = "tauri-runtime"))]
+fn store_set(key: &str, value: &str) -> Result<(), String> {
+    if uses_keychain() {
+        keychain_set(key, value)?;
+        return remove_from_file(key);
+    }
+    let mut tokens = read_tokens();
+    tokens.insert(key.to_string(), value.to_string());
+    write_tokens(&tokens)
+}
+
+#[cfg(not(feature = "tauri-runtime"))]
+fn store_delete(key: &str) -> Result<(), String> {
+    if uses_keychain() {
+        keychain_delete(key)?;
+    }
+    remove_from_file(key)
+}
+
+/// Offer every entry to `put`; what it refuses stays behind.
+#[cfg(not(feature = "tauri-runtime"))]
+fn move_entries(
+    tokens: std::collections::HashMap<String, String>,
+    mut put: impl FnMut(&str, &str) -> Result<(), String>,
+) -> std::collections::HashMap<String, String> {
+    tokens
+        .into_iter()
+        .filter(|(key, value)| match put(key, value) {
+            Ok(()) => false,
+            Err(err) => {
+                tracing::warn!("[tokens] kept {key} in the file store: {err}");
+                true
+            }
+        })
+        .collect()
+}
+
+/// `tokens.json` after a move: gone once empty, so no credential file lingers.
+#[cfg(not(feature = "tauri-runtime"))]
+fn write_remaining(
+    path: &std::path::Path,
+    remaining: &std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    if !remaining.is_empty() {
+        return write_tokens_at(path, remaining);
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("token store remove error: {err}")),
+    }
+}
+
+/// Move what an older Host left in `tokens.json` into the keychain. An entry
+/// leaves the file only once the keychain reads it back, so a denied prompt
+/// loses nothing and the next start tries again.
+#[cfg(not(feature = "tauri-runtime"))]
+pub fn migrate_file_store() {
+    if !uses_keychain() {
+        return;
+    }
+    let path = tokens_file_path();
+    let tokens = match read_tokens_at_checked(&path) {
+        Ok(tokens) if tokens.is_empty() => return,
+        Ok(tokens) => tokens,
+        Err(err) => return tracing::warn!("[tokens] file store not migrated: {err}"),
+    };
+    let remaining = move_entries(tokens, |key, value| {
+        keychain_set(key, value)?;
+        match keychain_get(key)? {
+            Some(stored) if stored == value => Ok(()),
+            _ => Err("the keychain did not return the saved value".to_string()),
+        }
+    });
+    if let Err(err) = write_remaining(&path, &remaining) {
+        tracing::warn!("[tokens] file store not updated: {err}");
+    }
+}
+
 #[cfg(not(feature = "tauri-runtime"))]
 pub fn set_token(account_id: &str, token: &str) -> Result<(), String> {
-    let mut tokens = read_tokens();
-    tokens.insert(token_key(account_id), token.to_string());
-    write_tokens(&tokens)
+    store_set(&token_key(account_id), token)
 }
 
 #[cfg(not(feature = "tauri-runtime"))]
 pub fn get_token(account_id: &str) -> Option<String> {
-    read_tokens().get(&token_key(account_id)).cloned()
+    store_get(&token_key(account_id)).ok().flatten()
 }
 
 #[cfg(not(feature = "tauri-runtime"))]
 pub fn delete_token(account_id: &str) -> Result<(), String> {
-    let mut tokens = read_tokens();
-    tokens.remove(&token_key(account_id));
-    write_tokens(&tokens)
+    store_delete(&token_key(account_id))
 }
 
 // ── Chat channel token helpers ──
@@ -235,26 +371,22 @@ pub fn delete_channel_token(channel_id: i32) -> Result<(), String> {
 
 #[cfg(not(feature = "tauri-runtime"))]
 pub fn set_channel_token(channel_id: i32, token: &str) -> Result<(), String> {
-    let mut tokens = read_tokens();
-    tokens.insert(channel_token_key(channel_id), token.to_string());
-    write_tokens(&tokens)
+    store_set(&channel_token_key(channel_id), token)
 }
 
 #[cfg(not(feature = "tauri-runtime"))]
 pub fn get_channel_token(channel_id: i32) -> Option<String> {
-    read_tokens().get(&channel_token_key(channel_id)).cloned()
+    store_get(&channel_token_key(channel_id)).ok().flatten()
 }
 
 #[cfg(not(feature = "tauri-runtime"))]
 pub fn delete_channel_token(channel_id: i32) -> Result<(), String> {
-    let mut tokens = read_tokens();
-    tokens.remove(&channel_token_key(channel_id));
-    write_tokens(&tokens)
+    store_delete(&channel_token_key(channel_id))
 }
 
 // ── Named secrets ──
-// Same storage as the tokens above (OS keyring on desktop, the 0600
-// `tokens.json` on a server), for credentials that belong to a feature rather
+// Same storage as the tokens above (the OS keychain, or the 0600 `tokens.json`
+// a headless Host opts into), for credentials that belong to a feature rather
 // than to an account: the config-sync WebDAV password and snapshot passphrase.
 
 #[cfg(feature = "tauri-runtime")]
@@ -295,23 +427,17 @@ pub fn delete_secret(name: &str) -> Result<(), String> {
 
 #[cfg(not(feature = "tauri-runtime"))]
 pub fn set_secret(name: &str, value: &str) -> Result<(), String> {
-    let mut tokens = read_tokens();
-    tokens.insert(secret_key(name), value.to_string());
-    write_tokens(&tokens)
+    store_set(&secret_key(name), value)
 }
 
 #[cfg(not(feature = "tauri-runtime"))]
 pub fn get_secret(name: &str) -> Result<Option<String>, String> {
-    Ok(read_tokens_at_checked(&tokens_file_path())?
-        .get(&secret_key(name))
-        .cloned())
+    store_get(&secret_key(name))
 }
 
 #[cfg(not(feature = "tauri-runtime"))]
 pub fn delete_secret(name: &str) -> Result<(), String> {
-    let mut tokens = read_tokens();
-    tokens.remove(&secret_key(name));
-    write_tokens(&tokens)
+    store_delete(&secret_key(name))
 }
 
 #[cfg(all(test, not(feature = "tauri-runtime")))]
@@ -412,5 +538,54 @@ mod tests {
         let tokens = read_tokens_at(&path);
         assert_eq!(tokens.get("github-token:c").unwrap(), "s3");
         assert_eq!(mode_bits(&path), 0o600);
+    }
+
+    #[test]
+    fn a_refused_entry_stays_in_the_file_store() {
+        let tokens = std::collections::HashMap::from([
+            ("moved".to_string(), "a".to_string()),
+            ("refused".to_string(), "b".to_string()),
+        ]);
+        let mut stored = Vec::new();
+        let remaining = move_entries(tokens, |key, value| {
+            if key == "refused" {
+                return Err("denied".to_string());
+            }
+            stored.push((key.to_string(), value.to_string()));
+            Ok(())
+        });
+        assert_eq!(stored, [("moved".to_string(), "a".to_string())]);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining.get("refused").unwrap(), "b");
+    }
+
+    #[test]
+    fn an_empty_file_store_leaves_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tokens.json");
+        let mut left = std::collections::HashMap::new();
+        left.insert("refused".to_string(), "b".to_string());
+
+        write_remaining(&path, &left).unwrap();
+        assert_eq!(read_tokens_at(&path), left);
+
+        left.clear();
+        write_remaining(&path, &left).unwrap();
+        assert!(!path.exists());
+        write_remaining(&path, &left).unwrap();
+    }
+
+    /// Writes to the real keychain, so it runs only on request:
+    /// `cargo test -p zwiim-host --lib keyring_store -- --ignored`.
+    #[test]
+    #[ignore = "uses the real OS keychain"]
+    fn the_keychain_keeps_a_credential_until_it_is_deleted() {
+        let key = format!("test-only:{}", uuid::Uuid::new_v4());
+        assert_eq!(keychain_get(&key).unwrap(), None);
+        keychain_set(&key, "value").unwrap();
+        assert_eq!(keychain_get(&key).unwrap().as_deref(), Some("value"));
+        keychain_delete(&key).unwrap();
+        assert_eq!(keychain_get(&key).unwrap(), None);
+        keychain_delete(&key).unwrap();
     }
 }

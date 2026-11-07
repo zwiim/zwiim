@@ -527,6 +527,17 @@ pub async fn repository_settings_update(
     Ok(Json(json!({ "values": values })))
 }
 
+/// Fill a repository's unset scripts from its Conductor settings.
+pub async fn repository_settings_import(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<RepositorySettingsGetParams>,
+) -> ZResult<Value> {
+    let imported =
+        crate::repository_settings::import_conductor(&state.db.conn, &p.workspace_id).await?;
+    let values = crate::repository_settings::get(&state.db.conn, &p.workspace_id).await?;
+    Ok(Json(json!({ "values": values, "imported": imported })))
+}
+
 // ─── agent ───────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]

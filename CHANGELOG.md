@@ -9,7 +9,7 @@ have their own versions and are listed under Compatibility.
 ## [Unreleased]
 
 ### Added
-- None.
+- Repository settings can import setup, run and archive scripts from a repository's Conductor settings. `$CONDUCTOR_*` variables become their `$ZWIIM_*` equivalents, and scripts already set are kept.
 
 ### Changed
 - None.
@@ -18,16 +18,22 @@ have their own versions and are listed under Compatibility.
 - None.
 
 ### Security
-- None.
+- GitHub tokens and config-sync secrets now live in the OS keychain, not in `tokens.json`.
+- Zwiim Cloud limits new connections per client address and requests per account, so one client cannot use up shared capacity.
+- Uploads have a default 10 GiB total cap. `ZWIIM_UPLOAD_MAX_TOTAL_BYTES` still sets it, and `0` turns it off.
+- Credential files the Host writes for Codex, OpenCode and Kimi are now readable by their owner only.
+- Logs and client-facing errors now also hide GitHub and Slack tokens.
 
 ### Compatibility
-- None.
+- Protocol revision 32. New capability: `repository.settings_import`.
 
 ### Provider changes
 - None.
 
 ### Migration notes
-- None.
+- The Host moves existing `tokens.json` entries into the keychain at its first start and deletes the file once empty. An entry the keychain refuses stays in the file and is tried again next start.
+- Backups no longer carry these credentials, so a restored machine signs in to GitHub again.
+- A headless Host without a keychain keeps using `tokens.json` with `ZWIIM_HOST_KEY_STORE=file`.
 
 ### Known limitations
 - None.

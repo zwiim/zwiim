@@ -82,6 +82,42 @@ async function mount(t: FakeTransport) {
 const updates = (t: FakeTransport) => t.calls.filter((c) => c.op === "repository.settings.update").map((c) => c.params);
 
 describe("repository settings", () => {
+  it("imports Conductor scripts and shows them, and says when nothing was set", async () => {
+    const t = host([root("w1", "zwiim")]);
+    let imported = ["scripts.setup"];
+    t.handlers["repository.settings.import"] = () => {
+      const result = { values: { "scripts.setup": "npm install" }, imported };
+      imported = [];
+      return result;
+    };
+    const c = await mount(t);
+    const dialog = openSettings("Repository");
+    await tick();
+
+    fireEvent.click(dialog.getByRole("button", { name: "Import from Conductor" }));
+    await tick();
+    expect((dialog.getByLabelText("Setup script") as HTMLTextAreaElement).value).toBe("npm install");
+    expect(dialog.getByText(/Imported 1 script/)).toBeTruthy();
+
+    fireEvent.click(dialog.getByRole("button", { name: "Import from Conductor" }));
+    await tick();
+    expect(dialog.getByText(/Nothing imported/)).toBeTruthy();
+    c.dispose();
+  });
+
+  it("does not offer the import to a host without it", async () => {
+    const t = host([root("w1", "zwiim")]);
+    t.handlers["host.hello"] = () =>
+      hostHello({
+        capabilities: CLIENT_CAPABILITIES.filter((x) => x !== "repository.settings_import"),
+      });
+    const c = await mount(t);
+    const dialog = openSettings("Repository");
+    await tick();
+    expect(dialog.queryByRole("button", { name: "Import from Conductor" })).toBeNull();
+    c.dispose();
+  });
+
   it("shows a repository's scripts, saves them on leaving a field and switches repositories", async () => {
     const t = host(
       [root("w1", "zwiim"), root("w2", "site"), root("w3", "notes", { is_git_repo: false })],

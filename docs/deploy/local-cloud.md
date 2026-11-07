@@ -305,6 +305,8 @@ All settings come from the environment; `run-cloud.sh` also reads
 | `ZWIIM_CLOUD_JWT_AUDIENCE` | `authenticated` | |
 | `ZWIIM_CLOUD_MAX_CONNECTIONS` | `1024` | open sockets; extra connections are closed on arrival |
 | `ZWIIM_CLOUD_MAX_RELAYS` | `256` | concurrent relays; more are refused with close 1013, and clients retry |
+| `ZWIIM_CLOUD_MAX_CONNECTS_PER_IP` | `120` | new connections per client address per minute; IPv6 counts by /64. Loopback peers are exempt, so a local tunnel or proxy is unaffected. A proxy on another machine counts as one client, so raise it there |
+| `ZWIIM_CLOUD_MAX_REQUESTS_PER_ACCOUNT` | `300` | authenticated requests per account per minute; more get a 429 |
 | `ZWIIM_CLOUD_LOG` | `RUST_LOG`, else `info` | tracing filter |
 | `ZWIIM_CLOUD_LOG_FORMAT` | `text` | `text` or `json` |
 

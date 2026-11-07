@@ -231,6 +231,10 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
             "/repository.settings.update",
             post(http::repository_settings_update),
         )
+        .route(
+            "/repository.settings.import",
+            post(http::repository_settings_import),
+        )
         .route("/ws", get(ws::ws_handler))
         .merge(local_authority)
         .fallback(unknown_operation)

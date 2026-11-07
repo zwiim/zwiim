@@ -13,6 +13,8 @@
 //! | `ZWIIM_CLOUD_JWT_AUDIENCE` | default `authenticated` |
 //! | `ZWIIM_CLOUD_MAX_CONNECTIONS` | open connections, all kinds (default 1024) |
 //! | `ZWIIM_CLOUD_MAX_RELAYS` | concurrent device relays (default 256) |
+//! | `ZWIIM_CLOUD_MAX_CONNECTS_PER_IP` | new connections per client address per minute (default 120) |
+//! | `ZWIIM_CLOUD_MAX_REQUESTS_PER_ACCOUNT` | authenticated requests per account per minute (default 300) |
 //! | `ZWIIM_CLOUD_LOG` | log filter (else `RUST_LOG`, else `info`) |
 //! | `ZWIIM_CLOUD_LOG_FORMAT` | `text` (default) or `json` |
 //!
@@ -101,9 +103,16 @@ impl Settings {
             return Err("set ZWIIM_CLOUD_SUPABASE_URL (JWKS) and/or ZWIIM_CLOUD_JWT_SECRET (HS256)".into());
         }
 
+        let defaults = Limits::default();
         let limits = Limits {
-            max_connections: limit(&get, "ZWIIM_CLOUD_MAX_CONNECTIONS", Limits::default().max_connections)?,
-            max_relays: limit(&get, "ZWIIM_CLOUD_MAX_RELAYS", Limits::default().max_relays)?,
+            max_connections: limit(&get, "ZWIIM_CLOUD_MAX_CONNECTIONS", defaults.max_connections)?,
+            max_relays: limit(&get, "ZWIIM_CLOUD_MAX_RELAYS", defaults.max_relays)?,
+            max_connects_per_ip: limit(&get, "ZWIIM_CLOUD_MAX_CONNECTS_PER_IP", defaults.max_connects_per_ip)?,
+            max_requests_per_account: limit(
+                &get,
+                "ZWIIM_CLOUD_MAX_REQUESTS_PER_ACCOUNT",
+                defaults.max_requests_per_account,
+            )?,
         };
 
         let log_filter = get("ZWIIM_CLOUD_LOG")

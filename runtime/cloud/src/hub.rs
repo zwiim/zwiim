@@ -3,6 +3,8 @@
 //! survives a restart, by design — hosts reconnect and devices ask again.
 
 use std::collections::HashMap;
+use std::hash::Hash;
+use std::net::{IpAddr, Ipv6Addr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -16,6 +18,58 @@ use crate::proto::ControlFromCloud;
 /// Outstanding one-time tokens per kind; beyond it issuing fails until some
 /// expire.
 pub const MAX_OUTSTANDING: usize = 10_000;
+
+/// Keys a [`PerMinute`] tracks; a new key beyond it is refused until old
+/// windows lapse.
+const MAX_TRACKED: usize = 100_000;
+const MINUTE: Duration = Duration::from_secs(60);
+
+/// Allows `limit` events per key per minute, in fixed windows.
+pub struct PerMinute<K> {
+    limit: usize,
+    seen: Mutex<HashMap<K, (Instant, usize)>>,
+}
+
+impl<K: Eq + Hash> PerMinute<K> {
+    pub fn new(limit: usize) -> Self {
+        Self { limit, seen: Mutex::default() }
+    }
+
+    pub fn allow(&self, key: K) -> bool {
+        let now = Instant::now();
+        let mut seen = self.seen.lock().unwrap();
+        if seen.len() >= MAX_TRACKED && !seen.contains_key(&key) {
+            seen.retain(|_, (started, _)| now.duration_since(*started) < MINUTE);
+            if seen.len() >= MAX_TRACKED {
+                return false;
+            }
+        }
+        let (started, count) = seen.entry(key).or_insert((now, 0));
+        if now.duration_since(*started) >= MINUTE {
+            (*started, *count) = (now, 0);
+        }
+        *count += 1;
+        *count <= self.limit
+    }
+}
+
+/// The address a client is limited under, if it can be told apart: an IPv6
+/// client controls a whole /64, so that is one client. A loopback peer is a
+/// tunnel or proxy on this machine carrying every client at once, so it is
+/// not limited as one.
+pub fn client_key(ip: IpAddr) -> Option<IpAddr> {
+    let ip = ip.to_canonical();
+    if ip.is_loopback() {
+        return None;
+    }
+    Some(match ip {
+        IpAddr::V6(v6) => {
+            let [a, b, c, d, ..] = v6.segments();
+            IpAddr::V6(Ipv6Addr::new(a, b, c, d, 0, 0, 0, 0))
+        }
+        v4 => v4,
+    })
+}
 
 pub fn random_token(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
@@ -199,6 +253,34 @@ impl<S> Rendezvous<S> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_key_over_its_limit_is_refused_without_touching_others() {
+        let limit = super::PerMinute::new(2);
+        assert!(limit.allow("a"));
+        assert!(limit.allow("a"));
+        assert!(!limit.allow("a"));
+        assert!(limit.allow("b"));
+    }
+
+    #[test]
+    fn ipv6_clients_are_limited_by_their_network() {
+        use std::net::IpAddr;
+        let key = |raw: &str| super::client_key(raw.parse::<IpAddr>().unwrap());
+        assert_eq!(key("2001:db8:1:2::1"), key("2001:db8:1:2:ffff::9"));
+        assert_ne!(key("2001:db8:1:2::1"), key("2001:db8:1:3::1"));
+        assert_eq!(key("::ffff:192.0.2.7"), key("192.0.2.7"));
+    }
+
+    #[test]
+    fn a_local_tunnel_is_not_limited_as_one_client() {
+        use std::net::IpAddr;
+        let key = |raw: &str| super::client_key(raw.parse::<IpAddr>().unwrap());
+        assert_eq!(key("127.0.0.1"), None);
+        assert_eq!(key("::1"), None);
+        assert_eq!(key("::ffff:127.0.0.1"), None);
+        assert!(key("192.0.2.7").is_some());
+    }
+
     use super::*;
 
     #[test]

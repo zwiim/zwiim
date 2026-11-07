@@ -1,0 +1,30 @@
+name: Bug report
+description: Something does not work as it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Report security problems privately. See SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Zwiim version
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what happened
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: Agent and client involved
+      placeholder: Claude Code, Desktop on macOS 26

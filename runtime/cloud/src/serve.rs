@@ -1,7 +1,7 @@
 //! Serving the Cloud: TLS (rustls) on any address, plain HTTP on loopback
 //! only (development, tests, or behind a local TLS-terminating proxy).
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -19,6 +19,7 @@ use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
 
+use crate::hub::{client_key, PerMinute};
 use crate::server::{router, Cloud, Config};
 
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -78,10 +79,11 @@ pub fn start(
     }
     let (stop, shutdown) = watch::channel(false);
     let slots = Arc::new(Semaphore::new(config.limits.max_connections));
+    let clients = PerMinute::new(config.limits.max_connects_per_ip);
     let cloud = Cloud::new(config, shutdown.clone())?;
     let app = router(cloud);
     let tls = tls.map(TlsAcceptor::from);
-    let task = tokio::spawn(accept_loop(listener, tls, app, slots, shutdown));
+    let task = tokio::spawn(accept_loop(listener, tls, app, slots, clients, shutdown));
     Ok(Running { addr, stop, task })
 }
 
@@ -90,6 +92,7 @@ async fn accept_loop(
     tls: Option<TlsAcceptor>,
     app: Router,
     slots: Arc<Semaphore>,
+    clients: PerMinute<IpAddr>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut connections = tokio::task::JoinSet::new();
@@ -98,7 +101,12 @@ async fn accept_loop(
         tokio::select! {
             _ = crate::hub::stopped(&mut shutdown) => break,
             accepted = listener.accept() => match accepted {
-                Ok((stream, _)) => {
+                Ok((stream, peer)) => {
+                    // One client cannot use up the slots everyone shares.
+                    if client_key(peer.ip()).is_some_and(|client| !clients.allow(client)) {
+                        drop(stream);
+                        continue;
+                    }
                     // At the connection limit: close it at once.
                     let Ok(slot) = slots.clone().try_acquire_owned() else {
                         if last_full_warning.is_none_or(|t| t.elapsed() > FULL_WARNING_EVERY) {

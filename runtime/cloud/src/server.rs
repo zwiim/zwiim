@@ -25,7 +25,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, watch, Semaphore};
 
 use crate::auth::{AuthConfig, AuthError, Verifier};
-use crate::hub::{self, OneTime, Presence, Rendezvous};
+use crate::hub::{self, OneTime, PerMinute, Presence, Rendezvous};
 use crate::proto::*;
 use crate::registry::{HostRecord, Registry};
 
@@ -67,11 +67,20 @@ pub struct Limits {
     pub max_connections: usize,
     /// Concurrent device relays; more are refused with close code 1013.
     pub max_relays: usize,
+    /// New connections per client address per minute; more are closed.
+    pub max_connects_per_ip: usize,
+    /// Authenticated requests per account per minute; more get a 429.
+    pub max_requests_per_account: usize,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Self { max_connections: 1024, max_relays: 256 }
+        Self {
+            max_connections: 1024,
+            max_relays: 256,
+            max_connects_per_ip: 120,
+            max_requests_per_account: 300,
+        }
     }
 }
 
@@ -115,6 +124,7 @@ pub struct Cloud {
     presence: Presence,
     rendezvous: Rendezvous<WebSocket>,
     relays: Arc<Semaphore>,
+    accounts: PerMinute<String>,
     next_conn: AtomicU64,
     shutdown: watch::Receiver<bool>,
 }
@@ -133,6 +143,7 @@ impl Cloud {
             presence: Presence::default(),
             rendezvous: Rendezvous::default(),
             relays: Arc::new(Semaphore::new(config.limits.max_relays)),
+            accounts: PerMinute::new(config.limits.max_requests_per_account),
             next_conn: AtomicU64::new(1),
             shutdown,
         }))
@@ -140,10 +151,14 @@ impl Cloud {
 
     async fn user(&self, headers: &HeaderMap) -> Result<String, ApiError> {
         let header = headers.get("authorization").and_then(|v| v.to_str().ok());
-        self.verifier.verify_header(header).await.map_err(|e| match e {
+        let user_id = self.verifier.verify_header(header).await.map_err(|e| match e {
             AuthError::Missing => ApiError::unauthenticated("An account token is required"),
             AuthError::Invalid => ApiError::unauthenticated("The account token is invalid or expired"),
-        })
+        })?;
+        if !self.accounts.allow(user_id.clone()) {
+            return Err(ApiError::rate_limited());
+        }
+        Ok(user_id)
     }
 
     fn host_signed(&self, record: &HostRecord, message: &[u8], signature: &str) -> bool {
@@ -198,6 +213,9 @@ impl ApiError {
     }
     fn invalid(message: &str) -> Self {
         Self::new(StatusCode::BAD_REQUEST, "invalid_request", message)
+    }
+    fn rate_limited() -> Self {
+        Self::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", "Too many requests; try again shortly")
     }
     fn busy() -> Self {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "Try again later")

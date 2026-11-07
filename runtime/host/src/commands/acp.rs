@@ -72,6 +72,18 @@ pub(crate) struct AgentInstallEvent {
     pub payload: String,
 }
 
+/// A vendor's credential file is the user's alone. An older build may have
+/// left one at the umask default, so that is tightened before any new bytes
+/// go in.
+fn write_credential_file(path: &Path, body: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    if path.exists() {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    crate::identity::device::write_private(path, body.as_bytes())
+}
+
 fn emit_agent_install_event(
     emitter: &EventEmitter,
     task_id: &str,
@@ -3765,7 +3777,7 @@ fn persist_codex_local_config(config_patch_json: Option<&str>) -> Result<(), Acp
         fs::create_dir_all(parent)
             .map_err(|e| AcpError::protocol(format!("create codex auth directory failed: {e}")))?;
     }
-    fs::write(&auth_path, format!("{serialized_auth}\n"))
+    write_credential_file(&auth_path, &format!("{serialized_auth}\n"))
         .map_err(|e| AcpError::protocol(format!("write codex auth failed: {e}")))?;
 
     Ok(())
@@ -4774,7 +4786,7 @@ fn persist_opencode_auth_json(raw_auth: &str) -> Result<(), AcpError> {
         fs::create_dir_all(parent)
             .map_err(|e| AcpError::protocol(format!("create opencode directory failed: {e}")))?;
     }
-    fs::write(&path, format!("{raw_auth}\n"))
+    write_credential_file(&path, &format!("{raw_auth}\n"))
         .map_err(|e| AcpError::protocol(format!("write opencode auth.json failed: {e}")))?;
     Ok(())
 }
@@ -5082,7 +5094,7 @@ fn mutate_kimi_config_toml(spec: Option<&KimiManagedSpec>) -> Result<(), AcpErro
         fs::create_dir_all(parent)
             .map_err(|e| AcpError::protocol(format!("create kimi config directory failed: {e}")))?;
     }
-    fs::write(&path, format!("{serialized}\n"))
+    write_credential_file(&path, &format!("{serialized}\n"))
         .map_err(|e| AcpError::protocol(format!("write kimi config.toml failed: {e}")))?;
     Ok(())
 }
@@ -5155,7 +5167,7 @@ fn seed_kimi_synthetic_credential_at(path: &Path) -> Result<(), AcpError> {
     }
     let body = serde_json::to_string_pretty(&token)
         .map_err(|e| AcpError::protocol(format!("serialize kimi credential failed: {e}")))?;
-    fs::write(path, format!("{body}\n"))
+    write_credential_file(path, &format!("{body}\n"))
         .map_err(|e| AcpError::protocol(format!("write kimi credential failed: {e}")))?;
     Ok(())
 }

@@ -294,7 +294,12 @@ use serde::{Deserialize, Serialize};
 /// refuses a symlink that resolves to a hidden file the path did not name. An
 /// HTML preview page's requests carry it. Older Hosts refuse the field, so a
 /// client sends it only to a Host that offers this.
-pub const PROTOCOL_REVISION: u32 = 31;
+///
+/// 32 (`repository.settings_import`): `repository.settings.import
+/// {workspace_id}` fills the repository's unset scripts from its Conductor
+/// settings and returns `{values, imported}`, the keys it set. `not_found`
+/// when the repository has none.
+pub const PROTOCOL_REVISION: u32 = 32;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -357,6 +362,7 @@ pub const CAPABILITIES: &[&str] = &[
     "workspace.layout",
     "session.fork",
     "session.transcript_remove",
+    "repository.settings_import",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -503,7 +509,13 @@ mod tests {
     #[test]
     fn hidden_file_guard_is_served() {
         assert!(CAPABILITIES.contains(&"files.guard_hidden"));
-        assert_eq!(PROTOCOL_REVISION, 31);
+        const _: () = assert!(PROTOCOL_REVISION >= 31);
+    }
+
+    #[test]
+    fn repository_settings_import_is_served() {
+        assert!(CAPABILITIES.contains(&"repository.settings_import"));
+        assert_eq!(PROTOCOL_REVISION, 32);
     }
 
     #[test]

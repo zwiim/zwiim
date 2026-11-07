@@ -1933,6 +1933,15 @@ export interface Operations {
    */
   "repository.settings.update": [{ workspace_id: string } & RepositorySettings, RepositorySettings];
   /**
+   * Fill the repository's unset scripts from its Conductor settings. `imported`
+   * is the keys it set; `not_found` when it has none. Capability
+   * `repository.settings_import`.
+   */
+  "repository.settings.import": [
+    { workspace_id: string },
+    RepositorySettings & { imported: RepositorySettingKey[] },
+  ];
+  /**
    * Run a worktree's repository script now, in a new terminal titled `Setup`
    * or `Run` that replaces its live one of that title. `script_not_set` when
    * the repository has none; `root_workspace` in a repository folder.

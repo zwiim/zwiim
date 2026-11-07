@@ -6,7 +6,8 @@ around them is (`runtime/host/tests/host_lifecycle.rs`, `src/update/tests.rs`,
 `scripts/release/rehearse.mjs`, `scripts/release/check-host-signature.sh`).
 
 What the Keychain checks: the Host's items (service `zwiim`, accounts
-`host-identity:<host_id>` and `host-token:<host_id>`) trust the Host by its
+`host-identity:<host_id>`, `host-token:<host_id>`, `github-token:<id>`, and
+`secret:<name>`) trust the Host by its
 designated requirement, which names the identifier `com.zwiim.host` and the
 Zwiim Team ID. A Host signed the same way reads them without asking; any other
 binary (a development build, an ad-hoc signature, another team) is asked for,

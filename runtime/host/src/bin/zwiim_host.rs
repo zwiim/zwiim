@@ -392,6 +392,8 @@ async fn async_main() -> Exit {
 
     // API keys saved for the agents, read before any agent launches.
     zwiim_host::agent_auth::init(&data_dir).await;
+    // Before anything reads a credential; a Keychain call may wait on a prompt.
+    let _ = tokio::task::spawn_blocking(zwiim_host::keyring_store::migrate_file_store).await;
 
     // Install or confirm the managed Claude/Codex adapters from this build's
     // lock, in the background; offline, installed adapters keep working.

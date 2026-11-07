@@ -157,6 +157,31 @@ pub async fn update(
     Ok(())
 }
 
+/// Fill the scripts this repository has not set from its Conductor settings.
+/// Returns the keys it set; a script already set is left alone.
+pub async fn import_conductor(
+    db: &DatabaseConnection,
+    workspace_id: &str,
+) -> Result<Vec<&'static str>, ZwiimError> {
+    let folder_id = repository_of(db, workspace_id).await?;
+    let root = crate::db::entities::folder::Entity::find_by_id(folder_id)
+        .one(db)
+        .await
+        .map_err(db_error)?
+        .ok_or_else(|| ZwiimError::not_found("Repository not found"))?;
+    let scripts = crate::conductor_import::read_scripts(std::path::Path::new(&root.path))
+        .map_err(ZwiimError::invalid_input)?
+        .ok_or_else(|| ZwiimError::not_found("This repository has no Conductor settings"))?;
+    let kept = stored(db, folder_id).await?;
+    let values: Map<String, Value> = scripts
+        .iter()
+        .filter(|(key, _)| !kept.contains_key(**key))
+        .map(|(key, script)| (key.to_string(), Value::String(script.clone())))
+        .collect();
+    update(db, workspace_id, &values).await?;
+    Ok(scripts.into_keys().filter(|key| values.contains_key(*key)).collect())
+}
+
 fn check(key: &str, value: &Value) -> Result<(), ZwiimError> {
     if !KEYS.contains(&key) {
         return Err(ZwiimError::invalid_input(format!("Unknown setting `{key}`")));
@@ -392,6 +417,35 @@ mod tests {
             .unwrap()
             .workspace_id
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn importing_fills_only_the_scripts_that_are_unset() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("conductor.json"),
+            r#"{"scripts":{"setup":"npm install","run":"npm run dev"}}"#,
+        )
+        .unwrap();
+        let id = repository(&db, dir.path().to_str().unwrap()).await;
+        update(&db.conn, &id, &values(json!({ "scripts.run": "mine" }))).await.unwrap();
+
+        let imported = import_conductor(&db.conn, &id).await.unwrap();
+
+        assert_eq!(imported, [SETUP_SCRIPT]);
+        let kept = get(&db.conn, &id).await.unwrap();
+        assert_eq!(kept[SETUP_SCRIPT], "npm install");
+        assert_eq!(kept[RUN_SCRIPT], "mine");
+        assert!(import_conductor(&db.conn, &id).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_repository_without_conductor_settings_cannot_import() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let id = repository(&db, dir.path().to_str().unwrap()).await;
+        assert!(import_conductor(&db.conn, &id).await.is_err());
     }
 
     fn values(v: Value) -> Map<String, Value> {
