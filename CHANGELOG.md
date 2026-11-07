@@ -12,6 +12,32 @@ have their own versions and are listed under Compatibility.
 - None.
 
 ### Changed
+- None.
+
+### Fixed
+- None.
+
+### Security
+- None.
+
+### Compatibility
+- None.
+
+### Provider changes
+- None.
+
+### Migration notes
+- None.
+
+### Known limitations
+- None.
+
+## [0.1.0-rc.15] - 2026-11-07
+
+### Added
+- None.
+
+### Changed
 - A fork now works the same for every agent: a `Transcript of <title>.md` chip waits at the top of the composer, holding the chat under `User` and `Assistant` headings. Open it to read it, remove it with its X, or send it alone. The Host holds it, so it survives a restart and shows on the phone too. `Fork here` is now `Fork to new tab`.
 - Desktop: the fork icon opens its menu on a click, not when the mouse passes over it.
 - A fork that hasn't started says where it is: `New chat in <workspace>`, or for a new worktree what was created and how many files were copied.
@@ -21,10 +47,12 @@ have their own versions and are listed under Compatibility.
 - None.
 
 ### Security
-- None.
+- An agent's shell command could skip the approval card if its title contained the words of the ask tool. The ask tool is now matched by its whole name and the shape of its call.
+- An HTML preview page could read hidden workspace files such as `.env` or `.git`. Previews now refuse hidden paths, including through a link committed to the repository; the opened file and what sits beside it stay in reach.
 
 ### Compatibility
-- Protocol revision 30. New capability: `session.transcript_remove`. Older Hosts keep sending the transcript with the first message, with no chip.
+- Protocol revision 31. New capabilities: `session.transcript_remove`, `files.guard_hidden`. Older Hosts keep sending the transcript with the first message, with no chip, and `files.download` sends `guard_hidden` only to a Host that offers it.
+- Mobile: Android app 0.1.0 (version code 1) as `com.zwiim.mobile`, installed from the APK. iOS 0.1.0 (build 5) for TestFlight testers.
 
 ### Provider changes
 - None.
@@ -34,6 +62,10 @@ have their own versions and are listed under Compatibility.
 
 ### Known limitations
 - An agent that runs commands through a login shell can still get your own `gh`, because your shell profile reorders `PATH`.
+- iOS build 5 predates this release and rc.14: workspace groups and session fork are in the Android app and Desktop, not yet on TestFlight.
+- An agent shows a task list only when it keeps one; ask for one in the prompt.
+- Codex command output appears when the command ends, not live.
+- Mobile dark text is #EDEFF0, not DESIGN.md's #DFE1E3.
 
 ## [0.1.0-rc.14] - 2026-11-05
 
