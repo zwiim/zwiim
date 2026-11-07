@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Periodic sweeper that disconnects ACP connections idle past a deadline.
 //!
 //! Connections accumulate when frontends close their window/tab without

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Runtime-agnostic backup engine.
 //!
 //! `create_backup_core` / `scan_external_conflicts_core` take plain references

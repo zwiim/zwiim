@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Per-day byte ceiling for the rolling file sink.
 //!
 //! `Rotation::DAILY` + `max_log_files(N)` (see [`crate::logging::init`]) bounds

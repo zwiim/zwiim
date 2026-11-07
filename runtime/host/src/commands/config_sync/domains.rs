@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! The single table of configuration domains a snapshot carries.
 //!
 //! Collection ([`super::snapshot::collect_snapshot_core`]) and application

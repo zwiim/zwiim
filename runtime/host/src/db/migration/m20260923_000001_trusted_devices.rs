@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Zwiim-owned: the host's trusted-device registry (Identity V1).
 //!
 //! One row per device that has paired with this host. `credential_hash` is a

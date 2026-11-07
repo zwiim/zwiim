@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! In-process ACP event bus.
 //!
 //! Carries `Arc<EventEnvelope>` directly to back-end consumers (lifecycle,

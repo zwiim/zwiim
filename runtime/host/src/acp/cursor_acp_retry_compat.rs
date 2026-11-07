@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Version-gated compatibility patch for Cursor ACP sessions that omit
 //! `enableAgentRetries` from `agentClient.run` options (see `agent-session.ts`).
 //!

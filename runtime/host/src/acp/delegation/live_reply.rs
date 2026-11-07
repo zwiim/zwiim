@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! `ChildLiveReplyLookup` — broker capability that peeks at a still-running
 //! delegation child's **in-memory** session to pull a one-line "what it's doing
 //! right now" hint. The broker uses it to enrich `get_delegation_status`'s

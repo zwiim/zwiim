@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 use serde::Deserialize;
 #[cfg(feature = "tauri-runtime")]
 use tauri::State;

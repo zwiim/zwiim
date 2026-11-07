@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! WHICH SIDE of the ACP connection actually touches the disk and spawns
 //! commands — a peer of
 //! [`FsAccessPolicy`](crate::acp::file_system_runtime::FsAccessPolicy), not a

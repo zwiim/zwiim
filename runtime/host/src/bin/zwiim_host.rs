@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -618,27 +619,6 @@ async fn async_main() -> Exit {
             }
         });
     }
-
-    // Install bundled expert skills into the central store
-    // (`~/.zwiim/skills/`). Runs in the background; failures are logged
-    // but non-fatal.
-    tokio::spawn(async move {
-        let report = zwiim_host::commands::experts::ensure_central_experts_installed().await;
-        if !report.errors.is_empty() {
-            tracing::error!(
-                "[Experts] install finished with {} error(s): {:?}",
-                report.errors.len(),
-                report.errors
-            );
-        } else {
-            tracing::info!(
-                "[Experts] install ok: installed={} updated={} pending_review={}",
-                report.installed_count,
-                report.updated_count,
-                report.pending_user_review.len()
-            );
-        }
-    });
 
     // Spawn the LifecycleSubscriber for cross-connection DB writes. The
     // broker is supplied so TurnComplete on a delegation child resolves the

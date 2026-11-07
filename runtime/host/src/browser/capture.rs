@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Screenshots for an agent: the pixels of a shared page, or of one element
 //! of it, sized for a model to look at.
 //!

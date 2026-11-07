@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 pub mod agent_mentions;
 pub mod antigravity_login;
 pub mod background_watch;

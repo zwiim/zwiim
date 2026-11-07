@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! `browser_*` commands: thin parameter validation over the registry. The
 //! `_core` functions are the real implementation and are also driven by the
 //! dev-only smoke puppet, so every code path the frontend uses is the one the

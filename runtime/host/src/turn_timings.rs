@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Per-turn wall-clock observations recorded by Zwiim's own ACP connection
 //! layer, for agents whose native session store carries **no per-turn
 //! timestamps**.

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 #[cfg(feature = "tauri-runtime")]
 use crate::db::error::DbError;
 #[cfg(feature = "tauri-runtime")]

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Ask-user-question settings persistence — the web/Tauri-shared surface for
 //! the `ask_user_question` feature toggle.
 //!

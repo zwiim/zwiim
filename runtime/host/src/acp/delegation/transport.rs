@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Wire format for `zwiim-mcp` companion ↔ main process round-trip over UDS
 //! (Unix) or named pipe (Windows).
 //!

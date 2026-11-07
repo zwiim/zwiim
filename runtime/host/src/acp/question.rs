@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Interactive multiple-choice question ("ask the user") domain types.
 //!
 //! Mid-turn an agent can ask the user one or more multiple-choice questions and

@@ -1,7 +1,7 @@
 //! Process-runtime + (stubbed) self-update seam.
 //!
 //! Upstream-derived: `runtime` is carried verbatim from upstream
-//! (`src-tauri/src/update/runtime.rs`, v0.31.1; see third_party/codeg/PROVENANCE.md) — it holds pure process /
+//! (`src-tauri/src/update/runtime.rs`, v0.31.1; see NOTICE) — it holds pure process /
 //! supervise / restart constants and helpers (`self_exe`, `EXIT_RESTART`,
 //! `is_supervised`, restart delays) that the Host Runtime bootstrap and the
 //! `--supervise` process supervisor both depend on. It is exec-lifecycle

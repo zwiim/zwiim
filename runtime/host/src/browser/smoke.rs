@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Dev-only puppet for the built-in browser (Cargo feature `browser-smoke`,
 //! never part of a release build).
 //!

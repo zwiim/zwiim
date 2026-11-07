@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! The background half of config sync: a timer that uploads when — and only
 //! when — the local configuration actually changed.
 //!

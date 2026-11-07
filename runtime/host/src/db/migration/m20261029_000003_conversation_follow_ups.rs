@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Zwiim-owned: a session's queued follow-ups, the prompts waiting for its
 //! running turn to end.
 //!

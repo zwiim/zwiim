@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Work-task CRUD + state machine. Mode-agnostic: every fn takes a plain
 //! `&DatabaseConnection` so Tauri commands, Axum handlers, and the task engine
 //! share one code path.

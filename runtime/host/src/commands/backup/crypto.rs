@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Optional passphrase encryption for backup archives.
 //!
 //! When a passphrase is supplied, the plaintext ZIP payload is wrapped in a

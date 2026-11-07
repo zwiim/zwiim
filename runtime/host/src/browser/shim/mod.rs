@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Platform-specific WebKit / WebView2 calls that neither tauri nor wry
 //! expose: isolated-world scripts and message handlers, world-scoped
 //! evaluation, snapshots, back / forward. Every function here runs on the

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! The two secrets config sync owns, kept out of the settings row.
 //!
 //! The WebDAV password and the (optional) snapshot passphrase used to live in

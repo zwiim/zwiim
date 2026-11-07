@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Linux shim on top of WebKitGTK (`webkit2gtk` + `gtk`).
 //!
 //! The helper script and the primitive it posts through live in a WebKitGTK

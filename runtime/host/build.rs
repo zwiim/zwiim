@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 fn main() {
     embed_host_signing_identifier();
     #[cfg(feature = "tauri-runtime")]

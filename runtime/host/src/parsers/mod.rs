@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 pub mod acp_native;
 pub mod antigravity;
 pub mod claude;

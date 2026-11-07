@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! The concrete surfaces behind a tab and the operations the command layer
 //! needs from all of them. Both handle types are cheap `Send + Clone` values
 //! that dispatch to the main thread internally, so callers clone a surface OUT

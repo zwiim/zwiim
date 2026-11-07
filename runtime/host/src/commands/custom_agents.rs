@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Commands for managing **custom ACP agents** — agents the user registers by
 //! supplying ACP-registry information rather than agents Zwiim ships support
 //! for.

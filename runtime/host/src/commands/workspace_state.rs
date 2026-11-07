@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 use crate::app_error::AppCommandError;
 use crate::web::event_bridge::EventEmitter;
 use crate::workspace_state::WorkspaceSnapshotResponse;

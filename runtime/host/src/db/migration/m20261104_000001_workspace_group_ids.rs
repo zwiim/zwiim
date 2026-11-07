@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Zwiim-owned: host-owned opaque `public_id` per sidebar group, and one
 //! sequence for `folder.sort_order`.
 //!

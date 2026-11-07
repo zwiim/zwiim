@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 use sea_orm::entity::prelude::*;
 
 /// Zwiim-owned: a device paired with this host (Identity V1). See

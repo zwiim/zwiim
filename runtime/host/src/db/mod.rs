@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 pub mod entities;
 pub mod error;
 pub mod migration;
@@ -38,41 +39,12 @@ pub(crate) fn database_file_name() -> &'static str {
     }
 }
 
-/// The file name data directories created before the Zwiim rename use. Kept
-/// only so [`adopt_legacy_database`] can carry an existing Host's data over.
-fn legacy_database_file_name() -> &'static str {
-    if cfg!(all(debug_assertions, feature = "tauri-runtime")) {
-        "codeg-dev.db"
-    } else {
-        "codeg.db"
-    }
-}
-
-/// Renames a pre-rename database (and its SQLite sidecars) to the current
-/// name, once: only when the current file does not exist yet. Sidecars move
-/// first, so an interrupted adoption never leaves the database without its WAL.
-fn adopt_legacy_database(app_data_dir: &Path) -> std::io::Result<()> {
-    let current = app_data_dir.join(database_file_name());
-    let legacy = app_data_dir.join(legacy_database_file_name());
-    if current.exists() || !legacy.exists() {
-        return Ok(());
-    }
-    for suffix in ["-wal", "-shm"] {
-        let from = app_data_dir.join(format!("{}{suffix}", legacy_database_file_name()));
-        if from.exists() {
-            std::fs::rename(from, app_data_dir.join(format!("{}{suffix}", database_file_name())))?;
-        }
-    }
-    std::fs::rename(legacy, current)
-}
-
 pub async fn init_database(
     app_data_dir: impl AsRef<Path>,
     app_version: &str,
 ) -> Result<AppDatabase, DbError> {
     let app_data_dir = app_data_dir.as_ref();
     std::fs::create_dir_all(app_data_dir)?;
-    adopt_legacy_database(app_data_dir)?;
 
     // Apply any pending restore BEFORE opening a connection — swapping
     // `zwiim.db` under a live SQLite handle would corrupt it. A failure here
@@ -170,53 +142,4 @@ async fn apply_sqlite_pragmas(conn: &DatabaseConnection) -> Result<(), DbError> 
             .await?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn adopts_a_pre_rename_database_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let legacy = dir.path().join(legacy_database_file_name());
-        std::fs::write(&legacy, b"db").unwrap();
-        let legacy_wal = format!("{}-wal", legacy_database_file_name());
-        std::fs::write(dir.path().join(legacy_wal), b"wal").unwrap();
-        adopt_legacy_database(dir.path()).unwrap();
-        let current = dir.path().join(database_file_name());
-        assert_eq!(std::fs::read(&current).unwrap(), b"db");
-        let wal = dir.path().join(format!("{}-wal", database_file_name()));
-        assert_eq!(std::fs::read(wal).unwrap(), b"wal");
-        assert!(!legacy.exists());
-
-        // A current database is never replaced by a stray legacy file.
-        std::fs::write(&legacy, b"stale").unwrap();
-        adopt_legacy_database(dir.path()).unwrap();
-        assert_eq!(std::fs::read(&current).unwrap(), b"db");
-    }
-
-    #[tokio::test]
-    async fn opens_an_adopted_database_with_its_data() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = init_database(dir.path(), "test").await.unwrap();
-        db.conn
-            .execute(Statement::from_string(DbBackend::Sqlite, "CREATE TABLE kept (v TEXT)"))
-            .await
-            .unwrap();
-        db.conn.close().await.unwrap();
-        std::fs::rename(
-            dir.path().join(database_file_name()),
-            dir.path().join(legacy_database_file_name()),
-        )
-        .unwrap();
-        let db = init_database(dir.path(), "test").await.unwrap();
-        let kept = "SELECT name FROM sqlite_master WHERE name = 'kept'";
-        let row = db
-            .conn
-            .query_one(Statement::from_string(DbBackend::Sqlite, kept))
-            .await
-            .unwrap();
-        assert!(row.is_some());
-    }
 }

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 #[cfg(feature = "tauri-runtime")]
 use reqwest::StatusCode;
 #[cfg(feature = "tauri-runtime")]

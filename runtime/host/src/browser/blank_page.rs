@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! The empty tab's page: `about:blank`, painted in the app's own colours.
 //!
 //! The engine's blank document is white in every theme, and it is the one

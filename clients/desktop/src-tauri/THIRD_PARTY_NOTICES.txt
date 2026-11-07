@@ -11,7 +11,7 @@ Incorporated source (1 components)
 Codeg 0.31.1 (https://github.com/xintaofei/codeg) (Apache-2.0)
 ------------------------------------------------------------------------------
 
-Portions of the Zwiim Host are derived from Codeg and were modified by Zwiim.
+Portions of the Zwiim Host and Desktop UI are derived from Codeg and were modified by Zwiim.
 
 Apache License
                            Version 2.0, January 2004
@@ -216,7 +216,7 @@ Apache License
    limitations under the License.
 
 ==============================================================================
-Rust crates (538 components)
+Rust crates (536 components)
 ==============================================================================
 
 ------------------------------------------------------------------------------
@@ -1707,8 +1707,6 @@ async-stream@0.3.6 (MIT)
 block2@0.6.2 (MIT)
 brotli-decompressor@5.0.3 (BSD-3-Clause OR MIT)
 brotli-decompressor@6.0.1 (BSD-3-Clause OR MIT)
-include_dir_macros@0.7.4 (MIT)
-include_dir@0.7.4 (MIT)
 kill_tree@0.2.4 (MIT)
 libm@0.2.16 (MIT)
 minisign-verify@0.2.5 (MIT)

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! The custom `tracing` layer that feeds the in-memory ring buffer and the
 //! live-tail event stream. Runs alongside the stderr fmt layer and the JSON
 //! file layer in the subscriber stack ([`crate::logging::init`]).

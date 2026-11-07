@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Centralized resolution of zwiim-owned filesystem paths.
 //!
 //! Mirrors the conventions already used by `preferences.rs` (`~/.zwiim/`)

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Runtime registry for **custom (user-registered) ACP agents**.
 //!
 //! Built-in agents are compile-time constants in [`crate::acp::registry`].

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! What a page printed, kept for the agent that has been given the page.
 //!
 //! Every tab holds a small ring of the lines its current document wrote to

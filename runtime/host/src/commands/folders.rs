@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};

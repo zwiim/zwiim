@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Running an agent's own code on a page — the most powerful thing on this
 //! surface, and the one with a switch of its very own.
 //!

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! HTTP handlers for the zwiim-mcp service status indicator — the web-mode
 //! mirror of the Tauri commands in `commands::mcp_service`.
 //!

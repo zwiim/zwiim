@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Zwiim-owned: clear the credentials an older build left in plaintext SQLite.
 //!
 //! `model_provider.api_key`, `remote_workspace_connection.token` and the

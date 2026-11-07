@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! The allowlist of `app_metadata` keys a config snapshot may carry.
 //!
 //! `app_metadata` is a junk drawer: language, appearance, delegation toggles,

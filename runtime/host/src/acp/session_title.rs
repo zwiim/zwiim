@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Live ACP session titles.
 //!
 //! Agents publish a session name through `session_info_update.title`. Zwiim

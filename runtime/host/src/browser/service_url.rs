@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Finding the address of a local server in terminal output.
 //!
 //! A dev server announces itself by printing a line — `Local: http://localhost:5173/`,

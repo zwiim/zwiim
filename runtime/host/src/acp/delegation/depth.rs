@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Walk the conversation parent chain to compute delegation depth.
 //!
 //! The walker is generic over an async closure so the broker can plug in a

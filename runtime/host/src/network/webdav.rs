@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! A minimal WebDAV client: exactly the four verbs config sync needs.
 //!
 //! Deliberately does NOT parse WebDAV XML. `PROPFIND` is used only as a

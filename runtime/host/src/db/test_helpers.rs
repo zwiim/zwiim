@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Test scaffolding: fresh in-memory SQLite database + minimal seed helpers.
 //! Used by manager + lifecycle tests that need a real DB without touching the
 //! filesystem.

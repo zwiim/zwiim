@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Remote-workspace IPC proxy.
 //!
 //! When a desktop window is opened against a remote zwiim-host, every API

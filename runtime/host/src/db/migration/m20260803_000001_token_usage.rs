@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Token-usage analytics store: a per-turn fact table plus per-conversation
 //! sync bookkeeping.
 //!

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Policy decisions for browser tabs: the scheme allow-lists, the per-site
 //! rule table, and the administrator's policy file. Everything that decides
 //! is a function of its arguments so the tables in the unit tests are the

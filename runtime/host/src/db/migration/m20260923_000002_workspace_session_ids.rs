@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Zwiim-owned: host-owned opaque `workspace_id` (per user-facing Folder row)
 //! and `session_id` (per client-facing Conversation row).
 //!

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Transcript-tail watcher: surfaces Claude Code's OUT-OF-TURN activity.
 //!
 //! Claude Code produces activity outside any zwiim-driven prompt turn:

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! The local servers zwiim has seen start, and telling the workspace about a
 //! new one.
 //!

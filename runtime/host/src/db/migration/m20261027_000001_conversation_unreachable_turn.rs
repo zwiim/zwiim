@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Zwiim-owned: the turn that failed because the agent couldn't reach its
 //! provider, saved for `session.retry`.
 //!

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Background subscriber that watches the in-process `InternalEventBus` for
 //! ACP events that need cross-connection DB persistence (e.g. binding the
 //! agent's external session id onto a conversation row when SessionStarted

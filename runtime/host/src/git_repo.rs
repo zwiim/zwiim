@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Single source of truth for "is this path a git repository?" detection.
 //!
 //! The check is deliberately strict: the exact path must contain a `.git`

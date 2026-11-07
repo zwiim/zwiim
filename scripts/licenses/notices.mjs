@@ -9,7 +9,7 @@
 // shipped) are not included.
 //
 // Fails when a shipped package is under a copyleft license (GPL, AGPL, LGPL,
-// SSPL, ...): Zwiim is closed source.
+// SSPL, ...): Zwiim stays under Apache-2.0.
 //
 //   node scripts/licenses/notices.mjs           # write the notices files
 //   node scripts/licenses/notices.mjs --check   # fail if they are out of date
@@ -23,7 +23,7 @@ import { fetchGh, ghDependencyNotices, GH_VERSION } from "../gh/fetch.mjs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const check = process.argv.includes("--check");
 
-/** Licenses a closed-source app cannot ship. */
+/** Licenses that would bind Zwiim to copyleft terms. */
 const COPYLEFT = /\b(A?GPL|LGPL|SSPL|EUPL|OSL|RPL|CPAL|CC-BY-SA|CC-BY-NC)/i;
 /** File-level copyleft: fine unmodified, but worth a look. */
 const REVIEW = /\b(MPL|EPL|CDDL)/i;
@@ -151,7 +151,7 @@ function incorporated() {
     {
       id: "Codeg 0.31.1 (https://github.com/xintaofei/codeg)",
       license: "Apache-2.0",
-      text: `Portions of the Zwiim Host are derived from Codeg and were modified by Zwiim.\n\n${codeg}`,
+      text: `Portions of the Zwiim Host and Desktop UI are derived from Codeg and were modified by Zwiim.\n\n${codeg}`,
     },
   ];
 }

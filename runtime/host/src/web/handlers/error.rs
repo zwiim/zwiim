@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},

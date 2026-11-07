@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Commands backing the Settings → Logs viewer.
 //!
 //! `*_core` functions hold the logic and are shared by the Tauri command

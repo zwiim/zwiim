@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! CRUD for user-registered ACP agents (`custom_agent` table).
 //!
 //! Rows here are the persistent form of [`CustomAgentDef`]; the process-global

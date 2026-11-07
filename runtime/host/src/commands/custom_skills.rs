@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Custom (user-authored) skills management.
 //!
 //! The fourth "skill pack" in Zwiim's central store `~/.zwiim/skills/<id>/`.
@@ -8,19 +9,13 @@
 //! into the central copy), so they reuse the experts link engine + DTOs and the
 //! matrix UI renders them identically.
 //!
-//! **Identity by exclusion.** A "custom skill" is any directory in the central
-//! store that holds a `SKILL.md` and whose id is NOT claimed by a bundled pack
-//! (experts ∪ science ∪ office). This keeps the store's disjoint-id-namespace
-//! safety model (see `science.rs`) holding for custom too, and lets a user drop
-//! a folder into `~/.zwiim/skills` and have it appear on refresh. The startup
-//! extraction of bundled packs is id-scoped (hash + manifest + backup, never a
-//! wipe), so it never touches unclaimed custom directories.
+//! A "custom skill" is any directory in the central store that holds a
+//! `SKILL.md`, so a user can drop a folder into `~/.zwiim/skills` and have it
+//! appear on refresh.
 //!
 //! The link primitives, link-state DTOs and central-dir path are reused from
-//! `experts.rs` (exactly as `science.rs`/`office_tools.rs` do) so link statuses
-//! serialize identically and the frontend enablement merge stays uniform.
+//! `experts.rs`.
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -51,8 +46,6 @@ pub enum CustomSkillsError {
     NotFound(String),
     #[error("a skill with id '{0}' already exists")]
     AlreadyExists(String),
-    #[error("'{0}' is a built-in skill id and can't be used for a custom skill")]
-    ReservedId(String),
     #[error("agent does not support skills: {0:?}")]
     UnsupportedAgent(AgentType),
     #[error("a real directory already exists at '{path}' — delete or rename it first")]
@@ -108,7 +101,7 @@ pub struct CustomDeleteResult {
 /// Per-skill outcome for the import-from-agent command. Three outcomes:
 /// `ok` (copied into the store), `skipped` (already present in the shared store
 /// — a linked expert/science/office skill or an already-imported custom one; not
-/// an error), or an `error` (not found in the agent, reserved id collision, io).
+/// an error), or an `error` (not found in the agent, io).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomImportResult {
@@ -153,26 +146,10 @@ fn supported_agents() -> Vec<AgentType> {
         .collect()
 }
 
-// ─── Reserved (built-in) ids ────────────────────────────────────────────
-
-/// Union of every bundled pack's ids. A central-store dir with one of these ids
-/// belongs to experts/science/office and is never treated as custom.
-fn reserved_ids() -> BTreeSet<String> {
-    let mut set = BTreeSet::new();
-    set.extend(crate::commands::experts::bundled_ids());
-    // science / office bundled packs are deferred product (not carried in
-    // this build); only the experts pack contributes reserved ids here.
-    set
-}
-
-/// Validate an id AND require it to be free of any built-in pack. Used by every
-/// authoring mutation (create/save/duplicate/import/delete).
+/// Validate an id. Used by every authoring mutation
+/// (create/save/duplicate/import/delete).
 fn ensure_custom_id(raw: &str) -> Result<String, CustomSkillsError> {
-    let id = validate_skill_id(raw).map_err(|e| CustomSkillsError::Metadata(e.to_string()))?;
-    if reserved_ids().contains(&id) {
-        return Err(CustomSkillsError::ReservedId(id));
-    }
-    Ok(id)
+    validate_skill_id(raw).map_err(|e| CustomSkillsError::Metadata(e.to_string()))
 }
 
 /// Turn a free-form name (folder name, frontmatter `name:`) into a valid skill
@@ -242,11 +219,10 @@ fn build_item(id: String) -> CustomSkillItem {
     }
 }
 
-/// Scan the central store for custom skill ids (real dir + SKILL.md, id not
-/// reserved, not a dotfile). Sync helper shared by list + status snapshot.
+/// Scan the central store for custom skill ids (real dir + SKILL.md, not a
+/// dotfile). Sync helper shared by list + status snapshot.
 fn collect_custom_ids() -> Result<Vec<String>, CustomSkillsError> {
     let central = central_experts_dir();
-    let reserved = reserved_ids();
     let mut ids = Vec::new();
 
     let entries = match fs::read_dir(&central) {
@@ -265,9 +241,6 @@ fn collect_custom_ids() -> Result<Vec<String>, CustomSkillsError> {
             continue;
         }
         let id = name.to_string();
-        if reserved.contains(&id) {
-            continue; // a built-in pack owns this dir
-        }
         if validate_skill_id(&id).is_err() {
             continue; // ignore oddly-named dirs rather than fail the whole list
         }
@@ -642,8 +615,6 @@ fn import_one_from_agent_locked(spec: &SkillStorageSpec, raw_id: &str) -> Custom
         };
     }
 
-    // Guard: refuse ids owned by a built-in pack that somehow aren't extracted
-    // yet (rare — built-ins are normally present, so this path is a safety net).
     if let Err(err) = ensure_custom_id(&id) {
         return CustomImportResult {
             id,
@@ -784,19 +755,6 @@ mod tests {
 
     // Uses ids that are well-formed but absent from the central store, so the
     // link tests never mutate the developer's real skill directories.
-
-    #[test]
-    fn reserved_ids_include_known_bundled() {
-        let reserved = reserved_ids();
-        assert!(reserved.contains("brainstorming"), "experts id missing");
-        assert!(!reserved.is_empty());
-    }
-
-    #[test]
-    fn ensure_custom_id_rejects_reserved() {
-        let err = ensure_custom_id("brainstorming").unwrap_err();
-        assert!(matches!(err, CustomSkillsError::ReservedId(_)), "{err:?}");
-    }
 
     #[test]
     fn ensure_custom_id_accepts_free_id() {
@@ -968,17 +926,6 @@ mod tests {
         .expect("batch returns Ok");
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(|r| r.ok), "{results:?}");
-    }
-
-    #[tokio::test]
-    async fn create_and_save_reject_reserved_ids() {
-        let created = custom_create_skill("writing-plans".into(), "x".into()).await;
-        assert!(matches!(
-            created,
-            Err(CustomSkillsError::ReservedId(_))
-        ));
-        let saved = custom_save_skill("writing-plans".into(), "x".into()).await;
-        assert!(matches!(saved, Err(CustomSkillsError::ReservedId(_))));
     }
 
     #[tokio::test]

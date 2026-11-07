@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Who is serving a loopback address.
 //!
 //! A grant binds to an origin, and for a site on the internet the origin is

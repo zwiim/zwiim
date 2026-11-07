@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Live user-feedback settings persistence + the submit command surface.
 //!
 //! One knob survives across restarts:

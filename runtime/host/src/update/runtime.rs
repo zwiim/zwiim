@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Runtime self-knowledge for the in-place updater: where our own
 //! executable lives, whether we run under our supervisor, and how the
 //! restart will be carried out.

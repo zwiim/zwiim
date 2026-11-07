@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Broker-facing request / outcome types.
 //!
 //! These cross two boundaries:

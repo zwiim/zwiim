@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! `DelegationBroker` — the coordination unit for multi-agent delegation.
 //!
 //! Delegation is **asynchronous**: `delegate_to_agent` returns a `task_id`

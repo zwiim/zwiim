@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Zwiim-owned: how many files a fork to a new worktree started with, for the
 //! card its first screen shows. Null for a fork in place, and for a link from
 //! before this migration.

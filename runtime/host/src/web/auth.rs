@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Request authentication and the one authorization distinction the host
 //! makes: local host authority versus a paired device.
 

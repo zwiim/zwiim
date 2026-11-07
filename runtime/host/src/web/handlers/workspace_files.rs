@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! HTTP endpoints for uploading/downloading workspace files.
 //!
 //! These exist for issue #179 — the web/server build has no native file

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Server-side re-hydration of uploaded image attachments.
 //!
 //! In web / remote-workspace mode the composer does NOT inline image bytes

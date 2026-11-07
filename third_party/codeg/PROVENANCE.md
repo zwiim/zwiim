@@ -48,7 +48,7 @@ Copied and kept, with only the modifications noted in the next section:
 | SQLite / SeaORM persistence (entities, services, migrations) | `runtime/host/src/db/` | Reused (migrations kept **dormant**, not trimmed) |
 | MCP host bridge (companion server, now `zwiim-mcp`) + delegation tool groups | `runtime/host/src/bin/zwiim_mcp.rs`, `runtime/host/src/acp/{browser_tools,chat_authoring,work_task_tools}.rs` | Reused (companion renamed `codeg-mcp` → `zwiim-mcp`) |
 | Shared command façade (business logic under `web/handlers`) | `runtime/host/src/commands/` | Reused (product commands removed; see below) |
-| Bundled agent skills (`experts`) | `runtime/host/src/commands/experts.rs`, `runtime/host/experts/` | Reused (relocated into crate for `include_dir!`) |
+| Skill link engine (`experts`) | `runtime/host/src/commands/experts.rs` | Reused; reduced to the link primitives custom skills share |
 | Process supervisor / PID-1 init + exec/supervise runtime constants | `runtime/host/src/supervise.rs`, `runtime/host/src/update/runtime.rs` | Reused |
 | Bearer-token + WS-subprotocol auth (transitional bootstrap) | `runtime/host/src/web/auth.rs` | Reused; extended for Identity V1 (see modifications). Public-key replacement is a later slice |
 
@@ -56,7 +56,7 @@ Copied and kept, with only the modifications noted in the next section:
 
 Entire modules deleted from the tree: `work_task`, `automation`,
 `pet_state_mapper`, `forge`, `canvas`, `office_tools`, `office_watch`,
-`science`, `backgrounds`, `quick_messages`, `app_update` (minisign
+`science`, bundled `experts` skills, `backgrounds`, `quick_messages`, `app_update` (minisign
 self-updater), `chat_channel` (Telegram, incl. manager/traits/types/commands),
 and `web/browser_bridge` (dev-server port bridge). The Tauri/WebKit desktop UI
 and its ~200-route command surface are gated out via the absent `tauri-runtime`

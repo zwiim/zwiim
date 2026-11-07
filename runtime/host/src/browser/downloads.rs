@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Downloads started by a browser tab.
 //!
 //! P1 refused every download outright (no destination policy, no UI). Here the

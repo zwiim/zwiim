@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::process::Command;

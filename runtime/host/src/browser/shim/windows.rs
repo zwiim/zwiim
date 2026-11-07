@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Windows shim on top of WebView2 (`webview2-com` + the `windows` crate).
 //!
 //! The helper script and the primitive it posts through live in a CDP

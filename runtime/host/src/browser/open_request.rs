@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Asking a workspace window to open a tab, and hearing back which tab it is.
 //!
 //! A browser tab is not the backend's to create. `open_tab_core` needs an

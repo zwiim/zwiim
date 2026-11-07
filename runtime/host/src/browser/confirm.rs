@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Asking the person, for one snippet, right now.
 //!
 //! `browser_eval` is the only tool on this surface that can stop and wait for

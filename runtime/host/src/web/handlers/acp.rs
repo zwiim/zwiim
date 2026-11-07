@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 use crate::acp::temp_reclaim as zwiim_temp_reclaim;
 use std::collections::BTreeMap;
 use std::sync::Arc;

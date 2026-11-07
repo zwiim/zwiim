@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Multi-folder workspaces: symlink other directories into a workspace folder
 //! so one root can host several projects.
 //!

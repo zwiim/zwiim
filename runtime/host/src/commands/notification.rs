@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! OS notifications, and the two affordances the platform gives us for
 //! diagnosing them.
 //!

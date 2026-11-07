@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Live user-feedback ("steering") domain types.
 //!
 //! While an agent is mid-turn the user can submit short notes / corrections

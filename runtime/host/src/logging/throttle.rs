@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Time-windowed throttle for high-frequency, near-duplicate WARN logs.
 //!
 //! Several broadcast subscribers (`pet_state_mapper`, `ws`, the chat-channel

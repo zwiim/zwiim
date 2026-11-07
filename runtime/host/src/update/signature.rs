@@ -1,7 +1,8 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Minisign verification of Zwiim release metadata.
 //!
 //! Upstream-derived: adapted from upstream `src-tauri/src/update/verify.rs`
-//! (v0.31.1; see third_party/codeg/PROVENANCE.md). Kept: the wire format and
+//! (v0.31.1; see NOTICE). Kept: the wire format and
 //! the `minisign-verify` call. Changed: the upstream embedded key is gone;
 //! the Zwiim release key is compiled in from `ZWIIM_RELEASE_PUBKEY` by the
 //! release build, and a build without it verifies nothing (updates off).

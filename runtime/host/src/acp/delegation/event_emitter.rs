@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! `DelegationEventEmitter` — broker capability for surfacing
 //! `AcpEvent::DelegationStarted` / `DelegationCompleted` to the parent's
 //! event stream.

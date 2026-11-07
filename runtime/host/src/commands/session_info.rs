@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! `get_session_info` backing logic + settings persistence.
 //!
 //! Two surfaces live here, mirroring `crate::commands::question`:

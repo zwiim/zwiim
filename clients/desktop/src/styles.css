@@ -1,3 +1,4 @@
+/* Modified from upstream Apache-2.0 source; see NOTICE. */
 @import "tailwindcss";
 @import "@xterm/xterm/css/xterm.css";
 @import "@fontsource-variable/inter";
@@ -5,7 +6,7 @@
 @custom-variant dark (&:is(.dark *));
 
 /* Theme tokens: variable names adapted from the upstream web UI's `src/app/globals.css`
-   (Apache-2.0; see third_party/codeg/PROVENANCE.md); values are Zwiim's Tide palette
+   (Apache-2.0; see NOTICE); values are Zwiim's Tide palette
    (DESIGN.md "Desktop"). One accent (`brand`) for links, mentions, focus, the primary
    action and "needs you"; `done` green and `destructive` red carry status; nothing else
    is chromatic. */

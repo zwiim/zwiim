@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 #![allow(unused_imports)]
 
 pub use super::agent_setting::Entity as AgentSetting;

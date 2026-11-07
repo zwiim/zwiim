@@ -1,6 +1,6 @@
 # Zwiim Host Runtime — headless core.
 #
-# Upstream-derived infrastructure (see third_party/codeg/PROVENANCE.md), built
+# Upstream-derived infrastructure (see NOTICE), built
 # headless: the `tauri-runtime` / desktop features are intentionally absent so
 # no Tauri/WebKit/desktop code compiles. All identifiers, keys and strings use
 # Zwiim naming.
@@ -112,7 +112,6 @@ prost = "0.13"
 rand = "0.8"
 qrcode = "0.14"
 image = { version = "0.25", default-features = false, features = ["png", "webp", "jpeg", "gif"] }
-include_dir = "0.7"
 sha2 = "0.10"
 aes-gcm = { version = "0.10", features = ["stream"] }
 argon2 = "0.5"

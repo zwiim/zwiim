@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Sync settings, remote layout, and the upload/download choreography.
 //!
 //! ## Remote layout

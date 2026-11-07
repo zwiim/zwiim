@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Lifecycle handle for the zwiim-mcp broker socket — the half of the
 //! companion round-trip that lives inside Zwiim's own process.
 //!

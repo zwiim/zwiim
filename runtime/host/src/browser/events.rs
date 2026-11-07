@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Fan-out of tab state to the frontend. One full `BrowserTabState` per
 //! change on `browser://state`; the frontend filters by `tabId`.
 

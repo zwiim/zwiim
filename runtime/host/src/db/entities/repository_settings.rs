@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 use sea_orm::entity::prelude::*;
 
 /// Zwiim-owned: one repository's settings (one row per root folder, made on

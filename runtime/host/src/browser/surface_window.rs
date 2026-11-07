@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Owned-window surface: a top-level `WebviewWindow` attached to the owner
 //! (`parent`). The only surface on Linux, the fallback everywhere else, and
 //! the shape popups take when they cannot be adopted as tabs.

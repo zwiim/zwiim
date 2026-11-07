@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Automation CRUD + cron scheduling math. Mode-agnostic: every fn takes a plain
 //! `&DatabaseConnection` so both the Tauri command and the Axum handler share it.
 //! `config` is stored as an opaque JSON string and replayed wholesale at fire.

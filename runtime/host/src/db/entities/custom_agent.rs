@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 use sea_orm::entity::prelude::*;
 
 /// A user-registered ACP agent. See `crate::acp::custom_registry` for how a row

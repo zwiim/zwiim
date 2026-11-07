@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};

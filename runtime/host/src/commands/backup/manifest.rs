@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Backup archive manifest + progress/preview wire types.
 //!
 //! The manifest describes the *logical* contents of a backup archive: the

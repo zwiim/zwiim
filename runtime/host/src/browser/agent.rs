@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Who may read a page on an agent's behalf, and the one read that exists.
 //!
 //! The rule everything here implements: **nothing is granted automatically.**

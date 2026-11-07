@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! `ConnectionSpawner` trait — the subset of `ConnectionManager` capabilities
 //! that the delegation broker needs. Defined as a trait so:
 //!

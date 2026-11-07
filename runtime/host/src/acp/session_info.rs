@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Session-info lookup domain types — backing the `get_session_info` MCP tool.
 //!
 //! When the user references a session in the composer it serializes into the

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! One-time reclamation of temp artifacts leaked BEFORE per-launch isolation.
 //!
 //! [`crate::acp::scratch_dir`] stops the bleeding; this hands back what already

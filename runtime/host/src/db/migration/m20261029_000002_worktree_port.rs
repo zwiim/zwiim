@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Zwiim-owned: the ports a managed worktree's processes may use.
 //!
 //! `port` is the first of a block of `workspace::ports::BLOCK` ports given to

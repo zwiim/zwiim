@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Shared mapping of Codex's structured goal object into Zwiim's canonical
 //! `create_goal`/`update_goal` synthetic tool-call representation.
 //!

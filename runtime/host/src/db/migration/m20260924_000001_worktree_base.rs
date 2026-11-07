@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Zwiim-owned: the base a managed worktree workspace was created from.
 //!
 //! `base_branch` is the root workspace's branch at creation (NULL when its

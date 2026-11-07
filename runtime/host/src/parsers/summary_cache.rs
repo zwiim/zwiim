@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Process-global cache for per-file conversation summaries.
 //!
 //! `list_conversations` (and, through it, `list_folders`, `get_stats`, and

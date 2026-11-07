@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! User-scoped preferences stored at `~/.zwiim/preferences.json`.
 //!
 //! These are settings that must be readable **before** the Tauri builder and

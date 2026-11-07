@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Health report for the zwiim-mcp service, and the one action that can fix
 //! it from the UI.
 //!

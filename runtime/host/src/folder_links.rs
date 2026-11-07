@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Process-global registry of user-authorized workspace links.
 //!
 //! A workspace folder can have other directories symlinked in as subdirectories

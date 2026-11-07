@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Subscriber construction and per-binary initialization.
 //!
 //! Initialization is split into phases because the subscriber must be live as

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! The `zwiim-doc:` document guest: a local HTML file shown through a webview
 //! of its own, whose every request the host answers from the file's folder.
 //! This is what the desktop shows for an `.html` file instead of an inline

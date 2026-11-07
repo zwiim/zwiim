@@ -1,0 +1,14 @@
+Zwiim
+Copyright 2026 Ashish Kumar Shakya
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+This product includes software derived from Codeg 0.31.1
+(https://github.com/xintaofei/codeg), licensed under the Apache License,
+Version 2.0. A copy of that license is in third_party/codeg/LICENSE.
+
+Portions of the Zwiim Host and Desktop UI derive from that software and were
+modified for Zwiim. Source files carrying the line "Modified from upstream
+Apache-2.0 source" are such files. third_party/codeg/PROVENANCE.md records the
+source, version and changes. Embedded scripts under runtime/host/resources are
+covered by the same statement.

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Zwiim-owned: what the user set for one repository, such as the scripts run
 //! when its worktrees are created and removed.
 //!

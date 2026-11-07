@@ -1,4 +1,5 @@
-// Adapted from the upstream web UI's `src/components/ui/badge.tsx` (see third_party/codeg/PROVENANCE.md).
+// Modified from upstream Apache-2.0 source; see NOTICE.
+// Adapted from the upstream web UI's `src/components/ui/badge.tsx` (see NOTICE).
 import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";

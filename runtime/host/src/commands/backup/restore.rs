@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Restore: stage-then-swap-on-startup.
 //!
 //! The DB connection pool holds `zwiim.db` open (WAL sidecars), so swapping it

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 // The ACP connection driver (`acp::connection`) wraps the enormous
 // `run_connection` future in a `block_on(async move { … })` frame whose type
 // layout nests deep enough to blow rustc's default query depth of 128 (it
@@ -115,7 +116,7 @@ mod tauri_app {
         conversations,
         custom_skills as custom_skills_commands,
         deepseek_settings as deepseek_settings_commands, delegation as delegation_commands,
-        experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
+        feedback as feedback_commands, file_io, folder_commands,
         folder_links, office_tools as office_tools_commands, open_in,
         folders, logging as logging_commands, mcp as mcp_commands,
         model_provider as model_provider_commands, notification, pet as pet_commands, project_boot,
@@ -727,27 +728,6 @@ mod tauri_app {
                 // turning off idle disconnects must not also turn off disk
                 // reclamation on a machine leaking gigabytes per launch.
                 tauri::async_runtime::spawn(crate::scratch_sweep_task());
-
-                // Install bundled expert skills into the central store
-                // (`~/.zwiim/skills/`). Runs in the background and does
-                // not block startup; failures are logged but non-fatal.
-                tauri::async_runtime::spawn(async move {
-                    let report = crate::commands::experts::ensure_central_experts_installed().await;
-                    if !report.errors.is_empty() {
-                        tracing::error!(
-                            "[Experts] install finished with {} error(s): {:?}",
-                            report.errors.len(),
-                            report.errors
-                        );
-                    } else {
-                        tracing::info!(
-                            "[Experts] install ok: installed={} updated={} pending_review={}",
-                            report.installed_count,
-                            report.updated_count,
-                            report.pending_user_review.len()
-                        );
-                    }
-                });
 
                 // Install bundled scientific-research skills into the same
                 // central store (`~/.zwiim/skills/`). Background, non-blocking;
@@ -1872,14 +1852,6 @@ mod tauri_app {
                 acp_commands::opencode_uninstall_plugin,
                 acp_commands::codex_request_device_code,
                 acp_commands::codex_poll_device_code,
-                experts_commands::experts_list,
-                experts_commands::experts_get_install_status,
-                experts_commands::experts_list_all_install_statuses,
-                experts_commands::experts_link_to_agent,
-                experts_commands::experts_unlink_from_agent,
-                experts_commands::experts_apply_links,
-                experts_commands::experts_read_content,
-                experts_commands::experts_open_central_dir,
                 science_commands::science_list,
                 science_commands::science_get_install_status,
                 science_commands::science_list_all_install_statuses,

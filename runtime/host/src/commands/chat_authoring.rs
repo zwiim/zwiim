@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! `create_automation` / `create_work_task` backing logic + settings
 //! persistence.
 //!

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Desktop-pet data model.
 //!
 //! Field shapes mirror the Codex `/pet` + `/hatch` format so a directory under

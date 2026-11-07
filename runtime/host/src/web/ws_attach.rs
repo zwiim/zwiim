@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! WS attach protocol — Phase 1 of the Subscribe-with-Snapshot redesign.
 //!
 //! Replaces the legacy "subscribe to a global firehose + fetch HTTP snapshot

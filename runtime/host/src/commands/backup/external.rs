@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Optional external agent-CLI transcript handling (the "include conversation
 //! content" toggle).
 //!

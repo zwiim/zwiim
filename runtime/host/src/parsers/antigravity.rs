@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Transcript reader for Google Antigravity's first-party ACP server
 //! (`agy_acp_server`).
 //!

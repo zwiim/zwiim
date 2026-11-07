@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Self-cleanup watchdog for `zwiim-mcp`.
 //!
 //! On Windows, child processes don't die with their parent automatically.

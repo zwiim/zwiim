@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Browser profiles: where tabs keep cookies, caches and storage, which
 //! proxy their traffic goes through, and the one user-agent exception.
 //!

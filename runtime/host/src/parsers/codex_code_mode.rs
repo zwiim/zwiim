@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Codex "code mode" script unwrapping.
 //!
 //! Since codex enabled *code mode*, the model no longer emits one rollout

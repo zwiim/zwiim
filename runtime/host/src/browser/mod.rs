@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Built-in browser.
 //!
 //! A browser tab is a Rust-owned webview that renders an arbitrary web page

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Zwiim's own **ACP-native transcript** for custom agents.
 //!
 //! Every built-in agent ships a dedicated parser (`crate::parsers::*`) that

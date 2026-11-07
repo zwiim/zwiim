@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Multi-agent delegation: the parent agent's LLM can call the built-in MCP
 //! tool `delegate_to_agent` to spawn a fresh ACP session of any (possibly
 //! different) agent type, wait for its first turn to finish, and receive the

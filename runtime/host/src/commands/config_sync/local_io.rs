@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Export the local configuration to a single file, and import one back.
 //!
 //! The file is one self-contained JSON object — manifest and snapshot

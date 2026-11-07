@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Response compression for the web/server mode router.
 //!
 //! Large JSON payloads (a long conversation's `get_folder_conversation`

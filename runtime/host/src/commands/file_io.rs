@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 use crate::app_error::AppCommandError;

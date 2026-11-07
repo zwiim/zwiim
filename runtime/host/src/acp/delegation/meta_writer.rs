@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! `DelegationMetaWriter` — broker capability that attaches the live
 //! delegation state onto the parent's active `delegate_to_agent`
 //! tool-call. The shape written under `meta["zwiim.delegation"]`

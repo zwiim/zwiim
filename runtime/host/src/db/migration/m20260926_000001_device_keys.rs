@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Zwiim-owned: cryptographic device identity on the trusted-device registry.
 //!
 //! `device_pubkey` is the device's X25519 static public key (URL-safe base64),

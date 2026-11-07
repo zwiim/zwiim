@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! One decryption per restore.
 //!
 //! Inspecting an archive, scanning it for external conflicts and staging it

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! `tab id → surface + last known state`, shared by the commands, the
 //! webview hooks and the window-close cleanup. The mutex is only ever held
 //! for map operations; every surface call happens on a clone taken out of it.

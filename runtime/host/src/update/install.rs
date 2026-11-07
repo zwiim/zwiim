@@ -1,8 +1,8 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Zwiim-owned Host installer: versioned installs, a trial, and rollback.
 //!
-//! Replaces the upstream in-place self-updater (discarded per CLAUDE.md; see
-//! `third_party/codeg/PROVENANCE.md`). The Host never overwrites the binary
-//! it runs. Each version lives in its own directory under the data
+//! Replaces the upstream in-place self-updater. The Host never overwrites the
+//! binary it runs. Each version lives in its own directory under the data
 //! directory, and one state file says which one runs:
 //!
 //! ```text

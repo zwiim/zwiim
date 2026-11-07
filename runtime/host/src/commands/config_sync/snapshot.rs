@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Snapshot assembly, validation, and application.
 //!
 //! A snapshot is two files that always travel together:

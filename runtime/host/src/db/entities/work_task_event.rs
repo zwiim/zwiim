@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 use sea_orm::entity::prelude::*;
 
 /// Append-only progress timeline of a work task ("how it advanced"). Rows are

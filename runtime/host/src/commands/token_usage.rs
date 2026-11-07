@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Token-usage dashboard: materialize per-turn spend, then aggregate it.
 //!
 //! ## Why a materialized table at all

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 use sea_orm_migration::prelude::*;
 
 mod m20260211_000001_init;

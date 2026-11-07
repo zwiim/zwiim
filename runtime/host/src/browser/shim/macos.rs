@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! macOS shim on top of `WKWebView` / `WKUserContentController` (objc2).
 //!
 //! The helper script and the `zwiimBrowser` message handler live in the

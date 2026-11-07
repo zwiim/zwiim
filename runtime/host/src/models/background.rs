@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Workspace background-image data model.
 
 use serde::Serialize;

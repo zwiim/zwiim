@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! OpenCode provider catalog backed by [models.dev](https://models.dev).
 //!
 //! OpenCode resolves its built-in providers and their model lists from the

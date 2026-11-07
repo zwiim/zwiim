@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 use axum::Json;
 use serde::Deserialize;
 use serde_json::Value;

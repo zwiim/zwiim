@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Data backup & restore engine.
 //!
 //! Layered so the `*_core` functions in [`core`] (and, from M2, `restore`) are

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Optional passphrase encryption for the snapshot payload.
 //!
 //! The feature's baseline security boundary is the user's own authenticated

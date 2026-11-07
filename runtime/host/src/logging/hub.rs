@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Process-global logging runtime: the in-memory ring buffer the viewer reads,
 //! the reload handle for runtime level changes, and the event emitter wired in
 //! once `AppState` exists.

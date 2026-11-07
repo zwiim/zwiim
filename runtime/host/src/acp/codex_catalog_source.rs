@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Runtime source for codex's official model catalog.
 //!
 //! Because `model_catalog_json` is a whole-table replace, Zwiim must reproduce

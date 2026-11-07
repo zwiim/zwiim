@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! DeepSeek Harness deployment settings — the advisory model catalog.
 //!
 //! `deepseek-acp` composes `@deepseek-ai/dsh-llm-deepseek`, whose plugin config

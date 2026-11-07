@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Chat-authoring domain types — backing the `create_automation` and
 //! `create_work_task` MCP tools.
 //!

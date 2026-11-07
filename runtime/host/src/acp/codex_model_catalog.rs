@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Codex custom-model catalog generation for codex's `model_catalog_json`.
 //!
 //! Codex only lists a model in its picker when the model is a first-class

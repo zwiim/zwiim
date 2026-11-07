@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! ACP `session/fork` support via raw JSON-RPC messages.
 //!
 //! The `sacp` crate does not yet provide typed request/response types for

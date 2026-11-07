@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! History parser for agents that have **no zwiim-side store parser**: custom
 //! ACP agents.
 //!

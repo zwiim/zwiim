@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Main-process side of the `zwiim-mcp` round-trip: accept UDS / named-pipe
 //! connections from companion processes, validate the per-launch token,
 //! resolve the parent's current conversation, and hand off to the broker.

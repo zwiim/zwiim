@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Sidebar folder groups: named containers the user drops workspace folders
 //! into so a long folder list can be split into "work / open source / scratch".
 //!

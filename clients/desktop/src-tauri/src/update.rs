@@ -1,7 +1,7 @@
 //! Desktop self-update through `tauri-plugin-updater`.
 //!
 //! Upstream-derived: the shape follows upstream `src-tauri/src/commands/app_update.rs`
-//! (v0.31.1; see third_party/codeg/PROVENANCE.md): the download is driven from
+//! (v0.31.1; see NOTICE): the download is driven from
 //! Rust, so its progress survives the page that started it, and the UI only
 //! reads a snapshot. Changed: the key and the endpoint are Zwiim's, compiled
 //! in by the release build; a build without the key never updates.

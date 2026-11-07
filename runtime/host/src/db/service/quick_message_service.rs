@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 use chrono::Utc;
 use sea_orm::DatabaseConnection;
 use sea_orm::{

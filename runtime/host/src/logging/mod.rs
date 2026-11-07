@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Application diagnostic logging built on `tracing`.
 //!
 //! One subscriber feeds three sinks: **stderr** (preserves the pre-tracing

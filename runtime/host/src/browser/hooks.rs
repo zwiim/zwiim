@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Callbacks the surfaces install on their webviews. They only touch the
 //! registry and emit state; nothing here calls back into the surface, so the
 //! webview thread never waits on itself.

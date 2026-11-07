@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 use sea_orm::entity::prelude::*;
 
 /// Zwiim-owned: the session and turn a forked session came from. See

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! ZIP construction / extraction + per-entry integrity, all synchronous.
 //!
 //! Callers run these under `tokio::task::spawn_blocking`. The archive is built

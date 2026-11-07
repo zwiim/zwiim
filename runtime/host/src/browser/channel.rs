@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Page → host channel: the helper script (`src/browser-injected/helper.js`)
 //! runs in an isolated world and posts JSON envelopes through a native
 //! message handler; this module validates and routes them. The element picker

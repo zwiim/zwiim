@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! The single table of zwiim-owned data sections a backup packs and a restore
 //! swaps back in.
 //!
@@ -99,10 +100,8 @@ pub const MANAGED_SECTIONS: &[ManagedSection] = &[
         live_path: |_| crate::paths::zwiim_pets_root(),
     },
     ManagedSection {
-        // Includes user-authored skills, which exist nowhere else. Built-in
-        // packs re-extract by id at startup (`experts::ensure_central_experts_installed`,
-        // id-scoped and never a wipe), so replacing the tree self-heals those;
-        // what a replace can drop is a hand-made skill the backup predates —
+        // Holds user-authored skills, which exist nowhere else. What a replace
+        // can drop is a hand-made skill the backup predates —
         // the same semantics as `uploads`, and it survives in the safety
         // snapshot. Note `central_experts_dir()` resolves against the real home
         // and does NOT honor `ZWIIM_HOME`/`ZWIIM_DATA_DIR`; changing that would

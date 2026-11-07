@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Configuration sync: a small, config-only snapshot of this machine's
 //! settings that can be exported to a file or pushed to the user's own WebDAV
 //! share, and pulled back on another machine.

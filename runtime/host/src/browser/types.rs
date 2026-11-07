@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Wire types for the built-in browser. `src/lib/browser/types.ts` mirrors
 //! these one to one; both sides use camelCase field names and kebab-case enum
 //! values.

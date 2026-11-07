@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Companion-side MCP protocol — the bits that live inside the `zwiim-mcp`
 //! binary but are factored out into the library so they can be unit-tested
 //! without spawning the binary.

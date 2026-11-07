@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Page → conversation: what the built-in browser hands to the composer when
 //! a person points at something on a page and says "this".
 //!

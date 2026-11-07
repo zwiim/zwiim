@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Wire types for the token-usage dashboard.
 //!
 //! ## What "usage" means here

@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Delegation settings persistence + Tauri/HTTP command surface.
 //!
 //! These knobs survive across restarts:

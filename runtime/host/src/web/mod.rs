@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 pub mod auth;
 pub mod compression;
 pub mod event_bridge;

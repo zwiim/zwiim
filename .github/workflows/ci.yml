@@ -35,6 +35,27 @@ jobs:
       - name: Release script tests
         run: node --test scripts/release/*.test.mjs
 
+  licenses:
+    name: Licences and third-party notices
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            clients/mobile/package-lock.json
+      - run: npm ci
+      - run: npm ci
+        working-directory: clients/mobile
+      - run: cargo install --locked cargo-about
+      - name: Notices are current and no shipped package is copyleft
+        run: node scripts/licenses/notices.mjs --check
+
   rust:
     name: Host, Cloud, Desktop shell (Rust)
     runs-on: macos-14

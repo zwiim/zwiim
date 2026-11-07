@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Zwiim-owned: which session and turn a forked session came from.
 //!
 //! A table rather than a file in the session's worktree, as the link crosses

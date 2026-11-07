@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! `zwiim-host --supervise` — a minimal process supervisor that owns the
 //! lifecycle of the real worker, so an update can switch versions and have
 //! the *new* version relaunched deterministically.

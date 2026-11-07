@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Listener-facing access for the built-in browser's agent tools
 //! (`browser_list_tabs` / `browser_snapshot` / `browser_console_messages` /
 //! `browser_screenshot`, and the five action tools `browser_click` /

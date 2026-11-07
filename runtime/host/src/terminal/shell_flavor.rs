@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Shell family classification shared by the built-in terminal and the ACP
 //! terminal runtime.
 //!

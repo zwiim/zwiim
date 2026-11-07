@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;

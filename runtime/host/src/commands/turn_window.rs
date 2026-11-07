@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Turn-window slicing for conversation detail responses.
 //!
 //! The parsers always parse a session transcript in full (local parsing is

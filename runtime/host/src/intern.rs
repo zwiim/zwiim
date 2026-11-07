@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Process-lifetime string interning for **runtime-defined agent metadata**.
 //!
 //! `AgentType` is `Copy` and threaded by value through ~900 call sites, and

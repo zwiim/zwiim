@@ -1,3 +1,4 @@
+// Modified from upstream Apache-2.0 source; see NOTICE.
 //! Grok plan-mode approval ("exit plan mode") domain types.
 //!
 //! When a Grok session is in **plan mode** and the agent finishes planning, it
