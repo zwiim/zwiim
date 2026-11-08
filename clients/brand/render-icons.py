@@ -18,7 +18,7 @@ repo = here.parent.parent
 mark = (here / "zwiim-mark.svg").read_text()
 body = mark.split(">", 1)[1].rsplit("</svg>", 1)[0]
 
-TILE = "#0C0C0D"  # DESIGN.md `code`
+TILE = "#0D0E10"  # DESIGN.md `code`
 UNIT = 298
 
 
@@ -37,8 +37,7 @@ def tile(x, y, side, radius):
 
 
 def monochrome(content):
-    # Android themed icons: one color, alpha only. Eyes stay as visor holes.
-    content = re.sub(r'<rect x="1(29|54)"[^>]*/>', "", content)
+    # Android themed icons: one color, alpha only. The gap keeps the dot apart.
     return re.sub(r'fill="#[0-9A-Fa-f]{6}"|stroke="#[0-9A-Fa-f]{6}"',
                   lambda m: m.group(0).split("=")[0] + '="#FFFFFF"', content)
 

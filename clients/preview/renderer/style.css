@@ -1,24 +1,24 @@
 /* Colours, type and spacing from DESIGN.md (dark default, light variant). */
 :root {
   color-scheme: dark light;
-  --bg: #131314;
-  --surface: #1c1c1d;
-  --fg: #eeeef0;
-  --mut: #929296;
+  --bg: #121416;
+  --surface: #1e2123;
+  --fg: #dfe1e3;
+  --mut: #a3a6a9;
   --line: rgba(255, 255, 255, 0.07);
-  --accent: #9c96f8;
+  --accent: #6cb4f0;
   --err: #ff6467;
 }
 
 @media (prefers-color-scheme: light) {
   :root {
     --bg: #ffffff;
-    --surface: #f7f7f8;
-    --fg: #0a0a0b;
-    --mut: #6e6e73;
+    --surface: #eff1f4;
+    --fg: #101214;
+    --mut: #5f6368;
     --line: rgba(0, 0, 0, 0.08);
-    --accent: #6b55df;
-    --err: #d93b3b;
+    --accent: #1a68b3;
+    --err: #c8343a;
   }
 }
 
