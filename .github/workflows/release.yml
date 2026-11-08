@@ -19,9 +19,6 @@
 #   ZWIIM_ANDROID_KEYSTORE_BASE64, ZWIIM_ANDROID_KEYSTORE_PASSWORD
 #       the Android release key (PKCS12 keystore, base64; alias "zwiim") and
 #       its password: signs the APK
-#   ZWIIM_RELEASES_TOKEN
-#       fine-grained token with Contents read/write on the public releases
-#       repository (scripts/release/lib.mjs REPOSITORY), where it publishes
 # Repository variables (public values):
 #   ZWIIM_RELEASE_PUBKEY    the release key's public half (compiled in)
 #   ZWIIM_APPLE_TEAM_ID     the permanent Apple Team ID (compiled in)
@@ -88,7 +85,6 @@ jobs:
             *) echo "::error::APPLE_SIGNING_IDENTITY is not a Developer ID of team ZWIIM_APPLE_TEAM_ID"; exit 1 ;;
           esac
           case "$ZWIIM_CLOUD_URL" in https://*) ;; *) echo "::error::ZWIIM_CLOUD_URL must be https"; exit 1 ;; esac
-          test -n "${{ secrets.ZWIIM_RELEASES_TOKEN != '' && 'set' || '' }}" || { echo "::error::secret ZWIIM_RELEASES_TOKEN is not set"; exit 1; }
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
@@ -225,7 +221,7 @@ jobs:
 
       - name: Publish (refuses an existing version)
         env:
-          GH_TOKEN: ${{ secrets.ZWIIM_RELEASES_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/release/publish.mjs --dir dist
 
       - name: Remove the signing keychain

@@ -36,7 +36,7 @@ use tauri_plugin_updater::UpdaterExt;
 
 /// The release public key (Tauri form), compiled in by the release build.
 pub const RELEASE_PUBKEY: Option<&str> = option_env!("ZWIIM_RELEASE_PUBKEY");
-const DEFAULT_RELEASES_URL: &str = "https://github.com/Ashish1101/zwiim-releases/releases";
+const DEFAULT_RELEASES_URL: &str = "https://github.com/zwiim/zwiim/releases";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn release_key() -> Option<&'static str> {

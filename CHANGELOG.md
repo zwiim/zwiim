@@ -12,7 +12,7 @@ have their own versions and are listed under Compatibility.
 - Repository settings can import setup, run and archive scripts from a repository's Conductor settings. `$CONDUCTOR_*` variables become their `$ZWIIM_*` equivalents, and scripts already set are kept.
 
 ### Changed
-- None.
+- Updates and downloads now come from the releases of `zwiim/zwiim`, and the app icon is the new Zwiim mark.
 
 ### Fixed
 - None.

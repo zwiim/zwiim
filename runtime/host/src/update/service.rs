@@ -39,7 +39,7 @@ use crate::adapters::install::Fetch;
 
 /// Where releases are published. Overridable at build time and, for
 /// rehearsals, at run time: the signature, not the origin, is the trust.
-const DEFAULT_RELEASES_URL: &str = "https://github.com/Ashish1101/zwiim-releases/releases";
+const DEFAULT_RELEASES_URL: &str = "https://github.com/zwiim/zwiim/releases";
 const RELEASES_URL_ENV: &str = "ZWIIM_RELEASE_URL";
 /// `off` disables the periodic check (tests, air-gapped installs).
 const CHECK_ENV: &str = "ZWIIM_UPDATE_CHECK";

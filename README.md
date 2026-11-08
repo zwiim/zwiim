@@ -28,7 +28,7 @@ worktrees, then approve, follow and answer them from your Mac or your phone.
 ## Install
 
 Download the latest Desktop build from
-[Releases](https://github.com/zwiim/zwiim-releases/releases). Then, to use your
+[Releases](https://github.com/zwiim/zwiim/releases). Then, to use your
 phone, sign in on both devices and scan the pairing QR code on your Mac.
 
 ## How it works

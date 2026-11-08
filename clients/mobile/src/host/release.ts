@@ -11,7 +11,7 @@
 // phone. It only picks a link, and only App Store or Google Play links are
 // ever opened. The store verifies what it installs.
 
-export const DEFAULT_RELEASES_URL = "https://github.com/Ashish1101/zwiim-releases/releases";
+export const DEFAULT_RELEASES_URL = "https://github.com/zwiim/zwiim/releases";
 
 export type MobilePlatform = "ios" | "android";
 

@@ -4,7 +4,7 @@ Source of truth for the Zwiim mobile client (`clients/mobile`, Expo + React Nati
 Desktop shares the color tokens; see "Desktop alignment" at the end.
 
 Approved direction: variant A of the 2026-09-26 consultation (Now bar + approve
-from the list). Mockups: `~/.gstack/projects/Ashish1101-zwiim-v1/designs/mobile-system-20260926/`.
+from the list).
 
 ## Product Context
 

@@ -7,10 +7,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-// Releases are published to a public repository of their own (the source
-// stays private): Host and Desktop download from it without credentials.
-export const REPOSITORY = process.env.ZWIIM_RELEASE_REPOSITORY || "Ashish1101/zwiim-releases";
-export const SOURCE_REPOSITORY = process.env.GITHUB_REPOSITORY || "Ashish1101/zwiim-v1";
+export const SOURCE_REPOSITORY = process.env.GITHUB_REPOSITORY || "zwiim/zwiim";
+// Releases are published in the source repository, which is public: Host and
+// Desktop download from it without credentials.
+export const REPOSITORY = process.env.ZWIIM_RELEASE_REPOSITORY || SOURCE_REPOSITORY;
 
 export function fail(message) {
   console.error(`release: ${message}`);
