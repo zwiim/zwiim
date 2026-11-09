@@ -15,7 +15,7 @@ have their own versions and are listed under Compatibility.
 - Updates and downloads now come from the releases of `zwiim/zwiim`, and the app icon is the new Zwiim mark.
 
 ### Fixed
-- None.
+- Desktop no longer shows a session's turn twice when the agent saved part of it before the conversation loaded.
 
 ### Security
 - GitHub tokens and config-sync secrets now live in the OS keychain, not in `tokens.json`.

@@ -341,4 +341,62 @@ describe("SessionPanel", () => {
     });
     controller.dispose();
   });
+
+  it("shows a turn once when the history read during it already holds its start", async () => {
+    // Agents write their transcript as they go: a history read mid-turn has
+    // the prompt the live turn is answering, and the start of its reply.
+    const t = new FakeTransport();
+    const turn = (turn_id: string, role: "user" | "assistant", text: string) => ({
+      turn_id, role, blocks: [{ type: "text", text }], timestamp: "", completed_at: null, duration_ms: null, model: null, usage: null,
+    });
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        turn("t1", "user", "earlier question"),
+        turn("t2", "assistant", "earlier answer"),
+        turn("t3", "user", "fix the bug"),
+        turn("t4", "assistant", "Working on"),
+      ],
+    });
+    const client = new HostClient({ transport: t });
+    const controller = new HostController(client);
+    client.start();
+    await tick();
+
+    render(
+      <HostProvider value={controller}>
+        <SessionPanel workspaceId="w1" sessionId="s1" onSessionStarted={() => {}} />
+      </HostProvider>,
+    );
+    await tick();
+    await act(async () => {
+      t.frame({
+        type: "snapshot",
+        subscription_id: "sub-1",
+        session_id: "s1",
+        epoch: "e1",
+        event_seq: 3,
+        snapshot: {
+          status: "prompting",
+          live_message: { message_id: "m", role: "assistant", content: [{ type: "text", text: "Working on it" }] },
+          tool_calls: [],
+          pending_request: null,
+          pending_user_message: { message_id: "u", blocks: [{ type: "text", text: "fix the bug" }] },
+          last_error: null,
+          usage: null,
+          options: null,
+          commands: [],
+        },
+      });
+    });
+    await tick();
+
+    const text = screen.getByTestId("transcript").textContent ?? "";
+    expect(text).toContain("earlier question");
+    expect(text).toContain("earlier answer");
+    expect(text.split("fix the bug").length - 1).toBe(1);
+    expect(text).toContain("Working on it");
+    expect(text.split("Working on").length - 1).toBe(1);
+    controller.dispose();
+  });
 });

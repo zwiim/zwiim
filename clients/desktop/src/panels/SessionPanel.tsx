@@ -470,7 +470,14 @@ function OpenSession({
   const [kept] = useState<KeptState>(() => new Map());
   const scroller = useRef<HTMLDivElement>(null);
   const history = view?.history;
-  const turns = history ?? NO_TURNS;
+  // The history without the turn shown live: a history read during a turn can
+  // already hold its start, which the live turn draws.
+  const liveSent = view?.live.userMessage ?? null;
+  const settledSent = view?.settled?.userMessage ?? null;
+  const turns = useMemo(
+    () => (history ? historyBefore(history, [liveSent, settledSent]) : NO_TURNS),
+    [history, liveSent, settledSent],
+  );
   // What a new turn opens is kept under its message until the history has the
   // turn, then under its reply there, before that reply's row first draws. A
   // history read before the turn ended (back after it ended while away) waits
@@ -528,7 +535,7 @@ function OpenSession({
   const stopped = running ? null : stopReasonText(view?.lastStopReason ?? null);
   const [optionsBusy, setOptionsBusy] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
-  const footers = useMemo(() => new Map((history ? turnGroups(history) : []).map((g) => [g.end, g])), [history]);
+  const footers = useMemo(() => new Map(turnGroups(turns).map((g) => [g.end, g])), [turns]);
   const lastFooter = useMemo(() => Math.max(-1, ...footers.keys()), [footers]);
   const composerDraft = useRef(EMPTY_DRAFT);
   const [startingDraft] = useState(() => forkedDraft(sessionId));
@@ -555,7 +562,7 @@ function OpenSession({
     const out = new Map<number, TurnFork>();
     if (!canFork || removed || !history) return out;
     for (const [end, group] of footers) {
-      const forkTurn = forkTurnOf(history, group);
+      const forkTurn = forkTurnOf(turns, group);
       if (!forkTurn) continue;
       out.set(end, {
         turnId: forkTurn.turn_id,
@@ -567,14 +574,14 @@ function OpenSession({
       });
     }
     return out;
-  }, [canFork, removed, history, footers, lastFooter, forkDisabled, forkError, fork]);
+  }, [canFork, removed, history, turns, footers, lastFooter, forkDisabled, forkError, fork]);
   // A prompt already in the history while the agent still answers it has no
   // row yet, nor once it has finished until the history has the turn: that
   // live turn carries on the history's last.
   const tail = running ? view?.live : view?.settled;
   // So while a finished turn the history lacks carries on it, the history's
   // last turn reads unended too, with no footer.
-  const runningEnd = tail && !tail.userMessage && history?.length ? history.length - 1 : -1;
+  const runningEnd = tail && !tail.userMessage && turns.length ? turns.length - 1 : -1;
   // A run of tool calls it ends with folds with the live reply's first ones
   // there, and what that reply opens is kept as the history will key it;
   // not when a finished turn the history lacks comes between them.
@@ -977,6 +984,27 @@ function OpenSession({
 }
 
 const NO_TURNS: readonly HistoryTurn[] = [];
+
+/** What a message's blocks say and attach, to match a sent message with its turn in the history. */
+const sentKey = (blocks: readonly { type: string; text?: string; attachment_id?: string }[]) =>
+  blocks.map((b) => (b.type === "text" ? (b.text ?? "") : b.type === "attachment" ? `\u0000${b.attachment_id ?? ""}` : "")).join("").trim();
+
+/**
+ * The history without the turns shown live. An agent writes its transcript
+ * as it goes, so a history read during a turn can already hold the start of
+ * the turn the live view is showing: cut it at that turn's message.
+ */
+export function historyBefore(history: readonly HistoryTurn[], sent: readonly (PendingUserMessage | null)[]): readonly HistoryTurn[] {
+  let turns = history;
+  for (const message of sent) {
+    if (!message) continue;
+    const key = sentKey(message.blocks);
+    let at = turns.length - 1;
+    while (at >= 0 && turns[at]!.role !== "user") at--;
+    if (key && at >= 0 && sentKey(turns[at]!.blocks) === key) turns = turns.slice(0, at);
+  }
+  return turns;
+}
 const NO_FOLLOW_UPS: readonly QueuedFollowUp[] = [];
 
 /** A history row's height until it is measured, the space between rows (gap-5), and the rows mounted past the view. */
