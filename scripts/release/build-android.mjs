@@ -30,9 +30,13 @@ export const DEBUG_CERT_SHA256 = "fac61745dc0903786fb9ede62a962b399f7348f0bb6f89
 
 export const normalizeDigest = (d) => d.replace(/[:\s]/g, "").toLowerCase();
 
-/** The signer certificate digests `apksigner verify --print-certs` reports. */
+/** The distinct signer certificate digests `apksigner verify --print-certs`
+ * reports. Newer apksigner names a signer by its SDK range
+ * ("Signer (minSdkVersion=24, maxSdkVersion=32)") and can list one
+ * certificate once per range. */
 export function signerDigests(output) {
-  return [...output.matchAll(/^Signer #\d+ certificate SHA-256 digest: ([0-9a-f]+)$/gim)].map((m) => normalizeDigest(m[1]));
+  const found = output.matchAll(/^Signer (?:#\d+|\([^)]*\)) certificate SHA-256 digest: ([0-9a-f:]+)$/gim);
+  return [...new Set([...found].map((m) => normalizeDigest(m[1])))];
 }
 
 /** Why an APK signed by `digests` must not be published, or null. */
@@ -84,6 +88,7 @@ function main() {
   const problem = signerProblem(signerDigests(report));
   if (problem) {
     fs.rmSync(apk);
+    console.error(report);
     fail(problem);
   }
   console.log(apk);
