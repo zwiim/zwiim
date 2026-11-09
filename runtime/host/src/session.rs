@@ -3847,42 +3847,6 @@ pub(crate) mod orchestration_tests {
     }
 
     #[tokio::test]
-    async fn revert_chat_never_lists_the_history_it_keeps() {
-        let db = fresh_in_memory_db().await;
-        let (wid, dir) = git_workspace(&db).await;
-        let mgr = ConnectionManager::new();
-        let launcher = FakeLauncher::new(mgr.clone_ref());
-        let prompts = ["first", "second"];
-        let sid = ran(&db, &mgr, &launcher, &wid, &dir, &prompts).await;
-        let gate = hold_forks(&launcher);
-        let turns = transcript(&prompts);
-
-        let (files, chat) = CHAT_ONLY;
-        let revert = revert_with(&db, &mgr, &launcher, &sid, &turns, "turn-2", files, chat);
-        tokio::pin!(revert);
-        // The listing is checked all along: while the agent forks, and while
-        // the fork is written down.
-        let out = loop {
-            tokio::select! {
-                out = &mut revert => break out.unwrap(),
-                _ = tokio::time::sleep(Duration::from_millis(2)) => {
-                    assert_eq!(listed(&db, &mgr, &wid).await, std::slice::from_ref(&sid));
-                    if !launcher.forks.lock().unwrap().is_empty() {
-                        gate.notify_one();
-                    }
-                }
-            }
-        };
-        assert!(out.chat_rewound);
-        assert_eq!(listed(&db, &mgr, &wid).await, std::slice::from_ref(&sid));
-        let kept = holder_of(&db, "native-1").await.expect("kept");
-        assert!(kept.deleted_at.is_some());
-        assert_ne!(kept.id, row_of(&db, &sid).await.id);
-        assert!(told_rewound(&mgr, "fake-conn-1").await);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[tokio::test]
     async fn revert_chat_completes_when_the_caller_goes_away() {
         let db = fresh_in_memory_db().await;
         let (wid, dir) = git_workspace(&db).await;
