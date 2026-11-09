@@ -408,8 +408,15 @@ async fn run(p: &Provider) {
     assert_eq!(saved["connected"], true, "{saved}");
     assert_eq!(saved["method"], "api_key", "{saved}");
     assert_eq!(saved["saved_key"], true, "{saved}");
-    let workspace = host
+    let repository = host
         .ok("workspace.add", json!({"path": s.repo.to_string_lossy()}))
+        .await;
+    // Sessions run in a worktree, not in the repository folder.
+    let workspace = host
+        .ok(
+            "workspace.create_worktree",
+            json!({"workspace_id": repository["workspace_id"]}),
+        )
         .await;
     let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
 
