@@ -9,14 +9,42 @@ have their own versions and are listed under Compatibility.
 ## [Unreleased]
 
 ### Added
+- None.
+
+### Changed
+- None.
+
+### Fixed
+- None.
+
+### Security
+- None.
+
+### Compatibility
+- None.
+
+### Provider changes
+- None.
+
+### Migration notes
+- None.
+
+### Known limitations
+- None.
+
+## [0.1.0] - 2026-11-09
+
+### Added
 - Repository settings can import setup, run and archive scripts from a repository's Conductor settings. `$CONDUCTOR_*` variables become their `$ZWIIM_*` equivalents, and scripts already set are kept.
 
 ### Changed
-- Updates and downloads now come from the releases of `zwiim/zwiim`, and the app icon is the new Zwiim mark.
+- First public release. Updates and downloads now come from the releases of `zwiim/zwiim`, and the app icon is the new Zwiim mark.
+- Zwiim Cloud is now at `https://cloud.zwiim.com`.
 
 ### Fixed
 - Desktop no longer shows a session's turn twice when the agent saved part of it before the conversation loaded.
 - Tool titles and previews no longer garble a path that only contains the workspace path, such as a symlinked workspace's real path (`/privatesrc/...`) or a sibling folder (`/ws/repo-old`).
+- Long button labels on the phone wrap instead of being cut off.
 
 ### Security
 - GitHub tokens and config-sync secrets now live in the OS keychain, not in `tokens.json`.
@@ -35,9 +63,11 @@ have their own versions and are listed under Compatibility.
 - The Host moves existing `tokens.json` entries into the keychain at its first start and deletes the file once empty. An entry the keychain refuses stays in the file and is tried again next start.
 - Backups no longer carry these credentials, so a restored machine signs in to GitHub again.
 - A headless Host without a keychain keeps using `tokens.json` with `ZWIIM_HOST_KEY_STORE=file`.
+- Release candidates reach Zwiim Cloud at its old address and lose remote access when it moves. Install 0.1.0 on the Mac and the phone, then pair the phone again.
 
 ### Known limitations
-- None.
+- The Mac app runs on Apple Silicon only.
+- The iOS app is not public yet.
 
 ## [0.1.0-rc.15] - 2026-11-07
 
