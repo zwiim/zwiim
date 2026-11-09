@@ -46,7 +46,7 @@ jobs:
       matrix:
         provider: ${{ fromJSON((inputs.provider && inputs.provider != 'both') && format('["{0}"]', inputs.provider) || '["claude","codex"]') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Credentials present
