@@ -1,6 +1,6 @@
 # Zwiim Privacy Policy
 
-Last updated: [DATE]
+Last updated: 9 November 2026
 
 This policy explains what data Zwiim handles, where it goes, and what you can
 do about it. Zwiim is run by Ashish Kumar Shakya ("we", "us"). Contact:

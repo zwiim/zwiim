@@ -1,6 +1,6 @@
 # Zwiim Terms of Service
 
-Last updated: [DATE]
+Last updated: 9 November 2026
 
 These terms cover your use of the Zwiim account and Zwiim Cloud, the hosted
 service that lets your devices reach your computer ("the Service"). Zwiim is
