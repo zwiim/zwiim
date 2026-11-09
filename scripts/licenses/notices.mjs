@@ -18,7 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { fetchGh, ghDependencyNotices, GH_VERSION } from "../gh/fetch.mjs";
+import { committedGhNotices, GH_VERSION } from "../gh/fetch.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const check = process.argv.includes("--check");
@@ -157,10 +157,16 @@ function incorporated() {
 }
 
 /** The pinned GitHub CLI: one entry for the notice, and its dependencies for the gate. */
-async function ghNotices() {
-  const triple = execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/^host: (\S+)$/m)[1];
-  const { bin, license } = await fetchGh(triple);
-  const deps = ghDependencyNotices(bin).trim();
+function ghNotices() {
+  // Read from the tree rather than downloaded, so the check works offline.
+  const { version, license, dependencies } = committedGhNotices();
+  if (version !== GH_VERSION) {
+    fail(
+      `third_party/gh holds the texts of gh ${version ?? "(no version)"}, but scripts/gh/fetch.mjs pins ${GH_VERSION}: ` +
+        "run node scripts/gh/fetch.mjs --update-notices",
+    );
+  }
+  const deps = dependencies.trim();
   // `name (version) - license - url` per dependency, before the license texts.
   const gated = [...deps.matchAll(/^(\S+) \(([^)]+)\) - (\S+) - \S+$/gm)].map(([, name, version, l]) => ({
     id: `${name}@${version}`,
@@ -170,7 +176,7 @@ async function ghNotices() {
   const entry = {
     id: `GitHub CLI ${GH_VERSION} (https://github.com/cli/cli)`,
     license: "MIT",
-    text: `${fs.readFileSync(license, "utf8").trim()}\n\n${deps}`,
+    text: `${license.trim()}\n\n${deps}`,
   };
   return { entry, gated };
 }
@@ -230,7 +236,7 @@ const mobileNpm = npmNotices([
   [root, "clients/sdk"],
   [root, "clients/preview"],
 ]);
-const gh = await ghNotices();
+const gh = ghNotices();
 gate([...rust, ...desktopNpm, ...mobileNpm, ...gh.gated]);
 
 write(
