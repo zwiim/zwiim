@@ -29,6 +29,14 @@ default = []
 # tests. Uncompiled in release builds.
 test-utils = []
 
+[lints.rust]
+# Upstream code still carries `tauri-runtime` and browser cfg blocks. They
+# never compile here; declaring the values keeps them from flooding the build
+# with `unexpected cfg` warnings.
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(feature, values("tauri-runtime", "browser-child", "browser-smoke"))',
+] }
+
 [[bin]]
 name = "zwiim-host"
 path = "src/bin/zwiim_host.rs"
