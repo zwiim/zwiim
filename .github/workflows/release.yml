@@ -138,7 +138,7 @@ jobs:
           codesign --verify --strict --verbose=2 target/release/zwiim-power-helper
           scripts/release/check-host-signature.sh target/release/zwiim-power-helper com.zwiim.power-helper
           (cd target/release && zip -q "$RUNNER_TEMP/host-notarize.zip" zwiim-host zwiim-mcp gh)
-          xcrun notarytool submit "$RUNNER_TEMP/host-notarize.zip" \
+          scripts/release/retry.sh xcrun notarytool submit "$RUNNER_TEMP/host-notarize.zip" \
             --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
       - name: Package the Host
         run: node scripts/release/package-host.mjs --bin-dir target/release --target "$TARGET" --out dist
@@ -166,13 +166,13 @@ jobs:
           # launchd runs the power helper as root from the plist that names it.
           scripts/release/check-host-signature.sh "$APP/Contents/MacOS/zwiim-power-helper" com.zwiim.power-helper
           test -f "$APP/Contents/Library/LaunchDaemons/com.zwiim.power-helper.plist"
-          xcrun stapler validate "$APP"
-          spctl --assess --type execute --verbose=2 "$APP"
+          scripts/release/retry.sh xcrun stapler validate "$APP"
+          scripts/release/retry.sh spctl --assess --type execute --verbose=2 "$APP"
           DMG=$(ls target/release/bundle/dmg/*.dmg)
           # The app inside is notarized by the bundler; the disk image itself too.
-          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
-          xcrun stapler staple "$DMG"
-          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+          scripts/release/retry.sh xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          scripts/release/retry.sh xcrun stapler staple "$DMG"
+          scripts/release/retry.sh spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
       - name: Collect Desktop artifacts
         run: |
           V=$(cat VERSION)
