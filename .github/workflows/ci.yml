@@ -37,7 +37,7 @@ jobs:
 
   licenses:
     name: Licences and third-party notices
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -52,13 +52,13 @@ jobs:
       - run: npm ci
       - run: npm ci
         working-directory: clients/mobile
-      - run: cargo install --locked cargo-about
+      - run: cargo install --locked cargo-about --version 0.9.2 --features cli
       - name: Notices are current and no shipped package is copyleft
         run: node scripts/licenses/notices.mjs --check
 
   rust:
     name: Host, Cloud, Desktop shell (Rust)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -137,7 +137,7 @@ jobs:
   rehearsal:
     name: Release rehearsal (update, rollback, compatibility)
     if: github.event_name == 'push'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
