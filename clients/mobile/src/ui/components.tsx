@@ -159,7 +159,8 @@ export function Button({
         styles.button,
         {
           backgroundColor: look.bg,
-          height: tall ? 48 : 40,
+          // A minimum, not a height: a long label wraps instead of being cut off.
+          minHeight: tall ? 48 : 40,
           opacity: disabled ? 0.4 : pressed ? PRESSED_OPACITY : 1,
           transform: [{ scale: pressed && !off ? PRESSED_SCALE : 1 }],
         },
@@ -567,11 +568,12 @@ const styles = StyleSheet.create({
     minWidth: 44,
     borderRadius: radius.md,
     paddingHorizontal: space.lg,
+    paddingVertical: space.sm,
     alignItems: "center",
     justifyContent: "center",
   },
   buttonRow: { flexDirection: "row", alignItems: "center", gap: space.sm },
-  buttonText: { fontFamily: fonts.sansMedium },
+  buttonText: { fontFamily: fonts.sansMedium, flexShrink: 1, textAlign: "center" },
   flex: { flex: 1 },
   scrim: { backgroundColor: "rgba(0,0,0,0.45)" },
   sheet: {

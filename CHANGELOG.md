@@ -16,6 +16,7 @@ have their own versions and are listed under Compatibility.
 
 ### Fixed
 - Desktop no longer shows a session's turn twice when the agent saved part of it before the conversation loaded.
+- Tool titles and previews no longer garble a path that only contains the workspace path, such as a symlinked workspace's real path (`/privatesrc/...`) or a sibling folder (`/ws/repo-old`).
 
 ### Security
 - GitHub tokens and config-sync secrets now live in the OS keychain, not in `tokens.json`.

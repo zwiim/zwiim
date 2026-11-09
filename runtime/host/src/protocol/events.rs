@@ -75,12 +75,34 @@ pub(crate) fn scrub(text: &str) -> String {
 }
 
 /// Paths under `root` (the session's workspace directory) become relative to
-/// it; `root` itself becomes `.`.
+/// it; `root` itself becomes `.`. Only a path that starts at the root counts:
+/// the root inside a longer path (a symlinked root's real path) or a sibling
+/// named like it (`/ws/repo-old`) stays as it is.
 pub(crate) fn relativize(text: &str, root: Option<&str>) -> String {
-    match root.map(|r| r.trim_end_matches('/')).filter(|r| !r.is_empty()) {
-        Some(root) => text.replace(&format!("{root}/"), "").replace(root, "."),
-        None => text.to_string(),
+    let Some(root) = root.map(|r| r.trim_end_matches('/')).filter(|r| !r.is_empty()) else {
+        return text.to_string();
+    };
+    let in_path = |c: char| c.is_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '~');
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(root) {
+        let after = &rest[at + root.len()..];
+        let starts = rest[..at].chars().next_back().is_none_or(|c| !in_path(c));
+        out.push_str(&rest[..at]);
+        match after.chars().next() {
+            Some('/') if starts => rest = &after[1..],
+            next if starts && next.is_none_or(|c| !in_path(c)) => {
+                out.push('.');
+                rest = after;
+            }
+            _ => {
+                out.push_str(root);
+                rest = after;
+            }
+        }
     }
+    out.push_str(rest);
+    out
 }
 
 /// A tool-call title as clients see it: Zwiim's Git tools by their readable
@@ -1457,6 +1479,21 @@ pub(crate) mod tests {
         assert_eq!(v[1]["blocks"][1]["tool_call_id"], "toolu_1");
         assert_eq!(v[1]["blocks"][2]["tool_call_id"], "toolu_1");
         assert_eq!(v[1]["usage"]["output_tokens"], 2);
+    }
+
+    #[test]
+    fn relativize_only_shortens_paths_that_start_at_the_root() {
+        let root = Some("/ws/repo");
+        assert_eq!(relativize("Write /ws/repo/src/a.rs", root), "Write src/a.rs");
+        assert_eq!(relativize(r#"{"file_path":"/ws/repo/src/a.rs"}"#, root), r#"{"file_path":"src/a.rs"}"#);
+        assert_eq!(relativize("cd /ws/repo && ls", root), "cd . && ls");
+        assert_eq!(relativize("/ws/repo", root), ".");
+        // The root inside a longer path is not the workspace: a symlinked
+        // root's real path (macOS `/tmp` is `/private/tmp`) stays whole.
+        assert_eq!(relativize("Write /private/ws/repo/src/a.rs", root), "Write /private/ws/repo/src/a.rs");
+        // Nor is a sibling whose name starts with the root's.
+        assert_eq!(relativize("ls /ws/repo-old/x /ws/repo2", root), "ls /ws/repo-old/x /ws/repo2");
+        assert_eq!(relativize("diff /ws/repo/a /ws/repo/b", root), "diff a b");
     }
 
     #[test]
