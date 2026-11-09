@@ -85,6 +85,12 @@ test("only an APK signed by Zwiim's pinned key is published", () => {
   assert.match(signerProblem(signerDigests("DOES NOT VERIFY\n"), ours), /found 0/);
 });
 
+test("signers named by SDK range count once per certificate", () => {
+  const ranged = (min, max) => `Signer (minSdkVersion=${min}, maxSdkVersion=${max}) certificate SHA-256 digest: ${RELEASE_CERT_SHA256}\n`;
+  assert.deepEqual(signerDigests(ranged(24, 32) + ranged(33, 2147483647)), [RELEASE_CERT_SHA256]);
+  assert.equal(signerProblem(signerDigests(ranged(24, 2147483647))), null);
+});
+
 test("the pinned Android certificate is the one in use", () => {
   const report = `Signer #1 certificate SHA-256 digest: ${RELEASE_CERT_SHA256}\n`;
   assert.equal(signerProblem(signerDigests(report)), null);
