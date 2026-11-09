@@ -551,7 +551,15 @@ async fn run(p: &Provider) {
         .and_then(|m| m.modified())
         .ok();
     let restart = host.ok("host.restart", json!({"mode": "when_idle"})).await;
-    assert_eq!(restart["state"], "restarting", "{restart}");
+    // An agent may still be settling after its turn: the Host then restarts
+    // as soon as it is idle.
+    assert!(
+        matches!(
+            restart["state"].as_str(),
+            Some("restarting" | "restart_pending")
+        ),
+        "{restart}"
+    );
     let host = Host::wait(&s.data, &mut child, written).await;
     let history = host
         .ok("session.history", json!({"session_id": session_id}))
