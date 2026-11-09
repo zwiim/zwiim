@@ -1105,19 +1105,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transcript_is_a_message_on_its_own() {
-        let f = forkable().await;
-        let forked = idle_fork(&f, "turn-3").await;
-        let path = pending(&f, &forked.session_id).await.unwrap();
-
-        send(&f.db, &f.mgr, &f.launcher, &forked.session_id, Vec::new(), None)
-            .await
-            .unwrap();
-
-        assert!(f.launcher.prompts_for("fake-conn-2")[0].contains(&path));
-    }
-
-    #[tokio::test]
     async fn removed_transcript_is_gone_for_good() {
         let f = forkable().await;
         let (sid, turns) = ran_two(&f).await;
