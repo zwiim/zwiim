@@ -408,8 +408,15 @@ async fn run(p: &Provider) {
     assert_eq!(saved["connected"], true, "{saved}");
     assert_eq!(saved["method"], "api_key", "{saved}");
     assert_eq!(saved["saved_key"], true, "{saved}");
-    let workspace = host
+    let repository = host
         .ok("workspace.add", json!({"path": s.repo.to_string_lossy()}))
+        .await;
+    // Sessions run in a worktree, not in the repository folder.
+    let workspace = host
+        .ok(
+            "workspace.create_worktree",
+            json!({"workspace_id": repository["workspace_id"]}),
+        )
         .await;
     let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
 
@@ -544,7 +551,15 @@ async fn run(p: &Provider) {
         .and_then(|m| m.modified())
         .ok();
     let restart = host.ok("host.restart", json!({"mode": "when_idle"})).await;
-    assert_eq!(restart["state"], "restarting", "{restart}");
+    // An agent may still be settling after its turn: the Host then restarts
+    // as soon as it is idle.
+    assert!(
+        matches!(
+            restart["state"].as_str(),
+            Some("restarting" | "restart_pending")
+        ),
+        "{restart}"
+    );
     let host = Host::wait(&s.data, &mut child, written).await;
     let history = host
         .ok("session.history", json!({"session_id": session_id}))
