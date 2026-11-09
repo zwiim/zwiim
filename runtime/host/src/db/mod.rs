@@ -95,9 +95,7 @@ pub async fn init_database(
     let mut opts = ConnectOptions::new(db_url);
     opts.max_connections(5)
         .min_connections(1)
-        // Unit tests run thousands of databases at once on small CI
-        // runners, where a 10 s wait for a pooled connection can lapse.
-        .connect_timeout(Duration::from_secs(if cfg!(test) { 60 } else { 10 }))
+        .connect_timeout(Duration::from_secs(10))
         .idle_timeout(Duration::from_secs(300))
         .sqlx_logging(false);
     let conn = Database::connect(opts).await?;
