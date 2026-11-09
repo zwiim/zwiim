@@ -32,10 +32,12 @@ export const normalizeDigest = (d) => d.replace(/[:\s]/g, "").toLowerCase();
 
 /** The distinct signer certificate digests `apksigner verify --print-certs`
  * reports. Newer apksigner names a signer by its SDK range
- * ("Signer (minSdkVersion=24, maxSdkVersion=32)") and can list one
- * certificate once per range. */
+ * ("Signer (minSdkVersion=24, maxSdkVersion=32)") or by scheme
+ * ("V2 Signer:"), and can list one certificate more than once. */
 export function signerDigests(output) {
-  const found = output.matchAll(/^Signer (?:#\d+|\([^)]*\)) certificate SHA-256 digest: ([0-9a-f:]+)$/gim);
+  const found = output.matchAll(
+    /^(?:Signer (?:#\d+|\([^)]*\))|V\d+(?:\.\d+)? Signer:) certificate SHA-256 digest: ([0-9a-f:]+)$/gim,
+  );
   return [...new Set([...found].map((m) => normalizeDigest(m[1])))];
 }
 

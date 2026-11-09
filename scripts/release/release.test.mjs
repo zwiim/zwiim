@@ -91,6 +91,17 @@ test("signers named by SDK range count once per certificate", () => {
   assert.equal(signerProblem(signerDigests(ranged(24, 2147483647))), null);
 });
 
+test("signers named by scheme are read", () => {
+  const report = [
+    "V2 Signer: certificate DN: CN=Zwiim, O=Zwiim",
+    `V2 Signer: certificate SHA-256 digest: ${RELEASE_CERT_SHA256}`,
+    `V3 Signer: certificate SHA-256 digest: ${RELEASE_CERT_SHA256}`,
+    "",
+  ].join("\n");
+  assert.deepEqual(signerDigests(report), [RELEASE_CERT_SHA256]);
+  assert.equal(signerProblem(signerDigests(report)), null);
+});
+
 test("the pinned Android certificate is the one in use", () => {
   const report = `Signer #1 certificate SHA-256 digest: ${RELEASE_CERT_SHA256}\n`;
   assert.equal(signerProblem(signerDigests(report)), null);
