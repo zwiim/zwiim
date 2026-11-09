@@ -6,26 +6,34 @@
 //! code path serves the desktop Tauri commands, the Axum web handlers, and a
 //! future headless scheduler (which would pass `EventEmitter::Noop`).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use chrono::Utc;
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
+use sea_orm::DatabaseConnection;
 use sea_orm_migration::MigratorTrait;
-use tokio_util::sync::CancellationToken;
 
-use crate::app_error::{AppCommandError, BACKUP_I18N_KEY_NEWER_VERSION, BACKUP_I18N_KEY_UNKNOWN_FORMAT};
+use crate::app_error::{BACKUP_I18N_KEY_NEWER_VERSION, BACKUP_I18N_KEY_UNKNOWN_FORMAT};
 use crate::db::migration::Migrator;
-use crate::web::event_bridge::{emit_event, EventEmitter};
 
-use super::archive::ArchiveBuilder;
-use super::crypto;
-use super::external;
-use super::manifest::{
-    BackupManifest, BackupPhase, BackupProgress, BACKUP_FORMAT_VERSION, BACKUP_KIND,
-    BACKUP_PROGRESS_EVENT,
+use super::manifest::{BackupManifest, BACKUP_FORMAT_VERSION, BACKUP_KIND};
+use super::sections::LiveRoots;
+
+// Creating a backup is reachable only from the desktop Tauri commands (and
+// tests), which the headless Host does not compile.
+#[cfg(any(test, feature = "tauri-runtime"))]
+use {
+    super::archive::ArchiveBuilder,
+    super::cancelled_error,
+    super::crypto,
+    super::external,
+    super::manifest::{BackupPhase, BackupProgress, BACKUP_PROGRESS_EVENT},
+    super::sections::{self, SectionKind},
+    crate::app_error::AppCommandError,
+    crate::web::event_bridge::{emit_event, EventEmitter},
+    chrono::Utc,
+    sea_orm::{ConnectionTrait, DbBackend, Statement},
+    std::path::PathBuf,
+    tokio_util::sync::CancellationToken,
 };
-use super::sections::{self, LiveRoots, SectionKind};
-use super::cancelled_error;
 
 /// Options that shape a backup.
 #[derive(Debug, Clone, Default)]
@@ -51,6 +59,7 @@ pub struct BackupInputs<'a> {
 /// Build a backup archive at `dest_path`. Emits [`BACKUP_PROGRESS_EVENT`]
 /// throughout and honors `cancel`. Writes to a sibling `.part` file and renames
 /// on success so a crash never leaves a half-written backup at `dest_path`.
+#[cfg(any(test, feature = "tauri-runtime"))]
 pub(crate) async fn create_backup_core(
     inputs: BackupInputs<'_>,
     options: BackupOptions,
@@ -197,6 +206,7 @@ pub(crate) async fn create_backup_core(
 /// Scan a backup for external transcript entries whose live target already
 /// exists. Called only when the user opts to restore to original locations,
 /// so the UI can surface conflicts before any write.
+#[cfg(feature = "tauri-runtime")]
 pub(crate) async fn scan_external_conflicts_core(
     zip_path: &Path,
 ) -> Result<Vec<super::external::ExternalConflict>, AppCommandError> {
@@ -208,6 +218,7 @@ pub(crate) async fn scan_external_conflicts_core(
 
 /// Run `VACUUM INTO` to produce a transactionally-consistent, defragmented
 /// single-file copy of the live DB — sidesteps the WAL `-wal`/`-shm` sidecars.
+#[cfg(any(test, feature = "tauri-runtime"))]
 pub(crate) async fn snapshot_db_to(
     conn: &DatabaseConnection,
     dest: &Path,
@@ -226,6 +237,7 @@ pub(crate) async fn snapshot_db_to(
 
 /// Plaintext bytes the archive is about to hold, so the progress bar is not
 /// stuck in the indeterminate state for the whole run. Stat-only.
+#[cfg(any(test, feature = "tauri-runtime"))]
 fn total_plaintext_bytes(live_roots: &LiveRoots, db_snapshot: &Path, include_external: bool) -> u64 {
     fn dir_bytes(root: &Path, exclude: &dyn Fn(&Path) -> bool) -> u64 {
         walkdir::WalkDir::new(root)
@@ -263,6 +275,7 @@ fn total_plaintext_bytes(live_roots: &LiveRoots, db_snapshot: &Path, include_ext
 /// Private scratch root under the data dir, created `0700` on Unix. Shared
 /// with the server-mode export staging area, which `cleanup_transient_dirs`
 /// already wipes at startup.
+#[cfg(any(test, feature = "tauri-runtime"))]
 pub(crate) fn scratch_root(data_dir: &Path) -> Result<PathBuf, AppCommandError> {
     let root = data_dir.join(super::restore::EXPORT_TMP_DIR);
     std::fs::create_dir_all(&root).map_err(AppCommandError::io)?;
@@ -287,6 +300,7 @@ pub(crate) fn evaluate_compat(manifest: &BackupManifest) -> (bool, Option<String
     (true, None)
 }
 
+#[cfg(any(test, feature = "tauri-runtime"))]
 fn latest_migration_name() -> String {
     Migrator::migrations()
         .last()
@@ -298,12 +312,14 @@ fn known_migration(name: &str) -> bool {
     Migrator::migrations().iter().any(|m| m.name() == name)
 }
 
+#[cfg(any(test, feature = "tauri-runtime"))]
 fn with_part_suffix(dest: &Path) -> PathBuf {
     let mut s = dest.as_os_str().to_owned();
     s.push(".part");
     PathBuf::from(s)
 }
 
+#[cfg(any(test, feature = "tauri-runtime"))]
 fn emit(
     emitter: &EventEmitter,
     op_id: &str,

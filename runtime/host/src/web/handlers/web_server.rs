@@ -2,7 +2,7 @@
 use std::sync::Arc;
 
 use axum::{extract::Extension, Json};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::app_error::AppCommandError;
 use crate::app_state::AppState;

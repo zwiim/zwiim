@@ -1,6 +1,5 @@
 // Modified from upstream Apache-2.0 source; see NOTICE.
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

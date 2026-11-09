@@ -20,15 +20,24 @@ use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tokio_util::sync::CancellationToken;
 
 use crate::app_error::{AppCommandError, BACKUP_I18N_KEY_ALREADY_PENDING};
 
-use super::archive;
-use super::core;
-use super::manifest::{BackupManifest, BackupPhase, BackupProgress, BACKUP_PROGRESS_EVENT};
-use super::sections::{self, LiveRoots, SectionKind, SectionPolicy};
-use crate::web::event_bridge::{emit_event, EventEmitter};
+use super::manifest::BackupManifest;
+use super::sections::{self, LiveRoots};
+
+// Staging a restore is reachable only from the desktop Tauri commands (and
+// tests), which the headless Host does not compile. Applying one at startup
+// stays live.
+#[cfg(any(test, feature = "tauri-runtime"))]
+use {
+    super::archive,
+    super::core,
+    super::manifest::{BackupPhase, BackupProgress, BACKUP_PROGRESS_EVENT},
+    super::sections::{SectionKind, SectionPolicy},
+    crate::web::event_bridge::{emit_event, EventEmitter},
+    tokio_util::sync::CancellationToken,
+};
 
 /// Marker committing a staged restore; consumed on next startup.
 pub const PENDING_MARKER: &str = ".zwiim-restore-pending.json";
@@ -189,6 +198,7 @@ fn legacy_section_ids() -> Vec<String> {
 /// External transcripts are deliberately NOT handled here. They are dispatched
 /// by the command layer via [`dispatch_external_after_stage`], which is the
 /// only place with a handle on the live ACP connections it has to lock out.
+#[cfg(any(test, feature = "tauri-runtime"))]
 pub(crate) async fn stage_restore_core(
     zip_path: &Path,
     data_dir: &Path,
@@ -301,6 +311,7 @@ pub(crate) async fn stage_restore_core(
 /// When agents are live it downgrades to `SideLocation` rather than refusing:
 /// nothing is lost, the user is told where the files went, and the call still
 /// reports success + `needs_restart`.
+#[cfg(any(test, feature = "tauri-runtime"))]
 pub(crate) async fn dispatch_external_after_stage(
     staged: &mut StagedRestore,
     data_dir: &Path,
@@ -365,6 +376,7 @@ pub(crate) async fn dispatch_external_after_stage(
 /// Agents whose process could still be holding a transcript open. A torn-down
 /// or errored connection has no writer behind it, so counting it would
 /// downgrade a restore that was perfectly safe.
+#[cfg(any(test, feature = "tauri-runtime"))]
 async fn live_agent_names(
     connections: &crate::acp::manager::ConnectionManager,
 ) -> Vec<String> {
@@ -379,6 +391,7 @@ async fn live_agent_names(
 /// Agents that are currently connected, for the advisory prompt shown while
 /// the user is still choosing a mode. Read-only and purely a courtesy — the
 /// correctness guarantee is [`dispatch_external_after_stage`]'s lock, not this.
+#[cfg(feature = "tauri-runtime")]
 pub(crate) async fn active_agent_names(
     connections: &crate::acp::manager::ConnectionManager,
 ) -> Vec<String> {
@@ -986,6 +999,7 @@ fn sync_dir(_dir: &Path) -> std::io::Result<()> {
 /// are owned by the agent CLIs, so OriginalLocations never overwrites an
 /// existing file unless the caller authorized it (`Overwrite`); skipped paths
 /// are returned for the UI to report.
+#[cfg(any(test, feature = "tauri-runtime"))]
 async fn handle_external(
     staging_root: &Path,
     data_dir: &Path,
@@ -1029,6 +1043,7 @@ async fn handle_external(
     }
 }
 
+#[cfg(any(test, feature = "tauri-runtime"))]
 fn write_pending_marker(
     data_dir: &Path,
     staging_root: &Path,
@@ -1073,6 +1088,7 @@ fn commit_pending_marker(
 /// Sections an archive declares, normalized to this binary's table. An archive
 /// written before the field existed is normalized to the legacy three — the
 /// only sections that format ever managed — rather than to the full table.
+#[cfg(any(test, feature = "tauri-runtime"))]
 fn manifest_section_ids(manifest: &BackupManifest) -> Vec<String> {
     match manifest.managed_sections.as_deref() {
         Some(list) => sections::normalize_section_ids(list),
@@ -1087,6 +1103,7 @@ fn already_pending_error() -> AppCommandError {
     .with_i18n(BACKUP_I18N_KEY_ALREADY_PENDING, Default::default())
 }
 
+#[cfg(any(test, feature = "tauri-runtime"))]
 fn reject_to_error(manifest: &BackupManifest, reason: Option<&str>) -> AppCommandError {
     use crate::app_error::BACKUP_I18N_KEY_NEWER_VERSION;
     match reason {
@@ -1097,6 +1114,7 @@ fn reject_to_error(manifest: &BackupManifest, reason: Option<&str>) -> AppComman
     }
 }
 
+#[cfg(any(test, feature = "tauri-runtime"))]
 fn sanitize_stamp(rfc3339: &str) -> String {
     rfc3339
         .chars()
@@ -1104,10 +1122,12 @@ fn sanitize_stamp(rfc3339: &str) -> String {
         .collect()
 }
 
+#[cfg(any(test, feature = "tauri-runtime"))]
 fn emit(emitter: &EventEmitter, op_id: &str, phase: BackupPhase) {
     emit_event(emitter, BACKUP_PROGRESS_EVENT, BackupProgress::phase(op_id, phase));
 }
 
+#[cfg(any(test, feature = "tauri-runtime"))]
 fn emit_progress(
     emitter: &EventEmitter,
     op_id: &str,
@@ -1130,6 +1150,7 @@ fn emit_progress(
     );
 }
 
+#[cfg(any(test, feature = "tauri-runtime"))]
 fn spawn_err(e: tokio::task::JoinError) -> AppCommandError {
     AppCommandError::task_execution_failed("Restore task failed").with_detail(e.to_string())
 }
