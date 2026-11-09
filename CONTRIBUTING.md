@@ -31,7 +31,7 @@ npm test --workspace clients/desktop
 node scripts/licenses/notices.mjs --check
 ```
 
-The notices check needs `cargo install --locked cargo-about`.
+The notices check needs `cargo install --locked cargo-about --version 0.9.2`.
 
 ## Project rules
 

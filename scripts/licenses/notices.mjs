@@ -88,7 +88,7 @@ function rustNotices() {
   try {
     execFileSync("cargo", ["about", "--version"], { stdio: "ignore" });
   } catch {
-    fail("cargo-about is not installed: cargo install --locked cargo-about");
+    fail("cargo-about is not installed: cargo install --locked cargo-about --version 0.9.2");
   }
   const out = execFileSync(
     "cargo",
