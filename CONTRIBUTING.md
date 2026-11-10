@@ -33,6 +33,14 @@ node scripts/licenses/notices.mjs --check
 
 The notices check needs `cargo install --locked cargo-about --version 0.9.2 --features cli`.
 
+## Release stats
+
+`node scripts/stats.mjs` prints, for each release, the downloads of the `.dmg`,
+the `.apk`, the updater `.app.tar.gz` and `release.json` (fetched by every
+Desktop update check, so it roughly tracks active installs), then stars, forks
+and the last 14 days of traffic. It needs an authenticated `gh`; traffic is
+skipped without push access. Pass `owner/repo` to read another repository.
+
 ## Project rules
 
 - **The Host owns the truth.** Clients send commands and render events. They do
