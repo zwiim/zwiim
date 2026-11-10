@@ -6,7 +6,7 @@ use axum::{
     http::{StatusCode, Uri},
     middleware::{self, Next},
     response::IntoResponse,
-    routing::{any, get, post},
+    routing::{get, post},
     Json, Router,
 };
 

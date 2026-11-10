@@ -20,8 +20,10 @@ use std::collections::BTreeMap;
 
 use crate::app_error::{
     AppCommandError, BACKUP_I18N_KEY_CANCELLED, BACKUP_I18N_KEY_CORRUPTED,
-    BACKUP_I18N_KEY_DISK_SPACE, BACKUP_I18N_KEY_NEWER_VERSION, BACKUP_I18N_KEY_UNKNOWN_FORMAT,
+    BACKUP_I18N_KEY_DISK_SPACE, BACKUP_I18N_KEY_UNKNOWN_FORMAT,
 };
+#[cfg(any(test, feature = "tauri-runtime"))]
+use crate::app_error::BACKUP_I18N_KEY_NEWER_VERSION;
 
 /// Map an I/O error to a friendlier "out of disk space" error when it is an
 /// `ENOSPC` (Unix 28) / `ERROR_DISK_FULL` (Windows 112) / `ERROR_HANDLE_DISK_FULL`
@@ -55,6 +57,7 @@ pub(crate) fn corrupted_error() -> AppCommandError {
 }
 
 /// The backup was taken by a newer app version whose schema we can't represent.
+#[cfg(any(test, feature = "tauri-runtime"))]
 pub(crate) fn newer_version_error(backup_version: &str, app_version: &str) -> AppCommandError {
     let mut params = BTreeMap::new();
     params.insert("backupVersion".to_string(), backup_version.to_string());
