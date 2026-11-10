@@ -5,8 +5,11 @@
 // their own `gh` rather than relying on one the user installed.
 //
 // Downloads once into `target/gh/<version>/<triple>/` (`gh` and `LICENSE`).
+// Its license texts are committed under `third_party/gh/` for the notices;
+// `--update-notices` refreshes them after `GH_VERSION` changes.
 //
 //   node scripts/gh/fetch.mjs --target aarch64-apple-darwin --out target/release
+//   node scripts/gh/fetch.mjs --update-notices
 
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -65,9 +68,34 @@ export async function fetchGh(target) {
   return { bin, license };
 }
 
-/** `gh licenses`: the third-party licenses built into this `gh`. */
-export function ghDependencyNotices(bin) {
-  return execFileSync(bin, ["licenses"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+// The pinned `gh`'s license texts, committed so the notices need no download.
+const NOTICES_DIR = path.join(root, "third_party/gh");
+const VERSION_LINE = /^- \*\*Version:\*\* (\S+)$/m;
+
+/**
+ * The committed texts: `{ version, license, dependencies }`, where `version` is
+ * the `gh` they were taken from and `dependencies` is its `gh licenses` output.
+ */
+export function committedGhNotices() {
+  const read = (file) => fs.readFileSync(path.join(NOTICES_DIR, file), "utf8");
+  return {
+    version: read("PROVENANCE.md").match(VERSION_LINE)?.[1],
+    license: read("LICENSE"),
+    dependencies: read("DEPENDENCIES.txt"),
+  };
+}
+
+/** Refresh the committed texts from the pinned `gh`. */
+async function updateNotices(target) {
+  const { bin, license } = await fetchGh(target);
+  fs.copyFileSync(license, path.join(NOTICES_DIR, "LICENSE"));
+  const deps = execFileSync(bin, ["licenses"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  fs.writeFileSync(path.join(NOTICES_DIR, "DEPENDENCIES.txt"), deps);
+  const provenance = path.join(NOTICES_DIR, "PROVENANCE.md");
+  const text = fs.readFileSync(provenance, "utf8");
+  if (!VERSION_LINE.test(text)) throw new Error(`${provenance}: no "- **Version:**" line`);
+  fs.writeFileSync(provenance, text.replace(VERSION_LINE, `- **Version:** ${GH_VERSION}`));
+  console.log(`updated ${path.relative(root, NOTICES_DIR)} for gh ${GH_VERSION}`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -76,6 +104,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     return i > 0 ? process.argv[i + 1] : undefined;
   };
   const target = arg("target") ?? execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/^host: (\S+)$/m)[1];
+  if (process.argv.includes("--update-notices")) {
+    await updateNotices(target);
+    process.exit(0);
+  }
   const { bin } = await fetchGh(target);
   const out = arg("out");
   if (out) {
