@@ -2,10 +2,10 @@
 // previews, diffs and terminals render in Geist Mono on the `code` surface,
 // line by line, and scroll sideways instead of wrapping unless asked.
 
-import { forwardRef, useState, type ReactElement, type Ref } from "react";
+import { forwardRef, useEffect, useRef, useState, type ReactElement, type Ref } from "react";
 import { FlatList, Pressable, ScrollView, StyleSheet, Text, View, type FlatListProps } from "react-native";
 import { fileSegments, revealStep, type FileLine } from "@zwiim/sdk";
-import { highlight, type SyntaxKind } from "../files/model";
+import { highlight, markSpans, type SyntaxKind } from "../files/model";
 import { T } from "./components";
 import { ChevronsUpDown, Icon } from "./icons";
 import { MONO_MAX_SCALE, space, type, useTheme, type Palette } from "./tokens";
@@ -69,9 +69,34 @@ function syntaxColor(kind: SyntaxKind, theme: Palette): string {
   }
 }
 
-/** A file's lines, numbered in `faint`, colored by `ext` (`ts`, `md`…). */
-export function CodeView({ lines, wrap, ext, footer }: { lines: string[]; wrap: boolean; ext: string; footer?: ReactElement | null }) {
+/** Find's matches in one line, the one stepped to `current`. */
+export type LineMarks = ReadonlyMap<number, readonly { start: number; end: number; current: boolean }[]>;
+
+/**
+ * A file's lines, numbered in `faint`, colored by `ext` (`ts`, `md`…). Find's
+ * `marks` are tinted `accent`, and the list scrolls to line `scrollTo`.
+ */
+export function CodeView({
+  lines,
+  wrap,
+  ext,
+  footer,
+  marks,
+  scrollTo,
+}: {
+  lines: string[];
+  wrap: boolean;
+  ext: string;
+  footer?: ReactElement | null;
+  marks?: LineMarks;
+  scrollTo?: number | null;
+}) {
   const theme = useTheme();
+  const list = useRef<FlatList<string>>(null);
+  useEffect(() => {
+    if (scrollTo == null || scrollTo >= lines.length) return;
+    list.current?.scrollToIndex({ index: scrollTo, viewPosition: 0.4, animated: true });
+  }, [scrollTo, lines.length]);
   const [cw, probe] = useCharWidth("mono");
   const digits = String(lines.length).length;
   const gutter = digits * cw + space.md * 2;
@@ -80,7 +105,9 @@ export function CodeView({ lines, wrap, ext, footer }: { lines: string[]; wrap: 
     <View style={[styles.flex, { backgroundColor: theme.code }]} testID="code-view">
       {probe}
       <WideList
+        ref={list}
         data={lines}
+        extraData={marks}
         wrap={wrap}
         width={Math.max(gutter + longest * cw + space.lg, 1)}
         keyExtractor={(_, i) => String(i)}
@@ -89,6 +116,11 @@ export function CodeView({ lines, wrap, ext, footer }: { lines: string[]; wrap: 
         contentContainerStyle={styles.codeContent}
         getItemLayout={wrap ? undefined : (_, i) => ({ length: LINE_HEIGHT, offset: LINE_HEIGHT * i + space.md, index: i })}
         ListFooterComponent={footer}
+        // Wrapped lines have no fixed height: jump near the line, then to it once it is laid out.
+        onScrollToIndexFailed={({ index, averageItemLength }) => {
+          list.current?.scrollToOffset({ offset: averageItemLength * index, animated: false });
+          setTimeout(() => list.current?.scrollToIndex({ index, viewPosition: 0.4, animated: true }), 50);
+        }}
         renderItem={({ item, index }) => (
           <View style={styles.codeLine}>
             <T variant="mono" color={theme.faint} style={[styles.tabular, styles.gutter, { width: gutter }]}>
@@ -96,8 +128,13 @@ export function CodeView({ lines, wrap, ext, footer }: { lines: string[]; wrap: 
             </T>
             <T variant="mono" style={wrap ? styles.flex : undefined}>
               {item
-                ? highlight(item, ext).map((span, i) => (
-                    <T key={i} variant="mono" color={syntaxColor(span.kind, theme)}>
+                ? markSpans(highlight(item, ext), marks?.get(index) ?? []).map((span, i) => (
+                    <T
+                      key={i}
+                      variant="mono"
+                      color={syntaxColor(span.kind, theme)}
+                      style={span.mark && { backgroundColor: `${theme.accent}${span.mark === "current" ? "73" : "2E"}` }}
+                    >
                       {span.text}
                     </T>
                   ))
