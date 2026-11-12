@@ -450,3 +450,114 @@ describe("find in a pdf", () => {
     controller.dispose();
   });
 });
+
+describe("replace in text files", () => {
+  function text(t: FakeTransport, path: string, content: string, extra: Record<string, unknown> = {}) {
+    t.handlers["files.read"] = () => ({ path, content, etag: "e1", mtime_ms: null, readonly: false, line_ending: "lf", ...extra });
+    t.handlers["files.write"] = () => ({ path, etag: "e2", mtime_ms: null, readonly: false, line_ending: "lf" });
+  }
+  const writes = (t: FakeTransport) => t.calls.filter((c) => c.op === "files.write").map((c) => c.params);
+  async function open(q: string, r: string) {
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show replace" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Find" }), { target: { value: q } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Replace with" }), { target: { value: r } });
+    await tick();
+  }
+
+  it("replaces one at a time and all, writing only on Save", async () => {
+    const t = new FakeTransport();
+    text(t, "a.json", '{"old": 1, "old_x": "old"}\r\n');
+    const controller = await mount(t, "a.json");
+    await open("old", "older");
+    expect(screen.getByTestId("find-count").textContent).toBe("1 of 3");
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+    await tick();
+    // The replacement holds the query; the next match is the one after it.
+    expect(screen.getByTestId("find-count").textContent).toBe("2 of 3");
+    expect(screen.getByText("edited")).toBeTruthy();
+    expect(writes(t)).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "Whole word" }));
+    await tick();
+    expect(screen.getByTestId("find-count").textContent).toBe("1 of 1");
+    fireEvent.click(screen.getByRole("button", { name: "Replace all" }));
+    await tick();
+    expect(screen.getByTestId("file-content").textContent).toContain('{"older": 1, "old_x": "older"}');
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await tick();
+    expect(writes(t)).toEqual([{ workspace_id: "w1", path: "a.json", content: '{"older": 1, "old_x": "older"}\r\n', etag: "e1" }]);
+    expect(screen.getByText("read-only")).toBeTruthy();
+    controller.dispose();
+  });
+
+  it("cancels every replacement, and keeps edits through a workspace change", async () => {
+    const t = new FakeTransport();
+    text(t, "a.txt", "one two\n");
+    const controller = await mount(t, "a.txt");
+    await open("one", "1");
+    fireEvent.click(screen.getByRole("button", { name: "Replace all" }));
+    await tick();
+    text(t, "a.txt", "one two three\n");
+    await t.feedEvent("workspace.diff_changed", { workspace_id: "w1" });
+    await tick();
+    expect(screen.getByTestId("file-content").textContent).toContain("1 two");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByTestId("file-content").textContent).toContain("one two three");
+    expect(writes(t)).toEqual([]);
+    controller.dispose();
+  });
+
+  it("refuses to overwrite a file that changed on disk", async () => {
+    const t = new FakeTransport();
+    text(t, "a.txt", "one\n");
+    t.handlers["files.write"] = () => {
+      throw new ZwiimClientError("file_changed", "File has changed on disk. Reload the file before saving.", 409);
+    };
+    const controller = await mount(t, "a.txt");
+    await open("one", "1");
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await tick();
+    expect(screen.getByText(/This file changed on disk/)).toBeTruthy();
+    expect(screen.getByTestId("file-content").textContent).toContain("1");
+    controller.dispose();
+  });
+
+  it("opens to replace on ⌘⌥F, leaving Markdown's preview for its source", async () => {
+    const t = new FakeTransport();
+    text(t, "a.md", "# Hi\n");
+    const controller = await mount(t, "a.md");
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    await tick();
+    fireEvent.keyDown(window, { key: "ƒ", code: "KeyF", metaKey: true, altKey: true, ctrlKey: false });
+    fireEvent.keyDown(window, { key: "h", ctrlKey: true });
+    await tick();
+    expect(screen.getByRole("textbox", { name: "Replace with" })).toBeTruthy();
+    expect(screen.queryByTestId("file-markdown")).toBeNull();
+    expect(screen.getByTestId("file-content")).toBeTruthy();
+    controller.dispose();
+  });
+
+  it("offers replace only for text it can save exactly", async () => {
+    for (const [content, extra] of [
+      ["caf�\n", {}],
+      ["a\n", { readonly: true }],
+    ] as const) {
+      const t = new FakeTransport();
+      text(t, "a.txt", content, extra);
+      const controller = await mount(t, "a.txt");
+      fireEvent.click(screen.getByRole("button", { name: "Find" }));
+      expect(screen.getByRole("textbox", { name: "Find" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Show replace" })).toBeNull();
+      controller.dispose();
+      cleanup();
+    }
+    const old = new FakeTransport();
+    old.handlers["host.hello"] = () => hostHello({ capabilities: hostHello().capabilities!.filter((c) => c !== "files.write") });
+    text(old, "a.txt", "a\n");
+    const controller = await mount(old, "a.txt");
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
+    expect(screen.queryByRole("button", { name: "Show replace" })).toBeNull();
+    controller.dispose();
+  });
+});

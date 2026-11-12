@@ -6,6 +6,7 @@ import {
   delimiterFor,
   findMatches,
   imageMime,
+  replaceMatches,
   parseDelimited,
   previewErrorMessage,
   previewKind,
@@ -260,12 +261,17 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
   const [mode, setMode] = useState<"rendered" | "source">("rendered");
   // A CSV/TSV being edited: the table, and the text and etag it was read at.
   const [editing, setEditing] = useState<{ table: DelimitedTable; source: string; etag: string } | null>(null);
+  // A text file changed by replace: the text and etag it was read at, and the text now.
+  const [textEdit, setTextEdit] = useState<{ source: string; etag: string; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
   const delimiter = delimiterFor(name);
   const canWrite = useHost((s) => hasCapability(s.connection.compat, "files.write"));
-  const dirty = useMemo(() => !!editing && serializeDelimited(editing.table) !== editing.source, [editing]);
+  const dirty = useMemo(
+    () => (editing ? serializeDelimited(editing.table) !== editing.source : !!textEdit && textEdit.text !== textEdit.source),
+    [editing, textEdit],
+  );
   const [preview, setPreview] = useState(false);
   const book = usePref(markdownStyle) === "book";
 
@@ -355,17 +361,19 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
 
   function stopEdit() {
     setEditing(null);
+    setTextEdit(null);
     setEditError(null);
     setStale(false);
   }
 
   async function save() {
-    if (!editing) return;
+    const edit = editing ?? textEdit;
+    if (!edit) return;
     setSaving(true);
     setEditError(null);
     try {
-      const content = serializeDelimited(editing.table);
-      await controller.client.request("files.write", { workspace_id: workspaceId, path, content, etag: editing.etag });
+      const content = editing ? serializeDelimited(editing.table) : textEdit!.text;
+      await controller.client.request("files.write", { workspace_id: workspaceId, path, content, etag: edit.etag });
       stopEdit();
       void refresh();
     } catch (e) {
@@ -379,19 +387,24 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
   const sheet = shown && "sheets" in shown ? shown.sheets[0] : undefined;
   const editable = !!delimiter && !!sheet && !sheet.truncated && canWrite;
   const markdown = isMarkdown(path) && !!shown && "text" in shown;
+  const read = shown && "text" in shown ? shown.text : null;
+  const text = read && (textEdit?.text ?? read.content);
+  // Replace saves the whole text back, so only text the Host read exactly
+  // (no U+FFFD standing in for bytes it could not decode) into a file it can write.
+  const replaceable = !!read && canWrite && !read.readonly && !read.content.includes("\uFFFD");
   // What find searches: the text as shown in lines, or the rendered page. A
   // page framed at its own origin cannot be searched from here.
-  const findText = shown && "text" in shown && !(preview && markdown) ? shown.text.content : null;
+  const findText = text !== null && !(preview && markdown) ? text : null;
   const findIn: "text" | "dom" | "pdf" | "page" | null =
     findText !== null
       ? "text"
       : shown && "pdf" in shown
         ? "pdf"
-      : shown && ("sheets" in shown || "word" in shown || ("text" in shown && preview && markdown))
-        ? "dom"
-        : shown && "html" in shown
-          ? "page"
-          : null;
+        : shown && ("sheets" in shown || "word" in shown || (read && preview && markdown))
+          ? "dom"
+          : shown && "html" in shown
+            ? "page"
+            : null;
   const find = useFind(active && !!findIn, root);
   const query = useDeferredValue(find.query);
   const matches = useMemo(
@@ -414,6 +427,24 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
     else pdf.closeFind();
   }, [pdf, find.open, query, find.options]);
   const count = findIn === "dom" ? domCount : findIn === "pdf" ? pdfFound?.total : matches.length;
+  // Replace works on the source: opening it leaves the rendered Markdown.
+  useEffect(() => {
+    if (find.replacing && preview && markdown && replaceable) setPreview(false);
+  }, [find.replacing, preview, markdown, replaceable]);
+
+  /** Replaces the current match, moving to the next, or every match. Nothing is written until Save. */
+  function replace(which: "current" | "all") {
+    if (!read || findText === null) return;
+    const i = at(find, matches.length);
+    const chosen = which === "all" ? matches : matches.slice(i, i + 1);
+    if (!chosen.length) return;
+    const next = replaceMatches(findText, chosen, find.replacement);
+    setTextEdit((e) => ({ source: e?.source ?? read.content, etag: e?.etag ?? read.etag, text: next }));
+    // The next match starts after the replacement, even one the replacement itself contains.
+    const after = chosen[0]!.start + find.replacement.length;
+    const left = findMatches(next, query, find.options).findIndex((m) => m.start >= after);
+    find.setCurrent(Math.max(0, left));
+  }
 
   return (
     <div ref={root} className="flex h-full min-h-0 flex-col" data-testid="file-view">
@@ -449,9 +480,9 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
             <Eye /> Preview
           </Button>
         )}
-        {shown && "text" in shown && <span className="shrink-0">read-only</span>}
+        {read && <span className="shrink-0">{textEdit ? "edited" : "read-only"}</span>}
         {findIn && (
-          <Button size="icon-sm" variant="ghost" title="Find" aria-label="Find" onClick={find.show}>
+          <Button size="icon-sm" variant="ghost" title="Find" aria-label="Find" onClick={() => find.show()}>
             <Search />
           </Button>
         )}
@@ -464,7 +495,7 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
         >
           <ExternalLink />
         </Button>
-        {editing ? (
+        {editing || textEdit ? (
           <>
             <Button size="xs" variant="ghost" onClick={stopEdit} disabled={saving}>
               Cancel
@@ -491,6 +522,7 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
           find={find}
           count={count}
           note={findIn === "page" ? "Switch to Source to search this page." : undefined}
+          onReplace={replaceable && (findIn === "text" || markdown) ? replace : undefined}
           {...(findIn === "pdf" && {
             current: Math.max(0, (pdfFound?.current ?? 1) - 1),
             onStep: (by: 1 | -1) => pdf?.find(query, find.options, by > 0 ? "next" : "previous"),
@@ -557,12 +589,12 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
         ) : shown && preview && markdown ? (
           <div className="min-h-0 flex-1 overflow-auto" data-testid="file-markdown">
             <Markdown
-              text={shown.text.content}
+              text={text ?? ""}
               className={book ? "markdown-book px-8 py-10" : "max-w-3xl px-6 py-4"}
             />
           </div>
         ) : shown ? (
-          <FileText text={shown.text.content} matches={matches} current={at(find, matches.length)} />
+          <FileText text={text ?? ""} matches={matches} current={at(find, matches.length)} />
         ) : (
           <PreviewLoading />
         )}
