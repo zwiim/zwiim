@@ -561,3 +561,64 @@ describe("replace in text files", () => {
     controller.dispose();
   });
 });
+
+describe("replace in csv and tsv", () => {
+  const enc = (text: string) => new TextEncoder().encode(text);
+  function editable(t: FakeTransport, path: string, text: string) {
+    serve(t, { [path]: enc(text) });
+    t.handlers["files.read"] = () => ({ path, content: text, etag: "e1", mtime_ms: null, readonly: false, line_ending: "lf" });
+    t.handlers["files.write"] = () => ({ path, etag: "e2", mtime_ms: null, readonly: false, line_ending: "lf" });
+  }
+  const writes = (t: FakeTransport) => t.calls.filter((c) => c.op === "files.write").map((c) => c.params);
+
+  it("starts editing when replace opens, and replaces cell by cell", async () => {
+    const t = new FakeTransport();
+    editable(t, "data.csv", 'name,qty\r\n"pens, red",2\r\ncups,pens\r\n');
+    const controller = await mount(t, "data.csv");
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Find" }), { target: { value: "pens" } });
+    await tick();
+    expect(screen.getByTestId("find-count").textContent).toBe("1 of 2");
+    fireEvent.click(screen.getByRole("button", { name: "Show replace" }));
+    await tick();
+    expect(screen.getByTestId("sheet-editor")).toBeTruthy();
+    expect([...screen.getByTestId("sheet-editor").querySelectorAll("mark")].map((m) => m.textContent)).toEqual(["pens", "pens"]);
+    fireEvent.change(screen.getByRole("textbox", { name: "Replace with" }), { target: { value: "a,b" } });
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+    await tick();
+    expect(screen.getByTestId("find-count").textContent).toBe("1 of 1");
+    fireEvent.click(screen.getByRole("button", { name: "Replace all" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await tick();
+    expect(writes(t)).toEqual([
+      { workspace_id: "w1", path: "data.csv", content: 'name,qty\r\n"a,b, red",2\r\ncups,"a,b"\r\n', etag: "e1" },
+    ]);
+    controller.dispose();
+  });
+
+  it("cancel leaves editing and the replace row closed", async () => {
+    const t = new FakeTransport();
+    editable(t, "list.tsv", "a\tb\n");
+    const controller = await mount(t, "list.tsv");
+    fireEvent.keyDown(window, { key: "h", ctrlKey: true });
+    await tick();
+    expect(screen.getByTestId("sheet-editor")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await tick();
+    expect(screen.queryByTestId("sheet-editor")).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Replace with" })).toBeNull();
+    expect(writes(t)).toEqual([]);
+    controller.dispose();
+  });
+
+  it("keeps find only for a sheet it cannot save", async () => {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["a"]]), "One");
+    const t = new FakeTransport();
+    serve(t, { "b.xlsx": new Uint8Array(XLSX.write(wb, { type: "array", bookType: "xlsx" })) });
+    const controller = await mount(t, "b.xlsx");
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
+    expect(screen.queryByRole("button", { name: "Show replace" })).toBeNull();
+    controller.dispose();
+  });
+});

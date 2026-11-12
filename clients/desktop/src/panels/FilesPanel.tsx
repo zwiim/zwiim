@@ -4,8 +4,10 @@ import { FolderIcon, fileIcon } from "@/components/FileIcon";
 import {
   delimitedEditable,
   delimiterFor,
+  findInTable,
   findMatches,
   imageMime,
+  replaceInTable,
   replaceMatches,
   parseDelimited,
   previewErrorMessage,
@@ -345,21 +347,28 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
     }
   }
 
-  async function startEdit() {
-    if (!delimiter) return;
+  /** Starts editing the CSV/TSV; false, with the reason shown, when it cannot be. */
+  async function startEdit(): Promise<boolean> {
+    if (!delimiter) return false;
     setEditError(null);
     try {
       const file = await controller.client.request("files.read", { workspace_id: workspaceId, path });
       const table = parseDelimited(file.content, delimiter);
-      if (!delimitedEditable(table))
-        return setEditError("Only files up to 1,000 rows and 100 columns can be edited here.");
+      if (!delimitedEditable(table)) {
+        setEditError("Only files up to 1,000 rows and 100 columns can be edited here.");
+        return false;
+      }
       setEditing({ table, source: file.content, etag: file.etag });
+      return true;
     } catch (e) {
       setEditError(errorMessage(e));
+      return false;
     }
   }
 
   function stopEdit() {
+    // Replace on a CSV/TSV edits it; left open, it would start editing again.
+    if (editing) find.setReplacing(false);
     setEditing(null);
     setTextEdit(null);
     setEditError(null);
@@ -395,8 +404,10 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
   // What find searches: the text as shown in lines, or the rendered page. A
   // page framed at its own origin cannot be searched from here.
   const findText = text !== null && !(preview && markdown) ? text : null;
-  const findIn: "text" | "dom" | "pdf" | "page" | null =
-    findText !== null
+  // A CSV/TSV being edited is searched cell by cell, the way replace changes it.
+  const findIn: "cells" | "text" | "dom" | "pdf" | "page" | null = editing
+    ? "cells"
+    : findText !== null
       ? "text"
       : shown && "pdf" in shown
         ? "pdf"
@@ -410,6 +421,10 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
   const matches = useMemo(
     () => (find.open && findText !== null ? findMatches(findText, query, find.options) : []),
     [find.open, findText, query, find.options],
+  );
+  const cellMatches = useMemo(
+    () => (find.open && editing ? findInTable(editing.table, query, find.options) : []),
+    [find.open, editing, query, find.options],
   );
   const domCount = useDomFind(content, find.open && findIn === "dom", query, find.options, find.current);
   // pdf.js finds, counts and keeps its own current match.
@@ -426,14 +441,26 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
     if (find.open && query) pdf.find(query, find.options);
     else pdf.closeFind();
   }, [pdf, find.open, query, find.options]);
-  const count = findIn === "dom" ? domCount : findIn === "pdf" ? pdfFound?.total : matches.length;
-  // Replace works on the source: opening it leaves the rendered Markdown.
+  const count =
+    findIn === "dom" ? domCount : findIn === "pdf" ? pdfFound?.total : findIn === "cells" ? cellMatches.length : matches.length;
+  // Replace works on the source: opening it leaves the rendered Markdown, and
+  // starts editing a CSV/TSV (or says why it cannot, closing the row again).
   useEffect(() => {
     if (find.replacing && preview && markdown && replaceable) setPreview(false);
   }, [find.replacing, preview, markdown, replaceable]);
+  const starting = useRef(false);
+  useEffect(() => {
+    if (!find.replacing || !editable || editing || starting.current) return;
+    starting.current = true;
+    void startEdit().then((ok) => {
+      starting.current = false;
+      if (!ok) find.setReplacing(false);
+    });
+  });
 
   /** Replaces the current match, moving to the next, or every match. Nothing is written until Save. */
   function replace(which: "current" | "all") {
+    if (editing) return replaceCells(which);
     if (!read || findText === null) return;
     const i = at(find, matches.length);
     const chosen = which === "all" ? matches : matches.slice(i, i + 1);
@@ -443,6 +470,21 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
     // The next match starts after the replacement, even one the replacement itself contains.
     const after = chosen[0]!.start + find.replacement.length;
     const left = findMatches(next, query, find.options).findIndex((m) => m.start >= after);
+    find.setCurrent(Math.max(0, left));
+  }
+
+  function replaceCells(which: "current" | "all") {
+    if (!editing) return;
+    const i = at(find, cellMatches.length);
+    const chosen = which === "all" ? cellMatches : cellMatches.slice(i, i + 1);
+    if (!chosen.length) return;
+    const table = replaceInTable(editing.table, chosen, find.replacement);
+    setEditing({ ...editing, table });
+    const { r, c, start } = chosen[0]!;
+    const after = start + find.replacement.length;
+    const left = findInTable(table, query, find.options).findIndex(
+      (m) => m.r > r || (m.r === r && (m.c > c || (m.c === c && m.start >= after))),
+    );
     find.setCurrent(Math.max(0, left));
   }
 
@@ -522,7 +564,7 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
           find={find}
           count={count}
           note={findIn === "page" ? "Switch to Source to search this page." : undefined}
-          onReplace={replaceable && (findIn === "text" || markdown) ? replace : undefined}
+          onReplace={(replaceable && (findIn === "text" || markdown)) || editing || editable ? replace : undefined}
           {...(findIn === "pdf" && {
             current: Math.max(0, (pdfFound?.current ?? 1) - 1),
             onStep: (by: 1 | -1) => pdf?.find(query, find.options, by > 0 ? "next" : "previous"),
@@ -577,7 +619,12 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
         ) : shown && "html" in shown ? (
           <HtmlView workspaceId={workspaceId} path={path} reloadKey={reloads} onError={onViewError} />
         ) : editing ? (
-          <SheetEditor table={editing.table} onChange={(table) => setEditing((e) => e && { ...e, table })} />
+          <SheetEditor
+            table={editing.table}
+            onChange={(table) => setEditing((e) => e && { ...e, table })}
+            matches={cellMatches}
+            current={at(find, cellMatches.length)}
+          />
         ) : shown && "sheets" in shown ? (
           <SheetView sheets={shown.sheets} />
         ) : shown && "word" in shown ? (

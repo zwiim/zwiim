@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findMatches, replaceMatches } from "../src";
+import { findInTable, findMatches, parseDelimited, replaceInTable, replaceMatches, serializeDelimited } from "../src";
 
 const spans = (text: string, ms: { start: number; end: number }[]) => ms.map((m) => text.slice(m.start, m.end));
 
@@ -50,5 +50,20 @@ describe("replaceMatches", () => {
     expect(replaceMatches(text, ms, "1")).toBe("1 two 1");
     expect(replaceMatches(text, ms.slice(1), "uno")).toBe("one two uno");
     expect(replaceMatches(text, [], "x")).toBe(text);
+  });
+});
+
+describe("findInTable / replaceInTable", () => {
+  it("finds within cells only and rewrites only the rows it changes", () => {
+    const table = parseDelimited('ab,c\n"a, b",x\nq,ab ab\n', ",");
+    expect(findInTable(table, "bc")).toEqual([]);
+    const ms = findInTable(table, "ab");
+    expect(ms.map(({ r, c, start }) => [r, c, start])).toEqual([
+      [0, 0, 0],
+      [2, 1, 0],
+      [2, 1, 3],
+    ]);
+    expect(serializeDelimited(replaceInTable(table, ms.slice(1), 'x,"y'))).toBe('ab,c\n"a, b",x\nq,"x,""y x,""y"\n');
+    expect(serializeDelimited(replaceInTable(table, findInTable(table, "a, b"), "z"))).toBe("ab,c\nz,x\nq,ab ab\n");
   });
 });

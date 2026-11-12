@@ -1,3 +1,5 @@
+import { setCell, type DelimitedTable } from "./delimited";
+
 /** How a find query matches. */
 export interface FindOptions {
   matchCase?: boolean;
@@ -43,4 +45,36 @@ export function replaceMatches(text: string, matches: readonly FindMatch[], repl
     at = m.end;
   }
   return out + text.slice(at);
+}
+
+/** A match in a table cell: `rows[r].cells[c].slice(start, end)`. */
+export interface CellMatch extends FindMatch {
+  r: number;
+  c: number;
+}
+
+/** Every match in the table's cells, row by row; a match never runs from one cell into the next. */
+export function findInTable(table: DelimitedTable, query: string, options: FindOptions = {}): CellMatch[] {
+  const out: CellMatch[] = [];
+  table.rows.forEach((row, r) =>
+    row.cells.forEach((cell, c) => {
+      for (const m of findMatches(cell, query, options)) out.push({ r, c, ...m });
+    }),
+  );
+  return out;
+}
+
+/** The table with each of `matches` (from `findInTable` on it) replaced; only rows it changes are rewritten. */
+export function replaceInTable(table: DelimitedTable, matches: readonly CellMatch[], replacement: string): DelimitedTable {
+  const cells = new Map<string, CellMatch[]>();
+  for (const m of matches) {
+    const key = `${m.r},${m.c}`;
+    cells.set(key, [...(cells.get(key) ?? []), m]);
+  }
+  let next = table;
+  for (const ms of cells.values()) {
+    const { r, c } = ms[0]!;
+    next = setCell(next, r, c, replaceMatches(table.rows[r]!.cells[c] ?? "", ms, replacement));
+  }
+  return next;
 }

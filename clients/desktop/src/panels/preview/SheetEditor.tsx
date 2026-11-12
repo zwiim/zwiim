@@ -1,18 +1,49 @@
-import { memo, useCallback, useRef, useState, type KeyboardEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Plus, Trash2 } from "lucide-react";
-import { addRow, deleteRow, delimitedWidth, setCell, type DelimitedRow, type DelimitedTable } from "@zwiim/preview";
+import {
+  addRow,
+  deleteRow,
+  delimitedWidth,
+  setCell,
+  type CellMatch,
+  type DelimitedRow,
+  type DelimitedTable,
+} from "@zwiim/preview";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 type Active = { r: number; c: number; row: DelimitedRow };
+/** A find match in one row: its cell, where it runs, and whether it is the current one. */
+type Mark = { c: number; start: number; end: number; current: boolean };
+const NO_MARKS: Mark[] = [];
 
 /**
  * A CSV/TSV as an editable grid. A cell opens on click and edits the table as
  * you type; Enter or Tab closes it, Escape puts the cell back. Changed rows are
- * tinted — only they are rewritten on save.
+ * tinted — only they are rewritten on save. Find's `matches` are marked, the
+ * `current` one scrolled to.
  */
-export function SheetEditor({ table, onChange }: { table: DelimitedTable; onChange: (table: DelimitedTable) => void }) {
+export function SheetEditor({
+  table,
+  onChange,
+  matches = [],
+  current = 0,
+}: {
+  table: DelimitedTable;
+  onChange: (table: DelimitedTable) => void;
+  matches?: CellMatch[];
+  current?: number;
+}) {
   const [active, setActive] = useState<Active | null>(null);
+  const box = useRef<HTMLDivElement>(null);
+  const marks = useMemo(() => {
+    const out = new Map<number, Mark[]>();
+    matches.forEach((m, i) => out.set(m.r, [...(out.get(m.r) ?? []), { c: m.c, start: m.start, end: m.end, current: i === current }]));
+    return out;
+  }, [matches, current]);
+  useEffect(() => {
+    box.current?.querySelector("[data-current]")?.scrollIntoView?.({ block: "center", inline: "nearest" });
+  }, [marks]);
   const width = Math.max(1, delimitedWidth(table));
   // Row callbacks stay stable so typing re-renders only the open row.
   const latest = useRef({ table, onChange, width, active });
@@ -55,7 +86,7 @@ export function SheetEditor({ table, onChange }: { table: DelimitedTable; onChan
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto p-4" data-testid="sheet-editor">
+    <div ref={box} className="min-h-0 flex-1 overflow-auto p-4" data-testid="sheet-editor">
       <table className="border-collapse font-mono text-xs">
         <tbody>
           {table.rows.map((row, r) => (
@@ -65,6 +96,7 @@ export function SheetEditor({ table, onChange }: { table: DelimitedTable; onChan
               r={r}
               width={width}
               activeCol={active?.r === r ? active.c : -1}
+              marks={marks.get(r) ?? NO_MARKS}
               onOpen={open}
               onEdit={edit}
               onClose={close}
@@ -85,6 +117,7 @@ const EditorRow = memo(function EditorRow({
   r,
   width,
   activeCol,
+  marks,
   onOpen,
   onEdit,
   onClose,
@@ -94,6 +127,7 @@ const EditorRow = memo(function EditorRow({
   r: number;
   width: number;
   activeCol: number;
+  marks: Mark[];
   onOpen: (r: number, c: number) => void;
   onEdit: (r: number, c: number, value: string) => void;
   onClose: (restore: boolean, move?: number) => void;
@@ -137,10 +171,28 @@ const EditorRow = memo(function EditorRow({
           </td>
         ) : (
           <td key={c} className="hover:bg-muted min-w-12 cursor-text border px-2 py-1 align-top whitespace-pre" onClick={() => onOpen(r, c)}>
-            {value}
+            {marked(value, marks.filter((m) => m.c === c))}
           </td>
         );
       })}
     </tr>
   );
 });
+
+/** A cell's text split around its find marks. */
+function marked(value: string, marks: Mark[]) {
+  if (!marks.length) return value;
+  const parts: React.ReactNode[] = [];
+  let from = 0;
+  for (const m of marks) {
+    parts.push(value.slice(from, m.start));
+    parts.push(
+      <mark key={m.start} className={cn("text-foreground rounded-xs", m.current ? "bg-brand/40" : "bg-brand-halo")} data-current={m.current || undefined}>
+        {value.slice(m.start, m.end)}
+      </mark>,
+    );
+    from = m.end;
+  }
+  parts.push(value.slice(from));
+  return parts;
+}
