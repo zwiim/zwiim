@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ExternalLink, ChevronRight, Eye, Loader2, Pencil, RefreshCw } from "lucide-react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, ExternalLink, ChevronRight, Eye, Loader2, Pencil, RefreshCw, Search } from "lucide-react";
 import { FolderIcon, fileIcon } from "@/components/FileIcon";
 import {
   delimitedEditable,
   delimiterFor,
+  findMatches,
   imageMime,
   parseDelimited,
   previewErrorMessage,
   previewKind,
   serializeDelimited,
   type DelimitedTable,
+  type FindMatch,
 } from "@zwiim/preview";
 import { readSheet, type Sheet } from "@zwiim/preview/sheet";
 import { renderWord } from "@zwiim/preview/word";
@@ -30,6 +32,7 @@ import { markdownStyle } from "@/lib/prefs";
 import { usePref } from "@/lib/use-pref";
 import { cn } from "@/lib/utils";
 import { ListSkeleton } from "./DiffPanel";
+import { at, FindBar, useFind } from "./preview/FindBar";
 import { HtmlView } from "./preview/HtmlView";
 import { PdfView } from "./preview/PdfView";
 import { PreviewFailure, PreviewLoading } from "./preview/PreviewState";
@@ -232,9 +235,14 @@ type Shown =
   | { html: true }
   | { none: true };
 
-/** One file's contents, read-only, in its own tab; what has no preview opens in its own app. */
-export function FileView({ workspaceId, path }: { workspaceId: string; path: string }) {
+/**
+ * One file's contents, read-only, in its own tab; what has no preview opens in
+ * its own app. `active` is whether its tab is the one showing.
+ */
+export function FileView({ workspaceId, path, active = true }: { workspaceId: string; path: string; active?: boolean }) {
   const controller = useController();
+  const root = useRef<HTMLDivElement>(null);
+  const find = useFind(active, root);
   const [shown, setShown] = useState<Shown | null>(null);
   const [failure, setFailure] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
@@ -369,9 +377,17 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
   const sheet = shown && "sheets" in shown ? shown.sheets[0] : undefined;
   const editable = !!delimiter && !!sheet && !sheet.truncated && canWrite;
   const markdown = isMarkdown(path) && !!shown && "text" in shown;
+  // What find searches: the text as shown in lines.
+  const findText = shown && "text" in shown && !(preview && markdown) ? shown.text.content : null;
+  const findable = findText !== null;
+  const query = useDeferredValue(find.query);
+  const matches = useMemo(
+    () => (find.open && findText !== null ? findMatches(findText, query, find.options) : []),
+    [find.open, findText, query, find.options],
+  );
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="file-view">
+    <div ref={root} className="flex h-full min-h-0 flex-col" data-testid="file-view">
       <div className="text-muted-foreground flex h-10 shrink-0 items-center gap-2 border-b px-4 text-xs">
         <span className="text-foreground min-w-0 flex-1 truncate font-mono">{path}</span>
         {page && (
@@ -405,6 +421,11 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
           </Button>
         )}
         {shown && "text" in shown && <span className="shrink-0">read-only</span>}
+        {findable && (
+          <Button size="icon-sm" variant="ghost" title="Find" aria-label="Find" onClick={find.show}>
+            <Search />
+          </Button>
+        )}
         <Button
           size="icon-sm"
           variant="ghost"
@@ -436,6 +457,7 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
           </>
         )}
       </div>
+      {find.open && findable && <FindBar find={find} count={matches.length} />}
       {stale && (
         <div className="flex items-center gap-3 border-b px-4 py-2 text-xs" role="alert">
           <p className="text-destructive flex-1">
@@ -500,7 +522,7 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
           />
         </div>
       ) : shown ? (
-        <FileText text={shown.text.content} />
+        <FileText text={shown.text.content} matches={matches} current={at(find, matches.length)} />
       ) : (
         <PreviewLoading />
       )}
@@ -508,20 +530,68 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
   );
 }
 
-function FileText({ text }: { text: string }) {
-  const lines = (text.endsWith("\n") ? text.slice(0, -1) : text).split(/\r?\n/);
+/** Text in numbered lines, with find's `matches` marked and the `current` one scrolled to. */
+function FileText({ text, matches = [], current = 0 }: { text: string; matches?: FindMatch[]; current?: number }) {
+  const box = useRef<HTMLDivElement>(null);
+  const lines = useMemo(() => {
+    const out: { start: number; text: string }[] = [];
+    const body = text.endsWith("\n") ? text.slice(0, -1) : text;
+    const re = /\r?\n/g;
+    let start = 0;
+    for (let m = re.exec(body); m; m = re.exec(body)) {
+      out.push({ start, text: body.slice(start, m.index) });
+      start = m.index + m[0].length;
+    }
+    out.push({ start, text: body.slice(start) });
+    return out;
+  }, [text]);
+  // Each line's matches, in order: lines and matches both run forward.
+  const marks = useMemo(() => {
+    const out = new Map<number, number[]>();
+    let line = 0;
+    matches.forEach((m, i) => {
+      while (line + 1 < lines.length && lines[line + 1]!.start <= m.start) line++;
+      out.set(line, [...(out.get(line) ?? []), i]);
+    });
+    return out;
+  }, [matches, lines]);
+  useEffect(() => {
+    box.current?.querySelector("[data-current]")?.scrollIntoView?.({ block: "center", inline: "nearest" });
+  }, [matches, current]);
   return (
-    <div className="min-h-0 flex-1 overflow-auto" data-testid="file-content">
+    <div ref={box} className="min-h-0 flex-1 overflow-auto" data-testid="file-content">
       <table className="border-collapse font-mono text-xs leading-5">
         <tbody>
           {lines.map((line, i) => (
             <tr key={i}>
               <td className="text-muted-foreground border-r px-2 text-right align-top select-none">{i + 1}</td>
-              <td className="px-3 whitespace-pre">{line || " "}</td>
+              <td className="px-3 whitespace-pre">
+                {marks.has(i) ? <Marked line={line} matches={matches} at={marks.get(i)!} current={current} /> : line.text || " "}
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
     </div>
   );
+}
+
+/** One line split around its matches (`at`, indexes into `matches`). */
+function Marked({ line, matches, at, current }: { line: { start: number; text: string }; matches: FindMatch[]; at: number[]; current: number }) {
+  const parts: React.ReactNode[] = [];
+  let from = 0;
+  for (const i of at) {
+    const m = matches[i]!;
+    const start = m.start - line.start;
+    const end = Math.min(m.end - line.start, line.text.length);
+    parts.push(line.text.slice(from, start));
+    parts.push(
+      <mark key={i} className={cn("text-foreground rounded-xs", i === current ? "bg-brand/40" : "bg-brand-halo")} data-current={i === current || undefined}>
+        {line.text.slice(start, end)}
+      </mark>,
+    );
+    from = end;
+  }
+  parts.push(line.text.slice(from));
+  return <>{parts}</>;
 }

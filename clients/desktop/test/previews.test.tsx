@@ -292,3 +292,60 @@ describe("editing csv and tsv", () => {
     controller.dispose();
   });
 });
+
+describe("find", () => {
+  function text(t: FakeTransport, path: string, content: string) {
+    t.handlers["files.read"] = () => ({ path, content, etag: "e1", mtime_ms: null, readonly: false, line_ending: "lf" });
+  }
+  const marks = () => [...screen.getByTestId("file-content").querySelectorAll("mark")].map((m) => m.textContent);
+  const current = () => screen.getByTestId("file-content").querySelector("mark[data-current]")?.textContent;
+
+  it("opens on ⌘F, counts and marks matches, and steps through them", async () => {
+    const t = new FakeTransport();
+    text(t, "notes.md", "Alpha beta\nalpha\r\ngamma alphabet\n");
+    const controller = await mount(t, "notes.md");
+    expect(screen.queryByRole("textbox", { name: "Find" })).toBeNull();
+    fireEvent.keyDown(window, { key: "f", metaKey: true, ctrlKey: true });
+    const box = screen.getByRole("textbox", { name: "Find" });
+    fireEvent.change(box, { target: { value: "alpha" } });
+    await tick();
+    expect(screen.getByTestId("find-count").textContent).toBe("1 of 3");
+    expect(marks()).toEqual(["Alpha", "alpha", "alpha"]);
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(screen.getByTestId("find-count").textContent).toBe("2 of 3");
+    fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
+    fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
+    expect(screen.getByTestId("find-count").textContent).toBe("3 of 3");
+    expect(current()).toBe("alpha");
+    fireEvent.click(screen.getByRole("button", { name: "Whole word" }));
+    await tick();
+    expect(screen.getByTestId("find-count").textContent).toBe("1 of 2");
+    fireEvent.click(screen.getByRole("button", { name: "Match case" }));
+    await tick();
+    expect(marks()).toEqual(["alpha"]);
+    fireEvent.change(box, { target: { value: "zeta" } });
+    await tick();
+    expect(screen.getByTestId("find-count").textContent).toBe("No results");
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(screen.queryByRole("textbox", { name: "Find" })).toBeNull();
+    expect(screen.getByTestId("file-content").querySelectorAll("mark").length).toBe(0);
+    controller.dispose();
+  });
+
+  it("opens from the header, and leaves ⌘F to text fields elsewhere", async () => {
+    const t = new FakeTransport();
+    text(t, "a.json", '{"key": 1}\n');
+    const controller = await mount(t, "a.json");
+    const other = document.createElement("input");
+    document.body.append(other);
+    other.focus();
+    fireEvent.keyDown(other, { key: "f", metaKey: true, ctrlKey: true });
+    expect(screen.queryByRole("textbox", { name: "Find" })).toBeNull();
+    other.remove();
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Find" }), { target: { value: "key" } });
+    await tick();
+    expect(marks()).toEqual(["key"]);
+    controller.dispose();
+  });
+});
