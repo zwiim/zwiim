@@ -86,12 +86,25 @@ export function useFind(active: boolean, root: RefObject<HTMLElement | null>): F
 /**
  * The find row under a preview's header. `count` is the number of matches,
  * undefined while they are being counted; `note` replaces the field where the
- * preview cannot be searched.
+ * preview cannot be searched. A preview that tracks its own current match
+ * (pdf.js) passes it as `current` and moves it in `onStep`.
  */
-export function FindBar({ find, count, note }: { find: Find; count: number | undefined; note?: string }) {
+export function FindBar({
+  find,
+  count,
+  note,
+  current: own,
+  onStep,
+}: {
+  find: Find;
+  count: number | undefined;
+  note?: string;
+  current?: number;
+  onStep?: (by: 1 | -1) => void;
+}) {
   const n = count ?? 0;
-  const current = at(find, n);
-  const step = (by: number) => n && find.setCurrent((current + by + n) % n);
+  const current = own ?? at(find, n);
+  const step = (by: 1 | -1) => n && (onStep ? onStep(by) : find.setCurrent((current + by + n) % n));
   const toggle = (key: keyof FindOptions, label: string, Icon: typeof Search) => (
     <Button
       size="icon-sm"

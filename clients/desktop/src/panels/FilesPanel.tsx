@@ -13,6 +13,7 @@ import {
   type DelimitedTable,
   type FindMatch,
 } from "@zwiim/preview";
+import type { PdfHandle } from "@zwiim/preview/pdf";
 import { readSheet, type Sheet } from "@zwiim/preview/sheet";
 import { renderWord } from "@zwiim/preview/word";
 import {
@@ -381,9 +382,11 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
   // What find searches: the text as shown in lines, or the rendered page. A
   // page framed at its own origin cannot be searched from here.
   const findText = shown && "text" in shown && !(preview && markdown) ? shown.text.content : null;
-  const findIn: "text" | "dom" | "page" | null =
+  const findIn: "text" | "dom" | "pdf" | "page" | null =
     findText !== null
       ? "text"
+      : shown && "pdf" in shown
+        ? "pdf"
       : shown && ("sheets" in shown || "word" in shown || ("text" in shown && preview && markdown))
         ? "dom"
         : shown && "html" in shown
@@ -396,7 +399,21 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
     [find.open, findText, query, find.options],
   );
   const domCount = useDomFind(content, find.open && findIn === "dom", query, find.options, find.current);
-  const count = findIn === "dom" ? domCount : matches.length;
+  // pdf.js finds, counts and keeps its own current match.
+  const [pdf, setPdf] = useState<PdfHandle | null>(null);
+  const [pdfFound, setPdfFound] = useState<{ current: number; total: number } | null>(null);
+  useEffect(() => {
+    if (!pdf) return;
+    pdf.onFindCount((current, total) => setPdfFound({ current, total }));
+    return () => pdf.onFindCount(null);
+  }, [pdf]);
+  useEffect(() => {
+    if (!pdf) return;
+    setPdfFound(null);
+    if (find.open && query) pdf.find(query, find.options);
+    else pdf.closeFind();
+  }, [pdf, find.open, query, find.options]);
+  const count = findIn === "dom" ? domCount : findIn === "pdf" ? pdfFound?.total : matches.length;
 
   return (
     <div ref={root} className="flex h-full min-h-0 flex-col" data-testid="file-view">
@@ -470,7 +487,15 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
         )}
       </div>
       {find.open && findIn && (
-        <FindBar find={find} count={count} note={findIn === "page" ? "Switch to Source to search this page." : undefined} />
+        <FindBar
+          find={find}
+          count={count}
+          note={findIn === "page" ? "Switch to Source to search this page." : undefined}
+          {...(findIn === "pdf" && {
+            current: Math.max(0, (pdfFound?.current ?? 1) - 1),
+            onStep: (by: 1 | -1) => pdf?.find(query, find.options, by > 0 ? "next" : "previous"),
+          })}
+        />
       )}
       {stale && (
         <div className="flex items-center gap-3 border-b px-4 py-2 text-xs" role="alert">
@@ -516,7 +541,7 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
             </Button>
           </div>
         ) : shown && "pdf" in shown ? (
-          <PdfView key={reloads} workspaceId={workspaceId} path={path} onError={onViewError} />
+          <PdfView key={reloads} workspaceId={workspaceId} path={path} onError={onViewError} onHandle={setPdf} />
         ) : shown && "html" in shown ? (
           <HtmlView workspaceId={workspaceId} path={path} reloadKey={reloads} onError={onViewError} />
         ) : editing ? (

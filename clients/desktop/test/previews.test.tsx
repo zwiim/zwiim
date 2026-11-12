@@ -47,7 +47,7 @@ async function mount(t: FakeTransport, path: string) {
 
 describe("previews", () => {
   it("renders a PDF with zoom controls", async () => {
-    const handle = { zoomIn: vi.fn(), zoomOut: vi.fn(), fitWidth: vi.fn(), destroy: vi.fn() };
+    const handle = { zoomIn: vi.fn(), zoomOut: vi.fn(), fitWidth: vi.fn(), destroy: vi.fn(), find: vi.fn(), closeFind: vi.fn(), onFindCount: vi.fn() };
     pdf.openPdfSource.mockResolvedValue({ size: 3, initial: new Uint8Array(3), read: vi.fn() });
     pdf.renderPdf.mockResolvedValue(handle);
     const t = new FakeTransport();
@@ -416,6 +416,37 @@ describe("find in rendered previews", () => {
     expect(screen.getByText("Switch to Source to search this page.")).toBeTruthy();
     expect(screen.queryByRole("textbox", { name: "Find" })).toBeNull();
     shell.tauri = false;
+    controller.dispose();
+  });
+});
+
+describe("find in a pdf", () => {
+  it("lets pdf.js find, count and step", async () => {
+    let counted: ((current: number, total: number) => void) | null = null;
+    const handle = {
+      zoomIn: vi.fn(), zoomOut: vi.fn(), fitWidth: vi.fn(), destroy: vi.fn(), find: vi.fn(), closeFind: vi.fn(),
+      onFindCount: vi.fn((l: typeof counted) => (counted = l)),
+    };
+    pdf.openPdfSource.mockResolvedValue({ size: 3, initial: new Uint8Array(3), read: vi.fn() });
+    pdf.renderPdf.mockResolvedValue(handle);
+    const controller = await mount(new FakeTransport(), "memo.pdf");
+    fireEvent.keyDown(window, { key: "f", metaKey: true, ctrlKey: true });
+    const box = screen.getByRole("textbox", { name: "Find" });
+    fireEvent.change(box, { target: { value: "total" } });
+    await tick();
+    expect(handle.find).toHaveBeenLastCalledWith("total", {});
+    act(() => counted!(1, 4));
+    expect(screen.getByTestId("find-count").textContent).toBe("1 of 4");
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(handle.find).toHaveBeenLastCalledWith("total", {}, "next");
+    fireEvent.click(screen.getByRole("button", { name: "Previous match" }));
+    expect(handle.find).toHaveBeenLastCalledWith("total", {}, "previous");
+    fireEvent.click(screen.getByRole("button", { name: "Match case" }));
+    await tick();
+    expect(handle.find).toHaveBeenLastCalledWith("total", { matchCase: true });
+    fireEvent.keyDown(box, { key: "Escape" });
+    await tick();
+    expect(handle.closeFind).toHaveBeenCalled();
     controller.dispose();
   });
 });
