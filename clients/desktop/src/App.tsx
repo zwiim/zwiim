@@ -607,7 +607,7 @@ export function Workbench({
                     {d.kind === "diff" ? (
                       <DiffView workspace={workspace} path={d.path} />
                     ) : (
-                      <FileView workspaceId={d.workspaceId} path={d.path} />
+                      <FileView workspaceId={d.workspaceId} path={d.path} active={current === d} />
                     )}
                   </TabPane>
                 ))}

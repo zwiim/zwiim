@@ -8,7 +8,9 @@ import {
   changeTotals,
   crumbs,
   findFiles,
+  findInLines,
   highlight,
+  markSpans,
   hunkLabel,
   syntaxOf,
   fileProblem,
@@ -317,5 +319,33 @@ describe("the workspace Files and Terminal show", () => {
     expect(currentWorkspace([ws("a"), ws("plain", { is_git_repo: false })], "a")).toBeNull();
     expect(currentWorkspace([], null)).toBeNull();
     expect(currentWorkspace(null, "a")).toBeNull();
+  });
+});
+
+describe("find in a file", () => {
+  it("finds matches line by line, never across lines", () => {
+    expect(findInLines(["const a = A;", "", "ca", "t cat"], "a")).toEqual([
+      { line: 0, start: 6, end: 7 },
+      { line: 0, start: 10, end: 11 },
+      { line: 2, start: 1, end: 2 },
+      { line: 3, start: 3, end: 4 },
+    ]);
+    expect(findInLines(["ca", "t cat"], "cat", { wholeWord: true })).toEqual([{ line: 1, start: 2, end: 5 }]);
+    expect(findInLines(["x"], "")).toEqual([]);
+  });
+
+  it("cuts syntax spans where matches begin and end", () => {
+    const spans = highlight('const x = "abc";', "ts");
+    const marked = markSpans(spans, [
+      { start: 3, end: 7, current: false },
+      { start: 12, end: 13, current: true },
+    ]);
+    expect(marked.map((s) => s.text).join("")).toBe('const x = "abc";');
+    expect(marked.filter((s) => s.mark).map((s) => [s.text, s.kind, s.mark])).toEqual([
+      ["st", "keyword", "match"],
+      [" x", "plain", "match"],
+      ["b", "string", "current"],
+    ]);
+    expect(markSpans(spans, [])).toEqual(spans);
   });
 });

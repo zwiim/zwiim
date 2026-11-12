@@ -9,7 +9,9 @@ have their own versions and are listed under Compatibility.
 ## [Unreleased]
 
 ### Added
-- None.
+- Find in file previews: ⌘F (Ctrl+F) on desktop searches text, Markdown,
+  Word, spreadsheets and PDFs; replace (⌘⌥F, Ctrl+H) changes text files and
+  CSV/TSV, written only on Save. Mobile finds in text files.
 
 ### Changed
 - None.

@@ -14,7 +14,18 @@ export const PDF_ASSETS: PdfAssets = {
 };
 
 /** A PDF read in ranges as its pages scroll into view, with zoom. */
-export function PdfView({ workspaceId, path, onError }: { workspaceId: string; path: string; onError: (e: unknown) => void }) {
+export function PdfView({
+  workspaceId,
+  path,
+  onError,
+  onHandle,
+}: {
+  workspaceId: string;
+  path: string;
+  onError: (e: unknown) => void;
+  /** The viewer once it shows the document, null when it goes: the file view's find drives it. */
+  onHandle?: (handle: PdfHandle | null) => void;
+}) {
   const controller = useController();
   const box = useRef<HTMLDivElement>(null);
   const [handle, setHandle] = useState<PdfHandle | null>(null);
@@ -38,6 +49,7 @@ export function PdfView({ workspaceId, path, onError }: { workspaceId: string; p
       setHandle(null);
     };
   }, [controller, workspaceId, path, onError]);
+  useEffect(() => onHandle?.(handle), [handle, onHandle]);
   return (
     <div className="relative min-h-0 flex-1">
       <div className="absolute top-2 right-4 z-10 flex gap-1">

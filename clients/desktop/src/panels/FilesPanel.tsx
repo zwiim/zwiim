@@ -1,16 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ExternalLink, ChevronRight, Eye, Loader2, Pencil, RefreshCw } from "lucide-react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, ExternalLink, ChevronRight, Eye, Loader2, Pencil, RefreshCw, Search } from "lucide-react";
 import { FolderIcon, fileIcon } from "@/components/FileIcon";
 import {
   delimitedEditable,
   delimiterFor,
+  findInTable,
+  findMatches,
   imageMime,
+  replaceInTable,
+  replaceMatches,
   parseDelimited,
   previewErrorMessage,
   previewKind,
   serializeDelimited,
   type DelimitedTable,
+  type FindMatch,
 } from "@zwiim/preview";
+import type { PdfHandle } from "@zwiim/preview/pdf";
 import { readSheet, type Sheet } from "@zwiim/preview/sheet";
 import { renderWord } from "@zwiim/preview/word";
 import {
@@ -30,6 +36,8 @@ import { markdownStyle } from "@/lib/prefs";
 import { usePref } from "@/lib/use-pref";
 import { cn } from "@/lib/utils";
 import { ListSkeleton } from "./DiffPanel";
+import { at, FindBar, useFind } from "./preview/FindBar";
+import { useDomFind } from "./preview/dom-find";
 import { HtmlView } from "./preview/HtmlView";
 import { PdfView } from "./preview/PdfView";
 import { PreviewFailure, PreviewLoading } from "./preview/PreviewState";
@@ -232,9 +240,14 @@ type Shown =
   | { html: true }
   | { none: true };
 
-/** One file's contents, read-only, in its own tab; what has no preview opens in its own app. */
-export function FileView({ workspaceId, path }: { workspaceId: string; path: string }) {
+/**
+ * One file's contents, read-only, in its own tab; what has no preview opens in
+ * its own app. `active` is whether its tab is the one showing.
+ */
+export function FileView({ workspaceId, path, active = true }: { workspaceId: string; path: string; active?: boolean }) {
   const controller = useController();
+  const root = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
   const [shown, setShown] = useState<Shown | null>(null);
   const [failure, setFailure] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
@@ -250,12 +263,17 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
   const [mode, setMode] = useState<"rendered" | "source">("rendered");
   // A CSV/TSV being edited: the table, and the text and etag it was read at.
   const [editing, setEditing] = useState<{ table: DelimitedTable; source: string; etag: string } | null>(null);
+  // A text file changed by replace: the text and etag it was read at, and the text now.
+  const [textEdit, setTextEdit] = useState<{ source: string; etag: string; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
   const delimiter = delimiterFor(name);
   const canWrite = useHost((s) => hasCapability(s.connection.compat, "files.write"));
-  const dirty = useMemo(() => !!editing && serializeDelimited(editing.table) !== editing.source, [editing]);
+  const dirty = useMemo(
+    () => (editing ? serializeDelimited(editing.table) !== editing.source : !!textEdit && textEdit.text !== textEdit.source),
+    [editing, textEdit],
+  );
   const [preview, setPreview] = useState(false);
   const book = usePref(markdownStyle) === "book";
 
@@ -329,33 +347,42 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
     }
   }
 
-  async function startEdit() {
-    if (!delimiter) return;
+  /** Starts editing the CSV/TSV; false, with the reason shown, when it cannot be. */
+  async function startEdit(): Promise<boolean> {
+    if (!delimiter) return false;
     setEditError(null);
     try {
       const file = await controller.client.request("files.read", { workspace_id: workspaceId, path });
       const table = parseDelimited(file.content, delimiter);
-      if (!delimitedEditable(table))
-        return setEditError("Only files up to 1,000 rows and 100 columns can be edited here.");
+      if (!delimitedEditable(table)) {
+        setEditError("Only files up to 1,000 rows and 100 columns can be edited here.");
+        return false;
+      }
       setEditing({ table, source: file.content, etag: file.etag });
+      return true;
     } catch (e) {
       setEditError(errorMessage(e));
+      return false;
     }
   }
 
   function stopEdit() {
+    // Replace on a CSV/TSV edits it; left open, it would start editing again.
+    if (editing) find.setReplacing(false);
     setEditing(null);
+    setTextEdit(null);
     setEditError(null);
     setStale(false);
   }
 
   async function save() {
-    if (!editing) return;
+    const edit = editing ?? textEdit;
+    if (!edit) return;
     setSaving(true);
     setEditError(null);
     try {
-      const content = serializeDelimited(editing.table);
-      await controller.client.request("files.write", { workspace_id: workspaceId, path, content, etag: editing.etag });
+      const content = editing ? serializeDelimited(editing.table) : textEdit!.text;
+      await controller.client.request("files.write", { workspace_id: workspaceId, path, content, etag: edit.etag });
       stopEdit();
       void refresh();
     } catch (e) {
@@ -369,9 +396,100 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
   const sheet = shown && "sheets" in shown ? shown.sheets[0] : undefined;
   const editable = !!delimiter && !!sheet && !sheet.truncated && canWrite;
   const markdown = isMarkdown(path) && !!shown && "text" in shown;
+  const read = shown && "text" in shown ? shown.text : null;
+  const text = read && (textEdit?.text ?? read.content);
+  // Replace saves the whole text back, so only text the Host read exactly
+  // (no U+FFFD standing in for bytes it could not decode) into a file it can write.
+  const replaceable = !!read && canWrite && !read.readonly && !read.content.includes("\uFFFD");
+  // What find searches: the text as shown in lines, or the rendered page. A
+  // page framed at its own origin cannot be searched from here.
+  const findText = text !== null && !(preview && markdown) ? text : null;
+  // A CSV/TSV being edited is searched cell by cell, the way replace changes it.
+  const findIn: "cells" | "text" | "dom" | "pdf" | "page" | null = editing
+    ? "cells"
+    : findText !== null
+      ? "text"
+      : shown && "pdf" in shown
+        ? "pdf"
+        : shown && ("sheets" in shown || "word" in shown || (read && preview && markdown))
+          ? "dom"
+          : shown && "html" in shown
+            ? "page"
+            : null;
+  const find = useFind(active && !!findIn, root);
+  const query = useDeferredValue(find.query);
+  const matches = useMemo(
+    () => (find.open && findText !== null ? findMatches(findText, query, find.options) : []),
+    [find.open, findText, query, find.options],
+  );
+  const cellMatches = useMemo(
+    () => (find.open && editing ? findInTable(editing.table, query, find.options) : []),
+    [find.open, editing, query, find.options],
+  );
+  const domCount = useDomFind(content, find.open && findIn === "dom", query, find.options, find.current);
+  // pdf.js finds, counts and keeps its own current match.
+  const [pdf, setPdf] = useState<PdfHandle | null>(null);
+  const [pdfFound, setPdfFound] = useState<{ current: number; total: number } | null>(null);
+  useEffect(() => {
+    if (!pdf) return;
+    pdf.onFindCount((current, total) => setPdfFound({ current, total }));
+    return () => pdf.onFindCount(null);
+  }, [pdf]);
+  useEffect(() => {
+    if (!pdf) return;
+    setPdfFound(null);
+    if (find.open && query) pdf.find(query, find.options);
+    else pdf.closeFind();
+  }, [pdf, find.open, query, find.options]);
+  const count =
+    findIn === "dom" ? domCount : findIn === "pdf" ? pdfFound?.total : findIn === "cells" ? cellMatches.length : matches.length;
+  // Replace works on the source: opening it leaves the rendered Markdown, and
+  // starts editing a CSV/TSV (or says why it cannot, closing the row again).
+  useEffect(() => {
+    if (find.replacing && preview && markdown && replaceable) setPreview(false);
+  }, [find.replacing, preview, markdown, replaceable]);
+  const starting = useRef(false);
+  useEffect(() => {
+    if (!find.replacing || !editable || editing || starting.current) return;
+    starting.current = true;
+    void startEdit().then((ok) => {
+      starting.current = false;
+      if (!ok) find.setReplacing(false);
+    });
+  });
+
+  /** Replaces the current match, moving to the next, or every match. Nothing is written until Save. */
+  function replace(which: "current" | "all") {
+    if (editing) return replaceCells(which);
+    if (!read || findText === null) return;
+    const i = at(find, matches.length);
+    const chosen = which === "all" ? matches : matches.slice(i, i + 1);
+    if (!chosen.length) return;
+    const next = replaceMatches(findText, chosen, find.replacement);
+    setTextEdit((e) => ({ source: e?.source ?? read.content, etag: e?.etag ?? read.etag, text: next }));
+    // The next match starts after the replacement, even one the replacement itself contains.
+    const after = chosen[0]!.start + find.replacement.length;
+    const left = findMatches(next, query, find.options).findIndex((m) => m.start >= after);
+    find.setCurrent(Math.max(0, left));
+  }
+
+  function replaceCells(which: "current" | "all") {
+    if (!editing) return;
+    const i = at(find, cellMatches.length);
+    const chosen = which === "all" ? cellMatches : cellMatches.slice(i, i + 1);
+    if (!chosen.length) return;
+    const table = replaceInTable(editing.table, chosen, find.replacement);
+    setEditing({ ...editing, table });
+    const { r, c, start } = chosen[0]!;
+    const after = start + find.replacement.length;
+    const left = findInTable(table, query, find.options).findIndex(
+      (m) => m.r > r || (m.r === r && (m.c > c || (m.c === c && m.start >= after))),
+    );
+    find.setCurrent(Math.max(0, left));
+  }
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="file-view">
+    <div ref={root} className="flex h-full min-h-0 flex-col" data-testid="file-view">
       <div className="text-muted-foreground flex h-10 shrink-0 items-center gap-2 border-b px-4 text-xs">
         <span className="text-foreground min-w-0 flex-1 truncate font-mono">{path}</span>
         {page && (
@@ -404,7 +522,12 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
             <Eye /> Preview
           </Button>
         )}
-        {shown && "text" in shown && <span className="shrink-0">read-only</span>}
+        {read && <span className="shrink-0">{textEdit ? "edited" : "read-only"}</span>}
+        {findIn && (
+          <Button size="icon-sm" variant="ghost" title="Find" aria-label="Find" onClick={() => find.show()}>
+            <Search />
+          </Button>
+        )}
         <Button
           size="icon-sm"
           variant="ghost"
@@ -414,7 +537,7 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
         >
           <ExternalLink />
         </Button>
-        {editing ? (
+        {editing || textEdit ? (
           <>
             <Button size="xs" variant="ghost" onClick={stopEdit} disabled={saving}>
               Cancel
@@ -436,6 +559,18 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
           </>
         )}
       </div>
+      {find.open && findIn && (
+        <FindBar
+          find={find}
+          count={count}
+          note={findIn === "page" ? "Switch to Source to search this page." : undefined}
+          onReplace={(replaceable && (findIn === "text" || markdown)) || editing || editable ? replace : undefined}
+          {...(findIn === "pdf" && {
+            current: Math.max(0, (pdfFound?.current ?? 1) - 1),
+            onStep: (by: 1 | -1) => pdf?.find(query, find.options, by > 0 ? "next" : "previous"),
+          })}
+        />
+      )}
       {stale && (
         <div className="flex items-center gap-3 border-b px-4 py-2 text-xs" role="alert">
           <p className="text-destructive flex-1">
@@ -464,64 +599,119 @@ export function FileView({ workspaceId, path }: { workspaceId: string; path: str
           {openError}
         </p>
       )}
-      {failure ? (
-        <PreviewFailure error={failure} name={name} opening={opening} onOpen={() => void openElsewhere()} />
-      ) : shown && "none" in shown ? (
-        <div
-          className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center"
-          data-testid="file-no-preview"
-        >
-          <p className="text-muted-foreground text-xs">
-            No preview for <span className="text-foreground font-mono">{name}</span> here yet.
-          </p>
-          <Button size="sm" variant="outline" disabled={opening} onClick={() => void openElsewhere()}>
-            {opening ? <Loader2 className="animate-spin" /> : <ExternalLink />} Open in default app
-          </Button>
-        </div>
-      ) : shown && "pdf" in shown ? (
-        <PdfView key={reloads} workspaceId={workspaceId} path={path} onError={onViewError} />
-      ) : shown && "html" in shown ? (
-        <HtmlView workspaceId={workspaceId} path={path} reloadKey={reloads} onError={onViewError} />
-      ) : editing ? (
-        <SheetEditor table={editing.table} onChange={(table) => setEditing((e) => e && { ...e, table })} />
-      ) : shown && "sheets" in shown ? (
-        <SheetView sheets={shown.sheets} />
-      ) : shown && "word" in shown ? (
-        <WordView html={shown.word} />
-      ) : shown && "image" in shown ? (
-        <div className="min-h-0 flex-1 overflow-auto p-4">
-          <img className="max-w-full rounded-md" src={shown.image} alt={name} data-testid="file-image" />
-        </div>
-      ) : shown && preview && markdown ? (
-        <div className="min-h-0 flex-1 overflow-auto" data-testid="file-markdown">
-          <Markdown
-            text={shown.text.content}
-            className={book ? "markdown-book px-8 py-10" : "max-w-3xl px-6 py-4"}
+      <div ref={content} className="flex min-h-0 flex-1 flex-col">
+        {failure ? (
+          <PreviewFailure error={failure} name={name} opening={opening} onOpen={() => void openElsewhere()} />
+        ) : shown && "none" in shown ? (
+          <div
+            className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center"
+            data-testid="file-no-preview"
+          >
+            <p className="text-muted-foreground text-xs">
+              No preview for <span className="text-foreground font-mono">{name}</span> here yet.
+            </p>
+            <Button size="sm" variant="outline" disabled={opening} onClick={() => void openElsewhere()}>
+              {opening ? <Loader2 className="animate-spin" /> : <ExternalLink />} Open in default app
+            </Button>
+          </div>
+        ) : shown && "pdf" in shown ? (
+          <PdfView key={reloads} workspaceId={workspaceId} path={path} onError={onViewError} onHandle={setPdf} />
+        ) : shown && "html" in shown ? (
+          <HtmlView workspaceId={workspaceId} path={path} reloadKey={reloads} onError={onViewError} />
+        ) : editing ? (
+          <SheetEditor
+            table={editing.table}
+            onChange={(table) => setEditing((e) => e && { ...e, table })}
+            matches={cellMatches}
+            current={at(find, cellMatches.length)}
           />
-        </div>
-      ) : shown ? (
-        <FileText text={shown.text.content} />
-      ) : (
-        <PreviewLoading />
-      )}
+        ) : shown && "sheets" in shown ? (
+          <SheetView sheets={shown.sheets} />
+        ) : shown && "word" in shown ? (
+          <WordView html={shown.word} />
+        ) : shown && "image" in shown ? (
+          <div className="min-h-0 flex-1 overflow-auto p-4">
+            <img className="max-w-full rounded-md" src={shown.image} alt={name} data-testid="file-image" />
+          </div>
+        ) : shown && preview && markdown ? (
+          <div className="min-h-0 flex-1 overflow-auto" data-testid="file-markdown">
+            <Markdown
+              text={text ?? ""}
+              className={book ? "markdown-book px-8 py-10" : "max-w-3xl px-6 py-4"}
+            />
+          </div>
+        ) : shown ? (
+          <FileText text={text ?? ""} matches={matches} current={at(find, matches.length)} />
+        ) : (
+          <PreviewLoading />
+        )}
+      </div>
     </div>
   );
 }
 
-function FileText({ text }: { text: string }) {
-  const lines = (text.endsWith("\n") ? text.slice(0, -1) : text).split(/\r?\n/);
+/** Text in numbered lines, with find's `matches` marked and the `current` one scrolled to. */
+function FileText({ text, matches = [], current = 0 }: { text: string; matches?: FindMatch[]; current?: number }) {
+  const box = useRef<HTMLDivElement>(null);
+  const lines = useMemo(() => {
+    const out: { start: number; text: string }[] = [];
+    const body = text.endsWith("\n") ? text.slice(0, -1) : text;
+    const re = /\r?\n/g;
+    let start = 0;
+    for (let m = re.exec(body); m; m = re.exec(body)) {
+      out.push({ start, text: body.slice(start, m.index) });
+      start = m.index + m[0].length;
+    }
+    out.push({ start, text: body.slice(start) });
+    return out;
+  }, [text]);
+  // Each line's matches, in order: lines and matches both run forward.
+  const marks = useMemo(() => {
+    const out = new Map<number, number[]>();
+    let line = 0;
+    matches.forEach((m, i) => {
+      while (line + 1 < lines.length && lines[line + 1]!.start <= m.start) line++;
+      out.set(line, [...(out.get(line) ?? []), i]);
+    });
+    return out;
+  }, [matches, lines]);
+  useEffect(() => {
+    box.current?.querySelector("[data-current]")?.scrollIntoView?.({ block: "center", inline: "nearest" });
+  }, [matches, current]);
   return (
-    <div className="min-h-0 flex-1 overflow-auto" data-testid="file-content">
+    <div ref={box} className="min-h-0 flex-1 overflow-auto" data-testid="file-content">
       <table className="border-collapse font-mono text-xs leading-5">
         <tbody>
           {lines.map((line, i) => (
             <tr key={i}>
               <td className="text-muted-foreground border-r px-2 text-right align-top select-none">{i + 1}</td>
-              <td className="px-3 whitespace-pre">{line || " "}</td>
+              <td className="px-3 whitespace-pre">
+                {marks.has(i) ? <Marked line={line} matches={matches} at={marks.get(i)!} current={current} /> : line.text || " "}
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
     </div>
   );
+}
+
+/** One line split around its matches (`at`, indexes into `matches`). */
+function Marked({ line, matches, at, current }: { line: { start: number; text: string }; matches: FindMatch[]; at: number[]; current: number }) {
+  const parts: React.ReactNode[] = [];
+  let from = 0;
+  for (const i of at) {
+    const m = matches[i]!;
+    const start = m.start - line.start;
+    const end = Math.min(m.end - line.start, line.text.length);
+    parts.push(line.text.slice(from, start));
+    parts.push(
+      <mark key={i} className={cn("text-foreground rounded-xs", i === current ? "bg-brand/40" : "bg-brand-halo")} data-current={i === current || undefined}>
+        {line.text.slice(start, end)}
+      </mark>,
+    );
+    from = end;
+  }
+  parts.push(line.text.slice(from));
+  return <>{parts}</>;
 }

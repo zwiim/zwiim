@@ -4,6 +4,7 @@
 // numbered lines, and a file's text in color. Pure; screens render it.
 
 import { isClientError, type DiffFile, type FileTreeNode, type GitStatusEntry, type WorkspaceDiff, type WorkspaceInfo } from "@zwiim/sdk";
+import { findMatches, type FindOptions } from "@zwiim/preview";
 
 export interface Crumb {
   label: string;
@@ -299,4 +300,46 @@ export function highlight(line: string, ext: string): SyntaxSpan[] {
   }
   if (last < line.length) spans.push({ text: line.slice(last), kind: "plain" });
   return spans;
+}
+
+/** A find match in a preview line: `lines[line].slice(start, end)`. */
+export interface LineMatch {
+  line: number;
+  start: number;
+  end: number;
+}
+
+/** Every match of `query` in the lines shown, line by line; a match never runs past its line. */
+export function findInLines(lines: readonly string[], query: string, options: FindOptions = {}): LineMatch[] {
+  const out: LineMatch[] = [];
+  lines.forEach((text, line) => {
+    for (const m of findMatches(text, query, options)) out.push({ line, ...m });
+  });
+  return out;
+}
+
+/** A span of a line, inside a find match (`current` for the one stepped to) or not. */
+export interface MarkedSpan extends SyntaxSpan {
+  mark?: "match" | "current";
+}
+
+/** A line's syntax spans cut where its find `marks` begin and end, so each piece is wholly in one or outside. */
+export function markSpans(spans: readonly SyntaxSpan[], marks: readonly { start: number; end: number; current: boolean }[]): MarkedSpan[] {
+  if (!marks.length) return [...spans];
+  const out: MarkedSpan[] = [];
+  let at = 0;
+  for (const span of spans) {
+    const end = at + span.text.length;
+    let from = at;
+    for (const m of marks) {
+      if (m.end <= from || m.start >= end) continue;
+      if (m.start > from) out.push({ text: span.text.slice(from - at, m.start - at), kind: span.kind });
+      const to = Math.min(m.end, end);
+      out.push({ text: span.text.slice(Math.max(m.start, from) - at, to - at), kind: span.kind, mark: m.current ? "current" : "match" });
+      from = to;
+    }
+    if (from < end) out.push({ text: span.text.slice(from - at), kind: span.kind });
+    at = end;
+  }
+  return out;
 }

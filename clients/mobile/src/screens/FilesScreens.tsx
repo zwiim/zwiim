@@ -5,7 +5,7 @@
 // (binary, too large, gone) says so.
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { NativeStackNavigationProp, NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Clipboard from "expo-clipboard";
@@ -19,8 +19,10 @@ import {
   changeName,
   changeTotals,
   fileProblem,
+  findInLines,
   notGitProblem,
   parentPath,
+  PREVIEW_MAX_LINES,
   previewLines,
   syntaxOf,
   type ChangeItem,
@@ -29,10 +31,10 @@ import { loadViewed, TOO_LARGE } from "../files/viewer";
 import { contextLabel, contextText, workspaceLabel } from "../host/workspace";
 import { currentHost } from "../services";
 import { Button, EmptyState, ScreenHeader, SkeletonRows, T } from "../ui/components";
-import { CodeView, FileChangeView } from "../ui/code";
+import { CodeView, FileChangeView, type LineMarks } from "../ui/code";
 import { Markdown } from "../ui/markdown";
-import { Check, ChevronRight, Copy, Eye, Icon } from "../ui/icons";
-import { fonts, radius, space, useTheme, type Palette } from "../ui/tokens";
+import { Check, ChevronDown, ChevronRight, ChevronUp, Copy, Eye, Icon, Search, X } from "../ui/icons";
+import { fonts, radius, space, type, useTheme, type Palette } from "../ui/tokens";
 import { useHostName } from "./HostFrame";
 
 export interface Changes {
@@ -240,6 +242,22 @@ export function FileScreen({ route, navigation }: NativeStackScreenProps<RootSta
   const change = changes.data?.items.find((c) => c.path === path) ?? null;
   const preview = useMemo(() => (file.data ? previewLines(file.data.content) : null), [file.data]);
   const name = baseName(path);
+  // Find searches the lines shown; `current` may run past the matches, so read it through `at`.
+  const [finding, setFinding] = useState(false);
+  const [query, setQuery] = useState("");
+  const [current, setCurrent] = useState(0);
+  const matches = useMemo(() => (finding && preview ? findInLines(preview.lines, query) : []), [finding, preview, query]);
+  const at = matches.length ? Math.min(current, matches.length - 1) : 0;
+  const marks = useMemo(() => {
+    const out = new Map<number, { start: number; end: number; current: boolean }[]>();
+    matches.forEach((m, i) => out.set(m.line, [...(out.get(m.line) ?? []), { start: m.start, end: m.end, current: i === at }]));
+    return out as LineMarks;
+  }, [matches, at]);
+  const closeFind = () => {
+    setFinding(false);
+    setQuery("");
+    setCurrent(0);
+  };
 
   let body;
   if (file.error) {
@@ -257,6 +275,8 @@ export function FileScreen({ route, navigation }: NativeStackScreenProps<RootSta
         lines={preview.lines}
         wrap={wrap}
         ext={syntaxOf(path)}
+        marks={marks}
+        scrollTo={matches[at]?.line ?? null}
         footer={
           clipped ? (
             <T variant="monoSm" color={theme.mut} style={styles.clipped}>
@@ -279,23 +299,48 @@ export function FileScreen({ route, navigation }: NativeStackScreenProps<RootSta
           onBack={back}
           trailing={
             file.data && file.data.content ? (
-              <Pressable
-                accessibilityRole="switch"
-                accessibilityLabel="Wrap lines"
-                accessibilityState={{ checked: wrap }}
-                onPress={() => setWrap((w) => !w)}
-                style={[styles.wrap, { backgroundColor: theme.surface }]}
-                testID="file-wrap"
-              >
-                <T variant="monoSm" color={wrap ? theme.fg : theme.mut}>
-                  wrap
-                </T>
-              </Pressable>
+              <View style={styles.trailing}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Find in file"
+                  onPress={() => (finding ? closeFind() : setFinding(true))}
+                  style={[styles.wrap, { backgroundColor: finding ? theme.raised : theme.surface }]}
+                  testID="file-find"
+                >
+                  <Icon icon={Search} color={finding ? theme.fg : theme.mut} size={16} />
+                </Pressable>
+                <Pressable
+                  accessibilityRole="switch"
+                  accessibilityLabel="Wrap lines"
+                  accessibilityState={{ checked: wrap }}
+                  onPress={() => setWrap((w) => !w)}
+                  style={[styles.wrap, { backgroundColor: theme.surface }]}
+                  testID="file-wrap"
+                >
+                  <T variant="monoSm" color={wrap ? theme.fg : theme.mut}>
+                    wrap
+                  </T>
+                </Pressable>
+              </View>
             ) : null
           }
         />
       }
     >
+      {finding && preview && file.data?.content ? (
+        <FindRow
+          query={query}
+          onQuery={(q) => {
+            setQuery(q);
+            setCurrent(0);
+          }}
+          at={at}
+          count={matches.length}
+          onStep={(by) => matches.length && setCurrent((at + by + matches.length) % matches.length)}
+          onClose={closeFind}
+          clipped={preview.total > preview.lines.length}
+        />
+      ) : null}
       {change ? (
         <Pressable
           accessibilityRole="button"
@@ -323,6 +368,77 @@ export function FileScreen({ route, navigation }: NativeStackScreenProps<RootSta
       ) : null}
       {body}
     </Page>
+  );
+}
+
+/** Find in a file: the query, which match of how many, previous / next, close. */
+function FindRow({
+  query,
+  onQuery,
+  at,
+  count,
+  onStep,
+  onClose,
+  clipped,
+}: {
+  query: string;
+  onQuery(q: string): void;
+  at: number;
+  count: number;
+  onStep(by: 1 | -1): void;
+  onClose(): void;
+  clipped: boolean;
+}) {
+  const theme = useTheme();
+  const step = (by: 1 | -1, icon: typeof ChevronUp, label: string) => (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled: !count }}
+      disabled={!count}
+      onPress={() => onStep(by)}
+      style={styles.findButton}
+      testID={by > 0 ? "file-find-next" : "file-find-previous"}
+    >
+      <Icon icon={icon} color={count ? theme.fg : theme.faint} size={20} />
+    </Pressable>
+  );
+  return (
+    <View style={[styles.findBar, { borderBottomColor: theme.line }]}>
+      <View style={styles.findLine}>
+        <View style={[styles.findBox, { backgroundColor: theme.surface }]}>
+          <TextInput
+            autoFocus
+            value={query}
+            onChangeText={onQuery}
+            onSubmitEditing={() => onStep(1)}
+            submitBehavior="submit"
+            placeholder="Find in file"
+            placeholderTextColor={theme.faint}
+            autoCapitalize="none"
+            autoCorrect={false}
+            spellCheck={false}
+            returnKeyType="search"
+            style={[type.mono, styles.findInput, { color: theme.fg }]}
+            accessibilityLabel="Find in file"
+            testID="file-find-input"
+          />
+        </View>
+        <T variant="monoSm" color={theme.mut} style={[styles.tabular, styles.findCount]} testID="file-find-count">
+          {query ? (count ? `${at + 1} of ${count}` : "No results") : ""}
+        </T>
+        {step(-1, ChevronUp, "Previous match")}
+        {step(1, ChevronDown, "Next match")}
+        <Pressable accessibilityRole="button" accessibilityLabel="Close find" onPress={onClose} style={styles.findButton} testID="file-find-close">
+          <Icon icon={X} color={theme.fg} size={20} />
+        </Pressable>
+      </View>
+      {clipped ? (
+        <T variant="monoSm" color={theme.mut} style={styles.findNote}>
+          Searching the first {PREVIEW_MAX_LINES.toLocaleString()} lines
+        </T>
+      ) : null}
+    </View>
   );
 }
 
@@ -574,6 +690,14 @@ const styles = StyleSheet.create({
   struck: { textDecorationLine: "line-through" },
   note: { paddingHorizontal: space.lg, paddingTop: space.md },
   wrap: { height: 36, borderRadius: radius.sm, paddingHorizontal: space.md, justifyContent: "center" },
+  trailing: { flexDirection: "row", gap: space.sm },
+  findBar: { paddingHorizontal: space.lg, paddingVertical: space.sm, borderBottomWidth: StyleSheet.hairlineWidth },
+  findLine: { flexDirection: "row", alignItems: "center", gap: space.xs },
+  findBox: { flex: 1, height: 36, borderRadius: radius.md, paddingHorizontal: space.sm, justifyContent: "center" },
+  findInput: { padding: 0 },
+  findCount: { minWidth: 64, textAlign: "center" },
+  findButton: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  findNote: { paddingTop: space.xs },
   clipped: { paddingTop: space.md, paddingLeft: space.lg },
   changed: {
     minHeight: 48,
