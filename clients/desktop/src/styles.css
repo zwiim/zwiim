@@ -404,6 +404,13 @@
   ::selection {
     background: var(--selection);
   }
+  /* A preview's find matches, marked without touching its DOM; the current one stronger. */
+  ::highlight(find-match) {
+    background-color: var(--brand-halo);
+  }
+  ::highlight(find-current) {
+    background-color: color-mix(in srgb, var(--brand) 40%, transparent);
+  }
   /* One keyboard focus ring, everywhere: the accent at half strength, off the element. */
   :focus-visible {
     outline: 2px solid var(--ring);

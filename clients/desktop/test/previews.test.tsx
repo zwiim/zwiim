@@ -349,3 +349,73 @@ describe("find", () => {
     controller.dispose();
   });
 });
+
+describe("find in rendered previews", () => {
+  async function search(q: string) {
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Find" }), { target: { value: q } });
+    await tick();
+    return screen.getByTestId("find-count").textContent;
+  }
+
+  it("counts matches in Word, inside one block across inline styling", async () => {
+    const word = await import("@zwiim/preview/word");
+    vi.spyOn(word, "renderWord").mockResolvedValue(`<p>Plan <b>ahead</b>.</p><p>plan</p><p>ahead</p>`);
+    const t = new FakeTransport();
+    serve(t, { "spec.docx": new Uint8Array([1]) });
+    const controller = await mount(t, "spec.docx");
+    expect(await search("plan")).toBe("1 of 2");
+    fireEvent.change(screen.getByRole("textbox", { name: "Find" }), { target: { value: "plan ahead" } });
+    await tick();
+    expect(screen.getByTestId("find-count").textContent).toBe("1 of 1");
+    controller.dispose();
+  });
+
+  it("searches the sheet showing, never one cell into the next or the tabs", async () => {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["ab", "c"], ["abc", "One"]]), "One");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["abc"], ["abc"], ["x"]]), "Two");
+    const t = new FakeTransport();
+    serve(t, { "b.xlsx": new Uint8Array(XLSX.write(wb, { type: "array", bookType: "xlsx" })) });
+    const controller = await mount(t, "b.xlsx");
+    expect(await search("abc")).toBe("1 of 1");
+    fireEvent.change(screen.getByRole("textbox", { name: "Find" }), { target: { value: "one" } });
+    await tick();
+    expect(screen.getByTestId("find-count").textContent).toBe("1 of 1");
+    fireEvent.change(screen.getByRole("textbox", { name: "Find" }), { target: { value: "abc" } });
+    fireEvent.click(screen.getByRole("tab", { name: "Two" }));
+    await tick();
+    expect(screen.getByTestId("find-count").textContent).toBe("1 of 2");
+    controller.dispose();
+  });
+
+  it("searches rendered Markdown, and the source once Preview is off", async () => {
+    const t = new FakeTransport();
+    t.handlers["files.read"] = () => ({ path: "a.md", content: "# Title\n\n**bold** title\n", etag: "e1", mtime_ms: null, readonly: false, line_ending: "lf" });
+    const controller = await mount(t, "a.md");
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    await tick();
+    expect(await search("**")).toBe("No results");
+    fireEvent.change(screen.getByRole("textbox", { name: "Find" }), { target: { value: "title" } });
+    await tick();
+    expect(screen.getByTestId("find-count").textContent).toBe("1 of 2");
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Find" }), { target: { value: "**" } });
+    await tick();
+    expect(screen.getByTestId("find-count").textContent).toBe("1 of 2");
+    controller.dispose();
+  });
+
+  it("points to Source for a page framed at its own origin", async () => {
+    shell.tauri = true;
+    host.openPreview.mockResolvedValue("0123456789abcdef0123456789abcdef");
+    host.previewUrl.mockReturnValue("zwiim-preview://x/a.html");
+    const t = new FakeTransport();
+    const controller = await mount(t, "a.html");
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
+    expect(screen.getByText("Switch to Source to search this page.")).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "Find" })).toBeNull();
+    shell.tauri = false;
+    controller.dispose();
+  });
+});

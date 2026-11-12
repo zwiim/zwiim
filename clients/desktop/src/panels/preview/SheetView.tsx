@@ -9,7 +9,7 @@ export function SheetView({ sheets }: { sheets: Sheet[] }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {sheets.length > 1 && (
-        <div role="tablist" className="flex shrink-0 gap-1 overflow-x-auto border-b px-4 py-1.5">
+        <div role="tablist" data-find-skip className="flex shrink-0 gap-1 overflow-x-auto border-b px-4 py-1.5">
           {sheets.map((s, i) => (
             <button
               key={s.name}
@@ -26,7 +26,7 @@ export function SheetView({ sheets }: { sheets: Sheet[] }) {
           ))}
         </div>
       )}
-      {sheet.truncated && <p className="text-muted-foreground shrink-0 px-4 pt-2 text-xs">{SHEET_CAP_NOTE}</p>}
+      {sheet.truncated && <p data-find-skip className="text-muted-foreground shrink-0 px-4 pt-2 text-xs">{SHEET_CAP_NOTE}</p>}
       <div key={at} className="animate-fade-in min-h-0 flex-1 overflow-auto p-4">
         <table className="border-collapse font-mono text-xs" data-testid="sheet-table">
           <tbody>

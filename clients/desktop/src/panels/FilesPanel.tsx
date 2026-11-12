@@ -33,6 +33,7 @@ import { usePref } from "@/lib/use-pref";
 import { cn } from "@/lib/utils";
 import { ListSkeleton } from "./DiffPanel";
 import { at, FindBar, useFind } from "./preview/FindBar";
+import { useDomFind } from "./preview/dom-find";
 import { HtmlView } from "./preview/HtmlView";
 import { PdfView } from "./preview/PdfView";
 import { PreviewFailure, PreviewLoading } from "./preview/PreviewState";
@@ -242,7 +243,7 @@ type Shown =
 export function FileView({ workspaceId, path, active = true }: { workspaceId: string; path: string; active?: boolean }) {
   const controller = useController();
   const root = useRef<HTMLDivElement>(null);
-  const find = useFind(active, root);
+  const content = useRef<HTMLDivElement>(null);
   const [shown, setShown] = useState<Shown | null>(null);
   const [failure, setFailure] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
@@ -377,14 +378,25 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
   const sheet = shown && "sheets" in shown ? shown.sheets[0] : undefined;
   const editable = !!delimiter && !!sheet && !sheet.truncated && canWrite;
   const markdown = isMarkdown(path) && !!shown && "text" in shown;
-  // What find searches: the text as shown in lines.
+  // What find searches: the text as shown in lines, or the rendered page. A
+  // page framed at its own origin cannot be searched from here.
   const findText = shown && "text" in shown && !(preview && markdown) ? shown.text.content : null;
-  const findable = findText !== null;
+  const findIn: "text" | "dom" | "page" | null =
+    findText !== null
+      ? "text"
+      : shown && ("sheets" in shown || "word" in shown || ("text" in shown && preview && markdown))
+        ? "dom"
+        : shown && "html" in shown
+          ? "page"
+          : null;
+  const find = useFind(active && !!findIn, root);
   const query = useDeferredValue(find.query);
   const matches = useMemo(
     () => (find.open && findText !== null ? findMatches(findText, query, find.options) : []),
     [find.open, findText, query, find.options],
   );
+  const domCount = useDomFind(content, find.open && findIn === "dom", query, find.options, find.current);
+  const count = findIn === "dom" ? domCount : matches.length;
 
   return (
     <div ref={root} className="flex h-full min-h-0 flex-col" data-testid="file-view">
@@ -421,7 +433,7 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
           </Button>
         )}
         {shown && "text" in shown && <span className="shrink-0">read-only</span>}
-        {findable && (
+        {findIn && (
           <Button size="icon-sm" variant="ghost" title="Find" aria-label="Find" onClick={find.show}>
             <Search />
           </Button>
@@ -457,7 +469,9 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
           </>
         )}
       </div>
-      {find.open && findable && <FindBar find={find} count={matches.length} />}
+      {find.open && findIn && (
+        <FindBar find={find} count={count} note={findIn === "page" ? "Switch to Source to search this page." : undefined} />
+      )}
       {stale && (
         <div className="flex items-center gap-3 border-b px-4 py-2 text-xs" role="alert">
           <p className="text-destructive flex-1">
@@ -486,46 +500,48 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
           {openError}
         </p>
       )}
-      {failure ? (
-        <PreviewFailure error={failure} name={name} opening={opening} onOpen={() => void openElsewhere()} />
-      ) : shown && "none" in shown ? (
-        <div
-          className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center"
-          data-testid="file-no-preview"
-        >
-          <p className="text-muted-foreground text-xs">
-            No preview for <span className="text-foreground font-mono">{name}</span> here yet.
-          </p>
-          <Button size="sm" variant="outline" disabled={opening} onClick={() => void openElsewhere()}>
-            {opening ? <Loader2 className="animate-spin" /> : <ExternalLink />} Open in default app
-          </Button>
-        </div>
-      ) : shown && "pdf" in shown ? (
-        <PdfView key={reloads} workspaceId={workspaceId} path={path} onError={onViewError} />
-      ) : shown && "html" in shown ? (
-        <HtmlView workspaceId={workspaceId} path={path} reloadKey={reloads} onError={onViewError} />
-      ) : editing ? (
-        <SheetEditor table={editing.table} onChange={(table) => setEditing((e) => e && { ...e, table })} />
-      ) : shown && "sheets" in shown ? (
-        <SheetView sheets={shown.sheets} />
-      ) : shown && "word" in shown ? (
-        <WordView html={shown.word} />
-      ) : shown && "image" in shown ? (
-        <div className="min-h-0 flex-1 overflow-auto p-4">
-          <img className="max-w-full rounded-md" src={shown.image} alt={name} data-testid="file-image" />
-        </div>
-      ) : shown && preview && markdown ? (
-        <div className="min-h-0 flex-1 overflow-auto" data-testid="file-markdown">
-          <Markdown
-            text={shown.text.content}
-            className={book ? "markdown-book px-8 py-10" : "max-w-3xl px-6 py-4"}
-          />
-        </div>
-      ) : shown ? (
-        <FileText text={shown.text.content} matches={matches} current={at(find, matches.length)} />
-      ) : (
-        <PreviewLoading />
-      )}
+      <div ref={content} className="flex min-h-0 flex-1 flex-col">
+        {failure ? (
+          <PreviewFailure error={failure} name={name} opening={opening} onOpen={() => void openElsewhere()} />
+        ) : shown && "none" in shown ? (
+          <div
+            className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center"
+            data-testid="file-no-preview"
+          >
+            <p className="text-muted-foreground text-xs">
+              No preview for <span className="text-foreground font-mono">{name}</span> here yet.
+            </p>
+            <Button size="sm" variant="outline" disabled={opening} onClick={() => void openElsewhere()}>
+              {opening ? <Loader2 className="animate-spin" /> : <ExternalLink />} Open in default app
+            </Button>
+          </div>
+        ) : shown && "pdf" in shown ? (
+          <PdfView key={reloads} workspaceId={workspaceId} path={path} onError={onViewError} />
+        ) : shown && "html" in shown ? (
+          <HtmlView workspaceId={workspaceId} path={path} reloadKey={reloads} onError={onViewError} />
+        ) : editing ? (
+          <SheetEditor table={editing.table} onChange={(table) => setEditing((e) => e && { ...e, table })} />
+        ) : shown && "sheets" in shown ? (
+          <SheetView sheets={shown.sheets} />
+        ) : shown && "word" in shown ? (
+          <WordView html={shown.word} />
+        ) : shown && "image" in shown ? (
+          <div className="min-h-0 flex-1 overflow-auto p-4">
+            <img className="max-w-full rounded-md" src={shown.image} alt={name} data-testid="file-image" />
+          </div>
+        ) : shown && preview && markdown ? (
+          <div className="min-h-0 flex-1 overflow-auto" data-testid="file-markdown">
+            <Markdown
+              text={shown.text.content}
+              className={book ? "markdown-book px-8 py-10" : "max-w-3xl px-6 py-4"}
+            />
+          </div>
+        ) : shown ? (
+          <FileText text={shown.text.content} matches={matches} current={at(find, matches.length)} />
+        ) : (
+          <PreviewLoading />
+        )}
+      </div>
     </div>
   );
 }
