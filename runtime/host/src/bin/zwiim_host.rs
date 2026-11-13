@@ -545,14 +545,15 @@ async fn async_main() -> Exit {
         &chat_authoring_config,
     )
     .await;
-    // And the browser-tools switch, so the popover reports it truthfully.
-    // Server mode never advertises the group (there are no native tabs here),
-    // but the flag is one setting shared by both runtimes.
-    zwiim_host::commands::browser_tools::apply_persisted_browser_tools_config(
-        &state.db.conn,
-        &state.browser_tools_config,
-    )
-    .await;
+    // The browser tools are on: an agent reaches only its own session's
+    // tabs, which need no one's leave (design 10.1). `browser_eval` stays off.
+    state
+        .browser_tools_config
+        .set(zwiim_host::acp::browser_tools::BrowserToolsConfig {
+            enabled: true,
+            eval: false,
+        })
+        .await;
     // Before accepting connections: keep ACP model terminal fallbacks aligned
     // with the same default-shell preference the built-in terminal uses, and
     // seed the command-color opt-in that every launch env is built from.
@@ -594,10 +595,7 @@ async fn async_main() -> Exit {
                 state.emitter.clone(),
                 chat_authoring_config.clone(),
             )),
-            // No native webviews in this process: what a web user sees in a
-            // "browser tab" is an iframe their own browser renders, which
-            // nothing here can reach.
-            Arc::new(zwiim_host::acp::browser_tools::NoBrowserTabs),
+            Arc::new(zwiim_host::browser::tools::HostBrowserTools::new(&state)),
             Arc::new(zwiim_host::acp::git_tools::HostGitTools {
                 manager: Arc::new(state.connection_manager.clone_ref()),
                 db: Arc::new(zwiim_host::db::AppDatabase {

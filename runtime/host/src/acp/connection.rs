@@ -5302,13 +5302,8 @@ where
         tasks: tasks_enabled,
         automations: authoring.automations_enabled,
         taskboard: authoring.work_tasks_enabled,
-        // `cfg!` rather than a runtime probe: a browser tab is a native
-        // webview owned by this process, and the server binary has no such
-        // thing — what a web user sees in a "browser tab" is an iframe their
-        // own browser renders, which nothing here can read. Advertising the
-        // tools there would promise a capability that cannot exist, and the
-        // agent would find out by being told "no tabs" forever.
-        browser: cfg!(feature = "tauri-runtime") && injection.browser.is_enabled().await,
+        // The Host browser's tabs (design 10.2).
+        browser: injection.browser.is_enabled().await,
         browser_eval: cfg!(feature = "tauri-runtime")
             && injection.browser.is_eval_enabled().await,
         // The Git Harness runs git and gh on the user's machine, outside an
