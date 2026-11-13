@@ -136,7 +136,7 @@ New Host modules, all under `runtime/host/src/browser/`:
 2. `service` — `BrowserService`: tabs, contexts, grants, lease, policy.
 3. `stream` — `StreamHub`, the local frame socket, remote frame delivery.
 4. `forward` — `PortForwarder` for Live App (8).
-5. `native_ui` — dialogs, file chooser, select, context menu, permissions.
+5. `native_ui` — dialogs, file chooser, select, context menu.
 6. `governor` — the memory and priority policy.
 7. `cdp_proxy` — the per-session CDP endpoint (10.4).
 8. `tools` — the CDP implementation of `BrowserToolAccess`.
@@ -562,14 +562,14 @@ one into a protocol event and the clients draw it with their own UI
 | Context menu | `contextmenu` caught by the helper | Client menu: Back, Reload, Copy link, Copy image, Inspect element (pick, 10.6) | Host action |
 | File chooser | `Page.setInterceptFileChooserDialog` + `Page.fileChooserOpened` | A picker limited to workspace files and phone photos (uploaded through the tunnel to session scratch) | `DOM.setFileInputFiles` |
 | HTTP auth | `Fetch.authRequired`, with each tab intercepting its page requests (documents only) and the event pump letting them go on at once | Username and password sheet (built, P1.6) | `Fetch.continueWithAuth`; nothing stored or logged, cancelled after 5 minutes unanswered |
-| Permissions (camera, mic, location, notifications) | Permission requests | A prompt per origin | `Browser.setPermission` for that origin and context. Camera and mic are never granted to agent-only tabs, and no real camera or mic is wired to the engine in this design |
+| Permissions (camera, mic, location, notifications) | Not relayed (decision 12) | Nothing | The engine's default, which refuses them. The agent grants what its tabs need through its browser tools, for its session's context only; no real camera or mic is wired to the engine in this design |
 | Downloads | `Browser.downloadWillBegin` | Download bar | Saved under `<session scratch>/downloads` with upstream `downloads` naming; never opened automatically |
 | Certificate errors | `Security` events | Interstitial | Only loopback addresses can be accepted, per tab, by a person |
 
 The helper script runs in an isolated world (`Page.createIsolatedWorld`), as
 the upstream helper did, so page scripts cannot see or tamper with it. It
-only draws `<select>`, date, find-in-page and context-menu UI. Permissions,
-HTTP auth, file choosers, downloads and certificate decisions come from CDP
+only draws `<select>`, date, find-in-page and context-menu UI. HTTP auth,
+file choosers, downloads and certificate decisions come from CDP
 events to the Host and are answered by the Host; nothing in the page can
 trigger or answer them.
 
@@ -1124,7 +1124,7 @@ Operations:
    and `viewport`; input it cannot deliver gets an `error` text message.
 6. `browser.control.claim`, `browser.control.release` (deferred, 7.5)
 7. `browser.ui.answer { request_id, answer }` (dialogs, pickers,
-   permissions, auth, takeover). For a dialog, `answer` is `{ kind:
+   auth, takeover). For a dialog, `answer` is `{ kind:
    "dialog", accept, text? }`; for a sign-in, `{ kind: "auth", accept,
    username, password }` (P1.6). An answer of another kind is
    `invalid_answer`. The first answer from any client
@@ -1244,8 +1244,9 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 4. Local stream socket and `StreamHub`.
 5. Desktop `BrowserPanel`: viewer, tab strip, navigation, shortcuts.
 6. Native UI relay (section 9) and the isolated-world helper, with find in
-   page. JavaScript dialogs and HTTP auth are done; permissions, the file
-   chooser, downloads, certificate errors and the helper remain.
+   page. JavaScript dialogs and HTTP auth are done; the file chooser,
+   downloads, certificate errors and the helper remain. Permissions are not
+   relayed (decision 12).
 7. CDP implementation of `BrowserToolAccess`; `browser.agent.action`; ghost
    cursor on the desktop.
 8. Action side effects, `expect_url`, typing guard, password-field guard,
@@ -1313,6 +1314,11 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
     keeps working until the total limit.
 11. Shared control: a tab the agent opens can be driven by the person and
     the agent at the same time. No lease or takeover step (7.5 is deferred).
+12. Site permissions (location, notifications, camera, mic) are the agent's
+    to control. Zwiim neither asks a person nor keeps any permission state:
+    the engine refuses them by default, and the agent grants what its tabs
+    need through its browser tools (P1.7), for its session's context only,
+    gone with that context. CDP reports no permission request to relay.
 
 Not decided yet, and not blocking: audio in Agent View, DevTools on the
 phone, a camera or mic source for pages, and Linux support for the governor.
