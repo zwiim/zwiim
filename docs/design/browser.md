@@ -1,0 +1,1165 @@
+# In-Zwiim browser: architecture
+
+Status: decided design, 2026-11-13. Nothing here is built yet. Latency, memory
+and cost figures are estimates until P0 measures them.
+
+Zwiim gets its own browser. The Host runs it, agents drive it, and the person
+watches and steers it from the Mac or the phone. This document says how, which
+rules it follows, what we learned from other products, what it costs to run,
+and the order to build it in.
+
+## 1. Requirements
+
+| # | Requirement | Where it is met |
+|---|---|---|
+| R1 | The person sees what an agent does in the browser, live, on desktop and phone | 7.1, 7.3, 8, 10.2 |
+| R2 | The person previews their own app with live reload and steers it from desktop or phone. On the phone this can be the phone's own browser loading the app through the tunnel (Live App), which is a separate browser from the agent's | 7, 8 |
+| R3 | Changes an agent makes show up at once | 10.5 |
+| R4 | One browser instance on the Host for every workspace and session, with memory kept in check. This limits the Host's browser; the phone's Live App is the phone's own | 4, 11 |
+
+Fixed rules this design keeps (from `CLAUDE.md`):
+
+1. The Host is the authority. The browser engine, its tabs and their state
+   live in the Host. Clients render frames and send input.
+2. Local work never depends on the Cloud. The desktop on the same Mac and the
+   phone on the same network never touch it. The Cloud only relays
+   ciphertext, and only counts bytes (15).
+3. Clients use `/zwiim/v1` only. CDP and Chromium internals do not leak into
+   the protocol.
+4. Credentials go in the OS keychain. Cookie snapshots are credentials (6.3).
+5. No copyleft dependencies (17).
+
+## 2. What exists today
+
+1. `runtime/host/src/browser/` is upstream code (about 11k lines) for a
+   built-in browser made of native webviews inside the desktop process. Most
+   of it is behind `tauri-runtime` / `browser-child` features that never build
+   (`runtime/host/Cargo.toml:25`). Only `agent`, `types`, `capture`,
+   `console`, `eval`, `service_url` and `services` compile.
+2. Agent browser tools exist: 13 `browser_*` tools in
+   `acp/delegation/tool_schema.json`, routed to the `BrowserToolAccess` trait
+   (`acp/browser_tools.rs:534`). The headless Host passes the `NoBrowserTabs`
+   stub (`bin/zwiim_host.rs:597`), so every call answers "unavailable".
+3. Dev-server detection works: `service_url` reads addresses from terminal
+   output, `services` probes them, and `workspace.previews` reports them. The
+   desktop opens them in the system browser (`TerminalPanel.tsx:379`).
+4. The tunnel (`runtime/host/src/tunnel`) is Noise over the relay's WSS. It
+   carries JSON envelopes, including HTTP requests and WebSocket messages
+   (`req`/`res`, `ws.open`/`ws.msg`), with a 64 KB send cap
+   (`tunnel/relay.rs:21`). The relay socket itself already sends binary
+   WebSocket messages (`tunnel/relay.rs:50`).
+5. The Host has a wake detector (`runtime/host/src/power/wake.rs`).
+6. Missing: binary framing in the envelope layer, per-device rights beyond
+   Host vs. device (`web/auth.rs:154`), CPU or memory priority handling for
+   child processes, and any per-account accounting in the Cloud.
+
+The upstream design put the engine in the desktop process. That cannot serve
+a phone, cannot run while the desktop window is closed, and stops painting
+when the pane is hidden (Claude desktop issue #86444 shows the same failure).
+So the engine moves to the Host. We keep the pure upstream modules (grants,
+policy, console ring, capture cropping, service detection, downloads naming,
+handoff rendering) and drop the webview surfaces.
+
+## 3. What others do, and what we take from it
+
+We read the public docs, changelogs and issue trackers of Cursor, Windsurf /
+Devin, VS Code + Copilot, Claude desktop and Claude in Chrome, ChatGPT Atlas
+and Operator, Codex, Google Antigravity, Replit, Lovable, v0, Manus,
+Browserbase, Steel, Kernel, Browserless, neko, Cloudflare Browser Isolation,
+Parsec and Chrome Remote Desktop, and the source of two MIT projects, Orca
+and T3 Code. We take ideas only. No code, no binaries, no packages from them,
+and nothing that ties us to their licences.
+
+| Observed | Who | What Zwiim does with it |
+|---|---|---|
+| Engine out of the UI process, UI only composites | Atlas (Chromium behind Mojo) | Engine is a Host child process; every client is a viewer |
+| Server owns one `chrome-headless-shell`, downloaded with pinned hashes | T3 Code | Same engine and delivery (5) |
+| Phone viewing ships as CDP JPEG frames, no video | T3 Code, Orca | Agent View is JPEG over our tunnel; WebRTC is deferred (P4) |
+| Frame credit window, pause on queueing, probe when acks stop | Orca | Per-viewer credit (7.3) |
+| One engine, a storage partition per task | Atlas, VS Code ephemeral agent sessions | One Chromium, one `BrowserContext` per session (6) |
+| Human tabs private until "Share with agent" | VS Code | Personal tabs need an explicit grant; session tabs are the agent's own (10.1) |
+| Approve sites, not clicks; localhost free | Claude desktop, Codex | Same, enforced at the network layer, not by URL checks (13.2) |
+| Allow-lists escape via redirects | Cursor (documented) | Check every document request with CDP `Fetch` (13.2) |
+| Take over and hand back, with a timeout | Replit, Operator, Cursor | Control lease in the Host (7.5) |
+| Lease generation invalidates the agent's element refs | T3 Code | Same (7.5) |
+| Actions report their side effects; `expect-url` guard; typing guard | Orca | Agent tools (10.3) |
+| Accessibility snapshot, not screenshot + coordinates | Playwright MCP, Cursor | Agent tools act on snapshot refs (10.2) |
+| Element comments become agent context | Codex Annotate, Windsurf, VS Code | Element pick goes into the composer as untrusted page data (10.6) |
+| Renderer-per-tab warm pools reach 12 GB; only 4 worktrees kept live | Cursor (user reports), Orca | Memory governor with a RAM budget (11) |
+| 60 GB of recording JPEGs | Antigravity (user reports) | Recordings have a quota and an expiry (10.7) |
+| Public artifact URLs, org-wide shared profiles | Cursor, Devin | Nothing leaves the Mac except through the encrypted tunnel |
+
+Where we differ on purpose: the products above run the engine either inside
+the editor (no phone, or a phone only while the desktop app is open) or in a
+cloud VM (no localhost, data leaves the machine). Zwiim runs it on the
+person's Mac and streams it out, so `localhost` dev servers, HMR and the
+person's network just work, and the Cloud never sees a page.
+
+We also looked at shipping a public tunnel (cloudflared, ngrok, frp, bore) for
+the phone and rejected it: their edges decrypt traffic, they give dev servers
+public URLs, and they duplicate the tunnel Zwiim already has (14.4).
+
+## 4. Shape
+
+```
+                         ┌──────────────── Host (user's Mac) ────────────────┐
+ agents ──tools────────► │ BrowserService: tabs, contexts, grants, lease,    │
+ (MCP, CDP proxy)        │   site policy, native-UI relay, side effects      │
+                         │      │                                            │
+ desktop/phone ─/zwiim/v1► EngineManager ─pipe─► chrome-headless-shell (1)   │
+                         │      │                  1 context per session     │
+                         │      │                  + 1 personal context      │
+                         │ StreamHub: JPEG screencast, credit per viewer     │
+                         │ PortForwarder: workspace dev ports only           │
+                         │ MemoryGovernor: RSS budget, freeze, discard       │
+                         └─────────┬───────────────────────┬─────────────────┘
+               loopback (same Mac) │                       │ Noise tunnel (E2E)
+                                   ▼                       ▼
+                          Desktop app            LAN direct ── or ── Cloud relay
+                                                     (ciphertext only, bytes counted
+                                                      per account and channel)
+                                                           ▼
+                                                     Phone app
+                                       ┌───────────────┴────────────────┐
+                                  Live App (Phone)               Agent View (Mac)
+                                  native WebView on              JPEG stream of the
+                                  localhost:<port> proxy         Host's Chromium tab
+```
+
+New Host modules, all under `runtime/host/src/browser/`:
+
+1. `engine` — download, verify, spawn and supervise Chromium; the CDP pipe
+   connection and its session multiplexing.
+2. `service` — `BrowserService`: tabs, contexts, grants, lease, policy.
+3. `stream` — `StreamHub`, the local frame socket, remote frame delivery.
+4. `forward` — `PortForwarder` for Live App (8).
+5. `native_ui` — dialogs, file chooser, select, context menu, permissions.
+6. `governor` — the memory and priority policy.
+7. `cdp_proxy` — the per-session CDP endpoint (10.4).
+8. `tools` — the CDP implementation of `BrowserToolAccess`.
+
+Existing pure modules stay and lose their `tauri-runtime` gates where they
+are needed: `agent`, `types`, `policy`, `console`, `capture`, `eval`,
+`listener`, `service_url`, `services`, `handoff`, and the naming part of
+`downloads`. The webview modules (`surface*`, `shim`, `hooks`, `blank_page`,
+`doc_guest`, `channel`, `profile`, `registry`, `events`, `open_request`,
+`smoke`) are removed in their own PR once nothing refers to them.
+
+## 5. Engine
+
+### 5.1 Which build
+
+`chrome-headless-shell`, the Chrome for Testing build of headless Chromium.
+
+1. Memory. Measured on this Mac with five simple tabs: about 550 MB summed
+   RSS against about 2.6 GB for `--headless=new`, and it respects
+   `--renderer-process-limit` (new headless does not).
+2. Its licence file is the Chromium BSD notice plus third-party notices. The
+   full Chrome for Testing build carries Widevine, whose licence forbids
+   redistribution; P0.3 confirms the headless shell does not.
+3. It has the H.264 decoder, so pages that play video work.
+4. Trade-off: no extensions, and it is easier to detect as automation. Dev
+   servers and most sites do not care. Bot-walled sites (some Google and
+   Cloudflare flows) may need "Open in my browser" (5.6).
+
+### 5.2 How it gets onto the Mac
+
+Downloaded on first use, never bundled.
+
+1. Zwiim pins a version and a SHA-256 per platform in the Host (in code,
+   updated with each Zwiim release). The Host downloads from Google's Chrome
+   for Testing bucket over HTTPS, checks the hash, unpacks it into
+   `<app data>/browser/engine/<version>/` and removes old versions after a
+   successful start of the new one.
+2. Why not bundle: Google's builds carry Google's terms, and
+   redistributing them is not clearly allowed. A download straight from
+   Google to the person's machine is what Playwright and Puppeteer do.
+3. Chromium is a separate program we start, never a linked dependency. Its
+   own LGPL / MPL parts (FFmpeg, Blink) stay inside its process, and the
+   notices script is not affected. We write this policy down in `NOTICE`.
+4. Updates: Chrome for Testing does not update itself. A Zwiim release bumps
+   the pin. Between releases the Host can fetch a newer pinned engine from the
+   update feed it already uses, so a Chromium security fix does not wait for
+   a full app release.
+5. Enterprise or offline setups can point the Host at their own Chromium
+   build (`browser.enginePath` setting). The Host still only talks CDP over a
+   pipe to it.
+6. Setup failures are reported with a reason the clients can show:
+   `download_offline`, `checksum_mismatch`, `disk_full`, `unsupported_platform`,
+   `crash_loop`.
+
+### 5.3 Launch
+
+```
+chrome-headless-shell
+  --remote-debugging-pipe            # fd 3/4, no TCP port; nobody else can attach
+  --user-data-dir=<app data>/browser/profile
+  --renderer-process-limit=<from budget, 11.2>
+  --no-first-run --no-default-browser-check
+  --disable-background-networking --disable-component-update
+  --enable-gpu                        # Metal compositing; verify in P0
+```
+
+1. Started lazily, on the first `browser.tab.open` or agent tool call.
+2. Spawned in its own process group, `kill_on_drop`, like
+   `workspace/scripts.rs:395`, so a Host crash takes it down too.
+3. Restarted by `EngineManager` on unexpected exit with backoff (1 s, 2 s,
+   4 s, max 30 s; five failures in ten minutes turn the browser off with
+   `crash_loop`).
+4. Stopped after 5 minutes with no open tab, or 15 minutes with no viewer,
+   no agent activity and no loading tab. Tabs come back discarded (11.3).
+
+### 5.4 CDP connection
+
+One pipe, NUL-delimited JSON, with flattened sessions (`Target.attachToTarget
+{flatten:true}`), so one reader task multiplexes every tab. Per tab the Host
+enables `Page`, `Runtime`, `Network` (only while an agent or a viewer needs
+it), `Fetch` for documents (13.2), and the native-UI events (9).
+
+CDP is the only seam between `BrowserService` and the engine. Headless-shell
+details (download, flags) stay in `engine`, so a different engine later (18.1)
+does not touch the rest. No backend trait is added until a second engine
+exists.
+
+### 5.5 Sleep and wake
+
+On a wake event from `power/wake.rs` the Host calls `Browser.getVersion` with
+a 3 s timeout. If it fails, `EngineManager` restarts the engine and restores
+tabs (12.3). Remote viewers whose tunnel dropped reconnect with a new stream
+and get a fresh full frame.
+
+### 5.6 Open in my browser
+
+Every tab has "Open in my browser", which hands the URL to the system default
+browser. It covers what a headless engine cannot do well: passkeys, password
+managers, extensions, sites that block automation.
+
+## 6. Tabs and contexts
+
+### 6.1 Ownership
+
+Every tab belongs to exactly one owner:
+
+1. **Session tabs** live in that session's own `BrowserContext`. The session's
+   agent may use them without asking (10.1). Other sessions cannot see them.
+2. **Personal tabs** live in the default context, which is the persistent
+   profile on disk. They are the person's. An agent reads one only after the
+   person shares it (upstream `agent.rs` grant rules, unchanged).
+
+The UI groups tabs by session, so ten worktrees are ten tab groups in one
+browser (R4).
+
+### 6.2 Popups
+
+`Page.windowOpen` and `Target.targetCreated` with an opener become a new tab
+in the same context and owner. OAuth and SSO popups therefore work, and the
+opener relationship survives (`window.opener.postMessage`), which is what
+breaks in Cursor's webview.
+
+### 6.3 Session storage
+
+`Target.createBrowserContext` contexts are always ephemeral, and one profile
+directory can serve only one Chromium process. So persistence is ours:
+
+1. **Workspace login (P3).** "Keep me signed in for this workspace" saves a
+   snapshot of the session context's cookies (`Storage.getCookies`) and
+   `localStorage` (`DOMStorage`) for the origins the person chooses. New
+   sessions in the same workspace start from it. IndexedDB is not included;
+   it needs page script per origin and comes later if asked for.
+2. The snapshot is a credential. It is encrypted with a per-Host key held in
+   the keychain (or the file key store under `ZWIIM_HOST_KEY_STORE=file`), and
+   only the ciphertext is written to disk. Never into SQLite in the clear.
+3. The personal profile keeps Chromium's own on-disk storage. P0 checks how
+   the headless shell protects its cookie database on macOS. If it does not
+   use the keychain, the personal context switches to the same encrypted
+   snapshot scheme.
+
+### 6.4 Persisted tab records
+
+New table `browser_tabs` (sea-orm migration, `db/migration/`):
+
+`id, owner_kind (session|personal), session_id, url, title, position,
+created_at, last_active_at, discarded`.
+
+It is used for restore after an engine restart, a Host restart or discard.
+Page content is never stored.
+
+## 7. Agent View: the Host's tab, streamed
+
+Agent View is the stream of a tab in the Host's Chromium. The desktop always
+uses it. The phone uses it to watch an agent, to take over, and for external
+sites. It is required, not optional: Live App (8) cannot show the agent.
+
+### 7.1 Frames
+
+1. One `Page.startScreencast` per watched tab, JPEG. Chromium sends a frame
+   only when the page paints, so a still page sends nothing.
+2. Every frame goes to viewers as one binary message: a fixed header, then
+   the JPEG bytes as Chromium produced them. Header, little-endian: format
+   version (u8), message type (u8: frame; later ones such as cursor stay
+   possible), frame number (u32), Host timestamp in ms (u64), CSS width and
+   height (u16 each), scale (f32), scroll offset x and y (f32 each), JPEG
+   length (u32). A client that sees an unknown version closes the stream and
+   falls back to `browser.frame` events.
+3. Chromium is acked at the pace of the fastest viewer. Slower viewers skip
+   to the newest frame through their own credit (7.3), so a phone on the
+   relay never slows the desktop watching the same tab.
+4. Screencast size and quality come from the largest viewer. When a smaller
+   remote viewer watches the same tab, the Host re-encodes for it (decode
+   with `zune-jpeg`, encode with `jpeg-encoder`). That only happens when two
+   viewers of different sizes share a tab; P0 measures its cost.
+5. Identical frames (same hash as the last one sent to that viewer) are
+   skipped. A blinking text cursor otherwise repaints about every 500 ms.
+
+### 7.2 Desktop on the same Mac
+
+1. `browser.view.open { tabId, viewport }` over the normal socket returns a
+   `streamId`. The desktop then opens `/zwiim/v1/browser/stream/<streamId>`,
+   a WebSocket on the same loopback listener and token as the rest of
+   `/zwiim/v1`.
+2. Client → Host: JSON input messages (7.6) on the same socket.
+3. The desktop draws frames with `createImageBitmap` on a canvas, and draws
+   the cursor itself, so pointer movement never waits for the Host.
+4. No re-encode, no relay, no cost. Expected added latency: one frame of
+   compositing plus JPEG encode in Chromium, about 20 to 35 ms. P0 measures
+   it.
+
+### 7.3 Phone and other remote viewers
+
+1. The stream travels in the `browser` relay channel (14.2), inside the Noise
+   tunnel, over LAN when the phone can reach the Mac directly and over the
+   relay otherwise.
+2. Credit window per viewer: 2 frames in flight normally, growing to 16 while
+   the link's queue stays under 100 ms, back to 2 when it grows. When acks
+   stop, the Host sends one probe frame a second instead of pausing. A viewer
+   that refuses many frames in a row is dropped and must reopen.
+3. The newest frame always wins. A frame waiting to be sent is replaced by a
+   newer one before it costs any bytes. Nothing old is ever queued.
+4. Starting numbers, tuned in P0:
+   1. Frames at most 860 px wide (and at most 2x the phone's screen).
+   2. JPEG quality 45 while the page moves; one quality-80 frame 200 ms after
+      movement stops, so text is sharp when it is read.
+   3. Up to 30 fps on LAN, about 15 fps on the relay.
+   4. Quality drops in this order: motion quality, then frame rate, then
+      size. Latency is never traded.
+5. The stream pauses when the phone app goes to the background, the screen
+   turns off or the view is hidden. Thumbnails use a small size.
+6. A desktop on another Mac is a remote viewer like the phone.
+7. Budget, to be measured in P0: LAN under 60 ms input-to-frame, relay under
+   150 ms plus the network round trip.
+
+### 7.4 Routes, cheapest first
+
+| Route | Who | Relay cost |
+|---|---|---|
+| Loopback | Desktop on the same Mac | none |
+| LAN | Phone on the same network (the existing LAN path); also any network the person already has to the Mac, such as Tailscale or a VPN | none |
+| Relay | Phone anywhere else | counted and limited (15) |
+
+The Host and phone try them in that order and fall back automatically. A
+badge shows the active route. Direct internet connections (WebRTC with STUN)
+are P4.
+
+### 7.5 Control lease
+
+One controller per tab at a time, held by the Host:
+
+1. Holders: a device (desktop or phone) or a session's agent.
+2. `browser.control.claim` / `release`. A person always gets control. The
+   agent's in-flight action steps are aborted at once, its input tools return
+   `person_has_control` until the person releases control or 2 minutes pass
+   without input (configurable), and its read tools (snapshot, screenshot,
+   console) refuse too, so what the person types is never captured.
+3. Each claim bumps the tab's lease generation. Element refs from older
+   snapshots stop working, and the agent must take a new snapshot.
+4. An agent asking for the person (login, CAPTCHA, MFA) uses a new tool,
+   `browser_request_takeover { tabId, reason }`. This shows on every client
+   like a permission request, with "Take over" and "Skip".
+5. Viewport belongs to the lease. The controller's viewport and device
+   metrics (`Emulation.setDeviceMetricsOverride`, touch on for phones) apply;
+   other viewers get the same frames scaled and letterboxed.
+6. `browser.tab.state` events say who holds control, so every client shows
+   "Agent is driving" or "iPhone has control".
+
+### 7.6 Input
+
+1. Pointer: client coordinates are mapped to CSS pixels with the frame header
+   (scale, offset). `Input.dispatchMouseEvent`. Moves are coalesced on the
+   client to one per animation frame.
+2. Touch: `Input.dispatchTouchEvent`, with pinch through
+   `Input.synthesizePinchGesture`.
+3. Keys: `Input.dispatchKeyEvent` with code, key and modifiers.
+4. Text from phone keyboards: a hidden native text field on the phone. The
+   committed text goes as `Input.insertText`, the composition in progress as
+   `Input.imeSetComposition`, so autocorrect, dictation and CJK input work.
+5. Clipboard: explicit "Paste to page" and "Copy from page" actions only.
+   Copy and cut inside the page stay inside the page; the Mac's clipboard is
+   never read or written in the background.
+6. Shortcuts the client keeps: Cmd+L (address bar), Cmd+T, Cmd+W, Cmd+R,
+   Cmd+F (find), Cmd+[ and Cmd+] (back, forward), Cmd+ + / − / 0 (zoom),
+   Cmd+P (print). Every other key goes to the page.
+7. Drag and drop on the desktop: files dropped on the panel go to the page's
+   drop target through `Input.dispatchDragEvent`; dropped files must come from
+   the workspace or be copied into session scratch first.
+8. Device rights: a new `browser_access` column on trusted devices with
+   values `none`, `view`, `control`. A newly paired phone gets `view`.
+   `control` is needed to steer and to use Live App. Raising it is a
+   Host-only action (`require_local_authority`), so a device cannot raise its
+   own rights.
+
+### 7.7 Browser basics
+
+1. Find in page: a helper in the isolated world (9) searches the page's text
+   and highlights matches. Not `Page.searchInResources`, which searches
+   resource files.
+2. Print and save as PDF: `Page.printToPDF`, saved to the session's scratch
+   downloads.
+3. Zoom: `Emulation.setPageScaleFactor` per tab.
+4. History: the address bar suggests from `browser_tabs` URLs and the
+   person's own navigation history in the personal profile. No bookmarks in
+   this design.
+
+## 8. Live App: the phone's own browser on your dev server
+
+Live App is the default phone view for the person's own app. The phone's
+native WebView loads the app itself; the Mac only forwards the dev server's
+ports through the tunnel. It is the phone's own browser, separate from the
+agent's tab.
+
+### 8.1 How it works
+
+1. The phone app runs a small loopback proxy in a native module (Swift and
+   Kotlin, extending `zwiim-preview`). It listens on `127.0.0.1:<port>` on the
+   phone, with the same port numbers as the Mac.
+2. `browser.forward.open { workspaceId }` asks the Host for every port the
+   `services` registry ties to that workspace, for example the frontend on
+   5173 and the API on 8080, and opens a forward for each. The WebView then
+   loads `http://localhost:5173`.
+3. Because the address is still `localhost:<port>`:
+   1. The HMR WebSocket connects to `localhost:5173`, which is forwarded, so
+      live updates work.
+   2. A frontend calling an API on another forwarded port works.
+   3. `localhost` is a secure origin, so `crypto.subtle`, service workers and
+      secure cookies work without HTTPS.
+   4. Vite's `allowedHosts` check and login redirects registered for
+      `localhost` pass.
+4. Requests and WebSocket messages ride the `forward` lane of the `browser`
+   channel (14.2), in 16–32 KB chunks.
+5. Platform settings: iOS needs `NSAllowsLocalNetworking`; Android needs a
+   network security config that allows cleartext to `localhost` only.
+6. The forward stops when the phone app goes to the background (iOS stops
+   the proxy anyway) and reopens on return.
+
+### 8.2 Choosing the view
+
+The phone switches between "Live App (Phone)" and "Agent View (Mac)" on its
+own, and one tap switches back:
+
+1. Agent View opens when an agent drives the tab, when a takeover is
+   requested, or for a URL that is not one of the workspace's ports.
+2. Live App opens for the workspace's own dev server.
+
+### 8.3 Limits, stated plainly
+
+1. Live App does not show the agent. Agent clicks, typing and form state
+   appear only in Agent View; code changes reach both through HMR.
+2. The phone has its own cookies and logins. A login done in Live App does
+   not carry over to the agent's tab, and the reverse. Takeover for a login
+   always uses Agent View.
+3. The phone uses its own network. Calls the frontend makes to hosts that
+   only the Mac can reach (VPN-only, `/etc/hosts`) fail unless those are
+   forwarded ports too.
+4. The first uncached load over the relay is slow: a Vite dev app loads
+   hundreds of modules, one round trip each, so 5–10 s on mobile data. After
+   that the phone's cache and HMR keep it small. LAN is fast.
+5. Phone WebKit or Android WebView and the Mac's Chromium can disagree. That
+   is often useful mobile testing, but "works on the phone" does not prove
+   "works for the agent".
+
+### 8.4 What it can reach
+
+Only ports the `services` registry ties to that workspace, and only for a
+device with `browser_access = control`. Never the Host's own `/zwiim/v1`
+port, the CDP proxy (10.4), or any other port on the Mac.
+
+## 9. Native UI the stream does not show
+
+Chromium does not paint these into screencast frames, so the Host turns each
+one into a protocol event and the clients draw it with their own UI
+(following `DESIGN.md`; on the phone these are sheets):
+
+| Thing | How the Host sees it | What the client shows | Answer |
+|---|---|---|---|
+| `alert` / `confirm` / `prompt` / `beforeunload` | `Page.javascriptDialogOpening` | A sheet with the message | `Page.handleJavaScriptDialog`. Dialogs stall capture, so a dialog nobody answers in 60 s is dismissed and logged |
+| `<select>` | Injected `select { appearance: base-select }` in an isolated world, so the list renders in the page | Nothing special | Ordinary clicks. Where the page opts out, the helper reports the options and the client shows a native picker |
+| Date / time inputs | Isolated-world helper on focus | Native date picker | Value set through the helper. Colour pickers paint in frames and need nothing |
+| Context menu | `contextmenu` caught by the helper | Client menu: Back, Reload, Copy link, Copy image, Inspect element (pick, 10.6) | Host action |
+| File chooser | `Page.setInterceptFileChooserDialog` + `Page.fileChooserOpened` | A picker limited to workspace files and phone photos (uploaded through the tunnel to session scratch) | `DOM.setFileInputFiles` |
+| HTTP auth | `Fetch.authRequired` | Username and password sheet | `Fetch.continueWithAuth`; nothing stored |
+| Permissions (camera, mic, location, notifications) | Permission requests | A prompt per origin | `Browser.setPermission` for that origin and context. Camera and mic are never granted to agent-only tabs, and no real camera or mic is wired to the engine in this design |
+| Downloads | `Browser.downloadWillBegin` | Download bar | Saved under `<session scratch>/downloads` with upstream `downloads` naming; never opened automatically |
+| Certificate errors | `Security` events | Interstitial | Only loopback addresses can be accepted, per tab, by a person |
+
+The helper script runs in an isolated world (`Page.createIsolatedWorld`), as
+the upstream helper did, so page scripts cannot see or tamper with it. It
+only draws `<select>`, date, find-in-page and context-menu UI. Permissions,
+HTTP auth, file choosers, downloads and certificate decisions come from CDP
+events to the Host and are answered by the Host; nothing in the page can
+trigger or answer them.
+
+## 10. Agents
+
+### 10.1 What an agent may touch
+
+1. Its own session's tabs: yes, without asking. They live in a context with
+   no personal logins, so a read leaks nothing the agent did not navigate to.
+   This is a deliberate change from the upstream rule ("nothing is granted
+   automatically"), which assumed one shared cookie jar.
+2. Personal tabs: only after the person shares one, at `read` or `control`
+   (upstream grant levels and the loopback listener binding from
+   `listener.rs`, unchanged).
+3. Other sessions' tabs: never.
+4. External sites: governed by site policy (13.2).
+
+### 10.2 Tools
+
+`BrowserToolAccess` gets a CDP implementation in `browser/tools.rs`, so the
+13 existing tools start working without schema changes. Every call goes
+through `BrowserService` first, which checks tab ownership, the grant, the
+control lease and site policy, and emits the action event; `tools.rs` never
+holds its own CDP session.
+
+1. `browser_snapshot` — the accessibility tree (`Accessibility.getFullAXTree`)
+   flattened into the upstream `PageSnapshot` with element refs, tagged with
+   the lease generation (7.5).
+2. `browser_click`, `browser_type`, `browser_hover`, `browser_select_option`,
+   `browser_press_key` — act on a ref: resolve it to a node, scroll it into
+   view, dispatch input at its centre. Each one waits for the page to settle
+   (load event or network idle, at most 5 s) before returning, so the next
+   snapshot shows the result.
+3. `browser_screenshot` — `Page.captureScreenshot`, cropped and capped by the
+   existing `capture` module, taken after the page settles so it never shows
+   the page from before an HMR update.
+4. `browser_console_messages` — the existing `console` ring, fed by
+   `Runtime.consoleAPICalled` and `Runtime.exceptionThrown`.
+5. `browser_eval` — unchanged gates: its own switch (off by default) and
+   `control` level.
+6. New: `browser_request_takeover` (7.5), and `browser_wait_for { text |
+   selector | network_idle }` so agents stop guessing with sleeps.
+
+Every action also emits a `browser.agent.action` event (kind, target box,
+label) just before it runs. Clients draw a ghost cursor and a highlight over
+the frame, so the person sees what the agent is about to click, not only that
+the page changed (R1).
+
+### 10.3 Action guards and side effects
+
+1. **Side effects.** Every action returns what it caused: navigated (new
+   URL), new tab opened, download started, dialog opened, console errors
+   logged during the action. The agent learns about a popup or a failed
+   request without a second call.
+2. **`expect_url`.** Action tools take an optional `expect_url`. If the tab
+   is no longer on that URL, the action is refused instead of clicking on the
+   wrong page.
+3. **Typing guard.** Agent input never goes to a tab while a person's focus
+   is in it and they typed in the last 2 s.
+4. **Password fields.** An agent cannot type into a password field without
+   the person's approval, except on the workspace's own loopback dev servers,
+   where agents need test logins.
+
+### 10.4 Scripts that bring their own Playwright
+
+An agent that runs Playwright or Puppeteer from a shell would normally start
+its own invisible browser. To make those runs visible too:
+
+1. Each session can get a CDP endpoint, `ws://127.0.0.1:<port>/cdp/<token>`,
+   passed to the agent's environment as `ZWIIM_BROWSER_CDP_URL` and mentioned
+   in the agent instructions (`chromium.connectOverCDP(url)`).
+2. It is a proxy in the Host, not Chromium's own port. It only exposes the
+   session's own context: `Target.*` is filtered to that `browserContextId`,
+   and `Browser.*`, `SystemInfo.*`, `Target.createBrowserContext`, storage
+   calls for other contexts and the personal context are refused. Methods are
+   allow-listed, not deny-listed.
+3. The token is per session, lives in memory, and dies with the session.
+   The proxy obeys the control lease like the tools do: while a person holds
+   a tab, every method aimed at that tab (input, DOM, `Runtime`, screenshots)
+   is refused, reads included, so a script cannot read what the person types.
+   Navigations still pass through site policy (13.2). The proxy parses
+   untrusted input and gets its own fuzz tests.
+4. Off by default, on per workspace. Headless test suites (`npx playwright
+   test`) still launch their own browsers; their traces and videos are shown
+   from the files they write.
+
+### 10.5 Instant results (R3)
+
+1. The agent edits a file, the dev server's HMR updates the page, Chromium
+   paints, and every viewer gets the frame. Live App gets the same HMR update
+   directly. No extra machinery.
+2. The session's tab follows the session's own dev server. When `services`
+   sees a new server, either from a URL printed in the terminal or from a
+   port probe, `listener.rs` finds the process behind the port and its
+   working directory (`proc_pidinfo`), which names the worktree. That URL
+   opens in, or replaces, that session's preview tab. Two worktrees on 5173
+   and 5174 therefore never cross.
+3. For servers without HMR, an optional "Reload on save" per tab reloads
+   after files in the worktree change (debounced 300 ms).
+
+### 10.6 Element pick (P3)
+
+"Inspect element" and a picker button on every client: the person points at an
+element, and the upstream `handoff` module turns it into a block in the
+composer (selector, text, box, console lines) labelled as untrusted page
+content. On the phone the pick is a long press.
+
+### 10.7 Recording (P3)
+
+Each agent-driven tab keeps an action timeline: one small JPEG thumbnail and
+the action per step. Capped at 50 MB per session and kept 7 days, both
+configurable. It lets the person review on the phone what happened while they
+were away. No continuous video.
+
+## 11. Memory and priority (R4)
+
+One process tree still has one renderer per site and per context, so "one
+instance" alone does not cap memory. The governor does.
+
+### 11.1 Measuring
+
+1. Every 5 s the governor reads the RSS of every process in Chromium's process
+   group (`proc_pidinfo`). CDP gives no per-tab memory and no pid, so this is
+   per tree and per renderer pid only.
+2. It listens to `DISPATCH_SOURCE_TYPE_MEMORYPRESSURE` (WARN, CRITICAL)
+   through `dispatch2`.
+
+### 11.2 Budget
+
+Default `min(25% of RAM, 6 GB)`, a setting. `--renderer-process-limit` is set
+from it at launch (about one renderer per 300 MB of budget, at least 4).
+Caps: 8 tabs per session, 30 in total, both settings.
+
+### 11.3 Ladder
+
+From cheapest to strongest, applied when usage passes 70%, 85% and 100% of
+the budget, or on a pressure event:
+
+1. Stop screencasts nobody is watching (always, not only under pressure).
+2. Freeze background tabs (`Page.setWebLifecycleState frozen`) after 2
+   minutes unseen and idle.
+3. Discard the least recently used tabs: record URL and title, close the
+   target. The tab stays in the list and reloads when opened.
+4. Refuse new tabs with a clear message saying which sessions hold the most.
+5. On CRITICAL: discard everything except the tabs in use.
+6. If one renderer alone is over half the budget, its tabs show "This page is
+   using too much memory" with Reload and Close. Nothing is killed silently.
+
+"In use" means viewed, driven by an agent, or downloading. Tabs in use are
+never frozen or discarded.
+
+### 11.4 Priority
+
+1. The whole tree runs at `nice +5`, so the Host, agents and the relay keep
+   their CPU when a page spins.
+2. When no tab is being viewed and no agent is using the browser, the tree
+   moves to `PRIO_DARWIN_BG` (throttles CPU, disk and network). It returns to
+   normal on the first view or tool call. P0 checks that Chromium does not
+   reset its children's priority.
+
+### 11.5 Other platforms
+
+The governor's measuring and priority parts are macOS code. A Linux Host
+reports the engine as `unsupported_platform` until they are ported; nothing
+else in the design is macOS-specific.
+
+## 12. Resilience
+
+1. **Client disconnects:** the viewer's stream stops. Tabs, agent work and the
+   lease (after its timeout) are unaffected. A reconnect gets a fresh full
+   frame.
+2. **Renderer crash** (`Inspector.targetCrashed`): the tab shows "This page
+   crashed" with Reload. A tab an agent is driving reloads once automatically.
+3. **Engine crash:** `EngineManager` restarts it (5.3) and restores tabs from
+   `browser_tabs` as discarded. Session contexts are recreated, seeded from
+   workspace logins if there are any.
+4. **Hung page:** a CDP call that takes longer than 10 s on one tab marks that
+   tab unresponsive and does not block the others (one reader task, per-call
+   timeouts).
+5. **Host restart or update:** same as an engine crash.
+6. **Mac wake:** health check (5.5).
+7. **No engine yet** (first use, offline download): tools answer
+   "unavailable" with the reason from 5.2.6, as the stub does today.
+
+## 13. Security
+
+### 13.1 Boundaries
+
+1. CDP only through a pipe. Nothing else on the Mac can attach.
+2. Agents get CDP only through the per-session proxy (10.4), never Chromium's
+   own endpoint.
+3. Pages have no path into Zwiim. The helper world only posts capped,
+   validated messages (upstream `channel` rules).
+4. Page content is untrusted. Anything handed to an agent (snapshot, console,
+   pick) is labelled as page data, never as instructions.
+5. View versus control is enforced in the Host per device (7.6), never only
+   in the client UI.
+6. Live App forwards only the workspace's own ports (8.4).
+
+### 13.2 Site policy
+
+1. Allowed without asking: the workspace's own preview servers (ports the
+   `services` registry maps to this workspace, 10.5) and loopback origins the
+   person has approved. Other loopback ports, private and link-local ranges
+   (including `169.254.169.254`) and `.local` names need approval like any
+   new site, because they reach local admin ports and metadata services.
+   The check uses the resolved address, so a public name that resolves to
+   loopback (DNS rebinding) is treated as loopback.
+2. External origins in session tabs: the first navigation an agent makes to a
+   new site needs approval (once, always, deny), subdomains separately, using
+   the upstream `policy` rule table. Navigations the person makes need none.
+3. Enforced with `Fetch.requestPaused` on every main-frame and subframe
+   document request in session contexts, so redirects, `location =` and link
+   clicks are all checked, not only the URL the agent asked for.
+4. Administrators can ship a policy file (upstream `policy`) with allow and
+   deny lists.
+
+### 13.3 Data
+
+1. Cookie snapshots: encrypted, key in the keychain (6.3).
+2. Recordings and downloads stay in the session's scratch directory and are
+   removed with the session.
+3. Frames and forwarded traffic leave the Mac only inside the Noise tunnel.
+   The relay sees ciphertext and byte counts.
+
+## 14. Tunnel changes
+
+### 14.1 Binary framing and chunks
+
+1. The envelope layer gets binary messages next to the JSON ones, so frames
+   and forwarded bodies are not base64-encoded.
+2. Anything larger than the send cap is split into 16–32 KB chunks, so a
+   5 MB bundle never holds up a tap behind it.
+
+### 14.2 Relay channels
+
+Each kind of traffic uses its own relay connection, tagged with its channel
+when it opens, so the Cloud can count and limit per channel without seeing
+content:
+
+| Channel | Carries |
+|---|---|
+| `control` | The normal protocol: commands and events, terminal, chat, approvals, file and Git views |
+| `browser` | Agent View frames and input, Live App forwarding |
+
+1. The phone asks for a ticket with `channel` (`POST /v1/hosts/{id}/tickets`
+   `{ channel: "browser" }`). The Cloud's `Dial` to the Host carries the
+   channel, and the Host routes a `browser` connection only to the browser
+   stream and the port forwarder.
+2. Each connection runs its own Noise session with the same pairing keys, so
+   encryption stays end to end with no new trust setup. Opening the browser
+   costs one extra handshake round trip.
+3. The `browser` connection opens only while Agent View or Live App is open.
+4. Older clients send no channel and are treated as `control`.
+
+### 14.3 Lanes inside the `browser` channel
+
+Three priority lanes, highest first: `input` (taps, keys, frame acks), then
+`forward` (Live App), then `frames`. A waiting frame is replaced by a newer
+one before it is sent.
+
+### 14.4 No third-party tunnel
+
+cloudflared and ngrok decrypt at their edge and give dev servers public
+URLs; frp, rathole and bore would move the same bytes through the same
+droplets. The Zwiim tunnel already has pairing, end-to-end encryption and
+device rights, so it carries everything.
+
+## 15. Relay usage and plans
+
+Relay bandwidth out of the droplets is the only part of this design that
+costs Zwiim money (16). The Cloud counts it per account and channel, and a
+plan sets the limits. Loopback and LAN traffic never reach the Cloud and are
+never counted or limited.
+
+### 15.1 Plans
+
+Every account is on a plan. Every new account starts on Free.
+
+| Plan | Browser | Total (all channels) | `control` speed cap |
+|---|---|---|---|
+| Free | 5 GiB per period | 10 GiB per period | 4 MiB burst, then 128 KiB/s |
+
+1. Plans are rows in Supabase, not code. A paid plan later is a new row, and
+   upgrading an account is changing its `plan_id`. The Cloud needs no change.
+2. `null` in a limit column means unlimited. Removing a limit is an update
+   to the plan row; it takes effect within about 60 s, with no restart.
+3. A billing provider, when there is one, never talks to the Cloud. Its
+   webhook (a Supabase Edge Function or a small service) writes
+   `account_plans`. Prices, billing and an upgrade API are not part of this
+   design.
+
+### 15.2 Periods
+
+1. Each account has a reset day, its `period_anchor`: the sign-up time for
+   now, the billing date once paid plans exist.
+2. Usage is stored per account period. A reset day of the 31st becomes the
+   last day of shorter months, then the 31st again. All dates are UTC.
+3. The database works out the period, using its own clock, so every Cloud
+   instance agrees.
+4. At `resets_at` the Cloud zeroes that account's counters in memory, so the
+   block lifts without waiting for the next sync.
+
+### 15.3 Storage (Supabase)
+
+Migration: `runtime/cloud/supabase/migrations/`.
+
+1. `plans (id, name, browser_bytes, total_bytes, control_rate, …)`, seeded
+   with the Free row.
+2. `account_plans (user_id, plan_id default 'free', period_anchor, …)`. A
+   trigger on `auth.users` puts every new user on Free, and the migration
+   backfills existing users.
+3. `relay_usage (user_id, period_start, channel, bytes, updated_at)`, primary
+   key `(user_id, period_start, channel)`.
+4. `add_relay_usage(batch)` adds a batch of byte counts and returns, per
+   account: the plan, used bytes per channel, the limits and `resets_at`. An
+   account with no `account_plans` row is treated as Free.
+5. Row-level security is on with no policies. Only the Cloud's service key
+   can read or write. Clients use `GET /v1/usage`.
+6. Only account id, period, channel and byte counts are stored: no content,
+   no IP addresses, no URLs.
+
+### 15.4 Counting and enforcement (Cloud)
+
+1. Every relayed message passes `forward` in `runtime/cloud/src/server.rs`,
+   which adds its size to the account's counter for that channel, in both
+   directions.
+2. Counters live in memory. Once a minute the Cloud sends one
+   `add_relay_usage` call with every account's new bytes and gets fresh
+   totals and limits back. On startup it loads the current period's totals.
+3. **Ticket gate:**
+   1. A `browser` ticket is refused when browser usage or total usage is at
+      its limit.
+   2. A `control` ticket is refused when total usage is at its limit.
+   3. The refusal is `429` with:
+      ```json
+      { "error": "relay_quota_exceeded", "channel": "browser",
+        "plan": "free", "used_bytes": 5368709120, "limit_bytes": 5368709120,
+        "resets_at": "2026-12-12T00:00:00Z" }
+      ```
+      `channel` is `browser` or `total`.
+4. **Open connections** that cross a limit are closed with close code
+   `4429`: only `browser` connections at the browser limit, every connection
+   at the total limit.
+5. **`control` speed cap:** a token bucket per account, so browser traffic
+   sneaked through `control` by a modified client is too slow to use.
+6. **Supabase unreachable:** the relay keeps working with the last known
+   totals (fail-open). Unsent bytes stay in memory and are retried. A Cloud
+   restart during an outage loses at most a few minutes of counts.
+7. **Self-hosters without Supabase:** counting is memory-only, resets on
+   restart, and there are no limits.
+
+### 15.5 Settings
+
+| Variable | Meaning |
+|---|---|
+| `ZWIIM_CLOUD_SUPABASE_URL` | Existing. Also the REST endpoint for usage |
+| `ZWIIM_CLOUD_SUPABASE_SERVICE_KEY` | New, secret. Turns on usage storage and plan limits. Lives only in the server's environment file (mode `0600`), never in the repo or in logs |
+| `ZWIIM_CLOUD_MAX_RELAYS` | Existing. Each phone now uses two connections while the browser is open, so the hosted Cloud raises it to about 512 |
+
+Limits come from plan rows, so there are no limit variables.
+
+### 15.6 What the person sees
+
+1. `GET /v1/usage` (Cloud, next to `/v1/hosts`, same account token):
+   ```json
+   { "plan": { "id": "free", "name": "Free" },
+     "period_start": "2026-11-12T00:00:00Z", "resets_at": "2026-12-12T00:00:00Z",
+     "channels": { "browser": { "used": 3435973837, "limit": 5368709120 },
+                   "total":   { "used": 3865470566, "limit": 10737418240 } } }
+   ```
+   The SDK exposes it as `CloudClient.usage()` and turns a `429` into a typed
+   `RelayQuotaError`.
+2. At 80% of the browser limit: a line in the phone's browser toolbar,
+   "Free · 4 of 5 GB used · resets 12 Dec". Not a popup.
+3. At the browser limit, opening Agent View or Live App over the relay, or
+   crossing it while watching (the picture freezes), shows a sheet:
+   ```
+   Browser limit reached
+
+   You've used 5 GB of remote browsing this period.
+   It resets on 12 Dec.
+
+   Chat, terminal and approvals still work.
+   On the same Wi-Fi as your Mac, the browser works as usual.
+
+   [ OK ]                        (later: [ See plans ])
+   ```
+4. At the total limit, a second sheet, "Remote limit reached": "Phone access
+   over the internet resets on 12 Dec. On the same Wi-Fi as your Mac,
+   everything works."
+5. Dates show in the person's own format and time zone.
+6. Neither sheet appears on LAN or on the desktop on the same Mac.
+
+This is a Cloud API change, not `/zwiim/v1`; only the channel on `Dial` (14.2)
+touches the Host.
+
+## 16. Cost
+
+What costs Zwiim money is relay bandwidth out of the droplets, plus the
+droplets. Chromium runs on the person's Mac, its download comes from Google,
+and loopback and LAN traffic never touch the Cloud. DigitalOcean charges
+nothing for inbound traffic, pools outbound allowance across droplets, and
+charges $0.01 per GiB beyond it. Figures below are estimates; `relay_usage`
+replaces them with real numbers.
+
+### 16.1 Per viewer
+
+| On screen | Agent View rate |
+|---|---|
+| Page not changing | ~0 |
+| Agent working, phone-sized frames | ~90 KB/s (~0.3 GB an hour) |
+| Scrolling or animation at 10 fps | ~500 KB/s |
+
+Live App costs one uncached load (about 10–20 MB for a Vite dev app), then
+only HMR updates and API calls.
+
+### 16.2 What 5 GiB gives a Free user
+
+1. About 15 hours of Agent View over the relay a period.
+2. Or about 250 uncached Live App loads.
+3. A typical user, at about 2 GiB of relayed browser traffic, stays well
+   under it. Normal agent use (chat, terminal, approvals) is about 0.3 GiB a
+   period and counts only toward the 10 GiB total.
+
+### 16.3 One 2 GB droplet (1 vCPU, 2 TB outbound, about $12 a month)
+
+| Usage pattern | Relay traffic per account | Accounts within 2 TB |
+|---|---|---|
+| Worst case: everyone at the 10 GiB total | 10 GiB | ~200 |
+| Heavy | ~2.5 GiB | ~800 |
+| Typical | ~0.7 GiB | ~2,800 |
+
+1. The most one Free account can cost beyond the allowance is about $0.10 a
+   period.
+2. One core caps concurrent streams at roughly 200–250 (to be load-tested),
+   about 2,000–2,500 active phone users at 10% concurrency.
+3. A single droplet is a single point of failure for remote access. LAN and
+   local use keep working.
+
+### 16.4 At 10,000 users
+
+| | Light | Typical | Heavy |
+|---|---|---|---|
+| Relay outbound per month | ~1 TB | ~8 TB | ~60 TB |
+| Monthly bill | ~$12–50 | ~$70–100 | ~$600 |
+| Per user | ~$0.005 | ~$0.01 | ~$0.06 |
+
+For comparison, the same typical load as a pure pixel stream with no Live App
+and no cost controls is about 40–80 TB, roughly $400–800 a month. The saving
+comes mostly from Live App and LAN-first routing.
+
+### 16.5 When to upgrade
+
+| Signal | Action |
+|---|---|
+| CPU over 60% at peak, or more than ~150 concurrent browser streams | 2 vCPU / 4 GB droplet (~$24, 4 TB included) |
+| More than ~1.5 TB a month in `relay_usage` | Same, or a second droplet (adds pooled allowance) |
+| Remote access must survive a server failure | Second droplet behind DNS; counters in Supabase already work across both |
+| Heavy pattern becomes real | P4: direct WebRTC connections and H.264 |
+
+## 17. Dependencies and licences
+
+| Need | Choice | Licence |
+|---|---|---|
+| Engine | chrome-headless-shell, downloaded at run time, separate process | Chromium BSD + Google terms; not redistributed by us |
+| JPEG decode (mixed-size viewers) | `zune-jpeg` (avoids libjpeg-turbo's IJG notice) | MIT OR Apache-2.0 OR Zlib |
+| JPEG encode (mixed-size viewers) | `jpeg-encoder` | checked in its PR; must be permissive |
+| Memory pressure | `dispatch2` | Zlib OR Apache-2.0 OR MIT |
+| Phone loopback proxy | Platform networking (Network.framework, Java sockets) | system |
+| Usage storage | Supabase REST through the Cloud's existing `reqwest` | no new dependency |
+
+No third-party CDP driver (`playwright-core`, `agent-browser`) is used; the
+Host speaks CDP itself.
+
+Deferred to P4, only if measurements call for it: `str0m` (MIT OR
+Apache-2.0), a TURN client and server (webrtc-rs `turn`, MIT OR Apache-2.0),
+VideoToolbox through `objc2-video-toolbox` (Zlib OR Apache-2.0 OR MIT), and
+`react-native-webrtc` (MIT).
+
+Do not use: the `turn-rs` crate (GPL), KasmVNC (GPL), BrowserBox (AGPL), any
+GPL ffmpeg or x264 build, Widevine, the ngrok agent (proprietary).
+`scripts/licenses/notices.mjs --check` catches the packaged ones; the rest are
+kept out by review, and Widevine by downloading the headless shell only.
+
+## 18. Protocol changes
+
+Revision 33 (from 32), capabilities `browser` and `relay_channels`. Mirrored
+in `clients/sdk`.
+
+Operations:
+
+1. `browser.tabs.list { sessionId? }`
+2. `browser.tab.open { owner, url?, viewport? }`, `browser.tab.close`,
+   `browser.tab.navigate { url | back | forward | reload | stop }`
+3. `browser.tab.share { tabId, sessionId, level }`, `browser.tab.unshare`
+4. `browser.view.open { tabId, viewport }`, `browser.view.close`
+5. `browser.control.claim`, `browser.control.release`
+6. `browser.ui.answer { tabId, requestId, answer }` (dialogs, pickers,
+   permissions, auth, takeover)
+7. `browser.site.decide { origin, decision }`
+8. `browser.forward.open { workspaceId }`, `browser.forward.close`
+9. `browser.find { tabId, text }`, `browser.print { tabId }`
+10. `browser.workspace_login.save`, `browser.workspace_login.clear` (P3)
+
+Events:
+
+1. `browser.tab.state` — URL, title, loading, owner, controller, lease
+   generation, grants, viewers, discarded or crashed.
+2. `browser.tab.removed`
+3. `browser.ui.request` — one of the rows in section 9, or a takeover.
+4. `browser.agent.action` — ghost cursor and highlight.
+5. `browser.frame` — fallback frames only (7.1).
+6. `browser.engine.state` — downloading, starting, running, stopped, failed
+   with a reason (5.2.6).
+
+Socket: `/zwiim/v1/browser/stream/<streamId>`, loopback only. Remote viewers
+get the same binary messages on the `browser` channel.
+
+Device rights: `browser_access` on trusted devices, set by `device.update`
+(Host only).
+
+## 19. Clients
+
+1. **Desktop:** a `BrowserPanel` beside `TerminalPanel` in `App.tsx`, with a
+   tab strip grouped by session, an address bar, back, forward and reload,
+   "Share with agent", "Take over", "Open in my browser", find, print and a
+   picker. `TerminalPanel` opens detected previews in this panel instead of
+   the system browser.
+2. **Phone:** a Browser screen per session, reached from the session and from
+   a "Preview" chip when a dev server is detected. It holds Live App (the
+   native WebView on the loopback proxy) and Agent View (frames on a canvas
+   view, touch input, the hidden text field for typing, native sheets for
+   section 9, the ghost cursor), with automatic switching (8.2), a route
+   badge, the usage line and the limit sheets (15.6).
+3. Both follow `DESIGN.md`. The phone design adds a "watching the agent"
+   state to the session screen, and `DESIGN.md` gets entries for the limit
+   sheets and the usage line.
+
+## 20. Build order
+
+Each item is one small PR unless noted.
+
+### P0 — spikes (throwaway code, answers only)
+
+1. Measure input-to-frame latency of the loopback JPEG socket, and of JPEG
+   over the tunnel on LAN and on the relay.
+2. Live App with a real Vite app and a real Next.js app on an iPhone and an
+   Android phone: HMR, API calls to a second port, first-load time over the
+   relay, `NSAllowsLocalNetworking` and the Android network security config.
+3. Headless shell on macOS: no Widevine in the archive, cookie database
+   protection, GPU compositing with `--enable-gpu`, WebGL and video
+   performance, whether `PRIO_DARWIN_BG` sticks on its children.
+4. Cost baseline: bytes per minute of Agent View and Live App for typical
+   pages.
+
+### Cloud — relay usage and plans (can start now; independent of P1)
+
+1. Supabase migration: `plans` with the Free row, `account_plans`, the
+   sign-up trigger and backfill, `relay_usage` keyed by period, and
+   `add_relay_usage`.
+2. `usage.rs`: counters, the 60 s sync, startup load, fail-open.
+3. Channel on tickets and `Dial`, the ticket gate, the `429` and close code
+   `4429`.
+4. The `control` speed cap.
+5. `GET /v1/usage` and `RelayQuotaError` in the SDK.
+6. Phone limit sheets and the 80% line, with their `DESIGN.md` entries.
+7. Deployment notes for the droplet: the service key in the `0600` env file.
+
+### P1 — Host browser, agents, desktop (covers R1, R3, R4 on the Mac)
+
+1. `browser::engine`: download, verify, spawn, CDP pipe, supervision, setup
+   errors, wake health check.
+2. `browser_tabs` migration and `BrowserService` with session and personal
+   contexts.
+3. Protocol revision 33: tab operations and `browser.tab.state`; SDK types.
+4. Local stream socket and `StreamHub`.
+5. Desktop `BrowserPanel`: viewer, tab strip, navigation, shortcuts.
+6. Native UI relay (section 9) and the isolated-world helper, with find in
+   page.
+7. CDP implementation of `BrowserToolAccess`; `browser.agent.action`; ghost
+   cursor on the desktop.
+8. Action side effects, `expect_url`, typing guard, password-field guard.
+9. Control lease with generation, and `browser_request_takeover`.
+10. Site policy through `Fetch`.
+11. Memory governor and priority.
+12. Dev-server-to-worktree mapping and auto-open in the session tab.
+13. Print to PDF, drag and drop.
+14. Remove the dead upstream webview modules.
+
+### P2a — Live App on the phone (covers R2 on the phone)
+
+1. `browser_access` device rights.
+2. Tunnel binary framing and chunking.
+3. Relay channels on the Host side (`Dial` routing) and the SDK.
+4. `PortForwarder` and `browser.forward.*`.
+5. Phone loopback proxy (iOS and Android) and the Live App view.
+
+### P2b — Agent View on the phone (covers R1 on the phone)
+
+1. Lanes in the `browser` channel.
+2. Remote frame delivery with the credit window and the quality rules.
+3. Phone Agent View: viewer, touch, keyboard, native sheets, takeover,
+   automatic switching.
+4. Per-session CDP proxy (10.4).
+
+### P3 — comfort
+
+1. Workspace login snapshots (6.3).
+2. Recording timeline (10.7).
+3. Element pick on both clients (10.6).
+4. Snapshots that return only what changed. Element refs can drift, so this
+   waits until the basic tools are proven.
+5. Reload on save; mobile preview tab.
+6. DevTools on the desktop, served by the Host from the engine's own
+   DevTools frontend through the proxy.
+
+### P4 — optional, only if measurements or the relay bill call for it
+
+1. Direct internet connections over WebRTC with STUN, falling back to the
+   relay.
+2. H.264 through VideoToolbox for Agent View.
+3. TURN in `runtime/cloud`.
+
+## 21. Decisions
+
+1. A newly paired phone gets `view`; `control` is granted on the Host.
+2. The per-session CDP proxy is opt-in per workspace.
+3. Workspace login snapshots come in P3.
+4. Memory budget default: `min(25% RAM, 6 GB)`.
+5. No TURN for now. Routes are loopback, LAN and relay; WebRTC is P4.
+6. Live App's cookies stay separate from the Host's browser.
+7. Relay limits are counted in bytes, per account period, per channel.
+8. LAN is used automatically when the phone can reach the Mac.
+9. Free plan: 5 GiB browser, 10 GiB total per period, `control` capped at
+   128 KiB/s sustained.
+10. Over the browser limit, the browser stops on the relay; everything else
+    keeps working until the total limit.
+
+Not decided yet, and not blocking: audio in Agent View, DevTools on the
+phone, a camera or mic source for pages, and Linux support for the governor.
+
+## 22. Risks
+
+1. Latency is an estimate until P0.1. If the JPEG path costs too much, the
+   options are H.264 (P4) or CEF off-screen rendering with shared IOSurface
+   textures (BSD, `cef` crate), at the cost of embedding work.
+2. Live App on real phones is unproven until P0.2: origin rules, cleartext
+   settings, and first-load time over the relay.
+3. Live App uses the phone's network and cookies (8.3). Company setups with
+   VPN-only APIs fall back to Agent View.
+4. iOS stops the phone's proxy and the stream in the background.
+5. Cost figures are unmeasured until P0.4 and `relay_usage`.
+6. One droplet is a single point of failure for remote access.
+7. Headless detection blocks some third-party logins. "Open in my browser"
+   is the escape hatch, not a fix.
+8. Chrome for Testing is meant for automation, and Google says to load only
+   trusted content in it. The pin must follow Chrome stable closely, and
+   general browsing should stay a secondary use next to development and agents.
