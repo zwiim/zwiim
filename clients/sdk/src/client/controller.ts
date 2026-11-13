@@ -3,6 +3,7 @@
 // and terminals follow the host state feed: each (re)connect starts from its
 // snapshot instead of trusting what the store had.
 
+import type { BrowserStream, BrowserStreamHandlers } from "../browser/stream";
 import { createHostStore, type HostStore } from "../state/store";
 import type { TerminalOutput } from "../state/terminal";
 import { backgroundMovedHistory, historyCovers, type SessionFrame, type SessionView } from "../state/session";
@@ -773,6 +774,11 @@ export class HostController {
 
   async closeBrowserView(stream_id: string): Promise<void> {
     await this.client.request("browser.view.close", { stream_id });
+  }
+
+  /** Watch a stream `openBrowserView` returned, and send it input. */
+  openBrowserStream(stream_id: string, handlers: BrowserStreamHandlers): Promise<BrowserStream> {
+    return this.client.openBrowserStream(stream_id, handlers);
   }
 
   private browserTabStep(tab: BrowserTab): BrowserTab {

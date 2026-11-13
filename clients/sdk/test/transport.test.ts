@@ -257,3 +257,62 @@ describe("LocalTransport.openEvents", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("LocalTransport.openBrowserStream", () => {
+  function frame(version = 1): ArrayBuffer {
+    const out = new Uint8Array(34 + 2);
+    const v = new DataView(out.buffer);
+    out[0] = version;
+    out[1] = 1;
+    v.setUint32(2, 3, true);
+    v.setUint16(14, 800, true);
+    v.setUint16(16, 600, true);
+    v.setFloat32(18, 1, true);
+    v.setUint32(30, 2, true);
+    out[34] = 0xff;
+    out[35] = 0xd8;
+    return out.buffer;
+  }
+
+  function open() {
+    const t = new LocalTransport({ url: "http://127.0.0.1:3080", token: "smoke-token-123", WebSocket: FakeWebSocket as any });
+    const frames: number[] = [];
+    const errors: string[] = [];
+    const onClose = vi.fn();
+    const stream = t.openBrowserStream("st 1", {
+      onFrame: (f) => frames.push(f.number),
+      onInputError: (e) => errors.push(e.code),
+      onClose,
+    });
+    return { ws: FakeWebSocket.last as FakeWebSocket & { binaryType?: string }, stream, frames, errors, onClose };
+  }
+
+  it("authenticates like /ws, reads frames and input errors, and sends input", () => {
+    const { ws, stream, frames, errors } = open();
+    expect(ws.url).toBe("ws://127.0.0.1:3080/zwiim/v1/browser/stream/st%201");
+    expect(ws.protocols).toEqual(["zwiim-browser-stream", "zwiim-token.c21va2UtdG9rZW4tMTIz"]);
+    expect(ws.binaryType).toBe("arraybuffer");
+
+    stream.send({ type: "text", text: "dropped" });
+    ws.readyState = 1;
+    ws.onopen?.();
+    stream.send({ type: "mouse", action: "down", x: 1, y: 2, button: "left", buttons: 1, click_count: 1 });
+    expect(JSON.parse(ws.sent[0]!)).toMatchObject({ type: "mouse", action: "down", x: 1 });
+    expect(ws.sent).toHaveLength(1);
+
+    ws.onmessage?.({ data: frame() });
+    ws.onmessage?.({ data: new Uint8Array([1, 1, 0]).buffer });
+    ws.onmessage?.({ data: '{"type":"error","error":{"code":"invalid_request","message":"bad"}}' });
+    ws.onmessage?.({ data: "not json" });
+    expect(frames).toEqual([3]);
+    expect(errors).toEqual(["invalid_request"]);
+  });
+
+  it("closes on a newer frame format, and reports a close once", () => {
+    const { ws, onClose } = open();
+    ws.onmessage?.({ data: frame(2) });
+    expect(ws.readyState).toBe(3);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledWith({ code: 1000, reason: "unsupported_version" });
+  });
+});

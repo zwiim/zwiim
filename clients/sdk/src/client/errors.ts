@@ -52,6 +52,11 @@ import type {
  * - `pairing_expired`: the QR's code has expired.
  * - `pairing_rejected`: the host refused the code (unknown, expired or
  *   already used).
+ *
+ * Browser views (`openBrowserStream`) add:
+ *
+ * - `browser_stream_unavailable`: this connection cannot carry a browser
+ *   stream (a phone, or a computer reaching the host remotely).
  */
 export type ClientErrorCode =
   | HostErrorCode
@@ -71,6 +76,7 @@ export type ClientErrorCode =
   | "pairing_expired"
   | "pairing_rejected"
   | "update_required"
+  | "browser_stream_unavailable"
   | (string & {});
 
 export class ZwiimClientError extends Error {

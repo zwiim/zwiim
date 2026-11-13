@@ -6,6 +6,12 @@ export {
   type BrowserScreenFrame,
   type BrowserFrameResult,
 } from "./browser/frame";
+export {
+  BROWSER_STREAM_SUBPROTOCOL,
+  type BrowserStream,
+  type BrowserStreamHandlers,
+  type BrowserStreamTransport,
+} from "./browser/stream";
 export * from "./transport/transport";
 export { LocalTransport, type LocalTransportOptions } from "./transport/local";
 export { RelayTransport, type RelayTransportOptions } from "./transport/relay";

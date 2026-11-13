@@ -12,6 +12,7 @@ import {
   type TerminalCursor,
   type TerminalOutput,
 } from "../state/terminal";
+import type { BrowserStream, BrowserStreamHandlers, BrowserStreamTransport } from "../browser/stream";
 import type { BrowserUpdate } from "../state/browser";
 import type { SessionFrame } from "../state/session";
 import { decodeResult } from "../transport/codec";
@@ -563,6 +564,22 @@ export class HostClient {
     if (!compat || !("capabilities" in compat) || !compat.capabilities.includes("browser")) return;
     this.emit((l) => l.browser?.({ type: "browser.subscribing" }));
     this.channel.send({ op: "browser.subscribe" });
+  }
+
+  /**
+   * Open the socket of a stream `browser.view.open` returned. Only a
+   * transport on this computer carries one for now; others throw
+   * `browser_stream_unavailable`.
+   */
+  async openBrowserStream(stream_id: string, handlers: BrowserStreamHandlers): Promise<BrowserStream> {
+    const transport =
+      this.transport ?? (typeof this.source === "function" ? await this.source() : this.source);
+    this.transport = transport;
+    const streams = transport as Partial<BrowserStreamTransport>;
+    if (typeof streams.openBrowserStream !== "function") {
+      throw new ZwiimClientError("browser_stream_unavailable", "Browser views are only available on the host's own computer");
+    }
+    return streams.openBrowserStream(stream_id, handlers);
   }
 
   private onFrame(frame: ServerFrame): void {
