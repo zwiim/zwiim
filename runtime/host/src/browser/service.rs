@@ -222,12 +222,7 @@ impl BrowserService {
         let cdp = self.cdp_locked(&mut inner).await?;
         let live = self.create_target(&cdp, &mut inner, &owner).await?;
         if let Some(url) = &url {
-            cdp.call(
-                "Page.navigate",
-                json!({ "url": url }),
-                Some(&live.session_id),
-            )
-            .await?;
+            start_navigation(&cdp, &live.session_id, url);
         }
         let url = url.unwrap_or_else(|| "about:blank".into());
         Ok(self.add_tab(&mut inner, owner, url, live).await)
@@ -348,7 +343,7 @@ impl BrowserService {
         match to {
             Navigation::Url(_) => {
                 let url = target_url.unwrap_or_default();
-                cdp.call("Page.navigate", json!({ "url": url }), s).await?;
+                start_navigation(&cdp, &session, &url);
             }
             Navigation::Reload => {
                 tab.info.crashed = false;
@@ -414,12 +409,7 @@ impl BrowserService {
         let owner = inner.tabs[tab_id].info.owner.clone();
         let live = self.create_target(&cdp, inner, &owner).await?;
         if url != "about:blank" {
-            cdp.call(
-                "Page.navigate",
-                json!({ "url": url }),
-                Some(&live.session_id),
-            )
-            .await?;
+            start_navigation(&cdp, &live.session_id, url);
         }
         let tab = inner
             .tabs
@@ -486,13 +476,7 @@ impl BrowserService {
             match self.create_target(&cdp, inner, &owner).await {
                 Ok(live) => {
                     if url != "about:blank" {
-                        let _ = cdp
-                            .call(
-                                "Page.navigate",
-                                json!({ "url": url }),
-                                Some(&live.session_id),
-                            )
-                            .await;
+                        start_navigation(&cdp, &live.session_id, &url);
                     }
                     if let Some(tab) = inner.tabs.get_mut(&id) {
                         tab.live = Some(live);
@@ -736,21 +720,8 @@ impl BrowserService {
                 };
                 self.ask_locked(&mut inner, &id, ui::dialog_of(p));
             }
+            // The pump already let it go on.
             "Fetch.requestPaused" => {
-                let (Some(cdp), Some(session)) = (inner.cdp.clone(), event.session_id.clone())
-                else {
-                    return;
-                };
-                let request_id = p["requestId"].as_str().unwrap_or_default().to_string();
-                tokio::spawn(async move {
-                    let params = json!({ "requestId": request_id });
-                    if let Err(e) = cdp
-                        .call("Fetch.continueRequest", params, Some(&session))
-                        .await
-                    {
-                        tracing::debug!(error = %e, "a paused page request went away");
-                    }
-                });
                 // A new page in a frame ends a sign-in it was waiting on.
                 let frame = p["frameId"].as_str().unwrap_or_default();
                 if let Some(id) = by_session(&inner, &event.session_id.clone().unwrap_or_default())
@@ -1072,6 +1043,40 @@ impl BrowserService {
     }
 }
 
+/// Load `url` in the tab of `session` without waiting for the server: a
+/// page that wants a sign-in answers only once a person has, and that needs
+/// the service.
+fn start_navigation(cdp: &Cdp, session: &str, url: &str) {
+    let reply = cdp.request(
+        "Page.navigate",
+        json!({ "url": url }),
+        Some(session),
+        super::engine::cdp::DEFAULT_TIMEOUT,
+    );
+    tokio::spawn(async move {
+        if let Err(e) = reply.await {
+            tracing::debug!(error = %e, "a browser navigation did not start");
+        }
+    });
+}
+
+/// Let a paused page request go on (`Fetch.enable` in `attach`), at once and
+/// without the service: a request waiting on it would never load.
+fn continue_request(cdp: &Cdp, event: &Event) {
+    let params = json!({ "requestId": event.params["requestId"] });
+    let reply = cdp.request(
+        "Fetch.continueRequest",
+        params,
+        event.session_id.as_deref(),
+        super::engine::cdp::DEFAULT_TIMEOUT,
+    );
+    tokio::spawn(async move {
+        if let Err(e) = reply.await {
+            tracing::debug!(error = %e, "a paused page request went away");
+        }
+    });
+}
+
 fn ui_order(request_id: &str) -> u64 {
     request_id
         .strip_prefix("ui-")
@@ -1099,6 +1104,9 @@ async fn pump(
             }
             Err(broadcast::error::RecvError::Closed) => return,
         };
+        if event.method == "Fetch.requestPaused" {
+            continue_request(&cdp, &event);
+        }
         let Some(service) = service.upgrade() else {
             return;
         };
@@ -1273,7 +1281,7 @@ mod tests {
         svc.navigate(&tab.id, Navigation::Url("https://example.com/".into()))
             .await
             .unwrap();
-        let target = fake.target_of_url("https://example.com/").unwrap();
+        let target = fake.wait_url("https://example.com/").await;
         fake.set_title(&target, "Example Domain");
         until(&svc, &tab.id, |t| t.title == "Example Domain").await;
         assert_eq!(svc.tab(&tab.id).await.unwrap().url, "https://example.com/");
@@ -1324,7 +1332,7 @@ mod tests {
         url: &str,
         params: serde_json::Value,
     ) -> UiRequest {
-        let target = fake.target_of_url(url).unwrap();
+        let target = fake.wait_url(url).await;
         let session = fake.lock().targets[&target].session.clone().unwrap();
         fake.emit("Page.javascriptDialogOpening", params, Some(&session));
         loop {
@@ -1420,7 +1428,7 @@ mod tests {
             vec![json!({"handleAuthRequests": true,
                         "patterns": [{"urlPattern": "*", "resourceType": "Document"}]})]
         );
-        let target = fake.target_of_url("https://example.com/").unwrap();
+        let target = fake.wait_url("https://example.com/").await;
         let session = fake.lock().targets[&target].session.clone().unwrap();
         let mut events = svc.subscribe();
 
@@ -1483,6 +1491,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_page_waiting_on_its_server_holds_nothing_up() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let tab = svc.open(TabOwner::Personal, None).await.unwrap();
+        fake.lock().hold_navigations = true;
+        let mut events = svc.subscribe();
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            svc.navigate(&tab.id, Navigation::Url("https://example.com/".into())),
+        )
+        .await
+        .expect("navigate returns before the page answers")
+        .unwrap();
+
+        // Meanwhile its sign-in still reaches a person.
+        let target = fake.wait_url("https://example.com/").await;
+        let session = fake.lock().targets[&target].session.clone().unwrap();
+        fake.emit(
+            "Fetch.authRequired",
+            json!({"requestId": "r1", "frameId": target, "request": {"url": "https://example.com/"},
+                   "authChallenge": {"source": "Server", "origin": "https://example.com",
+                                     "scheme": "basic", "realm": ""}}),
+            Some(&session),
+        );
+        let asked = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let BrowserEvent::Ui(r) = events.recv().await.unwrap() {
+                    return r;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(asked.tab_id, tab.id);
+    }
+
+    #[tokio::test]
     async fn a_page_that_closes_itself_is_removed() {
         let fake = FakeEngine::default();
         let db = fresh_in_memory_db().await;
@@ -1491,7 +1537,7 @@ mod tests {
             .open(session("s1"), Some("https://example.com/"))
             .await
             .unwrap();
-        let target = fake.target_of_url("https://example.com/").unwrap();
+        let target = fake.wait_url("https://example.com/").await;
         fake.lock().targets.remove(&target);
         fake.emit(
             "Target.targetDestroyed",
@@ -1543,7 +1589,7 @@ mod tests {
         let back = svc.activate(&tab.id).await.unwrap();
         assert!(!back.discarded);
         assert_eq!(fresh.lock().starts, 1);
-        assert!(fresh.target_of_url("https://example.com/").is_some());
+        fresh.wait_url("https://example.com/").await;
         assert!(!store::load(&db.conn).await.unwrap()[0].discarded);
     }
 
@@ -1571,7 +1617,7 @@ mod tests {
         let restored = svc.tab(&tab.id).await.unwrap();
         assert!(!restored.discarded);
         let (_, session_id) = svc.session(&tab.id).await.unwrap();
-        let target = fake.target_of_url("https://example.com/").unwrap();
+        let target = fake.wait_url("https://example.com/").await;
         assert_eq!(
             fake.lock().targets[&target].session.as_deref(),
             Some(session_id.as_str())
@@ -1598,7 +1644,7 @@ mod tests {
             .open(session("s1"), Some("https://app.example/"))
             .await
             .unwrap();
-        let opener_target = fake.target_of_url("https://app.example/").unwrap();
+        let opener_target = fake.wait_url("https://app.example/").await;
 
         let popup = fake.open_popup(&opener_target, "https://auth.example/login");
         let tabs = tokio::time::timeout(Duration::from_secs(5), async {

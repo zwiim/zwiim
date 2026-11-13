@@ -6447,10 +6447,7 @@ async fn browser_tabs_over_http() {
         json!({"tab_id": tab_id, "url": "https://example.com/"}),
     )
     .await;
-    assert!(fake
-        .calls("Page.navigate")
-        .iter()
-        .any(|c| c["url"] == "https://example.com/"));
+    fake.wait_url("https://example.com/").await;
     h.ok(
         "browser.tab.navigate",
         json!({"tab_id": tab_id, "action": "reload"}),
@@ -6577,7 +6574,7 @@ async fn a_page_dialog_reaches_clients_and_the_first_answer_wins() {
     ws.send_json(&json!({"op": "browser.subscribe"})).await;
     browser_frame(&mut ws, "browser.snapshot", |_| true).await;
 
-    let target = fake.target_of_url("https://example.com/").unwrap();
+    let target = fake.wait_url("https://example.com/").await;
     let session = fake.lock().targets[&target].session.clone().unwrap();
     fake.emit(
         "Page.javascriptDialogOpening",

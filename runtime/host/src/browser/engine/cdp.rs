@@ -122,6 +122,47 @@ impl Cdp {
         session_id: Option<&str>,
         timeout: Duration,
     ) -> Result<Value, CdpError> {
+        self.request(method, params, session_id, timeout).await
+    }
+
+    /// Send `method` now; the returned future waits for its result. For a
+    /// call whose result can arrive much later (`Page.navigate` waits for
+    /// the server), so the caller need not hold anything while it waits.
+    pub fn request(
+        &self,
+        method: &str,
+        params: Value,
+        session_id: Option<&str>,
+        timeout: Duration,
+    ) -> impl std::future::Future<Output = Result<Value, CdpError>> + Send + 'static {
+        let sent = self.enqueue(method, params, session_id);
+        let shared = self.shared.clone();
+        let method = method.to_string();
+        async move {
+            let (id, reply_rx) = sent?;
+            let _forget = Forget {
+                shared: &shared,
+                id,
+            };
+            match tokio::time::timeout(timeout, reply_rx).await {
+                Err(_) => Err(CdpError::Timeout { method }),
+                Ok(Err(_)) => Err(CdpError::Closed),
+                Ok(Ok(Ok(result))) => Ok(result),
+                Ok(Ok(Err((code, message)))) => Err(CdpError::Protocol {
+                    method,
+                    code,
+                    message,
+                }),
+            }
+        }
+    }
+
+    fn enqueue(
+        &self,
+        method: &str,
+        params: Value,
+        session_id: Option<&str>,
+    ) -> Result<(u64, oneshot::Receiver<Reply>), CdpError> {
         if self.is_closed() {
             return Err(CdpError::Closed);
         }
@@ -135,25 +176,11 @@ impl Cdp {
 
         let (reply_tx, reply_rx) = oneshot::channel();
         lock(&self.shared.pending).insert(id, reply_tx);
-        let _forget = Forget {
-            shared: &self.shared,
-            id,
-        };
         if self.writer.send(bytes).is_err() {
+            lock(&self.shared.pending).remove(&id);
             return Err(CdpError::Closed);
         }
-        match tokio::time::timeout(timeout, reply_rx).await {
-            Err(_) => Err(CdpError::Timeout {
-                method: method.to_string(),
-            }),
-            Ok(Err(_)) => Err(CdpError::Closed),
-            Ok(Ok(Ok(result))) => Ok(result),
-            Ok(Ok(Err((code, message)))) => Err(CdpError::Protocol {
-                method: method.to_string(),
-                code,
-                message,
-            }),
-        }
+        Ok((id, reply_rx))
     }
 
     /// Every event from now on.

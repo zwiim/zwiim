@@ -39,6 +39,8 @@ pub struct FakeState {
     pub targets: HashMap<String, FakeTarget>,
     /// Cookies per browser context.
     pub cookies: HashMap<String, Vec<Value>>,
+    /// `Page.navigate` never answers, as for a page waiting on a sign-in.
+    pub hold_navigations: bool,
     next: usize,
     /// The running engine's event sender and exit switch.
     events: Option<mpsc::UnboundedSender<Value>>,
@@ -142,6 +144,21 @@ impl FakeEngine {
             .map(|(id, _)| id.clone())
     }
 
+    /// The target at `url`, once a navigation (which the service starts
+    /// without waiting) has got there.
+    pub async fn wait_url(&self, url: &str) -> String {
+        let found = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(id) = self.target_of_url(url) {
+                    return id;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        found.unwrap_or_else(|_| panic!("no page reached {url}"))
+    }
+
     fn start(&self) -> Running {
         let (to_engine, from_host) = duplex(1 << 20);
         let (to_host, from_engine) = duplex(1 << 20);
@@ -180,7 +197,9 @@ impl FakeEngine {
                     buf.pop();
                     let req: Value = serde_json::from_slice(&buf).unwrap();
                     buf.clear();
+                    let held = req["method"] == "Page.navigate" && self.lock().hold_navigations;
                     let reply = self.answer(&req, &events_tx);
+                    if held { continue; }
                     let mut msg = match reply {
                         Ok(result) => json!({ "id": req["id"], "result": result }),
                         Err(message) => json!({ "id": req["id"], "error": { "code": -32000, "message": message } }),
