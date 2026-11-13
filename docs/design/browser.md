@@ -561,7 +561,7 @@ one into a protocol event and the clients draw it with their own UI
 | Date / time inputs | Isolated-world helper on focus | Native date picker | Value set through the helper. Colour pickers paint in frames and need nothing |
 | Context menu | `contextmenu` caught by the helper | Client menu: Back, Reload, Copy link, Copy image, Inspect element (pick, 10.6) | Host action |
 | File chooser | `Page.setInterceptFileChooserDialog` + `Page.fileChooserOpened` | A picker limited to workspace files and phone photos (uploaded through the tunnel to session scratch) | `DOM.setFileInputFiles` |
-| HTTP auth | `Fetch.authRequired` | Username and password sheet | `Fetch.continueWithAuth`; nothing stored |
+| HTTP auth | `Fetch.authRequired`, with each tab intercepting its page requests (documents only) and the event pump letting them go on at once | Username and password sheet (built, P1.6) | `Fetch.continueWithAuth`; nothing stored or logged, cancelled after 5 minutes unanswered |
 | Permissions (camera, mic, location, notifications) | Permission requests | A prompt per origin | `Browser.setPermission` for that origin and context. Camera and mic are never granted to agent-only tabs, and no real camera or mic is wired to the engine in this design |
 | Downloads | `Browser.downloadWillBegin` | Download bar | Saved under `<session scratch>/downloads` with upstream `downloads` naming; never opened automatically |
 | Certificate errors | `Security` events | Interstitial | Only loopback addresses can be accepted, per tab, by a person |
@@ -1125,7 +1125,9 @@ Operations:
 6. `browser.control.claim`, `browser.control.release` (deferred, 7.5)
 7. `browser.ui.answer { request_id, answer }` (dialogs, pickers,
    permissions, auth, takeover). For a dialog, `answer` is `{ kind:
-   "dialog", accept, text? }` (P1.6). The first answer from any client
+   "dialog", accept, text? }`; for a sign-in, `{ kind: "auth", accept,
+   username, password }` (P1.6). An answer of another kind is
+   `invalid_answer`. The first answer from any client
    wins; a later one is `request_not_found`.
 8. `browser.site.decide { origin, decision }`
 9. `browser.forward.open { workspace_id }`, `browser.forward.close`
@@ -1153,7 +1155,8 @@ answer is a `browser.snapshot { tabs, engine, ui_requests }`, then:
 4. `browser.ui.request { request }`: one of the rows in section 9, or a
    takeover. A request is `{ request_id, tab_id, owner, kind, ... }`; a
    dialog adds `dialog` (`alert`, `confirm`, `prompt`, `beforeunload`),
-   `message`, `default_text?` and `url`. `browser.ui.done { request_id,
+   `message`, `default_text?` and `url`; a sign-in (`kind: "auth"`) adds
+   `origin`, `scheme`, `realm`, `proxy` and `url`. `browser.ui.done { request_id,
    tab_id }` ends it: answered, dismissed unanswered, or its tab gone.
 5. `browser.agent.action`: ghost cursor and highlight.
 6. `browser.frame`: fallback frames only (7.1).
@@ -1241,7 +1244,7 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 4. Local stream socket and `StreamHub`.
 5. Desktop `BrowserPanel`: viewer, tab strip, navigation, shortcuts.
 6. Native UI relay (section 9) and the isolated-world helper, with find in
-   page. JavaScript dialogs are done; HTTP auth, permissions, the file
+   page. JavaScript dialogs and HTTP auth are done; permissions, the file
    chooser, downloads, certificate errors and the helper remain.
 7. CDP implementation of `BrowserToolAccess`; `browser.agent.action`; ghost
    cursor on the desktop.
