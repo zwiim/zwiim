@@ -165,6 +165,8 @@ struct Inner {
     saving: HashMap<String, Saving>,
     /// What session tabs printed, by tab id (design 10.2).
     consoles: HashMap<String, Console>,
+    /// When a person last typed into each tab (design 10.3).
+    typed: HashMap<String, tokio::time::Instant>,
 }
 
 /// One tab's console lines, and its page's execution contexts: whether each
@@ -229,6 +231,7 @@ impl BrowserService {
                 next_ui: 0,
                 saving: HashMap::new(),
                 consoles: HashMap::new(),
+                typed: HashMap::new(),
             }),
             events: broadcast::channel(EVENT_BUFFER).0,
         });
@@ -322,6 +325,7 @@ impl BrowserService {
         let mut inner = self.inner.lock().await;
         let tab = inner.tabs.remove(tab_id).ok_or_else(|| not_found(tab_id))?;
         inner.consoles.remove(tab_id);
+        inner.typed.remove(tab_id);
         self.drop_ui_locked(&mut inner, |r| r.tab_id == tab_id);
         if let (Some(live), Some(cdp)) = (&tab.live, &inner.cdp) {
             let _ = cdp
@@ -1048,6 +1052,21 @@ impl BrowserService {
         let empty = Console::default();
         let console = inner.consoles.get(tab_id).unwrap_or(&empty);
         Some(console.ring.read(query, &tab.info.url, |_| true))
+    }
+
+    /// A person typed into tab `tab_id`.
+    pub async fn person_typed(&self, tab_id: &str) {
+        let now = tokio::time::Instant::now();
+        self.inner
+            .lock()
+            .await
+            .typed
+            .insert(tab_id.to_string(), now);
+    }
+
+    /// When a person last typed into tab `tab_id`, if they have.
+    pub async fn last_typed(&self, tab_id: &str) -> Option<tokio::time::Instant> {
+        self.inner.lock().await.typed.get(tab_id).copied()
     }
 
     /// The seq of tab `tab_id`'s newest console line, to read only what

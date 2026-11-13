@@ -372,6 +372,12 @@ impl Viewer {
         if let Some(viewport) = input.viewport() {
             return self.hub.resize(&self.tab_id, viewport).await;
         }
+        if matches!(
+            input,
+            super::input::Input::Key { .. } | super::input::Input::Text { .. }
+        ) {
+            self.hub.browser.person_typed(&self.tab_id).await;
+        }
         let (cdp, session) = self.hub.browser.session(&self.tab_id).await?;
         super::input::dispatch(&cdp, &session, input).await
     }
@@ -896,6 +902,8 @@ mod tests {
         assert_eq!(eval("document.activeElement.id").await, "f");
         assert_eq!(eval("f.value").await, "ab");
         assert_eq!(eval("document.title").await, "sent ab");
+        // Agents hold off while the person types (design 10.3).
+        assert!(browser.last_typed(&tab.id).await.is_some());
         drop(viewer);
         browser.stop_engine().await;
     }

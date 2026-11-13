@@ -31,8 +31,8 @@ use crate::acp::browser_tools::{
     ActionEffects, BrowserActOutcome, BrowserCaptureOutcome, BrowserConsoleOutcome,
     BrowserEvalOutcome, BrowserSnapshotOutcome, BrowserTabOp, BrowserTabOutcome,
     BrowserTabsOutcome, BrowserToolAccess, DEFAULT_SNAPSHOT_MAX_CHARS, ERROR_ACTION_FAILED,
-    ERROR_BAD_ADDRESS, ERROR_NO_SUCH_TAB, ERROR_OPEN_FAILED, ERROR_READ_FAILED, ERROR_UNAVAILABLE,
-    ERROR_URL_CHANGED, ERROR_WAIT_TIMEOUT,
+    ERROR_BAD_ADDRESS, ERROR_NO_SUCH_TAB, ERROR_OPEN_FAILED, ERROR_PERSON_TYPING,
+    ERROR_READ_FAILED, ERROR_UNAVAILABLE, ERROR_URL_CHANGED, ERROR_WAIT_TIMEOUT,
 };
 use crate::app_state::AppState;
 use crate::db::entities::conversation;
@@ -61,6 +61,10 @@ const WORLD_NAME: &str = "zwiim-agent";
 /// this many characters.
 const EFFECT_ERRORS: usize = 5;
 const EFFECT_ERROR_CHARS: usize = 300;
+/// Agent input waits this long after a person last typed into the tab, and
+/// waits at most this long for them to stop (design 10.3).
+const TYPING_QUIET: Duration = Duration::from_secs(2);
+const TYPING_WAIT: Duration = Duration::from_secs(5);
 
 /// The tools for the Host this process runs.
 pub struct HostBrowserTools {
@@ -655,6 +659,16 @@ pub(crate) async fn act(
             );
         }
     }
+    if !person_quiet(browser, tab_id, TYPING_WAIT).await {
+        return BrowserActOutcome::refused(
+            tab_id,
+            ERROR_PERSON_TYPING,
+            format!(
+                "The person is typing in tab {tab_id}, so nothing was done. Wait a little and \
+                 try again, or leave this tab to them."
+            ),
+        );
+    }
     if request.target.is_none() && !matches!(request.action, ActionKind::Press { .. }) {
         return BrowserActOutcome::refused(
             tab_id,
@@ -832,6 +846,26 @@ fn asked(kind: &UiKind) -> String {
         }
         UiKind::Auth { origin, .. } => format!("sign-in for {origin}"),
         UiKind::FileChooser { .. } => "file chooser".to_string(),
+    }
+}
+
+/// Wait until the person has not typed into the tab for [`TYPING_QUIET`],
+/// at most `limit`. Whether they stopped.
+async fn person_quiet(browser: &BrowserService, tab_id: &str, limit: Duration) -> bool {
+    let give_up = tokio::time::Instant::now() + limit;
+    loop {
+        let Some(typed) = browser.last_typed(tab_id).await else {
+            return true;
+        };
+        let quiet_at = typed + TYPING_QUIET;
+        let now = tokio::time::Instant::now();
+        if quiet_at <= now {
+            return true;
+        }
+        if quiet_at > give_up {
+            return false;
+        }
+        tokio::time::sleep_until(quiet_at).await;
     }
 }
 
@@ -1239,6 +1273,33 @@ mod tests {
         .await;
         assert_eq!(failed.error, None);
         assert_eq!(failed.load_error.as_deref(), Some("dns"));
+    }
+
+    #[tokio::test]
+    async fn an_agent_waits_for_a_person_to_stop_typing() {
+        let fake = FakeEngine::default();
+        let browser = browser(&fake).await;
+        let tab = browser.open(owner("s1"), None).await.unwrap();
+        assert!(person_quiet(&browser, &tab.id, Duration::ZERO).await);
+        browser.person_typed(&tab.id).await;
+        assert!(!person_quiet(&browser, &tab.id, Duration::from_millis(100)).await);
+        let started = tokio::time::Instant::now();
+        assert!(person_quiet(&browser, &tab.id, TYPING_WAIT).await);
+        assert!(started.elapsed() >= TYPING_QUIET - Duration::from_millis(100));
+        let refused = act(
+            &browser,
+            &Worlds::default(),
+            "s1",
+            &tab.id,
+            &ActionRequest {
+                generation: "g.0.0".into(),
+                target: None,
+                action: ActionKind::Press { key: "a".into() },
+                expect_url: None,
+            },
+        )
+        .await;
+        assert_ne!(refused.error.as_deref(), Some(ERROR_PERSON_TYPING));
     }
 
     #[test]
