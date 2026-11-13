@@ -133,6 +133,8 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/browser.tab.close", post(browser::tab_close))
         .route("/browser.tab.navigate", post(browser::tab_navigate))
         .route("/browser.tab.find", post(browser::tab_find))
+        .route("/browser.tab.print", post(browser::tab_print))
+        .route("/browser.tab.drop", post(browser::tab_drop))
         .route("/browser.engine.reset", post(browser::engine_reset))
         .route("/browser.view.open", post(browser::view_open))
         .route("/browser.view.close", post(browser::view_close))

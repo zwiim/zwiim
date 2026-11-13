@@ -38,6 +38,7 @@ impl From<BrowserError> for ZwiimError {
             "invalid_answer" => (StatusCode::BAD_REQUEST, e.message),
             "invalid_site" => (StatusCode::BAD_REQUEST, e.message),
             "too_many_tabs" | "browser_memory_full" => (StatusCode::CONFLICT, e.message),
+            "page_too_large" => (StatusCode::PAYLOAD_TOO_LARGE, e.message),
             _ => (StatusCode::SERVICE_UNAVAILABLE, scrub_paths(&e.message)),
         };
         ZwiimError::new(status, e.code, message)
@@ -267,19 +268,8 @@ async fn chosen_files(
             "Choose between 1 and {MAX_CHOSEN_FILES} files"
         )));
     }
-    if let TabOwner::Session { session_id } = owner {
-        let row = crate::session::resolve(&state.db.conn, session_id).await?;
-        let own = crate::workspace::workspace_id_of(&state.db.conn, row.folder_id).await?;
-        if own.as_deref() != Some(workspace_id) {
-            return Err(ZwiimError::permission_denied(
-                "This tab can only take files from its session's workspace",
-            ));
-        }
-    }
-    let root = crate::workspace::resolve(&state.db.conn, workspace_id)
-        .await?
-        .path;
-    let root = std::path::Path::new(&root);
+    let root = files_root(state, owner, workspace_id).await?;
+    let root = root.as_path();
     let not_found = || ZwiimError::not_found("File not found");
     let canonical_root = root.canonicalize().map_err(|_| not_found())?;
     let mut files = Vec::with_capacity(paths.len());
@@ -295,6 +285,90 @@ async fn chosen_files(
         files.push(target);
     }
     Ok(files)
+}
+
+/// The root of workspace `workspace_id`, when `owner`'s tab may take files
+/// from it: a session's tab only from its session's workspace.
+async fn files_root(
+    state: &AppState,
+    owner: &TabOwner,
+    workspace_id: &str,
+) -> Result<std::path::PathBuf, ZwiimError> {
+    if let TabOwner::Session { session_id } = owner {
+        let row = crate::session::resolve(&state.db.conn, session_id).await?;
+        let own = crate::workspace::workspace_id_of(&state.db.conn, row.folder_id).await?;
+        if own.as_deref() != Some(workspace_id) {
+            return Err(ZwiimError::permission_denied(
+                "This tab can only take files from its session's workspace",
+            ));
+        }
+    }
+    Ok(crate::workspace::resolve(&state.db.conn, workspace_id)
+        .await?
+        .path
+        .into())
+}
+
+/// `browser.tab.print {tab_id}` → `{name}`: the page saved as a PDF in the
+/// tab's downloads folder (design 7.7).
+pub async fn tab_print(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<TabParams>,
+) -> ZResult<Value> {
+    let name = service(&state).await?.print(&p.tab_id).await?;
+    Ok(Json(json!({ "name": name })))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TabDropParams {
+    pub tab_id: String,
+    /// Where, in the page's CSS pixels.
+    pub x: f64,
+    pub y: f64,
+    pub workspace_id: String,
+    /// Files in the workspace, relative to it.
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// Files uploaded with `attachments.upload` to the workspace.
+    #[serde(default)]
+    pub attachment_ids: Vec<String>,
+}
+
+/// `browser.tab.drop {tab_id, x, y, workspace_id, paths?, attachment_ids?}`:
+/// drop files from the workspace on the page at `(x, y)`, as the person
+/// dragging them there (design 7.6).
+pub async fn tab_drop(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<TabDropParams>,
+) -> ZResult<Value> {
+    if !(p.x.is_finite() && p.y.is_finite()) {
+        return Err(ZwiimError::invalid_request("Give the point in the page"));
+    }
+    let browser = service(&state).await?;
+    let tab = browser.tab(&p.tab_id).await.ok_or_else(|| {
+        ZwiimError::from(BrowserError {
+            code: "tab_not_found",
+            message: "No such tab".into(),
+        })
+    })?;
+    let mut files = Vec::new();
+    if !p.paths.is_empty() {
+        files = chosen_files(&state, &tab.owner, &p.workspace_id, &p.paths).await?;
+    }
+    if !p.attachment_ids.is_empty() {
+        let root = files_root(&state, &tab.owner, &p.workspace_id).await?;
+        for id in &p.attachment_ids {
+            files.push(crate::attachments::resolve(&root, id)?);
+        }
+    }
+    if files.is_empty() || files.len() > MAX_CHOSEN_FILES {
+        return Err(ZwiimError::invalid_request(format!(
+            "Drop between 1 and {MAX_CHOSEN_FILES} files"
+        )));
+    }
+    browser.drop_files(&p.tab_id, p.x, p.y, &files).await?;
+    Ok(Json(json!({})))
 }
 
 #[derive(Debug, Deserialize)]

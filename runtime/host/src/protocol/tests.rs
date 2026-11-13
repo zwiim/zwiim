@@ -126,6 +126,8 @@ const OPS: &[&str] = &[
     "browser.tab.close",
     "browser.tab.navigate",
     "browser.tab.find",
+    "browser.tab.print",
+    "browser.tab.drop",
     "browser.engine.reset",
     "browser.view.open",
     "browser.view.close",
@@ -5576,6 +5578,11 @@ async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
             json!({"tab_id": "t", "action": "reload"}),
         ),
         ("browser.tab.find", json!({"tab_id": "t", "query": "a"})),
+        ("browser.tab.print", json!({"tab_id": "t"})),
+        (
+            "browser.tab.drop",
+            json!({"tab_id": "t", "x": 1, "y": 1, "workspace_id": "w", "paths": ["a"]}),
+        ),
         ("browser.engine.reset", json!({})),
         (
             "browser.view.open",
@@ -6698,6 +6705,82 @@ async fn a_file_chooser_gets_files_of_its_sessions_workspace_only() {
         vec![json!({"files": [photo], "backendNodeId": 7})]
     );
     browser_frame(&mut ws, "browser.ui.done", |_| true).await;
+}
+
+#[tokio::test]
+async fn files_dropped_on_a_tab_come_from_its_sessions_workspace() {
+    let h = host(true).await;
+    let fake = fake_browser(&h).await;
+    let wt = std::path::Path::new(&h.wt);
+    std::fs::write(wt.join("photo.png"), b"png").unwrap();
+    let uploaded = crate::attachments::store(wt, "scan.pdf", b"pdf")
+        .await
+        .unwrap();
+
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let tab = h
+        .ok(
+            "browser.tab.open",
+            json!({"owner": {"kind": "session", "session_id": sid}, "url": "https://example.com/"}),
+        )
+        .await;
+    let drop = |workspace_id: &str, extra: Value| {
+        let mut body =
+            json!({"tab_id": tab["tab_id"], "x": 5, "y": 6, "workspace_id": workspace_id});
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        body
+    };
+    for (body, refused) in [
+        (
+            drop(&h.workspace_id, json!({"paths": ["photo.png"]})),
+            (StatusCode::FORBIDDEN, "permission_denied"),
+        ),
+        (
+            drop(&h.wt_workspace_id, json!({})),
+            (StatusCode::BAD_REQUEST, "invalid_request"),
+        ),
+        (
+            drop(&h.wt_workspace_id, json!({"attachment_ids": ["nope"]})),
+            (StatusCode::NOT_FOUND, "attachment_not_found"),
+        ),
+    ] {
+        assert_eq!(
+            h.err("browser.tab.drop", body.clone()).await,
+            (refused.0, refused.1.into()),
+            "{body}"
+        );
+    }
+    assert!(fake.calls("Input.dispatchDragEvent").is_empty());
+
+    h.ok(
+        "browser.tab.drop",
+        drop(
+            &h.wt_workspace_id,
+            json!({"paths": ["photo.png"], "attachment_ids": [uploaded.attachment_id]}),
+        ),
+    )
+    .await;
+    let dropped = fake.calls("Input.dispatchDragEvent");
+    assert_eq!(dropped.len(), 3);
+    let files = dropped[2]["data"]["files"].as_array().unwrap();
+    assert_eq!(
+        files[0],
+        json!(wt.join("photo.png").canonicalize().unwrap())
+    );
+    assert!(files[1].as_str().unwrap().ends_with("scan.pdf"));
+}
+
+#[tokio::test]
+async fn printing_a_missing_tab_is_not_found() {
+    let h = host(false).await;
+    let _fake = fake_browser(&h).await;
+    assert_eq!(
+        h.err("browser.tab.print", json!({"tab_id": "nope"})).await,
+        (StatusCode::NOT_FOUND, "tab_not_found".into())
+    );
 }
 
 #[tokio::test]

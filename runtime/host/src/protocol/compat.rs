@@ -366,6 +366,12 @@ use serde::{Deserialize, Serialize};
 /// local network) and answered `{kind: "site", allow, always?}`: allowed for
 /// the session, or for every session with `always`; refused for the session
 /// otherwise, and after 5 minutes unanswered.
+/// `browser.tab.print {tab_id}` saves the page as a PDF in the tab's
+/// downloads folder and returns `{name}` (`page_too_large` over 200 MB), and
+/// `browser.tab.drop {tab_id, x, y, workspace_id, paths?, attachment_ids?}`
+/// drops files on the page at `(x, y)` in its CSS pixels: workspace files by
+/// relative path, or uploaded ones by attachment id, from the session's own
+/// workspace for a session's tab.
 /// `settings` also gains `browser.open_dev_servers` (a boolean; unset is
 /// on): whether a dev server a session starts opens in that session's tab,
 /// which then arrives as an ordinary `browser.tab.state`.
