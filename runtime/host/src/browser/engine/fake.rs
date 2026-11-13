@@ -389,6 +389,7 @@ impl FakeEngine {
             | "Fetch.continueRequest"
             | "Fetch.continueWithAuth"
             | "Fetch.failRequest"
+            | "Page.setWebLifecycleState"
             | "Page.setInterceptFileChooserDialog"
             | "DOM.setFileInputFiles" => {
                 target_of_session(&s)?;

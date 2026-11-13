@@ -373,6 +373,11 @@ use serde::{Deserialize, Serialize};
 /// bad entry is `invalid_site`. With a list, the session's agent opens only
 /// those sites and its own dev servers; the person's navigations are not
 /// limited. Host only for now.
+/// `browser.tab.open` is refused with `too_many_tabs` past 8 tabs in a
+/// session or 30 in all, and with `browser_memory_full` (its message says
+/// which sessions hold the most) while the browser is at its memory budget.
+/// The Host may also put tabs nobody uses to sleep: they come back
+/// `discarded` and load again when used.
 /// A session's tab saves to `<worktree>/.zwiim/browser/<id>/`, removed with
 /// the session, unless `browser.downloads.set_location {root}` chose a
 /// folder (`root` an existing absolute folder, null for the default): then

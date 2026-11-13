@@ -214,10 +214,13 @@ pub(crate) async fn list(browser: &BrowserService, session: &str) -> BrowserTabs
 
 /// `tab_id`, when it is one of `session`'s tabs.
 async fn own_tab(browser: &BrowserService, session: &str, tab_id: &str) -> Option<TabInfo> {
-    browser
+    let tab = browser
         .tab(tab_id)
         .await
-        .filter(|t| t.owner == owner(session))
+        .filter(|t| t.owner == owner(session))?;
+    // The agent is using it: the memory governor leaves it alone.
+    browser.agent_used(tab_id);
+    Some(tab)
 }
 
 pub(crate) async fn tab_op(
@@ -438,6 +441,7 @@ enum Load {
 /// [`LOAD_TIMEOUT`] plus [`SETTLE_TIMEOUT`].
 async fn load(browser: &BrowserService, tab_id: &str, url: &str) -> Result<Load, BrowserError> {
     let url = super::service::check_url(url)?;
+    browser.agent_used(tab_id);
     let (cdp, session) = browser.session(tab_id).await?;
     browser.acted(tab_id, Actor::Agent).await;
     if let Ok(parsed) = url::Url::parse(&url) {

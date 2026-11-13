@@ -282,6 +282,8 @@ impl StreamHub {
             )
         });
         cast.viewers += 1;
+        // Viewed: in use, so the memory governor leaves it alone.
+        self.browser.viewing(&tab_id, true);
         Ok(Viewer {
             frames: cast.frames.clone(),
             sent: cast.sent.clone(),
@@ -293,6 +295,7 @@ impl StreamHub {
     }
 
     fn detach(&self, stream_id: &str, tab_id: &str) {
+        self.browser.viewing(tab_id, false);
         let mut inner = self.lock();
         inner.streams.remove(stream_id);
         let last = inner.casts.get_mut(tab_id).is_some_and(|cast| {

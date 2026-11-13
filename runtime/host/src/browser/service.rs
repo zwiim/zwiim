@@ -22,6 +22,7 @@ use tokio::sync::{broadcast, watch, Mutex};
 use super::console::{self, ConsoleQuery, ConsoleReadout, ConsoleRing};
 use super::engine::cdp::{Cdp, Event};
 use super::engine::manager::{EngineError, EngineManager, EngineState};
+use super::governor::{self, TabUse};
 use super::helper::{self, HelperMessage, PageMenu};
 use super::network::{NetworkQuery, NetworkReadout, NetworkRing};
 use super::policy::{self, HostRule};
@@ -190,10 +191,29 @@ struct Console {
 /// A download in flight: the page's file name, and its row in the Host's
 /// downloads.
 struct Saving {
+    /// The tab it came from, which is in use until it ends.
+    tab_id: Option<String>,
     name: String,
     progress: crate::downloads::Progress,
     received: u64,
     sized: bool,
+}
+
+/// How tabs are used, for the memory governor (design 11), apart from
+/// `inner` so the stream hub and the tools can say so without waiting.
+struct Usage {
+    /// Viewers of each tab.
+    viewers: HashMap<String, usize>,
+    /// When each tab was last viewed or driven.
+    last_used: HashMap<String, tokio::time::Instant>,
+    /// When an agent last used each tab.
+    agent_at: HashMap<String, tokio::time::Instant>,
+    /// Tabs the governor froze.
+    frozen: std::collections::HashSet<String>,
+    /// When anyone last viewed a tab or used the browser tools.
+    active_at: tokio::time::Instant,
+    /// Why new tabs are refused, while they are.
+    refuse: Option<String>,
 }
 
 /// What the site policy (design 13.2) knows, apart from `inner`: the pump
@@ -248,6 +268,7 @@ pub struct BrowserService {
     db: DatabaseConnection,
     inner: Mutex<Inner>,
     sites: std::sync::Mutex<Sites>,
+    usage: std::sync::Mutex<Usage>,
     events: broadcast::Sender<BrowserEvent>,
 }
 
@@ -297,9 +318,18 @@ impl BrowserService {
                     .unwrap_or_default(),
                 ..Sites::default()
             }),
+            usage: std::sync::Mutex::new(Usage {
+                viewers: HashMap::new(),
+                last_used: HashMap::new(),
+                agent_at: HashMap::new(),
+                frozen: std::collections::HashSet::new(),
+                active_at: tokio::time::Instant::now(),
+                refuse: None,
+            }),
             events: broadcast::channel(EVENT_BUFFER).0,
         });
         tokio::spawn(follow_engine(Arc::downgrade(&service), state));
+        tokio::spawn(govern(Arc::downgrade(&service)));
         Ok(service)
     }
 
@@ -343,6 +373,7 @@ impl BrowserService {
     pub async fn open(&self, owner: TabOwner, url: Option<&str>) -> Result<TabInfo, BrowserError> {
         let url = url.map(check_url).transpose()?;
         let mut inner = self.inner.lock().await;
+        self.room_for_tab(&inner, &owner)?;
         let cdp = self.cdp_locked(&mut inner).await?;
         let live = self.create_target(&cdp, &mut inner, &owner).await?;
         if let Some(url) = &url {
@@ -391,6 +422,7 @@ impl BrowserService {
         if let Some(live) = &tab.live {
             self.sites_mut().tabs.remove(&live.session_id);
         }
+        self.forget_usage(tab_id);
         inner.consoles.remove(tab_id);
         inner.typed.remove(tab_id);
         inner.networks.remove(tab_id);
@@ -527,6 +559,22 @@ impl BrowserService {
             .get(tab_id)
             .and_then(|t| t.live.clone())
             .ok_or_else(|| not_found(tab_id))?;
+        // Wanted again: a frozen tab wakes first.
+        let frozen = {
+            let mut usage = self.usage_mut();
+            usage
+                .last_used
+                .insert(tab_id.to_string(), tokio::time::Instant::now());
+            usage.frozen.remove(tab_id)
+        };
+        if frozen {
+            cdp.call(
+                "Page.setWebLifecycleState",
+                json!({ "state": "active" }),
+                Some(&live.session_id),
+            )
+            .await?;
+        }
         Ok((cdp, live.session_id))
     }
 
@@ -757,6 +805,7 @@ impl BrowserService {
         if let Some(live) = tab.live.take() {
             self.sites_mut().tabs.remove(&live.session_id);
         }
+        self.usage_mut().frozen.remove(tab_id);
         tab.info.discarded = true;
         tab.info.loading = false;
         let info = tab.info.clone();
@@ -955,7 +1004,8 @@ impl BrowserService {
                     .as_str()
                     .unwrap_or_default()
                     .to_string();
-                if let Some(tab_id) = by_target(&inner, p["frameId"].as_str().unwrap_or_default()) {
+                let from = by_target(&inner, p["frameId"].as_str().unwrap_or_default());
+                if let Some(tab_id) = from.clone() {
                     self.emit(BrowserEvent::Download {
                         tab_id,
                         name: name.clone(),
@@ -966,6 +1016,7 @@ impl BrowserService {
                 inner.saving.insert(
                     guid,
                     Saving {
+                        tab_id: from,
                         name,
                         progress,
                         received: 0,
@@ -1326,6 +1377,183 @@ impl BrowserService {
                     self.ask_locked(&mut inner, &id, kind);
                 }
             }
+        }
+    }
+
+    fn usage_mut(&self) -> std::sync::MutexGuard<'_, Usage> {
+        self.usage.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn forget_usage(&self, tab_id: &str) {
+        let mut usage = self.usage_mut();
+        usage.viewers.remove(tab_id);
+        usage.last_used.remove(tab_id);
+        usage.agent_at.remove(tab_id);
+        usage.frozen.remove(tab_id);
+    }
+
+    /// A viewer started (`on`) or stopped watching tab `tab_id`.
+    pub fn viewing(&self, tab_id: &str, on: bool) {
+        let mut usage = self.usage_mut();
+        let now = tokio::time::Instant::now();
+        let viewers = usage.viewers.entry(tab_id.to_string()).or_default();
+        *viewers = if on {
+            *viewers + 1
+        } else {
+            viewers.saturating_sub(1)
+        };
+        if *viewers == 0 {
+            usage.viewers.remove(tab_id);
+        }
+        usage.last_used.insert(tab_id.to_string(), now);
+        usage.active_at = now;
+    }
+
+    /// An agent used tab `tab_id` through its browser tools.
+    pub fn agent_used(&self, tab_id: &str) {
+        let mut usage = self.usage_mut();
+        let now = tokio::time::Instant::now();
+        usage.agent_at.insert(tab_id.to_string(), now);
+        usage.last_used.insert(tab_id.to_string(), now);
+        usage.active_at = now;
+    }
+
+    /// Whether `owner` may open another tab: within the tab caps, and while
+    /// the governor is not refusing new tabs (design 11.2, 11.3).
+    fn room_for_tab(&self, inner: &Inner, owner: &TabOwner) -> Result<(), BrowserError> {
+        if inner.tabs.len() >= governor::MAX_TABS {
+            return Err(BrowserError {
+                code: "too_many_tabs",
+                message: format!(
+                    "The browser holds {} tabs, its most; close some first.",
+                    governor::MAX_TABS
+                ),
+            });
+        }
+        let mine = inner
+            .tabs
+            .values()
+            .filter(|t| t.info.owner == *owner)
+            .count();
+        if matches!(owner, TabOwner::Session { .. }) && mine >= governor::MAX_SESSION_TABS {
+            return Err(BrowserError {
+                code: "too_many_tabs",
+                message: format!(
+                    "This session has {} tabs, its most; close some first.",
+                    governor::MAX_SESSION_TABS
+                ),
+            });
+        }
+        if let Some(why) = self.usage_mut().refuse.clone() {
+            return Err(BrowserError {
+                code: "browser_memory_full",
+                message: why,
+            });
+        }
+        Ok(())
+    }
+
+    /// Measure, then freeze, discard and refuse as the governor says, and
+    /// set the engine's priority (design 11).
+    async fn govern_once(&self) {
+        let Some(pid) = self.engine.pid().await else {
+            return;
+        };
+        let background = {
+            let usage = self.usage_mut();
+            usage.viewers.is_empty() && usage.active_at.elapsed() >= governor::IDLE_AFTER
+        };
+        #[cfg(target_os = "macos")]
+        let measured = tokio::task::spawn_blocking(move || {
+            // Background when nobody views a tab or uses the tools; new
+            // processes since the last check get it too.
+            governor::sys::set_priority(pid, super::engine::launch::ENGINE_NICE, background);
+            (governor::sys::usage(pid).0, governor::sys::pressure())
+        })
+        .await
+        .ok();
+        #[cfg(not(target_os = "macos"))]
+        let measured: Option<(u64, governor::Pressure)> = {
+            let _ = (pid, background);
+            None
+        };
+        if let Some((used, pressure)) = measured {
+            self.ease(used, governor::budget(), pressure).await;
+        }
+    }
+
+    /// With the engine at `used` of `budget`: freeze, discard and refuse new
+    /// tabs as the ladder says (design 11.3).
+    async fn ease(&self, used: u64, budget: u64, pressure: governor::Pressure) {
+        let now = tokio::time::Instant::now();
+        let mut inner = self.inner.lock().await;
+        let busy: std::collections::HashSet<String> = inner
+            .saving
+            .values()
+            .filter_map(|d| d.tab_id.clone())
+            .collect();
+        let tabs: Vec<TabUse> = {
+            let usage = self.usage_mut();
+            inner
+                .tabs
+                .iter()
+                .filter(|(_, t)| t.live.is_some())
+                .map(|(id, _)| TabUse {
+                    tab_id: id.clone(),
+                    in_use: usage.viewers.contains_key(id)
+                        || busy.contains(id)
+                        || usage
+                            .agent_at
+                            .get(id)
+                            .is_some_and(|at| now.duration_since(*at) < governor::AGENT_IN_USE),
+                    frozen: usage.frozen.contains(id),
+                    last_used: usage.last_used.get(id).copied().unwrap_or(now),
+                })
+                .collect()
+        };
+        let plan = governor::plan(now, used, budget, pressure, &tabs);
+        self.usage_mut().refuse = plan.refuse_new.then(|| busiest(&inner, used, budget));
+        if plan.freeze.is_empty() && plan.discard.is_empty() {
+            return;
+        }
+        tracing::info!(
+            used_mb = used >> 20,
+            budget_mb = budget >> 20,
+            ?pressure,
+            freeze = plan.freeze.len(),
+            discard = plan.discard.len(),
+            "the browser governor is easing memory"
+        );
+        let Some(cdp) = inner.cdp.clone() else {
+            return;
+        };
+        for id in &plan.freeze {
+            let Some(live) = inner.tabs.get(id).and_then(|t| t.live.clone()) else {
+                continue;
+            };
+            let frozen = cdp
+                .call(
+                    "Page.setWebLifecycleState",
+                    json!({ "state": "frozen" }),
+                    Some(&live.session_id),
+                )
+                .await;
+            if frozen.is_ok() {
+                self.usage_mut().frozen.insert(id.clone());
+            }
+        }
+        for id in &plan.discard {
+            let Some(live) = inner.tabs.get(id).and_then(|t| t.live.clone()) else {
+                continue;
+            };
+            let _ = cdp
+                .call(
+                    "Target.closeTarget",
+                    json!({ "targetId": live.target_id }),
+                    None,
+                )
+                .await;
+            self.discard_locked(&mut inner, id);
         }
     }
 
@@ -1963,6 +2191,49 @@ async fn screen(service: Weak<BrowserService>, cdp: Cdp, event: Event) {
     };
     if let Err(e) = cdp.call(method, params, Some(&session)).await {
         tracing::debug!(error = %e, "a paused page request went away");
+    }
+}
+
+/// Why new tabs are refused: the browser is at `used` of its `budget`, and
+/// which owners hold the most loaded tabs.
+fn busiest(inner: &Inner, used: u64, budget: u64) -> String {
+    let mut held: HashMap<String, usize> = HashMap::new();
+    for tab in inner.tabs.values().filter(|t| t.live.is_some()) {
+        let who = match &tab.info.owner {
+            TabOwner::Session { session_id } => format!("session {}", short(session_id)),
+            TabOwner::Personal => "your own tabs".to_string(),
+        };
+        *held.entry(who).or_default() += 1;
+    }
+    let mut held: Vec<(String, usize)> = held.into_iter().collect();
+    held.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let most: Vec<String> = held
+        .iter()
+        .take(3)
+        .map(|(who, n)| format!("{who} ({n})"))
+        .collect();
+    format!(
+        "The browser is using {} MB of its {} MB, so it opens no new tabs until some close. Most are held by {}.",
+        used >> 20,
+        budget >> 20,
+        if most.is_empty() { "nobody".to_string() } else { most.join(", ") }
+    )
+}
+
+fn short(id: &str) -> &str {
+    id.get(..8).unwrap_or(id)
+}
+
+/// Run the governor every [`governor::INTERVAL`] while the service lives.
+async fn govern(service: Weak<BrowserService>) {
+    let mut tick = tokio::time::interval(governor::INTERVAL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        let Some(service) = service.upgrade() else {
+            return;
+        };
+        service.govern_once().await;
     }
 }
 
@@ -2664,6 +2935,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_governor_frees_memory_from_tabs_nobody_uses() {
+        use governor::Pressure;
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let mut ids = Vec::new();
+        for _ in 0..4 {
+            ids.push(svc.open(session("s1"), None).await.unwrap().id);
+        }
+        let [viewed, driven, old, older] = [&ids[0], &ids[1], &ids[2], &ids[3]];
+        svc.viewing(viewed, true);
+        svc.agent_used(driven);
+        {
+            let now = tokio::time::Instant::now();
+            let mut usage = svc.usage_mut();
+            for (id, age) in [(viewed, 900), (old, 600), (older, 1200)] {
+                usage
+                    .last_used
+                    .insert(id.clone(), now - Duration::from_secs(age));
+            }
+        }
+        let frozen = |id: &str| svc.usage_mut().frozen.contains(id);
+        let discarded = |svc: Arc<BrowserService>, id: String| async move {
+            svc.tab(&id).await.unwrap().discarded
+        };
+
+        // Under the first rung nothing happens.
+        svc.ease(50, 100, Pressure::Normal).await;
+        assert!(fake.calls("Page.setWebLifecycleState").is_empty());
+
+        // Freeze the idle ones, discard the least recently used.
+        svc.ease(86, 100, Pressure::Normal).await;
+        assert!(discarded(svc.clone(), older.clone()).await);
+        assert!(frozen(old) && !frozen(viewed) && !frozen(driven));
+        assert_eq!(
+            fake.calls("Page.setWebLifecycleState"),
+            vec![json!({"state": "frozen"})]
+        );
+        assert!(!discarded(svc.clone(), viewed.clone()).await);
+
+        // Used again: it wakes first.
+        svc.session(old).await.unwrap();
+        assert!(!frozen(old));
+        assert_eq!(
+            fake.calls("Page.setWebLifecycleState").last().unwrap(),
+            &json!({"state": "active"})
+        );
+
+        // At the budget, new tabs wait; below it, they open again.
+        svc.ease(100, 100, Pressure::Normal).await;
+        let full = svc.open(session("s2"), None).await.unwrap_err();
+        assert_eq!(full.code, "browser_memory_full");
+        assert!(full.message.contains("session s1 (3)"), "{}", full.message);
+        svc.ease(10, 100, Pressure::Normal).await;
+        svc.open(session("s2"), None).await.unwrap();
+
+        // Critical: everything not in use goes.
+        svc.viewing(viewed, false);
+        {
+            let past = tokio::time::Instant::now() - Duration::from_secs(600);
+            svc.usage_mut().agent_at.insert(driven.clone(), past);
+        }
+        svc.ease(10, 100, Pressure::Critical).await;
+        for id in [viewed, driven, old] {
+            assert!(discarded(svc.clone(), id.clone()).await, "{id}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_holds_at_most_its_share_of_tabs() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        for _ in 0..governor::MAX_SESSION_TABS {
+            svc.open(session("s1"), None).await.unwrap();
+        }
+        assert_eq!(
+            svc.open(session("s1"), None).await.unwrap_err().code,
+            "too_many_tabs"
+        );
+        svc.open(session("s2"), None).await.unwrap();
+        svc.open(TabOwner::Personal, None).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn a_page_waiting_on_its_server_holds_nothing_up() {
         let fake = FakeEngine::default();
         let db = fresh_in_memory_db().await;
@@ -3003,6 +3359,59 @@ mod tests {
 
     /// The service against real Chromium: titles, history and contexts.
     /// Point `ZWIIM_TEST_ENGINE` at a `chrome-headless-shell` binary.
+    /// The real engine freezes, wakes and discards a tab, and its tree is
+    /// measured. Point `ZWIIM_TEST_ENGINE` at a `chrome-headless-shell`.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "needs ZWIIM_TEST_ENGINE"]
+    async fn the_real_engine_is_eased_by_the_governor() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = super::super::engine::fake::real_engine(dir.path().join("profile"));
+        let db = fresh_in_memory_db().await;
+        let svc = BrowserService::start(EngineManager::new(start), db.conn.clone(), None)
+            .await
+            .unwrap();
+        let a = svc.open(session("s1"), None).await.unwrap().id;
+        let b = svc.open(session("s1"), None).await.unwrap().id;
+        let pid = svc.engine.pid().await.expect("the real engine has a pid");
+        #[cfg(target_os = "macos")]
+        {
+            let (bytes, count) = governor::sys::usage(pid);
+            assert!(
+                bytes > 10 << 20 && count >= 2,
+                "{bytes} bytes in {count} processes"
+            );
+        }
+        let _ = pid;
+        {
+            let old = tokio::time::Instant::now() - Duration::from_secs(600);
+            let mut usage = svc.usage_mut();
+            usage.last_used.insert(a.clone(), old);
+            usage
+                .last_used
+                .insert(b.clone(), old - Duration::from_secs(60));
+        }
+        svc.ease(86, 100, governor::Pressure::Normal).await;
+        assert!(svc.tab(&b).await.unwrap().discarded);
+        assert!(svc.usage_mut().frozen.contains(&a));
+        // A frozen page runs no script; woken, it does.
+        let (cdp, session) = svc.session(&a).await.unwrap();
+        let answer = cdp
+            .call_with_timeout(
+                "Runtime.evaluate",
+                json!({"expression": "1 + 1", "returnByValue": true}),
+                Some(&session),
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer["result"]["value"], 2);
+        // A discarded tab loads again when used.
+        svc.session(&b).await.unwrap();
+        assert!(!svc.tab(&b).await.unwrap().discarded);
+        svc.govern_once().await;
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     #[ignore = "needs ZWIIM_TEST_ENGINE"]

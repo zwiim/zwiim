@@ -37,6 +37,7 @@ impl From<BrowserError> for ZwiimError {
             "request_not_found" => (StatusCode::NOT_FOUND, e.message),
             "invalid_answer" => (StatusCode::BAD_REQUEST, e.message),
             "invalid_site" => (StatusCode::BAD_REQUEST, e.message),
+            "too_many_tabs" | "browser_memory_full" => (StatusCode::CONFLICT, e.message),
             _ => (StatusCode::SERVICE_UNAVAILABLE, scrub_paths(&e.message)),
         };
         ZwiimError::new(status, e.code, message)
