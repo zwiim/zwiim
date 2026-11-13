@@ -16,6 +16,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use super::helper::{self, PageBox, SelectOption};
 use super::service::BrowserError;
 use super::store::TabOwner;
 
@@ -25,7 +26,7 @@ pub const DIALOG_TIMEOUT: Duration = Duration::from_secs(60);
 pub const AUTH_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Something a tab is waiting on a person for.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct UiRequest {
     pub request_id: String,
     pub tab_id: String,
@@ -34,7 +35,7 @@ pub struct UiRequest {
     pub kind: UiKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UiKind {
     Dialog {
@@ -73,6 +74,35 @@ pub enum UiKind {
         #[serde(skip)]
         backend_node: i64,
     },
+    /// A `<select>`'s list, which the engine does not paint: one option to
+    /// pick, at the select's box.
+    Select {
+        options: Vec<SelectOption>,
+        #[serde(flatten)]
+        at: PageBox,
+        /// The page helper's world and its name for the select: never sent.
+        #[serde(skip)]
+        context: i64,
+        #[serde(skip)]
+        element: u64,
+    },
+    /// A date or time input's picker: `input_type` is the input's `type`
+    /// (`date`, `time`, `datetime-local`, `month`, `week`), `value` its
+    /// value in the input's own format.
+    Date {
+        input_type: String,
+        value: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        min: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max: Option<String>,
+        #[serde(flatten)]
+        at: PageBox,
+        #[serde(skip)]
+        context: i64,
+        #[serde(skip)]
+        element: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -87,7 +117,7 @@ pub enum DialogType {
 impl UiKind {
     /// A pick the page helper waits on, which goes with the document.
     pub fn is_pick(&self) -> bool {
-        false
+        matches!(self, UiKind::Select { .. } | UiKind::Date { .. })
     }
 }
 
@@ -122,6 +152,19 @@ pub enum UiAnswer {
         #[serde(skip)]
         files: Vec<PathBuf>,
     },
+    /// Pick the option at `index` (the request's `index`) when `accept`.
+    Select {
+        accept: bool,
+        #[serde(default)]
+        index: Option<u32>,
+    },
+    /// Give the input `value`, in its own format (empty clears it), when
+    /// `accept`.
+    Date {
+        accept: bool,
+        #[serde(default)]
+        value: String,
+    },
 }
 
 /// Never shows a password.
@@ -148,6 +191,16 @@ impl std::fmt::Debug for UiAnswer {
                 .field("workspace_id", workspace_id)
                 .field("paths", paths)
                 .finish_non_exhaustive(),
+            UiAnswer::Select { accept, index } => f
+                .debug_struct("Select")
+                .field("accept", accept)
+                .field("index", index)
+                .finish(),
+            UiAnswer::Date { accept, value } => f
+                .debug_struct("Date")
+                .field("accept", accept)
+                .field("value", value)
+                .finish(),
         }
     }
 }
@@ -261,8 +314,52 @@ pub fn answer_call(
                 json!({ "response": "CancelAuth" })
             },
         ))),
+        (UiKind::Select { .. }, UiAnswer::Select { accept: false, .. })
+        | (UiKind::Date { .. }, UiAnswer::Date { accept: false, .. }) => Ok(None),
+        (
+            UiKind::Select {
+                options,
+                context,
+                element,
+                ..
+            },
+            UiAnswer::Select {
+                index: Some(index), ..
+            },
+        ) => {
+            if !options.iter().any(|o| o.index == *index && !o.disabled) {
+                return Err(invalid_answer());
+            }
+            Ok(Some(helper_answer(*context, *element, json!([index]))))
+        }
+        (
+            UiKind::Date {
+                context, element, ..
+            },
+            UiAnswer::Date { value, .. },
+        ) => {
+            let fits = value.len() <= MAX_DATE_VALUE
+                && value
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || matches!(c, '-' | ':' | 'T' | 'W' | '.'));
+            if !fits {
+                return Err(invalid_answer());
+            }
+            Ok(Some(helper_answer(*context, *element, json!(value))))
+        }
         _ => Err(invalid_answer()),
     }
+}
+
+/// Longest date or time value an answer gives.
+const MAX_DATE_VALUE: usize = 32;
+
+/// The page helper gives its waiting element `value`.
+fn helper_answer(context: i64, element: u64, value: Value) -> (&'static str, Value) {
+    (
+        "Runtime.evaluate",
+        json!({ "expression": helper::answer_expression(element, &value), "contextId": context }),
+    )
 }
 
 /// The call that ends a request nobody answered: the dialog dismissed, the
@@ -274,7 +371,7 @@ pub fn dismiss_call(request: &UiKind) -> Option<(&'static str, Value)> {
             fetch_request,
             json!({ "response": "CancelAuth" }),
         )),
-        UiKind::FileChooser { .. } => None,
+        UiKind::FileChooser { .. } | UiKind::Select { .. } | UiKind::Date { .. } => None,
     }
 }
 
@@ -282,7 +379,10 @@ pub fn dismiss_call(request: &UiKind) -> Option<(&'static str, Value)> {
 pub fn timeout(request: &UiKind) -> Duration {
     match request {
         UiKind::Dialog { .. } => DIALOG_TIMEOUT,
-        UiKind::Auth { .. } | UiKind::FileChooser { .. } => AUTH_TIMEOUT,
+        UiKind::Auth { .. }
+        | UiKind::FileChooser { .. }
+        | UiKind::Select { .. }
+        | UiKind::Date { .. } => AUTH_TIMEOUT,
     }
 }
 

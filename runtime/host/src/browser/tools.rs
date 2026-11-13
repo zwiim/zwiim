@@ -924,6 +924,8 @@ fn asked(kind: &UiKind) -> String {
         }
         UiKind::Auth { origin, .. } => format!("sign-in for {origin}"),
         UiKind::FileChooser { .. } => "file chooser".to_string(),
+        UiKind::Select { .. } => "a list to pick from".to_string(),
+        UiKind::Date { input_type, .. } => format!("a {input_type} picker"),
     }
 }
 

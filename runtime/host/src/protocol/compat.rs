@@ -344,7 +344,14 @@ use serde::{Deserialize, Serialize};
 /// width, height}`) in the page's CSS pixels. A right-click the page leaves
 /// to the browser sends `browser.ui.menu {menu}`, `{tab_id, x, y, link_url?,
 /// image_url?, selection?, editable}`, for the client to draw its own menu
-/// at that point (CSS pixels); the addresses are http(s) only. `settings` gains
+/// at that point (CSS pixels); the addresses are http(s) only. A `<select>`
+/// opening is a request `{kind: "select", options, x, y, width, height}`,
+/// each option `{index, label, disabled, selected, group?}`, answered
+/// `{kind: "select", accept, index?}`; a date or time input's picker button
+/// is `{kind: "date", input_type, value, min?, max?, x, y, width, height}`
+/// (`input_type` one of `date`, `time`, `datetime-local`, `month`, `week`),
+/// answered `{kind: "date", accept, value}` in the input's own format. Both
+/// end with their document and after 5 minutes. `settings` gains
 /// `browser.agent_passwords` (a boolean; unset is off): whether agents may
 /// type into password fields on any site rather than only on loopback dev
 /// servers.

@@ -454,4 +454,101 @@ mod engine_tests {
         assert_eq!(renamed.title, "New");
         browser.stop_engine().await;
     }
+
+    /// A click on a `<select>` or a date input's picker button asks the
+    /// person; their pick reaches the page as if they had made it there.
+    #[tokio::test]
+    #[ignore = "needs ZWIIM_TEST_ENGINE"]
+    async fn a_pick_from_the_person_reaches_the_page() {
+        use crate::browser::ui::{UiAnswer, UiKind};
+        let dir = tempfile::tempdir().unwrap();
+        let browser = real_browser(dir.path()).await;
+        let url = serve(
+            "<select id=s onchange=\"document.title='picked '+this.value\" style=\"display:block;width:200px;height:30px\">\
+             <option value=a>Apple</option><optgroup label=More><option value=b>Banana</option><option disabled>Cherry</option></optgroup></select>\
+             <input id=d type=date oninput=\"document.title='dated '+this.value\" style=\"display:block;width:200px;height:30px\">",
+        )
+        .await;
+        let tab = browser.open(TabOwner::Personal, Some(&url)).await.unwrap();
+        let mut events = browser.subscribe();
+        let (cdp, session) = browser.session(&tab.id).await.unwrap();
+        let click = |x: f64, y: f64| {
+            let cdp = cdp.clone();
+            let session = session.clone();
+            move || {
+                let cdp = cdp.clone();
+                let session = session.clone();
+                tokio::spawn(async move {
+                    for kind in ["mousePressed", "mouseReleased"] {
+                        let _ = cdp
+                            .call(
+                                "Input.dispatchMouseEvent",
+                                json!({ "type": kind, "x": x, "y": y, "button": "left", "clickCount": 1 }),
+                                Some(&session),
+                            )
+                            .await;
+                    }
+                })
+            }
+        };
+        let request = until(&mut events, click(20.0, 15.0), |e| match e {
+            BrowserEvent::Ui(r) if matches!(r.kind, UiKind::Select { .. }) => Some(r),
+            _ => None,
+        })
+        .await;
+        let UiKind::Select { options, at, .. } = &request.kind else {
+            unreachable!()
+        };
+        let labels: Vec<_> = options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, ["Apple", "Banana", "Cherry"]);
+        assert_eq!(options[1].group.as_deref(), Some("More"));
+        assert!(options[2].disabled && options[0].selected);
+        assert_eq!(at.width, 200.0);
+        let refused = UiAnswer::Select {
+            accept: true,
+            index: Some(2),
+        };
+        assert!(browser.answer(&request.request_id, &refused).await.is_err());
+        let pick = UiAnswer::Select {
+            accept: true,
+            index: Some(1),
+        };
+        browser.answer(&request.request_id, &pick).await.unwrap();
+        let title = |want: &'static str| {
+            let browser = browser.clone();
+            let id = tab.id.clone();
+            async move {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        if browser.tab(&id).await.is_some_and(|t| t.title == want) {
+                            return;
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                })
+                .await
+                .unwrap_or_else(|_| panic!("the title became {want}"));
+            }
+        };
+        title("picked b").await;
+
+        let request = until(&mut events, click(195.0, 45.0), |e| match e {
+            BrowserEvent::Ui(r) if matches!(r.kind, UiKind::Date { .. }) => Some(r),
+            _ => None,
+        })
+        .await;
+        assert!(matches!(&request.kind, UiKind::Date { input_type, .. } if input_type == "date"));
+        let bad = UiAnswer::Date {
+            accept: true,
+            value: "1); alert(1".into(),
+        };
+        assert!(browser.answer(&request.request_id, &bad).await.is_err());
+        let day = UiAnswer::Date {
+            accept: true,
+            value: "2026-12-25".into(),
+        };
+        browser.answer(&request.request_id, &day).await.unwrap();
+        title("dated 2026-12-25").await;
+        browser.stop_engine().await;
+    }
 }

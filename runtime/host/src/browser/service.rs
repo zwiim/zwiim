@@ -1138,7 +1138,7 @@ impl BrowserService {
 
     /// What the page helper of the tab on `session` reported.
     pub async fn helper_said(&self, session: &str, context: i64, messages: Vec<HelperMessage>) {
-        let inner = self.inner.lock().await;
+        let mut inner = self.inner.lock().await;
         let Some(id) = tab_on(&inner, session) else {
             return;
         };
@@ -1167,7 +1167,40 @@ impl BrowserService {
                     let generation = inner.generation;
                     self.refresh_info(&inner, &id, generation);
                 }
-                HelperMessage::Select { .. } | HelperMessage::Date { .. } => {}
+                HelperMessage::Select {
+                    id: element,
+                    options,
+                    at,
+                } => {
+                    self.drop_ui_locked(&mut inner, |r| r.tab_id == id && r.kind.is_pick());
+                    let kind = UiKind::Select {
+                        options,
+                        at,
+                        context,
+                        element,
+                    };
+                    self.ask_locked(&mut inner, &id, kind);
+                }
+                HelperMessage::Date {
+                    id: element,
+                    input_type,
+                    value,
+                    min,
+                    max,
+                    at,
+                } => {
+                    self.drop_ui_locked(&mut inner, |r| r.tab_id == id && r.kind.is_pick());
+                    let kind = UiKind::Date {
+                        input_type,
+                        value,
+                        min,
+                        max,
+                        at,
+                        context,
+                        element,
+                    };
+                    self.ask_locked(&mut inner, &id, kind);
+                }
             }
         }
     }
