@@ -684,12 +684,27 @@ its own invisible browser. To make those runs visible too:
 1. The agent edits a file, the dev server's HMR updates the page, Chromium
    paints, and every viewer gets the frame. Live App gets the same HMR update
    directly. No extra machinery.
-2. The session's tab follows the session's own dev server. When `services`
-   sees a new server, either from a URL printed in the terminal or from a
-   port probe, `listener.rs` finds the process behind the port and its
-   working directory (`proc_pidinfo`), which names the worktree. That URL
-   opens in, or replaces, that session's preview tab. Two worktrees on 5173
-   and 5174 therefore never cross.
+2. The session's tab follows the session's own dev server
+   (`dev_servers.rs`). Every 3 s the Host lists the loopback ports its own
+   descendant processes listen on, with each listener's working directory
+   (`listener.rs`, two `lsof` runs). The agents and everything they run are
+   among them, including servers started by an agent's own shell tool,
+   whose output the Host never sees. A new port that answers HTTP belongs
+   to the latest top-level session of the deepest worktree holding that
+   directory. Two worktrees on 5173 and 5174 therefore never cross. The
+   session's tabs then:
+   1. Reload the tab already showing that server.
+   2. Otherwise show it in a tab whose loopback server stopped, or else in a
+      blank tab.
+   3. Otherwise leave things alone if a tab shows another running loopback
+      server: an API server starting beside the app does not take the app's
+      tab.
+   4. Otherwise open a tab. Tabs on other sites are never taken.
+
+   Servers already running when the Host starts, or when the setting is
+   turned on, are not new. The Host setting `browser.open_dev_servers`
+   (Settings > Advanced, on unless turned off) controls it. macOS only for
+   now: elsewhere the scan finds nothing.
 3. For servers without HMR, an optional "Reload on save" per tab reloads
    after files in the worktree change (debounced 300 ms).
 
@@ -1310,7 +1325,8 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 11. Memory governor and priority. Done: measuring, the ladder's first five
     rungs, tab caps and priority. The per-renderer notice and budget
     settings are not built (11.2, 11.3).
-12. Dev-server-to-worktree mapping and auto-open in the session tab.
+12. Dev-server-to-worktree mapping and auto-open in the session tab. Done
+    on macOS (10.5); the Linux and Windows scans are not built.
 13. Print to PDF, drag and drop.
 14. Remove the dead upstream webview modules.
 
