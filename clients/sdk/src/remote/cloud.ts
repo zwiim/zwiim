@@ -4,6 +4,7 @@
 // bytes of the Noise tunnel (`./tunnel`), which the Cloud cannot read.
 //
 //   GET  /v1/hosts                  the account's hosts, with presence
+//   GET  /v1/usage                  the account's plan and relay usage
 //   POST /v1/hosts/{id}/tickets     a single-use ticket to reach one
 //   POST /v1/enrollments            a single-use host enrollment token
 //   WS   /v1/relay/device           {"type":"device","ticket"} → {"type":"ready"} → binary
@@ -30,6 +31,59 @@ export interface CloudTicket {
   expires_at: number;
 }
 
+/**
+ * The kind of traffic a relay connection carries; the Cloud counts and
+ * limits each separately. `browser` is for Agent View and Live App only.
+ */
+export type RelayChannel = "control" | "browser";
+
+/** Bytes relayed this period and the plan's limit; `null` is unlimited. */
+export interface CloudChannelUsage {
+  used: number;
+  limit: number | null;
+}
+
+/**
+ * The account's plan and relay usage this period. `plan` is `null` when the
+ * Cloud keeps no plan for the account: nothing is limited and the period
+ * fields are absent.
+ */
+export interface CloudUsage {
+  plan: { id: string; name: string } | null;
+  /** Unix seconds. */
+  period_start?: number;
+  /** Unix seconds. */
+  resets_at?: number;
+  channels?: { browser: CloudChannelUsage; total: CloudChannelUsage };
+}
+
+/**
+ * The account reached a relay limit of its plan: a refused ticket (`429`),
+ * with which limit and when it lifts. A relay closed at a limit (4429)
+ * carries no details; `CloudClient.usage()` has them.
+ */
+export class RelayQuotaError extends ZwiimClientError {
+  /** `browser`: the browser limit; `total`: every channel together, which stops all relays. */
+  readonly limit: "browser" | "total";
+  /** The plan id. */
+  readonly plan: string;
+  readonly usedBytes: number;
+  readonly limitBytes: number;
+  /** Unix seconds. */
+  readonly resetsAt: number;
+
+  constructor(d: { channel: "browser" | "total"; plan: string; used_bytes: number; limit_bytes: number; resets_at: number }) {
+    const what = d.channel === "browser" ? "remote browser" : "relay";
+    super("relay_quota_exceeded", `The account reached its ${what} limit for this period`, 429, { ...d });
+    this.name = "RelayQuotaError";
+    this.limit = d.channel;
+    this.plan = d.plan;
+    this.usedBytes = d.used_bytes;
+    this.limitBytes = d.limit_bytes;
+    this.resetsAt = d.resets_at;
+  }
+}
+
 export interface EnrollmentToken {
   enrollment_token: string;
   /** Unix seconds. */
@@ -53,6 +107,7 @@ export interface CloudClientOptions {
 export const CLOUD_CLOSE = {
   protocol: 4400,
   unauthenticated: 4401,
+  quotaExceeded: 4429,
   hostOffline: 4503,
   restarting: 1012,
 } as const;
@@ -104,7 +159,8 @@ export function isValidHostId(hostId: string): boolean {
 /**
  * What an early relay close means: the host is offline (4503), the Cloud is
  * restarting or gone (1012, 1006), the ticket was refused (4401: retry with
- * a fresh one), or the host ended the stream (1000).
+ * a fresh one), the account reached a relay limit (4429), or the host ended
+ * the stream (1000).
  */
 export function relayCloseError({ code, reason }: { code: number; reason: string }): ZwiimClientError {
   const detail = `${code}${reason ? ` ${reason}` : ""}`;
@@ -116,6 +172,9 @@ export function relayCloseError({ code, reason }: { code: number; reason: string
   }
   if (code === CLOUD_CLOSE.unauthenticated) {
     return new ZwiimClientError("network", "The Cloud refused the connection ticket");
+  }
+  if (code === CLOUD_CLOSE.quotaExceeded) {
+    return new ZwiimClientError("relay_quota_exceeded", "The account reached a relay limit of its plan");
   }
   return new ZwiimClientError("cloud_unavailable", `Relay connection closed (${detail})`);
 }
@@ -145,13 +204,30 @@ export class CloudClient {
     return body as CloudHost[];
   }
 
+  /** The account's plan and relay usage this period. */
+  async usage(): Promise<CloudUsage> {
+    const body = (await this.call("GET", "/v1/usage")) as CloudUsage;
+    if (typeof body !== "object" || body === null || !("plan" in body)) {
+      throw new ZwiimClientError("invalid_response", "Malformed usage");
+    }
+    return body;
+  }
+
   /**
-   * A single-use ticket for one of the account's hosts. `host_unknown` if
-   * the account has no such host; `host_offline` if it is not connected.
+   * A single-use ticket for one of the account's hosts, for a relay on
+   * `channel`. `host_unknown` if the account has no such host;
+   * `host_offline` if it is not connected; a `RelayQuotaError` at a limit
+   * of the account's plan.
    */
-  async ticket(hostId: string): Promise<CloudTicket> {
+  async ticket(hostId: string, channel: RelayChannel = "control"): Promise<CloudTicket> {
     if (!isValidHostId(hostId)) throw new ZwiimClientError("host_unknown", "Not a host id");
-    const body = (await this.call("POST", `/v1/hosts/${hostId}/tickets`, true)) as CloudTicket;
+    // A control ticket sends no body, as before relay channels.
+    const body = (await this.call(
+      "POST",
+      `/v1/hosts/${hostId}/tickets`,
+      true,
+      channel === "control" ? undefined : { channel },
+    )) as CloudTicket;
     if (typeof body?.ticket !== "string") {
       throw new ZwiimClientError("invalid_response", "Malformed ticket");
     }
@@ -271,7 +347,7 @@ export class CloudClient {
     return typeof this.accessToken === "function" ? await this.accessToken() : this.accessToken;
   }
 
-  private async call(method: "GET" | "POST", path: string, hostScoped = false): Promise<unknown> {
+  private async call(method: "GET" | "POST", path: string, hostScoped = false, json?: unknown): Promise<unknown> {
     const token = await this.token();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -280,7 +356,11 @@ export class CloudClient {
       try {
         res = await this.fetchImpl(`${this.origin}${path}`, {
           method,
-          headers: { authorization: `Bearer ${token}` },
+          headers: {
+            authorization: `Bearer ${token}`,
+            ...(json === undefined ? {} : { "content-type": "application/json" }),
+          },
+          ...(json === undefined ? {} : { body: JSON.stringify(json) }),
           signal: controller.signal,
         });
       } catch {
@@ -301,6 +381,10 @@ export class CloudClient {
         // Unknown, or another account's: the Cloud does not say which.
         throw new ZwiimClientError("host_unknown", "This account has no such host", 404);
       }
+      if (code === "relay_quota_exceeded") {
+        const quota = parseQuota((body as { error?: unknown }).error);
+        if (quota) throw new RelayQuotaError(quota);
+      }
       if (code === "host_offline") {
         throw new ZwiimClientError("host_offline", "The host is offline", res.status);
       }
@@ -316,4 +400,13 @@ export class CloudClient {
       clearTimeout(timer);
     }
   }
+}
+
+function parseQuota(raw: unknown): ConstructorParameters<typeof RelayQuotaError>[0] | null {
+  const e = raw as Record<string, unknown> | null;
+  if (!e || (e.channel !== "browser" && e.channel !== "total") || typeof e.plan !== "string") return null;
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const [used, limit, resets] = [n(e.used_bytes), n(e.limit_bytes), n(e.resets_at)];
+  if (used === null || limit === null || resets === null) return null;
+  return { channel: e.channel, plan: e.plan, used_bytes: used, limit_bytes: limit, resets_at: resets };
 }

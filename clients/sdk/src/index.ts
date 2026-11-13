@@ -25,9 +25,13 @@ export { createTransport, type HostTarget } from "./transport/select";
 export {
   CloudClient,
   normalizeCloudUrl,
+  RelayQuotaError,
+  type CloudChannelUsage,
   type CloudClientOptions,
   type CloudHost,
   type CloudTicket,
+  type CloudUsage,
+  type RelayChannel,
   type EnrollmentToken,
 } from "./remote/cloud";
 export {

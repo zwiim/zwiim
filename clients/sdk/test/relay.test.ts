@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isClientError, ZwiimClientError } from "../src/client/errors";
 import { HostController } from "../src/client/controller";
 import { HostClient, type HostFeedUpdate } from "../src/client/host-client";
-import { CloudClient, normalizeCloudUrl } from "../src/remote/cloud";
+import { CloudClient, normalizeCloudUrl, RelayQuotaError, relayCloseError } from "../src/remote/cloud";
 import { generateDeviceKeys } from "../src/remote/keys";
 import type { SessionFrame } from "../src/state/session";
 import { LocalTransport } from "../src/transport/local";
@@ -188,6 +188,79 @@ describe("Cloud client", () => {
     const calls = t.cloud.http.length;
     await new Promise((r) => setTimeout(r, 60));
     expect(t.cloud.http.length).toBe(calls); // not retried
+  });
+});
+
+describe("Cloud usage and limits", () => {
+  const requests: { path: string; body: string | null; type: string | null }[] = [];
+  const cloudAnswering = (status: number, body: unknown) =>
+    new CloudClient({
+      url: "https://cloud.test",
+      accessToken: "t",
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const headers = new Headers(init?.headers);
+        requests.push({
+          path: new URL(String(input)).pathname,
+          body: typeof init?.body === "string" ? init.body : null,
+          type: headers.get("content-type"),
+        });
+        return new Response(JSON.stringify(body), { status });
+      }) as typeof fetch,
+    });
+  const quota = {
+    code: "relay_quota_exceeded",
+    message: "m",
+    channel: "browser",
+    plan: "free",
+    used_bytes: 5368709120,
+    limit_bytes: 5368709120,
+    resets_at: 1797033600,
+  };
+
+  it("asks for a browser ticket by channel, and a control ticket as before", async () => {
+    requests.length = 0;
+    const cloud = cloudAnswering(200, { ticket: "k", expires_at: 0 });
+    await cloud.ticket("host-1");
+    await cloud.ticket("host-1", "browser");
+    expect(requests).toEqual([
+      { path: "/v1/hosts/host-1/tickets", body: null, type: null },
+      { path: "/v1/hosts/host-1/tickets", body: '{"channel":"browser"}', type: "application/json" },
+    ]);
+  });
+
+  it("turns a refused ticket into a RelayQuotaError with its limit", async () => {
+    const error = await cloudAnswering(429, { error: quota }).ticket("host-1", "browser").catch((e) => e);
+    expect(error).toBeInstanceOf(RelayQuotaError);
+    expect(error).toMatchObject({
+      code: "relay_quota_exceeded",
+      status: 429,
+      limit: "browser",
+      plan: "free",
+      usedBytes: 5368709120,
+      limitBytes: 5368709120,
+      resetsAt: 1797033600,
+    });
+    expect(isClientError(error, "relay_quota_exceeded")).toBe(true);
+    // Other 429s are the Cloud's request rate limit.
+    await expect(
+      cloudAnswering(429, { error: { code: "rate_limited", message: "m" } }).ticket("host-1"),
+    ).rejects.toMatchObject({ code: "cloud_unavailable" });
+  });
+
+  it("names a relay closed at a limit", () => {
+    expect(relayCloseError({ code: 4429, reason: "relay_quota_exceeded" }).code).toBe("relay_quota_exceeded");
+  });
+
+  it("reads the account's usage, or no plan", async () => {
+    const usage = {
+      plan: { id: "free", name: "Free" },
+      period_start: 1794441600,
+      resets_at: 1797033600,
+      channels: { browser: { used: 1, limit: 5368709120 }, total: { used: 2, limit: null } },
+    };
+    expect(await cloudAnswering(200, usage).usage()).toEqual(usage);
+    expect(await cloudAnswering(200, { plan: null }).usage()).toEqual({ plan: null });
+    await expect(cloudAnswering(200, []).usage()).rejects.toMatchObject({ code: "invalid_response" });
   });
 });
 

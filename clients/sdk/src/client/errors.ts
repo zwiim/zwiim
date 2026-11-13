@@ -26,6 +26,9 @@ import type {
  *   revoked (terminal).
  * - `handshake_failed`: the host's tunnel handshake did not authenticate
  *   against the pinned host key (terminal).
+ * - `relay_quota_exceeded`: the account reached a relay limit of its plan
+ *   (`RelayQuotaError` on a refused ticket). Retried with backoff: the
+ *   limit lifts at the period's reset, and the local network still works.
  *
  * Reaching a host directly on the local network (`LanTransport`,
  * `ConnectionManager`) adds:
@@ -61,6 +64,7 @@ export type ClientErrorCode =
   | "host_unknown"
   | "device_refused"
   | "handshake_failed"
+  | "relay_quota_exceeded"
   | "lan_unavailable"
   | "host_identity_mismatch"
   | "pairing_invalid"
