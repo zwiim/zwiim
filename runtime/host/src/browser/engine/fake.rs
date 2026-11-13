@@ -176,6 +176,7 @@ impl FakeEngine {
         Running {
             cdp: Cdp::new(from_engine, to_engine),
             version: "fake".into(),
+            pid: None,
             exited: async move {
                 let _ = exit_rx.await;
             }
@@ -420,6 +421,7 @@ pub fn real_engine(profile: std::path::PathBuf) -> StartFn {
             Ok(Running {
                 cdp: engine.cdp,
                 version: "real".into(),
+                pid: child.id(),
                 exited: async move {
                     let _ = child.wait().await;
                 }

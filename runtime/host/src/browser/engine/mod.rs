@@ -69,7 +69,9 @@ pub fn host_start(root: std::path::PathBuf) -> manager::StartFn {
             let engine = launch::spawn(&launch::LaunchOptions {
                 binary: installed.binary,
                 profile_dir: launch::profile_dir(&root),
-                renderer_limit: None,
+                renderer_limit: Some(super::governor::renderer_limit(
+                    super::governor::budget(),
+                )),
                 log_file: root.parent().map(|p| p.join("engine.log")),
             })
             .map_err(|e| failed(format!("the browser engine could not start: {e}")))?;
@@ -88,6 +90,7 @@ pub fn host_start(root: std::path::PathBuf) -> manager::StartFn {
             Ok(manager::Running {
                 cdp: engine.cdp,
                 version: installed.version,
+                pid: child.id(),
                 exited: async move {
                     let _ = child.wait().await;
                 }

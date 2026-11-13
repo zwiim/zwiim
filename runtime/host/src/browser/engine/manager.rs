@@ -51,6 +51,9 @@ pub struct EngineError {
 pub struct Running {
     pub cdp: Cdp,
     pub version: String,
+    /// The engine process, which leads its own process group; none for a
+    /// fake engine.
+    pub pid: Option<u32>,
     /// Resolves when the engine process exits.
     pub exited: BoxFuture<'static, ()>,
 }
@@ -66,6 +69,7 @@ enum Control {
 
 struct Inner {
     cdp: Option<Cdp>,
+    pid: Option<u32>,
     control: Option<mpsc::UnboundedSender<Control>>,
     exits: VecDeque<Instant>,
     generation: u64,
@@ -83,6 +87,7 @@ impl EngineManager {
             start,
             inner: Mutex::new(Inner {
                 cdp: None,
+                pid: None,
                 control: None,
                 exits: VecDeque::new(),
                 generation: 0,
@@ -125,6 +130,13 @@ impl EngineManager {
         let inner = self.inner.lock().await;
         let cdp = inner.cdp.as_ref().filter(|c| !c.is_closed())?;
         Some((cdp.clone(), inner.generation))
+    }
+
+    /// The running engine's process, which leads its own process group.
+    pub async fn pid(&self) -> Option<u32> {
+        let inner = self.inner.lock().await;
+        inner.cdp.as_ref().filter(|c| !c.is_closed())?;
+        inner.pid
     }
 
     /// Allow starts again after `crash_loop`.
@@ -185,6 +197,7 @@ impl EngineManager {
         let cdp = running.cdp.clone();
         let (control, rx) = mpsc::unbounded_channel();
         inner.cdp = Some(cdp.clone());
+        inner.pid = running.pid;
         inner.control = Some(control.clone());
         self.state.send_replace(EngineState::Running {
             version: running.version.clone(),
@@ -341,6 +354,7 @@ mod tests {
                 Ok(Running {
                     cdp: Cdp::new(from_engine, to_engine),
                     version: format!("v{n}"),
+                    pid: None,
                     exited: async move {
                         let _ = exit_rx.await;
                     }

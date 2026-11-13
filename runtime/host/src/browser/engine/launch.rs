@@ -23,6 +23,9 @@ pub struct LaunchOptions {
     pub log_file: Option<PathBuf>,
 }
 
+/// The engine's nice value: below the Host's own work (design 11.4).
+pub const ENGINE_NICE: i32 = 5;
+
 /// A running engine: its process and its CDP connection.
 pub struct Engine {
     pub child: Child,
@@ -78,9 +81,14 @@ pub fn spawn(options: &LaunchOptions) -> io::Result<Engine> {
     let child_read = to_engine_r.as_raw_fd();
     let child_write = from_engine_w.as_raw_fd();
     // SAFETY: runs between fork and exec, and only calls the
-    // async-signal-safe `fcntl` and `dup2`.
+    // async-signal-safe `fcntl`, `dup2` and `setpriority`.
     unsafe {
-        cmd.pre_exec(move || place_pipe_fds(child_read, child_write));
+        cmd.pre_exec(move || {
+            // The engine and every process it starts run below the Host,
+            // its agents and the relay (design 11.4).
+            libc::setpriority(libc::PRIO_PROCESS, 0, ENGINE_NICE);
+            place_pipe_fds(child_read, child_write)
+        });
     }
     let child = cmd.spawn()?;
     // The child holds its own copies now.
@@ -179,6 +187,21 @@ mod tests {
             .await
             .unwrap();
         assert!(version["product"].as_str().unwrap().contains("Chrome"));
+        // The engine and the processes it started run at its nice value.
+        #[cfg(target_os = "macos")]
+        {
+            let pid = engine.child.id().unwrap();
+            let tree = crate::browser::governor::sys::tree(pid);
+            assert!(tree.len() >= 2, "{tree:?}");
+            for p in tree {
+                // SAFETY: reading a priority.
+                assert_eq!(
+                    unsafe { libc::getpriority(libc::PRIO_PROCESS, p) },
+                    ENGINE_NICE,
+                    "{p}"
+                );
+            }
+        }
 
         engine
             .cdp

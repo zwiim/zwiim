@@ -74,6 +74,20 @@ pub fn default_budget(ram: u64) -> u64 {
     (ram.saturating_mul(BUDGET_SHARE) / 100).min(MAX_BUDGET)
 }
 
+/// The Host's budget: the default for this Mac, or [`MAX_BUDGET`] where its
+/// memory cannot be read.
+pub fn budget() -> u64 {
+    #[cfg(target_os = "macos")]
+    let ram = sys::ram();
+    #[cfg(not(target_os = "macos"))]
+    let ram = 0;
+    if ram == 0 {
+        MAX_BUDGET
+    } else {
+        default_budget(ram)
+    }
+}
+
 /// `--renderer-process-limit` for `budget`.
 pub fn renderer_limit(budget: u64) -> u32 {
     u32::try_from(budget / RENDERER_BYTES)
