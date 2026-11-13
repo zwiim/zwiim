@@ -71,6 +71,11 @@ pub enum BrowserEvent {
     UiDone { request_id: String, tab_id: String },
     /// An agent is about to act on a tab (design 10.2).
     AgentAction(AgentAction),
+    /// A tab's page began a download, under the page's file name.
+    Download {
+        tab_id: String,
+        name: String,
+    },
 }
 
 /// What an agent is about to do, for clients to show: where its pointer
@@ -841,7 +846,16 @@ impl BrowserService {
                 });
             }
             "Browser.downloadWillBegin" => {
-                let name = p["suggestedFilename"].as_str().unwrap_or_default().to_string();
+                let name = p["suggestedFilename"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                if let Some(tab_id) = by_target(&inner, p["frameId"].as_str().unwrap_or_default()) {
+                    self.emit(BrowserEvent::Download {
+                        tab_id,
+                        name: name.clone(),
+                    });
+                }
                 let progress = crate::downloads::global().begin(name.clone(), 1);
                 let guid = p["guid"].as_str().unwrap_or_default().to_string();
                 inner.saving.insert(
@@ -1034,6 +1048,13 @@ impl BrowserService {
         let empty = Console::default();
         let console = inner.consoles.get(tab_id).unwrap_or(&empty);
         Some(console.ring.read(query, &tab.info.url, |_| true))
+    }
+
+    /// The seq of tab `tab_id`'s newest console line, to read only what
+    /// comes after it.
+    pub async fn console_mark(&self, tab_id: &str) -> u64 {
+        let inner = self.inner.lock().await;
+        inner.consoles.get(tab_id).map_or(0, |c| c.ring.last_seq())
     }
 
     /// The download folder setting changed: every open context follows it.

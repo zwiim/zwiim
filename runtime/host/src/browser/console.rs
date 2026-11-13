@@ -334,6 +334,12 @@ impl ConsoleRing {
         self.errors = 0;
     }
 
+    /// The seq of the newest line, kept or not yet: a read `since` it sees
+    /// only what comes after.
+    pub fn last_seq(&self) -> u64 {
+        self.next_seq - 1
+    }
+
     /// How many error lines the current document has printed.
     pub fn errors(&self) -> u64 {
         self.errors

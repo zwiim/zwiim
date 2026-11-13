@@ -197,6 +197,9 @@ pub struct BrowserActOutcome {
     pub tab_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<ActionOutcome>,
+    /// What the action caused, when it was done (design 10.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effects: Option<ActionEffects>,
     /// One of the `browser_*` slugs above. `None` exactly when `action` is
     /// `Some`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -205,20 +208,57 @@ pub struct BrowserActOutcome {
     pub note: Option<String>,
 }
 
+/// What an action caused while it ran and the page settled, so the agent
+/// learns of a popup or an error without a second call (design 10.3).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionEffects {
+    /// The tab's address after the action, when it moved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub navigated: Option<String>,
+    /// Tabs the page opened.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub opened_tabs: Vec<String>,
+    /// Files the page began to download, by the page's names for them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub downloads: Vec<String>,
+    /// What the page asked of a person: a dialog with its message, a
+    /// sign-in, a file chooser.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dialogs: Vec<String>,
+    /// Errors the page printed to its console or threw.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<String>,
+}
+
+impl ActionEffects {
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 impl BrowserActOutcome {
     pub fn done(tab_id: &str, outcome: ActionOutcome) -> Self {
         Self {
             tab_id: tab_id.to_string(),
             action: Some(outcome),
+            effects: None,
             error: None,
             note: None,
         }
+    }
+
+    /// Done, and what it caused.
+    pub fn with_effects(mut self, effects: ActionEffects) -> Self {
+        self.effects = (!effects.is_empty()).then_some(effects);
+        self
     }
 
     pub fn refused(tab_id: &str, error: &str, note: impl Into<String>) -> Self {
         Self {
             tab_id: tab_id.to_string(),
             action: None,
+            effects: None,
             error: Some(error.to_string()),
             note: Some(note.into()),
         }

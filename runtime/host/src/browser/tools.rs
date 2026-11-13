@@ -14,23 +14,25 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use sea_orm::EntityTrait;
 use serde_json::{json, Value};
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 
 use super::agent::{
     self, ActionError, ActionKind, ActionOutcome, ActionRequest, AgentTabSummary, Fidelity,
     GrantLevel, PageSnapshot, PointerButton, RectAnswer, SnapshotRequest, WorldAnswer,
 };
 use super::capture::{self, CaptureOutcome, CaptureRegion, CaptureRequest};
-use super::console::ConsoleQuery;
+use super::console::{ConsoleLevel, ConsoleQuery};
 use super::engine::cdp::Cdp;
 use super::eval::EvalRequest;
-use super::service::{AgentAction, BrowserError, BrowserService, TabInfo};
+use super::service::{AgentAction, BrowserError, BrowserEvent, BrowserService, TabInfo};
 use super::store::TabOwner;
+use super::ui::UiKind;
 use crate::acp::browser_tools::{
-    BrowserActOutcome, BrowserCaptureOutcome, BrowserConsoleOutcome, BrowserEvalOutcome,
-    BrowserSnapshotOutcome, BrowserTabOp, BrowserTabOutcome, BrowserTabsOutcome, BrowserToolAccess,
-    DEFAULT_SNAPSHOT_MAX_CHARS, ERROR_ACTION_FAILED, ERROR_BAD_ADDRESS, ERROR_NO_SUCH_TAB,
-    ERROR_OPEN_FAILED, ERROR_READ_FAILED, ERROR_UNAVAILABLE, ERROR_WAIT_TIMEOUT,
+    ActionEffects, BrowserActOutcome, BrowserCaptureOutcome, BrowserConsoleOutcome,
+    BrowserEvalOutcome, BrowserSnapshotOutcome, BrowserTabOp, BrowserTabOutcome,
+    BrowserTabsOutcome, BrowserToolAccess, DEFAULT_SNAPSHOT_MAX_CHARS, ERROR_ACTION_FAILED,
+    ERROR_BAD_ADDRESS, ERROR_NO_SUCH_TAB, ERROR_OPEN_FAILED, ERROR_READ_FAILED, ERROR_UNAVAILABLE,
+    ERROR_WAIT_TIMEOUT,
 };
 use crate::app_state::AppState;
 use crate::db::entities::conversation;
@@ -55,6 +57,10 @@ const WAIT_POLL: Duration = Duration::from_millis(200);
 /// The isolated world the page-reading script runs in, where page scripts
 /// cannot see or change it.
 const WORLD_NAME: &str = "zwiim-agent";
+/// At most this many console errors are told with an action, each cut to
+/// this many characters.
+const EFFECT_ERRORS: usize = 5;
+const EFFECT_ERROR_CHARS: usize = 300;
 
 /// The tools for the Host this process runs.
 pub struct HostBrowserTools {
@@ -654,6 +660,7 @@ pub(crate) async fn act(
     if !agent::ref_is_current(&request.generation, &epoch_of(context)) {
         return stale("The page has navigated since that snapshot; take a new one.");
     }
+    let watch = Watch::start(browser, session, tab_id).await;
     let show = |x: f64, y: f64, bounds: Option<CaptureRegion>| {
         browser.agent_action(AgentAction {
             tab_id: tab_id.to_string(),
@@ -703,7 +710,8 @@ pub(crate) async fn act(
         Ok(Ok(outcome)) => {
             tokio::time::sleep(ACTION_GRACE).await;
             settle(&cdp, &cdp_session).await;
-            BrowserActOutcome::done(tab_id, outcome)
+            let effects = watch.effects(browser, session, tab_id).await;
+            BrowserActOutcome::done(tab_id, outcome).with_effects(effects)
         }
         Ok(Err((Some(ActionError::Stale) | None, detail))) => stale(&detail),
         Ok(Err((Some(_), detail))) => {
@@ -714,6 +722,103 @@ pub(crate) async fn act(
             stale("The page has navigated since that snapshot; take a new one.")
         }
         Err(WorldError::Failed(m)) => BrowserActOutcome::refused(tab_id, ERROR_ACTION_FAILED, m),
+    }
+}
+
+/// What a tab is like before an action, to tell what the action caused.
+struct Watch {
+    events: broadcast::Receiver<BrowserEvent>,
+    url: Option<String>,
+    console: u64,
+    /// The session's tabs, the acting one first.
+    tabs: Vec<String>,
+}
+
+impl Watch {
+    async fn start(browser: &BrowserService, session: &str, tab_id: &str) -> Self {
+        let events = browser.subscribe();
+        let mut tabs = vec![tab_id.to_string()];
+        tabs.extend(
+            browser
+                .list(Some(session))
+                .await
+                .into_iter()
+                .map(|t| t.id)
+                .filter(|id| id != tab_id),
+        );
+        Self {
+            events,
+            url: own_tab(browser, session, tab_id).await.map(|t| t.url),
+            console: browser.console_mark(tab_id).await,
+            tabs,
+        }
+    }
+
+    /// What happened since [`Watch::start`]: the tab moved, the page opened
+    /// tabs, downloads or dialogs, or it printed errors.
+    async fn effects(
+        mut self,
+        browser: &BrowserService,
+        session: &str,
+        tab_id: &str,
+    ) -> ActionEffects {
+        let mut effects = ActionEffects::default();
+        let mine = owner(session);
+        // The acting tab and those it opened: what they ask or download is
+        // the action's doing.
+        let mut caused = vec![tab_id.to_string()];
+        loop {
+            match self.events.try_recv() {
+                Ok(BrowserEvent::Tab(tab)) if tab.owner == mine && !self.tabs.contains(&tab.id) => {
+                    self.tabs.push(tab.id.clone());
+                    caused.push(tab.id.clone());
+                    effects.opened_tabs.push(tab.id);
+                }
+                Ok(BrowserEvent::Ui(request)) if caused.contains(&request.tab_id) => {
+                    effects.dialogs.push(asked(&request.kind));
+                }
+                Ok(BrowserEvent::Download { tab_id, name }) if caused.contains(&tab_id) => {
+                    effects.downloads.push(name);
+                }
+                Ok(_) | Err(broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        let now = own_tab(browser, session, tab_id).await.map(|t| t.url);
+        if now.is_some() && now != self.url {
+            effects.navigated = now;
+        }
+        let query = ConsoleQuery {
+            since: self.console,
+            min_level: Some(ConsoleLevel::Error),
+            limit: Some(EFFECT_ERRORS),
+        };
+        if let Some(read) = browser.console(tab_id, &query).await {
+            effects.errors = read
+                .entries
+                .into_iter()
+                .map(|e| e.text.chars().take(EFFECT_ERROR_CHARS).collect())
+                .collect();
+        }
+        effects
+    }
+}
+
+/// What a page asked of a person, in a few words.
+fn asked(kind: &UiKind) -> String {
+    match kind {
+        UiKind::Dialog {
+            dialog, message, ..
+        } => {
+            let dialog = serde_json::to_value(dialog)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
+            let message: String = message.chars().take(EFFECT_ERROR_CHARS).collect();
+            format!("{dialog}: {message}")
+        }
+        UiKind::Auth { origin, .. } => format!("sign-in for {origin}"),
+        UiKind::FileChooser { .. } => "file chooser".to_string(),
     }
 }
 
@@ -1110,6 +1215,59 @@ mod tests {
         assert_eq!(failed.load_error.as_deref(), Some("dns"));
     }
 
+    #[tokio::test]
+    async fn an_action_reports_the_tabs_downloads_and_moves_it_caused() {
+        let fake = FakeEngine::default();
+        let browser = browser(&fake).await;
+        let tab = browser
+            .open(owner("s1"), Some("http://localhost:5173/"))
+            .await
+            .unwrap();
+        let other = browser
+            .open(owner("s2"), Some("http://localhost:5174/"))
+            .await
+            .unwrap();
+        let target = fake.wait_url("http://localhost:5173/").await;
+        let theirs = fake.wait_url("http://localhost:5174/").await;
+
+        let watch = Watch::start(&browser, "s1", &tab.id).await;
+        fake.open_popup(&target, "http://localhost:5173/pop");
+        fake.open_popup(&theirs, "http://localhost:5174/pop");
+        for (frame, name) in [(&target, "report.pdf"), (&theirs, "secret.pdf")] {
+            fake.emit(
+                "Browser.downloadWillBegin",
+                json!({ "frameId": frame, "guid": name, "suggestedFilename": name, "url": "http://localhost/x" }),
+                None,
+            );
+        }
+        browser
+            .navigate(
+                &tab.id,
+                super::super::service::Navigation::Url("http://localhost:5173/done".into()),
+            )
+            .await
+            .unwrap();
+        fake.wait_url("http://localhost:5173/done").await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while browser.list(None).await.len() < 4 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("both popups became tabs");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let effects = watch.effects(&browser, "s1", &tab.id).await;
+        assert_eq!(
+            effects.navigated.as_deref(),
+            Some("http://localhost:5173/done")
+        );
+        assert_eq!(effects.opened_tabs.len(), 1, "{effects:?}");
+        assert_ne!(effects.opened_tabs[0], other.id);
+        assert_eq!(effects.downloads, vec!["report.pdf".to_string()]);
+        assert!(effects.dialogs.is_empty() && effects.errors.is_empty());
+    }
+
     /// The page-reading script reads a real page, a click lands as real
     /// input, typing reaches the field, and a new document makes old refs
     /// stale. Point `ZWIIM_TEST_ENGINE` at a `chrome-headless-shell` binary.
@@ -1128,7 +1286,7 @@ mod tests {
                     let mut buf = [0u8; 4096];
                     let _ = sock.read(&mut buf).await;
                     let body = "<title>Form</title><input aria-label=Name>\
-                        <script>console.error('boom', 42)</script><button onclick=\"document.title='clicked:'+event.isTrusted;document.body.append('Thanks, Ada!')\">Go</button>";
+                        <script>console.error('boom', 42)</script><button onclick=\"document.title='clicked:'+event.isTrusted;document.body.append('Thanks, Ada!');window.open('/pop');console.error('after click')\">Go</button>";
                     let resp = format!(
                         "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                         body.len()
@@ -1198,6 +1356,11 @@ mod tests {
         )
         .await;
         assert_eq!(clicked.action.unwrap().fidelity, Fidelity::Trusted);
+        // The click's popup and error came back with it.
+        let effects = clicked.effects.expect("the click caused things");
+        assert_eq!(effects.opened_tabs.len(), 1, "{effects:?}");
+        assert_eq!(effects.errors, vec!["after click".to_string()]);
+        assert_eq!(effects.navigated, None);
         // Clients were shown where the pointer went, before it landed.
         let shown = loop {
             if let super::super::service::BrowserEvent::AgentAction(a) =

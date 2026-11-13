@@ -2345,6 +2345,52 @@ fn scroll_note(scrolled: Option<&Value>) -> String {
     format!(" Scrolled {direction} {:.0}px{where_now}.", by.abs())
 }
 
+/// What an action caused (a serialized
+/// [`crate::acp::browser_tools::ActionEffects`]), as sentences; empty when
+/// it caused nothing.
+fn effects_note(effects: Option<&Value>) -> String {
+    let Some(effects) = effects else {
+        return String::new();
+    };
+    let list = |key: &str| -> Vec<String> {
+        effects
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut out = String::new();
+    if let Some(url) = effects.get("navigated").and_then(Value::as_str) {
+        out.push_str(&format!(" It went to {url}; refs from before are stale."));
+    }
+    let opened = list("openedTabs");
+    if !opened.is_empty() {
+        out.push_str(&format!(" It opened tab {}.", opened.join(", ")));
+    }
+    let downloads = list("downloads");
+    if !downloads.is_empty() {
+        out.push_str(&format!(" It began downloading {}.", downloads.join(", ")));
+    }
+    for dialog in list("dialogs") {
+        out.push_str(&format!(" The page asked the person: {dialog}."));
+    }
+    let errors = list("errors");
+    if !errors.is_empty() {
+        out.push_str(" The page logged errors:");
+        for error in errors {
+            out.push_str(&format!("\n  {error}"));
+        }
+        out.push('\n');
+    }
+    out
+}
+
 /// Map an action tool's round-trip outcome (a serialized
 /// [`crate::acp::browser_tools::BrowserActOutcome`]) into an MCP `tools/call`
 /// result.
@@ -2365,9 +2411,10 @@ pub fn render_browser_act_result(outcome: &Value) -> Value {
                 _ => "as events dispatched by script (synthetic)",
             };
             format!(
-                "Done, {how}.{} The page was at {url}. Take a browser_snapshot to see what came \
-                 of it.",
+                "Done, {how}.{} The page was at {url}.{} Take a browser_snapshot to see what \
+                 came of it.",
                 scroll_note(action.get("scrolled")),
+                effects_note(outcome.get("effects")),
             )
         }
         _ => outcome
@@ -4880,6 +4927,31 @@ mod tests {
         let e = resp.error.unwrap();
         assert_eq!(e.code, -32602);
         assert!(e.message.contains("`ref`"));
+    }
+
+    #[test]
+    fn an_action_result_tells_what_the_action_caused() {
+        let done = render_browser_act_result(&json!({
+            "tabId": "t1",
+            "action": { "fidelity": "trusted", "url": "http://localhost:3000/" },
+            "effects": {
+                "navigated": "http://localhost:3000/orders",
+                "openedTabs": ["t9"],
+                "downloads": ["report.pdf"],
+                "dialogs": ["confirm: Delete it?"],
+                "errors": ["TypeError: x is undefined"]
+            }
+        }));
+        let text = done["content"][0]["text"].as_str().unwrap();
+        for said in [
+            "went to http://localhost:3000/orders",
+            "opened tab t9",
+            "downloading report.pdf",
+            "confirm: Delete it?",
+            "TypeError: x is undefined",
+        ] {
+            assert!(text.contains(said), "{said}: {text}");
+        }
     }
 
     #[test]
