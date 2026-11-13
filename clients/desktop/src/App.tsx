@@ -5,6 +5,7 @@ import {
   FileDiff,
   FileText,
   GitBranch,
+  Globe,
   Loader2,
   MessageSquare,
   PanelLeftClose,
@@ -63,6 +64,7 @@ import { Welcome } from "@/panels/Account";
 import { cn } from "@/lib/utils";
 import { ConnectionStatus, type RemoteLink } from "@/panels/ConnectionStatus";
 import { ControlCenter } from "@/panels/ControlCenter";
+import { BrowserPanel } from "@/panels/BrowserPanel";
 import { DiffPanel, DiffView } from "@/panels/DiffPanel";
 import { FilesPanel, FileView } from "@/panels/FilesPanel";
 import { GitPanel } from "@/panels/GitPanel";
@@ -231,12 +233,13 @@ export function App({ bridge, bootOptions }: { bridge: NativeBridge; bootOptions
   );
 }
 
-type Tab = "files" | "diff" | "git";
+type Tab = "files" | "diff" | "git" | "browser";
 
 const TABS: { id: Tab; label: string; icon: typeof FileText }[] = [
   { id: "files", label: "Files", icon: FileText },
   { id: "diff", label: "Diff", icon: FileDiff },
   { id: "git", label: "Git", icon: GitBranch },
+  { id: "browser", label: "Browser", icon: Globe },
 ];
 
 /** A file opened beside the conversation: its changes, or its contents. */
@@ -1011,6 +1014,11 @@ function WorkspacePanel({
               {visited.has("git") && (
                 <TabPane active={tab === "git"}>
                   <GitPanel workspace={workspace} />
+                </TabPane>
+              )}
+              {visited.has("browser") && (
+                <TabPane active={tab === "browser"}>
+                  <BrowserPanel sessionId={sessionId} active={tab === "browser" && !collapsed} />
                 </TabPane>
               )}
             </div>
