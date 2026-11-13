@@ -588,6 +588,8 @@ export class HostClient {
       case "browser.tab.state":
       case "browser.tab.removed":
       case "browser.engine.state":
+      case "browser.ui.request":
+      case "browser.ui.done":
       case "browser.error":
         this.emit((l) => l.browser?.(frame));
         return;

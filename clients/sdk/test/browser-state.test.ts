@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostController } from "../src/client/controller";
 import { HostClient } from "../src/client/host-client";
-import { initialBrowserState, personalTabs, reduceBrowser, sessionTabs } from "../src/state/browser";
-import type { BrowserTab } from "../src/types/protocol";
+import { initialBrowserState, personalTabs, reduceBrowser, sessionTabs, tabUiRequests } from "../src/state/browser";
+import type { BrowserTab, BrowserUiRequest } from "../src/types/protocol";
 import { FakeTransport, flush, hello } from "./fakes";
 
 const tab = (tab_id: string, position: number, session_id: string | null = "s1"): BrowserTab => ({
@@ -14,6 +14,16 @@ const tab = (tab_id: string, position: number, session_id: string | null = "s1")
   loading: false,
   discarded: false,
   crashed: false,
+});
+
+const dialog = (request_id: string, tab_id: string): BrowserUiRequest => ({
+  request_id,
+  tab_id,
+  owner: { kind: "session", session_id: "s1" },
+  kind: "dialog",
+  dialog: "confirm",
+  message: "Leave?",
+  url: "https://example.com/",
 });
 
 describe("reduceBrowser", () => {
@@ -40,6 +50,27 @@ describe("reduceBrowser", () => {
 
     s = reduceBrowser(s, { type: "browser.engine.state", engine: { state: "running", version: "157" } });
     expect(s.engine).toEqual({ state: "running", version: "157" });
+  });
+
+  it("follows what tabs wait on until each is done", () => {
+    let s = reduceBrowser(initialBrowserState(), {
+      type: "browser.snapshot",
+      tabs: [tab("a", 0), tab("b", 1)],
+      engine: { state: "running", version: "157" },
+      ui_requests: [dialog("ui-1", "a")],
+    });
+    s = reduceBrowser(s, { type: "browser.ui.request", request: dialog("ui-2", "b") });
+    s = reduceBrowser(s, { type: "browser.ui.request", request: dialog("ui-2", "b") });
+    expect(s.uiRequests.map((r) => r.request_id)).toEqual(["ui-1", "ui-2"]);
+    expect(tabUiRequests(s, "b")).toEqual([dialog("ui-2", "b")]);
+
+    s = reduceBrowser(s, { type: "browser.ui.done", request_id: "ui-1", tab_id: "a" });
+    expect(tabUiRequests(s, "a")).toEqual([]);
+    expect(reduceBrowser(s, { type: "browser.ui.done", request_id: "ui-1", tab_id: "a" })).toBe(s);
+
+    // A snapshot from an older Host has no requests.
+    s = reduceBrowser(s, { type: "browser.snapshot", tabs: [], engine: { state: "stopped" } });
+    expect(s.uiRequests).toEqual([]);
   });
 
   it("keeps a refusal until the next subscribe", () => {
@@ -113,5 +144,24 @@ describe("browser feed", () => {
     await controller.browserTabHistory("n", "reload");
     expect(controller.store.getState().browser.tabs).toEqual([{ ...tab("n", 0), url: "https://example.com/", loading: true }]);
     expect(transport.requests.find((r) => r.op === "browser.tab.open")!.options?.mutating).toBe(true);
+  });
+
+  it("answers a dialog once, and receives its requests", async () => {
+    const { transport, controller } = setup();
+    transport.handlers["browser.ui.answer"] = () => ({});
+    controller.client.start();
+    await flush();
+    transport.channel.open();
+    controller.watchBrowser();
+    transport.channel.frame({ type: "browser.snapshot", tabs: [tab("a", 0)], engine: { state: "stopped" } });
+    transport.channel.frame({ type: "browser.ui.request", request: dialog("ui-1", "a") });
+    expect(controller.store.getState().browser.uiRequests).toEqual([dialog("ui-1", "a")]);
+
+    await controller.answerBrowserUi("ui-1", { kind: "dialog", accept: true });
+    const sent = transport.requests.find((r) => r.op === "browser.ui.answer")!;
+    expect(sent.params).toEqual({ request_id: "ui-1", answer: { kind: "dialog", accept: true } });
+    expect(sent.options?.mutating).toBe(true);
+    transport.channel.frame({ type: "browser.ui.done", request_id: "ui-1", tab_id: "a" });
+    expect(controller.store.getState().browser.uiRequests).toEqual([]);
   });
 });

@@ -19,6 +19,8 @@ const FRAME_TYPES = new Set([
   "browser.tab.state",
   "browser.tab.removed",
   "browser.engine.state",
+  "browser.ui.request",
+  "browser.ui.done",
   "browser.error",
   "pong",
   "error",

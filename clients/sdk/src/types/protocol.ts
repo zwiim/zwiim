@@ -85,6 +85,8 @@ export type HostErrorCode =
   | "stream_not_found"
   /** The stream socket: the stream already has its viewer. */
   | "stream_attached"
+  /** `browser.ui.answer`: the request was already answered, or dismissed unanswered after 60 s. */
+  | "request_not_found"
   | "internal";
 
 export interface WireError {
@@ -285,12 +287,39 @@ export type BrowserInput =
   | { type: "text"; text: string }
   | ({ type: "viewport" } & BrowserViewport);
 
+/** A JavaScript dialog's kind; `beforeunload` asks whether to leave the page. */
+export type BrowserDialogType = "alert" | "confirm" | "prompt" | "beforeunload";
+
+/**
+ * Something a tab waits on a person for, which the stream does not show:
+ * each client draws it, and the first answer wins.
+ */
+export type BrowserUiRequest = {
+  request_id: string;
+  tab_id: string;
+  owner: BrowserTabOwner;
+} & {
+  kind: "dialog";
+  dialog: BrowserDialogType;
+  message: string;
+  /** A `prompt`'s default answer. */
+  default_text?: string;
+  /** The page that asked. */
+  url: string;
+};
+
+/** The answer to a {@link BrowserUiRequest}: OK (or Leave) when `accept`; `text` answers a `prompt`. */
+export type BrowserUiAnswer = { kind: "dialog"; accept: boolean; text?: string };
+
 /** `browser.subscribe` frames. Events carry a tab's whole state. */
 export type BrowserFrame =
-  | { type: "browser.snapshot"; tabs: BrowserTab[]; engine: BrowserEngine }
+  | { type: "browser.snapshot"; tabs: BrowserTab[]; engine: BrowserEngine; ui_requests?: BrowserUiRequest[] }
   | { type: "browser.tab.state"; tab: BrowserTab }
   | { type: "browser.tab.removed"; tab_id: string; owner: BrowserTabOwner }
   | { type: "browser.engine.state"; engine: BrowserEngine }
+  | { type: "browser.ui.request"; request: BrowserUiRequest }
+  /** Answered, dismissed unanswered after 60 s, or its tab went. */
+  | { type: "browser.ui.done"; request_id: string; tab_id: string }
   /** `browser.subscribe` was refused (`permission_denied` on a paired device). */
   | { type: "browser.error"; error: WireError };
 
@@ -2134,6 +2163,8 @@ export interface Operations {
   "browser.view.open": [{ tab_id: string; viewport: BrowserViewport }, { stream_id: string }];
   /** End the stream and its socket. */
   "browser.view.close": [{ stream_id: string }, Record<string, never>];
+  /** Answer what a tab waits on; a later answer is `request_not_found`. */
+  "browser.ui.answer": [{ request_id: string; answer: BrowserUiAnswer }, Record<string, never>];
 }
 
 export type OpName = keyof Operations;
@@ -2174,6 +2205,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "browser.tab.navigate",
   "browser.engine.reset",
   "browser.view.open",
+  "browser.ui.answer",
   "session.start",
   "session.send",
   "session.cancel",

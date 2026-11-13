@@ -13,6 +13,7 @@ import type {
   BrowserEngine,
   BrowserTab,
   BrowserTabOwner,
+  BrowserUiAnswer,
   BrowserViewport,
   CloneStart,
   ForkTarget,
@@ -774,6 +775,11 @@ export class HostController {
 
   async closeBrowserView(stream_id: string): Promise<void> {
     await this.client.request("browser.view.close", { stream_id });
+  }
+
+  /** Answer what a tab waits on. Another client may have answered first: then `request_not_found`. */
+  async answerBrowserUi(request_id: string, answer: BrowserUiAnswer): Promise<void> {
+    await this.client.request("browser.ui.answer", { request_id, answer });
   }
 
   /** Watch a stream `openBrowserView` returned, and send it input. */
