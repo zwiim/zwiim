@@ -97,6 +97,26 @@ impl FakeEngine {
         );
     }
 
+    /// The page in `opener` opens a window at `url`. Returns its target id.
+    pub fn open_popup(&self, opener: &str, url: &str) -> String {
+        let (id, info) = {
+            let mut s = self.lock();
+            s.next += 1;
+            let id = format!("target-{}", s.next);
+            let target = FakeTarget {
+                context: s.targets[opener].context.clone(),
+                history: vec![url.to_string()],
+                ..Default::default()
+            };
+            let mut info = target_info(&id, &target);
+            info["openerId"] = json!(opener);
+            s.targets.insert(id.clone(), target);
+            (id, info)
+        };
+        self.emit("Target.targetCreated", json!({ "targetInfo": info }), None);
+        id
+    }
+
     /// The engine process dies.
     pub fn crash(&self) {
         let exit = {

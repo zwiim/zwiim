@@ -206,11 +206,23 @@ impl BrowserService {
             )
             .await?;
         }
+        let url = url.unwrap_or_else(|| "about:blank".into());
+        Ok(self.add_tab(&mut inner, owner, url, live).await)
+    }
+
+    /// Record a new loaded tab and tell clients.
+    async fn add_tab(
+        &self,
+        inner: &mut Inner,
+        owner: TabOwner,
+        url: String,
+        live: Live,
+    ) -> TabInfo {
         let position = store::next_position(&self.db, &owner).await.unwrap_or(0);
         let info = TabInfo {
             id: uuid::Uuid::new_v4().to_string(),
             owner,
-            url: url.unwrap_or_else(|| "about:blank".into()),
+            url,
             title: String::new(),
             position,
             loading: false,
@@ -228,7 +240,7 @@ impl BrowserService {
             },
         );
         self.emit(BrowserEvent::Tab(info.clone()));
-        Ok(info)
+        info
     }
 
     pub async fn close(&self, tab_id: &str) -> Result<(), BrowserError> {
@@ -504,6 +516,16 @@ impl BrowserService {
             )
             .await?;
         let target_id = created["targetId"].as_str().unwrap_or_default().to_string();
+        self.attach(cdp, inner, target_id).await
+    }
+
+    /// Attach to a page target and set it up as a tab's.
+    async fn attach(
+        &self,
+        cdp: &Cdp,
+        inner: &Inner,
+        target_id: String,
+    ) -> Result<Live, BrowserError> {
         let attached = cdp
             .call(
                 "Target.attachToTarget",
@@ -629,6 +651,32 @@ impl BrowserService {
                     return;
                 };
                 self.refresh_info(&inner, &id, generation);
+            }
+            // A page opened a window (`window.open`, `target=_blank`, an
+            // OAuth popup): it becomes a tab of the opener's owner, in the
+            // same context, so `window.opener` keeps working.
+            "Target.targetCreated" => {
+                let info = &p["targetInfo"];
+                let target_id = info["targetId"].as_str().unwrap_or_default().to_string();
+                let Some(opener) = info["openerId"].as_str().and_then(|o| by_target(&inner, o))
+                else {
+                    return;
+                };
+                if info["type"] != "page" || by_target(&inner, &target_id).is_some() {
+                    return;
+                }
+                let (Some(cdp), owner) =
+                    (inner.cdp.clone(), inner.tabs[&opener].info.owner.clone())
+                else {
+                    return;
+                };
+                let url = info["url"].as_str().unwrap_or("about:blank").to_string();
+                match self.attach(&cdp, &inner, target_id).await {
+                    Ok(live) => {
+                        self.add_tab(&mut inner, owner, url, live).await;
+                    }
+                    Err(e) => tracing::warn!(error = %e, "could not adopt a popup"),
+                }
             }
             "Target.targetCrashed" => {
                 let Some(id) = by_target(&inner, p["targetId"].as_str().unwrap_or_default()) else {
@@ -1072,6 +1120,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_popup_becomes_a_tab_of_the_openers_owner() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let opener = svc
+            .open(session("s1"), Some("https://app.example/"))
+            .await
+            .unwrap();
+        let opener_target = fake.target_of_url("https://app.example/").unwrap();
+
+        let popup = fake.open_popup(&opener_target, "https://auth.example/login");
+        let tabs = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let tabs = svc.list(Some("s1")).await;
+                if tabs.len() == 2 {
+                    return tabs;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(tabs[0].id, opener.id);
+        assert_eq!(tabs[1].url, "https://auth.example/login");
+        assert_eq!(tabs[1].position, 1);
+        assert!(fake.lock().targets[&popup].session.is_some(), "attached");
+
+        // A target whose opener is not one of our tabs is left alone.
+        fake.emit(
+            "Target.targetCreated",
+            json!({ "targetInfo": { "targetId": "stray", "type": "page", "url": "https://x.example/", "openerId": "not-ours" } }),
+            None,
+        );
+        let other = svc.open(session("s2"), None).await.unwrap();
+        assert_eq!(svc.list(Some("s2")).await, vec![other]);
+        assert_eq!(svc.list(Some("s1")).await.len(), 2);
+    }
+
+    #[tokio::test]
     async fn only_web_addresses_open() {
         let fake = FakeEngine::default();
         let db = fresh_in_memory_db().await;
@@ -1190,8 +1277,40 @@ mod tests {
             "s2 cannot touch s1's cookie"
         );
 
+        // window.open from s1's page becomes an s1 tab that shares its cookie.
+        let (cdp, s) = svc.session(&a.id).await.unwrap();
+        let popup_url = url("/popup");
+        cdp.call(
+            "Runtime.evaluate",
+            json!({ "expression": format!("window.open('{popup_url}')"), "userGesture": true }),
+            Some(&s),
+        )
+        .await
+        .unwrap();
+        let popup = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(t) = svc
+                    .list(Some("s1"))
+                    .await
+                    .into_iter()
+                    .find(|t| t.id != a.id)
+                {
+                    return t;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the popup became a tab");
+        until(&svc, &popup.id, |t| t.title == "Page /popup").await;
+        assert_eq!(
+            cookies(popup.id.clone()).await,
+            1,
+            "same context as its opener"
+        );
+
         svc.close(&a.id).await.unwrap();
-        assert_eq!(svc.list(None).await.len(), 1);
+        assert_eq!(svc.list(None).await.len(), 2);
         svc.engine().stop().await;
     }
 }
