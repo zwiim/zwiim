@@ -382,11 +382,12 @@ mod tests {
 
     #[async_trait]
     impl crate::acp::browser_tools::BrowserToolAccess for Stub {
-        async fn list_tabs(&self) -> crate::acp::browser_tools::BrowserTabsOutcome {
+        async fn list_tabs(&self, _caller: &str) -> crate::acp::browser_tools::BrowserTabsOutcome {
             Default::default()
         }
         async fn snapshot(
             &self,
+            _caller: &str,
             tab_id: &str,
             _max_chars: Option<usize>,
         ) -> crate::acp::browser_tools::BrowserSnapshotOutcome {
@@ -399,6 +400,7 @@ mod tests {
 
         async fn console(
             &self,
+            _caller: &str,
             tab_id: &str,
             _query: crate::browser::console::ConsoleQuery,
         ) -> crate::acp::browser_tools::BrowserConsoleOutcome {
@@ -411,6 +413,7 @@ mod tests {
 
         async fn eval(
             &self,
+            _caller: &str,
             tab_id: &str,
             _request: crate::browser::eval::EvalRequest,
         ) -> crate::acp::browser_tools::BrowserEvalOutcome {
@@ -423,6 +426,7 @@ mod tests {
 
         async fn tab_op(
             &self,
+            _caller: &str,
             op: crate::acp::browser_tools::BrowserTabOp,
         ) -> crate::acp::browser_tools::BrowserTabOutcome {
             crate::acp::browser_tools::BrowserTabOutcome::refused(
@@ -434,6 +438,7 @@ mod tests {
 
         async fn capture(
             &self,
+            _caller: &str,
             tab_id: &str,
             _request: crate::browser::capture::CaptureRequest,
         ) -> crate::acp::browser_tools::BrowserCaptureOutcome {
@@ -446,6 +451,7 @@ mod tests {
 
         async fn act(
             &self,
+            _caller: &str,
             tab_id: &str,
             _request: crate::browser::agent::ActionRequest,
         ) -> crate::acp::browser_tools::BrowserActOutcome {
