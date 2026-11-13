@@ -20,6 +20,7 @@ use serde_json::json;
 use tokio::sync::{broadcast, watch, Mutex};
 
 use super::console::{self, ConsoleQuery, ConsoleReadout, ConsoleRing};
+use super::dev_servers;
 use super::engine::cdp::{Cdp, Event};
 use super::engine::manager::{EngineError, EngineManager, EngineState};
 use super::governor::{self, TabUse};
