@@ -15,6 +15,7 @@
 //! - `types`      — wire types shared with `src/lib/browser/types.ts`
 //! - `engine`     — the Host's own Chromium (`chrome-headless-shell`): download,
 //!   launch and CDP; compiled in both runtimes
+//! - `store`      — the Host browser's persisted tabs and their owners
 //! - `policy`     — pure decisions (scheme allow-list, …)
 //! - `agent`      — what an agent may read of a page, and on whose say-so
 //! - `eval`       — the one thing an agent may do that is not a named act:
@@ -65,6 +66,7 @@ pub mod engine;
 pub mod eval;
 pub mod service_url;
 pub mod services;
+pub mod store;
 pub mod types;
 
 #[cfg(feature = "tauri-runtime")]
