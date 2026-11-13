@@ -81,6 +81,7 @@ export const CLIENT_CAPABILITIES: readonly string[] = [
   "session.transcript_remove",
   "repository.settings_import",
   "browser",
+  "downloads",
 ];
 
 /** What an app says about itself in `host.hello`. */

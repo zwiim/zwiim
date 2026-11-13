@@ -72,6 +72,7 @@ export * from "./client/fork";
 export * from "./state/session";
 export * from "./state/terminal";
 export * from "./state/browser";
+export * from "./state/downloads";
 export * from "./state/store";
 export * from "./state/workspaces";
 export * from "./state/layout";

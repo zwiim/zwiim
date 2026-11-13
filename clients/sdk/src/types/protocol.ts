@@ -1555,7 +1555,21 @@ export type HostFeedEvent = { seq: number } & (
   | { type: "clone.changed"; payload: { clone: CloneJob } }
   | { type: "clone.removed"; payload: { clone_id: string } }
   | { type: "host.keep_awake_changed"; payload: KeepAwakeStatus }
+  /** Capability `downloads`: one started or moved (at most every 250 ms each). */
+  | { type: "download.changed"; payload: { download: HostDownload } }
+  | { type: "download.removed"; payload: { download_id: string } }
 );
+
+/** Something the Host is downloading: an agent's adapter, the browser engine, a Host update. */
+export interface HostDownload {
+  download_id: string;
+  /** What it is, as the person knows it: "Claude Code", "Browser engine 157.0.8103.78", "Zwiim 0.6.0". */
+  label: string;
+  /** Bytes received so far. */
+  received: number;
+  /** Bytes in all; null when unknown (an install of many files). */
+  total: number | null;
+}
 
 /** The feed's baseline: what `workspace.list`, `session.list` and `terminal.list` return. */
 export interface HostSnapshot {
@@ -1578,6 +1592,8 @@ export interface HostSnapshot {
   clones?: CloneJob[];
   /** What keeping the Mac awake is doing; null until the host first looked (older Hosts omit it). */
   keep_awake?: KeepAwakeStatus | null;
+  /** What the Host is downloading, oldest first (older Hosts omit it). */
+  downloads?: HostDownload[];
 }
 
 // ─── event socket ────────────────────────────────────────────────────────

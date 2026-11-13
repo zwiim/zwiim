@@ -9,6 +9,7 @@ import type {
   CloneJob,
   HostFeedEvent,
   HostHello,
+  HostDownload,
   HostOwner,
   HostSnapshot,
   KeepAwakeStatus,
@@ -69,6 +70,8 @@ export interface HostState {
   keepAwake: KeepAwakeStatus | null;
   /** The Host browser's tabs and engine, once a view has asked for them. */
   browser: BrowserState;
+  /** What the Host is downloading, oldest first. */
+  downloads: HostDownload[];
 }
 
 export type HostAction =
@@ -105,6 +108,7 @@ export function initialHostState(): HostState {
     clones: {},
     keepAwake: null,
     browser: initialBrowserState(),
+    downloads: [],
   };
 }
 
@@ -186,6 +190,7 @@ export function reduceHost(state: HostState, action: HostAction): HostState {
         resolving: action.snapshot.resolving ?? {},
         clones: Object.fromEntries((action.snapshot.clones ?? []).map((c) => [c.clone_id, c])),
         keepAwake: action.snapshot.keep_awake ?? null,
+        downloads: action.snapshot.downloads ?? [],
       };
     }
     case "host_event":
@@ -292,6 +297,14 @@ function reduceFeedEvent(state: HostState, event: HostFeedEvent): HostState {
     }
     case "host.keep_awake_changed":
       return { ...state, keepAwake: event.payload };
+    case "download.changed": {
+      const d = event.payload.download;
+      const i = state.downloads.findIndex((x) => x.download_id === d.download_id);
+      const downloads = i < 0 ? [...state.downloads, d] : state.downloads.map((x, j) => (j === i ? d : x));
+      return { ...state, downloads };
+    }
+    case "download.removed":
+      return { ...state, downloads: state.downloads.filter((x) => x.download_id !== event.payload.download_id) };
     default:
       // An event from a newer Host: ignore it, keep the state.
       return state;
