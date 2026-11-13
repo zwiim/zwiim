@@ -6557,9 +6557,13 @@ async fn a_paired_device_cannot_subscribe_to_the_browser() {
     let credential = bearer_device(&h, "dev-1").await;
     let mut ws = h.ws_as("/zwiim/v1/ws", &credential).await;
     ws.send_json(&json!({"op": "browser.subscribe"})).await;
-    let err = recv(&mut ws).await;
-    assert_eq!(err["type"], "error");
-    assert_eq!(err["error"]["code"], "permission_denied");
+    assert_eq!(
+        recv(&mut ws).await,
+        json!({"type": "browser.error", "error": {
+            "code": "permission_denied",
+            "message": "This operation requires local host authority",
+        }})
+    );
     h.ok("browser.tab.open", json!({"owner": {"kind": "personal"}}))
         .await;
     assert_silent(&mut ws).await;

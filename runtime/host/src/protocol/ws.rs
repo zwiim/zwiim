@@ -247,7 +247,9 @@ async fn next_browser_frame(browser: &mut Option<BrowserFeed>) -> Option<Value> 
     }
 }
 
-/// Subscribe the socket to the browser and send its snapshot. False when
+/// Subscribe the socket to the browser and send its snapshot. A refusal is
+/// a `browser.error` frame: an `error` frame without a subscription means
+/// the Host feed failed, which a client answers by reconnecting. False when
 /// the socket is gone.
 async fn subscribe_browser(
     state: &Arc<AppState>,
@@ -255,18 +257,25 @@ async fn subscribe_browser(
     browser: &mut Option<BrowserFeed>,
     socket: &mut WebSocket,
 ) -> bool {
-    if !matches!(principal, Some(Principal::Host)) {
-        let err = ZwiimError::permission_denied("This operation requires local host authority");
-        return send_json(socket, &error_frame(None, &err)).await;
-    }
-    match BrowserFeed::subscribe(state).await {
+    let subscribed = if matches!(principal, Some(Principal::Host)) {
+        BrowserFeed::subscribe(state).await
+    } else {
+        Err(ZwiimError::permission_denied(
+            "This operation requires local host authority",
+        ))
+    };
+    match subscribed {
         Ok((feed, snapshot)) => {
             *browser = Some(feed);
             send_json(socket, &snapshot).await
         }
         Err(e) => {
             *browser = None;
-            send_json(socket, &error_frame(None, &e)).await
+            let frame = json!({
+                "type": "browser.error",
+                "error": { "code": e.code, "message": e.message },
+            });
+            send_json(socket, &frame).await
         }
     }
 }
