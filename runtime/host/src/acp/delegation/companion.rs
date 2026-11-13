@@ -2031,7 +2031,7 @@ pub fn render_browser_tab_op_result(outcome: &Value) -> Value {
                 out.push_str(&format!(" — {title}"));
             }
             out.push_str(match level {
-                "control" => ". It is shared with you for reading and acting.",
+                "control" => ". You can read it and act on it.",
                 "read" => {
                     ". It is shared with you for reading; acting on it needs the user to allow \
                      actions."
