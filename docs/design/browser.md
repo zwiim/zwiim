@@ -612,16 +612,18 @@ holds its own CDP session.
 5. `browser_eval` — unchanged gates: its own switch (off by default) and
    `control` level.
 6. New: `browser_wait_for { text | selector, gone?, timeoutMs? }` so agents
-   stop guessing with sleeps; waiting for the network to go quiet comes
-   with `browser_network_log` (P1.8).
+   stop guessing with sleeps. Actions, navigations and screenshots also
+   wait for the tab's requests to be answered (event streams and
+   WebSockets aside), at most 5 s.
    `browser_request_takeover` (7.5) is deferred with the lease.
    New: `browser_set_permissions { tabId, grant }` sets which site
    permissions the tab's site may use in the session's context
    (decision 12).
-7. New: `browser_network_log { tabId, since?, filter?, har? }` — requests
-   from a per-tab ring (last 500, `Network` domain events): method, URL,
-   status, type, timing, sizes and, for failures, the error. `har: true`
-   writes a HAR file into the session's scratch directory and returns its
+7. New: `browser_network_log { tabId, since?, filter?, failedOnly?, har? }`
+   — requests from a per-tab ring (last 500, `Network` domain events; the
+   newest 100 matching are answered): method, URL, status, type, timing,
+   sizes and, for failures, the error. `har: true` writes a HAR file into
+   the session's browser folder (where its downloads go) and returns its
    path. Cookie, `Authorization` and `Set-Cookie` headers and request bodies
    are always removed; response bodies are left out. Same grant level as
    `browser_console_messages`.
@@ -637,11 +639,12 @@ the page changed (R1).
    URL), new tab opened, download started, dialog opened, console errors
    logged during the action. The agent learns about a popup or a failed
    request without a second call.
-2. **`expect_url`.** Action tools take an optional `expect_url`. If the tab
-   is no longer on that URL, the action is refused instead of clicking on the
-   wrong page.
-3. **Typing guard.** Agent input never goes to a tab while a person's focus
-   is in it and they typed in the last 2 s.
+2. **`expect_url`.** Action tools take an optional `expectUrl`. If the tab
+   is no longer on that URL (the fragment aside), the action is refused
+   (`browser_url_changed`) instead of clicking on the wrong page.
+3. **Typing guard.** Agent input never goes to a tab while a person typed
+   into it in the last 2 s. The action waits for them to stop, at most 5 s,
+   then is refused (`browser_person_typing`).
 4. **Password fields.** An agent cannot type into a password field without
    the person's approval, except on the workspace's own loopback dev servers,
    where agents need test logins.
@@ -1262,7 +1265,7 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
    (`browser_eval` stays off). Done, with the ghost cursor in the desktop
    Browser panel.
 8. Action side effects, `expect_url`, typing guard, password-field guard,
-   and `browser_network_log`.
+   and `browser_network_log`. Done except the password-field guard.
 9. Deferred: control lease and `browser_request_takeover` (see below).
 10. Site policy through `Fetch`, with the strict site list.
 11. Memory governor and priority.
