@@ -66,9 +66,9 @@ We read the public docs, changelogs and issue trackers of Cursor, Windsurf /
 Devin, VS Code + Copilot, Claude desktop and Claude in Chrome, ChatGPT Atlas
 and Operator, Codex, Google Antigravity, Replit, Lovable, v0, Manus,
 Browserbase, Steel, Kernel, Browserless, neko, Cloudflare Browser Isolation,
-Parsec and Chrome Remote Desktop, and the source of two MIT projects, Orca
-and T3 Code. We take ideas only. No code, no binaries, no packages from them,
-and nothing that ties us to their licences.
+Parsec and Chrome Remote Desktop, and the source of three MIT projects, Orca,
+T3 Code and OpenCode Browse. We take ideas only. No code, no binaries, no
+packages from them, and nothing that ties us to their licences.
 
 | Observed | Who | What Zwiim does with it |
 |---|---|---|
@@ -82,6 +82,9 @@ and nothing that ties us to their licences.
 | Allow-lists escape via redirects | Cursor (documented) | Check every document request with CDP `Fetch` (13.2) |
 | Take over and hand back, with a timeout | Replit, Operator, Cursor | Control lease in the Host (7.5) |
 | Lease generation invalidates the agent's element refs | T3 Code | Same (7.5) |
+| Agent waits while the person logs in, resumes on "Continue" | OpenCode Browse | `browser_request_takeover` blocks until the person clicks Done (7.5) |
+| A session limited to a list of sites | OpenCode Browse | Strict site list per session (13.2) |
+| Network capture as HAR for the agent | OpenCode Browse | `browser_network_log`, with secrets removed (10.2) |
 | Actions report their side effects; `expect-url` guard; typing guard | Orca | Agent tools (10.3) |
 | Accessibility snapshot, not screenshot + coordinates | Playwright MCP, Cursor | Agent tools act on snapshot refs (10.2) |
 | Element comments become agent context | Codex Annotate, Windsurf, VS Code | Element pick goes into the composer as untrusted page data (10.6) |
@@ -413,7 +416,11 @@ One controller per tab at a time, held by the Host:
    snapshots stop working, and the agent must take a new snapshot.
 4. An agent asking for the person (login, CAPTCHA, MFA) uses a new tool,
    `browser_request_takeover { tabId, reason }`. This shows on every client
-   like a permission request, with "Take over" and "Skip".
+   like a permission request, with "Take over" and "Skip". The tool call
+   stays open while the person works, with a "Done" button on the tab. Done
+   releases control and returns `handed_back` (with the tab's URL) to the
+   agent, Skip returns `skipped`, and 10 minutes without either returns
+   `timed_out`. The agent then takes a new snapshot (item 3).
 5. Viewport belongs to the lease. The controller's viewport and device
    metrics (`Emulation.setDeviceMetricsOverride`, touch on for phones) apply;
    other viewers get the same frames scaled and letterboxed.
@@ -585,6 +592,13 @@ holds its own CDP session.
    `control` level.
 6. New: `browser_request_takeover` (7.5), and `browser_wait_for { text |
    selector | network_idle }` so agents stop guessing with sleeps.
+7. New: `browser_network_log { tabId, since?, filter?, har? }` — requests
+   from a per-tab ring (last 500, `Network` domain events): method, URL,
+   status, type, timing, sizes and, for failures, the error. `har: true`
+   writes a HAR file into the session's scratch directory and returns its
+   path. Cookie, `Authorization` and `Set-Cookie` headers and request bodies
+   are always removed; response bodies are left out. Same grant level as
+   `browser_console_messages`.
 
 Every action also emits a `browser.agent.action` event (kind, target box,
 label) just before it runs. Clients draw a ghost cursor and a highlight over
@@ -763,6 +777,11 @@ else in the design is macOS-specific.
    clicks are all checked, not only the URL the agent asked for.
 4. Administrators can ship a policy file (upstream `policy`) with allow and
    deny lists.
+5. Strict site list (optional, per session). The person sets a list of
+   origins in the session's browser settings. Agent navigations to anything
+   else are refused with `site_not_allowed`, without asking, and the
+   workspace's own preview servers stay allowed. Navigations the person
+   makes are not limited.
 
 ### 13.3 Data
 
@@ -1168,9 +1187,11 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
    page.
 7. CDP implementation of `BrowserToolAccess`; `browser.agent.action`; ghost
    cursor on the desktop.
-8. Action side effects, `expect_url`, typing guard, password-field guard.
-9. Control lease with generation, and `browser_request_takeover`.
-10. Site policy through `Fetch`.
+8. Action side effects, `expect_url`, typing guard, password-field guard,
+   and `browser_network_log`.
+9. Control lease with generation, and `browser_request_takeover` with
+   hand-back.
+10. Site policy through `Fetch`, with the strict site list.
 11. Memory governor and priority.
 12. Dev-server-to-worktree mapping and auto-open in the session tab.
 13. Print to PDF, drag and drop.
