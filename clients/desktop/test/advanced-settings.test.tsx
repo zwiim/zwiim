@@ -169,6 +169,7 @@ describe("terminal scrollback", () => {
     await mount(t, bridge({ pickFolder: vi.fn(async () => "/Users/me/Saved") }));
     const dialog = openSettings("Advanced");
     await tick();
+    expect(dialog.getByText("Browser")).toBeTruthy();
     expect(dialog.getByText(/saves what pages download in its worktree, under .zwiim\/browser/)).toBeTruthy();
     fireEvent.click(dialog.getByText("Choose folder…"));
     await tick();
@@ -185,6 +186,6 @@ describe("terminal scrollback", () => {
     await mount(host());
     const dialog = openSettings("Advanced");
     await tick();
-    expect(dialog.queryByText("Browser downloads")).toBeNull();
+    expect(dialog.queryByText("Browser")).toBeNull();
   });
 });

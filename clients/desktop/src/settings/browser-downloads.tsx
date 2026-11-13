@@ -43,8 +43,8 @@ export function BrowserDownloadsSetting({ bridge }: { bridge: NativeBridge }) {
   return (
     <SettingRow
       setting={{
-        id: "browser-downloads",
-        title: "Browser downloads",
+        id: "browser",
+        title: "Browser",
         description: root
           ? "Every worktree saves what pages download here, in zwiim/<repository>/downloads. Zwiim never deletes these files."
           : "Each session saves what pages download in its worktree, under .zwiim/browser, removed with the session. Your own tabs save to Downloads.",
