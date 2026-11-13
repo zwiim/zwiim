@@ -557,18 +557,23 @@ one into a protocol event and the clients draw it with their own UI
 | Thing | How the Host sees it | What the client shows | Answer |
 |---|---|---|---|
 | `alert` / `confirm` / `prompt` / `beforeunload` | `Page.javascriptDialogOpening` | A sheet with the message, over its tab on the desktop (built, P1.6) | `Page.handleJavaScriptDialog`. Dialogs stall capture, so a dialog nobody answers in 60 s is dismissed and logged |
-| `<select>` | Injected `select { appearance: base-select }` in an isolated world, so the list renders in the page | Nothing special | Ordinary clicks. Where the page opts out, the helper reports the options and the client shows a native picker |
-| Date / time inputs | Isolated-world helper on focus | Native date picker | Value set through the helper. Colour pickers paint in frames and need nothing |
-| Context menu | `contextmenu` caught by the helper | Client menu: Back, Reload, Copy link, Copy image, Inspect element (pick, 10.6) | Host action |
+| `<select>` | The helper stops the engine's popup on mousedown (and Space, F4, the arrows) and reports the options, groups and box (built, P1.6) | A list under the select | Option index set through the helper, which fires `input` and `change`. Multiple and listbox selects paint in frames and need nothing |
+| Date / time inputs | The helper on a click on the input's picker button (built, P1.6) | A picker under the input, with Clear | Value set through the helper. Typing in the field needs nothing. Colour pickers paint in frames and need nothing |
+| Context menu | `contextmenu` the page left alone, caught by the helper (built, P1.6) | Client menu at the click: open or copy the link or image address, Copy the selection, Paste into a field, Back, Forward, Reload | Client and Host actions |
 | File chooser | `Page.setInterceptFileChooserDialog` + `Page.fileChooserOpened` | A picker limited to workspace files (built on the desktop, P1.6) and phone photos (uploaded through the tunnel to session scratch) | `DOM.setFileInputFiles`, with every path checked by the Host: inside the workspace after symlinks, a session's tab only its session's workspace |
 | HTTP auth | `Fetch.authRequired`, with each tab intercepting its page requests (documents only) and the event pump letting them go on at once | Username and password sheet (built, P1.6) | `Fetch.continueWithAuth`; nothing stored or logged, cancelled after 5 minutes unanswered |
 | Permissions (camera, mic, location, notifications) | Not relayed (decision 12) | Nothing | The engine's default, which refuses them. The agent grants what its tabs need through its browser tools, for its session's context only; no real camera or mic is wired to the engine in this design |
 | Downloads | `Browser.setDownloadBehavior` per context, `Browser.downloadWillBegin` and `Browser.downloadProgress` | The Host's download row (capability `downloads`) | Saved where decision 13 says, under the page's file name (` (1)`, ` (2)` when taken); never opened automatically |
 | Certificate errors | Launch switch | Interstitial | Loopback certificates load without asking (decision 14); other sites keep the error |
 
-The helper script runs in an isolated world (`Page.createIsolatedWorld`), as
-the upstream helper did, so page scripts cannot see or tamper with it. It
-only draws `<select>`, date, find-in-page and context-menu UI. HTTP auth,
+The helper script (`js/ui-helper.js`) runs in an isolated world
+(`Page.createIsolatedWorld`) of each tab's top document, so page scripts
+cannot see or tamper with it. The Host waits on it with `Runtime.evaluate`
+and `awaitPromise` rather than a binding, so it needs no `Runtime.enable` and
+a personal tab's page cannot tell it is there; it is installed again in each
+new document. It only reports `<select>`, date and context-menu requests and
+title changes, and does find in page; the Host checks and caps what it says.
+Frames inside the page are not covered yet. HTTP auth,
 file choosers and downloads come from CDP
 events to the Host and are answered by the Host; nothing in the page can
 trigger or answer them.
@@ -1258,8 +1263,9 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 6. Native UI relay (section 9) and the isolated-world helper, with find in
    page. JavaScript dialogs, HTTP auth, the file chooser and downloads
    (decision 13, with the folder in Settings > Advanced) and certificate
-   errors (decision 14) are done; the helper remains. Permissions are not
-   relayed (decision 12).
+   errors (decision 14) are done, and so is the helper: selects, date
+   pickers, the context menu and find in page. Permissions are not relayed
+   (decision 12).
 7. CDP implementation of `BrowserToolAccess`; `browser.agent.action`; ghost
    cursor on the desktop. The tools work on the session's own tabs: list,
    open, navigate, close, snapshot, click, hover, type, key, select,
