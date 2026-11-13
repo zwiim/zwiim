@@ -467,6 +467,11 @@ One controller per tab at a time, held by the Host:
 7. Drag and drop on the desktop: files dropped on the panel go to the page's
    drop target through `Input.dispatchDragEvent`; dropped files must come from
    the workspace or be copied into session scratch first.
+   `browser.tab.drop` takes workspace files by relative path, or files
+   uploaded with `attachments.upload` by id, from the session's own
+   workspace for a session's tab. The desktop uploads files dragged in from
+   the computer, then drops them by id. Dragging from the Files panel is not
+   built: it has no drag source yet.
 8. Device rights: a new `browser_access` column on trusted devices with
    values `none`, `view`, `control`. A newly paired phone gets `view`.
    `control` is needed to steer and to use Live App. Raising it is a
@@ -479,7 +484,10 @@ One controller per tab at a time, held by the Host:
    and highlights matches. Not `Page.searchInResources`, which searches
    resource files.
 2. Print and save as PDF: `Page.printToPDF`, saved to the session's scratch
-   downloads.
+   downloads. `browser.tab.print` streams it (`ReturnAsStream`, read through
+   the page's own CDP session) into the tab's downloads folder under the
+   page's title, at most 200 MB, from the address bar's "Save as PDF" or
+   Cmd+P.
 3. Zoom: `Emulation.setPageScaleFactor` per tab.
 4. History: the address bar suggests from `browser_tabs` URLs and the
    person's own navigation history in the personal profile. No bookmarks in
@@ -1327,7 +1335,7 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
     settings are not built (11.2, 11.3).
 12. Dev-server-to-worktree mapping and auto-open in the session tab. Done
     on macOS (10.5); the Linux and Windows scans are not built.
-13. Print to PDF, drag and drop.
+13. Print to PDF, drag and drop. Done (7.6, 7.7).
 14. Remove the dead upstream webview modules.
 
 ### P2a — Live App on the phone (covers R2 on the phone)
