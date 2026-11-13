@@ -8,7 +8,7 @@ use sea_orm::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::db::entities::browser_tab;
+use crate::db::entities::{browser_site, browser_tab};
 
 /// Who a tab belongs to (design 6.1).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -150,13 +150,101 @@ pub async fn remove(conn: &DatabaseConnection, id: &str) -> Result<(), DbErr> {
     Ok(())
 }
 
-/// Forget every tab of a deleted session.
+/// Forget every tab and the strict site list of a deleted session.
 pub async fn remove_session(conn: &DatabaseConnection, session_id: &str) -> Result<(), DbErr> {
     browser_tab::Entity::delete_many()
         .filter(browser_tab::Column::SessionId.eq(session_id))
         .exec(conn)
         .await?;
+    browser_site::Entity::delete_many()
+        .filter(browser_site::Column::Kind.eq(STRICT))
+        .filter(browser_site::Column::SessionId.eq(session_id))
+        .exec(conn)
+        .await?;
     Ok(())
+}
+
+const STRICT: &str = "strict";
+const APPROVED: &str = "approved";
+
+async fn sites(
+    conn: &DatabaseConnection,
+    kind: &str,
+    session_id: &str,
+) -> Result<Vec<String>, DbErr> {
+    let rows = browser_site::Entity::find()
+        .filter(browser_site::Column::Kind.eq(kind))
+        .filter(browser_site::Column::SessionId.eq(session_id))
+        .order_by_asc(browser_site::Column::CreatedAt)
+        .order_by_asc(browser_site::Column::Pattern)
+        .all(conn)
+        .await?;
+    Ok(rows.into_iter().map(|r| r.pattern).collect())
+}
+
+async fn add_site(
+    conn: &impl sea_orm::ConnectionTrait,
+    kind: &str,
+    session_id: &str,
+    pattern: &str,
+) -> Result<(), DbErr> {
+    let row = browser_site::ActiveModel {
+        kind: Set(kind.to_string()),
+        session_id: Set(session_id.to_string()),
+        pattern: Set(pattern.to_string()),
+        created_at: Set(Utc::now()),
+    };
+    browser_site::Entity::insert(row)
+        .on_conflict(
+            sea_orm::sea_query::OnConflict::columns([
+                browser_site::Column::Kind,
+                browser_site::Column::SessionId,
+                browser_site::Column::Pattern,
+            ])
+            .do_nothing()
+            .to_owned(),
+        )
+        .do_nothing()
+        .exec(conn)
+        .await?;
+    Ok(())
+}
+
+/// Session `session_id`'s strict site list (design 13.2); empty for none.
+pub async fn strict_sites(
+    conn: &DatabaseConnection,
+    session_id: &str,
+) -> Result<Vec<String>, DbErr> {
+    sites(conn, STRICT, session_id).await
+}
+
+/// Replace session `session_id`'s strict site list; empty removes it.
+pub async fn set_strict_sites(
+    conn: &DatabaseConnection,
+    session_id: &str,
+    patterns: &[String],
+) -> Result<(), DbErr> {
+    use sea_orm::TransactionTrait;
+    let txn = conn.begin().await?;
+    browser_site::Entity::delete_many()
+        .filter(browser_site::Column::Kind.eq(STRICT))
+        .filter(browser_site::Column::SessionId.eq(session_id))
+        .exec(&txn)
+        .await?;
+    for pattern in patterns {
+        add_site(&txn, STRICT, session_id, pattern).await?;
+    }
+    txn.commit().await
+}
+
+/// The sites a person always lets agents open, in every session.
+pub async fn approved_sites(conn: &DatabaseConnection) -> Result<Vec<String>, DbErr> {
+    sites(conn, APPROVED, "").await
+}
+
+/// Always let agents open `pattern`'s site.
+pub async fn approve_site(conn: &DatabaseConnection, pattern: &str) -> Result<(), DbErr> {
+    add_site(conn, APPROVED, "", pattern).await
 }
 
 /// A tab closed while its update was in flight is not an error.
@@ -228,7 +316,11 @@ mod tests {
         insert(&db.conn, &tab("p", TabOwner::Personal, 0))
             .await
             .unwrap();
+        set_strict_sites(&db.conn, "s1", &["github.com".into()])
+            .await
+            .unwrap();
         remove_session(&db.conn, "s1").await.unwrap();
+        assert!(strict_sites(&db.conn, "s1").await.unwrap().is_empty());
         let mut left: Vec<String> = load(&db.conn)
             .await
             .unwrap()
@@ -256,5 +348,40 @@ mod tests {
             serde_json::to_value(TabOwner::Personal).unwrap(),
             serde_json::json!({"kind": "personal"})
         );
+    }
+
+    #[tokio::test]
+    async fn a_strict_list_is_replaced_whole_and_approvals_are_kept_once() {
+        let db = fresh_in_memory_db().await;
+        let conn = &db.conn;
+        let list = vec![
+            "github.com".to_string(),
+            "*.example.com".into(),
+            "github.com".into(),
+        ];
+        set_strict_sites(conn, "s1", &list).await.unwrap();
+        let mut got = strict_sites(conn, "s1").await.unwrap();
+        got.sort();
+        assert_eq!(got, vec!["*.example.com".to_string(), "github.com".into()]);
+        assert!(strict_sites(conn, "s2").await.unwrap().is_empty());
+        set_strict_sites(conn, "s1", &["docs.rs".into()])
+            .await
+            .unwrap();
+        assert_eq!(
+            strict_sites(conn, "s1").await.unwrap(),
+            vec!["docs.rs".to_string()]
+        );
+        set_strict_sites(conn, "s1", &[]).await.unwrap();
+        assert!(strict_sites(conn, "s1").await.unwrap().is_empty());
+
+        approve_site(conn, "example.com:443").await.unwrap();
+        approve_site(conn, "example.com:443").await.unwrap();
+        assert_eq!(
+            approved_sites(conn).await.unwrap(),
+            vec!["example.com:443".to_string()]
+        );
+        // Removing a session leaves what is approved for every session.
+        remove_session(conn, "s1").await.unwrap();
+        assert_eq!(approved_sites(conn).await.unwrap().len(), 1);
     }
 }
