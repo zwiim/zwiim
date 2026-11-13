@@ -556,7 +556,7 @@ one into a protocol event and the clients draw it with their own UI
 
 | Thing | How the Host sees it | What the client shows | Answer |
 |---|---|---|---|
-| `alert` / `confirm` / `prompt` / `beforeunload` | `Page.javascriptDialogOpening` | A sheet with the message | `Page.handleJavaScriptDialog`. Dialogs stall capture, so a dialog nobody answers in 60 s is dismissed and logged |
+| `alert` / `confirm` / `prompt` / `beforeunload` | `Page.javascriptDialogOpening` | A sheet with the message, over its tab on the desktop (built, P1.6) | `Page.handleJavaScriptDialog`. Dialogs stall capture, so a dialog nobody answers in 60 s is dismissed and logged |
 | `<select>` | Injected `select { appearance: base-select }` in an isolated world, so the list renders in the page | Nothing special | Ordinary clicks. Where the page opts out, the helper reports the options and the client shows a native picker |
 | Date / time inputs | Isolated-world helper on focus | Native date picker | Value set through the helper. Colour pickers paint in frames and need nothing |
 | Context menu | `contextmenu` caught by the helper | Client menu: Back, Reload, Copy link, Copy image, Inspect element (pick, 10.6) | Host action |
@@ -1123,8 +1123,10 @@ Operations:
    `key` (`down`, `up`, with the DOM's `key`, `code` and `keyCode`), `text`
    and `viewport`; input it cannot deliver gets an `error` text message.
 6. `browser.control.claim`, `browser.control.release` (deferred, 7.5)
-7. `browser.ui.answer { tab_id, request_id, answer }` (dialogs, pickers,
-   permissions, auth, takeover)
+7. `browser.ui.answer { request_id, answer }` (dialogs, pickers,
+   permissions, auth, takeover). For a dialog, `answer` is `{ kind:
+   "dialog", accept, text? }` (P1.6). The first answer from any client
+   wins; a later one is `request_not_found`.
 8. `browser.site.decide { origin, decision }`
 9. `browser.forward.open { workspace_id }`, `browser.forward.close`
 10. `browser.find { tab_id, text }`, `browser.print { tab_id }`
@@ -1140,7 +1142,7 @@ other download.
 
 Events go to sockets that sent `browser.subscribe`, not through the Host
 feed, so the feed's `seq` counts the same events for every device. The
-answer is a `browser.snapshot { tabs, engine }`, then:
+answer is a `browser.snapshot { tabs, engine, ui_requests }`, then:
 
 1. `browser.tab.state { tab }`: the whole tab, so one arriving after a
    snapshot that already holds it changes nothing. Grants and viewers
@@ -1148,7 +1150,11 @@ answer is a `browser.snapshot { tabs, engine }`, then:
    deferred lease (7.5).
 2. `browser.tab.removed { tab_id, owner }`
 3. `browser.engine.state { engine }`
-4. `browser.ui.request`: one of the rows in section 9, or a takeover.
+4. `browser.ui.request { request }`: one of the rows in section 9, or a
+   takeover. A request is `{ request_id, tab_id, owner, kind, ... }`; a
+   dialog adds `dialog` (`alert`, `confirm`, `prompt`, `beforeunload`),
+   `message`, `default_text?` and `url`. `browser.ui.done { request_id,
+   tab_id }` ends it: answered, dismissed unanswered, or its tab gone.
 5. `browser.agent.action`: ghost cursor and highlight.
 6. `browser.frame`: fallback frames only (7.1).
 
@@ -1235,7 +1241,8 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 4. Local stream socket and `StreamHub`.
 5. Desktop `BrowserPanel`: viewer, tab strip, navigation, shortcuts.
 6. Native UI relay (section 9) and the isolated-world helper, with find in
-   page.
+   page. JavaScript dialogs are done; HTTP auth, permissions, the file
+   chooser, downloads, certificate errors and the helper remain.
 7. CDP implementation of `BrowserToolAccess`; `browser.agent.action`; ghost
    cursor on the desktop.
 8. Action side effects, `expect_url`, typing guard, password-field guard,
