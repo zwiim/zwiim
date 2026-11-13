@@ -12,12 +12,14 @@
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::service::TabInfo;
+use super::listener::listening;
+use super::service::{BrowserService, TabInfo};
 use crate::db::entities::{conversation, folder};
 
 /// How often the Host looks for new servers.
@@ -108,6 +110,65 @@ pub async fn answers_http(port: u16) -> bool {
         tokio::time::timeout(ANSWER_TIMEOUT, ask).await,
         Ok(Some(true))
     )
+}
+
+/// Whether anything listens on loopback `port`.
+pub async fn is_up(port: u16) -> bool {
+    let connect = async {
+        tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+            || tokio::net::TcpStream::connect(("::1", port)).await.is_ok()
+    };
+    tokio::time::timeout(ANSWER_TIMEOUT, connect)
+        .await
+        .unwrap_or(false)
+}
+
+/// Watch the Host's processes for new dev servers and show each in its
+/// session's tab, while `browser.open_dev_servers` is on. `browser` makes
+/// the browser service on first need.
+///
+/// Servers already running at the first scan, or when the setting is turned
+/// on, are left alone: only a server that starts while watched is new.
+pub async fn follow<F, Fut>(db: DatabaseConnection, browser: F)
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Option<Arc<BrowserService>>>,
+{
+    let root = std::process::id();
+    let mut known: Option<HashSet<(u32, u16)>> = None;
+    let mut tick = tokio::time::interval(INTERVAL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        if !crate::settings::browser_open_dev_servers(&db).await {
+            known = None;
+            continue;
+        }
+        let found = tokio::task::spawn_blocking(move || listening(&descendants(root)))
+            .await
+            .unwrap_or_default();
+        let now = found.iter().map(|l| (l.pid, l.port)).collect();
+        let Some(before) = known.replace(now) else {
+            continue;
+        };
+        for server in found
+            .into_iter()
+            .filter(|l| !before.contains(&(l.pid, l.port)))
+        {
+            let Some(dir) = server.workdir else { continue };
+            if !answers_http(server.port).await {
+                continue;
+            }
+            let Some(session) = session_of_dir(&db, &dir).await else {
+                continue;
+            };
+            if let Some(service) = browser().await {
+                service.show_dev_server(&session, server.port).await;
+            }
+        }
+    }
 }
 
 /// The session a server running in `dir` belongs to: the latest top-level

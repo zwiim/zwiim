@@ -652,6 +652,19 @@ async fn async_main() -> Exit {
     // reclamation.
     tokio::spawn(zwiim_host::scratch_sweep_task());
 
+    // A session's browser tab follows the dev server it starts (browser
+    // design 10.5). The browser service is made only when one is found.
+    {
+        let state = state.clone();
+        tokio::spawn(zwiim_host::browser::dev_servers::follow(
+            state.db.conn.clone(),
+            move || {
+                let state = state.clone();
+                async move { state.browser().await.ok() }
+            },
+        ));
+    }
+
     // Config-sync uploader (mirrors lib.rs setup): sleeps a minute, then
     // compares the configuration's hash every interval and uploads only when
     // it changed. Does nothing at all until a WebDAV endpoint is configured.

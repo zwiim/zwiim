@@ -420,6 +420,53 @@ impl BrowserService {
         info
     }
 
+    /// Show session `session_id`'s new dev server on loopback `port` in one of
+    /// its tabs, by [`dev_servers::choose`] (design 10.5).
+    pub async fn show_dev_server(&self, session_id: &str, port: u16) {
+        let origin = format!("http://localhost:{port}");
+        let tabs = self.list(Some(session_id)).await;
+        let mut stopped = std::collections::HashSet::new();
+        for tab in &tabs {
+            let Some(other) = url::Url::parse(&tab.url)
+                .ok()
+                .and_then(|u| super::listener::loopback_port(&u.origin().ascii_serialization()))
+            else {
+                continue;
+            };
+            if other != port && !dev_servers::is_up(other).await {
+                stopped.insert(tab.id.clone());
+            }
+        }
+        let choice = dev_servers::choose(&tabs, &origin, &stopped);
+        tracing::info!(session_id, port, ?choice, "a session's dev server started");
+        let shown = match choice {
+            dev_servers::Choice::Reload(tab) => {
+                self.navigate(&tab, Navigation::Reload).await.map(drop)
+            }
+            dev_servers::Choice::Navigate(tab) => self
+                .navigate(&tab, Navigation::Url(format!("{origin}/")))
+                .await
+                .map(drop),
+            dev_servers::Choice::Open => {
+                let owner = TabOwner::Session {
+                    session_id: session_id.to_string(),
+                };
+                self.open(owner, Some(&format!("{origin}/")))
+                    .await
+                    .map(drop)
+            }
+            dev_servers::Choice::Leave => Ok(()),
+        };
+        if let Err(e) = shown {
+            tracing::warn!(
+                session_id,
+                port,
+                code = e.code,
+                "could not show a dev server"
+            );
+        }
+    }
+
     pub async fn close(&self, tab_id: &str) -> Result<(), BrowserError> {
         let mut inner = self.inner.lock().await;
         let tab = inner.tabs.remove(tab_id).ok_or_else(|| not_found(tab_id))?;
@@ -3046,6 +3093,37 @@ mod tests {
         );
         svc.open(session("s2"), None).await.unwrap();
         svc.open(TabOwner::Personal, None).await.unwrap();
+    }
+
+    /// The session's tab follows its dev server: opened for the first, kept
+    /// while it runs, taken by the next once it stops (design 10.5).
+    #[tokio::test]
+    async fn the_session_tab_follows_its_dev_server() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let first = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let a = first.local_addr().unwrap().port();
+        let second = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let b = second.local_addr().unwrap().port();
+
+        svc.show_dev_server("s1", a).await;
+        fake.wait_url(&format!("http://localhost:{a}/")).await;
+        assert_eq!(svc.list(Some("s1")).await.len(), 1);
+
+        // A second server while the first runs leaves the tab alone.
+        svc.show_dev_server("s1", b).await;
+        let tabs = svc.list(Some("s1")).await;
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0].url, format!("http://localhost:{a}/"));
+
+        // Once the first stops, the next one takes its tab.
+        drop(first);
+        svc.show_dev_server("s1", b).await;
+        fake.wait_url(&format!("http://localhost:{b}/")).await;
+        assert_eq!(svc.list(Some("s1")).await.len(), 1);
+        // Another session's tabs are its own.
+        assert!(svc.list(Some("s2")).await.is_empty());
     }
 
     #[tokio::test]

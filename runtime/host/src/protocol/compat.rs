@@ -366,6 +366,9 @@ use serde::{Deserialize, Serialize};
 /// local network) and answered `{kind: "site", allow, always?}`: allowed for
 /// the session, or for every session with `always`; refused for the session
 /// otherwise, and after 5 minutes unanswered.
+/// `settings` also gains `browser.open_dev_servers` (a boolean; unset is
+/// on): whether a dev server a session starts opens in that session's tab,
+/// which then arrives as an ordinary `browser.tab.state`.
 /// `browser.sites.get {session_id}` returns the session's strict site list,
 /// `{sites}` (empty for none), and `browser.sites.set {session_id, sites}`
 /// replaces it, returning it as kept: site patterns (`example.com`,

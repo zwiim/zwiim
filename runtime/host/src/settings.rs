@@ -54,6 +54,7 @@ pub const TERMINAL_SCROLLBACK: &str = "terminal.scrollback";
 pub const PUSH_SETS_UPSTREAM: &str = "git.push_sets_upstream";
 pub const BROWSER_AGENT_PASSWORDS: &str = "browser.agent_passwords";
 pub const BROWSER_AGENT_ASK_SITES: &str = "browser.agent_ask_sites";
+pub const BROWSER_OPEN_DEV_SERVERS: &str = "browser.open_dev_servers";
 
 /// Every setting the Host keeps.
 const KEYS: &[(&str, Kind)] = &[
@@ -72,6 +73,7 @@ const KEYS: &[(&str, Kind)] = &[
     (PUSH_SETS_UPSTREAM, Kind::Bool),
     (BROWSER_AGENT_PASSWORDS, Kind::Bool),
     (BROWSER_AGENT_ASK_SITES, Kind::Bool),
+    (BROWSER_OPEN_DEV_SERVERS, Kind::Bool),
 ];
 
 /// The terminal output a setting can keep, in bytes.
@@ -224,6 +226,15 @@ pub async fn browser_agent_passwords(db: &DatabaseConnection) -> bool {
 /// the person to allow it (design 13.2). Off unless the person turns it on.
 pub async fn browser_agent_ask_sites(db: &DatabaseConnection) -> bool {
     read_bool(db, BROWSER_AGENT_ASK_SITES).await
+}
+
+/// Whether a session's browser tab shows a dev server the session starts
+/// (design 10.5). On unless the person turns it off.
+pub async fn browser_open_dev_servers(db: &DatabaseConnection) -> bool {
+    !matches!(
+        read_value(db, BROWSER_OPEN_DEV_SERVERS).await,
+        Some(Value::Bool(false))
+    )
 }
 
 /// Whether removing a worktree also deletes its branch, when no work is lost.
