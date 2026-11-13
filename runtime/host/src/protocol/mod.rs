@@ -135,6 +135,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/browser.engine.reset", post(browser::engine_reset))
         .route("/browser.view.open", post(browser::view_open))
         .route("/browser.view.close", post(browser::view_close))
+        .route("/browser.ui.answer", post(browser::ui_answer))
         .route("/browser/stream/{stream_id}", get(browser::stream_socket))
         .route_layer(middleware::from_fn(auth::require_local_authority));
 

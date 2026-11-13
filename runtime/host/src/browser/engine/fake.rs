@@ -332,6 +332,15 @@ impl FakeEngine {
                 emit("Target.targetInfoChanged", json!({ "targetInfo": info }));
                 Ok(json!({}))
             }
+            "Page.handleJavaScriptDialog" => {
+                target_of_session(&s)?;
+                let _ = events.send(json!({
+                    "method": "Page.javascriptDialogClosed",
+                    "params": { "result": params["accept"], "userInput": params["promptText"] },
+                    "sessionId": session,
+                }));
+                Ok(json!({}))
+            }
             "Page.enable"
             | "Page.reload"
             | "Page.stopLoading"

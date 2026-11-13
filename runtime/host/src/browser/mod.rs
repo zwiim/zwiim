@@ -78,6 +78,7 @@ pub mod store;
 pub mod stream;
 pub mod input;
 pub mod types;
+pub mod ui;
 
 #[cfg(feature = "tauri-runtime")]
 pub mod blank_page;

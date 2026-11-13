@@ -23,6 +23,7 @@ use super::engine::cdp::{Cdp, Event};
 use super::engine::manager::{EngineError, EngineManager, EngineState};
 use super::snapshot::{self, PersonalSnapshot};
 use super::store::{self, TabOwner, TabRecord};
+use super::ui::{self, UiAnswer, UiRequest};
 
 const EVENT_BUFFER: usize = 256;
 const DEFAULT_WIDTH: u32 = 1280;
@@ -50,6 +51,10 @@ pub struct TabInfo {
 pub enum BrowserEvent {
     Tab(TabInfo),
     Removed { tab_id: String, owner: TabOwner },
+    /// A tab waits on a person (design 9).
+    Ui(UiRequest),
+    /// That request was answered, timed out, or its tab went.
+    UiDone { request_id: String, tab_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +124,9 @@ struct Inner {
     personal_restored: bool,
     /// A personal snapshot save is scheduled.
     save_pending: bool,
+    /// Requests waiting on a person, by `request_id`.
+    ui: HashMap<String, UiRequest>,
+    next_ui: u64,
 }
 
 pub struct BrowserService {
@@ -162,6 +170,8 @@ impl BrowserService {
                 user_agent: None,
                 personal_restored: false,
                 save_pending: false,
+                ui: HashMap::new(),
+                next_ui: 0,
             }),
             events: broadcast::channel(EVENT_BUFFER).0,
         });
@@ -259,6 +269,7 @@ impl BrowserService {
     pub async fn close(&self, tab_id: &str) -> Result<(), BrowserError> {
         let mut inner = self.inner.lock().await;
         let tab = inner.tabs.remove(tab_id).ok_or_else(|| not_found(tab_id))?;
+        self.drop_ui_locked(&mut inner, Some(tab_id));
         if let (Some(live), Some(cdp)) = (&tab.live, &inner.cdp) {
             let _ = cdp
                 .call(
@@ -444,6 +455,7 @@ impl BrowserService {
             return Ok(cdp);
         }
         inner.generation = generation;
+        self.drop_ui_locked(inner, None);
         inner.contexts.clear();
         inner.personal_restored = false;
         inner.cdp = Some(cdp.clone());
@@ -574,6 +586,7 @@ impl BrowserService {
     }
 
     fn discard_locked(&self, inner: &mut Inner, tab_id: &str) {
+        self.drop_ui_locked(inner, Some(tab_id));
         let Some(tab) = inner.tabs.get_mut(tab_id) else {
             return;
         };
@@ -702,10 +715,51 @@ impl BrowserService {
                     Err(e) => tracing::warn!(error = %e, "could not adopt a popup"),
                 }
             }
+            "Page.javascriptDialogOpening" => {
+                let Some(id) = event
+                    .session_id
+                    .as_deref()
+                    .and_then(|s| by_session(&inner, s))
+                else {
+                    return;
+                };
+                inner.next_ui += 1;
+                let request = UiRequest {
+                    request_id: format!("ui-{}", inner.next_ui),
+                    tab_id: id.clone(),
+                    owner: inner.tabs[&id].info.owner.clone(),
+                    kind: ui::dialog_of(p),
+                };
+                inner
+                    .ui
+                    .insert(request.request_id.clone(), request.clone());
+                let request_id = request.request_id.clone();
+                self.emit(BrowserEvent::Ui(request));
+                let me = self.me.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(ui::DIALOG_TIMEOUT).await;
+                    if let Some(service) = me.upgrade() {
+                        service.expire(&request_id).await;
+                    }
+                });
+            }
+            // Answered here, by the page going away, or by another client of
+            // the engine: whatever is still asked of that tab is done.
+            "Page.javascriptDialogClosed" => {
+                let Some(id) = event
+                    .session_id
+                    .as_deref()
+                    .and_then(|s| by_session(&inner, s))
+                else {
+                    return;
+                };
+                self.drop_ui_locked(&mut inner, Some(&id));
+            }
             "Target.targetCrashed" => {
                 let Some(id) = by_target(&inner, p["targetId"].as_str().unwrap_or_default()) else {
                     return;
                 };
+                self.drop_ui_locked(&mut inner, Some(&id));
                 let tab = inner.tabs.get_mut(&id).expect("found above");
                 tab.info.crashed = true;
                 tab.info.loading = false;
@@ -717,6 +771,7 @@ impl BrowserService {
                 let Some(id) = by_target(&inner, p["targetId"].as_str().unwrap_or_default()) else {
                     return;
                 };
+                self.drop_ui_locked(&mut inner, Some(&id));
                 let tab = inner.tabs.remove(&id).expect("found above");
                 let db = self.db.clone();
                 let tab_id = id.clone();
@@ -729,6 +784,80 @@ impl BrowserService {
                 });
             }
             _ => {}
+        }
+    }
+
+    /// Every request waiting on a person, oldest first.
+    pub async fn ui_requests(&self) -> Vec<UiRequest> {
+        let inner = self.inner.lock().await;
+        let mut requests: Vec<UiRequest> = inner.ui.values().cloned().collect();
+        requests.sort_by_key(|r| ui_order(&r.request_id));
+        requests
+    }
+
+    /// Give a person's answer to a request. The first answer wins; a later
+    /// one finds no request.
+    pub async fn answer(&self, request_id: &str, answer: &UiAnswer) -> Result<(), BrowserError> {
+        let mut inner = self.inner.lock().await;
+        let request = inner
+            .ui
+            .get(request_id)
+            .cloned()
+            .ok_or_else(|| BrowserError {
+                code: "request_not_found",
+                message: "That request was already answered or has expired".into(),
+            })?;
+        let (method, params) = ui::answer_call(&request.kind, answer)?;
+        let session = inner
+            .tabs
+            .get(&request.tab_id)
+            .and_then(|t| t.live.as_ref())
+            .map(|l| l.session_id.clone());
+        // A dialog that already closed is no error: the request is done.
+        let delivered = match (inner.cdp.clone(), session) {
+            (Some(cdp), Some(session)) => cdp.call(method, params, Some(&session)).await.map(|_| ()),
+            _ => Ok(()),
+        };
+        self.drop_ui_locked(&mut inner, Some(&request.tab_id));
+        if let Err(e) = delivered {
+            tracing::debug!(error = %e, "a browser dialog closed before its answer");
+        }
+        Ok(())
+    }
+
+    /// Dismiss a request nobody answered in time.
+    async fn expire(&self, request_id: &str) {
+        let mut inner = self.inner.lock().await;
+        let Some(request) = inner.ui.get(request_id).cloned() else {
+            return;
+        };
+        tracing::warn!(tab_id = %request.tab_id, "dismissed a browser dialog nobody answered");
+        let session = inner
+            .tabs
+            .get(&request.tab_id)
+            .and_then(|t| t.live.as_ref())
+            .map(|l| l.session_id.clone());
+        if let (Some(cdp), Some(session)) = (inner.cdp.clone(), session) {
+            let (method, params) = ui::dismiss_call();
+            let _ = cdp.call(method, params, Some(&session)).await;
+        }
+        self.drop_ui_locked(&mut inner, Some(&request.tab_id));
+    }
+
+    /// End the requests of `tab_id`, or every request.
+    fn drop_ui_locked(&self, inner: &mut Inner, tab_id: Option<&str>) {
+        let done: Vec<UiRequest> = inner
+            .ui
+            .values()
+            .filter(|r| tab_id.is_none_or(|t| r.tab_id == t))
+            .cloned()
+            .collect();
+        for request in done {
+            inner.ui.remove(&request.request_id);
+            self.emit(BrowserEvent::UiDone {
+                request_id: request.request_id,
+                tab_id: request.tab_id,
+            });
         }
     }
 
@@ -893,6 +1022,13 @@ impl BrowserService {
             tracing::warn!(error = %e, "could not restore browser tabs after an engine restart");
         }
     }
+}
+
+fn ui_order(request_id: &str) -> u64 {
+    request_id
+        .strip_prefix("ui-")
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(u64::MAX)
 }
 
 /// Route engine events to the service until the engine goes away.
@@ -1131,6 +1267,95 @@ mod tests {
             }
         );
         assert_eq!(svc.close(&tab.id).await.unwrap_err().code, "tab_not_found");
+    }
+
+    /// Open a dialog in the page at `url`; returns the request the clients see.
+    async fn open_dialog(
+        fake: &FakeEngine,
+        events: &mut broadcast::Receiver<BrowserEvent>,
+        url: &str,
+        params: serde_json::Value,
+    ) -> UiRequest {
+        let target = fake.target_of_url(url).unwrap();
+        let session = fake.lock().targets[&target].session.clone().unwrap();
+        fake.emit("Page.javascriptDialogOpening", params, Some(&session));
+        loop {
+            if let BrowserEvent::Ui(request) = events.recv().await.unwrap() {
+                return request;
+            }
+        }
+    }
+
+    async fn ui_done(events: &mut broadcast::Receiver<BrowserEvent>) -> String {
+        loop {
+            if let BrowserEvent::UiDone { request_id, .. } = events.recv().await.unwrap() {
+                return request_id;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dialog_waits_for_the_first_answer() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let tab = svc
+            .open(session("s1"), Some("https://example.com/"))
+            .await
+            .unwrap();
+        let mut events = svc.subscribe();
+        let request = open_dialog(
+            &fake,
+            &mut events,
+            "https://example.com/",
+            json!({"type": "prompt", "message": "Name?", "defaultPrompt": "Ann",
+                   "url": "https://example.com/"}),
+        )
+        .await;
+        assert_eq!((request.tab_id.as_str(), &request.owner), (tab.id.as_str(), &session("s1")));
+        assert_eq!(svc.ui_requests().await, vec![request.clone()]);
+
+        let answer = UiAnswer::Dialog {
+            accept: true,
+            text: Some("Bo".into()),
+        };
+        svc.answer(&request.request_id, &answer).await.unwrap();
+        assert_eq!(
+            fake.calls("Page.handleJavaScriptDialog"),
+            vec![json!({"accept": true, "promptText": "Bo"})]
+        );
+        assert_eq!(ui_done(&mut events).await, request.request_id);
+        assert!(svc.ui_requests().await.is_empty());
+        assert_eq!(
+            svc.answer(&request.request_id, &answer).await.unwrap_err().code,
+            "request_not_found"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dialog_ends_with_its_tab_or_unanswered() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let a = svc
+            .open(session("s1"), Some("https://a.example/"))
+            .await
+            .unwrap();
+        svc.open(session("s1"), Some("https://b.example/"))
+            .await
+            .unwrap();
+        let mut events = svc.subscribe();
+        let alert = json!({"type": "alert", "message": "Hi", "url": ""});
+
+        let first = open_dialog(&fake, &mut events, "https://a.example/", alert.clone()).await;
+        svc.close(&a.id).await.unwrap();
+        assert_eq!(ui_done(&mut events).await, first.request_id);
+
+        let second = open_dialog(&fake, &mut events, "https://b.example/", alert).await;
+        svc.expire(&second.request_id).await;
+        assert_eq!(fake.calls("Page.handleJavaScriptDialog"), vec![json!({"accept": false})]);
+        assert_eq!(ui_done(&mut events).await, second.request_id);
+        assert!(svc.ui_requests().await.is_empty());
     }
 
     #[tokio::test]

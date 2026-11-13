@@ -33,6 +33,7 @@ impl From<BrowserError> for ZwiimError {
                 "The browser stream already has a viewer".to_string(),
             ),
             "invalid_viewport" => (StatusCode::BAD_REQUEST, e.message),
+            "request_not_found" => (StatusCode::NOT_FOUND, e.message),
             _ => (StatusCode::SERVICE_UNAVAILABLE, scrub_paths(&e.message)),
         };
         ZwiimError::new(status, e.code, message)
@@ -171,6 +172,26 @@ pub async fn tab_navigate(
     Ok(Json(service(&state).await?.navigate(&p.tab_id, to).await?))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiAnswerParams {
+    pub request_id: String,
+    pub answer: crate::browser::ui::UiAnswer,
+}
+
+/// `browser.ui.answer {request_id, answer}`: answer what a tab is waiting
+/// on (design 9). The first answer wins; a later one is `request_not_found`.
+pub async fn ui_answer(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<UiAnswerParams>,
+) -> ZResult<Value> {
+    service(&state)
+        .await?
+        .answer(&p.request_id, &p.answer)
+        .await?;
+    Ok(Json(json!({})))
+}
+
 /// `browser.engine.reset` → `{engine}`: clear a failure (`crash_loop` too)
 /// so the next tab starts the engine again.
 pub async fn engine_reset(Extension(state): Extension<Arc<AppState>>) -> ZResult<Value> {
@@ -282,8 +303,8 @@ async fn run_stream(
 }
 
 /// One socket's `browser.subscribe`: a `browser.snapshot` frame, then each
-/// change as `browser.tab.state`, `browser.tab.removed` or
-/// `browser.engine.state`. Events carry a tab's whole state, so one that
+/// change as `browser.tab.state`, `browser.tab.removed`,
+/// `browser.engine.state`, `browser.ui.request` or `browser.ui.done`. Events carry a tab's whole state, so one that
 /// arrives after a snapshot already holding it changes nothing. A socket
 /// that falls behind gets a fresh snapshot.
 pub(super) struct BrowserFeed {
@@ -313,6 +334,7 @@ impl BrowserFeed {
             "type": "browser.snapshot",
             "tabs": self.browser.list(None).await,
             "engine": self.sent_engine,
+            "ui_requests": self.browser.ui_requests().await,
         })
     }
 
@@ -329,6 +351,14 @@ impl BrowserFeed {
                         "type": "browser.tab.removed",
                         "tab_id": tab_id,
                         "owner": owner,
+                    })),
+                    Ok(BrowserEvent::Ui(request)) => {
+                        Some(json!({ "type": "browser.ui.request", "request": request }))
+                    }
+                    Ok(BrowserEvent::UiDone { request_id, tab_id }) => Some(json!({
+                        "type": "browser.ui.done",
+                        "request_id": request_id,
+                        "tab_id": tab_id,
                     })),
                     Err(RecvError::Lagged(_)) => Some(self.snapshot().await),
                     Err(RecvError::Closed) => None,

@@ -128,6 +128,7 @@ const OPS: &[&str] = &[
     "browser.engine.reset",
     "browser.view.open",
     "browser.view.close",
+    "browser.ui.answer",
 ];
 
 pub(crate) fn git(dir: &std::path::Path, args: &[&str]) {
@@ -5572,6 +5573,10 @@ async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
             json!({"tab_id": "t", "viewport": {"width": 800, "height": 600}}),
         ),
         ("browser.view.close", json!({"stream_id": "s"})),
+        (
+            "browser.ui.answer",
+            json!({"request_id": "ui-1", "answer": {"kind": "dialog", "accept": true}}),
+        ),
     ] {
         let (status, body) = h.call_as(&credential, op, body).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{op}");
@@ -6522,7 +6527,7 @@ async fn browser_subscribe_streams_tabs_and_the_engine() {
     ws.send_json(&json!({"op": "browser.subscribe"})).await;
     assert_eq!(
         recv(&mut ws).await,
-        json!({"type": "browser.snapshot", "tabs": [], "engine": {"state": "stopped"}})
+        json!({"type": "browser.snapshot", "tabs": [], "engine": {"state": "stopped"}, "ui_requests": []})
     );
 
     let tab = h
@@ -6555,6 +6560,64 @@ async fn browser_subscribe_streams_tabs_and_the_engine() {
     let again = browser_frame(&mut ws, "browser.snapshot", |_| true).await;
     assert_eq!(again["tabs"], json!([]));
     assert_eq!(again["engine"]["state"], "running");
+}
+
+#[tokio::test]
+async fn a_page_dialog_reaches_clients_and_the_first_answer_wins() {
+    let h = host(true).await;
+    let fake = fake_browser(&h).await;
+    let tab = h
+        .ok(
+            "browser.tab.open",
+            json!({"owner": {"kind": "personal"}, "url": "https://example.com/"}),
+        )
+        .await;
+    let tab_id = tab["tab_id"].as_str().unwrap().to_string();
+    let mut ws = h.ws().await;
+    ws.send_json(&json!({"op": "browser.subscribe"})).await;
+    browser_frame(&mut ws, "browser.snapshot", |_| true).await;
+
+    let target = fake.target_of_url("https://example.com/").unwrap();
+    let session = fake.lock().targets[&target].session.clone().unwrap();
+    fake.emit(
+        "Page.javascriptDialogOpening",
+        json!({"type": "confirm", "message": "Leave?", "url": "https://example.com/"}),
+        Some(&session),
+    );
+    let request = browser_frame(&mut ws, "browser.ui.request", |_| true).await["request"].clone();
+    let request_id = request["request_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        request,
+        json!({"request_id": request_id, "tab_id": tab_id, "owner": {"kind": "personal"},
+               "kind": "dialog", "dialog": "confirm", "message": "Leave?",
+               "url": "https://example.com/"})
+    );
+
+    // A client that subscribes now still sees it.
+    let mut late = h.ws().await;
+    late.send_json(&json!({"op": "browser.subscribe"})).await;
+    let snapshot = browser_frame(&mut late, "browser.snapshot", |_| true).await;
+    assert_eq!(snapshot["ui_requests"], json!([request]));
+
+    let answer = json!({"request_id": request_id, "answer": {"kind": "dialog", "accept": false}});
+    assert_eq!(h.ok("browser.ui.answer", answer.clone()).await, json!({}));
+    assert_eq!(fake.calls("Page.handleJavaScriptDialog"), vec![json!({"accept": false})]);
+    assert_eq!(
+        browser_frame(&mut ws, "browser.ui.done", |_| true).await,
+        json!({"type": "browser.ui.done", "request_id": request_id, "tab_id": tab_id})
+    );
+    assert_eq!(
+        h.err("browser.ui.answer", answer).await,
+        (StatusCode::NOT_FOUND, "request_not_found".into())
+    );
+    assert_eq!(
+        h.err(
+            "browser.ui.answer",
+            json!({"request_id": request_id, "answer": {"kind": "dialog"}}),
+        )
+        .await,
+        (StatusCode::BAD_REQUEST, "invalid_request".into())
+    );
 }
 
 #[tokio::test]

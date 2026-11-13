@@ -320,8 +320,16 @@ use serde::{Deserialize, Serialize};
 /// `zwiim-browser-stream`) for the tab's frames as binary messages, a
 /// 34-byte little-endian header then the JPEG, and sends its input as JSON
 /// text; `browser.view.close {stream_id}` ends it (`stream_not_found`,
-/// `stream_attached`, `invalid_viewport`). Host only for now: paired
-/// devices are refused with `permission_denied`.
+/// `stream_attached`, `invalid_viewport`). A tab that waits on a person (a
+/// JavaScript `alert`, `confirm`, `prompt` or `beforeunload` dialog) sends
+/// `browser.ui.request {request}`, a request `{request_id, tab_id, owner,
+/// kind: "dialog", dialog, message, default_text?, url}`, and
+/// `browser.ui.done {request_id, tab_id}` once it is answered, dismissed
+/// after 60 s unanswered, or its tab goes; the snapshot carries the open ones
+/// as `ui_requests`. `browser.ui.answer {request_id, answer}` with `answer`
+/// `{kind: "dialog", accept, text?}` answers one; the first answer wins and
+/// a later one is refused with `request_not_found`. Host only for now:
+/// paired devices are refused with `permission_denied`.
 ///
 /// 33 (`downloads`): what the Host is downloading (an agent's adapter, the
 /// browser engine, a Host update). The host snapshot carries `downloads`, a
