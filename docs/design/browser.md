@@ -563,7 +563,7 @@ one into a protocol event and the clients draw it with their own UI
 | File chooser | `Page.setInterceptFileChooserDialog` + `Page.fileChooserOpened` | A picker limited to workspace files (built on the desktop, P1.6) and phone photos (uploaded through the tunnel to session scratch) | `DOM.setFileInputFiles`, with every path checked by the Host: inside the workspace after symlinks, a session's tab only its session's workspace |
 | HTTP auth | `Fetch.authRequired`, with each tab intercepting its page requests (documents only) and the event pump letting them go on at once | Username and password sheet (built, P1.6) | `Fetch.continueWithAuth`; nothing stored or logged, cancelled after 5 minutes unanswered |
 | Permissions (camera, mic, location, notifications) | Not relayed (decision 12) | Nothing | The engine's default, which refuses them. The agent grants what its tabs need through its browser tools, for its session's context only; no real camera or mic is wired to the engine in this design |
-| Downloads | `Browser.downloadWillBegin` | Download bar | Saved under `<session scratch>/downloads` with upstream `downloads` naming; never opened automatically |
+| Downloads | `Browser.setDownloadBehavior` per context, `Browser.downloadWillBegin` and `Browser.downloadProgress` | The Host's download row (capability `downloads`) | Saved where decision 13 says, under the page's file name (` (1)`, ` (2)` when taken); never opened automatically |
 | Certificate errors | `Security` events | Interstitial | Only loopback addresses can be accepted, per tab, by a person |
 
 The helper script runs in an isolated world (`Page.createIsolatedWorld`), as
@@ -807,8 +807,8 @@ else in the design is macOS-specific.
 ### 13.3 Data
 
 1. Cookie snapshots: encrypted, key in the keychain (6.3).
-2. Recordings and downloads stay in the session's scratch directory and are
-   removed with the session.
+2. Recordings stay in the session's scratch directory and are removed with
+   the session. Downloads follow decision 13.
 3. Frames and forwarded traffic leave the Mac only inside the Noise tunnel.
    The relay sees ciphertext and byte counts.
 
@@ -1321,6 +1321,14 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
     the engine refuses them by default, and the agent grants what its tabs
     need through its browser tools (P1.7), for its session's context only,
     gone with that context. CDP reports no permission request to relay.
+13. Browser downloads. A session's tab saves to
+    `<worktree>/.zwiim/browser/<id>/`, where `<id>` is the session id's
+    first 8 characters (the whole id if another session in that worktree
+    shares them); `.zwiim/` is already excluded from Git, and the folder
+    goes with the session. The person can instead choose a root folder in
+    Settings, a Host setting every worktree follows: downloads then go to
+    `<root>/zwiim/<repo>/downloads/`, shared by the repository's worktrees
+    and never deleted by Zwiim. The person's own tabs save to `~/Downloads`.
 
 Not decided yet, and not blocking: audio in Agent View, DevTools on the
 phone, a camera or mic source for pages, and Linux support for the governor.
