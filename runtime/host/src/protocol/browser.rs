@@ -15,6 +15,7 @@ use crate::app_state::AppState;
 use crate::browser::engine::manager::EngineState;
 use crate::browser::service::{BrowserError, BrowserEvent, BrowserService, Navigation, TabInfo};
 use crate::browser::store::TabOwner;
+use crate::browser::ui::UiAnswer;
 use crate::browser::stream::{StreamHub, Viewport};
 
 type ZResult<T> = Result<Json<T>, ZwiimError>;
@@ -177,20 +178,85 @@ pub async fn tab_navigate(
 #[serde(deny_unknown_fields)]
 pub struct UiAnswerParams {
     pub request_id: String,
-    pub answer: crate::browser::ui::UiAnswer,
+    pub answer: UiAnswer,
 }
+
+/// Most files one file chooser answer gives a page.
+const MAX_CHOSEN_FILES: usize = 100;
 
 /// `browser.ui.answer {request_id, answer}`: answer what a tab is waiting
 /// on (design 9). The first answer wins; a later one is `request_not_found`.
 pub async fn ui_answer(
     Extension(state): Extension<Arc<AppState>>,
-    ZJson(p): ZJson<UiAnswerParams>,
+    ZJson(mut p): ZJson<UiAnswerParams>,
 ) -> ZResult<Value> {
-    service(&state)
-        .await?
-        .answer(&p.request_id, &p.answer)
-        .await?;
+    let browser = service(&state).await?;
+    if let UiAnswer::FileChooser {
+        accept: true,
+        workspace_id,
+        paths,
+        files,
+    } = &mut p.answer
+    {
+        let request = browser
+            .ui_request(&p.request_id)
+            .await
+            .ok_or_else(|| ZwiimError::from(BrowserError {
+                code: "request_not_found",
+                message: "That request was already answered or has expired".into(),
+            }))?;
+        let workspace_id = workspace_id
+            .as_deref()
+            .ok_or_else(|| ZwiimError::invalid_request("Name the workspace the files are in"))?;
+        *files = chosen_files(&state, &request.owner, workspace_id, paths).await?;
+    }
+    browser.answer(&p.request_id, &p.answer).await?;
     Ok(Json(json!({})))
+}
+
+/// `paths` in workspace `workspace_id` as files on disk, for a page's file
+/// chooser. A session's tab takes files from its own workspace only; every
+/// file must be a file inside the workspace (symlinks too) and not a hidden
+/// one a link hides behind another name.
+async fn chosen_files(
+    state: &AppState,
+    owner: &TabOwner,
+    workspace_id: &str,
+    paths: &[String],
+) -> Result<Vec<std::path::PathBuf>, ZwiimError> {
+    if paths.is_empty() || paths.len() > MAX_CHOSEN_FILES {
+        return Err(ZwiimError::invalid_request(format!(
+            "Choose between 1 and {MAX_CHOSEN_FILES} files"
+        )));
+    }
+    if let TabOwner::Session { session_id } = owner {
+        let row = crate::session::resolve(&state.db.conn, session_id).await?;
+        let own = crate::workspace::workspace_id_of(&state.db.conn, row.folder_id).await?;
+        if own.as_deref() != Some(workspace_id) {
+            return Err(ZwiimError::permission_denied(
+                "This tab can only take files from its session's workspace",
+            ));
+        }
+    }
+    let root = crate::workspace::resolve(&state.db.conn, workspace_id)
+        .await?
+        .path;
+    let root = std::path::Path::new(&root);
+    let not_found = || ZwiimError::not_found("File not found");
+    let canonical_root = root.canonicalize().map_err(|_| not_found())?;
+    let mut files = Vec::with_capacity(paths.len());
+    for path in paths {
+        let joined = crate::commands::folders::resolve_tree_path(root, path)?;
+        let target = joined.canonicalize().map_err(|_| not_found())?;
+        if !target.starts_with(&canonical_root)
+            || !target.is_file()
+            || super::http::link_reaches_hidden(&canonical_root, &target, path)
+        {
+            return Err(not_found());
+        }
+        files.push(target);
+    }
+    Ok(files)
 }
 
 /// `browser.engine.reset` → `{engine}`: clear a failure (`crash_loop` too)

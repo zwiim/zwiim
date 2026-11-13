@@ -332,7 +332,11 @@ use serde::{Deserialize, Serialize};
 /// to sign in is a request `{kind: "auth", origin, scheme, realm, proxy,
 /// url}`, answered `{kind: "auth", accept, username, password}` and
 /// cancelled after 5 minutes unanswered; an answer of the wrong kind is
-/// `invalid_answer`. Host only for now:
+/// `invalid_answer`. A page's file input is a request `{kind:
+/// "file_chooser", multiple, url}`, answered `{kind: "file_chooser", accept,
+/// workspace_id, paths}` with up to 100 files inside that workspace (a
+/// session's tab: its session's workspace only, else `permission_denied`;
+/// a path outside it or a missing file is `not_found`). Host only for now:
 /// paired devices are refused with `permission_denied`.
 ///
 /// 33 (`downloads`): what the Host is downloading (an agent's adapter, the

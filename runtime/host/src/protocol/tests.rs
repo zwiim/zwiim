@@ -6618,6 +6618,73 @@ async fn a_page_dialog_reaches_clients_and_the_first_answer_wins() {
 }
 
 #[tokio::test]
+async fn a_file_chooser_gets_files_of_its_sessions_workspace_only() {
+    let h = host(true).await;
+    let fake = fake_browser(&h).await;
+    let wt = std::path::Path::new(&h.wt);
+    std::fs::write(wt.join("photo.png"), b"png").unwrap();
+    std::fs::write(wt.join(".env"), b"SECRET=1").unwrap();
+    std::os::unix::fs::symlink(wt.join(".env"), wt.join("notes.txt")).unwrap();
+    std::os::unix::fs::symlink("/etc/hosts", wt.join("hosts")).unwrap();
+
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let tab = h
+        .ok(
+            "browser.tab.open",
+            json!({"owner": {"kind": "session", "session_id": sid}, "url": "https://example.com/"}),
+        )
+        .await;
+    let target = fake.wait_url("https://example.com/").await;
+    let session = fake.lock().targets[&target].session.clone().unwrap();
+    let mut ws = h.ws().await;
+    ws.send_json(&json!({"op": "browser.subscribe"})).await;
+    browser_frame(&mut ws, "browser.snapshot", |_| true).await;
+    fake.emit(
+        "Page.fileChooserOpened",
+        json!({"frameId": target, "mode": "selectSingle", "backendNodeId": 7}),
+        Some(&session),
+    );
+    let request = browser_frame(&mut ws, "browser.ui.request", |_| true).await["request"].clone();
+    assert_eq!(request["kind"], "file_chooser");
+    assert_eq!(request["tab_id"], tab["tab_id"]);
+    assert_eq!(request["multiple"], false);
+    let request_id = request["request_id"].as_str().unwrap().to_string();
+
+    let answer = |workspace_id: &str, path: &str| {
+        json!({"request_id": request_id, "answer":
+               {"kind": "file_chooser", "accept": true, "workspace_id": workspace_id, "paths": [path]}})
+    };
+    for (body, refused) in [
+        (answer(&h.workspace_id, "photo.png"), (StatusCode::FORBIDDEN, "permission_denied")),
+        (answer(&h.wt_workspace_id, "../photo.png"), (StatusCode::BAD_REQUEST, "invalid_input")),
+        (answer(&h.wt_workspace_id, "missing.png"), (StatusCode::NOT_FOUND, "not_found")),
+        (answer(&h.wt_workspace_id, "hosts"), (StatusCode::NOT_FOUND, "not_found")),
+        (answer(&h.wt_workspace_id, "notes.txt"), (StatusCode::NOT_FOUND, "not_found")),
+        (
+            json!({"request_id": request_id, "answer": {"kind": "file_chooser", "accept": true,
+                   "workspace_id": h.wt_workspace_id, "paths": ["photo.png"], "files": ["/etc/hosts"]}}),
+            (StatusCode::BAD_REQUEST, "invalid_request"),
+        ),
+    ] {
+        assert_eq!(
+            h.err("browser.ui.answer", body.clone()).await,
+            (refused.0, refused.1.into()),
+            "{body}"
+        );
+    }
+    assert!(fake.calls("DOM.setFileInputFiles").is_empty());
+
+    h.ok("browser.ui.answer", answer(&h.wt_workspace_id, "photo.png")).await;
+    let photo = wt.join("photo.png").canonicalize().unwrap();
+    assert_eq!(
+        fake.calls("DOM.setFileInputFiles"),
+        vec![json!({"files": [photo], "backendNodeId": 7})]
+    );
+    browser_frame(&mut ws, "browser.ui.done", |_| true).await;
+}
+
+#[tokio::test]
 async fn a_paired_device_cannot_subscribe_to_the_browser() {
     let h = host(true).await;
     let _fake = fake_browser(&h).await;

@@ -1435,7 +1435,7 @@ pub struct FileDownloadParams {
 /// Whether `target`, what `path` resolved to under `root`, is hidden when
 /// `path` doesn't say so. Page code can't see that from the path alone: a repo
 /// can commit `notes.txt -> .env`.
-fn link_reaches_hidden(root: &std::path::Path, target: &std::path::Path, path: &str) -> bool {
+pub(super) fn link_reaches_hidden(root: &std::path::Path, target: &std::path::Path, path: &str) -> bool {
     let Ok(resolved) = target.strip_prefix(root) else {
         return true;
     };

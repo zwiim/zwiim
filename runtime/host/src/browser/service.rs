@@ -566,6 +566,13 @@ impl BrowserService {
             s,
         )
         .await?;
+        // A page's file input asks a person, not the Mac's own file dialog.
+        cdp.call(
+            "Page.setInterceptFileChooserDialog",
+            json!({ "enabled": true }),
+            s,
+        )
+        .await?;
         if let Some(ua) = &inner.user_agent {
             cdp.call(
                 "Emulation.setUserAgentOverride",
@@ -732,6 +739,18 @@ impl BrowserService {
                     });
                 }
             }
+            "Page.fileChooserOpened" => {
+                let Some(id) = event
+                    .session_id
+                    .as_deref()
+                    .and_then(|s| by_session(&inner, s))
+                else {
+                    return;
+                };
+                if let Some(kind) = ui::chooser_of(p, &inner.tabs[&id].info.url) {
+                    self.ask_locked(&mut inner, &id, kind);
+                }
+            }
             "Fetch.authRequired" => {
                 let Some(id) = event
                     .session_id
@@ -788,6 +807,11 @@ impl BrowserService {
         }
     }
 
+    /// The request `request_id`, while it waits.
+    pub async fn ui_request(&self, request_id: &str) -> Option<UiRequest> {
+        self.inner.lock().await.ui.get(request_id).cloned()
+    }
+
     /// Every request waiting on a person, oldest first.
     pub async fn ui_requests(&self) -> Vec<UiRequest> {
         let inner = self.inner.lock().await;
@@ -808,15 +832,17 @@ impl BrowserService {
                 code: "request_not_found",
                 message: "That request was already answered or has expired".into(),
             })?;
-        let (method, params) = ui::answer_call(&request.kind, answer)?;
+        let call = ui::answer_call(&request.kind, answer)?;
         let session = inner
             .tabs
             .get(&request.tab_id)
             .and_then(|t| t.live.as_ref())
             .map(|l| l.session_id.clone());
         // A dialog or sign-in that already went is no error: the request is done.
-        let delivered = match (inner.cdp.clone(), session) {
-            (Some(cdp), Some(session)) => cdp.call(method, params, Some(&session)).await.map(|_| ()),
+        let delivered = match (inner.cdp.clone(), session, call) {
+            (Some(cdp), Some(session), Some((method, params))) => {
+                cdp.call(method, params, Some(&session)).await.map(|_| ())
+            }
             _ => Ok(()),
         };
         self.drop_ui_locked(&mut inner, |r| r.request_id == request_id);
@@ -838,8 +864,9 @@ impl BrowserService {
             .get(&request.tab_id)
             .and_then(|t| t.live.as_ref())
             .map(|l| l.session_id.clone());
-        if let (Some(cdp), Some(session)) = (inner.cdp.clone(), session) {
-            let (method, params) = ui::dismiss_call(&request.kind);
+        if let (Some(cdp), Some(session), Some((method, params))) =
+            (inner.cdp.clone(), session, ui::dismiss_call(&request.kind))
+        {
             let _ = cdp.call(method, params, Some(&session)).await;
         }
         self.drop_ui_locked(&mut inner, |r| r.request_id == request_id);

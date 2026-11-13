@@ -3,11 +3,14 @@
 //! client draws with its own UI, and the first answer wins.
 //!
 //! For now: JavaScript dialogs (`alert`, `confirm`, `prompt`,
-//! `beforeunload`) and HTTP auth. A dialog nobody answers within
-//! [`DIALOG_TIMEOUT`] is dismissed, since an open dialog stalls the page and
-//! its frames; a sign-in nobody answers within [`AUTH_TIMEOUT`] is cancelled.
-//! Credentials go to the engine and nowhere else: never stored or logged.
+//! `beforeunload`), HTTP auth and file choosers. A dialog nobody answers
+//! within [`DIALOG_TIMEOUT`] is dismissed, since an open dialog stalls the
+//! page and its frames; a sign-in or a file chooser nobody answers within
+//! [`AUTH_TIMEOUT`] is cancelled. Credentials go to the engine and nowhere
+//! else: never stored or logged. A file chooser gets workspace files only,
+//! which the protocol checks and resolves before the answer reaches here.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -17,7 +20,8 @@ use super::service::BrowserError;
 use super::store::TabOwner;
 
 pub const DIALOG_TIMEOUT: Duration = Duration::from_secs(60);
-/// Longer: nothing stalls while a sign-in waits, and typing a password takes time.
+/// Longer: nothing stalls while a sign-in or a file chooser waits, and
+/// typing a password or finding a file takes time.
 pub const AUTH_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Something a tab is waiting on a person for.
@@ -59,6 +63,16 @@ pub enum UiKind {
         #[serde(skip)]
         frame_id: String,
     },
+    /// A page's `<input type=file>` asks for files.
+    FileChooser {
+        /// More than one file may be picked.
+        multiple: bool,
+        /// The page that asked.
+        url: String,
+        /// The input, the engine's own id: never sent.
+        #[serde(skip)]
+        backend_node: i64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -89,6 +103,18 @@ pub enum UiAnswer {
         #[serde(default)]
         password: String,
     },
+    /// Give the page `paths`, files in workspace `workspace_id` relative to
+    /// its root, when `accept`; leave the input as it was otherwise.
+    FileChooser {
+        accept: bool,
+        #[serde(default)]
+        workspace_id: Option<String>,
+        #[serde(default)]
+        paths: Vec<String>,
+        /// `paths` on disk, filled in by the protocol once checked.
+        #[serde(skip)]
+        files: Vec<PathBuf>,
+    },
 }
 
 /// Never shows a password.
@@ -103,6 +129,17 @@ impl std::fmt::Debug for UiAnswer {
             UiAnswer::Auth { accept, .. } => f
                 .debug_struct("Auth")
                 .field("accept", accept)
+                .finish_non_exhaustive(),
+            UiAnswer::FileChooser {
+                accept,
+                workspace_id,
+                paths,
+                ..
+            } => f
+                .debug_struct("FileChooser")
+                .field("accept", accept)
+                .field("workspace_id", workspace_id)
+                .field("paths", paths)
                 .finish_non_exhaustive(),
         }
     }
@@ -146,6 +183,16 @@ pub fn auth_of(params: &Value) -> UiKind {
     }
 }
 
+/// The file chooser `Page.fileChooserOpened` reports for the page at `url`;
+/// none when no input element opened it.
+pub fn chooser_of(params: &Value, url: &str) -> Option<UiKind> {
+    Some(UiKind::FileChooser {
+        multiple: params["mode"] == "selectMultiple",
+        url: url.to_string(),
+        backend_node: params["backendNodeId"].as_i64()?,
+    })
+}
+
 fn continue_with_auth(fetch_request: &str, response: Value) -> (&'static str, Value) {
     (
         "Fetch.continueWithAuth",
@@ -153,18 +200,44 @@ fn continue_with_auth(fetch_request: &str, response: Value) -> (&'static str, Va
     )
 }
 
-/// The CDP call that gives `answer` to `request`.
+fn invalid_answer() -> BrowserError {
+    BrowserError {
+        code: "invalid_answer",
+        message: "That answer does not fit the request".into(),
+    }
+}
+
+/// The CDP call that gives `answer` to `request`; none when there is nothing
+/// to tell the engine (a cancelled file chooser).
 pub fn answer_call(
     request: &UiKind,
     answer: &UiAnswer,
-) -> Result<(&'static str, Value), BrowserError> {
+) -> Result<Option<(&'static str, Value)>, BrowserError> {
     match (request, answer) {
         (UiKind::Dialog { .. }, UiAnswer::Dialog { accept, text }) => {
             let mut params = json!({ "accept": accept });
             if let Some(text) = text {
                 params["promptText"] = json!(text);
             }
-            Ok(("Page.handleJavaScriptDialog", params))
+            Ok(Some(("Page.handleJavaScriptDialog", params)))
+        }
+        (UiKind::FileChooser { .. }, UiAnswer::FileChooser { accept: false, .. }) => Ok(None),
+        (
+            UiKind::FileChooser {
+                multiple,
+                backend_node,
+                ..
+            },
+            UiAnswer::FileChooser { paths, files, .. },
+        ) => {
+            // Unchecked paths never reach the engine.
+            if files.is_empty() || files.len() != paths.len() || (!multiple && files.len() > 1) {
+                return Err(invalid_answer());
+            }
+            Ok(Some((
+                "DOM.setFileInputFiles",
+                json!({ "files": files, "backendNodeId": backend_node }),
+            )))
         }
         (
             UiKind::Auth { fetch_request, .. },
@@ -173,29 +246,28 @@ pub fn answer_call(
                 username,
                 password,
             },
-        ) => Ok(continue_with_auth(
+        ) => Ok(Some(continue_with_auth(
             fetch_request,
             if *accept {
                 json!({ "response": "ProvideCredentials", "username": username, "password": password })
             } else {
                 json!({ "response": "CancelAuth" })
             },
-        )),
-        _ => Err(BrowserError {
-            code: "invalid_answer",
-            message: "That answer does not fit the request".into(),
-        }),
+        ))),
+        _ => Err(invalid_answer()),
     }
 }
 
 /// The call that ends a request nobody answered: the dialog dismissed, the
-/// sign-in cancelled.
-pub fn dismiss_call(request: &UiKind) -> (&'static str, Value) {
+/// sign-in cancelled. A file chooser needs none.
+pub fn dismiss_call(request: &UiKind) -> Option<(&'static str, Value)> {
     match request {
-        UiKind::Dialog { .. } => ("Page.handleJavaScriptDialog", json!({ "accept": false })),
-        UiKind::Auth { fetch_request, .. } => {
-            continue_with_auth(fetch_request, json!({ "response": "CancelAuth" }))
-        }
+        UiKind::Dialog { .. } => Some(("Page.handleJavaScriptDialog", json!({ "accept": false }))),
+        UiKind::Auth { fetch_request, .. } => Some(continue_with_auth(
+            fetch_request,
+            json!({ "response": "CancelAuth" }),
+        )),
+        UiKind::FileChooser { .. } => None,
     }
 }
 
@@ -203,7 +275,7 @@ pub fn dismiss_call(request: &UiKind) -> (&'static str, Value) {
 pub fn timeout(request: &UiKind) -> Duration {
     match request {
         UiKind::Dialog { .. } => DIALOG_TIMEOUT,
-        UiKind::Auth { .. } => AUTH_TIMEOUT,
+        UiKind::Auth { .. } | UiKind::FileChooser { .. } => AUTH_TIMEOUT,
     }
 }
 
@@ -257,7 +329,7 @@ mod tests {
             serde_json::from_value(json!({"kind": "dialog", "accept": true, "text": "Bo"}))
                 .unwrap();
         assert_eq!(
-            answer_call(&kind, &answer).unwrap(),
+            answer_call(&kind, &answer).unwrap().unwrap(),
             (
                 "Page.handleJavaScriptDialog",
                 json!({"accept": true, "promptText": "Bo"})
@@ -309,7 +381,7 @@ mod tests {
         .unwrap();
         assert!(!format!("{answer:?}").contains("hunter2"));
         assert_eq!(
-            answer_call(&kind, &answer).unwrap(),
+            answer_call(&kind, &answer).unwrap().unwrap(),
             (
                 "Fetch.continueWithAuth",
                 json!({"requestId": "interception-7", "authChallengeResponse":
@@ -317,12 +389,74 @@ mod tests {
             )
         );
         assert_eq!(
-            dismiss_call(&kind),
+            dismiss_call(&kind).unwrap(),
             (
                 "Fetch.continueWithAuth",
                 json!({"requestId": "interception-7", "authChallengeResponse": {"response": "CancelAuth"}})
             )
         );
         assert_eq!(timeout(&kind), AUTH_TIMEOUT);
+    }
+
+    #[test]
+    fn a_file_chooser_takes_only_checked_files() {
+        let kind = chooser_of(
+            &json!({"frameId": "F", "mode": "selectSingle", "backendNodeId": 42}),
+            "https://example.com/upload",
+        )
+        .unwrap();
+        assert!(chooser_of(&json!({"mode": "selectSingle"}), "u").is_none());
+        let request = UiRequest {
+            request_id: "ui-3".into(),
+            tab_id: "t1".into(),
+            owner: TabOwner::Personal,
+            kind: kind.clone(),
+        };
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            json!({"request_id": "ui-3", "tab_id": "t1", "owner": {"kind": "personal"},
+                   "kind": "file_chooser", "multiple": false, "url": "https://example.com/upload"})
+        );
+
+        let mut answer: UiAnswer = serde_json::from_value(json!({"kind": "file_chooser",
+            "accept": true, "workspace_id": "w1", "paths": ["a.png"]}))
+        .unwrap();
+        assert_eq!(
+            answer_call(&kind, &answer).unwrap_err().code,
+            "invalid_answer",
+            "unchecked"
+        );
+        if let UiAnswer::FileChooser { files, .. } = &mut answer {
+            files.push(PathBuf::from("/repo/a.png"));
+        }
+        assert_eq!(
+            answer_call(&kind, &answer).unwrap().unwrap(),
+            (
+                "DOM.setFileInputFiles",
+                json!({"files": ["/repo/a.png"], "backendNodeId": 42})
+            )
+        );
+        let two = UiAnswer::FileChooser {
+            accept: true,
+            workspace_id: Some("w1".into()),
+            paths: vec!["a".into(), "b".into()],
+            files: vec!["/repo/a".into(), "/repo/b".into()],
+        };
+        assert_eq!(
+            answer_call(&kind, &two).unwrap_err().code,
+            "invalid_answer",
+            "one file only"
+        );
+        let cancel: UiAnswer =
+            serde_json::from_value(json!({"kind": "file_chooser", "accept": false})).unwrap();
+        assert_eq!(answer_call(&kind, &cancel).unwrap(), None);
+        assert_eq!(dismiss_call(&kind), None);
+        assert!(
+            serde_json::from_value::<UiAnswer>(
+                json!({"kind": "file_chooser", "accept": true, "files": ["/etc/passwd"]})
+            )
+            .is_err(),
+            "files never come from a client"
+        );
     }
 }
