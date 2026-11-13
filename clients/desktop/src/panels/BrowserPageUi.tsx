@@ -9,14 +9,14 @@ import { Button } from "@/components/ui/button";
 import { moveMenuFocus } from "@/panels/ControlCenter";
 import { cn } from "@/lib/utils";
 
-const POP = "bg-card text-card-foreground ring-border presence-pop shadow-pop absolute z-20 rounded-xl p-1.5 ring-1 outline-none";
+export const POP = "bg-card text-card-foreground ring-border presence-pop shadow-pop absolute z-20 rounded-xl p-1.5 ring-1 outline-none";
 const ITEM =
   "hover:bg-muted focus-visible:bg-muted flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-ui transition-colors outline-none disabled:opacity-50";
 
 type Place = (p: { x: number; y: number }) => { x: number; y: number } | null;
 
-/** Closes on a press outside `ref` or on Escape. */
-function useDismiss(ref: React.RefObject<HTMLElement | null>, onClose: () => void) {
+/** Closes on a press outside `ref`. */
+export function useDismiss(ref: React.RefObject<HTMLElement | null>, onClose: () => void) {
   useEffect(() => {
     const down = (e: PointerEvent) => {
       if (!ref.current?.contains(e.target as Node)) onClose();

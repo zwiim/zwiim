@@ -141,6 +141,20 @@ export function AdvancedSettings({ bridge, remote }: { bridge: NativeBridge; rem
           onChange={(on) => update({ "browser.agent_passwords": on ? true : null })}
         />
       )}
+      {browser && (
+        <ToggleRow
+          setting={{
+            id: "browser-agent-ask-sites",
+            title: "Ask before agents open new sites",
+            description:
+              "Off, agents open any site, except those a session's site list leaves out. On, the first time an agent opens a site in a session, the page waits until you allow it.",
+          }}
+          testId="browser-agent-ask-sites"
+          checked={values["browser.agent_ask_sites"] === true}
+          disabled={!online}
+          onChange={(on) => update({ "browser.agent_ask_sites": on ? true : null })}
+        />
+      )}
       {error && (
         <p className="text-destructive" role="alert">
           {error}

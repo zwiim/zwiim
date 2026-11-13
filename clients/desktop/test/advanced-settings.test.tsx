@@ -199,6 +199,20 @@ describe("terminal scrollback", () => {
     c.dispose();
   });
 
+  it("asks before agents open new sites only once turned on", async () => {
+    const t = host();
+    const c = await mount(t);
+    const dialog = openSettings("Advanced");
+    await tick();
+    const toggle = dialog.getByTestId("browser-agent-ask-sites") as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    expect(dialog.getByText(/the page waits until you allow it/)).toBeTruthy();
+    fireEvent.click(toggle);
+    await tick();
+    expect(updates(t)).toEqual([{ "browser.agent_ask_sites": true }]);
+    c.dispose();
+  });
+
   it("leaves the row out for a host without the browser", async () => {
     await mount(host());
     const dialog = openSettings("Advanced");

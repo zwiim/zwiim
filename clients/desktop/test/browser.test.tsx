@@ -459,6 +459,81 @@ describe("browser panel", () => {
     expect(screen.getByRole("alertdialog", { name: "Sign in to the proxy" })).toBeTruthy();
   });
 
+  it("asks whether the agent may open a site, and sends the answer", async () => {
+    const t = new StreamingTransport();
+    t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
+    t.handlers["browser.view.close"] = () => ({});
+    t.handlers["browser.ui.answer"] = () => ({});
+    await mount(t, [tab("a")]);
+    const site = (request_id: string, local = false): BrowserUiRequest => ({
+      request_id,
+      tab_id: "a",
+      owner: { kind: "session", session_id: "s1" },
+      kind: "site",
+      site: local ? "127.0.0.1:9000" : "docs.example.com:443",
+      url: local ? "http://127.0.0.1:9000/admin" : "https://docs.example.com/guide",
+      local,
+    });
+    const answers = () => t.calls.filter((c) => c.op === "browser.ui.answer").map((c) => c.params);
+
+    await act(async () => t.frame({ type: "browser.ui.request", request: site("ui-1") } as never));
+    expect(screen.getByRole("alertdialog", { name: "Let the agent open docs.example.com?" })).toBeTruthy();
+    expect(screen.getByText("https://docs.example.com/guide")).toBeTruthy();
+    expect(screen.queryByText(/your computer or local network/)).toBeNull();
+    fireEvent.click(screen.getByText("Always allow"));
+    await tick();
+    await act(async () => t.frame({ type: "browser.ui.done", request_id: "ui-1", tab_id: "a" } as never));
+
+    await act(async () => t.frame({ type: "browser.ui.request", request: site("ui-2", true) } as never));
+    expect(screen.getByRole("alertdialog", { name: "Let the agent open 127.0.0.1:9000?" })).toBeTruthy();
+    expect(screen.getByText(/your computer or local network/)).toBeTruthy();
+    fireEvent.click(screen.getByText("Deny"));
+    await tick();
+    expect(answers()).toEqual([
+      { request_id: "ui-1", answer: { kind: "site", allow: true, always: true } },
+      { request_id: "ui-2", answer: { kind: "site", allow: false } },
+    ]);
+  });
+
+  it("keeps the session's agent to the sites the person lists", async () => {
+    const t = new StreamingTransport();
+    t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
+    t.handlers["browser.view.close"] = () => ({});
+    t.handlers["browser.sites.get"] = () => ({ sites: ["github.com"] });
+    t.handlers["browser.sites.set"] = (p) => {
+      if (p.sites.includes("bad site")) throw new ZwiimClientError("invalid_site", "\"bad site\" is not a site");
+      return { sites: p.sites.map((s: string) => s.replace(/^https:\/\/|\/.*$/g, "")) };
+    };
+    await mount(t, [tab("a")]);
+    expect(t.calls.find((c) => c.op === "browser.sites.get")!.params).toEqual({ session_id: "s1" });
+    const button = screen.getByTitle("Sites the agent may open");
+    expect(button.textContent).toBe("1");
+    fireEvent.click(button);
+    const dialog = screen.getByRole("dialog", { name: "Sites the agent may open" });
+    expect(dialog.textContent).toContain("opens only these sites");
+    const input = screen.getByLabelText("Add a site") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "https://docs.rs/serde" } });
+    fireEvent.submit(input.closest("form")!);
+    await tick();
+    expect(t.calls.filter((c) => c.op === "browser.sites.set").at(-1)!.params).toEqual({
+      session_id: "s1",
+      sites: ["github.com", "https://docs.rs/serde"],
+    });
+    expect(screen.getByText("docs.rs")).toBeTruthy();
+    expect(input.value).toBe("");
+
+    fireEvent.change(input, { target: { value: "bad site" } });
+    fireEvent.submit(input.closest("form")!);
+    await tick();
+    expect(screen.getByRole("alert").textContent).toContain("is not a site");
+    expect(input.value).toBe("bad site");
+
+    fireEvent.click(screen.getByLabelText("Remove github.com"));
+    await tick();
+    expect(t.calls.filter((c) => c.op === "browser.sites.set").at(-1)!.params).toEqual({ session_id: "s1", sites: ["docs.rs"] });
+    expect(screen.queryByText("github.com")).toBeNull();
+  });
+
   it("picks workspace files for a page's file input", async () => {
     const t = new StreamingTransport();
     t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });

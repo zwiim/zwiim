@@ -44,6 +44,7 @@ import {
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { isModKey } from "@/lib/platform";
 import { DatePicker, FindBar, isPick, PageMenu, SelectPicker, type MenuAction, type PickRequest } from "@/panels/BrowserPageUi";
+import { BrowserSites } from "@/panels/BrowserSites";
 import { cn } from "@/lib/utils";
 
 const CLOSE =
@@ -161,42 +162,45 @@ export function BrowserPanel({
         shortcut(s);
       }}
     >
-      <div className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b px-2" role="tablist" aria-label="Browser tabs">
-        {tabs.map((t) => (
-          <div
-            key={t.tab_id}
-            className={cn(
-              "flex max-w-44 shrink-0 items-center gap-1 rounded-md px-2 py-0.5 text-xs transition-colors",
-              tab?.tab_id === t.tab_id ? "bg-accent font-medium" : "hover:bg-muted",
-            )}
-          >
-            <button
-              role="tab"
-              className="min-w-0 truncate"
-              aria-selected={tab?.tab_id === t.tab_id}
-              title={t.url}
-              onClick={() => setSelected(t.tab_id)}
+      <div className="flex h-9 shrink-0 items-center border-b pr-2">
+        <div className="flex h-full min-w-0 flex-1 items-center gap-1 overflow-x-auto px-2" role="tablist" aria-label="Browser tabs">
+          {tabs.map((t) => (
+            <div
+              key={t.tab_id}
+              className={cn(
+                "flex max-w-44 shrink-0 items-center gap-1 rounded-md px-2 py-0.5 text-xs transition-colors",
+                tab?.tab_id === t.tab_id ? "bg-accent font-medium" : "hover:bg-muted",
+              )}
             >
-              {t.owner.kind === "personal" && <span className="text-muted-foreground">Mine · </span>}
-              {tabLabel(t)}
-            </button>
-            {tab?.tab_id !== t.tab_id && tabUiRequests(browser, t.tab_id).length > 0 && (
-              <span className="bg-brand size-1.5 shrink-0 rounded-full" title="This page is asking something" />
-            )}
-            <button
-              className={CLOSE}
-              title="Close tab"
-              aria-label={`Close ${tabLabel(t)}`}
-              disabled={!online}
-              onClick={() => void run(() => controller.closeBrowserTab(t.tab_id))}
-            >
-              <X className="size-3" />
-            </button>
-          </div>
-        ))}
-        <Button size="icon-sm" variant="ghost" title="New tab" disabled={!online || !!unavailable} onClick={() => void newTab()}>
-          <Plus />
-        </Button>
+              <button
+                role="tab"
+                className="min-w-0 truncate"
+                aria-selected={tab?.tab_id === t.tab_id}
+                title={t.url}
+                onClick={() => setSelected(t.tab_id)}
+              >
+                {t.owner.kind === "personal" && <span className="text-muted-foreground">Mine · </span>}
+                {tabLabel(t)}
+              </button>
+              {tab?.tab_id !== t.tab_id && tabUiRequests(browser, t.tab_id).length > 0 && (
+                <span className="bg-brand size-1.5 shrink-0 rounded-full" title="This page is asking something" />
+              )}
+              <button
+                className={CLOSE}
+                title="Close tab"
+                aria-label={`Close ${tabLabel(t)}`}
+                disabled={!online}
+                onClick={() => void run(() => controller.closeBrowserTab(t.tab_id))}
+              >
+                <X className="size-3" />
+              </button>
+            </div>
+          ))}
+          <Button size="icon-sm" variant="ghost" title="New tab" disabled={!online || !!unavailable} onClick={() => void newTab()}>
+            <Plus />
+          </Button>
+        </div>
+        {sessionId && !unavailable && <BrowserSites key={sessionId} sessionId={sessionId} disabled={!online} />}
       </div>
       {tab && (
         <AddressBar
@@ -347,6 +351,7 @@ type Answer = (answer: BrowserUiAnswer) => Promise<void>;
 type DialogRequest = Extract<BrowserUiRequest, { kind: "dialog" }>;
 type AuthRequest = Extract<BrowserUiRequest, { kind: "auth" }>;
 type ChooserRequest = Extract<BrowserUiRequest, { kind: "file_chooser" }>;
+type SiteRequest = Extract<BrowserUiRequest, { kind: "site" }>;
 
 /** What a tab waits on, over the tab: the first answer from any client wins. */
 function PageRequest({
@@ -367,6 +372,8 @@ function PageRequest({
       return <SignIn request={request} disabled={disabled} onAnswer={onAnswer} />;
     case "file_chooser":
       return <FileChooser request={request} workspaceId={workspaceId} disabled={disabled} onAnswer={onAnswer} />;
+    case "site":
+      return <SiteQuestion request={request} disabled={disabled} onAnswer={onAnswer} />;
     // Drawn by the view, where the element is.
     case "select":
     case "date":
@@ -454,6 +461,39 @@ function PageDialog({ request, disabled, onAnswer }: { request: DialogRequest; d
         )}
         <Button type="submit" size="sm" autoFocus={!prompt} disabled={busy}>
           {leaving ? "Leave" : "OK"}
+        </Button>
+      </div>
+    </Sheet>
+  );
+}
+
+/** The agent's page wants a site nobody allowed for the session; the page waits. */
+function SiteQuestion({ request, disabled, onAnswer }: { request: SiteRequest; disabled: boolean; onAnswer: Answer }) {
+  const { busy, send } = useAnswer(disabled, onAnswer);
+  const deny = () => void send({ kind: "site", allow: false });
+  const site = request.site.replace(/:(80|443)$/, "");
+
+  return (
+    <Sheet label={`Let the agent open ${site}?`} onAccept={() => void send({ kind: "site", allow: true })} onCancel={deny}>
+      <p className="text-ui text-muted-foreground break-all">{request.url}</p>
+      {request.local && (
+        <p className="text-ui">This is on your computer or local network, where admin pages and other services run.</p>
+      )}
+      <div className="flex justify-end gap-2">
+        <Button type="button" size="sm" variant="secondary" disabled={busy} onClick={deny}>
+          Deny
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          disabled={busy}
+          onClick={() => void send({ kind: "site", allow: true, always: true })}
+        >
+          Always allow
+        </Button>
+        <Button type="submit" size="sm" autoFocus disabled={busy}>
+          Allow
         </Button>
       </div>
     </Sheet>
