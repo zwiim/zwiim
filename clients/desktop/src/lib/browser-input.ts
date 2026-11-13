@@ -75,7 +75,7 @@ export function keyInput(e: KeyLike, action: "down" | "up"): BrowserInput {
   };
 }
 
-export type BrowserShortcut = "address" | "new_tab" | "close_tab" | "reload" | "back" | "forward";
+export type BrowserShortcut = "address" | "new_tab" | "close_tab" | "reload" | "back" | "forward" | "find";
 
 /** The shortcuts the panel keeps (design 7.6); every other key goes to the page. */
 export function browserShortcut(e: KeyLike, p: Platform = platform()): BrowserShortcut | null {
@@ -89,6 +89,8 @@ export function browserShortcut(e: KeyLike, p: Platform = platform()): BrowserSh
       return e.shiftKey ? null : "close_tab";
     case "r":
       return "reload";
+    case "f":
+      return e.shiftKey ? null : "find";
     case "[":
       return "back";
     case "]":

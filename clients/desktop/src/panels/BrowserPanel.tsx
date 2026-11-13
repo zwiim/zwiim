@@ -3,18 +3,22 @@
 // from the Host's engine. Both the person and the session's agent drive a
 // session tab; there is no control step between them. What a page asks of a
 // person (its `alert`, `confirm`, `prompt` or leave-page dialog, a site's
-// sign-in, a file input's picker of workspace files) is drawn over its tab.
+// sign-in, a file input's picker of workspace files) is drawn over its tab,
+// and so are what the engine does not paint: the page's menu, a select's
+// list, a date picker, and find in page.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, ChevronLeft, ExternalLink, File, Folder, Globe, MousePointer2, Plus, RotateCw, X } from "lucide-react";
 import {
   personalTabs,
   sessionTabs,
   tabAgentAction,
+  tabMenu,
   tabUiRequests,
   ZwiimClientError,
   type BrowserAgentAction,
   type BrowserEngine,
+  type BrowserMenu,
   type BrowserScreenFrame,
   type BrowserStream,
   type BrowserTab,
@@ -39,6 +43,7 @@ import {
 } from "@/lib/browser-input";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { isModKey } from "@/lib/platform";
+import { DatePicker, FindBar, isPick, PageMenu, SelectPicker, type MenuAction, type PickRequest } from "@/panels/BrowserPageUi";
 import { cn } from "@/lib/utils";
 
 const CLOSE =
@@ -66,6 +71,7 @@ export function BrowserPanel({
   const browser = useHost((s) => s.browser);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [finding, setFinding] = useState(false);
   const address = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -79,6 +85,17 @@ export function BrowserPanel({
   // The selection falls back to the first tab when its tab goes.
   const tab = tabs.find((t) => t.tab_id === selected) ?? tabs[0] ?? null;
   const owner: BrowserTabOwner = sessionId ? { kind: "session", session_id: sessionId } : { kind: "personal" };
+  const tabId = tab?.tab_id ?? null;
+  useEffect(() => setFinding(false), [tabId]);
+  const find = useCallback(
+    (query: string, backwards: boolean) =>
+      tabId ? controller.findInBrowserTab(tabId, query, backwards).catch(() => null) : Promise.resolve(null),
+    [controller, tabId],
+  );
+  const stopFinding = () => {
+    setFinding(false);
+    void find("", false);
+  };
 
   async function run(step: () => Promise<unknown>) {
     setError(null);
@@ -116,8 +133,21 @@ export function BrowserPanel({
       case "forward":
         if (tab) void run(() => controller.browserTabHistory(tab.tab_id, s));
         return;
+      case "find":
+        if (tab) setFinding(true);
+        return;
     }
   }
+
+  const answerUi = (r: BrowserUiRequest, answer: BrowserUiAnswer) =>
+    run(async () => {
+      try {
+        await controller.answerBrowserUi(r.request_id, answer);
+      } catch (e) {
+        // Another client answered first, or it timed out: it is done.
+        if (!(e instanceof ZwiimClientError && e.code === "request_not_found")) throw e;
+      }
+    });
 
   const unavailable = unavailableReason(browser.status, online);
   return (
@@ -195,32 +225,44 @@ export function BrowserPanel({
         ) : (
           <>
             {active && !tab.discarded && browser.engine?.state === "running" && (
-              <BrowserView key={tab.tab_id} tab={tab} agent={tabAgentAction(browser, tab.tab_id)} onShortcut={shortcut} />
+              <BrowserView
+                key={tab.tab_id}
+                tab={tab}
+                agent={tabAgentAction(browser, tab.tab_id)}
+                menu={tabMenu(browser, tab.tab_id)}
+                pick={tabUiRequests(browser, tab.tab_id).find(isPick)}
+                disabled={!online}
+                onShortcut={shortcut}
+                onAnswer={(r, answer) => void answerUi(r, answer)}
+                onMenu={(a) => {
+                  if (a.kind === "step") void run(() => controller.browserTabHistory(tab.tab_id, a.action));
+                  else if (a.kind === "open")
+                    void run(async () => {
+                      const opened = await controller.openBrowserTab(tab.owner, a.url);
+                      setSelected(opened.tab_id);
+                    });
+                }}
+              />
             )}
+            {finding && <FindBar key={tab.tab_id} find={find} onClose={stopFinding} />}
             <EngineNotice
               engine={browser.engine}
               tab={tab}
               onReset={() => run(() => controller.resetBrowserEngine())}
               onReload={() => run(() => controller.browserTabHistory(tab.tab_id, "reload"))}
             />
-            {tabUiRequests(browser, tab.tab_id).slice(0, 1).map((r) => (
-              <PageRequest
-                key={r.request_id}
-                request={r}
-                workspaceId={workspaceId}
-                disabled={!online}
-                onAnswer={(answer) =>
-                  run(async () => {
-                    try {
-                      await controller.answerBrowserUi(r.request_id, answer);
-                    } catch (e) {
-                      // Another client answered first, or it timed out: it is done.
-                      if (!(e instanceof ZwiimClientError && e.code === "request_not_found")) throw e;
-                    }
-                  })
-                }
-              />
-            ))}
+            {tabUiRequests(browser, tab.tab_id)
+              .filter((r) => !isPick(r))
+              .slice(0, 1)
+              .map((r) => (
+                <PageRequest
+                  key={r.request_id}
+                  request={r}
+                  workspaceId={workspaceId}
+                  disabled={!online}
+                  onAnswer={(answer) => answerUi(r, answer)}
+                />
+              ))}
           </>
         )}
       </div>
@@ -325,6 +367,10 @@ function PageRequest({
       return <SignIn request={request} disabled={disabled} onAnswer={onAnswer} />;
     case "file_chooser":
       return <FileChooser request={request} workspaceId={workspaceId} disabled={disabled} onAnswer={onAnswer} />;
+    // Drawn by the view, where the element is.
+    case "select":
+    case "date":
+      return null;
   }
 }
 
@@ -659,12 +705,25 @@ function viewportOf(box: { width: number; height: number }) {
 export function BrowserView({
   tab,
   agent,
+  menu,
+  pick,
+  disabled = false,
   onShortcut,
+  onAnswer,
+  onMenu,
 }: {
   tab: BrowserTab;
   /** The agent's latest action on this tab, shown as a ghost cursor. */
   agent?: { action: BrowserAgentAction; seq: number };
+  /** The page's latest context menu; shown when a new one arrives. */
+  menu?: { menu: BrowserMenu; seq: number };
+  /** A select's list or a date picker the page waits on. */
+  pick?: PickRequest;
+  disabled?: boolean;
   onShortcut(s: BrowserShortcut): void;
+  onAnswer?(request: PickRequest, answer: BrowserUiAnswer): void;
+  /** A menu pick the panel does: history and new tabs. */
+  onMenu?(action: MenuAction): void;
 }) {
   const controller = useController();
   const box = useRef<HTMLDivElement>(null);
@@ -676,6 +735,13 @@ export function BrowserView({
   const [attempt, setAttempt] = useState(0);
   const [failure, setFailure] = useState<string | null>(null);
   const [painted, setPainted] = useState(false);
+  // Only a menu asked for while this view is up.
+  const firstMenu = useRef(menu?.seq);
+  const [menuShown, setMenuShown] = useState<number | null>(null);
+  useEffect(() => {
+    if (menu && menu.seq !== firstMenu.current) setMenuShown(menu.seq);
+  }, [menu]);
+  const closeMenu = useCallback(() => setMenuShown(null), []);
 
   useEffect(() => {
     const el = box.current;
@@ -791,6 +857,21 @@ export function BrowserView({
   }
 
   const send = (input: Parameters<BrowserStream["send"]>[0]) => stream.current?.send(input);
+  const place = (p: { x: number; y: number }) => fromPage(p, fit.current, page.current);
+  const menuAction = (a: MenuAction) => {
+    if (a.kind === "copy") void navigator.clipboard?.writeText(a.text).catch(() => {});
+    else if (a.kind === "paste")
+      void navigator.clipboard
+        ?.readText()
+        .then((text) => text && send({ type: "text", text }))
+        .catch(() => {});
+    else onMenu?.(a);
+    canvas.current?.focus();
+  };
+  const answer = (a: BrowserUiAnswer) => {
+    if (pick && !disabled) onAnswer?.(pick, a);
+    canvas.current?.focus();
+  };
 
   return (
     <div ref={box} className="bg-background absolute inset-0">
@@ -864,6 +945,15 @@ export function BrowserView({
           seq={agent.seq}
           place={(p) => fromPage(p, fit.current, page.current)}
         />
+      )}
+      {painted && menu && menuShown === menu.seq && (
+        <PageMenu key={menu.seq} menu={menu.menu} place={place} view={box.current} onAction={menuAction} onClose={closeMenu} />
+      )}
+      {painted && pick?.kind === "select" && (
+        <SelectPicker key={pick.request_id} request={pick} place={place} view={box.current} onAnswer={answer} />
+      )}
+      {painted && pick?.kind === "date" && (
+        <DatePicker key={pick.request_id} request={pick} place={place} view={box.current} onAnswer={answer} />
       )}
       {!painted && !failure && <Notice>Loading…</Notice>}
       {failure && <Notice>{failure}</Notice>}

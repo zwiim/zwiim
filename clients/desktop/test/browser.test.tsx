@@ -12,6 +12,7 @@ import {
 import { HostProvider } from "@/lib/host-context";
 import { addressUrl, browserShortcut, fitFrame, fromPage, keyInput, modifiersOf, toPage } from "@/lib/browser-input";
 import { BrowserPanel, GhostCursor } from "@/panels/BrowserPanel";
+import { DatePicker, FindBar, PageMenu, SelectPicker } from "@/panels/BrowserPageUi";
 import { FakeTransport, tick } from "./fakes";
 
 afterEach(cleanup);
@@ -118,6 +119,97 @@ class StreamingTransport extends FakeTransport {
   }
 }
 
+describe("what the page does not paint", () => {
+  const same = (p: { x: number; y: number }) => p;
+
+  it("offers the menu for what was right-clicked, and the page's history", () => {
+    const onAction = vi.fn();
+    const onClose = vi.fn();
+    const menu = { tab_id: "a", x: 30, y: 40, link_url: "https://a.test/docs", selection: "hello", editable: false };
+    render(<PageMenu menu={menu} place={same} view={null} onAction={onAction} onClose={onClose} />);
+    const items = screen.getAllByRole("menuitem").map((i) => i.textContent);
+    expect(items).toEqual(["Open link in new tab", "Copy link address", "Copy", "Back", "Forward", "Reload"]);
+    fireEvent.click(screen.getByText("Copy link address"));
+    expect(onAction).toHaveBeenCalledWith({ kind: "copy", text: "https://a.test/docs" });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("lists a select's options and picks one by click or keys", () => {
+    const onAnswer = vi.fn();
+    const request = {
+      request_id: "ui-1",
+      tab_id: "a",
+      owner: { kind: "personal" as const },
+      kind: "select" as const,
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 30,
+      options: [
+        { index: 0, label: "Apple", disabled: false, selected: true },
+        { index: 1, label: "Banana", disabled: false, selected: false, group: "More" },
+        { index: 2, label: "Cherry", disabled: true, selected: false, group: "More" },
+      ],
+    };
+    render(<SelectPicker request={request} place={same} view={null} onAnswer={onAnswer} />);
+    expect(screen.getByText("More")).toBeTruthy();
+    expect((screen.getByRole("option", { name: "Cherry" }) as HTMLButtonElement).disabled).toBe(true);
+    const list = screen.getByRole("listbox");
+    fireEvent.keyDown(list, { key: "ArrowDown" });
+    fireEvent.keyDown(list, { key: "ArrowDown" });
+    fireEvent.keyDown(list, { key: "Enter" });
+    expect(onAnswer).toHaveBeenLastCalledWith({ kind: "select", accept: true, index: 1 });
+    fireEvent.click(screen.getByRole("option", { name: "Apple" }));
+    expect(onAnswer).toHaveBeenLastCalledWith({ kind: "select", accept: true, index: 0 });
+    fireEvent.keyDown(list, { key: "Escape" });
+    expect(onAnswer).toHaveBeenLastCalledWith({ kind: "select", accept: false });
+  });
+
+  it("picks a date, or clears it", () => {
+    const onAnswer = vi.fn();
+    const request = {
+      request_id: "ui-2",
+      tab_id: "a",
+      owner: { kind: "personal" as const },
+      kind: "date" as const,
+      input_type: "date" as const,
+      value: "2026-11-13",
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 30,
+    };
+    render(<DatePicker request={request} place={same} view={null} onAnswer={onAnswer} />);
+    const input = screen.getByLabelText("Value") as HTMLInputElement;
+    expect(input.value).toBe("2026-11-13");
+    fireEvent.change(input, { target: { value: "2026-12-25" } });
+    fireEvent.click(screen.getByText("Done"));
+    expect(onAnswer).toHaveBeenLastCalledWith({ kind: "date", accept: true, value: "2026-12-25" });
+    fireEvent.click(screen.getByText("Clear"));
+    expect(onAnswer).toHaveBeenLastCalledWith({ kind: "date", accept: true, value: "" });
+  });
+
+  it("finds as the person types and steps through the matches", async () => {
+    vi.useFakeTimers();
+    try {
+      const find = vi.fn(async () => ({ matches: 3, current: 1 }));
+      const onClose = vi.fn();
+      render(<FindBar find={find} onClose={onClose} />);
+      const input = screen.getByLabelText("Find in page");
+      fireEvent.change(input, { target: { value: "apple" } });
+      await act(async () => vi.advanceTimersByTimeAsync(200));
+      expect(find).toHaveBeenCalledWith("apple", false);
+      expect(screen.getByText("1/3")).toBeTruthy();
+      fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+      expect(find).toHaveBeenLastCalledWith("apple", true);
+      fireEvent.keyDown(input, { key: "Escape" });
+      expect(onClose).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("browser panel", () => {
   beforeEach(() => {
     vi.stubGlobal(
@@ -208,6 +300,45 @@ describe("browser panel", () => {
     await tick();
     expect(t.streams[0]!.closed).toBe(true);
     expect(t.calls.find((c) => c.op === "browser.view.close")!.params).toEqual({ stream_id: "st1" });
+  });
+
+  it("opens find in page with the shortcut and clears it on close", async () => {
+    const t = new StreamingTransport();
+    t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
+    t.handlers["browser.view.close"] = () => ({});
+    t.handlers["browser.tab.find"] = (p) => (p.query ? { matches: 2, current: 1 } : { matches: 0, current: 0 });
+    await mount(t, [tab("a")]);
+    const mod = navigator.userAgent.includes("Mac") ? { metaKey: true } : { ctrlKey: true };
+    fireEvent.keyDown(screen.getByLabelText("Page: Example"), { key: "f", code: "KeyF", ...mod });
+    const input = screen.getByLabelText("Find in page");
+    fireEvent.change(input, { target: { value: "apple" } });
+    await act(async () => new Promise((r) => setTimeout(r, 200)));
+    expect(t.calls.find((c) => c.op === "browser.tab.find")!.params).toEqual({ tab_id: "a", query: "apple", backwards: false });
+    expect(screen.getByText("1/2")).toBeTruthy();
+    fireEvent.click(screen.getByTitle("Close"));
+    await tick();
+    expect(screen.queryByLabelText("Find in page")).toBeNull();
+    expect(t.calls.filter((c) => c.op === "browser.tab.find").at(-1)!.params).toEqual({ tab_id: "a", query: "", backwards: false });
+  });
+
+  it("draws a select's list over the page, not as a sheet", async () => {
+    const t = new StreamingTransport();
+    t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
+    t.handlers["browser.view.close"] = () => ({});
+    await mount(t, [tab("a")]);
+    const request = {
+      request_id: "ui-9",
+      tab_id: "a",
+      owner: { kind: "session", session_id: "s1" },
+      kind: "select",
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 20,
+      options: [{ index: 0, label: "One", disabled: false, selected: true }],
+    };
+    await act(async () => t.frame({ type: "browser.ui.request", request } as never));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 
   it("explains an engine that could not start, and tries again", async () => {
