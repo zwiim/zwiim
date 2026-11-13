@@ -336,7 +336,13 @@ use serde::{Deserialize, Serialize};
 /// "file_chooser", multiple, url}`, answered `{kind: "file_chooser", accept,
 /// workspace_id, paths}` with up to 100 files inside that workspace (a
 /// session's tab: its session's workspace only, else `permission_denied`;
-/// a path outside it or a missing file is `not_found`). Host only for now:
+/// a path outside it or a missing file is `not_found`). A page's download
+/// is one of the Host's downloads (capability `downloads`) while it runs.
+/// A session's tab saves to `<worktree>/.zwiim/browser/<id>/`, removed with
+/// the session, unless `browser.downloads.set_location {root}` chose a
+/// folder (`root` an existing absolute folder, null for the default): then
+/// to `<root>/zwiim/<repo>/downloads/`. The person's tabs save to
+/// `~/Downloads`. `browser.downloads.location` returns `{root}`. Host only for now:
 /// paired devices are refused with `permission_denied`.
 ///
 /// 33 (`downloads`): what the Host is downloading (an agent's adapter, the

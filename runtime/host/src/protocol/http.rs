@@ -2575,6 +2575,8 @@ pub async fn session_delete(
     Extension(state): Extension<Arc<AppState>>,
     ZJson(p): ZJson<SessionParams>,
 ) -> ZResult<Value> {
+    // Found while the session still resolves.
+    let downloads = crate::browser::saving::session_folder(&state.db.conn, &p.session_id).await;
     session::delete(
         &state.db,
         &state.emitter,
@@ -2582,7 +2584,10 @@ pub async fn session_delete(
         &p.session_id,
     )
     .await?;
-    // Its browser tabs and their context go with it.
+    // Its browser downloads (in the default folder), tabs and context go with it.
+    if let Some(dir) = downloads {
+        crate::browser::saving::remove(&dir).await;
+    }
     match state.browser.get() {
         Some(browser) => browser.close_session(&p.session_id).await,
         None => {

@@ -129,6 +129,8 @@ const OPS: &[&str] = &[
     "browser.view.open",
     "browser.view.close",
     "browser.ui.answer",
+    "browser.downloads.location",
+    "browser.downloads.set_location",
 ];
 
 pub(crate) fn git(dir: &std::path::Path, args: &[&str]) {
@@ -5577,6 +5579,8 @@ async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
             "browser.ui.answer",
             json!({"request_id": "ui-1", "answer": {"kind": "dialog", "accept": true}}),
         ),
+        ("browser.downloads.location", json!({})),
+        ("browser.downloads.set_location", json!({"root": "/tmp"})),
     ] {
         let (status, body) = h.call_as(&credential, op, body).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{op}");
@@ -6682,6 +6686,71 @@ async fn a_file_chooser_gets_files_of_its_sessions_workspace_only() {
         vec![json!({"files": [photo], "backendNodeId": 7})]
     );
     browser_frame(&mut ws, "browser.ui.done", |_| true).await;
+}
+
+#[tokio::test]
+async fn browser_downloads_go_to_the_worktree_or_the_chosen_root() {
+    let h = host(false).await;
+    let fake = fake_browser(&h).await;
+    assert_eq!(
+        h.ok("browser.downloads.location", json!({})).await,
+        json!({"root": null})
+    );
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    h.ok(
+        "browser.tab.open",
+        json!({"owner": {"kind": "session", "session_id": sid}}),
+    )
+    .await;
+    let own = std::path::Path::new(&h.wt)
+        .join(".zwiim/browser")
+        .join(&sid[..8]);
+    let path_of = |i: usize| {
+        std::path::PathBuf::from(
+            fake.calls("Browser.setDownloadBehavior")[i]["downloadPath"]
+                .as_str()
+                .unwrap(),
+        )
+    };
+    assert_eq!(path_of(0), own);
+
+    for (root, refused) in [
+        ("relative/dir", (StatusCode::BAD_REQUEST, "invalid_input")),
+        ("/no/such/folder/here", (StatusCode::NOT_FOUND, "not_found")),
+    ] {
+        assert_eq!(
+            h.err("browser.downloads.set_location", json!({"root": root}))
+                .await,
+            (refused.0, refused.1.into())
+        );
+    }
+    let chosen = tempfile::tempdir().unwrap();
+    let chosen_path = chosen.path().canonicalize().unwrap();
+    assert_eq!(
+        h.ok(
+            "browser.downloads.set_location",
+            json!({"root": chosen.path()})
+        )
+        .await,
+        json!({"root": chosen_path})
+    );
+    // Open tabs follow at once, to the repository's shared folder.
+    let repo = std::path::Path::new(&h.root).file_name().unwrap();
+    assert_eq!(
+        path_of(1),
+        chosen_path.join("zwiim").join(repo).join("downloads")
+    );
+
+    // Back to the default; deleting the session removes its own folder.
+    h.ok("browser.downloads.set_location", json!({"root": null}))
+        .await;
+    assert_eq!(path_of(2), own);
+    std::fs::create_dir_all(&own).unwrap();
+    std::fs::write(own.join("report.pdf"), "x").unwrap();
+    h.ok("session.delete", json!({"session_id": sid})).await;
+    assert!(!own.exists());
+    assert!(std::path::Path::new(&h.wt).join(".zwiim").exists());
 }
 
 #[tokio::test]

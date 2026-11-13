@@ -259,6 +259,61 @@ async fn chosen_files(
     Ok(files)
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DownloadLocationParams {
+    /// A folder on the Host, or null for the default.
+    pub root: Option<String>,
+}
+
+async fn download_location(state: &AppState) -> Result<Value, ZwiimError> {
+    let root = crate::browser::saving::root(&state.db.conn).await.map_err(|e| {
+        tracing::warn!(error = %e, "could not read the browser download folder");
+        ZwiimError::internal()
+    })?;
+    Ok(json!({ "root": root }))
+}
+
+/// `browser.downloads.location` → `{root}`: the folder the person chose for
+/// browser downloads, or null for the default (design, decision 13).
+pub async fn downloads_location(Extension(state): Extension<Arc<AppState>>) -> ZResult<Value> {
+    Ok(Json(download_location(&state).await?))
+}
+
+/// `browser.downloads.set_location {root}` → `{root}`: every worktree saves
+/// to `<root>/zwiim/<repo>/downloads/` from now on, or to its own
+/// `.zwiim/browser/` again with null. `root` must be an existing folder.
+pub async fn downloads_set_location(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<DownloadLocationParams>,
+) -> ZResult<Value> {
+    let root = match p.root.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+        None => None,
+        Some(raw) => {
+            let path = std::path::Path::new(raw);
+            if !path.is_absolute() {
+                return Err(ZwiimError::invalid_input("Choose a folder by its full path"));
+            }
+            let folder = path
+                .canonicalize()
+                .ok()
+                .filter(|f| f.is_dir())
+                .ok_or_else(|| ZwiimError::not_found("Folder not found"))?;
+            Some(folder)
+        }
+    };
+    crate::browser::saving::set_root(&state.db.conn, root.as_deref())
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "could not save the browser download folder");
+            ZwiimError::internal()
+        })?;
+    if let Some(browser) = state.browser.get() {
+        browser.redirect_downloads().await;
+    }
+    Ok(Json(download_location(&state).await?))
+}
+
 /// `browser.engine.reset` → `{engine}`: clear a failure (`crash_loop` too)
 /// so the next tab starts the engine again.
 pub async fn engine_reset(Extension(state): Extension<Arc<AppState>>) -> ZResult<Value> {

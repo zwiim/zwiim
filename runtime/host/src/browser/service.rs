@@ -22,6 +22,7 @@ use tokio::sync::{broadcast, watch, Mutex};
 use super::engine::cdp::{Cdp, Event};
 use super::engine::manager::{EngineError, EngineManager, EngineState};
 use super::snapshot::{self, PersonalSnapshot};
+use super::saving;
 use super::store::{self, TabOwner, TabRecord};
 use super::ui::{self, UiAnswer, UiKind, UiRequest};
 
@@ -127,6 +128,17 @@ struct Inner {
     /// Requests waiting on a person, by `request_id`.
     ui: HashMap<String, UiRequest>,
     next_ui: u64,
+    /// Downloads the engine is saving, by its guid.
+    saving: HashMap<String, Saving>,
+}
+
+/// A download in flight: the page's file name, and its row in the Host's
+/// downloads.
+struct Saving {
+    name: String,
+    progress: crate::downloads::Progress,
+    received: u64,
+    sized: bool,
 }
 
 pub struct BrowserService {
@@ -172,6 +184,7 @@ impl BrowserService {
                 save_pending: false,
                 ui: HashMap::new(),
                 next_ui: 0,
+                saving: HashMap::new(),
             }),
             events: broadcast::channel(EVENT_BUFFER).0,
         });
@@ -513,6 +526,7 @@ impl BrowserService {
                     .unwrap_or_default()
                     .to_string();
                 inner.contexts.insert(owner.clone(), ctx.clone());
+                self.direct_downloads(cdp, owner, &ctx).await;
                 if *owner == TabOwner::Personal {
                     inner.personal_restored = self.restore_personal(cdp, &ctx).await;
                 }
@@ -775,6 +789,60 @@ impl BrowserService {
                     r.tab_id == id && matches!(r.kind, UiKind::Dialog { .. })
                 });
             }
+            "Browser.downloadWillBegin" => {
+                let name = p["suggestedFilename"].as_str().unwrap_or_default().to_string();
+                let progress = crate::downloads::global().begin(name.clone(), 1);
+                let guid = p["guid"].as_str().unwrap_or_default().to_string();
+                inner.saving.insert(
+                    guid,
+                    Saving {
+                        name,
+                        progress,
+                        received: 0,
+                        sized: false,
+                    },
+                );
+            }
+            "Browser.downloadProgress" => {
+                let guid = p["guid"].as_str().unwrap_or_default();
+                match p["state"].as_str() {
+                    Some("inProgress") => {
+                        let Some(d) = inner.saving.get_mut(guid) else {
+                            return;
+                        };
+                        let total = p["totalBytes"].as_u64().unwrap_or(0);
+                        if !d.sized && total > 0 {
+                            d.sized = true;
+                            d.progress.file(Some(total));
+                        }
+                        let received = p["receivedBytes"].as_u64().unwrap_or(0);
+                        d.progress.received(received.saturating_sub(d.received));
+                        d.received = d.received.max(received);
+                    }
+                    // The engine saved it under its guid: give it the page's name.
+                    Some("completed") => {
+                        let Some(d) = inner.saving.remove(guid) else {
+                            return;
+                        };
+                        let saved = std::path::PathBuf::from(p["filePath"].as_str().unwrap_or_default());
+                        tokio::task::spawn_blocking(move || {
+                            let Some(dir) = saved.parent() else {
+                                return;
+                            };
+                            let named = saving::free_name(dir, &d.name);
+                            if let Err(e) = std::fs::rename(&saved, &named) {
+                                tracing::warn!(error = %e, "could not name a browser download");
+                            }
+                            drop(d.progress);
+                        });
+                    }
+                    // The engine removes what it had saved.
+                    Some("canceled") => {
+                        inner.saving.remove(guid);
+                    }
+                    _ => {}
+                }
+            }
             "Target.targetCrashed" => {
                 let Some(id) = by_target(&inner, p["targetId"].as_str().unwrap_or_default()) else {
                     return;
@@ -804,6 +872,38 @@ impl BrowserService {
                 });
             }
             _ => {}
+        }
+    }
+
+    /// Point the context `ctx` of `owner` at where its downloads go
+    /// (design, decision 13), or refuse them when there is nowhere.
+    async fn direct_downloads(&self, cdp: &Cdp, owner: &TabOwner, ctx: &str) {
+        let params = match saving::folder_for(&self.db, owner).await {
+            Some(dir) => {
+                if let Some(worktree) = saving::worktree_of_default(&dir) {
+                    let worktree = worktree.to_path_buf();
+                    tokio::spawn(async move {
+                        crate::commands::folder_links::add_to_git_exclude(&worktree, ".zwiim/").await;
+                    });
+                }
+                json!({ "behavior": "allowAndName", "browserContextId": ctx,
+                        "downloadPath": dir, "eventsEnabled": true })
+            }
+            None => json!({ "behavior": "deny", "browserContextId": ctx }),
+        };
+        if let Err(e) = cdp.call("Browser.setDownloadBehavior", params, None).await {
+            tracing::warn!(error = %e, "could not set where browser downloads go");
+        }
+    }
+
+    /// The download folder setting changed: every open context follows it.
+    pub async fn redirect_downloads(&self) {
+        let inner = self.inner.lock().await;
+        let Some(cdp) = inner.cdp.clone() else {
+            return;
+        };
+        for (owner, ctx) in &inner.contexts {
+            self.direct_downloads(&cdp, owner, ctx).await;
         }
     }
 
@@ -1553,6 +1653,67 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(asked.tab_id, tab.id);
+    }
+
+    #[tokio::test]
+    async fn a_download_is_shown_then_named_as_the_page_named_it() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        svc.open(TabOwner::Personal, None).await.unwrap();
+        // A session the Host does not know has nowhere to save.
+        svc.open(session("gone"), None).await.unwrap();
+        let behaviors = fake.calls("Browser.setDownloadBehavior");
+        assert_eq!(behaviors[0]["behavior"], "allowAndName");
+        assert_eq!(behaviors[0]["eventsEnabled"], true);
+        assert!(behaviors[0]["downloadPath"].as_str().unwrap().ends_with("Downloads"));
+        assert_eq!(behaviors[1]["behavior"], "deny");
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("report.pdf"), "older").unwrap();
+        let saved = dir.path().join("0c1d-guid");
+        std::fs::write(&saved, "new").unwrap();
+        let label = "report-for-the-download-test.pdf";
+        fake.emit(
+            "Browser.downloadWillBegin",
+            json!({"guid": "0c1d-guid", "frameId": "F", "url": "https://example.com/r",
+                   "suggestedFilename": label}),
+            None,
+        );
+        fake.emit(
+            "Browser.downloadProgress",
+            json!({"guid": "0c1d-guid", "totalBytes": 3, "receivedBytes": 2, "state": "inProgress"}),
+            None,
+        );
+        let listed = |want: Option<(u64, Option<u64>)>| async move {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let found = crate::downloads::global()
+                        .list()
+                        .into_iter()
+                        .find(|d| d.label == label)
+                        .map(|d| (d.received, d.total));
+                    if found == want {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("the download row changes");
+        };
+        listed(Some((2, Some(3)))).await;
+
+        fake.emit(
+            "Browser.downloadProgress",
+            json!({"guid": "0c1d-guid", "totalBytes": 3, "receivedBytes": 3, "state": "completed",
+                   "filePath": saved}),
+            None,
+        );
+        listed(None).await;
+        assert_eq!(std::fs::read_to_string(dir.path().join(label)).unwrap(), "new");
+        assert!(!saved.exists());
+        assert_eq!(std::fs::read_to_string(dir.path().join("report.pdf")).unwrap(), "older");
     }
 
     #[tokio::test]

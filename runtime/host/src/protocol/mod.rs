@@ -136,6 +136,11 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/browser.view.open", post(browser::view_open))
         .route("/browser.view.close", post(browser::view_close))
         .route("/browser.ui.answer", post(browser::ui_answer))
+        .route("/browser.downloads.location", post(browser::downloads_location))
+        .route(
+            "/browser.downloads.set_location",
+            post(browser::downloads_set_location),
+        )
         .route("/browser/stream/{stream_id}", get(browser::stream_socket))
         .route_layer(middleware::from_fn(auth::require_local_authority));
 
