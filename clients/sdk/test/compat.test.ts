@@ -99,9 +99,13 @@ describe("evaluateCompatibility", () => {
     expect(CLIENT_CAPABILITIES).toContain("workspace.layout");
   });
 
-  it("speaks revision 32 and imports repository scripts", () => {
-    expect(CLIENT_REVISION).toBe(32);
+  it("imports repository scripts", () => {
     expect(CLIENT_CAPABILITIES).toContain("repository.settings_import");
+  });
+
+  it("speaks revision 33 and uses the Host browser", () => {
+    expect(CLIENT_REVISION).toBe(33);
+    expect(CLIENT_CAPABILITIES).toContain("browser");
   });
 
   it("guards hidden files", () => {

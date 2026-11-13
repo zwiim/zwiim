@@ -75,6 +75,10 @@ export type HostErrorCode =
   | "agent_unreachable"
   /** `host.instructions.set`: an instruction text is larger than 8 KiB. */
   | "too_large"
+  /** `browser.tab.*`: no such tab. */
+  | "tab_not_found"
+  /** `browser.tab.open` / `browser.tab.navigate`: only http, https and about:blank open. */
+  | "unsupported_url"
   | "internal";
 
 export interface WireError {
@@ -194,6 +198,52 @@ export interface KeepAwakeStatus {
   warnings: ("lid_close_will_sleep" | "on_battery_will_drain")[];
   power: { source: "ac" | "battery" | "unknown"; battery_percent: number | null };
 }
+
+// ─── browser ─────────────────────────────────────────────────────────────
+
+/** Whose a browser tab is: a session's (its agent may use it) or the person's. */
+export type BrowserTabOwner = { kind: "session"; session_id: string } | { kind: "personal" };
+
+/** A Host browser tab. */
+export interface BrowserTab {
+  tab_id: string;
+  owner: BrowserTabOwner;
+  url: string;
+  title: string;
+  /** Order among its owner's tabs. */
+  position: number;
+  loading: boolean;
+  /** Not loaded in the engine; it loads again from `url` when next used. */
+  discarded: boolean;
+  /** Its page crashed; reloading brings it back. */
+  crashed: boolean;
+}
+
+/** Why the browser engine could not run. */
+export type BrowserEngineFailure =
+  | "download_offline"
+  | "checksum_mismatch"
+  | "disk_full"
+  | "unsupported_platform"
+  | "crash_loop"
+  | "setup_failed"
+  | (string & {});
+
+/** The Host's browser engine. It starts with the first tab, downloading itself first if needed. */
+export type BrowserEngine =
+  | { state: "stopped" }
+  | { state: "starting" }
+  | { state: "running"; version: string }
+  | { state: "failed"; code: BrowserEngineFailure; message: string };
+
+/** `browser.subscribe` frames. Events carry a tab's whole state. */
+export type BrowserFrame =
+  | { type: "browser.snapshot"; tabs: BrowserTab[]; engine: BrowserEngine }
+  | { type: "browser.tab.state"; tab: BrowserTab }
+  | { type: "browser.tab.removed"; tab_id: string; owner: BrowserTabOwner }
+  | { type: "browser.engine.state"; engine: BrowserEngine }
+  /** `browser.subscribe` was refused (`permission_denied` on a paired device). */
+  | { type: "browser.error"; error: WireError };
 
 // ─── lan ─────────────────────────────────────────────────────────────────
 
@@ -1495,6 +1545,8 @@ export type ClientMessage =
   | { op: "terminal.subscribe"; terminal_id: string }
   | { op: "terminal.unsubscribe"; terminal_id: string }
   | { op: "host.subscribe" }
+  /** Capability `browser`; Host only for now. */
+  | { op: "browser.subscribe" }
   | { op: "ping" };
 
 export type DetachReason = "session_not_live" | "lagged" | "server_shutdown";
@@ -1521,6 +1573,7 @@ export type ServerFrame =
   | { type: "terminal"; event: TerminalEvent }
   | ({ type: "host.snapshot" } & HostSnapshot)
   | { type: "host.event"; epoch: string; event: HostFeedEvent }
+  | BrowserFrame
   | { type: "pong" }
   | { type: "error"; subscription_id: string | null; error: WireError };
 
@@ -1997,6 +2050,18 @@ export interface Operations {
   "host.instructions": [Record<string, never>, UserInstructions];
   /** Idempotent: sets one scope's texts, never appends. */
   "host.instructions.set": [InstructionsChange, UserInstructions];
+  /** Tabs in each owner's order, only `session_id`'s when given (capability `browser`, local authority). */
+  "browser.tabs.list": [{ session_id?: string }, { tabs: BrowserTab[]; engine: BrowserEngine }];
+  /** Open a tab, blank without `url`. Starts the engine; `not_found` for a session that is gone. */
+  "browser.tab.open": [{ owner: BrowserTabOwner; url?: string }, BrowserTab];
+  "browser.tab.close": [{ tab_id: string }, Record<string, never>];
+  /** Go to `url`, or `back`, `forward`, `reload` or `stop`. A discarded tab loads again. */
+  "browser.tab.navigate": [
+    { tab_id: string } & ({ url: string } | { action: "back" | "forward" | "reload" | "stop" }),
+    BrowserTab,
+  ];
+  /** Clear an engine failure, `crash_loop` too, so the next tab starts it again. */
+  "browser.engine.reset": [Record<string, never>, { engine: BrowserEngine }];
 }
 
 export type OpName = keyof Operations;

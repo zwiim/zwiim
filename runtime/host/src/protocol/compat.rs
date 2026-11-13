@@ -299,7 +299,24 @@ use serde::{Deserialize, Serialize};
 /// {workspace_id}` fills the repository's unset scripts from its Conductor
 /// settings and returns `{values, imported}`, the keys it set. `not_found`
 /// when the repository has none.
-pub const PROTOCOL_REVISION: u32 = 32;
+///
+/// 33 (`browser`): the Host browser's tabs. `browser.tabs.list {session_id?}`
+/// returns `{tabs, engine}`; `browser.tab.open {owner, url?}`,
+/// `browser.tab.navigate {tab_id, url | action}` (`back`, `forward`,
+/// `reload`, `stop`) and `browser.tab.close {tab_id}` act on one tab, and
+/// `browser.engine.reset` clears an engine failure. A tab is `{tab_id,
+/// owner, url, title, position, loading, discarded, crashed}`, its owner
+/// `{kind: "session", session_id}` or `{kind: "personal"}`; the engine is
+/// `{state}` (`stopped`, `starting`, `running` with `version`, `failed` with
+/// `code` and `message`). On the socket, `browser.subscribe` answers with a
+/// `browser.snapshot {tabs, engine}`, then `browser.tab.state {tab}`,
+/// `browser.tab.removed {tab_id, owner}` and `browser.engine.state {engine}`,
+/// or a `browser.error {error}`. Refused with `tab_not_found`,
+/// `unsupported_url` or an engine setup code (`download_offline`,
+/// `checksum_mismatch`, `disk_full`, `unsupported_platform`, `crash_loop`,
+/// `setup_failed`, `engine_error`). Host only for now: paired devices are
+/// refused with `permission_denied`.
+pub const PROTOCOL_REVISION: u32 = 33;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -363,6 +380,7 @@ pub const CAPABILITIES: &[&str] = &[
     "session.fork",
     "session.transcript_remove",
     "repository.settings_import",
+    "browser",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -515,7 +533,13 @@ mod tests {
     #[test]
     fn repository_settings_import_is_served() {
         assert!(CAPABILITIES.contains(&"repository.settings_import"));
-        assert_eq!(PROTOCOL_REVISION, 32);
+        const _: () = assert!(PROTOCOL_REVISION >= 32);
+    }
+
+    #[test]
+    fn the_browser_is_served() {
+        assert!(CAPABILITIES.contains(&"browser"));
+        assert_eq!(PROTOCOL_REVISION, 33);
     }
 
     #[test]

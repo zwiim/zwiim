@@ -37,6 +37,28 @@ describe("codec", () => {
     expect(decodeServerFrame("null")).toBeNull();
   });
 
+  it("decodes browser frames", () => {
+    const tab = {
+      tab_id: "t1",
+      owner: { kind: "session", session_id: "s1" },
+      url: "http://localhost:5173/",
+      title: "App",
+      position: 0,
+      loading: false,
+      discarded: false,
+      crashed: false,
+    };
+    for (const frame of [
+      { type: "browser.snapshot", tabs: [tab], engine: { state: "running", version: "157.0.8103.78" } },
+      { type: "browser.tab.state", tab },
+      { type: "browser.tab.removed", tab_id: "t1", owner: { kind: "personal" } },
+      { type: "browser.engine.state", engine: { state: "failed", code: "crash_loop", message: "m" } },
+      { type: "browser.error", error: { code: "permission_denied", message: "m" } },
+    ]) {
+      expect(decodeServerFrame(JSON.stringify(frame))).toEqual(frame);
+    }
+  });
+
   describe("tool status", () => {
     // The host spells ACP's in_progress as "inprogress"; agents' own
     // transcripts may already say "in_progress". Both decode the same.

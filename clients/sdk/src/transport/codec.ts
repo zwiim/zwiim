@@ -15,6 +15,11 @@ const FRAME_TYPES = new Set([
   "terminal",
   "host.snapshot",
   "host.event",
+  "browser.snapshot",
+  "browser.tab.state",
+  "browser.tab.removed",
+  "browser.engine.state",
+  "browser.error",
   "pong",
   "error",
 ]);
