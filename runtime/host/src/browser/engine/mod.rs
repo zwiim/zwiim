@@ -58,6 +58,7 @@ pub fn host_start(root: std::path::PathBuf) -> manager::StartFn {
                 root: &root,
                 pin,
                 fetch: &fetch,
+                downloads: Some(&crate::downloads::global()),
             }
             .ensure()
             .await?;

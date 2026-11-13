@@ -28,6 +28,7 @@ pub mod conductor_import;
 pub mod browser;
 pub mod cloud;
 pub mod db;
+pub mod downloads;
 pub mod folder_links;
 pub mod git_credential;
 pub mod git_harness;

@@ -18,6 +18,7 @@
 
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use super::lock::{AdapterLock, Lock, Platform};
 use super::probe::{self, ProbeInfo};
 use super::verify::{self, VerifyError};
+use crate::downloads::{Downloads, Progress};
 
 pub const STATE_FILE: &str = "state.json";
 pub const MARKER: &str = ".zwiim-install.json";
@@ -39,8 +41,8 @@ static NODE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[async_trait::async_trait]
 pub trait Fetch: Send + Sync {
-    /// Download `url` into the file `dest`.
-    async fn fetch(&self, url: &str, dest: &Path) -> Result<(), FetchError>;
+    /// Download `url` into the file `dest`, reporting to `progress`.
+    async fn fetch(&self, url: &str, dest: &Path, progress: &Progress) -> Result<(), FetchError>;
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -188,6 +190,8 @@ pub struct Installer<'a> {
     pub platform: Platform,
     pub fetch: &'a dyn Fetch,
     pub probe_timeout: Duration,
+    /// Where an install is listed while it downloads, and as what.
+    pub downloads: Option<(&'a Arc<Downloads>, &'a str)>,
 }
 
 impl Installer<'_> {
@@ -209,10 +213,15 @@ impl Installer<'_> {
             }
         }
 
-        let node_version = self.ensure_node().await?;
+        let progress = match self.downloads {
+            Some((downloads, label)) => downloads.begin(label, usize::MAX),
+            None => Progress::none(),
+        };
+        let node_version = self.ensure_node(&progress).await?;
         let version_dir = self
-            .install_tree(adapter, tree, &digest, &node_version)
+            .install_tree(adapter, tree, &digest, &node_version, &progress)
             .await?;
+        drop(progress);
         let Some(fresh) = installed(self.root, adapter, &tree.version) else {
             return Err(SetupError::Io("the installed tree is incomplete".into()));
         };
@@ -275,7 +284,7 @@ impl Installer<'_> {
     }
 
     /// The locked Node runtime, installed if missing. Returns its version.
-    async fn ensure_node(&self) -> Result<String, SetupError> {
+    async fn ensure_node(&self, progress: &Progress) -> Result<String, SetupError> {
         let _guard = NODE_LOCK.lock().await;
         let node = &self.lock.node;
         let artifact = node
@@ -293,7 +302,7 @@ impl Installer<'_> {
         let staging = new_staging(&self.root.join(NODE_DIR))?;
         let result = async {
             let archive = staging.join("node.tar.gz");
-            self.fetch.fetch(&artifact.url, &archive).await?;
+            self.fetch.fetch(&artifact.url, &archive, progress).await?;
             verify::sha256(
                 &archive,
                 &artifact.sha256,
@@ -327,6 +336,7 @@ impl Installer<'_> {
         tree: &AdapterLock,
         digest: &str,
         node_version: &str,
+        progress: &Progress,
     ) -> Result<PathBuf, SetupError> {
         if !safe_relative(&tree.entry) {
             return Err(SetupError::Io(format!("unsafe entry path {}", tree.entry)));
@@ -347,7 +357,7 @@ impl Installer<'_> {
                     )));
                 }
                 let archive = staging.join(format!("{i}.tgz"));
-                self.fetch.fetch(&package.url, &archive).await?;
+                self.fetch.fetch(&package.url, &archive, progress).await?;
                 let what = format!("{}@{}", package.name, package.version);
                 verify::integrity(&archive, &package.integrity, &what)?;
                 verify::registry_signature(&self.lock.registry_keys, package)?;

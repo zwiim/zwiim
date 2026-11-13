@@ -146,6 +146,8 @@ pub struct Installer<'a> {
     pub root: &'a Path,
     pub pin: Pin,
     pub fetch: &'a dyn Fetch,
+    /// Where the download is listed while it runs.
+    pub downloads: Option<&'a std::sync::Arc<crate::downloads::Downloads>>,
 }
 
 impl Installer<'_> {
@@ -172,7 +174,12 @@ impl Installer<'_> {
 
     async fn install_into(&self, staging: &Path) -> Result<(), SetupError> {
         let archive = staging.join("engine.zip");
-        self.fetch.fetch(&self.pin.url(), &archive).await?;
+        let progress = match self.downloads {
+            Some(downloads) => downloads.begin(format!("Browser engine {}", self.pin.version), 1),
+            None => crate::downloads::Progress::none(),
+        };
+        self.fetch.fetch(&self.pin.url(), &archive, &progress).await?;
+        drop(progress);
 
         let pin = self.pin;
         let staging = staging.to_path_buf();
@@ -323,7 +330,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Fetch for FakeFetch {
-        async fn fetch(&self, url: &str, dest: &Path) -> Result<(), FetchError> {
+        async fn fetch(
+            &self,
+            url: &str,
+            dest: &Path,
+            _progress: &crate::downloads::Progress,
+        ) -> Result<(), FetchError> {
             let bytes = self.files.lock().unwrap().get(url).cloned();
             let bytes = bytes.ok_or_else(|| FetchError::Offline("no route to host".into()))?;
             self.fetched.fetch_add(1, Ordering::SeqCst);
@@ -379,6 +391,7 @@ mod tests {
             root: dir.path(),
             pin,
             fetch: &fetch,
+            downloads: None,
         };
 
         let got = installer.ensure().await.unwrap();
@@ -409,6 +422,7 @@ mod tests {
             root: dir.path(),
             pin,
             fetch: &fetch,
+            downloads: None,
         };
 
         let err = installer.ensure().await.unwrap_err();
@@ -428,6 +442,7 @@ mod tests {
             root: dir.path(),
             pin: pin_for(b"x"),
             fetch: &fetch,
+            downloads: None,
         };
         assert_eq!(
             installer.ensure().await.unwrap_err().code(),

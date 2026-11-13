@@ -9,6 +9,7 @@ runtime/host/src/adapters/tests.rs
 runtime/host/src/adapters/verify.rs
 runtime/host/src/db/schema_guard.rs
 runtime/host/src/db/schema_guard/tests.rs
+runtime/host/src/downloads.rs
 runtime/host/src/host_lifecycle.rs
 runtime/host/src/host_lifecycle/tests.rs
 runtime/host/src/protocol/compat.rs
