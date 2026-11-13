@@ -516,6 +516,9 @@ pub enum BrowserTabOp {
     Navigate { tab_id: String, url: String },
     /// Close an existing tab.
     Close { tab_id: String },
+    /// Set the site permissions of the tab's site: those in `grant` granted,
+    /// the rest denied.
+    Permissions { tab_id: String, grant: Vec<String> },
     /// Wait until text or an element is on the page, or gone from it.
     Wait {
         tab_id: String,
@@ -536,7 +539,10 @@ impl BrowserTabOp {
     pub fn tab_id(&self) -> Option<&str> {
         match self {
             Self::Open { .. } => None,
-            Self::Navigate { tab_id, .. } | Self::Close { tab_id } | Self::Wait { tab_id, .. } => {
+            Self::Navigate { tab_id, .. }
+            | Self::Close { tab_id }
+            | Self::Wait { tab_id, .. }
+            | Self::Permissions { tab_id, .. } => {
                 Some(tab_id)
             }
         }

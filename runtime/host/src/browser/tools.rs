@@ -249,6 +249,40 @@ pub(crate) async fn tab_op(
                 ),
             };
         }
+        BrowserTabOp::Permissions { tab_id, grant } => {
+            let Some(tab) = own_tab(browser, session, &tab_id).await else {
+                return BrowserTabOutcome::refused(
+                    Some(&tab_id),
+                    ERROR_NO_SUCH_TAB,
+                    no_such_tab(&tab_id),
+                );
+            };
+            let Some(origin) = summary(&tab).origin else {
+                return BrowserTabOutcome::refused(
+                    Some(&tab_id),
+                    ERROR_ACTION_FAILED,
+                    "The tab is on no site yet; open one first.",
+                );
+            };
+            if let Err(e) = browser.session(&tab_id).await {
+                return BrowserTabOutcome::refused(Some(&tab_id), ERROR_ACTION_FAILED, e.message);
+            }
+            return match browser.set_permissions(&tab.owner, &origin, &grant).await {
+                Ok(()) => {
+                    let mut out = BrowserTabOutcome::tab(summary(&tab), None);
+                    out.note = Some(if grant.is_empty() {
+                        format!("{origin} may use none of the site permissions in your tabs.")
+                    } else {
+                        format!(
+                            "{origin} may now use {} in your tabs; the rest are denied.",
+                            grant.join(", ")
+                        )
+                    });
+                    out
+                }
+                Err(e) => BrowserTabOutcome::refused(Some(&tab_id), ERROR_ACTION_FAILED, e.message),
+            };
+        }
         BrowserTabOp::Wait {
             tab_id,
             text,
@@ -1220,6 +1254,30 @@ mod tests {
         assert_eq!(late.error.as_deref(), Some(ERROR_WAIT_TIMEOUT));
         let away = tab_op(&browser, &worlds, "s1", wait("Never", true)).await;
         assert_eq!(away.error, None);
+
+        // Permissions: granted for this site, the rest denied.
+        let set = tab_op(
+            &browser,
+            &worlds,
+            "s1",
+            BrowserTabOp::Permissions {
+                tab_id: tab.clone(),
+                grant: vec!["geolocation".into()],
+            },
+        )
+        .await;
+        assert_eq!(set.error, None, "{:?}", set.note);
+        let (cdp, cdp_session) = browser.session(&tab).await.unwrap();
+        let states = cdp
+            .call(
+                "Runtime.evaluate",
+                json!({ "expression": "Promise.all(['geolocation','camera'].map(n => navigator.permissions.query({name: n}).then(p => p.state))).then(a => a.join())",
+                        "awaitPromise": true, "returnByValue": true }),
+                Some(&cdp_session),
+            )
+            .await
+            .unwrap();
+        assert_eq!(states["result"]["value"], "granted,denied");
 
         // Another session sees none of it.
         let other = snapshot(&browser, &worlds, "s2", &tab, None).await;

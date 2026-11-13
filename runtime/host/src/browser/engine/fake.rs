@@ -238,7 +238,9 @@ impl FakeEngine {
             "Browser.getVersion" => {
                 Ok(json!({ "product": "HeadlessChrome/157.0.8103.78", "userAgent": USER_AGENT }))
             }
-            "Target.setDiscoverTargets" | "Browser.setDownloadBehavior" => Ok(json!({})),
+            "Target.setDiscoverTargets" | "Browser.setDownloadBehavior" | "Browser.setPermission" => {
+                Ok(json!({}))
+            }
             "Target.createBrowserContext" => {
                 s.next += 1;
                 let id = format!("ctx-{}", s.next);

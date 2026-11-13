@@ -264,7 +264,8 @@ impl CompanionFeatures {
             "browser_list_tabs" | "browser_snapshot" | "browser_console_messages"
             | "browser_screenshot" | "browser_click" | "browser_hover" | "browser_type"
             | "browser_press_key" | "browser_select_option" | "browser_open_tab"
-            | "browser_navigate" | "browser_close_tab" | "browser_wait_for" => self.browser,
+            | "browser_navigate" | "browser_close_tab" | "browser_wait_for"
+            | "browser_set_permissions" => self.browser,
             // Both, so a `--features browser_eval` with no `browser` — a
             // parent bug, or someone editing the agent's MCP config by hand —
             // cannot leave the strongest tool as the only one present.
@@ -856,7 +857,8 @@ async fn build_tools_call_spawn(
                 Box::pin(async move { client_browser_eval_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_browser_eval_result).await
         }
-        "browser_open_tab" | "browser_navigate" | "browser_close_tab" | "browser_wait_for" => {
+        "browser_open_tab" | "browser_navigate" | "browser_close_tab" | "browser_wait_for"
+        | "browser_set_permissions" => {
             let op = match browser_tab_op(name.as_str(), &arguments) {
                 Ok(parsed) => parsed,
                 Err(msg) => return LineAction::Respond(err(id, -32602, msg)),
@@ -1987,6 +1989,24 @@ pub fn browser_tab_op(
         "browser_close_tab" => Ok(BrowserTabOp::Close {
             tab_id: text("tabId")?,
         }),
+        "browser_set_permissions" => {
+            let tab_id = text("tabId")?;
+            let known = crate::browser::service::PERMISSIONS;
+            let grant = match arguments.get("grant") {
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|v| match v.as_str() {
+                        Some(p) if known.contains(&p) => Ok(p.to_string()),
+                        _ => Err(format!(
+                            "{name}: each of `grant` must be one of {}",
+                            known.join(", ")
+                        )),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                _ => return Err(format!("{name} requires `grant`, a list (empty to deny all)")),
+            };
+            Ok(BrowserTabOp::Permissions { tab_id, grant })
+        }
         "browser_wait_for" => {
             let tab_id = text("tabId")?;
             let (text, selector) = match (arguments.get("text"), arguments.get("selector")) {
@@ -2077,6 +2097,10 @@ pub fn render_browser_tab_op_result(outcome: &Value) -> Value {
                      that tab and presses \"Share with agents\" in its toolbar."
                 }
             });
+            if let Some(note) = outcome.get("note").and_then(Value::as_str) {
+                out.push(' ');
+                out.push_str(note);
+            }
             out
         }
         _ => outcome
@@ -4314,6 +4338,7 @@ mod tests {
                 "browser_press_key".to_string(),
                 "browser_select_option".to_string(),
                 "browser_wait_for".to_string(),
+                "browser_set_permissions".to_string(),
             ]
         );
         // The strongest tool in the group is not in the group: sharing the
@@ -4787,6 +4812,8 @@ mod tests {
             ("browser_navigate", json!({ "tabId": "t1" }), "`url`"),
             ("browser_close_tab", json!({}), "`tabId`"),
             ("browser_wait_for", json!({ "tabId": "t1" }), "exactly one"),
+            ("browser_set_permissions", json!({ "tabId": "t1" }), "`grant`"),
+            ("browser_set_permissions", json!({ "tabId": "t1", "grant": ["usb"] }), "one of"),
             ("browser_wait_for", json!({ "tabId": "t1", "text": "a", "selector": "b" }), "exactly one"),
             ("browser_wait_for", json!({ "tabId": "t1", "text": "a", "timeoutMs": 0 }), "`timeoutMs`"),
         ] {

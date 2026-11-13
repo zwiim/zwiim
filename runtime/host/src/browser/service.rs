@@ -28,6 +28,18 @@ use super::store::{self, TabOwner, TabRecord};
 use super::ui::{self, UiAnswer, UiKind, UiRequest};
 
 const EVENT_BUFFER: usize = 256;
+
+/// The site permissions an agent may set for its tabs (decision 12), as the
+/// web's Permissions API names them.
+pub const PERMISSIONS: [&str; 7] = [
+    "geolocation",
+    "notifications",
+    "camera",
+    "microphone",
+    "clipboard-read",
+    "clipboard-write",
+    "midi",
+];
 const DEFAULT_WIDTH: u32 = 1280;
 const DEFAULT_HEIGHT: u32 = 800;
 /// How long after a personal page loads its cookies are saved.
@@ -983,6 +995,36 @@ impl BrowserService {
         if let Err(e) = cdp.call("Browser.setDownloadBehavior", params, None).await {
             tracing::warn!(error = %e, "could not set where browser downloads go");
         }
+    }
+
+    /// Set what `origin` may use in `owner`'s context (design, decision 12):
+    /// each of `PERMISSIONS` granted when listed, denied otherwise.
+    pub async fn set_permissions(
+        &self,
+        owner: &TabOwner,
+        origin: &str,
+        granted: &[String],
+    ) -> Result<(), BrowserError> {
+        let (cdp, ctx) = {
+            let mut inner = self.inner.lock().await;
+            let cdp = self.cdp_locked(&mut inner).await?;
+            let ctx = inner.contexts.get(owner).cloned().ok_or_else(|| BrowserError {
+                code: "tab_not_found",
+                message: "no tab of this owner is loaded".into(),
+            })?;
+            (cdp, ctx)
+        };
+        for name in PERMISSIONS {
+            let setting = if granted.iter().any(|g| g == name) { "granted" } else { "denied" };
+            cdp.call(
+                "Browser.setPermission",
+                json!({ "permission": { "name": name }, "setting": setting,
+                        "origin": origin, "browserContextId": ctx }),
+                None,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     /// What tab `tab_id` printed to its console, if it is a session tab.
