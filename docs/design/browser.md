@@ -419,6 +419,11 @@ are P4.
 
 ### 7.5 Control lease
 
+Deferred: not built in P1 (see "Deferred" in section 20). Until it lands,
+every viewer's input reaches the tab, the tab's viewport is the last one a
+viewer asked for, and the agent's tools act whether or not a person is
+typing in the same tab. The design below is kept for when it is built.
+
 One controller per tab at a time, held by the Host:
 
 1. Holders: a device (desktop or phone) or a session's agent.
@@ -605,8 +610,9 @@ holds its own CDP session.
    `Runtime.consoleAPICalled` and `Runtime.exceptionThrown`.
 5. `browser_eval` — unchanged gates: its own switch (off by default) and
    `control` level.
-6. New: `browser_request_takeover` (7.5), and `browser_wait_for { text |
+6. New: `browser_wait_for { text |
    selector | network_idle }` so agents stop guessing with sleeps.
+   `browser_request_takeover` (7.5) is deferred with the lease.
 7. New: `browser_network_log { tabId, since?, filter?, har? }` — requests
    from a per-tab ring (last 500, `Network` domain events): method, URL,
    status, type, timing, sizes and, for failures, the error. `har: true`
@@ -1116,7 +1122,7 @@ Operations:
    viewer's input as JSON text: `mouse` (`move`, `down`, `up`, `wheel`),
    `key` (`down`, `up`, with the DOM's `key`, `code` and `keyCode`), `text`
    and `viewport`; input it cannot deliver gets an `error` text message.
-6. `browser.control.claim`, `browser.control.release`
+6. `browser.control.claim`, `browser.control.release` (deferred, 7.5)
 7. `browser.ui.answer { tab_id, request_id, answer }` (dialogs, pickers,
    permissions, auth, takeover)
 8. `browser.site.decide { origin, decision }`
@@ -1136,8 +1142,9 @@ feed, so the feed's `seq` counts the same events for every device. The
 answer is a `browser.snapshot { tabs, engine }`, then:
 
 1. `browser.tab.state { tab }`: the whole tab, so one arriving after a
-   snapshot that already holds it changes nothing. Controller, lease
-   generation, grants and viewers join it with P1.9.
+   snapshot that already holds it changes nothing. Grants and viewers
+   join it later; controller and lease generation join it with the
+   deferred lease (7.5).
 2. `browser.tab.removed { tab_id, owner }`
 3. `browser.engine.state { engine }`
 4. `browser.ui.request`: one of the rows in section 9, or a takeover.
@@ -1231,8 +1238,7 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
    cursor on the desktop.
 8. Action side effects, `expect_url`, typing guard, password-field guard,
    and `browser_network_log`.
-9. Control lease with generation, and `browser_request_takeover` with
-   hand-back.
+9. Deferred: control lease and `browser_request_takeover` (see below).
 10. Site policy through `Fetch`, with the strict site list.
 11. Memory governor and priority.
 12. Dev-server-to-worktree mapping and auto-open in the session tab.
@@ -1265,6 +1271,12 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 5. Reload on save; mobile preview tab.
 6. DevTools on the desktop, served by the Host from the engine's own
    DevTools frontend through the proxy.
+
+### Deferred — out of scope until decided otherwise
+
+1. Control lease with generation, and `browser_request_takeover` with
+   hand-back (7.5, was P1.9). The per-session CDP proxy (P2b.4) and phone
+   takeover (P2b.3) depend on it and wait for it.
 
 ### P4 — optional, only if measurements or the relay bill call for it
 
