@@ -113,6 +113,8 @@ pub struct AppState {
     pub github_auth: Arc<crate::git_harness::GithubSignIn>,
     /// The Host browser, made on first use (see [`AppState::browser`]).
     pub browser: Arc<tokio::sync::OnceCell<Arc<crate::browser::service::BrowserService>>>,
+    /// The browser's tab streams, made with their first view.
+    pub browser_streams: Arc<tokio::sync::OnceCell<Arc<crate::browser::stream::StreamHub>>>,
 }
 
 pub fn default_system_op_lock() -> Arc<tokio::sync::Mutex<()>> {
@@ -290,6 +292,18 @@ impl AppState {
             .cloned()
     }
 
+    /// The streams of the browser's tabs, made on first use.
+    pub async fn browser_streams(
+        &self,
+    ) -> Result<Arc<crate::browser::stream::StreamHub>, sea_orm::DbErr> {
+        let browser = self.browser().await?;
+        Ok(self
+            .browser_streams
+            .get_or_init(|| async { crate::browser::stream::StreamHub::new(browser) })
+            .await
+            .clone())
+    }
+
     /// What a clone job needs, from this Host's state.
     pub fn clone_env(&self) -> crate::workspace::clone::CloneEnv {
         crate::workspace::clone::CloneEnv {
@@ -376,6 +390,7 @@ impl AppState {
             keep_awake: Default::default(),
             github_auth: Default::default(),
             browser: Default::default(),
+            browser_streams: Default::default(),
         }
     }
 }

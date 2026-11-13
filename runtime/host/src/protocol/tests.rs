@@ -126,6 +126,8 @@ const OPS: &[&str] = &[
     "browser.tab.close",
     "browser.tab.navigate",
     "browser.engine.reset",
+    "browser.view.open",
+    "browser.view.close",
 ];
 
 pub(crate) fn git(dir: &std::path::Path, args: &[&str]) {
@@ -5565,6 +5567,11 @@ async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
         ("browser.tab.close", json!({"tab_id": "t"})),
         ("browser.tab.navigate", json!({"tab_id": "t", "action": "reload"})),
         ("browser.engine.reset", json!({})),
+        (
+            "browser.view.open",
+            json!({"tab_id": "t", "viewport": {"width": 800, "height": 600}}),
+        ),
+        ("browser.view.close", json!({"stream_id": "s"})),
     ] {
         let (status, body) = h.call_as(&credential, op, body).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{op}");
@@ -6567,4 +6574,137 @@ async fn a_paired_device_cannot_subscribe_to_the_browser() {
     h.ok("browser.tab.open", json!({"owner": {"kind": "personal"}}))
         .await;
     assert_silent(&mut ws).await;
+}
+
+/// A viewer's socket on `stream_id`, with `token`.
+async fn stream_socket(h: &Host, stream_id: &str, token: &str) -> axum_test::TestResponse {
+    let proto = format!(
+        "zwiim-browser-stream, zwiim-token.{}",
+        URL_SAFE_NO_PAD.encode(token)
+    );
+    h.server
+        .get_websocket(&format!("/zwiim/v1/browser/stream/{stream_id}"))
+        .add_header("sec-websocket-protocol", proto)
+        .await
+}
+
+#[tokio::test]
+async fn browser_frames_reach_the_stream_socket() {
+    let h = host(true).await;
+    let fake = fake_browser(&h).await;
+    let tab = h
+        .ok("browser.tab.open", json!({"owner": {"kind": "personal"}}))
+        .await;
+    let tab_id = tab["tab_id"].as_str().unwrap();
+    let view = json!({"tab_id": tab_id, "viewport": {"width": 800, "height": 600, "scale": 2}});
+    let stream_id = h.ok("browser.view.open", view).await["stream_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut ws = stream_socket(&h, &stream_id, HOST_TOKEN)
+        .await
+        .into_websocket()
+        .await;
+    // One viewer per stream.
+    let again = stream_socket(&h, &stream_id, HOST_TOKEN).await;
+    assert_eq!(again.status_code(), StatusCode::CONFLICT);
+    assert_eq!(again.json::<Value>()["error"]["code"], "stream_attached");
+
+    let (_, session) = h
+        .state
+        .browser
+        .get()
+        .unwrap()
+        .session(tab_id)
+        .await
+        .unwrap();
+    for _ in 0..200 {
+        if !fake.calls("Page.startScreencast").is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    fake.emit(
+        "Page.screencastFrame",
+        json!({
+            "data": base64::engine::general_purpose::STANDARD.encode(b"JPEG"),
+            "sessionId": 9,
+            "metadata": {"deviceWidth": 800, "deviceHeight": 600, "pageScaleFactor": 1,
+                "scrollOffsetX": 0, "scrollOffsetY": 0, "offsetTop": 0, "timestamp": 1.0}
+        }),
+        Some(&session),
+    );
+    let frame = tokio::time::timeout(Duration::from_secs(5), ws.receive_bytes())
+        .await
+        .unwrap();
+    assert_eq!(&frame[..2], &[1, 1]);
+    assert_eq!(&frame[crate::browser::stream::HEADER_LEN..], b"JPEG");
+    for _ in 0..200 {
+        if fake.calls("Page.screencastFrameAck") == vec![json!({"sessionId": 9})] {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(
+        fake.calls("Page.screencastFrameAck"),
+        vec![json!({"sessionId": 9})]
+    );
+
+    // Closing the view ends the socket.
+    h.ok("browser.view.close", json!({"stream_id": stream_id}))
+        .await;
+    let closed = tokio::time::timeout(Duration::from_secs(5), ws.receive_message())
+        .await
+        .unwrap();
+    assert!(
+        matches!(closed, axum_test::WsMessage::Close(_)),
+        "{closed:?}"
+    );
+    assert_eq!(
+        h.err("browser.view.close", json!({"stream_id": stream_id}))
+            .await,
+        (StatusCode::NOT_FOUND, "stream_not_found".into())
+    );
+}
+
+#[tokio::test]
+async fn browser_views_refuse_bad_input_and_devices() {
+    let h = host(true).await;
+    let _fake = fake_browser(&h).await;
+    let tab = h
+        .ok("browser.tab.open", json!({"owner": {"kind": "personal"}}))
+        .await;
+    assert_eq!(
+        h.err(
+            "browser.view.open",
+            json!({"tab_id": tab["tab_id"], "viewport": {"width": 5, "height": 600}})
+        )
+        .await,
+        (StatusCode::BAD_REQUEST, "invalid_viewport".into())
+    );
+    assert_eq!(
+        h.err(
+            "browser.view.open",
+            json!({"tab_id": "nope", "viewport": {"width": 800, "height": 600}})
+        )
+        .await,
+        (StatusCode::NOT_FOUND, "tab_not_found".into())
+    );
+    let unknown = stream_socket(&h, "nope", HOST_TOKEN).await;
+    assert_eq!(unknown.status_code(), StatusCode::NOT_FOUND);
+    assert_eq!(unknown.json::<Value>()["error"]["code"], "stream_not_found");
+
+    let stream_id = h
+        .ok(
+            "browser.view.open",
+            json!({"tab_id": tab["tab_id"], "viewport": {"width": 800, "height": 600}}),
+        )
+        .await["stream_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let credential = bearer_device(&h, "dev-1").await;
+    let device = stream_socket(&h, &stream_id, &credential).await;
+    assert_eq!(device.status_code(), StatusCode::FORBIDDEN);
+    assert_eq!(device.json::<Value>()["error"]["code"], "permission_denied");
 }

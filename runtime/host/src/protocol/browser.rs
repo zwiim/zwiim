@@ -15,6 +15,7 @@ use crate::app_state::AppState;
 use crate::browser::engine::manager::EngineState;
 use crate::browser::service::{BrowserError, BrowserEvent, BrowserService, Navigation, TabInfo};
 use crate::browser::store::TabOwner;
+use crate::browser::stream::{StreamHub, Viewport};
 
 type ZResult<T> = Result<Json<T>, ZwiimError>;
 
@@ -26,6 +27,12 @@ impl From<BrowserError> for ZwiimError {
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "Only http, https and about:blank addresses open in the browser".to_string(),
             ),
+            "stream_not_found" => (StatusCode::NOT_FOUND, "No such browser stream".to_string()),
+            "stream_attached" => (
+                StatusCode::CONFLICT,
+                "The browser stream already has a viewer".to_string(),
+            ),
+            "invalid_viewport" => (StatusCode::BAD_REQUEST, e.message),
             _ => (StatusCode::SERVICE_UNAVAILABLE, scrub_paths(&e.message)),
         };
         ZwiimError::new(status, e.code, message)
@@ -171,6 +178,90 @@ pub async fn engine_reset(Extension(state): Extension<Arc<AppState>>) -> ZResult
     browser.engine().reset().await;
     let engine = EngineView::from(&*browser.engine().state().borrow());
     Ok(Json(json!({ "engine": engine })))
+}
+
+async fn streams(state: &AppState) -> Result<Arc<StreamHub>, ZwiimError> {
+    state.browser_streams().await.map_err(|e| {
+        tracing::warn!(error = %e, "[zwiim] browser tabs could not be read");
+        ZwiimError::internal()
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewOpenParams {
+    pub tab_id: String,
+    pub viewport: Viewport,
+}
+
+/// `browser.view.open {tab_id, viewport}` → `{stream_id}`: a stream of the
+/// tab shown at `viewport` (`{width, height, scale?}` in CSS pixels), for
+/// one viewer to open at `/zwiim/v1/browser/stream/<stream_id>` within 30 s.
+/// Loads a discarded tab.
+pub async fn view_open(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<ViewOpenParams>,
+) -> ZResult<Value> {
+    let stream_id = streams(&state).await?.open(&p.tab_id, p.viewport).await?;
+    Ok(Json(json!({ "stream_id": stream_id })))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewCloseParams {
+    pub stream_id: String,
+}
+
+/// `browser.view.close {stream_id}`: ends the stream and its socket.
+pub async fn view_close(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<ViewCloseParams>,
+) -> ZResult<Value> {
+    streams(&state).await?.close(&p.stream_id)?;
+    Ok(Json(json!({})))
+}
+
+/// Subprotocol the stream socket negotiates.
+pub const STREAM_PROTOCOL: &str = "zwiim-browser-stream";
+
+/// `GET /zwiim/v1/browser/stream/<stream_id>`: the stream's frames, one
+/// binary message each (design 7.1.2). Refused before the upgrade when the
+/// stream is unknown or already has its viewer.
+pub async fn stream_socket(
+    ws: axum::extract::WebSocketUpgrade,
+    axum::extract::Path(stream_id): axum::extract::Path<String>,
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(shutdown): Extension<Arc<crate::web::shutdown::ShutdownSignal>>,
+) -> Result<axum::response::Response, ZwiimError> {
+    let viewer = streams(&state).await?.attach(&stream_id).await?;
+    Ok(ws
+        .protocols([STREAM_PROTOCOL])
+        .on_upgrade(move |socket| run_stream(socket, viewer, shutdown)))
+}
+
+async fn run_stream(
+    mut socket: axum::extract::ws::WebSocket,
+    mut viewer: crate::browser::stream::Viewer,
+    shutdown: Arc<crate::web::shutdown::ShutdownSignal>,
+) {
+    use axum::extract::ws::Message;
+    loop {
+        tokio::select! {
+            frame = viewer.next() => {
+                let Some(frame) = frame else { break };
+                if socket.send(Message::Binary(frame.message.clone())).await.is_err() {
+                    return;
+                }
+                viewer.sent(&frame);
+            }
+            msg = socket.recv() => match msg {
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
+                Some(Ok(_)) => {}
+            },
+            _ = shutdown.wait() => break,
+        }
+    }
+    let _ = socket.send(Message::Close(None)).await;
 }
 
 /// One socket's `browser.subscribe`: a `browser.snapshot` frame, then each
