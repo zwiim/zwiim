@@ -19,6 +19,7 @@ import type {
   WorkspaceInfo,
   WorkspaceLayout,
 } from "../types/protocol";
+import { initialBrowserState, reduceBrowser, type BrowserState, type BrowserUpdate } from "./browser";
 import { initialSessionView, reduceSession, type SessionFrame, type SessionView } from "./session";
 
 export interface TerminalMeta {
@@ -66,6 +67,8 @@ export interface HostState {
   clones: Record<string, CloneJob>;
   /** Whether the host keeps its Mac awake, as the feed last said; null until it does. */
   keepAwake: KeepAwakeStatus | null;
+  /** The Host browser's tabs and engine, once a view has asked for them. */
+  browser: BrowserState;
 }
 
 export type HostAction =
@@ -82,7 +85,8 @@ export type HostAction =
   | { type: "terminal"; terminal_id: string; patch: Partial<Omit<TerminalMeta, "terminal_id">> }
   | { type: "terminal_forget"; terminal_id: string }
   | { type: "host_snapshot"; snapshot: HostSnapshot }
-  | { type: "host_event"; event: HostFeedEvent };
+  | { type: "host_event"; event: HostFeedEvent }
+  | { type: "browser"; update: BrowserUpdate };
 
 export function initialHostState(): HostState {
   return {
@@ -100,6 +104,7 @@ export function initialHostState(): HostState {
     resolving: {},
     clones: {},
     keepAwake: null,
+    browser: initialBrowserState(),
   };
 }
 
@@ -185,6 +190,10 @@ export function reduceHost(state: HostState, action: HostAction): HostState {
     }
     case "host_event":
       return reduceFeedEvent(state, action.event);
+    case "browser": {
+      const browser = reduceBrowser(state.browser, action.update);
+      return browser === state.browser ? state : { ...state, browser };
+    }
   }
 }
 

@@ -7,7 +7,7 @@ export const BROWSER_FRAME_VERSION = 1;
 export const BROWSER_MESSAGE_FRAME = 1;
 export const BROWSER_FRAME_HEADER_LEN = 34;
 
-export interface BrowserFrame {
+export interface BrowserScreenFrame {
   /** Counts up per screencast; a restarted screencast starts again at 1. */
   number: number;
   /** When the Host took the frame, ms since the epoch. */
@@ -23,7 +23,7 @@ export interface BrowserFrame {
 }
 
 export type BrowserFrameResult =
-  | { kind: "frame"; frame: BrowserFrame }
+  | { kind: "frame"; frame: BrowserScreenFrame }
   /** A newer Host's format: close the stream. */
   | { kind: "unsupported_version"; version: number }
   /** Not a frame (a later message type), or a broken message: skip it. */

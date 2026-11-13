@@ -12,6 +12,7 @@ import {
   type TerminalCursor,
   type TerminalOutput,
 } from "../state/terminal";
+import type { BrowserUpdate } from "../state/browser";
 import type { SessionFrame } from "../state/session";
 import { decodeResult } from "../transport/codec";
 import type { EventChannel, Transport } from "../transport/transport";
@@ -99,6 +100,7 @@ export interface HostClientListener {
   feed?(update: HostFeedUpdate): void;
   session?(session_id: string, frame: SessionFrame): void;
   terminal?(terminal_id: string, output: TerminalOutput): void;
+  browser?(update: BrowserUpdate): void;
 }
 
 interface SessionSub {
@@ -145,6 +147,8 @@ export class HostClient {
   private readonly sessions = new Map<string, SessionSub>(); // by session_id
   private readonly subIndex = new Map<string, string>(); // subscription_id → session_id
   private readonly terminals = new Map<string, TerminalSub>();
+  /** A view asked for the browser feed; it is subscribed on every connection from then on. */
+  private browserWatched = false;
   /** Host feed cursor; `epoch` is null while a snapshot is awaited. */
   private feed: { epoch: string | null; seq: number } = { epoch: null, seq: 0 };
   private readonly listeners = new Set<HostClientListener>();
@@ -284,6 +288,7 @@ export class HostClient {
       this.channel?.send({ op: "terminal.subscribe", terminal_id: id });
       void this.snapshotTerminal(id);
     }
+    this.subscribeBrowser();
   }
 
   private fail(e: unknown): void {
@@ -539,8 +544,36 @@ export class HostClient {
     this.emit((l) => l.feed?.({ type: "event", event }));
   }
 
+  // ─── browser feed ──────────────────────────────────────────────────────
+
+  /**
+   * Follow the Host browser's tabs and engine: a snapshot, then each change,
+   * again after every reconnect. Idempotent. A Host without the `browser`
+   * capability is not asked.
+   */
+  watchBrowser(): void {
+    if (this.browserWatched) return;
+    this.browserWatched = true;
+    this.subscribeBrowser();
+  }
+
+  private subscribeBrowser(): void {
+    if (!this.browserWatched || this.stateValue.status !== "live" || !this.channel) return;
+    const compat = this.stateValue.compat;
+    if (!compat || !("capabilities" in compat) || !compat.capabilities.includes("browser")) return;
+    this.emit((l) => l.browser?.({ type: "browser.subscribing" }));
+    this.channel.send({ op: "browser.subscribe" });
+  }
+
   private onFrame(frame: ServerFrame): void {
     switch (frame.type) {
+      case "browser.snapshot":
+      case "browser.tab.state":
+      case "browser.tab.removed":
+      case "browser.engine.state":
+      case "browser.error":
+        this.emit((l) => l.browser?.(frame));
+        return;
       case "host.snapshot": {
         const { type: _, ...snapshot } = frame;
         this.feed = { epoch: snapshot.epoch, seq: snapshot.seq };

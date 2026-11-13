@@ -3,7 +3,7 @@ export {
   BROWSER_FRAME_HEADER_LEN,
   BROWSER_FRAME_VERSION,
   decodeBrowserFrame,
-  type BrowserFrame,
+  type BrowserScreenFrame,
   type BrowserFrameResult,
 } from "./browser/frame";
 export * from "./transport/transport";
@@ -65,6 +65,7 @@ export * from "./client/revert";
 export * from "./client/fork";
 export * from "./state/session";
 export * from "./state/terminal";
+export * from "./state/browser";
 export * from "./state/store";
 export * from "./state/workspaces";
 export * from "./state/layout";

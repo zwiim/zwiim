@@ -9,6 +9,10 @@ import { backgroundMovedHistory, historyCovers, type SessionFrame, type SessionV
 import type {
   AgentSummary,
   AgentType,
+  BrowserEngine,
+  BrowserTab,
+  BrowserTabOwner,
+  BrowserViewport,
   CloneStart,
   ForkTarget,
   FollowUpOutcome,
@@ -170,6 +174,7 @@ export class HostController {
         }
         for (const l of [...this.terminalListeners]) l(terminal_id, out);
       },
+      browser: (update) => this.store.dispatch({ type: "browser", update }),
     });
   }
 
@@ -721,5 +726,57 @@ export class HostController {
   onTerminalOutput(listener: (terminal_id: string, out: TerminalOutput) => void): () => void {
     this.terminalListeners.add(listener);
     return () => this.terminalListeners.delete(listener);
+  }
+
+  // ─── browser ───────────────────────────────────────────────────────────
+
+  /** Follow the Host browser's tabs and engine into `store.browser`. Idempotent. */
+  watchBrowser(): void {
+    this.client.watchBrowser();
+  }
+
+  /** Open a tab, on `url` or a blank page. The engine starts (or downloads) first if it must. */
+  async openBrowserTab(owner: BrowserTabOwner, url?: string): Promise<BrowserTab> {
+    const tab = await this.client.request("browser.tab.open", { owner, ...(url ? { url } : {}) });
+    this.store.dispatch({ type: "browser", update: { type: "browser.tab.state", tab } });
+    return tab;
+  }
+
+  async closeBrowserTab(tab_id: string): Promise<void> {
+    await this.client.request("browser.tab.close", { tab_id });
+  }
+
+  /** Load `url` in the tab. */
+  async navigateBrowserTab(tab_id: string, url: string): Promise<BrowserTab> {
+    return this.browserTabStep(await this.client.request("browser.tab.navigate", { tab_id, url }));
+  }
+
+  async browserTabHistory(tab_id: string, action: "back" | "forward" | "reload" | "stop"): Promise<BrowserTab> {
+    return this.browserTabStep(await this.client.request("browser.tab.navigate", { tab_id, action }));
+  }
+
+  /** Stop the engine and start it again, as after a crash loop. */
+  async resetBrowserEngine(): Promise<BrowserEngine> {
+    const { engine } = await this.client.request("browser.engine.reset", {});
+    this.store.dispatch({ type: "browser", update: { type: "browser.engine.state", engine } });
+    return engine;
+  }
+
+  /**
+   * Start streaming a tab at `viewport`. Open the returned stream with
+   * `openBrowserStream` within 30 s; close it with `closeBrowserView`.
+   */
+  async openBrowserView(tab_id: string, viewport: BrowserViewport): Promise<string> {
+    const { stream_id } = await this.client.request("browser.view.open", { tab_id, viewport });
+    return stream_id;
+  }
+
+  async closeBrowserView(stream_id: string): Promise<void> {
+    await this.client.request("browser.view.close", { stream_id });
+  }
+
+  private browserTabStep(tab: BrowserTab): BrowserTab {
+    this.store.dispatch({ type: "browser", update: { type: "browser.tab.state", tab } });
+    return tab;
   }
 }
