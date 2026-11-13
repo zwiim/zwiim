@@ -56,6 +56,7 @@ import { ContinuedCard, ForkedFromRow, ForkStart } from "./ContinuedCard";
 import { dropForkedDraft, EMPTY_DRAFT, forkedDraft, keepForkedDraft, type ComposerDraft } from "./forkedDraft";
 import { PlanStrip } from "./PlanStrip";
 import { FollowUpQueue } from "./FollowUpQueue";
+import { HostDownloads } from "./HostDownloads";
 import { useSlashMenu } from "./SlashCommands";
 import { AgentTerminalCard, AgentTerminalsContext } from "./AgentTerminal";
 import { SignInNeededCard } from "./SignInNeededCard";
@@ -1355,6 +1356,7 @@ function Composer(props: {
   return (
     <div className="shrink-0 px-6 pt-1 pb-4">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-2">
+        <HostDownloads />
         {props.notice}
         {error && (
           <p className="text-destructive text-xs" role="alert">
