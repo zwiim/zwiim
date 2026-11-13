@@ -6491,3 +6491,76 @@ async fn browser_tabs_over_http() {
         "running"
     );
 }
+
+/// Frames until one of `kind` that `matches`; panics after 50 others.
+async fn browser_frame(
+    ws: &mut TestWebSocket,
+    kind: &str,
+    matches: impl Fn(&Value) -> bool,
+) -> Value {
+    for _ in 0..50 {
+        let frame = recv(ws).await;
+        if frame["type"] == kind && matches(&frame) {
+            return frame;
+        }
+    }
+    panic!("no {kind} frame");
+}
+
+#[tokio::test]
+async fn browser_subscribe_streams_tabs_and_the_engine() {
+    let h = host(true).await;
+    let _fake = fake_browser(&h).await;
+    let mut ws = h.ws().await;
+    ws.send_json(&json!({"op": "browser.subscribe"})).await;
+    assert_eq!(
+        recv(&mut ws).await,
+        json!({"type": "browser.snapshot", "tabs": [], "engine": {"state": "stopped"}})
+    );
+
+    let tab = h
+        .ok(
+            "browser.tab.open",
+            json!({"owner": {"kind": "personal"}, "url": "https://example.com/"}),
+        )
+        .await;
+    let tab_id = tab["tab_id"].as_str().unwrap().to_string();
+    let running = browser_frame(&mut ws, "browser.engine.state", |f| {
+        f["engine"]["state"] == "running"
+    })
+    .await;
+    assert!(running["engine"]["version"].is_string());
+    let state = browser_frame(&mut ws, "browser.tab.state", |f| {
+        f["tab"]["tab_id"] == tab_id.as_str()
+    })
+    .await;
+    assert_eq!(state["tab"]["owner"], json!({"kind": "personal"}));
+    assert_no_internal_keys(&state);
+
+    h.ok("browser.tab.close", json!({"tab_id": tab_id})).await;
+    assert_eq!(
+        browser_frame(&mut ws, "browser.tab.removed", |_| true).await,
+        json!({"type": "browser.tab.removed", "tab_id": tab_id, "owner": {"kind": "personal"}})
+    );
+
+    // Subscribing again starts over from a snapshot.
+    ws.send_json(&json!({"op": "browser.subscribe"})).await;
+    let again = browser_frame(&mut ws, "browser.snapshot", |_| true).await;
+    assert_eq!(again["tabs"], json!([]));
+    assert_eq!(again["engine"]["state"], "running");
+}
+
+#[tokio::test]
+async fn a_paired_device_cannot_subscribe_to_the_browser() {
+    let h = host(true).await;
+    let _fake = fake_browser(&h).await;
+    let credential = bearer_device(&h, "dev-1").await;
+    let mut ws = h.ws_as("/zwiim/v1/ws", &credential).await;
+    ws.send_json(&json!({"op": "browser.subscribe"})).await;
+    let err = recv(&mut ws).await;
+    assert_eq!(err["type"], "error");
+    assert_eq!(err["error"]["code"], "permission_denied");
+    h.ok("browser.tab.open", json!({"owner": {"kind": "personal"}}))
+        .await;
+    assert_silent(&mut ws).await;
+}

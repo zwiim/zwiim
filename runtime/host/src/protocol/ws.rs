@@ -12,6 +12,10 @@
 //! terminal, then each change as a `host.event`. The feed has no replay; a
 //! socket that falls behind gets a fresh snapshot.
 //!
+//! `browser.subscribe` does the same for the Host browser's tabs and engine
+//! (`super::browser::BrowserFeed`). Host only, like the `browser.*`
+//! operations.
+//!
 //! Replay cursors are `session_id + epoch + seq`. `seq` counts events on the
 //! session's current agent connection, and `epoch` is an opaque token for
 //! that connection. A cursor from an earlier connection (the agent was
@@ -31,6 +35,7 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use super::browser::BrowserFeed;
 use super::error::ZwiimError;
 use super::events::{epoch_of, project_envelope, project_snapshot, project_terminal};
 use crate::app_state::AppState;
@@ -73,6 +78,8 @@ enum ClientMsg {
     TerminalUnsubscribe { terminal_id: String },
     #[serde(rename = "host.subscribe")]
     HostSubscribe {},
+    #[serde(rename = "browser.subscribe")]
+    BrowserSubscribe {},
     #[serde(rename = "ping")]
     Ping,
 }
@@ -232,6 +239,38 @@ fn host_snapshot_frame(snapshot: HostSnapshot) -> Value {
 
 type FeedReceiver = tokio::sync::broadcast::Receiver<Arc<HostEvent>>;
 
+/// Next browser frame; pending forever until the socket subscribed.
+async fn next_browser_frame(browser: &mut Option<BrowserFeed>) -> Option<Value> {
+    match browser {
+        Some(feed) => feed.next().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Subscribe the socket to the browser and send its snapshot. False when
+/// the socket is gone.
+async fn subscribe_browser(
+    state: &Arc<AppState>,
+    principal: Option<&Principal>,
+    browser: &mut Option<BrowserFeed>,
+    socket: &mut WebSocket,
+) -> bool {
+    if !matches!(principal, Some(Principal::Host)) {
+        let err = ZwiimError::permission_denied("This operation requires local host authority");
+        return send_json(socket, &error_frame(None, &err)).await;
+    }
+    match BrowserFeed::subscribe(state).await {
+        Ok((feed, snapshot)) => {
+            *browser = Some(feed);
+            send_json(socket, &snapshot).await
+        }
+        Err(e) => {
+            *browser = None;
+            send_json(socket, &error_frame(None, &e)).await
+        }
+    }
+}
+
 /// Next host feed event; pending forever until the socket subscribed.
 async fn next_feed_event(
     feed: &mut Option<FeedReceiver>,
@@ -284,6 +323,7 @@ async fn handle_socket(
     let mut terminal_rx = state.event_broadcaster.subscribe();
     let mut terminals: HashSet<String> = HashSet::new();
     let mut feed: Option<FeedReceiver> = None;
+    let mut browser: Option<BrowserFeed> = None;
 
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<ServerMsg>(OUTBOUND_CAPACITY);
     let (cleanup_tx, mut cleanup_rx) = mpsc::channel::<(String, u64)>(OUTBOUND_CAPACITY);
@@ -294,7 +334,11 @@ async fn handle_socket(
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     // A revoked device loses this socket at once, not at its next reconnect.
-    let revoked = device_revoked(principal, state.device_revocations.clone(), state.db.conn.clone());
+    let revoked = device_revoked(
+        principal.clone(),
+        state.device_revocations.clone(),
+        state.db.conn.clone(),
+    );
     tokio::pin!(revoked);
 
     loop {
@@ -392,10 +436,26 @@ async fn handle_socket(
                 }
             }
 
+            frame = next_browser_frame(&mut browser) => {
+                match frame {
+                    Some(frame) => {
+                        if !send_json(&mut socket, &frame).await {
+                            break;
+                        }
+                    }
+                    None => browser = None,
+                }
+            }
+
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<ClientMsg>(&text) {
+                            Ok(ClientMsg::BrowserSubscribe {}) => {
+                                if !subscribe_browser(&state, principal.as_ref(), &mut browser, &mut socket).await {
+                                    break;
+                                }
+                            }
                             Ok(cmsg) => {
                                 handle_client_msg(
                                     cmsg,
@@ -549,6 +609,8 @@ async fn handle_client_msg(
         ClientMsg::HostSubscribe {} => {
             subscribe_host(state, feed, socket).await;
         }
+        // Handled by the socket loop, which holds the principal.
+        ClientMsg::BrowserSubscribe {} => {}
         ClientMsg::Ping => {
             for sub in subs.values() {
                 state.connection_manager.touch(&sub.connection_id).await;
