@@ -828,6 +828,16 @@ glyph, a title, one line, one action.
   in the preview panel. A workspace image linked in the agent's text shows
   nothing. An image with no row (a message's own image part, a result's extra
   images) gets the same chip.
+- Desktop shows what the Host downloads (an agent's adapter, the browser
+  engine, a Host update, which brings `gh`) the same way everywhere: one row
+  per download right above the composer, its width, `card` with a `border`
+  and a 12px radius, 40px tall: Download icon in `mut`, **Downloading
+  Claude Code…** in `ui` medium (truncated), then the progress in `mut`
+  tabular figures, `23 MB / 89 MB`, or `23 MB` when the total is unknown (an
+  install of many files). Bytes count as the Mac does (1 MB = 1,000,000).
+  Rows fade in and leave when the download ends; there is no bar and no
+  cancel. Every later download (a new agent, `gh`) joins this row, not a
+  screen of its own.
 - Desktop's **Browser** view (Globe) is the fourth view beside Files, Diff
   and Git. Its tab strip matches the terminals' (the selected tab `accent`,
   a close X on each); the person's own tabs read `Mine · ` in `mut` before

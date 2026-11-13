@@ -1134,8 +1134,9 @@ A tab is `{ tab_id, owner, url, title, position, loading, discarded,
 crashed }`, its owner `{ kind: "session", session_id }` or
 `{ kind: "personal" }`. The engine is `{ state }`: `stopped`, `starting`,
 `running` with `version`, or `failed` with `code` and `message`. The first
-download shows as `starting`; a `downloading` state with progress is not
-built yet (the desktop's notice says the first start downloads).
+download shows as `starting`; its progress is one of the Host's downloads
+(capability `downloads`), shown as a row above the composer like every
+other download.
 
 Events go to sockets that sent `browser.subscribe`, not through the Host
 feed, so the feed's `seq` counts the same events for every device. The

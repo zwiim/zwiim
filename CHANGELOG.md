@@ -16,6 +16,9 @@ have their own versions and are listed under Compatibility.
   downloads its engine on first use) and streams them to the Browser view,
   where you click, type and scroll as in any browser. Tabs belong to the
   chat or to you; ⌘L, ⌘T, ⌘W, ⌘R, ⌘[ and ⌘] work in the view.
+- Downloads show their progress above the composer: "Downloading Claude
+  Code… 23 MB", "Downloading Browser engine… 6 MB / 105 MB", and Zwiim
+  updates (which bring the GitHub CLI).
 
 ### Changed
 - None.
@@ -27,8 +30,9 @@ have their own versions and are listed under Compatibility.
 - None.
 
 ### Compatibility
-- Protocol revision 33 adds the browser (capability `browser`). An older
-  Host shows the Browser view's update notice.
+- Protocol revision 33 adds the browser (capability `browser`) and the
+  Host's downloads (capability `downloads`). An older Host shows the Browser
+  view's update notice and no download rows.
 
 ### Provider changes
 - None.
