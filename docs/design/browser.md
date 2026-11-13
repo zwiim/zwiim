@@ -645,9 +645,11 @@ the page changed (R1).
 3. **Typing guard.** Agent input never goes to a tab while a person typed
    into it in the last 2 s. The action waits for them to stop, at most 5 s,
    then is refused (`browser_person_typing`).
-4. **Password fields.** An agent cannot type into a password field without
-   the person's approval, except on the workspace's own loopback dev servers,
-   where agents need test logins.
+4. **Password fields.** An agent types into a password field only on
+   loopback dev servers (`localhost`, `*.localhost`, `127.0.0.1`, `::1`),
+   where agents need test logins. Elsewhere it is refused
+   (`browser_password_field`) unless the person turns on "Let agents type
+   passwords on any site" in Settings > Advanced (decision 15).
 
 ### 10.4 Scripts that bring their own Playwright
 
@@ -1265,7 +1267,7 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
    (`browser_eval` stays off). Done, with the ghost cursor in the desktop
    Browser panel.
 8. Action side effects, `expect_url`, typing guard, password-field guard,
-   and `browser_network_log`. Done except the password-field guard.
+   and `browser_network_log`. Done.
 9. Deferred: control lease and `browser_request_takeover` (see below).
 10. Site policy through `Fetch`, with the strict site list.
 11. Memory governor and priority.
@@ -1346,6 +1348,11 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
     prompt. The engine starts with `--allow-insecure-localhost`: a dev
     server's self-signed certificate on `localhost` or `127.0.0.1` loads.
     Every other site keeps Chromium's error page, with no way past it.
+15. Password fields ask no one either. Agents may always type passwords on
+    loopback dev servers. Elsewhere the Host setting
+    `browser.agent_passwords` decides, off by default; only the person
+    changes it, from Settings, and no agent tool can. The browser keeps no
+    passwords and reads none from other browsers.
 
 Not decided yet, and not blocking: audio in Agent View, DevTools on the
 phone, a camera or mic source for pages, and Linux support for the governor.
