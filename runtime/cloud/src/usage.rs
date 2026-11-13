@@ -16,32 +16,11 @@ use std::time::Duration;
 use futures_util::future::BoxFuture;
 
 use crate::hub;
+pub use crate::proto::Channel;
+use crate::proto::{QuotaExceeded, QuotaLimit};
 
 /// How often pending bytes go to the store.
 pub const SYNC_INTERVAL: Duration = Duration::from_secs(60);
-
-/// The kind of traffic a relay connection carries, counted and limited
-/// separately.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Channel {
-    Control,
-    Browser,
-}
-
-impl Channel {
-    pub const ALL: [Channel; 2] = [Channel::Control, Channel::Browser];
-
-    fn index(self) -> usize {
-        self as usize
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Channel::Control => "control",
-            Channel::Browser => "browser",
-        }
-    }
-}
 
 /// A plan's limits; `None` is unlimited.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -71,7 +50,7 @@ pub struct Account {
 
 impl Account {
     pub fn used(&self, channel: Channel) -> u64 {
-        self.used[channel.index()]
+        self.used[channel as usize]
     }
 
     pub fn total(&self) -> u64 {
@@ -92,6 +71,19 @@ pub trait Store: Send + Sync {
     /// Add a batch and return every account in it the store knows, with its
     /// totals after the batch.
     fn add(&self, batch: Vec<Entry>) -> BoxFuture<'_, Result<Vec<Account>, String>>;
+}
+
+/// The store's last answer for an account, with this period's usage
+/// including bytes not yet synced.
+fn current(counter: &Counter) -> Option<(&Account, [u64; 2])> {
+    let account = counter.known.as_ref()?;
+    // The period ended: its usage no longer counts, so a block lifts
+    // without waiting for the next sync to report the new period.
+    let mut used = if hub::unix_now() >= account.resets_at { [0; 2] } else { account.used };
+    for (n, pending) in used.iter_mut().zip(counter.pending) {
+        *n = n.saturating_add(pending);
+    }
+    Some((account, used))
 }
 
 #[derive(Default)]
@@ -119,7 +111,7 @@ impl Usage {
             Some(counter) => counter,
             None => accounts.entry(user_id.to_string()).or_default(),
         };
-        let pending = &mut counter.pending[channel.index()];
+        let pending = &mut counter.pending[channel as usize];
         *pending = pending.saturating_add(bytes);
     }
 
@@ -127,18 +119,32 @@ impl Usage {
     /// `None` when the store has never answered for it: no limits apply.
     pub fn account(&self, user_id: &str) -> Option<Account> {
         let accounts = self.accounts.lock().unwrap();
-        let counter = accounts.get(user_id)?;
-        let mut account = counter.known.clone()?;
-        // The period ended: its usage no longer counts, so a block lifts
-        // without waiting for the next sync to report the new period.
-        if hub::unix_now() >= account.resets_at {
-            account.used = [0; 2];
-        }
-        for channel in Channel::ALL {
-            let i = channel.index();
-            account.used[i] = account.used[i].saturating_add(counter.pending[i]);
-        }
-        Some(account)
+        let (account, used) = current(accounts.get(user_id)?)?;
+        Some(Account { used, ..account.clone() })
+    }
+
+    /// The limit that stops a `channel` relay for `user_id`, if one is
+    /// reached: a `browser` relay stops at the browser or the total limit, a
+    /// `control` relay at the total limit.
+    pub fn blocked(&self, user_id: &str, channel: Channel) -> Option<QuotaExceeded> {
+        let accounts = self.accounts.lock().unwrap();
+        let (account, used) = current(accounts.get(user_id)?)?;
+        let reached = |limit, used: u64, max: Option<u64>| {
+            max.filter(|max| used >= *max).map(|max| QuotaExceeded {
+                channel: limit,
+                plan: account.plan_id.clone(),
+                used_bytes: used,
+                limit_bytes: max,
+                resets_at: account.resets_at,
+            })
+        };
+        // The total stops every relay, so it is the one to report when both
+        // are reached.
+        let total = used.iter().fold(0u64, |sum, n| sum.saturating_add(*n));
+        reached(QuotaLimit::Total, total, account.limits.total).or_else(|| match channel {
+            Channel::Browser => reached(QuotaLimit::Browser, used[Channel::Browser as usize], account.limits.browser),
+            Channel::Control => None,
+        })
     }
 
     /// Fetch the account's totals from the store if it has none yet, as on
@@ -166,10 +172,10 @@ impl Usage {
                 .iter_mut()
                 .flat_map(|(user_id, counter)| {
                     let pending = std::mem::take(&mut counter.pending);
-                    Channel::ALL.into_iter().filter(move |c| pending[c.index()] > 0).map(move |channel| Entry {
+                    Channel::ALL.into_iter().filter(move |c| pending[*c as usize] > 0).map(move |channel| Entry {
                         user_id: user_id.clone(),
                         channel,
-                        bytes: pending[channel.index()],
+                        bytes: pending[channel as usize],
                     })
                 })
                 .collect()
@@ -355,6 +361,7 @@ pub(crate) mod tests {
         calls: Mutex<Vec<Vec<Entry>>>,
         down: AtomicBool,
         resets_at: u64,
+        limits: PlanLimits,
     }
 
     impl Fake {
@@ -362,7 +369,12 @@ pub(crate) mod tests {
             Self::resetting(users, hub::unix_now() + 3600)
         }
         fn resetting(users: &[&str], resets_at: u64) -> Arc<Self> {
-            Arc::new(Self { users: users.iter().map(|u| u.to_string()).collect(), resets_at, ..Default::default() })
+            let limits = PlanLimits { browser: Some(5), total: Some(10), control_rate: Some(1) };
+            Arc::new(Self { users: users.iter().map(|u| u.to_string()).collect(), resets_at, limits, ..Default::default() })
+        }
+        pub(crate) fn with_limits(users: &[&str], limits: PlanLimits) -> Arc<Self> {
+            let resets_at = hub::unix_now() + 3600;
+            Arc::new(Self { users: users.iter().map(|u| u.to_string()).collect(), resets_at, limits, ..Default::default() })
         }
         pub(crate) fn stored(&self, user: &str, channel: Channel) -> u64 {
             *self.bytes.lock().unwrap().get(&(user.to_string(), channel)).unwrap_or(&0)
@@ -393,7 +405,7 @@ pub(crate) mod tests {
                         plan_name: "Free".into(),
                         period_start: 0,
                         resets_at: self.resets_at,
-                        limits: PlanLimits { browser: Some(5), total: Some(10), control_rate: Some(1) },
+                        limits: self.limits,
                     })
                     .collect())
             })
@@ -489,12 +501,48 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn the_browser_limit_stops_browser_relays_and_the_total_stops_all() {
+        // Fake limits: browser 5, total 10.
+        let store = Fake::knowing(&["a", "b"]);
+        let usage = usage(&store);
+        usage.load("a").await;
+        usage.add("a", Channel::Browser, 4);
+        assert_eq!(usage.blocked("a", Channel::Browser), None);
+        usage.add("a", Channel::Browser, 1);
+        let quota = usage.blocked("a", Channel::Browser).unwrap();
+        assert_eq!(quota.channel, QuotaLimit::Browser);
+        assert_eq!((quota.used_bytes, quota.limit_bytes, quota.plan.as_str()), (5, 5, "free"));
+        assert_eq!(quota.resets_at, store.resets_at);
+        assert_eq!(usage.blocked("a", Channel::Control), None, "control is limited by the total only");
+        usage.sync().await;
+        usage.add("a", Channel::Control, 5);
+        for channel in Channel::ALL {
+            let quota = usage.blocked("a", channel).unwrap();
+            assert_eq!((quota.channel, quota.used_bytes, quota.limit_bytes), (QuotaLimit::Total, 10, 10));
+        }
+        // Under the browser limit, a browser relay still stops at the total.
+        usage.load("b").await;
+        usage.add("b", Channel::Control, 10);
+        assert_eq!(usage.blocked("b", Channel::Browser).unwrap().channel, QuotaLimit::Total);
+    }
+
+    #[tokio::test]
+    async fn an_ended_period_lifts_the_block() {
+        let store = Fake::resetting(&["a"], hub::unix_now() - 1);
+        let usage = usage(&store);
+        usage.add("a", Channel::Control, 50);
+        usage.sync().await;
+        assert_eq!(usage.blocked("a", Channel::Control), None);
+    }
+
+    #[tokio::test]
     async fn without_a_store_nothing_is_limited() {
         let usage = Usage::new(None);
         usage.add("a", Channel::Browser, 10);
         usage.sync().await;
         usage.load("a").await;
         assert_eq!(usage.account("a"), None);
+        assert_eq!(usage.blocked("a", Channel::Browser), None);
     }
 
     /// Against a database with the migration applied, as the `zwiim_cloud`

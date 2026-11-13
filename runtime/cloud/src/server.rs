@@ -17,6 +17,7 @@ use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use axum::body::Bytes;
 use axum::{Json, Router};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::{Signature, VerifyingKey};
@@ -28,13 +29,16 @@ use crate::auth::{AuthConfig, AuthError, Verifier};
 use crate::hub::{self, OneTime, PerMinute, Presence, Rendezvous};
 use crate::proto::*;
 use crate::registry::{HostRecord, Registry};
-use crate::usage::{Channel, Store, Usage};
+use crate::usage::{Store, Usage};
 
 const MAX_BODY: usize = 16 * 1024;
 const CONTROL_QUEUE: usize = 64;
 const CLOSE_LINGER: Duration = Duration::from_secs(1);
 /// WebSocket "try again later": the relay limit is reached.
 const CLOSE_TRY_AGAIN: u16 = 1013;
+/// How long a ticket waits for an account's usage on its first ticket after
+/// a Cloud start; past this the account is not limited until the next sync.
+const USAGE_LOAD_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Deadlines; tests shorten them.
 #[derive(Debug, Clone, Copy)]
@@ -117,6 +121,7 @@ struct Ticket {
     host_id: String,
     /// The account the relay's bytes count against.
     user_id: String,
+    channel: Channel,
 }
 
 pub struct Cloud {
@@ -214,11 +219,19 @@ pub struct ApiError {
     status: StatusCode,
     code: &'static str,
     message: String,
+    quota: Option<QuotaExceeded>,
 }
 
 impl ApiError {
     fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
-        Self { status, code, message: message.into() }
+        Self { status, code, message: message.into(), quota: None }
+    }
+    fn quota_exceeded(quota: QuotaExceeded) -> Self {
+        let message = match quota.channel {
+            QuotaLimit::Browser => "The account reached its remote browser limit for this period",
+            QuotaLimit::Total => "The account reached its relay limit for this period",
+        };
+        Self { quota: Some(quota), ..Self::new(StatusCode::TOO_MANY_REQUESTS, "relay_quota_exceeded", message) }
     }
     fn unauthenticated(message: &str) -> Self {
         Self::new(StatusCode::UNAUTHORIZED, "unauthenticated", message)
@@ -239,7 +252,7 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = ErrorBody { error: ErrorDetail { code: self.code.into(), message: self.message } };
+        let body = ErrorBody { error: ErrorDetail { code: self.code.into(), message: self.message, quota: self.quota } };
         (self.status, Json(body)).into_response()
     }
 }
@@ -347,8 +360,14 @@ async fn create_ticket(
     State(cloud): State<Arc<Cloud>>,
     Path(host_id): Path<String>,
     headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Json<TicketResponse>, ApiError> {
     let user_id = cloud.user(&headers).await?;
+    // Clients before relay channels send no body.
+    let TicketRequest { channel } = match body.is_empty() {
+        true => TicketRequest::default(),
+        false => serde_json::from_slice(&body).map_err(|_| ApiError::invalid("Malformed ticket request"))?,
+    };
     // Someone else's host is indistinguishable from no host.
     if !cloud.registry.get(&host_id).is_some_and(|h| h.user_id == user_id) {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "not_found", "Host not found"));
@@ -356,8 +375,12 @@ async fn create_ticket(
     if !cloud.presence.is_online(&host_id) {
         return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "host_offline", "The host is offline"));
     }
+    let _ = tokio::time::timeout(USAGE_LOAD_TIMEOUT, cloud.usage.load(&user_id)).await;
+    if let Some(quota) = cloud.usage.blocked(&user_id, channel) {
+        return Err(ApiError::quota_exceeded(quota));
+    }
     let ttl = cloud.timing.ticket_ttl;
-    let ticket = cloud.tickets.issue(Ticket { host_id, user_id }, ttl).ok_or_else(ApiError::busy)?;
+    let ticket = cloud.tickets.issue(Ticket { host_id, user_id, channel }, ttl).ok_or_else(ApiError::busy)?;
     Ok(Json(TicketResponse { ticket, expires_at: hub::unix_now() + ttl.as_secs() }))
 }
 
@@ -488,7 +511,7 @@ async fn device_relay(cloud: Arc<Cloud>, mut ws: WebSocket) {
         Ok(_) => return close(ws, CLOSE_PROTOCOL, "malformed").await,
         Err((code, reason)) => return close(ws, code, reason).await,
     };
-    let Some(Ticket { host_id, user_id }) = cloud.tickets.take(&ticket) else {
+    let Some(Ticket { host_id, user_id, channel }) = cloud.tickets.take(&ticket) else {
         return close(ws, CLOSE_UNAUTHENTICATED, "unauthenticated").await;
     };
     // Held for the relay's life.
@@ -502,7 +525,7 @@ async fn device_relay(cloud: Arc<Cloud>, mut ws: WebSocket) {
     let Some((id, token, arrived)) = cloud.rendezvous.open(&host_id, cloud.timing.dial_timeout) else {
         return close(ws, CLOSE_HOST_OFFLINE, "host_offline").await;
     };
-    if control.try_send(ControlFromCloud::Dial { rendezvous: id.clone(), token }).is_err() {
+    if control.try_send(ControlFromCloud::Dial { rendezvous: id.clone(), token, channel }).is_err() {
         cloud.rendezvous.cancel(&id);
         return close(ws, CLOSE_HOST_OFFLINE, "host_offline").await;
     }
@@ -521,8 +544,8 @@ async fn device_relay(cloud: Arc<Cloud>, mut ws: WebSocket) {
             return close(ws, 1012, "restarting").await;
         }
     };
-    tracing::info!(relay = %id, host_id = %host_id, "[cloud] relay open");
-    pipe(&cloud, ws, host, &user_id).await;
+    tracing::info!(relay = %id, host_id = %host_id, channel = channel.as_str(), "[cloud] relay open");
+    pipe(&cloud, ws, host, &user_id, channel).await;
     tracing::info!(relay = %id, host_id = %host_id, "[cloud] relay closed");
 }
 
@@ -543,43 +566,58 @@ async fn host_relay(cloud: Arc<Cloud>, mut ws: WebSocket) {
 }
 
 /// Relay binary messages both ways until either side closes, counting their
-/// bytes against `user_id`. Both ends learn the other is ready; after that,
-/// any text message is a protocol violation.
-async fn pipe(cloud: &Cloud, mut device: WebSocket, mut host: WebSocket, user_id: &str) {
+/// bytes against `user_id` on `channel`. Both ends learn the other is ready;
+/// after that, any text message is a protocol violation. A relay that
+/// reaches a limit of the account's plan is closed at both ends with
+/// [`CLOSE_QUOTA_EXCEEDED`].
+async fn pipe(cloud: &Cloud, mut device: WebSocket, mut host: WebSocket, user_id: &str, channel: Channel) {
     if !send_json(&mut host, &RelayReady::Ready).await {
         return close(device, CLOSE_HOST_OFFLINE, "host_offline").await;
     }
     if !send_json(&mut device, &RelayReady::Ready).await {
         return close(host, 1000, "").await;
     }
-    let (device_tx, device_rx) = device.split();
-    let (host_tx, host_rx) = host.split();
+    let (mut device_tx, mut device_rx) = device.split();
+    let (mut host_tx, mut host_rx) = host.split();
     let mut shutdown = cloud.shutdown.clone();
-    tokio::select! {
-        _ = forward(device_rx, host_tx, Direction::DeviceToHost, cloud, user_id) => {}
-        _ = forward(host_rx, device_tx, Direction::HostToDevice, cloud, user_id) => {}
-        _ = crate::hub::stopped(&mut shutdown) => {}
+    let blocked = tokio::select! {
+        b = forward(&mut device_rx, &mut host_tx, Direction::DeviceToHost, cloud, user_id, channel) => b,
+        b = forward(&mut host_rx, &mut device_tx, Direction::HostToDevice, cloud, user_id, channel) => b,
+        _ = crate::hub::stopped(&mut shutdown) => false,
+    };
+    if blocked {
+        tracing::info!(channel = channel.as_str(), "[cloud] relay closed at the account's limit");
+        for tx in [&mut device_tx, &mut host_tx] {
+            let frame = CloseFrame { code: CLOSE_QUOTA_EXCEEDED, reason: "relay_quota_exceeded".into() };
+            let _ = tx.send(Message::Close(Some(frame))).await;
+        }
     }
 }
 
+/// Move messages from `from` to `to` until `from` closes, then pass its
+/// close on. `true` when the account reached a limit instead; the caller
+/// closes both ends.
 async fn forward(
-    mut from: SplitStream<WebSocket>,
-    mut to: SplitSink<WebSocket, Message>,
+    from: &mut SplitStream<WebSocket>,
+    to: &mut SplitSink<WebSocket, Message>,
     direction: Direction,
     cloud: &Cloud,
     user_id: &str,
-) {
+    channel: Channel,
+) -> bool {
     let (code, reason) = loop {
         match from.next().await {
             Some(Ok(Message::Binary(bytes))) => {
                 if let Some(tap) = &cloud.tap {
                     tap(direction, &bytes);
                 }
+                if cloud.usage.blocked(user_id, channel).is_some() {
+                    return true;
+                }
                 // Both directions leave the Cloud's network, so both count.
-                // Every relay is `control` until relay channels exist.
-                cloud.usage.add(user_id, Channel::Control, bytes.len() as u64);
+                cloud.usage.add(user_id, channel, bytes.len() as u64);
                 if to.send(Message::Binary(bytes)).await.is_err() {
-                    return;
+                    return false;
                 }
             }
             Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
@@ -588,4 +626,5 @@ async fn forward(
         }
     };
     let _ = to.send(Message::Close(Some(CloseFrame { code, reason: reason.into() }))).await;
+    false
 }

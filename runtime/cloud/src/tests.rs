@@ -19,7 +19,7 @@ use crate::auth::AuthConfig;
 use crate::proto::*;
 use crate::serve::{self, Running};
 use crate::server::{Config, Direction, Limits, Timing};
-use crate::usage::{self, Channel};
+use crate::usage::{self, Channel, PlanLimits};
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type Taps = Arc<Mutex<Vec<(Direction, Vec<u8>)>>>;
@@ -136,6 +136,10 @@ impl TestCloud {
     async fn ticket(&self, user: &str, host_id: &str) -> (u16, Value) {
         self.post(&tickets_path(host_id), Some(&jwt(user)), json!({})).await
     }
+
+    async fn browser_ticket(&self, user: &str, host_id: &str) -> (u16, Value) {
+        self.post(&tickets_path(host_id), Some(&jwt(user)), json!({"channel": "browser"})).await
+    }
 }
 
 /// A host stand-in: an id and an Ed25519 key.
@@ -199,7 +203,7 @@ impl FakeHost {
 
     /// Answer the next dial on `control` with a relay socket.
     async fn answer(&self, cloud: &TestCloud, control: &mut Ws) -> Ws {
-        let ControlFromCloud::Dial { rendezvous, token } = recv_json(control).await else { panic!("no dial") };
+        let ControlFromCloud::Dial { rendezvous, token, .. } = recv_json(control).await else { panic!("no dial") };
         let mut ws = cloud.ws(RELAY_HOST_PATH).await;
         send_json(&mut ws, &RelayHello::Host { rendezvous, token }).await;
         ws
@@ -474,7 +478,7 @@ async fn the_relay_joins_device_and_host_and_moves_opaque_bytes() {
 
 #[tokio::test]
 async fn relayed_bytes_count_against_the_devices_account_both_ways() {
-    let store = usage::tests::Fake::knowing(&["alice"]);
+    let store = usage::tests::Fake::with_limits(&["alice"], PlanLimits::default());
     let mut cloud = TestCloud::start_with(fast(), Limits::default(), Some(store.clone())).await;
     let host = FakeHost::new();
     host.enroll(&cloud, "alice").await;
@@ -503,6 +507,77 @@ async fn relayed_bytes_count_against_the_devices_account_both_ways() {
 }
 
 #[tokio::test]
+async fn tickets_name_their_channel_and_the_dial_carries_it() {
+    let cloud = TestCloud::start(fast()).await;
+    let host = FakeHost::new();
+    host.enroll(&cloud, "alice").await;
+    let mut control = host.control(&cloud).await;
+
+    // Clients before relay channels send no body: control.
+    let res = cloud.http.post(format!("{}{}", cloud.url, tickets_path(&host.host_id))).bearer_auth(jwt("alice"));
+    let res = res.send().await.unwrap();
+    assert_eq!(res.status().as_u16(), 200);
+    let ticket = res.json::<Value>().await.unwrap()["ticket"].as_str().unwrap().to_string();
+    let _dev = device(&cloud, &ticket).await;
+    let dial: ControlFromCloud = recv_json(&mut control).await;
+    assert!(matches!(dial, ControlFromCloud::Dial { channel: Channel::Control, .. }), "{dial:?}");
+
+    let ticket = cloud.browser_ticket("alice", &host.host_id).await.1["ticket"].as_str().unwrap().to_string();
+    let _dev = device(&cloud, &ticket).await;
+    let dial: ControlFromCloud = recv_json(&mut control).await;
+    assert!(matches!(dial, ControlFromCloud::Dial { channel: Channel::Browser, .. }), "{dial:?}");
+
+    let bad = cloud.post(&tickets_path(&host.host_id), Some(&jwt("alice")), json!({"channel": "video"})).await;
+    assert_eq!(bad.0, 400, "{}", bad.1);
+}
+
+#[tokio::test]
+async fn plan_limits_refuse_tickets_and_close_open_relays() {
+    let limits = PlanLimits { browser: Some(100), total: Some(1000), control_rate: None };
+    let store = usage::tests::Fake::with_limits(&["alice"], limits);
+    let cloud = TestCloud::start_with(fast(), Limits::default(), Some(store)).await;
+    let host = FakeHost::new();
+    host.enroll(&cloud, "alice").await;
+    let mut control = host.control(&cloud).await;
+    let open = async |control: &mut Ws, ticket: Value| {
+        let mut dev = device(&cloud, ticket["ticket"].as_str().unwrap()).await;
+        let mut relayed = host.answer(&cloud, control).await;
+        ready(&mut relayed).await;
+        ready(&mut dev).await;
+        (dev, relayed)
+    };
+
+    // A browser relay runs to the browser limit, then both ends close.
+    let (mut dev, mut relayed) = open(&mut control, cloud.browser_ticket("alice", &host.host_id).await.1).await;
+    dev.send(Message::Binary(vec![0; 100].into())).await.unwrap();
+    binary(&mut relayed).await;
+    dev.send(Message::Binary(vec![0; 1].into())).await.unwrap();
+    assert_eq!(closed(&mut dev).await, Some(CLOSE_QUOTA_EXCEEDED));
+    assert_eq!(closed(&mut relayed).await, Some(CLOSE_QUOTA_EXCEEDED));
+
+    let (status, body) = cloud.browser_ticket("alice", &host.host_id).await;
+    assert_eq!(status, 429, "{body}");
+    let error = &body["error"];
+    assert_eq!(error["code"], "relay_quota_exceeded");
+    assert_eq!(error["channel"], "browser");
+    assert_eq!(error["plan"], "free");
+    assert_eq!((error["used_bytes"].as_u64(), error["limit_bytes"].as_u64()), (Some(100), Some(100)));
+    assert!(error["resets_at"].as_u64().unwrap() > crate::hub::unix_now());
+
+    // Control still works up to the total, then stops too.
+    let (mut dev, mut relayed) = open(&mut control, cloud.ticket("alice", &host.host_id).await.1).await;
+    relayed.send(Message::Binary(vec![0; 900].into())).await.unwrap();
+    binary(&mut dev).await;
+    relayed.send(Message::Binary(vec![0; 1].into())).await.unwrap();
+    assert_eq!(closed(&mut dev).await, Some(CLOSE_QUOTA_EXCEEDED));
+    for (status, body) in [cloud.ticket("alice", &host.host_id).await, cloud.browser_ticket("alice", &host.host_id).await] {
+        assert_eq!(status, 429, "{body}");
+        assert_eq!(body["error"]["channel"], "total");
+        assert_eq!(body["error"]["used_bytes"], 1000);
+    }
+}
+
+#[tokio::test]
 async fn relay_failures_are_explicit() {
     let cloud = TestCloud::start(Timing { ticket_ttl: Duration::from_millis(300), ..fast() }).await;
     let host = FakeHost::new();
@@ -520,7 +595,7 @@ async fn relay_failures_are_explicit() {
 
     // The host never dials back: host_offline, and the dial is dead.
     let mut ws = device(&cloud, &ticket().await).await;
-    let ControlFromCloud::Dial { rendezvous, token } = recv_json(&mut control).await else { panic!() };
+    let ControlFromCloud::Dial { rendezvous, token, .. } = recv_json(&mut control).await else { panic!() };
     assert_eq!(closed(&mut ws).await, Some(CLOSE_HOST_OFFLINE));
     let mut late = cloud.ws(RELAY_HOST_PATH).await;
     send_json(&mut late, &RelayHello::Host { rendezvous, token }).await;
@@ -528,7 +603,7 @@ async fn relay_failures_are_explicit() {
 
     // A host socket with the wrong token is refused, and burns the dial.
     let mut ws = device(&cloud, &ticket().await).await;
-    let ControlFromCloud::Dial { rendezvous, token } = recv_json(&mut control).await else { panic!() };
+    let ControlFromCloud::Dial { rendezvous, token, .. } = recv_json(&mut control).await else { panic!() };
     let mut wrong = cloud.ws(RELAY_HOST_PATH).await;
     send_json(&mut wrong, &RelayHello::Host { rendezvous: rendezvous.clone(), token: "guess".into() }).await;
     assert_eq!(closed(&mut wrong).await, Some(CLOSE_UNAUTHENTICATED));
@@ -716,7 +791,7 @@ async fn relays_beyond_the_limit_are_refused_until_one_ends() {
     for _ in 0..50 {
         let mut ws = device(&cloud, &ticket(cloud.ticket("alice", &host.host_id).await.1)).await;
         match tokio::time::timeout(Duration::from_millis(300), recv_json::<ControlFromCloud>(&mut control)).await {
-            Ok(ControlFromCloud::Dial { rendezvous, token }) => {
+            Ok(ControlFromCloud::Dial { rendezvous, token, .. }) => {
                 let mut host_ws = cloud.ws(RELAY_HOST_PATH).await;
                 send_json(&mut host_ws, &RelayHello::Host { rendezvous, token }).await;
                 ready(&mut ws).await;

@@ -843,13 +843,16 @@ Migration: `runtime/cloud/supabase/migrations/`.
    1. A `browser` ticket is refused when browser usage or total usage is at
       its limit.
    2. A `control` ticket is refused when total usage is at its limit.
-   3. The refusal is `429` with:
+   3. The refusal is `429` in the Cloud's usual error body:
       ```json
-      { "error": "relay_quota_exceeded", "channel": "browser",
-        "plan": "free", "used_bytes": 5368709120, "limit_bytes": 5368709120,
-        "resets_at": "2026-12-12T00:00:00Z" }
+      { "error": { "code": "relay_quota_exceeded", "message": "…",
+        "channel": "browser", "plan": "free",
+        "used_bytes": 5368709120, "limit_bytes": 5368709120,
+        "resets_at": 1797033600 } }
       ```
-      `channel` is `browser` or `total`.
+      `channel` is `browser` or `total`; when both are reached it is
+      `total`, which stops every relay. `resets_at` is Unix seconds, like
+      the Cloud's other times.
 4. **Open connections** that cross a limit are closed with close code
    `4429`: only `browser` connections at the browser limit, every connection
    at the total limit.
