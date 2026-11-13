@@ -119,7 +119,7 @@ describe("browser panel", () => {
     await tick();
     render(
       <HostProvider value={controller}>
-        <BrowserPanel sessionId="s1" active />
+        <BrowserPanel workspaceId="w1" sessionId="s1" active />
       </HostProvider>,
     );
     await tick();
@@ -310,6 +310,51 @@ describe("browser panel", () => {
     expect(screen.getByRole("alertdialog", { name: "Sign in to the proxy" })).toBeTruthy();
   });
 
+  it("picks workspace files for a page's file input", async () => {
+    const t = new StreamingTransport();
+    t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
+    t.handlers["browser.view.close"] = () => ({});
+    t.handlers["browser.ui.answer"] = () => ({});
+    t.handlers["workspace.tree"] = (p) =>
+      p.path === "assets"
+        ? [{ kind: "file", name: "logo.png", path: "assets/logo.png" }]
+        : [
+            { kind: "file", name: "README.md", path: "README.md" },
+            { kind: "dir", name: "assets", path: "assets", children: [] },
+          ];
+    await mount(t, [tab("a")]);
+    await act(async () =>
+      t.frame({
+        type: "browser.ui.request",
+        request: {
+          request_id: "ui-1",
+          tab_id: "a",
+          owner: { kind: "session", session_id: "s1" },
+          kind: "file_chooser",
+          multiple: true,
+          url: "https://example.com/upload",
+        },
+      } as never),
+    );
+    await tick();
+    expect(screen.getByRole("alertdialog", { name: "Choose files" })).toBeTruthy();
+    // Folders first.
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual(["assets", "README.md"]);
+    expect((screen.getByText("Choose") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByText("README.md"));
+    fireEvent.click(screen.getByText("assets"));
+    await tick();
+    expect(t.calls.filter((c) => c.op === "workspace.tree").at(-1)!.params).toEqual({ workspace_id: "w1", path: "assets", max_depth: 1 });
+    fireEvent.click(screen.getByText("logo.png"));
+    expect(screen.getByText("2 files")).toBeTruthy();
+    fireEvent.click(screen.getByText("Choose"));
+    await tick();
+    expect(t.calls.find((c) => c.op === "browser.ui.answer")!.params).toEqual({
+      request_id: "ui-1",
+      answer: { kind: "file_chooser", accept: true, workspace_id: "w1", paths: ["README.md", "assets/logo.png"] },
+    });
+  });
+
   it("says when the host refuses the browser", async () => {
     const t = new StreamingTransport();
     const client = new HostClient({ transport: t });
@@ -318,7 +363,7 @@ describe("browser panel", () => {
     await tick();
     render(
       <HostProvider value={controller}>
-        <BrowserPanel sessionId={null} active />
+        <BrowserPanel workspaceId="w1" sessionId={null} active />
       </HostProvider>,
     );
     await tick();

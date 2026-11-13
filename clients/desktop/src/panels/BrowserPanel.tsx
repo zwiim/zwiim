@@ -3,10 +3,10 @@
 // from the Host's engine. Both the person and the session's agent drive a
 // session tab; there is no control step between them. What a page asks of a
 // person (its `alert`, `confirm`, `prompt` or leave-page dialog, a site's
-// sign-in) is drawn over its tab.
+// sign-in, a file input's picker of workspace files) is drawn over its tab.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, ExternalLink, Globe, Plus, RotateCw, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, ChevronLeft, ExternalLink, File, Folder, Globe, Plus, RotateCw, X } from "lucide-react";
 import {
   personalTabs,
   sessionTabs,
@@ -19,6 +19,7 @@ import {
   type BrowserTabOwner,
   type BrowserUiAnswer,
   type BrowserUiRequest,
+  type FileTreeNode,
 } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { openLink, isOpenableLink } from "@/lib/bridge";
@@ -46,9 +47,12 @@ const RESIZE_SETTLE_MS = 150;
 const REOPEN_MS = 1000;
 
 export function BrowserPanel({
+  workspaceId,
   sessionId,
   active,
 }: {
+  /** The workspace on screen: where a page's file input picks from. */
+  workspaceId: string;
   /** The chat on screen: its tabs show first, and a new tab is its own. */
   sessionId: string | null;
   /** On screen; a hidden panel streams nothing. */
@@ -200,6 +204,7 @@ export function BrowserPanel({
               <PageRequest
                 key={r.request_id}
                 request={r}
+                workspaceId={workspaceId}
                 disabled={!online}
                 onAnswer={(answer) =>
                   run(async () => {
@@ -296,14 +301,28 @@ function EngineNotice({
 type Answer = (answer: BrowserUiAnswer) => Promise<void>;
 type DialogRequest = Extract<BrowserUiRequest, { kind: "dialog" }>;
 type AuthRequest = Extract<BrowserUiRequest, { kind: "auth" }>;
+type ChooserRequest = Extract<BrowserUiRequest, { kind: "file_chooser" }>;
 
 /** What a tab waits on, over the tab: the first answer from any client wins. */
-function PageRequest({ request, disabled, onAnswer }: { request: BrowserUiRequest; disabled: boolean; onAnswer: Answer }) {
-  return request.kind === "dialog" ? (
-    <PageDialog request={request} disabled={disabled} onAnswer={onAnswer} />
-  ) : (
-    <SignIn request={request} disabled={disabled} onAnswer={onAnswer} />
-  );
+function PageRequest({
+  request,
+  workspaceId,
+  disabled,
+  onAnswer,
+}: {
+  request: BrowserUiRequest;
+  workspaceId: string;
+  disabled: boolean;
+  onAnswer: Answer;
+}) {
+  switch (request.kind) {
+    case "dialog":
+      return <PageDialog request={request} disabled={disabled} onAnswer={onAnswer} />;
+    case "auth":
+      return <SignIn request={request} disabled={disabled} onAnswer={onAnswer} />;
+    case "file_chooser":
+      return <FileChooser request={request} workspaceId={workspaceId} disabled={disabled} onAnswer={onAnswer} />;
+  }
 }
 
 /** One answer at a time. */
@@ -432,6 +451,107 @@ function SignIn({ request, disabled, onAnswer }: { request: AuthRequest; disable
         </Button>
         <Button type="submit" size="sm" disabled={busy}>
           Sign in
+        </Button>
+      </div>
+    </Sheet>
+  );
+}
+
+/**
+ * A page's file input: the workspace's files, one folder at a time. The Host
+ * hands the page only files inside the workspace.
+ */
+function FileChooser({
+  request,
+  workspaceId,
+  disabled,
+  onAnswer,
+}: {
+  request: ChooserRequest;
+  workspaceId: string;
+  disabled: boolean;
+  onAnswer: Answer;
+}) {
+  const controller = useController();
+  const [folder, setFolder] = useState("");
+  const [nodes, setNodes] = useState<FileTreeNode[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [picked, setPicked] = useState<string[]>([]);
+  const { busy, send } = useAnswer(disabled, onAnswer);
+
+  useEffect(() => {
+    let live = true;
+    setNodes(null);
+    setError(null);
+    controller.client
+      .request("workspace.tree", { workspace_id: workspaceId, ...(folder ? { path: folder } : {}), max_depth: 1 })
+      .then((n) => live && setNodes([...n].sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "dir" ? -1 : 1))))
+      .catch((e) => live && setError(errorMessage(e)));
+    return () => {
+      live = false;
+    };
+  }, [controller, workspaceId, folder]);
+
+  const toggle = (path: string) =>
+    setPicked((p) => (p.includes(path) ? p.filter((x) => x !== path) : request.multiple ? [...p, path] : [path]));
+  const cancel = () => void send({ kind: "file_chooser", accept: false });
+  const up = folder.includes("/") ? folder.slice(0, folder.lastIndexOf("/")) : "";
+
+  return (
+    <Sheet
+      label={request.multiple ? "Choose files" : "Choose a file"}
+      onAccept={() => {
+        if (picked.length > 0) void send({ kind: "file_chooser", accept: true, workspace_id: workspaceId, paths: picked });
+      }}
+      onCancel={cancel}
+    >
+      <div className="text-muted-foreground flex h-6 items-center gap-1 text-xs">
+        {folder && (
+          <button type="button" className={CLOSE} title="Up" aria-label="Up" onClick={() => setFolder(up)}>
+            <ChevronLeft className="size-3.5" />
+          </button>
+        )}
+        <span className="truncate font-mono">{folder || "Workspace"}</span>
+      </div>
+      <ul className="border-border -mx-1 max-h-64 min-h-24 overflow-y-auto rounded-md border p-1" aria-label="Files">
+        {error ? (
+          <li className="text-destructive text-ui p-2">{error}</li>
+        ) : !nodes ? null : nodes.length === 0 ? (
+          <li className="text-muted-foreground text-ui p-2">This folder is empty.</li>
+        ) : (
+          nodes.map((n) => (
+            <li key={n.path}>
+              <button
+                type="button"
+                className={cn(
+                  "text-ui flex w-full items-center gap-2 rounded px-2 py-1 text-left transition-colors",
+                  picked.includes(n.path) ? "bg-accent font-medium" : "hover:bg-muted",
+                )}
+                aria-pressed={n.kind === "file" ? picked.includes(n.path) : undefined}
+                onClick={() => (n.kind === "dir" ? setFolder(n.path) : toggle(n.path))}
+                onDoubleClick={() => {
+                  if (n.kind === "file" && !request.multiple)
+                    void send({ kind: "file_chooser", accept: true, workspace_id: workspaceId, paths: [n.path] });
+                }}
+              >
+                {n.kind === "dir" ? (
+                  <Folder className="text-muted-foreground size-3.5 shrink-0" />
+                ) : (
+                  <File className="text-muted-foreground size-3.5 shrink-0" />
+                )}
+                <span className="truncate">{n.name}</span>
+              </button>
+            </li>
+          ))
+        )}
+      </ul>
+      <div className="flex items-center justify-end gap-2">
+        {picked.length > 1 && <span className="text-muted-foreground mr-auto text-xs">{picked.length} files</span>}
+        <Button type="button" size="sm" variant="secondary" disabled={busy} onClick={cancel}>
+          Cancel
+        </Button>
+        <Button type="submit" size="sm" disabled={busy || picked.length === 0}>
+          Choose
         </Button>
       </div>
     </Sheet>

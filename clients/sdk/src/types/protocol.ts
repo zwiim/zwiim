@@ -322,17 +322,28 @@ export type BrowserUiRequest = {
       /** The page being loaded. */
       url: string;
     }
+  | {
+      /** A page's `<input type=file>` asks for files. Cancelled after 5 minutes unanswered. */
+      kind: "file_chooser";
+      /** More than one file may be picked. */
+      multiple: boolean;
+      /** The page that asked. */
+      url: string;
+    }
 );
 
 /**
  * The answer to a {@link BrowserUiRequest}, of its kind. A dialog: OK (or
  * Leave) when `accept`; `text` answers a `prompt`. A sign-in: the
  * credentials when `accept`, Cancel otherwise. They reach the Host's engine
- * only; nothing stores them.
+ * only; nothing stores them. A file chooser: up to 100 files in workspace
+ * `workspace_id`, relative to its root (a session's tab: its session's
+ * workspace only), when `accept`; the input stays as it was otherwise.
  */
 export type BrowserUiAnswer =
   | { kind: "dialog"; accept: boolean; text?: string }
-  | { kind: "auth"; accept: boolean; username?: string; password?: string };
+  | { kind: "auth"; accept: boolean; username?: string; password?: string }
+  | { kind: "file_chooser"; accept: boolean; workspace_id?: string; paths?: string[] };
 
 /** `browser.subscribe` frames. Events carry a tab's whole state. */
 export type BrowserFrame =

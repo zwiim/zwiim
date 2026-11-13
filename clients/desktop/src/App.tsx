@@ -1018,7 +1018,7 @@ function WorkspacePanel({
               )}
               {visited.has("browser") && (
                 <TabPane active={tab === "browser"}>
-                  <BrowserPanel sessionId={sessionId} active={tab === "browser" && !collapsed} />
+                  <BrowserPanel workspaceId={workspaceId} sessionId={sessionId} active={tab === "browser" && !collapsed} />
                 </TabPane>
               )}
             </div>
