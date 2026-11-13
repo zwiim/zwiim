@@ -1134,8 +1134,8 @@ A tab is `{ tab_id, owner, url, title, position, loading, discarded,
 crashed }`, its owner `{ kind: "session", session_id }` or
 `{ kind: "personal" }`. The engine is `{ state }`: `stopped`, `starting`,
 `running` with `version`, or `failed` with `code` and `message`. The first
-download shows as `starting`; a `downloading` state with progress comes with
-the desktop's setup screen (P1.5).
+download shows as `starting`; a `downloading` state with progress is not
+built yet (the desktop's notice says the first start downloads).
 
 Events go to sockets that sent `browser.subscribe`, not through the Host
 feed, so the feed's `seq` counts the same events for every device. The
@@ -1168,10 +1168,11 @@ Device rights: `browser_access` on trusted devices, set by `device.update`
 
 ## 19. Clients
 
-1. **Desktop:** a `BrowserPanel` beside `TerminalPanel` in `App.tsx`, with a
-   tab strip grouped by session, an address bar, back, forward and reload,
-   "Share with agent", "Take over", "Open in my browser", find, print and a
-   picker. `TerminalPanel` opens detected previews in this panel instead of
+1. **Desktop:** a `BrowserPanel`, the Browser view beside Files, Diff and
+   Git in the workspace panel (P1.5), with a tab strip of the chat's tabs
+   then the person's, an address bar, back, forward and reload,
+   "Share with agent", "Open in my browser", find, print and a picker
+   ("Take over" is deferred with the lease, 7.5). `TerminalPanel` opens detected previews in this panel instead of
    the system browser.
 2. **Phone:** a Browser screen per session, reached from the session and from
    a "Preview" chip when a dev server is detected. It holds Live App (the

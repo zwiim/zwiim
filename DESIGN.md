@@ -828,6 +828,19 @@ glyph, a title, one line, one action.
   in the preview panel. A workspace image linked in the agent's text shows
   nothing. An image with no row (a message's own image part, a result's extra
   images) gets the same chip.
+- Desktop's **Browser** view (Globe) is the fourth view beside Files, Diff
+  and Git. Its tab strip matches the terminals' (the selected tab `accent`,
+  a close X on each); the person's own tabs read `Mine · ` in `mut` before
+  their title, after the chat's tabs. Under it, an address bar: back,
+  forward, reload (stop while loading) as ghost icon buttons, the URL in mono
+  12 in an input, and "Open in my browser" (ExternalLink). The page fills the
+  rest, drawn as large as fits and centred. Notices sit in the middle in
+  `mut` `ui`: no tabs (Globe, "No tabs open.", `secondary` **New tab**),
+  starting ("Starting the browser… The first start downloads it, which can
+  take a minute."), could not start (`destructive` line, the Host's message,
+  **Try again**), crashed and asleep (**Reload**, **Load it again**). The
+  page takes the one focus ring when focused. Hidden or collapsed, the view
+  streams nothing.
 - Desktop's PR banner (V2.3) sits above the Files / Diff / Git views: PR icon,
   mono `#12` and the title (opens the PR), a `done` **Merge** button (tooltip
   names the method, or GitHub's reason when disabled), then the status and check

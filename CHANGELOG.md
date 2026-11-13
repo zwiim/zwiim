@@ -12,6 +12,10 @@ have their own versions and are listed under Compatibility.
 - Find in file previews: ⌘F (Ctrl+F) on desktop searches text, Markdown,
   Word, spreadsheets and PDFs; replace (⌘⌥F, Ctrl+H) changes text files and
   CSV/TSV, written only on Save. Mobile finds in text files.
+- A browser in the desktop's workspace panel: the Host runs the pages (it
+  downloads its engine on first use) and streams them to the Browser view,
+  where you click, type and scroll as in any browser. Tabs belong to the
+  chat or to you; ⌘L, ⌘T, ⌘W, ⌘R, ⌘[ and ⌘] work in the view.
 
 ### Changed
 - None.
@@ -23,7 +27,8 @@ have their own versions and are listed under Compatibility.
 - None.
 
 ### Compatibility
-- None.
+- Protocol revision 33 adds the browser (capability `browser`). An older
+  Host shows the Browser view's update notice.
 
 ### Provider changes
 - None.
