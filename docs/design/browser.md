@@ -1097,9 +1097,9 @@ kept out by review, and Widevine by downloading the headless shell only.
 
 ## 18. Protocol changes
 
-Revision 33 (from 32), capability `browser`, mirrored in `clients/sdk`.
-Later items add their operations and events at the revision they ship in,
-and P2a adds `relay_channels`. Names on the wire are snake_case like the rest
+Revision 33 (from 32), capability `browser`, mirrored in `clients/sdk`. The
+browser ships as one change, so its later items join revision 33 too until it
+is released; P2a adds `relay_channels`. Names on the wire are snake_case like the rest
 of the protocol (`tab_id`, `session_id`).
 
 Operations:
@@ -1110,7 +1110,12 @@ Operations:
    `back`, `forward`, `reload`, `stop` (P1.3; `viewport` comes with P1.4)
 3. `browser.engine.reset`: clears a failure, `crash_loop` too (P1.3)
 4. `browser.tab.share { tab_id, session_id, level }`, `browser.tab.unshare`
-5. `browser.view.open { tab_id, viewport }`, `browser.view.close`
+5. `browser.view.open { tab_id, viewport }` → `{ stream_id }`,
+   `browser.view.close { stream_id }` (P1.4). `viewport` is
+   `{ width, height, scale? }` in CSS pixels. The stream socket takes the
+   viewer's input as JSON text: `mouse` (`move`, `down`, `up`, `wheel`),
+   `key` (`down`, `up`, with the DOM's `key`, `code` and `keyCode`), `text`
+   and `viewport`; input it cannot deliver gets an `error` text message.
 6. `browser.control.claim`, `browser.control.release`
 7. `browser.ui.answer { tab_id, request_id, answer }` (dialogs, pickers,
    permissions, auth, takeover)
@@ -1147,7 +1152,8 @@ Until P2a gives devices `browser_access`, every `browser.*` operation and
 `browser.subscribe` need local host authority, so a paired phone sees no tab
 addresses.
 
-Socket: `/zwiim/v1/browser/stream/<streamId>`, loopback only. Remote viewers
+Socket: `/zwiim/v1/browser/stream/<stream_id>`, subprotocol
+`zwiim-browser-stream`, loopback only. Remote viewers
 get the same binary messages on the `browser` channel.
 
 Device rights: `browser_access` on trusted devices, set by `device.update`

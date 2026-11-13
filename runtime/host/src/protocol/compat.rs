@@ -314,8 +314,14 @@ use serde::{Deserialize, Serialize};
 /// or a `browser.error {error}`. Refused with `tab_not_found`,
 /// `unsupported_url` or an engine setup code (`download_offline`,
 /// `checksum_mismatch`, `disk_full`, `unsupported_platform`, `crash_loop`,
-/// `setup_failed`, `engine_error`). Host only for now: paired devices are
-/// refused with `permission_denied`.
+/// `setup_failed`, `engine_error`). `browser.view.open {tab_id, viewport}`
+/// (`{width, height, scale?}` in CSS pixels) returns `{stream_id}`, and one
+/// viewer opens `/zwiim/v1/browser/stream/<stream_id>` (subprotocol
+/// `zwiim-browser-stream`) for the tab's frames as binary messages, a
+/// 34-byte little-endian header then the JPEG, and sends its input as JSON
+/// text; `browser.view.close {stream_id}` ends it (`stream_not_found`,
+/// `stream_attached`, `invalid_viewport`). Host only for now: paired
+/// devices are refused with `permission_denied`.
 pub const PROTOCOL_REVISION: u32 = 33;
 
 /// Oldest client revision this Host serves. Raise only after a release that

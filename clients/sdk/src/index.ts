@@ -1,4 +1,11 @@
 export * from "./types/protocol";
+export {
+  BROWSER_FRAME_HEADER_LEN,
+  BROWSER_FRAME_VERSION,
+  decodeBrowserFrame,
+  type BrowserFrame,
+  type BrowserFrameResult,
+} from "./browser/frame";
 export * from "./transport/transport";
 export { LocalTransport, type LocalTransportOptions } from "./transport/local";
 export { RelayTransport, type RelayTransportOptions } from "./transport/relay";

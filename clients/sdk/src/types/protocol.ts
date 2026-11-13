@@ -79,6 +79,12 @@ export type HostErrorCode =
   | "tab_not_found"
   /** `browser.tab.open` / `browser.tab.navigate`: only http, https and about:blank open. */
   | "unsupported_url"
+  /** `browser.view.open` / a stream's `viewport` input: 100 to 8192 pixels each way, scale 0.5 to 4. */
+  | "invalid_viewport"
+  /** `browser.view.close` / the stream socket: no such stream (they expire 30 s unopened). */
+  | "stream_not_found"
+  /** The stream socket: the stream already has its viewer. */
+  | "stream_attached"
   | "internal";
 
 export interface WireError {
@@ -235,6 +241,49 @@ export type BrowserEngine =
   | { state: "starting" }
   | { state: "running"; version: string }
   | { state: "failed"; code: BrowserEngineFailure; message: string };
+
+/** A browser view's page size in CSS pixels, and its device pixel ratio (default 1). */
+export interface BrowserViewport {
+  width: number;
+  height: number;
+  scale?: number;
+}
+
+/** Alt 1, Ctrl 2, Meta 4, Shift 8, as CDP counts them. */
+export type BrowserModifiers = number;
+
+/**
+ * Input a viewer sends as JSON text on its stream socket. Coordinates are CSS
+ * pixels of the page: map the pointer through the frame header first.
+ */
+export type BrowserInput =
+  | {
+      type: "mouse";
+      action: "move" | "down" | "up" | "wheel";
+      x: number;
+      y: number;
+      button?: "none" | "left" | "middle" | "right" | "back" | "forward";
+      /** Buttons held, as `MouseEvent.buttons`. */
+      buttons?: number;
+      click_count?: number;
+      modifiers?: BrowserModifiers;
+      delta_x?: number;
+      delta_y?: number;
+    }
+  | {
+      type: "key";
+      action: "down" | "up";
+      /** `KeyboardEvent.key` and `.code`. */
+      key: string;
+      code: string;
+      /** What the key types, for a key that types something. */
+      text?: string;
+      modifiers?: BrowserModifiers;
+      /** `KeyboardEvent.keyCode`; Enter, Backspace and the arrows need it. */
+      key_code?: number;
+    }
+  | { type: "text"; text: string }
+  | ({ type: "viewport" } & BrowserViewport);
 
 /** `browser.subscribe` frames. Events carry a tab's whole state. */
 export type BrowserFrame =
@@ -2062,6 +2111,13 @@ export interface Operations {
   ];
   /** Clear an engine failure, `crash_loop` too, so the next tab starts it again. */
   "browser.engine.reset": [Record<string, never>, { engine: BrowserEngine }];
+  /**
+   * A stream of the tab at `viewport`, for one viewer to open at
+   * `/zwiim/v1/browser/stream/<stream_id>` within 30 s. Loads a discarded tab.
+   */
+  "browser.view.open": [{ tab_id: string; viewport: BrowserViewport }, { stream_id: string }];
+  /** End the stream and its socket. */
+  "browser.view.close": [{ stream_id: string }, Record<string, never>];
 }
 
 export type OpName = keyof Operations;
