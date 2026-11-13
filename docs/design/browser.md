@@ -717,14 +717,21 @@ instance" alone does not cap memory. The governor does.
 1. Every 5 s the governor reads the RSS of every process in Chromium's process
    group (`proc_pidinfo`). CDP gives no per-tab memory and no pid, so this is
    per tree and per renderer pid only.
-2. It listens to `DISPATCH_SOURCE_TYPE_MEMORYPRESSURE` (WARN, CRITICAL)
-   through `dispatch2`.
+2. It reads the system's memory pressure (WARN, CRITICAL) at the same
+   time, from `kern.memorystatus_vm_pressure_level`. Polling every 5 s
+   needs no new dependency; `DISPATCH_SOURCE_TYPE_MEMORYPRESSURE` through
+   `dispatch2` would react sooner if that ever matters.
+3. Built in `browser/governor.rs` (P1.11): the engine leads its own process
+   group, so its tree is that group (`proc_listpids`), measured with
+   `proc_pidinfo`.
 
 ### 11.2 Budget
 
-Default `min(25% of RAM, 6 GB)`, a setting. `--renderer-process-limit` is set
+Default `min(25% of RAM, 6 GB)`. `--renderer-process-limit` is set
 from it at launch (about one renderer per 300 MB of budget, at least 4).
-Caps: 8 tabs per session, 30 in total, both settings.
+Caps: 8 tabs per session, 30 in total (`too_many_tabs`). The budget and the
+caps are fixed for now; making them settings waits until someone needs
+other values. Tabs a page opens itself (popups) are not capped yet.
 
 ### 11.3 Ladder
 
@@ -740,22 +747,31 @@ the budget, or on a pressure event:
 5. On CRITICAL: discard everything except the tabs in use.
 6. If one renderer alone is over half the budget, its tabs show "This page is
    using too much memory" with Reload and Close. Nothing is killed silently.
+   Not built yet: CDP names no renderer pid per tab.
 
-"In use" means viewed, driven by an agent, or downloading. Tabs in use are
-never frozen or discarded.
+Rungs 1 to 5 are built (P1.11). New tabs are refused with
+`browser_memory_full`, whose message names the owners holding the most
+loaded tabs; a discarded tab shows "put to sleep" and loads again when
+used, and a frozen one wakes first.
+
+"In use" means viewed, driven by an agent (a tool used it in the last 2
+minutes), or downloading. Tabs in use are never frozen or discarded.
 
 ### 11.4 Priority
 
 1. The whole tree runs at `nice +5`, so the Host, agents and the relay keep
-   their CPU when a page spins.
+   their CPU when a page spins. The engine starts at it and its processes
+   inherit it (built, P1.11).
 2. When no tab is being viewed and no agent is using the browser, the tree
    moves to `PRIO_DARWIN_BG` (throttles CPU, disk and network). It returns to
    normal on the first view or tool call. P0 found that Chromium keeps the
    priority it inherits, but `setpriority` on the browser process reaches
    only children started afterwards: existing GPU, utility and renderer
    processes keep theirs. So the Host sets it on every process of the tree
-   (the browser's descendants by parent pid), and on the browser at spawn
-   so new renderers inherit it.
+   (the engine's process group), and on the browser at spawn
+   so new renderers inherit it. Built (P1.11): after 30 s with no tab
+   viewed and no tool used, every process of the engine's group gets
+   `PRIO_DARWIN_BG`, set again each check so new processes get it too.
 
 ### 11.5 Other platforms
 
@@ -1291,7 +1307,9 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 9. Deferred: control lease and `browser_request_takeover` (see below).
 10. Site policy through `Fetch`, with the strict site list. Done, with
     asking off by default (decision 16).
-11. Memory governor and priority.
+11. Memory governor and priority. Done: measuring, the ladder's first five
+    rungs, tab caps and priority. The per-renderer notice and budget
+    settings are not built (11.2, 11.3).
 12. Dev-server-to-worktree mapping and auto-open in the session tab.
 13. Print to PDF, drag and drop.
 14. Remove the dead upstream webview modules.
