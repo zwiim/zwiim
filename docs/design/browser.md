@@ -78,7 +78,7 @@ packages from them, and nothing that ties us to their licences.
 | Frame credit window, pause on queueing, probe when acks stop | Orca | Per-viewer credit (7.3) |
 | One engine, a storage partition per task | Atlas, VS Code ephemeral agent sessions | One Chromium, one `BrowserContext` per session (6) |
 | Human tabs private until "Share with agent" | VS Code | Personal tabs need an explicit grant; session tabs are the agent's own (10.1) |
-| Approve sites, not clicks; localhost free | Claude desktop, Codex | Same, enforced at the network layer, not by URL checks (13.2) |
+| Approve sites, not clicks; localhost free | Claude desktop, Codex | Optional (decision 16): off by default, enforced at the network layer, not by URL checks (13.2) |
 | Allow-lists escape via redirects | Cursor (documented) | Check every document request with CDP `Fetch` (13.2) |
 | Take over and hand back, with a timeout | Replit, Operator, Cursor | Control lease in the Host (7.5) |
 | Lease generation invalidates the agent's element refs | T3 Code | Same (7.5) |
@@ -798,26 +798,40 @@ else in the design is macOS-specific.
 
 ### 13.2 Site policy
 
-1. Allowed without asking: the workspace's own preview servers (ports the
-   `services` registry maps to this workspace, 10.5) and loopback origins the
-   person has approved. Other loopback ports, private and link-local ranges
-   (including `169.254.169.254`) and `.local` names need approval like any
-   new site, because they reach local admin ports and metadata services.
-   The check uses the resolved address, so a public name that resolves to
-   loopback (DNS rebinding) is treated as loopback.
-2. External origins in session tabs: the first navigation an agent makes to a
-   new site needs approval (once, always, deny), subdomains separately, using
-   the upstream `policy` rule table. Navigations the person makes need none.
-3. Enforced with `Fetch.requestPaused` on every main-frame and subframe
-   document request in session contexts, so redirects, `location =` and link
-   clicks are all checked, not only the URL the agent asked for.
-4. Administrators can ship a policy file (upstream `policy`) with allow and
-   deny lists.
-5. Strict site list (optional, per session). The person sets a list of
-   origins in the session's browser settings. Agent navigations to anything
-   else are refused with `site_not_allowed`, without asking, and the
-   workspace's own preview servers stay allowed. Navigations the person
-   makes are not limited.
+Agents are not stopped by site prompts by default (decision 16). The policy
+is enforced with `Fetch.requestPaused` on every document request of every
+tab (`browser/sites.rs` decides, the service gathers its inputs), so
+redirects, `location =` and link clicks are checked, not only the URL the
+agent asked for. Each load counts as whoever last acted on the tab: the
+person's clicks, keys and address-bar navigations are theirs, an agent's
+tool actions and navigations the agent's; a tab nobody acted on yet is its
+opener's, and a popup its opener tab's.
+
+1. Administrator blocks: the policy file (upstream `policy`) blocks sites in
+   every tab, for the person and the agent alike (`browser_blocked`).
+2. The person's navigations and frames inside a page are not limited
+   further.
+3. The session's own dev servers are always allowed: a loopback port whose
+   server runs from the session's worktree (`listener.rs`).
+4. Strict site list (optional, per session). The person sets it from the
+   shield button in the Browser panel's tab strip (`browser.sites.set`).
+   Agent loads of anything else are refused with `browser_site_not_allowed`,
+   without asking; the person's navigations are not limited.
+5. Asking (optional, Settings > Advanced, `browser.agent_ask_sites`). The
+   first agent load of a site nobody allowed for the session waits for the
+   person: Allow (the session), Always allow (every session, kept in
+   `browser_sites`) or Deny (the session, `browser_site_denied`). A site is
+   its host and port, so subdomains are asked separately. Loopback,
+   private and link-local addresses (including `169.254.169.254`) and
+   `.local` names are asked about like any site, and marked as local.
+   Unanswered for 5 minutes is a deny.
+6. A listed or allowed name that resolves to a local address (DNS rebinding)
+   counts as not listed: refused under a strict list, asked about again
+   when asking is on.
+
+Agent navigations are checked before they start, so the agent gets the
+error rather than an error page; loads an action leads to that are refused
+come back in the action's effects.
 
 ### 13.3 Data
 
@@ -1275,7 +1289,8 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 8. Action side effects, `expect_url`, typing guard, password-field guard,
    and `browser_network_log`. Done.
 9. Deferred: control lease and `browser_request_takeover` (see below).
-10. Site policy through `Fetch`, with the strict site list.
+10. Site policy through `Fetch`, with the strict site list. Done, with
+    asking off by default (decision 16).
 11. Memory governor and priority.
 12. Dev-server-to-worktree mapping and auto-open in the session tab.
 13. Print to PDF, drag and drop.
@@ -1359,6 +1374,11 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
     `browser.agent_passwords` decides, off by default; only the person
     changes it, from Settings, and no agent tool can. The browser keeps no
     passwords and reads none from other browsers.
+16. Site prompts ask no one by default either. Agents open any site except
+    what an administrator's policy blocks or a session's strict site list
+    leaves out. The person can turn on "Ask before agents open new sites"
+    (`browser.agent_ask_sites`) to be asked the first time an agent opens a
+    site in a session (13.2).
 
 Not decided yet, and not blocking: audio in Agent View, DevTools on the
 phone, a camera or mic source for pages, and Linux support for the governor.
