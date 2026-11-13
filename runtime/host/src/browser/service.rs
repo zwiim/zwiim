@@ -1296,7 +1296,7 @@ fn owner_key(owner: &TabOwner) -> (u8, &str) {
 }
 
 /// Addresses a tab may be sent to. Site policy (design 13.2) comes on top.
-fn check_url(url: &str) -> Result<String, BrowserError> {
+pub(crate) fn check_url(url: &str) -> Result<String, BrowserError> {
     let unsupported = || BrowserError {
         code: "unsupported_url",
         message: format!("the browser cannot open {url}"),

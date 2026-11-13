@@ -76,6 +76,7 @@ pub mod services;
 pub mod snapshot;
 pub mod store;
 pub mod stream;
+pub mod tools;
 pub mod input;
 pub mod saving;
 pub mod types;

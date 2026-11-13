@@ -41,6 +41,8 @@ pub struct FakeState {
     pub cookies: HashMap<String, Vec<Value>>,
     /// `Page.navigate` never answers, as for a page waiting on a sign-in.
     pub hold_navigations: bool,
+    /// `Page.navigate` fails with this `errorText`, as for an unknown host.
+    pub nav_error: Option<String>,
     next: usize,
     /// The running engine's event sender and exit switch.
     events: Option<mpsc::UnboundedSender<Value>>,
@@ -294,6 +296,9 @@ impl FakeEngine {
             }
             "Page.navigate" => {
                 let id = target_of_session(&s)?;
+                if let Some(error) = s.nav_error.clone() {
+                    return Ok(json!({ "frameId": id, "loaderId": "L", "errorText": error }));
+                }
                 let url = params["url"].as_str().unwrap_or_default().to_string();
                 let t = s.targets.get_mut(&id).unwrap();
                 t.history.truncate(t.index + 1);
@@ -350,6 +355,10 @@ impl FakeEngine {
                 let info = target_info(&id, t);
                 emit("Target.targetInfoChanged", json!({ "targetInfo": info }));
                 Ok(json!({}))
+            }
+            "Runtime.evaluate" if params["expression"] == "document.readyState" => {
+                target_of_session(&s)?;
+                Ok(json!({ "result": { "type": "string", "value": "complete" } }))
             }
             "Page.handleJavaScriptDialog" => {
                 target_of_session(&s)?;
