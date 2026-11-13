@@ -89,6 +89,12 @@ export type HostErrorCode =
   | "request_not_found"
   /** `browser.ui.answer`: the answer is not of the request's kind. */
   | "invalid_answer"
+  /** `browser.sites.set`: an entry is not a site pattern or an address. */
+  | "invalid_site"
+  /** `browser.tab.open`: the session holds 8 tabs, or the browser 30. */
+  | "too_many_tabs"
+  /** `browser.tab.open`: the browser is at its memory budget; the message says who holds the most. */
+  | "browser_memory_full"
   | "internal";
 
 export interface WireError {
