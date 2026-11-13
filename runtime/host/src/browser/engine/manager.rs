@@ -97,9 +97,14 @@ impl EngineManager {
 
     /// The running engine's connection, starting it first if needed.
     pub async fn cdp(self: &Arc<Self>) -> Result<Cdp, EngineError> {
+        self.connect().await.map(|(cdp, _)| cdp)
+    }
+
+    /// Like [`Self::cdp`], with the generation the connection belongs to.
+    pub async fn connect(self: &Arc<Self>) -> Result<(Cdp, u64), EngineError> {
         let mut inner = self.inner.lock().await;
         if let Some(cdp) = inner.cdp.as_ref().filter(|c| !c.is_closed()) {
-            return Ok(cdp.clone());
+            return Ok((cdp.clone(), inner.generation));
         }
         if let EngineState::Failed {
             code: "crash_loop",
@@ -111,7 +116,15 @@ impl EngineManager {
                 message: message.clone(),
             });
         }
-        self.start_locked(&mut inner).await
+        let cdp = self.start_locked(&mut inner).await?;
+        Ok((cdp, inner.generation))
+    }
+
+    /// The running engine's connection and generation, without starting one.
+    pub async fn running(&self) -> Option<(Cdp, u64)> {
+        let inner = self.inner.lock().await;
+        let cdp = inner.cdp.as_ref().filter(|c| !c.is_closed())?;
+        Some((cdp.clone(), inner.generation))
     }
 
     /// Allow starts again after `crash_loop`.

@@ -8,6 +8,8 @@
 //! - `manager` — one engine kept running: lazy start, restarts, `crash_loop`
 
 pub mod cdp;
+#[cfg(test)]
+pub mod fake;
 pub mod install;
 #[cfg(unix)]
 pub mod launch;

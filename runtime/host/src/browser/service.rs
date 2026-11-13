@@ -1,0 +1,1197 @@
+//! `BrowserService`: the Host browser's tabs (design 6). Every tab belongs to
+//! one owner, and every owner gets its own `BrowserContext` in the one engine,
+//! so sessions never see each other's cookies or storage.
+//!
+//! The service is the only holder of tab state. Clients and agent tools go
+//! through it; nothing else opens CDP sessions on a tab.
+//!
+//! - Tabs are persisted in `browser_tabs` and come back **discarded** after a
+//!   Host restart or an idle stop of the engine: listed, not loaded, and
+//!   reloaded from their URL when next used.
+//! - After an engine crash the manager starts a new engine (a new
+//!   generation); tabs that were loaded are opened again at their URL.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Weak};
+
+use sea_orm::DatabaseConnection;
+use serde::Serialize;
+use serde_json::json;
+use tokio::sync::{broadcast, watch, Mutex};
+
+use super::engine::cdp::{Cdp, Event};
+use super::engine::manager::{EngineError, EngineManager, EngineState};
+use super::store::{self, TabOwner, TabRecord};
+
+const EVENT_BUFFER: usize = 256;
+const DEFAULT_WIDTH: u32 = 1280;
+const DEFAULT_HEIGHT: u32 = 800;
+
+/// A tab as clients see it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabInfo {
+    pub id: String,
+    pub owner: TabOwner,
+    pub url: String,
+    pub title: String,
+    pub position: i32,
+    pub loading: bool,
+    /// Not loaded in the engine; it reloads from `url` when next used.
+    pub discarded: bool,
+    /// Its renderer died; reloading brings it back.
+    pub crashed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BrowserEvent {
+    Tab(TabInfo),
+    Removed { tab_id: String, owner: TabOwner },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Navigation {
+    Url(String),
+    Back,
+    Forward,
+    Reload,
+    Stop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
+pub struct BrowserError {
+    /// `tab_not_found`, `unsupported_url`, `engine_error`, or one of the
+    /// engine's setup codes (`download_offline`, `crash_loop`, …).
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl From<EngineError> for BrowserError {
+    fn from(e: EngineError) -> Self {
+        BrowserError {
+            code: e.code,
+            message: e.message,
+        }
+    }
+}
+
+impl From<super::engine::cdp::CdpError> for BrowserError {
+    fn from(e: super::engine::cdp::CdpError) -> Self {
+        BrowserError {
+            code: "engine_error",
+            message: e.to_string(),
+        }
+    }
+}
+
+fn not_found(tab_id: &str) -> BrowserError {
+    BrowserError {
+        code: "tab_not_found",
+        message: format!("no browser tab {tab_id}"),
+    }
+}
+
+/// A tab loaded in the current engine.
+#[derive(Debug, Clone)]
+struct Live {
+    target_id: String,
+    session_id: String,
+}
+
+struct Tab {
+    info: TabInfo,
+    live: Option<Live>,
+}
+
+struct Inner {
+    tabs: HashMap<String, Tab>,
+    /// The engine generation `contexts` and every `Live` belong to.
+    generation: u64,
+    cdp: Option<Cdp>,
+    contexts: HashMap<TabOwner, String>,
+    user_agent: Option<String>,
+}
+
+pub struct BrowserService {
+    me: Weak<BrowserService>,
+    engine: Arc<EngineManager>,
+    db: DatabaseConnection,
+    inner: Mutex<Inner>,
+    events: broadcast::Sender<BrowserEvent>,
+}
+
+impl BrowserService {
+    /// Load the persisted tabs (all discarded) and follow the engine.
+    pub async fn start(
+        engine: Arc<EngineManager>,
+        db: DatabaseConnection,
+    ) -> Result<Arc<Self>, sea_orm::DbErr> {
+        let tabs = store::load(&db)
+            .await?
+            .into_iter()
+            .map(|record| {
+                let info = TabInfo {
+                    discarded: true,
+                    ..info_of(record)
+                };
+                (info.id.clone(), Tab { info, live: None })
+            })
+            .collect();
+        let state = engine.state();
+        let service = Arc::new_cyclic(|me| BrowserService {
+            me: me.clone(),
+            engine,
+            db,
+            inner: Mutex::new(Inner {
+                tabs,
+                generation: 0,
+                cdp: None,
+                contexts: HashMap::new(),
+                user_agent: None,
+            }),
+            events: broadcast::channel(EVENT_BUFFER).0,
+        });
+        tokio::spawn(follow_engine(Arc::downgrade(&service), state));
+        Ok(service)
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<BrowserEvent> {
+        self.events.subscribe()
+    }
+
+    pub fn engine(&self) -> &Arc<EngineManager> {
+        &self.engine
+    }
+
+    /// Tabs in each owner's order; only `session_id`'s when given.
+    pub async fn list(&self, session_id: Option<&str>) -> Vec<TabInfo> {
+        let inner = self.inner.lock().await;
+        let mut tabs: Vec<TabInfo> = inner
+            .tabs
+            .values()
+            .map(|t| t.info.clone())
+            .filter(|t| match (session_id, &t.owner) {
+                (None, _) => true,
+                (Some(id), TabOwner::Session { session_id }) => id == session_id,
+                (Some(_), TabOwner::Personal) => false,
+            })
+            .collect();
+        tabs.sort_by(|a, b| {
+            (owner_key(&a.owner), a.position).cmp(&(owner_key(&b.owner), b.position))
+        });
+        tabs
+    }
+
+    pub async fn tab(&self, tab_id: &str) -> Option<TabInfo> {
+        self.inner
+            .lock()
+            .await
+            .tabs
+            .get(tab_id)
+            .map(|t| t.info.clone())
+    }
+
+    /// Open a tab for `owner`, at `url` or blank.
+    pub async fn open(&self, owner: TabOwner, url: Option<&str>) -> Result<TabInfo, BrowserError> {
+        let url = url.map(check_url).transpose()?;
+        let mut inner = self.inner.lock().await;
+        let cdp = self.cdp_locked(&mut inner).await?;
+        let live = self.create_target(&cdp, &mut inner, &owner).await?;
+        if let Some(url) = &url {
+            cdp.call(
+                "Page.navigate",
+                json!({ "url": url }),
+                Some(&live.session_id),
+            )
+            .await?;
+        }
+        let position = store::next_position(&self.db, &owner).await.unwrap_or(0);
+        let info = TabInfo {
+            id: uuid::Uuid::new_v4().to_string(),
+            owner,
+            url: url.unwrap_or_else(|| "about:blank".into()),
+            title: String::new(),
+            position,
+            loading: false,
+            discarded: false,
+            crashed: false,
+        };
+        if let Err(e) = store::insert(&self.db, &record_of(&info)).await {
+            tracing::warn!(error = %e, "could not save a browser tab");
+        }
+        inner.tabs.insert(
+            info.id.clone(),
+            Tab {
+                info: info.clone(),
+                live: Some(live),
+            },
+        );
+        self.emit(BrowserEvent::Tab(info.clone()));
+        Ok(info)
+    }
+
+    pub async fn close(&self, tab_id: &str) -> Result<(), BrowserError> {
+        let mut inner = self.inner.lock().await;
+        let tab = inner.tabs.remove(tab_id).ok_or_else(|| not_found(tab_id))?;
+        if let (Some(live), Some(cdp)) = (&tab.live, &inner.cdp) {
+            let _ = cdp
+                .call(
+                    "Target.closeTarget",
+                    json!({ "targetId": live.target_id }),
+                    None,
+                )
+                .await;
+        }
+        drop(inner);
+        if let Err(e) = store::remove(&self.db, tab_id).await {
+            tracing::warn!(error = %e, "could not remove a browser tab");
+        }
+        self.emit(BrowserEvent::Removed {
+            tab_id: tab_id.to_string(),
+            owner: tab.info.owner,
+        });
+        Ok(())
+    }
+
+    /// Close every tab of a session that has ended, and drop its context.
+    pub async fn close_session(&self, session_id: &str) {
+        let ids: Vec<String> = self
+            .list(Some(session_id))
+            .await
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        for id in ids {
+            let _ = self.close(&id).await;
+        }
+        let mut inner = self.inner.lock().await;
+        let owner = TabOwner::Session {
+            session_id: session_id.to_string(),
+        };
+        if let (Some(ctx), Some(cdp)) = (inner.contexts.remove(&owner), inner.cdp.clone()) {
+            let _ = cdp
+                .call(
+                    "Target.disposeBrowserContext",
+                    json!({ "browserContextId": ctx }),
+                    None,
+                )
+                .await;
+        }
+    }
+
+    pub async fn navigate(&self, tab_id: &str, to: Navigation) -> Result<TabInfo, BrowserError> {
+        let target_url = match &to {
+            Navigation::Url(url) => Some(check_url(url)?),
+            _ => None,
+        };
+        let mut inner = self.inner.lock().await;
+        let tab = inner.tabs.get(tab_id).ok_or_else(|| not_found(tab_id))?;
+        // A discarded tab comes back at the address asked for, or its own.
+        if tab.live.is_none() {
+            let url = target_url.unwrap_or_else(|| tab.info.url.clone());
+            if matches!(to, Navigation::Stop) {
+                return Ok(tab.info.clone());
+            }
+            return self.revive_locked(&mut inner, tab_id, &url).await;
+        }
+        let cdp = self.cdp_locked(&mut inner).await?;
+        let tab = inner
+            .tabs
+            .get_mut(tab_id)
+            .ok_or_else(|| not_found(tab_id))?;
+        let session = tab
+            .live
+            .as_ref()
+            .map(|l| l.session_id.clone())
+            .unwrap_or_default();
+        let s = Some(session.as_str());
+        match to {
+            Navigation::Url(_) => {
+                let url = target_url.unwrap_or_default();
+                cdp.call("Page.navigate", json!({ "url": url }), s).await?;
+            }
+            Navigation::Reload => {
+                tab.info.crashed = false;
+                cdp.call("Page.reload", json!({}), s).await?;
+            }
+            Navigation::Stop => {
+                cdp.call("Page.stopLoading", json!({}), s).await?;
+            }
+            Navigation::Back | Navigation::Forward => {
+                let history = cdp.call("Page.getNavigationHistory", json!({}), s).await?;
+                let current = history["currentIndex"].as_i64().unwrap_or(0);
+                let step = if to == Navigation::Back { -1 } else { 1 };
+                let entry = usize::try_from(current + step)
+                    .ok()
+                    .and_then(|i| history["entries"].get(i).cloned());
+                if let Some(entry) = entry {
+                    cdp.call(
+                        "Page.navigateToHistoryEntry",
+                        json!({ "entryId": entry["id"] }),
+                        s,
+                    )
+                    .await?;
+                }
+            }
+        }
+        let tab = inner.tabs.get(tab_id).ok_or_else(|| not_found(tab_id))?;
+        Ok(tab.info.clone())
+    }
+
+    /// Load a discarded tab again. A loaded tab is returned as is.
+    pub async fn activate(&self, tab_id: &str) -> Result<TabInfo, BrowserError> {
+        let mut inner = self.inner.lock().await;
+        let tab = inner.tabs.get(tab_id).ok_or_else(|| not_found(tab_id))?;
+        if tab.live.is_some() {
+            return Ok(tab.info.clone());
+        }
+        let url = tab.info.url.clone();
+        self.revive_locked(&mut inner, tab_id, &url).await
+    }
+
+    /// The tab's CDP session, loading it first if it was discarded. For the
+    /// layers above (stream, agent tools), which must still go through the
+    /// service's own checks first.
+    pub async fn session(&self, tab_id: &str) -> Result<(Cdp, String), BrowserError> {
+        self.activate(tab_id).await?;
+        let mut inner = self.inner.lock().await;
+        let cdp = self.cdp_locked(&mut inner).await?;
+        let live = inner
+            .tabs
+            .get(tab_id)
+            .and_then(|t| t.live.clone())
+            .ok_or_else(|| not_found(tab_id))?;
+        Ok((cdp, live.session_id))
+    }
+
+    async fn revive_locked(
+        &self,
+        inner: &mut Inner,
+        tab_id: &str,
+        url: &str,
+    ) -> Result<TabInfo, BrowserError> {
+        let cdp = self.cdp_locked(inner).await?;
+        let owner = inner.tabs[tab_id].info.owner.clone();
+        let live = self.create_target(&cdp, inner, &owner).await?;
+        if url != "about:blank" {
+            cdp.call(
+                "Page.navigate",
+                json!({ "url": url }),
+                Some(&live.session_id),
+            )
+            .await?;
+        }
+        let tab = inner
+            .tabs
+            .get_mut(tab_id)
+            .ok_or_else(|| not_found(tab_id))?;
+        tab.live = Some(live);
+        tab.info.discarded = false;
+        tab.info.crashed = false;
+        tab.info.url = url.to_string();
+        let info = tab.info.clone();
+        if let Err(e) = store::set_discarded(&self.db, tab_id, false).await {
+            tracing::warn!(error = %e, "could not save a browser tab");
+        }
+        self.emit(BrowserEvent::Tab(info.clone()));
+        Ok(info)
+    }
+
+    /// The current engine's connection. A new generation means a new
+    /// engine: contexts are gone and loaded tabs are opened again.
+    async fn cdp_locked(&self, inner: &mut Inner) -> Result<Cdp, BrowserError> {
+        let (cdp, generation) = self.engine.connect().await?;
+        self.resync_locked(inner, cdp, generation).await
+    }
+
+    /// Adopt `cdp` of `generation`. Nothing to do if it is the one in use.
+    async fn resync_locked(
+        &self,
+        inner: &mut Inner,
+        cdp: Cdp,
+        generation: u64,
+    ) -> Result<Cdp, BrowserError> {
+        if generation == inner.generation && inner.cdp.is_some() {
+            return Ok(cdp);
+        }
+        inner.generation = generation;
+        inner.contexts.clear();
+        inner.cdp = Some(cdp.clone());
+        // Subscribe before discovery, so no target event is missed.
+        let events = cdp.subscribe();
+        cdp.call(
+            "Target.setDiscoverTargets",
+            json!({ "discover": true }),
+            None,
+        )
+        .await?;
+        let version = cdp.call("Browser.getVersion", json!({}), None).await?;
+        inner.user_agent = version["userAgent"]
+            .as_str()
+            .map(|ua| ua.replace("HeadlessChrome", "Chrome"));
+        tokio::spawn(pump(self.me.clone(), cdp.clone(), events, generation));
+
+        let reopen: Vec<(String, String)> = inner
+            .tabs
+            .iter_mut()
+            .filter_map(|(id, tab)| {
+                let was_live = tab.live.take().is_some();
+                was_live.then(|| (id.clone(), tab.info.url.clone()))
+            })
+            .collect();
+        for (id, url) in reopen {
+            let owner = inner.tabs[&id].info.owner.clone();
+            match self.create_target(&cdp, inner, &owner).await {
+                Ok(live) => {
+                    if url != "about:blank" {
+                        let _ = cdp
+                            .call(
+                                "Page.navigate",
+                                json!({ "url": url }),
+                                Some(&live.session_id),
+                            )
+                            .await;
+                    }
+                    if let Some(tab) = inner.tabs.get_mut(&id) {
+                        tab.live = Some(live);
+                        tab.info.crashed = false;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not restore a browser tab");
+                    self.discard_locked(inner, &id);
+                }
+            }
+        }
+        Ok(cdp)
+    }
+
+    async fn create_target(
+        &self,
+        cdp: &Cdp,
+        inner: &mut Inner,
+        owner: &TabOwner,
+    ) -> Result<Live, BrowserError> {
+        let context = match inner.contexts.get(owner) {
+            Some(ctx) => ctx.clone(),
+            None => {
+                let created = cdp
+                    .call(
+                        "Target.createBrowserContext",
+                        json!({ "disposeOnDetach": false }),
+                        None,
+                    )
+                    .await?;
+                let ctx = created["browserContextId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                inner.contexts.insert(owner.clone(), ctx.clone());
+                ctx
+            }
+        };
+        let created = cdp
+            .call(
+                "Target.createTarget",
+                json!({
+                    "url": "about:blank",
+                    "browserContextId": context,
+                    "width": DEFAULT_WIDTH,
+                    "height": DEFAULT_HEIGHT,
+                }),
+                None,
+            )
+            .await?;
+        let target_id = created["targetId"].as_str().unwrap_or_default().to_string();
+        let attached = cdp
+            .call(
+                "Target.attachToTarget",
+                json!({ "targetId": target_id, "flatten": true }),
+                None,
+            )
+            .await?;
+        let session_id = attached["sessionId"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let s = Some(session_id.as_str());
+        cdp.call("Page.enable", json!({}), s).await?;
+        if let Some(ua) = &inner.user_agent {
+            cdp.call(
+                "Emulation.setUserAgentOverride",
+                json!({ "userAgent": ua }),
+                s,
+            )
+            .await?;
+        }
+        Ok(Live {
+            target_id,
+            session_id,
+        })
+    }
+
+    fn discard_locked(&self, inner: &mut Inner, tab_id: &str) {
+        let Some(tab) = inner.tabs.get_mut(tab_id) else {
+            return;
+        };
+        tab.live = None;
+        tab.info.discarded = true;
+        tab.info.loading = false;
+        let info = tab.info.clone();
+        let db = self.db.clone();
+        let id = tab_id.to_string();
+        tokio::spawn(async move {
+            let _ = store::set_discarded(&db, &id, true).await;
+        });
+        self.emit(BrowserEvent::Tab(info));
+    }
+
+    fn emit(&self, event: BrowserEvent) {
+        let _ = self.events.send(event);
+    }
+
+    /// Apply one engine event to the tab it names.
+    async fn on_event(&self, generation: u64, event: Event) {
+        let mut inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return;
+        }
+        let p = &event.params;
+        let by_target = |inner: &Inner, target: &str| {
+            inner
+                .tabs
+                .iter()
+                .find(|(_, t)| t.live.as_ref().is_some_and(|l| l.target_id == target))
+                .map(|(id, _)| id.clone())
+        };
+        let by_session = |inner: &Inner, session: &str| {
+            inner
+                .tabs
+                .iter()
+                .find(|(_, t)| t.live.as_ref().is_some_and(|l| l.session_id == session))
+                .map(|(id, _)| id.clone())
+        };
+        match event.method.as_str() {
+            "Target.targetInfoChanged" => {
+                let info = &p["targetInfo"];
+                let Some(id) = by_target(&inner, info["targetId"].as_str().unwrap_or_default())
+                else {
+                    return;
+                };
+                let tab = inner.tabs.get_mut(&id).expect("found above");
+                let url = info["url"].as_str().unwrap_or_default().to_string();
+                let title = info["title"].as_str().unwrap_or_default().to_string();
+                if tab.info.url == url && tab.info.title == title {
+                    return;
+                }
+                tab.info.url = url;
+                tab.info.title = title;
+                let info = tab.info.clone();
+                let db = self.db.clone();
+                tokio::spawn(async move {
+                    let _ = store::update_page(&db, &info.id, &info.url, &info.title).await;
+                });
+                self.emit(BrowserEvent::Tab(tab.info.clone()));
+            }
+            "Page.frameStartedLoading" | "Page.frameStoppedLoading" => {
+                let Some(session) = event.session_id.as_deref() else {
+                    return;
+                };
+                let Some(id) = by_session(&inner, session) else {
+                    return;
+                };
+                let tab = inner.tabs.get_mut(&id).expect("found above");
+                // Only the main frame, whose id is the target's.
+                let main = tab.live.as_ref().map(|l| l.target_id.as_str());
+                if p["frameId"].as_str() != main {
+                    return;
+                }
+                let loading = event.method == "Page.frameStartedLoading";
+                if tab.info.loading != loading {
+                    tab.info.loading = loading;
+                    self.emit(BrowserEvent::Tab(tab.info.clone()));
+                }
+                if !loading {
+                    self.refresh_info(&inner, &id, generation);
+                }
+            }
+            // Chromium reports a new title only when asked: `targetInfoChanged`
+            // fires when the URL commits, not when the title changes.
+            "Page.domContentEventFired"
+            | "Page.loadEventFired"
+            | "Page.navigatedWithinDocument" => {
+                let Some(id) = event
+                    .session_id
+                    .as_deref()
+                    .and_then(|s| by_session(&inner, s))
+                else {
+                    return;
+                };
+                self.refresh_info(&inner, &id, generation);
+            }
+            "Target.targetCrashed" => {
+                let Some(id) = by_target(&inner, p["targetId"].as_str().unwrap_or_default()) else {
+                    return;
+                };
+                let tab = inner.tabs.get_mut(&id).expect("found above");
+                tab.info.crashed = true;
+                tab.info.loading = false;
+                self.emit(BrowserEvent::Tab(tab.info.clone()));
+            }
+            "Target.targetDestroyed" => {
+                // The page closed itself (`window.close()`); ours were
+                // removed from `tabs` before their target went.
+                let Some(id) = by_target(&inner, p["targetId"].as_str().unwrap_or_default()) else {
+                    return;
+                };
+                let tab = inner.tabs.remove(&id).expect("found above");
+                let db = self.db.clone();
+                let tab_id = id.clone();
+                tokio::spawn(async move {
+                    let _ = store::remove(&db, &tab_id).await;
+                });
+                self.emit(BrowserEvent::Removed {
+                    tab_id: id,
+                    owner: tab.info.owner,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// Read the tab's URL and title from the engine, then apply them as a
+    /// `targetInfoChanged` would.
+    fn refresh_info(&self, inner: &Inner, tab_id: &str, generation: u64) {
+        let (Some(cdp), Some(live)) = (
+            inner.cdp.clone(),
+            inner.tabs.get(tab_id).and_then(|t| t.live.clone()),
+        ) else {
+            return;
+        };
+        let me = self.me.clone();
+        tokio::spawn(async move {
+            let Ok(got) = cdp
+                .call(
+                    "Target.getTargetInfo",
+                    json!({ "targetId": live.target_id }),
+                    None,
+                )
+                .await
+            else {
+                return;
+            };
+            let Some(service) = me.upgrade() else {
+                return;
+            };
+            let event = Event {
+                session_id: None,
+                method: "Target.targetInfoChanged".into(),
+                params: Arc::new(got),
+            };
+            service.on_event(generation, event).await;
+        });
+    }
+
+    /// The engine stopped on purpose: every loaded tab is now discarded.
+    async fn on_stopped(&self) {
+        let mut inner = self.inner.lock().await;
+        inner.cdp = None;
+        inner.contexts.clear();
+        let live: Vec<String> = inner
+            .tabs
+            .iter()
+            .filter(|(_, t)| t.live.is_some())
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in live {
+            self.discard_locked(&mut inner, &id);
+        }
+    }
+
+    /// A new engine generation is running: bring loaded tabs back now
+    /// rather than on their next use.
+    async fn on_restarted(&self) {
+        let mut inner = self.inner.lock().await;
+        // Never starts an engine: only one the manager already restarted.
+        let Some((cdp, generation)) = self.engine.running().await else {
+            return;
+        };
+        if inner.cdp.is_none() || generation == inner.generation {
+            return;
+        }
+        if let Err(e) = self.resync_locked(&mut inner, cdp, generation).await {
+            tracing::warn!(error = %e, "could not restore browser tabs after an engine restart");
+        }
+    }
+}
+
+/// Route engine events to the service until the engine goes away.
+async fn pump(
+    service: Weak<BrowserService>,
+    cdp: Cdp,
+    mut events: broadcast::Receiver<Event>,
+    generation: u64,
+) {
+    loop {
+        let event = tokio::select! {
+            event = events.recv() => event,
+            _ = cdp.closed() => return,
+        };
+        let event = match event {
+            Ok(event) => event,
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                tracing::warn!(missed = n, "browser tab events fell behind");
+                continue;
+            }
+            Err(broadcast::error::RecvError::Closed) => return,
+        };
+        let Some(service) = service.upgrade() else {
+            return;
+        };
+        service.on_event(generation, event).await;
+    }
+}
+
+/// React to the engine stopping or coming back in a new generation.
+/// `state` is subscribed before the service can start the engine, so no
+/// generation is missed. A generation the service started itself is already
+/// current there, and `on_restarted` leaves it alone.
+async fn follow_engine(service: Weak<BrowserService>, mut state: watch::Receiver<EngineState>) {
+    let mut last = 0;
+    while state.changed().await.is_ok() {
+        let now = state.borrow_and_update().clone();
+        let Some(service) = service.upgrade() else {
+            return;
+        };
+        match now {
+            EngineState::Stopped => service.on_stopped().await,
+            EngineState::Running { generation, .. } if generation != last => {
+                last = generation;
+                service.on_restarted().await;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn info_of(record: TabRecord) -> TabInfo {
+    TabInfo {
+        id: record.id,
+        owner: record.owner,
+        url: record.url,
+        title: record.title,
+        position: record.position,
+        loading: false,
+        discarded: record.discarded,
+        crashed: false,
+    }
+}
+
+fn record_of(info: &TabInfo) -> TabRecord {
+    TabRecord {
+        id: info.id.clone(),
+        owner: info.owner.clone(),
+        url: info.url.clone(),
+        title: info.title.clone(),
+        position: info.position,
+        discarded: info.discarded,
+    }
+}
+
+/// Personal tabs first, then sessions by id.
+fn owner_key(owner: &TabOwner) -> (u8, &str) {
+    match owner {
+        TabOwner::Personal => (0, ""),
+        TabOwner::Session { session_id } => (1, session_id.as_str()),
+    }
+}
+
+/// Addresses a tab may be sent to. Site policy (design 13.2) comes on top.
+fn check_url(url: &str) -> Result<String, BrowserError> {
+    let unsupported = || BrowserError {
+        code: "unsupported_url",
+        message: format!("the browser cannot open {url}"),
+    };
+    if url == "about:blank" {
+        return Ok(url.to_string());
+    }
+    let parsed = url::Url::parse(url).map_err(|_| unsupported())?;
+    match parsed.scheme() {
+        "http" | "https" => Ok(parsed.to_string()),
+        _ => Err(unsupported()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::super::engine::fake::FakeEngine;
+    use super::*;
+    use crate::db::test_helpers::fresh_in_memory_db;
+
+    fn session(id: &str) -> TabOwner {
+        TabOwner::Session {
+            session_id: id.into(),
+        }
+    }
+
+    async fn service(fake: &FakeEngine, db: &DatabaseConnection) -> Arc<BrowserService> {
+        BrowserService::start(EngineManager::new(fake.start_fn()), db.clone())
+            .await
+            .unwrap()
+    }
+
+    /// Wait until `f` holds for the service's tab `id`.
+    async fn until(svc: &BrowserService, id: &str, f: impl Fn(&TabInfo) -> bool) -> TabInfo {
+        let reached = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(tab) = svc.tab(id).await.filter(|t| f(t)) {
+                    return tab;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        match reached {
+            Ok(tab) => tab,
+            Err(_) => panic!("the tab did not reach the state: {:?}", svc.tab(id).await),
+        }
+    }
+
+    #[tokio::test]
+    async fn each_owner_gets_its_own_context_and_tabs_are_saved() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let mut events = svc.subscribe();
+
+        let a = svc
+            .open(session("s1"), Some("http://localhost:5173/"))
+            .await
+            .unwrap();
+        let b = svc.open(session("s1"), None).await.unwrap();
+        let c = svc.open(session("s2"), None).await.unwrap();
+        let p = svc.open(TabOwner::Personal, None).await.unwrap();
+        assert_eq!(
+            (a.position, b.position, c.position, p.position),
+            (0, 1, 0, 0)
+        );
+        assert_eq!(a.url, "http://localhost:5173/");
+
+        let contexts: Vec<String> = fake
+            .calls("Target.createTarget")
+            .iter()
+            .map(|c| c["browserContextId"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(contexts[0], contexts[1], "one session shares its context");
+        assert_ne!(contexts[0], contexts[2], "sessions do not share");
+        assert_ne!(contexts[2], contexts[3], "personal tabs have their own");
+        assert_eq!(fake.calls("Target.createBrowserContext").len(), 3);
+
+        let ua = fake.calls("Emulation.setUserAgentOverride");
+        assert_eq!(ua.len(), 4);
+        let ua = ua[0]["userAgent"].as_str().unwrap();
+        assert!(
+            ua.contains("Chrome/157") && !ua.contains("Headless"),
+            "{ua}"
+        );
+
+        let ids: Vec<String> = svc
+            .list(Some("s1"))
+            .await
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(ids, vec![a.id.clone(), b.id.clone()]);
+        assert_eq!(svc.list(None).await[0].id, p.id, "personal tabs first");
+        assert_eq!(store::load(&db.conn).await.unwrap().len(), 4);
+        assert_eq!(events.recv().await.unwrap(), BrowserEvent::Tab(a.clone()));
+    }
+
+    #[tokio::test]
+    async fn page_changes_reach_the_tab_and_the_store() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let tab = svc.open(session("s1"), None).await.unwrap();
+
+        svc.navigate(&tab.id, Navigation::Url("https://example.com/".into()))
+            .await
+            .unwrap();
+        let target = fake.target_of_url("https://example.com/").unwrap();
+        fake.set_title(&target, "Example Domain");
+        until(&svc, &tab.id, |t| t.title == "Example Domain").await;
+        assert_eq!(svc.tab(&tab.id).await.unwrap().url, "https://example.com/");
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while store::load(&db.conn).await.unwrap()[0].title != "Example Domain" {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        svc.navigate(&tab.id, Navigation::Url("https://example.org/".into()))
+            .await
+            .unwrap();
+        until(&svc, &tab.id, |t| t.url == "https://example.org/").await;
+        svc.navigate(&tab.id, Navigation::Back).await.unwrap();
+        until(&svc, &tab.id, |t| t.url == "https://example.com/").await;
+        svc.navigate(&tab.id, Navigation::Forward).await.unwrap();
+        until(&svc, &tab.id, |t| t.url == "https://example.org/").await;
+    }
+
+    #[tokio::test]
+    async fn closing_removes_the_target_the_record_and_tells_clients() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let tab = svc.open(session("s1"), None).await.unwrap();
+        let mut events = svc.subscribe();
+
+        svc.close(&tab.id).await.unwrap();
+        assert!(fake.lock().targets.is_empty());
+        assert!(store::load(&db.conn).await.unwrap().is_empty());
+        assert_eq!(
+            events.recv().await.unwrap(),
+            BrowserEvent::Removed {
+                tab_id: tab.id.clone(),
+                owner: session("s1")
+            }
+        );
+        assert_eq!(svc.close(&tab.id).await.unwrap_err().code, "tab_not_found");
+    }
+
+    #[tokio::test]
+    async fn a_page_that_closes_itself_is_removed() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let tab = svc
+            .open(session("s1"), Some("https://example.com/"))
+            .await
+            .unwrap();
+        let target = fake.target_of_url("https://example.com/").unwrap();
+        fake.lock().targets.remove(&target);
+        fake.emit(
+            "Target.targetDestroyed",
+            json!({ "targetId": target }),
+            None,
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while svc.tab(&tab.id).await.is_some() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_ended_session_loses_its_tabs_and_context() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        svc.open(session("s1"), None).await.unwrap();
+        svc.open(session("s1"), None).await.unwrap();
+        let other = svc.open(session("s2"), None).await.unwrap();
+
+        svc.close_session("s1").await;
+        assert_eq!(svc.list(None).await, vec![other]);
+        assert_eq!(fake.calls("Target.disposeBrowserContext").len(), 1);
+        assert_eq!(fake.lock().contexts.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn after_a_host_restart_tabs_are_discarded_until_used() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let tab = {
+            let svc = service(&fake, &db.conn).await;
+            svc.open(session("s1"), Some("https://example.com/"))
+                .await
+                .unwrap()
+        };
+
+        let fresh = FakeEngine::default();
+        let svc = service(&fresh, &db.conn).await;
+        let listed = svc.list(None).await;
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].discarded);
+        assert_eq!(fresh.lock().starts, 0, "listing does not start the engine");
+
+        let back = svc.activate(&tab.id).await.unwrap();
+        assert!(!back.discarded);
+        assert_eq!(fresh.lock().starts, 1);
+        assert!(fresh.target_of_url("https://example.com/").is_some());
+        assert!(!store::load(&db.conn).await.unwrap()[0].discarded);
+    }
+
+    // Real time: the database pool's timeouts fire at once under paused time.
+    // The restart waits 1 s.
+    #[tokio::test]
+    async fn after_an_engine_crash_loaded_tabs_open_again() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let tab = svc
+            .open(session("s1"), Some("https://example.com/"))
+            .await
+            .unwrap();
+
+        fake.crash();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while fake.target_of_url("https://example.com/").is_none() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the tab was opened again in the new engine");
+        assert_eq!(fake.lock().starts, 2);
+        let restored = svc.tab(&tab.id).await.unwrap();
+        assert!(!restored.discarded);
+        let (_, session_id) = svc.session(&tab.id).await.unwrap();
+        let target = fake.target_of_url("https://example.com/").unwrap();
+        assert_eq!(
+            fake.lock().targets[&target].session.as_deref(),
+            Some(session_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn stopping_the_engine_discards_loaded_tabs() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let tab = svc.open(session("s1"), None).await.unwrap();
+
+        svc.engine().stop().await;
+        until(&svc, &tab.id, |t| t.discarded).await;
+    }
+
+    #[tokio::test]
+    async fn only_web_addresses_open() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        for url in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "chrome://settings",
+            "not a url",
+        ] {
+            let err = svc.open(session("s1"), Some(url)).await.unwrap_err();
+            assert_eq!(err.code, "unsupported_url", "{url}");
+        }
+        assert_eq!(fake.lock().starts, 0);
+    }
+
+    /// The service against real Chromium: titles, history and contexts.
+    /// Point `ZWIIM_TEST_ENGINE` at a `chrome-headless-shell` binary.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "needs ZWIIM_TEST_ENGINE"]
+    async fn the_real_engine_reports_pages_and_keeps_owners_apart() {
+        use super::super::engine::{launch, manager};
+        use futures::FutureExt;
+
+        let binary = std::path::PathBuf::from(std::env::var_os("ZWIIM_TEST_ENGINE").unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        let start = manager::start_fn(move || {
+            let options = launch::LaunchOptions {
+                binary: binary.clone(),
+                profile_dir: profile.clone(),
+                renderer_limit: Some(2),
+                log_file: None,
+            };
+            async move {
+                let engine = launch::spawn(&options).map_err(|e| EngineError {
+                    code: "setup_failed",
+                    message: e.to_string(),
+                })?;
+                let mut child = engine.child;
+                Ok(manager::Running {
+                    cdp: engine.cdp,
+                    version: "real".into(),
+                    exited: async move {
+                        let _ = child.wait().await;
+                    }
+                    .boxed(),
+                })
+            }
+        });
+
+        // A page that sets a cookie and its title.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            loop {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    let body = format!(
+                        "<title>Page {path}</title><script>document.cookie='seen=1'</script>"
+                    );
+                    let resp = format!("HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        let url = |p: &str| format!("http://127.0.0.1:{port}{p}");
+
+        let db = fresh_in_memory_db().await;
+        let svc = BrowserService::start(EngineManager::new(start), db.conn.clone())
+            .await
+            .unwrap();
+        let a = svc.open(session("s1"), Some(&url("/one"))).await.unwrap();
+        until(&svc, &a.id, |t| t.title == "Page /one" && !t.loading).await;
+        svc.navigate(&a.id, Navigation::Url(url("/two")))
+            .await
+            .unwrap();
+        until(&svc, &a.id, |t| t.title == "Page /two").await;
+        svc.navigate(&a.id, Navigation::Back).await.unwrap();
+        until(&svc, &a.id, |t| t.url == url("/one")).await;
+
+        // The cookie set in s1's context is not in s2's.
+        let b = svc.open(session("s2"), Some(&url("/three"))).await.unwrap();
+        until(&svc, &b.id, |t| t.title == "Page /three").await;
+        let cookies = |id: String| {
+            let svc = svc.clone();
+            async move {
+                let (cdp, s) = svc.session(&id).await.unwrap();
+                cdp.call("Network.getCookies", json!({}), Some(&s))
+                    .await
+                    .unwrap()["cookies"]
+                    .as_array()
+                    .unwrap()
+                    .len()
+            }
+        };
+        assert_eq!(cookies(a.id.clone()).await, 1);
+        let (cdp, s) = svc.session(&b.id).await.unwrap();
+        cdp.call(
+            "Network.deleteCookies",
+            json!({ "name": "seen", "url": url("/") }),
+            Some(&s),
+        )
+        .await
+        .unwrap();
+        assert_eq!(cookies(b.id.clone()).await, 0);
+        assert_eq!(
+            cookies(a.id.clone()).await,
+            1,
+            "s2 cannot touch s1's cookie"
+        );
+
+        svc.close(&a.id).await.unwrap();
+        assert_eq!(svc.list(None).await.len(), 1);
+        svc.engine().stop().await;
+    }
+}

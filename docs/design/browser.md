@@ -244,6 +244,12 @@ One pipe, NUL-delimited JSON, with flattened sessions (`Target.attachToTarget
 enables `Page`, `Runtime`, `Network` (only while an agent or a viewer needs
 it), `Fetch` for documents (13.2), and the native-UI events (9).
 
+Chromium sends `Target.targetInfoChanged` when a URL commits but not when a
+title changes, so the Host re-reads `Target.getTargetInfo` on
+`domContentEventFired`, `loadEventFired`, `navigatedWithinDocument` and when
+the main frame stops loading. Titles a page script changes later arrive
+through the isolated-world helper (P1.6).
+
 CDP is the only seam between `BrowserService` and the engine. Headless-shell
 details (download, flags) stay in `engine`, so a different engine later (18.1)
 does not touch the rest. No backend trait is added until a second engine
