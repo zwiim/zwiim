@@ -1246,8 +1246,9 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 4. Local stream socket and `StreamHub`.
 5. Desktop `BrowserPanel`: viewer, tab strip, navigation, shortcuts.
 6. Native UI relay (section 9) and the isolated-world helper, with find in
-   page. JavaScript dialogs, HTTP auth and the file chooser are done;
-   downloads, certificate errors and the helper remain. Permissions are not
+   page. JavaScript dialogs, HTTP auth, the file chooser and downloads
+   (decision 13, with the folder in Settings > Advanced) are done;
+   certificate errors and the helper remain. Permissions are not
    relayed (decision 12).
 7. CDP implementation of `BrowserToolAccess`; `browser.agent.action`; ghost
    cursor on the desktop.
