@@ -214,6 +214,134 @@ impl Usage {
     }
 }
 
+// ─── Postgres store ──────────────────────────────────────────────────────
+
+const STORE_TIMEOUT: Duration = Duration::from_secs(10);
+
+const ADD_SQL: &str = "select user_id::text, plan_id, plan_name, \
+    extract(epoch from period_start)::bigint, extract(epoch from resets_at)::bigint, \
+    control_used, browser_used, browser_limit, total_limit, control_rate \
+    from public.add_relay_usage($1::jsonb)";
+
+/// The usage store in Postgres (the hosted Cloud's Supabase project),
+/// reached as the `zwiim_cloud` role, which may only call
+/// `add_relay_usage` (`runtime/cloud/supabase/migrations/`). One connection,
+/// opened on first use and again after any failure.
+pub struct PgStore {
+    config: tokio_postgres::Config,
+    tls: tokio_postgres_rustls::MakeRustlsConnect,
+    client: tokio::sync::Mutex<Option<tokio_postgres::Client>>,
+}
+
+impl PgStore {
+    /// TLS is required unless the database is on this machine. Server
+    /// certificates are checked against `ca` (a PEM file) when given, else
+    /// the system's roots.
+    pub fn new(mut config: tokio_postgres::Config, ca: Option<&std::path::Path>) -> Result<Self, String> {
+        use rustls_pki_types::pem::PemObject;
+        use rustls_pki_types::CertificateDer;
+        use tokio_postgres::config::{Host, SslMode};
+
+        let local = config.get_hosts().iter().all(|host| match host {
+            Host::Tcp(name) => matches!(name.as_str(), "localhost" | "127.0.0.1" | "::1"),
+            Host::Unix(_) => true,
+        });
+        if !local {
+            config.ssl_mode(SslMode::Require);
+        }
+        let mut roots = rustls::RootCertStore::empty();
+        match ca {
+            Some(path) => {
+                for cert in CertificateDer::pem_file_iter(path).map_err(|e| format!("{}: {e}", path.display()))? {
+                    let cert = cert.map_err(|e| format!("{}: {e}", path.display()))?;
+                    roots.add(cert).map_err(|e| format!("{}: {e}", path.display()))?;
+                }
+            }
+            None => {
+                for cert in rustls_native_certs::load_native_certs().certs {
+                    let _ = roots.add(cert);
+                }
+            }
+        }
+        if roots.is_empty() && !local {
+            return Err("no CA certificates to check the usage database with".into());
+        }
+        let tls = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .map_err(|e| e.to_string())?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        Ok(Self {
+            config,
+            tls: tokio_postgres_rustls::MakeRustlsConnect::new(tls),
+            client: tokio::sync::Mutex::default(),
+        })
+    }
+
+    async fn query(&self, batch: &serde_json::Value) -> Result<Vec<tokio_postgres::Row>, String> {
+        let mut client = self.client.lock().await;
+        let result = tokio::time::timeout(STORE_TIMEOUT, async {
+            if client.as_ref().is_none_or(|c| c.is_closed()) {
+                let (fresh, connection) = self.config.connect(self.tls.clone()).await?;
+                tokio::spawn(async move {
+                    if let Err(e) = connection.await {
+                        tracing::warn!("[cloud] usage database connection ended: {e}");
+                    }
+                });
+                *client = Some(fresh);
+            }
+            client.as_ref().expect("connected").query(ADD_SQL, &[batch]).await
+        })
+        .await;
+        match result {
+            Ok(Ok(rows)) => Ok(rows),
+            Ok(Err(e)) => {
+                *client = None;
+                Err(e.to_string())
+            }
+            Err(_) => {
+                *client = None;
+                Err("timed out".into())
+            }
+        }
+    }
+}
+
+fn account_from_row(row: &tokio_postgres::Row) -> Result<Account, String> {
+    let count = |i: usize| -> Result<u64, String> {
+        let n: i64 = row.try_get(i).map_err(|e| e.to_string())?;
+        u64::try_from(n).map_err(|_| format!("negative value in column {i}"))
+    };
+    let limit = |i: usize| -> Result<Option<u64>, String> {
+        let n: Option<i64> = row.try_get(i).map_err(|e| e.to_string())?;
+        n.map(|n| u64::try_from(n).map_err(|_| format!("negative value in column {i}"))).transpose()
+    };
+    let text = |i: usize| -> Result<String, String> { row.try_get(i).map_err(|e| e.to_string()) };
+    Ok(Account {
+        user_id: text(0)?,
+        plan_id: text(1)?,
+        plan_name: text(2)?,
+        period_start: count(3)?,
+        resets_at: count(4)?,
+        used: [count(5)?, count(6)?],
+        limits: PlanLimits { browser: limit(7)?, total: limit(8)?, control_rate: limit(9)? },
+    })
+}
+
+impl Store for PgStore {
+    fn add(&self, batch: Vec<Entry>) -> BoxFuture<'_, Result<Vec<Account>, String>> {
+        Box::pin(async move {
+            let batch = serde_json::Value::Array(
+                batch
+                    .iter()
+                    .map(|e| serde_json::json!({ "user_id": e.user_id, "channel": e.channel.as_str(), "bytes": e.bytes }))
+                    .collect(),
+            );
+            self.query(&batch).await?.iter().map(account_from_row).collect()
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,5 +495,25 @@ mod tests {
         usage.sync().await;
         usage.load("a").await;
         assert_eq!(usage.account("a"), None);
+    }
+
+    /// Against a database with the migration applied, as the `zwiim_cloud`
+    /// role: `ZWIIM_CLOUD_TEST_DATABASE_URL` and an existing account in
+    /// `ZWIIM_CLOUD_TEST_USER_ID`. Adds 5 control bytes to that account.
+    #[tokio::test]
+    #[ignore = "needs a Postgres with the usage migration"]
+    async fn pg_store_adds_and_reads_back() {
+        let url = std::env::var("ZWIIM_CLOUD_TEST_DATABASE_URL").expect("ZWIIM_CLOUD_TEST_DATABASE_URL");
+        let user = std::env::var("ZWIIM_CLOUD_TEST_USER_ID").expect("ZWIIM_CLOUD_TEST_USER_ID");
+        let store = PgStore::new(url.parse().expect("database URL"), None).unwrap();
+        let read = |bytes| vec![Entry { user_id: user.clone(), channel: Channel::Control, bytes }];
+        let before = store.add(read(0)).await.unwrap();
+        assert_eq!(before.len(), 1);
+        let after = store.add(read(5)).await.unwrap();
+        assert_eq!(after[0].used(Channel::Control), before[0].used(Channel::Control) + 5);
+        assert_eq!(after[0].plan_id, "free");
+        assert!(after[0].resets_at > after[0].period_start);
+        let stranger = Entry { user_id: "not-a-uuid".into(), channel: Channel::Browser, bytes: 1 };
+        assert!(store.add(vec![stranger]).await.unwrap().is_empty());
     }
 }
