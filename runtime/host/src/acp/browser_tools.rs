@@ -96,6 +96,9 @@ pub const ERROR_BAD_ADDRESS: &str = "browser_bad_address";
 /// refused next time.
 pub const ERROR_BLOCKED: &str = "browser_blocked";
 
+/// `browser_wait_for` gave up: what it waited for did not happen in time.
+pub const ERROR_WAIT_TIMEOUT: &str = "browser_wait_timeout";
+
 /// The workspace was asked for a tab and none arrived — no window open to put
 /// one in, or the tab went away before it loaded.
 pub const ERROR_OPEN_FAILED: &str = "browser_open_failed";
@@ -513,6 +516,18 @@ pub enum BrowserTabOp {
     Navigate { tab_id: String, url: String },
     /// Close an existing tab.
     Close { tab_id: String },
+    /// Wait until text or an element is on the page, or gone from it.
+    Wait {
+        tab_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selector: Option<String>,
+        #[serde(default)]
+        gone: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+    },
 }
 
 impl BrowserTabOp {
@@ -521,7 +536,9 @@ impl BrowserTabOp {
     pub fn tab_id(&self) -> Option<&str> {
         match self {
             Self::Open { .. } => None,
-            Self::Navigate { tab_id, .. } | Self::Close { tab_id } => Some(tab_id),
+            Self::Navigate { tab_id, .. } | Self::Close { tab_id } | Self::Wait { tab_id, .. } => {
+                Some(tab_id)
+            }
         }
     }
 }

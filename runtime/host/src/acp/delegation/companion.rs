@@ -264,7 +264,7 @@ impl CompanionFeatures {
             "browser_list_tabs" | "browser_snapshot" | "browser_console_messages"
             | "browser_screenshot" | "browser_click" | "browser_hover" | "browser_type"
             | "browser_press_key" | "browser_select_option" | "browser_open_tab"
-            | "browser_navigate" | "browser_close_tab" => self.browser,
+            | "browser_navigate" | "browser_close_tab" | "browser_wait_for" => self.browser,
             // Both, so a `--features browser_eval` with no `browser` — a
             // parent bug, or someone editing the agent's MCP config by hand —
             // cannot leave the strongest tool as the only one present.
@@ -856,7 +856,7 @@ async fn build_tools_call_spawn(
                 Box::pin(async move { client_browser_eval_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_browser_eval_result).await
         }
-        "browser_open_tab" | "browser_navigate" | "browser_close_tab" => {
+        "browser_open_tab" | "browser_navigate" | "browser_close_tab" | "browser_wait_for" => {
             let op = match browser_tab_op(name.as_str(), &arguments) {
                 Ok(parsed) => parsed,
                 Err(msg) => return LineAction::Respond(err(id, -32602, msg)),
@@ -1987,7 +1987,43 @@ pub fn browser_tab_op(
         "browser_close_tab" => Ok(BrowserTabOp::Close {
             tab_id: text("tabId")?,
         }),
+        "browser_wait_for" => {
+            let tab_id = text("tabId")?;
+            let (text, selector) = match (arguments.get("text"), arguments.get("selector")) {
+                (Some(_), None) => (Some(self::text_arg(arguments, "text", name)?), None),
+                (None, Some(_)) => (None, Some(self::text_arg(arguments, "selector", name)?)),
+                _ => return Err(format!("{name} takes exactly one of `text` and `selector`")),
+            };
+            let gone = match arguments.get("gone") {
+                None => false,
+                Some(Value::Bool(b)) => *b,
+                Some(_) => return Err(format!("{name}: `gone` must be true or false")),
+            };
+            let timeout_ms = match arguments.get("timeoutMs") {
+                None => None,
+                Some(v) => match v.as_u64() {
+                    Some(n) if (1..=60_000).contains(&n) => Some(n),
+                    _ => return Err(format!("{name}: `timeoutMs` must be a whole number from 1 to 60000")),
+                },
+            };
+            Ok(BrowserTabOp::Wait {
+                tab_id,
+                text,
+                selector,
+                gone,
+                timeout_ms,
+            })
+        }
         other => Err(format!("unknown browser tab tool {other}")),
+    }
+}
+
+/// A non-empty string argument, kept as written: `browser_wait_for` text may
+/// need its spaces.
+fn text_arg(arguments: &Value, key: &str, name: &str) -> Result<String, String> {
+    match arguments.get(key) {
+        Some(Value::String(s)) if !s.is_empty() => Ok(s.clone()),
+        _ => Err(format!("{name}: `{key}` must be a non-empty string")),
     }
 }
 
@@ -4277,6 +4313,7 @@ mod tests {
                 "browser_type".to_string(),
                 "browser_press_key".to_string(),
                 "browser_select_option".to_string(),
+                "browser_wait_for".to_string(),
             ]
         );
         // The strongest tool in the group is not in the group: sharing the
@@ -4727,6 +4764,20 @@ mod tests {
                 tab_id: "t1".into()
             }
         );
+        assert_eq!(
+            browser_tab_op(
+                "browser_wait_for",
+                &json!({ "tabId": "t1", "text": "Built in ", "gone": true, "timeoutMs": 500 })
+            )
+            .unwrap(),
+            BrowserTabOp::Wait {
+                tab_id: "t1".into(),
+                text: Some("Built in ".into()),
+                selector: None,
+                gone: true,
+                timeout_ms: Some(500),
+            }
+        );
 
         for (name, args, wanted) in [
             ("browser_open_tab", json!({}), "`url`"),
@@ -4735,6 +4786,9 @@ mod tests {
             ("browser_navigate", json!({ "url": "https://x.test/" }), "`tabId`"),
             ("browser_navigate", json!({ "tabId": "t1" }), "`url`"),
             ("browser_close_tab", json!({}), "`tabId`"),
+            ("browser_wait_for", json!({ "tabId": "t1" }), "exactly one"),
+            ("browser_wait_for", json!({ "tabId": "t1", "text": "a", "selector": "b" }), "exactly one"),
+            ("browser_wait_for", json!({ "tabId": "t1", "text": "a", "timeoutMs": 0 }), "`timeoutMs`"),
         ] {
             let err = browser_tab_op(name, &args).unwrap_err();
             assert!(err.contains(wanted), "{name}: {err}");

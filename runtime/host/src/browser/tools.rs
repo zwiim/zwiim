@@ -30,7 +30,7 @@ use crate::acp::browser_tools::{
     BrowserActOutcome, BrowserCaptureOutcome, BrowserConsoleOutcome, BrowserEvalOutcome,
     BrowserSnapshotOutcome, BrowserTabOp, BrowserTabOutcome, BrowserTabsOutcome, BrowserToolAccess,
     DEFAULT_SNAPSHOT_MAX_CHARS, ERROR_ACTION_FAILED, ERROR_BAD_ADDRESS, ERROR_NO_SUCH_TAB,
-    ERROR_OPEN_FAILED, ERROR_READ_FAILED, ERROR_UNAVAILABLE,
+    ERROR_OPEN_FAILED, ERROR_READ_FAILED, ERROR_UNAVAILABLE, ERROR_WAIT_TIMEOUT,
 };
 use crate::app_state::AppState;
 use crate::db::entities::conversation;
@@ -48,6 +48,10 @@ const SETTLE_POLL: Duration = Duration::from_millis(100);
 /// How long an action's effects get to start (a click that navigates)
 /// before the page is waited on.
 const ACTION_GRACE: Duration = Duration::from_millis(150);
+/// How long `browser_wait_for` waits when not told, and at most.
+const WAIT_DEFAULT_MS: u64 = 10_000;
+const WAIT_MAX_MS: u64 = 60_000;
+const WAIT_POLL: Duration = Duration::from_millis(200);
 /// The isolated world the page-reading script runs in, where page scripts
 /// cannot see or change it.
 const WORLD_NAME: &str = "zwiim-agent";
@@ -245,6 +249,51 @@ pub(crate) async fn tab_op(
                 ),
             };
         }
+        BrowserTabOp::Wait {
+            tab_id,
+            text,
+            selector,
+            gone,
+            timeout_ms,
+        } => {
+            let Some(tab) = own_tab(browser, session, &tab_id).await else {
+                return BrowserTabOutcome::refused(
+                    Some(&tab_id),
+                    ERROR_NO_SUCH_TAB,
+                    no_such_tab(&tab_id),
+                );
+            };
+            let condition = match (text, selector) {
+                (Some(text), _) => Condition::Text(text),
+                (None, Some(selector)) => Condition::Selector(selector),
+                (None, None) => {
+                    return BrowserTabOutcome::refused(
+                        Some(&tab_id),
+                        ERROR_ACTION_FAILED,
+                        "Say what to wait for: `text` or `selector`.",
+                    )
+                }
+            };
+            let timeout =
+                Duration::from_millis(timeout_ms.unwrap_or(WAIT_DEFAULT_MS).min(WAIT_MAX_MS));
+            return match wait_for(browser, worlds, &tab_id, &condition, gone, timeout).await {
+                Ok(true) => match browser.tab(&tab_id).await {
+                    Some(tab) => BrowserTabOutcome::tab(summary(&tab), None),
+                    None => BrowserTabOutcome::refused(Some(&tab_id), ERROR_NO_SUCH_TAB, no_such_tab(&tab_id)),
+                },
+                Ok(false) => BrowserTabOutcome::refused(
+                    Some(&tab_id),
+                    ERROR_WAIT_TIMEOUT,
+                    format!(
+                        "After {} ms, {} on {}. Take a browser_snapshot to see what the page shows instead.",
+                        timeout.as_millis(),
+                        condition.describe(gone),
+                        tab.url
+                    ),
+                ),
+                Err(m) => BrowserTabOutcome::refused(Some(&tab_id), ERROR_ACTION_FAILED, m),
+            };
+        }
     };
     let load_error = match load(browser, &tab_id, &url).await {
         Ok(load_error) => load_error,
@@ -303,6 +352,79 @@ async fn settle(cdp: &Cdp, session: &str) {
         }
     };
     let _ = tokio::time::timeout(SETTLE_TIMEOUT, ready).await;
+}
+
+/// What `browser_wait_for` waits on.
+enum Condition {
+    Text(String),
+    Selector(String),
+}
+
+impl Condition {
+    /// Whether it holds, as an expression for the tab's world.
+    fn expression(&self) -> String {
+        match self {
+            Condition::Text(text) => format!(
+                "String(!!document.body && document.body.innerText.includes({}))",
+                Value::from(text.as_str())
+            ),
+            Condition::Selector(selector) => format!(
+                "String(!!document.querySelector({}))",
+                Value::from(selector.as_str())
+            ),
+        }
+    }
+
+    fn describe(&self, gone: bool) -> String {
+        let (what, verb) = match self {
+            Condition::Text(text) => (format!("the text {text:?}"), "on the page"),
+            Condition::Selector(selector) => {
+                (format!("an element matching {selector:?}"), "on the page")
+            }
+        };
+        if gone {
+            format!("{what} is still {verb}")
+        } else {
+            format!("{what} is not {verb}")
+        }
+    }
+}
+
+/// Wait until `condition` holds (or, with `gone`, stops holding), at most
+/// `timeout`. A new document part way through is waited on like the old.
+async fn wait_for(
+    browser: &BrowserService,
+    worlds: &Worlds,
+    tab_id: &str,
+    condition: &Condition,
+    gone: bool,
+    timeout: Duration,
+) -> Result<bool, String> {
+    let (cdp, session) = browser.session(tab_id).await.map_err(|e| e.message)?;
+    let expression = condition.expression();
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let context = match worlds.current(tab_id).await {
+            Some(context) => Some(context),
+            None => match worlds.create(&cdp, &session, tab_id).await {
+                Ok(context) => Some(context),
+                Err(WorldError::Gone) => None,
+                Err(WorldError::Failed(m)) => return Err(m),
+            },
+        };
+        if let Some(context) = context {
+            match eval_in(&cdp, &session, context, &expression).await {
+                Ok(holds) if (holds == "true") != gone => return Ok(true),
+                Ok(_) => {}
+                Err(WorldError::Gone) => worlds.forget(tab_id, context).await,
+                Err(WorldError::Failed(m)) => return Err(m),
+            }
+        }
+        if tokio::time::Instant::now() + WAIT_POLL > deadline {
+            return Ok(false);
+        }
+        tokio::time::sleep(WAIT_POLL).await;
+    }
 }
 
 /// Each tab's isolated world, by tab id: the execution context the
@@ -972,7 +1094,7 @@ mod tests {
                     let mut buf = [0u8; 4096];
                     let _ = sock.read(&mut buf).await;
                     let body = "<title>Form</title><input aria-label=Name>\
-                        <script>console.error('boom', 42)</script><button onclick=\"document.title='clicked:'+event.isTrusted\">Go</button>";
+                        <script>console.error('boom', 42)</script><button onclick=\"document.title='clicked:'+event.isTrusted;document.body.append('Thanks, Ada!')\">Go</button>";
                     let resp = format!(
                         "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                         body.len()
@@ -1083,6 +1205,21 @@ mod tests {
             "{:?}",
             element.region
         );
+
+        // Waiting: what is there holds at once; what never comes times out.
+        let wait = |text: &str, gone: bool| BrowserTabOp::Wait {
+            tab_id: tab.clone(),
+            text: Some(text.into()),
+            selector: None,
+            gone,
+            timeout_ms: Some(400),
+        };
+        let shown = tab_op(&browser, &worlds, "s1", wait("Thanks, Ada!", false)).await;
+        assert_eq!(shown.error, None, "{:?}", shown.note);
+        let late = tab_op(&browser, &worlds, "s1", wait("Never", false)).await;
+        assert_eq!(late.error.as_deref(), Some(ERROR_WAIT_TIMEOUT));
+        let away = tab_op(&browser, &worlds, "s1", wait("Never", true)).await;
+        assert_eq!(away.error, None);
 
         // Another session sees none of it.
         let other = snapshot(&browser, &worlds, "s2", &tab, None).await;
