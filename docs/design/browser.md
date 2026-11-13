@@ -1299,6 +1299,8 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
    128 KiB/s sustained.
 10. Over the browser limit, the browser stops on the relay; everything else
     keeps working until the total limit.
+11. Shared control: a tab the agent opens can be driven by the person and
+    the agent at the same time. No lease or takeover step (7.5 is deferred).
 
 Not decided yet, and not blocking: audio in Agent View, DevTools on the
 phone, a camera or mic source for pages, and Linux support for the governor.
