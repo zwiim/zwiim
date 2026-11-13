@@ -44,6 +44,9 @@ pub fn args(options: &LaunchOptions) -> Vec<String> {
         // device metrics say, so a Retina desktop gets sharp frames. A
         // smaller viewer gets them downscaled through `maxWidth`.
         "--force-device-scale-factor=2".into(),
+        // A dev server's self-signed certificate on localhost loads with no
+        // one asked (design, decision 14); other sites keep their errors.
+        "--allow-insecure-localhost".into(),
     ];
     if let Some(limit) = options.renderer_limit {
         args.push(format!("--renderer-process-limit={limit}"));
@@ -148,6 +151,7 @@ mod tests {
         assert!(args.contains(&"--user-data-dir=/data/browser/profile".to_string()));
         assert!(args.contains(&"--enable-gpu".to_string()));
         assert!(args.contains(&"--force-device-scale-factor=2".to_string()));
+        assert!(args.contains(&"--allow-insecure-localhost".to_string()));
         assert!(args.contains(&"--renderer-process-limit=2".to_string()));
         assert!(!args
             .iter()
