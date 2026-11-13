@@ -833,7 +833,9 @@ Migration: `runtime/cloud/supabase/migrations/`.
    directions.
 2. Counters live in memory. Once a minute the Cloud sends one
    `add_relay_usage` call with every account's new bytes and gets fresh
-   totals and limits back. On startup it loads the current period's totals.
+   totals and limits back. An account's first ticket after a Cloud start
+   reads its totals with a zero-byte entry. Accounts the database does not
+   know (tokens not issued by Supabase) get no row back and are not limited.
 3. **Ticket gate:**
    1. A `browser` ticket is refused when browser usage or total usage is at
       its limit.
