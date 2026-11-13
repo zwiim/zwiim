@@ -19,6 +19,7 @@ use serde::Serialize;
 use serde_json::json;
 use tokio::sync::{broadcast, watch, Mutex};
 
+use super::console::{self, ConsoleQuery, ConsoleReadout, ConsoleRing};
 use super::engine::cdp::{Cdp, Event};
 use super::engine::manager::{EngineError, EngineManager, EngineState};
 use super::snapshot::{self, PersonalSnapshot};
@@ -130,6 +131,16 @@ struct Inner {
     next_ui: u64,
     /// Downloads the engine is saving, by its guid.
     saving: HashMap<String, Saving>,
+    /// What session tabs printed, by tab id (design 10.2).
+    consoles: HashMap<String, Console>,
+}
+
+/// One tab's console lines, and its page's execution contexts: whether each
+/// is the top document's, and its origin.
+#[derive(Default)]
+struct Console {
+    ring: ConsoleRing,
+    contexts: HashMap<i64, (bool, Option<String>)>,
 }
 
 /// A download in flight: the page's file name, and its row in the Host's
@@ -185,6 +196,7 @@ impl BrowserService {
                 ui: HashMap::new(),
                 next_ui: 0,
                 saving: HashMap::new(),
+                consoles: HashMap::new(),
             }),
             events: broadcast::channel(EVENT_BUFFER).0,
         });
@@ -277,6 +289,7 @@ impl BrowserService {
     pub async fn close(&self, tab_id: &str) -> Result<(), BrowserError> {
         let mut inner = self.inner.lock().await;
         let tab = inner.tabs.remove(tab_id).ok_or_else(|| not_found(tab_id))?;
+        inner.consoles.remove(tab_id);
         self.drop_ui_locked(&mut inner, |r| r.tab_id == tab_id);
         if let (Some(live), Some(cdp)) = (&tab.live, &inner.cdp) {
             let _ = cdp
@@ -546,7 +559,7 @@ impl BrowserService {
             )
             .await?;
         let target_id = created["targetId"].as_str().unwrap_or_default().to_string();
-        self.attach(cdp, inner, target_id).await
+        self.attach(cdp, inner, owner, target_id).await
     }
 
     /// Attach to a page target and set it up as a tab's.
@@ -554,6 +567,7 @@ impl BrowserService {
         &self,
         cdp: &Cdp,
         inner: &Inner,
+        owner: &TabOwner,
         target_id: String,
     ) -> Result<Live, BrowserError> {
         let attached = cdp
@@ -587,6 +601,11 @@ impl BrowserService {
             s,
         )
         .await?;
+        // A session tab's console, for its agent. Personal tabs go without:
+        // pages can tell `Runtime` is on.
+        if matches!(owner, TabOwner::Session { .. }) {
+            cdp.call("Runtime.enable", json!({}), s).await?;
+        }
         if let Some(ua) = &inner.user_agent {
             cdp.call(
                 "Emulation.setUserAgentOverride",
@@ -724,7 +743,7 @@ impl BrowserService {
                     return;
                 };
                 let url = info["url"].as_str().unwrap_or("about:blank").to_string();
-                match self.attach(&cdp, &inner, target_id).await {
+                match self.attach(&cdp, &inner, &owner, target_id).await {
                     Ok(live) => {
                         self.add_tab(&mut inner, owner, url, live).await;
                     }
@@ -843,6 +862,56 @@ impl BrowserService {
                     _ => {}
                 }
             }
+            "Runtime.executionContextCreated"
+            | "Runtime.executionContextsCleared"
+            | "Runtime.consoleAPICalled"
+            | "Runtime.exceptionThrown" => {
+                let Some(id) = event
+                    .session_id
+                    .as_deref()
+                    .and_then(|s| by_session(&inner, s))
+                else {
+                    return;
+                };
+                let main = inner.tabs[&id].live.as_ref().map(|l| l.target_id.clone());
+                let console = inner.consoles.entry(id).or_default();
+                let at = chrono::Utc::now().timestamp_millis();
+                let context_of = |console: &Console, context: &serde_json::Value| {
+                    context
+                        .as_i64()
+                        .and_then(|c| console.contexts.get(&c).cloned())
+                        .unwrap_or((false, None))
+                };
+                match event.method.as_str() {
+                    "Runtime.executionContextCreated" => {
+                        let context = &p["context"];
+                        let top = context["auxData"]["isDefault"] == true
+                            && context["auxData"]["frameId"].as_str() == main.as_deref();
+                        let origin = console::cdp_context_origin(context["origin"].as_str());
+                        if let Some(c) = context["id"].as_i64() {
+                            console.contexts.insert(c, (top, origin));
+                        }
+                    }
+                    // A new document.
+                    "Runtime.executionContextsCleared" => {
+                        console.ring.clear();
+                        console.contexts.clear();
+                    }
+                    "Runtime.consoleAPICalled" => {
+                        let (top, origin) = context_of(console, &p["executionContextId"]);
+                        if let Some(line) = console::cdp_console_line(p, at, top, origin) {
+                            console.ring.push(line, true);
+                        }
+                    }
+                    _ => {
+                        let context = &p["exceptionDetails"]["executionContextId"];
+                        let (top, origin) = context_of(console, context);
+                        if let Some(line) = console::cdp_exception_line(p, at, top, origin) {
+                            console.ring.push(line, true);
+                        }
+                    }
+                }
+            }
             "Target.targetCrashed" => {
                 let Some(id) = by_target(&inner, p["targetId"].as_str().unwrap_or_default()) else {
                     return;
@@ -894,6 +963,15 @@ impl BrowserService {
         if let Err(e) = cdp.call("Browser.setDownloadBehavior", params, None).await {
             tracing::warn!(error = %e, "could not set where browser downloads go");
         }
+    }
+
+    /// What tab `tab_id` printed to its console, if it is a session tab.
+    pub async fn console(&self, tab_id: &str, query: &ConsoleQuery) -> Option<ConsoleReadout> {
+        let inner = self.inner.lock().await;
+        let tab = inner.tabs.get(tab_id)?;
+        let empty = Console::default();
+        let console = inner.consoles.get(tab_id).unwrap_or(&empty);
+        Some(console.ring.read(query, &tab.info.url, |_| true))
     }
 
     /// The download folder setting changed: every open context follows it.

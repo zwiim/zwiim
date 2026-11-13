@@ -10,15 +10,17 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
 use sea_orm::EntityTrait;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use super::agent::{
     self, ActionError, ActionKind, ActionOutcome, ActionRequest, AgentTabSummary, Fidelity,
-    GrantLevel, PageSnapshot, PointerButton, SnapshotRequest, WorldAnswer,
+    GrantLevel, PageSnapshot, PointerButton, RectAnswer, SnapshotRequest, WorldAnswer,
 };
-use super::capture::CaptureRequest;
+use super::capture::{self, CaptureOutcome, CaptureRegion, CaptureRequest};
 use super::console::ConsoleQuery;
 use super::engine::cdp::Cdp;
 use super::eval::EvalRequest;
@@ -117,20 +119,28 @@ impl BrowserToolAccess for HostBrowserTools {
 
     async fn console(
         &self,
-        _caller: &str,
+        caller: &str,
         tab_id: &str,
-        _query: ConsoleQuery,
+        query: ConsoleQuery,
     ) -> BrowserConsoleOutcome {
-        BrowserConsoleOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_SESSION_NOTE)
+        match self.context(caller).await {
+            Some((browser, session)) => console(&browser, &session, tab_id, &query).await,
+            None => BrowserConsoleOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_SESSION_NOTE),
+        }
     }
 
     async fn capture(
         &self,
-        _caller: &str,
+        caller: &str,
         tab_id: &str,
-        _request: CaptureRequest,
+        request: CaptureRequest,
     ) -> BrowserCaptureOutcome {
-        BrowserCaptureOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_SESSION_NOTE)
+        match self.context(caller).await {
+            Some((browser, session)) => {
+                screenshot(&browser, &self.worlds, &session, tab_id, &request).await
+            }
+            None => BrowserCaptureOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_SESSION_NOTE),
+        }
     }
 
     async fn eval(&self, _caller: &str, tab_id: &str, _request: EvalRequest) -> BrowserEvalOutcome {
@@ -590,6 +600,171 @@ async fn pointer(
     }))
 }
 
+pub(crate) async fn console(
+    browser: &BrowserService,
+    session: &str,
+    tab_id: &str,
+    query: &ConsoleQuery,
+) -> BrowserConsoleOutcome {
+    if own_tab(browser, session, tab_id).await.is_none() {
+        return BrowserConsoleOutcome::refused(tab_id, ERROR_NO_SUCH_TAB, no_such_tab(tab_id));
+    }
+    match browser.console(tab_id, query).await {
+        Some(readout) => BrowserConsoleOutcome::lines(tab_id, readout),
+        None => BrowserConsoleOutcome::refused(tab_id, ERROR_NO_SUCH_TAB, no_such_tab(tab_id)),
+    }
+}
+
+pub(crate) async fn screenshot(
+    browser: &BrowserService,
+    worlds: &Worlds,
+    session: &str,
+    tab_id: &str,
+    request: &CaptureRequest,
+) -> BrowserCaptureOutcome {
+    let Some(tab) = own_tab(browser, session, tab_id).await else {
+        return BrowserCaptureOutcome::refused(tab_id, ERROR_NO_SUCH_TAB, no_such_tab(tab_id));
+    };
+    let (cdp, cdp_session) = match browser.session(tab_id).await {
+        Ok(found) => found,
+        Err(e) => return BrowserCaptureOutcome::refused(tab_id, ERROR_READ_FAILED, e.message),
+    };
+    settle(&cdp, &cdp_session).await;
+    let clip = match request.clip_target() {
+        None => None,
+        Some((generation, target)) => {
+            match element_box(&cdp, &cdp_session, worlds, tab_id, generation, target).await {
+                Ok(region) => Some(region),
+                Err(Shot::Stale(detail)) => {
+                    return BrowserCaptureOutcome::stale_ref(tab_id, &detail)
+                }
+                Err(Shot::Failed(m)) => {
+                    return BrowserCaptureOutcome::refused(tab_id, ERROR_READ_FAILED, m)
+                }
+            }
+        }
+    };
+    match capture_viewport(&cdp, &cdp_session, clip, request).await {
+        Ok((fitted, viewport)) => BrowserCaptureOutcome::image(
+            tab_id,
+            CaptureOutcome {
+                mime: request.format.mime().to_string(),
+                data: B64.encode(&fitted.bytes),
+                width: fitted.width,
+                height: fitted.height,
+                url: tab.url,
+                region: clip.unwrap_or(viewport),
+                clipped: clip.is_some(),
+            },
+        ),
+        Err(m) => BrowserCaptureOutcome::refused(tab_id, ERROR_READ_FAILED, m),
+    }
+}
+
+enum Shot {
+    Stale(String),
+    Failed(String),
+}
+
+/// The element's visible box, in viewport CSS pixels, brought into view.
+async fn element_box(
+    cdp: &Cdp,
+    session: &str,
+    worlds: &Worlds,
+    tab_id: &str,
+    generation: &str,
+    target: &str,
+) -> Result<CaptureRegion, Shot> {
+    let navigated =
+        || Shot::Stale("The page has navigated since that snapshot; take a new one.".into());
+    let Some(context) = worlds.current(tab_id).await else {
+        return Err(Shot::Stale(
+            "No snapshot has been taken of this page; take one first.".into(),
+        ));
+    };
+    if !agent::ref_is_current(generation, &epoch_of(context)) {
+        return Err(navigated());
+    }
+    let raw = match eval_in(cdp, session, context, &agent::rect_call(generation, target)).await {
+        Ok(raw) => raw,
+        Err(WorldError::Gone) => {
+            worlds.forget(tab_id, context).await;
+            return Err(navigated());
+        }
+        Err(WorldError::Failed(m)) => return Err(Shot::Failed(m)),
+    };
+    if raw == agent::ENGINE_ABSENT {
+        return Err(navigated());
+    }
+    let rect: RectAnswer = serde_json::from_str(&raw)
+        .map_err(|e| Shot::Failed(format!("the page answered unreadably: {e}")))?;
+    let detail = || {
+        rect.detail
+            .clone()
+            .unwrap_or_else(|| "the element cannot be captured".into())
+    };
+    if !rect.ok {
+        return Err(match rect.error {
+            Some(ActionError::Stale) | None => Shot::Stale(detail()),
+            Some(_) => Shot::Failed(detail()),
+        });
+    }
+    let (Some(x), Some(y), Some(width), Some(height)) = (rect.x, rect.y, rect.width, rect.height)
+    else {
+        return Err(Shot::Failed(detail()));
+    };
+    if rect.scrolled {
+        // The engine owes a frame of the scrolled page.
+        tokio::time::sleep(SETTLE_POLL).await;
+    }
+    Ok(CaptureRegion {
+        x,
+        y,
+        width,
+        height,
+    })
+}
+
+/// The viewport's pixels, cropped to `clip` and fitted to the request, and
+/// the viewport's own box in CSS pixels.
+async fn capture_viewport(
+    cdp: &Cdp,
+    session: &str,
+    clip: Option<CaptureRegion>,
+    request: &CaptureRequest,
+) -> Result<(capture::Fitted, CaptureRegion), String> {
+    let metrics = cdp
+        .call("Page.getLayoutMetrics", json!({}), Some(session))
+        .await
+        .map_err(|e| e.to_string())?;
+    let css = &metrics["cssVisualViewport"];
+    let viewport = CaptureRegion {
+        x: 0.0,
+        y: 0.0,
+        width: css["clientWidth"].as_f64().unwrap_or(0.0),
+        height: css["clientHeight"].as_f64().unwrap_or(0.0),
+    };
+    let shot = cdp
+        .call(
+            "Page.captureScreenshot",
+            json!({ "format": "png" }),
+            Some(session),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let png = B64
+        .decode(shot["data"].as_str().unwrap_or_default())
+        .map_err(|e| format!("the engine sent an unreadable capture: {e}"))?;
+    let max_width = capture::effective_max_width(request.max_width);
+    let format = request.format;
+    let width = viewport.width;
+    let fitted =
+        tokio::task::spawn_blocking(move || capture::fit(&png, width, clip, max_width, format))
+            .await
+            .map_err(|e| e.to_string())??;
+    Ok((fitted, viewport))
+}
+
 /// Chromium's `net::ERR_*` name as one of the kinds the tools report.
 fn load_error_kind(error: &str) -> &'static str {
     if error.contains("NAME_NOT_RESOLVED") || error.contains("NAME_RESOLUTION") {
@@ -748,7 +923,7 @@ mod tests {
                     let mut buf = [0u8; 4096];
                     let _ = sock.read(&mut buf).await;
                     let body = "<title>Form</title><input aria-label=Name>\
-                        <button onclick=\"document.title='clicked:'+event.isTrusted\">Go</button>";
+                        <script>console.error('boom', 42)</script><button onclick=\"document.title='clicked:'+event.isTrusted\">Go</button>";
                     let resp = format!(
                         "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                         body.len()
@@ -823,6 +998,31 @@ mod tests {
             .unwrap();
         assert_eq!(after.title, "clicked:true");
         assert!(after.tree.contains("Ada"), "{}", after.tree);
+
+        let printed = console(&browser, "s1", &tab, &ConsoleQuery::default()).await;
+        let lines = printed.console.unwrap().entries;
+        assert!(
+            lines.iter().any(|l| l.text == "boom 42" && l.top),
+            "{lines:?}"
+        );
+
+        let whole = screenshot(&browser, &worlds, "s1", &tab, &CaptureRequest::default()).await;
+        let whole = whole.capture.unwrap_or_else(|| panic!("{:?}", whole.note));
+        assert!(!whole.clipped && whole.width > 0 && whole.region.width > 0.0);
+        let shot = CaptureRequest {
+            generation: Some(after.generation.clone()),
+            target: Some(ref_of(&after.tree, "button \"Go\"")),
+            ..Default::default()
+        };
+        let element = screenshot(&browser, &worlds, "s1", &tab, &shot).await;
+        let element = element
+            .capture
+            .unwrap_or_else(|| panic!("{:?}", element.note));
+        assert!(
+            element.clipped && element.width < whole.width,
+            "{:?}",
+            element.region
+        );
 
         // Another session sees none of it.
         let other = snapshot(&browser, &worlds, "s2", &tab, None).await;
