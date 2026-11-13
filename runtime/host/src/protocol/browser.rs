@@ -225,8 +225,10 @@ pub async fn view_close(
 pub const STREAM_PROTOCOL: &str = "zwiim-browser-stream";
 
 /// `GET /zwiim/v1/browser/stream/<stream_id>`: the stream's frames, one
-/// binary message each (design 7.1.2). Refused before the upgrade when the
-/// stream is unknown or already has its viewer.
+/// binary message each (design 7.1.2), and the viewer's input as JSON text
+/// (`crate::browser::input::Input`); input that cannot be delivered is
+/// answered with an `error` text message. Refused before the upgrade when
+/// the stream is unknown or already has its viewer.
 pub async fn stream_socket(
     ws: axum::extract::WebSocketUpgrade,
     axum::extract::Path(stream_id): axum::extract::Path<String>,
@@ -255,6 +257,21 @@ async fn run_stream(
                 viewer.sent(&frame);
             }
             msg = socket.recv() => match msg {
+                Some(Ok(Message::Text(text))) => {
+                    let done = match serde_json::from_str::<crate::browser::input::Input>(&text) {
+                        Ok(input) => viewer.input(&input).await.map_err(ZwiimError::from),
+                        Err(e) => Err(ZwiimError::invalid_request(format!("Invalid input: {e}"))),
+                    };
+                    if let Err(e) = done {
+                        let frame = json!({
+                            "type": "error",
+                            "error": { "code": e.code, "message": e.message },
+                        });
+                        if socket.send(Message::Text(frame.to_string().into())).await.is_err() {
+                            return;
+                        }
+                    }
+                }
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
                 Some(Ok(_)) => {}
             },

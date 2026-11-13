@@ -6708,3 +6708,52 @@ async fn browser_views_refuse_bad_input_and_devices() {
     assert_eq!(device.status_code(), StatusCode::FORBIDDEN);
     assert_eq!(device.json::<Value>()["error"]["code"], "permission_denied");
 }
+
+#[tokio::test]
+async fn the_stream_socket_takes_input() {
+    let h = host(true).await;
+    let fake = fake_browser(&h).await;
+    let tab = h
+        .ok("browser.tab.open", json!({"owner": {"kind": "personal"}}))
+        .await;
+    let view = json!({"tab_id": tab["tab_id"], "viewport": {"width": 800, "height": 600}});
+    let stream_id = h.ok("browser.view.open", view).await["stream_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut ws = stream_socket(&h, &stream_id, HOST_TOKEN)
+        .await
+        .into_websocket()
+        .await;
+
+    ws.send_json(&json!({"type": "mouse", "action": "down", "x": 5, "y": 6, "button": "left", "click_count": 1}))
+        .await;
+    ws.send_json(&json!({"type": "text", "text": "hi"})).await;
+    ws.send_json(&json!({"type": "viewport", "width": 1024, "height": 700}))
+        .await;
+    ws.send_json(&json!({"type": "teleport"})).await;
+    let err: Value = tokio::time::timeout(Duration::from_secs(5), ws.receive_json())
+        .await
+        .unwrap();
+    assert_eq!(err["type"], "error");
+    assert_eq!(err["error"]["code"], "invalid_request");
+    // Messages are handled in order, so the good ones are in by now.
+    assert_eq!(
+        fake.calls("Input.dispatchMouseEvent")[0]["type"],
+        "mousePressed"
+    );
+    assert_eq!(fake.calls("Input.insertText"), vec![json!({"text": "hi"})]);
+    assert_eq!(
+        fake.calls("Emulation.setDeviceMetricsOverride")
+            .last()
+            .unwrap()["width"],
+        1024
+    );
+
+    ws.send_json(&json!({"type": "viewport", "width": 5, "height": 700}))
+        .await;
+    let err: Value = tokio::time::timeout(Duration::from_secs(5), ws.receive_json())
+        .await
+        .unwrap();
+    assert_eq!(err["error"]["code"], "invalid_viewport");
+}

@@ -340,7 +340,10 @@ impl FakeEngine {
             | "Emulation.setDeviceMetricsOverride"
             | "Page.startScreencast"
             | "Page.stopScreencast"
-            | "Page.screencastFrameAck" => {
+            | "Page.screencastFrameAck"
+            | "Input.dispatchMouseEvent"
+            | "Input.dispatchKeyEvent"
+            | "Input.insertText" => {
                 target_of_session(&s)?;
                 Ok(json!({}))
             }

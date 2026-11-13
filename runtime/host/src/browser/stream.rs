@@ -191,22 +191,12 @@ impl StreamHub {
 
     /// A stream of `tab_id` shown at `viewport`. Loads a discarded tab.
     pub async fn open(&self, tab_id: &str, viewport: Viewport) -> Result<String, BrowserError> {
-        viewport.check()?;
-        let (cdp, session) = self.browser.session(tab_id).await?;
-        set_viewport(&cdp, &session, &viewport).await?;
+        self.resize(tab_id, viewport).await?;
         let stream_id = uuid::Uuid::new_v4().to_string();
         let mut inner = self.lock();
         inner
             .streams
             .retain(|_, s| s.attached || s.opened_at.elapsed() < UNATTACHED_TTL);
-        inner.viewports.insert(tab_id.to_string(), viewport);
-        if let Some(cast) = inner.casts.get(tab_id) {
-            cast.viewport.send_if_modified(|v| {
-                let changed = *v != Some(viewport);
-                *v = Some(viewport);
-                changed
-            });
-        }
         inner.streams.insert(
             stream_id.clone(),
             StreamEntry {
@@ -217,6 +207,23 @@ impl StreamHub {
             },
         );
         Ok(stream_id)
+    }
+
+    /// Show `tab_id` at `viewport`, and cast it at that size.
+    pub async fn resize(&self, tab_id: &str, viewport: Viewport) -> Result<(), BrowserError> {
+        viewport.check()?;
+        let (cdp, session) = self.browser.session(tab_id).await?;
+        set_viewport(&cdp, &session, &viewport).await?;
+        let mut inner = self.lock();
+        inner.viewports.insert(tab_id.to_string(), viewport);
+        if let Some(cast) = inner.casts.get(tab_id) {
+            cast.viewport.send_if_modified(|v| {
+                let changed = *v != Some(viewport);
+                *v = Some(viewport);
+                changed
+            });
+        }
+        Ok(())
     }
 
     /// End a stream, and its viewer if one is attached.
@@ -358,6 +365,15 @@ impl Viewer {
                 }
             }
         }
+    }
+
+    /// Deliver the viewer's `input` to its tab.
+    pub async fn input(&self, input: &super::input::Input) -> Result<(), BrowserError> {
+        if let Some(viewport) = input.viewport() {
+            return self.hub.resize(&self.tab_id, viewport).await;
+        }
+        let (cdp, session) = self.hub.browser.session(&self.tab_id).await?;
+        super::input::dispatch(&cdp, &session, input).await
     }
 
     /// `frame` reached this viewer; the first viewer to say so acks it.
@@ -519,9 +535,6 @@ async fn run_cast(
             }
             Ok(()) = viewport.changed() => {
                 let size = *viewport.borrow_and_update();
-                if let Some(size) = &size {
-                    let _ = set_viewport(cdp, session, size).await;
-                }
                 unacked = None;
                 let _ = cdp.call("Page.stopScreencast", json!({}), Some(session)).await;
                 if start(cdp, size).await.is_err() {
@@ -825,6 +838,64 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(second.number > first.number);
+        drop(viewer);
+        browser.stop_engine().await;
+    }
+
+    /// Real Chromium takes a viewer's click, keys and text.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "needs ZWIIM_TEST_ENGINE"]
+    async fn the_real_engine_takes_input() {
+        use crate::browser::input::Input;
+        let dir = tempfile::tempdir().unwrap();
+        let db = fresh_in_memory_db().await;
+        let engine = EngineManager::new(crate::browser::engine::fake::real_engine(
+            dir.path().join("profile"),
+        ));
+        let browser = BrowserService::start(engine, db.conn.clone(), None)
+            .await
+            .unwrap();
+        let tab = browser.open(TabOwner::Personal, None).await.unwrap();
+        let hub = StreamHub::new(browser.clone());
+        let stream = hub.open(&tab.id, VIEW).await.unwrap();
+        let viewer = hub.attach(&stream).await.unwrap();
+        let (cdp, session) = browser.session(&tab.id).await.unwrap();
+        let eval = |expression: &'static str| {
+            let cdp = cdp.clone();
+            let session = session.clone();
+            async move {
+                cdp.call(
+                    "Runtime.evaluate",
+                    json!({ "expression": expression, "returnByValue": true }),
+                    Some(&session),
+                )
+                .await
+                .unwrap()["result"]["value"]
+                    .clone()
+            }
+        };
+        eval(
+            "document.body.innerHTML = '<form onsubmit=\"document.title=\\'sent \\'+f.value; return false\"><input id=f style=\"position:absolute;left:0;top:0;width:400px;height:40px\"></form>'",
+        )
+        .await;
+        let parse = |v: Value| serde_json::from_value::<Input>(v).unwrap();
+        for v in [
+            json!({"type": "mouse", "action": "down", "x": 50, "y": 20, "button": "left", "buttons": 1, "click_count": 1}),
+            json!({"type": "mouse", "action": "up", "x": 50, "y": 20, "button": "left", "click_count": 1}),
+            json!({"type": "key", "action": "down", "key": "a", "code": "KeyA", "text": "a", "key_code": 65}),
+            json!({"type": "key", "action": "up", "key": "a", "code": "KeyA", "key_code": 65}),
+            json!({"type": "text", "text": "bc"}),
+            json!({"type": "key", "action": "down", "key": "Backspace", "code": "Backspace", "key_code": 8}),
+            json!({"type": "key", "action": "up", "key": "Backspace", "code": "Backspace", "key_code": 8}),
+            json!({"type": "key", "action": "down", "key": "Enter", "code": "Enter", "key_code": 13}),
+            json!({"type": "key", "action": "up", "key": "Enter", "code": "Enter", "key_code": 13}),
+        ] {
+            viewer.input(&parse(v)).await.unwrap();
+        }
+        assert_eq!(eval("document.activeElement.id").await, "f");
+        assert_eq!(eval("f.value").await, "ab");
+        assert_eq!(eval("document.title").await, "sent ab");
         drop(viewer);
         browser.stop_engine().await;
     }
