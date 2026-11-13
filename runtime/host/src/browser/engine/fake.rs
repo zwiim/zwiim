@@ -336,13 +336,48 @@ impl FakeEngine {
             | "Page.reload"
             | "Page.stopLoading"
             | "Runtime.enable"
-            | "Emulation.setUserAgentOverride" => {
+            | "Emulation.setUserAgentOverride"
+            | "Emulation.setDeviceMetricsOverride"
+            | "Page.startScreencast"
+            | "Page.stopScreencast"
+            | "Page.screencastFrameAck" => {
                 target_of_session(&s)?;
                 Ok(json!({}))
             }
             other => Err(format!("'{other}' wasn't found")),
         }
     }
+}
+
+/// The real engine at `ZWIIM_TEST_ENGINE`, for the ignored tests that drive
+/// a `chrome-headless-shell` binary.
+#[cfg(unix)]
+pub fn real_engine(profile: std::path::PathBuf) -> StartFn {
+    use super::launch;
+    let binary = std::path::PathBuf::from(std::env::var_os("ZWIIM_TEST_ENGINE").unwrap());
+    start_fn(move || {
+        let options = launch::LaunchOptions {
+            binary: binary.clone(),
+            profile_dir: profile.clone(),
+            renderer_limit: Some(2),
+            log_file: None,
+        };
+        async move {
+            let engine = launch::spawn(&options).map_err(|e| EngineError {
+                code: "setup_failed",
+                message: e.to_string(),
+            })?;
+            let mut child = engine.child;
+            Ok(Running {
+                cdp: engine.cdp,
+                version: "real".into(),
+                exited: async move {
+                    let _ = child.wait().await;
+                }
+                .boxed(),
+            })
+        }
+    })
 }
 
 fn target_info(id: &str, t: &FakeTarget) -> Value {

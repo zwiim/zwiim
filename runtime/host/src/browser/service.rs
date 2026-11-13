@@ -1378,35 +1378,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs ZWIIM_TEST_ENGINE"]
     async fn the_real_engine_reports_pages_and_keeps_owners_apart() {
-        use super::super::engine::{launch, manager};
-        use futures::FutureExt;
-
-        let binary = std::path::PathBuf::from(std::env::var_os("ZWIIM_TEST_ENGINE").unwrap());
         let dir = tempfile::tempdir().unwrap();
-        let profile = dir.path().join("profile");
-        let start = manager::start_fn(move || {
-            let options = launch::LaunchOptions {
-                binary: binary.clone(),
-                profile_dir: profile.clone(),
-                renderer_limit: Some(2),
-                log_file: None,
-            };
-            async move {
-                let engine = launch::spawn(&options).map_err(|e| EngineError {
-                    code: "setup_failed",
-                    message: e.to_string(),
-                })?;
-                let mut child = engine.child;
-                Ok(manager::Running {
-                    cdp: engine.cdp,
-                    version: "real".into(),
-                    exited: async move {
-                        let _ = child.wait().await;
-                    }
-                    .boxed(),
-                })
-            }
-        });
+        let start = super::super::engine::fake::real_engine(dir.path().join("profile"));
 
         // A page that sets a cookie and its title.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
