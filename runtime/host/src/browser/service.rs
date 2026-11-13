@@ -22,6 +22,7 @@ use tokio::sync::{broadcast, watch, Mutex};
 use super::console::{self, ConsoleQuery, ConsoleReadout, ConsoleRing};
 use super::engine::cdp::{Cdp, Event};
 use super::engine::manager::{EngineError, EngineManager, EngineState};
+use super::helper::{self, HelperMessage, PageMenu};
 use super::network::{NetworkQuery, NetworkReadout, NetworkRing};
 use super::snapshot::{self, PersonalSnapshot};
 use super::saving;
@@ -72,6 +73,8 @@ pub enum BrowserEvent {
     UiDone { request_id: String, tab_id: String },
     /// An agent is about to act on a tab (design 10.2).
     AgentAction(AgentAction),
+    /// A page's context menu was asked for (design 9).
+    Menu(PageMenu),
     /// A tab's page began a download, under the page's file name.
     Download {
         tab_id: String,
@@ -170,6 +173,8 @@ struct Inner {
     typed: HashMap<String, tokio::time::Instant>,
     /// What session tabs fetched, by tab id (design 10.2).
     networks: HashMap<String, NetworkRing>,
+    /// The page helper's world in each tab's current document (design 9).
+    helpers: HashMap<String, i64>,
 }
 
 /// One tab's console lines, and its page's execution contexts: whether each
@@ -236,6 +241,7 @@ impl BrowserService {
                 consoles: HashMap::new(),
                 typed: HashMap::new(),
                 networks: HashMap::new(),
+                helpers: HashMap::new(),
             }),
             events: broadcast::channel(EVENT_BUFFER).0,
         });
@@ -331,6 +337,7 @@ impl BrowserService {
         inner.consoles.remove(tab_id);
         inner.typed.remove(tab_id);
         inner.networks.remove(tab_id);
+        inner.helpers.remove(tab_id);
         self.drop_ui_locked(&mut inner, |r| r.tab_id == tab_id);
         if let (Some(live), Some(cdp)) = (&tab.live, &inner.cdp) {
             let _ = cdp
@@ -656,6 +663,11 @@ impl BrowserService {
             )
             .await?;
         }
+        tokio::spawn(helper::follow(
+            self.me.clone(),
+            cdp.clone(),
+            session_id.clone(),
+        ));
         Ok(Live {
             target_id,
             session_id,
@@ -666,6 +678,7 @@ impl BrowserService {
         self.drop_ui_locked(inner, |r| r.tab_id == tab_id);
         // Its requests in flight will never finish.
         inner.networks.remove(tab_id);
+        inner.helpers.remove(tab_id);
         let Some(tab) = inner.tabs.get_mut(tab_id) else {
             return;
         };
@@ -1106,6 +1119,59 @@ impl BrowserService {
         crate::settings::browser_agent_passwords(&self.db).await
     }
 
+    /// Whether a tab is attached on engine session `session`.
+    pub async fn has_session(&self, session: &str) -> bool {
+        let inner = self.inner.lock().await;
+        tab_on(&inner, session).is_some()
+    }
+
+    /// The page helper is in the new document of the tab on `session`.
+    /// Picks the old document waited on are gone with it.
+    pub async fn helper_ready(&self, session: &str, context: i64) {
+        let mut inner = self.inner.lock().await;
+        let Some(id) = tab_on(&inner, session) else {
+            return;
+        };
+        inner.helpers.insert(id.clone(), context);
+        self.drop_ui_locked(&mut inner, |r| r.tab_id == id && r.kind.is_pick());
+    }
+
+    /// What the page helper of the tab on `session` reported.
+    pub async fn helper_said(&self, session: &str, context: i64, messages: Vec<HelperMessage>) {
+        let inner = self.inner.lock().await;
+        let Some(id) = tab_on(&inner, session) else {
+            return;
+        };
+        if inner.helpers.get(&id) != Some(&context) {
+            return;
+        }
+        for message in messages {
+            match message {
+                HelperMessage::Menu {
+                    x,
+                    y,
+                    link_url,
+                    image_url,
+                    selection,
+                    editable,
+                } => self.emit(BrowserEvent::Menu(PageMenu {
+                    tab_id: id.clone(),
+                    x,
+                    y,
+                    link_url,
+                    image_url,
+                    selection,
+                    editable,
+                })),
+                HelperMessage::Title => {
+                    let generation = inner.generation;
+                    self.refresh_info(&inner, &id, generation);
+                }
+                HelperMessage::Select { .. } | HelperMessage::Date { .. } => {}
+            }
+        }
+    }
+
     /// A person typed into tab `tab_id`.
     pub async fn person_typed(&self, tab_id: &str) {
         let now = tokio::time::Instant::now();
@@ -1528,6 +1594,15 @@ fn owner_key(owner: &TabOwner) -> (u8, &str) {
 }
 
 /// Addresses a tab may be sent to. Site policy (design 13.2) comes on top.
+/// The tab attached on engine session `session`.
+fn tab_on(inner: &Inner, session: &str) -> Option<String> {
+    inner
+        .tabs
+        .iter()
+        .find(|(_, t)| t.live.as_ref().is_some_and(|l| l.session_id == session))
+        .map(|(id, _)| id.clone())
+}
+
 pub(crate) fn check_url(url: &str) -> Result<String, BrowserError> {
     let unsupported = || BrowserError {
         code: "unsupported_url",

@@ -486,6 +486,9 @@ impl BrowserFeed {
                     Ok(BrowserEvent::AgentAction(action)) => {
                         Some(json!({ "type": "browser.agent.action", "action": action }))
                     }
+                    Ok(BrowserEvent::Menu(menu)) => {
+                        Some(json!({ "type": "browser.ui.menu", "menu": menu }))
+                    }
                     // Told to the agent that acted (design 10.3); clients
                     // follow downloads in the Host's downloads.
                     Ok(BrowserEvent::Download { .. }) => continue,

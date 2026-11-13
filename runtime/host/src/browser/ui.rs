@@ -84,6 +84,13 @@ pub enum DialogType {
     Beforeunload,
 }
 
+impl UiKind {
+    /// A pick the page helper waits on, which goes with the document.
+    pub fn is_pick(&self) -> bool {
+        false
+    }
+}
+
 /// A person's answer to a [`UiRequest`].
 #[derive(Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]

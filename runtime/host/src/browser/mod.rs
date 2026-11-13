@@ -70,6 +70,7 @@ pub mod capture;
 pub mod console;
 pub mod engine;
 pub mod eval;
+pub mod helper;
 pub mod network;
 pub mod service_url;
 pub mod service;
