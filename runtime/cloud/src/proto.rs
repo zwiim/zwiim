@@ -26,6 +26,9 @@ pub const ENROLLMENTS_PATH: &str = "/v1/enrollments";
 pub const ENROLL_PATH: &str = "/v1/hosts/enroll";
 /// `GET` with an account token: the account's hosts.
 pub const HOSTS_PATH: &str = "/v1/hosts";
+/// `GET` with an account token: the account's plan and relay usage
+/// ([`UsageResponse`]).
+pub const USAGE_PATH: &str = "/v1/usage";
 /// The host's control socket.
 pub const CONTROL_PATH: &str = "/v1/hosts/control";
 /// The device's relay socket.
@@ -193,6 +196,45 @@ pub struct TicketResponse {
     pub ticket: String,
     /// Unix seconds.
     pub expires_at: u64,
+}
+
+/// The account's plan and its relay usage this period.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageResponse {
+    /// `None` when this Cloud keeps no plan for the account: nothing is
+    /// limited, and the period fields are absent.
+    pub plan: Option<PlanInfo>,
+    #[serde(default, flatten, skip_serializing_if = "Option::is_none")]
+    pub period: Option<UsagePeriod>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanInfo {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsagePeriod {
+    /// Unix seconds.
+    pub period_start: u64,
+    /// Unix seconds.
+    pub resets_at: u64,
+    pub channels: UsageChannels,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageChannels {
+    pub browser: ChannelUsage,
+    /// Every channel together.
+    pub total: ChannelUsage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelUsage {
+    pub used: u64,
+    /// `None` is unlimited.
+    pub limit: Option<u64>,
 }
 
 /// Every HTTP error: `{"error": {"code", "message"}}`.

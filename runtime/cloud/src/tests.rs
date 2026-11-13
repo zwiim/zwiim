@@ -607,6 +607,35 @@ async fn control_relays_slow_to_the_plans_speed_cap_after_a_burst() {
 }
 
 #[tokio::test]
+async fn usage_reports_the_plan_and_this_periods_bytes() {
+    let limits = PlanLimits { browser: Some(5000), total: Some(10000), control_rate: None };
+    let store = usage::tests::Fake::with_limits(&["alice"], limits);
+    let cloud = TestCloud::start_with(fast(), Limits::default(), Some(store)).await;
+    assert_eq!(cloud.get(USAGE_PATH, None).await.0, 401);
+
+    let (status, body) = cloud.get(USAGE_PATH, Some(&jwt("alice"))).await;
+    assert_eq!(status, 200, "{body}");
+    let usage: UsageResponse = serde_json::from_value(body.clone()).unwrap();
+    assert_eq!(usage.plan, Some(PlanInfo { id: "free".into(), name: "Free".into() }));
+    let period = usage.period.unwrap();
+    assert!(period.resets_at > crate::hub::unix_now());
+    assert_eq!(period.channels.browser, ChannelUsage { used: 0, limit: Some(5000) });
+    assert_eq!(period.channels.total, ChannelUsage { used: 0, limit: Some(10000) });
+    assert_eq!(body["channels"]["total"]["limit"], 10000, "flat, as documented: {body}");
+
+    // Bytes not yet synced count too.
+    let usage = cloud.running.as_ref().unwrap().usage.clone();
+    usage.add("alice", Channel::Browser, 300);
+    usage.add("alice", Channel::Control, 20);
+    let (_, body) = cloud.get(USAGE_PATH, Some(&jwt("alice"))).await;
+    assert_eq!((body["channels"]["browser"]["used"].as_u64(), body["channels"]["total"]["used"].as_u64()), (Some(300), Some(320)));
+
+    // An account the store does not know has no plan and no limits.
+    let (status, body) = cloud.get(USAGE_PATH, Some(&jwt("bob"))).await;
+    assert_eq!((status, body), (200, json!({"plan": null})));
+}
+
+#[tokio::test]
 async fn relay_failures_are_explicit() {
     let cloud = TestCloud::start(Timing { ticket_ttl: Duration::from_millis(300), ..fast() }).await;
     let host = FakeHost::new();

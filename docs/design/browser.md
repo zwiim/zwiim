@@ -882,10 +882,13 @@ Limits come from plan rows, so there are no limit variables.
 1. `GET /v1/usage` (Cloud, next to `/v1/hosts`, same account token):
    ```json
    { "plan": { "id": "free", "name": "Free" },
-     "period_start": "2026-11-12T00:00:00Z", "resets_at": "2026-12-12T00:00:00Z",
+     "period_start": 1794441600, "resets_at": 1797033600,
      "channels": { "browser": { "used": 3435973837, "limit": 5368709120 },
                    "total":   { "used": 3865470566, "limit": 10737418240 } } }
    ```
+   Times are Unix seconds; a `null` limit is unlimited. An account the
+   Cloud keeps no plan for (no usage database, or a token not issued by
+   Supabase) gets `{ "plan": null }`. Usage includes bytes not yet synced.
    The SDK exposes it as `CloudClient.usage()` and turns a `429` into a typed
    `RelayQuotaError`.
 2. At 80% of the browser limit: a line in the phone's browser toolbar,

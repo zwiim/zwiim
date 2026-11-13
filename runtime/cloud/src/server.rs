@@ -203,6 +203,7 @@ pub fn router(cloud: Arc<Cloud>) -> Router {
         .route(ENROLLMENTS_PATH, post(create_enrollment))
         .route(ENROLL_PATH, post(enroll))
         .route(HOSTS_PATH, get(list_hosts))
+        .route(USAGE_PATH, get(usage))
         .route("/v1/hosts/{host_id}/tickets", post(create_ticket))
         .route(CONTROL_PATH, get(control_socket))
         .route(RELAY_DEVICE_PATH, get(device_socket))
@@ -354,6 +355,26 @@ async fn list_hosts(State(cloud): State<Arc<Cloud>>, headers: HeaderMap) -> Resu
             })
             .collect(),
     ))
+}
+
+async fn usage(State(cloud): State<Arc<Cloud>>, headers: HeaderMap) -> Result<Json<UsageResponse>, ApiError> {
+    let user_id = cloud.user(&headers).await?;
+    let _ = tokio::time::timeout(USAGE_LOAD_TIMEOUT, cloud.usage.load(&user_id)).await;
+    let Some(account) = cloud.usage.account(&user_id) else {
+        return Ok(Json(UsageResponse { plan: None, period: None }));
+    };
+    let usage = |used, limit| ChannelUsage { used, limit };
+    Ok(Json(UsageResponse {
+        plan: Some(PlanInfo { id: account.plan_id.clone(), name: account.plan_name.clone() }),
+        period: Some(UsagePeriod {
+            period_start: account.period_start,
+            resets_at: account.resets_at,
+            channels: UsageChannels {
+                browser: usage(account.used(Channel::Browser), account.limits.browser),
+                total: usage(account.total(), account.limits.total),
+            },
+        }),
+    }))
 }
 
 async fn create_ticket(
