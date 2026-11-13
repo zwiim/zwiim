@@ -352,7 +352,10 @@ impl FakeEngine {
             | "Page.screencastFrameAck"
             | "Input.dispatchMouseEvent"
             | "Input.dispatchKeyEvent"
-            | "Input.insertText" => {
+            | "Input.insertText"
+            | "Fetch.enable"
+            | "Fetch.continueRequest"
+            | "Fetch.continueWithAuth" => {
                 target_of_session(&s)?;
                 Ok(json!({}))
             }

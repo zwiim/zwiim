@@ -23,7 +23,7 @@ use super::engine::cdp::{Cdp, Event};
 use super::engine::manager::{EngineError, EngineManager, EngineState};
 use super::snapshot::{self, PersonalSnapshot};
 use super::store::{self, TabOwner, TabRecord};
-use super::ui::{self, UiAnswer, UiRequest};
+use super::ui::{self, UiAnswer, UiKind, UiRequest};
 
 const EVENT_BUFFER: usize = 256;
 const DEFAULT_WIDTH: u32 = 1280;
@@ -269,7 +269,7 @@ impl BrowserService {
     pub async fn close(&self, tab_id: &str) -> Result<(), BrowserError> {
         let mut inner = self.inner.lock().await;
         let tab = inner.tabs.remove(tab_id).ok_or_else(|| not_found(tab_id))?;
-        self.drop_ui_locked(&mut inner, Some(tab_id));
+        self.drop_ui_locked(&mut inner, |r| r.tab_id == tab_id);
         if let (Some(live), Some(cdp)) = (&tab.live, &inner.cdp) {
             let _ = cdp
                 .call(
@@ -455,7 +455,7 @@ impl BrowserService {
             return Ok(cdp);
         }
         inner.generation = generation;
-        self.drop_ui_locked(inner, None);
+        self.drop_ui_locked(inner, |_| true);
         inner.contexts.clear();
         inner.personal_restored = false;
         inner.cdp = Some(cdp.clone());
@@ -571,6 +571,17 @@ impl BrowserService {
             .to_string();
         let s = Some(session_id.as_str());
         cdp.call("Page.enable", json!({}), s).await?;
+        // Pages only, so a site's sign-in reaches a person (design 9); each
+        // paused page request goes straight on.
+        cdp.call(
+            "Fetch.enable",
+            json!({
+                "handleAuthRequests": true,
+                "patterns": [{ "urlPattern": "*", "resourceType": "Document" }],
+            }),
+            s,
+        )
+        .await?;
         if let Some(ua) = &inner.user_agent {
             cdp.call(
                 "Emulation.setUserAgentOverride",
@@ -586,7 +597,7 @@ impl BrowserService {
     }
 
     fn discard_locked(&self, inner: &mut Inner, tab_id: &str) {
-        self.drop_ui_locked(inner, Some(tab_id));
+        self.drop_ui_locked(inner, |r| r.tab_id == tab_id);
         let Some(tab) = inner.tabs.get_mut(tab_id) else {
             return;
         };
@@ -723,25 +734,42 @@ impl BrowserService {
                 else {
                     return;
                 };
-                inner.next_ui += 1;
-                let request = UiRequest {
-                    request_id: format!("ui-{}", inner.next_ui),
-                    tab_id: id.clone(),
-                    owner: inner.tabs[&id].info.owner.clone(),
-                    kind: ui::dialog_of(p),
+                self.ask_locked(&mut inner, &id, ui::dialog_of(p));
+            }
+            "Fetch.requestPaused" => {
+                let (Some(cdp), Some(session)) = (inner.cdp.clone(), event.session_id.clone())
+                else {
+                    return;
                 };
-                inner
-                    .ui
-                    .insert(request.request_id.clone(), request.clone());
-                let request_id = request.request_id.clone();
-                self.emit(BrowserEvent::Ui(request));
-                let me = self.me.clone();
+                let request_id = p["requestId"].as_str().unwrap_or_default().to_string();
                 tokio::spawn(async move {
-                    tokio::time::sleep(ui::DIALOG_TIMEOUT).await;
-                    if let Some(service) = me.upgrade() {
-                        service.expire(&request_id).await;
+                    let params = json!({ "requestId": request_id });
+                    if let Err(e) = cdp
+                        .call("Fetch.continueRequest", params, Some(&session))
+                        .await
+                    {
+                        tracing::debug!(error = %e, "a paused page request went away");
                     }
                 });
+                // A new page in a frame ends a sign-in it was waiting on.
+                let frame = p["frameId"].as_str().unwrap_or_default();
+                if let Some(id) = by_session(&inner, &event.session_id.clone().unwrap_or_default())
+                {
+                    self.drop_ui_locked(&mut inner, |r| {
+                        r.tab_id == id
+                            && matches!(&r.kind, UiKind::Auth { frame_id, .. } if frame_id == frame)
+                    });
+                }
+            }
+            "Fetch.authRequired" => {
+                let Some(id) = event
+                    .session_id
+                    .as_deref()
+                    .and_then(|s| by_session(&inner, s))
+                else {
+                    return;
+                };
+                self.ask_locked(&mut inner, &id, ui::auth_of(p));
             }
             // Answered here, by the page going away, or by another client of
             // the engine: whatever is still asked of that tab is done.
@@ -753,13 +781,15 @@ impl BrowserService {
                 else {
                     return;
                 };
-                self.drop_ui_locked(&mut inner, Some(&id));
+                self.drop_ui_locked(&mut inner, |r| {
+                    r.tab_id == id && matches!(r.kind, UiKind::Dialog { .. })
+                });
             }
             "Target.targetCrashed" => {
                 let Some(id) = by_target(&inner, p["targetId"].as_str().unwrap_or_default()) else {
                     return;
                 };
-                self.drop_ui_locked(&mut inner, Some(&id));
+                self.drop_ui_locked(&mut inner, |r| r.tab_id == id);
                 let tab = inner.tabs.get_mut(&id).expect("found above");
                 tab.info.crashed = true;
                 tab.info.loading = false;
@@ -771,7 +801,7 @@ impl BrowserService {
                 let Some(id) = by_target(&inner, p["targetId"].as_str().unwrap_or_default()) else {
                     return;
                 };
-                self.drop_ui_locked(&mut inner, Some(&id));
+                self.drop_ui_locked(&mut inner, |r| r.tab_id == id);
                 let tab = inner.tabs.remove(&id).expect("found above");
                 let db = self.db.clone();
                 let tab_id = id.clone();
@@ -813,14 +843,14 @@ impl BrowserService {
             .get(&request.tab_id)
             .and_then(|t| t.live.as_ref())
             .map(|l| l.session_id.clone());
-        // A dialog that already closed is no error: the request is done.
+        // A dialog or sign-in that already went is no error: the request is done.
         let delivered = match (inner.cdp.clone(), session) {
             (Some(cdp), Some(session)) => cdp.call(method, params, Some(&session)).await.map(|_| ()),
             _ => Ok(()),
         };
-        self.drop_ui_locked(&mut inner, Some(&request.tab_id));
+        self.drop_ui_locked(&mut inner, |r| r.request_id == request_id);
         if let Err(e) = delivered {
-            tracing::debug!(error = %e, "a browser dialog closed before its answer");
+            tracing::debug!(error = %e, "a browser request went before its answer");
         }
         Ok(())
     }
@@ -831,27 +861,45 @@ impl BrowserService {
         let Some(request) = inner.ui.get(request_id).cloned() else {
             return;
         };
-        tracing::warn!(tab_id = %request.tab_id, "dismissed a browser dialog nobody answered");
+        tracing::warn!(tab_id = %request.tab_id, "ended a browser request nobody answered");
         let session = inner
             .tabs
             .get(&request.tab_id)
             .and_then(|t| t.live.as_ref())
             .map(|l| l.session_id.clone());
         if let (Some(cdp), Some(session)) = (inner.cdp.clone(), session) {
-            let (method, params) = ui::dismiss_call();
+            let (method, params) = ui::dismiss_call(&request.kind);
             let _ = cdp.call(method, params, Some(&session)).await;
         }
-        self.drop_ui_locked(&mut inner, Some(&request.tab_id));
+        self.drop_ui_locked(&mut inner, |r| r.request_id == request_id);
     }
 
-    /// End the requests of `tab_id`, or every request.
-    fn drop_ui_locked(&self, inner: &mut Inner, tab_id: Option<&str>) {
-        let done: Vec<UiRequest> = inner
-            .ui
-            .values()
-            .filter(|r| tab_id.is_none_or(|t| r.tab_id == t))
-            .cloned()
-            .collect();
+    /// Ask a person for `kind` on behalf of the tab `tab_id`, until answered
+    /// or [`ui::timeout`].
+    fn ask_locked(&self, inner: &mut Inner, tab_id: &str, kind: UiKind) {
+        inner.next_ui += 1;
+        let request = UiRequest {
+            request_id: format!("ui-{}", inner.next_ui),
+            tab_id: tab_id.to_string(),
+            owner: inner.tabs[tab_id].info.owner.clone(),
+            kind,
+        };
+        let wait = ui::timeout(&request.kind);
+        let request_id = request.request_id.clone();
+        inner.ui.insert(request_id.clone(), request.clone());
+        self.emit(BrowserEvent::Ui(request));
+        let me = self.me.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(wait).await;
+            if let Some(service) = me.upgrade() {
+                service.expire(&request_id).await;
+            }
+        });
+    }
+
+    /// End the requests `done` picks.
+    fn drop_ui_locked(&self, inner: &mut Inner, done: impl Fn(&UiRequest) -> bool) {
+        let done: Vec<UiRequest> = inner.ui.values().filter(|r| done(r)).cloned().collect();
         for request in done {
             inner.ui.remove(&request.request_id);
             self.emit(BrowserEvent::UiDone {
@@ -1356,6 +1404,82 @@ mod tests {
         assert_eq!(fake.calls("Page.handleJavaScriptDialog"), vec![json!({"accept": false})]);
         assert_eq!(ui_done(&mut events).await, second.request_id);
         assert!(svc.ui_requests().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_waits_for_a_person_apart_from_dialogs() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let tab = svc
+            .open(TabOwner::Personal, Some("https://example.com/"))
+            .await
+            .unwrap();
+        assert_eq!(
+            fake.calls("Fetch.enable"),
+            vec![json!({"handleAuthRequests": true,
+                        "patterns": [{"urlPattern": "*", "resourceType": "Document"}]})]
+        );
+        let target = fake.target_of_url("https://example.com/").unwrap();
+        let session = fake.lock().targets[&target].session.clone().unwrap();
+        let mut events = svc.subscribe();
+
+        let paused = |id: &str, frame: &str| {
+            json!({"requestId": id, "frameId": frame, "resourceType": "Document",
+                   "request": {"url": "https://example.com/admin"}})
+        };
+        let auth = |id: &str| {
+            let mut p = paused(id, "F1");
+            p["authChallenge"] = json!({"source": "Server", "origin": "https://example.com",
+                                        "scheme": "basic", "realm": "Admin"});
+            p
+        };
+        fake.emit("Fetch.requestPaused", paused("r1", "F1"), Some(&session));
+        fake.emit("Fetch.authRequired", auth("r1"), Some(&session));
+        let sign_in = loop {
+            if let BrowserEvent::Ui(r) = events.recv().await.unwrap() {
+                break r;
+            }
+        };
+        assert_eq!(fake.calls("Fetch.continueRequest"), vec![json!({"requestId": "r1"})]);
+        assert!(matches!(&sign_in.kind, UiKind::Auth { realm, proxy: false, .. } if realm == "Admin"));
+        assert_eq!(sign_in.tab_id, tab.id);
+
+        let dialog = open_dialog(
+            &fake,
+            &mut events,
+            "https://example.com/",
+            json!({"type": "alert", "message": "Hi", "url": ""}),
+        )
+        .await;
+        let answer = UiAnswer::Auth {
+            accept: true,
+            username: "ann".into(),
+            password: "pw".into(),
+        };
+        svc.answer(&sign_in.request_id, &answer).await.unwrap();
+        assert_eq!(
+            fake.calls("Fetch.continueWithAuth"),
+            vec![json!({"requestId": "r1", "authChallengeResponse":
+                        {"response": "ProvideCredentials", "username": "ann", "password": "pw"}})]
+        );
+        assert_eq!(ui_done(&mut events).await, sign_in.request_id);
+        assert_eq!(svc.ui_requests().await, vec![dialog.clone()], "the dialog stays");
+        assert_eq!(
+            svc.answer(&dialog.request_id, &answer).await.unwrap_err().code,
+            "invalid_answer"
+        );
+
+        // A new page in that frame ends a sign-in still waiting.
+        fake.emit("Fetch.authRequired", auth("r2"), Some(&session));
+        let second = loop {
+            if let BrowserEvent::Ui(r) = events.recv().await.unwrap() {
+                break r;
+            }
+        };
+        fake.emit("Fetch.requestPaused", paused("r3", "F1"), Some(&session));
+        assert_eq!(ui_done(&mut events).await, second.request_id);
+        assert_eq!(svc.ui_requests().await, vec![dialog]);
     }
 
     #[tokio::test]

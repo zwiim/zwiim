@@ -328,7 +328,11 @@ use serde::{Deserialize, Serialize};
 /// after 60 s unanswered, or its tab goes; the snapshot carries the open ones
 /// as `ui_requests`. `browser.ui.answer {request_id, answer}` with `answer`
 /// `{kind: "dialog", accept, text?}` answers one; the first answer wins and
-/// a later one is refused with `request_not_found`. Host only for now:
+/// a later one is refused with `request_not_found`. A site or proxy asking
+/// to sign in is a request `{kind: "auth", origin, scheme, realm, proxy,
+/// url}`, answered `{kind: "auth", accept, username, password}` and
+/// cancelled after 5 minutes unanswered; an answer of the wrong kind is
+/// `invalid_answer`. Host only for now:
 /// paired devices are refused with `permission_denied`.
 ///
 /// 33 (`downloads`): what the Host is downloading (an agent's adapter, the

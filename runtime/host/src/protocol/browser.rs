@@ -34,6 +34,7 @@ impl From<BrowserError> for ZwiimError {
             ),
             "invalid_viewport" => (StatusCode::BAD_REQUEST, e.message),
             "request_not_found" => (StatusCode::NOT_FOUND, e.message),
+            "invalid_answer" => (StatusCode::BAD_REQUEST, e.message),
             _ => (StatusCode::SERVICE_UNAVAILABLE, scrub_paths(&e.message)),
         };
         ZwiimError::new(status, e.code, message)
