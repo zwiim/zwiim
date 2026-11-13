@@ -370,7 +370,24 @@ pub(crate) async fn tab_op(
         }
     };
     let load_error = match load(browser, &tab_id, &url).await {
-        Ok(load_error) => load_error,
+        Ok(Load::Done(load_error)) => load_error,
+        Ok(Load::Asked(site)) => {
+            return match browser.tab(&tab_id).await {
+                Some(tab) => {
+                    let mut out = BrowserTabOutcome::tab(summary(&tab), None);
+                    out.note = Some(format!(
+                        "The person is asked whether you may open {site}; the page loads once they \
+                         allow it. Wait with browser_wait_for, or take a snapshot later."
+                    ));
+                    out
+                }
+                None => BrowserTabOutcome::refused(
+                    Some(&tab_id),
+                    ERROR_OPEN_FAILED,
+                    no_such_tab(&tab_id),
+                ),
+            };
+        }
         Err(e) if e.code == "unsupported_url" => {
             return BrowserTabOutcome::refused(Some(&tab_id), ERROR_BAD_ADDRESS, e.message)
         }
@@ -408,23 +425,37 @@ async fn write_har(
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// How a [`load`] ended.
+enum Load {
+    /// Loaded, or the kind of error page the tab shows instead.
+    Done(Option<String>),
+    /// The person is asked about this site first (design 13.2): the page
+    /// waits for them, and nothing waits here.
+    Asked(String),
+}
+
 /// Send the tab to `url` and wait for the page to load, at most
-/// [`LOAD_TIMEOUT`] plus [`SETTLE_TIMEOUT`]. The answer is the kind of error
-/// page the tab shows instead, if it does.
-async fn load(
-    browser: &BrowserService,
-    tab_id: &str,
-    url: &str,
-) -> Result<Option<String>, BrowserError> {
+/// [`LOAD_TIMEOUT`] plus [`SETTLE_TIMEOUT`].
+async fn load(browser: &BrowserService, tab_id: &str, url: &str) -> Result<Load, BrowserError> {
     let url = super::service::check_url(url)?;
     let (cdp, session) = browser.session(tab_id).await?;
     browser.acted(tab_id, Actor::Agent).await;
     if let Ok(parsed) = url::Url::parse(&url) {
-        if let Verdict::Refuse(code) = browser.site_check(tab_id, &url).await {
-            return Err(BrowserError {
-                code,
-                message: site_refusal(code, &parsed),
-            });
+        match browser.site_check(tab_id, &url).await {
+            Verdict::Refuse(code) => {
+                return Err(BrowserError {
+                    code,
+                    message: site_refusal(code, &parsed),
+                })
+            }
+            Verdict::Ask => {
+                browser
+                    .navigate(tab_id, super::service::Navigation::Url(url.clone()))
+                    .await?;
+                let site = parsed.host_str().unwrap_or("that site").to_string();
+                return Ok(Load::Asked(site));
+            }
+            Verdict::Allow => {}
         }
     }
     let reply = cdp
@@ -436,10 +467,10 @@ async fn load(
         )
         .await?;
     if let Some(error) = reply["errorText"].as_str() {
-        return Ok(Some(load_error_kind(error).to_string()));
+        return Ok(Load::Done(Some(load_error_kind(error).to_string())));
     }
     settle(browser, tab_id, &cdp, &session).await;
-    Ok(None)
+    Ok(Load::Done(None))
 }
 
 /// The agent's error for a site policy refusal `code` (design 13.2).
@@ -1440,6 +1471,49 @@ mod tests {
         .await;
         assert_eq!(failed.error, None);
         assert_eq!(failed.load_error.as_deref(), Some("dns"));
+    }
+
+    #[tokio::test]
+    async fn an_agent_is_refused_a_site_off_its_list_and_not_held_up_by_a_question() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let browser =
+            BrowserService::start(EngineManager::new(fake.start_fn()), db.conn.clone(), None)
+                .await
+                .unwrap();
+        let worlds = Worlds::default();
+        browser
+            .set_strict_sites("s1", &["example.com".into()])
+            .await
+            .unwrap();
+        let open = |url: &str| BrowserTabOp::Open { url: url.into() };
+        let ok = tab_op(&browser, &worlds, "s1", open("https://example.com/")).await;
+        assert_eq!(ok.error, None, "{:?}", ok.note);
+        let refused = tab_op(&browser, &worlds, "s1", open("https://other.test/")).await;
+        assert_eq!(refused.error.as_deref(), Some(ERROR_SITE_NOT_ALLOWED));
+        assert!(refused
+            .note
+            .unwrap()
+            .contains("other.test is not on this session's strict site list"));
+
+        browser.set_strict_sites("s1", &[]).await.unwrap();
+        let on = serde_json::Map::from_iter([(
+            crate::settings::BROWSER_AGENT_ASK_SITES.to_string(),
+            json!(true),
+        )]);
+        crate::settings::update(&db.conn, &on).await.unwrap();
+        let asked = tokio::time::timeout(
+            Duration::from_secs(5),
+            tab_op(&browser, &worlds, "s1", open("https://other.test/")),
+        )
+        .await
+        .expect("returns at once");
+        assert_eq!(asked.error, None);
+        assert!(asked
+            .note
+            .unwrap()
+            .contains("The person is asked whether you may open other.test"));
+        fake.wait_url("https://other.test/").await;
     }
 
     #[tokio::test]
