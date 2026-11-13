@@ -6,6 +6,8 @@ import {
   type BrowserInput,
   type BrowserStreamHandlers,
   type BrowserTab,
+  type BrowserUiRequest,
+  ZwiimClientError,
 } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
 import { addressUrl, browserShortcut, fitFrame, keyInput, modifiersOf, toPage } from "@/lib/browser-input";
@@ -200,6 +202,70 @@ describe("browser panel", () => {
     fireEvent.click(screen.getByText("Try again"));
     await tick();
     expect(t.calls.some((c) => c.op === "browser.engine.reset")).toBe(true);
+  });
+
+  const dialog = (more: Partial<BrowserUiRequest> = {}): BrowserUiRequest => ({
+    request_id: "ui-1",
+    tab_id: "a",
+    owner: { kind: "session", session_id: "s1" },
+    kind: "dialog",
+    dialog: "prompt",
+    message: "Your name?",
+    default_text: "Ann",
+    url: "https://example.com/form",
+    ...more,
+  });
+
+  it("shows a page's dialog over its tab and sends the answer", async () => {
+    const t = new StreamingTransport();
+    t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
+    t.handlers["browser.view.close"] = () => ({});
+    t.handlers["browser.ui.answer"] = () => ({});
+    await mount(t, [tab("a"), tab("b", { title: "Other", position: 1 })]);
+    await act(async () => t.frame({ type: "browser.ui.request", request: dialog() } as never));
+    expect(screen.getByRole("alertdialog", { name: "example.com says" })).toBeTruthy();
+    expect(screen.getByText("Your name?")).toBeTruthy();
+    const answer = screen.getByLabelText("Answer") as HTMLInputElement;
+    expect(answer.value).toBe("Ann");
+    fireEvent.change(answer, { target: { value: "Bo" } });
+    fireEvent.submit(answer.closest("form")!);
+    await tick();
+    expect(t.calls.find((c) => c.op === "browser.ui.answer")!.params).toEqual({
+      request_id: "ui-1",
+      answer: { kind: "dialog", accept: true, text: "Bo" },
+    });
+    await act(async () => t.frame({ type: "browser.ui.done", request_id: "ui-1", tab_id: "a" } as never));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+
+    // A dialog in a tab not on screen marks that tab; Escape cancels one on screen.
+    await act(async () =>
+      t.frame({ type: "browser.ui.request", request: dialog({ request_id: "ui-2", tab_id: "b", dialog: "beforeunload" }) } as never),
+    );
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.getByTitle("This page is asking something")).toBeTruthy();
+    fireEvent.click(screen.getByText("Other"));
+    const leave = screen.getByRole("alertdialog", { name: "Leave this page?" });
+    fireEvent.keyDown(leave, { key: "Escape" });
+    await tick();
+    expect(t.calls.filter((c) => c.op === "browser.ui.answer").at(-1)!.params).toEqual({
+      request_id: "ui-2",
+      answer: { kind: "dialog", accept: false },
+    });
+  });
+
+  it("says nothing when another client answered the dialog first", async () => {
+    const t = new StreamingTransport();
+    t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
+    t.handlers["browser.view.close"] = () => ({});
+    t.handlers["browser.ui.answer"] = () => {
+      throw new ZwiimClientError("request_not_found", "That request was already answered or has expired");
+    };
+    await mount(t, [tab("a")]);
+    await act(async () => t.frame({ type: "browser.ui.request", request: dialog({ dialog: "alert", message: "Saved" }) } as never));
+    fireEvent.click(screen.getByText("OK"));
+    await tick();
+    expect(t.calls.some((c) => c.op === "browser.ui.answer")).toBe(true);
+    expect(screen.queryByText(/already answered/)).toBeNull();
   });
 
   it("says when the host refuses the browser", async () => {

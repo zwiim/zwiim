@@ -1,18 +1,23 @@
 // The Host's browser beside the conversation (design 19.1): the session's
 // tabs and the person's own, an address bar, and the selected tab streamed
 // from the Host's engine. Both the person and the session's agent drive a
-// session tab; there is no control step between them.
+// session tab; there is no control step between them. A page's own dialog
+// (`alert`, `confirm`, `prompt`, leaving the page) is drawn over its tab.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, ExternalLink, Globe, Plus, RotateCw, X } from "lucide-react";
 import {
   personalTabs,
   sessionTabs,
+  tabUiRequests,
+  ZwiimClientError,
   type BrowserEngine,
   type BrowserScreenFrame,
   type BrowserStream,
   type BrowserTab,
   type BrowserTabOwner,
+  type BrowserUiAnswer,
+  type BrowserUiRequest,
 } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import { openLink, isOpenableLink } from "@/lib/bridge";
@@ -137,6 +142,9 @@ export function BrowserPanel({
               {t.owner.kind === "personal" && <span className="text-muted-foreground">Mine · </span>}
               {tabLabel(t)}
             </button>
+            {tab?.tab_id !== t.tab_id && tabUiRequests(browser, t.tab_id).length > 0 && (
+              <span className="bg-brand size-1.5 shrink-0 rounded-full" title="This page is asking something" />
+            )}
             <button
               className={CLOSE}
               title="Close tab"
@@ -187,6 +195,23 @@ export function BrowserPanel({
               onReset={() => run(() => controller.resetBrowserEngine())}
               onReload={() => run(() => controller.browserTabHistory(tab.tab_id, "reload"))}
             />
+            {tabUiRequests(browser, tab.tab_id).slice(0, 1).map((r) => (
+              <PageDialog
+                key={r.request_id}
+                request={r}
+                disabled={!online}
+                onAnswer={(answer) =>
+                  run(async () => {
+                    try {
+                      await controller.answerBrowserUi(r.request_id, answer);
+                    } catch (e) {
+                      // Another client answered first, or it timed out: it is done.
+                      if (!(e instanceof ZwiimClientError && e.code === "request_not_found")) throw e;
+                    }
+                  })
+                }
+              />
+            ))}
           </>
         )}
       </div>
@@ -265,6 +290,86 @@ function EngineNotice({
     );
   }
   return null;
+}
+
+/** A page's JavaScript dialog, over its tab: the first answer from any client wins. */
+function PageDialog({
+  request,
+  disabled,
+  onAnswer,
+}: {
+  request: BrowserUiRequest;
+  disabled: boolean;
+  onAnswer(answer: BrowserUiAnswer): Promise<void>;
+}) {
+  const [text, setText] = useState(request.default_text ?? "");
+  const [busy, setBusy] = useState(false);
+  const leaving = request.dialog === "beforeunload";
+  const prompt = request.dialog === "prompt";
+
+  async function answer(accept: boolean) {
+    if (busy || disabled) return;
+    setBusy(true);
+    try {
+      await onAnswer({ kind: "dialog", accept, ...(prompt && accept ? { text } : {}) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="bg-scrim absolute inset-0 z-10 flex items-start justify-center p-6 pt-10">
+      <form
+        className="bg-popover ring-border shadow-pop presence-pop flex w-full max-w-sm flex-col gap-3 rounded-xl p-4 ring-1"
+        role="alertdialog"
+        aria-label={leaving ? "Leave this page?" : `${pageHost(request.url)} says`}
+        onSubmit={(e) => {
+          e.preventDefault();
+          void answer(true);
+        }}
+        onKeyDown={(e) => {
+          // The page is behind this: keys stay here.
+          e.stopPropagation();
+          if (e.key === "Escape") {
+            e.preventDefault();
+            void answer(false);
+          }
+        }}
+      >
+        <p className="text-ui font-medium">{leaving ? "Leave this page?" : `${pageHost(request.url)} says`}</p>
+        <p className="text-ui max-h-48 overflow-y-auto break-words whitespace-pre-wrap">
+          {leaving ? "Changes you made may not be saved." : request.message}
+        </p>
+        {prompt && (
+          <input
+            autoFocus
+            className="border-border bg-input/30 text-ui h-8 rounded-md border px-2 outline-none focus-visible:ring-2"
+            aria-label="Answer"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+          />
+        )}
+        <div className="flex justify-end gap-2">
+          {request.dialog !== "alert" && (
+            <Button type="button" size="sm" variant="secondary" disabled={busy || disabled} onClick={() => void answer(false)}>
+              {leaving ? "Stay" : "Cancel"}
+            </Button>
+          )}
+          <Button type="submit" size="sm" autoFocus={!prompt} disabled={busy || disabled}>
+            {leaving ? "Leave" : "OK"}
+          </Button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function pageHost(url: string): string {
+  try {
+    return new URL(url).host || "This page";
+  } catch {
+    return "This page";
+  }
 }
 
 function AddressBar({
