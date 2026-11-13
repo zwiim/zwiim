@@ -786,6 +786,16 @@ export class HostController {
     return this.client.request("browser.tab.find", { tab_id, query, backwards });
   }
 
+  /** Session `session_id`'s strict site list; empty for none. */
+  async browserSites(session_id: string): Promise<string[]> {
+    return (await this.client.request("browser.sites.get", { session_id })).sites;
+  }
+
+  /** Replace session `session_id`'s strict site list (empty removes it); the list as kept. */
+  async setBrowserSites(session_id: string, sites: string[]): Promise<string[]> {
+    return (await this.client.request("browser.sites.set", { session_id, sites })).sites;
+  }
+
   /** Answer what a tab waits on. Another client may have answered first: then `request_not_found`. */
   async answerBrowserUi(request_id: string, answer: BrowserUiAnswer): Promise<void> {
     await this.client.request("browser.ui.answer", { request_id, answer });

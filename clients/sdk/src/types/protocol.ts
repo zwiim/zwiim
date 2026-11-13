@@ -344,6 +344,19 @@ export type BrowserUiRequest = {
       min?: string;
       max?: string;
     } & BrowserPageBox)
+  | {
+      /**
+       * An agent's tab loads a site nobody allowed for the session, and
+       * `browser.agent_ask_sites` is on. The page waits; refused after 5 minutes.
+       */
+      kind: "site";
+      /** `host:port`. */
+      site: string;
+      /** The address being loaded. */
+      url: string;
+      /** This machine or the local network. */
+      local: boolean;
+    }
 );
 
 /** An element's box in the page's CSS pixels. */
@@ -390,7 +403,9 @@ export type BrowserUiAnswer =
   | { kind: "auth"; accept: boolean; username?: string; password?: string }
   | { kind: "file_chooser"; accept: boolean; workspace_id?: string; paths?: string[] }
   | { kind: "select"; accept: boolean; index?: number }
-  | { kind: "date"; accept: boolean; value?: string };
+  | { kind: "date"; accept: boolean; value?: string }
+  /** Allow the site for the session, or every session with `always`; refuse it for the session otherwise. */
+  | { kind: "site"; allow: boolean; always?: boolean };
 
 /**
  * What an agent is about to do on a tab: the point its pointer goes to and,
@@ -943,7 +958,9 @@ export interface AgentDefaults {
  * branch's upstream (unset is on), and from revision 33 (capability
  * `browser`) `browser.agent_passwords`, whether agents may type into
  * password fields on any site rather than only on loopback dev servers
- * (unset is off). Null when unset.
+ * (unset is off), and `browser.agent_ask_sites`, whether a site an agent's
+ * tab loads for the first time in a session waits for a person (unset is
+ * off). Null when unset.
  */
 export type HostSettingKey =
   | "defaults.agent"
@@ -959,7 +976,8 @@ export type HostSettingKey =
   | "prompts.branch_name"
   | "terminal.scrollback"
   | "git.push_sets_upstream"
-  | "browser.agent_passwords";
+  | "browser.agent_passwords"
+  | "browser.agent_ask_sites";
 
 /** Longest `prompts.*` setting the Host accepts, in UTF-8 bytes. */
 export const MAX_PROMPT_BYTES = 8000;
@@ -2282,6 +2300,14 @@ export interface Operations {
   "browser.downloads.location": [Record<string, never>, { root: string | null }];
   /** Choose the root folder (an existing absolute folder on the Host), or null for the default. */
   "browser.downloads.set_location": [{ root: string | null }, { root: string | null }];
+  /** The session's strict site list; empty for none. */
+  "browser.sites.get": [{ session_id: string }, { sites: string[] }];
+  /**
+   * Keep the session's agent to these sites (`example.com`, `*.example.com`,
+   * `localhost:3000`, or pasted addresses; at most 100) and its own dev
+   * servers; empty lets it open any. Returns them as kept; a bad one is `invalid_site`.
+   */
+  "browser.sites.set": [{ session_id: string; sites: string[] }, { sites: string[] }];
 }
 
 export type OpName = keyof Operations;
@@ -2325,6 +2351,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "browser.view.open",
   "browser.ui.answer",
   "browser.downloads.set_location",
+  "browser.sites.set",
   "session.start",
   "session.send",
   "session.cancel",
