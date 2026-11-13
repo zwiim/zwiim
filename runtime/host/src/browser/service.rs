@@ -21,11 +21,14 @@ use tokio::sync::{broadcast, watch, Mutex};
 
 use super::engine::cdp::{Cdp, Event};
 use super::engine::manager::{EngineError, EngineManager, EngineState};
+use super::snapshot::{self, PersonalSnapshot};
 use super::store::{self, TabOwner, TabRecord};
 
 const EVENT_BUFFER: usize = 256;
 const DEFAULT_WIDTH: u32 = 1280;
 const DEFAULT_HEIGHT: u32 = 800;
+/// How long after a personal page loads its cookies are saved.
+const SAVE_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A tab as clients see it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -111,11 +114,17 @@ struct Inner {
     cdp: Option<Cdp>,
     contexts: HashMap<TabOwner, String>,
     user_agent: Option<String>,
+    /// The personal context of this generation holds the snapshot's
+    /// cookies. Until it does, nothing is saved over the snapshot.
+    personal_restored: bool,
+    /// A personal snapshot save is scheduled.
+    save_pending: bool,
 }
 
 pub struct BrowserService {
     me: Weak<BrowserService>,
     engine: Arc<EngineManager>,
+    snapshot: Option<Arc<PersonalSnapshot>>,
     db: DatabaseConnection,
     inner: Mutex<Inner>,
     events: broadcast::Sender<BrowserEvent>,
@@ -126,6 +135,7 @@ impl BrowserService {
     pub async fn start(
         engine: Arc<EngineManager>,
         db: DatabaseConnection,
+        snapshot: Option<PersonalSnapshot>,
     ) -> Result<Arc<Self>, sea_orm::DbErr> {
         let tabs = store::load(&db)
             .await?
@@ -142,6 +152,7 @@ impl BrowserService {
         let service = Arc::new_cyclic(|me| BrowserService {
             me: me.clone(),
             engine,
+            snapshot: snapshot.map(Arc::new),
             db,
             inner: Mutex::new(Inner {
                 tabs,
@@ -149,6 +160,8 @@ impl BrowserService {
                 cdp: None,
                 contexts: HashMap::new(),
                 user_agent: None,
+                personal_restored: false,
+                save_pending: false,
             }),
             events: broadcast::channel(EVENT_BUFFER).0,
         });
@@ -258,6 +271,9 @@ impl BrowserService {
         drop(inner);
         if let Err(e) = store::remove(&self.db, tab_id).await {
             tracing::warn!(error = %e, "could not remove a browser tab");
+        }
+        if tab.info.owner == TabOwner::Personal {
+            self.save_personal().await;
         }
         self.emit(BrowserEvent::Removed {
             tab_id: tab_id.to_string(),
@@ -429,6 +445,7 @@ impl BrowserService {
         }
         inner.generation = generation;
         inner.contexts.clear();
+        inner.personal_restored = false;
         inner.cdp = Some(cdp.clone());
         // Subscribe before discovery, so no target event is missed.
         let events = cdp.subscribe();
@@ -500,6 +517,9 @@ impl BrowserService {
                     .unwrap_or_default()
                     .to_string();
                 inner.contexts.insert(owner.clone(), ctx.clone());
+                if *owner == TabOwner::Personal {
+                    inner.personal_restored = self.restore_personal(cdp, &ctx).await;
+                }
                 ctx
             }
         };
@@ -651,6 +671,10 @@ impl BrowserService {
                     return;
                 };
                 self.refresh_info(&inner, &id, generation);
+                let personal = inner.tabs[&id].info.owner == TabOwner::Personal;
+                if personal && event.method == "Page.loadEventFired" {
+                    self.schedule_save(&mut inner);
+                }
             }
             // A page opened a window (`window.open`, `target=_blank`, an
             // OAuth popup): it becomes a tab of the opener's owner, in the
@@ -708,6 +732,102 @@ impl BrowserService {
         }
     }
 
+    /// Load the snapshot's cookies into the new personal context `ctx`.
+    /// Returns whether the context now holds them (or there were none).
+    async fn restore_personal(&self, cdp: &Cdp, ctx: &str) -> bool {
+        let Some(snapshot) = self.snapshot.clone() else {
+            return false;
+        };
+        let loaded = tokio::task::spawn_blocking(move || snapshot.load()).await;
+        let contents = match loaded {
+            Ok(Ok(contents)) => contents,
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "could not read the browser's personal sign-ins");
+                return false;
+            }
+            Err(_) => return false,
+        };
+        if contents.cookies.is_empty() {
+            return true;
+        }
+        let set = cdp
+            .call(
+                "Storage.setCookies",
+                json!({ "cookies": contents.cookies, "browserContextId": ctx }),
+                None,
+            )
+            .await;
+        if let Err(e) = &set {
+            tracing::warn!(error = %e, "could not restore the browser's personal sign-ins");
+        }
+        set.is_ok()
+    }
+
+    /// Save the personal context's cookies to the snapshot now. Does nothing
+    /// before that context exists, or when its restore failed: an empty or
+    /// partial jar must never replace the saved one.
+    pub async fn save_personal(&self) {
+        let Some(snapshot) = self.snapshot.clone() else {
+            return;
+        };
+        let (cdp, ctx) = {
+            let inner = self.inner.lock().await;
+            match (&inner.cdp, inner.contexts.get(&TabOwner::Personal)) {
+                (Some(cdp), Some(ctx)) if inner.personal_restored => (cdp.clone(), ctx.clone()),
+                _ => return,
+            }
+        };
+        let got = match cdp
+            .call(
+                "Storage.getCookies",
+                json!({ "browserContextId": ctx }),
+                None,
+            )
+            .await
+        {
+            Ok(got) => got,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read the browser's personal cookies");
+                return;
+            }
+        };
+        let cookies = got["cookies"]
+            .as_array()
+            .map(|all| all.iter().filter_map(snapshot::cookie_param).collect())
+            .unwrap_or_default();
+        let contents = snapshot::Contents { cookies };
+        match tokio::task::spawn_blocking(move || snapshot.save(&contents)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "could not save the browser's personal sign-ins")
+            }
+            Err(_) => {}
+        }
+    }
+
+    /// Save the personal snapshot a little after page loads settle.
+    fn schedule_save(&self, inner: &mut Inner) {
+        if inner.save_pending || self.snapshot.is_none() {
+            return;
+        }
+        inner.save_pending = true;
+        let me = self.me.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(SAVE_DELAY).await;
+            let Some(service) = me.upgrade() else {
+                return;
+            };
+            service.inner.lock().await.save_pending = false;
+            service.save_personal().await;
+        });
+    }
+
+    /// Stop the engine on purpose, saving the personal sign-ins first.
+    pub async fn stop_engine(&self) {
+        self.save_personal().await;
+        self.engine.stop().await;
+    }
+
     /// Read the tab's URL and title from the engine, then apply them as a
     /// `targetInfoChanged` would.
     fn refresh_info(&self, inner: &Inner, tab_id: &str, generation: u64) {
@@ -746,6 +866,7 @@ impl BrowserService {
         let mut inner = self.inner.lock().await;
         inner.cdp = None;
         inner.contexts.clear();
+        inner.personal_restored = false;
         let live: Vec<String> = inner
             .tabs
             .iter()
@@ -886,7 +1007,7 @@ mod tests {
     }
 
     async fn service(fake: &FakeEngine, db: &DatabaseConnection) -> Arc<BrowserService> {
-        BrowserService::start(EngineManager::new(fake.start_fn()), db.clone())
+        BrowserService::start(EngineManager::new(fake.start_fn()), db.clone(), None)
             .await
             .unwrap()
     }
@@ -1158,6 +1279,82 @@ mod tests {
         assert_eq!(svc.list(Some("s1")).await.len(), 2);
     }
 
+    fn personal_ctx(fake: &FakeEngine) -> String {
+        let calls = fake.calls("Target.createTarget");
+        calls.last().unwrap()["browserContextId"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn personal_sign_ins_come_back_in_a_new_engine_and_only_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("personal.snapshot");
+        let db = fresh_in_memory_db().await;
+        let cookie = json!({ "name": "sid", "value": "secret", "domain": "example.com", "path": "/", "session": true });
+
+        let fake = FakeEngine::default();
+        let svc = BrowserService::start(
+            EngineManager::new(fake.start_fn()),
+            db.conn.clone(),
+            Some(PersonalSnapshot::with_key(path.clone(), [3; 32])),
+        )
+        .await
+        .unwrap();
+        svc.open(TabOwner::Personal, None).await.unwrap();
+        let ctx = personal_ctx(&fake);
+        fake.lock().cookies.insert(ctx, vec![cookie.clone()]);
+        svc.stop_engine().await;
+        assert!(path.is_file());
+
+        let fresh = FakeEngine::default();
+        let svc = BrowserService::start(
+            EngineManager::new(fresh.start_fn()),
+            db.conn.clone(),
+            Some(PersonalSnapshot::with_key(path.clone(), [3; 32])),
+        )
+        .await
+        .unwrap();
+        svc.open(session("s1"), None).await.unwrap();
+        assert!(
+            fresh.calls("Storage.setCookies").is_empty(),
+            "sessions get none"
+        );
+        svc.open(TabOwner::Personal, None).await.unwrap();
+        let set = fresh.calls("Storage.setCookies");
+        assert_eq!(set.len(), 1);
+        assert_eq!(set[0]["browserContextId"], personal_ctx(&fresh));
+        assert_eq!(set[0]["cookies"][0]["value"], "secret");
+        assert!(set[0]["cookies"][0].get("session").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_that_cannot_be_read_is_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("personal.snapshot");
+        PersonalSnapshot::with_key(path.clone(), [1; 32])
+            .save(&snapshot::Contents {
+                cookies: vec![json!({ "name": "sid", "value": "v", "domain": "x", "path": "/" })],
+            })
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = BrowserService::start(
+            EngineManager::new(fake.start_fn()),
+            db.conn.clone(),
+            // Another key: as if the keychain entry were replaced.
+            Some(PersonalSnapshot::with_key(path.clone(), [2; 32])),
+        )
+        .await
+        .unwrap();
+        svc.open(TabOwner::Personal, None).await.unwrap();
+        svc.save_personal().await;
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
     #[tokio::test]
     async fn only_web_addresses_open() {
         let fake = FakeEngine::default();
@@ -1234,7 +1431,7 @@ mod tests {
         let url = |p: &str| format!("http://127.0.0.1:{port}{p}");
 
         let db = fresh_in_memory_db().await;
-        let svc = BrowserService::start(EngineManager::new(start), db.conn.clone())
+        let svc = BrowserService::start(EngineManager::new(start), db.conn.clone(), None)
             .await
             .unwrap();
         let a = svc.open(session("s1"), Some(&url("/one"))).await.unwrap();

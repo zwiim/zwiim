@@ -37,6 +37,8 @@ pub struct FakeState {
     pub calls: Vec<(String, Value, Option<String>)>,
     pub contexts: Vec<String>,
     pub targets: HashMap<String, FakeTarget>,
+    /// Cookies per browser context.
+    pub cookies: HashMap<String, Vec<Value>>,
     next: usize,
     /// The running engine's event sender and exit switch.
     events: Option<mpsc::UnboundedSender<Value>>,
@@ -123,6 +125,7 @@ impl FakeEngine {
             let mut s = self.lock();
             s.targets.clear();
             s.contexts.clear();
+            s.cookies.clear();
             s.events = None;
             s.exit.take()
         };
@@ -287,6 +290,23 @@ impl FakeEngine {
                 emit("Target.targetInfoChanged", json!({ "targetInfo": info }));
                 send("Page.frameStoppedLoading", json!({ "frameId": id }));
                 Ok(json!({ "frameId": id, "loaderId": "L" }))
+            }
+            "Storage.setCookies" => {
+                let ctx = params["browserContextId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                let jar = s.cookies.entry(ctx).or_default();
+                for c in params["cookies"].as_array().cloned().unwrap_or_default() {
+                    jar.retain(|old| old["name"] != c["name"] || old["domain"] != c["domain"]);
+                    jar.push(c);
+                }
+                Ok(json!({}))
+            }
+            "Storage.getCookies" => {
+                let ctx = params["browserContextId"].as_str().unwrap_or_default();
+                let jar = s.cookies.get(ctx).cloned().unwrap_or_default();
+                Ok(json!({ "cookies": jar }))
             }
             "Target.getTargetInfo" => {
                 let id = params["targetId"].as_str().unwrap_or_default();

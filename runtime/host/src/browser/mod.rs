@@ -17,6 +17,7 @@
 //!   launch and CDP; compiled in both runtimes
 //! - `service`    — `BrowserService`: the Host browser's tabs, one context per
 //!   owner, restored after restarts
+//! - `snapshot`   — the personal context's cookies, sealed with a keychain key
 //! - `store`      — the Host browser's persisted tabs and their owners
 //! - `policy`     — pure decisions (scheme allow-list, …)
 //! - `agent`      — what an agent may read of a page, and on whose say-so
@@ -69,6 +70,7 @@ pub mod eval;
 pub mod service_url;
 pub mod service;
 pub mod services;
+pub mod snapshot;
 pub mod store;
 pub mod types;
 
