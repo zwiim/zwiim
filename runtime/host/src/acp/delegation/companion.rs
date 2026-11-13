@@ -1763,6 +1763,7 @@ pub fn browser_action_request(
             generation,
             target,
             action,
+            expect_url: text("expectUrl"),
         },
     ))
 }
@@ -4927,6 +4928,19 @@ mod tests {
         let e = resp.error.unwrap();
         assert_eq!(e.code, -32602);
         assert!(e.message.contains("`ref`"));
+    }
+
+    #[test]
+    fn an_action_takes_the_address_it_expects() {
+        let args = json!({ "tabId": "t1", "generation": "g.3.1", "ref": "e7", "expectUrl": "http://localhost:3000/a" });
+        let (_, request) = browser_action_request("browser_click", &args).unwrap();
+        assert_eq!(
+            request.expect_url.as_deref(),
+            Some("http://localhost:3000/a")
+        );
+        let args = json!({ "tabId": "t1", "generation": "g.3.1", "ref": "e7" });
+        let (_, request) = browser_action_request("browser_click", &args).unwrap();
+        assert_eq!(request.expect_url, None);
     }
 
     #[test]

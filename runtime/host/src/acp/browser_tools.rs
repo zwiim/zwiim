@@ -99,6 +99,10 @@ pub const ERROR_BLOCKED: &str = "browser_blocked";
 /// `browser_wait_for` gave up: what it waited for did not happen in time.
 pub const ERROR_WAIT_TIMEOUT: &str = "browser_wait_timeout";
 
+/// An action named the address it expected the tab at with `expectUrl`, and
+/// the tab is somewhere else: nothing was done.
+pub const ERROR_URL_CHANGED: &str = "browser_url_changed";
+
 /// The workspace was asked for a tab and none arrived — no window open to put
 /// one in, or the tab went away before it loaded.
 pub const ERROR_OPEN_FAILED: &str = "browser_open_failed";

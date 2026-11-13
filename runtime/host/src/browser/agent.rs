@@ -699,6 +699,11 @@ pub struct ActionRequest {
     #[serde(rename = "ref", default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     pub action: ActionKind,
+    /// The address the agent expects the tab at; the action is refused when
+    /// it is elsewhere (design 10.3). Checked by the host, never sent to the
+    /// world.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_url: Option<String>,
 }
 
 /// How an action reached the page.
@@ -1412,6 +1417,7 @@ mod tests {
                 text: "it's \"quoted\"".into(),
                 submit: true,
             },
+            expect_url: None,
         };
         let call = act_call(&request);
         assert!(call.starts_with("typeof globalThis.__zwiimAgent === 'undefined' ? \"absent\" :"));
@@ -1424,7 +1430,10 @@ mod tests {
         let keyless = ActionRequest {
             generation: "g".into(),
             target: None,
-            action: ActionKind::Press { key: "Enter".into() },
+            action: ActionKind::Press {
+                key: "Enter".into(),
+            },
+            expect_url: None,
         };
         assert!(act_call(&keyless).contains(".act(\"g\", null, {\"key\":\"Enter\",\"kind\":\"press\"}))"));
 

@@ -32,7 +32,7 @@ use crate::acp::browser_tools::{
     BrowserEvalOutcome, BrowserSnapshotOutcome, BrowserTabOp, BrowserTabOutcome,
     BrowserTabsOutcome, BrowserToolAccess, DEFAULT_SNAPSHOT_MAX_CHARS, ERROR_ACTION_FAILED,
     ERROR_BAD_ADDRESS, ERROR_NO_SUCH_TAB, ERROR_OPEN_FAILED, ERROR_READ_FAILED, ERROR_UNAVAILABLE,
-    ERROR_WAIT_TIMEOUT,
+    ERROR_URL_CHANGED, ERROR_WAIT_TIMEOUT,
 };
 use crate::app_state::AppState;
 use crate::db::entities::conversation;
@@ -639,8 +639,21 @@ pub(crate) async fn act(
     tab_id: &str,
     request: &ActionRequest,
 ) -> BrowserActOutcome {
-    if own_tab(browser, session, tab_id).await.is_none() {
+    let Some(tab) = own_tab(browser, session, tab_id).await else {
         return BrowserActOutcome::refused(tab_id, ERROR_NO_SUCH_TAB, no_such_tab(tab_id));
+    };
+    if let Some(expected) = request.expect_url.as_deref() {
+        if !same_page(expected, &tab.url) {
+            return BrowserActOutcome::refused(
+                tab_id,
+                ERROR_URL_CHANGED,
+                format!(
+                    "Tab {tab_id} is at {}, not {expected}, so nothing was done. Take a \
+                     browser_snapshot to see the page it is on.",
+                    tab.url
+                ),
+            );
+        }
     }
     if request.target.is_none() && !matches!(request.action, ActionKind::Press { .. }) {
         return BrowserActOutcome::refused(
@@ -820,6 +833,19 @@ fn asked(kind: &UiKind) -> String {
         UiKind::Auth { origin, .. } => format!("sign-in for {origin}"),
         UiKind::FileChooser { .. } => "file chooser".to_string(),
     }
+}
+
+/// Whether `expected` names the page at `url`; the fragment does not count.
+fn same_page(expected: &str, url: &str) -> bool {
+    let page = |raw: &str| {
+        url::Url::parse(raw.trim())
+            .map(|mut u| {
+                u.set_fragment(None);
+                u.to_string()
+            })
+            .unwrap_or_else(|_| raw.trim().to_string())
+    };
+    page(expected) == page(url)
 }
 
 /// The action's name as clients show it.
@@ -1215,6 +1241,23 @@ mod tests {
         assert_eq!(failed.load_error.as_deref(), Some("dns"));
     }
 
+    #[test]
+    fn an_expected_address_matches_the_page_whatever_its_fragment() {
+        assert!(same_page("http://localhost:5173", "http://localhost:5173/"));
+        assert!(same_page(
+            "http://localhost:5173/a#x",
+            "http://localhost:5173/a"
+        ));
+        assert!(!same_page(
+            "http://localhost:5173/a",
+            "http://localhost:5173/b"
+        ));
+        assert!(!same_page(
+            "http://localhost:5173/a?q=1",
+            "http://localhost:5173/a"
+        ));
+    }
+
     #[tokio::test]
     async fn an_action_reports_the_tabs_downloads_and_moves_it_caused() {
         let fake = FakeEngine::default();
@@ -1323,7 +1366,28 @@ mod tests {
             generation: page.generation.clone(),
             target: Some(target.to_string()),
             action,
+            expect_url: None,
         };
+
+        // Expected elsewhere: refused, nothing typed.
+        let elsewhere = ActionRequest {
+            expect_url: Some("http://127.0.0.1:1/other".into()),
+            ..request(
+                &field,
+                ActionKind::Type {
+                    text: "Bob".into(),
+                    submit: false,
+                },
+            )
+        };
+        let refused = act(&browser, &worlds, "s1", &tab, &elsewhere).await;
+        assert_eq!(refused.error.as_deref(), Some(ERROR_URL_CHANGED));
+        let here = ActionRequest {
+            expect_url: Some(format!("{url}#top")),
+            ..elsewhere
+        };
+        let typed = act(&browser, &worlds, "s1", &tab, &here).await;
+        assert_eq!(typed.error, None, "{:?}", typed.note);
 
         let typed = act(
             &browser,

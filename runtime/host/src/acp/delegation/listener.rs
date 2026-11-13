@@ -3434,6 +3434,7 @@ mod tests {
                         text: "Ada".into(),
                         submit: true,
                     },
+                    expect_url: None,
                 },
             }),
         )
@@ -3608,6 +3609,7 @@ mod tests {
                     generation: "g".into(),
                     target: Some("e1".into()),
                     action: crate::browser::agent::ActionKind::Hover,
+                    expect_url: None,
                 },
             }),
         )
