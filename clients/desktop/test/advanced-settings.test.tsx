@@ -213,6 +213,19 @@ describe("terminal scrollback", () => {
     c.dispose();
   });
 
+  it("opens dev servers in the session's tab unless turned off", async () => {
+    const t = host();
+    const c = await mount(t);
+    const dialog = openSettings("Advanced");
+    await tick();
+    const toggle = dialog.getByTestId("browser-open-dev-servers") as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(toggle);
+    await tick();
+    expect(updates(t)).toEqual([{ "browser.open_dev_servers": false }]);
+    c.dispose();
+  });
+
   it("leaves the row out for a host without the browser", async () => {
     await mount(host());
     const dialog = openSettings("Advanced");

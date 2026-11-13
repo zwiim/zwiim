@@ -966,7 +966,8 @@ export interface AgentDefaults {
  * password fields on any site rather than only on loopback dev servers
  * (unset is off), and `browser.agent_ask_sites`, whether a site an agent's
  * tab loads for the first time in a session waits for a person (unset is
- * off). Null when unset.
+ * off), and `browser.open_dev_servers`, whether a dev server a session starts
+ * opens in that session's tab (unset is on). Null when unset.
  */
 export type HostSettingKey =
   | "defaults.agent"
@@ -983,7 +984,8 @@ export type HostSettingKey =
   | "terminal.scrollback"
   | "git.push_sets_upstream"
   | "browser.agent_passwords"
-  | "browser.agent_ask_sites";
+  | "browser.agent_ask_sites"
+  | "browser.open_dev_servers";
 
 /** Longest `prompts.*` setting the Host accepts, in UTF-8 bytes. */
 export const MAX_PROMPT_BYTES = 8000;

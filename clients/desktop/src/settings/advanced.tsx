@@ -155,6 +155,20 @@ export function AdvancedSettings({ bridge, remote }: { bridge: NativeBridge; rem
           onChange={(on) => update({ "browser.agent_ask_sites": on ? true : null })}
         />
       )}
+      {browser && (
+        <ToggleRow
+          setting={{
+            id: "browser-open-dev-servers",
+            title: "Open dev servers in the session's tab",
+            description:
+              "When a session starts a dev server in its worktree, its browser tab shows it. A tab on another site or another running server is left alone.",
+          }}
+          testId="browser-open-dev-servers"
+          checked={values["browser.open_dev_servers"] !== false}
+          disabled={!online}
+          onChange={(on) => update({ "browser.open_dev_servers": on ? null : false })}
+        />
+      )}
       {error && (
         <p className="text-destructive" role="alert">
           {error}
