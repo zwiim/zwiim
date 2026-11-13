@@ -1088,34 +1088,55 @@ kept out by review, and Widevine by downloading the headless shell only.
 
 ## 18. Protocol changes
 
-Revision 33 (from 32), capabilities `browser` and `relay_channels`. Mirrored
-in `clients/sdk`.
+Revision 33 (from 32), capability `browser`, mirrored in `clients/sdk`.
+Later items add their operations and events at the revision they ship in,
+and P2a adds `relay_channels`. Names on the wire are snake_case like the rest
+of the protocol (`tab_id`, `session_id`).
 
 Operations:
 
-1. `browser.tabs.list { sessionId? }`
-2. `browser.tab.open { owner, url?, viewport? }`, `browser.tab.close`,
-   `browser.tab.navigate { url | back | forward | reload | stop }`
-3. `browser.tab.share { tabId, sessionId, level }`, `browser.tab.unshare`
-4. `browser.view.open { tabId, viewport }`, `browser.view.close`
-5. `browser.control.claim`, `browser.control.release`
-6. `browser.ui.answer { tabId, requestId, answer }` (dialogs, pickers,
+1. `browser.tabs.list { session_id? }` → `{ tabs, engine }` (P1.3)
+2. `browser.tab.open { owner, url? }`, `browser.tab.close { tab_id }`,
+   `browser.tab.navigate { tab_id, url | action }` with `action` one of
+   `back`, `forward`, `reload`, `stop` (P1.3; `viewport` comes with P1.4)
+3. `browser.engine.reset`: clears a failure, `crash_loop` too (P1.3)
+4. `browser.tab.share { tab_id, session_id, level }`, `browser.tab.unshare`
+5. `browser.view.open { tab_id, viewport }`, `browser.view.close`
+6. `browser.control.claim`, `browser.control.release`
+7. `browser.ui.answer { tab_id, request_id, answer }` (dialogs, pickers,
    permissions, auth, takeover)
-7. `browser.site.decide { origin, decision }`
-8. `browser.forward.open { workspaceId }`, `browser.forward.close`
-9. `browser.find { tabId, text }`, `browser.print { tabId }`
-10. `browser.workspace_login.save`, `browser.workspace_login.clear` (P3)
+8. `browser.site.decide { origin, decision }`
+9. `browser.forward.open { workspace_id }`, `browser.forward.close`
+10. `browser.find { tab_id, text }`, `browser.print { tab_id }`
+11. `browser.workspace_login.save`, `browser.workspace_login.clear` (P3)
 
-Events:
+A tab is `{ tab_id, owner, url, title, position, loading, discarded,
+crashed }`, its owner `{ kind: "session", session_id }` or
+`{ kind: "personal" }`. The engine is `{ state }`: `stopped`, `starting`,
+`running` with `version`, or `failed` with `code` and `message`. The first
+download shows as `starting`; a `downloading` state with progress comes with
+the desktop's setup screen (P1.5).
 
-1. `browser.tab.state` — URL, title, loading, owner, controller, lease
-   generation, grants, viewers, discarded or crashed.
-2. `browser.tab.removed`
-3. `browser.ui.request` — one of the rows in section 9, or a takeover.
-4. `browser.agent.action` — ghost cursor and highlight.
-5. `browser.frame` — fallback frames only (7.1).
-6. `browser.engine.state` — downloading, starting, running, stopped, failed
-   with a reason (5.2.6).
+Events go to sockets that sent `browser.subscribe`, not through the Host
+feed, so the feed's `seq` counts the same events for every device. The
+answer is a `browser.snapshot { tabs, engine }`, then:
+
+1. `browser.tab.state { tab }`: the whole tab, so one arriving after a
+   snapshot that already holds it changes nothing. Controller, lease
+   generation, grants and viewers join it with P1.9.
+2. `browser.tab.removed { tab_id, owner }`
+3. `browser.engine.state { engine }`
+4. `browser.ui.request`: one of the rows in section 9, or a takeover.
+5. `browser.agent.action`: ghost cursor and highlight.
+6. `browser.frame`: fallback frames only (7.1).
+
+A refused subscription is a `browser.error { error }` frame, never a plain
+`error` frame, which clients take to mean the Host feed failed. A socket that
+falls behind gets a fresh snapshot.
+
+Until P2a gives devices `browser_access`, every `browser.*` operation and
+`browser.subscribe` need local host authority, so a paired phone sees no tab
+addresses.
 
 Socket: `/zwiim/v1/browser/stream/<streamId>`, loopback only. Remote viewers
 get the same binary messages on the `browser` channel.
