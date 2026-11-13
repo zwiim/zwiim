@@ -595,9 +595,10 @@ through `BrowserService` first, which checks tab ownership, the grant, the
 control lease and site policy, and emits the action event; `tools.rs` never
 holds its own CDP session.
 
-1. `browser_snapshot` — the accessibility tree (`Accessibility.getFullAXTree`)
-   flattened into the upstream `PageSnapshot` with element refs, tagged with
-   the lease generation (7.5).
+1. `browser_snapshot` — the upstream page-reading script (`agent.bundle.js`)
+   run in an isolated world per tab (`Page.createIsolatedWorld`), so page
+   scripts cannot see it. It returns the upstream `PageSnapshot` with element
+   refs; a new document ends the world and makes its refs stale.
 2. `browser_click`, `browser_type`, `browser_hover`, `browser_select_option`,
    `browser_press_key` — act on a ref: resolve it to a node, scroll it into
    view, dispatch input at its centre. Each one waits for the page to settle
@@ -1251,7 +1252,11 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
    errors (decision 14) are done; the helper remains. Permissions are not
    relayed (decision 12).
 7. CDP implementation of `BrowserToolAccess`; `browser.agent.action`; ghost
-   cursor on the desktop.
+   cursor on the desktop. The tools work on the session's own tabs: list,
+   open, navigate, close, snapshot, click, hover, type, key, select,
+   screenshot and console (`browser_eval` stays off). `browser.agent.action`,
+   the ghost cursor, permission grants (decision 12) and `browser_wait_for`
+   remain.
 8. Action side effects, `expect_url`, typing guard, password-field guard,
    and `browser_network_log`.
 9. Deferred: control lease and `browser_request_takeover` (see below).
