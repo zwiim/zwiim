@@ -421,14 +421,19 @@ async fn load(
     if let Some(error) = reply["errorText"].as_str() {
         return Ok(Some(load_error_kind(error).to_string()));
     }
-    settle(&cdp, &session).await;
+    settle(browser, tab_id, &cdp, &session).await;
     Ok(None)
 }
 
-/// Wait until the document has loaded, at most [`SETTLE_TIMEOUT`].
-async fn settle(cdp: &Cdp, session: &str) {
+/// Wait until the document has loaded and none of its requests are still
+/// waiting on an answer, at most [`SETTLE_TIMEOUT`].
+async fn settle(browser: &BrowserService, tab_id: &str, cdp: &Cdp, session: &str) {
     let ready = async {
         loop {
+            if browser.network_busy(tab_id).await > 0 {
+                tokio::time::sleep(SETTLE_POLL).await;
+                continue;
+            }
             let state = cdp
                 .call(
                     "Runtime.evaluate",
@@ -784,7 +789,7 @@ pub(crate) async fn act(
     match outcome {
         Ok(Ok(outcome)) => {
             tokio::time::sleep(ACTION_GRACE).await;
-            settle(&cdp, &cdp_session).await;
+            settle(browser, tab_id, &cdp, &cdp_session).await;
             let effects = watch.effects(browser, session, tab_id).await;
             BrowserActOutcome::done(tab_id, outcome).with_effects(effects)
         }
@@ -1047,7 +1052,7 @@ pub(crate) async fn screenshot(
         Ok(found) => found,
         Err(e) => return BrowserCaptureOutcome::refused(tab_id, ERROR_READ_FAILED, e.message),
     };
-    settle(&cdp, &cdp_session).await;
+    settle(browser, tab_id, &cdp, &cdp_session).await;
     let clip = match request.clip_target() {
         None => None,
         Some((generation, target)) => {
@@ -1348,6 +1353,50 @@ mod tests {
         )
         .await;
         assert_ne!(refused.error.as_deref(), Some(ERROR_PERSON_TYPING));
+    }
+
+    #[tokio::test]
+    async fn a_page_settles_once_its_requests_are_answered() {
+        let fake = FakeEngine::default();
+        let browser = browser(&fake).await;
+        let tab = browser
+            .open(owner("s1"), Some("http://localhost:5173/"))
+            .await
+            .unwrap();
+        let target = fake.wait_url("http://localhost:5173/").await;
+        let session = fake.lock().targets[&target].session.clone().unwrap();
+        fake.emit(
+            "Network.requestWillBeSent",
+            json!({ "requestId": "r1", "type": "Fetch", "timestamp": 1.0,
+                    "request": { "method": "GET", "url": "http://localhost:5173/api", "headers": {} } }),
+            Some(&session),
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while browser.network_busy(&tab.id).await == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the request is in flight");
+        let (cdp, cdp_session) = browser.session(&tab.id).await.unwrap();
+        let answer = {
+            let fake = fake.clone();
+            let session = session.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                fake.emit(
+                    "Network.loadingFinished",
+                    json!({ "requestId": "r1", "timestamp": 1.3, "encodedDataLength": 10 }),
+                    Some(&session),
+                );
+            })
+        };
+        let started = tokio::time::Instant::now();
+        settle(&browser, &tab.id, &cdp, &cdp_session).await;
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(250), "{waited:?}");
+        assert!(waited < SETTLE_TIMEOUT, "{waited:?}");
+        answer.await.unwrap();
     }
 
     #[test]

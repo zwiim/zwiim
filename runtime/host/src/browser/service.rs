@@ -664,6 +664,8 @@ impl BrowserService {
 
     fn discard_locked(&self, inner: &mut Inner, tab_id: &str) {
         self.drop_ui_locked(inner, |r| r.tab_id == tab_id);
+        // Its requests in flight will never finish.
+        inner.networks.remove(tab_id);
         let Some(tab) = inner.tabs.get_mut(tab_id) else {
             return;
         };
@@ -991,6 +993,7 @@ impl BrowserService {
                     return;
                 };
                 self.drop_ui_locked(&mut inner, |r| r.tab_id == id);
+                inner.networks.remove(&id);
                 let tab = inner.tabs.get_mut(&id).expect("found above");
                 tab.info.crashed = true;
                 tab.info.loading = false;
