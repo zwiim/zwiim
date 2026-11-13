@@ -21,6 +21,7 @@ const FRAME_TYPES = new Set([
   "browser.engine.state",
   "browser.ui.request",
   "browser.ui.done",
+  "browser.agent.action",
   "browser.error",
   "pong",
   "error",

@@ -345,6 +345,18 @@ export type BrowserUiAnswer =
   | { kind: "auth"; accept: boolean; username?: string; password?: string }
   | { kind: "file_chooser"; accept: boolean; workspace_id?: string; paths?: string[] };
 
+/**
+ * What an agent is about to do on a tab: the point its pointer goes to and,
+ * when known, the element's box, in the page's CSS pixels.
+ */
+export type BrowserAgentAction = {
+  tab_id: string;
+  kind: "click" | "hover" | "type" | "press" | "select";
+  x: number;
+  y: number;
+  box?: { x: number; y: number; width: number; height: number };
+};
+
 /** `browser.subscribe` frames. Events carry a tab's whole state. */
 export type BrowserFrame =
   | { type: "browser.snapshot"; tabs: BrowserTab[]; engine: BrowserEngine; ui_requests?: BrowserUiRequest[] }
@@ -354,6 +366,8 @@ export type BrowserFrame =
   | { type: "browser.ui.request"; request: BrowserUiRequest }
   /** Answered, dismissed unanswered after 60 s, or its tab went. */
   | { type: "browser.ui.done"; request_id: string; tab_id: string }
+  /** Sent just before the agent acts. */
+  | { type: "browser.agent.action"; action: BrowserAgentAction }
   /** `browser.subscribe` was refused (`permission_denied` on a paired device). */
   | { type: "browser.error"; error: WireError };
 

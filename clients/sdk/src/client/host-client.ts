@@ -590,6 +590,7 @@ export class HostClient {
       case "browser.engine.state":
       case "browser.ui.request":
       case "browser.ui.done":
+      case "browser.agent.action":
       case "browser.error":
         this.emit((l) => l.browser?.(frame));
         return;

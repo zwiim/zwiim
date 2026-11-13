@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostController } from "../src/client/controller";
 import { HostClient } from "../src/client/host-client";
-import { initialBrowserState, personalTabs, reduceBrowser, sessionTabs, tabUiRequests } from "../src/state/browser";
+import { initialBrowserState, personalTabs, reduceBrowser, sessionTabs, tabAgentAction, tabUiRequests } from "../src/state/browser";
 import type { BrowserTab, BrowserUiRequest } from "../src/types/protocol";
 import { FakeTransport, flush, hello } from "./fakes";
 
@@ -50,6 +50,20 @@ describe("reduceBrowser", () => {
 
     s = reduceBrowser(s, { type: "browser.engine.state", engine: { state: "running", version: "157" } });
     expect(s.engine).toEqual({ state: "running", version: "157" });
+  });
+
+  it("keeps each tab's latest agent action until the tab goes", () => {
+    let s = reduceBrowser(initialBrowserState(), {
+      type: "browser.snapshot",
+      tabs: [tab("a", 0)],
+      engine: { state: "running", version: "157" },
+    });
+    const click = { tab_id: "a", kind: "click" as const, x: 10, y: 20 };
+    s = reduceBrowser(s, { type: "browser.agent.action", action: click });
+    s = reduceBrowser(s, { type: "browser.agent.action", action: click });
+    expect(tabAgentAction(s, "a")).toEqual({ action: click, seq: 2 });
+    s = reduceBrowser(s, { type: "browser.tab.removed", tab_id: "a", owner: { kind: "personal" } });
+    expect(tabAgentAction(s, "a")).toBeUndefined();
   });
 
   it("follows what tabs wait on until each is done", () => {

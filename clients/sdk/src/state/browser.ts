@@ -2,7 +2,14 @@
 // report them. Every event carries a tab's whole state, so applying one the
 // snapshot already holds changes nothing.
 
-import type { BrowserEngine, BrowserFrame, BrowserTab, BrowserUiRequest, WireError } from "../types/protocol";
+import type {
+  BrowserAgentAction,
+  BrowserEngine,
+  BrowserFrame,
+  BrowserTab,
+  BrowserUiRequest,
+  WireError,
+} from "../types/protocol";
 
 /** One step of the browser feed: the subscribe going out, or a frame back. */
 export type BrowserUpdate = { type: "browser.subscribing" } | BrowserFrame;
@@ -18,11 +25,14 @@ export interface BrowserState {
   engine: BrowserEngine | null;
   /** What tabs wait on a person for (dialogs), oldest first. */
   uiRequests: BrowserUiRequest[];
+  /** Each tab's latest agent action; `seq` grows with every one, so a repeat shows again. */
+  agentActions: Record<string, { action: BrowserAgentAction; seq: number }>;
+  agentSeq: number;
   error: WireError | null;
 }
 
 export function initialBrowserState(): BrowserState {
-  return { status: "off", tabs: [], engine: null, uiRequests: [], error: null };
+  return { status: "off", tabs: [], engine: null, uiRequests: [], agentActions: {}, agentSeq: 0, error: null };
 }
 
 export function reduceBrowser(state: BrowserState, update: BrowserUpdate): BrowserState {
@@ -31,6 +41,7 @@ export function reduceBrowser(state: BrowserState, update: BrowserUpdate): Brows
       return { ...state, status: "loading", error: null };
     case "browser.snapshot":
       return {
+        ...state,
         status: "live",
         tabs: ordered(update.tabs),
         engine: update.engine,
@@ -43,7 +54,8 @@ export function reduceBrowser(state: BrowserState, update: BrowserUpdate): Brows
     }
     case "browser.tab.removed": {
       if (!state.tabs.some((t) => t.tab_id === update.tab_id)) return state;
-      return { ...state, tabs: state.tabs.filter((t) => t.tab_id !== update.tab_id) };
+      const { [update.tab_id]: _, ...agentActions } = state.agentActions;
+      return { ...state, tabs: state.tabs.filter((t) => t.tab_id !== update.tab_id), agentActions };
     }
     case "browser.engine.state":
       return { ...state, engine: update.engine };
@@ -54,6 +66,11 @@ export function reduceBrowser(state: BrowserState, update: BrowserUpdate): Brows
     case "browser.ui.done": {
       if (!state.uiRequests.some((r) => r.request_id === update.request_id)) return state;
       return { ...state, uiRequests: state.uiRequests.filter((r) => r.request_id !== update.request_id) };
+    }
+    case "browser.agent.action": {
+      const seq = state.agentSeq + 1;
+      const agentActions = { ...state.agentActions, [update.action.tab_id]: { action: update.action, seq } };
+      return { ...state, agentActions, agentSeq: seq };
     }
     case "browser.error":
       return { ...state, status: "refused", error: update.error };
@@ -73,6 +90,14 @@ export function personalTabs(state: BrowserState): BrowserTab[] {
 /** What the tab `tab_id` waits on, oldest first. */
 export function tabUiRequests(state: BrowserState, tab_id: string): BrowserUiRequest[] {
   return state.uiRequests.filter((r) => r.tab_id === tab_id);
+}
+
+/** The tab's latest agent action, if any. */
+export function tabAgentAction(
+  state: BrowserState,
+  tab_id: string,
+): { action: BrowserAgentAction; seq: number } | undefined {
+  return state.agentActions[tab_id];
 }
 
 function ordered(tabs: BrowserTab[]): BrowserTab[] {
