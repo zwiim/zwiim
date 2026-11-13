@@ -259,6 +259,30 @@ pub struct RefusedLoad {
     pub code: &'static str,
 }
 
+/// What one `IO.read` of a PDF asks for, and the largest PDF kept.
+const PDF_CHUNK: usize = 1 << 20;
+const MAX_PDF: usize = 200 << 20;
+
+fn engine_error(message: String) -> BrowserError {
+    BrowserError {
+        code: "engine_error",
+        message,
+    }
+}
+
+/// A PDF's name for `tab`: its title, else its host, else `page`. A page
+/// without a title has its address for one.
+fn pdf_title(tab: &TabInfo) -> String {
+    let title = tab.title.trim();
+    if !title.is_empty() && !tab.url.ends_with(title) {
+        return title.to_string();
+    }
+    url::Url::parse(&tab.url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .unwrap_or_else(|| "page".into())
+}
+
 /// Most refused loads kept per tab.
 const MAX_REFUSED: usize = 10;
 /// How long a site's name may take to resolve before it counts as public.
@@ -419,6 +443,103 @@ impl BrowserService {
         );
         self.emit(BrowserEvent::Tab(info.clone()));
         info
+    }
+
+    /// Print tab `tab_id` to a PDF in its owner's downloads folder (design
+    /// 7.7); the file's name.
+    pub async fn print(&self, tab_id: &str) -> Result<String, BrowserError> {
+        let (cdp, session) = self.session(tab_id).await?;
+        let info = self.tab(tab_id).await.ok_or_else(|| not_found(tab_id))?;
+        let dir = saving::folder_for(&self.db, &info.owner)
+            .await
+            .ok_or_else(|| BrowserError {
+                code: "tab_not_found",
+                message: "This tab's session is gone".into(),
+            })?;
+        let reply = cdp
+            .call(
+                "Page.printToPDF",
+                json!({ "transferMode": "ReturnAsStream", "printBackground": true }),
+                Some(&session),
+            )
+            .await?;
+        let stream = reply["stream"].as_str().unwrap_or_default().to_string();
+        let written = async {
+            let mut pdf = Vec::new();
+            loop {
+                let chunk = cdp
+                    .call(
+                        "IO.read",
+                        json!({ "handle": stream, "size": PDF_CHUNK }),
+                        None,
+                    )
+                    .await?;
+                let data = chunk["data"].as_str().unwrap_or_default();
+                if chunk["base64Encoded"].as_bool() == Some(true) {
+                    use base64::Engine as _;
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(data)
+                        .map_err(|e| engine_error(e.to_string()))?;
+                    pdf.extend_from_slice(&bytes);
+                } else {
+                    pdf.extend_from_slice(data.as_bytes());
+                }
+                if pdf.len() > MAX_PDF {
+                    return Err(BrowserError {
+                        code: "page_too_large",
+                        message: "This page makes a PDF over 200 MB".into(),
+                    });
+                }
+                if chunk["eof"].as_bool() != Some(false) {
+                    return Ok(pdf);
+                }
+            }
+        }
+        .await;
+        let _ = cdp
+            .call("IO.close", json!({ "handle": stream }), None)
+            .await;
+        let pdf = written?;
+        let saved = async {
+            tokio::fs::create_dir_all(&dir).await?;
+            if let Some(worktree) = saving::worktree_of_default(&dir) {
+                crate::commands::folder_links::add_to_git_exclude(worktree, ".zwiim/").await;
+            }
+            let path = saving::free_name(&dir, &format!("{}.pdf", pdf_title(&info)));
+            tokio::fs::write(&path, &pdf).await?;
+            Ok::<_, std::io::Error>(path)
+        }
+        .await
+        .map_err(|e| engine_error(format!("could not save the PDF: {e}")))?;
+        Ok(saved
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default())
+    }
+
+    /// Drop `files` on tab `tab_id` at `(x, y)` in the page's CSS pixels, as
+    /// a person dragging them there (design 7.6).
+    pub async fn drop_files(
+        &self,
+        tab_id: &str,
+        x: f64,
+        y: f64,
+        files: &[std::path::PathBuf],
+    ) -> Result<(), BrowserError> {
+        let (cdp, session) = self.session(tab_id).await?;
+        self.acted(tab_id, Actor::Person).await;
+        self.wake().await;
+        // Copy: the page receives the files, the workspace keeps them.
+        let data = json!({ "items": [], "files": files, "dragOperationsMask": 1 });
+        for kind in ["dragEnter", "dragOver", "drop"] {
+            cdp.call(
+                "Input.dispatchDragEvent",
+                json!({ "type": kind, "x": x, "y": y, "data": data }),
+                Some(&session),
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     /// Show session `session_id`'s new dev server on loopback `port` in one of
@@ -3094,6 +3215,58 @@ mod tests {
         );
         svc.open(session("s2"), None).await.unwrap();
         svc.open(TabOwner::Personal, None).await.unwrap();
+    }
+
+    /// A printed page lands as a PDF in its session's downloads folder,
+    /// read from the engine's stream to the end.
+    #[tokio::test]
+    async fn printing_saves_the_whole_pdf_beside_the_downloads() {
+        use crate::db::test_helpers::{seed_conversation, seed_worktree_folder};
+        use sea_orm::EntityTrait;
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let wt = dir.path().join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        let folder = seed_worktree_folder(&db, wt.to_str().unwrap()).await;
+        let conv =
+            seed_conversation(&db, folder, crate::models::agent::AgentType::ClaudeCode).await;
+        let sid = crate::db::entities::conversation::Entity::find_by_id(conv)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap()
+            .session_id
+            .unwrap();
+        let svc = service(&fake, &db.conn).await;
+        let tab = svc
+            .open(session(&sid), Some("https://example.com/a"))
+            .await
+            .unwrap();
+
+        let name = svc.print(&tab.id).await.unwrap();
+        assert_eq!(name, "example.com.pdf");
+        let folder = svc.files_folder(&session(&sid)).await.unwrap();
+        assert_eq!(std::fs::read(folder.join(&name)).unwrap(), b"%PDF-%%EOF");
+        assert_eq!(fake.calls("IO.close").len(), 1);
+        // A second print never overwrites the first.
+        fake.lock().reads = 0;
+        assert_eq!(svc.print(&tab.id).await.unwrap(), "example.com (1).pdf");
+    }
+
+    #[tokio::test]
+    async fn dropped_files_reach_the_page_as_a_person_dragged_them() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let tab = svc.open(TabOwner::Personal, None).await.unwrap();
+        let file = std::path::PathBuf::from("/work/a.png");
+        svc.drop_files(&tab.id, 10.0, 20.0, &[file]).await.unwrap();
+        let drags = fake.calls("Input.dispatchDragEvent");
+        let kinds: Vec<_> = drags.iter().map(|d| d["type"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["dragEnter", "dragOver", "drop"]);
+        assert_eq!(drags[2]["data"]["files"], json!(["/work/a.png"]));
+        assert_eq!(drags[2]["x"], json!(10.0));
     }
 
     /// The session's tab follows its dev server: opened for the first, kept

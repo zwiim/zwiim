@@ -43,6 +43,8 @@ pub struct FakeState {
     pub hold_navigations: bool,
     /// `Page.navigate` fails with this `errorText`, as for an unknown host.
     pub nav_error: Option<String>,
+    /// `IO.read` calls so far.
+    pub reads: usize,
     next: usize,
     /// The running engine's event sender and exit switch.
     events: Option<mpsc::UnboundedSender<Value>>,
@@ -372,6 +374,19 @@ impl FakeEngine {
                 }));
                 Ok(json!({}))
             }
+            // A two-chunk stream, so readers must loop.
+            "Page.printToPDF" => {
+                target_of_session(&s)?;
+                Ok(json!({ "stream": "pdf-1" }))
+            }
+            "IO.read" => {
+                s.reads += 1;
+                Ok(match s.reads {
+                    1 => json!({ "base64Encoded": true, "data": "JVBERi0=", "eof": false }),
+                    _ => json!({ "base64Encoded": false, "data": "%%EOF", "eof": true }),
+                })
+            }
+            "IO.close" => Ok(json!({})),
             "Page.enable"
             | "Page.reload"
             | "Page.stopLoading"
@@ -385,6 +400,7 @@ impl FakeEngine {
             | "Input.dispatchMouseEvent"
             | "Input.dispatchKeyEvent"
             | "Input.insertText"
+            | "Input.dispatchDragEvent"
             | "Fetch.enable"
             | "Fetch.continueRequest"
             | "Fetch.continueWithAuth"
