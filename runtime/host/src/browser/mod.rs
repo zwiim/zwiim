@@ -23,6 +23,7 @@
 //!   viewers
 //! - `input`      — a viewer's pointer, keys and text, as CDP `Input` calls
 //! - `policy`     — pure decisions (scheme allow-list, …)
+//! - `sites`      — which sites a tab's page loads may reach (site policy)
 //! - `agent`      — what an agent may read of a page, and on whose say-so
 //! - `eval`       — the one thing an agent may do that is not a named act:
 //!   run its own code, which a person approves snippet by snippet
@@ -74,6 +75,7 @@ pub mod helper;
 pub mod network;
 pub mod service_url;
 pub mod service;
+pub mod sites;
 pub mod services;
 pub mod snapshot;
 pub mod store;
