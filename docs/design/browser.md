@@ -564,12 +564,12 @@ one into a protocol event and the clients draw it with their own UI
 | HTTP auth | `Fetch.authRequired`, with each tab intercepting its page requests (documents only) and the event pump letting them go on at once | Username and password sheet (built, P1.6) | `Fetch.continueWithAuth`; nothing stored or logged, cancelled after 5 minutes unanswered |
 | Permissions (camera, mic, location, notifications) | Not relayed (decision 12) | Nothing | The engine's default, which refuses them. The agent grants what its tabs need through its browser tools, for its session's context only; no real camera or mic is wired to the engine in this design |
 | Downloads | `Browser.setDownloadBehavior` per context, `Browser.downloadWillBegin` and `Browser.downloadProgress` | The Host's download row (capability `downloads`) | Saved where decision 13 says, under the page's file name (` (1)`, ` (2)` when taken); never opened automatically |
-| Certificate errors | `Security` events | Interstitial | Only loopback addresses can be accepted, per tab, by a person |
+| Certificate errors | Launch switch | Interstitial | Loopback certificates load without asking (decision 14); other sites keep the error |
 
 The helper script runs in an isolated world (`Page.createIsolatedWorld`), as
 the upstream helper did, so page scripts cannot see or tamper with it. It
 only draws `<select>`, date, find-in-page and context-menu UI. HTTP auth,
-file choosers, downloads and certificate decisions come from CDP
+file choosers and downloads come from CDP
 events to the Host and are answered by the Host; nothing in the page can
 trigger or answer them.
 
@@ -1247,8 +1247,8 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 5. Desktop `BrowserPanel`: viewer, tab strip, navigation, shortcuts.
 6. Native UI relay (section 9) and the isolated-world helper, with find in
    page. JavaScript dialogs, HTTP auth, the file chooser and downloads
-   (decision 13, with the folder in Settings > Advanced) are done;
-   certificate errors and the helper remain. Permissions are not
+   (decision 13, with the folder in Settings > Advanced) and certificate
+   errors (decision 14) are done; the helper remains. Permissions are not
    relayed (decision 12).
 7. CDP implementation of `BrowserToolAccess`; `browser.agent.action`; ghost
    cursor on the desktop.
@@ -1330,6 +1330,10 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
     Settings, a Host setting every worktree follows: downloads then go to
     `<root>/zwiim/<repo>/downloads/`, shared by the repository's worktrees
     and never deleted by Zwiim. The person's own tabs save to `~/Downloads`.
+14. Certificate errors ask no one, so the agent is never stopped by a
+    prompt. The engine starts with `--allow-insecure-localhost`: a dev
+    server's self-signed certificate on `localhost` or `127.0.0.1` loads.
+    Every other site keeps Chromium's error page, with no way past it.
 
 Not decided yet, and not blocking: audio in Agent View, DevTools on the
 phone, a camera or mic source for pages, and Linux support for the governor.
