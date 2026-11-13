@@ -214,6 +214,8 @@ struct Usage {
     active_at: tokio::time::Instant,
     /// Why new tabs are refused, while they are.
     refuse: Option<String>,
+    /// The engine's tree runs in the background priority.
+    background: bool,
 }
 
 /// What the site policy (design 13.2) knows, apart from `inner`: the pump
@@ -325,6 +327,7 @@ impl BrowserService {
                 frozen: std::collections::HashSet::new(),
                 active_at: tokio::time::Instant::now(),
                 refuse: None,
+                background: false,
             }),
             events: broadcast::channel(EVENT_BUFFER).0,
         });
@@ -372,6 +375,7 @@ impl BrowserService {
     /// Open a tab for `owner`, at `url` or blank.
     pub async fn open(&self, owner: TabOwner, url: Option<&str>) -> Result<TabInfo, BrowserError> {
         let url = url.map(check_url).transpose()?;
+        self.wake().await;
         let mut inner = self.inner.lock().await;
         self.room_for_tab(&inner, &owner)?;
         let cdp = self.cdp_locked(&mut inner).await?;
@@ -478,6 +482,7 @@ impl BrowserService {
     }
 
     pub async fn navigate(&self, tab_id: &str, to: Navigation) -> Result<TabInfo, BrowserError> {
+        self.wake().await;
         let target_url = match &to {
             Navigation::Url(url) => Some(check_url(url)?),
             _ => None,
@@ -567,6 +572,7 @@ impl BrowserService {
                 .insert(tab_id.to_string(), tokio::time::Instant::now());
             usage.frozen.remove(tab_id)
         };
+        self.wake().await;
         if frozen {
             cdp.call(
                 "Page.setWebLifecycleState",
@@ -1392,6 +1398,27 @@ impl BrowserService {
         usage.frozen.remove(tab_id);
     }
 
+    /// Someone is using the browser: out of the background priority at once
+    /// rather than at the next check (design 11.4).
+    async fn wake(&self) {
+        let was_background = {
+            let mut usage = self.usage_mut();
+            usage.active_at = tokio::time::Instant::now();
+            std::mem::replace(&mut usage.background, false)
+        };
+        #[cfg(target_os = "macos")]
+        if was_background {
+            if let Some(pid) = self.engine.pid().await {
+                let _ = tokio::task::spawn_blocking(move || {
+                    governor::sys::set_priority(pid, super::engine::launch::ENGINE_NICE, false)
+                })
+                .await;
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = was_background;
+    }
+
     /// A viewer started (`on`) or stopped watching tab `tab_id`.
     pub fn viewing(&self, tab_id: &str, on: bool) {
         let mut usage = self.usage_mut();
@@ -1460,8 +1487,10 @@ impl BrowserService {
             return;
         };
         let background = {
-            let usage = self.usage_mut();
-            usage.viewers.is_empty() && usage.active_at.elapsed() >= governor::IDLE_AFTER
+            let mut usage = self.usage_mut();
+            usage.background =
+                usage.viewers.is_empty() && usage.active_at.elapsed() >= governor::IDLE_AFTER;
+            usage.background
         };
         #[cfg(target_os = "macos")]
         let measured = tokio::task::spawn_blocking(move || {
