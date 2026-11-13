@@ -892,7 +892,10 @@ export interface AgentDefaults {
  * `terminal.scrollback`, the bytes of output each terminal keeps (within
  * `SCROLLBACK_RANGE`; unset keeps `DEFAULT_SCROLLBACK_BYTES`), and
  * `git.push_sets_upstream`, whether a plain `git push` in a worktree sets the
- * branch's upstream (unset is on). Null when unset.
+ * branch's upstream (unset is on), and from revision 33 (capability
+ * `browser`) `browser.agent_passwords`, whether agents may type into
+ * password fields on any site rather than only on loopback dev servers
+ * (unset is off). Null when unset.
  */
 export type HostSettingKey =
   | "defaults.agent"
@@ -907,7 +910,8 @@ export type HostSettingKey =
   | "prompts.pull_request"
   | "prompts.branch_name"
   | "terminal.scrollback"
-  | "git.push_sets_upstream";
+  | "git.push_sets_upstream"
+  | "browser.agent_passwords";
 
 /** Longest `prompts.*` setting the Host accepts, in UTF-8 bytes. */
 export const MAX_PROMPT_BYTES = 8000;

@@ -1,12 +1,13 @@
 // The Advanced tab: how much terminal output the host keeps, whether a plain
 // `git push` from a worktree sets its upstream, where the host keeps
-// worktrees and repositories, and where its browser saves downloads. Agents run through the host, so there is no binary to point at here.
+// worktrees and repositories, where its browser saves downloads, and whether
+// agents may type passwords on any site. Agents run through the host, so there is no binary to point at here.
 
 import { useCallback, useEffect, useState } from "react";
-import { DEFAULT_SCROLLBACK_BYTES, type HostFolders, type HostSettings } from "@zwiim/sdk";
+import { DEFAULT_SCROLLBACK_BYTES, hasCapability, type HostFolders, type HostSettings } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import type { NativeBridge } from "@/lib/bridge";
-import { errorMessage, useController, useOnline } from "@/lib/host-context";
+import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { ControlSelect } from "@/panels/OptionsBar";
 import { BrowserDownloadsSetting } from "@/settings/browser-downloads";
 import { SettingRow, ToggleRow } from "@/settings/rows";
@@ -27,6 +28,7 @@ export function AdvancedSettings({ bridge, remote }: { bridge: NativeBridge; rem
   const [values, setValues] = useState<Values | null>(null);
   const [folders, setFolders] = useState<HostFolders | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const browser = useHost((s) => hasCapability(s.connection.compat, "browser"));
 
   useEffect(() => {
     controller.client.request("settings.get", {}).then(
@@ -125,6 +127,20 @@ export function AdvancedSettings({ bridge, remote }: { bridge: NativeBridge; rem
         </section>
       )}
       {!remote && <BrowserDownloadsSetting bridge={bridge} />}
+      {browser && (
+        <ToggleRow
+          setting={{
+            id: "browser-agent-passwords",
+            title: "Let agents type passwords on any site",
+            description:
+              "Off, agents type passwords only on this computer's dev servers (localhost), for test logins. On, they can type them into any site's password field.",
+          }}
+          testId="browser-agent-passwords"
+          checked={values["browser.agent_passwords"] === true}
+          disabled={!online}
+          onChange={(on) => update({ "browser.agent_passwords": on ? true : null })}
+        />
+      )}
       {error && (
         <p className="text-destructive" role="alert">
           {error}

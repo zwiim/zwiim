@@ -182,6 +182,23 @@ describe("terminal scrollback", () => {
     expect(dialog.queryByText("/Users/me/Saved")).toBeNull();
   });
 
+  it("lets agents type passwords on any site only once turned on", async () => {
+    const t = host();
+    const c = await mount(t);
+    const dialog = openSettings("Advanced");
+    await tick();
+    const toggle = dialog.getByTestId("browser-agent-passwords") as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    expect(dialog.getByText(/only on this computer's dev servers/)).toBeTruthy();
+    fireEvent.click(toggle);
+    await tick();
+    expect((dialog.getByTestId("browser-agent-passwords") as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(dialog.getByTestId("browser-agent-passwords"));
+    await tick();
+    expect(updates(t)).toEqual([{ "browser.agent_passwords": true }, { "browser.agent_passwords": null }]);
+    c.dispose();
+  });
+
   it("leaves the row out for a host without the browser", async () => {
     await mount(host());
     const dialog = openSettings("Advanced");
