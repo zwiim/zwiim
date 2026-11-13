@@ -82,6 +82,7 @@ describe("browser input", () => {
     expect(browserShortcut(key("R", { metaKey: true, shiftKey: true }), "macos")).toBe("reload");
     expect(browserShortcut(key("[", { metaKey: true }), "macos")).toBe("back");
     expect(browserShortcut(key("]", { metaKey: true }), "macos")).toBe("forward");
+    expect(browserShortcut(key("p", { metaKey: true }), "macos")).toBe("print");
     expect(browserShortcut(key("l", { ctrlKey: true }), "macos")).toBeNull();
     expect(browserShortcut(key("l", { ctrlKey: true }), "windows")).toBe("address");
     expect(browserShortcut(key("a", { metaKey: true }), "macos")).toBeNull();
@@ -319,6 +320,70 @@ describe("browser panel", () => {
     await tick();
     expect(screen.queryByLabelText("Find in page")).toBeNull();
     expect(t.calls.filter((c) => c.op === "browser.tab.find").at(-1)!.params).toEqual({ tab_id: "a", query: "", backwards: false });
+  });
+
+  it("saves the page as a PDF from the button or the shortcut", async () => {
+    const t = new StreamingTransport();
+    t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
+    t.handlers["browser.view.close"] = () => ({});
+    t.handlers["browser.tab.print"] = () => ({ name: "Example.pdf" });
+    await mount(t, [tab("a")]);
+    fireEvent.click(screen.getByTitle("Save as PDF"));
+    await tick();
+    expect(t.calls.find((c) => c.op === "browser.tab.print")!.params).toEqual({ tab_id: "a" });
+    expect(screen.getByRole("status").textContent).toBe("Saved Example.pdf to this chat's downloads.");
+
+    const mod = navigator.userAgent.includes("Mac") ? { metaKey: true } : { ctrlKey: true };
+    fireEvent.keyDown(screen.getByLabelText("Page: Example"), { key: "p", code: "KeyP", ...mod });
+    await tick();
+    expect(t.calls.filter((c) => c.op === "browser.tab.print")).toHaveLength(2);
+    expect(t.streams[0]!.sent).toEqual([]);
+  });
+
+  it("uploads files dropped on the page, then drops them where they fell", async () => {
+    const size = (v: number) => ({ configurable: true, get: () => v });
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", size(200));
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", size(200));
+    vi.stubGlobal("createImageBitmap", async () => ({ close() {} }));
+    try {
+      const t = new StreamingTransport();
+      t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
+      t.handlers["browser.view.close"] = () => ({});
+      t.handlers["attachments.upload"] = (p) => ({ attachment_id: `id-${p.name}`, name: p.name, size: 3, mime_type: "image/png" });
+      t.handlers["browser.tab.drop"] = () => ({});
+      await mount(t, [tab("a")]);
+      await act(async () => {
+        t.streams[0]!.handlers.onFrame?.({
+          number: 1,
+          host_ms: 0,
+          css_width: 100,
+          css_height: 100,
+          scale: 1,
+          scroll_x: 0,
+          scroll_y: 0,
+          jpeg: new Uint8Array(),
+        } as never);
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      const file = new File(["png"], "shot.png", { type: "image/png" });
+      const box = screen.getByLabelText("Page: Example").parentElement!;
+      // jsdom has no DragEvent: a mouse event carries the point.
+      const drop = new MouseEvent("drop", { bubbles: true, cancelable: true, clientX: 100, clientY: 50 });
+      Object.defineProperty(drop, "dataTransfer", { value: { files: [file], types: ["Files"] } });
+      fireEvent(box, drop);
+      await act(async () => new Promise((r) => setTimeout(r, 20)));
+      expect(t.calls.find((c) => c.op === "attachments.upload")!.params).toMatchObject({ workspace_id: "w1", name: "shot.png" });
+      expect(t.calls.find((c) => c.op === "browser.tab.drop")!.params).toEqual({
+        tab_id: "a",
+        x: 50,
+        y: 25,
+        workspace_id: "w1",
+        attachment_ids: ["id-shot.png"],
+      });
+    } finally {
+      delete (HTMLElement.prototype as { clientWidth?: number }).clientWidth;
+      delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight;
+    }
   });
 
   it("draws a select's list over the page, not as a sheet", async () => {

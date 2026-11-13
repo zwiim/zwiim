@@ -8,13 +8,14 @@
 // list, a date picker, and find in page.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, ChevronLeft, ExternalLink, File, Folder, Globe, MousePointer2, Plus, RotateCw, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, ChevronLeft, ExternalLink, File, Folder, Globe, MousePointer2, Plus, Printer, RotateCw, X } from "lucide-react";
 import {
   personalTabs,
   sessionTabs,
   tabAgentAction,
   tabMenu,
   tabUiRequests,
+  uploadAttachment,
   ZwiimClientError,
   type BrowserAgentAction,
   type BrowserEngine,
@@ -27,6 +28,7 @@ import {
   type BrowserUiRequest,
   type FileTreeNode,
 } from "@zwiim/sdk";
+import { readBase64 } from "@/attachments/usePendingAttachments";
 import { Button } from "@/components/ui/button";
 import { openLink, isOpenableLink } from "@/lib/bridge";
 import {
@@ -72,6 +74,8 @@ export function BrowserPanel({
   const browser = useHost((s) => s.browser);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The PDF just saved, said until the next step.
+  const [saved, setSaved] = useState<string | null>(null);
   const [finding, setFinding] = useState(false);
   const address = useRef<HTMLInputElement>(null);
 
@@ -100,6 +104,7 @@ export function BrowserPanel({
 
   async function run(step: () => Promise<unknown>) {
     setError(null);
+    setSaved(null);
     try {
       await step();
     } catch (e) {
@@ -112,6 +117,24 @@ export function BrowserPanel({
       const opened = await controller.openBrowserTab(owner);
       setSelected(opened.tab_id);
       requestAnimationFrame(() => address.current?.focus());
+    });
+
+  const print = (t: BrowserTab) =>
+    run(async () => {
+      const name = await controller.printBrowserTab(t.tab_id);
+      setSaved(t.owner.kind === "session" ? `Saved ${name} to this chat's downloads.` : `Saved ${name} to Downloads.`);
+    });
+
+  // Files from this computer reach the page through the workspace: uploaded
+  // first, then dropped by id (design 7.6).
+  const dropFiles = (t: BrowserTab, at: { x: number; y: number }, files: File[]) =>
+    run(async () => {
+      const ids: string[] = [];
+      for (const f of files) {
+        const up = await uploadAttachment(controller.client, workspaceId, f.name, await readBase64(f));
+        ids.push(up.attachment_id);
+      }
+      await controller.dropOnBrowserTab(t.tab_id, at.x, at.y, workspaceId, { attachment_ids: ids });
     });
 
   function shortcut(s: BrowserShortcut) {
@@ -136,6 +159,9 @@ export function BrowserPanel({
         return;
       case "find":
         if (tab) setFinding(true);
+        return;
+      case "print":
+        if (tab) void print(tab);
         return;
     }
   }
@@ -210,9 +236,15 @@ export function BrowserPanel({
           disabled={!online}
           onGo={(url) => run(() => controller.navigateBrowserTab(tab.tab_id, url))}
           onStep={(action) => run(() => controller.browserTabHistory(tab.tab_id, action))}
+          onPrint={() => void print(tab)}
         />
       )}
       {error && <p className="text-destructive border-b px-3 py-1.5 text-xs">{error}</p>}
+      {saved && (
+        <p className="text-muted-foreground border-b px-3 py-1.5 text-xs" role="status">
+          {saved}
+        </p>
+      )}
       <div className="relative min-h-0 flex-1">
         {unavailable ? (
           <Notice>{unavailable}</Notice>
@@ -237,6 +269,7 @@ export function BrowserPanel({
                 pick={tabUiRequests(browser, tab.tab_id).find(isPick)}
                 disabled={!online}
                 onShortcut={shortcut}
+                onDropFiles={(at, files) => void dropFiles(tab, at, files)}
                 onAnswer={(r, answer) => void answerUi(r, answer)}
                 onMenu={(a) => {
                   if (a.kind === "step") void run(() => controller.browserTabHistory(tab.tab_id, a.action));
@@ -661,12 +694,14 @@ function AddressBar({
   disabled,
   onGo,
   onStep,
+  onPrint,
 }: {
   tab: BrowserTab;
   inputRef: React.RefObject<HTMLInputElement | null>;
   disabled: boolean;
   onGo(url: string): Promise<unknown>;
   onStep(action: "back" | "forward" | "reload" | "stop"): Promise<unknown>;
+  onPrint(): void;
 }) {
   // What the person is typing; the tab's own URL whenever they are not.
   const [draft, setDraft] = useState<string | null>(null);
@@ -715,6 +750,9 @@ function AddressBar({
         }}
         onBlur={() => setDraft((d) => (d === null || d.trim() === "" ? null : d))}
       />
+      <Button type="button" size="icon-sm" variant="ghost" title="Save as PDF" disabled={disabled} onClick={onPrint}>
+        <Printer />
+      </Button>
       <Button
         type="button"
         size="icon-sm"
@@ -749,6 +787,7 @@ export function BrowserView({
   pick,
   disabled = false,
   onShortcut,
+  onDropFiles,
   onAnswer,
   onMenu,
 }: {
@@ -761,6 +800,8 @@ export function BrowserView({
   pick?: PickRequest;
   disabled?: boolean;
   onShortcut(s: BrowserShortcut): void;
+  /** Files dropped on the page, at a point in its CSS pixels. */
+  onDropFiles?(at: { x: number; y: number }, files: File[]): void;
   onAnswer?(request: PickRequest, answer: BrowserUiAnswer): void;
   /** A menu pick the panel does: history and new tabs. */
   onMenu?(action: MenuAction): void;
@@ -885,7 +926,7 @@ export function BrowserView({
   );
 
   /** The pointer as page CSS pixels; clamped to the page when `clamp`, else null outside it. */
-  function pointOf(e: React.PointerEvent | React.WheelEvent, clamp = false) {
+  function pointOf(e: { clientX: number; clientY: number }, clamp = false) {
     const rect = canvas.current!.getBoundingClientRect();
     const local = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     const p = toPage(local, fit.current, page.current);
@@ -914,7 +955,21 @@ export function BrowserView({
   };
 
   return (
-    <div ref={box} className="bg-background absolute inset-0">
+    <div
+      ref={box}
+      className="bg-background absolute inset-0"
+      onDragOver={(e) => {
+        if (disabled || !onDropFiles || !e.dataTransfer.types.includes("Files")) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }}
+      onDrop={(e) => {
+        if (disabled || !onDropFiles || e.dataTransfer.files.length === 0) return;
+        e.preventDefault();
+        const at = pointOf(e, true);
+        if (at) onDropFiles(at, Array.from(e.dataTransfer.files));
+      }}
+    >
       <canvas
         ref={canvas}
         className="focus-visible:ring-brand/55 absolute inset-0 size-full outline-none focus-visible:ring-2"
