@@ -26,8 +26,9 @@ pub const ERROR_SITE_DENIED: &str = "site_denied";
 /// Most sites on a strict site list.
 pub const MAX_SITES: usize = 100;
 
-/// Who made a tab navigate: whoever acted on it last. A page that navigates
-/// on its own in a session tab counts as the agent's.
+/// Who made a tab navigate: whoever acted on it last, and until someone
+/// does, whoever opened it. A page that navigates on its own counts as
+/// theirs too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Actor {
     Person,

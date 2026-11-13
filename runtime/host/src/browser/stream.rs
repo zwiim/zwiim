@@ -372,10 +372,23 @@ impl Viewer {
         if let Some(viewport) = input.viewport() {
             return self.hub.resize(&self.tab_id, viewport).await;
         }
+        use super::input::{Input, MouseAction};
         if matches!(
             input,
-            super::input::Input::Key { .. } | super::input::Input::Text { .. }
+            Input::Key { .. }
+                | Input::Text { .. }
+                | Input::Mouse {
+                    action: MouseAction::Down,
+                    ..
+                }
         ) {
+            // What the page loads next is the person's doing (design 13.2).
+            self.hub
+                .browser
+                .acted(&self.tab_id, super::sites::Actor::Person)
+                .await;
+        }
+        if matches!(input, Input::Key { .. } | Input::Text { .. }) {
             self.hub.browser.person_typed(&self.tab_id).await;
         }
         let (cdp, session) = self.hub.browser.session(&self.tab_id).await?;

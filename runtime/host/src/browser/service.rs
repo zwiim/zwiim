@@ -24,8 +24,10 @@ use super::engine::cdp::{Cdp, Event};
 use super::engine::manager::{EngineError, EngineManager, EngineState};
 use super::helper::{self, HelperMessage, PageMenu};
 use super::network::{NetworkQuery, NetworkReadout, NetworkRing};
-use super::snapshot::{self, PersonalSnapshot};
+use super::policy::{self, HostRule};
 use super::saving;
+use super::sites::{self, Actor, Verdict};
+use super::snapshot::{self, PersonalSnapshot};
 use super::store::{self, TabOwner, TabRecord};
 use super::ui::{self, UiAnswer, UiKind, UiRequest};
 
@@ -194,12 +196,58 @@ struct Saving {
     sized: bool,
 }
 
+/// What the site policy (design 13.2) knows, apart from `inner`: the pump
+/// checks every page load with it, so a load never waits on the service.
+#[derive(Default)]
+struct Sites {
+    /// Each loaded tab, by its CDP session.
+    tabs: HashMap<String, SiteTab>,
+    /// Strict site lists read so far, by session id.
+    strict: HashMap<String, Vec<String>>,
+    /// The sites a person always allows, once read.
+    approved: Option<Vec<String>>,
+    /// What a person allowed or denied for each session, by session id.
+    answers: HashMap<String, Answers>,
+    /// The administrator's rules.
+    managed: Vec<HostRule>,
+}
+
+#[derive(Clone)]
+struct SiteTab {
+    owner: TabOwner,
+    target_id: String,
+    /// Who acted on the tab last.
+    actor: Actor,
+    /// Page loads refused since an agent last asked, newest last.
+    refused: Vec<RefusedLoad>,
+}
+
+#[derive(Default, Clone)]
+struct Answers {
+    allowed: Vec<String>,
+    denied: Vec<String>,
+}
+
+/// A page load the site policy refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedLoad {
+    pub url: String,
+    /// `site_blocked`, `site_not_allowed` or `site_denied`.
+    pub code: &'static str,
+}
+
+/// Most refused loads kept per tab.
+const MAX_REFUSED: usize = 10;
+/// How long a site's name may take to resolve before it counts as public.
+const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 pub struct BrowserService {
     me: Weak<BrowserService>,
     engine: Arc<EngineManager>,
     snapshot: Option<Arc<PersonalSnapshot>>,
     db: DatabaseConnection,
     inner: Mutex<Inner>,
+    sites: std::sync::Mutex<Sites>,
     events: broadcast::Sender<BrowserEvent>,
 }
 
@@ -242,6 +290,12 @@ impl BrowserService {
                 typed: HashMap::new(),
                 networks: HashMap::new(),
                 helpers: HashMap::new(),
+            }),
+            sites: std::sync::Mutex::new(Sites {
+                managed: policy::read_managed_policy(&policy::managed_policy_path())
+                    .map(|p| p.host_rules)
+                    .unwrap_or_default(),
+                ..Sites::default()
             }),
             events: broadcast::channel(EVENT_BUFFER).0,
         });
@@ -334,6 +388,9 @@ impl BrowserService {
     pub async fn close(&self, tab_id: &str) -> Result<(), BrowserError> {
         let mut inner = self.inner.lock().await;
         let tab = inner.tabs.remove(tab_id).ok_or_else(|| not_found(tab_id))?;
+        if let Some(live) = &tab.live {
+            self.sites_mut().tabs.remove(&live.session_id);
+        }
         inner.consoles.remove(tab_id);
         inner.typed.remove(tab_id);
         inner.networks.remove(tab_id);
@@ -519,6 +576,7 @@ impl BrowserService {
             return Ok(cdp);
         }
         inner.generation = generation;
+        self.sites_mut().tabs.clear();
         self.drop_ui_locked(inner, |_| true);
         inner.contexts.clear();
         inner.personal_restored = false;
@@ -607,16 +665,21 @@ impl BrowserService {
             )
             .await?;
         let target_id = created["targetId"].as_str().unwrap_or_default().to_string();
-        self.attach(cdp, inner, owner, target_id).await
+        // Until someone acts on it, a tab's loads are its opener's: the
+        // person's, or an agent's tool, which says so before it loads.
+        self.attach(cdp, inner, owner, target_id, Actor::Person)
+            .await
     }
 
-    /// Attach to a page target and set it up as a tab's.
+    /// Attach to a page target and set it up as a tab's, its loads counted
+    /// as `actor`'s until someone acts on it.
     async fn attach(
         &self,
         cdp: &Cdp,
         inner: &Inner,
         owner: &TabOwner,
         target_id: String,
+        actor: Actor,
     ) -> Result<Live, BrowserError> {
         let attached = cdp
             .call(
@@ -630,9 +693,18 @@ impl BrowserService {
             .unwrap_or_default()
             .to_string();
         let s = Some(session_id.as_str());
+        self.sites_mut().tabs.insert(
+            session_id.clone(),
+            SiteTab {
+                owner: owner.clone(),
+                target_id: target_id.clone(),
+                actor,
+                refused: Vec::new(),
+            },
+        );
         cdp.call("Page.enable", json!({}), s).await?;
-        // Pages only, so a site's sign-in reaches a person (design 9); each
-        // paused page request goes straight on.
+        // Pages only, so a site's sign-in reaches a person (design 9) and
+        // the site policy sees every page load (design 13.2).
         cdp.call(
             "Fetch.enable",
             json!({
@@ -682,7 +754,9 @@ impl BrowserService {
         let Some(tab) = inner.tabs.get_mut(tab_id) else {
             return;
         };
-        tab.live = None;
+        if let Some(live) = tab.live.take() {
+            self.sites_mut().tabs.remove(&live.session_id);
+        }
         tab.info.discarded = true;
         tab.info.loading = false;
         let info = tab.info.clone();
@@ -805,7 +879,13 @@ impl BrowserService {
                     return;
                 };
                 let url = info["url"].as_str().unwrap_or("about:blank").to_string();
-                match self.attach(&cdp, &inner, &owner, target_id).await {
+                // Whoever made the opener open it.
+                let actor = inner.tabs[&opener]
+                    .live
+                    .as_ref()
+                    .and_then(|l| self.sites_mut().tabs.get(&l.session_id).map(|t| t.actor))
+                    .unwrap_or(Actor::Agent);
+                match self.attach(&cdp, &inner, &owner, target_id, actor).await {
                     Ok(live) => {
                         self.add_tab(&mut inner, owner, url, live).await;
                     }
@@ -1249,6 +1329,271 @@ impl BrowserService {
         }
     }
 
+    fn sites_mut(&self) -> std::sync::MutexGuard<'_, Sites> {
+        self.sites.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// `actor` acted on tab `tab_id`: its next page loads are theirs (design
+    /// 13.2).
+    pub async fn acted(&self, tab_id: &str, actor: Actor) {
+        let inner = self.inner.lock().await;
+        let Some(live) = inner.tabs.get(tab_id).and_then(|t| t.live.as_ref()) else {
+            return;
+        };
+        if let Some(tab) = self.sites_mut().tabs.get_mut(&live.session_id) {
+            tab.actor = actor;
+            if actor == Actor::Agent {
+                tab.refused.clear();
+            }
+        }
+    }
+
+    /// The page loads of tab `tab_id` the site policy refused since an agent
+    /// last acted on it.
+    pub async fn refused_loads(&self, tab_id: &str) -> Vec<RefusedLoad> {
+        let inner = self.inner.lock().await;
+        let Some(live) = inner.tabs.get(tab_id).and_then(|t| t.live.as_ref()) else {
+            return Vec::new();
+        };
+        self.sites_mut()
+            .tabs
+            .get(&live.session_id)
+            .map(|t| t.refused.clone())
+            .unwrap_or_default()
+    }
+
+    /// What the site policy says of an agent loading `url` in tab `tab_id`,
+    /// before it does.
+    pub async fn site_check(&self, tab_id: &str, url: &str) -> Verdict {
+        let session = {
+            let inner = self.inner.lock().await;
+            match inner.tabs.get(tab_id).and_then(|t| t.live.as_ref()) {
+                Some(live) => live.session_id.clone(),
+                None => return Verdict::Allow,
+            }
+        };
+        self.site_verdict_as(&session, url, None, Some(Actor::Agent))
+            .await
+    }
+
+    /// Session `session_id`'s strict site list; empty for none.
+    pub async fn strict_sites(&self, session_id: &str) -> Vec<String> {
+        if let Some(list) = self.sites_mut().strict.get(session_id) {
+            return list.clone();
+        }
+        let list = store::strict_sites(&self.db, session_id)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "could not read a strict site list");
+                Vec::new()
+            });
+        self.sites_mut()
+            .strict
+            .insert(session_id.to_string(), list.clone());
+        list
+    }
+
+    /// Replace session `session_id`'s strict site list with `entries`
+    /// (site patterns or pasted addresses); empty removes it. Returns the
+    /// list as kept.
+    pub async fn set_strict_sites(
+        &self,
+        session_id: &str,
+        entries: &[String],
+    ) -> Result<Vec<String>, BrowserError> {
+        let mut list: Vec<String> = Vec::new();
+        for entry in entries {
+            let pattern = sites::site_pattern(entry).ok_or_else(|| BrowserError {
+                code: "invalid_site",
+                message: format!("{entry:?} is not a site: use a name like example.com, *.example.com or localhost:3000"),
+            })?;
+            if !list.contains(&pattern) {
+                list.push(pattern);
+            }
+        }
+        if list.len() > sites::MAX_SITES {
+            return Err(BrowserError {
+                code: "invalid_site",
+                message: format!(
+                    "a strict site list holds at most {} sites",
+                    sites::MAX_SITES
+                ),
+            });
+        }
+        store::set_strict_sites(&self.db, session_id, &list)
+            .await
+            .map_err(|e| BrowserError {
+                code: "engine_error",
+                message: e.to_string(),
+            })?;
+        self.sites_mut()
+            .strict
+            .insert(session_id.to_string(), list.clone());
+        Ok(list)
+    }
+
+    /// The site policy's answer for loading `url` in the tab of CDP session
+    /// `session`, in frame `frame` (the tab's own page when none).
+    async fn site_verdict(&self, session: &str, url: &str, frame: Option<&str>) -> Verdict {
+        self.site_verdict_as(session, url, frame, None).await
+    }
+
+    async fn site_verdict_as(
+        &self,
+        session: &str,
+        url: &str,
+        frame: Option<&str>,
+        actor: Option<Actor>,
+    ) -> Verdict {
+        let Ok(url) = url::Url::parse(url) else {
+            return Verdict::Allow;
+        };
+        if !matches!(url.scheme(), "http" | "https") {
+            return Verdict::Allow;
+        }
+        let (tab, managed) = {
+            let sites = self.sites_mut();
+            let Some(tab) = sites.tabs.get(session) else {
+                return Verdict::Allow;
+            };
+            (tab.clone(), sites.managed.clone())
+        };
+        let actor = actor.unwrap_or(tab.actor);
+        let main_frame = frame.is_none_or(|f| f == tab.target_id);
+        let mut check = sites::Check {
+            url: &url,
+            main_frame,
+            actor,
+            managed: &managed,
+            strict: &[],
+            ask: false,
+            approved: &[],
+            denied: &[],
+            workspace_server: false,
+            resolves_local: false,
+        };
+        // Blocked, or nothing more to know.
+        let quick = sites::decide(&check);
+        let TabOwner::Session { session_id } = &tab.owner else {
+            return quick;
+        };
+        if quick != Verdict::Allow || actor == Actor::Person || !main_frame {
+            return quick;
+        }
+        let strict = self.strict_sites(session_id).await;
+        let ask = strict.is_empty() && crate::settings::browser_agent_ask_sites(&self.db).await;
+        if strict.is_empty() && !ask {
+            return Verdict::Allow;
+        }
+        let approved = if ask {
+            self.approved_sites().await
+        } else {
+            Vec::new()
+        };
+        let answers = self
+            .sites_mut()
+            .answers
+            .get(session_id)
+            .cloned()
+            .unwrap_or_default();
+        let approved: Vec<String> = approved.into_iter().chain(answers.allowed).collect();
+        check.strict = &strict;
+        check.ask = ask;
+        check.approved = &approved;
+        check.denied = &answers.denied;
+        check.workspace_server = self.workspace_server(session_id, &url).await;
+        check.resolves_local = resolves_local(&url).await;
+        sites::decide(&check)
+    }
+
+    async fn approved_sites(&self) -> Vec<String> {
+        if let Some(approved) = &self.sites_mut().approved {
+            return approved.clone();
+        }
+        let approved = store::approved_sites(&self.db).await.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "could not read the allowed sites");
+            Vec::new()
+        });
+        self.sites_mut().approved = Some(approved.clone());
+        approved
+    }
+
+    /// `url` is a loopback server running from session `session_id`'s
+    /// worktree (design 10.5).
+    async fn workspace_server(&self, session_id: &str, url: &url::Url) -> bool {
+        let Some(port) = super::listener::loopback_port(&url.origin().ascii_serialization()) else {
+            return false;
+        };
+        let Some(worktree) = saving::worktree_of(&self.db, session_id).await else {
+            return false;
+        };
+        let identity = tokio::task::spawn_blocking(move || super::listener::identify(port))
+            .await
+            .ok()
+            .flatten();
+        identity
+            .and_then(|i| i.workdir)
+            .is_some_and(|dir| std::path::Path::new(&dir).starts_with(&worktree))
+    }
+
+    /// Note a page load the site policy refused in the tab of CDP session
+    /// `session`.
+    fn refused(&self, session: &str, url: &str, code: &'static str) {
+        let site = url::Url::parse(url).ok().and_then(|u| sites::site_of(&u));
+        tracing::info!(
+            site = site.as_deref().unwrap_or("?"),
+            code,
+            "refused a browser page load"
+        );
+        if let Some(tab) = self.sites_mut().tabs.get_mut(session) {
+            if tab.refused.len() >= MAX_REFUSED {
+                tab.refused.remove(0);
+            }
+            tab.refused.push(RefusedLoad {
+                url: url.to_string(),
+                code,
+            });
+        }
+    }
+
+    /// Ask the person whether the paused load `fetch_request` of `url` may
+    /// go on. A newer load in the same tab replaces one still waiting.
+    async fn ask_site(&self, session: &str, fetch_request: String, url: &str) {
+        let Ok(parsed) = url::Url::parse(url) else {
+            return;
+        };
+        let local = resolves_local(&parsed).await;
+        let mut inner = self.inner.lock().await;
+        let Some(tab_id) = tab_on(&inner, session) else {
+            return;
+        };
+        let waiting: Vec<String> = inner
+            .ui
+            .values()
+            .filter(|r| r.tab_id == tab_id)
+            .filter_map(|r| match &r.kind {
+                UiKind::Site { fetch_request, .. } => Some(fetch_request.clone()),
+                _ => None,
+            })
+            .collect();
+        if let Some(cdp) = inner.cdp.clone() {
+            for old in waiting {
+                let (method, params) = ui::refuse_load(&old);
+                let _ = cdp.call(method, params, Some(session)).await;
+            }
+        }
+        self.drop_ui_locked(&mut inner, |r| {
+            r.tab_id == tab_id && matches!(r.kind, UiKind::Site { .. })
+        });
+        let kind = UiKind::Site {
+            site: sites::site_of(&parsed).unwrap_or_default(),
+            url: url.to_string(),
+            local,
+            fetch_request,
+        };
+        self.ask_locked(&mut inner, &tab_id, kind);
+    }
+
     /// A person typed into tab `tab_id`.
     pub async fn person_typed(&self, tab_id: &str) {
         let now = tokio::time::Instant::now();
@@ -1308,6 +1653,30 @@ impl BrowserService {
                 message: "That request was already answered or has expired".into(),
             })?;
         let call = ui::answer_call(&request.kind, answer)?;
+        if let (
+            UiKind::Site { site, .. },
+            UiAnswer::Site { allow, always },
+            TabOwner::Session { session_id },
+        ) = (&request.kind, answer, &request.owner)
+        {
+            if *allow && *always {
+                if let Err(e) = store::approve_site(&self.db, site).await {
+                    tracing::warn!(error = %e, "could not save an allowed site");
+                }
+                // Unread yet: the next read finds it.
+                if let Some(approved) = &mut self.sites_mut().approved {
+                    approved.push(site.clone());
+                }
+            }
+            let mut sites = self.sites_mut();
+            let answers = sites.answers.entry(session_id.clone()).or_default();
+            if *allow {
+                &mut answers.allowed
+            } else {
+                &mut answers.denied
+            }
+            .push(site.clone());
+        }
         let session = inner
             .tabs
             .get(&request.tab_id)
@@ -1562,21 +1931,56 @@ fn start_navigation(cdp: &Cdp, session: &str, url: &str) {
     });
 }
 
-/// Let a paused page request go on (`Fetch.enable` in `attach`), at once and
-/// without the service: a request waiting on it would never load.
-fn continue_request(cdp: &Cdp, event: &Event) {
-    let params = json!({ "requestId": event.params["requestId"] });
-    let reply = cdp.request(
-        "Fetch.continueRequest",
-        params,
-        event.session_id.as_deref(),
-        super::engine::cdp::DEFAULT_TIMEOUT,
-    );
-    tokio::spawn(async move {
-        if let Err(e) = reply.await {
-            tracing::debug!(error = %e, "a paused page request went away");
+/// Decide a paused page load (`Fetch.enable` in `attach`) by the site
+/// policy, without the service lock: a load the service waits on would
+/// never come. It goes on, is refused, or waits on a person.
+async fn screen(service: Weak<BrowserService>, cdp: Cdp, event: Event) {
+    let p = &event.params;
+    let session = event.session_id.clone().unwrap_or_default();
+    let request = p["requestId"].as_str().unwrap_or_default().to_string();
+    let url = p["request"]["url"].as_str().unwrap_or_default();
+    let verdict = match service.upgrade() {
+        Some(service) => {
+            let frame = p["frameId"].as_str().unwrap_or_default();
+            service.site_verdict(&session, url, Some(frame)).await
         }
-    });
+        None => Verdict::Allow,
+    };
+    let (method, params) = match verdict {
+        Verdict::Allow => ("Fetch.continueRequest", json!({ "requestId": request })),
+        Verdict::Refuse(code) => {
+            if let Some(service) = service.upgrade() {
+                service.refused(&session, url, code);
+            }
+            ui::refuse_load(&request)
+        }
+        Verdict::Ask => {
+            if let Some(service) = service.upgrade() {
+                service.ask_site(&session, request, url).await;
+            }
+            return;
+        }
+    };
+    if let Err(e) = cdp.call(method, params, Some(&session)).await {
+        tracing::debug!(error = %e, "a paused page request went away");
+    }
+}
+
+/// `url`'s host names, or resolves to, a loopback, private or link-local
+/// address. A name that does not resolve in time counts as public.
+async fn resolves_local(url: &url::Url) -> bool {
+    if sites::is_local_host(url) {
+        return true;
+    }
+    let Some(url::Host::Domain(name)) = url.host() else {
+        return false;
+    };
+    let port = url.port_or_known_default().unwrap_or(80);
+    let lookup = tokio::net::lookup_host((name.to_string(), port));
+    match tokio::time::timeout(RESOLVE_TIMEOUT, lookup).await {
+        Ok(Ok(mut addrs)) => addrs.any(|a| sites::is_local_addr(a.ip())),
+        _ => false,
+    }
 }
 
 fn ui_order(request_id: &str) -> u64 {
@@ -1607,7 +2011,7 @@ async fn pump(
             Err(broadcast::error::RecvError::Closed) => return,
         };
         if event.method == "Fetch.requestPaused" {
-            continue_request(&cdp, &event);
+            tokio::spawn(screen(service.clone(), cdp.clone(), event.clone()));
         }
         let Some(service) = service.upgrade() else {
             return;
@@ -1960,8 +2364,13 @@ mod tests {
                 break r;
             }
         };
-        assert_eq!(fake.calls("Fetch.continueRequest"), vec![json!({"requestId": "r1"})]);
-        assert!(matches!(&sign_in.kind, UiKind::Auth { realm, proxy: false, .. } if realm == "Admin"));
+        assert_eq!(
+            calls_until(&fake, "Fetch.continueRequest", 1).await,
+            vec![json!({"requestId": "r1"})]
+        );
+        assert!(
+            matches!(&sign_in.kind, UiKind::Auth { realm, proxy: false, .. } if realm == "Admin")
+        );
         assert_eq!(sign_in.tab_id, tab.id);
 
         let dialog = open_dialog(
@@ -1999,6 +2408,259 @@ mod tests {
         fake.emit("Fetch.requestPaused", paused("r3", "F1"), Some(&session));
         assert_eq!(ui_done(&mut events).await, second.request_id);
         assert_eq!(svc.ui_requests().await, vec![dialog]);
+    }
+
+    /// The `method` calls once there are `n` of them.
+    async fn calls_until(fake: &FakeEngine, method: &str, n: usize) -> Vec<serde_json::Value> {
+        for _ in 0..200 {
+            let calls = fake.calls(method);
+            if calls.len() >= n {
+                return calls;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!(
+            "{method} was called {} times, not {n}",
+            fake.calls(method).len()
+        );
+    }
+
+    async fn asked(events: &mut broadcast::Receiver<BrowserEvent>) -> UiRequest {
+        loop {
+            if let BrowserEvent::Ui(r) = events.recv().await.unwrap() {
+                return r;
+            }
+        }
+    }
+
+    fn page_load(id: &str, frame: &str, url: &str) -> serde_json::Value {
+        json!({"requestId": id, "frameId": frame, "resourceType": "Document",
+               "request": {"url": url}})
+    }
+
+    #[tokio::test]
+    async fn a_strict_site_list_limits_what_the_agent_loads() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let kept = svc
+            .set_strict_sites(
+                "s1",
+                &["https://GitHub.com/x".into(), "*.example.com".into()],
+            )
+            .await
+            .unwrap();
+        assert_eq!(kept, vec!["github.com".to_string(), "*.example.com".into()]);
+        assert_eq!(svc.strict_sites("s1").await, kept);
+        assert_eq!(
+            svc.set_strict_sites("s1", &["not a site".into()])
+                .await
+                .unwrap_err()
+                .code,
+            "invalid_site"
+        );
+
+        let tab = svc
+            .open(session("s1"), Some("https://github.com/"))
+            .await
+            .unwrap();
+        let target = fake.wait_url("https://github.com/").await;
+        let cdp_session = fake.lock().targets[&target].session.clone().unwrap();
+        let refused = |id: &str| json!({"requestId": id, "errorReason": "BlockedByClient"});
+
+        // The person opened it: anything goes.
+        fake.emit(
+            "Fetch.requestPaused",
+            page_load("r1", &target, "https://other.test/"),
+            Some(&cdp_session),
+        );
+        assert_eq!(
+            calls_until(&fake, "Fetch.continueRequest", 1).await,
+            vec![json!({"requestId": "r1"})]
+        );
+
+        svc.acted(&tab.id, Actor::Agent).await;
+        assert_eq!(
+            svc.site_check(&tab.id, "https://other.test/").await,
+            Verdict::Refuse(sites::ERROR_SITE_NOT_ALLOWED)
+        );
+        assert_eq!(
+            svc.site_check(&tab.id, "https://a.example.com/").await,
+            Verdict::Allow
+        );
+        fake.emit(
+            "Fetch.requestPaused",
+            page_load("r2", &target, "https://other.test/"),
+            Some(&cdp_session),
+        );
+        assert_eq!(
+            calls_until(&fake, "Fetch.failRequest", 1).await,
+            vec![refused("r2")]
+        );
+        // A redirect or link to a listed site, and a frame inside the page.
+        fake.emit(
+            "Fetch.requestPaused",
+            page_load("r3", &target, "https://docs.example.com/"),
+            Some(&cdp_session),
+        );
+        fake.emit(
+            "Fetch.requestPaused",
+            page_load("r4", "F9", "https://embed.other.test/"),
+            Some(&cdp_session),
+        );
+        let went = calls_until(&fake, "Fetch.continueRequest", 3).await;
+        assert!(
+            went.contains(&json!({"requestId": "r3"}))
+                && went.contains(&json!({"requestId": "r4"}))
+        );
+        let loads = svc.refused_loads(&tab.id).await;
+        assert_eq!(loads.len(), 1);
+        assert_eq!(loads[0].url, "https://other.test/");
+        assert_eq!(loads[0].code, sites::ERROR_SITE_NOT_ALLOWED);
+
+        // The person clicks: theirs again.
+        svc.acted(&tab.id, Actor::Person).await;
+        fake.emit(
+            "Fetch.requestPaused",
+            page_load("r5", &target, "https://other.test/"),
+            Some(&cdp_session),
+        );
+        calls_until(&fake, "Fetch.continueRequest", 4).await;
+
+        // Personal tabs and other sessions are not limited.
+        svc.set_strict_sites("s1", &[]).await.unwrap();
+        svc.acted(&tab.id, Actor::Agent).await;
+        assert!(svc.refused_loads(&tab.id).await.is_empty());
+        fake.emit(
+            "Fetch.requestPaused",
+            page_load("r6", &target, "https://other.test/"),
+            Some(&cdp_session),
+        );
+        calls_until(&fake, "Fetch.continueRequest", 5).await;
+        assert_eq!(fake.calls("Fetch.failRequest").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn asking_lets_the_person_allow_or_deny_a_site_for_the_session() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let on = serde_json::Map::from_iter([(
+            crate::settings::BROWSER_AGENT_ASK_SITES.to_string(),
+            json!(true),
+        )]);
+        crate::settings::update(&db.conn, &on).await.unwrap();
+        let tab = svc
+            .open(session("s1"), Some("https://start.test/"))
+            .await
+            .unwrap();
+        let target = fake.wait_url("https://start.test/").await;
+        let cdp_session = fake.lock().targets[&target].session.clone().unwrap();
+        svc.acted(&tab.id, Actor::Agent).await;
+        let mut events = svc.subscribe();
+
+        fake.emit(
+            "Fetch.requestPaused",
+            page_load("r1", &target, "https://example.com/a"),
+            Some(&cdp_session),
+        );
+        let first = asked(&mut events).await;
+        assert!(
+            matches!(&first.kind, UiKind::Site { site, local: false, .. } if site == "example.com:443")
+        );
+        assert!(
+            fake.calls("Fetch.continueRequest").is_empty(),
+            "the page waits"
+        );
+        // A newer load replaces the one waiting.
+        fake.emit(
+            "Fetch.requestPaused",
+            page_load("r2", &target, "https://example.com/b"),
+            Some(&cdp_session),
+        );
+        let second = asked(&mut events).await;
+        assert_eq!(
+            fake.calls("Fetch.failRequest"),
+            vec![json!({"requestId": "r1", "errorReason": "BlockedByClient"})]
+        );
+        assert_eq!(svc.ui_requests().await, vec![second.clone()]);
+        svc.answer(
+            &second.request_id,
+            &UiAnswer::Site {
+                allow: true,
+                always: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fake.calls("Fetch.continueRequest"),
+            vec![json!({"requestId": "r2"})]
+        );
+        fake.emit(
+            "Fetch.requestPaused",
+            page_load("r3", &target, "https://example.com/c"),
+            Some(&cdp_session),
+        );
+        calls_until(&fake, "Fetch.continueRequest", 2).await;
+
+        fake.emit(
+            "Fetch.requestPaused",
+            page_load("r4", &target, "http://127.0.0.1:9/"),
+            Some(&cdp_session),
+        );
+        let local = asked(&mut events).await;
+        assert!(matches!(&local.kind, UiKind::Site { local: true, .. }));
+        svc.answer(
+            &local.request_id,
+            &UiAnswer::Site {
+                allow: false,
+                always: false,
+            },
+        )
+        .await
+        .unwrap();
+        fake.emit(
+            "Fetch.requestPaused",
+            page_load("r5", &target, "http://127.0.0.1:9/x"),
+            Some(&cdp_session),
+        );
+        let failed = calls_until(&fake, "Fetch.failRequest", 3).await;
+        assert_eq!(failed[2]["requestId"], "r5", "denied without asking again");
+
+        // Always: every session, and kept.
+        fake.emit(
+            "Fetch.requestPaused",
+            page_load("r6", &target, "https://docs.test/"),
+            Some(&cdp_session),
+        );
+        let docs = asked(&mut events).await;
+        svc.answer(
+            &docs.request_id,
+            &UiAnswer::Site {
+                allow: true,
+                always: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            store::approved_sites(&db.conn).await.unwrap(),
+            vec!["docs.test:443".to_string()]
+        );
+        let other = svc
+            .open(session("s2"), Some("https://start.test/"))
+            .await
+            .unwrap();
+        svc.acted(&other.id, Actor::Agent).await;
+        assert_eq!(
+            svc.site_check(&other.id, "https://docs.test/").await,
+            Verdict::Allow
+        );
+        assert_eq!(
+            svc.site_check(&other.id, "https://example.com/").await,
+            Verdict::Ask
+        );
     }
 
     #[tokio::test]

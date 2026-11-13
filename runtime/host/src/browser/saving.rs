@@ -69,6 +69,16 @@ pub async fn folder_for(conn: &DatabaseConnection, owner: &TabOwner) -> Option<P
     Some(default_folder(Path::new(&worktree.path), &id))
 }
 
+/// Session `session_id`'s worktree; none when the session is gone.
+pub async fn worktree_of(conn: &DatabaseConnection, session_id: &str) -> Option<PathBuf> {
+    let row = crate::session::resolve(conn, session_id).await.ok()?;
+    let worktree = folder::Entity::find_by_id(row.folder_id)
+        .one(conn)
+        .await
+        .ok()??;
+    Some(PathBuf::from(worktree.path))
+}
+
 /// The default folder of the session whose folder name is `id`.
 pub fn default_folder(worktree: &Path, id: &str) -> PathBuf {
     worktree.join(".zwiim").join("browser").join(id)

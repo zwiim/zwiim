@@ -103,6 +103,19 @@ pub enum UiKind {
         #[serde(skip)]
         element: u64,
     },
+    /// An agent's page load goes to a site nobody allowed for its session,
+    /// and the person asked to be asked (design 13.2). The page waits.
+    Site {
+        /// The site, `host:port`.
+        site: String,
+        /// The address being loaded.
+        url: String,
+        /// It is this machine or the local network.
+        local: bool,
+        /// The paused request, the engine's own id: never sent.
+        #[serde(skip)]
+        fetch_request: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -165,6 +178,13 @@ pub enum UiAnswer {
         #[serde(default)]
         value: String,
     },
+    /// Let the page load when `allow`: for the session, or for every
+    /// session when `always`. Refuse it for the session otherwise.
+    Site {
+        allow: bool,
+        #[serde(default)]
+        always: bool,
+    },
 }
 
 /// Never shows a password.
@@ -200,6 +220,11 @@ impl std::fmt::Debug for UiAnswer {
                 .debug_struct("Date")
                 .field("accept", accept)
                 .field("value", value)
+                .finish(),
+            UiAnswer::Site { allow, always } => f
+                .debug_struct("Site")
+                .field("allow", allow)
+                .field("always", always)
                 .finish(),
         }
     }
@@ -347,6 +372,13 @@ pub fn answer_call(
             }
             Ok(Some(helper_answer(*context, *element, json!(value))))
         }
+        (UiKind::Site { fetch_request, .. }, UiAnswer::Site { allow: true, .. }) => Ok(Some((
+            "Fetch.continueRequest",
+            json!({ "requestId": fetch_request }),
+        ))),
+        (UiKind::Site { fetch_request, .. }, UiAnswer::Site { allow: false, .. }) => {
+            Ok(Some(refuse_load(fetch_request)))
+        }
         _ => Err(invalid_answer()),
     }
 }
@@ -362,8 +394,17 @@ fn helper_answer(context: i64, element: u64, value: Value) -> (&'static str, Val
     )
 }
 
+/// Fail the paused page load `fetch_request`: the tab shows the engine's
+/// blocked page.
+pub fn refuse_load(fetch_request: &str) -> (&'static str, Value) {
+    (
+        "Fetch.failRequest",
+        json!({ "requestId": fetch_request, "errorReason": "BlockedByClient" }),
+    )
+}
+
 /// The call that ends a request nobody answered: the dialog dismissed, the
-/// sign-in cancelled. A file chooser needs none.
+/// sign-in cancelled, the page load refused. A file chooser needs none.
 pub fn dismiss_call(request: &UiKind) -> Option<(&'static str, Value)> {
     match request {
         UiKind::Dialog { .. } => Some(("Page.handleJavaScriptDialog", json!({ "accept": false }))),
@@ -371,6 +412,7 @@ pub fn dismiss_call(request: &UiKind) -> Option<(&'static str, Value)> {
             fetch_request,
             json!({ "response": "CancelAuth" }),
         )),
+        UiKind::Site { fetch_request, .. } => Some(refuse_load(fetch_request)),
         UiKind::FileChooser { .. } | UiKind::Select { .. } | UiKind::Date { .. } => None,
     }
 }
@@ -382,7 +424,8 @@ pub fn timeout(request: &UiKind) -> Duration {
         UiKind::Auth { .. }
         | UiKind::FileChooser { .. }
         | UiKind::Select { .. }
-        | UiKind::Date { .. } => AUTH_TIMEOUT,
+        | UiKind::Date { .. }
+        | UiKind::Site { .. } => AUTH_TIMEOUT,
     }
 }
 
@@ -565,5 +608,43 @@ mod tests {
             .is_err(),
             "files never come from a client"
         );
+    }
+
+    #[test]
+    fn a_site_is_allowed_or_its_load_refused() {
+        let kind = UiKind::Site {
+            site: "example.com:443".into(),
+            url: "https://example.com/".into(),
+            local: false,
+            fetch_request: "f1".into(),
+        };
+        let sent = serde_json::to_value(UiRequest {
+            request_id: "ui-1".into(),
+            tab_id: "t1".into(),
+            owner: TabOwner::Session {
+                session_id: "s1".into(),
+            },
+            kind: kind.clone(),
+        })
+        .unwrap();
+        assert_eq!(sent["kind"], "site");
+        assert_eq!(sent["site"], "example.com:443");
+        assert!(sent.get("fetch_request").is_none());
+
+        let allow: UiAnswer =
+            serde_json::from_value(json!({"kind": "site", "allow": true, "always": true})).unwrap();
+        assert_eq!(
+            answer_call(&kind, &allow).unwrap().unwrap(),
+            ("Fetch.continueRequest", json!({"requestId": "f1"}))
+        );
+        let deny: UiAnswer =
+            serde_json::from_value(json!({"kind": "site", "allow": false})).unwrap();
+        let refused = (
+            "Fetch.failRequest",
+            json!({"requestId": "f1", "errorReason": "BlockedByClient"}),
+        );
+        assert_eq!(answer_call(&kind, &deny).unwrap().unwrap(), refused);
+        assert_eq!(dismiss_call(&kind).unwrap(), refused);
+        assert_eq!(timeout(&kind), AUTH_TIMEOUT);
     }
 }

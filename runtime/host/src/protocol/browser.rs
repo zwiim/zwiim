@@ -171,7 +171,12 @@ pub async fn tab_navigate(
         (None, Some(NavigateAction::Stop)) => Navigation::Stop,
         _ => return Err(ZwiimError::invalid_request("Give either url or action")),
     };
-    Ok(Json(service(&state).await?.navigate(&p.tab_id, to).await?))
+    let browser = service(&state).await?;
+    // A client's navigation is the person's (design 13.2).
+    browser
+        .acted(&p.tab_id, crate::browser::sites::Actor::Person)
+        .await;
+    Ok(Json(browser.navigate(&p.tab_id, to).await?))
 }
 
 #[derive(Debug, Deserialize)]

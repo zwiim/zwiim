@@ -111,6 +111,13 @@ pub const ERROR_PERSON_TYPING: &str = "browser_person_typing";
 /// loopback dev server, and the person has not let agents do that.
 pub const ERROR_PASSWORD_FIELD: &str = "browser_password_field";
 
+/// The session has a strict site list and the address is not on it: agents
+/// may not open it. The person can add it.
+pub const ERROR_SITE_NOT_ALLOWED: &str = "browser_site_not_allowed";
+
+/// The person denied this site for the session when asked.
+pub const ERROR_SITE_DENIED: &str = "browser_site_denied";
+
 /// The workspace was asked for a tab and none arrived — no window open to put
 /// one in, or the tab went away before it loaded.
 pub const ERROR_OPEN_FAILED: &str = "browser_open_failed";
@@ -241,6 +248,9 @@ pub struct ActionEffects {
     /// Errors the page printed to its console or threw.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
+    /// Page loads the site policy refused, each with why.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refused: Vec<String>,
 }
 
 impl ActionEffects {

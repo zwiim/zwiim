@@ -359,6 +359,13 @@ use serde::{Deserialize, Serialize};
 /// `browser.agent_passwords` (a boolean; unset is off): whether agents may
 /// type into password fields on any site rather than only on loopback dev
 /// servers.
+/// `settings` also gains `browser.agent_ask_sites` (a boolean; unset is
+/// off): whether a site an agent's tab loads for the first time in a session
+/// waits for a person. It is then asked as `{kind: "site", site, url,
+/// local}` (`site` is `host:port`, `local` true for this machine or the
+/// local network) and answered `{kind: "site", allow, always?}`: allowed for
+/// the session, or for every session with `always`; refused for the session
+/// otherwise, and after 5 minutes unanswered.
 /// A session's tab saves to `<worktree>/.zwiim/browser/<id>/`, removed with
 /// the session, unless `browser.downloads.set_location {root}` chose a
 /// folder (`root` an existing absolute folder, null for the default): then

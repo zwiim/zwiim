@@ -25,16 +25,19 @@ use super::console::{ConsoleLevel, ConsoleQuery};
 use super::engine::cdp::Cdp;
 use super::eval::EvalRequest;
 use super::network::{self, NetworkEntry};
-use super::service::{AgentAction, BrowserError, BrowserEvent, BrowserService, TabInfo};
+use super::service::{
+    AgentAction, BrowserError, BrowserEvent, BrowserService, RefusedLoad, TabInfo,
+};
+use super::sites::{self, Actor, Verdict};
 use super::store::TabOwner;
 use super::ui::UiKind;
 use crate::acp::browser_tools::{
     ActionEffects, BrowserActOutcome, BrowserCaptureOutcome, BrowserConsoleOutcome,
     BrowserEvalOutcome, BrowserSnapshotOutcome, BrowserTabOp, BrowserTabOutcome,
     BrowserTabsOutcome, BrowserToolAccess, DEFAULT_SNAPSHOT_MAX_CHARS, ERROR_ACTION_FAILED,
-    ERROR_BAD_ADDRESS, ERROR_NO_SUCH_TAB, ERROR_OPEN_FAILED, ERROR_PASSWORD_FIELD,
-    ERROR_PERSON_TYPING, ERROR_READ_FAILED, ERROR_UNAVAILABLE, ERROR_URL_CHANGED,
-    ERROR_WAIT_TIMEOUT,
+    ERROR_BAD_ADDRESS, ERROR_BLOCKED, ERROR_NO_SUCH_TAB, ERROR_OPEN_FAILED, ERROR_PASSWORD_FIELD,
+    ERROR_PERSON_TYPING, ERROR_READ_FAILED, ERROR_SITE_DENIED, ERROR_SITE_NOT_ALLOWED,
+    ERROR_UNAVAILABLE, ERROR_URL_CHANGED, ERROR_WAIT_TIMEOUT,
 };
 use crate::app_state::AppState;
 use crate::db::entities::conversation;
@@ -371,6 +374,10 @@ pub(crate) async fn tab_op(
         Err(e) if e.code == "unsupported_url" => {
             return BrowserTabOutcome::refused(Some(&tab_id), ERROR_BAD_ADDRESS, e.message)
         }
+        Err(e) if site_error(e.code).is_some() => {
+            let code = site_error(e.code).unwrap_or(ERROR_BLOCKED);
+            return BrowserTabOutcome::refused(Some(&tab_id), code, e.message);
+        }
         Err(e) => return BrowserTabOutcome::refused(Some(&tab_id), ERROR_OPEN_FAILED, e.message),
     };
     match browser.tab(&tab_id).await {
@@ -411,6 +418,15 @@ async fn load(
 ) -> Result<Option<String>, BrowserError> {
     let url = super::service::check_url(url)?;
     let (cdp, session) = browser.session(tab_id).await?;
+    browser.acted(tab_id, Actor::Agent).await;
+    if let Ok(parsed) = url::Url::parse(&url) {
+        if let Verdict::Refuse(code) = browser.site_check(tab_id, &url).await {
+            return Err(BrowserError {
+                code,
+                message: site_refusal(code, &parsed),
+            });
+        }
+    }
     let reply = cdp
         .call_with_timeout(
             "Page.navigate",
@@ -424,6 +440,40 @@ async fn load(
     }
     settle(browser, tab_id, &cdp, &session).await;
     Ok(None)
+}
+
+/// The agent's error for a site policy refusal `code` (design 13.2).
+fn site_error(code: &str) -> Option<&'static str> {
+    match code {
+        sites::ERROR_SITE_BLOCKED => Some(ERROR_BLOCKED),
+        sites::ERROR_SITE_NOT_ALLOWED => Some(ERROR_SITE_NOT_ALLOWED),
+        sites::ERROR_SITE_DENIED => Some(ERROR_SITE_DENIED),
+        _ => None,
+    }
+}
+
+/// Why the site policy refused loading `url`, for the agent.
+fn site_refusal(code: &str, url: &url::Url) -> String {
+    let site = url.host_str().unwrap_or("that site");
+    match code {
+        sites::ERROR_SITE_NOT_ALLOWED => format!(
+            "{site} is not on this session's strict site list, so agents may not open it. \
+             Nothing was loaded. Ask the person to add it to the session's sites in the \
+             Browser panel."
+        ),
+        sites::ERROR_SITE_DENIED => {
+            format!("The person denied {site} for this session. Nothing was loaded.")
+        }
+        _ => format!("The administrator's policy blocks {site}. Nothing was loaded."),
+    }
+}
+
+/// A refused page load, in a few words.
+fn refused_note(load: &RefusedLoad) -> String {
+    match url::Url::parse(&load.url) {
+        Ok(url) => format!("{} ({})", load.url, site_refusal(load.code, &url)),
+        Err(_) => load.url.clone(),
+    }
 }
 
 /// Wait until the document has loaded and none of its requests are still
@@ -765,6 +815,7 @@ pub(crate) async fn act(
             }
         }
     }
+    browser.acted(tab_id, Actor::Agent).await;
     let watch = Watch::start(browser, session, tab_id).await;
     let show = |x: f64, y: f64, bounds: Option<CaptureRegion>| {
         browser.agent_action(AgentAction {
@@ -889,6 +940,12 @@ impl Watch {
                 Err(_) => break,
             }
         }
+        effects.refused = browser
+            .refused_loads(tab_id)
+            .await
+            .iter()
+            .map(refused_note)
+            .collect();
         let now = own_tab(browser, session, tab_id).await.map(|t| t.url);
         if now.is_some() && now != self.url {
             effects.navigated = now;
@@ -926,6 +983,9 @@ fn asked(kind: &UiKind) -> String {
         UiKind::FileChooser { .. } => "file chooser".to_string(),
         UiKind::Select { .. } => "a list to pick from".to_string(),
         UiKind::Date { input_type, .. } => format!("a {input_type} picker"),
+        UiKind::Site { site, .. } => {
+            format!("whether you may open {site}: the page waits for the person's answer")
+        }
     }
 }
 
@@ -1566,6 +1626,123 @@ mod tests {
         assert_ne!(effects.opened_tabs[0], other.id);
         assert_eq!(effects.downloads, vec!["report.pdf".to_string()]);
         assert!(effects.dialogs.is_empty() && effects.errors.is_empty());
+    }
+
+    /// A strict site list refuses what the agent opens and what its click
+    /// leads to, and never what the person opens. Point `ZWIIM_TEST_ENGINE`
+    /// at a `chrome-headless-shell` binary.
+    #[tokio::test]
+    #[ignore = "needs ZWIIM_TEST_ENGINE"]
+    async fn the_real_engine_keeps_an_agent_to_its_site_list() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = tempfile::tempdir().unwrap();
+        let start = super::super::engine::fake::real_engine(dir.path().join("profile"));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    let body = format!(
+                        "<title>Home</title><a href=\"http://localhost:{port}/away\">Away</a>"
+                    );
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        let db = fresh_in_memory_db().await;
+        let browser = BrowserService::start(EngineManager::new(start), db.conn.clone(), None)
+            .await
+            .unwrap();
+        browser
+            .set_strict_sites("s1", &[format!("127.0.0.1:{port}")])
+            .await
+            .unwrap();
+        let worlds = Worlds::default();
+        let home = format!("http://127.0.0.1:{port}/");
+        let opened = tab_op(
+            &browser,
+            &worlds,
+            "s1",
+            BrowserTabOp::Open { url: home.clone() },
+        )
+        .await;
+        let tab = opened
+            .tab
+            .unwrap_or_else(|| panic!("{:?}", opened.note))
+            .tab_id;
+
+        let away = format!("http://localhost:{port}/away");
+        let refused = tab_op(
+            &browser,
+            &worlds,
+            "s1",
+            BrowserTabOp::Navigate {
+                tab_id: tab.clone(),
+                url: away.clone(),
+            },
+        )
+        .await;
+        assert_eq!(
+            refused.error.as_deref(),
+            Some(ERROR_SITE_NOT_ALLOWED),
+            "{:?}",
+            refused.note
+        );
+        assert_eq!(browser.tab(&tab).await.unwrap().url, home);
+
+        let page = snapshot(&browser, &worlds, "s1", &tab, None).await;
+        let page = page.snapshot.unwrap_or_else(|| panic!("{:?}", page.note));
+        let line = page
+            .tree
+            .lines()
+            .find(|l| l.contains("link \"Away\""))
+            .unwrap();
+        let start = line.find("[ref=").unwrap() + 5;
+        let link = line[start..start + line[start..].find(']').unwrap()].to_string();
+        let clicked = act(
+            &browser,
+            &worlds,
+            "s1",
+            &tab,
+            &ActionRequest {
+                generation: page.generation.clone(),
+                target: Some(link),
+                action: ActionKind::Click {
+                    button: None,
+                    count: None,
+                },
+                expect_url: None,
+            },
+        )
+        .await;
+        let effects = clicked.effects.expect("the click was refused somewhere");
+        assert_eq!(effects.refused.len(), 1, "{effects:?}");
+        assert!(effects.refused[0].starts_with(&away), "{effects:?}");
+
+        // The person goes there.
+        browser.acted(&tab, Actor::Person).await;
+        browser
+            .navigate(&tab, super::super::service::Navigation::Url(away.clone()))
+            .await
+            .unwrap();
+        for _ in 0..100 {
+            let now = browser.tab(&tab).await.unwrap();
+            if now.url == away && now.title == "Home" {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!(
+            "the person's navigation did not load: {:?}",
+            browser.tab(&tab).await
+        );
     }
 
     /// The page-reading script reads a real page, a click lands as real

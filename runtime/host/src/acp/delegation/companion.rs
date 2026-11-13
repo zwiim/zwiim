@@ -2475,6 +2475,9 @@ fn effects_note(effects: Option<&Value>) -> String {
     for dialog in list("dialogs") {
         out.push_str(&format!(" The page asked the person: {dialog}."));
     }
+    for refused in list("refused") {
+        out.push_str(&format!(" A page load was refused: {refused}."));
+    }
     let errors = list("errors");
     if !errors.is_empty() {
         out.push_str(" The page logged errors:");
@@ -5118,7 +5121,8 @@ mod tests {
                 "openedTabs": ["t9"],
                 "downloads": ["report.pdf"],
                 "dialogs": ["confirm: Delete it?"],
-                "errors": ["TypeError: x is undefined"]
+                "errors": ["TypeError: x is undefined"],
+                "refused": ["https://other.test/ (not on the list)"]
             }
         }));
         let text = done["content"][0]["text"].as_str().unwrap();
@@ -5128,6 +5132,7 @@ mod tests {
             "downloading report.pdf",
             "confirm: Delete it?",
             "TypeError: x is undefined",
+            "refused: https://other.test/ (not on the list)",
         ] {
             assert!(text.contains(said), "{said}: {text}");
         }
