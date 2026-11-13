@@ -204,7 +204,7 @@ describe("browser panel", () => {
     expect(t.calls.some((c) => c.op === "browser.engine.reset")).toBe(true);
   });
 
-  const dialog = (more: Partial<BrowserUiRequest> = {}): BrowserUiRequest => ({
+  const dialog = (more: Partial<Extract<BrowserUiRequest, { kind: "dialog" }>> = {}): BrowserUiRequest => ({
     request_id: "ui-1",
     tab_id: "a",
     owner: { kind: "session", session_id: "s1" },
@@ -266,6 +266,48 @@ describe("browser panel", () => {
     await tick();
     expect(t.calls.some((c) => c.op === "browser.ui.answer")).toBe(true);
     expect(screen.queryByText(/already answered/)).toBeNull();
+  });
+
+  it("asks for a site's sign-in and sends it, or cancels", async () => {
+    const t = new StreamingTransport();
+    t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
+    t.handlers["browser.view.close"] = () => ({});
+    t.handlers["browser.ui.answer"] = () => ({});
+    await mount(t, [tab("a")]);
+    const auth = (request_id: string): BrowserUiRequest => ({
+      request_id,
+      tab_id: "a",
+      owner: { kind: "session", session_id: "s1" },
+      kind: "auth",
+      origin: "http://localhost:8080",
+      scheme: "basic",
+      realm: "Staging",
+      proxy: false,
+      url: "http://localhost:8080/admin",
+    });
+    await act(async () => t.frame({ type: "browser.ui.request", request: auth("ui-1") } as never));
+    expect(screen.getByRole("alertdialog", { name: "Sign in" })).toBeTruthy();
+    expect(screen.getByText(/http:\/\/localhost:8080 asks for a username and password for “Staging”/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "ann" } });
+    const password = screen.getByLabelText("Password") as HTMLInputElement;
+    expect(password.type).toBe("password");
+    fireEvent.change(password, { target: { value: "pw" } });
+    fireEvent.submit(password.closest("form")!);
+    await tick();
+    expect(t.calls.find((c) => c.op === "browser.ui.answer")!.params).toEqual({
+      request_id: "ui-1",
+      answer: { kind: "auth", accept: true, username: "ann", password: "pw" },
+    });
+    await act(async () => t.frame({ type: "browser.ui.done", request_id: "ui-1", tab_id: "a" } as never));
+
+    await act(async () => t.frame({ type: "browser.ui.request", request: { ...auth("ui-2"), proxy: true } } as never));
+    fireEvent.click(screen.getByText("Cancel"));
+    await tick();
+    expect(t.calls.filter((c) => c.op === "browser.ui.answer").at(-1)!.params).toEqual({
+      request_id: "ui-2",
+      answer: { kind: "auth", accept: false },
+    });
+    expect(screen.getByRole("alertdialog", { name: "Sign in to the proxy" })).toBeTruthy();
   });
 
   it("says when the host refuses the browser", async () => {

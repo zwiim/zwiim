@@ -87,6 +87,8 @@ export type HostErrorCode =
   | "stream_attached"
   /** `browser.ui.answer`: the request was already answered, or dismissed unanswered after 60 s. */
   | "request_not_found"
+  /** `browser.ui.answer`: the answer is not of the request's kind. */
+  | "invalid_answer"
   | "internal";
 
 export interface WireError {
@@ -298,18 +300,39 @@ export type BrowserUiRequest = {
   request_id: string;
   tab_id: string;
   owner: BrowserTabOwner;
-} & {
-  kind: "dialog";
-  dialog: BrowserDialogType;
-  message: string;
-  /** A `prompt`'s default answer. */
-  default_text?: string;
-  /** The page that asked. */
-  url: string;
-};
+} & (
+  | {
+      kind: "dialog";
+      dialog: BrowserDialogType;
+      message: string;
+      /** A `prompt`'s default answer. */
+      default_text?: string;
+      /** The page that asked. */
+      url: string;
+    }
+  | {
+      /** A site, or a proxy when `proxy`, asks for a username and password. Cancelled after 5 minutes unanswered. */
+      kind: "auth";
+      /** `scheme://host:port` of who asks. */
+      origin: string;
+      /** `basic`, `digest`, `ntlm` or `negotiate`. */
+      scheme: string;
+      realm: string;
+      proxy: boolean;
+      /** The page being loaded. */
+      url: string;
+    }
+);
 
-/** The answer to a {@link BrowserUiRequest}: OK (or Leave) when `accept`; `text` answers a `prompt`. */
-export type BrowserUiAnswer = { kind: "dialog"; accept: boolean; text?: string };
+/**
+ * The answer to a {@link BrowserUiRequest}, of its kind. A dialog: OK (or
+ * Leave) when `accept`; `text` answers a `prompt`. A sign-in: the
+ * credentials when `accept`, Cancel otherwise. They reach the Host's engine
+ * only; nothing stores them.
+ */
+export type BrowserUiAnswer =
+  | { kind: "dialog"; accept: boolean; text?: string }
+  | { kind: "auth"; accept: boolean; username?: string; password?: string };
 
 /** `browser.subscribe` frames. Events carry a tab's whole state. */
 export type BrowserFrame =

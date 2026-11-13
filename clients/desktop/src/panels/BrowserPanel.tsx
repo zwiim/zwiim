@@ -1,8 +1,9 @@
 // The Host's browser beside the conversation (design 19.1): the session's
 // tabs and the person's own, an address bar, and the selected tab streamed
 // from the Host's engine. Both the person and the session's agent drive a
-// session tab; there is no control step between them. A page's own dialog
-// (`alert`, `confirm`, `prompt`, leaving the page) is drawn over its tab.
+// session tab; there is no control step between them. What a page asks of a
+// person (its `alert`, `confirm`, `prompt` or leave-page dialog, a site's
+// sign-in) is drawn over its tab.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, ExternalLink, Globe, Plus, RotateCw, X } from "lucide-react";
@@ -196,7 +197,7 @@ export function BrowserPanel({
               onReload={() => run(() => controller.browserTabHistory(tab.tab_id, "reload"))}
             />
             {tabUiRequests(browser, tab.tab_id).slice(0, 1).map((r) => (
-              <PageDialog
+              <PageRequest
                 key={r.request_id}
                 request={r}
                 disabled={!online}
@@ -292,75 +293,148 @@ function EngineNotice({
   return null;
 }
 
-/** A page's JavaScript dialog, over its tab: the first answer from any client wins. */
-function PageDialog({
-  request,
-  disabled,
-  onAnswer,
-}: {
-  request: BrowserUiRequest;
-  disabled: boolean;
-  onAnswer(answer: BrowserUiAnswer): Promise<void>;
-}) {
-  const [text, setText] = useState(request.default_text ?? "");
-  const [busy, setBusy] = useState(false);
-  const leaving = request.dialog === "beforeunload";
-  const prompt = request.dialog === "prompt";
+type Answer = (answer: BrowserUiAnswer) => Promise<void>;
+type DialogRequest = Extract<BrowserUiRequest, { kind: "dialog" }>;
+type AuthRequest = Extract<BrowserUiRequest, { kind: "auth" }>;
 
-  async function answer(accept: boolean) {
+/** What a tab waits on, over the tab: the first answer from any client wins. */
+function PageRequest({ request, disabled, onAnswer }: { request: BrowserUiRequest; disabled: boolean; onAnswer: Answer }) {
+  return request.kind === "dialog" ? (
+    <PageDialog request={request} disabled={disabled} onAnswer={onAnswer} />
+  ) : (
+    <SignIn request={request} disabled={disabled} onAnswer={onAnswer} />
+  );
+}
+
+/** One answer at a time. */
+function useAnswer(disabled: boolean, onAnswer: Answer) {
+  const [busy, setBusy] = useState(false);
+  async function send(answer: BrowserUiAnswer) {
     if (busy || disabled) return;
     setBusy(true);
     try {
-      await onAnswer({ kind: "dialog", accept, ...(prompt && accept ? { text } : {}) });
+      await onAnswer(answer);
     } finally {
       setBusy(false);
     }
   }
+  return { busy: busy || disabled, send };
+}
 
+/** The sheet over the page: Enter accepts, Escape cancels, and keys never reach the page. */
+function Sheet({
+  label,
+  onAccept,
+  onCancel,
+  children,
+}: {
+  label: string;
+  onAccept(): void;
+  onCancel(): void;
+  children: React.ReactNode;
+}) {
   return (
     <div className="bg-scrim absolute inset-0 z-10 flex items-start justify-center p-6 pt-10">
       <form
         className="bg-popover ring-border shadow-pop presence-pop flex w-full max-w-sm flex-col gap-3 rounded-xl p-4 ring-1"
         role="alertdialog"
-        aria-label={leaving ? "Leave this page?" : `${pageHost(request.url)} says`}
+        aria-label={label}
         onSubmit={(e) => {
           e.preventDefault();
-          void answer(true);
+          onAccept();
         }}
         onKeyDown={(e) => {
-          // The page is behind this: keys stay here.
           e.stopPropagation();
           if (e.key === "Escape") {
             e.preventDefault();
-            void answer(false);
+            onCancel();
           }
         }}
       >
-        <p className="text-ui font-medium">{leaving ? "Leave this page?" : `${pageHost(request.url)} says`}</p>
-        <p className="text-ui max-h-48 overflow-y-auto break-words whitespace-pre-wrap">
-          {leaving ? "Changes you made may not be saved." : request.message}
-        </p>
-        {prompt && (
-          <input
-            autoFocus
-            className="border-border bg-input/30 text-ui h-8 rounded-md border px-2 outline-none focus-visible:ring-2"
-            aria-label="Answer"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-          />
-        )}
-        <div className="flex justify-end gap-2">
-          {request.dialog !== "alert" && (
-            <Button type="button" size="sm" variant="secondary" disabled={busy || disabled} onClick={() => void answer(false)}>
-              {leaving ? "Stay" : "Cancel"}
-            </Button>
-          )}
-          <Button type="submit" size="sm" autoFocus={!prompt} disabled={busy || disabled}>
-            {leaving ? "Leave" : "OK"}
-          </Button>
-        </div>
+        <p className="text-ui font-medium">{label}</p>
+        {children}
       </form>
     </div>
+  );
+}
+
+const FIELD = "border-border bg-input/30 text-ui h-8 rounded-md border px-2 outline-none focus-visible:ring-2";
+
+/** A page's `alert`, `confirm`, `prompt` or leave-page question. */
+function PageDialog({ request, disabled, onAnswer }: { request: DialogRequest; disabled: boolean; onAnswer: Answer }) {
+  const [text, setText] = useState(request.default_text ?? "");
+  const { busy, send } = useAnswer(disabled, onAnswer);
+  const leaving = request.dialog === "beforeunload";
+  const prompt = request.dialog === "prompt";
+  const answer = (accept: boolean) => void send({ kind: "dialog", accept, ...(prompt && accept ? { text } : {}) });
+
+  return (
+    <Sheet
+      label={leaving ? "Leave this page?" : `${pageHost(request.url)} says`}
+      onAccept={() => answer(true)}
+      onCancel={() => answer(false)}
+    >
+      <p className="text-ui max-h-48 overflow-y-auto break-words whitespace-pre-wrap">
+        {leaving ? "Changes you made may not be saved." : request.message}
+      </p>
+      {prompt && <input autoFocus className={FIELD} aria-label="Answer" value={text} onChange={(e) => setText(e.target.value)} />}
+      <div className="flex justify-end gap-2">
+        {request.dialog !== "alert" && (
+          <Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => answer(false)}>
+            {leaving ? "Stay" : "Cancel"}
+          </Button>
+        )}
+        <Button type="submit" size="sm" autoFocus={!prompt} disabled={busy}>
+          {leaving ? "Leave" : "OK"}
+        </Button>
+      </div>
+    </Sheet>
+  );
+}
+
+/** A site (or a proxy) asks for a username and password. They go to the Host's browser and nowhere else. */
+function SignIn({ request, disabled, onAnswer }: { request: AuthRequest; disabled: boolean; onAnswer: Answer }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const { busy, send } = useAnswer(disabled, onAnswer);
+  const cancel = () => void send({ kind: "auth", accept: false });
+
+  return (
+    <Sheet
+      label={request.proxy ? "Sign in to the proxy" : "Sign in"}
+      onAccept={() => void send({ kind: "auth", accept: true, username, password })}
+      onCancel={cancel}
+    >
+      <p className="text-ui text-muted-foreground break-words">
+        {request.origin} asks for a username and password{request.realm ? ` for “${request.realm}”` : ""}.
+      </p>
+      <input
+        autoFocus
+        className={FIELD}
+        aria-label="Username"
+        placeholder="Username"
+        autoComplete="off"
+        value={username}
+        onChange={(e) => setUsername(e.target.value)}
+      />
+      <input
+        type="password"
+        className={FIELD}
+        aria-label="Password"
+        placeholder="Password"
+        autoComplete="off"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+      />
+      <div className="flex justify-end gap-2">
+        <Button type="button" size="sm" variant="secondary" disabled={busy} onClick={cancel}>
+          Cancel
+        </Button>
+        <Button type="submit" size="sm" disabled={busy}>
+          Sign in
+        </Button>
+      </div>
+    </Sheet>
   );
 }
 
