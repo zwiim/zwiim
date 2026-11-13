@@ -121,6 +121,11 @@ const OPS: &[&str] = &[
     "lan.set",
     "host.keep_awake.status",
     "host.keep_awake.set",
+    "browser.tabs.list",
+    "browser.tab.open",
+    "browser.tab.close",
+    "browser.tab.navigate",
+    "browser.engine.reset",
 ];
 
 pub(crate) fn git(dir: &std::path::Path, args: &[&str]) {
@@ -5555,6 +5560,11 @@ async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
         ),
         ("agent.remove_key", json!({"agent": "codex"})),
         ("agent.sign_out", json!({"agent": "codex"})),
+        ("browser.tabs.list", json!({})),
+        ("browser.tab.open", json!({"owner": {"kind": "personal"}})),
+        ("browser.tab.close", json!({"tab_id": "t"})),
+        ("browser.tab.navigate", json!({"tab_id": "t", "action": "reload"})),
+        ("browser.engine.reset", json!({})),
     ] {
         let (status, body) = h.call_as(&credential, op, body).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{op}");
@@ -6361,4 +6371,123 @@ async fn a_steer_goes_into_the_running_turn() {
     assert_eq!(follow_ups_of(&h, &sid).await[0]["text"], "and tests");
     let sent = agent.await.unwrap();
     assert!(matches!(&sent[0][..], [PromptInputBlock::Text { text }] if text == "use the cache"));
+}
+
+// ─── browser ─────────────────────────────────────────────────────────────
+
+/// Give the Host a browser on a fake engine.
+async fn fake_browser(h: &Host) -> crate::browser::engine::fake::FakeEngine {
+    use crate::browser::engine::{fake::FakeEngine, manager::EngineManager};
+    let fake = FakeEngine::default();
+    let service = crate::browser::service::BrowserService::start(
+        EngineManager::new(fake.start_fn()),
+        h.state.db.conn.clone(),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(h.state.browser.set(service).is_ok());
+    fake
+}
+
+#[tokio::test]
+async fn browser_tabs_over_http() {
+    let h = host(false).await;
+    let fake = fake_browser(&h).await;
+    assert_eq!(
+        h.ok("browser.tabs.list", json!({})).await,
+        json!({"tabs": [], "engine": {"state": "stopped"}})
+    );
+
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let owner = json!({"kind": "session", "session_id": sid});
+    let tab = h
+        .ok(
+            "browser.tab.open",
+            json!({"owner": owner, "url": "http://localhost:5173/"}),
+        )
+        .await;
+    let tab_id = tab["tab_id"].as_str().unwrap().to_string();
+    assert_eq!(tab["owner"], owner);
+    assert_eq!(tab["url"], "http://localhost:5173/");
+    assert_eq!(tab["discarded"], false);
+    let personal = h
+        .ok("browser.tab.open", json!({"owner": {"kind": "personal"}}))
+        .await;
+    assert_eq!(personal["url"], "about:blank");
+
+    let listed = h.ok("browser.tabs.list", json!({"session_id": sid})).await;
+    assert_eq!(listed["tabs"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["tabs"][0]["tab_id"], tab_id.as_str());
+    assert_eq!(listed["engine"]["state"], "running");
+    assert!(listed["engine"]["version"].is_string());
+    assert_eq!(
+        h.ok("browser.tabs.list", json!({})).await["tabs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    h.ok(
+        "browser.tab.navigate",
+        json!({"tab_id": tab_id, "url": "https://example.com/"}),
+    )
+    .await;
+    assert!(fake
+        .calls("Page.navigate")
+        .iter()
+        .any(|c| c["url"] == "https://example.com/"));
+    h.ok(
+        "browser.tab.navigate",
+        json!({"tab_id": tab_id, "action": "reload"}),
+    )
+    .await;
+    assert_eq!(fake.calls("Page.reload").len(), 1);
+
+    for body in [
+        json!({"tab_id": tab_id}),
+        json!({"tab_id": tab_id, "url": "https://example.com/", "action": "back"}),
+        json!({"tab_id": tab_id, "action": "sideways"}),
+    ] {
+        assert_eq!(
+            h.err("browser.tab.navigate", body).await,
+            (StatusCode::BAD_REQUEST, "invalid_request".into())
+        );
+    }
+    assert_eq!(
+        h.err(
+            "browser.tab.navigate",
+            json!({"tab_id": tab_id, "url": "file:///etc/passwd"}),
+        )
+        .await,
+        (StatusCode::UNPROCESSABLE_ENTITY, "unsupported_url".into())
+    );
+    assert_eq!(
+        h.err(
+            "browser.tab.open",
+            json!({"owner": {"kind": "session", "session_id": "nope"}}),
+        )
+        .await,
+        (StatusCode::NOT_FOUND, "not_found".into())
+    );
+
+    h.ok("browser.tab.close", json!({"tab_id": tab_id})).await;
+    assert_eq!(
+        h.err("browser.tab.close", json!({"tab_id": tab_id})).await,
+        (StatusCode::NOT_FOUND, "tab_not_found".into())
+    );
+    assert_eq!(
+        h.err(
+            "browser.tab.navigate",
+            json!({"tab_id": tab_id, "action": "stop"})
+        )
+        .await,
+        (StatusCode::NOT_FOUND, "tab_not_found".into())
+    );
+    assert_eq!(
+        h.ok("browser.engine.reset", json!({})).await["engine"]["state"],
+        "running"
+    );
 }

@@ -31,7 +31,7 @@ pub struct ZwiimError {
 }
 
 impl ZwiimError {
-    fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
+    pub(super) fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
         Self {
             status,
             code,

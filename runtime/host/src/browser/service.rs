@@ -32,8 +32,8 @@ const SAVE_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A tab as clients see it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct TabInfo {
+    #[serde(rename = "tab_id")]
     pub id: String,
     pub owner: TabOwner,
     pub url: String,

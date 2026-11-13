@@ -10,6 +10,7 @@
 //! authority (`web::auth::require_local_authority`); `device.pair` is the one
 //! unauthenticated operation, authorized by its one-time pairing code.
 
+pub mod browser;
 pub mod compat;
 pub mod error;
 pub mod events;
@@ -125,6 +126,13 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/agent.save_key", post(http::agent_save_key))
         .route("/agent.remove_key", post(http::agent_remove_key))
         .route("/agent.sign_out", post(http::agent_sign_out))
+        // Browser tabs show the person's addresses: Host only until devices
+        // carry browser rights.
+        .route("/browser.tabs.list", post(browser::tabs_list))
+        .route("/browser.tab.open", post(browser::tab_open))
+        .route("/browser.tab.close", post(browser::tab_close))
+        .route("/browser.tab.navigate", post(browser::tab_navigate))
+        .route("/browser.engine.reset", post(browser::engine_reset))
         .route_layer(middleware::from_fn(auth::require_local_authority));
 
     let authenticated = Router::new()

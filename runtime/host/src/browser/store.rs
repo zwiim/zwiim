@@ -15,10 +15,7 @@ use crate::db::entities::browser_tab;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TabOwner {
     /// The session's own tab, in its own context; its agent may use it.
-    Session {
-        #[serde(rename = "sessionId")]
-        session_id: String,
-    },
+    Session { session_id: String },
     /// The person's tab, in the personal context.
     Personal,
 }
@@ -253,7 +250,7 @@ mod tests {
     fn owners_serialize_for_the_protocol() {
         assert_eq!(
             serde_json::to_value(session("s1")).unwrap(),
-            serde_json::json!({"kind": "session", "sessionId": "s1"})
+            serde_json::json!({"kind": "session", "session_id": "s1"})
         );
         assert_eq!(
             serde_json::to_value(TabOwner::Personal).unwrap(),
