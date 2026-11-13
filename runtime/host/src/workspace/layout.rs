@@ -808,7 +808,7 @@ mod tests {
         let db = fresh_in_memory_db().await;
         let backend = db.conn.get_database_backend();
         // Back past `workspace_group_ids` and the migrations after it.
-        Migrator::down(&db.conn, Some(4)).await.unwrap();
+        Migrator::down(&db.conn, Some(5)).await.unwrap();
         let now = Utc::now();
         for (order, path) in [(3, "/oldest"), (2, "/middle"), (1, "/newest")] {
             folder::ActiveModel {
