@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 use serde::{Deserialize, Serialize};
-use tauri::Url;
+use url::Url;
 
 /// Top-level navigation allow-list. Only real web pages may load in a tab:
 /// `http(s)`, the `about:blank` bootstrap page every tab starts from, and

@@ -80,6 +80,8 @@ pub mod store;
 pub mod stream;
 pub mod tools;
 pub mod input;
+pub mod listener;
+pub mod policy;
 pub mod saving;
 pub mod types;
 pub mod ui;
@@ -101,11 +103,7 @@ pub mod handoff;
 #[cfg(feature = "tauri-runtime")]
 pub mod hooks;
 #[cfg(feature = "tauri-runtime")]
-pub mod listener;
-#[cfg(feature = "tauri-runtime")]
 pub mod open_request;
-#[cfg(feature = "tauri-runtime")]
-pub mod policy;
 #[cfg(feature = "tauri-runtime")]
 pub mod profile;
 #[cfg(feature = "tauri-runtime")]

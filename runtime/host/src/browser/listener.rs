@@ -25,7 +25,7 @@
 
 use std::net::IpAddr;
 
-use tauri::Url;
+use url::Url;
 
 use super::agent::ListenerIdentity;
 
