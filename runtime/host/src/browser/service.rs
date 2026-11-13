@@ -471,7 +471,7 @@ impl BrowserService {
                     .call(
                         "IO.read",
                         json!({ "handle": stream, "size": PDF_CHUNK }),
-                        None,
+                        Some(&session),
                     )
                     .await?;
                 let data = chunk["data"].as_str().unwrap_or_default();
@@ -496,8 +496,9 @@ impl BrowserService {
             }
         }
         .await;
+        // The stream is the page's: read and closed through its session.
         let _ = cdp
-            .call("IO.close", json!({ "handle": stream }), None)
+            .call("IO.close", json!({ "handle": stream }), Some(&session))
             .await;
         let pdf = written?;
         let saved = async {
@@ -3642,6 +3643,100 @@ mod tests {
     /// Point `ZWIIM_TEST_ENGINE` at a `chrome-headless-shell` binary.
     /// The real engine freezes, wakes and discards a tab, and its tree is
     /// measured. Point `ZWIIM_TEST_ENGINE` at a `chrome-headless-shell`.
+    /// On the real engine a dropped file reaches the page's drop handler
+    /// with its contents, and a print is a PDF.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "needs ZWIIM_TEST_ENGINE"]
+    async fn the_real_engine_takes_dropped_files_and_prints() {
+        use crate::db::test_helpers::{seed_conversation, seed_worktree_folder};
+        use sea_orm::EntityTrait;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        const PAGE: &str = "<title>Drop test</title><body style=margin:0>\
+            <div id=z style='width:400px;height:300px'>drop here</div><script>\
+            z.addEventListener('dragover', e => e.preventDefault());\
+            z.addEventListener('drop', e => { e.preventDefault(); const f = e.dataTransfer.files[0];\
+            f.text().then(t => document.title = 'got ' + f.name + ' ' + t); });</script>";
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = server.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = server.accept().await {
+                let mut buf = [0u8; 2048];
+                let _ = s.read(&mut buf).await;
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{PAGE}",
+                    PAGE.len()
+                );
+                let _ = s.write_all(reply.as_bytes()).await;
+            }
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let wt = dir.path().join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join("a.txt"), "hello").unwrap();
+        let db = fresh_in_memory_db().await;
+        let folder = seed_worktree_folder(&db, wt.to_str().unwrap()).await;
+        let conv =
+            seed_conversation(&db, folder, crate::models::agent::AgentType::ClaudeCode).await;
+        let sid = crate::db::entities::conversation::Entity::find_by_id(conv)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap()
+            .session_id
+            .unwrap();
+        let start = super::super::engine::fake::real_engine(dir.path().join("profile"));
+        let svc = BrowserService::start(EngineManager::new(start), db.conn.clone(), None)
+            .await
+            .unwrap();
+        let url = format!("http://127.0.0.1:{port}/");
+        let tab = svc.open(session(&sid), Some(&url)).await.unwrap().id;
+        let (cdp, cdp_session) = svc.session(&tab).await.unwrap();
+        let title = || async {
+            cdp.call(
+                "Runtime.evaluate",
+                json!({"expression": "document.title", "returnByValue": true}),
+                Some(&cdp_session),
+            )
+            .await
+            .map(|r| {
+                r["result"]["value"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .unwrap_or_default()
+        };
+        for _ in 0..50 {
+            if title().await == "Drop test" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(title().await, "Drop test");
+
+        svc.drop_files(&tab, 50.0, 50.0, &[wt.join("a.txt")])
+            .await
+            .unwrap();
+        let mut got = String::new();
+        for _ in 0..50 {
+            got = title().await;
+            if got.starts_with("got") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(got, "got a.txt hello");
+
+        let name = svc.print(&tab).await.unwrap();
+        let folder = svc.files_folder(&session(&sid)).await.unwrap();
+        let pdf = std::fs::read(folder.join(&name)).unwrap();
+        assert!(pdf.starts_with(b"%PDF-"), "{name}");
+        assert!(pdf.len() > 500);
+        svc.stop_engine().await;
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     #[ignore = "needs ZWIIM_TEST_ENGINE"]
