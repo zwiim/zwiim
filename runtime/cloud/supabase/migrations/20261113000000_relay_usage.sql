@@ -3,9 +3,10 @@
 --
 -- Every account is on a plan; new accounts start on Free. The Cloud counts
 -- relay bytes per account, period and channel, and sends them here once a
--- minute through add_relay_usage(). Only the Cloud's service key reads or
--- writes these tables: row-level security is on with no policies, and
--- clients read their usage through the Cloud's GET /v1/usage.
+-- minute through add_relay_usage(), logged in as the zwiim_cloud role,
+-- which can call that function and nothing else. Row-level security is on
+-- with no policies, and clients read their usage through the Cloud's
+-- GET /v1/usage.
 --
 -- Stored: account id, period, channel and byte counts. Never content, IP
 -- addresses or URLs.
@@ -164,6 +165,21 @@ begin
 end
 $$;
 
-revoke execute on function public.add_relay_usage(jsonb) from public, anon, authenticated;
+revoke execute on function public.add_relay_usage(jsonb) from public, anon, authenticated, service_role;
 revoke execute on function public.relay_period(timestamptz, timestamptz) from public, anon, authenticated;
-grant execute on function public.add_relay_usage(jsonb) to service_role;
+
+-- The Cloud's own database login. Its only right is calling
+-- add_relay_usage(), so a compromised Cloud exposes byte counts and nothing
+-- else: no tables, no auth.users, no service-role key. The role is created
+-- without login; give it one in the SQL editor, never in this repo:
+--   alter role zwiim_cloud with login password '<generated>';
+do $$
+begin
+  if not exists (select from pg_roles where rolname = 'zwiim_cloud') then
+    create role zwiim_cloud nologin;
+  end if;
+end
+$$;
+
+grant usage on schema public to zwiim_cloud;
+grant execute on function public.add_relay_usage(jsonb) to zwiim_cloud;

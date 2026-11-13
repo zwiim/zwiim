@@ -821,8 +821,11 @@ Migration: `runtime/cloud/supabase/migrations/`.
 4. `add_relay_usage(batch)` adds a batch of byte counts and returns, per
    account: the plan, used bytes per channel, the limits and `resets_at`. An
    account with no `account_plans` row is treated as Free.
-5. Row-level security is on with no policies. Only the Cloud's service key
-   can read or write. Clients use `GET /v1/usage`.
+5. Row-level security is on with no policies. The Cloud logs in as its own
+   Postgres role, `zwiim_cloud`, whose only right is calling
+   `add_relay_usage`: it cannot read the tables or `auth.users`. A
+   compromised Cloud therefore exposes byte counts, not accounts. The Cloud
+   never holds the service-role key. Clients use `GET /v1/usage`.
 6. Only account id, period, channel and byte counts are stored: no content,
    no IP addresses, no URLs.
 
@@ -862,8 +865,8 @@ Migration: `runtime/cloud/supabase/migrations/`.
 
 | Variable | Meaning |
 |---|---|
-| `ZWIIM_CLOUD_SUPABASE_URL` | Existing. Also the REST endpoint for usage |
-| `ZWIIM_CLOUD_SUPABASE_SERVICE_KEY` | New, secret. Turns on usage storage and plan limits. Lives only in the server's environment file (mode `0600`), never in the repo or in logs |
+| `ZWIIM_CLOUD_SUPABASE_URL` | Existing. Token checks only |
+| `ZWIIM_CLOUD_USAGE_DATABASE_URL` | New, secret. Postgres connection string for the `zwiim_cloud` role through Supabase's pooler in session mode. Turns on usage storage and plan limits. Lives only in the server's environment file (mode `0600`), never in the repo or in logs |
 | `ZWIIM_CLOUD_MAX_RELAYS` | Existing. Each phone now uses two connections while the browser is open, so the hosted Cloud raises it to about 512 |
 
 Limits come from plan rows, so there are no limit variables.
@@ -976,7 +979,7 @@ comes mostly from Live App and LAN-first routing.
 | JPEG encode (mixed-size viewers) | `jpeg-encoder` | checked in its PR; must be permissive |
 | Memory pressure | `dispatch2` | Zlib OR Apache-2.0 OR MIT |
 | Phone loopback proxy | Platform networking (Network.framework, Java sockets) | system |
-| Usage storage | Supabase REST through the Cloud's existing `reqwest` | no new dependency |
+| Usage storage | `tokio-postgres`, as the restricted `zwiim_cloud` role | MIT OR Apache-2.0 |
 
 No third-party CDP driver (`playwright-core`, `agent-browser`) is used; the
 Host speaks CDP itself.
@@ -1073,7 +1076,8 @@ Each item is one small PR unless noted.
 4. The `control` speed cap.
 5. `GET /v1/usage` and `RelayQuotaError` in the SDK.
 6. Phone limit sheets and the 80% line, with their `DESIGN.md` entries.
-7. Deployment notes for the droplet: the service key in the `0600` env file.
+7. Deployment notes for the droplet: setting the `zwiim_cloud` password,
+   and `ZWIIM_CLOUD_USAGE_DATABASE_URL` in the `0600` env file.
 
 ### P1 — Host browser, agents, desktop (covers R1, R3, R4 on the Mac)
 
