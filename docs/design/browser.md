@@ -611,9 +611,13 @@ holds its own CDP session.
    `Runtime.consoleAPICalled` and `Runtime.exceptionThrown`.
 5. `browser_eval` — unchanged gates: its own switch (off by default) and
    `control` level.
-6. New: `browser_wait_for { text |
-   selector | network_idle }` so agents stop guessing with sleeps.
+6. New: `browser_wait_for { text | selector, gone?, timeoutMs? }` so agents
+   stop guessing with sleeps; waiting for the network to go quiet comes
+   with `browser_network_log` (P1.8).
    `browser_request_takeover` (7.5) is deferred with the lease.
+   New: `browser_set_permissions { tabId, grant }` sets which site
+   permissions the tab's site may use in the session's context
+   (decision 12).
 7. New: `browser_network_log { tabId, since?, filter?, har? }` — requests
    from a per-tab ring (last 500, `Network` domain events): method, URL,
    status, type, timing, sizes and, for failures, the error. `har: true`
@@ -1254,9 +1258,9 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 7. CDP implementation of `BrowserToolAccess`; `browser.agent.action`; ghost
    cursor on the desktop. The tools work on the session's own tabs: list,
    open, navigate, close, snapshot, click, hover, type, key, select,
-   screenshot and console (`browser_eval` stays off). `browser.agent.action`,
-   the ghost cursor, permission grants (decision 12) and `browser_wait_for`
-   remain.
+   screenshot, console, `browser_wait_for` and `browser_set_permissions`
+   (`browser_eval` stays off). Done, with the ghost cursor in the desktop
+   Browser panel.
 8. Action side effects, `expect_url`, typing guard, password-field guard,
    and `browser_network_log`.
 9. Deferred: control lease and `browser_request_takeover` (see below).
