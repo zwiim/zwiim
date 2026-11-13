@@ -1,6 +1,6 @@
 // The Advanced tab: how much terminal output the host keeps, whether a plain
-// `git push` from a worktree sets its upstream, and where the host keeps
-// worktrees and repositories. Agents run through the host, so there is no binary to point at here.
+// `git push` from a worktree sets its upstream, where the host keeps
+// worktrees and repositories, and where its browser saves downloads. Agents run through the host, so there is no binary to point at here.
 
 import { useCallback, useEffect, useState } from "react";
 import { DEFAULT_SCROLLBACK_BYTES, type HostFolders, type HostSettings } from "@zwiim/sdk";
@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import type { NativeBridge } from "@/lib/bridge";
 import { errorMessage, useController, useOnline } from "@/lib/host-context";
 import { ControlSelect } from "@/panels/OptionsBar";
+import { BrowserDownloadsSetting } from "@/settings/browser-downloads";
 import { SettingRow, ToggleRow } from "@/settings/rows";
 
 type Values = HostSettings["values"];
@@ -123,6 +124,7 @@ export function AdvancedSettings({ bridge, remote }: { bridge: NativeBridge; rem
           ))}
         </section>
       )}
+      {!remote && <BrowserDownloadsSetting bridge={bridge} />}
       {error && (
         <p className="text-destructive" role="alert">
           {error}

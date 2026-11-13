@@ -2199,6 +2199,14 @@ export interface Operations {
   "browser.view.close": [{ stream_id: string }, Record<string, never>];
   /** Answer what a tab waits on; a later answer is `request_not_found`. */
   "browser.ui.answer": [{ request_id: string; answer: BrowserUiAnswer }, Record<string, never>];
+  /**
+   * Where browser downloads go: null is the default, each session's
+   * `<worktree>/.zwiim/browser/<id>/` (removed with the session); a chosen
+   * `root` holds `<root>/zwiim/<repo>/downloads/`. The person's tabs save to `~/Downloads`.
+   */
+  "browser.downloads.location": [Record<string, never>, { root: string | null }];
+  /** Choose the root folder (an existing absolute folder on the Host), or null for the default. */
+  "browser.downloads.set_location": [{ root: string | null }, { root: string | null }];
 }
 
 export type OpName = keyof Operations;
@@ -2240,6 +2248,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "browser.engine.reset",
   "browser.view.open",
   "browser.ui.answer",
+  "browser.downloads.set_location",
   "session.start",
   "session.send",
   "session.cancel",

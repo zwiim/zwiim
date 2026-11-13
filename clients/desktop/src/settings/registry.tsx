@@ -250,7 +250,7 @@ export const TABS: readonly TabDef[] = [
     label: "Advanced",
     icon: Wrench,
     group: "Host",
-    keywords: ["scrollback", "terminal", "output", "history", "push", "upstream", "git", "folders", "path"],
+    keywords: ["scrollback", "terminal", "output", "history", "push", "upstream", "git", "folders", "path", "browser", "downloads"],
     available: (ctx) => ctx.advancedSettings,
     panel: (ctx) => <AdvancedSettings bridge={ctx.bridge} remote={ctx.remote} />,
   },

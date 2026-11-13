@@ -157,4 +157,34 @@ describe("terminal scrollback", () => {
     expect(scrollbackLines(64 * 1024)).toBe(1000);
     expect(scrollbackLines(16 * 1024 * 1024)).toBe(50_000);
   });
+
+  it("chooses where the browser saves downloads, and goes back to the worktrees", async () => {
+    const t = host();
+    let root: string | null = null;
+    t.handlers["browser.downloads.location"] = () => ({ root });
+    t.handlers["browser.downloads.set_location"] = (p: { root: string | null }) => {
+      root = p.root;
+      return { root };
+    };
+    await mount(t, bridge({ pickFolder: vi.fn(async () => "/Users/me/Saved") }));
+    const dialog = openSettings("Advanced");
+    await tick();
+    expect(dialog.getByText(/saves what pages download in its worktree, under .zwiim\/browser/)).toBeTruthy();
+    fireEvent.click(dialog.getByText("Choose folder…"));
+    await tick();
+    expect(t.calls.find((c) => c.op === "browser.downloads.set_location")!.params).toEqual({ root: "/Users/me/Saved" });
+    expect(dialog.getByText("/Users/me/Saved")).toBeTruthy();
+    expect(dialog.getByText(/zwiim\/<repository>\/downloads/)).toBeTruthy();
+    fireEvent.click(dialog.getByText("Use worktrees"));
+    await tick();
+    expect(t.calls.filter((c) => c.op === "browser.downloads.set_location").at(-1)!.params).toEqual({ root: null });
+    expect(dialog.queryByText("/Users/me/Saved")).toBeNull();
+  });
+
+  it("leaves the row out for a host without the browser", async () => {
+    await mount(host());
+    const dialog = openSettings("Advanced");
+    await tick();
+    expect(dialog.queryByText("Browser downloads")).toBeNull();
+  });
 });
