@@ -130,6 +130,8 @@ const OPS: &[&str] = &[
     "browser.view.open",
     "browser.view.close",
     "browser.ui.answer",
+    "browser.sites.get",
+    "browser.sites.set",
     "browser.downloads.location",
     "browser.downloads.set_location",
 ];
@@ -5584,6 +5586,11 @@ async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
             "browser.ui.answer",
             json!({"request_id": "ui-1", "answer": {"kind": "dialog", "accept": true}}),
         ),
+        ("browser.sites.get", json!({"session_id": "s"})),
+        (
+            "browser.sites.set",
+            json!({"session_id": "s", "sites": ["example.com"]}),
+        ),
         ("browser.downloads.location", json!({})),
         ("browser.downloads.set_location", json!({"root": "/tmp"})),
     ] {
@@ -6691,6 +6698,42 @@ async fn a_file_chooser_gets_files_of_its_sessions_workspace_only() {
         vec![json!({"files": [photo], "backendNodeId": 7})]
     );
     browser_frame(&mut ws, "browser.ui.done", |_| true).await;
+}
+
+#[tokio::test]
+async fn a_sessions_strict_site_list_is_kept_and_checked() {
+    let h = host(false).await;
+    let _fake = fake_browser(&h).await;
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    assert_eq!(
+        h.ok("browser.sites.get", json!({"session_id": sid})).await,
+        json!({"sites": []})
+    );
+    assert_eq!(
+        h.ok(
+            "browser.sites.set",
+            json!({"session_id": sid, "sites": ["https://GitHub.com/zwiim", "*.example.com"]})
+        )
+        .await,
+        json!({"sites": ["github.com", "*.example.com"]})
+    );
+    assert_eq!(
+        h.ok("browser.sites.get", json!({"session_id": sid})).await,
+        json!({"sites": ["github.com", "*.example.com"]})
+    );
+    let (status, body) = h
+        .call(
+            "browser.sites.set",
+            json!({"session_id": sid, "sites": ["not a site"]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_site");
+    let (status, _) = h
+        .call("browser.sites.get", json!({"session_id": "nope"}))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

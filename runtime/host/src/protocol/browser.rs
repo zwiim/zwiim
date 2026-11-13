@@ -36,6 +36,7 @@ impl From<BrowserError> for ZwiimError {
             "invalid_viewport" => (StatusCode::BAD_REQUEST, e.message),
             "request_not_found" => (StatusCode::NOT_FOUND, e.message),
             "invalid_answer" => (StatusCode::BAD_REQUEST, e.message),
+            "invalid_site" => (StatusCode::BAD_REQUEST, e.message),
             _ => (StatusCode::SERVICE_UNAVAILABLE, scrub_paths(&e.message)),
         };
         ZwiimError::new(status, e.code, message)
@@ -293,6 +294,54 @@ async fn chosen_files(
         files.push(target);
     }
     Ok(files)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SitesParams {
+    pub session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SitesSetParams {
+    pub session_id: String,
+    /// Site patterns or pasted addresses; empty removes the list.
+    pub sites: Vec<String>,
+}
+
+async fn known_session(state: &AppState, session_id: &str) -> Result<(), ZwiimError> {
+    crate::session::resolve(&state.db.conn, session_id)
+        .await
+        .map(|_| ())
+        .map_err(|_| ZwiimError::not_found("No such session"))
+}
+
+/// `browser.sites.get {session_id}` → `{sites}`: the session's strict site
+/// list, empty for none (design 13.2).
+pub async fn sites_get(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<SitesParams>,
+) -> ZResult<Value> {
+    known_session(&state, &p.session_id).await?;
+    let sites = service(&state).await?.strict_sites(&p.session_id).await;
+    Ok(Json(json!({ "sites": sites })))
+}
+
+/// `browser.sites.set {session_id, sites}` → `{sites}`: the session's agent
+/// opens only these sites and its own dev servers from now on; an empty
+/// list lets it open any. Entries come back as kept (`https://x.com/a` is
+/// `x.com`); a bad one is `invalid_site`.
+pub async fn sites_set(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<SitesSetParams>,
+) -> ZResult<Value> {
+    known_session(&state, &p.session_id).await?;
+    let sites = service(&state)
+        .await?
+        .set_strict_sites(&p.session_id, &p.sites)
+        .await?;
+    Ok(Json(json!({ "sites": sites })))
 }
 
 #[derive(Debug, Deserialize)]

@@ -137,6 +137,8 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/browser.view.open", post(browser::view_open))
         .route("/browser.view.close", post(browser::view_close))
         .route("/browser.ui.answer", post(browser::ui_answer))
+        .route("/browser.sites.get", post(browser::sites_get))
+        .route("/browser.sites.set", post(browser::sites_set))
         .route("/browser.downloads.location", post(browser::downloads_location))
         .route(
             "/browser.downloads.set_location",

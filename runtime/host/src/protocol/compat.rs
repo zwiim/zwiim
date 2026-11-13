@@ -366,6 +366,13 @@ use serde::{Deserialize, Serialize};
 /// local network) and answered `{kind: "site", allow, always?}`: allowed for
 /// the session, or for every session with `always`; refused for the session
 /// otherwise, and after 5 minutes unanswered.
+/// `browser.sites.get {session_id}` returns the session's strict site list,
+/// `{sites}` (empty for none), and `browser.sites.set {session_id, sites}`
+/// replaces it, returning it as kept: site patterns (`example.com`,
+/// `*.example.com`, `localhost:3000`) or pasted addresses, at most 100; a
+/// bad entry is `invalid_site`. With a list, the session's agent opens only
+/// those sites and its own dev servers; the person's navigations are not
+/// limited. Host only for now.
 /// A session's tab saves to `<worktree>/.zwiim/browser/<id>/`, removed with
 /// the session, unless `browser.downloads.set_location {root}` chose a
 /// folder (`root` an existing absolute folder, null for the default): then
