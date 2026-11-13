@@ -36,7 +36,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(settings.addr)
         .await
         .unwrap_or_else(|e| fail(format!("bind {}: {e}", settings.addr)));
-    let running = serve::start(settings.config(), listener, tls).unwrap_or_else(|e| fail(e));
+    let running = serve::start(settings.config().unwrap_or_else(|e| fail(e)), listener, tls).unwrap_or_else(|e| fail(e));
     tracing::info!(addr = %running.addr, "[cloud] listening: {}", settings.summary());
 
     shutdown_signal().await;

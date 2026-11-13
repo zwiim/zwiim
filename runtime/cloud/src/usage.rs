@@ -343,13 +343,13 @@ impl Store for PgStore {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// A store in memory: knows `users`, fails while `down` is set.
     #[derive(Default)]
-    struct Fake {
+    pub(crate) struct Fake {
         users: Vec<String>,
         bytes: Mutex<HashMap<(String, Channel), u64>>,
         calls: Mutex<Vec<Vec<Entry>>>,
@@ -358,13 +358,13 @@ mod tests {
     }
 
     impl Fake {
-        fn knowing(users: &[&str]) -> Arc<Self> {
+        pub(crate) fn knowing(users: &[&str]) -> Arc<Self> {
             Self::resetting(users, hub::unix_now() + 3600)
         }
         fn resetting(users: &[&str], resets_at: u64) -> Arc<Self> {
             Arc::new(Self { users: users.iter().map(|u| u.to_string()).collect(), resets_at, ..Default::default() })
         }
-        fn stored(&self, user: &str, channel: Channel) -> u64 {
+        pub(crate) fn stored(&self, user: &str, channel: Channel) -> u64 {
             *self.bytes.lock().unwrap().get(&(user.to_string(), channel)).unwrap_or(&0)
         }
     }

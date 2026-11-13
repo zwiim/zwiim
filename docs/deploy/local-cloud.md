@@ -303,6 +303,8 @@ All settings come from the environment; `run-cloud.sh` also reads
 | `ZWIIM_CLOUD_SUPABASE_URL` | unset | verify ES256/RS256 tokens with the project's JWKS; issuer `<url>/auth/v1` |
 | `ZWIIM_CLOUD_JWT_SECRET` | unset | **secret**; HS256 verification. At least one of the two is required. |
 | `ZWIIM_CLOUD_JWT_AUDIENCE` | `authenticated` | |
+| `ZWIIM_CLOUD_USAGE_DATABASE_URL` | unset | **secret**; Postgres URL for the `zwiim_cloud` role (`runtime/cloud/supabase/migrations/`), through Supabase's pooler in session mode. Relay bytes per account are stored there once a minute. Unset: counted in memory only, nothing limited |
+| `ZWIIM_CLOUD_USAGE_DATABASE_CA` | system roots | PEM file the usage database's certificate is checked against |
 | `ZWIIM_CLOUD_MAX_CONNECTIONS` | `1024` | open sockets; extra connections are closed on arrival |
 | `ZWIIM_CLOUD_MAX_RELAYS` | `256` | concurrent relays; more are refused with close 1013, and clients retry |
 | `ZWIIM_CLOUD_MAX_CONNECTS_PER_IP` | `120` | new connections per client address per minute; IPv6 counts by /64. Loopback peers are exempt, so a local tunnel or proxy is unaffected. A proxy on another machine counts as one client, so raise it there |

@@ -28,6 +28,7 @@ use crate::auth::{AuthConfig, AuthError, Verifier};
 use crate::hub::{self, OneTime, PerMinute, Presence, Rendezvous};
 use crate::proto::*;
 use crate::registry::{HostRecord, Registry};
+use crate::usage::{Channel, Store, Usage};
 
 const MAX_BODY: usize = 16 * 1024;
 const CONTROL_QUEUE: usize = 64;
@@ -103,6 +104,9 @@ pub struct Config {
     pub timing: Timing,
     pub limits: Limits,
     pub relay_tap: Option<RelayTap>,
+    /// Where relay usage is kept; without one it is counted in memory only
+    /// and nothing is limited.
+    pub usage_store: Option<Arc<dyn Store>>,
 }
 
 struct Enrollment {
@@ -111,6 +115,8 @@ struct Enrollment {
 
 struct Ticket {
     host_id: String,
+    /// The account the relay's bytes count against.
+    user_id: String,
 }
 
 pub struct Cloud {
@@ -125,6 +131,7 @@ pub struct Cloud {
     rendezvous: Rendezvous<WebSocket>,
     relays: Arc<Semaphore>,
     accounts: PerMinute<String>,
+    usage: Arc<Usage>,
     next_conn: AtomicU64,
     shutdown: watch::Receiver<bool>,
 }
@@ -144,9 +151,14 @@ impl Cloud {
             rendezvous: Rendezvous::default(),
             relays: Arc::new(Semaphore::new(config.limits.max_relays)),
             accounts: PerMinute::new(config.limits.max_requests_per_account),
+            usage: Arc::new(Usage::new(config.usage_store)),
             next_conn: AtomicU64::new(1),
             shutdown,
         }))
+    }
+
+    pub fn usage(&self) -> Arc<Usage> {
+        self.usage.clone()
     }
 
     async fn user(&self, headers: &HeaderMap) -> Result<String, ApiError> {
@@ -345,7 +357,7 @@ async fn create_ticket(
         return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "host_offline", "The host is offline"));
     }
     let ttl = cloud.timing.ticket_ttl;
-    let ticket = cloud.tickets.issue(Ticket { host_id }, ttl).ok_or_else(ApiError::busy)?;
+    let ticket = cloud.tickets.issue(Ticket { host_id, user_id }, ttl).ok_or_else(ApiError::busy)?;
     Ok(Json(TicketResponse { ticket, expires_at: hub::unix_now() + ttl.as_secs() }))
 }
 
@@ -476,7 +488,7 @@ async fn device_relay(cloud: Arc<Cloud>, mut ws: WebSocket) {
         Ok(_) => return close(ws, CLOSE_PROTOCOL, "malformed").await,
         Err((code, reason)) => return close(ws, code, reason).await,
     };
-    let Some(Ticket { host_id }) = cloud.tickets.take(&ticket) else {
+    let Some(Ticket { host_id, user_id }) = cloud.tickets.take(&ticket) else {
         return close(ws, CLOSE_UNAUTHENTICATED, "unauthenticated").await;
     };
     // Held for the relay's life.
@@ -510,7 +522,7 @@ async fn device_relay(cloud: Arc<Cloud>, mut ws: WebSocket) {
         }
     };
     tracing::info!(relay = %id, host_id = %host_id, "[cloud] relay open");
-    pipe(&cloud, ws, host).await;
+    pipe(&cloud, ws, host, &user_id).await;
     tracing::info!(relay = %id, host_id = %host_id, "[cloud] relay closed");
 }
 
@@ -530,9 +542,10 @@ async fn host_relay(cloud: Arc<Cloud>, mut ws: WebSocket) {
     }
 }
 
-/// Relay binary messages both ways until either side closes. Both ends learn
-/// the other is ready; after that, any text message is a protocol violation.
-async fn pipe(cloud: &Cloud, mut device: WebSocket, mut host: WebSocket) {
+/// Relay binary messages both ways until either side closes, counting their
+/// bytes against `user_id`. Both ends learn the other is ready; after that,
+/// any text message is a protocol violation.
+async fn pipe(cloud: &Cloud, mut device: WebSocket, mut host: WebSocket, user_id: &str) {
     if !send_json(&mut host, &RelayReady::Ready).await {
         return close(device, CLOSE_HOST_OFFLINE, "host_offline").await;
     }
@@ -543,8 +556,8 @@ async fn pipe(cloud: &Cloud, mut device: WebSocket, mut host: WebSocket) {
     let (host_tx, host_rx) = host.split();
     let mut shutdown = cloud.shutdown.clone();
     tokio::select! {
-        _ = forward(device_rx, host_tx, Direction::DeviceToHost, cloud.tap.as_ref()) => {}
-        _ = forward(host_rx, device_tx, Direction::HostToDevice, cloud.tap.as_ref()) => {}
+        _ = forward(device_rx, host_tx, Direction::DeviceToHost, cloud, user_id) => {}
+        _ = forward(host_rx, device_tx, Direction::HostToDevice, cloud, user_id) => {}
         _ = crate::hub::stopped(&mut shutdown) => {}
     }
 }
@@ -553,14 +566,18 @@ async fn forward(
     mut from: SplitStream<WebSocket>,
     mut to: SplitSink<WebSocket, Message>,
     direction: Direction,
-    tap: Option<&RelayTap>,
+    cloud: &Cloud,
+    user_id: &str,
 ) {
     let (code, reason) = loop {
         match from.next().await {
             Some(Ok(Message::Binary(bytes))) => {
-                if let Some(tap) = tap {
+                if let Some(tap) = &cloud.tap {
                     tap(direction, &bytes);
                 }
+                // Both directions leave the Cloud's network, so both count.
+                // Every relay is `control` until relay channels exist.
+                cloud.usage.add(user_id, Channel::Control, bytes.len() as u64);
                 if to.send(Message::Binary(bytes)).await.is_err() {
                     return;
                 }

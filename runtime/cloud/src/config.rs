@@ -11,6 +11,8 @@
 //! | `ZWIIM_CLOUD_SUPABASE_URL` | Supabase project URL: tokens verified against its JWKS and issuer |
 //! | `ZWIIM_CLOUD_JWT_SECRET` | secret: the project's legacy HS256 JWT secret |
 //! | `ZWIIM_CLOUD_JWT_AUDIENCE` | default `authenticated` |
+//! | `ZWIIM_CLOUD_USAGE_DATABASE_URL` | secret: Postgres URL for the `zwiim_cloud` role; turns on relay usage storage and plan limits |
+//! | `ZWIIM_CLOUD_USAGE_DATABASE_CA` | PEM file the usage database's certificate is checked against (default: system roots) |
 //! | `ZWIIM_CLOUD_MAX_CONNECTIONS` | open connections, all kinds (default 1024) |
 //! | `ZWIIM_CLOUD_MAX_RELAYS` | concurrent device relays (default 256) |
 //! | `ZWIIM_CLOUD_MAX_CONNECTS_PER_IP` | new connections per client address per minute (default 120) |
@@ -22,10 +24,12 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::auth::AuthConfig;
 use crate::proto::normalize_cloud_url;
 use crate::server::{Config, Limits, Timing};
+use crate::usage::PgStore;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8443";
 
@@ -45,6 +49,9 @@ pub struct Settings {
     pub tls: Option<(PathBuf, PathBuf)>,
     pub auth: AuthConfig,
     pub limits: Limits,
+    /// The usage database; its `Debug` hides the password.
+    pub usage_database: Option<tokio_postgres::Config>,
+    pub usage_database_ca: Option<PathBuf>,
     pub log_filter: String,
     pub log_format: LogFormat,
 }
@@ -115,6 +122,16 @@ impl Settings {
             )?,
         };
 
+        // The value is a secret: never echoed back.
+        let usage_database = get("ZWIIM_CLOUD_USAGE_DATABASE_URL")
+            .map(|url| url.trim().parse::<tokio_postgres::Config>())
+            .transpose()
+            .map_err(|_| "ZWIIM_CLOUD_USAGE_DATABASE_URL is not a Postgres connection URL".to_string())?;
+        let usage_database_ca = get("ZWIIM_CLOUD_USAGE_DATABASE_CA").map(PathBuf::from);
+        if usage_database_ca.is_some() && usage_database.is_none() {
+            return Err("ZWIIM_CLOUD_USAGE_DATABASE_CA needs ZWIIM_CLOUD_USAGE_DATABASE_URL".into());
+        }
+
         let log_filter = get("ZWIIM_CLOUD_LOG")
             .or_else(|| get("RUST_LOG"))
             .unwrap_or_else(|| "info".into());
@@ -124,31 +141,40 @@ impl Settings {
             Some(other) => return Err(format!("ZWIIM_CLOUD_LOG_FORMAT must be text or json, not {other}")),
         };
 
-        Ok(Self { addr, public_url, data_dir, tls, auth, limits, log_filter, log_format })
+        Ok(Self { addr, public_url, data_dir, tls, auth, limits, usage_database, usage_database_ca, log_filter, log_format })
     }
 
     /// The service configuration.
-    pub fn config(&self) -> Config {
-        Config {
+    pub fn config(&self) -> Result<Config, String> {
+        let usage_store = match &self.usage_database {
+            Some(db) => Some(Arc::new(
+                PgStore::new(db.clone(), self.usage_database_ca.as_deref())
+                    .map_err(|e| format!("ZWIIM_CLOUD_USAGE_DATABASE_CA: {e}"))?,
+            ) as Arc<dyn crate::usage::Store>),
+            None => None,
+        };
+        Ok(Config {
             public_url: self.public_url.clone(),
             data_dir: self.data_dir.clone(),
             auth: self.auth.clone(),
             timing: Timing::default(),
             limits: self.limits,
             relay_tap: None,
-        }
+            usage_store,
+        })
     }
 
     /// One line for the startup log: public facts only, never the secret.
     pub fn summary(&self) -> String {
         let tls = if self.tls.is_some() { "terminated here" } else { "terminated upstream (loopback listener)" };
+        let usage = if self.usage_database.is_some() { "database" } else { "memory only" };
         let auth = match (&self.auth.jwks_url, &self.auth.hs256_secret) {
             (Some(_), Some(_)) => "Supabase JWKS + HS256 secret",
             (Some(_), None) => "Supabase JWKS",
             (None, _) => "HS256 secret",
         };
         format!(
-            "public_url={} addr={} tls={tls} auth={auth} issuer={} audience={} data_dir={} max_connections={} max_relays={}",
+            "public_url={} addr={} tls={tls} auth={auth} issuer={} audience={} data_dir={} max_connections={} max_relays={} usage={usage}",
             self.public_url,
             self.addr,
             self.auth.issuer.as_deref().unwrap_or("-"),
@@ -193,7 +219,9 @@ mod tests {
         assert_eq!(s.auth.audience, "authenticated");
         assert_eq!((s.limits.max_connections, s.limits.max_relays), (1024, 256));
         assert_eq!((s.log_filter.as_str(), s.log_format), ("info", LogFormat::Text));
-        assert_eq!(s.config().public_url, "https://cloud.example.com");
+        assert_eq!(s.config().unwrap().public_url, "https://cloud.example.com");
+        assert!(s.usage_database.is_none());
+        assert!(s.summary().contains("usage=memory only"));
     }
 
     #[test]
@@ -215,7 +243,7 @@ mod tests {
 
     #[test]
     fn bad_settings_are_refused_with_the_variable_named() {
-        let cases: [(&[(&str, &str)], &str); 11] = [
+        let cases: [(&[(&str, &str)], &str); 13] = [
             (&[("ZWIIM_CLOUD_PUBLIC_URL", "")], "ZWIIM_CLOUD_PUBLIC_URL is required"),
             (&[("ZWIIM_CLOUD_PUBLIC_URL", "http://cloud.example.com")], "ZWIIM_CLOUD_PUBLIC_URL"),
             (&[("ZWIIM_CLOUD_PUBLIC_URL", "https://cloud.example.com/zwiim")], "ZWIIM_CLOUD_PUBLIC_URL"),
@@ -227,6 +255,8 @@ mod tests {
             (&[("ZWIIM_CLOUD_SUPABASE_URL", "http://abc.supabase.co")], "ZWIIM_CLOUD_SUPABASE_URL"),
             (&[("ZWIIM_CLOUD_MAX_RELAYS", "0")], "ZWIIM_CLOUD_MAX_RELAYS"),
             (&[("ZWIIM_CLOUD_LOG_FORMAT", "yaml")], "ZWIIM_CLOUD_LOG_FORMAT"),
+            (&[("ZWIIM_CLOUD_USAGE_DATABASE_URL", "postgres://u:p@db:5432/x?sslmode=bogus")], "ZWIIM_CLOUD_USAGE_DATABASE_URL"),
+            (&[("ZWIIM_CLOUD_USAGE_DATABASE_CA", "/ca.pem")], "needs ZWIIM_CLOUD_USAGE_DATABASE_URL"),
         ];
         for (vars, expected) in cases {
             let err = settings(&with(vars)).unwrap_err();
@@ -249,5 +279,17 @@ mod tests {
         assert!(!s.summary().contains("super-secret-jwt-value"));
         assert!(!format!("{s:?}").contains("super-secret-jwt-value"));
         assert!(!format!("{s:?}").contains(&format!("{:?}", b"super-secret-jwt-value")));
+    }
+
+    #[test]
+    fn the_usage_database_password_never_appears_either() {
+        let url = "postgres://zwiim_cloud.ref:db-password-value@pooler.example.com:5432/postgres";
+        let s = settings(&with(&[("ZWIIM_CLOUD_USAGE_DATABASE_URL", url)])).unwrap();
+        assert!(s.summary().contains("usage=database"), "{}", s.summary());
+        assert!(!s.summary().contains("db-password-value"));
+        assert!(!format!("{s:?}").contains("db-password-value"));
+        let err = settings(&with(&[("ZWIIM_CLOUD_USAGE_DATABASE_URL", "postgres://u:db-password-value@h/x?sslmode=bogus")]))
+            .unwrap_err();
+        assert!(!err.contains("db-password-value"), "{err}");
     }
 }

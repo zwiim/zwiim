@@ -19,6 +19,7 @@ use crate::auth::AuthConfig;
 use crate::proto::*;
 use crate::serve::{self, Running};
 use crate::server::{Config, Direction, Limits, Timing};
+use crate::usage::{self, Channel};
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type Taps = Arc<Mutex<Vec<(Direction, Vec<u8>)>>>;
@@ -60,6 +61,7 @@ fn config_limited(url: &str, dir: &std::path::Path, timing: Timing, limits: Limi
         timing,
         limits,
         relay_tap: Some(Arc::new(move |d, bytes: &[u8]| taps.lock().unwrap().push((d, bytes.to_vec())))),
+        usage_store: None,
     }
 }
 
@@ -69,11 +71,16 @@ impl TestCloud {
     }
 
     async fn start_limited(timing: Timing, limits: Limits) -> Self {
+        Self::start_with(timing, limits, None).await
+    }
+
+    async fn start_with(timing: Timing, limits: Limits, store: Option<Arc<dyn usage::Store>>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let taps = Taps::default();
-        let running = serve::start(config_limited(&url, dir.path(), timing, limits, &taps), listener, None).unwrap();
+        let config = Config { usage_store: store, ..config_limited(&url, dir.path(), timing, limits, &taps) };
+        let running = serve::start(config, listener, None).unwrap();
         Self { dir, running: Some(running), url, taps, http: reqwest::Client::new() }
     }
 
@@ -463,6 +470,36 @@ async fn the_relay_joins_device_and_host_and_moves_opaque_bytes() {
     // The ticket was single use.
     let mut again = device(&cloud, &ticket).await;
     assert_eq!(closed(&mut again).await, Some(CLOSE_UNAUTHENTICATED));
+}
+
+#[tokio::test]
+async fn relayed_bytes_count_against_the_devices_account_both_ways() {
+    let store = usage::tests::Fake::knowing(&["alice"]);
+    let mut cloud = TestCloud::start_with(fast(), Limits::default(), Some(store.clone())).await;
+    let host = FakeHost::new();
+    host.enroll(&cloud, "alice").await;
+    let mut control = host.control(&cloud).await;
+
+    let ticket = cloud.ticket("alice", &host.host_id).await.1["ticket"].as_str().unwrap().to_string();
+    let mut dev = device(&cloud, &ticket).await;
+    let mut relayed = host.answer(&cloud, &mut control).await;
+    ready(&mut relayed).await;
+    ready(&mut dev).await;
+    dev.send(Message::Binary(vec![0; 1000].into())).await.unwrap();
+    binary(&mut relayed).await;
+    relayed.send(Message::Binary(vec![0; 24].into())).await.unwrap();
+    binary(&mut dev).await;
+
+    let running = cloud.running.as_ref().unwrap();
+    running.usage.sync().await;
+    assert_eq!(store.stored("alice", Channel::Control), 1024);
+    assert_eq!(running.usage.account("alice").unwrap().used(Channel::Control), 1024);
+
+    // Bytes after the last sync are sent when the Cloud stops.
+    relayed.send(Message::Binary(vec![0; 6].into())).await.unwrap();
+    binary(&mut dev).await;
+    cloud.stop().await;
+    assert_eq!(store.stored("alice", Channel::Control), 1030);
 }
 
 #[tokio::test]
