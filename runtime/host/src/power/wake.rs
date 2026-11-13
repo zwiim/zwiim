@@ -42,6 +42,11 @@ pub fn spawn(state: Arc<AppState>) {
                 tracing::info!("[power] woke after {}s asleep", slept.as_secs());
                 state.cloud.nudge();
                 super::nudge();
+                // An engine that slept may not answer any more (design 5.5).
+                if let Some(browser) = state.browser.get() {
+                    let engine = browser.engine().clone();
+                    tokio::spawn(async move { engine.check().await });
+                }
             }
         }
     });

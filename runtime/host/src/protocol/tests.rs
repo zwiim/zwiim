@@ -3186,7 +3186,29 @@ async fn session_operations_over_http() {
         h.err("session.delete", json!({"session_id": sid})).await,
         (StatusCode::CONFLICT, "turn_in_progress".into())
     );
+    let tab = |id: &str, session_id: &str| crate::browser::store::TabRecord {
+        id: id.into(),
+        owner: crate::browser::store::TabOwner::Session {
+            session_id: session_id.into(),
+        },
+        url: "http://localhost:5173/".into(),
+        title: String::new(),
+        position: 0,
+        discarded: true,
+    };
+    crate::browser::store::insert(&h.state.db.conn, &tab("t-idle", &idle))
+        .await
+        .unwrap();
+    crate::browser::store::insert(&h.state.db.conn, &tab("t-other", &sid))
+        .await
+        .unwrap();
     h.ok("session.delete", json!({"session_id": idle})).await;
+    // Its browser tabs go with it; other sessions' stay.
+    let tabs = crate::browser::store::load(&h.state.db.conn).await.unwrap();
+    assert_eq!(
+        tabs.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+        vec!["t-other"]
+    );
     let listed = h
         .ok(
             "session.list",

@@ -2582,6 +2582,17 @@ pub async fn session_delete(
         &p.session_id,
     )
     .await?;
+    // Its browser tabs and their context go with it.
+    match state.browser.get() {
+        Some(browser) => browser.close_session(&p.session_id).await,
+        None => {
+            let removed =
+                crate::browser::store::remove_session(&state.db.conn, &p.session_id).await;
+            if let Err(e) = removed {
+                tracing::warn!(error = %e, "could not remove a deleted session's browser tabs");
+            }
+        }
+    }
     ok()
 }
 

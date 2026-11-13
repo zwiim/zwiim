@@ -30,6 +30,18 @@ impl From<install::SetupError> for EngineError {
     }
 }
 
+/// Where the browser keeps its files under the Host's data directory:
+/// `engine/<version>/`, `profile/`, `engine.log` and `personal.snapshot`.
+pub fn browser_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
+    data_dir.join("browser")
+}
+
+/// No engine for this platform (design 11.5).
+#[cfg(not(unix))]
+pub fn host_start(_root: std::path::PathBuf) -> manager::StartFn {
+    manager::start_fn(|| async { Err(install::SetupError::Unsupported.into()) })
+}
+
 /// The Host's engine starter: install the pinned engine under `root` if
 /// needed, launch it, and wait for its first answer. Older versions are
 /// removed only after the new one has answered.

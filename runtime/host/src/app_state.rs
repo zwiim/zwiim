@@ -111,6 +111,8 @@ pub struct AppState {
     pub keep_awake: Arc<tokio::sync::watch::Sender<Option<crate::power::KeepAwakeStatus>>>,
     /// The GitHub sign-in through `gh` (one at a time, in memory).
     pub github_auth: Arc<crate::git_harness::GithubSignIn>,
+    /// The Host browser, made on first use (see [`AppState::browser`]).
+    pub browser: Arc<tokio::sync::OnceCell<Arc<crate::browser::service::BrowserService>>>,
 }
 
 pub fn default_system_op_lock() -> Arc<tokio::sync::Mutex<()>> {
@@ -270,6 +272,24 @@ pub fn default_repos_dir() -> Option<PathBuf> {
 }
 
 impl AppState {
+    /// The Host browser's tab service, made on first use. Making it loads
+    /// the saved tabs; the engine itself starts only when a tab is used.
+    pub async fn browser(
+        &self,
+    ) -> Result<Arc<crate::browser::service::BrowserService>, sea_orm::DbErr> {
+        use crate::browser::{engine, service::BrowserService, snapshot::PersonalSnapshot};
+        self.browser
+            .get_or_try_init(|| async {
+                let dir = engine::browser_dir(&self.data_dir);
+                let manager =
+                    engine::manager::EngineManager::new(engine::host_start(dir.join("engine")));
+                let snapshot = PersonalSnapshot::at(dir.join("personal.snapshot"));
+                BrowserService::start(manager, self.db.conn.clone(), Some(snapshot)).await
+            })
+            .await
+            .cloned()
+    }
+
     /// What a clone job needs, from this Host's state.
     pub fn clone_env(&self) -> crate::workspace::clone::CloneEnv {
         crate::workspace::clone::CloneEnv {
@@ -355,6 +375,7 @@ impl AppState {
             )),
             keep_awake: Default::default(),
             github_auth: Default::default(),
+            browser: Default::default(),
         }
     }
 }

@@ -153,6 +153,15 @@ pub async fn remove(conn: &DatabaseConnection, id: &str) -> Result<(), DbErr> {
     Ok(())
 }
 
+/// Forget every tab of a deleted session.
+pub async fn remove_session(conn: &DatabaseConnection, session_id: &str) -> Result<(), DbErr> {
+    browser_tab::Entity::delete_many()
+        .filter(browser_tab::Column::SessionId.eq(session_id))
+        .exec(conn)
+        .await?;
+    Ok(())
+}
+
 /// A tab closed while its update was in flight is not an error.
 fn ignore_missing(e: DbErr) -> Result<(), DbErr> {
     match e {
@@ -212,6 +221,25 @@ mod tests {
         assert_eq!(tabs[0].owner, session("s1"));
         assert_eq!(tabs[1].id, "b");
         assert!(tabs[1].discarded);
+    }
+
+    #[tokio::test]
+    async fn a_deleted_sessions_tabs_are_forgotten() {
+        let db = fresh_in_memory_db().await;
+        insert(&db.conn, &tab("a", session("s1"), 0)).await.unwrap();
+        insert(&db.conn, &tab("b", session("s2"), 0)).await.unwrap();
+        insert(&db.conn, &tab("p", TabOwner::Personal, 0))
+            .await
+            .unwrap();
+        remove_session(&db.conn, "s1").await.unwrap();
+        let mut left: Vec<String> = load(&db.conn)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["b".to_string(), "p".to_string()]);
     }
 
     #[tokio::test]

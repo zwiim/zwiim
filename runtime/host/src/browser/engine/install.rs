@@ -74,14 +74,6 @@ impl Pin {
     }
 }
 
-/// Where engines are installed: beside the Host's database.
-pub fn root() -> PathBuf {
-    crate::adapters::root()
-        .parent()
-        .map(|data| data.join("browser").join("engine"))
-        .unwrap_or_else(|| PathBuf::from("browser/engine"))
-}
-
 /// Why the engine could not be set up. [`SetupError::code`] is what clients
 /// show a reason for.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

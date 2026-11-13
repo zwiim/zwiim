@@ -463,6 +463,7 @@ async fn async_main() -> Exit {
         )),
            keep_awake: Default::default(),
         github_auth: Default::default(),
+        browser: Default::default(),
     });
 
     // Load (first boot: mint) the host's identity keys off the startup path.
