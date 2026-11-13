@@ -551,4 +551,42 @@ mod engine_tests {
         title("dated 2026-12-25").await;
         browser.stop_engine().await;
     }
+
+    /// Find in page counts the visible matches, steps through them both
+    /// ways and wraps; an empty query clears it.
+    #[tokio::test]
+    #[ignore = "needs ZWIIM_TEST_ENGINE"]
+    async fn find_in_page_steps_through_the_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let browser = real_browser(dir.path()).await;
+        let url = serve("<p>An apple, a banana.</p><p>Another Apple</p><div hidden>apple</div><script>var apple</script>").await;
+        let tab = browser.open(TabOwner::Personal, Some(&url)).await.unwrap();
+        let first = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Ok(found) = browser.find(&tab.id, "apple", false).await {
+                    return found;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("the helper is there");
+        assert_eq!(first, (2, 1));
+        assert_eq!(browser.find(&tab.id, "apple", false).await.unwrap(), (2, 2));
+        assert_eq!(browser.find(&tab.id, "apple", false).await.unwrap(), (2, 1));
+        assert_eq!(browser.find(&tab.id, "apple", true).await.unwrap(), (2, 2));
+        let (cdp, session) = browser.session(&tab.id).await.unwrap();
+        let painted = cdp
+            .call(
+                "Runtime.evaluate",
+                json!({ "expression": "CSS.highlights.has('zwiim-find-current')", "returnByValue": true }),
+                Some(&session),
+            )
+            .await
+            .unwrap();
+        assert_eq!(painted["result"]["value"], true);
+        assert_eq!(browser.find(&tab.id, "zebra", false).await.unwrap(), (0, 0));
+        assert_eq!(browser.find(&tab.id, "", false).await.unwrap(), (0, 0));
+        browser.stop_engine().await;
+    }
 }

@@ -351,7 +351,11 @@ use serde::{Deserialize, Serialize};
 /// is `{kind: "date", input_type, value, min?, max?, x, y, width, height}`
 /// (`input_type` one of `date`, `time`, `datetime-local`, `month`, `week`),
 /// answered `{kind: "date", accept, value}` in the input's own format. Both
-/// end with their document and after 5 minutes. `settings` gains
+/// end with their document and after 5 minutes. `browser.tab.find {tab_id,
+/// query, backwards?}` highlights `query` (up to 200 characters, case
+/// insensitive) on the page and goes to its next match, or the one before;
+/// it returns `{matches, current}` (`current` from 1, 0 with none), an empty
+/// query clears it, and a page still loading is `page_not_ready`. `settings` gains
 /// `browser.agent_passwords` (a boolean; unset is off): whether agents may
 /// type into password fields on any site rather than only on loopback dev
 /// servers.

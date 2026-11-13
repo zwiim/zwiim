@@ -176,6 +176,37 @@ pub async fn tab_navigate(
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct TabFindParams {
+    pub tab_id: String,
+    pub query: String,
+    #[serde(default)]
+    pub backwards: bool,
+}
+
+/// Longest text find in page looks for.
+const MAX_FIND: usize = 200;
+
+/// `browser.tab.find {tab_id, query, backwards?}` → `{matches, current}`:
+/// highlight `query` on the page and go to its next match, or the one before;
+/// an empty query clears it (design 7.7).
+pub async fn tab_find(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<TabFindParams>,
+) -> ZResult<Value> {
+    if p.query.chars().count() > MAX_FIND {
+        return Err(ZwiimError::invalid_request(format!(
+            "Look for at most {MAX_FIND} characters"
+        )));
+    }
+    let (matches, current) = service(&state)
+        .await?
+        .find(&p.tab_id, &p.query, p.backwards)
+        .await?;
+    Ok(Json(json!({ "matches": matches, "current": current })))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UiAnswerParams {
     pub request_id: String,
     pub answer: UiAnswer,

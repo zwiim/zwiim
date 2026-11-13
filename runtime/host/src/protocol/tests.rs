@@ -125,6 +125,7 @@ const OPS: &[&str] = &[
     "browser.tab.open",
     "browser.tab.close",
     "browser.tab.navigate",
+    "browser.tab.find",
     "browser.engine.reset",
     "browser.view.open",
     "browser.view.close",
@@ -5568,7 +5569,11 @@ async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
         ("browser.tabs.list", json!({})),
         ("browser.tab.open", json!({"owner": {"kind": "personal"}})),
         ("browser.tab.close", json!({"tab_id": "t"})),
-        ("browser.tab.navigate", json!({"tab_id": "t", "action": "reload"})),
+        (
+            "browser.tab.navigate",
+            json!({"tab_id": "t", "action": "reload"}),
+        ),
+        ("browser.tab.find", json!({"tab_id": "t", "query": "a"})),
         ("browser.engine.reset", json!({})),
         (
             "browser.view.open",

@@ -1136,6 +1136,50 @@ impl BrowserService {
         self.drop_ui_locked(&mut inner, |r| r.tab_id == id && r.kind.is_pick());
     }
 
+    /// Highlight `query` in tab `tab_id` and move to its next match (the one
+    /// before with `backwards`); an empty query clears it. `(matches,
+    /// current)`, `current` counting from 1, 0 with no match.
+    pub async fn find(
+        &self,
+        tab_id: &str,
+        query: &str,
+        backwards: bool,
+    ) -> Result<(u32, u32), BrowserError> {
+        let (cdp, session, context) = {
+            let inner = self.inner.lock().await;
+            let tab = inner.tabs.get(tab_id).ok_or_else(|| not_found(tab_id))?;
+            let live = tab.live.as_ref().ok_or_else(|| BrowserError {
+                code: "page_not_ready",
+                message: "The page is not loaded yet".into(),
+            })?;
+            let context = inner.helpers.get(tab_id).copied();
+            (inner.cdp.clone(), live.session_id.clone(), context)
+        };
+        let (Some(cdp), Some(context)) = (cdp, context) else {
+            return Err(BrowserError {
+                code: "page_not_ready",
+                message: "The page is not loaded yet".into(),
+            });
+        };
+        let reply = cdp
+            .call(
+                "Runtime.evaluate",
+                json!({
+                    "expression": helper::find_expression(query, backwards),
+                    "contextId": context,
+                    "returnByValue": true,
+                }),
+                Some(&session),
+            )
+            .await?;
+        let found: serde_json::Value = reply["result"]["value"]
+            .as_str()
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or_default();
+        let count = |key: &str| found[key].as_u64().unwrap_or(0).min(u32::MAX.into()) as u32;
+        Ok((count("matches"), count("current")))
+    }
+
     /// What the page helper of the tab on `session` reported.
     pub async fn helper_said(&self, session: &str, context: i64, messages: Vec<HelperMessage>) {
         let mut inner = self.inner.lock().await;
