@@ -95,6 +95,8 @@ export type HostErrorCode =
   | "too_many_tabs"
   /** `browser.tab.open`: the browser is at its memory budget; the message says who holds the most. */
   | "browser_memory_full"
+  /** `browser.tab.print`: the page's PDF would be over 200 MB. */
+  | "page_too_large"
   | "internal";
 
 export interface WireError {
@@ -2289,6 +2291,25 @@ export interface Operations {
     { tab_id: string; query: string; backwards?: boolean },
     { matches: number; current: number },
   ];
+  /** Save the page as a PDF in the tab's downloads folder; the file's name. */
+  "browser.tab.print": [{ tab_id: string }, { name: string }];
+  /**
+   * Drop files on the page at `(x, y)` in its CSS pixels, as the person
+   * dragging them there: workspace files by relative path, or files uploaded
+   * with `attachments.upload` by id. A session's tab takes files from its
+   * own workspace only.
+   */
+  "browser.tab.drop": [
+    {
+      tab_id: string;
+      x: number;
+      y: number;
+      workspace_id: string;
+      paths?: string[];
+      attachment_ids?: string[];
+    },
+    Record<string, never>,
+  ];
   /** Clear an engine failure, `crash_loop` too, so the next tab starts it again. */
   "browser.engine.reset": [Record<string, never>, { engine: BrowserEngine }];
   /**
@@ -2355,6 +2376,8 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "browser.tab.close",
   "browser.tab.navigate",
   "browser.tab.find",
+  "browser.tab.print",
+  "browser.tab.drop",
   "browser.engine.reset",
   "browser.view.open",
   "browser.ui.answer",

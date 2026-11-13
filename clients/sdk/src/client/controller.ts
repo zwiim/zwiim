@@ -786,6 +786,22 @@ export class HostController {
     return this.client.request("browser.tab.find", { tab_id, query, backwards });
   }
 
+  /** Save the tab's page as a PDF in its downloads folder; the file's name. */
+  async printBrowserTab(tab_id: string): Promise<string> {
+    return (await this.client.request("browser.tab.print", { tab_id })).name;
+  }
+
+  /** Drop workspace files (`paths`) or uploaded ones (`attachment_ids`) on the page at `(x, y)`. */
+  async dropOnBrowserTab(
+    tab_id: string,
+    x: number,
+    y: number,
+    workspace_id: string,
+    files: { paths?: string[]; attachment_ids?: string[] },
+  ): Promise<void> {
+    await this.client.request("browser.tab.drop", { tab_id, x, y, workspace_id, ...files });
+  }
+
   /** Session `session_id`'s strict site list; empty for none. */
   async browserSites(session_id: string): Promise<string[]> {
     return (await this.client.request("browser.sites.get", { session_id })).sites;
