@@ -777,6 +777,15 @@ export class HostController {
     await this.client.request("browser.view.close", { stream_id });
   }
 
+  /** Find `query` in the tab and go to its next match (the one before with `backwards`). */
+  async findInBrowserTab(
+    tab_id: string,
+    query: string,
+    backwards = false,
+  ): Promise<{ matches: number; current: number }> {
+    return this.client.request("browser.tab.find", { tab_id, query, backwards });
+  }
+
   /** Answer what a tab waits on. Another client may have answered first: then `request_not_found`. */
   async answerBrowserUi(request_id: string, answer: BrowserUiAnswer): Promise<void> {
     await this.client.request("browser.ui.answer", { request_id, answer });

@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostController } from "../src/client/controller";
 import { HostClient } from "../src/client/host-client";
-import { initialBrowserState, personalTabs, reduceBrowser, sessionTabs, tabAgentAction, tabUiRequests } from "../src/state/browser";
+import {
+  initialBrowserState,
+  personalTabs,
+  reduceBrowser,
+  sessionTabs,
+  tabAgentAction,
+  tabMenu,
+  tabUiRequests,
+} from "../src/state/browser";
 import type { BrowserTab, BrowserUiRequest } from "../src/types/protocol";
 import { FakeTransport, flush, hello } from "./fakes";
 
@@ -64,6 +72,21 @@ describe("reduceBrowser", () => {
     expect(tabAgentAction(s, "a")).toEqual({ action: click, seq: 2 });
     s = reduceBrowser(s, { type: "browser.tab.removed", tab_id: "a", owner: { kind: "personal" } });
     expect(tabAgentAction(s, "a")).toBeUndefined();
+  });
+
+  it("keeps each tab's latest context menu, a repeat as a new one", () => {
+    let s = reduceBrowser(initialBrowserState(), {
+      type: "browser.snapshot",
+      tabs: [tab("a", 0)],
+      engine: { state: "running", version: "157" },
+    });
+    const menu = { tab_id: "a", x: 5, y: 6, link_url: "https://a.test/", editable: false };
+    s = reduceBrowser(s, { type: "browser.ui.menu", menu });
+    const first = tabMenu(s, "a")!.seq;
+    s = reduceBrowser(s, { type: "browser.ui.menu", menu });
+    expect(tabMenu(s, "a")).toEqual({ menu, seq: first + 1 });
+    s = reduceBrowser(s, { type: "browser.tab.removed", tab_id: "a", owner: { kind: "personal" } });
+    expect(tabMenu(s, "a")).toBeUndefined();
   });
 
   it("follows what tabs wait on until each is done", () => {

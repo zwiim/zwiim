@@ -6,6 +6,7 @@ import type {
   BrowserAgentAction,
   BrowserEngine,
   BrowserFrame,
+  BrowserMenu,
   BrowserTab,
   BrowserUiRequest,
   WireError,
@@ -25,14 +26,25 @@ export interface BrowserState {
   engine: BrowserEngine | null;
   /** What tabs wait on a person for (dialogs), oldest first. */
   uiRequests: BrowserUiRequest[];
-  /** Each tab's latest agent action; `seq` grows with every one, so a repeat shows again. */
+  /** Each tab's latest agent action; `seq` grows with every one (menus share it), so a repeat shows again. */
   agentActions: Record<string, { action: BrowserAgentAction; seq: number }>;
   agentSeq: number;
+  /** Each tab's latest context menu; `seq` grows with every one. */
+  menus: Record<string, { menu: BrowserMenu; seq: number }>;
   error: WireError | null;
 }
 
 export function initialBrowserState(): BrowserState {
-  return { status: "off", tabs: [], engine: null, uiRequests: [], agentActions: {}, agentSeq: 0, error: null };
+  return {
+    status: "off",
+    tabs: [],
+    engine: null,
+    uiRequests: [],
+    agentActions: {},
+    agentSeq: 0,
+    menus: {},
+    error: null,
+  };
 }
 
 export function reduceBrowser(state: BrowserState, update: BrowserUpdate): BrowserState {
@@ -55,7 +67,8 @@ export function reduceBrowser(state: BrowserState, update: BrowserUpdate): Brows
     case "browser.tab.removed": {
       if (!state.tabs.some((t) => t.tab_id === update.tab_id)) return state;
       const { [update.tab_id]: _, ...agentActions } = state.agentActions;
-      return { ...state, tabs: state.tabs.filter((t) => t.tab_id !== update.tab_id), agentActions };
+      const { [update.tab_id]: __, ...menus } = state.menus;
+      return { ...state, tabs: state.tabs.filter((t) => t.tab_id !== update.tab_id), agentActions, menus };
     }
     case "browser.engine.state":
       return { ...state, engine: update.engine };
@@ -71,6 +84,11 @@ export function reduceBrowser(state: BrowserState, update: BrowserUpdate): Brows
       const seq = state.agentSeq + 1;
       const agentActions = { ...state.agentActions, [update.action.tab_id]: { action: update.action, seq } };
       return { ...state, agentActions, agentSeq: seq };
+    }
+    case "browser.ui.menu": {
+      const seq = state.agentSeq + 1;
+      const menus = { ...state.menus, [update.menu.tab_id]: { menu: update.menu, seq } };
+      return { ...state, menus, agentSeq: seq };
     }
     case "browser.error":
       return { ...state, status: "refused", error: update.error };
@@ -98,6 +116,11 @@ export function tabAgentAction(
   tab_id: string,
 ): { action: BrowserAgentAction; seq: number } | undefined {
   return state.agentActions[tab_id];
+}
+
+/** The tab's latest context menu, if any. */
+export function tabMenu(state: BrowserState, tab_id: string): { menu: BrowserMenu; seq: number } | undefined {
+  return state.menus[tab_id];
 }
 
 function ordered(tabs: BrowserTab[]): BrowserTab[] {

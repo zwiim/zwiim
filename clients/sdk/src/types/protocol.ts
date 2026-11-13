@@ -330,7 +330,50 @@ export type BrowserUiRequest = {
       /** The page that asked. */
       url: string;
     }
+  | ({
+      /** A `<select>` opened: one option to pick. Ends with its document, or after 5 minutes. */
+      kind: "select";
+      options: BrowserSelectOption[];
+    } & BrowserPageBox)
+  | ({
+      /** A date or time input's picker button. Ends with its document, or after 5 minutes. */
+      kind: "date";
+      input_type: "date" | "time" | "datetime-local" | "month" | "week";
+      /** The input's value, in its own format; empty when unset. */
+      value: string;
+      min?: string;
+      max?: string;
+    } & BrowserPageBox)
 );
+
+/** An element's box in the page's CSS pixels. */
+export type BrowserPageBox = { x: number; y: number; width: number; height: number };
+
+/** One option of a `<select>`. */
+export type BrowserSelectOption = {
+  index: number;
+  label: string;
+  disabled: boolean;
+  selected: boolean;
+  /** The `<optgroup>` it is in. */
+  group?: string;
+};
+
+/**
+ * A right-click the page left to the browser, at `x`, `y` in its CSS pixels:
+ * the client draws its own menu there. Addresses are http(s) only.
+ */
+export type BrowserMenu = {
+  tab_id: string;
+  x: number;
+  y: number;
+  link_url?: string;
+  image_url?: string;
+  /** The selected text, up to 2000 characters. */
+  selection?: string;
+  /** On a field the person can type into. */
+  editable: boolean;
+};
 
 /**
  * The answer to a {@link BrowserUiRequest}, of its kind. A dialog: OK (or
@@ -338,12 +381,16 @@ export type BrowserUiRequest = {
  * credentials when `accept`, Cancel otherwise. They reach the Host's engine
  * only; nothing stores them. A file chooser: up to 100 files in workspace
  * `workspace_id`, relative to its root (a session's tab: its session's
- * workspace only), when `accept`; the input stays as it was otherwise.
+ * workspace only), when `accept`; the input stays as it was otherwise. A
+ * select: the option at `index`. A date: `value` in the input's own format,
+ * empty to clear it.
  */
 export type BrowserUiAnswer =
   | { kind: "dialog"; accept: boolean; text?: string }
   | { kind: "auth"; accept: boolean; username?: string; password?: string }
-  | { kind: "file_chooser"; accept: boolean; workspace_id?: string; paths?: string[] };
+  | { kind: "file_chooser"; accept: boolean; workspace_id?: string; paths?: string[] }
+  | { kind: "select"; accept: boolean; index?: number }
+  | { kind: "date"; accept: boolean; value?: string };
 
 /**
  * What an agent is about to do on a tab: the point its pointer goes to and,
@@ -368,6 +415,7 @@ export type BrowserFrame =
   | { type: "browser.ui.done"; request_id: string; tab_id: string }
   /** Sent just before the agent acts. */
   | { type: "browser.agent.action"; action: BrowserAgentAction }
+  | { type: "browser.ui.menu"; menu: BrowserMenu }
   /** `browser.subscribe` was refused (`permission_denied` on a paired device). */
   | { type: "browser.error"; error: WireError };
 
@@ -2206,6 +2254,15 @@ export interface Operations {
     { tab_id: string } & ({ url: string } | { action: "back" | "forward" | "reload" | "stop" }),
     BrowserTab,
   ];
+  /**
+   * Highlight `query` (up to 200 characters, any case) and go to its next
+   * match, or the one before; an empty query clears it. `current` counts from
+   * 1, 0 with no match. `page_not_ready` while the page loads.
+   */
+  "browser.tab.find": [
+    { tab_id: string; query: string; backwards?: boolean },
+    { matches: number; current: number },
+  ];
   /** Clear an engine failure, `crash_loop` too, so the next tab starts it again. */
   "browser.engine.reset": [Record<string, never>, { engine: BrowserEngine }];
   /**
@@ -2263,6 +2320,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "browser.tab.open",
   "browser.tab.close",
   "browser.tab.navigate",
+  "browser.tab.find",
   "browser.engine.reset",
   "browser.view.open",
   "browser.ui.answer",
