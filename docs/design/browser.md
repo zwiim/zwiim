@@ -153,21 +153,34 @@ are needed: `agent`, `types`, `policy`, `console`, `capture`, `eval`,
 
 1. Memory. Measured on this Mac with five simple tabs: about 550 MB summed
    RSS against about 2.6 GB for `--headless=new`, and it respects
-   `--renderer-process-limit` (new headless does not).
+   `--renderer-process-limit` (new headless does not). P0 with five real
+   pages (157.0.8103.78, Apple M5): 864 MB in 9 processes with no limit,
+   530 MB in 5 processes with `--renderer-process-limit=2`.
 2. Its licence file is the Chromium BSD notice plus third-party notices. The
    full Chrome for Testing build carries Widevine, whose licence forbids
-   redistribution; P0.3 confirms the headless shell does not.
+   redistribution. P0 confirmed the headless shell has no Widevine: no file
+   in the archive, and `requestMediaKeySystemAccess('com.widevine.alpha')`
+   fails. DRM video therefore does not play (Open in my browser, 5.6).
 3. It has the H.264 decoder, so pages that play video work.
 4. Trade-off: no extensions, and it is easier to detect as automation. Dev
    servers and most sites do not care. Bot-walled sites (some Google and
-   Cloudflare flows) may need "Open in my browser" (5.6).
+   Cloudflare flows) may need "Open in my browser" (5.6). Out of the box it
+   reports `HeadlessChrome` in its user agent and `navigator.webdriver`
+   true. The Host launches with `--disable-blink-features=AutomationControlled`
+   and sets the user agent per context (`Emulation.setUserAgentOverride`)
+   with `Chrome` in place of `HeadlessChrome`; P0 confirmed both take effect.
+   `navigator.plugins` stays empty, which some checks still notice.
 
 ### 5.2 How it gets onto the Mac
 
 Downloaded on first use, never bundled.
 
 1. Zwiim pins a version and a SHA-256 per platform in the Host (in code,
-   updated with each Zwiim release). The Host downloads from Google's Chrome
+   updated with each Zwiim release). Chrome for Testing publishes no
+   SHA-256, only the bucket's MD5 and CRC32C (`x-goog-hash`), so the release
+   process downloads each archive once, checks it against the MD5, and
+   records its SHA-256. The `mac-arm64` archive is about 100 MB, 205 MB
+   unpacked. The Host downloads from Google's Chrome
    for Testing bucket over HTTPS, checks the hash, unpacks it into
    `<app data>/browser/engine/<version>/` and removes old versions after a
    successful start of the new one.
@@ -184,7 +197,12 @@ Downloaded on first use, never bundled.
 5. Enterprise or offline setups can point the Host at their own Chromium
    build (`browser.enginePath` setting). The Host still only talks CDP over a
    pipe to it.
-6. Setup failures are reported with a reason the clients can show:
+6. The binary is ad-hoc signed and not notarized, so Gatekeeper refuses it
+   once it carries a quarantine attribute. A Host download through its own
+   HTTP client sets none; the Host still clears `com.apple.quarantine` on the
+   unpacked files, for archives a person fetched with a browser for
+   `browser.enginePath`.
+7. Setup failures are reported with a reason the clients can show:
    `download_offline`, `checksum_mismatch`, `disk_full`, `unsupported_platform`,
    `crash_loop`.
 
@@ -197,8 +215,15 @@ chrome-headless-shell
   --renderer-process-limit=<from budget, 11.2>
   --no-first-run --no-default-browser-check
   --disable-background-networking --disable-component-update
-  --enable-gpu                        # Metal compositing; verify in P0
+  --disable-blink-features=AutomationControlled
+  --enable-gpu                        # Metal; without it, SwiftShader
 ```
+
+P0: `--enable-gpu` turns on Metal (ANGLE) on Apple silicon, with GPU
+compositing, WebGL 2, rasterization and video decode all `enabled`. Without
+it the shell falls back to SwiftShader, with all four in software. H.264,
+VP9 and AV1 report `probably`. The engine answers `Browser.getVersion`
+about 0.1 s after spawn.
 
 1. Started lazily, on the first `browser.tab.open` or agent tool call.
 2. Spawned in its own process group, `kill_on_drop`, like
@@ -242,9 +267,9 @@ Every tab belongs to exactly one owner:
 
 1. **Session tabs** live in that session's own `BrowserContext`. The session's
    agent may use them without asking (10.1). Other sessions cannot see them.
-2. **Personal tabs** live in the default context, which is the persistent
-   profile on disk. They are the person's. An agent reads one only after the
-   person shares it (upstream `agent.rs` grant rules, unchanged).
+2. **Personal tabs** live in one personal context, persisted through an
+   encrypted snapshot (6.3). They are the person's. An agent reads one only
+   after the person shares it (upstream `agent.rs` grant rules, unchanged).
 
 The UI groups tabs by session, so ten worktrees are ten tab groups in one
 browser (R4).
@@ -269,10 +294,15 @@ directory can serve only one Chromium process. So persistence is ours:
 2. The snapshot is a credential. It is encrypted with a per-Host key held in
    the keychain (or the file key store under `ZWIIM_HOST_KEY_STORE=file`), and
    only the ciphertext is written to disk. Never into SQLite in the clear.
-3. The personal profile keeps Chromium's own on-disk storage. P0 checks how
-   the headless shell protects its cookie database on macOS. If it does not
-   use the keychain, the personal context switches to the same encrypted
-   snapshot scheme.
+3. The personal context uses the same encrypted snapshot scheme, saved on
+   change and on engine stop and restored at start. P0 found that the
+   headless shell does not use the keychain: it encrypts its cookie
+   database with Chromium's built-in mock password, so anything that can
+   read the profile can read the cookies. Personal tabs therefore live in
+   their own `Target.createBrowserContext` context like session tabs, and
+   the default context (Chromium's on-disk profile) is left unused for
+   credentials. Its cache and history stay on disk; they are not
+   credentials.
 
 ### 6.4 Persisted tab records
 
@@ -309,7 +339,11 @@ sites. It is required, not optional: Live App (8) cannot show the agent.
    with `zune-jpeg`, encode with `jpeg-encoder`). That only happens when two
    viewers of different sizes share a tab; P0 measures its cost.
 5. Identical frames (same hash as the last one sent to that viewer) are
-   skipped. A blinking text cursor otherwise repaints about every 500 ms.
+   skipped. P0: this rarely fires. Chromium seldom sends a frame identical
+   to the last one, and a blinking caret alternates between two different
+   frames, so it still sends 2 frames a second (about 1.2 MB a minute at
+   1280x800). What keeps an idle tab cheap is the pause rules (7.3.5), not
+   the hash.
 
 ### 7.2 Desktop on the same Mac
 
@@ -321,8 +355,10 @@ sites. It is required, not optional: Live App (8) cannot show the agent.
 3. The desktop draws frames with `createImageBitmap` on a canvas, and draws
    the cursor itself, so pointer movement never waits for the Host.
 4. No re-encode, no relay, no cost. Expected added latency: one frame of
-   compositing plus JPEG encode in Chromium, about 20 to 35 ms. P0 measures
-   it.
+   compositing plus JPEG encode in Chromium, about 20 to 35 ms. P0 measured
+   input sent over CDP to the next screencast frame arriving: 11.5 ms median,
+   13.7 ms p90, 21.6 ms worst (30 clicks, 1280x800, quality 70). The
+   desktop's socket and decode add to that; P1 measures the full path.
 
 ### 7.3 Phone and other remote viewers
 
@@ -339,7 +375,10 @@ sites. It is required, not optional: Live App (8) cannot show the agent.
    1. Frames at most 860 px wide (and at most 2x the phone's screen).
    2. JPEG quality 45 while the page moves; one quality-80 frame 200 ms after
       movement stops, so text is sharp when it is read.
-   3. Up to 30 fps on LAN, about 15 fps on the relay.
+   3. Up to 30 fps on LAN, about 15 fps on the relay. The Host enforces
+      the cap: Chromium sends up to 60 fps for any animation (P0: a CSS
+      spinner, the typical dev server loading screen, gives 59 fps and
+      40 MB a minute at 1280x800).
    4. Quality drops in this order: motion quality, then frame rate, then
       size. Latency is never traded.
 5. The stream pauses when the phone app goes to the background, the screen
@@ -661,8 +700,12 @@ never frozen or discarded.
    their CPU when a page spins.
 2. When no tab is being viewed and no agent is using the browser, the tree
    moves to `PRIO_DARWIN_BG` (throttles CPU, disk and network). It returns to
-   normal on the first view or tool call. P0 checks that Chromium does not
-   reset its children's priority.
+   normal on the first view or tool call. P0 found that Chromium keeps the
+   priority it inherits, but `setpriority` on the browser process reaches
+   only children started afterwards: existing GPU, utility and renderer
+   processes keep theirs. So the Host sets it on every process of the tree
+   (the browser's descendants by parent pid), and on the browser at spawn
+   so new renderers inherit it.
 
 ### 11.5 Other platforms
 
@@ -932,6 +975,21 @@ replaces them with real numbers.
 | Agent working, phone-sized frames | ~90 KB/s (~0.3 GB an hour) |
 | Scrolling or animation at 10 fps | ~500 KB/s |
 
+Measured in P0 (Chromium's own screencast, quality 70, before the Host's
+caps; MB per minute):
+
+| Page | 1280x800 | 390x844 |
+|---|---|---|
+| Static page, no changes | 0.3 (one frame) | |
+| Blinking caret in a field | 1.2 | |
+| Typing | 2.5 | |
+| Scrolling a long article (Wikipedia, about 9 fps) | 64 (q50: 51) | 20 |
+| CSS spinner (59 fps) | 40 | |
+
+Phone-sized scrolling at about 20 MB a minute is about 0.33 MB/s, in line
+with the estimate above. Animations are the outlier, which is why the fps
+cap (7.3.4) matters on the relay.
+
 Live App costs one uncached load (about 10–20 MB for a Vite dev app), then
 only HMR updates and API calls.
 
@@ -1074,6 +1132,15 @@ Each item is one small PR unless noted.
 4. Cost baseline: bytes per minute of Agent View and Live App for typical
    pages.
 
+Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
+
+1. Done: P0.3 except video and WebGL performance (5.1, 5.2, 5.3, 6.3, 11.4),
+   the Agent View half of P0.4 (16.1), and the CDP part of P0.1 (7.2.4).
+2. Open, needing phones: P0.1 over the tunnel on LAN and the relay, P0.2,
+   and the Live App half of P0.4. These need the tunnel framing and
+   forwarder, so they are measured during P2a and P2b instead of with
+   throwaway code.
+
 ### Cloud — relay usage and plans (can start now; independent of P1)
 
 1. Supabase migration: `plans` with the Free row, `account_plans`, the
@@ -1163,15 +1230,18 @@ phone, a camera or mic source for pages, and Linux support for the governor.
 
 ## 22. Risks
 
-1. Latency is an estimate until P0.1. If the JPEG path costs too much, the
-   options are H.264 (P4) or CEF off-screen rendering with shared IOSurface
-   textures (BSD, `cef` crate), at the cost of embedding work.
+1. Latency: P0 measured 11.5 ms median from CDP input to screencast frame
+   on the Mac; the tunnel and relay paths are still unmeasured. If the JPEG
+   path costs too much, the options are H.264 (P4) or CEF off-screen
+   rendering with shared IOSurface textures (BSD, `cef` crate), at the cost
+   of embedding work.
 2. Live App on real phones is unproven until P0.2: origin rules, cleartext
    settings, and first-load time over the relay.
 3. Live App uses the phone's network and cookies (8.3). Company setups with
    VPN-only APIs fall back to Agent View.
 4. iOS stops the phone's proxy and the stream in the background.
-5. Cost figures are unmeasured until P0.4 and `relay_usage`.
+5. Cost figures: P0 measured Chromium's frame bytes on the Mac (16.1);
+   real relay totals come from `relay_usage`.
 6. One droplet is a single point of failure for remote access.
 7. Headless detection blocks some third-party logins. "Open in my browser"
    is the escape hatch, not a fix.
