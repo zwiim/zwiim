@@ -58,6 +58,14 @@ pub struct Cdp {
     writer: mpsc::UnboundedSender<Vec<u8>>,
 }
 
+impl std::fmt::Debug for Cdp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cdp")
+            .field("closed", &self.is_closed())
+            .finish()
+    }
+}
+
 #[derive(Deserialize)]
 struct Incoming {
     id: Option<u64>,
