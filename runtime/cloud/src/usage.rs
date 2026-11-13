@@ -21,6 +21,9 @@ use crate::proto::{QuotaExceeded, QuotaLimit};
 
 /// How often pending bytes go to the store.
 pub const SYNC_INTERVAL: Duration = Duration::from_secs(60);
+/// `control` bytes an account may send at once before its plan's speed cap
+/// applies: enough for a burst of file or Git views.
+pub const CONTROL_BURST: u64 = 4 * 1024 * 1024;
 
 /// A plan's limits; `None` is unlimited.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -92,6 +95,15 @@ struct Counter {
     pending: [u64; 2],
     /// The store's last answer.
     known: Option<Account>,
+    /// The `control` speed cap, once the account has one.
+    bucket: Option<Bucket>,
+}
+
+/// A token bucket of `control` bytes, refilled at the plan's rate.
+struct Bucket {
+    /// May go below zero: the debt is what the next sender waits out.
+    tokens: f64,
+    at: tokio::time::Instant,
 }
 
 pub struct Usage {
@@ -121,6 +133,26 @@ impl Usage {
         let accounts = self.accounts.lock().unwrap();
         let (account, used) = current(accounts.get(user_id)?)?;
         Some(Account { used, ..account.clone() })
+    }
+
+    /// How long to hold `bytes` of `control` traffic for `user_id` so the
+    /// account stays within its plan's speed cap. Zero for an account
+    /// without one. Every `control` relay of the account shares the cap, in
+    /// both directions, so browser traffic sent through `control` by a
+    /// modified client is too slow to use.
+    pub fn throttle(&self, user_id: &str, bytes: u64) -> Duration {
+        let mut accounts = self.accounts.lock().unwrap();
+        let Some(counter) = accounts.get_mut(user_id) else { return Duration::ZERO };
+        let Some(rate) = counter.known.as_ref().and_then(|a| a.limits.control_rate) else { return Duration::ZERO };
+        let (rate, burst, now) = (rate as f64, CONTROL_BURST as f64, tokio::time::Instant::now());
+        let bucket = counter.bucket.get_or_insert(Bucket { tokens: burst, at: now });
+        bucket.tokens = (bucket.tokens + now.duration_since(bucket.at).as_secs_f64() * rate).min(burst);
+        bucket.at = now;
+        bucket.tokens -= bytes as f64;
+        match bucket.tokens < 0.0 {
+            true => Duration::from_secs_f64(-bucket.tokens / rate),
+            false => Duration::ZERO,
+        }
     }
 
     /// The limit that stops a `channel` relay for `user_id`, if one is
@@ -524,6 +556,32 @@ pub(crate) mod tests {
         usage.load("b").await;
         usage.add("b", Channel::Control, 10);
         assert_eq!(usage.blocked("b", Channel::Browser).unwrap().channel, QuotaLimit::Total);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn control_bursts_then_runs_at_the_plans_rate() {
+        let limits = PlanLimits { control_rate: Some(1024), ..Default::default() };
+        let store = Fake::with_limits(&["a"], limits);
+        let usage = usage(&store);
+        assert_eq!(usage.throttle("a", CONTROL_BURST * 2), Duration::ZERO, "no plan known yet");
+        usage.load("a").await;
+        assert_eq!(usage.throttle("a", CONTROL_BURST), Duration::ZERO, "the burst is free");
+        assert_eq!(usage.throttle("a", 512), Duration::from_millis(500));
+        assert_eq!(usage.throttle("a", 512), Duration::from_secs(1), "waits add up");
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert_eq!(usage.throttle("a", 0), Duration::ZERO, "the debt is paid off");
+        // Twice the time a full refill takes.
+        tokio::time::advance(Duration::from_secs(2 * CONTROL_BURST / 1024)).await;
+        assert_eq!(usage.throttle("a", CONTROL_BURST), Duration::ZERO, "the bucket refills to the burst");
+        assert_eq!(usage.throttle("a", 1024), Duration::from_secs(1), "and no further");
+    }
+
+    #[tokio::test]
+    async fn without_a_speed_cap_control_is_not_held() {
+        let store = Fake::with_limits(&["a"], PlanLimits::default());
+        let usage = usage(&store);
+        usage.load("a").await;
+        assert_eq!(usage.throttle("a", CONTROL_BURST * 10), Duration::ZERO);
     }
 
     #[tokio::test]

@@ -616,6 +616,12 @@ async fn forward(
                 }
                 // Both directions leave the Cloud's network, so both count.
                 cloud.usage.add(user_id, channel, bytes.len() as u64);
+                if channel == Channel::Control {
+                    let hold = cloud.usage.throttle(user_id, bytes.len() as u64);
+                    if !hold.is_zero() {
+                        tokio::time::sleep(hold).await;
+                    }
+                }
                 if to.send(Message::Binary(bytes)).await.is_err() {
                     return false;
                 }

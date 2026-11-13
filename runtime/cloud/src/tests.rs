@@ -578,6 +578,35 @@ async fn plan_limits_refuse_tickets_and_close_open_relays() {
 }
 
 #[tokio::test]
+async fn control_relays_slow_to_the_plans_speed_cap_after_a_burst() {
+    let limits = PlanLimits { control_rate: Some(1024 * 1024), ..Default::default() };
+    let store = usage::tests::Fake::with_limits(&["alice"], limits);
+    let cloud = TestCloud::start_with(fast(), Limits::default(), Some(store)).await;
+    let host = FakeHost::new();
+    host.enroll(&cloud, "alice").await;
+    let mut control = host.control(&cloud).await;
+
+    // The burst plus half a second at 1 MiB/s, in 64 KiB messages.
+    let chunks = (usage::CONTROL_BURST as usize + 512 * 1024) / (64 * 1024);
+    let mut timed = async |ticket: Value| {
+        let mut dev = device(&cloud, ticket["ticket"].as_str().unwrap()).await;
+        let mut relayed = host.answer(&cloud, &mut control).await;
+        ready(&mut relayed).await;
+        ready(&mut dev).await;
+        let started = std::time::Instant::now();
+        for _ in 0..chunks {
+            dev.send(Message::Binary(vec![0; 64 * 1024].into())).await.unwrap();
+            binary(&mut relayed).await;
+        }
+        started.elapsed()
+    };
+    let held = timed(cloud.ticket("alice", &host.host_id).await.1).await;
+    assert!(held >= Duration::from_millis(400), "control was not held: {held:?}");
+    let browser = timed(cloud.browser_ticket("alice", &host.host_id).await.1).await;
+    assert!(browser < held, "the browser channel has no speed cap: {browser:?} vs {held:?}");
+}
+
+#[tokio::test]
 async fn relay_failures_are_explicit() {
     let cloud = TestCloud::start(Timing { ticket_ttl: Duration::from_millis(300), ..fast() }).await;
     let host = FakeHost::new();

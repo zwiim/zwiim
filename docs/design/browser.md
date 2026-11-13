@@ -856,8 +856,11 @@ Migration: `runtime/cloud/supabase/migrations/`.
 4. **Open connections** that cross a limit are closed with close code
    `4429`: only `browser` connections at the browser limit, every connection
    at the total limit.
-5. **`control` speed cap:** a token bucket per account, so browser traffic
-   sneaked through `control` by a modified client is too slow to use.
+5. **`control` speed cap:** a token bucket per account, shared by all its
+   `control` relays in both directions, so browser traffic sneaked through
+   `control` by a modified client is too slow to use. The rate is the
+   plan's `control_rate`; the 4 MiB burst is a Cloud constant
+   (`CONTROL_BURST`). A message over the cap is held, not dropped.
 6. **Supabase unreachable:** the relay keeps working with the last known
    totals (fail-open). Unsent bytes stay in memory and are retried. A Cloud
    restart during an outage loses at most a few minutes of counts.
