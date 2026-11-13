@@ -23,6 +23,7 @@
 //!   viewers
 //! - `input`      — a viewer's pointer, keys and text, as CDP `Input` calls
 //! - `policy`     — pure decisions (scheme allow-list, …)
+//! - `governor`   — the Host browser's memory budget, ladder and priority
 //! - `sites`      — which sites a tab's page loads may reach (site policy)
 //! - `agent`      — what an agent may read of a page, and on whose say-so
 //! - `eval`       — the one thing an agent may do that is not a named act:
@@ -71,6 +72,7 @@ pub mod capture;
 pub mod console;
 pub mod engine;
 pub mod eval;
+pub mod governor;
 pub mod helper;
 pub mod network;
 pub mod service_url;
