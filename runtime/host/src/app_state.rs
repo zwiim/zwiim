@@ -109,6 +109,8 @@ pub struct AppState {
     pub clones: Arc<crate::workspace::clone::CloneJobs>,
     /// What the keep-awake supervisor last did; `None` until its first pass.
     pub keep_awake: Arc<tokio::sync::watch::Sender<Option<crate::power::KeepAwakeStatus>>>,
+    /// What is downloading (adapters, the browser engine, Host updates).
+    pub downloads: Arc<crate::downloads::Downloads>,
     /// The GitHub sign-in through `gh` (one at a time, in memory).
     pub github_auth: Arc<crate::git_harness::GithubSignIn>,
     /// The Host browser, made on first use (see [`AppState::browser`]).
@@ -388,6 +390,7 @@ impl AppState {
                 std::time::Duration::from_secs(2),
             )),
             keep_awake: Default::default(),
+            downloads: crate::downloads::Downloads::new(),
             github_auth: Default::default(),
             browser: Default::default(),
             browser_streams: Default::default(),

@@ -322,6 +322,13 @@ use serde::{Deserialize, Serialize};
 /// text; `browser.view.close {stream_id}` ends it (`stream_not_found`,
 /// `stream_attached`, `invalid_viewport`). Host only for now: paired
 /// devices are refused with `permission_denied`.
+///
+/// 33 (`downloads`): what the Host is downloading (an agent's adapter, the
+/// browser engine, a Host update). The host snapshot carries `downloads`, a
+/// list of `{download_id, label, received, total}` (bytes; `total` null when
+/// unknown), and the feed sends `download.changed {download}` as one starts
+/// or moves (at most every 250 ms each) and `download.removed
+/// {download_id}` when it ends.
 pub const PROTOCOL_REVISION: u32 = 33;
 
 /// Oldest client revision this Host serves. Raise only after a release that
@@ -387,6 +394,7 @@ pub const CAPABILITIES: &[&str] = &[
     "session.transcript_remove",
     "repository.settings_import",
     "browser",
+    "downloads",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -546,6 +554,12 @@ mod tests {
     fn the_browser_is_served() {
         assert!(CAPABILITIES.contains(&"browser"));
         assert_eq!(PROTOCOL_REVISION, 33);
+    }
+
+    #[test]
+    fn downloads_are_served() {
+        assert!(CAPABILITIES.contains(&"downloads"));
+        const _: () = assert!(PROTOCOL_REVISION >= 33);
     }
 
     #[test]

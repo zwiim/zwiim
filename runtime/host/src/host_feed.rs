@@ -44,6 +44,7 @@ use crate::acp::manager::ConnectionManager;
 use crate::acp::types::{AcpEvent, ConnectionStatus, EventEnvelope};
 use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
+use crate::downloads::{Download, Downloads};
 use crate::conflict_watch::{
     self, ConflictCmd, ConflictResult, ConflictTarget, ConflictWatchConfig,
 };
@@ -119,6 +120,8 @@ pub struct HostSnapshot {
     pub keep_awake: Option<KeepAwakeStatus>,
     /// The session resolving each workspace's conflicts, while its turn runs.
     pub resolving: BTreeMap<String, String>,
+    /// What the Host is downloading, oldest first.
+    pub downloads: Vec<Download>,
 }
 
 /// How long `git.pr { refresh }` waits for GitHub.
@@ -138,6 +141,7 @@ struct Projection {
     clones: Vec<CloneJob>,
     keep_awake: Option<KeepAwakeStatus>,
     resolving: BTreeMap<String, String>,
+    downloads: Vec<Download>,
 }
 
 impl Projection {
@@ -159,6 +163,7 @@ impl Projection {
             clones: self.clones.clone(),
             keep_awake: self.keep_awake.clone(),
             resolving: self.resolving.clone(),
+            downloads: self.downloads.clone(),
         }
     }
 }
@@ -291,6 +296,7 @@ async fn start(
     let bus_rx = state.acp_event_bus.subscribe();
     let clones_rx = state.clones.subscribe();
     let mut keep_awake_rx = state.keep_awake.subscribe();
+    let mut downloads_rx = state.downloads.subscribe();
     let (pr_results, pr_rx) = mpsc::unbounded_channel();
     let pr_cmd = pr_watch::spawn(state.db.conn.clone(), state.data_dir.clone(), prs, pr_results);
     let (conflict_results, conflict_rx) = mpsc::unbounded_channel();
@@ -313,12 +319,15 @@ async fn start(
         conflict_cmd,
         conflict_targets: Vec::new(),
         clones: state.clones.clone(),
+        downloads: state.downloads.clone(),
         layout_retrying: false,
     };
     task.projection.workspaces = workspace::list(&task.db).await?;
     task.projection.layout = layout::read(&task.db).await?;
     task.projection.clones = task.clones.list();
     task.projection.keep_awake = keep_awake_rx.borrow_and_update().clone();
+    downloads_rx.borrow_and_update();
+    task.projection.downloads = task.downloads.list();
     let ids: Vec<String> = task
         .projection
         .workspaces
@@ -348,6 +357,7 @@ async fn start(
         resolve_rx,
         clones_rx,
         keep_awake_rx,
+        downloads_rx,
     ));
     Ok(shared)
 }
@@ -423,6 +433,7 @@ struct FeedTask {
     /// What the conflict watcher was last told to follow.
     conflict_targets: Vec<ConflictTarget>,
     clones: Arc<CloneJobs>,
+    downloads: Arc<Downloads>,
     /// A failed layout read is waiting to be tried again.
     layout_retrying: bool,
 }
@@ -540,6 +551,7 @@ impl FeedTask {
         mut resolve_rx: mpsc::UnboundedReceiver<(String, String)>,
         mut clones_rx: tokio::sync::watch::Receiver<u64>,
         mut keep_awake_rx: tokio::sync::watch::Receiver<Option<KeepAwakeStatus>>,
+        mut downloads_rx: tokio::sync::watch::Receiver<u64>,
     ) {
         let (recheck_tx, mut recheck_rx) = mpsc::unbounded_channel::<Recheck>();
         let mut stale = Stale::default();
@@ -576,6 +588,14 @@ impl FeedTask {
                     Ok(()) => {
                         let status = keep_awake_rx.borrow_and_update().clone();
                         self.apply_keep_awake(&shared, status);
+                        continue;
+                    }
+                    Err(_) => return,
+                },
+                r = downloads_rx.changed() => match r {
+                    Ok(()) => {
+                        downloads_rx.borrow_and_update();
+                        self.apply_downloads(&shared);
                         continue;
                     }
                     Err(_) => return,
@@ -888,6 +908,7 @@ impl FeedTask {
             keep_awake: old.keep_awake.clone(),
             conflicts,
             resolving,
+            downloads: old.downloads.clone(),
         };
         self.publish(shared, events);
         self.sync_watchers().await;
@@ -1007,6 +1028,30 @@ impl FeedTask {
         let Some(status) = status else { return };
         let payload = serde_json::to_value(&status).unwrap_or(Value::Null);
         self.publish(shared, vec![("host.keep_awake_changed", payload)]);
+    }
+
+    /// Publish each download that started or moved, and each that ended.
+    fn apply_downloads(&mut self, shared: &Shared) {
+        let now = self.downloads.list();
+        let old = std::mem::replace(&mut self.projection.downloads, now.clone());
+        let mut events = Vec::new();
+        for download in &now {
+            if !old.contains(download) {
+                events.push(("download.changed", json!({ "download": download })));
+            }
+        }
+        for gone in old
+            .iter()
+            .filter(|o| !now.iter().any(|d| d.download_id == o.download_id))
+        {
+            events.push((
+                "download.removed",
+                json!({ "download_id": gone.download_id }),
+            ));
+        }
+        if !events.is_empty() {
+            self.publish(shared, events);
+        }
     }
 
     /// Tell the PR watcher which workspaces to follow when that changed.
@@ -2686,6 +2731,44 @@ esac
         f.state.keep_awake.send_replace(Some(keep_awake(false)));
         let (snapshot, _) = f.subscribe().await;
         assert_eq!(snapshot.keep_awake, Some(keep_awake(false)));
+    }
+
+    // ── downloads ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn downloads_stream_and_are_in_the_snapshot() {
+        let f = fixture().await;
+        let early = f.state.downloads.begin("Codex", 2);
+        let (snapshot, mut feed) = f.subscribe().await;
+        assert_eq!(snapshot.downloads.len(), 1);
+        assert_eq!(snapshot.downloads[0].label, "Codex");
+
+        let engine = f.state.downloads.begin("Browser engine 157", 1);
+        engine.file(Some(1000));
+        let events = feed.drain(500).await;
+        let changed: Vec<_> = events
+            .iter()
+            .filter(|e| e.kind == "download.changed")
+            .map(|e| e.payload["download"].clone())
+            .collect();
+        assert_eq!(
+            changed.last().unwrap(),
+            &json!({"download_id": "download-2", "label": "Browser engine 157",
+                    "received": 0, "total": 1000})
+        );
+
+        drop(early);
+        let removed: Vec<_> = feed
+            .drain(500)
+            .await
+            .into_iter()
+            .filter(|e| e.kind == "download.removed")
+            .collect();
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].payload["download_id"], "download-1");
+        let (snapshot, _) = f.subscribe().await;
+        assert_eq!(snapshot.downloads.len(), 1);
+        drop(engine);
     }
 
     fn conflicts_fixture_policy(policy: ConflictPolicy) -> HostFeed {

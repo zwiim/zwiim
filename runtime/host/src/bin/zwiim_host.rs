@@ -462,6 +462,7 @@ async fn async_main() -> Exit {
             zwiim_host::workspace::clone::RETENTION,
         )),
            keep_awake: Default::default(),
+           downloads: zwiim_host::downloads::global(),
         github_auth: Default::default(),
         browser: Default::default(),
         browser_streams: Default::default(),
