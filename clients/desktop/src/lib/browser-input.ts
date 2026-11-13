@@ -53,6 +53,12 @@ export function toPage(
   return { x, y };
 }
 
+/** A point in page CSS pixels as pixels from the box's top left: the inverse of {@link toPage}. */
+export function fromPage(point: { x: number; y: number }, fit: Fit, page: { width: number; height: number }) {
+  if (fit.width <= 0 || page.width <= 0 || page.height <= 0) return null;
+  return { x: fit.x + (point.x / page.width) * fit.width, y: fit.y + (point.y / page.height) * fit.height };
+}
+
 type KeyLike = Modifiers & { key: string; code: string; keyCode: number };
 
 /** A key press or release for the page. Only a key that types one character carries `text`. */

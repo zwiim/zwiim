@@ -6,12 +6,14 @@
 // sign-in, a file input's picker of workspace files) is drawn over its tab.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, ChevronLeft, ExternalLink, File, Folder, Globe, Plus, RotateCw, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, ChevronLeft, ExternalLink, File, Folder, Globe, MousePointer2, Plus, RotateCw, X } from "lucide-react";
 import {
   personalTabs,
   sessionTabs,
+  tabAgentAction,
   tabUiRequests,
   ZwiimClientError,
+  type BrowserAgentAction,
   type BrowserEngine,
   type BrowserScreenFrame,
   type BrowserStream,
@@ -28,6 +30,7 @@ import {
   browserShortcut,
   buttonOf,
   fitFrame,
+  fromPage,
   keyInput,
   modifiersOf,
   toPage,
@@ -192,7 +195,7 @@ export function BrowserPanel({
         ) : (
           <>
             {active && !tab.discarded && browser.engine?.state === "running" && (
-              <BrowserView key={tab.tab_id} tab={tab} onShortcut={shortcut} />
+              <BrowserView key={tab.tab_id} tab={tab} agent={tabAgentAction(browser, tab.tab_id)} onShortcut={shortcut} />
             )}
             <EngineNotice
               engine={browser.engine}
@@ -653,7 +656,16 @@ function viewportOf(box: { width: number; height: number }) {
  * The selected tab, streamed. The canvas takes the page's pointer and keys;
  * the panel's shortcuts pass through to the panel.
  */
-export function BrowserView({ tab, onShortcut }: { tab: BrowserTab; onShortcut(s: BrowserShortcut): void }) {
+export function BrowserView({
+  tab,
+  agent,
+  onShortcut,
+}: {
+  tab: BrowserTab;
+  /** The agent's latest action on this tab, shown as a ghost cursor. */
+  agent?: { action: BrowserAgentAction; seq: number };
+  onShortcut(s: BrowserShortcut): void;
+}) {
   const controller = useController();
   const box = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -845,8 +857,65 @@ export function BrowserView({ tab, onShortcut }: { tab: BrowserTab; onShortcut(s
           if (text) send({ type: "text", text });
         }}
       />
+      {painted && agent && (
+        <GhostCursor
+          key={agent.action.tab_id}
+          action={agent.action}
+          seq={agent.seq}
+          place={(p) => fromPage(p, fit.current, page.current)}
+        />
+      )}
       {!painted && !failure && <Notice>Loading…</Notice>}
       {failure && <Notice>{failure}</Notice>}
+    </div>
+  );
+}
+
+/** How long the ghost cursor stays after the agent's action. */
+const GHOST_MS = 1500;
+
+/**
+ * Where the agent is about to act (design 10.2): a cursor at its point and a
+ * ring round the element. It moves to each new action and fades out after.
+ */
+export function GhostCursor({
+  action,
+  seq,
+  place,
+}: {
+  action: BrowserAgentAction;
+  seq: number;
+  place(p: { x: number; y: number }): { x: number; y: number } | null;
+}) {
+  const [shown, setShown] = useState(true);
+  useEffect(() => {
+    setShown(true);
+    const t = setTimeout(() => setShown(false), GHOST_MS);
+    return () => clearTimeout(t);
+  }, [seq]);
+  const at = place(action);
+  if (!at) return null;
+  const box = action.box && place(action.box);
+  const end = action.box && place({ x: action.box.x + action.box.width, y: action.box.y + action.box.height });
+  return (
+    <div
+      aria-hidden
+      data-testid="ghost-cursor"
+      className={cn(
+        "pointer-events-none absolute inset-0 transition-opacity duration-[130ms] ease-in motion-reduce:transition-none",
+        shown ? "opacity-100" : "opacity-0",
+      )}
+    >
+      {box && end && (
+        <div
+          className="ring-brand/55 absolute rounded-sm ring-2"
+          style={{ left: box.x, top: box.y, width: end.x - box.x, height: end.y - box.y }}
+        />
+      )}
+      <MousePointer2
+        className="fill-brand text-background absolute size-5 drop-shadow transition-[left,top] duration-[180ms] ease-in-out motion-reduce:transition-none"
+        style={{ left: at.x, top: at.y }}
+      />
     </div>
   );
 }

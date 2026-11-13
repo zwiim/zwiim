@@ -10,8 +10,8 @@ import {
   ZwiimClientError,
 } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
-import { addressUrl, browserShortcut, fitFrame, keyInput, modifiersOf, toPage } from "@/lib/browser-input";
-import { BrowserPanel } from "@/panels/BrowserPanel";
+import { addressUrl, browserShortcut, fitFrame, fromPage, keyInput, modifiersOf, toPage } from "@/lib/browser-input";
+import { BrowserPanel, GhostCursor } from "@/panels/BrowserPanel";
 import { FakeTransport, tick } from "./fakes";
 
 afterEach(cleanup);
@@ -32,11 +32,29 @@ describe("browser input", () => {
     expect(modifiersOf(key("a", { ctrlKey: true, metaKey: true }))).toBe(6);
   });
 
+  it("shows where the agent acts, then fades", () => {
+    vi.useFakeTimers();
+    try {
+      const action = { tab_id: "t", kind: "type" as const, x: 50, y: 20, box: { x: 10, y: 10, width: 80, height: 20 } };
+      const half = (p: { x: number; y: number }) => ({ x: p.x / 2, y: p.y / 2 });
+      render(<GhostCursor action={action} seq={1} place={half} />);
+      const ghost = screen.getByTestId("ghost-cursor");
+      expect(ghost.className).toContain("opacity-100");
+      const ring = ghost.firstElementChild as HTMLElement;
+      expect([ring.style.left, ring.style.top, ring.style.width, ring.style.height]).toEqual(["5px", "5px", "40px", "10px"]);
+      act(() => vi.advanceTimersByTime(1500));
+      expect(ghost.className).toContain("opacity-0");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("fits a frame in its box and maps the pointer back to the page", () => {
     const fit = fitFrame({ width: 400, height: 400 }, { width: 800, height: 600 });
     expect(fit).toEqual({ x: 0, y: 50, width: 400, height: 300 });
     expect(toPage({ x: 200, y: 200 }, fit, { width: 800, height: 600 })).toEqual({ x: 400, y: 300 });
     expect(toPage({ x: 200, y: 20 }, fit, { width: 800, height: 600 })).toBeNull();
+    expect(fromPage({ x: 400, y: 300 }, fit, { width: 800, height: 600 })).toEqual({ x: 200, y: 200 });
     expect(toPage({ x: 1, y: 1 }, fitFrame({ width: 10, height: 10 }, { width: 0, height: 0 }), { width: 0, height: 0 })).toBeNull();
   });
 
