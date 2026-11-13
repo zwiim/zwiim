@@ -426,7 +426,8 @@ async fn run_stream(
 
 /// One socket's `browser.subscribe`: a `browser.snapshot` frame, then each
 /// change as `browser.tab.state`, `browser.tab.removed`,
-/// `browser.engine.state`, `browser.ui.request` or `browser.ui.done`. Events carry a tab's whole state, so one that
+/// `browser.engine.state`, `browser.ui.request`, `browser.ui.done` or
+/// `browser.agent.action`. Events carry a tab's whole state, so one that
 /// arrives after a snapshot already holding it changes nothing. A socket
 /// that falls behind gets a fresh snapshot.
 pub(super) struct BrowserFeed {
@@ -482,6 +483,9 @@ impl BrowserFeed {
                         "request_id": request_id,
                         "tab_id": tab_id,
                     })),
+                    Ok(BrowserEvent::AgentAction(action)) => {
+                        Some(json!({ "type": "browser.agent.action", "action": action }))
+                    }
                     Err(RecvError::Lagged(_)) => Some(self.snapshot().await),
                     Err(RecvError::Closed) => None,
                 },

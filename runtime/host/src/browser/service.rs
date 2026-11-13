@@ -49,7 +49,7 @@ pub struct TabInfo {
     pub crashed: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BrowserEvent {
     Tab(TabInfo),
     Removed { tab_id: String, owner: TabOwner },
@@ -57,6 +57,21 @@ pub enum BrowserEvent {
     Ui(UiRequest),
     /// That request was answered, timed out, or its tab went.
     UiDone { request_id: String, tab_id: String },
+    /// An agent is about to act on a tab (design 10.2).
+    AgentAction(AgentAction),
+}
+
+/// What an agent is about to do, for clients to show: where its pointer
+/// goes, in the page's CSS pixels, and the element's box when known.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AgentAction {
+    pub tab_id: String,
+    /// `click`, `hover`, `type`, `press` or `select`.
+    pub kind: &'static str,
+    pub x: f64,
+    pub y: f64,
+    #[serde(rename = "box", skip_serializing_if = "Option::is_none")]
+    pub bounds: Option<super::capture::CaptureRegion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -635,6 +650,11 @@ impl BrowserService {
             let _ = store::set_discarded(&db, &id, true).await;
         });
         self.emit(BrowserEvent::Tab(info));
+    }
+
+    /// Tell clients what an agent is about to do.
+    pub fn agent_action(&self, action: AgentAction) {
+        self.emit(BrowserEvent::AgentAction(action));
     }
 
     fn emit(&self, event: BrowserEvent) {

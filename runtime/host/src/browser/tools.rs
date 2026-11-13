@@ -24,7 +24,7 @@ use super::capture::{self, CaptureOutcome, CaptureRegion, CaptureRequest};
 use super::console::ConsoleQuery;
 use super::engine::cdp::Cdp;
 use super::eval::EvalRequest;
-use super::service::{BrowserError, BrowserService, TabInfo};
+use super::service::{AgentAction, BrowserError, BrowserService, TabInfo};
 use super::store::TabOwner;
 use crate::acp::browser_tools::{
     BrowserActOutcome, BrowserCaptureOutcome, BrowserConsoleOutcome, BrowserEvalOutcome,
@@ -498,14 +498,50 @@ pub(crate) async fn act(
     if !agent::ref_is_current(&request.generation, &epoch_of(context)) {
         return stale("The page has navigated since that snapshot; take a new one.");
     }
+    let show = |x: f64, y: f64, bounds: Option<CaptureRegion>| {
+        browser.agent_action(AgentAction {
+            tab_id: tab_id.to_string(),
+            kind: kind_of(&request.action),
+            x,
+            y,
+            bounds,
+        })
+    };
     let outcome = match (&request.action, request.target.as_deref()) {
         (ActionKind::Click { .. } | ActionKind::Hover, Some(target)) => {
-            pointer(&cdp, &cdp_session, context, request, target).await
+            pointer(&cdp, &cdp_session, context, request, target, |x, y| {
+                show(x, y, None)
+            })
+            .await
         }
-        _ => match eval_in(&cdp, &cdp_session, context, &agent::act_call(request)).await {
-            Ok(raw) => answer(&raw, Fidelity::Synthetic),
-            Err(e) => Err(e),
-        },
+        _ => {
+            if let Some(target) = request.target.as_deref() {
+                let rect = agent::rect_call(&request.generation, target);
+                if let Ok(raw) = eval_in(&cdp, &cdp_session, context, &rect).await {
+                    if let Ok(RectAnswer {
+                        ok: true,
+                        x: Some(x),
+                        y: Some(y),
+                        width: Some(w),
+                        height: Some(h),
+                        ..
+                    }) = serde_json::from_str::<RectAnswer>(&raw)
+                    {
+                        let bounds = CaptureRegion {
+                            x,
+                            y,
+                            width: w,
+                            height: h,
+                        };
+                        show(x + w / 2.0, y + h / 2.0, Some(bounds));
+                    }
+                }
+            }
+            match eval_in(&cdp, &cdp_session, context, &agent::act_call(request)).await {
+                Ok(raw) => answer(&raw, Fidelity::Synthetic),
+                Err(e) => Err(e),
+            }
+        }
     };
     match outcome {
         Ok(Ok(outcome)) => {
@@ -522,6 +558,17 @@ pub(crate) async fn act(
             stale("The page has navigated since that snapshot; take a new one.")
         }
         Err(WorldError::Failed(m)) => BrowserActOutcome::refused(tab_id, ERROR_ACTION_FAILED, m),
+    }
+}
+
+/// The action's name as clients show it.
+fn kind_of(action: &ActionKind) -> &'static str {
+    match action {
+        ActionKind::Click { .. } => "click",
+        ActionKind::Hover => "hover",
+        ActionKind::Type { .. } => "type",
+        ActionKind::Press { .. } => "press",
+        ActionKind::Select { .. } => "select",
     }
 }
 
@@ -558,6 +605,7 @@ async fn pointer(
     context: i64,
     request: &ActionRequest,
     target: &str,
+    show: impl FnOnce(f64, f64),
 ) -> Result<Result<ActionOutcome, Refusal>, WorldError> {
     let raw = eval_in(
         cdp,
@@ -576,6 +624,7 @@ async fn pointer(
             "the page did not say where the element is".into(),
         ));
     };
+    show(x, y);
     let mouse = |kind: &str, button: &str, clicks: u8| json!({ "type": kind, "x": x, "y": y, "button": button, "clickCount": clicks });
     let mut events = vec![mouse("mouseMoved", "none", 0)];
     if let ActionKind::Click { button, count } = &request.action {
@@ -977,6 +1026,7 @@ mod tests {
         )
         .await;
         assert_eq!(typed.error, None, "{:?}", typed.note);
+        let mut events = browser.subscribe();
         let clicked = act(
             &browser,
             &worlds,
@@ -992,6 +1042,16 @@ mod tests {
         )
         .await;
         assert_eq!(clicked.action.unwrap().fidelity, Fidelity::Trusted);
+        // Clients were shown where the pointer went, before it landed.
+        let shown = loop {
+            if let super::super::service::BrowserEvent::AgentAction(a) =
+                events.recv().await.unwrap()
+            {
+                break a;
+            }
+        };
+        assert_eq!((shown.tab_id.as_str(), shown.kind), (tab.as_str(), "click"));
+        assert!(shown.x > 0.0 && shown.y > 0.0);
         let after = snapshot(&browser, &worlds, "s1", &tab, None)
             .await
             .snapshot

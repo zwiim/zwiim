@@ -338,6 +338,10 @@ use serde::{Deserialize, Serialize};
 /// session's tab: its session's workspace only, else `permission_denied`;
 /// a path outside it or a missing file is `not_found`). A page's download
 /// is one of the Host's downloads (capability `downloads`) while it runs.
+/// Just before an agent acts on a tab, `browser.agent.action {action}` says
+/// where: `{tab_id, kind, x, y, box?}`, `kind` one of `click`, `hover`,
+/// `type`, `press` and `select`, the point and the element's box (`{x, y,
+/// width, height}`) in the page's CSS pixels.
 /// A session's tab saves to `<worktree>/.zwiim/browser/<id>/`, removed with
 /// the session, unless `browser.downloads.set_location {root}` chose a
 /// folder (`root` an existing absolute folder, null for the default): then
