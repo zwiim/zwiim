@@ -40,6 +40,10 @@ pub fn args(options: &LaunchOptions) -> Vec<String> {
         "--disable-blink-features=AutomationControlled".into(),
         // Metal through ANGLE; without it the shell renders in SwiftShader.
         "--enable-gpu".into(),
+        // Screencast frames are captured at this scale whatever a tab's
+        // device metrics say, so a Retina desktop gets sharp frames. A
+        // smaller viewer gets them downscaled through `maxWidth`.
+        "--force-device-scale-factor=2".into(),
     ];
     if let Some(limit) = options.renderer_limit {
         args.push(format!("--renderer-process-limit={limit}"));
@@ -143,6 +147,7 @@ mod tests {
         assert_eq!(args[0], "--remote-debugging-pipe");
         assert!(args.contains(&"--user-data-dir=/data/browser/profile".to_string()));
         assert!(args.contains(&"--enable-gpu".to_string()));
+        assert!(args.contains(&"--force-device-scale-factor=2".to_string()));
         assert!(args.contains(&"--renderer-process-limit=2".to_string()));
         assert!(!args
             .iter()

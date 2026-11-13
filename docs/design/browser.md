@@ -220,6 +220,7 @@ chrome-headless-shell
   --disable-background-networking --disable-component-update
   --disable-blink-features=AutomationControlled
   --enable-gpu                        # Metal; without it, SwiftShader
+  --force-device-scale-factor=2       # sharp frames on a Retina desktop
 ```
 
 P0: `--enable-gpu` turns on Metal (ANGLE) on Apple silicon, with GPU
@@ -227,6 +228,14 @@ compositing, WebGL 2, rasterization and video decode all `enabled`. Without
 it the shell falls back to SwiftShader, with all four in software. H.264,
 VP9 and AV1 report `probably`. The engine answers `Browser.getVersion`
 about 0.1 s after spawn.
+
+P1: screencast frames are captured at the engine's device scale, not the
+tab's. `Emulation.setDeviceMetricsOverride` with `deviceScaleFactor: 2`
+gives the page `devicePixelRatio` 2 but still 800x600 frames for an 800x600
+viewport; `--force-device-scale-factor=2` gives 1600x1200, and a tab cannot
+lower it. So the engine runs at 2 and `maxWidth` scales frames down for
+smaller viewers. Pages raster four times the pixels; P1.11 measures what that
+costs and drops to 1 under memory pressure if it must.
 
 1. Started lazily, on the first `browser.tab.open` or agent tool call.
 2. Spawned in its own process group, `kill_on_drop`, like
