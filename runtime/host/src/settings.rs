@@ -52,6 +52,7 @@ pub const PROMPT_PULL_REQUEST: &str = "prompts.pull_request";
 pub const PROMPT_BRANCH_NAME: &str = "prompts.branch_name";
 pub const TERMINAL_SCROLLBACK: &str = "terminal.scrollback";
 pub const PUSH_SETS_UPSTREAM: &str = "git.push_sets_upstream";
+pub const BROWSER_AGENT_PASSWORDS: &str = "browser.agent_passwords";
 
 /// Every setting the Host keeps.
 const KEYS: &[(&str, Kind)] = &[
@@ -68,6 +69,7 @@ const KEYS: &[(&str, Kind)] = &[
     (PROMPT_BRANCH_NAME, Kind::Prompt),
     (TERMINAL_SCROLLBACK, Kind::Scrollback),
     (PUSH_SETS_UPSTREAM, Kind::Bool),
+    (BROWSER_AGENT_PASSWORDS, Kind::Bool),
 ];
 
 /// The terminal output a setting can keep, in bytes.
@@ -208,6 +210,12 @@ pub async fn branch_prefix(
         _ => return None,
     };
     valid_prefix(&prefix).then(|| prefix.trim_end_matches('/').to_string())
+}
+
+/// Whether agents may type into password fields on any site, not only the
+/// loopback dev servers (design 10.3). Off unless the person turns it on.
+pub async fn browser_agent_passwords(db: &DatabaseConnection) -> bool {
+    read_bool(db, BROWSER_AGENT_PASSWORDS).await
 }
 
 /// Whether removing a worktree also deletes its branch, when no work is lost.

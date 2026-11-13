@@ -906,6 +906,22 @@ pub struct ViewportAnswer {
     pub viewport: SnapshotViewport,
 }
 
+/// Whether the element `target` names, or with no target whatever has
+/// focus (inside shadow roots too), is a password field: `true` or `false`,
+/// or [`ENGINE_ABSENT`].
+pub fn password_field_call(generation: &str, target: Option<&str>) -> String {
+    format!(
+        "typeof globalThis.{AGENT_GLOBAL} === 'undefined' ? {absent} : (() => {{ \
+         const t = {target}; \
+         let e = t === null ? document.activeElement : globalThis.{AGENT_GLOBAL}.elementForRef({generation}, t); \
+         while (t === null && e && e.shadowRoot && e.shadowRoot.activeElement) e = e.shadowRoot.activeElement; \
+         return JSON.stringify(e instanceof HTMLInputElement && e.type === 'password'); }})()",
+        absent = serde_json::Value::from(ENGINE_ABSENT),
+        generation = serde_json::Value::from(generation),
+        target = serde_json::to_value(target).unwrap_or(serde_json::Value::Null),
+    )
+}
+
 /// `JSON.stringify(__zwiimAgent.rectOf(generation, ref))`: the element's
 /// visible box, for a capture cropped to it. [`ENGINE_ABSENT`] when no
 /// snapshot was ever taken in this document, which makes the ref stale.

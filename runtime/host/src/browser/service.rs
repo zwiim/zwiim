@@ -1101,6 +1101,11 @@ impl BrowserService {
         saving::folder_for(&self.db, owner).await
     }
 
+    /// Whether the person lets agents type passwords on any site.
+    pub async fn agent_passwords(&self) -> bool {
+        crate::settings::browser_agent_passwords(&self.db).await
+    }
+
     /// A person typed into tab `tab_id`.
     pub async fn person_typed(&self, tab_id: &str) {
         let now = tokio::time::Instant::now();

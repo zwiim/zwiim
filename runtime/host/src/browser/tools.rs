@@ -32,8 +32,9 @@ use crate::acp::browser_tools::{
     ActionEffects, BrowserActOutcome, BrowserCaptureOutcome, BrowserConsoleOutcome,
     BrowserEvalOutcome, BrowserSnapshotOutcome, BrowserTabOp, BrowserTabOutcome,
     BrowserTabsOutcome, BrowserToolAccess, DEFAULT_SNAPSHOT_MAX_CHARS, ERROR_ACTION_FAILED,
-    ERROR_BAD_ADDRESS, ERROR_NO_SUCH_TAB, ERROR_OPEN_FAILED, ERROR_PERSON_TYPING,
-    ERROR_READ_FAILED, ERROR_UNAVAILABLE, ERROR_URL_CHANGED, ERROR_WAIT_TIMEOUT,
+    ERROR_BAD_ADDRESS, ERROR_NO_SUCH_TAB, ERROR_OPEN_FAILED, ERROR_PASSWORD_FIELD,
+    ERROR_PERSON_TYPING, ERROR_READ_FAILED, ERROR_UNAVAILABLE, ERROR_URL_CHANGED,
+    ERROR_WAIT_TIMEOUT,
 };
 use crate::app_state::AppState;
 use crate::db::entities::conversation;
@@ -740,6 +741,30 @@ pub(crate) async fn act(
     if !agent::ref_is_current(&request.generation, &epoch_of(context)) {
         return stale("The page has navigated since that snapshot; take a new one.");
     }
+    if types_text(&request.action) && !passwords_allowed(browser, &tab.url).await {
+        let call = agent::password_field_call(&request.generation, request.target.as_deref());
+        match eval_in(&cdp, &cdp_session, context, &call).await {
+            Ok(raw) if raw == "false" => {}
+            Ok(raw) if raw == "true" => {
+                return BrowserActOutcome::refused(
+                    tab_id,
+                    ERROR_PASSWORD_FIELD,
+                    "That is a password field, and agents may type passwords only on this \
+                     computer's dev servers (localhost). Nothing was typed. Ask the person to \
+                     sign in themselves, or to turn on \"Let agents type passwords on any \
+                     site\" in Zwiim's Settings > Advanced > Browser.",
+                );
+            }
+            Ok(_) => return stale("No snapshot has been taken of this page; take one first."),
+            Err(WorldError::Gone) => {
+                worlds.forget(tab_id, context).await;
+                return stale("The page has navigated since that snapshot; take a new one.");
+            }
+            Err(WorldError::Failed(m)) => {
+                return BrowserActOutcome::refused(tab_id, ERROR_ACTION_FAILED, m)
+            }
+        }
+    }
     let watch = Watch::start(browser, session, tab_id).await;
     let show = |x: f64, y: f64, bounds: Option<CaptureRegion>| {
         browser.agent_action(AgentAction {
@@ -920,6 +945,33 @@ async fn person_quiet(browser: &BrowserService, tab_id: &str, limit: Duration) -
         }
         tokio::time::sleep_until(quiet_at).await;
     }
+}
+
+/// Whether the action puts text into the page: typing, or a key that types a
+/// character. Enter, Tab and shortcuts type nothing.
+fn types_text(action: &ActionKind) -> bool {
+    match action {
+        ActionKind::Type { .. } => true,
+        ActionKind::Press { key } => {
+            let mut parts = key.split('+');
+            let last = parts.next_back().unwrap_or_default();
+            let shortcut = parts.any(|m| matches!(m, "Control" | "Meta" | "Alt"));
+            last.chars().count() == 1 && !shortcut
+        }
+        _ => false,
+    }
+}
+
+/// Whether agents may type a password on the page at `url`: always on this
+/// computer's dev servers, elsewhere only when the person turned it on.
+async fn passwords_allowed(browser: &BrowserService, url: &str) -> bool {
+    let loopback = url::Url::parse(url).is_ok_and(|u| match u.host() {
+        Some(url::Host::Domain(d)) => d == "localhost" || d.ends_with(".localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    });
+    loopback || browser.agent_passwords().await
 }
 
 /// Whether `expected` names the page at `url`; the fragment does not count.
@@ -1400,6 +1452,51 @@ mod tests {
     }
 
     #[test]
+    fn only_typing_and_character_keys_put_text_in_a_field() {
+        let press = |key: &str| ActionKind::Press { key: key.into() };
+        assert!(types_text(&ActionKind::Type {
+            text: "x".into(),
+            submit: false
+        }));
+        assert!(types_text(&press("a")));
+        assert!(types_text(&press("Shift+A")));
+        assert!(!types_text(&press("Enter")));
+        assert!(!types_text(&press("Control+a")));
+        assert!(!types_text(&ActionKind::Hover));
+    }
+
+    #[tokio::test]
+    async fn passwords_go_only_to_dev_servers_unless_the_person_allows_more() {
+        let db = fresh_in_memory_db().await;
+        let fake = FakeEngine::default();
+        let browser =
+            BrowserService::start(EngineManager::new(fake.start_fn()), db.conn.clone(), None)
+                .await
+                .unwrap();
+        for dev in [
+            "http://localhost:5173/login",
+            "http://app.localhost:3000/",
+            "http://127.0.0.1:8080/",
+            "http://[::1]:3000/",
+        ] {
+            assert!(passwords_allowed(&browser, dev).await, "{dev}");
+        }
+        for site in [
+            "https://github.com/login",
+            "http://192.168.1.4/",
+            "about:blank",
+        ] {
+            assert!(!passwords_allowed(&browser, site).await, "{site}");
+        }
+        let on = serde_json::Map::from_iter([(
+            crate::settings::BROWSER_AGENT_PASSWORDS.to_string(),
+            json!(true),
+        )]);
+        crate::settings::update(&db.conn, &on).await.unwrap();
+        assert!(passwords_allowed(&browser, "https://github.com/login").await);
+    }
+
+    #[test]
     fn an_expected_address_matches_the_page_whatever_its_fragment() {
         assert!(same_page("http://localhost:5173", "http://localhost:5173/"));
         assert!(same_page(
@@ -1486,7 +1583,7 @@ mod tests {
                 tokio::spawn(async move {
                     let mut buf = [0u8; 4096];
                     let _ = sock.read(&mut buf).await;
-                    let body = "<title>Form</title><input aria-label=Name>\
+                    let body = "<title>Form</title><input aria-label=Name><input type=password aria-label=Secret>\
                         <script>console.error('boom', 42)</script><button onclick=\"document.title='clicked:'+event.isTrusted;document.body.append('Thanks, Ada!');window.open('/pop');console.error('after click')\">Go</button>";
                     let resp = format!(
                         "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -1520,6 +1617,15 @@ mod tests {
         };
         let button = ref_of(&page.tree, "button \"Go\"");
         let field = ref_of(&page.tree, "textbox \"Name\"");
+        let secret = ref_of(&page.tree, "textbox \"Secret\"");
+        // The Host tells a password field from any other.
+        let context = worlds.current(&tab).await.unwrap();
+        let (cdp, cdp_session) = browser.session(&tab).await.unwrap();
+        for (target, password) in [(&secret, "true"), (&field, "false")] {
+            let call = agent::password_field_call(&page.generation, Some(target));
+            let found = eval_in(&cdp, &cdp_session, context, &call).await.ok();
+            assert_eq!(found.as_deref(), Some(password), "{target}");
+        }
         let request = |target: &str, action| ActionRequest {
             generation: page.generation.clone(),
             target: Some(target.to_string()),

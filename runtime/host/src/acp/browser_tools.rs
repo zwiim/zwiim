@@ -107,6 +107,10 @@ pub const ERROR_URL_CHANGED: &str = "browser_url_changed";
 /// and gave up: nothing was done.
 pub const ERROR_PERSON_TYPING: &str = "browser_person_typing";
 
+/// An agent tried to type into a password field on a site other than a
+/// loopback dev server, and the person has not let agents do that.
+pub const ERROR_PASSWORD_FIELD: &str = "browser_password_field";
+
 /// The workspace was asked for a tab and none arrived — no window open to put
 /// one in, or the tab went away before it loaded.
 pub const ERROR_OPEN_FAILED: &str = "browser_open_failed";

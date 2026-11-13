@@ -341,7 +341,10 @@ use serde::{Deserialize, Serialize};
 /// Just before an agent acts on a tab, `browser.agent.action {action}` says
 /// where: `{tab_id, kind, x, y, box?}`, `kind` one of `click`, `hover`,
 /// `type`, `press` and `select`, the point and the element's box (`{x, y,
-/// width, height}`) in the page's CSS pixels.
+/// width, height}`) in the page's CSS pixels. `settings` gains
+/// `browser.agent_passwords` (a boolean; unset is off): whether agents may
+/// type into password fields on any site rather than only on loopback dev
+/// servers.
 /// A session's tab saves to `<worktree>/.zwiim/browser/<id>/`, removed with
 /// the session, unless `browser.downloads.set_location {root}` chose a
 /// folder (`root` an existing absolute folder, null for the default): then
