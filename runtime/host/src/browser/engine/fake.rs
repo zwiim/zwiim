@@ -375,6 +375,7 @@ impl FakeEngine {
             | "Page.reload"
             | "Page.stopLoading"
             | "Runtime.enable"
+            | "Network.enable"
             | "Emulation.setUserAgentOverride"
             | "Emulation.setDeviceMetricsOverride"
             | "Page.startScreencast"

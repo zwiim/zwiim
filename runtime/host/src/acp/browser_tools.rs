@@ -498,6 +498,9 @@ pub struct BrowserTabOutcome {
     /// that is not up yet is the ordinary shape of this.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_error: Option<String>,
+    /// What the tab fetched, for `browser_network_log`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<crate::browser::network::NetworkReadout>,
     /// One of the `browser_*` slugs above. `None` exactly when the call did
     /// what it was asked to.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -513,6 +516,19 @@ impl BrowserTabOutcome {
             tab_id: Some(summary.tab_id.clone()),
             tab: Some(summary),
             load_error,
+            network: None,
+            error: None,
+            note: None,
+        }
+    }
+
+    /// What tab `tab_id` fetched.
+    pub fn network(tab_id: &str, readout: crate::browser::network::NetworkReadout) -> Self {
+        Self {
+            tab_id: Some(tab_id.to_string()),
+            tab: None,
+            load_error: None,
+            network: Some(readout),
             error: None,
             note: None,
         }
@@ -524,6 +540,7 @@ impl BrowserTabOutcome {
             tab_id: Some(tab_id.to_string()),
             tab: None,
             load_error: None,
+            network: None,
             error: None,
             note: Some(format!("Browser tab {tab_id} is closed.")),
         }
@@ -534,6 +551,7 @@ impl BrowserTabOutcome {
             tab_id: tab_id.map(str::to_string),
             tab: None,
             load_error: None,
+            network: None,
             error: Some(error.to_string()),
             note: Some(note.into()),
         }
@@ -579,6 +597,14 @@ pub enum BrowserTabOp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
     },
+    /// Read what the tab fetched; with `har`, also write it to a HAR file.
+    Network {
+        tab_id: String,
+        #[serde(default)]
+        query: crate::browser::network::NetworkQuery,
+        #[serde(default)]
+        har: bool,
+    },
 }
 
 impl BrowserTabOp {
@@ -590,9 +616,8 @@ impl BrowserTabOp {
             Self::Navigate { tab_id, .. }
             | Self::Close { tab_id }
             | Self::Wait { tab_id, .. }
-            | Self::Permissions { tab_id, .. } => {
-                Some(tab_id)
-            }
+            | Self::Network { tab_id, .. }
+            | Self::Permissions { tab_id, .. } => Some(tab_id),
         }
     }
 }

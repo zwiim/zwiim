@@ -24,6 +24,7 @@ use super::capture::{self, CaptureOutcome, CaptureRegion, CaptureRequest};
 use super::console::{ConsoleLevel, ConsoleQuery};
 use super::engine::cdp::Cdp;
 use super::eval::EvalRequest;
+use super::network::{self, NetworkEntry};
 use super::service::{AgentAction, BrowserError, BrowserEvent, BrowserService, TabInfo};
 use super::store::TabOwner;
 use super::ui::UiKind;
@@ -293,6 +294,31 @@ pub(crate) async fn tab_op(
                 Err(e) => BrowserTabOutcome::refused(Some(&tab_id), ERROR_ACTION_FAILED, e.message),
             };
         }
+        BrowserTabOp::Network { tab_id, query, har } => {
+            let Some(tab) = own_tab(browser, session, &tab_id).await else {
+                return BrowserTabOutcome::refused(
+                    Some(&tab_id),
+                    ERROR_NO_SUCH_TAB,
+                    no_such_tab(&tab_id),
+                );
+            };
+            let Some(mut readout) = browser.network(&tab_id, &query).await else {
+                return BrowserTabOutcome::refused(
+                    Some(&tab_id),
+                    ERROR_NO_SUCH_TAB,
+                    no_such_tab(&tab_id),
+                );
+            };
+            if har {
+                match write_har(browser, &tab, &readout.entries).await {
+                    Ok(path) => readout.har = Some(path),
+                    Err(m) => {
+                        return BrowserTabOutcome::refused(Some(&tab_id), ERROR_READ_FAILED, m)
+                    }
+                }
+            }
+            return BrowserTabOutcome::network(&tab_id, readout);
+        }
         BrowserTabOp::Wait {
             tab_id,
             text,
@@ -350,6 +376,28 @@ pub(crate) async fn tab_op(
         Some(tab) => BrowserTabOutcome::tab(summary(&tab), load_error),
         None => BrowserTabOutcome::refused(Some(&tab_id), ERROR_OPEN_FAILED, no_such_tab(&tab_id)),
     }
+}
+
+/// Write `entries` as a HAR file in the session's browser folder; its path.
+async fn write_har(
+    browser: &BrowserService,
+    tab: &TabInfo,
+    entries: &[NetworkEntry],
+) -> Result<String, String> {
+    let dir = browser
+        .files_folder(&tab.owner)
+        .await
+        .ok_or("this session has no folder to write to")?;
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("could not make {}: {e}", dir.display()))?;
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let path = super::saving::free_name(&dir, &format!("network-{}-{stamp}.har", tab.id));
+    let text = serde_json::to_vec_pretty(&network::har(entries)).map_err(|e| e.to_string())?;
+    tokio::fs::write(&path, text)
+        .await
+        .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 /// Send the tab to `url` and wait for the page to load, at most
@@ -1508,6 +1556,27 @@ mod tests {
         assert!(
             lines.iter().any(|l| l.text == "boom 42" && l.top),
             "{lines:?}"
+        );
+
+        // The page's own load is in its network log.
+        let log = tab_op(
+            &browser,
+            &worlds,
+            "s1",
+            BrowserTabOp::Network {
+                tab_id: tab.clone(),
+                query: Default::default(),
+                har: false,
+            },
+        )
+        .await;
+        let log = log.network.unwrap_or_else(|| panic!("{:?}", log.note));
+        assert!(
+            log.entries
+                .iter()
+                .any(|e| e.url == url && e.kind == "Document" && e.status == Some(200)),
+            "{:?}",
+            log.entries
         );
 
         let whole = screenshot(&browser, &worlds, "s1", &tab, &CaptureRequest::default()).await;

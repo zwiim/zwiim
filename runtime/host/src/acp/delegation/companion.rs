@@ -265,7 +265,7 @@ impl CompanionFeatures {
             | "browser_screenshot" | "browser_click" | "browser_hover" | "browser_type"
             | "browser_press_key" | "browser_select_option" | "browser_open_tab"
             | "browser_navigate" | "browser_close_tab" | "browser_wait_for"
-            | "browser_set_permissions" => self.browser,
+            | "browser_set_permissions" | "browser_network_log" => self.browser,
             // Both, so a `--features browser_eval` with no `browser` — a
             // parent bug, or someone editing the agent's MCP config by hand —
             // cannot leave the strongest tool as the only one present.
@@ -858,7 +858,7 @@ async fn build_tools_call_spawn(
             register_and_spawn(inflight, id, None, round_trip, render_browser_eval_result).await
         }
         "browser_open_tab" | "browser_navigate" | "browser_close_tab" | "browser_wait_for"
-        | "browser_set_permissions" => {
+        | "browser_set_permissions" | "browser_network_log" => {
             let op = match browser_tab_op(name.as_str(), &arguments) {
                 Ok(parsed) => parsed,
                 Err(msg) => return LineAction::Respond(err(id, -32602, msg)),
@@ -2035,6 +2035,34 @@ pub fn browser_tab_op(
                 timeout_ms,
             })
         }
+        "browser_network_log" => {
+            let tab_id = text("tabId")?;
+            let flag = |key: &str| match arguments.get(key) {
+                None => Ok(false),
+                Some(Value::Bool(b)) => Ok(*b),
+                Some(_) => Err(format!("{name}: `{key}` must be true or false")),
+            };
+            let since = match arguments.get("since") {
+                None => 0,
+                Some(v) => v
+                    .as_u64()
+                    .ok_or_else(|| format!("{name}: `since` must be a whole number"))?,
+            };
+            let filter = match arguments.get("filter") {
+                None => None,
+                Some(_) => Some(self::text_arg(arguments, "filter", name)?),
+            };
+            Ok(BrowserTabOp::Network {
+                tab_id,
+                query: crate::browser::network::NetworkQuery {
+                    since,
+                    filter,
+                    failed_only: flag("failedOnly")?,
+                    limit: None,
+                },
+                har: flag("har")?,
+            })
+        }
         other => Err(format!("unknown browser tab tool {other}")),
     }
 }
@@ -2058,6 +2086,13 @@ fn text_arg(arguments: &Value, key: &str, name: &str) -> Result<String, String> 
 /// it may not it has to ask the user about. Saying only "opened" would leave
 /// it to find that out by being refused.
 pub fn render_browser_tab_op_result(outcome: &Value) -> Value {
+    if let Some(network) = outcome.get("network").filter(|n| n.is_object()) {
+        return json!({
+            "content": [{ "type": "text", "text": network_text(network) }],
+            "structuredContent": outcome,
+            "isError": false,
+        });
+    }
     let text = match outcome.get("tab") {
         Some(tab) if tab.is_object() => {
             let id = tab.get("tabId").and_then(Value::as_str).unwrap_or("?");
@@ -2115,6 +2150,65 @@ pub fn render_browser_tab_op_result(outcome: &Value) -> Value {
         "structuredContent": outcome,
         "isError": false,
     })
+}
+
+/// A `browser_network_log` readout (a serialized
+/// [`crate::browser::network::NetworkReadout`]), one request a line.
+fn network_text(network: &Value) -> String {
+    let entries = network
+        .get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let url = network.get("url").and_then(Value::as_str).unwrap_or("");
+    let mut out = if entries.is_empty() {
+        format!("No requests to show for the page at {url}.")
+    } else {
+        format!(
+            "Requests of the page at {url} ({}), oldest first:\n",
+            entries.len()
+        )
+    };
+    for e in &entries {
+        let s = |k: &str| e.get(k).and_then(Value::as_str).unwrap_or("");
+        let n = |k: &str| e.get(k).and_then(Value::as_u64);
+        let outcome = match (s("error"), n("status")) {
+            ("", Some(status)) => status.to_string(),
+            ("", None) => "pending".to_string(),
+            (error, _) => format!("failed: {error}"),
+        };
+        out.push_str(&format!(
+            "  #{} {} {} [{}] {}",
+            n("seq").unwrap_or(0),
+            s("method"),
+            s("url"),
+            s("type"),
+            outcome
+        ));
+        if let Some(ms) = n("durationMs") {
+            out.push_str(&format!(" {ms}ms"));
+        }
+        if let Some(size) = n("size") {
+            out.push_str(&format!(" {size}B"));
+        }
+        out.push('\n');
+    }
+    if let Some(omitted) = network
+        .get("omitted")
+        .and_then(Value::as_u64)
+        .filter(|n| *n > 0)
+    {
+        out.push_str(&format!("{omitted} older requests left out.\n"));
+    }
+    if let Some(next) = network.get("nextSince").and_then(Value::as_u64) {
+        out.push_str(&format!("Pass since: {next} to see only newer requests."));
+    }
+    if let Some(har) = network.get("har").and_then(Value::as_str) {
+        out.push_str(&format!(
+            " HAR written to {har} (cookies and credentials removed)."
+        ));
+    }
+    out
 }
 
 /// Map a `browser_eval` round-trip outcome (a serialized
@@ -4387,6 +4481,7 @@ mod tests {
                 "browser_select_option".to_string(),
                 "browser_wait_for".to_string(),
                 "browser_set_permissions".to_string(),
+                "browser_network_log".to_string(),
             ]
         );
         // The strongest tool in the group is not in the group: sharing the
@@ -4832,6 +4927,23 @@ mod tests {
             }
         );
         assert_eq!(
+            browser_tab_op(
+                "browser_network_log",
+                &json!({ "tabId": "t1", "since": 4, "filter": "/api/", "failedOnly": true, "har": true })
+            )
+            .unwrap(),
+            BrowserTabOp::Network {
+                tab_id: "t1".into(),
+                query: crate::browser::network::NetworkQuery {
+                    since: 4,
+                    filter: Some("/api/".into()),
+                    failed_only: true,
+                    limit: None,
+                },
+                har: true,
+            }
+        );
+        assert_eq!(
             browser_tab_op("browser_close_tab", &json!({ "tabId": "t1" })).unwrap(),
             BrowserTabOp::Close {
                 tab_id: "t1".into()
@@ -4860,10 +4972,36 @@ mod tests {
             ("browser_navigate", json!({ "tabId": "t1" }), "`url`"),
             ("browser_close_tab", json!({}), "`tabId`"),
             ("browser_wait_for", json!({ "tabId": "t1" }), "exactly one"),
-            ("browser_set_permissions", json!({ "tabId": "t1" }), "`grant`"),
-            ("browser_set_permissions", json!({ "tabId": "t1", "grant": ["usb"] }), "one of"),
-            ("browser_wait_for", json!({ "tabId": "t1", "text": "a", "selector": "b" }), "exactly one"),
-            ("browser_wait_for", json!({ "tabId": "t1", "text": "a", "timeoutMs": 0 }), "`timeoutMs`"),
+            (
+                "browser_set_permissions",
+                json!({ "tabId": "t1" }),
+                "`grant`",
+            ),
+            (
+                "browser_set_permissions",
+                json!({ "tabId": "t1", "grant": ["usb"] }),
+                "one of",
+            ),
+            (
+                "browser_wait_for",
+                json!({ "tabId": "t1", "text": "a", "selector": "b" }),
+                "exactly one",
+            ),
+            (
+                "browser_wait_for",
+                json!({ "tabId": "t1", "text": "a", "timeoutMs": 0 }),
+                "`timeoutMs`",
+            ),
+            (
+                "browser_network_log",
+                json!({ "tabId": "t1", "since": -1 }),
+                "`since`",
+            ),
+            (
+                "browser_network_log",
+                json!({ "tabId": "t1", "har": "yes" }),
+                "`har`",
+            ),
         ] {
             let err = browser_tab_op(name, &args).unwrap_err();
             assert!(err.contains(wanted), "{name}: {err}");
@@ -4928,6 +5066,33 @@ mod tests {
         let e = resp.error.unwrap();
         assert_eq!(e.code, -32602);
         assert!(e.message.contains("`ref`"));
+    }
+
+    #[test]
+    fn a_network_log_lists_each_request_and_where_the_har_went() {
+        let result = render_browser_tab_op_result(&json!({
+            "tabId": "t1",
+            "network": {
+                "url": "http://localhost:3000/",
+                "entries": [
+                    { "seq": 3, "method": "POST", "url": "http://localhost:3000/api/orders", "type": "Fetch",
+                      "status": 500, "started": 0, "durationMs": 42, "size": 120 },
+                    { "seq": 4, "method": "GET", "url": "http://localhost:3000/app.js", "type": "Script",
+                      "started": 0, "error": "net::ERR_ABORTED" }
+                ],
+                "omitted": 7, "dropped": 0, "nextSince": 4, "har": "/w/.zwiim/browser/s/network.har"
+            }
+        }));
+        let text = result["content"][0]["text"].as_str().unwrap();
+        for said in [
+            "#3 POST http://localhost:3000/api/orders [Fetch] 500 42ms 120B",
+            "failed: net::ERR_ABORTED",
+            "7 older requests",
+            "since: 4",
+            "/w/.zwiim/browser/s/network.har",
+        ] {
+            assert!(text.contains(said), "{said}: {text}");
+        }
     }
 
     #[test]

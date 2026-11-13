@@ -22,6 +22,7 @@ use tokio::sync::{broadcast, watch, Mutex};
 use super::console::{self, ConsoleQuery, ConsoleReadout, ConsoleRing};
 use super::engine::cdp::{Cdp, Event};
 use super::engine::manager::{EngineError, EngineManager, EngineState};
+use super::network::{NetworkQuery, NetworkReadout, NetworkRing};
 use super::snapshot::{self, PersonalSnapshot};
 use super::saving;
 use super::store::{self, TabOwner, TabRecord};
@@ -167,6 +168,8 @@ struct Inner {
     consoles: HashMap<String, Console>,
     /// When a person last typed into each tab (design 10.3).
     typed: HashMap<String, tokio::time::Instant>,
+    /// What session tabs fetched, by tab id (design 10.2).
+    networks: HashMap<String, NetworkRing>,
 }
 
 /// One tab's console lines, and its page's execution contexts: whether each
@@ -232,6 +235,7 @@ impl BrowserService {
                 saving: HashMap::new(),
                 consoles: HashMap::new(),
                 typed: HashMap::new(),
+                networks: HashMap::new(),
             }),
             events: broadcast::channel(EVENT_BUFFER).0,
         });
@@ -326,6 +330,7 @@ impl BrowserService {
         let tab = inner.tabs.remove(tab_id).ok_or_else(|| not_found(tab_id))?;
         inner.consoles.remove(tab_id);
         inner.typed.remove(tab_id);
+        inner.networks.remove(tab_id);
         self.drop_ui_locked(&mut inner, |r| r.tab_id == tab_id);
         if let (Some(live), Some(cdp)) = (&tab.live, &inner.cdp) {
             let _ = cdp
@@ -641,6 +646,7 @@ impl BrowserService {
         // pages can tell `Runtime` is on.
         if matches!(owner, TabOwner::Session { .. }) {
             cdp.call("Runtime.enable", json!({}), s).await?;
+            cdp.call("Network.enable", json!({}), s).await?;
         }
         if let Some(ua) = &inner.user_agent {
             cdp.call(
@@ -912,6 +918,24 @@ impl BrowserService {
                     _ => {}
                 }
             }
+            "Network.requestWillBeSent"
+            | "Network.responseReceived"
+            | "Network.loadingFinished"
+            | "Network.loadingFailed" => {
+                let Some(id) = event
+                    .session_id
+                    .as_deref()
+                    .and_then(|s| by_session(&inner, s))
+                else {
+                    return;
+                };
+                let now = chrono::Utc::now().timestamp_millis();
+                inner
+                    .networks
+                    .entry(id)
+                    .or_default()
+                    .on_event(&event.method, p, now);
+            }
             "Runtime.executionContextCreated"
             | "Runtime.executionContextsCleared"
             | "Runtime.consoleAPICalled"
@@ -1052,6 +1076,26 @@ impl BrowserService {
         let empty = Console::default();
         let console = inner.consoles.get(tab_id).unwrap_or(&empty);
         Some(console.ring.read(query, &tab.info.url, |_| true))
+    }
+
+    /// What tab `tab_id` fetched, if it is open.
+    pub async fn network(&self, tab_id: &str, query: &NetworkQuery) -> Option<NetworkReadout> {
+        let inner = self.inner.lock().await;
+        let tab = inner.tabs.get(tab_id)?;
+        let empty = NetworkRing::default();
+        let ring = inner.networks.get(tab_id).unwrap_or(&empty);
+        Some(ring.read(query, &tab.info.url))
+    }
+
+    /// How many of tab `tab_id`'s requests are still waiting on an answer.
+    pub async fn network_busy(&self, tab_id: &str) -> usize {
+        let inner = self.inner.lock().await;
+        inner.networks.get(tab_id).map_or(0, NetworkRing::busy)
+    }
+
+    /// Where `owner`'s browser files go: its downloads folder.
+    pub async fn files_folder(&self, owner: &TabOwner) -> Option<std::path::PathBuf> {
+        saving::folder_for(&self.db, owner).await
     }
 
     /// A person typed into tab `tab_id`.
