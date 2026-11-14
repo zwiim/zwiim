@@ -10,7 +10,7 @@ import { moveMenuFocus } from "@/panels/ControlCenter";
 import { cn } from "@/lib/utils";
 
 export const POP = "bg-card text-card-foreground ring-border presence-pop shadow-pop absolute z-20 rounded-xl p-1.5 ring-1 outline-none";
-const ITEM =
+export const ITEM =
   "hover:bg-muted focus-visible:bg-muted flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-ui transition-colors outline-none disabled:opacity-50";
 
 type Place = (p: { x: number; y: number }) => { x: number; y: number } | null;

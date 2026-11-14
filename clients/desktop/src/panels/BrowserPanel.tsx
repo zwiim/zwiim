@@ -36,6 +36,7 @@ import {
   type BrowserAgentAction,
   type BrowserEngine,
   type BrowserMenu,
+  type BrowserPreviewId,
   type BrowserScreenFrame,
   type BrowserStream,
   type BrowserTab,
@@ -67,6 +68,7 @@ import { DatePicker, FindBar, isPick, PageMenu, SelectPicker, type MenuAction, t
 import { BrowserLogin } from "@/panels/BrowserLogin";
 import { BrowserSites } from "@/panels/BrowserSites";
 import { BrowserSteps } from "@/panels/BrowserSteps";
+import { BrowserPreview } from "@/panels/BrowserPreview";
 import { cn } from "@/lib/utils";
 
 const CLOSE =
@@ -302,6 +304,7 @@ export function BrowserPanel({
               ? () => void run(() => controller.setBrowserReloadOnSave(tab.tab_id, !tab.reload_on_save))
               : null
           }
+          onPreview={(preview) => void run(() => controller.setBrowserPreview(tab.tab_id, preview))}
         />
       )}
       {picking && picking.tabId === tab?.tab_id && (
@@ -769,6 +772,7 @@ function AddressBar({
   onPick,
   picking,
   onReloadOnSave,
+  onPreview,
 }: {
   tab: BrowserTab;
   inputRef: React.RefObject<HTMLInputElement | null>;
@@ -781,6 +785,7 @@ function AddressBar({
   picking: boolean;
   /** Turn reload on save on or off; null for a tab without a worktree, or an older Host. */
   onReloadOnSave: (() => void) | null;
+  onPreview(preview: BrowserPreviewId | null): void;
 }) {
   // What the person is typing; the tab's own URL whenever they are not.
   const [draft, setDraft] = useState<string | null>(null);
@@ -853,6 +858,7 @@ function AddressBar({
           <RefreshCcwDot />
         </Button>
       )}
+      <BrowserPreview tab={tab} disabled={disabled} onChoose={onPreview} />
       <Button type="button" size="icon-sm" variant="ghost" title="Save as PDF" disabled={disabled} onClick={onPrint}>
         <Printer />
       </Button>
@@ -869,6 +875,14 @@ function AddressBar({
     </form>
   );
 }
+
+/** Room left round a previewed device, for its outline. */
+const PREVIEW_MARGIN = 16;
+const shrink = (box: { width: number; height: number }) => ({
+  width: Math.max(0, box.width - 2 * PREVIEW_MARGIN),
+  height: Math.max(0, box.height - 2 * PREVIEW_MARGIN),
+});
+const inset = (f: Fit): Fit => ({ ...f, x: f.x + PREVIEW_MARGIN, y: f.y + PREVIEW_MARGIN });
 
 /** The viewport the Host's tab takes for a box this size. */
 function viewportOf(box: { width: number; height: number }) {
@@ -919,6 +933,10 @@ export function BrowserView({
   // The last frame's page size and where it was drawn, for mapping the pointer.
   const page = useRef({ width: 0, height: 0 });
   const fit = useRef<Fit>({ x: 0, y: 0, width: 0, height: 0 });
+  // Where the frame sits, for the device outline of a previewed tab.
+  const [frameBox, setFrameBox] = useState<Fit | null>(null);
+  const previewed = useRef(!!tab.preview);
+  previewed.current = !!tab.preview;
   const [attempt, setAttempt] = useState(0);
   const [failure, setFailure] = useState<string | null>(null);
   const [painted, setPainted] = useState(false);
@@ -951,7 +969,10 @@ export function BrowserView({
         c.height = h;
       }
       page.current = { width: frame.css_width, height: frame.css_height };
-      fit.current = fitFrame(rect, page.current);
+      const was = fit.current;
+      fit.current = previewed.current ? inset(fitFrame(shrink(rect), page.current)) : fitFrame(rect, page.current);
+      const now = fit.current;
+      if (now.x !== was.x || now.y !== was.y || now.width !== was.width || now.height !== was.height) setFrameBox(now);
       const ctx = c.getContext("2d");
       if (!ctx) return;
       ctx.clearRect(0, 0, w, h);
@@ -1149,6 +1170,14 @@ export function BrowserView({
           if (text) send({ type: "text", text });
         }}
       />
+      {painted && tab.preview && frameBox && frameBox.width > 0 && (
+        <div
+          aria-hidden
+          data-testid="preview-outline"
+          className="ring-border pointer-events-none absolute rounded-[20px] ring-[6px]"
+          style={{ left: frameBox.x, top: frameBox.y, width: frameBox.width, height: frameBox.height }}
+        />
+      )}
       {painted && agent && (
         <GhostCursor
           key={agent.action.tab_id}

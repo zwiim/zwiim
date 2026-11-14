@@ -394,6 +394,26 @@ describe("browser panel", () => {
     expect(t.calls.filter((c) => c.op === "browser.tab.reload_on_save").at(-1)!.params).toEqual({ tab_id: "a", on: false });
   });
 
+  it("previews a tab as a phone and back as a desktop page", async () => {
+    const t = new StreamingTransport();
+    t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
+    t.handlers["browser.view.close"] = () => ({});
+    t.handlers["browser.tab.preview"] = (p) => tab("a", p.preview ? { preview: p.preview } : {});
+    await mount(t, [tab("a")]);
+    fireEvent.click(screen.getByTitle("Preview as a phone or tablet"));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /iPhone/ }));
+    await tick();
+    expect(t.calls.find((c) => c.op === "browser.tab.preview")!.params).toEqual({ tab_id: "a", preview: "iphone" });
+    await act(async () => t.frame({ type: "browser.tab.state", tab: tab("a", { preview: "iphone" }) } as never));
+    const on = screen.getByTitle("Previewing as iPhone");
+    expect(on.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(on);
+    expect(screen.getByRole("menuitemradio", { name: /iPhone/ }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Desktop/ }));
+    await tick();
+    expect(t.calls.filter((c) => c.op === "browser.tab.preview").at(-1)!.params).toEqual({ tab_id: "a", preview: null });
+  });
+
   it("offers no reload on save for the person's tabs, or an older host", async () => {
     const t = new StreamingTransport();
     t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
