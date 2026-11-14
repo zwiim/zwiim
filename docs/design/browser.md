@@ -1306,6 +1306,7 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
    Browser screen with P2a.
 7. Deployment notes for the droplet: setting the `zwiim_cloud` password,
    and `ZWIIM_CLOUD_USAGE_DATABASE_URL` in the `0600` env file.
+   Done in `docs/deploy/self-hosting.md`.
 
 ### P1 — Host browser, agents, desktop (covers R1, R3, R4 on the Mac)
 

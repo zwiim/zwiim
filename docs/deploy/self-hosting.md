@@ -34,6 +34,48 @@ ZWIIM_CLOUD_SUPABASE_URL=https://<ref>.supabase.co
 Or keep the default loopback address and put an HTTPS reverse proxy in front.
 All settings are in [Cloud settings](local-cloud.md#cloud-settings).
 
+## Relay usage and plan limits
+
+Without a usage database the Cloud counts relay bytes in memory and limits
+nothing. To store usage and apply the plans' limits (browser design 15):
+
+1. Apply the migration in `runtime/cloud/supabase/migrations/` to the
+   Supabase project, with `supabase db push` or by pasting it into the SQL
+   editor. It adds the plans, usage tables and the `zwiim_cloud` role,
+   which can only call `add_relay_usage()`.
+2. Give that role a login in the SQL editor. Generate the password on your
+   machine and keep it out of the repository, issues and shell history:
+   ```sql
+   alter role zwiim_cloud with login password '<generated>';
+   ```
+3. Put the URL in an env file only root can read, through the project's
+   pooler in session mode (Database settings → Connection string, port 5432):
+   ```sh
+   sudo install -d -m 0700 /etc/zwiim-cloud
+   sudo install -m 0600 /dev/null /etc/zwiim-cloud/cloud.env
+   sudoedit /etc/zwiim-cloud/cloud.env
+   ```
+   ```sh
+   ZWIIM_CLOUD_USAGE_DATABASE_URL=postgres://zwiim_cloud.<ref>:<password>@<pooler-host>:5432/postgres
+   ```
+   The Cloud requires TLS to a database on another machine and checks its
+   certificate against the system roots. If that check fails, download the
+   project's CA certificate (Database settings → SSL configuration) and set
+   `ZWIIM_CLOUD_USAGE_DATABASE_CA` to its path.
+4. Load the file in the service, for example with systemd:
+   ```ini
+   [Service]
+   EnvironmentFile=/etc/zwiim-cloud/cloud.env
+   ExecStart=/usr/local/bin/zwiim-cloud
+   ```
+5. Restart and check the startup line says `usage=database`. A
+   `usage store unavailable` or `usage sync failed` warning means the Cloud
+   can't reach the database; it keeps relaying and limits nothing until it
+   can.
+
+Never give the Cloud the service-role key: the `zwiim_cloud` role is all it
+needs.
+
 ## Point the apps at it
 
 Build Desktop with `ZWIIM_CLOUD_URL`, `ZWIIM_SUPABASE_URL` and
