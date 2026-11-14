@@ -114,47 +114,6 @@ pub struct BrowserTabState {
     pub agent_grant: Option<crate::browser::agent::AgentGrant>,
 }
 
-/// Answer to `browser_capabilities`: what this build on this machine can do.
-///
-/// Desktop-only, unlike the rest of this file: it quotes the proxy and policy
-/// status types, which are themselves about a webview this process owns. The
-/// question it answers — "what can the built-in browser do here?" — has no
-/// meaning in a runtime that has no built-in browser.
-#[cfg(feature = "tauri-runtime")]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BrowserCapabilities {
-    pub available: bool,
-    pub surface: Option<SurfaceKind>,
-    pub platform: String,
-    pub channel: ChannelKind,
-    /// Human-readable reasons behind a degraded answer (for diagnostics UI).
-    pub reasons: Vec<String>,
-    /// Browsing data lives apart from the app's own web storage.
-    pub isolated_storage: bool,
-    pub proxy: crate::browser::profile::BrowserProxyStatus,
-    /// Where a page's downloads land, for the settings section.
-    pub downloads_dir: String,
-    /// The administrator's policy in force (rules shown read-only, and
-    /// whether the browser is enabled at all).
-    pub policy: crate::browser::policy::BrowserPolicyStatus,
-    /// Local HTML files can be shown through the `zwiim-doc:` document guest
-    /// (an embedded surface with a handler for that scheme).
-    pub doc_guest: bool,
-    /// More than the default browser profile can exist (macOS 14+, Windows,
-    /// Linux); the settings offer to create, clear and delete them.
-    pub profiles: bool,
-    /// Tabs present the sign-in user agent to Google's sign-in hosts when the
-    /// preference is on (needs a navigation hook: the embedded tabs' delegate,
-    /// or the owned window's navigation decision on Linux).
-    pub sign_in_user_agent: bool,
-    /// A tab shown in an owned window still answers find, history, stop and
-    /// snapshots, and its page still talks to the host. True where the owned
-    /// window is the surface the platform shim is written for (Linux); false
-    /// where it is the fallback and the host does not hold its webview.
-    pub owned_window_controls: bool,
-}
-
 /// The last frame of a page, handed back by `browser_set_visible` when the
 /// frontend hides a surface under an overlay: the placeholder paints it so
 /// the page does not vanish while a dialog or menu is open over it.

@@ -111,7 +111,6 @@ mod tauri_app {
     use crate::commands::{
         acp as acp_commands, app_update as app_update_commands,
         automation as automation_commands, background as background_commands, backup,
-        browser as browser_commands,
         canvas as canvas_commands,
         chat_authoring as chat_authoring_commands, chat_channel as chat_channel_commands,
         config_sync,
@@ -561,11 +560,6 @@ mod tauri_app {
                 None,
             ))
             .manage(ConnectionManager::new())
-            .manage(crate::browser::BrowserRegistry::default())
-            .manage(crate::browser::BrowserDownloads::default())
-            .manage(crate::browser::DocGuests::default())
-            .manage(crate::browser::confirm::EvalConsent::new())
-            .manage(crate::browser::open_request::OpenRequests::new())
             .manage(crate::browser::policy::BrowserPolicy::load())
             .manage(TerminalManager::new())
             .manage(ChatChannelManager::new())
@@ -1064,12 +1058,6 @@ mod tauri_app {
                                 chat_authoring_config.clone(),
                             ),
                         ),
-                        std::sync::Arc::new(
-                            crate::commands::browser::McpBrowserTools::new(
-                                app.handle().clone(),
-                                browser_tools_config.clone(),
-                            ),
-                        ),
                         std::sync::Arc::new(crate::acp::git_tools::HostGitTools {
                             manager: std::sync::Arc::new(cm_state.clone_ref()),
                             db: std::sync::Arc::new(db::AppDatabase {
@@ -1251,16 +1239,6 @@ mod tauri_app {
                     ),
                 );
 
-                // Before any inspectable webview exists: web inspectors in
-                // this app open in a window of their own instead of docking
-                // into the window they are inspecting, which for a browser
-                // tab would be the whole workspace. Here rather than at the
-                // menu item that opens one, because a page can be
-                // right-clicked into "Inspect Element" without going through
-                // any of our code.
-                #[cfg(target_os = "macos")]
-                crate::browser::shim::macos::prefer_detached_inspector();
-
                 // Single-window workspace: ensure the main window exists.
                 // Workspace state (open folders, opened tabs, active tab) is
                 // restored by the frontend via `list_open_folder_details` /
@@ -1283,16 +1261,6 @@ mod tauri_app {
                         windows::post_window_setup(&w);
                     }
                 }
-
-                #[cfg(all(
-                    feature = "browser-child",
-                    any(target_os = "macos", target_os = "windows")
-                ))]
-                crate::browser::surface_child::init_main_thread();
-                crate::browser::surface_window::init_main_thread();
-
-                #[cfg(feature = "browser-smoke")]
-                crate::browser::smoke::spawn_if_enabled(app.handle().clone());
 
                 Ok(())
             })
@@ -1337,12 +1305,6 @@ mod tauri_app {
             })
             .on_window_event(|window, event| {
                 let label = window.label().to_string();
-
-                // A window's browser tabs die with it: child webviews are
-                // destroyed by the platform, owned windows are closed here.
-                if matches!(event, tauri::WindowEvent::Destroyed) {
-                    browser_commands::close_all_for_owner(window.app_handle(), &label);
-                }
 
                 if (label == "settings" || label.starts_with("remote-settings-"))
                     && matches!(
@@ -1491,45 +1453,6 @@ mod tauri_app {
                 }
             })
             .invoke_handler(tauri::generate_handler![
-                browser_commands::browser_capabilities,
-                browser_commands::browser_open_tab,
-                browser_commands::browser_close,
-                browser_commands::browser_set_bounds,
-                browser_commands::browser_set_visible,
-                browser_commands::browser_freeze_frame,
-                browser_commands::browser_navigate,
-                browser_commands::browser_reload,
-                browser_commands::browser_go_back,
-                browser_commands::browser_go_forward,
-                browser_commands::browser_stop,
-                browser_commands::browser_open_devtools,
-                browser_commands::browser_get_state,
-                browser_commands::browser_list_tabs,
-                browser_commands::browser_list_services,
-                browser_commands::browser_clear_data,
-                browser_commands::browser_find,
-                browser_commands::browser_list_downloads,
-                browser_commands::browser_reveal_download,
-                browser_commands::browser_clear_downloads,
-                browser_commands::browser_set_host_rules,
-                browser_commands::browser_set_sign_in_user_agent,
-                browser_commands::browser_set_blank_page_theme,
-                browser_commands::browser_remove_profile,
-                browser_commands::browser_doc_open,
-                browser_commands::browser_doc_set_mode,
-                browser_commands::browser_doc_state,
-                browser_commands::browser_agent_grant,
-                browser_commands::browser_agent_snapshot,
-                browser_commands::browser_agent_act,
-                browser_commands::browser_agent_console,
-                browser_commands::browser_agent_capture,
-                browser_commands::browser_agent_eval,
-                browser_commands::browser_eval_decide,
-                browser_commands::browser_answer_open_request,
-                browser_commands::browser_pick_element,
-                browser_commands::browser_pick_cancel,
-                browser_commands::browser_page_capture,
-                browser_commands::browser_page_console,
                 conversations::list_conversations,
                 conversations::get_conversation,
                 conversations::list_all_conversations,

@@ -6,9 +6,8 @@
 //! `browser_select_option`) carried by zwiim-mcp.
 //!
 //! Nothing here decides whether a page may be read or acted on. That decision
-//! is `crate::browser::agent`'s, and it is enforced inside
-//! `commands::browser::agent_snapshot_core` / `agent_act_core`, which the
-//! production impl calls — so an MCP read passes the same grant check, and
+//! is `crate::browser::agent`'s, and it is enforced inside the production
+//! impl of [`BrowserToolAccess`] — so an MCP read passes the same grant check, and
 //! leaves the same line on the tab's activity strip, as any other read. A tool
 //! surface that reimplemented the check would be a second place to get it
 //! wrong, and the first place someone forgot to emit the audit line from.
@@ -637,8 +636,8 @@ impl BrowserTabOp {
 }
 
 /// Listener-facing access to the built-in browser's agent surface. The
-/// production impl (`crate::commands::browser::McpBrowserTools`) exists only in
-/// the desktop build; server mode and tests use [`NoBrowserTabs`]. Mirrors
+/// production impl is the Host's `crate::browser::tools::HostBrowserTools`;
+/// tests use [`NoBrowserTabs`]. Mirrors
 /// [`crate::acp::session_info::SessionInfoAccess`].
 ///
 /// `caller` is the agent's parent connection, from its token: the impl finds

@@ -269,7 +269,8 @@ pub struct BrokerBrowserTabsRequest {
 }
 
 /// Read one shared page. Backs the `browser_snapshot` MCP tool; the grant check
-/// and the audit line both happen behind it, in `agent_snapshot_core`.
+/// and the audit line both happen behind it, in the `BrowserToolAccess` impl
+/// (the Host's is `browser::tools::HostBrowserTools`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrokerBrowserSnapshotRequest {
     pub token: String,
@@ -284,7 +285,7 @@ pub struct BrokerBrowserSnapshotRequest {
 /// `browser_hover`, `browser_type`, `browser_press_key`,
 /// `browser_select_option`), which differ only in the action they carry; the
 /// `control` check, the ref check and the audit line all happen behind it, in
-/// `agent_act_core`.
+/// the `BrowserToolAccess` impl.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrokerBrowserActRequest {
     pub token: String,
@@ -316,12 +317,12 @@ pub struct BrokerBrowserCaptureRequest {
 
 /// Run the caller's own code on one shared page. Backs the `browser_eval` MCP
 /// tool; its own switch, the `control` check, the per-snippet confirmation and
-/// the audit line all happen behind it, in `agent_eval_core`.
+/// the audit line all happen behind it, in the `BrowserToolAccess` impl. The
+/// Host's leaves `browser_eval` off.
 ///
 /// The only browser round trip that waits on a person, so it can be in flight
-/// for as long as someone takes to read a screen of code — up to
-/// `browser::confirm::EVAL_CONFIRM_TIMEOUT`, which is what stops it waiting
-/// for one who never comes.
+/// for as long as someone takes to read a screen of code; the impl's own
+/// confirmation timeout is what stops it waiting for one who never comes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrokerBrowserEvalRequest {
     pub token: String,
@@ -335,7 +336,7 @@ pub struct BrokerBrowserEvalRequest {
 /// tools, because they share a gate, an answer shape and a renderer.
 ///
 /// Waits for the page to settle, so this round trip is as long as a page
-/// load (`browser::open_request::SETTLE_TIMEOUT`).
+/// load.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrokerBrowserTabOpRequest {
     pub token: String,

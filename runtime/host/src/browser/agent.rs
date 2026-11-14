@@ -566,12 +566,11 @@ pub struct PageSnapshot {
 /// goes A → B → A arrives back at an address that matches.
 ///
 /// What the host actually knows is worth being exact about, because it is
-/// less than it sounds. A new document arrives through the engine's load
-/// callback, promptly. A same-document navigation has no native signal at
-/// all, and reaches the host only because `src/browser-injected/helper.js`
-/// polls `location.href` a few times a second — and only while the document
-/// reports itself visible. So a route change that leaves and returns between
-/// two polls bumps nothing.
+/// less than it sounds. This was written for the upstream webview, where a
+/// same-document navigation had no native signal and was found by polling
+/// `location.href`, so a route change that left and returned between two
+/// polls bumped nothing. The Host's engine reports one
+/// (`Page.navigatedWithinDocument`).
 ///
 /// The epoch narrows that window; it does not close it. Closing it belongs to
 /// the world, which can watch things the host cannot reach at all —

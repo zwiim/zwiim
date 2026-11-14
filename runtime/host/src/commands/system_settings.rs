@@ -633,7 +633,6 @@ pub async fn update_system_proxy_settings(
         .map_err(AppCommandError::from)?;
 
     proxy::apply_system_proxy_settings(&normalized)?;
-    crate::browser::profile::proxy_settings_changed(&app);
     Ok(normalized)
 }
 
