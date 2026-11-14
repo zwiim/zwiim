@@ -19,6 +19,8 @@ have their own versions and are listed under Compatibility.
 - Pick an element in the desktop browser for the chat: the pick button
   highlights what the pointer is on, and a click adds it to your next
   message as page content, without pressing it. Esc cancels.
+- Reload on save: a chat's browser tab can reload by itself whenever files
+  in its worktree change, for dev servers without hot reload.
 - Settings > Devices sets what each paired device may do with the Mac's
   browser: off, watch, or watch and steer its sessions' tabs. A newly
   paired device watches; your own tabs stay on the Mac.

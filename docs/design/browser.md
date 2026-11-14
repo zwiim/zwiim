@@ -714,7 +714,11 @@ its own invisible browser. To make those runs visible too:
    (Settings > Advanced, on unless turned off) controls it. macOS only for
    now: elsewhere the scan finds nothing.
 3. For servers without HMR, an optional "Reload on save" per tab reloads
-   after files in the worktree change (debounced 300 ms).
+   after files in the worktree change (debounced 300 ms). Built:
+   `browser.tab.reload_on_save` and a toggle in the desktop's address bar;
+   changes under `.git`, `.zwiim` and `node_modules` are left out, a
+   sleeping tab stays asleep, and the choice is not kept across a Host
+   restart.
 
 ### 10.6 Element pick (P3)
 
@@ -1379,7 +1383,7 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 3. Element pick on both clients (10.6). Done on the desktop.
 4. Snapshots that return only what changed. Element refs can drift, so this
    waits until the basic tools are proven.
-5. Reload on save; mobile preview tab.
+5. Reload on save; mobile preview tab. Reload on save is done.
 6. DevTools on the desktop, served by the Host from the engine's own
    DevTools frontend through the proxy.
 
