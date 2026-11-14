@@ -138,6 +138,9 @@ export function hostProblem(
             : "Zwiim Cloud is unreachable.",
         action: "retry",
       };
+    case "relay_quota_exceeded":
+      // The account's total relay limit (browser design 15.6); its sheet says when it resets.
+      return { kind: "banner", text: `Remote limit reached. On the same Wi-Fi as ${name}, everything works.`, action: "retry" };
     case "unauthenticated":
       return { kind: "banner", text: "Your sign-in has expired.", action: "sign_in" };
     default:

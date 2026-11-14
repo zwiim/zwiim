@@ -38,6 +38,7 @@ import { fonts, radius, space, type, useTheme } from "../ui/tokens";
 import { FilesTab } from "./FilesTab";
 import { HostFrame } from "./HostFrame";
 import { InstructionsGroup } from "./instructions";
+import { LimitSheet } from "./LimitSheet";
 import { SessionsTab } from "./SessionsTab";
 
 const Tabs = createBottomTabNavigator<HostTabs>();
@@ -92,34 +93,38 @@ export function HostShell() {
   }
 
   return (
-    <Tabs.Navigator
-      backBehavior="none"
-      screenOptions={{
-        headerShown: false,
-        tabBarActiveTintColor: theme.fg,
-        tabBarInactiveTintColor: theme.mut,
-        tabBarStyle: { backgroundColor: theme.bg, borderTopColor: theme.line },
-        tabBarLabelStyle: { fontFamily: fonts.sansMedium, fontSize: type.caption.fontSize },
-      }}
-    >
-      <Tabs.Screen
-        name="Sessions"
-        component={SessionsTab}
-        options={{
-          tabBarIcon: ICONS.Sessions,
-          tabBarButtonTestID: "tab-sessions",
-          // Requests waiting across the host.
-          tabBarBadge: pending || undefined,
-          tabBarBadgeStyle: { backgroundColor: theme.need, color: theme.needInk, fontFamily: fonts.mono, fontSize: type.monoSm.fontSize },
+    <>
+      <Tabs.Navigator
+        backBehavior="none"
+        screenOptions={{
+          headerShown: false,
+          tabBarActiveTintColor: theme.fg,
+          tabBarInactiveTintColor: theme.mut,
+          tabBarStyle: { backgroundColor: theme.bg, borderTopColor: theme.line },
+          tabBarLabelStyle: { fontFamily: fonts.sansMedium, fontSize: type.caption.fontSize },
         }}
-      />
-      <Tabs.Screen name="Files" component={FilesTab} options={{ tabBarIcon: ICONS.Files, tabBarButtonTestID: "tab-files" }} />
-      <Tabs.Screen
-        name="HostTab"
-        component={HostTab}
-        options={{ title: "Host", tabBarIcon: ICONS.Host, tabBarButtonTestID: "tab-host" }}
-      />
-    </Tabs.Navigator>
+      >
+        <Tabs.Screen
+          name="Sessions"
+          component={SessionsTab}
+          options={{
+            tabBarIcon: ICONS.Sessions,
+            tabBarButtonTestID: "tab-sessions",
+            // Requests waiting across the host.
+            tabBarBadge: pending || undefined,
+            tabBarBadgeStyle: { backgroundColor: theme.need, color: theme.needInk, fontFamily: fonts.mono, fontSize: type.monoSm.fontSize },
+          }}
+        />
+        <Tabs.Screen name="Files" component={FilesTab} options={{ tabBarIcon: ICONS.Files, tabBarButtonTestID: "tab-files" }} />
+        <Tabs.Screen
+          name="HostTab"
+          component={HostTab}
+          options={{ title: "Host", tabBarIcon: ICONS.Host, tabBarButtonTestID: "tab-host" }}
+        />
+      </Tabs.Navigator>
+      {/* Once for every tab: the account's total relay limit. */}
+      <LimitSheet limit="total" hit={view?.error?.code === "relay_quota_exceeded"} hostName={hostName(host)} />
+    </>
   );
 }
 
