@@ -61,6 +61,7 @@ mod m20261105_000002_session_fork_first_message;
 mod m20261105_000003_session_fork_worktree_files;
 mod m20261113_000001_browser_tabs;
 mod m20261113_000002_browser_sites;
+mod m20261114_000001_device_browser_access;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -127,6 +128,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261105_000003_session_fork_worktree_files::Migration),
             Box::new(m20261113_000001_browser_tabs::Migration),
             Box::new(m20261113_000002_browser_sites::Migration),
+            Box::new(m20261114_000001_device_browser_access::Migration),
         ]
     }
 }

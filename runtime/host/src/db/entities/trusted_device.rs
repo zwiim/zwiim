@@ -24,6 +24,8 @@ pub struct Model {
     pub revoked_at: Option<DateTimeUtc>,
     /// When the device last authenticated.
     pub last_seen_at: Option<DateTimeUtc>,
+    /// What it may do with the Host browser: `none`, `view` or `control`.
+    pub browser_access: String,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
 }
