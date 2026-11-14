@@ -723,6 +723,13 @@ element, and the upstream `handoff` module turns it into a block in the
 composer (selector, text, box, console lines) labelled as untrusted page
 content. On the phone the pick is a long press.
 
+Built on the desktop: `browser.tab.pick` arms the picker in the tab's
+isolated world with an inbox for its reports, and `browser.tab.picked`
+carries the element, or nothing when it was called off (Escape,
+`browser.tab.pick_cancel`, the page going, 2 minutes). The element becomes
+a chip on the chat's composer and goes after the message as its own text
+block. Console lines and the phone's long press are not built.
+
 ### 10.7 Recording (P3)
 
 Each agent-driven tab keeps an action timeline: one small JPEG thumbnail and
@@ -1369,7 +1376,7 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 
 1. Workspace login snapshots (6.3).
 2. Recording timeline (10.7).
-3. Element pick on both clients (10.6).
+3. Element pick on both clients (10.6). Done on the desktop.
 4. Snapshots that return only what changed. Element refs can drift, so this
    waits until the basic tools are proven.
 5. Reload on save; mobile preview tab.
