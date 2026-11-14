@@ -499,6 +499,10 @@ fn site_refusal(code: &str, url: &url::Url) -> String {
         sites::ERROR_SITE_DENIED => {
             format!("The person denied {site} for this session. Nothing was loaded.")
         }
+        "too_many_tabs" => format!(
+            "The page tried to open {site} in a new tab, but this session holds its most \
+             tabs, so nothing was opened. Close tabs it no longer needs first."
+        ),
         _ => format!("The administrator's policy blocks {site}. Nothing was loaded."),
     }
 }

@@ -41,6 +41,8 @@ enum Kind {
     Prompt,
     /// How much terminal output to keep, in bytes (see [`SCROLLBACK_RANGE`]).
     Scrollback,
+    /// Tabs one session's browser may hold (see [`SESSION_TABS_RANGE`]).
+    SessionTabs,
 }
 
 pub const DEFAULT_AGENT: &str = "defaults.agent";
@@ -55,6 +57,7 @@ pub const PUSH_SETS_UPSTREAM: &str = "git.push_sets_upstream";
 pub const BROWSER_AGENT_PASSWORDS: &str = "browser.agent_passwords";
 pub const BROWSER_AGENT_ASK_SITES: &str = "browser.agent_ask_sites";
 pub const BROWSER_OPEN_DEV_SERVERS: &str = "browser.open_dev_servers";
+pub const BROWSER_SESSION_TABS: &str = "browser.session_tabs";
 
 /// Every setting the Host keeps.
 const KEYS: &[(&str, Kind)] = &[
@@ -70,6 +73,7 @@ const KEYS: &[(&str, Kind)] = &[
     (PROMPT_PULL_REQUEST, Kind::Prompt),
     (PROMPT_BRANCH_NAME, Kind::Prompt),
     (TERMINAL_SCROLLBACK, Kind::Scrollback),
+    (BROWSER_SESSION_TABS, Kind::SessionTabs),
     (PUSH_SETS_UPSTREAM, Kind::Bool),
     (BROWSER_AGENT_PASSWORDS, Kind::Bool),
     (BROWSER_AGENT_ASK_SITES, Kind::Bool),
@@ -78,6 +82,12 @@ const KEYS: &[(&str, Kind)] = &[
 
 /// The terminal output a setting can keep, in bytes.
 pub const SCROLLBACK_RANGE: std::ops::RangeInclusive<u64> = 64 * 1024..=16 * 1024 * 1024;
+
+/// Tabs a session's browser may hold, its own and those its pages open, and
+/// how many unless the person chose (browser design 11.2).
+pub const SESSION_TABS_RANGE: std::ops::RangeInclusive<u64> =
+    1..=crate::browser::governor::MAX_TABS as u64;
+pub const DEFAULT_SESSION_TABS: usize = 20;
 
 /// Longest text value accepted.
 const MAX_TEXT: usize = 200;
@@ -145,7 +155,12 @@ fn check(key: &str, value: &Value) -> Result<(), ZwiimError> {
         (Kind::PrefixSource, Value::String(s)) => s == "github" || s == "custom",
         (Kind::Prefix, Value::String(s)) => valid_prefix(s),
         (Kind::Prompt, Value::String(s)) => !s.trim().is_empty() && s.len() <= MAX_PROMPT,
-        (Kind::Scrollback, value) => value.as_u64().is_some_and(|n| SCROLLBACK_RANGE.contains(&n)),
+        (Kind::Scrollback, value) => value
+            .as_u64()
+            .is_some_and(|n| SCROLLBACK_RANGE.contains(&n)),
+        (Kind::SessionTabs, value) => value
+            .as_u64()
+            .is_some_and(|n| SESSION_TABS_RANGE.contains(&n)),
         _ => false,
     };
     if valid {
@@ -235,6 +250,16 @@ pub async fn browser_open_dev_servers(db: &DatabaseConnection) -> bool {
         read_value(db, BROWSER_OPEN_DEV_SERVERS).await,
         Some(Value::Bool(false))
     )
+}
+
+/// How many tabs one session's browser may hold: the person's choice, or
+/// [`DEFAULT_SESSION_TABS`].
+pub async fn browser_session_tabs(db: &DatabaseConnection) -> usize {
+    read_value(db, BROWSER_SESSION_TABS)
+        .await
+        .and_then(|v| v.as_u64())
+        .filter(|n| SESSION_TABS_RANGE.contains(n))
+        .map_or(DEFAULT_SESSION_TABS, |n| n as usize)
 }
 
 /// Whether removing a worktree also deletes its branch, when no work is lost.
@@ -477,6 +502,11 @@ mod tests {
         assert!(check("terminal.scrollback", &Value::from(64 * 1024 * 1024)).is_err());
         assert!(check("terminal.scrollback", &Value::from(1.5e6)).is_err());
         assert!(check("terminal.scrollback", &Value::from("1MB")).is_err());
+        assert!(check("browser.session_tabs", &Value::from(20)).is_ok());
+        assert!(check("browser.session_tabs", &Value::from(30)).is_ok());
+        assert!(check("browser.session_tabs", &Value::from(0)).is_err());
+        assert!(check("browser.session_tabs", &Value::from(31)).is_err());
+        assert!(check("browser.session_tabs", &Value::from("20")).is_err());
         assert!(check("git.push_sets_upstream", &Value::from(false)).is_ok());
     }
 

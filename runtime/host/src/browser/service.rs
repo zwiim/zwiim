@@ -272,7 +272,8 @@ struct Answers {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefusedLoad {
     pub url: String,
-    /// `site_blocked`, `site_not_allowed` or `site_denied`.
+    /// `site_blocked`, `site_not_allowed` or `site_denied`, or
+    /// `too_many_tabs` for a window the page opened past the tab caps.
     pub code: &'static str,
 }
 
@@ -420,8 +421,9 @@ impl BrowserService {
     pub async fn open(&self, owner: TabOwner, url: Option<&str>) -> Result<TabInfo, BrowserError> {
         let url = url.map(check_url).transpose()?;
         self.wake().await;
+        let session_tabs = crate::settings::browser_session_tabs(&self.db).await;
         let mut inner = self.inner.lock().await;
-        self.room_for_tab(&inner, &owner)?;
+        self.room_for_tab(&inner, &owner, session_tabs)?;
         let cdp = self.cdp_locked(&mut inner).await?;
         let live = self.create_target(&cdp, &mut inner, &owner).await?;
         if let Some(url) = &url {
@@ -1125,6 +1127,18 @@ impl BrowserService {
                     return;
                 };
                 let url = info["url"].as_str().unwrap_or("about:blank").to_string();
+                // Past the tab caps the window is closed, and the opener's
+                // next action tells the agent why.
+                let session_tabs = crate::settings::browser_session_tabs(&self.db).await;
+                if self.room_for_tab(&inner, &owner, session_tabs).is_err() {
+                    let _ = cdp
+                        .call("Target.closeTarget", json!({ "targetId": target_id }), None)
+                        .await;
+                    if let Some(live) = &inner.tabs[&opener].live {
+                        self.refused(&live.session_id, &url, "too_many_tabs");
+                    }
+                    return;
+                }
                 // Whoever made the opener open it.
                 let actor = inner.tabs[&opener]
                     .live
@@ -1858,9 +1872,15 @@ impl BrowserService {
         usage.active_at = now;
     }
 
-    /// Whether `owner` may open another tab: within the tab caps, and while
-    /// the governor is not refusing new tabs (design 11.2, 11.3).
-    fn room_for_tab(&self, inner: &Inner, owner: &TabOwner) -> Result<(), BrowserError> {
+    /// Whether `owner` may open another tab: within the tab caps, a session
+    /// holding at most `session_tabs`, and while the governor is not refusing
+    /// new tabs (design 11.2, 11.3).
+    fn room_for_tab(
+        &self,
+        inner: &Inner,
+        owner: &TabOwner,
+        session_tabs: usize,
+    ) -> Result<(), BrowserError> {
         if inner.tabs.len() >= governor::MAX_TABS {
             return Err(BrowserError {
                 code: "too_many_tabs",
@@ -1875,12 +1895,11 @@ impl BrowserService {
             .values()
             .filter(|t| t.info.owner == *owner)
             .count();
-        if matches!(owner, TabOwner::Session { .. }) && mine >= governor::MAX_SESSION_TABS {
+        if matches!(owner, TabOwner::Session { .. }) && mine >= session_tabs {
             return Err(BrowserError {
                 code: "too_many_tabs",
                 message: format!(
-                    "This session has {} tabs, its most; close some first.",
-                    governor::MAX_SESSION_TABS
+                    "This session has {session_tabs} tabs, its most; close some first."
                 ),
             });
         }
@@ -2206,8 +2225,8 @@ impl BrowserService {
             .is_some_and(|dir| std::path::Path::new(&dir).starts_with(&worktree))
     }
 
-    /// Note a page load the site policy refused in the tab of CDP session
-    /// `session`.
+    /// Note a page load the site policy or the tab caps refused in the tab
+    /// of CDP session `session`.
     fn refused(&self, session: &str, url: &str, code: &'static str) {
         let site = url::Url::parse(url).ok().and_then(|u| sites::site_of(&u));
         tracing::info!(
@@ -3451,12 +3470,25 @@ mod tests {
         let fake = FakeEngine::default();
         let db = fresh_in_memory_db().await;
         let svc = service(&fake, &db.conn).await;
-        for _ in 0..governor::MAX_SESSION_TABS {
+        for _ in 0..crate::settings::DEFAULT_SESSION_TABS {
             svc.open(session("s1"), None).await.unwrap();
         }
         assert_eq!(
             svc.open(session("s1"), None).await.unwrap_err().code,
             "too_many_tabs"
+        );
+        // The person's choice moves the cap.
+        let mut values = serde_json::Map::new();
+        values.insert("browser.session_tabs".into(), json!(2));
+        crate::settings::update(&db.conn, &values).await.unwrap();
+        svc.open(session("s3"), None).await.unwrap();
+        svc.open(session("s3"), None).await.unwrap();
+        let refused = svc.open(session("s3"), None).await.unwrap_err();
+        assert_eq!(refused.code, "too_many_tabs");
+        assert!(
+            refused.message.contains("has 2 tabs"),
+            "{}",
+            refused.message
         );
         svc.open(session("s2"), None).await.unwrap();
         svc.open(TabOwner::Personal, None).await.unwrap();
@@ -3788,6 +3820,37 @@ mod tests {
         let other = svc.open(session("s2"), None).await.unwrap();
         assert_eq!(svc.list(Some("s2")).await, vec![other]);
         assert_eq!(svc.list(Some("s1")).await.len(), 2);
+    }
+
+    /// A page cannot open windows past its session's tab cap: the window is
+    /// closed and the opener notes why (design 11.2).
+    #[tokio::test]
+    async fn a_popup_past_the_session_cap_is_closed() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let mut values = serde_json::Map::new();
+        values.insert("browser.session_tabs".into(), json!(1));
+        crate::settings::update(&db.conn, &values).await.unwrap();
+        let svc = service(&fake, &db.conn).await;
+        let opener = svc
+            .open(session("s1"), Some("https://app.example/"))
+            .await
+            .unwrap();
+        let opener_target = fake.wait_url("https://app.example/").await;
+
+        let popup = fake.open_popup(&opener_target, "https://spam.example/");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while fake.lock().targets.contains_key(&popup) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the popup was closed");
+        assert_eq!(svc.list(Some("s1")).await.len(), 1);
+        let refused = svc.refused_loads(&opener.id).await;
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].url, "https://spam.example/");
+        assert_eq!(refused[0].code, "too_many_tabs");
     }
 
     fn personal_ctx(fake: &FakeEngine) -> String {

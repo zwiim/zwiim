@@ -38,8 +38,7 @@ pub const BUDGET_SHARE: u64 = 25;
 /// About one renderer per this much budget, at least [`MIN_RENDERERS`].
 pub const RENDERER_BYTES: u64 = 300 << 20;
 pub const MIN_RENDERERS: u32 = 4;
-/// Tabs a session may hold, and tabs in all.
-pub const MAX_SESSION_TABS: usize = 8;
+/// Tabs in all. A session's own cap is the `browser.session_tabs` setting.
 pub const MAX_TABS: usize = 30;
 
 /// The system's memory pressure.
