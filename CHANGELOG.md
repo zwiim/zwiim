@@ -21,6 +21,8 @@ have their own versions and are listed under Compatibility.
   message as page content, without pressing it. Esc cancels.
 - Reload on save: a chat's browser tab can reload by itself whenever files
   in its worktree change, for dev servers without hot reload.
+- Drag a file from the Files panel onto a page in the desktop browser, for
+  upload fields and drop zones. Holding it over the Browser tab opens it.
 - Settings > Devices sets what each paired device may do with the Mac's
   browser: off, watch, or watch and steer its sessions' tabs. A newly
   paired device watches; your own tabs stay on the Mac.

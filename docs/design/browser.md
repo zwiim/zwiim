@@ -470,8 +470,9 @@ One controller per tab at a time, held by the Host:
    `browser.tab.drop` takes workspace files by relative path, or files
    uploaded with `attachments.upload` by id, from the session's own
    workspace for a session's tab. The desktop uploads files dragged in from
-   the computer, then drops them by id. Dragging from the Files panel is not
-   built: it has no drag source yet.
+   the computer, then drops them by id. Files dragged from the Files panel
+   are dropped by path; Files and Browser share the side pane, so holding a
+   dragged file over the Browser tab opens it.
 8. Device rights: a new `browser_access` column on trusted devices with
    values `none`, `view`, `control`. A newly paired phone gets `view`.
    `control` is needed to steer and to use Live App. Raising it is a
