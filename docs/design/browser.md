@@ -752,6 +752,16 @@ the action per step. Capped at 50 MB per session and kept 7 days, both
 configurable. It lets the person review on the phone what happened while they
 were away. No continuous video.
 
+Built on the desktop: after each agent action or page load in a session's
+tab, the Host saves a JPEG at most 480 CSS pixels wide and a line ("Clicked",
+"Typed into a field", "Opened <url>"; typed text is never kept) under
+`browser/timeline/<session>/`, readable by the user only, and removed with
+the session. `browser.timeline_mb` and `browser.timeline_days` (Settings >
+Browser) set the caps; the oldest steps go first. `browser.timeline.list`
+and `browser.timeline.image` read it, Host only for now; the desktop shows
+it from a history button beside the session's tabs. The phone view comes
+with the phone's browser build.
+
 ## 11. Memory and priority (R4)
 
 One process tree still has one renderer per site and per context, so "one
@@ -1394,7 +1404,7 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 
 1. Workspace login snapshots (6.3). Done on the desktop: cookies and
    `localStorage`.
-2. Recording timeline (10.7).
+2. Recording timeline (10.7). Done on the desktop.
 3. Element pick on both clients (10.6). Done on the desktop.
 4. Snapshots that return only what changed. Element refs can drift, so this
    waits until the basic tools are proven.

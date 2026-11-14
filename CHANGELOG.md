@@ -27,6 +27,10 @@ have their own versions and are listed under Compatibility.
   browser tabs keeps the sites you pick, and new chats in that workspace
   start signed in to them, whether a site keeps its sign-in in cookies or
   localStorage. They stay encrypted on the Mac.
+- What the agent did: the history button beside a chat's browser tabs
+  shows each step the agent took in its browser, with a small picture of
+  the page. Settings > Browser sets how much is kept (50 MB, 7 days by
+  default). Typed text is never recorded.
 - Settings > Browser gathers the browser's settings and adds Tabs per
   session (20 by default). Windows a page opens by itself count too, so a
   page can no longer open tabs without end.
