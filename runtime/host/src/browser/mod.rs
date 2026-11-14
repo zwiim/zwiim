@@ -56,6 +56,7 @@ pub mod store;
 pub mod stream;
 pub mod timeline;
 pub mod tools;
+pub mod tree_diff;
 pub mod input;
 pub mod listener;
 pub mod policy;
