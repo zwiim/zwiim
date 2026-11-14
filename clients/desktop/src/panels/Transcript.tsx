@@ -10,7 +10,6 @@ import {
   FilePlus2,
   FileText,
   FolderOpen,
-  GitBranch,
   GitFork,
   Globe,
   Image,
@@ -55,6 +54,7 @@ import {
   type ToolCallStatus,
   type TurnGroup,
   waitingText,
+  type ZwiimToolGroup,
 } from "@zwiim/sdk";
 import { opensInPreview } from "@zwiim/preview";
 import { AgentImageChip } from "@/attachments/AgentImageChip";
@@ -62,7 +62,7 @@ import { WorkingMark } from "@/components/WorkingMark";
 import { SentAttachments } from "@/attachments/AttachmentChip";
 import { FileLinksContext, Markdown } from "@/components/Markdown";
 import { basename, parseUnifiedDiff, type FileDiff } from "@/lib/diff";
-import { BROWSER_VERBS, clipToolText, GIT_VERBS, historyTool, liveTool, type ToolSummary } from "@/lib/tools";
+import { clipToolText, historyTool, liveTool, type ToolSummary } from "@/lib/tools";
 import { usePresence } from "@/lib/presence";
 import { expandToolCalls } from "@/lib/prefs";
 import { usePref } from "@/lib/use-pref";
@@ -105,13 +105,18 @@ const VERB_ICONS: Record<string, typeof Terminal> = {
   Agent: Bot,
   Todos: ListTodo,
   "Updated tasks": ListTodo,
-  Delegate: Bot,
   "Chat compacted": ListCollapse,
   List: FolderOpen,
   View: Image,
   Input: Keyboard,
   Script: FileCode2,
   Ask: MessageCircleQuestion,
+};
+
+/** Zwiim's own tools without a common verb, by what kind of tool they are. */
+const GROUP_ICONS: Partial<Record<ZwiimToolGroup, typeof Terminal>> = {
+  browser: Globe,
+  delegation: Bot,
 };
 
 /**
@@ -516,7 +521,7 @@ export const ToolCallView = memo(function ToolCallView(props: ToolCallProps) {
   const command = verb === "Run" ? props.tool.input || target || null : null;
   // A one-line input already reads in full on the row.
   const input = props.tool.input?.trim() === target ? null : props.tool.input;
-  const Icon = VERB_ICONS[verb] ?? (BROWSER_VERBS.has(verb) ? Globe : GIT_VERBS.has(verb) ? GitBranch : Wrench);
+  const Icon = (props.tool.group && GROUP_ICONS[props.tool.group]) ?? VERB_ICONS[verb] ?? Wrench;
   const label = diffs && diffs.length > 1 ? `${diffs.length} files` : path ? basename(path) : target;
   // A file inside the workspace opens whole; several open from the card.
   const links = useContext(FileLinksContext);

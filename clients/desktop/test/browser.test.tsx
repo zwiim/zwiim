@@ -873,6 +873,7 @@ describe("browser panel", () => {
     }
     expect(screen.getAllByTitle("What the agent did")).toHaveLength(1);
     expect(screen.getAllByTitle("Sign-ins kept for this workspace")).toHaveLength(1);
+    expect(screen.getAllByTitle("Sites the agent may open")).toHaveLength(1);
   });
 
   it("says when the host refuses the browser", async () => {

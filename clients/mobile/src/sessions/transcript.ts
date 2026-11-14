@@ -7,6 +7,7 @@
 
 import {
   clockTime,
+  firstQuestion,
   forkTurnOf,
   historyLaunches,
   historySubagentCards,
@@ -21,6 +22,7 @@ import {
   toolChanges,
   turnDuration,
   turnGroups,
+  zwiimTool,
   type AgentImage,
   type AttachmentBlock,
   type ChangedFile,
@@ -150,64 +152,6 @@ const TOOL_VERBS: Record<string, string> = {
   // Claude titles it so live.
   exitplanmode: "Exited Plan Mode",
 };
-/**
- * Zwiim's own tools, as the agent names them: `mcp__zwiim-mcp__<tool>`, or
- * `mcp.zwiim-mcp.<tool>` in a Codex title. Read by what they do, never by
- * that name.
- */
-const ZWIIM_TOOLS: Record<string, string> = {
-  update_progress: "Updated tasks",
-  delegate_to_agent: "Delegate",
-  get_delegation_status: "Check delegation",
-  cancel_delegation: "Cancel delegation",
-  resume_delegation: "Resume delegation",
-  check_user_feedback: "Check feedback",
-  ask_user_question: "Ask",
-  get_session_info: "Read session",
-  create_automation: "Create automation",
-  create_work_task: "Create task",
-  task_progress: "Report progress",
-  task_complete: "Finish task",
-  git_status: "Git status",
-  git_diff: "Git diff",
-  git_log: "Git log",
-  git_branch_create: "Create branch",
-  git_branch_rename: "Rename branch",
-  git_switch: "Switch branch",
-  git_stage: "Stage",
-  git_commit: "Commit",
-  git_fetch: "Git fetch",
-  git_pull: "Pull",
-  git_push: "Push",
-  git_pr_create: "Open PR",
-  git_pr_view: "View PR",
-  git_pr_checks: "PR checks",
-  git_pr_comments: "PR comments",
-  git_pr_merge: "Merge PR",
-  browser_list_tabs: "List tabs",
-  browser_open_tab: "Open tab",
-  browser_navigate: "Go to",
-  browser_close_tab: "Close tab",
-  browser_snapshot: "Read page",
-  browser_screenshot: "Screenshot",
-  browser_click: "Click",
-  browser_hover: "Hover",
-  browser_type: "Type",
-  browser_press_key: "Press key",
-  browser_select_option: "Select option",
-  browser_wait_for: "Wait for",
-  browser_console_messages: "Console",
-  browser_network_log: "Network log",
-  browser_set_permissions: "Site permissions",
-  browser_eval: "Run in page",
-};
-
-/** What one of Zwiim's own tools does, or null for any other tool. */
-function zwiimTool(name: string | null | undefined): string | null {
-  const m = /^mcp(?:__|\.)zwiim-mcp(?:__|\.)(\w+)$/.exec(name?.trim() ?? "");
-  return m ? (ZWIIM_TOOLS[m[1]!] ?? null) : null;
-}
-
 const TARGET_KEYS = ["command", "cmd", "file_path", "path", "notebook_path", "pattern", "query", "url", "description"];
 
 function historyTool(name: string, input: string | null): { verb: string | null; target: string; input: string | null } {
@@ -223,8 +167,9 @@ function historyTool(name: string, input: string | null): { verb: string | null;
     return Array.isArray(v) ? v.join(" ") : typeof v === "string" ? v : null;
   };
   const key = TARGET_KEYS.find((k) => value(k)?.trim());
-  const target = key ? value(key)!.trim().split("\n")[0]! : null;
-  const verb = zwiimTool(name) ?? TOOL_VERBS[name.toLowerCase()] ?? (target ? name : null);
+  const asked = args && (name === "request_user_input" || name.endsWith("ask_user_question")) ? firstQuestion(args) : null;
+  const target = asked ?? (key ? value(key)!.trim().split("\n")[0]! : null);
+  const verb = zwiimTool(name)?.label ?? TOOL_VERBS[name.toLowerCase()] ?? (target ? name : null);
   const shown = value("command") ?? value("cmd") ?? (args ? JSON.stringify(args, null, 2) : input);
   // A verb that names the whole call (Exited Plan Mode) reads as live: alone.
   if (!target && verb) return { verb: null, target: verb, input: shown };
@@ -295,7 +240,7 @@ function toolItem(p: {
 export function liveTool(tc: ToolCall | undefined, running: boolean): ToolItem {
   return toolItem({
     kind: tc?.kind,
-    title: zwiimTool(tc?.title) ?? tc?.title ?? null,
+    title: zwiimTool(tc?.title)?.label ?? tc?.title ?? null,
     state: toolState(tc?.status ?? null, running),
     input: null,
     output: typeof tc?.content === "string" && tc.content ? tc.content : null,

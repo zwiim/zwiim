@@ -2,6 +2,7 @@
 // Edit…) and what it works on (a command, a path, a query). The same reading
 // as the mobile transcript (`clients/mobile/src/sessions/transcript.ts`).
 
+import { firstQuestion, zwiimTool, type ZwiimToolGroup } from "@zwiim/sdk";
 import { editChanges, parseCodexPatch, type FileDiff } from "@/lib/diff";
 
 /** The most of a tool's input or output the transcript shows. More (an
@@ -52,78 +53,6 @@ const NAME_VERBS: Record<string, string> = {
   view_image: "View",
 };
 
-/**
- * Zwiim's own tools, as the agent names them: `mcp__zwiim-mcp__<tool>`, or
- * `mcp.zwiim-mcp.<tool>` in a Codex title. Read by what they do, never by
- * that name.
- */
-const ZWIIM_TOOLS: Record<string, string> = {
-  update_progress: "Updated tasks",
-  delegate_to_agent: "Delegate",
-  get_delegation_status: "Check delegation",
-  cancel_delegation: "Cancel delegation",
-  resume_delegation: "Resume delegation",
-  check_user_feedback: "Check feedback",
-  ask_user_question: "Ask",
-  get_session_info: "Read session",
-  create_automation: "Create automation",
-  create_work_task: "Create task",
-  task_progress: "Report progress",
-  task_complete: "Finish task",
-};
-
-/** Zwiim's Git tools. */
-const GIT_TOOLS: Record<string, string> = {
-  git_status: "Git status",
-  git_diff: "Git diff",
-  git_log: "Git log",
-  git_branch_create: "Create branch",
-  git_branch_rename: "Rename branch",
-  git_switch: "Switch branch",
-  git_stage: "Stage",
-  git_commit: "Commit",
-  git_fetch: "Git fetch",
-  git_pull: "Pull",
-  git_push: "Push",
-  git_pr_create: "Open PR",
-  git_pr_view: "View PR",
-  git_pr_checks: "PR checks",
-  git_pr_comments: "PR comments",
-  git_pr_merge: "Merge PR",
-};
-
-/** Labels of Zwiim's Git tools, for the transcript's Git icon. */
-export const GIT_VERBS: ReadonlySet<string> = new Set(Object.values(GIT_TOOLS));
-
-/** Zwiim's browser tools (browser design 10.2), read as what they do in a tab. */
-const BROWSER_TOOLS: Record<string, string> = {
-  browser_list_tabs: "List tabs",
-  browser_open_tab: "Open tab",
-  browser_navigate: "Go to",
-  browser_close_tab: "Close tab",
-  browser_snapshot: "Read page",
-  browser_screenshot: "Screenshot",
-  browser_click: "Click",
-  browser_hover: "Hover",
-  browser_type: "Type",
-  browser_press_key: "Press key",
-  browser_select_option: "Select option",
-  browser_wait_for: "Wait for",
-  browser_console_messages: "Console",
-  browser_network_log: "Network log",
-  browser_set_permissions: "Site permissions",
-  browser_eval: "Run in page",
-};
-
-/** Labels of Zwiim's browser tools, for the transcript's browser icon. */
-export const BROWSER_VERBS: ReadonlySet<string> = new Set(Object.values(BROWSER_TOOLS));
-
-/** What one of Zwiim's own tools does, or null for any other tool. */
-function zwiimTool(name: string): string | null {
-  const m = /^mcp(?:__|\.)zwiim-mcp(?:__|\.)(\w+)$/.exec(name.trim());
-  return m ? (ZWIIM_TOOLS[m[1]!] ?? BROWSER_TOOLS[m[1]!] ?? GIT_TOOLS[m[1]!] ?? null) : null;
-}
-
 const TARGET_KEYS = [
   "command",
   "cmd",
@@ -151,6 +80,8 @@ export interface ToolSummary {
   path?: string | null;
   /** The changes an edit makes, a file each, read from its input. */
   changes?: FileDiff[] | null;
+  /** Which of Zwiim's own tools it is, for its icon; absent for any other tool. */
+  group?: ZwiimToolGroup;
 }
 
 /** A title without the backticks agents wrap commands in. */
@@ -187,18 +118,21 @@ function patchTool(input: string | null): ToolSummary | null {
   return { verb, target: path ?? "", input: null, path, changes: changes.length > 0 ? changes : null };
 }
 
-/** What a Codex tool works on, where its input does not name it under a common key. */
+/** What a Codex or question tool works on, where its input does not name it under a common key. */
 function codexTarget(name: string, args: Record<string, unknown>): string | null {
-  if (name === "request_user_input" && Array.isArray(args.questions)) {
-    const first = args.questions[0] as Record<string, unknown> | undefined;
-    return str(first?.question) ?? str(first?.header);
-  }
+  if (name === "request_user_input" || name.endsWith("ask_user_question")) return firstQuestion(args);
   if (name === "codex_script") return str(args.source);
   return null;
 }
 
 /** A call from a transcript: the tool's name and its input as JSON. */
 export function historyTool(name: string, input: string | null): ToolSummary {
+  const summary = readHistoryTool(name, input);
+  const own = zwiimTool(name);
+  return own ? { ...summary, group: own.group } : summary;
+}
+
+function readHistoryTool(name: string, input: string | null): ToolSummary {
   if (name === "context_compaction") return { verb: "Chat compacted", target: "", input: null };
   if (name === "apply_patch") {
     const patch = patchTool(input);
@@ -211,7 +145,7 @@ export function historyTool(name: string, input: string | null): ToolSummary {
   } catch {
     // Not JSON (or cut short): shown as it is.
   }
-  const verb = zwiimTool(name) ?? NAME_VERBS[name.toLowerCase()] ?? name;
+  const verb = zwiimTool(name)?.label ?? NAME_VERBS[name.toLowerCase()] ?? name;
   if (!args) {
     const target = firstLine(input ?? "");
     return { verb, target, input: input?.trim() === target ? null : input };
@@ -254,7 +188,7 @@ const CODEX_TITLES: [RegExp, string][] = [
 export function liveTool(title: string | null, kind: string | null | undefined): ToolSummary {
   const t = unquote(title ?? "");
   const own = zwiimTool(t);
-  if (own) return { verb: own, target: "", input: null };
+  if (own) return { verb: own.label, target: "", input: null, group: own.group };
   const summary = (verb: string, whole: string): ToolSummary => ({
     verb,
     target: firstLine(whole),

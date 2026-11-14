@@ -525,7 +525,7 @@ describe("transcript", () => {
           { type: "tool_call", tool_call_id: "t4", title: "ExitPlanMode", input_preview: '{"plan":"Do it"}', status: null },
           { type: "tool_call", tool_call_id: "t5", title: "mcp__zwiim-mcp__update_progress", input_preview: '{"steps":[]}', status: null },
           { type: "tool_call", tool_call_id: "t6", title: "mcp__zwiim-mcp__browser_snapshot", input_preview: '{"tabId":"a"}', status: null },
-          { type: "tool_call", tool_call_id: "t7", title: "mcp__zwiim-mcp__ask_user_question", input_preview: '{"questions":[]}', status: null },
+          { type: "tool_call", tool_call_id: "t7", title: "mcp__zwiim_mcp__ask_user_question", input_preview: '{"questions":[{"question":"Which branch?"}]}', status: null },
         ]),
       ]),
     );
@@ -545,7 +545,7 @@ describe("transcript", () => {
       // Zwiim's own tool reads by what it does, never by its MCP name.
       [null, "Updated tasks", "idle", '{\n  "steps": []\n}'],
       [null, "Read page", "idle", '{\n  "tabId": "a"\n}'],
-      [null, "Ask", "idle", '{\n  "questions": []\n}'],
+      ["Ask", "Which branch?", "idle", '{\n  "questions": [\n    {\n      "question": "Which branch?"\n    }\n  ]\n}'],
     ]);
   });
 

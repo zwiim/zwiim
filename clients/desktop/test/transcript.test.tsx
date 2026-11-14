@@ -182,7 +182,7 @@ describe("transcript", () => {
     controller.dispose();
   });
 
-  it("names Zwiim's browser and Git tools by what they do", async () => {
+  it("names Zwiim's browser tools by what they do, with the browser's icon", async () => {
     const t = new FakeTransport();
     t.handlers["session.history"] = (p) => ({
       session_id: p.session_id,
@@ -195,14 +195,25 @@ describe("transcript", () => {
             input_preview: '{"tabId":"a","url":"https://example.com/"}',
             status: "completed",
           },
+          {
+            type: "tool_call",
+            tool_call_id: "q1",
+            // Codex's transcripts spell the server zwiim_mcp.
+            title: "mcp__zwiim_mcp__ask_user_question",
+            input_preview: '{"questions":[{"question":"Which branch?"}]}',
+            status: "completed",
+          },
         ]),
       ],
     });
     const { controller, frame } = await openSession(t);
-    const call = screen.getByTestId("tool-call");
-    expect(call.textContent).toContain("Go to");
-    expect(call.textContent).toContain("https://example.com/");
-    expect(call.textContent).not.toContain("zwiim-mcp");
+    const [call, ask] = screen.getAllByTestId("tool-call");
+    expect(ask!.textContent).toContain("Ask");
+    expect(ask!.textContent).toContain("Which branch?");
+    expect(ask!.textContent).not.toContain("zwiim");
+    expect(call!.textContent).toContain("Go to");
+    expect(call!.textContent).toContain("https://example.com/");
+    expect(call!.textContent).not.toContain("zwiim-mcp");
     await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
     await frame({
       type: "event",
@@ -220,10 +231,14 @@ describe("transcript", () => {
         session_id: "s1",
         seq: 3,
         type: "agent.tool_call",
-        payload: { tool_call_id: "g1", title: "mcp__zwiim-mcp__git_commit", kind: "other", status: "in_progress", content: null },
+        payload: { tool_call_id: "o1", title: "Type", kind: "other", status: "in_progress", content: null },
       },
     });
-    expect(screen.getAllByTestId("tool-call").at(-1)!.textContent).toBe("Commitrunning");
+    // The icon follows the tool, not its words: another tool titled "Type" is no browser step.
+    const calls = screen.getAllByTestId("tool-call");
+    expect(calls.at(-2)!.querySelector(".lucide-globe")).toBeTruthy();
+    expect(calls.at(-1)!.textContent).toBe("Typerunning");
+    expect(calls.at(-1)!.querySelector(".lucide-globe")).toBeNull();
     controller.dispose();
   });
 
