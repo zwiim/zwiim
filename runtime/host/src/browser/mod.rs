@@ -74,6 +74,7 @@ pub mod dev_servers;
 pub mod engine;
 pub mod eval;
 pub mod governor;
+pub mod handoff;
 pub mod helper;
 pub mod network;
 pub mod service_url;
@@ -103,8 +104,6 @@ pub mod doc_guest;
 pub mod downloads;
 #[cfg(feature = "tauri-runtime")]
 pub mod events;
-#[cfg(feature = "tauri-runtime")]
-pub mod handoff;
 #[cfg(feature = "tauri-runtime")]
 pub mod hooks;
 #[cfg(feature = "tauri-runtime")]

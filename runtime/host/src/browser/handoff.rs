@@ -17,16 +17,16 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::Url;
+use url::Url;
 
 use super::capture::{CaptureOutcome, CaptureRegion};
 use super::console::{ConsoleEntry, ConsoleLevel};
 
-/// The element picker (`src/browser-injected/picker.js`), evaluated into a
+/// The element picker (`resources/browser-injected/picker.js`), evaluated into a
 /// tab's isolated world when a person starts a pick and gone with the
 /// document. Never a document-start script: a page nobody picks on should not
 /// pay to parse it, and a navigation mid-pick should end the pick.
-pub const PICKER_JS: &str = include_str!("../../../src/browser-injected/picker.js");
+pub const PICKER_JS: &str = include_str!("../../resources/browser-injected/picker.js");
 
 /// Name the picker publishes in the isolated world.
 pub const PICKER_GLOBAL: &str = "__zwiimPicker";
