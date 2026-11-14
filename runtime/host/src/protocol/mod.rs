@@ -163,6 +163,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
             "/browser.tab.reload_on_save",
             post(browser::tab_reload_on_save),
         )
+        .route("/browser.tab.preview", post(browser::tab_preview))
         .route("/browser.tab.pick_cancel", post(browser::tab_pick_cancel))
         .route("/browser.ui.answer", post(browser::ui_answer))
         .route("/host.lan_endpoint", post(http::host_lan_endpoint))

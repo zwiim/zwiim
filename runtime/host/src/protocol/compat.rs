@@ -429,6 +429,12 @@ use serde::{Deserialize, Serialize};
 /// (Git's, `.zwiim` and `node_modules` aside), and a tab carries
 /// `reload_on_save`. It is not kept across a Host restart; the person's tabs
 /// are refused with `session_tab_only`.
+/// `browser.tab.preview {tab_id, preview}` returns the tab, shown as a phone
+/// or tablet shows it (`preview` `iphone`, `android` or `ipad`: its screen,
+/// pixel ratio, touch and user agent) or, with null, as a desktop page again;
+/// another name is `unknown_preview`. A previewed tab carries `preview` and
+/// keeps the device's size whatever size its viewers ask for, so its frames
+/// come at that size. It is not kept across a Host restart.
 /// A paired device reaches its sessions' tabs by its browser access, which
 /// `device.list` reports as `browser_access` (`none`, `view` or `control`;
 /// a newly paired device has `view`) and `device.update {device_id,
@@ -437,7 +443,8 @@ use serde::{Deserialize, Serialize};
 /// `browser.tab.open`, `browser.tab.navigate`, `browser.tab.close`,
 /// `browser.tab.find`, `browser.tab.print`, `browser.tab.drop`,
 /// `browser.tab.pick`, `browser.tab.pick_cancel`,
-/// `browser.tab.reload_on_save` and `browser.ui.answer`.
+/// `browser.tab.reload_on_save`, `browser.tab.preview` and
+/// `browser.ui.answer`.
 /// Below that it is refused with `permission_denied`.
 /// It never sees the person's tabs: they are left out of its list, opening
 /// one is `permission_denied`, and acting on one is `tab_not_found` (its

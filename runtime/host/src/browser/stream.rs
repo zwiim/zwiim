@@ -213,7 +213,15 @@ impl StreamHub {
     pub async fn resize(&self, tab_id: &str, viewport: Viewport) -> Result<(), BrowserError> {
         viewport.check()?;
         let (cdp, session) = self.browser.session(tab_id).await?;
-        set_viewport(&cdp, &session, &viewport).await?;
+        // A previewed tab keeps its device's size; the viewer letterboxes it.
+        let previewed = self
+            .browser
+            .tab(tab_id)
+            .await
+            .is_some_and(|t| t.preview.is_some());
+        if !previewed {
+            set_viewport(&cdp, &session, &viewport).await?;
+        }
         let mut inner = self.lock();
         inner.viewports.insert(tab_id.to_string(), viewport);
         if let Some(cast) = inner.casts.get(tab_id) {
@@ -224,6 +232,16 @@ impl StreamHub {
             });
         }
         Ok(())
+    }
+
+    /// Give `tab_id` back the size its viewers last asked for, after a
+    /// preview ends.
+    pub async fn refit(&self, tab_id: &str) -> Result<(), BrowserError> {
+        let viewport = self.lock().viewports.get(tab_id).copied();
+        match viewport {
+            Some(viewport) => self.resize(tab_id, viewport).await,
+            None => Ok(()),
+        }
     }
 
     /// End a stream, and its viewer if one is attached.

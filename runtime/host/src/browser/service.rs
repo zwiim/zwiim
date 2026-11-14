@@ -28,6 +28,7 @@ use super::handoff::{self, PageHandoff, PickReport};
 use super::helper::{self, HelperMessage, PageMenu};
 use super::network::{NetworkQuery, NetworkReadout, NetworkRing};
 use super::policy::{self, HostRule};
+use super::preview;
 use super::saving;
 use super::sites::{self, Actor, Verdict};
 use super::snapshot::{self, Snapshot};
@@ -71,6 +72,10 @@ pub struct TabInfo {
     /// It loads again when files in its session's worktree change (design
     /// 10.5). Not kept across a Host restart.
     pub reload_on_save: bool,
+    /// The device it is previewed as (design 7.7), by `preview::PREVIEWS`
+    /// id; none for a desktop page. Not kept across a Host restart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -659,6 +664,7 @@ impl BrowserService {
             discarded: false,
             crashed: false,
             reload_on_save: false,
+            preview: None,
         };
         if let Err(e) = store::insert(&self.db, &record_of(&info)).await {
             tracing::warn!(error = %e, "could not save a browser tab");
@@ -993,6 +999,7 @@ impl BrowserService {
         let cdp = self.cdp_locked(inner).await?;
         let owner = inner.tabs[tab_id].info.owner.clone();
         let live = self.create_target(&cdp, inner, &owner).await?;
+        self.keep_preview(&cdp, inner, tab_id, &live).await;
         if url != "about:blank" {
             start_navigation(&cdp, &live.session_id, url);
         }
@@ -1061,6 +1068,7 @@ impl BrowserService {
             let owner = inner.tabs[&id].info.owner.clone();
             match self.create_target(&cdp, inner, &owner).await {
                 Ok(live) => {
+                    self.keep_preview(&cdp, inner, &id, &live).await;
                     if url != "about:blank" {
                         start_navigation(&cdp, &live.session_id, &url);
                     }
@@ -1845,6 +1853,52 @@ impl BrowserService {
         drop(inner);
         self.emit(BrowserEvent::Tab(info.clone()));
         Ok(info)
+    }
+
+    /// Preview tab `tab_id` as device `preview` (design 7.7), or as a desktop
+    /// page again with None. A sleeping tab takes it when it wakes.
+    pub async fn set_preview(
+        &self,
+        tab_id: &str,
+        preview: Option<&str>,
+    ) -> Result<TabInfo, BrowserError> {
+        let device = match preview {
+            Some(id) => Some(preview::find(id).ok_or_else(|| BrowserError {
+                code: "unknown_preview",
+                message: format!("No device {id} to preview as"),
+            })?),
+            None => None,
+        };
+        let mut inner = self.inner.lock().await;
+        let desktop_ua = inner.user_agent.clone();
+        let cdp = inner.cdp.clone();
+        let tab = inner
+            .tabs
+            .get_mut(tab_id)
+            .ok_or_else(|| not_found(tab_id))?;
+        tab.info.preview = device.map(|d| d.id.to_string());
+        let info = tab.info.clone();
+        let live = tab.live.clone();
+        drop(inner);
+        if let (Some(cdp), Some(live)) = (cdp, live) {
+            preview::apply(&cdp, &live.session_id, device, desktop_ua.as_deref()).await?;
+        }
+        self.emit(BrowserEvent::Tab(info.clone()));
+        Ok(info)
+    }
+
+    /// Give a tab that just went live again the device it is previewed as.
+    async fn keep_preview(&self, cdp: &Cdp, inner: &Inner, tab_id: &str, live: &Live) {
+        let device = inner
+            .tabs
+            .get(tab_id)
+            .and_then(|t| t.info.preview.as_deref())
+            .and_then(preview::find);
+        if let Some(device) = device {
+            if let Err(e) = preview::apply(cdp, &live.session_id, Some(device), None).await {
+                tracing::debug!(code = e.code, "[browser] preview");
+            }
+        }
     }
 
     /// Call off `tab_id`'s element pick, if one is under way.
@@ -3329,6 +3383,7 @@ fn info_of(record: TabRecord) -> TabInfo {
         discarded: record.discarded,
         crashed: false,
         reload_on_save: false,
+        preview: None,
     }
 }
 

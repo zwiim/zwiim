@@ -43,7 +43,7 @@ impl From<BrowserError> for ZwiimError {
             "invalid_site" => (StatusCode::BAD_REQUEST, e.message),
             "too_many_tabs" | "browser_memory_full" => (StatusCode::CONFLICT, e.message),
             "page_too_large" => (StatusCode::PAYLOAD_TOO_LARGE, e.message),
-            "session_tab_only" => (StatusCode::BAD_REQUEST, e.message),
+            "session_tab_only" | "unknown_preview" => (StatusCode::BAD_REQUEST, e.message),
             "nothing_to_save" => (StatusCode::CONFLICT, e.message),
             "login_unavailable" => (StatusCode::SERVICE_UNAVAILABLE, scrub_paths(&e.message)),
             _ => (StatusCode::SERVICE_UNAVAILABLE, scrub_paths(&e.message)),
@@ -333,6 +333,33 @@ pub async fn tab_reload_on_save(
     let browser = service(&state).await?;
     visible_tab(&browser, caller, &p.tab_id).await?;
     Ok(Json(browser.set_reload_on_save(&p.tab_id, p.on).await?))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewParams {
+    pub tab_id: String,
+    /// A device id from `preview::PREVIEWS`, or null for a desktop page.
+    pub preview: Option<String>,
+}
+
+/// `browser.tab.preview {tab_id, preview}` → the tab, shown as that phone or
+/// tablet shows it, or as a desktop page again (design 7.7).
+pub async fn tab_preview(
+    Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+    ZJson(p): ZJson<PreviewParams>,
+) -> ZResult<TabInfo> {
+    let caller = Caller::of(&state, principal)
+        .await?
+        .needs(BrowserAccess::Control)?;
+    let browser = service(&state).await?;
+    visible_tab(&browser, caller, &p.tab_id).await?;
+    let tab = browser.set_preview(&p.tab_id, p.preview.as_deref()).await?;
+    if tab.preview.is_none() {
+        streams(&state).await?.refit(&p.tab_id).await?;
+    }
+    Ok(Json(tab))
 }
 
 /// `browser.tab.pick {tab_id}`: let the person point at an element of the

@@ -132,6 +132,7 @@ const OPS: &[&str] = &[
     "browser.tab.pick",
     "browser.tab.pick_cancel",
     "browser.tab.reload_on_save",
+    "browser.tab.preview",
     "browser.engine.reset",
     "browser.view.open",
     "browser.view.close",
@@ -7089,6 +7090,91 @@ async fn a_session_tab_reloads_when_its_worktree_changes() {
         )
         .await,
         (StatusCode::BAD_REQUEST, "session_tab_only".into())
+    );
+}
+
+#[tokio::test]
+async fn a_tab_is_previewed_as_a_phone_and_back_as_a_desktop_page() {
+    let h = host(false).await;
+    let fake = fake_browser(&h).await;
+    let tab = h
+        .ok("browser.tab.open", json!({"owner": {"kind": "personal"}}))
+        .await;
+    let tab_id = tab["tab_id"].as_str().unwrap().to_string();
+    assert!(tab.get("preview").is_none());
+    h.ok(
+        "browser.view.open",
+        json!({"tab_id": tab_id, "viewport": {"width": 900, "height": 700, "scale": 2.0}}),
+    )
+    .await;
+
+    let phone = h
+        .ok(
+            "browser.tab.preview",
+            json!({"tab_id": tab_id, "preview": "iphone"}),
+        )
+        .await;
+    assert_eq!(phone["preview"], "iphone");
+    let metrics = fake.calls("Emulation.setDeviceMetricsOverride");
+    let last = &metrics.last().unwrap();
+    assert_eq!(
+        (last["width"].as_u64(), last["mobile"].as_bool()),
+        (Some(393), Some(true))
+    );
+    assert_eq!(
+        fake.calls("Emulation.setTouchEmulationEnabled")
+            .last()
+            .unwrap()["enabled"],
+        true
+    );
+    let ua = fake.calls("Emulation.setUserAgentOverride");
+    assert!(ua.last().unwrap()["userAgent"]
+        .as_str()
+        .unwrap()
+        .contains("iPhone"));
+
+    // The viewer resizing leaves the phone's size alone.
+    let before = fake.calls("Emulation.setDeviceMetricsOverride").len();
+    let stream = h
+        .ok(
+            "browser.view.open",
+            json!({"tab_id": tab_id, "viewport": {"width": 1000, "height": 700, "scale": 2.0}}),
+        )
+        .await;
+    assert!(stream.get("stream_id").is_some());
+    assert_eq!(
+        fake.calls("Emulation.setDeviceMetricsOverride").len(),
+        before
+    );
+
+    let desktop = h
+        .ok(
+            "browser.tab.preview",
+            json!({"tab_id": tab_id, "preview": null}),
+        )
+        .await;
+    assert!(desktop.get("preview").is_none());
+    assert_eq!(fake.calls("Emulation.clearDeviceMetricsOverride").len(), 1);
+    // Back at the size its viewer asked for, with the desktop agent.
+    let metrics = fake.calls("Emulation.setDeviceMetricsOverride");
+    let last = &metrics.last().unwrap();
+    assert_eq!(
+        (last["width"].as_u64(), last["mobile"].as_bool()),
+        (Some(1000), Some(false))
+    );
+    let ua = fake.calls("Emulation.setUserAgentOverride");
+    assert!(!ua.last().unwrap()["userAgent"]
+        .as_str()
+        .unwrap()
+        .contains("iPhone"));
+
+    assert_eq!(
+        h.err(
+            "browser.tab.preview",
+            json!({"tab_id": tab_id, "preview": "fridge"})
+        )
+        .await,
+        (StatusCode::BAD_REQUEST, "unknown_preview".into())
     );
 }
 

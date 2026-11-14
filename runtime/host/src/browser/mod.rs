@@ -60,6 +60,7 @@ pub mod tree_diff;
 pub mod input;
 pub mod listener;
 pub mod policy;
+pub mod preview;
 pub mod reload;
 pub mod saving;
 pub mod types;

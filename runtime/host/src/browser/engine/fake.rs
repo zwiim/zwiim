@@ -407,6 +407,8 @@ impl FakeEngine {
             | "Network.enable"
             | "Emulation.setUserAgentOverride"
             | "Emulation.setDeviceMetricsOverride"
+            | "Emulation.clearDeviceMetricsOverride"
+            | "Emulation.setTouchEmulationEnabled"
             | "Page.startScreencast"
             | "Page.stopScreencast"
             | "Page.screencastFrameAck"
