@@ -115,6 +115,7 @@ const OPS: &[&str] = &[
     "device.pair_invite",
     "device.list",
     "device.revoke",
+    "device.update",
     "cloud.enroll",
     "cloud.status",
     "lan.status",
@@ -5570,18 +5571,9 @@ async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
         ),
         ("agent.remove_key", json!({"agent": "codex"})),
         ("agent.sign_out", json!({"agent": "codex"})),
-        ("browser.tabs.list", json!({})),
-        ("browser.tab.open", json!({"owner": {"kind": "personal"}})),
-        ("browser.tab.close", json!({"tab_id": "t"})),
         (
-            "browser.tab.navigate",
-            json!({"tab_id": "t", "action": "reload"}),
-        ),
-        ("browser.tab.find", json!({"tab_id": "t", "query": "a"})),
-        ("browser.tab.print", json!({"tab_id": "t"})),
-        (
-            "browser.tab.drop",
-            json!({"tab_id": "t", "x": 1, "y": 1, "workspace_id": "w", "paths": ["a"]}),
+            "device.update",
+            json!({"device_id": "dev-1", "browser_access": "control"}),
         ),
         ("browser.engine.reset", json!({})),
         (
@@ -5589,10 +5581,6 @@ async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
             json!({"tab_id": "t", "viewport": {"width": 800, "height": 600}}),
         ),
         ("browser.view.close", json!({"stream_id": "s"})),
-        (
-            "browser.ui.answer",
-            json!({"request_id": "ui-1", "answer": {"kind": "dialog", "accept": true}}),
-        ),
         ("browser.sites.get", json!({"session_id": "s"})),
         (
             "browser.sites.set",
@@ -6882,6 +6870,163 @@ async fn browser_downloads_go_to_the_worktree_or_the_chosen_root() {
     h.ok("session.delete", json!({"session_id": sid})).await;
     assert!(!own.exists());
     assert!(std::path::Path::new(&h.wt).join(".zwiim").exists());
+}
+
+#[tokio::test]
+async fn a_device_reaches_its_sessions_tabs_by_its_browser_access() {
+    let h = host(false).await;
+    let fake = fake_browser(&h).await;
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let owner = json!({"kind": "session", "session_id": sid});
+    let tab = h.ok("browser.tab.open", json!({"owner": owner})).await;
+    let tab_id = tab["tab_id"].as_str().unwrap().to_string();
+    let personal = h
+        .ok("browser.tab.open", json!({"owner": {"kind": "personal"}}))
+        .await;
+    let personal_id = personal["tab_id"].as_str().unwrap().to_string();
+    let device = bearer_device(&h, "dev-1").await;
+    let refused = |body: Value| {
+        body["error"]["code"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    // A newly paired device watches: it lists its sessions' tabs, never the
+    // person's, and can't steer them.
+    assert_eq!(
+        h.ok("device.list", json!({})).await["devices"][0]["browser_access"],
+        "view"
+    );
+    let (status, listed) = h.call_as(&device, "browser.tabs.list", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    let ids: Vec<&str> = listed["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["tab_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, [tab_id.as_str()]);
+    let navigate = json!({"tab_id": tab_id, "action": "reload"});
+    let (status, body) = h
+        .call_as(&device, "browser.tab.navigate", navigate.clone())
+        .await;
+    assert_eq!(
+        (status, refused(body.clone())),
+        (StatusCode::FORBIDDEN, "permission_denied".into())
+    );
+    assert_eq!(
+        body["error"]["message"],
+        "This device can only watch the Mac's browser. Allow it to steer on the Mac."
+    );
+    assert!(fake.calls("Page.reload").is_empty());
+
+    // Allowed to steer on the Mac, it does, from its next request.
+    h.ok(
+        "device.update",
+        json!({"device_id": "dev-1", "browser_access": "control"}),
+    )
+    .await;
+    assert_eq!(
+        h.ok("device.list", json!({})).await["devices"][0]["browser_access"],
+        "control"
+    );
+    assert_eq!(
+        h.call_as(&device, "browser.tab.navigate", navigate).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(fake.calls("Page.reload").len(), 1);
+    let (status, opened) = h
+        .call_as(&device, "browser.tab.open", json!({"owner": owner}))
+        .await;
+    assert_eq!((status, &opened["owner"]), (StatusCode::OK, &owner));
+
+    // The person's tabs stay hidden: as if they weren't there.
+    for (op, body) in [
+        (
+            "browser.tab.navigate",
+            json!({"tab_id": personal_id, "action": "reload"}),
+        ),
+        ("browser.tab.close", json!({"tab_id": personal_id})),
+        (
+            "browser.tab.find",
+            json!({"tab_id": personal_id, "query": "a"}),
+        ),
+        ("browser.tab.print", json!({"tab_id": personal_id})),
+        (
+            "browser.tab.drop",
+            json!({"tab_id": personal_id, "x": 1, "y": 1, "workspace_id": h.workspace_id, "paths": ["a"]}),
+        ),
+    ] {
+        let (status, body) = h.call_as(&device, op, body).await;
+        assert_eq!(
+            (status, refused(body)),
+            (StatusCode::NOT_FOUND, "tab_not_found".into()),
+            "{op}"
+        );
+    }
+    let (status, body) = h
+        .call_as(
+            &device,
+            "browser.tab.open",
+            json!({"owner": {"kind": "personal"}}),
+        )
+        .await;
+    assert_eq!(
+        (status, refused(body)),
+        (StatusCode::FORBIDDEN, "permission_denied".into())
+    );
+    let (status, body) = h
+        .call_as(
+            &device,
+            "browser.ui.answer",
+            json!({"request_id": "ui-1", "answer": {"kind": "dialog", "accept": true}}),
+        )
+        .await;
+    assert_eq!(
+        (status, refused(body)),
+        (StatusCode::NOT_FOUND, "request_not_found".into())
+    );
+    assert_eq!(
+        h.ok("browser.tabs.list", json!({})).await["tabs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3,
+        "the person's tab is still open"
+    );
+
+    // Taken away, the browser is closed to it.
+    h.ok(
+        "device.update",
+        json!({"device_id": "dev-1", "browser_access": "none"}),
+    )
+    .await;
+    let (status, body) = h.call_as(&device, "browser.tabs.list", json!({})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        body["error"]["message"],
+        "This device can't use the Mac's browser. Allow it on the Mac."
+    );
+
+    assert_eq!(
+        h.err(
+            "device.update",
+            json!({"device_id": "nope", "browser_access": "view"})
+        )
+        .await,
+        (StatusCode::NOT_FOUND, "not_found".into())
+    );
+    assert_eq!(
+        h.err(
+            "device.update",
+            json!({"device_id": "dev-1", "browser_access": "admin"})
+        )
+        .await
+        .1,
+        "invalid_request"
+    );
 }
 
 #[tokio::test]

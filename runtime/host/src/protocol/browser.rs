@@ -1,8 +1,10 @@
 //! `browser.*` operations: the Host browser's tabs (design 18).
 //!
-//! Tabs belong to a session or to the person (`owner`). Until devices carry
-//! browser rights (P2a), every operation needs local host authority, so a
-//! paired phone sees no tab addresses yet.
+//! Tabs belong to a session or to the person (`owner`). A paired device
+//! reaches its sessions' tabs by its `browser_access` (design 7.6): `view`
+//! lists them, `control` steers them. Personal tabs, the engine, site lists,
+//! downloads and the stream socket stay with the Mac; a device never learns
+//! a personal tab exists.
 
 use std::sync::Arc;
 
@@ -15,8 +17,10 @@ use crate::app_state::AppState;
 use crate::browser::engine::manager::EngineState;
 use crate::browser::service::{BrowserError, BrowserEvent, BrowserService, Navigation, TabInfo};
 use crate::browser::store::TabOwner;
-use crate::browser::ui::UiAnswer;
 use crate::browser::stream::{StreamHub, Viewport};
+use crate::browser::ui::UiAnswer;
+use crate::identity::trusted_devices::{self, BrowserAccess};
+use crate::web::auth::Principal;
 
 type ZResult<T> = Result<Json<T>, ZwiimError>;
 
@@ -79,6 +83,73 @@ pub(super) async fn service(state: &AppState) -> Result<Arc<BrowserService>, Zwi
     })
 }
 
+/// Who asks for a browser operation, as far as the Host browser goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Caller {
+    /// The Mac itself: everything.
+    Host,
+    /// A paired device, at its current `browser_access`.
+    Device(BrowserAccess),
+}
+
+impl Caller {
+    /// Read fresh on every request, so a change on the Mac applies at once.
+    async fn of(
+        state: &AppState,
+        principal: Option<Extension<Principal>>,
+    ) -> Result<Self, ZwiimError> {
+        match principal.map(|Extension(p)| p) {
+            Some(Principal::Host) => Ok(Self::Host),
+            Some(Principal::Device(id)) => trusted_devices::browser_access(&state.db.conn, &id)
+                .await
+                .map(Self::Device)
+                .map_err(|e| {
+                    tracing::warn!(error = %e, "[zwiim] device browser access could not be read");
+                    ZwiimError::internal()
+                }),
+            None => Ok(Self::Device(BrowserAccess::None)),
+        }
+    }
+
+    /// Refused unless the caller has at least `need`.
+    fn needs(self, need: BrowserAccess) -> Result<Self, ZwiimError> {
+        match self {
+            Self::Device(have) if have < need => Err(ZwiimError::permission_denied(
+                if have == BrowserAccess::None {
+                    "This device can't use the Mac's browser. Allow it on the Mac."
+                } else {
+                    "This device can only watch the Mac's browser. Allow it to steer on the Mac."
+                },
+            )),
+            _ => Ok(self),
+        }
+    }
+
+    /// Whether the caller may see tabs of `owner`: a device only sessions'.
+    fn sees(self, owner: &TabOwner) -> bool {
+        self == Self::Host || matches!(owner, TabOwner::Session { .. })
+    }
+}
+
+fn tab_not_found() -> ZwiimError {
+    ZwiimError::from(BrowserError {
+        code: "tab_not_found",
+        message: "No such tab".into(),
+    })
+}
+
+/// Tab `tab_id`, when `caller` may see it; a tab it may not see is not found.
+async fn visible_tab(
+    browser: &BrowserService,
+    caller: Caller,
+    tab_id: &str,
+) -> Result<TabInfo, ZwiimError> {
+    match browser.tab(tab_id).await {
+        Some(tab) if caller.sees(&tab.owner) => Ok(tab),
+        _ => Err(tab_not_found()),
+    }
+}
+
 /// A session owner must name a live session.
 async fn check_owner(state: &AppState, owner: &TabOwner) -> Result<(), ZwiimError> {
     if let TabOwner::Session { session_id } = owner {
@@ -97,14 +168,17 @@ pub struct TabsListParams {
 /// `browser.tabs.list {session_id?}` → `{tabs, engine}`.
 pub async fn tabs_list(
     Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
     ZJson(p): ZJson<TabsListParams>,
 ) -> ZResult<Value> {
+    let caller = Caller::of(&state, principal)
+        .await?
+        .needs(BrowserAccess::View)?;
     let browser = service(&state).await?;
     let engine = EngineView::from(&*browser.engine().state().borrow());
-    Ok(Json(json!({
-        "tabs": browser.list(p.session_id.as_deref()).await,
-        "engine": engine,
-    })))
+    let mut tabs = browser.list(p.session_id.as_deref()).await;
+    tabs.retain(|t| caller.sees(&t.owner));
+    Ok(Json(json!({ "tabs": tabs, "engine": engine })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -119,8 +193,17 @@ pub struct TabOpenParams {
 /// downloads it first if this Host has none yet.
 pub async fn tab_open(
     Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
     ZJson(p): ZJson<TabOpenParams>,
 ) -> ZResult<TabInfo> {
+    let caller = Caller::of(&state, principal)
+        .await?
+        .needs(BrowserAccess::Control)?;
+    if !caller.sees(&p.owner) {
+        return Err(ZwiimError::permission_denied(
+            "Personal tabs stay on the Mac",
+        ));
+    }
     check_owner(&state, &p.owner).await?;
     let browser = service(&state).await?;
     Ok(Json(browser.open(p.owner, p.url.as_deref()).await?))
@@ -135,9 +218,15 @@ pub struct TabParams {
 /// `browser.tab.close {tab_id}`.
 pub async fn tab_close(
     Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
     ZJson(p): ZJson<TabParams>,
 ) -> ZResult<Value> {
-    service(&state).await?.close(&p.tab_id).await?;
+    let caller = Caller::of(&state, principal)
+        .await?
+        .needs(BrowserAccess::Control)?;
+    let browser = service(&state).await?;
+    visible_tab(&browser, caller, &p.tab_id).await?;
+    browser.close(&p.tab_id).await?;
     Ok(Json(json!({})))
 }
 
@@ -164,8 +253,12 @@ pub struct TabNavigateParams {
 /// `back`, `forward`, `reload` or `stop`. A discarded tab loads again.
 pub async fn tab_navigate(
     Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
     ZJson(p): ZJson<TabNavigateParams>,
 ) -> ZResult<TabInfo> {
+    let caller = Caller::of(&state, principal)
+        .await?
+        .needs(BrowserAccess::Control)?;
     let to = match (p.url, p.action) {
         (Some(url), None) => Navigation::Url(url),
         (None, Some(NavigateAction::Back)) => Navigation::Back,
@@ -175,6 +268,7 @@ pub async fn tab_navigate(
         _ => return Err(ZwiimError::invalid_request("Give either url or action")),
     };
     let browser = service(&state).await?;
+    visible_tab(&browser, caller, &p.tab_id).await?;
     // A client's navigation is the person's (design 13.2).
     browser
         .acted(&p.tab_id, crate::browser::sites::Actor::Person)
@@ -199,17 +293,20 @@ const MAX_FIND: usize = 200;
 /// an empty query clears it (design 7.7).
 pub async fn tab_find(
     Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
     ZJson(p): ZJson<TabFindParams>,
 ) -> ZResult<Value> {
+    let caller = Caller::of(&state, principal)
+        .await?
+        .needs(BrowserAccess::Control)?;
     if p.query.chars().count() > MAX_FIND {
         return Err(ZwiimError::invalid_request(format!(
             "Look for at most {MAX_FIND} characters"
         )));
     }
-    let (matches, current) = service(&state)
-        .await?
-        .find(&p.tab_id, &p.query, p.backwards)
-        .await?;
+    let browser = service(&state).await?;
+    visible_tab(&browser, caller, &p.tab_id).await?;
+    let (matches, current) = browser.find(&p.tab_id, &p.query, p.backwards).await?;
     Ok(Json(json!({ "matches": matches, "current": current })))
 }
 
@@ -227,9 +324,25 @@ const MAX_CHOSEN_FILES: usize = 100;
 /// on (design 9). The first answer wins; a later one is `request_not_found`.
 pub async fn ui_answer(
     Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
     ZJson(mut p): ZJson<UiAnswerParams>,
 ) -> ZResult<Value> {
+    let caller = Caller::of(&state, principal)
+        .await?
+        .needs(BrowserAccess::Control)?;
     let browser = service(&state).await?;
+    let request = browser
+        .ui_request(&p.request_id)
+        .await
+        .filter(|r| caller.sees(&r.owner));
+    // A device answers only its sessions' tabs; for the Mac, the service
+    // says whether the request is still open.
+    if request.is_none() && caller != Caller::Host {
+        return Err(ZwiimError::from(BrowserError {
+            code: "request_not_found",
+            message: "That request was already answered or has expired".into(),
+        }));
+    }
     if let UiAnswer::FileChooser {
         accept: true,
         workspace_id,
@@ -237,13 +350,12 @@ pub async fn ui_answer(
         files,
     } = &mut p.answer
     {
-        let request = browser
-            .ui_request(&p.request_id)
-            .await
-            .ok_or_else(|| ZwiimError::from(BrowserError {
+        let request = request.ok_or_else(|| {
+            ZwiimError::from(BrowserError {
                 code: "request_not_found",
                 message: "That request was already answered or has expired".into(),
-            }))?;
+            })
+        })?;
         let workspace_id = workspace_id
             .as_deref()
             .ok_or_else(|| ZwiimError::invalid_request("Name the workspace the files are in"))?;
@@ -313,9 +425,15 @@ async fn files_root(
 /// tab's downloads folder (design 7.7).
 pub async fn tab_print(
     Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
     ZJson(p): ZJson<TabParams>,
 ) -> ZResult<Value> {
-    let name = service(&state).await?.print(&p.tab_id).await?;
+    let caller = Caller::of(&state, principal)
+        .await?
+        .needs(BrowserAccess::Control)?;
+    let browser = service(&state).await?;
+    visible_tab(&browser, caller, &p.tab_id).await?;
+    let name = browser.print(&p.tab_id).await?;
     Ok(Json(json!({ "name": name })))
 }
 
@@ -340,18 +458,17 @@ pub struct TabDropParams {
 /// dragging them there (design 7.6).
 pub async fn tab_drop(
     Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
     ZJson(p): ZJson<TabDropParams>,
 ) -> ZResult<Value> {
+    let caller = Caller::of(&state, principal)
+        .await?
+        .needs(BrowserAccess::Control)?;
     if !(p.x.is_finite() && p.y.is_finite()) {
         return Err(ZwiimError::invalid_request("Give the point in the page"));
     }
     let browser = service(&state).await?;
-    let tab = browser.tab(&p.tab_id).await.ok_or_else(|| {
-        ZwiimError::from(BrowserError {
-            code: "tab_not_found",
-            message: "No such tab".into(),
-        })
-    })?;
+    let tab = visible_tab(&browser, caller, &p.tab_id).await?;
     let mut files = Vec::new();
     if !p.paths.is_empty() {
         files = chosen_files(&state, &tab.owner, &p.workspace_id, &p.paths).await?;

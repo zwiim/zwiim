@@ -393,6 +393,19 @@ use serde::{Deserialize, Serialize};
 /// to `<root>/zwiim/<repo>/downloads/`. The person's tabs save to
 /// `~/Downloads`. `browser.downloads.location` returns `{root}`. Host only for now:
 /// paired devices are refused with `permission_denied`.
+/// A paired device reaches its sessions' tabs by its browser access, which
+/// `device.list` reports as `browser_access` (`none`, `view` or `control`;
+/// a newly paired device has `view`) and `device.update {device_id,
+/// browser_access}` (Host only; `not_found` for no trusted device) sets.
+/// With `view` it may call `browser.tabs.list`; with `control` also
+/// `browser.tab.open`, `browser.tab.navigate`, `browser.tab.close`,
+/// `browser.tab.find`, `browser.tab.print`, `browser.tab.drop` and
+/// `browser.ui.answer`. Below that it is refused with `permission_denied`.
+/// It never sees the person's tabs: they are left out of its list, opening
+/// one is `permission_denied`, and acting on one is `tab_not_found` (its
+/// requests `request_not_found`). The engine, site lists, downloads,
+/// `browser.view.*`, the stream socket and `browser.subscribe` stay Host
+/// only.
 ///
 /// 33 (`downloads`): what the Host is downloading (an agent's adapter, the
 /// browser engine, a Host update). The host snapshot carries `downloads`, a

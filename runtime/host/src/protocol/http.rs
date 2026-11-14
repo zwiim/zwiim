@@ -474,6 +474,38 @@ pub async fn device_revoke(
     ok()
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceUpdateParams {
+    pub device_id: String,
+    pub browser_access: crate::identity::trusted_devices::BrowserAccess,
+}
+
+/// `device.update {device_id, browser_access}`: what a trusted device may do
+/// with the Host browser (browser design 7.6). Host only, so a device never
+/// raises its own rights; it applies from the device's next request.
+pub async fn device_update(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<DeviceUpdateParams>,
+) -> ZResult<Value> {
+    if !crate::identity::trusted_devices::set_browser_access(
+        &state.db.conn,
+        &p.device_id,
+        p.browser_access,
+    )
+    .await
+    .map_err(db_error)?
+    {
+        return Err(ZwiimError::not_found("Device not found"));
+    }
+    tracing::info!(
+        "[identity] device {} browser access set to {}",
+        p.device_id,
+        p.browser_access.as_str()
+    );
+    ok()
+}
+
 // ─── settings ────────────────────────────────────────────────────────────
 
 pub async fn settings_get(Extension(state): Extension<Arc<AppState>>) -> ZResult<Value> {
