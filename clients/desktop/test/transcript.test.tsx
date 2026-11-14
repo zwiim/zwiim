@@ -1408,6 +1408,34 @@ describe("changed files", () => {
       controller.dispose();
     });
 
+    it("sends what was picked on a page after the message, and lets it be taken back", async () => {
+      const t = new FakeTransport();
+      t.handlers["session.history"] = (p) => ({ session_id: p.session_id, turns: [] });
+      const sent: { blocks: unknown[] }[] = [];
+      t.handlers["session.follow_up"] = (p) => (sent.push(p), { outcome: "sent" });
+      const { controller } = await openSession(t);
+      const { handToChat } = await import("@/lib/page-handoff");
+      await act(async () => {
+        handToChat("s1", { label: "button#go", text: "picked block" });
+        handToChat("s1", { label: "div.card", text: "second block" });
+      });
+      expect(screen.getAllByTestId("pending-page-block").map((c) => c.textContent)).toEqual(["button#go", "div.card"]);
+      fireEvent.click(screen.getByRole("button", { name: "Remove div.card" }));
+      await act(async () => {});
+      expect(screen.getAllByTestId("pending-page-block")).toHaveLength(1);
+
+      fireEvent.change(screen.getByRole("textbox"), { target: { value: "Fix this" } });
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /send/i }));
+      });
+      expect(sent[0]!.blocks).toEqual([
+        { type: "text", text: "Fix this" },
+        { type: "text", text: "picked block" },
+      ]);
+      expect(screen.queryByTestId("pending-page-block")).toBeNull();
+      controller.dispose();
+    });
+
     it("names a source that isn't listed in plain text", async () => {
       const t = new FakeTransport();
       t.handlers["session.history"] = (p) => ({ session_id: p.session_id, turns: [], forked_from: { session_id: "s0", title: null } });

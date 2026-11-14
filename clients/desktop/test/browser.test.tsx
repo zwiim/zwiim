@@ -340,6 +340,42 @@ describe("browser panel", () => {
     expect(t.streams[0]!.sent).toEqual([]);
   });
 
+  it("picks an element for the chat's next message, or stops picking", async () => {
+    const t = new StreamingTransport();
+    t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
+    t.handlers["browser.view.close"] = () => ({});
+    t.handlers["browser.tab.pick"] = () => ({});
+    t.handlers["browser.tab.pick_cancel"] = () => ({});
+    const handed: unknown[] = [];
+    const { useHandedBlocks } = await import("@/lib/page-handoff");
+    function Chat() {
+      handed.push(useHandedBlocks("s1"));
+      return null;
+    }
+    render(<Chat />);
+    await mount(t, [tab("a")]);
+    const owner = { kind: "session", session_id: "s1" };
+
+    fireEvent.click(screen.getByTitle("Pick an element for the chat"));
+    await tick();
+    expect(t.calls.find((c) => c.op === "browser.tab.pick")!.params).toEqual({ tab_id: "a" });
+    expect(screen.getByText(/Click an element on the page/)).toBeTruthy();
+    const pick = { label: "button#go", text: "page content block", url: "https://example.com/" };
+    await act(async () => t.frame({ type: "browser.tab.picked", tab_id: "a", owner, pick } as never));
+    expect(screen.queryByText(/Click an element on the page/)).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("Added button#go to your next message.");
+    expect(handed.at(-1)).toMatchObject([{ label: "button#go", text: "page content block" }]);
+
+    // Pressed again while picking, it stops; nothing more is handed over.
+    fireEvent.click(screen.getByTitle("Pick an element for the chat"));
+    await tick();
+    fireEvent.click(screen.getByTitle("Stop picking"));
+    await tick();
+    expect(t.calls.filter((c) => c.op === "browser.tab.pick_cancel").map((c) => c.params)).toEqual([{ tab_id: "a" }]);
+    await act(async () => t.frame({ type: "browser.tab.picked", tab_id: "a", owner, pick: null } as never));
+    expect(handed.at(-1)).toHaveLength(1);
+  });
+
   it("uploads files dropped on the page, then drops them where they fell", async () => {
     const size = (v: number) => ({ configurable: true, get: () => v });
     Object.defineProperty(HTMLElement.prototype, "clientWidth", size(200));

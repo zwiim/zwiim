@@ -8,12 +8,27 @@
 // list, a date picker, and find in page.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, ChevronLeft, ExternalLink, File, Folder, Globe, MousePointer2, Plus, Printer, RotateCw, X } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  ChevronLeft,
+  ExternalLink,
+  File,
+  Folder,
+  Globe,
+  MousePointer2,
+  Plus,
+  Printer,
+  RotateCw,
+  SquareDashedMousePointer,
+  X,
+} from "lucide-react";
 import {
   personalTabs,
   sessionTabs,
   tabAgentAction,
   tabMenu,
+  tabPick,
   tabUiRequests,
   uploadAttachment,
   ZwiimClientError,
@@ -44,6 +59,7 @@ import {
   type Fit,
 } from "@/lib/browser-input";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
+import { handToChat } from "@/lib/page-handoff";
 import { isModKey } from "@/lib/platform";
 import { DatePicker, FindBar, isPick, PageMenu, SelectPicker, type MenuAction, type PickRequest } from "@/panels/BrowserPageUi";
 import { BrowserSites } from "@/panels/BrowserSites";
@@ -77,6 +93,8 @@ export function BrowserPanel({
   // The PDF just saved, said until the next step.
   const [saved, setSaved] = useState<string | null>(null);
   const [finding, setFinding] = useState(false);
+  // The tab an element pick is armed in, and its last ended pick's seq then.
+  const [picking, setPicking] = useState<{ tabId: string; since: number } | null>(null);
   const address = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -92,6 +110,23 @@ export function BrowserPanel({
   const owner: BrowserTabOwner = sessionId ? { kind: "session", session_id: sessionId } : { kind: "personal" };
   const tabId = tab?.tab_id ?? null;
   useEffect(() => setFinding(false), [tabId]);
+  // A pick ends with the tab's next `browser.tab.picked`; its element goes
+  // to this chat's next message (design 10.6).
+  const ended = picking ? tabPick(browser, picking.tabId) : undefined;
+  useEffect(() => {
+    if (!picking || !ended || ended.seq <= picking.since) return;
+    setPicking(null);
+    if (ended.pick && sessionId) {
+      handToChat(sessionId, { label: ended.pick.label, text: ended.pick.text });
+      setSaved(`Added ${ended.pick.label} to your next message.`);
+    }
+  }, [picking, ended, sessionId]);
+  // Leaving the tab, or the panel, calls its pick off.
+  useEffect(() => {
+    if (!picking || (picking.tabId === tabId && active)) return;
+    void controller.cancelBrowserPick(picking.tabId).catch(() => {});
+    setPicking(null);
+  }, [picking, tabId, active, controller]);
   const find = useCallback(
     (query: string, backwards: boolean) =>
       tabId ? controller.findInBrowserTab(tabId, query, backwards).catch(() => null) : Promise.resolve(null),
@@ -117,6 +152,18 @@ export function BrowserPanel({
       const opened = await controller.openBrowserTab(owner);
       setSelected(opened.tab_id);
       requestAnimationFrame(() => address.current?.focus());
+    });
+
+  const togglePick = (t: BrowserTab) =>
+    run(async () => {
+      if (picking?.tabId === t.tab_id) {
+        setPicking(null);
+        await controller.cancelBrowserPick(t.tab_id);
+        return;
+      }
+      const since = tabPick(browser, t.tab_id)?.seq ?? 0;
+      await controller.pickInBrowserTab(t.tab_id);
+      setPicking({ tabId: t.tab_id, since });
     });
 
   const print = (t: BrowserTab) =>
@@ -237,7 +284,15 @@ export function BrowserPanel({
           onGo={(url) => run(() => controller.navigateBrowserTab(tab.tab_id, url))}
           onStep={(action) => run(() => controller.browserTabHistory(tab.tab_id, action))}
           onPrint={() => void print(tab)}
+          // Only a chat takes what is picked.
+          onPick={sessionId ? () => void togglePick(tab) : null}
+          picking={picking?.tabId === tab.tab_id}
         />
+      )}
+      {picking && picking.tabId === tab?.tab_id && (
+        <p className="text-muted-foreground border-b px-3 py-1.5 text-xs" role="status">
+          Click an element on the page to add it to your next message. Esc cancels.
+        </p>
       )}
       {error && <p className="text-destructive border-b px-3 py-1.5 text-xs">{error}</p>}
       {saved && (
@@ -695,6 +750,8 @@ function AddressBar({
   onGo,
   onStep,
   onPrint,
+  onPick,
+  picking,
 }: {
   tab: BrowserTab;
   inputRef: React.RefObject<HTMLInputElement | null>;
@@ -702,6 +759,9 @@ function AddressBar({
   onGo(url: string): Promise<unknown>;
   onStep(action: "back" | "forward" | "reload" | "stop"): Promise<unknown>;
   onPrint(): void;
+  /** Pick an element for the chat; null without a chat. */
+  onPick: (() => void) | null;
+  picking: boolean;
 }) {
   // What the person is typing; the tab's own URL whenever they are not.
   const [draft, setDraft] = useState<string | null>(null);
@@ -750,6 +810,17 @@ function AddressBar({
         }}
         onBlur={() => setDraft((d) => (d === null || d.trim() === "" ? null : d))}
       />
+      <Button
+        type="button"
+        size="icon-sm"
+        variant={picking ? "secondary" : "ghost"}
+        title={onPick ? (picking ? "Stop picking" : "Pick an element for the chat") : "Open a chat to pick an element for it"}
+        aria-pressed={picking}
+        disabled={disabled || !onPick}
+        onClick={() => onPick?.()}
+      >
+        <SquareDashedMousePointer />
+      </Button>
       <Button type="button" size="icon-sm" variant="ghost" title="Save as PDF" disabled={disabled} onClick={onPrint}>
         <Printer />
       </Button>
