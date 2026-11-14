@@ -281,13 +281,13 @@ impl AppState {
     pub async fn browser(
         &self,
     ) -> Result<Arc<crate::browser::service::BrowserService>, sea_orm::DbErr> {
-        use crate::browser::{engine, service::BrowserService, snapshot::PersonalSnapshot};
+        use crate::browser::{engine, service::BrowserService, snapshot::Snapshot};
         self.browser
             .get_or_try_init(|| async {
                 let dir = engine::browser_dir(&self.data_dir);
                 let manager =
                     engine::manager::EngineManager::new(engine::host_start(dir.join("engine")));
-                let snapshot = PersonalSnapshot::at(dir.join("personal.snapshot"));
+                let snapshot = Snapshot::at(dir.join("personal.snapshot"));
                 BrowserService::start(manager, self.db.conn.clone(), Some(snapshot)).await
             })
             .await

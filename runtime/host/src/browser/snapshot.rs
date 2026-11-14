@@ -1,4 +1,5 @@
-//! The personal context's sign-ins, kept between engines (design 6.3).
+//! Sign-ins kept between engines (design 6.3): the personal context's, and
+//! each workspace's saved login that its sessions start from.
 //!
 //! The engine's contexts are ephemeral and the headless shell protects its
 //! own cookie file with Chromium's built-in mock password, so the Host keeps
@@ -27,6 +28,8 @@ const NONCE_LEN: usize = 12;
 const KEY_SECRET: &str = "browser-snapshot-key";
 /// Binds a sealed file to what it is, so it cannot be passed off as another.
 const AAD: &[u8] = b"zwiim browser personal snapshot v1";
+/// The same for a workspace's login, followed by the workspace's id.
+const LOGIN_AAD: &str = "zwiim browser workspace login v1 ";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SnapshotError {
@@ -49,27 +52,33 @@ impl From<std::io::Error> for SnapshotError {
 pub struct Contents {
     /// CDP `Network.CookieParam`s, ready for `Storage.setCookies`.
     pub cookies: Vec<Value>,
+    /// For a workspace login, the sites the person chose to keep.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sites: Vec<String>,
 }
 
+#[derive(Clone)]
 enum KeySource {
     Keychain,
     #[cfg(test)]
     Fixed([u8; 32]),
 }
 
-/// The personal snapshot file and the key that seals it.
-pub struct PersonalSnapshot {
+/// A snapshot file and the key that seals it.
+pub struct Snapshot {
     path: PathBuf,
+    aad: Vec<u8>,
     source: KeySource,
     key: std::sync::OnceLock<Zeroizing<[u8; 32]>>,
 }
 
-impl PersonalSnapshot {
+impl Snapshot {
     /// The Host's snapshot: `<data>/browser/personal.snapshot`, key in the
     /// keychain.
     pub fn at(path: PathBuf) -> Self {
-        PersonalSnapshot {
+        Snapshot {
             path,
+            aad: AAD.to_vec(),
             source: KeySource::Keychain,
             key: std::sync::OnceLock::new(),
         }
@@ -77,11 +86,37 @@ impl PersonalSnapshot {
 
     #[cfg(test)]
     pub fn with_key(path: PathBuf, key: [u8; 32]) -> Self {
-        PersonalSnapshot {
+        Snapshot {
             path,
+            aad: AAD.to_vec(),
             source: KeySource::Fixed(key),
             key: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Workspace `workspace_id`'s saved login, beside this snapshot under
+    /// `logins/`, sealed by the same key and bound to that workspace. None
+    /// for an id that is not a plain name.
+    pub fn login(&self, workspace_id: &str) -> Option<Snapshot> {
+        let plain = !workspace_id.is_empty()
+            && workspace_id.len() <= 64
+            && workspace_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+        if !plain {
+            return None;
+        }
+        let dir = self.path.parent().unwrap_or(Path::new("."));
+        let key = std::sync::OnceLock::new();
+        if let Some(k) = self.key.get() {
+            let _ = key.set(k.clone());
+        }
+        Some(Snapshot {
+            path: dir.join("logins").join(format!("{workspace_id}.snapshot")),
+            aad: format!("{LOGIN_AAD}{workspace_id}").into_bytes(),
+            source: self.source.clone(),
+            key,
+        })
     }
 
     /// Read and open the snapshot. No file is an empty snapshot.
@@ -91,7 +126,7 @@ impl PersonalSnapshot {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Contents::default()),
             Err(e) => return Err(e.into()),
         };
-        let plain = Zeroizing::new(open(&*self.key()?, &sealed)?);
+        let plain = Zeroizing::new(open(&*self.key()?, &self.aad, &sealed)?);
         serde_json::from_slice(&plain).map_err(|_| SnapshotError::Corrupt)
     }
 
@@ -100,8 +135,16 @@ impl PersonalSnapshot {
         let plain = Zeroizing::new(
             serde_json::to_vec(contents).map_err(|e| SnapshotError::Io(e.to_string()))?,
         );
-        let sealed = seal(&*self.key()?, &plain);
+        let sealed = seal(&*self.key()?, &self.aad, &plain);
         write_private(&self.path, &sealed)
+    }
+
+    /// Remove the snapshot. No file is fine.
+    pub fn remove(&self) -> Result<(), SnapshotError> {
+        match std::fs::remove_file(&self.path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
     }
 
     fn key(&self) -> Result<Zeroizing<[u8; 32]>, SnapshotError> {
@@ -140,18 +183,12 @@ fn keychain_key() -> Result<Zeroizing<[u8; 32]>, SnapshotError> {
     Ok(key)
 }
 
-fn seal(key: &[u8; 32], plain: &[u8]) -> Vec<u8> {
+fn seal(key: &[u8; 32], aad: &[u8], plain: &[u8]) -> Vec<u8> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let mut nonce = [0u8; NONCE_LEN];
     rand::rngs::OsRng.fill_bytes(&mut nonce);
     let sealed = cipher
-        .encrypt(
-            Nonce::from_slice(&nonce),
-            Payload {
-                msg: plain,
-                aad: AAD,
-            },
-        )
+        .encrypt(Nonce::from_slice(&nonce), Payload { msg: plain, aad })
         .expect("AES-GCM encryption of an in-memory buffer");
     let mut out = Vec::with_capacity(MAGIC.len() + 1 + NONCE_LEN + sealed.len());
     out.extend_from_slice(MAGIC);
@@ -161,7 +198,7 @@ fn seal(key: &[u8; 32], plain: &[u8]) -> Vec<u8> {
     out
 }
 
-fn open(key: &[u8; 32], sealed: &[u8]) -> Result<Vec<u8>, SnapshotError> {
+fn open(key: &[u8; 32], aad: &[u8], sealed: &[u8]) -> Result<Vec<u8>, SnapshotError> {
     let header = MAGIC.len() + 1;
     if sealed.len() < header + NONCE_LEN
         || &sealed[..MAGIC.len()] != MAGIC
@@ -171,13 +208,7 @@ fn open(key: &[u8; 32], sealed: &[u8]) -> Result<Vec<u8>, SnapshotError> {
     }
     let (nonce, body) = sealed[header..].split_at(NONCE_LEN);
     Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key))
-        .decrypt(
-            Nonce::from_slice(nonce),
-            Payload {
-                msg: body,
-                aad: AAD,
-            },
-        )
+        .decrypt(Nonce::from_slice(nonce), Payload { msg: body, aad })
         .map_err(|_| SnapshotError::Corrupt)
 }
 
@@ -243,14 +274,46 @@ mod tests {
             cookies: vec![
                 json!({ "name": "sid", "value": "secret-session-value", "domain": "example.com", "path": "/" }),
             ],
+            sites: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_workspace_login_is_its_own_file_bound_to_its_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let personal = Snapshot::with_key(dir.path().join("personal.snapshot"), [7; 32]);
+        assert!(personal.login("../x").is_none());
+        assert!(personal.login("").is_none());
+        let login = personal.login("w1").unwrap();
+        let saved = Contents {
+            sites: vec!["example.com".into()],
+            ..contents()
+        };
+        login.save(&saved).unwrap();
+        assert!(dir.path().join("logins/w1.snapshot").exists());
+        assert_eq!(login.load().unwrap(), saved);
+        assert_eq!(personal.load().unwrap(), Contents::default());
+
+        // Copied to another workspace's name, it does not open.
+        std::fs::copy(
+            dir.path().join("logins/w1.snapshot"),
+            dir.path().join("logins/w2.snapshot"),
+        )
+        .unwrap();
+        assert_eq!(
+            personal.login("w2").unwrap().load().unwrap_err(),
+            SnapshotError::Corrupt
+        );
+        login.remove().unwrap();
+        login.remove().unwrap();
+        assert_eq!(login.load().unwrap(), Contents::default());
     }
 
     #[test]
     fn a_snapshot_round_trips_and_is_not_readable_on_disk() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("browser/personal.snapshot");
-        let snapshot = PersonalSnapshot::with_key(path.clone(), [7; 32]);
+        let snapshot = Snapshot::with_key(path.clone(), [7; 32]);
         assert_eq!(snapshot.load().unwrap(), Contents::default());
 
         snapshot.save(&contents()).unwrap();
@@ -270,11 +333,11 @@ mod tests {
     fn another_key_or_a_changed_byte_does_not_open_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("personal.snapshot");
-        PersonalSnapshot::with_key(path.clone(), [7; 32])
+        Snapshot::with_key(path.clone(), [7; 32])
             .save(&contents())
             .unwrap();
         assert_eq!(
-            PersonalSnapshot::with_key(path.clone(), [8; 32])
+            Snapshot::with_key(path.clone(), [8; 32])
                 .load()
                 .unwrap_err(),
             SnapshotError::Corrupt
@@ -285,9 +348,7 @@ mod tests {
         bytes[last] ^= 1;
         std::fs::write(&path, &bytes).unwrap();
         assert_eq!(
-            PersonalSnapshot::with_key(path, [7; 32])
-                .load()
-                .unwrap_err(),
+            Snapshot::with_key(path, [7; 32]).load().unwrap_err(),
             SnapshotError::Corrupt
         );
     }

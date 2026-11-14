@@ -30,7 +30,7 @@ use super::network::{NetworkQuery, NetworkReadout, NetworkRing};
 use super::policy::{self, HostRule};
 use super::saving;
 use super::sites::{self, Actor, Verdict};
-use super::snapshot::{self, PersonalSnapshot};
+use super::snapshot::{self, Snapshot};
 use super::store::{self, TabOwner, TabRecord};
 use super::ui::{self, UiAnswer, UiKind, UiRequest};
 
@@ -309,7 +309,7 @@ const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 pub struct BrowserService {
     me: Weak<BrowserService>,
     engine: Arc<EngineManager>,
-    snapshot: Option<Arc<PersonalSnapshot>>,
+    snapshot: Option<Arc<Snapshot>>,
     db: DatabaseConnection,
     inner: Mutex<Inner>,
     sites: std::sync::Mutex<Sites>,
@@ -322,7 +322,7 @@ impl BrowserService {
     pub async fn start(
         engine: Arc<EngineManager>,
         db: DatabaseConnection,
-        snapshot: Option<PersonalSnapshot>,
+        snapshot: Option<Snapshot>,
     ) -> Result<Arc<Self>, sea_orm::DbErr> {
         let tabs = store::load(&db)
             .await?
@@ -2503,7 +2503,10 @@ impl BrowserService {
             .as_array()
             .map(|all| all.iter().filter_map(snapshot::cookie_param).collect())
             .unwrap_or_default();
-        let contents = snapshot::Contents { cookies };
+        let contents = snapshot::Contents {
+            cookies,
+            ..Default::default()
+        };
         match tokio::task::spawn_blocking(move || snapshot.save(&contents)).await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
@@ -3872,7 +3875,7 @@ mod tests {
         let svc = BrowserService::start(
             EngineManager::new(fake.start_fn()),
             db.conn.clone(),
-            Some(PersonalSnapshot::with_key(path.clone(), [3; 32])),
+            Some(Snapshot::with_key(path.clone(), [3; 32])),
         )
         .await
         .unwrap();
@@ -3886,7 +3889,7 @@ mod tests {
         let svc = BrowserService::start(
             EngineManager::new(fresh.start_fn()),
             db.conn.clone(),
-            Some(PersonalSnapshot::with_key(path.clone(), [3; 32])),
+            Some(Snapshot::with_key(path.clone(), [3; 32])),
         )
         .await
         .unwrap();
@@ -3907,9 +3910,10 @@ mod tests {
     async fn a_snapshot_that_cannot_be_read_is_never_overwritten() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("personal.snapshot");
-        PersonalSnapshot::with_key(path.clone(), [1; 32])
+        Snapshot::with_key(path.clone(), [1; 32])
             .save(&snapshot::Contents {
                 cookies: vec![json!({ "name": "sid", "value": "v", "domain": "x", "path": "/" })],
+                ..Default::default()
             })
             .unwrap();
         let before = std::fs::read(&path).unwrap();
@@ -3920,7 +3924,7 @@ mod tests {
             EngineManager::new(fake.start_fn()),
             db.conn.clone(),
             // Another key: as if the keychain entry were replaced.
-            Some(PersonalSnapshot::with_key(path.clone(), [2; 32])),
+            Some(Snapshot::with_key(path.clone(), [2; 32])),
         )
         .await
         .unwrap();
