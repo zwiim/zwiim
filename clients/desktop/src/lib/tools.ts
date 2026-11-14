@@ -59,7 +59,41 @@ const NAME_VERBS: Record<string, string> = {
  */
 const ZWIIM_TOOLS: Record<string, string> = {
   update_progress: "Updated tasks",
+  delegate_to_agent: "Delegate",
+  get_delegation_status: "Check delegation",
+  cancel_delegation: "Cancel delegation",
+  resume_delegation: "Resume delegation",
+  check_user_feedback: "Check feedback",
+  ask_user_question: "Ask",
+  get_session_info: "Read session",
+  create_automation: "Create automation",
+  create_work_task: "Create task",
+  task_progress: "Report progress",
+  task_complete: "Finish task",
 };
+
+/** Zwiim's Git tools. */
+const GIT_TOOLS: Record<string, string> = {
+  git_status: "Git status",
+  git_diff: "Git diff",
+  git_log: "Git log",
+  git_branch_create: "Create branch",
+  git_branch_rename: "Rename branch",
+  git_switch: "Switch branch",
+  git_stage: "Stage",
+  git_commit: "Commit",
+  git_fetch: "Git fetch",
+  git_pull: "Pull",
+  git_push: "Push",
+  git_pr_create: "Open PR",
+  git_pr_view: "View PR",
+  git_pr_checks: "PR checks",
+  git_pr_comments: "PR comments",
+  git_pr_merge: "Merge PR",
+};
+
+/** Labels of Zwiim's Git tools, for the transcript's Git icon. */
+export const GIT_VERBS: ReadonlySet<string> = new Set(Object.values(GIT_TOOLS));
 
 /** Zwiim's browser tools (browser design 10.2), read as what they do in a tab. */
 const BROWSER_TOOLS: Record<string, string> = {
@@ -87,7 +121,7 @@ export const BROWSER_VERBS: ReadonlySet<string> = new Set(Object.values(BROWSER_
 /** What one of Zwiim's own tools does, or null for any other tool. */
 function zwiimTool(name: string): string | null {
   const m = /^mcp(?:__|\.)zwiim-mcp(?:__|\.)(\w+)$/.exec(name.trim());
-  return m ? (ZWIIM_TOOLS[m[1]!] ?? BROWSER_TOOLS[m[1]!] ?? null) : null;
+  return m ? (ZWIIM_TOOLS[m[1]!] ?? BROWSER_TOOLS[m[1]!] ?? GIT_TOOLS[m[1]!] ?? null) : null;
 }
 
 const TARGET_KEYS = [

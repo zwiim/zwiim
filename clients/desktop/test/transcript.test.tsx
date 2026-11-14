@@ -182,7 +182,7 @@ describe("transcript", () => {
     controller.dispose();
   });
 
-  it("names Zwiim's browser tools by what they do in a tab", async () => {
+  it("names Zwiim's browser and Git tools by what they do", async () => {
     const t = new FakeTransport();
     t.handlers["session.history"] = (p) => ({
       session_id: p.session_id,
@@ -214,6 +214,16 @@ describe("transcript", () => {
       },
     });
     expect(screen.getAllByTestId("tool-call").at(-1)!.textContent).toBe("Clickrunning");
+    await frame({
+      type: "event",
+      event: {
+        session_id: "s1",
+        seq: 3,
+        type: "agent.tool_call",
+        payload: { tool_call_id: "g1", title: "mcp__zwiim-mcp__git_commit", kind: "other", status: "in_progress", content: null },
+      },
+    });
+    expect(screen.getAllByTestId("tool-call").at(-1)!.textContent).toBe("Commitrunning");
     controller.dispose();
   });
 
