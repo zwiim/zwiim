@@ -1235,9 +1235,12 @@ A refused subscription is a `browser.error { error }` frame, never a plain
 `error` frame, which clients take to mean the Host feed failed. A socket that
 falls behind gets a fresh snapshot.
 
-Until P2a gives devices `browser_access`, every `browser.*` operation and
-`browser.subscribe` need local host authority, so a paired phone sees no tab
-addresses.
+A paired device reaches its sessions' tabs by its `browser_access`:
+`view` lists them, `control` also opens, steers and closes them and answers
+their requests. It never sees personal tabs: they are left out of its list
+and acting on one is `tab_not_found`. The engine, site lists, downloads,
+`browser.view.*`, the local stream socket and `browser.subscribe` stay Host
+only; phones watch over the `browser` channel (P2b).
 
 Socket: `/zwiim/v1/browser/stream/<stream_id>`, subprotocol
 `zwiim-browser-stream`, loopback only. Remote viewers
@@ -1347,7 +1350,8 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 
 ### P2a — Live App on the phone (covers R2 on the phone)
 
-1. `browser_access` device rights.
+1. `browser_access` device rights. Done, with the picker in Settings >
+   Devices.
 2. Tunnel binary framing and chunking.
 3. Relay channels on the Host side (`Dial` routing) and the SDK.
 4. `PortForwarder` and `browser.forward.*`.
