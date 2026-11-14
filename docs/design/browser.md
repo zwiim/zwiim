@@ -622,7 +622,14 @@ holds its own CDP session.
 1. `browser_snapshot` — the upstream page-reading script (`agent.bundle.js`)
    run in an isolated world per tab (`Page.createIsolatedWorld`), so page
    scripts cannot see it. It returns the upstream `PageSnapshot` with element
-   refs; a new document ends the world and makes its refs stale.
+   refs; a new document ends the world and makes its refs stale. With
+   `changesOnly`, the Host compares the page against the tree the agent's
+   last snapshot of the same document showed in full, and returns only the
+   changed lines, `+ ` new and `- ` gone, under their unmarked parents
+   (`tree_diff.rs`). Refs do not drift within a document: the engine keeps
+   an element's ref while the element lives, so refs from the earlier
+   snapshot keep working with the new generation. A new document, or a
+   last snapshot that was cut short, gets the whole tree.
 2. `browser_click`, `browser_type`, `browser_hover`, `browser_select_option`,
    `browser_press_key` — act on a ref: resolve it to a node, scroll it into
    view, dispatch input at its centre. Each one waits for the page to settle
@@ -1406,8 +1413,7 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
    `localStorage`.
 2. Recording timeline (10.7). Done on the desktop.
 3. Element pick on both clients (10.6). Done on the desktop.
-4. Snapshots that return only what changed. Element refs can drift, so this
-   waits until the basic tools are proven.
+4. Snapshots that return only what changed (10.2). Done.
 5. Reload on save; mobile preview tab. Reload on save is done.
 
 ### Deferred — out of scope until decided otherwise

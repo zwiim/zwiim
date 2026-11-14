@@ -31,6 +31,9 @@ have their own versions and are listed under Compatibility.
   shows each step the agent took in its browser, with a small picture of
   the page. Settings > Browser sets how much is kept (50 MB, 7 days by
   default). Typed text is never recorded.
+- Agents can ask the browser for only what changed on a page since their
+  last look (`browser_snapshot` with `changesOnly`), which keeps long
+  browser tasks short.
 - Settings > Browser gathers the browser's settings and adds Tabs per
   session (20 by default). Windows a page opens by itself count too, so a
   page can no longer open tabs without end.
