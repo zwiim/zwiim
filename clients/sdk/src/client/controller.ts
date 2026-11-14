@@ -13,6 +13,7 @@ import type {
   BrowserEngine,
   BrowserTab,
   BrowserTabOwner,
+  BrowserLoginSites,
   BrowserUiAnswer,
   BrowserViewport,
   CloneStart,
@@ -825,6 +826,21 @@ export class HostController {
   /** Replace session `session_id`'s strict site list (empty removes it); the list as kept. */
   async setBrowserSites(session_id: string, sites: string[]): Promise<string[]> {
     return (await this.client.request("browser.sites.set", { session_id, sites })).sites;
+  }
+
+  /** The sites session `session_id` could keep as its workspace's login, and those kept. */
+  async browserLogin(session_id: string): Promise<BrowserLoginSites> {
+    return this.client.request("browser.login.get", { session_id });
+  }
+
+  /** Keep session `session_id`'s sign-ins to `sites` for its workspace; the sites kept. */
+  async saveBrowserLogin(session_id: string, sites: string[]): Promise<string[]> {
+    return (await this.client.request("browser.login.save", { session_id, sites })).saved;
+  }
+
+  /** Forget `sites` from session `session_id`'s workspace login, or all of it; the sites kept. */
+  async forgetBrowserLogin(session_id: string, sites?: string[]): Promise<string[]> {
+    return (await this.client.request("browser.login.forget", { session_id, ...(sites ? { sites } : {}) })).saved;
   }
 
   /** Answer what a tab waits on. Another client may have answered first: then `request_not_found`. */

@@ -91,12 +91,16 @@ export type HostErrorCode =
   | "invalid_answer"
   /** `browser.sites.set`: an entry is not a site pattern or an address. */
   | "invalid_site"
-  /** `browser.tab.open`: the session holds 8 tabs, or the browser 30. */
+  /** `browser.tab.open`: the session holds its most tabs (`browser.session_tabs`), or the browser 30. */
   | "too_many_tabs"
   /** `browser.tab.open`: the browser is at its memory budget; the message says who holds the most. */
   | "browser_memory_full"
   /** `browser.tab.print`: the page's PDF would be over 200 MB. */
   | "page_too_large"
+  /** `browser.login.save`: the session holds no cookies for the sites named. */
+  | "nothing_to_save"
+  /** `browser.login.*`: the Host keeps no browser logins, or cannot open the saved one. */
+  | "login_unavailable"
   | "internal";
 
 export interface WireError {
@@ -2370,6 +2374,25 @@ export interface Operations {
    * servers; empty lets it open any. Returns them as kept; a bad one is `invalid_site`.
    */
   "browser.sites.set": [{ session_id: string; sites: string[] }, { sites: string[] }];
+  /**
+   * The sites the session's browser holds cookies for now, and those its
+   * workspace's saved login keeps. Cookies never leave the Host.
+   */
+  "browser.login.get": [{ session_id: string }, BrowserLoginSites];
+  /**
+   * Keep the session's cookies for these sites (1 to 100) as its workspace's
+   * login, which the workspace's new sessions start from; `nothing_to_save`
+   * when it holds none for them. Returns the sites kept.
+   */
+  "browser.login.save": [{ session_id: string; sites: string[] }, { saved: string[] }];
+  /** Drop these sites from the workspace's login, or all of it without `sites`. Returns the sites kept. */
+  "browser.login.forget": [{ session_id: string; sites?: string[] }, { saved: string[] }];
+}
+
+/** `browser.login.get`: sites by name, such as `app.example.com`. */
+export interface BrowserLoginSites {
+  available: string[];
+  saved: string[];
 }
 
 export type OpName = keyof Operations;
@@ -2416,6 +2439,8 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "browser.ui.answer",
   "browser.downloads.set_location",
   "browser.sites.set",
+  "browser.login.save",
+  "browser.login.forget",
   "session.start",
   "session.send",
   "session.cancel",
