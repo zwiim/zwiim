@@ -282,6 +282,9 @@ export function Workbench({
   const [askPath, setAskPath] = useState<((path: string | null) => void) | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  // The browser widened over the chat (Expand): the chat narrows to a column
+  // and the sidebar folds, until the person shrinks it again.
+  const [browserWide, setBrowserWide] = useState(false);
   const [docs, setDocs] = useState<OpenDoc[]>([]);
   /** The open file showing in the middle; null shows the session. */
   const [activeDoc, setActiveDoc] = useState<string | null>(null);
@@ -438,6 +441,8 @@ export function Workbench({
       <SidebarFrame
         // A Continue shows the sidebar, where its dialog or "Preparing workspace…" appears.
         reveal={continueRequest !== null}
+        folded={browserWide && !!workspace && !readOnly}
+        onUnfold={() => setBrowserWide(false)}
         rail={
           <ControlCenter
             compact
@@ -641,6 +646,8 @@ export function Workbench({
           showing={current}
           remote={remote}
           onOpen={(kind, path) => openDoc({ kind, workspaceId: workspace.workspace_id, path })}
+          wide={browserWide}
+          onWide={setBrowserWide}
         />
       )}
     </div>
@@ -917,6 +924,8 @@ function WorkspacePanel({
   showing,
   remote,
   onOpen,
+  wide,
+  onWide,
 }: {
   workspace: WorkspaceInfo;
   /** The chat on screen, which resolves the branch's conflicts. */
@@ -928,6 +937,9 @@ function WorkspacePanel({
   /** The host is on another computer, so its `localhost` is not this one's. */
   remote: boolean;
   onOpen(kind: OpenDoc["kind"], path: string): void;
+  /** The browser fills the window beside a narrow chat (Expand). */
+  wide: boolean;
+  onWide(wide: boolean): void;
 }) {
   const [layout, setLayout] = useState(panelLayout);
   const [tab, setTab] = useState<Tab>("files");
@@ -952,18 +964,24 @@ function WorkspacePanel({
   // Collapsed, the panel narrows to a rail (sliding like the sidebar) and stays
   // mounted, so open files and terminals survive.
   const collapsed = layout.collapsed;
+  // Wide holds only for the browser, open.
+  const expanded = wide && tab === "browser" && !collapsed;
+  useEffect(() => {
+    if (wide && !expanded) onWide(false);
+  }, [wide, expanded, onWide]);
+  const width = expanded ? `calc(100vw - ${RAIL + WIDE_CHAT}px)` : collapsed ? RAIL : layout.width;
   return (
     <aside
       className={cn(
         "bg-sidebar border-sidebar-border relative shrink-0 border-l",
         !resizing && "ease-std transition-[width] duration-200",
       )}
-      style={{ width: collapsed ? RAIL : layout.width }}
+      style={{ width }}
     >
       <div className="absolute inset-0 overflow-hidden">
         <div
           className={cn("flex h-full flex-col transition-opacity duration-200", collapsed && "opacity-0")}
-          style={{ width: layout.width - 1 }}
+          style={{ width: expanded ? "100%" : layout.width - 1 }}
           aria-hidden={collapsed}
           inert={collapsed}
           data-testid="workspace-panel"
@@ -1021,7 +1039,13 @@ function WorkspacePanel({
               )}
               {visited.has("browser") && (
                 <TabPane active={tab === "browser"}>
-                  <BrowserPanel workspaceId={workspaceId} sessionId={sessionId} active={tab === "browser" && !collapsed} />
+                  <BrowserPanel
+                    workspaceId={workspaceId}
+                    sessionId={sessionId}
+                    active={tab === "browser" && !collapsed}
+                    wide={expanded}
+                    onWide={() => onWide(!expanded)}
+                  />
                 </TabPane>
               )}
             </div>
@@ -1103,7 +1127,7 @@ function WorkspacePanel({
           </div>
         </div>
       </div>
-      {collapsed ? (
+      {expanded ? null : collapsed ? (
         <Button
           className="animate-fade-in absolute top-1.5 left-1.5"
           size="icon-sm"
@@ -1170,6 +1194,8 @@ function TabPane({ active, children }: { active: boolean; children: React.ReactN
 
 /** The collapsed sidebar's width: a ghost icon button (28px), its padding and the border. */
 const RAIL = 41;
+/** The chat column beside an expanded browser. */
+const WIDE_CHAT = 400;
 
 /** Resizable, collapsible sidebar; its layout is a client preference. */
 function SidebarFrame({
@@ -1177,6 +1203,8 @@ function SidebarFrame({
   footer,
   rail,
   reveal = false,
+  folded = false,
+  onUnfold,
 }: {
   children: React.ReactNode;
   footer: React.ReactNode;
@@ -1184,6 +1212,10 @@ function SidebarFrame({
   rail: React.ReactNode;
   /** Show a collapsed sidebar, for work that happens there. */
   reveal?: boolean;
+  /** Shown as a rail for now, its own layout kept (the expanded browser). */
+  folded?: boolean;
+  /** Showing it again ends what folded it. */
+  onUnfold?(): void;
 }) {
   const [layout, setLayout] = useState(sidebarLayout);
   const drag = useRef<{ x: number; width: number } | null>(null);
@@ -1195,7 +1227,7 @@ function SidebarFrame({
     if (reveal) setLayout((l) => (l.collapsed ? { ...l, collapsed: false } : l));
   }, [reveal]);
 
-  const collapsed = layout.collapsed;
+  const collapsed = layout.collapsed || folded;
   // Collapsed, the sidebar narrows to a rail and stays mounted, so its state survives.
   return (
     <aside
@@ -1236,7 +1268,10 @@ function SidebarFrame({
             size="icon-sm"
             variant="ghost"
             title="Show sidebar"
-            onClick={() => setLayout((l) => ({ ...l, collapsed: false }))}
+            onClick={() => {
+              if (folded) onUnfold?.();
+              setLayout((l) => ({ ...l, collapsed: false }));
+            }}
           >
             <PanelLeftOpen />
           </Button>

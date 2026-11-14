@@ -16,6 +16,8 @@ import {
   File,
   Folder,
   Globe,
+  Maximize2,
+  Minimize2,
   MousePointer2,
   Plus,
   Printer,
@@ -83,6 +85,8 @@ export function BrowserPanel({
   workspaceId,
   sessionId,
   active,
+  wide = false,
+  onWide,
 }: {
   /** The workspace on screen: where a page's file input picks from. */
   workspaceId: string;
@@ -90,6 +94,10 @@ export function BrowserPanel({
   sessionId: string | null;
   /** On screen; a hidden panel streams nothing. */
   active: boolean;
+  /** Filling the window beside a narrow chat. */
+  wide?: boolean;
+  /** Expand over the chat, or shrink back. */
+  onWide?(): void;
 }) {
   const controller = useController();
   const online = useOnline();
@@ -286,6 +294,17 @@ export function BrowserPanel({
         {sessionId && !unavailable && <BrowserSteps key={sessionId} sessionId={sessionId} disabled={!online} />}
         {sessionId && !unavailable && <BrowserLogin key={sessionId} sessionId={sessionId} disabled={!online} />}
         {sessionId && !unavailable && <BrowserSites key={sessionId} sessionId={sessionId} disabled={!online} />}
+        {onWide && (
+          <Button
+            size="icon-sm"
+            variant={wide ? "secondary" : "ghost"}
+            title={wide ? "Shrink the browser" : "Expand the browser beside the chat"}
+            aria-pressed={wide}
+            onClick={onWide}
+          >
+            {wide ? <Minimize2 /> : <Maximize2 />}
+          </Button>
+        )}
       </div>
       {tab && (
         <AddressBar

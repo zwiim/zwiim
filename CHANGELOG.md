@@ -37,6 +37,10 @@ have their own versions and are listed under Compatibility.
 - Preview a page as a phone or tablet: the phone button in the desktop
   browser's address bar shows the page as an iPhone, an Android phone or an
   iPad would, with its screen size, touch and mobile layout.
+- Expand the browser: the expand button beside a chat's browser tabs gives
+  the browser most of the window, with the chat and composer in a column on
+  the left and the sidebar folded, so you watch the agent work while you
+  keep talking to it. The same button shrinks it back.
 - Settings > Browser gathers the browser's settings and adds Tabs per
   session (20 by default). Windows a page opens by itself count too, so a
   page can no longer open tabs without end.

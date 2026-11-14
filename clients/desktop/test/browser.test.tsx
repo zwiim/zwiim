@@ -224,14 +224,19 @@ describe("browser panel", () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  async function mount(t: StreamingTransport, tabs: BrowserTab[], engine: object = { state: "running", version: "157" }) {
+  async function mount(
+    t: StreamingTransport,
+    tabs: BrowserTab[],
+    engine: object = { state: "running", version: "157" },
+    wide?: { wide: boolean; onWide(): void },
+  ) {
     const client = new HostClient({ transport: t });
     const controller = new HostController(client);
     client.start();
     await tick();
     render(
       <HostProvider value={controller}>
-        <BrowserPanel workspaceId="w1" sessionId="s1" active />
+        <BrowserPanel workspaceId="w1" sessionId="s1" active {...wide} />
       </HostProvider>,
     );
     await tick();
@@ -392,6 +397,16 @@ describe("browser panel", () => {
     fireEvent.click(on);
     await tick();
     expect(t.calls.filter((c) => c.op === "browser.tab.reload_on_save").at(-1)!.params).toEqual({ tab_id: "a", on: false });
+  });
+
+  it("expands beside the chat and shrinks back", async () => {
+    const t = new StreamingTransport();
+    t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
+    t.handlers["browser.view.close"] = () => ({});
+    const onWide = vi.fn();
+    await mount(t, [tab("a")], undefined, { wide: false, onWide });
+    fireEvent.click(screen.getByTitle("Expand the browser beside the chat"));
+    expect(onWide).toHaveBeenCalledTimes(1);
   });
 
   it("previews a tab as a phone and back as a desktop page", async () => {
