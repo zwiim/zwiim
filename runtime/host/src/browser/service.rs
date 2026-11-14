@@ -68,6 +68,9 @@ pub struct TabInfo {
     pub discarded: bool,
     /// Its renderer died; reloading brings it back.
     pub crashed: bool,
+    /// It loads again when files in its session's worktree change (design
+    /// 10.5). Not kept across a Host restart.
+    pub reload_on_save: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -191,6 +194,8 @@ struct Inner {
     helpers: HashMap<String, i64>,
     /// The element pick under way in each tab, by its token (design 10.6).
     picks: HashMap<String, String>,
+    /// The worktree watch of each tab that reloads on save (design 10.5).
+    reloads: HashMap<String, super::reload::ReloadWatch>,
 }
 
 /// One tab's console lines, and its page's execution contexts: whether each
@@ -351,6 +356,7 @@ impl BrowserService {
                 networks: HashMap::new(),
                 helpers: HashMap::new(),
                 picks: HashMap::new(),
+                reloads: HashMap::new(),
             }),
             sites: std::sync::Mutex::new(Sites {
                 managed: policy::read_managed_policy(&policy::managed_policy_path())
@@ -443,6 +449,7 @@ impl BrowserService {
             loading: false,
             discarded: false,
             crashed: false,
+            reload_on_save: false,
         };
         if let Err(e) = store::insert(&self.db, &record_of(&info)).await {
             tracing::warn!(error = %e, "could not save a browser tab");
@@ -614,6 +621,7 @@ impl BrowserService {
         inner.typed.remove(tab_id);
         inner.networks.remove(tab_id);
         inner.helpers.remove(tab_id);
+        inner.reloads.remove(tab_id);
         self.drop_ui_locked(&mut inner, |r| r.tab_id == tab_id);
         if let (Some(live), Some(cdp)) = (&tab.live, &inner.cdp) {
             let _ = cdp
@@ -1339,6 +1347,7 @@ impl BrowserService {
                     return;
                 };
                 self.drop_ui_locked(&mut inner, |r| r.tab_id == id);
+                inner.reloads.remove(&id);
                 let tab = inner.tabs.remove(&id).expect("found above");
                 let db = self.db.clone();
                 let tab_id = id.clone();
@@ -1549,6 +1558,67 @@ impl BrowserService {
             }
         });
         Ok(())
+    }
+
+    /// Reload session tab `tab_id` whenever files in its worktree change, or
+    /// stop (design 10.5). A sleeping tab is left asleep.
+    pub async fn set_reload_on_save(
+        &self,
+        tab_id: &str,
+        on: bool,
+    ) -> Result<TabInfo, BrowserError> {
+        let owner = self
+            .tab(tab_id)
+            .await
+            .ok_or_else(|| not_found(tab_id))?
+            .owner;
+        let watch = match (&owner, on) {
+            (_, false) => None,
+            (TabOwner::Personal, true) => {
+                return Err(BrowserError {
+                    code: "session_tab_only",
+                    message: "Only a chat's tab follows its worktree".into(),
+                })
+            }
+            (TabOwner::Session { session_id }, true) => {
+                let root = saving::worktree_of(&self.db, session_id)
+                    .await
+                    .ok_or_else(|| not_found(tab_id))?;
+                let me = self.me.clone();
+                let id = tab_id.to_string();
+                let watch = super::reload::watch(root, move || {
+                    let (me, id) = (me.clone(), id.clone());
+                    tokio::spawn(async move {
+                        let Some(me) = me.upgrade() else { return };
+                        if me.tab(&id).await.is_some_and(|t| !t.discarded) {
+                            if let Err(e) = me.navigate(&id, Navigation::Reload).await {
+                                tracing::debug!(code = e.code, "[browser] reload on save");
+                            }
+                        }
+                    });
+                })
+                .map_err(|e| BrowserError {
+                    code: "engine_error",
+                    message: format!("could not watch the worktree: {e}"),
+                })?;
+                Some(watch)
+            }
+        };
+        let mut inner = self.inner.lock().await;
+        // The tab may have closed while the watch started.
+        let tab = inner
+            .tabs
+            .get_mut(tab_id)
+            .ok_or_else(|| not_found(tab_id))?;
+        tab.info.reload_on_save = on;
+        let info = tab.info.clone();
+        match watch {
+            Some(watch) => inner.reloads.insert(tab_id.to_string(), watch),
+            None => inner.reloads.remove(tab_id),
+        };
+        drop(inner);
+        self.emit(BrowserEvent::Tab(info.clone()));
+        Ok(info)
     }
 
     /// Call off `tab_id`'s element pick, if one is under way.
@@ -2695,6 +2765,7 @@ fn info_of(record: TabRecord) -> TabInfo {
         loading: false,
         discarded: record.discarded,
         crashed: false,
+        reload_on_save: false,
     }
 }
 

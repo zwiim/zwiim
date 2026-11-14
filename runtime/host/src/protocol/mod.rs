@@ -154,6 +154,10 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/browser.tab.print", post(browser::tab_print))
         .route("/browser.tab.drop", post(browser::tab_drop))
         .route("/browser.tab.pick", post(browser::tab_pick))
+        .route(
+            "/browser.tab.reload_on_save",
+            post(browser::tab_reload_on_save),
+        )
         .route("/browser.tab.pick_cancel", post(browser::tab_pick_cancel))
         .route("/browser.ui.answer", post(browser::ui_answer))
         .route("/host.lan_endpoint", post(http::host_lan_endpoint))

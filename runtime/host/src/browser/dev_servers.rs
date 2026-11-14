@@ -252,6 +252,7 @@ mod tests {
             loading: false,
             discarded: false,
             crashed: false,
+            reload_on_save: false,
         }
     }
 

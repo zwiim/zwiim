@@ -131,6 +131,7 @@ const OPS: &[&str] = &[
     "browser.tab.drop",
     "browser.tab.pick",
     "browser.tab.pick_cancel",
+    "browser.tab.reload_on_save",
     "browser.engine.reset",
     "browser.view.open",
     "browser.view.close",
@@ -6872,6 +6873,69 @@ async fn browser_downloads_go_to_the_worktree_or_the_chosen_root() {
     h.ok("session.delete", json!({"session_id": sid})).await;
     assert!(!own.exists());
     assert!(std::path::Path::new(&h.wt).join(".zwiim").exists());
+}
+
+#[tokio::test]
+async fn a_session_tab_reloads_when_its_worktree_changes() {
+    let h = host(false).await;
+    let fake = fake_browser(&h).await;
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let tab = h
+        .ok(
+            "browser.tab.open",
+            json!({"owner": {"kind": "session", "session_id": sid}, "url": "http://localhost:5173/"}),
+        )
+        .await;
+    let tab_id = tab["tab_id"].as_str().unwrap().to_string();
+    assert_eq!(tab["reload_on_save"], false);
+
+    let on = h
+        .ok(
+            "browser.tab.reload_on_save",
+            json!({"tab_id": tab_id, "on": true}),
+        )
+        .await;
+    assert_eq!(on["reload_on_save"], true);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    std::fs::write(
+        std::path::Path::new(&h.wt).join("index.html"),
+        "<p>saved</p>",
+    )
+    .unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while fake.calls("Page.reload").is_empty() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(fake.calls("Page.reload").len(), 1);
+
+    let off = h
+        .ok(
+            "browser.tab.reload_on_save",
+            json!({"tab_id": tab_id, "on": false}),
+        )
+        .await;
+    assert_eq!(off["reload_on_save"], false);
+    std::fs::write(
+        std::path::Path::new(&h.wt).join("index.html"),
+        "<p>again</p>",
+    )
+    .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    assert_eq!(fake.calls("Page.reload").len(), 1);
+
+    // The person's tabs have no worktree to follow.
+    let personal = h
+        .ok("browser.tab.open", json!({"owner": {"kind": "personal"}}))
+        .await;
+    assert_eq!(
+        h.err(
+            "browser.tab.reload_on_save",
+            json!({"tab_id": personal["tab_id"], "on": true}),
+        )
+        .await,
+        (StatusCode::BAD_REQUEST, "session_tab_only".into())
+    );
 }
 
 #[tokio::test]

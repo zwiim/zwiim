@@ -43,6 +43,7 @@ impl From<BrowserError> for ZwiimError {
             "invalid_site" => (StatusCode::BAD_REQUEST, e.message),
             "too_many_tabs" | "browser_memory_full" => (StatusCode::CONFLICT, e.message),
             "page_too_large" => (StatusCode::PAYLOAD_TOO_LARGE, e.message),
+            "session_tab_only" => (StatusCode::BAD_REQUEST, e.message),
             _ => (StatusCode::SERVICE_UNAVAILABLE, scrub_paths(&e.message)),
         };
         ZwiimError::new(status, e.code, message)
@@ -308,6 +309,28 @@ pub async fn tab_find(
     visible_tab(&browser, caller, &p.tab_id).await?;
     let (matches, current) = browser.find(&p.tab_id, &p.query, p.backwards).await?;
     Ok(Json(json!({ "matches": matches, "current": current })))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReloadOnSaveParams {
+    pub tab_id: String,
+    pub on: bool,
+}
+
+/// `browser.tab.reload_on_save {tab_id, on}` → the tab: a session's tab
+/// loads again whenever files in its worktree change (design 10.5).
+pub async fn tab_reload_on_save(
+    Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+    ZJson(p): ZJson<ReloadOnSaveParams>,
+) -> ZResult<TabInfo> {
+    let caller = Caller::of(&state, principal)
+        .await?
+        .needs(BrowserAccess::Control)?;
+    let browser = service(&state).await?;
+    visible_tab(&browser, caller, &p.tab_id).await?;
+    Ok(Json(browser.set_reload_on_save(&p.tab_id, p.on).await?))
 }
 
 /// `browser.tab.pick {tab_id}`: let the person point at an element of the

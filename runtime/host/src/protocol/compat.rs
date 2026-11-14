@@ -403,6 +403,11 @@ use serde::{Deserialize, Serialize};
 /// Escape, `browser.tab.pick_cancel {tab_id}` called it off, the page went,
 /// or nobody picked in 2 minutes. A new pick replaces the tab's earlier one,
 /// which ends without an event.
+/// `browser.tab.reload_on_save {tab_id, on}` returns the tab: a session's
+/// tab then loads again 300 ms after files in its worktree stop changing
+/// (Git's, `.zwiim` and `node_modules` aside), and a tab carries
+/// `reload_on_save`. It is not kept across a Host restart; the person's tabs
+/// are refused with `session_tab_only`.
 /// A paired device reaches its sessions' tabs by its browser access, which
 /// `device.list` reports as `browser_access` (`none`, `view` or `control`;
 /// a newly paired device has `view`) and `device.update {device_id,
@@ -410,7 +415,8 @@ use serde::{Deserialize, Serialize};
 /// With `view` it may call `browser.tabs.list`; with `control` also
 /// `browser.tab.open`, `browser.tab.navigate`, `browser.tab.close`,
 /// `browser.tab.find`, `browser.tab.print`, `browser.tab.drop`,
-/// `browser.tab.pick`, `browser.tab.pick_cancel` and `browser.ui.answer`.
+/// `browser.tab.pick`, `browser.tab.pick_cancel`,
+/// `browser.tab.reload_on_save` and `browser.ui.answer`.
 /// Below that it is refused with `permission_denied`.
 /// It never sees the person's tabs: they are left out of its list, opening
 /// one is `permission_denied`, and acting on one is `tab_not_found` (its

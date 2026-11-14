@@ -24,6 +24,7 @@
 //! - `governor`   — the Host browser's memory budget, ladder and priority
 //! - `sites`      — which sites a tab's page loads may reach (site policy)
 //! - `dev_servers` — a session's new dev server, shown in its tab
+//! - `reload`     — reload on save: a tab follows its worktree's edits
 //! - `agent`      — what an agent may read of a page, and on whose say-so
 //! - `eval`       — the one thing an agent may do that is not a named act:
 //!   run its own code, which a person approves snippet by snippet
@@ -56,6 +57,7 @@ pub mod tools;
 pub mod input;
 pub mod listener;
 pub mod policy;
+pub mod reload;
 pub mod saving;
 pub mod types;
 pub mod ui;
