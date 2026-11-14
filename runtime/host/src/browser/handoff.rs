@@ -183,15 +183,38 @@ pub fn pick_from_envelope(raw: &str) -> Option<PickReport> {
     parse_pick(envelope.get("payload")?)
 }
 
+/// Most characters of an element's own text its chip shows.
+const CHIP_TEXT_CHARS: usize = 32;
+
 /// What a picked element becomes in the composer.
 pub fn element_handoff(element: &PickedElement) -> PageHandoff {
     PageHandoff {
         cancelled: false,
-        label: element.label.clone(),
+        label: chip_label(element),
         text: render_element(element),
         url: redact_url(&element.href).0,
         image: None,
         count: 0,
+    }
+}
+
+/// The chip's name for an element: its label, with its own words when the
+/// label alone (`a`, `div`) would not tell one from another. The whole
+/// page's text (`html`, `body`) says nothing about what was picked.
+fn chip_label(element: &PickedElement) -> String {
+    let label = element.label.trim();
+    if label.contains(['#', '.'])
+        || matches!(element.tag.to_ascii_lowercase().as_str(), "html" | "body")
+    {
+        return label.to_string();
+    }
+    let words = [&element.name, &element.text]
+        .into_iter()
+        .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
+        .find(|t| !t.is_empty());
+    match words {
+        Some(words) => format!("{label} \"{}\"", clamp(&words, CHIP_TEXT_CHARS)),
+        None => label.to_string(),
     }
 }
 
@@ -864,6 +887,29 @@ mod tests {
         assert_eq!(handoff.label, "button#go");
         assert!(handoff.text.starts_with(UNTRUSTED_NOTE));
         assert!(!handoff.url.contains("abc"), "{}", handoff.url);
+        // A label that names nothing gets the element's own words.
+        let plain = |text: &str| PickedElement {
+            tag: "a".into(),
+            label: "a".into(),
+            text: text.into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            element_handoff(&plain("Example  docs\nlink")).label,
+            "a \"Example docs link\""
+        );
+        assert_eq!(
+            element_handoff(&plain(&"word ".repeat(20))).label,
+            format!("a \"{}…\"", &"word ".repeat(20)[..32])
+        );
+        assert_eq!(element_handoff(&plain("")).label, "a");
+        let page = PickedElement {
+            tag: "html".into(),
+            label: "html".into(),
+            text: "Widgets body{font:16px}".into(),
+            ..Default::default()
+        };
+        assert_eq!(element_handoff(&page).label, "html");
         for other in [
             "",
             "nope",
