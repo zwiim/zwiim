@@ -1,15 +1,13 @@
 // The Advanced tab: how much terminal output the host keeps, whether a plain
-// `git push` from a worktree sets its upstream, where the host keeps
-// worktrees and repositories, where its browser saves downloads, and whether
-// agents may type passwords on any site. Agents run through the host, so there is no binary to point at here.
+// `git push` from a worktree sets its upstream, and where the host keeps
+// worktrees and repositories. Agents run through the host, so there is no binary to point at here.
 
 import { useCallback, useEffect, useState } from "react";
-import { DEFAULT_SCROLLBACK_BYTES, hasCapability, type HostFolders, type HostSettings } from "@zwiim/sdk";
+import { DEFAULT_SCROLLBACK_BYTES, type HostFolders, type HostSettings } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import type { NativeBridge } from "@/lib/bridge";
-import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
+import { errorMessage, useController, useOnline } from "@/lib/host-context";
 import { ControlSelect } from "@/panels/OptionsBar";
-import { BrowserDownloadsSetting } from "@/settings/browser-downloads";
 import { SettingRow, ToggleRow } from "@/settings/rows";
 
 type Values = HostSettings["values"];
@@ -28,7 +26,6 @@ export function AdvancedSettings({ bridge, remote }: { bridge: NativeBridge; rem
   const [values, setValues] = useState<Values | null>(null);
   const [folders, setFolders] = useState<HostFolders | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const browser = useHost((s) => hasCapability(s.connection.compat, "browser"));
 
   useEffect(() => {
     controller.client.request("settings.get", {}).then(
@@ -125,49 +122,6 @@ export function AdvancedSettings({ bridge, remote }: { bridge: NativeBridge; rem
             </div>
           ))}
         </section>
-      )}
-      {!remote && <BrowserDownloadsSetting bridge={bridge} />}
-      {browser && (
-        <ToggleRow
-          setting={{
-            id: "browser-agent-passwords",
-            title: "Let agents type passwords on any site",
-            description:
-              "Off, agents type passwords only on this computer's dev servers (localhost), for test logins. On, they can type them into any site's password field.",
-          }}
-          testId="browser-agent-passwords"
-          checked={values["browser.agent_passwords"] === true}
-          disabled={!online}
-          onChange={(on) => update({ "browser.agent_passwords": on ? true : null })}
-        />
-      )}
-      {browser && (
-        <ToggleRow
-          setting={{
-            id: "browser-agent-ask-sites",
-            title: "Ask before agents open new sites",
-            description:
-              "Off, agents open any site, except those a session's site list leaves out. On, the first time an agent opens a site in a session, the page waits until you allow it.",
-          }}
-          testId="browser-agent-ask-sites"
-          checked={values["browser.agent_ask_sites"] === true}
-          disabled={!online}
-          onChange={(on) => update({ "browser.agent_ask_sites": on ? true : null })}
-        />
-      )}
-      {browser && (
-        <ToggleRow
-          setting={{
-            id: "browser-open-dev-servers",
-            title: "Open dev servers in the session's tab",
-            description:
-              "When a session starts a dev server in its worktree, its browser tab shows it. A tab on another site or another running server is left alone.",
-          }}
-          testId="browser-open-dev-servers"
-          checked={values["browser.open_dev_servers"] !== false}
-          disabled={!online}
-          onChange={(on) => update({ "browser.open_dev_servers": on ? null : false })}
-        />
       )}
       {error && (
         <p className="text-destructive" role="alert">

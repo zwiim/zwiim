@@ -39,6 +39,7 @@ function ctx(over: Partial<SettingsContext> = {}): SettingsContext {
     promptSettings: false,
     repositorySettings: false,
     advancedSettings: false,
+    browser: false,
     steer: false,
     attachments: false,
     autoMerge: false,

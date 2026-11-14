@@ -167,9 +167,9 @@ describe("terminal scrollback", () => {
       return { root };
     };
     await mount(t, bridge({ pickFolder: vi.fn(async () => "/Users/me/Saved") }));
-    const dialog = openSettings("Advanced");
+    const dialog = openSettings("Browser");
     await tick();
-    expect(dialog.getByText("Browser")).toBeTruthy();
+    expect(dialog.getByText("Downloads")).toBeTruthy();
     expect(dialog.getByText(/saves what pages download in its worktree, under .zwiim\/browser/)).toBeTruthy();
     fireEvent.click(dialog.getByText("Choose folder…"));
     await tick();
@@ -185,7 +185,7 @@ describe("terminal scrollback", () => {
   it("lets agents type passwords on any site only once turned on", async () => {
     const t = host();
     const c = await mount(t);
-    const dialog = openSettings("Advanced");
+    const dialog = openSettings("Browser");
     await tick();
     const toggle = dialog.getByTestId("browser-agent-passwords") as HTMLInputElement;
     expect(toggle.checked).toBe(false);
@@ -202,7 +202,7 @@ describe("terminal scrollback", () => {
   it("asks before agents open new sites only once turned on", async () => {
     const t = host();
     const c = await mount(t);
-    const dialog = openSettings("Advanced");
+    const dialog = openSettings("Browser");
     await tick();
     const toggle = dialog.getByTestId("browser-agent-ask-sites") as HTMLInputElement;
     expect(toggle.checked).toBe(false);
@@ -216,7 +216,7 @@ describe("terminal scrollback", () => {
   it("opens dev servers in the session's tab unless turned off", async () => {
     const t = host();
     const c = await mount(t);
-    const dialog = openSettings("Advanced");
+    const dialog = openSettings("Browser");
     await tick();
     const toggle = dialog.getByTestId("browser-open-dev-servers") as HTMLInputElement;
     expect(toggle.checked).toBe(true);
@@ -226,10 +226,38 @@ describe("terminal scrollback", () => {
     c.dispose();
   });
 
-  it("leaves the row out for a host without the browser", async () => {
-    await mount(host());
-    const dialog = openSettings("Advanced");
+  it("holds 20 tabs per session unless another count is chosen", async () => {
+    const t = host();
+    const c = await mount(t);
+    const dialog = openSettings("Browser");
     await tick();
-    expect(dialog.queryByText("Browser")).toBeNull();
+    const tabs = dialog.getByLabelText("Tabs per session") as HTMLSelectElement;
+    expect(tabs.value).toBe("");
+    expect([...tabs.options].map((o) => o.text)).toEqual(["20 (default)", "5", "10", "30"]);
+    expect(dialog.getByText(/those its pages open by themselves included/)).toBeTruthy();
+    fireEvent.change(tabs, { target: { value: "10" } });
+    await tick();
+    fireEvent.change(dialog.getByLabelText("Tabs per session"), { target: { value: "" } });
+    await tick();
+    expect(updates(t)).toEqual([{ "browser.session_tabs": 10 }, { "browser.session_tabs": null }]);
+    c.dispose();
+  });
+
+  it("leaves the downloads row out while the host does not say where it saves", async () => {
+    await mount(host());
+    const dialog = openSettings("Browser");
+    await tick();
+    expect(dialog.queryByText("Downloads")).toBeNull();
+  });
+
+  it("is not offered by a host without the browser", async () => {
+    const t = host();
+    t.handlers["host.hello"] = () => hostHello({ capabilities: CLIENT_CAPABILITIES.filter((x) => x !== "browser") });
+    const c = await mount(t);
+    fireEvent.click(openMenu().getByRole("menuitem", { name: /^Settings/ }));
+    const nav = within(screen.getByRole("navigation", { name: "Settings sections" }));
+    expect(nav.queryByText("Browser")).toBeNull();
+    expect(nav.getByText("Advanced")).toBeTruthy();
+    c.dispose();
   });
 });
