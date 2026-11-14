@@ -286,6 +286,116 @@ pub struct LoginSites {
     pub saved: Vec<String>,
 }
 
+/// An origin whose `localStorage` a hidden page reads, or writes with the
+/// items given.
+type StorageJob = (String, Option<Vec<(String, String)>>);
+
+/// How long a hidden page waits for its origin's request.
+const BLANK_PAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The site an origin belongs to: its host.
+fn origin_site(origin: &str) -> Option<String> {
+    url::Url::parse(origin)
+        .ok()?
+        .host_str()
+        .map(str::to_ascii_lowercase)
+}
+
+/// [`BrowserService::storage_pass`] on the hidden page of CDP session
+/// `session`.
+async fn storage_jobs(
+    cdp: &Cdp,
+    session: &str,
+    jobs: Vec<StorageJob>,
+) -> Result<Vec<snapshot::OriginStorage>, BrowserError> {
+    use base64::Engine as _;
+    let s = Some(session);
+    let mut events = cdp.subscribe();
+    cdp.call(
+        "Fetch.enable",
+        json!({ "patterns": [{ "urlPattern": "*" }] }),
+        s,
+    )
+    .await?;
+    cdp.call("DOMStorage.enable", json!({}), s).await?;
+    let empty = base64::engine::general_purpose::STANDARD.encode("<!doctype html>");
+    let mut read = Vec::new();
+    for (origin, write) in jobs {
+        let page = format!("{origin}/");
+        let navigated = cdp.request(
+            "Page.navigate",
+            json!({ "url": page }),
+            s,
+            BLANK_PAGE_TIMEOUT,
+        );
+        let answered = tokio::time::timeout(BLANK_PAGE_TIMEOUT, async {
+            loop {
+                match events.recv().await {
+                    Ok(e) if e.method == "Fetch.requestPaused"
+                        && e.session_id.as_deref() == Some(session)
+                        && e.params["request"]["url"] == page =>
+                    {
+                        let request = e.params["requestId"].as_str().unwrap_or_default();
+                        let fulfilled = cdp
+                            .call(
+                                "Fetch.fulfillRequest",
+                                json!({
+                                    "requestId": request,
+                                    "responseCode": 200,
+                                    "responseHeaders": [{ "name": "Content-Type", "value": "text/html" }],
+                                    "body": empty,
+                                }),
+                                s,
+                            )
+                            .await;
+                        return fulfilled.is_ok();
+                    }
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => return false,
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        if !answered || navigated.await.is_err() {
+            tracing::warn!("a hidden page could not open a site for its storage");
+            continue;
+        }
+        let storage_id = json!({ "securityOrigin": origin, "isLocalStorage": true });
+        match write {
+            Some(items) => {
+                for (key, value) in items {
+                    cdp.call(
+                        "DOMStorage.setDOMStorageItem",
+                        json!({ "storageId": storage_id, "key": key, "value": value }),
+                        s,
+                    )
+                    .await?;
+                }
+            }
+            None => {
+                let got = cdp
+                    .call(
+                        "DOMStorage.getDOMStorageItems",
+                        json!({ "storageId": storage_id }),
+                        s,
+                    )
+                    .await?;
+                let items: Vec<(String, String)> = got["entries"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| Some((e[0].as_str()?.to_string(), e[1].as_str()?.to_string())))
+                    .collect();
+                if !items.is_empty() {
+                    read.push(snapshot::OriginStorage { origin, items });
+                }
+            }
+        }
+    }
+    Ok(read)
+}
+
 /// A site as the person names it: lower case, no leading dot.
 fn site_name(site: &str) -> String {
     site.trim().trim_start_matches('.').to_ascii_lowercase()
@@ -363,6 +473,9 @@ pub struct BrowserService {
     sites: std::sync::Mutex<Sites>,
     usage: std::sync::Mutex<Usage>,
     events: broadcast::Sender<BrowserEvent>,
+    /// CDP sessions of the hidden pages that read and write a workspace
+    /// login's `localStorage`; their requests are answered, not screened.
+    blank_pages: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl BrowserService {
@@ -423,6 +536,7 @@ impl BrowserService {
                 background: false,
             }),
             events: broadcast::channel(EVENT_BUFFER).0,
+            blank_pages: std::sync::Mutex::new(std::collections::HashSet::new()),
         });
         tokio::spawn(follow_engine(Arc::downgrade(&service), state));
         tokio::spawn(govern(Arc::downgrade(&service)));
@@ -2618,18 +2732,30 @@ impl BrowserService {
             .ok_or_else(|| unavailable("This Host keeps no browser logins."))
     }
 
-    /// The cookies in session `session_id`'s context now; none before it
-    /// has a tab.
-    async fn session_cookies(&self, session_id: &str) -> Result<Vec<Value>, BrowserError> {
+    /// The engine and session `session_id`'s browser context, once it has
+    /// one, with the origins its loaded tabs are on.
+    async fn session_context(&self, session_id: &str) -> Option<(Cdp, String, Vec<String>)> {
         let owner = TabOwner::Session {
             session_id: session_id.to_string(),
         };
-        let (cdp, ctx) = {
-            let inner = self.inner.lock().await;
-            match (&inner.cdp, inner.contexts.get(&owner)) {
-                (Some(cdp), Some(ctx)) => (cdp.clone(), ctx.clone()),
-                _ => return Ok(Vec::new()),
-            }
+        let inner = self.inner.lock().await;
+        let (cdp, ctx) = (inner.cdp.clone()?, inner.contexts.get(&owner)?.clone());
+        let origins = inner
+            .tabs
+            .values()
+            .filter(|t| t.info.owner == owner)
+            .filter_map(|t| url::Url::parse(&t.info.url).ok())
+            .filter(|u| matches!(u.scheme(), "http" | "https"))
+            .map(|u| u.origin().ascii_serialization())
+            .collect();
+        Some((cdp, ctx, origins))
+    }
+
+    /// The cookies in session `session_id`'s context now; none before it
+    /// has a tab.
+    async fn session_cookies(&self, session_id: &str) -> Result<Vec<Value>, BrowserError> {
+        let Some((cdp, ctx, _)) = self.session_context(session_id).await else {
+            return Ok(Vec::new());
         };
         let got = cdp
             .call(
@@ -2651,6 +2777,10 @@ impl BrowserService {
             .iter()
             .filter_map(cookie_site)
             .collect();
+        // A site may keep its sign-in in `localStorage` alone.
+        if let Some((_, _, origins)) = self.session_context(session_id).await {
+            available.extend(origins.iter().filter_map(|o| origin_site(o)));
+        }
         available.sort();
         available.dedup();
         let saved = load_login(login).await?.sites;
@@ -2673,7 +2803,23 @@ impl BrowserService {
             .filter(|c| cookie_site(c).is_some_and(|site| chosen.contains(&site)))
             .filter_map(snapshot::cookie_param)
             .collect();
-        if cookies.is_empty() {
+        let storage = match self.session_context(session_id).await {
+            Some((cdp, ctx, tabs)) => {
+                // The chosen sites' origins: those the session's tabs are on,
+                // and each site over https.
+                let mut origins: Vec<String> = tabs
+                    .into_iter()
+                    .filter(|o| origin_site(o).is_some_and(|site| chosen.contains(&site)))
+                    .chain(chosen.iter().map(|site| format!("https://{site}")))
+                    .collect();
+                origins.sort();
+                origins.dedup();
+                let jobs = origins.into_iter().map(|o| (o, None)).collect();
+                self.storage_pass(&cdp, &ctx, jobs).await?
+            }
+            None => Vec::new(),
+        };
+        if cookies.is_empty() && storage.is_empty() {
             return Err(BrowserError {
                 code: "nothing_to_save",
                 message: "This session is signed in to none of those sites.".into(),
@@ -2684,6 +2830,10 @@ impl BrowserService {
             .cookies
             .retain(|c| !cookie_site(c).is_some_and(|site| chosen.contains(&site)));
         contents.cookies.extend(cookies);
+        contents
+            .storage
+            .retain(|o| !o.site().is_some_and(|site| chosen.contains(&site)));
+        contents.storage.extend(storage);
         contents.sites.extend(chosen);
         contents.sites.sort();
         contents.sites.dedup();
@@ -2706,6 +2856,9 @@ impl BrowserService {
             contents
                 .cookies
                 .retain(|c| !cookie_site(c).is_some_and(|site| gone.contains(&site)));
+            contents
+                .storage
+                .retain(|o| !o.site().is_some_and(|site| gone.contains(&site)));
             contents.sites.retain(|site| !gone.contains(site));
         }
         if gone.is_empty() || contents.sites.is_empty() {
@@ -2730,19 +2883,74 @@ impl BrowserService {
                 return;
             }
         };
-        if contents.cookies.is_empty() {
-            return;
+        if !contents.cookies.is_empty() {
+            if let Err(e) = cdp
+                .call(
+                    "Storage.setCookies",
+                    json!({ "cookies": contents.cookies, "browserContextId": ctx }),
+                    None,
+                )
+                .await
+            {
+                tracing::warn!(error = %e, "could not restore a workspace's browser login");
+            }
         }
-        if let Err(e) = cdp
+        let jobs: Vec<_> = contents
+            .storage
+            .into_iter()
+            .map(|o| (o.origin, Some(o.items)))
+            .collect();
+        if let Err(e) = self.storage_pass(cdp, ctx, jobs).await {
+            tracing::warn!(error = %e.message, "could not restore a workspace's site storage");
+        }
+    }
+
+    /// Read or write the `localStorage` of each origin in `jobs` in context
+    /// `ctx`: write the items given, read the others. A hidden page opens
+    /// each origin and its request is answered with an empty page, so
+    /// nothing reaches the site and none of its script runs. Returns what
+    /// was read, origins with no items left out.
+    async fn storage_pass(
+        &self,
+        cdp: &Cdp,
+        ctx: &str,
+        jobs: Vec<StorageJob>,
+    ) -> Result<Vec<snapshot::OriginStorage>, BrowserError> {
+        if jobs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let created = cdp
             .call(
-                "Storage.setCookies",
-                json!({ "cookies": contents.cookies, "browserContextId": ctx }),
+                "Target.createTarget",
+                json!({ "url": "about:blank", "browserContextId": ctx, "background": true }),
                 None,
             )
-            .await
-        {
-            tracing::warn!(error = %e, "could not restore a workspace's browser login");
-        }
+            .await?;
+        let target = created["targetId"].as_str().unwrap_or_default().to_string();
+        let attached = cdp
+            .call(
+                "Target.attachToTarget",
+                json!({ "targetId": target, "flatten": true }),
+                None,
+            )
+            .await;
+        let result = match attached {
+            Ok(attached) => {
+                let session = attached["sessionId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                self.blank_pages.lock().unwrap().insert(session.clone());
+                let result = storage_jobs(cdp, &session, jobs).await;
+                self.blank_pages.lock().unwrap().remove(&session);
+                result
+            }
+            Err(e) => Err(e.into()),
+        };
+        let _ = cdp
+            .call("Target.closeTarget", json!({ "targetId": target }), None)
+            .await;
+        result
     }
 
     /// Read the tab's URL and title from the engine, then apply them as a
@@ -2827,6 +3035,15 @@ fn start_navigation(cdp: &Cdp, session: &str, url: &str) {
             tracing::debug!(error = %e, "a browser navigation did not start");
         }
     });
+}
+
+/// Whether `event` came from a hidden page a workspace login uses.
+fn on_blank_page(service: &Weak<BrowserService>, event: &Event) -> bool {
+    let (Some(service), Some(session)) = (service.upgrade(), event.session_id.as_deref()) else {
+        return false;
+    };
+    let pages = service.blank_pages.lock().unwrap();
+    pages.contains(session)
 }
 
 /// Decide a paused page load (`Fetch.enable` in `attach`) by the site
@@ -2951,7 +3168,7 @@ async fn pump(
             }
             Err(broadcast::error::RecvError::Closed) => return,
         };
-        if event.method == "Fetch.requestPaused" {
+        if event.method == "Fetch.requestPaused" && !on_blank_page(&service, &event) {
             tokio::spawn(screen(service.clone(), cdp.clone(), event.clone()));
         }
         let Some(service) = service.upgrade() else {
@@ -3799,6 +4016,79 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    /// A site that keeps its sign-in in `localStorage` alone is kept too:
+    /// read and written on a hidden page whose request never reaches the
+    /// site (design 6.3).
+    #[tokio::test]
+    async fn a_workspace_login_carries_local_storage() {
+        use crate::db::test_helpers::{seed_conversation, seed_worktree_folder};
+        use sea_orm::EntityTrait;
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let wt = dir.path().join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        let folder = seed_worktree_folder(&db, wt.to_str().unwrap()).await;
+        let mut sids = Vec::new();
+        for _ in 0..2 {
+            let conv =
+                seed_conversation(&db, folder, crate::models::agent::AgentType::ClaudeCode).await;
+            sids.push(
+                crate::db::entities::conversation::Entity::find_by_id(conv)
+                    .one(&db.conn)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .session_id
+                    .unwrap(),
+            );
+        }
+        let svc = BrowserService::start(
+            EngineManager::new(fake.start_fn()),
+            db.conn.clone(),
+            Some(Snapshot::with_key(
+                dir.path().join("personal.snapshot"),
+                [3; 32],
+            )),
+        )
+        .await
+        .unwrap();
+        svc.open(session(&sids[0]), Some("http://app.example:3000/home"))
+            .await
+            .unwrap();
+        fake.wait_url("http://app.example:3000/home").await;
+        let ctx = svc.inner.lock().await.contexts[&session(&sids[0])].clone();
+        fake.lock().local_storage.insert(
+            (ctx, "http://app.example:3000".into()),
+            vec![("token".into(), "secret-token".into())],
+        );
+        assert_eq!(
+            svc.login_sites(&sids[0]).await.unwrap().available,
+            ["app.example"]
+        );
+        assert_eq!(
+            svc.save_login(&sids[0], &["app.example".into()])
+                .await
+                .unwrap(),
+            ["app.example"]
+        );
+        // The hidden page's requests were answered, never let go on.
+        assert_eq!(fake.calls("Fetch.fulfillRequest").len(), 2);
+        assert!(fake.calls("Fetch.continueRequest").is_empty());
+        let tabs_now = fake.lock().targets.len();
+        assert_eq!(tabs_now, 1, "the hidden page closed");
+
+        svc.open(session(&sids[1]), None).await.unwrap();
+        let ctx = svc.inner.lock().await.contexts[&session(&sids[1])].clone();
+        assert_eq!(
+            fake.lock()
+                .local_storage
+                .get(&(ctx, "http://app.example:3000".into())),
+            Some(&vec![("token".to_string(), "secret-token".to_string())])
+        );
+        assert_eq!(fake.lock().targets.len(), 2);
     }
 
     /// A printed page lands as a PDF in its session's downloads folder,

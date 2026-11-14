@@ -383,11 +383,11 @@ use serde::{Deserialize, Serialize};
 /// those sites and its own dev servers; the person's navigations are not
 /// limited. Host only for now.
 /// `browser.login.get {session_id}` returns `{available, saved}`: the sites
-/// the session's browser holds cookies for now, and those its workspace's
-/// saved login keeps. `browser.login.save {session_id, sites}` keeps the
-/// session's cookies for those sites (1 to 100) as the workspace's login,
-/// sealed on the Host, and returns `{saved}`; it is `nothing_to_save` when
-/// the session holds none for them. `browser.login.forget {session_id,
+/// the session's browser holds cookies for or has open now, and those its
+/// workspace's saved login keeps. `browser.login.save {session_id, sites}`
+/// keeps the session's cookies and `localStorage` for those sites (1 to 100)
+/// as the workspace's login, sealed on the Host, and returns `{saved}`; it is
+/// `nothing_to_save` when the session holds neither for them. `browser.login.forget {session_id,
 /// sites?}` drops those sites, or the whole login, and returns `{saved}`.
 /// Every new session in the workspace starts its browser from that login.
 /// `login_unavailable` when the Host keeps no logins. Host only for now.

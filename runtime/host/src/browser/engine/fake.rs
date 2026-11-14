@@ -39,6 +39,11 @@ pub struct FakeState {
     pub targets: HashMap<String, FakeTarget>,
     /// Cookies per browser context.
     pub cookies: HashMap<String, Vec<Value>>,
+    /// `localStorage` per browser context and origin.
+    pub local_storage: HashMap<(String, String), Vec<(String, String)>>,
+    /// Sessions that pause every request (`Fetch.enable` for all
+    /// resources): their navigations report `Fetch.requestPaused`.
+    pub paused_sessions: std::collections::HashSet<String>,
     /// `Page.navigate` never answers, as for a page waiting on a sign-in.
     pub hold_navigations: bool,
     /// `Page.navigate` fails with this `errorText`, as for an unknown host.
@@ -301,6 +306,7 @@ impl FakeEngine {
             }
             "Page.navigate" => {
                 let id = target_of_session(&s)?;
+                let paused = s.paused_sessions.clone();
                 if let Some(error) = s.nav_error.clone() {
                     return Ok(json!({ "frameId": id, "loaderId": "L", "errorText": error }));
                 }
@@ -315,6 +321,13 @@ impl FakeEngine {
                 let send = |m: &str, p: Value| {
                     let _ = events.send(json!({ "method": m, "params": p, "sessionId": session }));
                 };
+                if session.as_ref().is_some_and(|s| paused.contains(s)) {
+                    let url = info["url"].clone();
+                    send(
+                        "Fetch.requestPaused",
+                        json!({ "requestId": format!("paused-{id}"), "request": { "url": url }, "frameId": id, "resourceType": "Document" }),
+                    );
+                }
                 send("Page.frameStartedLoading", json!({ "frameId": id }));
                 emit("Target.targetInfoChanged", json!({ "targetInfo": info }));
                 send("Page.frameStoppedLoading", json!({ "frameId": id }));
@@ -401,7 +414,6 @@ impl FakeEngine {
             | "Input.dispatchKeyEvent"
             | "Input.insertText"
             | "Input.dispatchDragEvent"
-            | "Fetch.enable"
             | "Fetch.continueRequest"
             | "Fetch.continueWithAuth"
             | "Fetch.failRequest"
@@ -410,6 +422,42 @@ impl FakeEngine {
             | "DOM.setFileInputFiles" => {
                 target_of_session(&s)?;
                 Ok(json!({}))
+            }
+            "Fetch.enable" => {
+                target_of_session(&s)?;
+                let all = params["patterns"][0].get("resourceType").is_none();
+                if let (true, Some(session)) = (all, session.clone()) {
+                    s.paused_sessions.insert(session);
+                }
+                Ok(json!({}))
+            }
+            "Fetch.fulfillRequest" | "DOMStorage.enable" => {
+                target_of_session(&s)?;
+                Ok(json!({}))
+            }
+            // A storage area needs a frame on its origin, as in the engine.
+            "DOMStorage.getDOMStorageItems" | "DOMStorage.setDOMStorageItem" => {
+                let id = target_of_session(&s)?;
+                let t = &s.targets[&id];
+                let origin = params["storageId"]["securityOrigin"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                if !t.url().starts_with(&origin) {
+                    return Err("Frame not found for the given storage id".into());
+                }
+                let area = (t.context.clone().unwrap_or_default(), origin);
+                let items = s.local_storage.entry(area).or_default();
+                if method == "DOMStorage.setDOMStorageItem" {
+                    let key = params["key"].as_str().unwrap_or_default().to_string();
+                    let value = params["value"].as_str().unwrap_or_default().to_string();
+                    items.retain(|(k, _)| *k != key);
+                    items.push((key, value));
+                    return Ok(json!({}));
+                }
+                Ok(
+                    json!({ "entries": items.iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>() }),
+                )
             }
             other => Err(format!("'{other}' wasn't found")),
         }

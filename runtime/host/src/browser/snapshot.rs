@@ -55,6 +55,27 @@ pub struct Contents {
     /// For a workspace login, the sites the person chose to keep.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sites: Vec<String>,
+    /// For a workspace login, those sites' `localStorage`, by origin.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub storage: Vec<OriginStorage>,
+}
+
+/// One origin's `localStorage` items, in order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OriginStorage {
+    /// `scheme://host[:port]`.
+    pub origin: String,
+    pub items: Vec<(String, String)>,
+}
+
+impl OriginStorage {
+    /// The site the origin belongs to: its host.
+    pub fn site(&self) -> Option<String> {
+        url::Url::parse(&self.origin)
+            .ok()?
+            .host_str()
+            .map(str::to_ascii_lowercase)
+    }
 }
 
 #[derive(Clone)]
@@ -274,7 +295,7 @@ mod tests {
             cookies: vec![
                 json!({ "name": "sid", "value": "secret-session-value", "domain": "example.com", "path": "/" }),
             ],
-            sites: Vec::new(),
+            ..Default::default()
         }
     }
 
