@@ -291,9 +291,9 @@ export function BrowserPanel({
             <Plus />
           </Button>
         </div>
-        {sessionId && !unavailable && <BrowserSteps key={sessionId} sessionId={sessionId} disabled={!online} />}
-        {sessionId && !unavailable && <BrowserLogin key={sessionId} sessionId={sessionId} disabled={!online} />}
-        {sessionId && !unavailable && <BrowserSites key={sessionId} sessionId={sessionId} disabled={!online} />}
+        {sessionId && !unavailable && <BrowserSteps key={`steps:${sessionId}`} sessionId={sessionId} disabled={!online} />}
+        {sessionId && !unavailable && <BrowserLogin key={`login:${sessionId}`} sessionId={sessionId} disabled={!online} />}
+        {sessionId && !unavailable && <BrowserSites key={`sites:${sessionId}`} sessionId={sessionId} disabled={!online} />}
         {onWide && (
           <Button
             size="icon-sm"

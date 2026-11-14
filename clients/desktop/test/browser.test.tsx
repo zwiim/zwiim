@@ -853,6 +853,28 @@ describe("browser panel", () => {
     });
   });
 
+  it("keeps one of each session control after switching sessions", async () => {
+    const t = new StreamingTransport();
+    const client = new HostClient({ transport: t });
+    const controller = new HostController(client);
+    client.start();
+    await tick();
+    const panel = (sessionId: string) => (
+      <HostProvider value={controller}>
+        <BrowserPanel workspaceId="w1" sessionId={sessionId} active />
+      </HostProvider>
+    );
+    const { rerender } = render(panel("s1"));
+    await tick();
+    await act(async () => t.frame({ type: "browser.snapshot", tabs: [], engine: { state: "running", version: "157" } } as never));
+    for (const id of ["s2", "s3", "s1"]) {
+      rerender(panel(id));
+      await tick();
+    }
+    expect(screen.getAllByTitle("What the agent did")).toHaveLength(1);
+    expect(screen.getAllByTitle("Sign-ins kept for this workspace")).toHaveLength(1);
+  });
+
   it("says when the host refuses the browser", async () => {
     const t = new StreamingTransport();
     const client = new HostClient({ transport: t });
