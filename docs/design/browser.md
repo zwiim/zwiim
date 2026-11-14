@@ -663,7 +663,7 @@ the page changed (R1).
    loopback dev servers (`localhost`, `*.localhost`, `127.0.0.1`, `::1`),
    where agents need test logins. Elsewhere it is refused
    (`browser_password_field`) unless the person turns on "Let agents type
-   passwords on any site" in Settings > Advanced (decision 15).
+   passwords on any site" in Settings > Browser (decision 15).
 
 ### 10.4 Scripts that bring their own Playwright
 
@@ -712,7 +712,7 @@ its own invisible browser. To make those runs visible too:
 
    Servers already running when the Host starts, or when the setting is
    turned on, are not new. The Host setting `browser.open_dev_servers`
-   (Settings > Advanced, on unless turned off) controls it. macOS only for
+   (Settings > Browser, on unless turned off) controls it. macOS only for
    now: elsewhere the scan finds nothing.
 3. For servers without HMR, an optional "Reload on save" per tab reloads
    after files in the worktree change (debounced 300 ms). Built:
@@ -764,9 +764,12 @@ instance" alone does not cap memory. The governor does.
 
 Default `min(25% of RAM, 6 GB)`. `--renderer-process-limit` is set
 from it at launch (about one renderer per 300 MB of budget, at least 4).
-Caps: 8 tabs per session, 30 in total (`too_many_tabs`). The budget and the
-caps are fixed for now; making them settings waits until someone needs
-other values. Tabs a page opens itself (popups) are not capped yet.
+Caps: tabs per session, 30 in total (`too_many_tabs`). Tabs per session is
+`browser.session_tabs` (Settings > Browser, 1 to 30, 20 unless changed), and
+counts the windows a session's pages open themselves: past it, a popup is
+closed before it becomes a tab, and the opener's next agent action says why.
+The budget and the total are fixed for now; making them settings waits until
+someone needs other values.
 
 ### 11.3 Ladder
 
@@ -868,7 +871,7 @@ opener's, and a popup its opener tab's.
    shield button in the Browser panel's tab strip (`browser.sites.set`).
    Agent loads of anything else are refused with `browser_site_not_allowed`,
    without asking; the person's navigations are not limited.
-5. Asking (optional, Settings > Advanced, `browser.agent_ask_sites`). The
+5. Asking (optional, Settings > Browser, `browser.agent_ask_sites`). The
    first agent load of a site nobody allowed for the session waits for the
    person: Allow (the session), Always allow (every session, kept in
    `browser_sites`) or Deny (the session, `browser_site_denied`). A site is
@@ -1334,7 +1337,7 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 5. Desktop `BrowserPanel`: viewer, tab strip, navigation, shortcuts.
 6. Native UI relay (section 9) and the isolated-world helper, with find in
    page. JavaScript dialogs, HTTP auth, the file chooser and downloads
-   (decision 13, with the folder in Settings > Advanced) and certificate
+   (decision 13, with the folder in Settings > Browser) and certificate
    errors (decision 14) are done, and so is the helper: selects, date
    pickers, the context menu and find in page. Permissions are not relayed
    (decision 12).

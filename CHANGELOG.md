@@ -23,6 +23,9 @@ have their own versions and are listed under Compatibility.
   in its worktree change, for dev servers without hot reload.
 - Drag a file from the Files panel onto a page in the desktop browser, for
   upload fields and drop zones. Holding it over the Browser tab opens it.
+- Settings > Browser gathers the browser's settings and adds Tabs per
+  session (20 by default). Windows a page opens by itself count too, so a
+  page can no longer open tabs without end.
 - Settings > Devices sets what each paired device may do with the Mac's
   browser: off, watch, or watch and steer its sessions' tabs. A newly
   paired device watches; your own tabs stay on the Mac.
