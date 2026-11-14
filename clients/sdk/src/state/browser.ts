@@ -7,6 +7,7 @@ import type {
   BrowserEngine,
   BrowserFrame,
   BrowserMenu,
+  BrowserPick,
   BrowserTab,
   BrowserUiRequest,
   WireError,
@@ -31,6 +32,8 @@ export interface BrowserState {
   agentSeq: number;
   /** Each tab's latest context menu; `seq` grows with every one. */
   menus: Record<string, { menu: BrowserMenu; seq: number }>;
+  /** Each tab's latest ended pick (`pick` null when called off); `seq` grows with every one. */
+  picks: Record<string, { pick: BrowserPick | null; seq: number }>;
   error: WireError | null;
 }
 
@@ -43,6 +46,7 @@ export function initialBrowserState(): BrowserState {
     agentActions: {},
     agentSeq: 0,
     menus: {},
+    picks: {},
     error: null,
   };
 }
@@ -68,7 +72,8 @@ export function reduceBrowser(state: BrowserState, update: BrowserUpdate): Brows
       if (!state.tabs.some((t) => t.tab_id === update.tab_id)) return state;
       const { [update.tab_id]: _, ...agentActions } = state.agentActions;
       const { [update.tab_id]: __, ...menus } = state.menus;
-      return { ...state, tabs: state.tabs.filter((t) => t.tab_id !== update.tab_id), agentActions, menus };
+      const { [update.tab_id]: ___, ...picks } = state.picks;
+      return { ...state, tabs: state.tabs.filter((t) => t.tab_id !== update.tab_id), agentActions, menus, picks };
     }
     case "browser.engine.state":
       return { ...state, engine: update.engine };
@@ -89,6 +94,11 @@ export function reduceBrowser(state: BrowserState, update: BrowserUpdate): Brows
       const seq = state.agentSeq + 1;
       const menus = { ...state.menus, [update.menu.tab_id]: { menu: update.menu, seq } };
       return { ...state, menus, agentSeq: seq };
+    }
+    case "browser.tab.picked": {
+      const seq = state.agentSeq + 1;
+      const picks = { ...state.picks, [update.tab_id]: { pick: update.pick, seq } };
+      return { ...state, picks, agentSeq: seq };
     }
     case "browser.error":
       return { ...state, status: "refused", error: update.error };
@@ -116,6 +126,11 @@ export function tabAgentAction(
   tab_id: string,
 ): { action: BrowserAgentAction; seq: number } | undefined {
   return state.agentActions[tab_id];
+}
+
+/** The tab's latest ended pick, if any. */
+export function tabPick(state: BrowserState, tab_id: string): { pick: BrowserPick | null; seq: number } | undefined {
+  return state.picks[tab_id];
 }
 
 /** The tab's latest context menu, if any. */

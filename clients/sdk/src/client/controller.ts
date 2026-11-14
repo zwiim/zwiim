@@ -791,6 +791,16 @@ export class HostController {
     return (await this.client.request("browser.tab.print", { tab_id })).name;
   }
 
+  /** Let the person point at an element of the tab's page; the outcome arrives in the browser state's `picks`. */
+  async pickInBrowserTab(tab_id: string): Promise<void> {
+    await this.client.request("browser.tab.pick", { tab_id });
+  }
+
+  /** Call the tab's element pick off. */
+  async cancelBrowserPick(tab_id: string): Promise<void> {
+    await this.client.request("browser.tab.pick_cancel", { tab_id });
+  }
+
   /** Drop workspace files (`paths`) or uploaded ones (`attachment_ids`) on the page at `(x, y)`. */
   async dropOnBrowserTab(
     tab_id: string,

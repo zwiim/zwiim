@@ -592,6 +592,7 @@ export class HostClient {
       case "browser.ui.done":
       case "browser.agent.action":
       case "browser.ui.menu":
+      case "browser.tab.picked":
       case "browser.error":
         this.emit((l) => l.browser?.(frame));
         return;

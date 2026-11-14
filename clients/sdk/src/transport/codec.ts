@@ -23,6 +23,7 @@ const FRAME_TYPES = new Set([
   "browser.ui.done",
   "browser.agent.action",
   "browser.ui.menu",
+  "browser.tab.picked",
   "browser.error",
   "pong",
   "error",

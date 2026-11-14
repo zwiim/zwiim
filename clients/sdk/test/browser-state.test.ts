@@ -8,6 +8,7 @@ import {
   sessionTabs,
   tabAgentAction,
   tabMenu,
+  tabPick,
   tabUiRequests,
 } from "../src/state/browser";
 import type { BrowserTab, BrowserUiRequest } from "../src/types/protocol";
@@ -87,6 +88,23 @@ describe("reduceBrowser", () => {
     expect(tabMenu(s, "a")).toEqual({ menu, seq: first + 1 });
     s = reduceBrowser(s, { type: "browser.tab.removed", tab_id: "a", owner: { kind: "personal" } });
     expect(tabMenu(s, "a")).toBeUndefined();
+  });
+
+  it("keeps each tab's latest ended pick, a called-off one as null", () => {
+    let s = reduceBrowser(initialBrowserState(), {
+      type: "browser.snapshot",
+      tabs: [tab("a", 0)],
+      engine: { state: "running", version: "157" },
+    });
+    const pick = { label: "button#go", text: "block", url: "https://a.test/" };
+    const owner = { kind: "personal" } as const;
+    s = reduceBrowser(s, { type: "browser.tab.picked", tab_id: "a", owner, pick });
+    const first = tabPick(s, "a")!.seq;
+    expect(tabPick(s, "a")!.pick).toEqual(pick);
+    s = reduceBrowser(s, { type: "browser.tab.picked", tab_id: "a", owner, pick: null });
+    expect(tabPick(s, "a")).toEqual({ pick: null, seq: first + 1 });
+    s = reduceBrowser(s, { type: "browser.tab.removed", tab_id: "a", owner });
+    expect(tabPick(s, "a")).toBeUndefined();
   });
 
   it("follows what tabs wait on until each is done", () => {

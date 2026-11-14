@@ -432,6 +432,13 @@ export type BrowserAgentAction = {
   box?: { x: number; y: number; width: number; height: number };
 };
 
+/**
+ * An element a person picked on a page (`browser.tab.pick`): `text` is a
+ * markdown block marked as page content, for the agent; `label` names the
+ * element (`button#go`); `url` leaves out secret-looking query values.
+ */
+export type BrowserPick = { label: string; text: string; url: string };
+
 /** `browser.subscribe` frames. Events carry a tab's whole state. */
 export type BrowserFrame =
   | { type: "browser.snapshot"; tabs: BrowserTab[]; engine: BrowserEngine; ui_requests?: BrowserUiRequest[] }
@@ -444,6 +451,8 @@ export type BrowserFrame =
   /** Sent just before the agent acts. */
   | { type: "browser.agent.action"; action: BrowserAgentAction }
   | { type: "browser.ui.menu"; menu: BrowserMenu }
+  /** A pick ended: the element, or `null` when it was called off, the page went, or nobody picked. */
+  | { type: "browser.tab.picked"; tab_id: string; owner: BrowserTabOwner; pick: BrowserPick | null }
   /** `browser.subscribe` was refused (`permission_denied` on a paired device). */
   | { type: "browser.error"; error: WireError };
 
@@ -2300,6 +2309,10 @@ export interface Operations {
   ];
   /** Save the page as a PDF in the tab's downloads folder; the file's name. */
   "browser.tab.print": [{ tab_id: string }, { name: string }];
+  /** Let the person point at an element; the outcome arrives as `browser.tab.picked`. */
+  "browser.tab.pick": [{ tab_id: string }, Record<string, never>];
+  /** Call the tab's pick off; it ends with a `browser.tab.picked` without a pick. */
+  "browser.tab.pick_cancel": [{ tab_id: string }, Record<string, never>];
   /**
    * Drop files on the page at `(x, y)` in its CSS pixels, as the person
    * dragging them there: workspace files by relative path, or files uploaded
