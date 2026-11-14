@@ -34,6 +34,9 @@ have their own versions and are listed under Compatibility.
 - Agents can ask the browser for only what changed on a page since their
   last look (`browser_snapshot` with `changesOnly`), which keeps long
   browser tasks short.
+- Preview a page as a phone or tablet: the phone button in the desktop
+  browser's address bar shows the page as an iPhone, an Android phone or an
+  iPad would, with its screen size, touch and mobile layout.
 - Settings > Browser gathers the browser's settings and adds Tabs per
   session (20 by default). Windows a page opens by itself count too, so a
   page can no longer open tabs without end.

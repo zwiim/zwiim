@@ -503,6 +503,16 @@ One controller per tab at a time, held by the Host:
 4. History: the address bar suggests from `browser_tabs` URLs and the
    person's own navigation history in the personal profile. No bookmarks in
    this design.
+5. Mobile preview: `browser.tab.preview {tab_id, preview}` shows a tab as
+   an iPhone, an Android phone or an iPad shows it (`preview.rs`): the
+   device's screen and pixel ratio through `Emulation.setDeviceMetricsOverride`
+   with `mobile`, touch through `Emulation.setTouchEmulationEnabled`, and
+   its user agent. The tab keeps that size whatever its viewers ask for,
+   and takes it again when it wakes; null brings back the desktop page at
+   the viewer's size. Agents read and act on the page as previewed. The
+   desktop picks the device from the address bar and draws the page in a
+   device outline. Not kept across a Host restart. It is Chromium in a
+   phone's shape, so engine-specific bugs (Safari's) do not show.
 
 ## 8. Live App: the phone's own browser on your dev server
 
@@ -1414,7 +1424,7 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 2. Recording timeline (10.7). Done on the desktop.
 3. Element pick on both clients (10.6). Done on the desktop.
 4. Snapshots that return only what changed (10.2). Done.
-5. Reload on save; mobile preview tab. Reload on save is done.
+5. Reload on save; mobile preview tab (7.7). Done on the desktop.
 
 ### Deferred — out of scope until decided otherwise
 
