@@ -16,6 +16,9 @@ have their own versions and are listed under Compatibility.
   downloads its engine on first use) and streams them to the Browser view,
   where you click, type and scroll as in any browser. Tabs belong to the
   chat or to you; ⌘L, ⌘T, ⌘W, ⌘R, ⌘[ and ⌘] work in the view.
+- Settings > Devices sets what each paired device may do with the Mac's
+  browser: off, watch, or watch and steer its sessions' tabs. A newly
+  paired device watches; your own tabs stay on the Mac.
 - Downloads show their progress above the composer: "Downloading Claude
   Code… 23 MB", "Downloading Browser engine… 6 MB / 105 MB", and Zwiim
   updates (which bring the GitHub CLI).

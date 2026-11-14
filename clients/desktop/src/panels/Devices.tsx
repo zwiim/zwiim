@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Check, Copy, Loader2 } from "lucide-react";
 import { renderSVG } from "uqr";
-import type { CloudStatus, DeviceInfo, KeyPairingInvitation, LanStatus } from "@zwiim/sdk";
+import type { BrowserAccess, CloudStatus, DeviceInfo, KeyPairingInvitation, LanStatus } from "@zwiim/sdk";
 import { Button } from "@/components/ui/button";
 import type { NativeBridge } from "@/lib/bridge";
 import { errorMessage, useController, useOnline } from "@/lib/host-context";
@@ -11,6 +11,13 @@ import { enableRemoteAccess } from "@/lib/remote";
 const POLL_MS = 2000;
 /** How long Copy says "Copied". */
 const COPIED_MS = 1500;
+
+/** What a device may do with this Mac's browser (browser design 7.6). */
+const BROWSER_ACCESS: { value: BrowserAccess; label: string }[] = [
+  { value: "none", label: "Browser: off" },
+  { value: "view", label: "Browser: watch" },
+  { value: "control", label: "Browser: watch and steer" },
+];
 
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "never");
 
@@ -75,6 +82,12 @@ export function DevicesSettings({ bridge }: { bridge: NativeBridge }) {
       setInvite(await controller.client.request("device.pair_invite", {}));
     });
 
+  const setBrowserAccess = (d: DeviceInfo, browser_access: BrowserAccess) =>
+    run(`browser:${d.device_id}`, async () => {
+      await controller.client.request("device.update", { device_id: d.device_id, browser_access });
+      await refresh();
+    });
+
   const revoke = (d: DeviceInfo) =>
     run(`revoke:${d.device_id}`, async () => {
       await controller.client.request("device.revoke", { device_id: d.device_id });
@@ -111,6 +124,22 @@ export function DevicesSettings({ bridge }: { bridge: NativeBridge }) {
                     : `Paired ${when(d.paired_at)} · last seen ${when(d.last_seen_at)}`}
                 </span>
               </div>
+              {d.status === "trusted" && (
+                <select
+                  className="border-input bg-background h-6 rounded-md border px-1 text-xs disabled:opacity-50"
+                  aria-label={`What ${d.device_name} may do with this Mac's browser`}
+                  title="Its sessions' tabs only; your own tabs stay on this Mac"
+                  value={d.browser_access}
+                  disabled={!online || busy !== null}
+                  onChange={(e) => void setBrowserAccess(d, e.target.value as BrowserAccess)}
+                >
+                  {BROWSER_ACCESS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              )}
               {d.status === "trusted" && (
                 <Button
                   size="xs"
