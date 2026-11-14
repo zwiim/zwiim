@@ -629,6 +629,13 @@ through `BrowserService` first, which checks tab ownership, the grant, the
 control lease and site policy, and emits the action event; `tools.rs` never
 holds its own CDP session.
 
+An agent that has these tools is told to use them, so it does not open the
+person's own browser or start another one: the same few lines
+(`harness::BROWSER_LINES`) go into Zwiim's session instructions as a Browser
+section, and into `zwiim-mcp`'s `instructions` when the agent connects, which
+reaches any MCP agent, including those that take no session instructions.
+Both only while the browser tools are on.
+
 1. `browser_snapshot` — the upstream page-reading script (`agent.bundle.js`)
    run in an isolated world per tab (`Page.createIsolatedWorld`), so page
    scripts cannot see it. It returns the upstream `PageSnapshot` with element

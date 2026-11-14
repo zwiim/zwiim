@@ -41,6 +41,9 @@ have their own versions and are listed under Compatibility.
   the browser most of the window, with the chat and composer in a column on
   the left and the sidebar folded, so you watch the agent work while you
   keep talking to it. The same button shrinks it back.
+- Agents reach for Zwiim's browser on their own: with the browser tools on,
+  they are told to check pages in the browser you can watch, not to open
+  your own browser or start another one unless you ask.
 - Settings > Browser gathers the browser's settings and adds Tabs per
   session (20 by default). Windows a page opens by itself count too, so a
   page can no longer open tabs without end.
