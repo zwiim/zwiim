@@ -138,6 +138,9 @@ const OPS: &[&str] = &[
     "browser.ui.answer",
     "browser.sites.get",
     "browser.sites.set",
+    "browser.login.get",
+    "browser.login.save",
+    "browser.login.forget",
     "browser.downloads.location",
     "browser.downloads.set_location",
 ];
@@ -5589,6 +5592,12 @@ async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
             "browser.sites.set",
             json!({"session_id": "s", "sites": ["example.com"]}),
         ),
+        ("browser.login.get", json!({"session_id": "s"})),
+        (
+            "browser.login.save",
+            json!({"session_id": "s", "sites": ["example.com"]}),
+        ),
+        ("browser.login.forget", json!({"session_id": "s"})),
         ("browser.downloads.location", json!({})),
         ("browser.downloads.set_location", json!({"root": "/tmp"})),
     ] {
@@ -6806,6 +6815,86 @@ async fn a_sessions_strict_site_list_is_kept_and_checked() {
     assert_eq!(body["error"]["code"], "invalid_site");
     let (status, _) = h
         .call("browser.sites.get", json!({"session_id": "nope"}))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_workspace_login_is_listed_saved_and_forgotten_by_site() {
+    use crate::browser::engine::{fake::FakeEngine, manager::EngineManager};
+    let h = host(false).await;
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeEngine::default();
+    let service = crate::browser::service::BrowserService::start(
+        EngineManager::new(fake.start_fn()),
+        h.state.db.conn.clone(),
+        Some(crate::browser::snapshot::Snapshot::with_key(
+            dir.path().join("personal.snapshot"),
+            [5; 32],
+        )),
+    )
+    .await
+    .unwrap();
+    assert!(h.state.browser.set(service.clone()).is_ok());
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    assert_eq!(
+        h.ok("browser.login.get", json!({"session_id": sid})).await,
+        json!({"available": [], "saved": []})
+    );
+    h.ok(
+        "browser.tab.open",
+        json!({"owner": {"kind": "session", "session_id": sid}}),
+    )
+    .await;
+    let ctx = fake.calls("Target.createTarget")[0]["browserContextId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    fake.lock().cookies.insert(
+        ctx,
+        vec![json!({ "name": "sid", "value": "secret", "domain": "app.example", "path": "/" })],
+    );
+    assert_eq!(
+        h.ok("browser.login.get", json!({"session_id": sid})).await,
+        json!({"available": ["app.example"], "saved": []})
+    );
+    assert_eq!(
+        h.err(
+            "browser.login.save",
+            json!({"session_id": sid, "sites": ["x.example"]})
+        )
+        .await,
+        (StatusCode::CONFLICT, "nothing_to_save".into())
+    );
+    assert_eq!(
+        h.ok(
+            "browser.login.save",
+            json!({"session_id": sid, "sites": ["app.example"]})
+        )
+        .await,
+        json!({"saved": ["app.example"]})
+    );
+    assert_eq!(
+        h.ok("browser.login.get", json!({"session_id": sid})).await["saved"],
+        json!(["app.example"])
+    );
+    assert_eq!(
+        h.ok("browser.login.forget", json!({"session_id": sid}))
+            .await,
+        json!({"saved": []})
+    );
+    assert_eq!(
+        h.err(
+            "browser.login.save",
+            json!({"session_id": sid, "sites": []})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let (status, _) = h
+        .call("browser.login.get", json!({"session_id": "nope"}))
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }

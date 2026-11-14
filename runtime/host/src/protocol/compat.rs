@@ -382,6 +382,15 @@ use serde::{Deserialize, Serialize};
 /// bad entry is `invalid_site`. With a list, the session's agent opens only
 /// those sites and its own dev servers; the person's navigations are not
 /// limited. Host only for now.
+/// `browser.login.get {session_id}` returns `{available, saved}`: the sites
+/// the session's browser holds cookies for now, and those its workspace's
+/// saved login keeps. `browser.login.save {session_id, sites}` keeps the
+/// session's cookies for those sites (1 to 100) as the workspace's login,
+/// sealed on the Host, and returns `{saved}`; it is `nothing_to_save` when
+/// the session holds none for them. `browser.login.forget {session_id,
+/// sites?}` drops those sites, or the whole login, and returns `{saved}`.
+/// Every new session in the workspace starts its browser from that login.
+/// `login_unavailable` when the Host keeps no logins. Host only for now.
 /// `browser.tab.open` is refused with `too_many_tabs` past a session's tab
 /// cap or 30 tabs in all, and with `browser_memory_full` (its message says
 /// which sessions hold the most) while the browser is at its memory budget.

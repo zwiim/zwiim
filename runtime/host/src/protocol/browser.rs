@@ -44,6 +44,8 @@ impl From<BrowserError> for ZwiimError {
             "too_many_tabs" | "browser_memory_full" => (StatusCode::CONFLICT, e.message),
             "page_too_large" => (StatusCode::PAYLOAD_TOO_LARGE, e.message),
             "session_tab_only" => (StatusCode::BAD_REQUEST, e.message),
+            "nothing_to_save" => (StatusCode::CONFLICT, e.message),
+            "login_unavailable" => (StatusCode::SERVICE_UNAVAILABLE, scrub_paths(&e.message)),
             _ => (StatusCode::SERVICE_UNAVAILABLE, scrub_paths(&e.message)),
         };
         ZwiimError::new(status, e.code, message)
@@ -590,6 +592,69 @@ pub async fn sites_set(
         .set_strict_sites(&p.session_id, &p.sites)
         .await?;
     Ok(Json(json!({ "sites": sites })))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoginParams {
+    pub session_id: String,
+    /// Sites by name (`app.example.com`); empty to forget the whole login.
+    #[serde(default)]
+    pub sites: Vec<String>,
+}
+
+/// Most sites one login call names.
+const MAX_LOGIN_SITES: usize = 100;
+
+/// `browser.login.get {session_id}` → `{available, saved}`: the sites the
+/// session's browser holds cookies for now, and those its workspace's saved
+/// login keeps (design 6.3). Cookies themselves never leave the Host.
+pub async fn login_get(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<SitesParams>,
+) -> ZResult<Value> {
+    known_session(&state, &p.session_id).await?;
+    let sites = service(&state).await?.login_sites(&p.session_id).await?;
+    Ok(Json(json!(sites)))
+}
+
+/// `browser.login.save {session_id, sites}` → `{saved}`: keep the session's
+/// cookies for `sites` as its workspace's login, which the workspace's new
+/// sessions start from; `nothing_to_save` when it holds none for them.
+pub async fn login_save(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<LoginParams>,
+) -> ZResult<Value> {
+    known_session(&state, &p.session_id).await?;
+    if p.sites.is_empty() || p.sites.len() > MAX_LOGIN_SITES {
+        return Err(ZwiimError::invalid_request(format!(
+            "Name between 1 and {MAX_LOGIN_SITES} sites"
+        )));
+    }
+    let saved = service(&state)
+        .await?
+        .save_login(&p.session_id, &p.sites)
+        .await?;
+    Ok(Json(json!({ "saved": saved })))
+}
+
+/// `browser.login.forget {session_id, sites?}` → `{saved}`: drop `sites`
+/// from the workspace's login, or the whole login without them.
+pub async fn login_forget(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<LoginParams>,
+) -> ZResult<Value> {
+    known_session(&state, &p.session_id).await?;
+    if p.sites.len() > MAX_LOGIN_SITES {
+        return Err(ZwiimError::invalid_request(format!(
+            "Name at most {MAX_LOGIN_SITES} sites"
+        )));
+    }
+    let saved = service(&state)
+        .await?
+        .forget_login(&p.session_id, &p.sites)
+        .await?;
+    Ok(Json(json!({ "saved": saved })))
 }
 
 #[derive(Debug, Deserialize)]
