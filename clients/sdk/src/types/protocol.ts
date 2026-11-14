@@ -97,7 +97,7 @@ export type HostErrorCode =
   | "browser_memory_full"
   /** `browser.tab.print`: the page's PDF would be over 200 MB. */
   | "page_too_large"
-  /** `browser.login.save`: the session holds no cookies for the sites named. */
+  /** `browser.login.save`: the session holds no cookies or storage for the sites named. */
   | "nothing_to_save"
   /** `browser.login.*`: the Host keeps no browser logins, or cannot open the saved one. */
   | "login_unavailable"
@@ -2375,14 +2375,14 @@ export interface Operations {
    */
   "browser.sites.set": [{ session_id: string; sites: string[] }, { sites: string[] }];
   /**
-   * The sites the session's browser holds cookies for now, and those its
-   * workspace's saved login keeps. Cookies never leave the Host.
+   * The sites the session's browser holds cookies for or has open now, and
+   * those its workspace's saved login keeps. Cookies and storage never leave the Host.
    */
   "browser.login.get": [{ session_id: string }, BrowserLoginSites];
   /**
-   * Keep the session's cookies for these sites (1 to 100) as its workspace's
-   * login, which the workspace's new sessions start from; `nothing_to_save`
-   * when it holds none for them. Returns the sites kept.
+   * Keep the session's cookies and `localStorage` for these sites (1 to 100)
+   * as its workspace's login, which the workspace's new sessions start from;
+   * `nothing_to_save` when it holds neither for them. Returns the sites kept.
    */
   "browser.login.save": [{ session_id: string; sites: string[] }, { saved: string[] }];
   /** Drop these sites from the workspace's login, or all of it without `sites`. Returns the sites kept. */

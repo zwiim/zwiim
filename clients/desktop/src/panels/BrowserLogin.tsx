@@ -1,7 +1,7 @@
 // "Keep me signed in for this workspace" (browser design 6.3): the person
-// picks sites this session is signed in to, and the Host keeps their cookies,
-// sealed, for every new session in the workspace. Only site names reach this
-// window; the cookies stay on the Host.
+// picks sites this session is signed in to, and the Host keeps their cookies
+// and localStorage, sealed, for every new session in the workspace. Only site
+// names reach this window; the rest stays on the Host.
 
 import { useEffect, useRef, useState } from "react";
 import { KeyRound, X } from "lucide-react";
@@ -86,8 +86,8 @@ export function BrowserLogin({ sessionId, disabled }: { sessionId: string; disab
         >
           <p className="text-ui font-medium">Keep me signed in for this workspace</p>
           <p className="text-muted-foreground text-xs">
-            New sessions in this workspace start signed in to the sites kept here. Zwiim keeps their cookies encrypted on
-            this computer.
+            New sessions in this workspace start signed in to the sites kept here. Zwiim keeps their sign-ins encrypted
+            on this computer.
           </p>
           {saved.length > 0 && (
             <ul className="flex max-h-40 flex-col overflow-y-auto" aria-label="Kept">
