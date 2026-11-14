@@ -1301,6 +1301,9 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 4. The `control` speed cap.
 5. `GET /v1/usage` and `RelayQuotaError` in the SDK.
 6. Phone limit sheets and the 80% line, with their `DESIGN.md` entries.
+   Done: the texts, and the "Remote limit reached" sheet and banner in the
+   Host shell. The browser sheet and the usage line go on the phone's
+   Browser screen with P2a.
 7. Deployment notes for the droplet: setting the `zwiim_cloud` password,
    and `ZWIIM_CLOUD_USAGE_DATABASE_URL` in the `0600` env file.
 
