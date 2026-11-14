@@ -985,7 +985,9 @@ export interface AgentDefaults {
  * (unset is off), and `browser.agent_ask_sites`, whether a site an agent's
  * tab loads for the first time in a session waits for a person (unset is
  * off), and `browser.open_dev_servers`, whether a dev server a session starts
- * opens in that session's tab (unset is on). Null when unset.
+ * opens in that session's tab (unset is on), and `browser.session_tabs`, the
+ * most tabs one session holds, those its pages open included (within
+ * `SESSION_TABS_RANGE`; unset keeps `DEFAULT_SESSION_TABS`). Null when unset.
  */
 export type HostSettingKey =
   | "defaults.agent"
@@ -1003,7 +1005,8 @@ export type HostSettingKey =
   | "git.push_sets_upstream"
   | "browser.agent_passwords"
   | "browser.agent_ask_sites"
-  | "browser.open_dev_servers";
+  | "browser.open_dev_servers"
+  | "browser.session_tabs";
 
 /** Longest `prompts.*` setting the Host accepts, in UTF-8 bytes. */
 export const MAX_PROMPT_BYTES = 8000;
@@ -1013,6 +1016,12 @@ export const SCROLLBACK_RANGE = { min: 64 * 1024, max: 16 * 1024 * 1024 } as con
 
 /** What a terminal keeps while `terminal.scrollback` is unset, in bytes. */
 export const DEFAULT_SCROLLBACK_BYTES = 1024 * 1024;
+
+/** What `browser.session_tabs` can be. */
+export const SESSION_TABS_RANGE = { min: 1, max: 30 } as const;
+
+/** Tabs a session holds while `browser.session_tabs` is unset. */
+export const DEFAULT_SESSION_TABS = 20;
 
 /** `host.folders`: where the Host keeps its data, worktrees and clones (revision 20). */
 export interface HostFolders {
