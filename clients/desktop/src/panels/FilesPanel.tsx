@@ -31,6 +31,7 @@ import {
 import { Markdown } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
 import { isTauri, openFileBytes } from "@/lib/bridge";
+import { fileDragProps } from "@/lib/file-drag";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
 import { markdownStyle } from "@/lib/prefs";
 import { usePref } from "@/lib/use-pref";
@@ -188,6 +189,7 @@ export function FilesPanel({
             className={cn(row, selected === n.path && "bg-accent font-medium")}
             style={indent}
             onClick={() => onOpen(n.path)}
+            {...fileDragProps(workspaceId, n.path)}
           >
             <Icon className={cn("ml-5 size-4 shrink-0", color)} />
             <span className="truncate">{n.name}</span>

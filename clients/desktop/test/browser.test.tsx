@@ -11,6 +11,7 @@ import {
 } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
 import { addressUrl, browserShortcut, fitFrame, fromPage, keyInput, modifiersOf, toPage } from "@/lib/browser-input";
+import { fileDragProps } from "@/lib/file-drag";
 import { BrowserPanel, GhostCursor } from "@/panels/BrowserPanel";
 import { DatePicker, FindBar, PageMenu, SelectPicker } from "@/panels/BrowserPageUi";
 import { FakeTransport, tick } from "./fakes";
@@ -442,6 +443,52 @@ describe("browser panel", () => {
         attachment_ids: ["id-shot.png"],
       });
     } finally {
+      delete (HTMLElement.prototype as { clientWidth?: number }).clientWidth;
+      delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight;
+    }
+  });
+
+  it("drops a file dragged from the Files panel by its workspace path", async () => {
+    const size = (v: number) => ({ configurable: true, get: () => v });
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", size(200));
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", size(200));
+    vi.stubGlobal("createImageBitmap", async () => ({ close() {} }));
+    const drag = fileDragProps("w1", "docs/report.pdf");
+    try {
+      const t = new StreamingTransport();
+      t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
+      t.handlers["browser.view.close"] = () => ({});
+      t.handlers["browser.tab.drop"] = () => ({});
+      await mount(t, [tab("a")]);
+      await act(async () => {
+        t.streams[0]!.handlers.onFrame?.({
+          number: 1,
+          host_ms: 0,
+          css_width: 100,
+          css_height: 100,
+          scale: 1,
+          scroll_x: 0,
+          scroll_y: 0,
+          jpeg: new Uint8Array(),
+        } as never);
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      drag.onDragStart({ dataTransfer: { setData() {}, effectAllowed: "" } } as never);
+      const box = screen.getByLabelText("Page: Example").parentElement!;
+      const drop = new MouseEvent("drop", { bubbles: true, cancelable: true, clientX: 100, clientY: 50 });
+      Object.defineProperty(drop, "dataTransfer", { value: { files: [], types: ["text/plain"] } });
+      fireEvent(box, drop);
+      await act(async () => new Promise((r) => setTimeout(r, 20)));
+      expect(t.calls.some((c) => c.op === "attachments.upload")).toBe(false);
+      expect(t.calls.find((c) => c.op === "browser.tab.drop")!.params).toEqual({
+        tab_id: "a",
+        x: 50,
+        y: 25,
+        workspace_id: "w1",
+        paths: ["docs/report.pdf"],
+      });
+    } finally {
+      drag.onDragEnd();
       delete (HTMLElement.prototype as { clientWidth?: number }).clientWidth;
       delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight;
     }

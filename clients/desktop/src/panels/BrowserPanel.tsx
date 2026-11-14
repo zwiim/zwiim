@@ -59,6 +59,7 @@ import {
   type BrowserShortcut,
   type Fit,
 } from "@/lib/browser-input";
+import { draggedFile, type DraggedFile } from "@/lib/file-drag";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { handToChat } from "@/lib/page-handoff";
 import { isModKey } from "@/lib/platform";
@@ -184,6 +185,10 @@ export function BrowserPanel({
       }
       await controller.dropOnBrowserTab(t.tab_id, at.x, at.y, workspaceId, { attachment_ids: ids });
     });
+
+  // Files from the Files panel are in the workspace already: dropped by path.
+  const dropPath = (t: BrowserTab, at: { x: number; y: number }, file: DraggedFile) =>
+    run(() => controller.dropOnBrowserTab(t.tab_id, at.x, at.y, file.workspaceId, { paths: [file.path] }));
 
   function shortcut(s: BrowserShortcut) {
     if (!online) return;
@@ -331,6 +336,7 @@ export function BrowserPanel({
                 disabled={!online}
                 onShortcut={shortcut}
                 onDropFiles={(at, files) => void dropFiles(tab, at, files)}
+                onDropPath={(at, file) => void dropPath(tab, at, file)}
                 onAnswer={(r, answer) => void answerUi(r, answer)}
                 onMenu={(a) => {
                   if (a.kind === "step") void run(() => controller.browserTabHistory(tab.tab_id, a.action));
@@ -881,6 +887,7 @@ export function BrowserView({
   disabled = false,
   onShortcut,
   onDropFiles,
+  onDropPath,
   onAnswer,
   onMenu,
 }: {
@@ -895,6 +902,8 @@ export function BrowserView({
   onShortcut(s: BrowserShortcut): void;
   /** Files dropped on the page, at a point in its CSS pixels. */
   onDropFiles?(at: { x: number; y: number }, files: File[]): void;
+  /** A workspace file dragged from the Files panel and dropped on the page. */
+  onDropPath?(at: { x: number; y: number }, file: DraggedFile): void;
   onAnswer?(request: PickRequest, answer: BrowserUiAnswer): void;
   /** A menu pick the panel does: history and new tabs. */
   onMenu?(action: MenuAction): void;
@@ -1052,12 +1061,22 @@ export function BrowserView({
       ref={box}
       className="bg-background absolute inset-0"
       onDragOver={(e) => {
-        if (disabled || !onDropFiles || !e.dataTransfer.types.includes("Files")) return;
+        if (disabled) return;
+        const fromPanel = !!draggedFile() && !!onDropPath && !e.dataTransfer.types.includes("Files");
+        if (!fromPanel && (!onDropFiles || !e.dataTransfer.types.includes("Files"))) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = "copy";
       }}
       onDrop={(e) => {
-        if (disabled || !onDropFiles || e.dataTransfer.files.length === 0) return;
+        if (disabled) return;
+        const file = draggedFile();
+        if (file && onDropPath && !e.dataTransfer.types.includes("Files")) {
+          e.preventDefault();
+          const at = pointOf(e, true);
+          if (at) onDropPath(at, file);
+          return;
+        }
+        if (!onDropFiles || e.dataTransfer.files.length === 0) return;
         e.preventDefault();
         const at = pointOf(e, true);
         if (at) onDropFiles(at, Array.from(e.dataTransfer.files));

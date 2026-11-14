@@ -33,6 +33,7 @@ import { stepZoom } from "@/lib/appearance";
 import { useTurnAlerts } from "@/lib/attention";
 import { bootHost, type BootOptions, type BootPhase } from "@/lib/boot";
 import type { NativeBridge } from "@/lib/bridge";
+import { draggedFile } from "@/lib/file-drag";
 import { errorMessage, HostProvider, useController, useHost, useOnline } from "@/lib/host-context";
 import { isModKey } from "@/lib/platform";
 import {
@@ -978,6 +979,8 @@ function WorkspacePanel({
                 )}
                 aria-current={tab === t.id ? "page" : undefined}
                 onClick={() => setTab(t.id)}
+                // A file dragged from Files opens the browser on the way to a page.
+                onDragEnter={() => t.id === "browser" && draggedFile() && setTab("browser")}
               >
                 <t.icon className="size-3.5" />
                 {t.label}
