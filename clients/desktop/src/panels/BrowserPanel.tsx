@@ -19,6 +19,7 @@ import {
   MousePointer2,
   Plus,
   Printer,
+  RefreshCcwDot,
   RotateCw,
   SquareDashedMousePointer,
   X,
@@ -287,6 +288,11 @@ export function BrowserPanel({
           // Only a chat takes what is picked.
           onPick={sessionId ? () => void togglePick(tab) : null}
           picking={picking?.tabId === tab.tab_id}
+          onReloadOnSave={
+            tab.owner.kind === "session" && tab.reload_on_save !== undefined
+              ? () => void run(() => controller.setBrowserReloadOnSave(tab.tab_id, !tab.reload_on_save))
+              : null
+          }
         />
       )}
       {picking && picking.tabId === tab?.tab_id && (
@@ -752,6 +758,7 @@ function AddressBar({
   onPrint,
   onPick,
   picking,
+  onReloadOnSave,
 }: {
   tab: BrowserTab;
   inputRef: React.RefObject<HTMLInputElement | null>;
@@ -762,6 +769,8 @@ function AddressBar({
   /** Pick an element for the chat; null without a chat. */
   onPick: (() => void) | null;
   picking: boolean;
+  /** Turn reload on save on or off; null for a tab without a worktree, or an older Host. */
+  onReloadOnSave: (() => void) | null;
 }) {
   // What the person is typing; the tab's own URL whenever they are not.
   const [draft, setDraft] = useState<string | null>(null);
@@ -821,6 +830,19 @@ function AddressBar({
       >
         <SquareDashedMousePointer />
       </Button>
+      {onReloadOnSave && (
+        <Button
+          type="button"
+          size="icon-sm"
+          variant={tab.reload_on_save ? "secondary" : "ghost"}
+          title={tab.reload_on_save ? "Reloading when files change: turn off" : "Reload when files in this chat's worktree change"}
+          aria-pressed={!!tab.reload_on_save}
+          disabled={disabled}
+          onClick={onReloadOnSave}
+        >
+          <RefreshCcwDot />
+        </Button>
+      )}
       <Button type="button" size="icon-sm" variant="ghost" title="Save as PDF" disabled={disabled} onClick={onPrint}>
         <Printer />
       </Button>

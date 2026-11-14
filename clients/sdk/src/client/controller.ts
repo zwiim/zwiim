@@ -791,6 +791,11 @@ export class HostController {
     return (await this.client.request("browser.tab.print", { tab_id })).name;
   }
 
+  /** Reload a session's tab whenever files in its worktree change (`on`), or stop. */
+  async setBrowserReloadOnSave(tab_id: string, on: boolean): Promise<BrowserTab> {
+    return this.client.request("browser.tab.reload_on_save", { tab_id, on });
+  }
+
   /** Let the person point at an element of the tab's page; the outcome arrives in the browser state's `picks`. */
   async pickInBrowserTab(tab_id: string): Promise<void> {
     await this.client.request("browser.tab.pick", { tab_id });

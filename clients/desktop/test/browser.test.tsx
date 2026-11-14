@@ -376,6 +376,31 @@ describe("browser panel", () => {
     expect(handed.at(-1)).toHaveLength(1);
   });
 
+  it("turns reload on save on and off for a chat's tab", async () => {
+    const t = new StreamingTransport();
+    t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
+    t.handlers["browser.view.close"] = () => ({});
+    t.handlers["browser.tab.reload_on_save"] = (p) => tab("a", { reload_on_save: p.on });
+    await mount(t, [tab("a", { reload_on_save: false })]);
+    fireEvent.click(screen.getByTitle("Reload when files in this chat's worktree change"));
+    await tick();
+    expect(t.calls.find((c) => c.op === "browser.tab.reload_on_save")!.params).toEqual({ tab_id: "a", on: true });
+    await act(async () => t.frame({ type: "browser.tab.state", tab: tab("a", { reload_on_save: true }) } as never));
+    const on = screen.getByTitle("Reloading when files change: turn off");
+    expect(on.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(on);
+    await tick();
+    expect(t.calls.filter((c) => c.op === "browser.tab.reload_on_save").at(-1)!.params).toEqual({ tab_id: "a", on: false });
+  });
+
+  it("offers no reload on save for the person's tabs, or an older host", async () => {
+    const t = new StreamingTransport();
+    t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
+    t.handlers["browser.view.close"] = () => ({});
+    await mount(t, [tab("a")]);
+    expect(screen.queryByTitle("Reload when files in this chat's worktree change")).toBeNull();
+  });
+
   it("uploads files dropped on the page, then drops them where they fell", async () => {
     const size = (v: number) => ({ configurable: true, get: () => v });
     Object.defineProperty(HTMLElement.prototype, "clientWidth", size(200));

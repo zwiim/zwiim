@@ -240,6 +240,8 @@ export interface BrowserTab {
   discarded: boolean;
   /** Its page crashed; reloading brings it back. */
   crashed: boolean;
+  /** It loads again when files in its session's worktree change; absent from older Hosts. */
+  reload_on_save?: boolean;
 }
 
 /** Why the browser engine could not run. */
@@ -2309,6 +2311,8 @@ export interface Operations {
   ];
   /** Save the page as a PDF in the tab's downloads folder; the file's name. */
   "browser.tab.print": [{ tab_id: string }, { name: string }];
+  /** Reload a session's tab whenever files in its worktree change, or stop; the tab. */
+  "browser.tab.reload_on_save": [{ tab_id: string; on: boolean }, BrowserTab];
   /** Let the person point at an element; the outcome arrives as `browser.tab.picked`. */
   "browser.tab.pick": [{ tab_id: string }, Record<string, never>];
   /** Call the tab's pick off; it ends with a `browser.tab.picked` without a pick. */
