@@ -99,7 +99,7 @@ export function BrowserSteps({ sessionId, disabled }: { sessionId: string; disab
                     className="hover:bg-muted flex w-full items-start gap-2 rounded-md p-1 text-left"
                     onClick={() => setShown(step)}
                   >
-                    <StepImage sessionId={sessionId} seq={step.seq} className="w-20 shrink-0" />
+                    <StepImage sessionId={sessionId} seq={step.seq} className="aspect-[4/3] w-20 shrink-0 object-cover object-top" />
                     <StepLine step={step} />
                   </button>
                 </li>
