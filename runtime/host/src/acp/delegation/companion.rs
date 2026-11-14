@@ -432,17 +432,23 @@ pub async fn dispatch_line(
 
     let id = req.id.expect("checked is_none");
     match req.method.as_str() {
-        "initialize" => LineAction::Respond(ok(
-            id,
-            json!({
+        "initialize" => {
+            let mut result = json!({
                 "protocolVersion": "2024-11-05",
                 "serverInfo": {
                     "name": "zwiim-mcp",
                     "version": env!("CARGO_PKG_VERSION"),
                 },
                 "capabilities": { "tools": {} },
-            }),
-        )),
+            });
+            // Told to every agent that connects, not only those that take
+            // Zwiim's session instructions, so any of them prefers the
+            // browser the user can watch.
+            if ctx.features.browser {
+                result["instructions"] = json!(crate::harness::BROWSER_LINES.join("\n"));
+            }
+            LineAction::Respond(ok(id, result))
+        }
         "tools/list" => {
             // The embedded schema is a JSON array of every tool the companion
             // can carry; filter to the groups enabled for this launch so a
@@ -2913,6 +2919,22 @@ mod tests {
         let result = resp.result.unwrap();
         assert_eq!(result["protocolVersion"], "2024-11-05");
         assert_eq!(result["serverInfo"]["name"], "zwiim-mcp");
+    }
+
+    #[tokio::test]
+    async fn an_agent_with_the_browser_tools_is_told_to_use_them_when_it_connects() {
+        let line = r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#;
+        let plain = unwrap_respond(dispatch_for_test(line).await)
+            .result
+            .unwrap();
+        assert!(plain.get("instructions").is_none());
+        let browser = unwrap_respond(dispatch_with_features(BROWSER_ONLY, line).await)
+            .result
+            .unwrap();
+        let text = browser["instructions"].as_str().unwrap();
+        for line in crate::harness::BROWSER_LINES {
+            assert!(text.contains(line), "{line}");
+        }
     }
 
     #[tokio::test]
