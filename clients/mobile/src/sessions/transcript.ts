@@ -238,11 +238,15 @@ function toolItem(p: {
 
 /** A live tool call as a row. */
 export function liveTool(tc: ToolCall | undefined, running: boolean): ToolItem {
+  const own = zwiimTool(tc?.title);
+  // Zwiim's own tools come with their input, which says what they act on.
+  const call = own && tc?.title && tc.input ? historyTool(tc.title, tc.input) : null;
   return toolItem({
     kind: tc?.kind,
-    title: zwiimTool(tc?.title)?.label ?? tc?.title ?? null,
+    verb: call?.verb,
+    title: call?.target ?? own?.label ?? tc?.title ?? null,
     state: toolState(tc?.status ?? null, running),
-    input: null,
+    input: call?.input ?? null,
     output: typeof tc?.content === "string" && tc.content ? tc.content : null,
   });
 }

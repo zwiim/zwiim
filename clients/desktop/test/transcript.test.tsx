@@ -225,11 +225,29 @@ describe("transcript", () => {
       },
     });
     expect(screen.getAllByTestId("tool-call").at(-1)!.textContent).toBe("Clickrunning");
+    // The Host sends a Zwiim tool's input live, so a running call says what it acts on.
     await frame({
       type: "event",
       event: {
         session_id: "s1",
         seq: 3,
+        type: "agent.tool_call",
+        payload: {
+          tool_call_id: "b3",
+          title: "mcp__zwiim-mcp__browser_navigate",
+          kind: "other",
+          status: "in_progress",
+          content: null,
+          input: '{"tabId":"a","url":"https://example.org/"}',
+        },
+      },
+    });
+    expect(screen.getAllByTestId("tool-call").at(-1)!.textContent).toContain("Go tohttps://example.org/");
+    await frame({
+      type: "event",
+      event: {
+        session_id: "s1",
+        seq: 4,
         type: "agent.tool_call",
         payload: { tool_call_id: "o1", title: "Type", kind: "other", status: "in_progress", content: null },
       },

@@ -1216,6 +1216,11 @@ export interface ToolCall {
   kind?: string | null;
   status: ToolCallStatus | null;
   content: unknown;
+  /**
+   * The call's arguments as JSON text (at most 2,000 characters), only for
+   * Zwiim's own tools other than Git; absent for every other tool.
+   */
+  input?: string;
   images?: AgentImage[];
   /**
    * The sub-agent tool call that made this call; absent on the main thread

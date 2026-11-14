@@ -504,6 +504,7 @@ function sameToolCall(a: ToolCallProps, b: ToolCallProps): boolean {
       t.target === u.target &&
       t.input === u.input &&
       t.path === u.path &&
+      t.group === u.group &&
       (t.changes === u.changes || (!t.changes?.length && !u.changes?.length)))
   );
 }
@@ -1245,7 +1246,7 @@ function liveRows(
         <ToolCallView
           key={i}
           className={enter}
-          tool={liveTool(tc?.title ?? null, tc?.kind)}
+          tool={liveTool(tc?.title ?? null, tc?.kind, tc?.input)}
           status={status}
           output={typeof tc?.content === "string" ? tc.content : null}
           images={tc?.images}

@@ -106,6 +106,12 @@ const AGENT_TOOL_PREFIXES: [&str; 4] = [
     "mcp.zwiim_mcp.",
 ];
 
+/// Whether an agent's tool-call title names one of `zwiim-mcp`'s tools.
+pub fn is_zwiim_tool_title(title: &str) -> bool {
+    let title = title.trim();
+    AGENT_TOOL_PREFIXES.iter().any(|p| title.starts_with(p))
+}
+
 /// The Git tool an agent's tool-call title names, and where the name ends.
 fn find_tool_in(title: &str) -> Option<(usize, usize, GitOpKind)> {
     AGENT_TOOL_PREFIXES.iter().find_map(|prefix| {

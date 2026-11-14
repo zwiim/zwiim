@@ -458,6 +458,12 @@ use serde::{Deserialize, Serialize};
 /// unknown), and the feed sends `download.changed {download}` as one starts
 /// or moves (at most every 250 ms each) and `download.removed
 /// {download_id}` when it ends.
+///
+/// 33 (live Zwiim tool input): a live call of one of Zwiim's own tools other
+/// than Git (`agent.tool_call`, `agent.tool_call_update`, a snapshot's
+/// `tool_calls`) carries `input`, its arguments as JSON text (at most 2,000
+/// characters), so a running call can say what it acts on. Other tools carry
+/// none. Older clients ignore the field.
 pub const PROTOCOL_REVISION: u32 = 33;
 
 /// Oldest client revision this Host serves. Raise only after a release that

@@ -558,6 +558,8 @@ export function applyEvent(view: SessionView, ev: SessionEvent): SessionView {
         content: ev.payload.content ?? prev?.content ?? null,
         images: ev.payload.images ?? prev?.images,
       };
+      const input = ev.payload.input ?? prev?.input;
+      if (input !== undefined) merged.input = input;
       const parent_id = ev.payload.parent_id ?? prev?.parent_id;
       if (parent_id !== undefined) merged.parent_id = parent_id;
       const subagent = mergeSubagent(prev?.subagent, ev.payload.subagent);

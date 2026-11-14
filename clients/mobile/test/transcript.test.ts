@@ -568,6 +568,24 @@ describe("transcript", () => {
     expect(t.type === "tool" && t.tool).toMatchObject({ verb: null, target: "Updated tasks", state: "running" });
   });
 
+  it("says what a running Zwiim tool acts on, from the input the Host sends", () => {
+    const v = view(
+      user("m1", "Check it"),
+      ev("agent.tool_call", {
+        tool_call_id: "t1",
+        title: "mcp__zwiim-mcp__browser_navigate",
+        kind: "other",
+        status: "in_progress",
+        content: null,
+        input: '{"tabId":"a","url":"https://example.org/"}',
+      }),
+      // An update without input keeps the input the call came with.
+      toolDone("t1", "in_progress"),
+    );
+    const t = transcriptRows(v)[1]!;
+    expect(t.type === "tool" && t.tool).toMatchObject({ verb: "Go to", target: "https://example.org/", state: "running" });
+  });
+
   it("folds three or more tool calls in a row", () => {
     const v = view(
       user("m1", "Look around"),

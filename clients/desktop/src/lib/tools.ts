@@ -184,11 +184,14 @@ const CODEX_TITLES: [RegExp, string][] = [
   [/^Compact conversation$/, "Chat compacted"],
 ];
 
-/** A live call: the agent's title ("Read src/a.ts", "`ls -la`") and kind. */
-export function liveTool(title: string | null, kind: string | null | undefined): ToolSummary {
+/**
+ * A live call: the agent's title ("Read src/a.ts", "`ls -la`") and kind, and
+ * for Zwiim's own tools the input the Host sends with it.
+ */
+export function liveTool(title: string | null, kind: string | null | undefined, input?: string | null): ToolSummary {
   const t = unquote(title ?? "");
   const own = zwiimTool(t);
-  if (own) return { verb: own.label, target: "", input: null, group: own.group };
+  if (own) return input ? historyTool(t, input) : { verb: own.label, target: "", input: null, group: own.group };
   const summary = (verb: string, whole: string): ToolSummary => ({
     verb,
     target: firstLine(whole),
