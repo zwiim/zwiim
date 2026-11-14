@@ -16,7 +16,7 @@ use std::sync::{Arc, Weak};
 
 use sea_orm::DatabaseConnection;
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::sync::{broadcast, watch, Mutex};
 
 use super::console::{self, ConsoleQuery, ConsoleReadout, ConsoleRing};
@@ -275,6 +275,54 @@ pub struct RefusedLoad {
     /// `site_blocked`, `site_not_allowed` or `site_denied`, or
     /// `too_many_tabs` for a window the page opened past the tab caps.
     pub code: &'static str,
+}
+
+/// What a session may keep as its workspace's login (design 6.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LoginSites {
+    /// Sites the session's browser holds cookies for now.
+    pub available: Vec<String>,
+    /// Sites the workspace's saved login keeps.
+    pub saved: Vec<String>,
+}
+
+/// A site as the person names it: lower case, no leading dot.
+fn site_name(site: &str) -> String {
+    site.trim().trim_start_matches('.').to_ascii_lowercase()
+}
+
+/// The site a cookie belongs to: its domain, as [`site_name`] has it.
+fn cookie_site(cookie: &Value) -> Option<String> {
+    let domain = site_name(cookie["domain"].as_str()?);
+    (!domain.is_empty()).then_some(domain)
+}
+
+fn login_error(e: snapshot::SnapshotError) -> BrowserError {
+    BrowserError {
+        code: "login_unavailable",
+        message: format!("The workspace's saved login cannot be used: {e}"),
+    }
+}
+
+async fn load_login(login: Arc<Snapshot>) -> Result<snapshot::Contents, BrowserError> {
+    tokio::task::spawn_blocking(move || login.load())
+        .await
+        .map_err(|e| engine_error(e.to_string()))?
+        .map_err(login_error)
+}
+
+/// Write `contents` as the login, or remove it for None.
+async fn store_login(
+    login: Arc<Snapshot>,
+    contents: Option<snapshot::Contents>,
+) -> Result<(), BrowserError> {
+    tokio::task::spawn_blocking(move || match contents {
+        Some(contents) => login.save(&contents),
+        None => login.remove(),
+    })
+    .await
+    .map_err(|e| engine_error(e.to_string()))?
+    .map_err(login_error)
 }
 
 /// What one `IO.read` of a PDF asks for, and the largest PDF kept.
@@ -893,8 +941,13 @@ impl BrowserService {
                     .to_string();
                 inner.contexts.insert(owner.clone(), ctx.clone());
                 self.direct_downloads(cdp, owner, &ctx).await;
-                if *owner == TabOwner::Personal {
-                    inner.personal_restored = self.restore_personal(cdp, &ctx).await;
+                match owner {
+                    TabOwner::Personal => {
+                        inner.personal_restored = self.restore_personal(cdp, &ctx).await;
+                    }
+                    TabOwner::Session { session_id } => {
+                        self.restore_login(cdp, &ctx, session_id).await;
+                    }
                 }
                 ctx
             }
@@ -2539,6 +2592,159 @@ impl BrowserService {
         self.engine.stop().await;
     }
 
+    /// The workspace session `session_id` works in.
+    async fn workspace_of(&self, session_id: &str) -> Option<String> {
+        let row = crate::session::resolve(&self.db, session_id).await.ok()?;
+        crate::workspace::workspace_id_of(&self.db, row.folder_id)
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// The saved login of session `session_id`'s workspace.
+    async fn login_of(&self, session_id: &str) -> Result<Arc<Snapshot>, BrowserError> {
+        let unavailable = |message: &str| BrowserError {
+            code: "login_unavailable",
+            message: message.into(),
+        };
+        let workspace = self
+            .workspace_of(session_id)
+            .await
+            .ok_or_else(|| unavailable("This session has no workspace to keep a login for."))?;
+        self.snapshot
+            .as_ref()
+            .and_then(|s| s.login(&workspace))
+            .map(Arc::new)
+            .ok_or_else(|| unavailable("This Host keeps no browser logins."))
+    }
+
+    /// The cookies in session `session_id`'s context now; none before it
+    /// has a tab.
+    async fn session_cookies(&self, session_id: &str) -> Result<Vec<Value>, BrowserError> {
+        let owner = TabOwner::Session {
+            session_id: session_id.to_string(),
+        };
+        let (cdp, ctx) = {
+            let inner = self.inner.lock().await;
+            match (&inner.cdp, inner.contexts.get(&owner)) {
+                (Some(cdp), Some(ctx)) => (cdp.clone(), ctx.clone()),
+                _ => return Ok(Vec::new()),
+            }
+        };
+        let got = cdp
+            .call(
+                "Storage.getCookies",
+                json!({ "browserContextId": ctx }),
+                None,
+            )
+            .await?;
+        Ok(got["cookies"].as_array().cloned().unwrap_or_default())
+    }
+
+    /// The sites session `session_id`'s browser holds cookies for now, and
+    /// those its workspace's saved login keeps (design 6.3).
+    pub async fn login_sites(&self, session_id: &str) -> Result<LoginSites, BrowserError> {
+        let login = self.login_of(session_id).await?;
+        let mut available: Vec<String> = self
+            .session_cookies(session_id)
+            .await?
+            .iter()
+            .filter_map(cookie_site)
+            .collect();
+        available.sort();
+        available.dedup();
+        let saved = load_login(login).await?.sites;
+        Ok(LoginSites { available, saved })
+    }
+
+    /// Keep session `session_id`'s cookies for `sites` as its workspace's
+    /// login, replacing what it kept for them. Returns the sites it keeps.
+    pub async fn save_login(
+        &self,
+        session_id: &str,
+        sites: &[String],
+    ) -> Result<Vec<String>, BrowserError> {
+        let login = self.login_of(session_id).await?;
+        let chosen: Vec<String> = sites.iter().map(|s| site_name(s)).collect();
+        let cookies: Vec<Value> = self
+            .session_cookies(session_id)
+            .await?
+            .iter()
+            .filter(|c| cookie_site(c).is_some_and(|site| chosen.contains(&site)))
+            .filter_map(snapshot::cookie_param)
+            .collect();
+        if cookies.is_empty() {
+            return Err(BrowserError {
+                code: "nothing_to_save",
+                message: "This session is signed in to none of those sites.".into(),
+            });
+        }
+        let mut contents = load_login(login.clone()).await?;
+        contents
+            .cookies
+            .retain(|c| !cookie_site(c).is_some_and(|site| chosen.contains(&site)));
+        contents.cookies.extend(cookies);
+        contents.sites.extend(chosen);
+        contents.sites.sort();
+        contents.sites.dedup();
+        let kept = contents.sites.clone();
+        store_login(login, Some(contents)).await?;
+        Ok(kept)
+    }
+
+    /// Forget `sites` from session `session_id`'s workspace login, or all of
+    /// it when `sites` is empty. Returns the sites it still keeps.
+    pub async fn forget_login(
+        &self,
+        session_id: &str,
+        sites: &[String],
+    ) -> Result<Vec<String>, BrowserError> {
+        let login = self.login_of(session_id).await?;
+        let gone: Vec<String> = sites.iter().map(|s| site_name(s)).collect();
+        let mut contents = load_login(login.clone()).await?;
+        if !gone.is_empty() {
+            contents
+                .cookies
+                .retain(|c| !cookie_site(c).is_some_and(|site| gone.contains(&site)));
+            contents.sites.retain(|site| !gone.contains(site));
+        }
+        if gone.is_empty() || contents.sites.is_empty() {
+            store_login(login, None).await?;
+            return Ok(Vec::new());
+        }
+        let kept = contents.sites.clone();
+        store_login(login, Some(contents)).await?;
+        Ok(kept)
+    }
+
+    /// Start session `session_id`'s new context `ctx` from its workspace's
+    /// saved login, if it has one.
+    async fn restore_login(&self, cdp: &Cdp, ctx: &str, session_id: &str) {
+        let Ok(login) = self.login_of(session_id).await else {
+            return;
+        };
+        let contents = match load_login(login).await {
+            Ok(contents) => contents,
+            Err(e) => {
+                tracing::warn!(error = %e.message, "could not read a workspace's browser login");
+                return;
+            }
+        };
+        if contents.cookies.is_empty() {
+            return;
+        }
+        if let Err(e) = cdp
+            .call(
+                "Storage.setCookies",
+                json!({ "cookies": contents.cookies, "browserContextId": ctx }),
+                None,
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "could not restore a workspace's browser login");
+        }
+    }
+
     /// Read the tab's URL and title from the engine, then apply them as a
     /// `targetInfoChanged` would.
     fn refresh_info(&self, inner: &Inner, tab_id: &str, generation: u64) {
@@ -3495,6 +3701,104 @@ mod tests {
         );
         svc.open(session("s2"), None).await.unwrap();
         svc.open(TabOwner::Personal, None).await.unwrap();
+    }
+
+    /// A session's cookies for the sites the person picks become its
+    /// workspace's login, and the workspace's next session starts signed in
+    /// (design 6.3).
+    #[tokio::test]
+    async fn a_workspace_login_carries_chosen_sites_to_new_sessions() {
+        use crate::db::test_helpers::{seed_conversation, seed_worktree_folder};
+        use sea_orm::EntityTrait;
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let wt = dir.path().join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        let folder = seed_worktree_folder(&db, wt.to_str().unwrap()).await;
+        let mut sids = Vec::new();
+        for _ in 0..2 {
+            let conv =
+                seed_conversation(&db, folder, crate::models::agent::AgentType::ClaudeCode).await;
+            sids.push(
+                crate::db::entities::conversation::Entity::find_by_id(conv)
+                    .one(&db.conn)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .session_id
+                    .unwrap(),
+            );
+        }
+        let svc = BrowserService::start(
+            EngineManager::new(fake.start_fn()),
+            db.conn.clone(),
+            Some(Snapshot::with_key(
+                dir.path().join("personal.snapshot"),
+                [3; 32],
+            )),
+        )
+        .await
+        .unwrap();
+
+        // Before any tab there is nothing to keep.
+        let none = svc.login_sites(&sids[0]).await.unwrap();
+        assert!(none.available.is_empty() && none.saved.is_empty());
+
+        svc.open(session(&sids[0]), None).await.unwrap();
+        let ctx = svc.inner.lock().await.contexts[&session(&sids[0])].clone();
+        fake.lock().cookies.insert(
+            ctx,
+            vec![
+                json!({ "name": "sid", "value": "secret-a", "domain": ".app.example", "path": "/", "session": true }),
+                json!({ "name": "t", "value": "secret-b", "domain": "other.example", "path": "/", "expires": 1_900_000_000.0 }),
+            ],
+        );
+        let sites = svc.login_sites(&sids[0]).await.unwrap();
+        assert_eq!(sites.available, ["app.example", "other.example"]);
+        assert_eq!(
+            svc.save_login(&sids[0], &["nothing.example".into()])
+                .await
+                .unwrap_err()
+                .code,
+            "nothing_to_save"
+        );
+        assert_eq!(
+            svc.save_login(&sids[0], &["App.Example".into()])
+                .await
+                .unwrap(),
+            ["app.example"]
+        );
+        let files: Vec<_> = std::fs::read_dir(dir.path().join("logins"))
+            .unwrap()
+            .collect();
+        assert_eq!(files.len(), 1);
+        let on_disk = std::fs::read(files[0].as_ref().unwrap().path()).unwrap();
+        assert!(!String::from_utf8_lossy(&on_disk).contains("secret-a"));
+
+        // The next session starts with app.example's cookie, not the other.
+        svc.open(session(&sids[1]), None).await.unwrap();
+        let ctx = svc.inner.lock().await.contexts[&session(&sids[1])].clone();
+        let jar = fake.lock().cookies.get(&ctx).cloned().unwrap_or_default();
+        assert_eq!(jar.len(), 1);
+        assert_eq!(jar[0]["value"], "secret-a");
+        assert_eq!(
+            svc.login_sites(&sids[1]).await.unwrap().saved,
+            ["app.example"]
+        );
+
+        assert!(svc
+            .forget_login(&sids[1], &["app.example".into()])
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(svc.login_sites(&sids[1]).await.unwrap().saved.is_empty());
+        assert_eq!(
+            std::fs::read_dir(dir.path().join("logins"))
+                .unwrap()
+                .count(),
+            0
+        );
     }
 
     /// A printed page lands as a PDF in its session's downloads folder,
