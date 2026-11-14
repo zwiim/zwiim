@@ -14,6 +14,7 @@ import type {
   BrowserTab,
   BrowserTabOwner,
   BrowserLoginSites,
+  BrowserStep,
   BrowserUiAnswer,
   BrowserViewport,
   CloneStart,
@@ -841,6 +842,16 @@ export class HostController {
   /** Forget `sites` from session `session_id`'s workspace login, or all of it; the sites kept. */
   async forgetBrowserLogin(session_id: string, sites?: string[]): Promise<string[]> {
     return (await this.client.request("browser.login.forget", { session_id, ...(sites ? { sites } : {}) })).saved;
+  }
+
+  /** Session `session_id`'s recorded browser steps, newest first, older than `before` when given. */
+  async browserSteps(session_id: string, before?: number): Promise<BrowserStep[]> {
+    return (await this.client.request("browser.timeline.list", { session_id, ...(before ? { before } : {}) })).steps;
+  }
+
+  /** Step `seq`'s picture, as base64 JPEG. */
+  async browserStepImage(session_id: string, seq: number): Promise<string> {
+    return (await this.client.request("browser.timeline.image", { session_id, seq })).jpeg;
   }
 
   /** Answer what a tab waits on. Another client may have answered first: then `request_not_found`. */

@@ -991,7 +991,10 @@ export interface AgentDefaults {
  * off), and `browser.open_dev_servers`, whether a dev server a session starts
  * opens in that session's tab (unset is on), and `browser.session_tabs`, the
  * most tabs one session holds, those its pages open included (within
- * `SESSION_TABS_RANGE`; unset keeps `DEFAULT_SESSION_TABS`). Null when unset.
+ * `SESSION_TABS_RANGE`; unset keeps `DEFAULT_SESSION_TABS`), and
+ * `browser.timeline_mb` and `browser.timeline_days`, how much of each
+ * session's browser recording the Host keeps (within `TIMELINE_MB_RANGE`
+ * and `TIMELINE_DAYS_RANGE`; unset keeps the defaults). Null when unset.
  */
 export type HostSettingKey =
   | "defaults.agent"
@@ -1010,7 +1013,9 @@ export type HostSettingKey =
   | "browser.agent_passwords"
   | "browser.agent_ask_sites"
   | "browser.open_dev_servers"
-  | "browser.session_tabs";
+  | "browser.session_tabs"
+  | "browser.timeline_mb"
+  | "browser.timeline_days";
 
 /** Longest `prompts.*` setting the Host accepts, in UTF-8 bytes. */
 export const MAX_PROMPT_BYTES = 8000;
@@ -1026,6 +1031,12 @@ export const SESSION_TABS_RANGE = { min: 1, max: 30 } as const;
 
 /** Tabs a session holds while `browser.session_tabs` is unset. */
 export const DEFAULT_SESSION_TABS = 20;
+
+/** What `browser.timeline_mb` and `browser.timeline_days` can be, and their defaults. */
+export const TIMELINE_MB_RANGE = { min: 1, max: 1000 } as const;
+export const DEFAULT_TIMELINE_MB = 50;
+export const TIMELINE_DAYS_RANGE = { min: 1, max: 90 } as const;
+export const DEFAULT_TIMELINE_DAYS = 7;
 
 /** `host.folders`: where the Host keeps its data, worktrees and clones (revision 20). */
 export interface HostFolders {
@@ -2387,6 +2398,24 @@ export interface Operations {
   "browser.login.save": [{ session_id: string; sites: string[] }, { saved: string[] }];
   /** Drop these sites from the workspace's login, or all of it without `sites`. Returns the sites kept. */
   "browser.login.forget": [{ session_id: string; sites?: string[] }, { saved: string[] }];
+  /** What the session's agent did in its browser, newest first: at most `limit` (50; 200 at most), older than step `before`. */
+  "browser.timeline.list": [{ session_id: string; before?: number; limit?: number }, { steps: BrowserStep[] }];
+  /** Step `seq`'s picture as base64 JPEG; `not_found` once trimmed. */
+  "browser.timeline.image": [{ session_id: string; seq: number }, { jpeg: string }];
+}
+
+/** One recorded step of an agent in its browser. */
+export interface BrowserStep {
+  /** From 1, per session, never reused. */
+  seq: number;
+  /** Unix milliseconds. */
+  at: number;
+  tab_id: string;
+  /** What the agent did: "Clicked", "Opened https://…". Typed text is never kept. */
+  action: string;
+  /** The page the step left the tab on. */
+  url: string;
+  bytes: number;
 }
 
 /** `browser.login.get`: sites by name, such as `app.example.com`. */
