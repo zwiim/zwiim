@@ -295,46 +295,48 @@ pub struct LoginSites {
 /// items given.
 type StorageJob = (String, Option<Vec<(String, String)>>);
 
-/// A recorded step's picture: this wide in CSS pixels at most, as a JPEG of
-/// this quality.
+/// A recorded step's picture: this wide in pixels at most, as a JPEG of this
+/// quality.
 const THUMBNAIL_WIDTH: f64 = 480.0;
 const THUMBNAIL_QUALITY: u8 = 60;
 
 /// A small JPEG of the viewport of the page on CDP session `session`.
+///
+/// Shot at the page's own size and made small here: a `clip` with a `scale`
+/// makes the engine paint the page at that scale for a moment, and a page
+/// that then sits still leaves its viewers on that blurred frame.
 async fn thumbnail(cdp: &Cdp, session: &str) -> Result<Vec<u8>, String> {
     use base64::Engine as _;
-    let s = Some(session);
-    let metrics = cdp
-        .call("Page.getLayoutMetrics", json!({}), s)
-        .await
-        .map_err(|e| e.to_string())?;
-    let css = &metrics["cssVisualViewport"];
-    let width = css["clientWidth"].as_f64().unwrap_or(0.0);
-    let height = css["clientHeight"].as_f64().unwrap_or(0.0);
-    if width <= 0.0 || height <= 0.0 {
-        return Err("the page has no viewport".into());
-    }
     let shot = cdp
         .call(
             "Page.captureScreenshot",
-            json!({
-                "format": "jpeg",
-                "quality": THUMBNAIL_QUALITY,
-                "clip": {
-                    "x": css["pageX"].as_f64().unwrap_or(0.0),
-                    "y": css["pageY"].as_f64().unwrap_or(0.0),
-                    "width": width,
-                    "height": height,
-                    "scale": (THUMBNAIL_WIDTH / width).min(1.0),
-                },
-            }),
-            s,
+            json!({ "format": "jpeg", "quality": 90 }),
+            Some(session),
         )
         .await
         .map_err(|e| e.to_string())?;
-    base64::engine::general_purpose::STANDARD
+    let jpeg = base64::engine::general_purpose::STANDARD
         .decode(shot["data"].as_str().unwrap_or_default())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || shrink_jpeg(&jpeg))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// `jpeg` at most [`THUMBNAIL_WIDTH`] pixels wide, at [`THUMBNAIL_QUALITY`];
+/// one that fits already is kept as it is.
+fn shrink_jpeg(jpeg: &[u8]) -> Result<Vec<u8>, String> {
+    let image = image::load_from_memory(jpeg).map_err(|e| e.to_string())?;
+    let width = THUMBNAIL_WIDTH as u32;
+    if image.width() <= width {
+        return Ok(jpeg.to_vec());
+    }
+    let image = image.resize(width, u32::MAX, image::imageops::FilterType::Triangle);
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, THUMBNAIL_QUALITY)
+        .encode_image(&image.to_rgb8())
+        .map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 /// How long a hidden page waits for its origin's request.
@@ -3434,6 +3436,18 @@ pub(crate) fn check_url(url: &str) -> Result<String, BrowserError> {
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
+    #[test]
+    fn a_step_picture_is_made_small_and_a_small_one_is_kept() {
+        let mut big = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut big, 90)
+            .encode_image(&image::RgbImage::new(1600, 1000))
+            .unwrap();
+        let small = image::load_from_memory(&shrink_jpeg(&big).unwrap()).unwrap();
+        assert_eq!((small.width(), small.height()), (480, 300));
+        let tiny = super::super::engine::fake::screenshot_jpeg();
+        assert_eq!(shrink_jpeg(&tiny).unwrap(), tiny);
+    }
 
     use super::super::engine::fake::FakeEngine;
     use super::*;

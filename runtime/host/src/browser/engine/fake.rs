@@ -15,6 +15,21 @@ use super::manager::{start_fn, EngineError, Running, StartFn};
 pub const USER_AGENT: &str =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36";
 
+/// What the fake engine's screenshots are: a small real JPEG, so code that
+/// decodes them can.
+pub fn screenshot_jpeg() -> Vec<u8> {
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 60)
+        .encode_image(&image::RgbImage::new(4, 4))
+        .expect("a 4x4 JPEG encodes");
+    out
+}
+
+pub fn screenshot_base64() -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(screenshot_jpeg())
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct FakeTarget {
     pub context: Option<String>,
@@ -439,10 +454,9 @@ impl FakeEngine {
                     json!({ "cssVisualViewport": { "pageX": 0, "pageY": 0, "clientWidth": 1280, "clientHeight": 800 } }),
                 )
             }
-            // Base64 of "fake jpeg".
             "Page.captureScreenshot" => {
                 target_of_session(&s)?;
-                Ok(json!({ "data": "ZmFrZSBqcGVn" }))
+                Ok(json!({ "data": screenshot_base64() }))
             }
             "Fetch.fulfillRequest" | "DOMStorage.enable" => {
                 target_of_session(&s)?;

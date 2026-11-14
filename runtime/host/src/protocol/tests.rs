@@ -6953,7 +6953,7 @@ async fn a_sessions_browser_steps_are_listed_with_their_pictures() {
             json!({"session_id": sid, "seq": 1})
         )
         .await,
-        json!({"jpeg": "ZmFrZSBqcGVn"})
+        json!({"jpeg": crate::browser::engine::fake::screenshot_base64()})
     );
     assert_eq!(
         h.err(

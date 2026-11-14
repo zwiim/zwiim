@@ -1527,8 +1527,8 @@ mod tests {
         assert_eq!(steps[0].action, "Opened http://localhost:5173/");
         assert_eq!(steps[0].tab_id, tab.tab_id);
         assert_eq!(
-            browser.timeline_image("s1", steps[0].seq).await.as_deref(),
-            Some(&b"fake jpeg"[..])
+            browser.timeline_image("s1", steps[0].seq).await,
+            Some(super::super::engine::fake::screenshot_jpeg())
         );
         assert!(browser.timeline_steps("s2", None, 10).await.is_empty());
         assert_eq!(
