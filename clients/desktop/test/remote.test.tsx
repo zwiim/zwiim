@@ -571,6 +571,7 @@ describe("devices", () => {
         paired_at: "2026-09-26T10:00:00Z",
         revoked_at: null,
         last_seen_at: null,
+        browser_access: "view",
       },
     ];
     env.local.handlers["device.list"] = () => ({ devices });

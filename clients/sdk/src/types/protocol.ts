@@ -177,7 +177,12 @@ export interface DeviceInfo {
   paired_at: string;
   revoked_at: string | null;
   last_seen_at: string | null;
+  /** What it may do with the Host browser: `view` its sessions' tabs, or `control` them. */
+  browser_access: BrowserAccess;
 }
+
+/** A paired device's browser rights (browser design 7.6); a newly paired one has `view`. */
+export type BrowserAccess = "none" | "view" | "control";
 
 // ─── cloud ───────────────────────────────────────────────────────────────
 
@@ -2253,6 +2258,8 @@ export interface Operations {
   ];
   "device.list": [Record<string, never>, { devices: DeviceInfo[] }];
   "device.revoke": [{ device_id: string }, Record<string, never>];
+  /** Local host authority only: what a trusted device may do with the Host browser. */
+  "device.update": [{ device_id: string; browser_access: BrowserAccess }, Record<string, never>];
   /** Local host authority only: enroll this host with a Zwiim Cloud. */
   "cloud.enroll": [
     { cloud_url: string; enrollment_token: string; name?: string },
