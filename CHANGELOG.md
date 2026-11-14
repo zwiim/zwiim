@@ -23,6 +23,9 @@ have their own versions and are listed under Compatibility.
   in its worktree change, for dev servers without hot reload.
 - Drag a file from the Files panel onto a page in the desktop browser, for
   upload fields and drop zones. Holding it over the Browser tab opens it.
+- Keep me signed in for a workspace: the key button beside a chat's
+  browser tabs keeps the sites you pick, and new chats in that workspace
+  start signed in to them. The cookies stay encrypted on the Mac.
 - Settings > Browser gathers the browser's settings and adds Tabs per
   session (20 by default). Windows a page opens by itself count too, so a
   page can no longer open tabs without end.

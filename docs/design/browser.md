@@ -309,6 +309,12 @@ directory can serve only one Chromium process. So persistence is ours:
    `localStorage` (`DOMStorage`) for the origins the person chooses. New
    sessions in the same workspace start from it. IndexedDB is not included;
    it needs page script per origin and comes later if asked for.
+   Built for cookies on the desktop: a key button beside a session's tabs
+   lists the sites the session holds cookies for (`browser.login.get`); the
+   person keeps some (`browser.login.save`) or forgets them
+   (`browser.login.forget`). The login is `browser/logins/<workspace>.snapshot`,
+   sealed like the personal one and bound to its workspace, and a session's
+   context loads it when it is made. `localStorage` is not kept yet.
 2. The snapshot is a credential. It is encrypted with a per-Host key held in
    the keychain (or the file key store under `ZWIIM_HOST_KEY_STORE=file`), and
    only the ciphertext is written to disk. Never into SQLite in the clear.
@@ -1382,7 +1388,8 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 
 ### P3 — comfort
 
-1. Workspace login snapshots (6.3).
+1. Workspace login snapshots (6.3). Done on the desktop for cookies;
+   `localStorage` waits.
 2. Recording timeline (10.7).
 3. Element pick on both clients (10.6). Done on the desktop.
 4. Snapshots that return only what changed. Element refs can drift, so this
