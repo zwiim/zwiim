@@ -243,6 +243,23 @@ describe("terminal scrollback", () => {
     c.dispose();
   });
 
+  it("keeps 50 MB of recording for 7 days unless chosen otherwise", async () => {
+    const t = host();
+    const c = await mount(t);
+    const dialog = openSettings("Browser");
+    await tick();
+    const mb = dialog.getByLabelText("Recording per session") as HTMLSelectElement;
+    expect([...mb.options].map((o) => o.text)).toEqual(["50 MB (default)", "10 MB", "200 MB", "1000 MB"]);
+    const days = dialog.getByLabelText("Keep recordings for") as HTMLSelectElement;
+    expect([...days.options].map((o) => o.text)).toEqual(["7 days (default)", "1 day", "30 days", "90 days"]);
+    fireEvent.change(mb, { target: { value: "200" } });
+    await tick();
+    fireEvent.change(dialog.getByLabelText("Keep recordings for"), { target: { value: "30" } });
+    await tick();
+    expect(updates(t)).toEqual([{ "browser.timeline_mb": 200 }, { "browser.timeline_days": 30 }]);
+    c.dispose();
+  });
+
   it("leaves the downloads row out while the host does not say where it saves", async () => {
     await mount(host());
     const dialog = openSettings("Browser");

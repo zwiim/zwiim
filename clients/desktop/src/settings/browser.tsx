@@ -4,7 +4,7 @@
 // new site, and whether dev servers open in the session's tab.
 
 import { useCallback, useEffect, useState } from "react";
-import { DEFAULT_SESSION_TABS, type HostSettings } from "@zwiim/sdk";
+import { DEFAULT_SESSION_TABS, DEFAULT_TIMELINE_DAYS, DEFAULT_TIMELINE_MB, type HostSettings } from "@zwiim/sdk";
 import type { NativeBridge } from "@/lib/bridge";
 import { errorMessage, useController, useOnline } from "@/lib/host-context";
 import { ControlSelect } from "@/panels/OptionsBar";
@@ -18,6 +18,14 @@ const DEFAULT = "";
 
 /** The tab counts offered, beside the default. */
 const TAB_COUNTS = [5, 10, 30];
+/** The recording sizes (MB) and ages (days) offered, beside the defaults. */
+const TIMELINE_MBS = [10, 200, 1000];
+const TIMELINE_DAYS = [1, 30, 90];
+
+/** `offered` with `kept` among them when it was set elsewhere, in order. */
+function withKept(offered: number[], kept: unknown): number[] {
+  return typeof kept === "number" && !offered.includes(kept) ? [...offered, kept].sort((a, b) => a - b) : offered;
+}
 
 export function BrowserSettings({ bridge, remote }: { bridge: NativeBridge; remote: boolean }) {
   const controller = useController();
@@ -51,9 +59,11 @@ export function BrowserSettings({ bridge, remote }: { bridge: NativeBridge; remo
     ) : null;
   }
 
+  // A value set elsewhere stays shown as chosen.
   const tabs = values["browser.session_tabs"];
-  // A count set elsewhere stays shown as chosen.
-  const counts = typeof tabs === "number" && !TAB_COUNTS.includes(tabs) ? [...TAB_COUNTS, tabs].sort((a, b) => a - b) : TAB_COUNTS;
+  const counts = withKept(TAB_COUNTS, tabs);
+  const mb = values["browser.timeline_mb"];
+  const days = values["browser.timeline_days"];
 
   return (
     <>
@@ -76,6 +86,43 @@ export function BrowserSettings({ bridge, remote }: { bridge: NativeBridge; remo
           options={[
             { value: DEFAULT, label: `${DEFAULT_SESSION_TABS} (default)` },
             ...counts.map((n) => ({ value: String(n), label: String(n) })),
+          ]}
+        />
+      </SettingRow>
+      <SettingRow
+        setting={{
+          id: "browser-timeline-mb",
+          title: "Recording per session",
+          description:
+            "Each step an agent takes in its browser is kept with a small picture of the page. The oldest steps go first past this size.",
+        }}
+      >
+        <ControlSelect
+          label="Recording per session"
+          value={typeof mb === "number" ? String(mb) : DEFAULT}
+          disabled={!online}
+          onChange={(v) => update({ "browser.timeline_mb": v === DEFAULT ? null : Number(v) })}
+          options={[
+            { value: DEFAULT, label: `${DEFAULT_TIMELINE_MB} MB (default)` },
+            ...withKept(TIMELINE_MBS, mb).map((n) => ({ value: String(n), label: `${n} MB` })),
+          ]}
+        />
+      </SettingRow>
+      <SettingRow
+        setting={{
+          id: "browser-timeline-days",
+          title: "Keep recordings for",
+          description: "Steps older than this are deleted.",
+        }}
+      >
+        <ControlSelect
+          label="Keep recordings for"
+          value={typeof days === "number" ? String(days) : DEFAULT}
+          disabled={!online}
+          onChange={(v) => update({ "browser.timeline_days": v === DEFAULT ? null : Number(v) })}
+          options={[
+            { value: DEFAULT, label: `${DEFAULT_TIMELINE_DAYS} days (default)` },
+            ...withKept(TIMELINE_DAYS, days).map((n) => ({ value: String(n), label: n === 1 ? "1 day" : `${n} days` })),
           ]}
         />
       </SettingRow>

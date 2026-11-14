@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   HostClient,
@@ -743,6 +743,34 @@ describe("browser panel", () => {
     await tick();
     expect(t.calls.find((c) => c.op === "browser.login.forget")!.params).toEqual({ session_id: "s1", sites: ["github.com"] });
     expect(screen.queryByLabelText("Forget github.com")).toBeNull();
+  });
+
+  it("shows what the agent did, a picture and a line a step", async () => {
+    const t = new StreamingTransport();
+    t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
+    t.handlers["browser.view.close"] = () => ({});
+    const step = (seq: number, action: string) => ({ seq, at: 0, tab_id: "a", action, url: "https://example.com/", bytes: 9 });
+    // A full first page, so older steps are offered.
+    const first = [step(52, "Pressed Enter"), ...Array.from({ length: 49 }, (_, i) => step(51 - i, i ? "Hovered" : "Clicked"))];
+    t.handlers["browser.timeline.list"] = (p) => (p.before ? { steps: [step(1, "Opened https://example.com/")] } : { steps: first });
+    t.handlers["browser.timeline.image"] = () => ({ jpeg: "ZmFrZQ==" });
+    await mount(t, [tab("a")]);
+    fireEvent.click(screen.getByTitle("What the agent did"));
+    await tick();
+    const dialog = within(screen.getByRole("dialog", { name: "What the agent did" }));
+    expect(dialog.getByText("Pressed Enter")).toBeTruthy();
+    expect(dialog.getByText("Clicked")).toBeTruthy();
+    expect(t.calls.find((c) => c.op === "browser.timeline.list")!.params).toEqual({ session_id: "s1" });
+    fireEvent.click(dialog.getByText("Older steps"));
+    await tick();
+    expect(t.calls.filter((c) => c.op === "browser.timeline.list").at(-1)!.params).toEqual({ session_id: "s1", before: 3 });
+    expect(dialog.getByText("Opened https://example.com/")).toBeTruthy();
+    expect(dialog.queryByText("Older steps")).toBeNull();
+    const image = screen.getByRole("dialog", { name: "What the agent did" }).querySelector("img")!;
+    expect(image.src).toBe("data:image/jpeg;base64,ZmFrZQ==");
+    fireEvent.click(dialog.getByText("Clicked"));
+    expect(dialog.getByText("Back to all steps")).toBeTruthy();
+    expect(dialog.queryByText("Pressed Enter")).toBeNull();
   });
 
   it("picks workspace files for a page's file input", async () => {

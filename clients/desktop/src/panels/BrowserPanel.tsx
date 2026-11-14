@@ -66,6 +66,7 @@ import { isModKey } from "@/lib/platform";
 import { DatePicker, FindBar, isPick, PageMenu, SelectPicker, type MenuAction, type PickRequest } from "@/panels/BrowserPageUi";
 import { BrowserLogin } from "@/panels/BrowserLogin";
 import { BrowserSites } from "@/panels/BrowserSites";
+import { BrowserSteps } from "@/panels/BrowserSteps";
 import { cn } from "@/lib/utils";
 
 const CLOSE =
@@ -280,6 +281,7 @@ export function BrowserPanel({
             <Plus />
           </Button>
         </div>
+        {sessionId && !unavailable && <BrowserSteps key={sessionId} sessionId={sessionId} disabled={!online} />}
         {sessionId && !unavailable && <BrowserLogin key={sessionId} sessionId={sessionId} disabled={!online} />}
         {sessionId && !unavailable && <BrowserSites key={sessionId} sessionId={sessionId} disabled={!online} />}
       </div>
