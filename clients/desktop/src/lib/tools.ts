@@ -61,10 +61,33 @@ const ZWIIM_TOOLS: Record<string, string> = {
   update_progress: "Updated tasks",
 };
 
+/** Zwiim's browser tools (browser design 10.2), read as what they do in a tab. */
+const BROWSER_TOOLS: Record<string, string> = {
+  browser_list_tabs: "List tabs",
+  browser_open_tab: "Open tab",
+  browser_navigate: "Go to",
+  browser_close_tab: "Close tab",
+  browser_snapshot: "Read page",
+  browser_screenshot: "Screenshot",
+  browser_click: "Click",
+  browser_hover: "Hover",
+  browser_type: "Type",
+  browser_press_key: "Press key",
+  browser_select_option: "Select option",
+  browser_wait_for: "Wait for",
+  browser_console_messages: "Console",
+  browser_network_log: "Network log",
+  browser_set_permissions: "Site permissions",
+  browser_eval: "Run in page",
+};
+
+/** Labels of Zwiim's browser tools, for the transcript's browser icon. */
+export const BROWSER_VERBS: ReadonlySet<string> = new Set(Object.values(BROWSER_TOOLS));
+
 /** What one of Zwiim's own tools does, or null for any other tool. */
 function zwiimTool(name: string): string | null {
   const m = /^mcp(?:__|\.)zwiim-mcp(?:__|\.)(\w+)$/.exec(name.trim());
-  return m ? (ZWIIM_TOOLS[m[1]!] ?? null) : null;
+  return m ? (ZWIIM_TOOLS[m[1]!] ?? BROWSER_TOOLS[m[1]!] ?? null) : null;
 }
 
 const TARGET_KEYS = [

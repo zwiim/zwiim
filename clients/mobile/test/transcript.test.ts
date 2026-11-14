@@ -524,6 +524,7 @@ describe("transcript", () => {
           { type: "tool_call", tool_call_id: "t3", title: "TodoWrite", input_preview: '{"todos":[]}', status: null },
           { type: "tool_call", tool_call_id: "t4", title: "ExitPlanMode", input_preview: '{"plan":"Do it"}', status: null },
           { type: "tool_call", tool_call_id: "t5", title: "mcp__zwiim-mcp__update_progress", input_preview: '{"steps":[]}', status: null },
+          { type: "tool_call", tool_call_id: "t6", title: "mcp__zwiim-mcp__browser_snapshot", input_preview: '{"tabId":"a"}', status: null },
         ]),
       ]),
     );
@@ -542,6 +543,7 @@ describe("transcript", () => {
       [null, "Exited Plan Mode", "idle", '{\n  "plan": "Do it"\n}'],
       // Zwiim's own tool reads by what it does, never by its MCP name.
       [null, "Updated tasks", "idle", '{\n  "steps": []\n}'],
+      [null, "Read page", "idle", '{\n  "tabId": "a"\n}'],
     ]);
   });
 

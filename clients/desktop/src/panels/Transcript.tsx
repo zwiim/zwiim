@@ -61,7 +61,7 @@ import { WorkingMark } from "@/components/WorkingMark";
 import { SentAttachments } from "@/attachments/AttachmentChip";
 import { FileLinksContext, Markdown } from "@/components/Markdown";
 import { basename, parseUnifiedDiff, type FileDiff } from "@/lib/diff";
-import { clipToolText, historyTool, liveTool, type ToolSummary } from "@/lib/tools";
+import { BROWSER_VERBS, clipToolText, historyTool, liveTool, type ToolSummary } from "@/lib/tools";
 import { usePresence } from "@/lib/presence";
 import { expandToolCalls } from "@/lib/prefs";
 import { usePref } from "@/lib/use-pref";
@@ -514,7 +514,7 @@ export const ToolCallView = memo(function ToolCallView(props: ToolCallProps) {
   const command = verb === "Run" ? props.tool.input || target || null : null;
   // A one-line input already reads in full on the row.
   const input = props.tool.input?.trim() === target ? null : props.tool.input;
-  const Icon = VERB_ICONS[verb] ?? Wrench;
+  const Icon = VERB_ICONS[verb] ?? (BROWSER_VERBS.has(verb) ? Globe : Wrench);
   const label = diffs && diffs.length > 1 ? `${diffs.length} files` : path ? basename(path) : target;
   // A file inside the workspace opens whole; several open from the card.
   const links = useContext(FileLinksContext);

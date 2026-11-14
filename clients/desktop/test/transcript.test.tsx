@@ -182,6 +182,41 @@ describe("transcript", () => {
     controller.dispose();
   });
 
+  it("names Zwiim's browser tools by what they do in a tab", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        turn("t1", "assistant", [
+          {
+            type: "tool_call",
+            tool_call_id: "b1",
+            title: "mcp__zwiim-mcp__browser_navigate",
+            input_preview: '{"tabId":"a","url":"https://example.com/"}',
+            status: "completed",
+          },
+        ]),
+      ],
+    });
+    const { controller, frame } = await openSession(t);
+    const call = screen.getByTestId("tool-call");
+    expect(call.textContent).toContain("Go to");
+    expect(call.textContent).toContain("https://example.com/");
+    expect(call.textContent).not.toContain("zwiim-mcp");
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+    await frame({
+      type: "event",
+      event: {
+        session_id: "s1",
+        seq: 2,
+        type: "agent.tool_call",
+        payload: { tool_call_id: "b2", title: "mcp__zwiim-mcp__browser_click", kind: "other", status: "in_progress", content: null },
+      },
+    });
+    expect(screen.getAllByTestId("tool-call").at(-1)!.textContent).toBe("Clickrunning");
+    controller.dispose();
+  });
+
   it("names Zwiim's own tool by what it does while it runs", async () => {
     const t = new FakeTransport();
     const { controller, frame } = await openSession(t);

@@ -157,6 +157,22 @@ const TOOL_VERBS: Record<string, string> = {
  */
 const ZWIIM_TOOLS: Record<string, string> = {
   update_progress: "Updated tasks",
+  browser_list_tabs: "List tabs",
+  browser_open_tab: "Open tab",
+  browser_navigate: "Go to",
+  browser_close_tab: "Close tab",
+  browser_snapshot: "Read page",
+  browser_screenshot: "Screenshot",
+  browser_click: "Click",
+  browser_hover: "Hover",
+  browser_type: "Type",
+  browser_press_key: "Press key",
+  browser_select_option: "Select option",
+  browser_wait_for: "Wait for",
+  browser_console_messages: "Console",
+  browser_network_log: "Network log",
+  browser_set_permissions: "Site permissions",
+  browser_eval: "Run in page",
 };
 
 /** What one of Zwiim's own tools does, or null for any other tool. */
