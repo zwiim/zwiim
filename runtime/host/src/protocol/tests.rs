@@ -129,6 +129,8 @@ const OPS: &[&str] = &[
     "browser.tab.find",
     "browser.tab.print",
     "browser.tab.drop",
+    "browser.tab.pick",
+    "browser.tab.pick_cancel",
     "browser.engine.reset",
     "browser.view.open",
     "browser.view.close",

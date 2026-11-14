@@ -310,6 +310,39 @@ pub async fn tab_find(
     Ok(Json(json!({ "matches": matches, "current": current })))
 }
 
+/// `browser.tab.pick {tab_id}`: let the person point at an element of the
+/// page (design 10.6). Returns once the picker is armed; the outcome arrives
+/// as `browser.tab.picked`.
+pub async fn tab_pick(
+    Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+    ZJson(p): ZJson<TabParams>,
+) -> ZResult<Value> {
+    let caller = Caller::of(&state, principal)
+        .await?
+        .needs(BrowserAccess::Control)?;
+    let browser = service(&state).await?;
+    visible_tab(&browser, caller, &p.tab_id).await?;
+    browser.pick(&p.tab_id).await?;
+    Ok(Json(json!({})))
+}
+
+/// `browser.tab.pick_cancel {tab_id}`: call the tab's pick off; it ends with
+/// a `browser.tab.picked` without a pick. Nothing to call off is fine.
+pub async fn tab_pick_cancel(
+    Extension(state): Extension<Arc<AppState>>,
+    principal: Option<Extension<Principal>>,
+    ZJson(p): ZJson<TabParams>,
+) -> ZResult<Value> {
+    let caller = Caller::of(&state, principal)
+        .await?
+        .needs(BrowserAccess::Control)?;
+    let browser = service(&state).await?;
+    visible_tab(&browser, caller, &p.tab_id).await?;
+    browser.pick_cancel(&p.tab_id).await?;
+    Ok(Json(json!({})))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UiAnswerParams {
@@ -766,6 +799,12 @@ impl BrowserFeed {
                     Ok(BrowserEvent::Menu(menu)) => {
                         Some(json!({ "type": "browser.ui.menu", "menu": menu }))
                     }
+                    Ok(BrowserEvent::Picked { tab_id, owner, handoff }) => Some(json!({
+                        "type": "browser.tab.picked",
+                        "tab_id": tab_id,
+                        "owner": owner,
+                        "pick": handoff.map(|h| json!({ "label": h.label, "text": h.text, "url": h.url })),
+                    })),
                     // Told to the agent that acted (design 10.3); clients
                     // follow downloads in the Host's downloads.
                     Ok(BrowserEvent::Download { .. }) => continue,

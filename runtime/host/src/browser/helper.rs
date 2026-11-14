@@ -403,6 +403,104 @@ mod engine_tests {
         .expect("the helper answered")
     }
 
+    /// A person picks an element by clicking it, without pressing it, and a
+    /// pick called off ends without one (design 10.6).
+    #[tokio::test]
+    #[ignore = "needs ZWIIM_TEST_ENGINE"]
+    async fn a_person_picks_an_element_without_pressing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let browser = real_browser(dir.path()).await;
+        let url = serve(
+            "<title>Pick</title><body style=\"margin:0\">\
+             <button id=\"go\" onclick=\"document.title='Pressed'\" style=\"display:block;width:200px;height:40px\">Go</button>",
+        )
+        .await;
+        let tab = browser.open(TabOwner::Personal, Some(&url)).await.unwrap();
+        let mut events = browser.subscribe();
+        // The helper's world comes with the document.
+        let mut armed = Err(String::new());
+        for _ in 0..50 {
+            armed = browser.pick(&tab.id).await.map_err(|e| e.code.to_string());
+            if armed.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(armed, Ok(()));
+        let (cdp, session) = browser.session(&tab.id).await.unwrap();
+        let press = || {
+            let cdp = cdp.clone();
+            let session = session.clone();
+            tokio::spawn(async move {
+                for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {
+                    let _ = cdp
+                        .call(
+                            "Input.dispatchMouseEvent",
+                            json!({ "type": kind, "x": 20, "y": 20, "button": "left", "clickCount": 1 }),
+                            Some(&session),
+                        )
+                        .await;
+                }
+            })
+        };
+        let picked = until(&mut events, press, |e| match e {
+            BrowserEvent::Picked {
+                tab_id, handoff, ..
+            } if tab_id == tab.id => Some(handoff),
+            _ => None,
+        })
+        .await
+        .expect("an element");
+        assert_eq!(picked.label, "button#go");
+        assert!(
+            picked.text.contains("- element: button#go"),
+            "{}",
+            picked.text
+        );
+        assert!(picked.url.starts_with("http://127.0.0.1:"));
+        let title = cdp
+            .call(
+                "Runtime.evaluate",
+                json!({"expression": "document.title", "returnByValue": true}),
+                Some(&session),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            title["result"]["value"], "Pick",
+            "the press reached the page"
+        );
+
+        // Wait out the double-click guard, then call a pick off.
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        browser.pick(&tab.id).await.unwrap();
+        let mut cancelled = false;
+        let browser2 = browser.clone();
+        let id = tab.id.clone();
+        let ended = until(
+            &mut events,
+            move || {
+                let browser = browser2.clone();
+                let id = id.clone();
+                let first = !cancelled;
+                cancelled = true;
+                tokio::spawn(async move {
+                    if first {
+                        browser.pick_cancel(&id).await.unwrap();
+                    }
+                })
+            },
+            |e| match e {
+                BrowserEvent::Picked {
+                    tab_id, handoff, ..
+                } if tab_id == tab.id => Some(handoff),
+                _ => None,
+            },
+        )
+        .await;
+        assert_eq!(ended, None);
+    }
+
     /// A right-click shows where, on what link and selection; a title a
     /// script sets reaches the tab. A personal tab, so without `Runtime`.
     #[tokio::test]

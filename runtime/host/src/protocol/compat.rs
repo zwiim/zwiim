@@ -393,14 +393,25 @@ use serde::{Deserialize, Serialize};
 /// to `<root>/zwiim/<repo>/downloads/`. The person's tabs save to
 /// `~/Downloads`. `browser.downloads.location` returns `{root}`. Host only for now:
 /// paired devices are refused with `permission_denied`.
+/// `browser.tab.pick {tab_id}` lets the person point at an element of the
+/// page: it returns once the picker is armed (`page_not_ready` before the
+/// page is), the element under the pointer is highlighted in the page, and
+/// the click that chooses it does not press it. The socket then sends
+/// `browser.tab.picked {tab_id, owner, pick}`, `pick` `{label, text, url}`
+/// (`text` a markdown block marked as page content, `url` with
+/// secret-looking query values left out) or null when the person pressed
+/// Escape, `browser.tab.pick_cancel {tab_id}` called it off, the page went,
+/// or nobody picked in 2 minutes. A new pick replaces the tab's earlier one,
+/// which ends without an event.
 /// A paired device reaches its sessions' tabs by its browser access, which
 /// `device.list` reports as `browser_access` (`none`, `view` or `control`;
 /// a newly paired device has `view`) and `device.update {device_id,
 /// browser_access}` (Host only; `not_found` for no trusted device) sets.
 /// With `view` it may call `browser.tabs.list`; with `control` also
 /// `browser.tab.open`, `browser.tab.navigate`, `browser.tab.close`,
-/// `browser.tab.find`, `browser.tab.print`, `browser.tab.drop` and
-/// `browser.ui.answer`. Below that it is refused with `permission_denied`.
+/// `browser.tab.find`, `browser.tab.print`, `browser.tab.drop`,
+/// `browser.tab.pick`, `browser.tab.pick_cancel` and `browser.ui.answer`.
+/// Below that it is refused with `permission_denied`.
 /// It never sees the person's tabs: they are left out of its list, opening
 /// one is `permission_denied`, and acting on one is `tab_not_found` (its
 /// requests `request_not_found`). The engine, site lists, downloads,

@@ -24,6 +24,7 @@ use super::dev_servers;
 use super::engine::cdp::{Cdp, Event};
 use super::engine::manager::{EngineError, EngineManager, EngineState};
 use super::governor::{self, TabUse};
+use super::handoff::{self, PageHandoff, PickReport};
 use super::helper::{self, HelperMessage, PageMenu};
 use super::network::{NetworkQuery, NetworkReadout, NetworkRing};
 use super::policy::{self, HostRule};
@@ -50,6 +51,8 @@ const DEFAULT_WIDTH: u32 = 1280;
 const DEFAULT_HEIGHT: u32 = 800;
 /// How long after a personal page loads its cookies are saved.
 const SAVE_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long an element pick waits for the person to click (design 10.6).
+const PICK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// A tab as clients see it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -83,6 +86,13 @@ pub enum BrowserEvent {
     Download {
         tab_id: String,
         name: String,
+    },
+    /// A person's element pick ended (design 10.6): what they picked, or
+    /// `None` when they called it off, the page went, or nobody picked.
+    Picked {
+        tab_id: String,
+        owner: TabOwner,
+        handoff: Option<PageHandoff>,
     },
 }
 
@@ -179,6 +189,8 @@ struct Inner {
     networks: HashMap<String, NetworkRing>,
     /// The page helper's world in each tab's current document (design 9).
     helpers: HashMap<String, i64>,
+    /// The element pick under way in each tab, by its token (design 10.6).
+    picks: HashMap<String, String>,
 }
 
 /// One tab's console lines, and its page's execution contexts: whether each
@@ -338,6 +350,7 @@ impl BrowserService {
                 typed: HashMap::new(),
                 networks: HashMap::new(),
                 helpers: HashMap::new(),
+                picks: HashMap::new(),
             }),
             sites: std::sync::Mutex::new(Sites {
                 managed: policy::read_managed_policy(&policy::managed_policy_path())
@@ -1485,6 +1498,166 @@ impl BrowserService {
             .unwrap_or_default();
         let count = |key: &str| found[key].as_u64().unwrap_or(0).min(u32::MAX.into()) as u32;
         Ok((count("matches"), count("current")))
+    }
+
+    /// Let the person point at an element of `tab_id`'s page (design 10.6).
+    /// Returns once the picker is armed; the outcome is a
+    /// [`BrowserEvent::Picked`] once they click an element, call it off, the
+    /// page goes, or after [`PICK_TIMEOUT`]. A pick replaces the tab's
+    /// earlier one, which then ends without an event.
+    pub async fn pick(&self, tab_id: &str) -> Result<(), BrowserError> {
+        let not_ready = || BrowserError {
+            code: "page_not_ready",
+            message: "The page is not loaded yet".into(),
+        };
+        let token = format!("pick-{}", uuid::Uuid::new_v4().simple());
+        let (cdp, session, context) = {
+            let mut inner = self.inner.lock().await;
+            let tab = inner.tabs.get(tab_id).ok_or_else(|| not_found(tab_id))?;
+            let session = tab.live.as_ref().ok_or_else(not_ready)?.session_id.clone();
+            let context = *inner.helpers.get(tab_id).ok_or_else(not_ready)?;
+            let cdp = inner.cdp.clone().ok_or_else(not_ready)?;
+            inner.picks.insert(tab_id.to_string(), token.clone());
+            (cdp, session, context)
+        };
+        let armed = cdp
+            .call(
+                "Runtime.evaluate",
+                json!({
+                    "expression": handoff::arm_pick(&token),
+                    "contextId": context,
+                    "returnByValue": true,
+                }),
+                Some(&session),
+            )
+            .await;
+        if !matches!(&armed, Ok(r) if r["result"]["value"] == "started") {
+            let mut inner = self.inner.lock().await;
+            if inner.picks.get(tab_id) == Some(&token) {
+                inner.picks.remove(tab_id);
+            }
+            return Err(armed
+                .err()
+                .map(BrowserError::from)
+                .unwrap_or_else(not_ready));
+        }
+        let me = self.me.clone();
+        let tab_id = tab_id.to_string();
+        tokio::spawn(async move {
+            if let Some(me) = me.upgrade() {
+                me.await_pick(tab_id, token, cdp, session, context).await;
+            }
+        });
+        Ok(())
+    }
+
+    /// Call off `tab_id`'s element pick, if one is under way.
+    pub async fn pick_cancel(&self, tab_id: &str) -> Result<(), BrowserError> {
+        let (cdp, session, context, token) = {
+            let inner = self.inner.lock().await;
+            let tab = inner.tabs.get(tab_id).ok_or_else(|| not_found(tab_id))?;
+            let (Some(token), Some(live), Some(context), Some(cdp)) = (
+                inner.picks.get(tab_id).cloned(),
+                tab.live.as_ref(),
+                inner.helpers.get(tab_id).copied(),
+                inner.cdp.clone(),
+            ) else {
+                return Ok(());
+            };
+            (cdp, live.session_id.clone(), context, token)
+        };
+        // The cancellation lands in the pick's own inbox, so its waiter
+        // reports it; a page already gone has nothing left to stop.
+        let _ = cdp
+            .call(
+                "Runtime.evaluate",
+                json!({
+                    "expression": handoff::cancel_pick(&token),
+                    "contextId": context,
+                    "returnByValue": true,
+                }),
+                Some(&session),
+            )
+            .await;
+        Ok(())
+    }
+
+    /// Wait for pick `token`'s report, then say how it ended.
+    async fn await_pick(
+        &self,
+        tab_id: String,
+        token: String,
+        cdp: Cdp,
+        session: String,
+        context: i64,
+    ) {
+        let deadline = tokio::time::Instant::now() + PICK_TIMEOUT;
+        let current = |inner: &Inner| inner.picks.get(&tab_id) == Some(&token);
+        let mut timed_out = false;
+        let handoff = loop {
+            if !current(&*self.inner.lock().await) {
+                return;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                timed_out = true;
+                break None;
+            }
+            let reply = cdp
+                .call(
+                    "Runtime.evaluate",
+                    json!({
+                        "expression": handoff::wait_for_pick(),
+                        "contextId": context,
+                        "awaitPromise": true,
+                        "returnByValue": true,
+                    }),
+                    Some(&session),
+                )
+                .await;
+            // An error is the document gone, and the picker with it.
+            let Ok(reply) = reply else { break None };
+            if reply.get("exceptionDetails").is_some() {
+                break None;
+            }
+            let raw = reply["result"]["value"].as_str().unwrap_or_default();
+            match handoff::pick_from_envelope(raw) {
+                Some(report) if report.id() == token => {
+                    break match report {
+                        PickReport::Cancelled { .. } => None,
+                        PickReport::Picked(element) => Some(handoff::element_handoff(&element)),
+                    };
+                }
+                _ => continue,
+            }
+        };
+        if timed_out {
+            let _ = cdp
+                .call(
+                    "Runtime.evaluate",
+                    json!({
+                        "expression": handoff::stop_pick_call(&token),
+                        "contextId": context,
+                        "returnByValue": true,
+                    }),
+                    Some(&session),
+                )
+                .await;
+        }
+        let owner = {
+            let mut inner = self.inner.lock().await;
+            if !current(&inner) {
+                return;
+            }
+            inner.picks.remove(&tab_id);
+            inner.tabs.get(&tab_id).map(|t| t.info.owner.clone())
+        };
+        if let Some(owner) = owner {
+            self.emit(BrowserEvent::Picked {
+                tab_id,
+                owner,
+                handoff,
+            });
+        }
     }
 
     /// What the page helper of the tab on `session` reported.
