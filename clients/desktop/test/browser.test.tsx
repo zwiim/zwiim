@@ -707,6 +707,44 @@ describe("browser panel", () => {
     expect(screen.queryByText("github.com")).toBeNull();
   });
 
+  it("keeps the sites the person picks signed in for the workspace", async () => {
+    const t = new StreamingTransport();
+    t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });
+    t.handlers["browser.view.close"] = () => ({});
+    let saved = ["github.com"];
+    t.handlers["browser.login.get"] = () => ({ available: ["app.example", "github.com", "cdn.example"], saved });
+    t.handlers["browser.login.save"] = (p) => {
+      saved = [...saved, ...p.sites].sort();
+      return { saved };
+    };
+    t.handlers["browser.login.forget"] = (p) => {
+      saved = saved.filter((s) => !p.sites.includes(s));
+      return { saved };
+    };
+    await mount(t, [tab("a")]);
+    const button = screen.getByTitle("Sign-ins kept for this workspace");
+    expect(button.textContent).toBe("1");
+    fireEvent.click(button);
+    await tick();
+    const dialog = screen.getByRole("dialog", { name: "Sign-ins kept for this workspace" });
+    expect(dialog.textContent).toContain("New sessions in this workspace start signed in");
+    // A kept site is listed once, to forget; the others to keep.
+    expect(screen.getByLabelText("Forget github.com")).toBeTruthy();
+    expect(screen.getAllByText("github.com")).toHaveLength(1);
+    const keep = screen.getByRole("button", { name: "Keep signed in" }) as HTMLButtonElement;
+    expect(keep.disabled).toBe(true);
+    fireEvent.click(screen.getByLabelText("app.example"));
+    fireEvent.click(keep);
+    await tick();
+    expect(t.calls.find((c) => c.op === "browser.login.save")!.params).toEqual({ session_id: "s1", sites: ["app.example"] });
+    expect(screen.getByLabelText("Forget app.example")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Forget github.com"));
+    await tick();
+    expect(t.calls.find((c) => c.op === "browser.login.forget")!.params).toEqual({ session_id: "s1", sites: ["github.com"] });
+    expect(screen.queryByLabelText("Forget github.com")).toBeNull();
+  });
+
   it("picks workspace files for a page's file input", async () => {
     const t = new StreamingTransport();
     t.handlers["browser.view.open"] = () => ({ stream_id: "st1" });

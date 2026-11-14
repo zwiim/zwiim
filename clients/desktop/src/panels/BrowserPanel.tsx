@@ -64,6 +64,7 @@ import { errorMessage, useController, useHost, useOnline } from "@/lib/host-cont
 import { handToChat } from "@/lib/page-handoff";
 import { isModKey } from "@/lib/platform";
 import { DatePicker, FindBar, isPick, PageMenu, SelectPicker, type MenuAction, type PickRequest } from "@/panels/BrowserPageUi";
+import { BrowserLogin } from "@/panels/BrowserLogin";
 import { BrowserSites } from "@/panels/BrowserSites";
 import { cn } from "@/lib/utils";
 
@@ -279,6 +280,7 @@ export function BrowserPanel({
             <Plus />
           </Button>
         </div>
+        {sessionId && !unavailable && <BrowserLogin key={sessionId} sessionId={sessionId} disabled={!online} />}
         {sessionId && !unavailable && <BrowserSites key={sessionId} sessionId={sessionId} disabled={!online} />}
       </div>
       {tab && (
