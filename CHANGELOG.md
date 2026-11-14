@@ -12,6 +12,49 @@ have their own versions and are listed under Compatibility.
 - Find in file previews: ⌘F (Ctrl+F) on desktop searches text, Markdown,
   Word, spreadsheets and PDFs; replace (⌘⌥F, Ctrl+H) changes text files and
   CSV/TSV, written only on Save. Mobile finds in text files.
+- A browser in the desktop's workspace panel: the Host runs the pages (it
+  downloads its engine on first use) and streams them to the Browser view,
+  where you click, type and scroll as in any browser. Tabs belong to the
+  chat or to you; ⌘L, ⌘T, ⌘W, ⌘R, ⌘[ and ⌘] work in the view.
+- Pick an element in the desktop browser for the chat: the pick button
+  highlights what the pointer is on, and a click adds it to your next
+  message as page content, without pressing it. Esc cancels.
+- Reload on save: a chat's browser tab can reload by itself whenever files
+  in its worktree change, for dev servers without hot reload.
+- Drag a file from the Files panel onto a page in the desktop browser, for
+  upload fields and drop zones. Holding it over the Browser tab opens it.
+- Keep me signed in for a workspace: the key button beside a chat's
+  browser tabs keeps the sites you pick, and new chats in that workspace
+  start signed in to them, whether a site keeps its sign-in in cookies or
+  localStorage. They stay encrypted on the Mac.
+- What the agent did: the history button beside a chat's browser tabs
+  shows each step the agent took in its browser, with a small picture of
+  the page. Settings > Browser sets how much is kept (50 MB, 7 days by
+  default). Typed text is never recorded.
+- Agents can ask the browser for only what changed on a page since their
+  last look (`browser_snapshot` with `changesOnly`), which keeps long
+  browser tasks short.
+- Preview a page as a phone or tablet: the phone button in the desktop
+  browser's address bar shows the page as an iPhone, an Android phone or an
+  iPad would, with its screen size, touch and mobile layout.
+- Expand the browser: the expand button beside a chat's browser tabs gives
+  the browser most of the window, with the chat and composer in a column on
+  the left and the sidebar folded, so you watch the agent work while you
+  keep talking to it. The same button shrinks it back.
+- Agents reach for Zwiim's browser on their own: with the browser tools on,
+  they are told to check pages in the browser you can watch, not to open
+  your own browser or start another one unless you ask.
+- The agent's browser steps read plainly in the chat, such as "Go to
+  https://example.com" or "Click", with a globe icon, even while they run.
+- Settings > Browser gathers the browser's settings and adds Tabs per
+  session (20 by default). Windows a page opens by itself count too, so a
+  page can no longer open tabs without end.
+- Settings > Devices sets what each paired device may do with the Mac's
+  browser: off, watch, or watch and steer its sessions' tabs. A newly
+  paired device watches; your own tabs stay on the Mac.
+- Downloads show their progress above the composer: "Downloading Claude
+  Code… 23 MB", "Downloading Browser engine… 6 MB / 105 MB", and Zwiim
+  updates (which bring the GitHub CLI).
 
 ### Changed
 - None.
@@ -23,7 +66,9 @@ have their own versions and are listed under Compatibility.
 - None.
 
 ### Compatibility
-- None.
+- Protocol revision 33 adds the browser (capability `browser`) and the
+  Host's downloads (capability `downloads`). An older Host shows the Browser
+  view's update notice and no download rows.
 
 ### Provider changes
 - None.

@@ -3,12 +3,21 @@
 // and terminals follow the host state feed: each (re)connect starts from its
 // snapshot instead of trusting what the store had.
 
+import type { BrowserStream, BrowserStreamHandlers } from "../browser/stream";
 import { createHostStore, type HostStore } from "../state/store";
 import type { TerminalOutput } from "../state/terminal";
 import { backgroundMovedHistory, historyCovers, type SessionFrame, type SessionView } from "../state/session";
 import type {
   AgentSummary,
   AgentType,
+  BrowserEngine,
+  BrowserTab,
+  BrowserPreviewId,
+  BrowserTabOwner,
+  BrowserLoginSites,
+  BrowserStep,
+  BrowserUiAnswer,
+  BrowserViewport,
   CloneStart,
   ForkTarget,
   FollowUpOutcome,
@@ -170,6 +179,7 @@ export class HostController {
         }
         for (const l of [...this.terminalListeners]) l(terminal_id, out);
       },
+      browser: (update) => this.store.dispatch({ type: "browser", update }),
     });
   }
 
@@ -721,5 +731,147 @@ export class HostController {
   onTerminalOutput(listener: (terminal_id: string, out: TerminalOutput) => void): () => void {
     this.terminalListeners.add(listener);
     return () => this.terminalListeners.delete(listener);
+  }
+
+  // ─── browser ───────────────────────────────────────────────────────────
+
+  /** Follow the Host browser's tabs and engine into `store.browser`. Idempotent. */
+  watchBrowser(): void {
+    this.client.watchBrowser();
+  }
+
+  /** Open a tab, on `url` or a blank page. The engine starts (or downloads) first if it must. */
+  async openBrowserTab(owner: BrowserTabOwner, url?: string): Promise<BrowserTab> {
+    const tab = await this.client.request("browser.tab.open", { owner, ...(url ? { url } : {}) });
+    this.store.dispatch({ type: "browser", update: { type: "browser.tab.state", tab } });
+    return tab;
+  }
+
+  async closeBrowserTab(tab_id: string): Promise<void> {
+    await this.client.request("browser.tab.close", { tab_id });
+  }
+
+  /** Load `url` in the tab. */
+  async navigateBrowserTab(tab_id: string, url: string): Promise<BrowserTab> {
+    return this.browserTabStep(await this.client.request("browser.tab.navigate", { tab_id, url }));
+  }
+
+  async browserTabHistory(tab_id: string, action: "back" | "forward" | "reload" | "stop"): Promise<BrowserTab> {
+    return this.browserTabStep(await this.client.request("browser.tab.navigate", { tab_id, action }));
+  }
+
+  /** Stop the engine and start it again, as after a crash loop. */
+  async resetBrowserEngine(): Promise<BrowserEngine> {
+    const { engine } = await this.client.request("browser.engine.reset", {});
+    this.store.dispatch({ type: "browser", update: { type: "browser.engine.state", engine } });
+    return engine;
+  }
+
+  /**
+   * Start streaming a tab at `viewport`. Open the returned stream with
+   * `openBrowserStream` within 30 s; close it with `closeBrowserView`.
+   */
+  async openBrowserView(tab_id: string, viewport: BrowserViewport): Promise<string> {
+    const { stream_id } = await this.client.request("browser.view.open", { tab_id, viewport });
+    return stream_id;
+  }
+
+  async closeBrowserView(stream_id: string): Promise<void> {
+    await this.client.request("browser.view.close", { stream_id });
+  }
+
+  /** Find `query` in the tab and go to its next match (the one before with `backwards`). */
+  async findInBrowserTab(
+    tab_id: string,
+    query: string,
+    backwards = false,
+  ): Promise<{ matches: number; current: number }> {
+    return this.client.request("browser.tab.find", { tab_id, query, backwards });
+  }
+
+  /** Save the tab's page as a PDF in its downloads folder; the file's name. */
+  async printBrowserTab(tab_id: string): Promise<string> {
+    return (await this.client.request("browser.tab.print", { tab_id })).name;
+  }
+
+  /** Reload a session's tab whenever files in its worktree change (`on`), or stop. */
+  async setBrowserReloadOnSave(tab_id: string, on: boolean): Promise<BrowserTab> {
+    return this.client.request("browser.tab.reload_on_save", { tab_id, on });
+  }
+
+  /** Show the tab as that phone or tablet shows it, or as a desktop page again with null. */
+  async setBrowserPreview(tab_id: string, preview: BrowserPreviewId | null): Promise<BrowserTab> {
+    return this.client.request("browser.tab.preview", { tab_id, preview });
+  }
+
+  /** Let the person point at an element of the tab's page; the outcome arrives in the browser state's `picks`. */
+  async pickInBrowserTab(tab_id: string): Promise<void> {
+    await this.client.request("browser.tab.pick", { tab_id });
+  }
+
+  /** Call the tab's element pick off. */
+  async cancelBrowserPick(tab_id: string): Promise<void> {
+    await this.client.request("browser.tab.pick_cancel", { tab_id });
+  }
+
+  /** Drop workspace files (`paths`) or uploaded ones (`attachment_ids`) on the page at `(x, y)`. */
+  async dropOnBrowserTab(
+    tab_id: string,
+    x: number,
+    y: number,
+    workspace_id: string,
+    files: { paths?: string[]; attachment_ids?: string[] },
+  ): Promise<void> {
+    await this.client.request("browser.tab.drop", { tab_id, x, y, workspace_id, ...files });
+  }
+
+  /** Session `session_id`'s strict site list; empty for none. */
+  async browserSites(session_id: string): Promise<string[]> {
+    return (await this.client.request("browser.sites.get", { session_id })).sites;
+  }
+
+  /** Replace session `session_id`'s strict site list (empty removes it); the list as kept. */
+  async setBrowserSites(session_id: string, sites: string[]): Promise<string[]> {
+    return (await this.client.request("browser.sites.set", { session_id, sites })).sites;
+  }
+
+  /** The sites session `session_id` could keep as its workspace's login, and those kept. */
+  async browserLogin(session_id: string): Promise<BrowserLoginSites> {
+    return this.client.request("browser.login.get", { session_id });
+  }
+
+  /** Keep session `session_id`'s sign-ins to `sites` for its workspace; the sites kept. */
+  async saveBrowserLogin(session_id: string, sites: string[]): Promise<string[]> {
+    return (await this.client.request("browser.login.save", { session_id, sites })).saved;
+  }
+
+  /** Forget `sites` from session `session_id`'s workspace login, or all of it; the sites kept. */
+  async forgetBrowserLogin(session_id: string, sites?: string[]): Promise<string[]> {
+    return (await this.client.request("browser.login.forget", { session_id, ...(sites ? { sites } : {}) })).saved;
+  }
+
+  /** Session `session_id`'s recorded browser steps, newest first, older than `before` when given. */
+  async browserSteps(session_id: string, before?: number): Promise<BrowserStep[]> {
+    return (await this.client.request("browser.timeline.list", { session_id, ...(before ? { before } : {}) })).steps;
+  }
+
+  /** Step `seq`'s picture, as base64 JPEG. */
+  async browserStepImage(session_id: string, seq: number): Promise<string> {
+    return (await this.client.request("browser.timeline.image", { session_id, seq })).jpeg;
+  }
+
+  /** Answer what a tab waits on. Another client may have answered first: then `request_not_found`. */
+  async answerBrowserUi(request_id: string, answer: BrowserUiAnswer): Promise<void> {
+    await this.client.request("browser.ui.answer", { request_id, answer });
+  }
+
+  /** Watch a stream `openBrowserView` returned, and send it input. */
+  openBrowserStream(stream_id: string, handlers: BrowserStreamHandlers): Promise<BrowserStream> {
+    return this.client.openBrowserStream(stream_id, handlers);
+  }
+
+  private browserTabStep(tab: BrowserTab): BrowserTab {
+    this.store.dispatch({ type: "browser", update: { type: "browser.tab.state", tab } });
+    return tab;
   }
 }

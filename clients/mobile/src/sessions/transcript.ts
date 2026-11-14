@@ -7,6 +7,7 @@
 
 import {
   clockTime,
+  firstQuestion,
   forkTurnOf,
   historyLaunches,
   historySubagentCards,
@@ -21,6 +22,7 @@ import {
   toolChanges,
   turnDuration,
   turnGroups,
+  zwiimTool,
   type AgentImage,
   type AttachmentBlock,
   type ChangedFile,
@@ -150,21 +152,6 @@ const TOOL_VERBS: Record<string, string> = {
   // Claude titles it so live.
   exitplanmode: "Exited Plan Mode",
 };
-/**
- * Zwiim's own tools, as the agent names them: `mcp__zwiim-mcp__<tool>`, or
- * `mcp.zwiim-mcp.<tool>` in a Codex title. Read by what they do, never by
- * that name.
- */
-const ZWIIM_TOOLS: Record<string, string> = {
-  update_progress: "Updated tasks",
-};
-
-/** What one of Zwiim's own tools does, or null for any other tool. */
-function zwiimTool(name: string | null | undefined): string | null {
-  const m = /^mcp(?:__|\.)zwiim-mcp(?:__|\.)(\w+)$/.exec(name?.trim() ?? "");
-  return m ? (ZWIIM_TOOLS[m[1]!] ?? null) : null;
-}
-
 const TARGET_KEYS = ["command", "cmd", "file_path", "path", "notebook_path", "pattern", "query", "url", "description"];
 
 function historyTool(name: string, input: string | null): { verb: string | null; target: string; input: string | null } {
@@ -180,8 +167,9 @@ function historyTool(name: string, input: string | null): { verb: string | null;
     return Array.isArray(v) ? v.join(" ") : typeof v === "string" ? v : null;
   };
   const key = TARGET_KEYS.find((k) => value(k)?.trim());
-  const target = key ? value(key)!.trim().split("\n")[0]! : null;
-  const verb = zwiimTool(name) ?? TOOL_VERBS[name.toLowerCase()] ?? (target ? name : null);
+  const asked = args && (name === "request_user_input" || name.endsWith("ask_user_question")) ? firstQuestion(args) : null;
+  const target = asked ?? (key ? value(key)!.trim().split("\n")[0]! : null);
+  const verb = zwiimTool(name)?.label ?? TOOL_VERBS[name.toLowerCase()] ?? (target ? name : null);
   const shown = value("command") ?? value("cmd") ?? (args ? JSON.stringify(args, null, 2) : input);
   // A verb that names the whole call (Exited Plan Mode) reads as live: alone.
   if (!target && verb) return { verb: null, target: verb, input: shown };
@@ -250,11 +238,15 @@ function toolItem(p: {
 
 /** A live tool call as a row. */
 export function liveTool(tc: ToolCall | undefined, running: boolean): ToolItem {
+  const own = zwiimTool(tc?.title);
+  // Zwiim's own tools come with their input, which says what they act on.
+  const call = own && tc?.title && tc.input ? historyTool(tc.title, tc.input) : null;
   return toolItem({
     kind: tc?.kind,
-    title: zwiimTool(tc?.title) ?? tc?.title ?? null,
+    verb: call?.verb,
+    title: call?.target ?? own?.label ?? tc?.title ?? null,
     state: toolState(tc?.status ?? null, running),
-    input: null,
+    input: call?.input ?? null,
     output: typeof tc?.content === "string" && tc.content ? tc.content : null,
   });
 }

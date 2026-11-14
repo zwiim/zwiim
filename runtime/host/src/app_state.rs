@@ -109,8 +109,14 @@ pub struct AppState {
     pub clones: Arc<crate::workspace::clone::CloneJobs>,
     /// What the keep-awake supervisor last did; `None` until its first pass.
     pub keep_awake: Arc<tokio::sync::watch::Sender<Option<crate::power::KeepAwakeStatus>>>,
+    /// What is downloading (adapters, the browser engine, Host updates).
+    pub downloads: Arc<crate::downloads::Downloads>,
     /// The GitHub sign-in through `gh` (one at a time, in memory).
     pub github_auth: Arc<crate::git_harness::GithubSignIn>,
+    /// The Host browser, made on first use (see [`AppState::browser`]).
+    pub browser: Arc<tokio::sync::OnceCell<Arc<crate::browser::service::BrowserService>>>,
+    /// The browser's tab streams, made with their first view.
+    pub browser_streams: Arc<tokio::sync::OnceCell<Arc<crate::browser::stream::StreamHub>>>,
 }
 
 pub fn default_system_op_lock() -> Arc<tokio::sync::Mutex<()>> {
@@ -270,6 +276,39 @@ pub fn default_repos_dir() -> Option<PathBuf> {
 }
 
 impl AppState {
+    /// The Host browser's tab service, made on first use. Making it loads
+    /// the saved tabs; the engine itself starts only when a tab is used.
+    pub async fn browser(
+        &self,
+    ) -> Result<Arc<crate::browser::service::BrowserService>, sea_orm::DbErr> {
+        use crate::browser::{engine, service::BrowserService, snapshot::Snapshot};
+        self.browser
+            .get_or_try_init(|| async {
+                let dir = engine::browser_dir(&self.data_dir);
+                let manager =
+                    engine::manager::EngineManager::new(engine::host_start(dir.join("engine")));
+                let snapshot = Snapshot::at(dir.join("personal.snapshot"));
+                let service =
+                    BrowserService::start(manager, self.db.conn.clone(), Some(snapshot)).await?;
+                service.keep_timeline(dir.join("timeline"));
+                Ok(service)
+            })
+            .await
+            .cloned()
+    }
+
+    /// The streams of the browser's tabs, made on first use.
+    pub async fn browser_streams(
+        &self,
+    ) -> Result<Arc<crate::browser::stream::StreamHub>, sea_orm::DbErr> {
+        let browser = self.browser().await?;
+        Ok(self
+            .browser_streams
+            .get_or_init(|| async { crate::browser::stream::StreamHub::new(browser) })
+            .await
+            .clone())
+    }
+
     /// What a clone job needs, from this Host's state.
     pub fn clone_env(&self) -> crate::workspace::clone::CloneEnv {
         crate::workspace::clone::CloneEnv {
@@ -354,7 +393,10 @@ impl AppState {
                 std::time::Duration::from_secs(2),
             )),
             keep_awake: Default::default(),
+            downloads: crate::downloads::Downloads::new(),
             github_auth: Default::default(),
+            browser: Default::default(),
+            browser_streams: Default::default(),
         }
     }
 }

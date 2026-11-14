@@ -1,8 +1,6 @@
 // Modified from upstream Apache-2.0 source; see NOTICE.
 pub mod acp;
 pub mod backup;
-#[cfg(feature = "tauri-runtime")]
-pub mod browser;
 /// The browser tool group's on/off switch. Unlike `browser` itself this is not
 /// desktop-only: the shared zwiim-mcp plumbing reads it in both runtimes.
 pub mod browser_tools;

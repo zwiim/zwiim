@@ -54,6 +54,7 @@ import {
   type ToolCallStatus,
   type TurnGroup,
   waitingText,
+  type ZwiimToolGroup,
 } from "@zwiim/sdk";
 import { opensInPreview } from "@zwiim/preview";
 import { AgentImageChip } from "@/attachments/AgentImageChip";
@@ -110,6 +111,12 @@ const VERB_ICONS: Record<string, typeof Terminal> = {
   Input: Keyboard,
   Script: FileCode2,
   Ask: MessageCircleQuestion,
+};
+
+/** Zwiim's own tools without a common verb, by what kind of tool they are. */
+const GROUP_ICONS: Partial<Record<ZwiimToolGroup, typeof Terminal>> = {
+  browser: Globe,
+  delegation: Bot,
 };
 
 /**
@@ -497,6 +504,7 @@ function sameToolCall(a: ToolCallProps, b: ToolCallProps): boolean {
       t.target === u.target &&
       t.input === u.input &&
       t.path === u.path &&
+      t.group === u.group &&
       (t.changes === u.changes || (!t.changes?.length && !u.changes?.length)))
   );
 }
@@ -514,7 +522,7 @@ export const ToolCallView = memo(function ToolCallView(props: ToolCallProps) {
   const command = verb === "Run" ? props.tool.input || target || null : null;
   // A one-line input already reads in full on the row.
   const input = props.tool.input?.trim() === target ? null : props.tool.input;
-  const Icon = VERB_ICONS[verb] ?? Wrench;
+  const Icon = (props.tool.group && GROUP_ICONS[props.tool.group]) ?? VERB_ICONS[verb] ?? Wrench;
   const label = diffs && diffs.length > 1 ? `${diffs.length} files` : path ? basename(path) : target;
   // A file inside the workspace opens whole; several open from the card.
   const links = useContext(FileLinksContext);
@@ -1238,7 +1246,7 @@ function liveRows(
         <ToolCallView
           key={i}
           className={enter}
-          tool={liveTool(tc?.title ?? null, tc?.kind)}
+          tool={liveTool(tc?.title ?? null, tc?.kind, tc?.input)}
           status={status}
           output={typeof tc?.content === "string" ? tc.content : null}
           images={tc?.images}

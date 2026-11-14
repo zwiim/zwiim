@@ -26,6 +26,9 @@ import type {
  *   revoked (terminal).
  * - `handshake_failed`: the host's tunnel handshake did not authenticate
  *   against the pinned host key (terminal).
+ * - `relay_quota_exceeded`: the account reached a relay limit of its plan
+ *   (`RelayQuotaError` on a refused ticket). Retried with backoff: the
+ *   limit lifts at the period's reset, and the local network still works.
  *
  * Reaching a host directly on the local network (`LanTransport`,
  * `ConnectionManager`) adds:
@@ -49,6 +52,11 @@ import type {
  * - `pairing_expired`: the QR's code has expired.
  * - `pairing_rejected`: the host refused the code (unknown, expired or
  *   already used).
+ *
+ * Browser views (`openBrowserStream`) add:
+ *
+ * - `browser_stream_unavailable`: this connection cannot carry a browser
+ *   stream (a phone, or a computer reaching the host remotely).
  */
 export type ClientErrorCode =
   | HostErrorCode
@@ -61,12 +69,14 @@ export type ClientErrorCode =
   | "host_unknown"
   | "device_refused"
   | "handshake_failed"
+  | "relay_quota_exceeded"
   | "lan_unavailable"
   | "host_identity_mismatch"
   | "pairing_invalid"
   | "pairing_expired"
   | "pairing_rejected"
   | "update_required"
+  | "browser_stream_unavailable"
   | (string & {});
 
 export class ZwiimClientError extends Error {

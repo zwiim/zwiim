@@ -43,7 +43,12 @@ impl FakeFetch {
 
 #[async_trait::async_trait]
 impl install::Fetch for FakeFetch {
-    async fn fetch(&self, url: &str, dest: &Path) -> Result<(), FetchError> {
+    async fn fetch(
+        &self,
+        url: &str,
+        dest: &Path,
+        _progress: &crate::downloads::Progress,
+    ) -> Result<(), FetchError> {
         if self.offline.load(Ordering::SeqCst) {
             return Err(FetchError::Offline("no route to host".into()));
         }
@@ -265,6 +270,7 @@ impl World {
             platform: self.platform,
             fetch: &self.fetch,
             probe_timeout: Duration::from_secs(10),
+            downloads: None,
         }
     }
 

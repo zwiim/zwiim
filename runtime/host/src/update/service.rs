@@ -399,9 +399,11 @@ async fn check_inner(download: bool) -> Result<(), CheckError> {
     let downloads = root.join("downloads");
     std::fs::create_dir_all(&downloads).map_err(|e| ("install", e.to_string()))?;
     let archive = downloads.join(format!("{}.part", artifact.name));
+    let progress = crate::downloads::global().begin(format!("Zwiim {version}"), 1);
     let fetched = crate::adapters::HttpFetch::new()
-        .fetch(&artifact.url, &archive)
+        .fetch(&artifact.url, &archive, &progress)
         .await;
+    drop(progress);
     let staged = match fetched {
         Ok(()) => install::stage_archive(
             &root,

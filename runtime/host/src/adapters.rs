@@ -75,6 +75,14 @@ impl ManagedAdapter {
         }
     }
 
+    /// What its download is called on every client.
+    pub fn label(self) -> &'static str {
+        match self {
+            ManagedAdapter::Claude => "Claude Code",
+            ManagedAdapter::Codex => "Codex",
+        }
+    }
+
     /// The adapter's command name, for the development PATH fallback.
     fn command(self) -> &'static str {
         match self {
@@ -298,6 +306,7 @@ async fn setup_with(
         platform,
         fetch,
         probe_timeout: PROBE_TIMEOUT,
+        downloads: Some((&crate::downloads::global(), adapter.label())),
     };
     let result = installer.ensure(adapter.id()).await;
     match &result {
@@ -518,7 +527,12 @@ impl Default for HttpFetch {
 
 #[async_trait::async_trait]
 impl Fetch for HttpFetch {
-    async fn fetch(&self, url: &str, dest: &Path) -> Result<(), FetchError> {
+    async fn fetch(
+        &self,
+        url: &str,
+        dest: &Path,
+        progress: &crate::downloads::Progress,
+    ) -> Result<(), FetchError> {
         use futures::StreamExt;
         use tokio::io::AsyncWriteExt;
         let offline = |e: reqwest::Error| {
@@ -532,12 +546,14 @@ impl Fetch for HttpFetch {
         if !res.status().is_success() {
             return Err(FetchError::Failed(format!("{url}: HTTP {}", res.status())));
         }
+        progress.file(res.content_length());
         let mut file = tokio::fs::File::create(dest)
             .await
             .map_err(|e| FetchError::Failed(e.to_string()))?;
         let mut body = res.bytes_stream();
         while let Some(chunk) = body.next().await {
             let chunk = chunk.map_err(offline)?;
+            progress.received(chunk.len() as u64);
             file.write_all(&chunk)
                 .await
                 .map_err(|e| FetchError::Failed(e.to_string()))?;

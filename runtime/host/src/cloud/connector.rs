@@ -121,7 +121,7 @@ async fn session(
                     Ok(ControlFromCloud::HeartbeatAck) => {
                         deadline = tokio::time::Instant::now() + timing.presence_timeout;
                     }
-                    Ok(ControlFromCloud::Dial { rendezvous, token }) => {
+                    Ok(ControlFromCloud::Dial { rendezvous, token, .. }) => {
                         dial(state, router, shutdown, &config.url, rendezvous, token);
                     }
                     _ => return (true, CloudError::Protocol.to_string()),

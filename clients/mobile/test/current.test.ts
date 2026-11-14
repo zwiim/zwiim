@@ -434,6 +434,11 @@ describe("how the connection reads", () => {
     expect(failed("host_identity_mismatch", { status: "error" })).toMatchObject({ kind: "screen", title: "Couldn't verify Mac" });
     expect(failed("handshake_failed", { status: "error" })).toMatchObject({ kind: "screen", title: "Couldn't verify Mac" });
     expect(failed("unauthenticated", { status: "unauthenticated" })).toMatchObject({ action: "sign_in" });
+    expect(failed("relay_quota_exceeded")).toEqual({
+      kind: "banner",
+      text: "Remote limit reached. On the same Wi-Fi as Mac, everything works.",
+      action: "retry",
+    });
     // Local only's LAN miss is a banner there; in Automatic the Cloud takes over.
     expect(failed("lan_unavailable", { mode: "local" })).toMatchObject({ text: expect.stringContaining("Mac isn't on this network"), action: "switch" });
     expect(failed("lan_unavailable", { mode: "local", lanKnown: false })).toMatchObject({

@@ -552,6 +552,10 @@ pub struct PageSnapshot {
     pub refs_count: usize,
     /// The tree stops at `max_chars` rather than at the end of the page.
     pub truncated: bool,
+    /// Set by the host when `tree` holds only what changed since the
+    /// snapshot with this generation (see `tree_diff`), not the whole page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changes_since: Option<String>,
 }
 
 /// The host's half of the token a snapshot hands out: which incarnation of
@@ -566,12 +570,11 @@ pub struct PageSnapshot {
 /// goes A → B → A arrives back at an address that matches.
 ///
 /// What the host actually knows is worth being exact about, because it is
-/// less than it sounds. A new document arrives through the engine's load
-/// callback, promptly. A same-document navigation has no native signal at
-/// all, and reaches the host only because `src/browser-injected/helper.js`
-/// polls `location.href` a few times a second — and only while the document
-/// reports itself visible. So a route change that leaves and returns between
-/// two polls bumps nothing.
+/// less than it sounds. This was written for the upstream webview, where a
+/// same-document navigation had no native signal and was found by polling
+/// `location.href`, so a route change that left and returned between two
+/// polls bumped nothing. The Host's engine reports one
+/// (`Page.navigatedWithinDocument`).
 ///
 /// The epoch narrows that window; it does not close it. Closing it belongs to
 /// the world, which can watch things the host cannot reach at all —
@@ -699,6 +702,11 @@ pub struct ActionRequest {
     #[serde(rename = "ref", default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     pub action: ActionKind,
+    /// The address the agent expects the tab at; the action is refused when
+    /// it is elsewhere (design 10.3). Checked by the host, never sent to the
+    /// world.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_url: Option<String>,
 }
 
 /// How an action reached the page.
@@ -899,6 +907,22 @@ pub struct RectAnswer {
 pub struct ViewportAnswer {
     pub url: String,
     pub viewport: SnapshotViewport,
+}
+
+/// Whether the element `target` names, or with no target whatever has
+/// focus (inside shadow roots too), is a password field: `true` or `false`,
+/// or [`ENGINE_ABSENT`].
+pub fn password_field_call(generation: &str, target: Option<&str>) -> String {
+    format!(
+        "typeof globalThis.{AGENT_GLOBAL} === 'undefined' ? {absent} : (() => {{ \
+         const t = {target}; \
+         let e = t === null ? document.activeElement : globalThis.{AGENT_GLOBAL}.elementForRef({generation}, t); \
+         while (t === null && e && e.shadowRoot && e.shadowRoot.activeElement) e = e.shadowRoot.activeElement; \
+         return JSON.stringify(e instanceof HTMLInputElement && e.type === 'password'); }})()",
+        absent = serde_json::Value::from(ENGINE_ABSENT),
+        generation = serde_json::Value::from(generation),
+        target = serde_json::to_value(target).unwrap_or(serde_json::Value::Null),
+    )
 }
 
 /// `JSON.stringify(__zwiimAgent.rectOf(generation, ref))`: the element's
@@ -1412,6 +1436,7 @@ mod tests {
                 text: "it's \"quoted\"".into(),
                 submit: true,
             },
+            expect_url: None,
         };
         let call = act_call(&request);
         assert!(call.starts_with("typeof globalThis.__zwiimAgent === 'undefined' ? \"absent\" :"));
@@ -1424,7 +1449,10 @@ mod tests {
         let keyless = ActionRequest {
             generation: "g".into(),
             target: None,
-            action: ActionKind::Press { key: "Enter".into() },
+            action: ActionKind::Press {
+                key: "Enter".into(),
+            },
+            expect_url: None,
         };
         assert!(act_call(&keyless).contains(".act(\"g\", null, {\"key\":\"Enter\",\"kind\":\"press\"}))"));
 

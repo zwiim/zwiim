@@ -59,6 +59,7 @@ export function SettingsDialog({
   const promptSettings = useHost((s) => hasCapability(s.connection.compat, "settings.prompts"));
   const repositorySettings = useHost((s) => hasCapability(s.connection.compat, "repository.settings"));
   const advancedSettings = useHost((s) => hasCapability(s.connection.compat, "settings.advanced"));
+  const browser = useHost((s) => hasCapability(s.connection.compat, "browser"));
   const steer = useHost((s) => hasCapability(s.connection.compat, "session.steer"));
   const attachments = useHost((s) => hasCapability(s.connection.compat, "attachments"));
   const autoMerge = useHost((s) => hasCapability(s.connection.compat, "git.pr_auto_merge"));
@@ -75,6 +76,7 @@ export function SettingsDialog({
     promptSettings,
     repositorySettings,
     advancedSettings,
+    browser,
     steer,
     attachments,
     autoMerge,

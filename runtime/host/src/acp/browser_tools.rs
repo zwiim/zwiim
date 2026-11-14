@@ -6,9 +6,8 @@
 //! `browser_select_option`) carried by zwiim-mcp.
 //!
 //! Nothing here decides whether a page may be read or acted on. That decision
-//! is `crate::browser::agent`'s, and it is enforced inside
-//! `commands::browser::agent_snapshot_core` / `agent_act_core`, which the
-//! production impl calls — so an MCP read passes the same grant check, and
+//! is `crate::browser::agent`'s, and it is enforced inside the production
+//! impl of [`BrowserToolAccess`] — so an MCP read passes the same grant check, and
 //! leaves the same line on the tab's activity strip, as any other read. A tool
 //! surface that reimplemented the check would be a second place to get it
 //! wrong, and the first place someone forgot to emit the audit line from.
@@ -95,6 +94,28 @@ pub const ERROR_BAD_ADDRESS: &str = "browser_bad_address";
 /// host. Not a sharing matter and not retryable: the same address will be
 /// refused next time.
 pub const ERROR_BLOCKED: &str = "browser_blocked";
+
+/// `browser_wait_for` gave up: what it waited for did not happen in time.
+pub const ERROR_WAIT_TIMEOUT: &str = "browser_wait_timeout";
+
+/// An action named the address it expected the tab at with `expectUrl`, and
+/// the tab is somewhere else: nothing was done.
+pub const ERROR_URL_CHANGED: &str = "browser_url_changed";
+
+/// A person kept typing in the tab, and the action waited for them to stop
+/// and gave up: nothing was done.
+pub const ERROR_PERSON_TYPING: &str = "browser_person_typing";
+
+/// An agent tried to type into a password field on a site other than a
+/// loopback dev server, and the person has not let agents do that.
+pub const ERROR_PASSWORD_FIELD: &str = "browser_password_field";
+
+/// The session has a strict site list and the address is not on it: agents
+/// may not open it. The person can add it.
+pub const ERROR_SITE_NOT_ALLOWED: &str = "browser_site_not_allowed";
+
+/// The person denied this site for the session when asked.
+pub const ERROR_SITE_DENIED: &str = "browser_site_denied";
 
 /// The workspace was asked for a tab and none arrived — no window open to put
 /// one in, or the tab went away before it loaded.
@@ -194,6 +215,9 @@ pub struct BrowserActOutcome {
     pub tab_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<ActionOutcome>,
+    /// What the action caused, when it was done (design 10.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effects: Option<ActionEffects>,
     /// One of the `browser_*` slugs above. `None` exactly when `action` is
     /// `Some`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -202,20 +226,60 @@ pub struct BrowserActOutcome {
     pub note: Option<String>,
 }
 
+/// What an action caused while it ran and the page settled, so the agent
+/// learns of a popup or an error without a second call (design 10.3).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionEffects {
+    /// The tab's address after the action, when it moved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub navigated: Option<String>,
+    /// Tabs the page opened.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub opened_tabs: Vec<String>,
+    /// Files the page began to download, by the page's names for them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub downloads: Vec<String>,
+    /// What the page asked of a person: a dialog with its message, a
+    /// sign-in, a file chooser.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dialogs: Vec<String>,
+    /// Errors the page printed to its console or threw.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<String>,
+    /// Page loads the site policy refused, each with why.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refused: Vec<String>,
+}
+
+impl ActionEffects {
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 impl BrowserActOutcome {
     pub fn done(tab_id: &str, outcome: ActionOutcome) -> Self {
         Self {
             tab_id: tab_id.to_string(),
             action: Some(outcome),
+            effects: None,
             error: None,
             note: None,
         }
+    }
+
+    /// Done, and what it caused.
+    pub fn with_effects(mut self, effects: ActionEffects) -> Self {
+        self.effects = (!effects.is_empty()).then_some(effects);
+        self
     }
 
     pub fn refused(tab_id: &str, error: &str, note: impl Into<String>) -> Self {
         Self {
             tab_id: tab_id.to_string(),
             action: None,
+            effects: None,
             error: Some(error.to_string()),
             note: Some(note.into()),
         }
@@ -447,6 +511,9 @@ pub struct BrowserTabOutcome {
     /// that is not up yet is the ordinary shape of this.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_error: Option<String>,
+    /// What the tab fetched, for `browser_network_log`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<crate::browser::network::NetworkReadout>,
     /// One of the `browser_*` slugs above. `None` exactly when the call did
     /// what it was asked to.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -462,6 +529,19 @@ impl BrowserTabOutcome {
             tab_id: Some(summary.tab_id.clone()),
             tab: Some(summary),
             load_error,
+            network: None,
+            error: None,
+            note: None,
+        }
+    }
+
+    /// What tab `tab_id` fetched.
+    pub fn network(tab_id: &str, readout: crate::browser::network::NetworkReadout) -> Self {
+        Self {
+            tab_id: Some(tab_id.to_string()),
+            tab: None,
+            load_error: None,
+            network: Some(readout),
             error: None,
             note: None,
         }
@@ -473,6 +553,7 @@ impl BrowserTabOutcome {
             tab_id: Some(tab_id.to_string()),
             tab: None,
             load_error: None,
+            network: None,
             error: None,
             note: Some(format!("Browser tab {tab_id} is closed.")),
         }
@@ -483,6 +564,7 @@ impl BrowserTabOutcome {
             tab_id: tab_id.map(str::to_string),
             tab: None,
             load_error: None,
+            network: None,
             error: Some(error.to_string()),
             note: Some(note.into()),
         }
@@ -513,6 +595,29 @@ pub enum BrowserTabOp {
     Navigate { tab_id: String, url: String },
     /// Close an existing tab.
     Close { tab_id: String },
+    /// Set the site permissions of the tab's site: those in `grant` granted,
+    /// the rest denied.
+    Permissions { tab_id: String, grant: Vec<String> },
+    /// Wait until text or an element is on the page, or gone from it.
+    Wait {
+        tab_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selector: Option<String>,
+        #[serde(default)]
+        gone: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+    },
+    /// Read what the tab fetched; with `har`, also write it to a HAR file.
+    Network {
+        tab_id: String,
+        #[serde(default)]
+        query: crate::browser::network::NetworkQuery,
+        #[serde(default)]
+        har: bool,
+    },
 }
 
 impl BrowserTabOp {
@@ -521,41 +626,66 @@ impl BrowserTabOp {
     pub fn tab_id(&self) -> Option<&str> {
         match self {
             Self::Open { .. } => None,
-            Self::Navigate { tab_id, .. } | Self::Close { tab_id } => Some(tab_id),
+            Self::Navigate { tab_id, .. }
+            | Self::Close { tab_id }
+            | Self::Wait { tab_id, .. }
+            | Self::Network { tab_id, .. }
+            | Self::Permissions { tab_id, .. } => Some(tab_id),
         }
     }
 }
 
 /// Listener-facing access to the built-in browser's agent surface. The
-/// production impl (`crate::commands::browser::McpBrowserTools`) exists only in
-/// the desktop build; server mode and tests use [`NoBrowserTabs`]. Mirrors
+/// production impl is the Host's `crate::browser::tools::HostBrowserTools`;
+/// tests use [`NoBrowserTabs`]. Mirrors
 /// [`crate::acp::session_info::SessionInfoAccess`].
+///
+/// `caller` is the agent's parent connection, from its token: the impl finds
+/// the session the agent is in from it, and with that the tabs it may touch.
 #[async_trait]
 pub trait BrowserToolAccess: Send + Sync {
     /// Every tab this agent may be told about. Never an error: "no tabs" and
     /// "no browser" are both listings, distinguished by `note`.
-    async fn list_tabs(&self) -> BrowserTabsOutcome;
+    async fn list_tabs(&self, caller: &str) -> BrowserTabsOutcome;
 
     /// Read one shared page. `max_chars` is the caller's own cap; `None` means
-    /// [`DEFAULT_SNAPSHOT_MAX_CHARS`].
-    async fn snapshot(&self, tab_id: &str, max_chars: Option<usize>) -> BrowserSnapshotOutcome;
+    /// [`DEFAULT_SNAPSHOT_MAX_CHARS`]. With `changes_only`, the tree holds only
+    /// what changed since the last snapshot of the same document, when there
+    /// was one the caller saw whole.
+    async fn snapshot(
+        &self,
+        caller: &str,
+        tab_id: &str,
+        max_chars: Option<usize>,
+        changes_only: bool,
+    ) -> BrowserSnapshotOutcome;
 
     /// Act on one shared page, by a ref from a snapshot of it. Needs the tab
     /// shared at `control`.
-    async fn act(&self, tab_id: &str, request: ActionRequest) -> BrowserActOutcome;
+    async fn act(&self, caller: &str, tab_id: &str, request: ActionRequest) -> BrowserActOutcome;
 
     /// What one shared page printed to its console. A read, like a snapshot.
-    async fn console(&self, tab_id: &str, query: ConsoleQuery) -> BrowserConsoleOutcome;
+    async fn console(
+        &self,
+        caller: &str,
+        tab_id: &str,
+        query: ConsoleQuery,
+    ) -> BrowserConsoleOutcome;
 
     /// A screenshot of one shared page, or of one element of it. A read,
     /// like a snapshot.
-    async fn capture(&self, tab_id: &str, request: CaptureRequest) -> BrowserCaptureOutcome;
+    async fn capture(
+        &self,
+        caller: &str,
+        tab_id: &str,
+        request: CaptureRequest,
+    ) -> BrowserCaptureOutcome;
 
     /// Run the caller's own code on one shared page. Needs the tab shared at
     /// `control`, the `browser_eval` switch on, AND the person to approve this
     /// particular snippet — so this call blocks on a human and can take as
     /// long as one takes to read it.
-    async fn eval(&self, tab_id: &str, request: EvalRequest) -> BrowserEvalOutcome;
+    async fn eval(&self, caller: &str, tab_id: &str, request: EvalRequest) -> BrowserEvalOutcome;
 
     /// Open a tab, point one somewhere else, or close one.
     ///
@@ -563,7 +693,7 @@ pub trait BrowserToolAccess: Send + Sync {
     /// page takes to load. Opening needs nothing but the group switch — there
     /// is no tab yet to have a grant; the other two need the tab shared at
     /// `control`, unless it has no document in it to protect.
-    async fn tab_op(&self, op: BrowserTabOp) -> BrowserTabOutcome;
+    async fn tab_op(&self, caller: &str, op: BrowserTabOp) -> BrowserTabOutcome;
 }
 
 /// The answer where there is no built-in browser: server mode, and the stub in
@@ -578,31 +708,47 @@ pub const NO_BROWSER_NOTE: &str =
 
 #[async_trait]
 impl BrowserToolAccess for NoBrowserTabs {
-    async fn list_tabs(&self) -> BrowserTabsOutcome {
+    async fn list_tabs(&self, _caller: &str) -> BrowserTabsOutcome {
         BrowserTabsOutcome::unavailable(NO_BROWSER_NOTE)
     }
 
-    async fn snapshot(&self, tab_id: &str, _max_chars: Option<usize>) -> BrowserSnapshotOutcome {
+    async fn snapshot(
+        &self,
+        _caller: &str,
+        tab_id: &str,
+        _max_chars: Option<usize>,
+        _changes_only: bool,
+    ) -> BrowserSnapshotOutcome {
         BrowserSnapshotOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_BROWSER_NOTE)
     }
 
-    async fn act(&self, tab_id: &str, _request: ActionRequest) -> BrowserActOutcome {
+    async fn act(&self, _caller: &str, tab_id: &str, _request: ActionRequest) -> BrowserActOutcome {
         BrowserActOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_BROWSER_NOTE)
     }
 
-    async fn console(&self, tab_id: &str, _query: ConsoleQuery) -> BrowserConsoleOutcome {
+    async fn console(
+        &self,
+        _caller: &str,
+        tab_id: &str,
+        _query: ConsoleQuery,
+    ) -> BrowserConsoleOutcome {
         BrowserConsoleOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_BROWSER_NOTE)
     }
 
-    async fn capture(&self, tab_id: &str, _request: CaptureRequest) -> BrowserCaptureOutcome {
+    async fn capture(
+        &self,
+        _caller: &str,
+        tab_id: &str,
+        _request: CaptureRequest,
+    ) -> BrowserCaptureOutcome {
         BrowserCaptureOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_BROWSER_NOTE)
     }
 
-    async fn eval(&self, tab_id: &str, _request: EvalRequest) -> BrowserEvalOutcome {
+    async fn eval(&self, _caller: &str, tab_id: &str, _request: EvalRequest) -> BrowserEvalOutcome {
         BrowserEvalOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_BROWSER_NOTE)
     }
 
-    async fn tab_op(&self, op: BrowserTabOp) -> BrowserTabOutcome {
+    async fn tab_op(&self, _caller: &str, op: BrowserTabOp) -> BrowserTabOutcome {
         BrowserTabOutcome::refused(op.tab_id(), ERROR_UNAVAILABLE, NO_BROWSER_NOTE)
     }
 }
@@ -702,6 +848,7 @@ mod tests {
                 tree: "- heading \"Example\"".into(),
                 refs_count: 1,
                 truncated: false,
+                changes_since: None,
             },
         ))
         .expect("serialises");
@@ -714,7 +861,7 @@ mod tests {
     /// apart by the note.
     #[tokio::test]
     async fn a_runtime_without_tabs_says_so_rather_than_looking_idle() {
-        let out = NoBrowserTabs.list_tabs().await;
+        let out = NoBrowserTabs.list_tabs("c1").await;
         assert!(out.tabs.is_empty());
         assert_eq!(out.note.as_deref(), Some(NO_BROWSER_NOTE));
 
@@ -722,7 +869,7 @@ mod tests {
         assert!(quiet.tabs.is_empty());
         assert_eq!(quiet.note, None);
 
-        let refused = NoBrowserTabs.snapshot("t1", None).await;
+        let refused = NoBrowserTabs.snapshot("c1", "t1", None, false).await;
         assert_eq!(refused.error.as_deref(), Some(ERROR_UNAVAILABLE));
     }
 
@@ -809,11 +956,17 @@ mod tests {
 
         let none = NoBrowserTabs;
         assert_eq!(
-            none.console("t1", ConsoleQuery::default()).await.error.as_deref(),
+            none.console("c1", "t1", ConsoleQuery::default())
+                .await
+                .error
+                .as_deref(),
             Some(ERROR_UNAVAILABLE)
         );
         assert_eq!(
-            none.capture("t1", CaptureRequest::default()).await.error.as_deref(),
+            none.capture("c1", "t1", CaptureRequest::default())
+                .await
+                .error
+                .as_deref(),
             Some(ERROR_UNAVAILABLE)
         );
     }
@@ -882,15 +1035,23 @@ mod tests {
         assert_eq!(no_tab["error"], ERROR_BLOCKED);
 
         let unavailable = NoBrowserTabs
-            .tab_op(BrowserTabOp::Close { tab_id: "t7".into() })
+            .tab_op(
+                "c1",
+                BrowserTabOp::Close {
+                    tab_id: "t7".into(),
+                },
+            )
             .await;
         assert_eq!(unavailable.error.as_deref(), Some(ERROR_UNAVAILABLE));
         assert_eq!(unavailable.tab_id.as_deref(), Some("t7"));
         // An open has no tab to name even here.
         let unavailable = NoBrowserTabs
-            .tab_op(BrowserTabOp::Open {
-                url: "https://example.com/".into(),
-            })
+            .tab_op(
+                "c1",
+                BrowserTabOp::Open {
+                    url: "https://example.com/".into(),
+                },
+            )
             .await;
         assert_eq!(unavailable.tab_id, None);
     }
@@ -949,7 +1110,7 @@ mod tests {
             BrowserActOutcome::control_required("t9").note
         );
 
-        let unavailable = NoBrowserTabs.eval("t9", EvalRequest::default()).await;
+        let unavailable = NoBrowserTabs.eval("c1", "t9", EvalRequest::default()).await;
         assert_eq!(unavailable.error.as_deref(), Some(ERROR_UNAVAILABLE));
 
         let wire = serde_json::to_value(BrowserEvalOutcome::ran(

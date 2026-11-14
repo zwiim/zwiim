@@ -1,4 +1,17 @@
 export * from "./types/protocol";
+export {
+  BROWSER_FRAME_HEADER_LEN,
+  BROWSER_FRAME_VERSION,
+  decodeBrowserFrame,
+  type BrowserScreenFrame,
+  type BrowserFrameResult,
+} from "./browser/frame";
+export {
+  BROWSER_STREAM_SUBPROTOCOL,
+  type BrowserStream,
+  type BrowserStreamHandlers,
+  type BrowserStreamTransport,
+} from "./browser/stream";
 export * from "./transport/transport";
 export { LocalTransport, type LocalTransportOptions } from "./transport/local";
 export { RelayTransport, type RelayTransportOptions } from "./transport/relay";
@@ -25,9 +38,13 @@ export { createTransport, type HostTarget } from "./transport/select";
 export {
   CloudClient,
   normalizeCloudUrl,
+  RelayQuotaError,
+  type CloudChannelUsage,
   type CloudClientOptions,
   type CloudHost,
   type CloudTicket,
+  type CloudUsage,
+  type RelayChannel,
   type EnrollmentToken,
 } from "./remote/cloud";
 export {
@@ -54,6 +71,8 @@ export * from "./client/revert";
 export * from "./client/fork";
 export * from "./state/session";
 export * from "./state/terminal";
+export * from "./state/browser";
+export * from "./state/downloads";
 export * from "./state/store";
 export * from "./state/workspaces";
 export * from "./state/layout";
@@ -72,5 +91,6 @@ export * from "./subagents/cards";
 export * from "./subagents/model";
 export * from "./subagents/labels";
 export * from "./subagents/clock";
+export * from "./tools/zwiim";
 export * from "./attachments";
 export * from "./files";

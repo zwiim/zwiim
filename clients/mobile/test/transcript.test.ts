@@ -524,6 +524,8 @@ describe("transcript", () => {
           { type: "tool_call", tool_call_id: "t3", title: "TodoWrite", input_preview: '{"todos":[]}', status: null },
           { type: "tool_call", tool_call_id: "t4", title: "ExitPlanMode", input_preview: '{"plan":"Do it"}', status: null },
           { type: "tool_call", tool_call_id: "t5", title: "mcp__zwiim-mcp__update_progress", input_preview: '{"steps":[]}', status: null },
+          { type: "tool_call", tool_call_id: "t6", title: "mcp__zwiim-mcp__browser_snapshot", input_preview: '{"tabId":"a"}', status: null },
+          { type: "tool_call", tool_call_id: "t7", title: "mcp__zwiim_mcp__ask_user_question", input_preview: '{"questions":[{"question":"Which branch?"}]}', status: null },
         ]),
       ]),
     );
@@ -542,6 +544,8 @@ describe("transcript", () => {
       [null, "Exited Plan Mode", "idle", '{\n  "plan": "Do it"\n}'],
       // Zwiim's own tool reads by what it does, never by its MCP name.
       [null, "Updated tasks", "idle", '{\n  "steps": []\n}'],
+      [null, "Read page", "idle", '{\n  "tabId": "a"\n}'],
+      ["Ask", "Which branch?", "idle", '{\n  "questions": [\n    {\n      "question": "Which branch?"\n    }\n  ]\n}'],
     ]);
   });
 
@@ -562,6 +566,24 @@ describe("transcript", () => {
     const v = view(user("m1", "Plan it"), tool("t1", "mcp__zwiim-mcp__update_progress", "other"));
     const t = transcriptRows(v)[1]!;
     expect(t.type === "tool" && t.tool).toMatchObject({ verb: null, target: "Updated tasks", state: "running" });
+  });
+
+  it("says what a running Zwiim tool acts on, from the input the Host sends", () => {
+    const v = view(
+      user("m1", "Check it"),
+      ev("agent.tool_call", {
+        tool_call_id: "t1",
+        title: "mcp__zwiim-mcp__browser_navigate",
+        kind: "other",
+        status: "in_progress",
+        content: null,
+        input: '{"tabId":"a","url":"https://example.org/"}',
+      }),
+      // An update without input keeps the input the call came with.
+      toolDone("t1", "in_progress"),
+    );
+    const t = transcriptRows(v)[1]!;
+    expect(t.type === "tool" && t.tool).toMatchObject({ verb: "Go to", target: "https://example.org/", state: "running" });
   });
 
   it("folds three or more tool calls in a row", () => {

@@ -114,6 +114,21 @@ fn tool_title(title: &str, root: Option<&str>) -> String {
     }
 }
 
+/// The most of a Zwiim tool's input a live tool call carries.
+const TOOL_INPUT_CHARS: usize = 2_000;
+
+/// A live tool call's input as clients see it: only for Zwiim's own tools
+/// other than Git (which the Host titles itself), as JSON text cut to
+/// `TOOL_INPUT_CHARS`, so a running call can say what it acts on ("Go to
+/// https://…"). Every other tool's input stays inside, as before.
+fn tool_input(title: &str, input: Option<&str>) -> Option<String> {
+    if !git_tools::is_zwiim_tool_title(title) || git_tools::kind_of_title(title).is_some() {
+        return None;
+    }
+    let input = input?.trim();
+    (!input.is_empty()).then(|| input.chars().take(TOOL_INPUT_CHARS).collect())
+}
+
 /// A tool-call kind as clients see it: a Zwiim Git tool is never a shell
 /// command, whatever the agent files it under.
 fn tool_kind<'a>(kind: Option<&'a str>, title: Option<&str>) -> Option<&'a str> {
@@ -227,14 +242,14 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
         } => (
             "agent.tool_call",
             with_images(
-                with_subagent(with_parent(json!({
+                with_subagent(with_parent(with_input(json!({
                     "tool_call_id": tool_call_id,
                     "title": tool_title(title, root),
                     "kind": tool_kind(Some(kind.as_str()), Some(title)),
                     "status": status,
                     "content": content_opt(content)
                         .or_else(|| command_output(raw_output.as_deref(), root)),
-                }), tool_parent(meta.as_ref()).as_deref()),
+                }), tool_input(title, raw_input.as_deref())), tool_parent(meta.as_ref()).as_deref()),
                 launch(raw_input.as_deref(), meta.as_ref()).as_ref(), root),
                 root,
                 images.as_deref(),
@@ -255,13 +270,13 @@ fn project_event(event: &AcpEvent, root: Option<&str>) -> Option<(&'static str, 
         } => (
             "agent.tool_call_update",
             with_images(
-                with_subagent(with_parent(json!({
+                with_subagent(with_parent(with_input(json!({
                     "tool_call_id": tool_call_id,
                     "title": title.as_deref().map(|t| tool_title(t, root)),
                     "status": status,
                     "content": content_opt(content)
                         .or_else(|| command_output(raw_output.as_deref(), root)),
-                }), tool_parent(meta.as_ref()).as_deref()),
+                }), title.as_deref().and_then(|t| tool_input(t, raw_input.as_deref()))), tool_parent(meta.as_ref()).as_deref()),
                 launch(raw_input.as_deref(), meta.as_ref()).as_ref(), root),
                 root,
                 images.as_deref(),
@@ -757,7 +772,7 @@ fn tool_call(t: &ToolCallState, root: Option<&str>) -> Value {
         _ => None,
     };
     with_images(
-        with_subagent(with_parent(json!({
+        with_subagent(with_parent(with_input(json!({
             "tool_call_id": t.id,
             "title": tool_title(&t.label, root),
             "kind": match git_tools::kind_of_title(&t.label) {
@@ -766,7 +781,7 @@ fn tool_call(t: &ToolCallState, root: Option<&str>) -> Value {
             },
             "status": to_value(&t.status),
             "content": t.content.as_deref().map(|c| tool_content(c, root)).or(output),
-        }), t.parent_id.as_deref()), t.subagent.as_ref(), root),
+        }), tool_input(&t.label, t.input.as_ref().map(Value::to_string).as_deref())), t.parent_id.as_deref()), t.subagent.as_ref(), root),
         root,
         Some(&t.images),
         first_location(t.locations.as_ref()),
@@ -889,6 +904,15 @@ fn plain_model(model: &str) -> &str {
         (Some(at), true) => model[..at].trim_end(),
         _ => model,
     }
+}
+
+/// `v` with `input` set when the call's input crosses (`tool_input`); left
+/// out, never null, otherwise.
+fn with_input(mut v: Value, input: Option<String>) -> Value {
+    if let Some(input) = input {
+        v["input"] = json!(input);
+    }
+    v
 }
 
 /// `v` with `parent_id` set when it was made by a sub-agent; left out, never
@@ -1937,6 +1961,56 @@ pub(crate) mod tests {
         assert_eq!(tool_title("mcp__other__git_push", None), "mcp__other__git_push");
         assert_eq!(tool_title("mcp__zwiim-mcp__browser_open", None), "mcp__zwiim-mcp__browser_open");
         assert_eq!(tool_content(r#"{"op":"status"}"#, None), r#"{"op":"status"}"#);
+    }
+
+    #[test]
+    fn only_zwiims_own_tools_carry_their_input_live() {
+        let url = r#"{"tabId":"a","url":"https://example.com/"}"#;
+        assert_eq!(tool_input("mcp__zwiim-mcp__browser_navigate", Some(url)).as_deref(), Some(url));
+        assert_eq!(tool_input("mcp.zwiim_mcp.browser_navigate", Some(url)).as_deref(), Some(url));
+        // Other tools' input stays inside, and so does Git's: the Host titles it.
+        assert_eq!(tool_input("Bash", Some(r#"{"command":"ls"}"#)), None);
+        assert_eq!(tool_input("mcp__other__browser_navigate", Some(url)), None);
+        assert_eq!(tool_input("mcp__zwiim-mcp__git_commit", Some(r#"{"message":"m"}"#)), None);
+        assert_eq!(tool_input("mcp__zwiim-mcp__browser_list_tabs", Some(" ")), None);
+        let long = "x".repeat(TOOL_INPUT_CHARS + 10);
+        let cut = tool_input("mcp__zwiim-mcp__browser_eval", Some(&long)).unwrap();
+        assert_eq!(cut.chars().count(), TOOL_INPUT_CHARS);
+
+        let (_, live) = project_event(
+            &AcpEvent::ToolCall {
+                tool_call_id: "b1".into(),
+                title: "mcp__zwiim-mcp__browser_navigate".into(),
+                kind: "other".into(),
+                status: "pending".into(),
+                content: None,
+                raw_input: Some(url.into()),
+                raw_output: None,
+                locations: None,
+                meta: None,
+                images: None,
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(live["input"], url);
+        let (_, other) = project_event(
+            &AcpEvent::ToolCall {
+                tool_call_id: "c1".into(),
+                title: "Bash".into(),
+                kind: "execute".into(),
+                status: "pending".into(),
+                content: None,
+                raw_input: Some(r#"{"command":"ls"}"#.into()),
+                raw_output: None,
+                locations: None,
+                meta: None,
+                images: None,
+            },
+            None,
+        )
+        .unwrap();
+        assert!(other.get("input").is_none());
     }
 
     #[test]

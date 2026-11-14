@@ -462,7 +462,10 @@ async fn async_main() -> Exit {
             zwiim_host::workspace::clone::RETENTION,
         )),
            keep_awake: Default::default(),
+           downloads: zwiim_host::downloads::global(),
         github_auth: Default::default(),
+        browser: Default::default(),
+        browser_streams: Default::default(),
     });
 
     // Load (first boot: mint) the host's identity keys off the startup path.
@@ -542,14 +545,15 @@ async fn async_main() -> Exit {
         &chat_authoring_config,
     )
     .await;
-    // And the browser-tools switch, so the popover reports it truthfully.
-    // Server mode never advertises the group (there are no native tabs here),
-    // but the flag is one setting shared by both runtimes.
-    zwiim_host::commands::browser_tools::apply_persisted_browser_tools_config(
-        &state.db.conn,
-        &state.browser_tools_config,
-    )
-    .await;
+    // The browser tools are on: an agent reaches only its own session's
+    // tabs, which need no one's leave (design 10.1). `browser_eval` stays off.
+    state
+        .browser_tools_config
+        .set(zwiim_host::acp::browser_tools::BrowserToolsConfig {
+            enabled: true,
+            eval: false,
+        })
+        .await;
     // Before accepting connections: keep ACP model terminal fallbacks aligned
     // with the same default-shell preference the built-in terminal uses, and
     // seed the command-color opt-in that every launch env is built from.
@@ -591,10 +595,7 @@ async fn async_main() -> Exit {
                 state.emitter.clone(),
                 chat_authoring_config.clone(),
             )),
-            // No native webviews in this process: what a web user sees in a
-            // "browser tab" is an iframe their own browser renders, which
-            // nothing here can reach.
-            Arc::new(zwiim_host::acp::browser_tools::NoBrowserTabs),
+            Arc::new(zwiim_host::browser::tools::HostBrowserTools::new(&state)),
             Arc::new(zwiim_host::acp::git_tools::HostGitTools {
                 manager: Arc::new(state.connection_manager.clone_ref()),
                 db: Arc::new(zwiim_host::db::AppDatabase {
@@ -650,6 +651,19 @@ async fn async_main() -> Exit {
     // `ZWIIM_ACP_IDLE_TIMEOUT_SECS=0` disables idle disconnects, not disk
     // reclamation.
     tokio::spawn(zwiim_host::scratch_sweep_task());
+
+    // A session's browser tab follows the dev server it starts (browser
+    // design 10.5). The browser service is made only when one is found.
+    {
+        let state = state.clone();
+        tokio::spawn(zwiim_host::browser::dev_servers::follow(
+            state.db.conn.clone(),
+            move || {
+                let state = state.clone();
+                async move { state.browser().await.ok() }
+            },
+        ));
+    }
 
     // Config-sync uploader (mirrors lib.rs setup): sleeps a minute, then
     // compares the configuration's hash every interval and uploads only when

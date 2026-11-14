@@ -264,7 +264,8 @@ impl CompanionFeatures {
             "browser_list_tabs" | "browser_snapshot" | "browser_console_messages"
             | "browser_screenshot" | "browser_click" | "browser_hover" | "browser_type"
             | "browser_press_key" | "browser_select_option" | "browser_open_tab"
-            | "browser_navigate" | "browser_close_tab" => self.browser,
+            | "browser_navigate" | "browser_close_tab" | "browser_wait_for"
+            | "browser_set_permissions" | "browser_network_log" => self.browser,
             // Both, so a `--features browser_eval` with no `browser` — a
             // parent bug, or someone editing the agent's MCP config by hand —
             // cannot leave the strongest tool as the only one present.
@@ -431,17 +432,23 @@ pub async fn dispatch_line(
 
     let id = req.id.expect("checked is_none");
     match req.method.as_str() {
-        "initialize" => LineAction::Respond(ok(
-            id,
-            json!({
+        "initialize" => {
+            let mut result = json!({
                 "protocolVersion": "2024-11-05",
                 "serverInfo": {
                     "name": "zwiim-mcp",
                     "version": env!("CARGO_PKG_VERSION"),
                 },
                 "capabilities": { "tools": {} },
-            }),
-        )),
+            });
+            // Told to every agent that connects, not only those that take
+            // Zwiim's session instructions, so any of them prefers the
+            // browser the user can watch.
+            if ctx.features.browser {
+                result["instructions"] = json!(crate::harness::BROWSER_LINES.join("\n"));
+            }
+            LineAction::Respond(ok(id, result))
+        }
         "tools/list" => {
             // The embedded schema is a JSON array of every tool the companion
             // can carry; filter to the groups enabled for this launch so a
@@ -776,6 +783,11 @@ async fn build_tools_call_spawn(
                 token: ctx.token.clone(),
                 tab_id,
                 max_chars: parse_max_chars(&arguments),
+                changes_only: arguments
+                    .get("changesOnly")
+                    .or_else(|| arguments.get("changes_only"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
             };
             // No external_handle, and no broker-side cancel: dropping this
             // round-trip only suppresses the answer. The read itself finishes
@@ -856,7 +868,8 @@ async fn build_tools_call_spawn(
                 Box::pin(async move { client_browser_eval_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_browser_eval_result).await
         }
-        "browser_open_tab" | "browser_navigate" | "browser_close_tab" => {
+        "browser_open_tab" | "browser_navigate" | "browser_close_tab" | "browser_wait_for"
+        | "browser_set_permissions" | "browser_network_log" => {
             let op = match browser_tab_op(name.as_str(), &arguments) {
                 Ok(parsed) => parsed,
                 Err(msg) => return LineAction::Respond(err(id, -32602, msg)),
@@ -1761,6 +1774,7 @@ pub fn browser_action_request(
             generation,
             target,
             action,
+            expect_url: text("expectUrl"),
         },
     ))
 }
@@ -1987,7 +2001,89 @@ pub fn browser_tab_op(
         "browser_close_tab" => Ok(BrowserTabOp::Close {
             tab_id: text("tabId")?,
         }),
+        "browser_set_permissions" => {
+            let tab_id = text("tabId")?;
+            let known = crate::browser::service::PERMISSIONS;
+            let grant = match arguments.get("grant") {
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|v| match v.as_str() {
+                        Some(p) if known.contains(&p) => Ok(p.to_string()),
+                        _ => Err(format!(
+                            "{name}: each of `grant` must be one of {}",
+                            known.join(", ")
+                        )),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                _ => return Err(format!("{name} requires `grant`, a list (empty to deny all)")),
+            };
+            Ok(BrowserTabOp::Permissions { tab_id, grant })
+        }
+        "browser_wait_for" => {
+            let tab_id = text("tabId")?;
+            let (text, selector) = match (arguments.get("text"), arguments.get("selector")) {
+                (Some(_), None) => (Some(self::text_arg(arguments, "text", name)?), None),
+                (None, Some(_)) => (None, Some(self::text_arg(arguments, "selector", name)?)),
+                _ => return Err(format!("{name} takes exactly one of `text` and `selector`")),
+            };
+            let gone = match arguments.get("gone") {
+                None => false,
+                Some(Value::Bool(b)) => *b,
+                Some(_) => return Err(format!("{name}: `gone` must be true or false")),
+            };
+            let timeout_ms = match arguments.get("timeoutMs") {
+                None => None,
+                Some(v) => match v.as_u64() {
+                    Some(n) if (1..=60_000).contains(&n) => Some(n),
+                    _ => return Err(format!("{name}: `timeoutMs` must be a whole number from 1 to 60000")),
+                },
+            };
+            Ok(BrowserTabOp::Wait {
+                tab_id,
+                text,
+                selector,
+                gone,
+                timeout_ms,
+            })
+        }
+        "browser_network_log" => {
+            let tab_id = text("tabId")?;
+            let flag = |key: &str| match arguments.get(key) {
+                None => Ok(false),
+                Some(Value::Bool(b)) => Ok(*b),
+                Some(_) => Err(format!("{name}: `{key}` must be true or false")),
+            };
+            let since = match arguments.get("since") {
+                None => 0,
+                Some(v) => v
+                    .as_u64()
+                    .ok_or_else(|| format!("{name}: `since` must be a whole number"))?,
+            };
+            let filter = match arguments.get("filter") {
+                None => None,
+                Some(_) => Some(self::text_arg(arguments, "filter", name)?),
+            };
+            Ok(BrowserTabOp::Network {
+                tab_id,
+                query: crate::browser::network::NetworkQuery {
+                    since,
+                    filter,
+                    failed_only: flag("failedOnly")?,
+                    limit: None,
+                },
+                har: flag("har")?,
+            })
+        }
         other => Err(format!("unknown browser tab tool {other}")),
+    }
+}
+
+/// A non-empty string argument, kept as written: `browser_wait_for` text may
+/// need its spaces.
+fn text_arg(arguments: &Value, key: &str, name: &str) -> Result<String, String> {
+    match arguments.get(key) {
+        Some(Value::String(s)) if !s.is_empty() => Ok(s.clone()),
+        _ => Err(format!("{name}: `{key}` must be a non-empty string")),
     }
 }
 
@@ -2001,6 +2097,13 @@ pub fn browser_tab_op(
 /// it may not it has to ask the user about. Saying only "opened" would leave
 /// it to find that out by being refused.
 pub fn render_browser_tab_op_result(outcome: &Value) -> Value {
+    if let Some(network) = outcome.get("network").filter(|n| n.is_object()) {
+        return json!({
+            "content": [{ "type": "text", "text": network_text(network) }],
+            "structuredContent": outcome,
+            "isError": false,
+        });
+    }
     let text = match outcome.get("tab") {
         Some(tab) if tab.is_object() => {
             let id = tab.get("tabId").and_then(Value::as_str).unwrap_or("?");
@@ -2031,7 +2134,7 @@ pub fn render_browser_tab_op_result(outcome: &Value) -> Value {
                 out.push_str(&format!(" — {title}"));
             }
             out.push_str(match level {
-                "control" => ". It is shared with you for reading and acting.",
+                "control" => ". You can read it and act on it.",
                 "read" => {
                     ". It is shared with you for reading; acting on it needs the user to allow \
                      actions."
@@ -2041,6 +2144,10 @@ pub fn render_browser_tab_op_result(outcome: &Value) -> Value {
                      that tab and presses \"Share with agents\" in its toolbar."
                 }
             });
+            if let Some(note) = outcome.get("note").and_then(Value::as_str) {
+                out.push(' ');
+                out.push_str(note);
+            }
             out
         }
         _ => outcome
@@ -2054,6 +2161,65 @@ pub fn render_browser_tab_op_result(outcome: &Value) -> Value {
         "structuredContent": outcome,
         "isError": false,
     })
+}
+
+/// A `browser_network_log` readout (a serialized
+/// [`crate::browser::network::NetworkReadout`]), one request a line.
+fn network_text(network: &Value) -> String {
+    let entries = network
+        .get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let url = network.get("url").and_then(Value::as_str).unwrap_or("");
+    let mut out = if entries.is_empty() {
+        format!("No requests to show for the page at {url}.")
+    } else {
+        format!(
+            "Requests of the page at {url} ({}), oldest first:\n",
+            entries.len()
+        )
+    };
+    for e in &entries {
+        let s = |k: &str| e.get(k).and_then(Value::as_str).unwrap_or("");
+        let n = |k: &str| e.get(k).and_then(Value::as_u64);
+        let outcome = match (s("error"), n("status")) {
+            ("", Some(status)) => status.to_string(),
+            ("", None) => "pending".to_string(),
+            (error, _) => format!("failed: {error}"),
+        };
+        out.push_str(&format!(
+            "  #{} {} {} [{}] {}",
+            n("seq").unwrap_or(0),
+            s("method"),
+            s("url"),
+            s("type"),
+            outcome
+        ));
+        if let Some(ms) = n("durationMs") {
+            out.push_str(&format!(" {ms}ms"));
+        }
+        if let Some(size) = n("size") {
+            out.push_str(&format!(" {size}B"));
+        }
+        out.push('\n');
+    }
+    if let Some(omitted) = network
+        .get("omitted")
+        .and_then(Value::as_u64)
+        .filter(|n| *n > 0)
+    {
+        out.push_str(&format!("{omitted} older requests left out.\n"));
+    }
+    if let Some(next) = network.get("nextSince").and_then(Value::as_u64) {
+        out.push_str(&format!("Pass since: {next} to see only newer requests."));
+    }
+    if let Some(har) = network.get("har").and_then(Value::as_str) {
+        out.push_str(&format!(
+            " HAR written to {har} (cookies and credentials removed)."
+        ));
+    }
+    out
 }
 
 /// Map a `browser_eval` round-trip outcome (a serialized
@@ -2285,6 +2451,55 @@ fn scroll_note(scrolled: Option<&Value>) -> String {
     format!(" Scrolled {direction} {:.0}px{where_now}.", by.abs())
 }
 
+/// What an action caused (a serialized
+/// [`crate::acp::browser_tools::ActionEffects`]), as sentences; empty when
+/// it caused nothing.
+fn effects_note(effects: Option<&Value>) -> String {
+    let Some(effects) = effects else {
+        return String::new();
+    };
+    let list = |key: &str| -> Vec<String> {
+        effects
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut out = String::new();
+    if let Some(url) = effects.get("navigated").and_then(Value::as_str) {
+        out.push_str(&format!(" It went to {url}; refs from before are stale."));
+    }
+    let opened = list("openedTabs");
+    if !opened.is_empty() {
+        out.push_str(&format!(" It opened tab {}.", opened.join(", ")));
+    }
+    let downloads = list("downloads");
+    if !downloads.is_empty() {
+        out.push_str(&format!(" It began downloading {}.", downloads.join(", ")));
+    }
+    for dialog in list("dialogs") {
+        out.push_str(&format!(" The page asked the person: {dialog}."));
+    }
+    for refused in list("refused") {
+        out.push_str(&format!(" A page load was refused: {refused}."));
+    }
+    let errors = list("errors");
+    if !errors.is_empty() {
+        out.push_str(" The page logged errors:");
+        for error in errors {
+            out.push_str(&format!("\n  {error}"));
+        }
+        out.push('\n');
+    }
+    out
+}
+
 /// Map an action tool's round-trip outcome (a serialized
 /// [`crate::acp::browser_tools::BrowserActOutcome`]) into an MCP `tools/call`
 /// result.
@@ -2305,9 +2520,10 @@ pub fn render_browser_act_result(outcome: &Value) -> Value {
                 _ => "as events dispatched by script (synthetic)",
             };
             format!(
-                "Done, {how}.{} The page was at {url}. Take a browser_snapshot to see what came \
-                 of it.",
+                "Done, {how}.{} The page was at {url}.{} Take a browser_snapshot to see what \
+                 came of it.",
                 scroll_note(action.get("scrolled")),
+                effects_note(outcome.get("effects")),
             )
         }
         _ => outcome
@@ -2421,8 +2637,24 @@ pub fn render_browser_snapshot_result(outcome: &Value) -> Value {
                      replaced the ones from any earlier snapshot of this tab.\n",
                 );
             }
+            let since = snapshot.get("changesSince").and_then(|v| v.as_str());
+            if let Some(since) = since {
+                // The refs did not move: the page is the same document, and
+                // the engine keeps an element's ref while it lives. Only the
+                // generation to quote is new.
+                out.push_str(&format!(
+                    "Only what changed since snapshot {since}: `+ ` lines are new, `- ` lines \
+                     are gone, unmarked lines are the parents they sit under. Refs from that \
+                     snapshot that are not gone still work; quote this snapshot's generation \
+                     with them.\n"
+                ));
+            }
             out.push('\n');
-            out.push_str(s("tree"));
+            if since.is_some() && s("tree").is_empty() {
+                out.push_str("Nothing on the page changed.");
+            } else {
+                out.push_str(s("tree"));
+            }
             out
         }
         _ => outcome
@@ -2687,6 +2919,22 @@ mod tests {
         let result = resp.result.unwrap();
         assert_eq!(result["protocolVersion"], "2024-11-05");
         assert_eq!(result["serverInfo"]["name"], "zwiim-mcp");
+    }
+
+    #[tokio::test]
+    async fn an_agent_with_the_browser_tools_is_told_to_use_them_when_it_connects() {
+        let line = r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#;
+        let plain = unwrap_respond(dispatch_for_test(line).await)
+            .result
+            .unwrap();
+        assert!(plain.get("instructions").is_none());
+        let browser = unwrap_respond(dispatch_with_features(BROWSER_ONLY, line).await)
+            .result
+            .unwrap();
+        let text = browser["instructions"].as_str().unwrap();
+        for line in crate::harness::BROWSER_LINES {
+            assert!(text.contains(line), "{line}");
+        }
     }
 
     #[tokio::test]
@@ -4277,6 +4525,9 @@ mod tests {
                 "browser_type".to_string(),
                 "browser_press_key".to_string(),
                 "browser_select_option".to_string(),
+                "browser_wait_for".to_string(),
+                "browser_set_permissions".to_string(),
+                "browser_network_log".to_string(),
             ]
         );
         // The strongest tool in the group is not in the group: sharing the
@@ -4722,9 +4973,40 @@ mod tests {
             }
         );
         assert_eq!(
+            browser_tab_op(
+                "browser_network_log",
+                &json!({ "tabId": "t1", "since": 4, "filter": "/api/", "failedOnly": true, "har": true })
+            )
+            .unwrap(),
+            BrowserTabOp::Network {
+                tab_id: "t1".into(),
+                query: crate::browser::network::NetworkQuery {
+                    since: 4,
+                    filter: Some("/api/".into()),
+                    failed_only: true,
+                    limit: None,
+                },
+                har: true,
+            }
+        );
+        assert_eq!(
             browser_tab_op("browser_close_tab", &json!({ "tabId": "t1" })).unwrap(),
             BrowserTabOp::Close {
                 tab_id: "t1".into()
+            }
+        );
+        assert_eq!(
+            browser_tab_op(
+                "browser_wait_for",
+                &json!({ "tabId": "t1", "text": "Built in ", "gone": true, "timeoutMs": 500 })
+            )
+            .unwrap(),
+            BrowserTabOp::Wait {
+                tab_id: "t1".into(),
+                text: Some("Built in ".into()),
+                selector: None,
+                gone: true,
+                timeout_ms: Some(500),
             }
         );
 
@@ -4735,6 +5017,37 @@ mod tests {
             ("browser_navigate", json!({ "url": "https://x.test/" }), "`tabId`"),
             ("browser_navigate", json!({ "tabId": "t1" }), "`url`"),
             ("browser_close_tab", json!({}), "`tabId`"),
+            ("browser_wait_for", json!({ "tabId": "t1" }), "exactly one"),
+            (
+                "browser_set_permissions",
+                json!({ "tabId": "t1" }),
+                "`grant`",
+            ),
+            (
+                "browser_set_permissions",
+                json!({ "tabId": "t1", "grant": ["usb"] }),
+                "one of",
+            ),
+            (
+                "browser_wait_for",
+                json!({ "tabId": "t1", "text": "a", "selector": "b" }),
+                "exactly one",
+            ),
+            (
+                "browser_wait_for",
+                json!({ "tabId": "t1", "text": "a", "timeoutMs": 0 }),
+                "`timeoutMs`",
+            ),
+            (
+                "browser_network_log",
+                json!({ "tabId": "t1", "since": -1 }),
+                "`since`",
+            ),
+            (
+                "browser_network_log",
+                json!({ "tabId": "t1", "har": "yes" }),
+                "`har`",
+            ),
         ] {
             let err = browser_tab_op(name, &args).unwrap_err();
             assert!(err.contains(wanted), "{name}: {err}");
@@ -4799,6 +5112,73 @@ mod tests {
         let e = resp.error.unwrap();
         assert_eq!(e.code, -32602);
         assert!(e.message.contains("`ref`"));
+    }
+
+    #[test]
+    fn a_network_log_lists_each_request_and_where_the_har_went() {
+        let result = render_browser_tab_op_result(&json!({
+            "tabId": "t1",
+            "network": {
+                "url": "http://localhost:3000/",
+                "entries": [
+                    { "seq": 3, "method": "POST", "url": "http://localhost:3000/api/orders", "type": "Fetch",
+                      "status": 500, "started": 0, "durationMs": 42, "size": 120 },
+                    { "seq": 4, "method": "GET", "url": "http://localhost:3000/app.js", "type": "Script",
+                      "started": 0, "error": "net::ERR_ABORTED" }
+                ],
+                "omitted": 7, "dropped": 0, "nextSince": 4, "har": "/w/.zwiim/browser/s/network.har"
+            }
+        }));
+        let text = result["content"][0]["text"].as_str().unwrap();
+        for said in [
+            "#3 POST http://localhost:3000/api/orders [Fetch] 500 42ms 120B",
+            "failed: net::ERR_ABORTED",
+            "7 older requests",
+            "since: 4",
+            "/w/.zwiim/browser/s/network.har",
+        ] {
+            assert!(text.contains(said), "{said}: {text}");
+        }
+    }
+
+    #[test]
+    fn an_action_takes_the_address_it_expects() {
+        let args = json!({ "tabId": "t1", "generation": "g.3.1", "ref": "e7", "expectUrl": "http://localhost:3000/a" });
+        let (_, request) = browser_action_request("browser_click", &args).unwrap();
+        assert_eq!(
+            request.expect_url.as_deref(),
+            Some("http://localhost:3000/a")
+        );
+        let args = json!({ "tabId": "t1", "generation": "g.3.1", "ref": "e7" });
+        let (_, request) = browser_action_request("browser_click", &args).unwrap();
+        assert_eq!(request.expect_url, None);
+    }
+
+    #[test]
+    fn an_action_result_tells_what_the_action_caused() {
+        let done = render_browser_act_result(&json!({
+            "tabId": "t1",
+            "action": { "fidelity": "trusted", "url": "http://localhost:3000/" },
+            "effects": {
+                "navigated": "http://localhost:3000/orders",
+                "openedTabs": ["t9"],
+                "downloads": ["report.pdf"],
+                "dialogs": ["confirm: Delete it?"],
+                "errors": ["TypeError: x is undefined"],
+                "refused": ["https://other.test/ (not on the list)"]
+            }
+        }));
+        let text = done["content"][0]["text"].as_str().unwrap();
+        for said in [
+            "went to http://localhost:3000/orders",
+            "opened tab t9",
+            "downloading report.pdf",
+            "confirm: Delete it?",
+            "TypeError: x is undefined",
+            "refused: https://other.test/ (not on the list)",
+        ] {
+            assert!(text.contains(said), "{said}: {text}");
+        }
     }
 
     #[test]
@@ -5024,6 +5404,32 @@ mod tests {
         assert_eq!(refused["isError"], false);
     }
 
+    #[test]
+    fn a_snapshot_of_changes_says_so_and_an_unchanged_page_says_nothing_changed() {
+        let changes = |tree: &str| {
+            let page = render_browser_snapshot_result(&json!({
+                "tabId": "t1",
+                "snapshot": {
+                    "generation": "w.2.3.0",
+                    "url": "https://example.com/",
+                    "title": "Example",
+                    "viewport": { "width": 1280.0, "height": 800.0, "dpr": 2.0 },
+                    "tree": tree,
+                    "refsCount": 4,
+                    "truncated": false,
+                    "changesSince": "w.1.3.0"
+                }
+            }));
+            page["content"][0]["text"].as_str().unwrap().to_string()
+        };
+        let text = changes("+ - status [ref=e9]: Saved");
+        assert!(
+            text.contains("Only what changed since snapshot w.1.3.0"),
+            "{text}"
+        );
+        assert!(text.ends_with("+ - status [ref=e9]: Saved"), "{text}");
+        assert!(changes("").ends_with("Nothing on the page changed."));
+    }
 
     // ── git tools ──────────────────────────────────────────────────────────
 

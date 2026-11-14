@@ -21,6 +21,7 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::hub::{client_key, PerMinute};
 use crate::server::{router, Cloud, Config};
+use crate::usage::{Usage, SYNC_INTERVAL};
 
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -56,14 +57,18 @@ pub struct Running {
     pub addr: SocketAddr,
     stop: watch::Sender<bool>,
     task: JoinHandle<()>,
+    usage_task: JoinHandle<()>,
+    #[cfg(test)]
+    pub(crate) usage: Arc<Usage>,
 }
 
 impl Running {
-    /// Stop accepting, end every control and relay socket, and release the
-    /// port.
+    /// Stop accepting, end every control and relay socket, release the
+    /// port, and send the last usage counts.
     pub async fn stop(self) {
         let _ = self.stop.send(true);
         let _ = self.task.await;
+        let _ = self.usage_task.await;
     }
 }
 
@@ -81,10 +86,19 @@ pub fn start(
     let slots = Arc::new(Semaphore::new(config.limits.max_connections));
     let clients = PerMinute::new(config.limits.max_connects_per_ip);
     let cloud = Cloud::new(config, shutdown.clone())?;
+    let usage: Arc<Usage> = cloud.usage();
+    let usage_task = tokio::spawn(usage.clone().run(SYNC_INTERVAL, shutdown.clone()));
     let app = router(cloud);
     let tls = tls.map(TlsAcceptor::from);
     let task = tokio::spawn(accept_loop(listener, tls, app, slots, clients, shutdown));
-    Ok(Running { addr, stop, task })
+    Ok(Running {
+        addr,
+        stop,
+        task,
+        usage_task,
+        #[cfg(test)]
+        usage,
+    })
 }
 
 async fn accept_loop(

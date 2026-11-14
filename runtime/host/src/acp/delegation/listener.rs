@@ -872,14 +872,13 @@ impl DelegationListener {
     /// cannot prove it is a companion learns nothing, not even whether the
     /// user has any tabs open.
     ///
-    /// Not scoped to the caller's parent connection, for the reason spelled
-    /// out on [`BrokerBrowserTabsRequest`]: tabs belong to the user, and what
-    /// an agent may read of one is the per-tab grant.
+    /// Every browser arm passes the token's parent connection on: which tabs
+    /// an agent may see and touch follows from the session it is in.
     async fn process_browser_tabs(&self, req: BrokerBrowserTabsRequest) -> BrowserTabsOutcome {
-        if self.tokens.lookup(&req.token).await.is_none() {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
             return BrowserTabsOutcome::default();
-        }
-        self.browser.list_tabs().await
+        };
+        self.browser.list_tabs(&entry.parent_connection_id).await
     }
 
     /// Validate the token and read one shared page.
@@ -891,28 +890,37 @@ impl DelegationListener {
         &self,
         req: BrokerBrowserSnapshotRequest,
     ) -> BrowserSnapshotOutcome {
-        if self.tokens.lookup(&req.token).await.is_none() {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
             return BrowserSnapshotOutcome::refused(
                 &req.tab_id,
                 ERROR_NO_SUCH_TAB,
                 format!("No browser tab {} is open.", req.tab_id),
             );
-        }
-        self.browser.snapshot(&req.tab_id, req.max_chars).await
+        };
+        self.browser
+            .snapshot(
+                &entry.parent_connection_id,
+                &req.tab_id,
+                req.max_chars,
+                req.changes_only,
+            )
+            .await
     }
 
     /// Validate the token and act on one shared page. An invalid token gets
     /// the same "no such tab" a wrong id gets, for the reason given on
     /// [`Self::process_browser_snapshot`].
     async fn process_browser_act(&self, req: BrokerBrowserActRequest) -> BrowserActOutcome {
-        if self.tokens.lookup(&req.token).await.is_none() {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
             return BrowserActOutcome::refused(
                 &req.tab_id,
                 ERROR_NO_SUCH_TAB,
                 format!("No browser tab {} is open.", req.tab_id),
             );
-        }
-        self.browser.act(&req.tab_id, req.request).await
+        };
+        self.browser
+            .act(&entry.parent_connection_id, &req.tab_id, req.request)
+            .await
     }
 
     /// Validate the token and read one shared page's console; an invalid
@@ -921,14 +929,16 @@ impl DelegationListener {
         &self,
         req: BrokerBrowserConsoleRequest,
     ) -> BrowserConsoleOutcome {
-        if self.tokens.lookup(&req.token).await.is_none() {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
             return BrowserConsoleOutcome::refused(
                 &req.tab_id,
                 ERROR_NO_SUCH_TAB,
                 format!("No browser tab {} is open.", req.tab_id),
             );
-        }
-        self.browser.console(&req.tab_id, req.query).await
+        };
+        self.browser
+            .console(&entry.parent_connection_id, &req.tab_id, req.query)
+            .await
     }
 
     /// Validate the token and capture one shared page; an invalid token gets
@@ -937,14 +947,16 @@ impl DelegationListener {
         &self,
         req: BrokerBrowserCaptureRequest,
     ) -> BrowserCaptureOutcome {
-        if self.tokens.lookup(&req.token).await.is_none() {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
             return BrowserCaptureOutcome::refused(
                 &req.tab_id,
                 ERROR_NO_SUCH_TAB,
                 format!("No browser tab {} is open.", req.tab_id),
             );
-        }
-        self.browser.capture(&req.tab_id, req.request).await
+        };
+        self.browser
+            .capture(&entry.parent_connection_id, &req.tab_id, req.request)
+            .await
     }
 
     /// Validate the token and run one snippet on one shared page; an invalid
@@ -955,14 +967,16 @@ impl DelegationListener {
     /// a caller with no standing must not be able to put a question in front
     /// of the user at all.
     async fn process_browser_eval(&self, req: BrokerBrowserEvalRequest) -> BrowserEvalOutcome {
-        if self.tokens.lookup(&req.token).await.is_none() {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
             return BrowserEvalOutcome::refused(
                 &req.tab_id,
                 ERROR_NO_SUCH_TAB,
                 format!("No browser tab {} is open.", req.tab_id),
             );
-        }
-        self.browser.eval(&req.tab_id, req.request).await
+        };
+        self.browser
+            .eval(&entry.parent_connection_id, &req.tab_id, req.request)
+            .await
     }
 
     /// Validate the token and open / navigate / close one tab.
@@ -974,7 +988,7 @@ impl DelegationListener {
     /// which reveals nothing either, being what a session with the browser
     /// switched off also hears.
     async fn process_browser_tab_op(&self, req: BrokerBrowserTabOpRequest) -> BrowserTabOutcome {
-        if self.tokens.lookup(&req.token).await.is_none() {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
             let tab_id = req.op.tab_id();
             return BrowserTabOutcome::refused(
                 tab_id,
@@ -984,8 +998,10 @@ impl DelegationListener {
                     None => crate::acp::browser_tools::NO_BROWSER_NOTE.to_string(),
                 },
             );
-        }
-        self.browser.tab_op(req.op).await
+        };
+        self.browser
+            .tab_op(&entry.parent_connection_id, req.op)
+            .await
     }
 
     /// Validate the token and run one Git tool call for its parent connection.
@@ -1660,7 +1676,7 @@ mod tests {
     }
     #[async_trait]
     impl BrowserToolAccess for StubBrowser {
-        async fn list_tabs(&self) -> BrowserTabsOutcome {
+        async fn list_tabs(&self, _caller: &str) -> BrowserTabsOutcome {
             self.calls.lock().await.push("list".into());
             BrowserTabsOutcome {
                 tabs: vec![crate::browser::agent::AgentTabSummary {
@@ -1674,8 +1690,10 @@ mod tests {
         }
         async fn snapshot(
             &self,
+            _caller: &str,
             tab_id: &str,
             max_chars: Option<usize>,
+            _changes_only: bool,
         ) -> BrowserSnapshotOutcome {
             self.calls
                 .lock()
@@ -1685,6 +1703,7 @@ mod tests {
         }
         async fn eval(
             &self,
+            _caller: &str,
             tab_id: &str,
             request: crate::browser::eval::EvalRequest,
         ) -> BrowserEvalOutcome {
@@ -1696,6 +1715,7 @@ mod tests {
         }
         async fn console(
             &self,
+            _caller: &str,
             tab_id: &str,
             query: crate::browser::console::ConsoleQuery,
         ) -> BrowserConsoleOutcome {
@@ -1707,6 +1727,7 @@ mod tests {
         }
         async fn capture(
             &self,
+            _caller: &str,
             tab_id: &str,
             request: crate::browser::capture::CaptureRequest,
         ) -> BrowserCaptureOutcome {
@@ -1720,6 +1741,7 @@ mod tests {
         }
         async fn act(
             &self,
+            _caller: &str,
             tab_id: &str,
             request: crate::browser::agent::ActionRequest,
         ) -> BrowserActOutcome {
@@ -1732,6 +1754,7 @@ mod tests {
         }
         async fn tab_op(
             &self,
+            _caller: &str,
             op: crate::acp::browser_tools::BrowserTabOp,
         ) -> BrowserTabOutcome {
             self.calls
@@ -3381,6 +3404,7 @@ mod tests {
                 token: "tok".into(),
                 tab_id: "t9".into(),
                 max_chars: Some(1234),
+                changes_only: false,
             }),
         )
         .await;
@@ -3417,6 +3441,7 @@ mod tests {
                         text: "Ada".into(),
                         submit: true,
                     },
+                    expect_url: None,
                 },
             }),
         )
@@ -3574,6 +3599,7 @@ mod tests {
                 token: "not-a-token".into(),
                 tab_id: "t1".into(),
                 max_chars: None,
+                changes_only: false,
             }),
         )
         .await;
@@ -3591,6 +3617,7 @@ mod tests {
                     generation: "g".into(),
                     target: Some("e1".into()),
                     action: crate::browser::agent::ActionKind::Hover,
+                    expect_url: None,
                 },
             }),
         )

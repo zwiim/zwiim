@@ -16,17 +16,17 @@
 //! label for the badge that stands in for it in the composer.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use tauri::Url;
+use serde_json::{json, Value};
+use url::Url;
 
 use super::capture::{CaptureOutcome, CaptureRegion};
 use super::console::{ConsoleEntry, ConsoleLevel};
 
-/// The element picker (`src/browser-injected/picker.js`), evaluated into a
+/// The element picker (`resources/browser-injected/picker.js`), evaluated into a
 /// tab's isolated world when a person starts a pick and gone with the
 /// document. Never a document-start script: a page nobody picks on should not
 /// pay to parse it, and a navigation mid-pick should end the pick.
-pub const PICKER_JS: &str = include_str!("../../../src/browser-injected/picker.js");
+pub const PICKER_JS: &str = include_str!("../../resources/browser-injected/picker.js");
 
 /// Name the picker publishes in the isolated world.
 pub const PICKER_GLOBAL: &str = "__zwiimPicker";
@@ -110,6 +110,112 @@ pub fn stop_pick_call(token: &str) -> String {
          globalThis.{PICKER_GLOBAL}.stop({token})",
         token = Value::from(token),
     )
+}
+
+/// The picker reports through `__zwiimSend`. In the Host browser that is an
+/// inbox in the same isolated world, which the Host empties with
+/// [`wait_for_pick`]; installed with the picker, so a page nobody picks on
+/// has neither.
+const PICK_INBOX: &str = "(function(){\
+if (typeof globalThis.__zwiimSend === 'function') return;\
+var inbox = [];\
+globalThis.__zwiimPickInbox = inbox;\
+globalThis.__zwiimSend = function (m) {\
+var wake = globalThis.__zwiimPickWake;\
+if (wake) { globalThis.__zwiimPickWake = null; wake(m); return; }\
+if (inbox.length >= 4) inbox.shift();\
+inbox.push(m);\
+};\
+})();";
+
+/// How long one [`wait_for_pick`] waits before answering `""`, so the Host
+/// can stop waiting without leaving a promise behind.
+pub const PICK_WAIT_MS: u64 = 20_000;
+
+/// Install the inbox and the picker where they are missing, and arm it for
+/// pick `token`, in one evaluation in the tab's isolated world.
+pub fn arm_pick(token: &str) -> String {
+    format!(
+        "(function(){{\n{PICK_INBOX}\nif (typeof globalThis.{PICKER_GLOBAL} === 'undefined') {{\n{PICKER_JS}\n}}\nreturn {call};}})()",
+        call = pick_call(token),
+    )
+}
+
+/// The picker's next report, as the envelope string it sent, or `""` after
+/// [`PICK_WAIT_MS`] with nothing. Evaluated with `awaitPromise`; a later
+/// wait takes over from an earlier one, which then answers `""`.
+pub fn wait_for_pick() -> String {
+    format!(
+        "new Promise(function (resolve) {{\
+var inbox = globalThis.__zwiimPickInbox || [];\
+if (inbox.length) {{ resolve(inbox.shift()); return; }}\
+var previous = globalThis.__zwiimPickWake;\
+if (previous) previous('');\
+globalThis.__zwiimPickWake = resolve;\
+setTimeout(function () {{\
+if (globalThis.__zwiimPickWake === resolve) {{ globalThis.__zwiimPickWake = null; resolve(''); }}\
+}}, {PICK_WAIT_MS});\
+}})"
+    )
+}
+
+/// Put pick `token` away and report it cancelled, so whoever waits on it
+/// stops waiting.
+pub fn cancel_pick(token: &str) -> String {
+    let cancelled = Value::from(
+        json!({"kind": "pick", "payload": {"id": token, "cancelled": true}}).to_string(),
+    );
+    format!(
+        "(function(){{var r = {stop};\
+if (typeof globalThis.__zwiimSend === 'function') globalThis.__zwiimSend({cancelled});\
+return r;}})()",
+        stop = stop_pick_call(token),
+    )
+}
+
+/// The pick in one envelope [`wait_for_pick`] answered with; `None` for
+/// anything else.
+pub fn pick_from_envelope(raw: &str) -> Option<PickReport> {
+    let envelope: Value = serde_json::from_str(raw).ok()?;
+    if envelope.get("kind").and_then(Value::as_str) != Some("pick") {
+        return None;
+    }
+    parse_pick(envelope.get("payload")?)
+}
+
+/// Most characters of an element's own text its chip shows.
+const CHIP_TEXT_CHARS: usize = 32;
+
+/// What a picked element becomes in the composer.
+pub fn element_handoff(element: &PickedElement) -> PageHandoff {
+    PageHandoff {
+        cancelled: false,
+        label: chip_label(element),
+        text: render_element(element),
+        url: redact_url(&element.href).0,
+        image: None,
+        count: 0,
+    }
+}
+
+/// The chip's name for an element: its label, with its own words when the
+/// label alone (`a`, `div`) would not tell one from another. The whole
+/// page's text (`html`, `body`) says nothing about what was picked.
+fn chip_label(element: &PickedElement) -> String {
+    let label = element.label.trim();
+    if label.contains(['#', '.'])
+        || matches!(element.tag.to_ascii_lowercase().as_str(), "html" | "body")
+    {
+        return label.to_string();
+    }
+    let words = [&element.name, &element.text]
+        .into_iter()
+        .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
+        .find(|t| !t.is_empty());
+    match words {
+        Some(words) => format!("{label} \"{}\"", clamp(&words, CHIP_TEXT_CHARS)),
+        None => label.to_string(),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -744,6 +850,74 @@ mod tests {
         let hostile = install_and_pick("\" ; alert(1) ; \"");
         assert!(hostile.contains(r#"start("\" ; alert(1) ; \"")"#));
         assert!(stop_pick_call("pick-7").contains("stop(\"pick-7\")"));
+    }
+
+    #[test]
+    fn a_pick_arms_once_and_reports_through_its_inbox() {
+        let js = arm_pick("pick-7");
+        assert!(js.contains(PICK_INBOX) && js.contains(PICKER_JS));
+        // The program is guarded, so arming again does not run it twice.
+        assert!(js.contains("if (typeof globalThis.__zwiimPicker === 'undefined')"));
+        assert!(js.contains("__zwiimPicker.start(\"pick-7\")"));
+        assert!(wait_for_pick().contains(&PICK_WAIT_MS.to_string()));
+        let cancel = cancel_pick("pick-7");
+        assert!(cancel.contains("stop(\"pick-7\")"));
+        // The cancellation is the picker's own envelope, for the same parser.
+        let sent = cancel.split("__zwiimSend(").nth(1).unwrap();
+        let sent: String = serde_json::from_str(&sent[..sent.find(");").unwrap()]).unwrap();
+        assert_eq!(
+            pick_from_envelope(&sent),
+            Some(PickReport::Cancelled {
+                id: "pick-7".into()
+            })
+        );
+    }
+
+    #[test]
+    fn only_a_pick_envelope_is_read() {
+        let picked = serde_json::json!({
+            "kind": "pick",
+            "payload": {"id": "p1", "tag": "button", "label": "button#go", "href": "https://example.com/?token=abc"},
+        })
+        .to_string();
+        let Some(PickReport::Picked(element)) = pick_from_envelope(&picked) else {
+            panic!("no pick");
+        };
+        let handoff = element_handoff(&element);
+        assert_eq!(handoff.label, "button#go");
+        assert!(handoff.text.starts_with(UNTRUSTED_NOTE));
+        assert!(!handoff.url.contains("abc"), "{}", handoff.url);
+        // A label that names nothing gets the element's own words.
+        let plain = |text: &str| PickedElement {
+            tag: "a".into(),
+            label: "a".into(),
+            text: text.into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            element_handoff(&plain("Example  docs\nlink")).label,
+            "a \"Example docs link\""
+        );
+        assert_eq!(
+            element_handoff(&plain(&"word ".repeat(20))).label,
+            format!("a \"{}…\"", &"word ".repeat(20)[..32])
+        );
+        assert_eq!(element_handoff(&plain("")).label, "a");
+        let page = PickedElement {
+            tag: "html".into(),
+            label: "html".into(),
+            text: "Widgets body{font:16px}".into(),
+            ..Default::default()
+        };
+        assert_eq!(element_handoff(&page).label, "html");
+        for other in [
+            "",
+            "nope",
+            r#"{"kind":"console","payload":{}}"#,
+            r#"{"kind":"pick"}"#,
+        ] {
+            assert_eq!(pick_from_envelope(other), None, "{other}");
+        }
     }
 
     #[test]

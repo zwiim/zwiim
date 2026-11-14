@@ -135,6 +135,7 @@ impl TestCloud {
                 };
                 dir.lock().unwrap().extend_from_slice(bytes);
             })),
+            usage_store: None,
         };
         let tls = self
             .tls

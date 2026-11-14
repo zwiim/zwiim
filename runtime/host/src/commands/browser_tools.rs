@@ -2,11 +2,9 @@
 //! The `browser_tools.enabled` setting — whether an agent may see the built-in
 //! browser at all.
 //!
-//! Separate from `commands::browser`, which is the browser itself and exists
-//! only in the desktop build: this switch is read by the shared zwiim-mcp
-//! plumbing (injection, the service-status popover), so it has to compile in
-//! server mode too — where it is simply always answered "no" at the point of
-//! use, there being no native tabs there.
+//! Separate from `crate::browser`, which is the browser itself: this switch
+//! is read by the shared zwiim-mcp plumbing (injection, the service-status
+//! popover).
 //!
 //! **Off by default**, unlike the other two read-only tool groups. Those hand
 //! an agent Zwiim's own state; this one hands it a listing of the sites the

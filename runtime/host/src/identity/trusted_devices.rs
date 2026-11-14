@@ -17,7 +17,7 @@ use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, DatabaseConnection, EntityTrait,
     IntoActiveModel, QueryFilter, QueryOrder, Set,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::broadcast;
 
@@ -26,6 +26,41 @@ use crate::db::error::DbError;
 
 pub const STATUS_TRUSTED: &str = "trusted";
 pub const STATUS_REVOKED: &str = "revoked";
+
+/// What a paired device may do with the Host browser (browser design 7.6).
+/// Ordered: each level allows what the one before it does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserAccess {
+    /// Nothing: the browser stays on the Mac.
+    None,
+    /// See its sessions' tabs.
+    View,
+    /// Steer them, and use Live App.
+    Control,
+}
+
+impl BrowserAccess {
+    /// A newly paired device's.
+    pub const PAIRED: Self = Self::View;
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::View => "view",
+            Self::Control => "control",
+        }
+    }
+
+    /// The stored value; anything unknown reads as `none`.
+    pub fn parse(stored: &str) -> Self {
+        match stored {
+            "view" => Self::View,
+            "control" => Self::Control,
+            _ => Self::None,
+        }
+    }
+}
 
 const MAX_DEVICE_ID_LEN: usize = 64;
 const MAX_DEVICE_NAME_LEN: usize = 100;
@@ -65,6 +100,7 @@ pub struct DeviceInfo {
     pub paired_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub last_seen_at: Option<DateTime<Utc>>,
+    pub browser_access: BrowserAccess,
 }
 
 impl From<trusted_device::Model> for DeviceInfo {
@@ -77,6 +113,7 @@ impl From<trusted_device::Model> for DeviceInfo {
             paired_at: m.paired_at,
             revoked_at: m.revoked_at,
             last_seen_at: m.last_seen_at,
+            browser_access: BrowserAccess::parse(&m.browser_access),
         }
     }
 }
@@ -143,6 +180,7 @@ pub async fn register(
         paired_at: Set(now),
         revoked_at: Set(None),
         last_seen_at: Set(None),
+        browser_access: Set(BrowserAccess::PAIRED.as_str().to_string()),
         created_at: Set(now),
         updated_at: Set(now),
     })
@@ -155,6 +193,7 @@ pub async fn register(
                 trusted_device::Column::DevicePubkey,
                 trusted_device::Column::PairedAt,
                 trusted_device::Column::RevokedAt,
+                trusted_device::Column::BrowserAccess,
                 trusted_device::Column::UpdatedAt,
             ])
             .to_owned(),
@@ -185,6 +224,7 @@ pub async fn register_key(
         paired_at: Set(now),
         revoked_at: Set(None),
         last_seen_at: Set(None),
+        browser_access: Set(BrowserAccess::PAIRED.as_str().to_string()),
         created_at: Set(now),
         updated_at: Set(now),
     })
@@ -197,6 +237,7 @@ pub async fn register_key(
                 trusted_device::Column::DevicePubkey,
                 trusted_device::Column::PairedAt,
                 trusted_device::Column::RevokedAt,
+                trusted_device::Column::BrowserAccess,
                 trusted_device::Column::UpdatedAt,
             ])
             .to_owned(),
@@ -296,6 +337,46 @@ pub async fn list<T: From<trusted_device::Model>>(
         .collect())
 }
 
+/// What trusted device `device_id` may do with the Host browser; `none` for
+/// a device that is unknown or revoked. Read on every request, so a change
+/// takes effect at once.
+pub async fn browser_access(
+    conn: &DatabaseConnection,
+    device_id: &str,
+) -> Result<BrowserAccess, DbError> {
+    Ok(trusted_device::Entity::find()
+        .filter(trusted_device::Column::DeviceId.eq(device_id))
+        .filter(trusted_device::Column::Status.eq(STATUS_TRUSTED))
+        .one(conn)
+        .await?
+        .map_or(BrowserAccess::None, |d| {
+            BrowserAccess::parse(&d.browser_access)
+        }))
+}
+
+/// Set what trusted device `device_id` may do with the Host browser.
+/// Returns `false` when no trusted device has that id.
+pub async fn set_browser_access(
+    conn: &DatabaseConnection,
+    device_id: &str,
+    access: BrowserAccess,
+) -> Result<bool, DbError> {
+    let updated = trusted_device::Entity::update_many()
+        .col_expr(
+            trusted_device::Column::BrowserAccess,
+            sea_orm::sea_query::Expr::value(access.as_str()),
+        )
+        .col_expr(
+            trusted_device::Column::UpdatedAt,
+            sea_orm::sea_query::Expr::value(Utc::now()),
+        )
+        .filter(trusted_device::Column::DeviceId.eq(device_id))
+        .filter(trusted_device::Column::Status.eq(STATUS_TRUSTED))
+        .exec(conn)
+        .await?;
+    Ok(updated.rows_affected > 0)
+}
+
 /// Revoke `device_id`. Returns `false` when the device is unknown.
 pub async fn revoke(conn: &DatabaseConnection, device_id: &str) -> Result<bool, DbError> {
     let Some(device) = trusted_device::Entity::find()
@@ -367,6 +448,84 @@ mod tests {
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].status, STATUS_REVOKED);
         assert!(devices[0].revoked_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn browser_access_starts_at_view_and_resets_on_pairing_again() {
+        let db = fresh_in_memory_db().await;
+        let key = URL_SAFE_NO_PAD.encode([7u8; 32]);
+        register_key(&db.conn, "dev-1", "Phone", &key)
+            .await
+            .unwrap();
+        assert_eq!(
+            browser_access(&db.conn, "dev-1").await.unwrap(),
+            BrowserAccess::View
+        );
+
+        assert!(
+            set_browser_access(&db.conn, "dev-1", BrowserAccess::Control)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            browser_access(&db.conn, "dev-1").await.unwrap(),
+            BrowserAccess::Control
+        );
+        let listed = list::<DeviceInfo>(&db.conn).await.unwrap();
+        assert_eq!(listed[0].browser_access, BrowserAccess::Control);
+
+        // Paired again, it starts over.
+        register_key(&db.conn, "dev-1", "Phone", &key)
+            .await
+            .unwrap();
+        assert_eq!(
+            browser_access(&db.conn, "dev-1").await.unwrap(),
+            BrowserAccess::View
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_or_revoked_device_has_no_browser_access() {
+        let db = fresh_in_memory_db().await;
+        assert_eq!(
+            browser_access(&db.conn, "nope").await.unwrap(),
+            BrowserAccess::None
+        );
+        assert!(
+            !set_browser_access(&db.conn, "nope", BrowserAccess::Control)
+                .await
+                .unwrap()
+        );
+
+        register(&db.conn, "dev-1", "Phone").await.unwrap();
+        set_browser_access(&db.conn, "dev-1", BrowserAccess::Control)
+            .await
+            .unwrap();
+        revoke(&db.conn, "dev-1").await.unwrap();
+        assert_eq!(
+            browser_access(&db.conn, "dev-1").await.unwrap(),
+            BrowserAccess::None
+        );
+        // A revoked device's rights can't be raised either.
+        assert!(!set_browser_access(&db.conn, "dev-1", BrowserAccess::View)
+            .await
+            .unwrap());
+    }
+
+    #[test]
+    fn browser_access_levels_are_ordered_and_unknown_reads_as_none() {
+        assert!(
+            BrowserAccess::None < BrowserAccess::View
+                && BrowserAccess::View < BrowserAccess::Control
+        );
+        for a in [
+            BrowserAccess::None,
+            BrowserAccess::View,
+            BrowserAccess::Control,
+        ] {
+            assert_eq!(BrowserAccess::parse(a.as_str()), a);
+        }
+        assert_eq!(BrowserAccess::parse("admin"), BrowserAccess::None);
     }
 
     #[tokio::test]

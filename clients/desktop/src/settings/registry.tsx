@@ -8,6 +8,7 @@ import {
   Bot,
   FolderGit2,
   GitBranch,
+  Globe,
   Info,
   MessageSquareText,
   Network,
@@ -57,6 +58,7 @@ import {
 } from "@/settings/chat";
 import { HostLoginToggle, KeepReachable } from "@/settings/general";
 import { AutoMergeToggle, GitSettings } from "@/settings/git";
+import { BrowserSettings } from "@/settings/browser";
 import { ModelsSettings } from "@/settings/models";
 import { PromptsSettings } from "@/settings/prompts";
 import { RepositorySettings } from "@/settings/repository";
@@ -74,6 +76,7 @@ export type SettingsTab =
   | "github"
   | "connection"
   | "devices"
+  | "browser"
   | "advanced"
   | "about";
 
@@ -103,6 +106,8 @@ export interface SettingsContext {
   repositorySettings: boolean;
   /** The host keeps its terminal and push settings, and names its folders (capability `settings.advanced`). */
   advancedSettings: boolean;
+  /** The host runs a browser (capability `browser`). */
+  browser: boolean;
   /** The host can put a message into an agent's running turn (capability `session.steer`). */
   steer: boolean;
   /** The host takes files with a message (capability `attachments`). */
@@ -244,6 +249,15 @@ export const TABS: readonly TabDef[] = [
     keywords: ["pair", "qr", "phone", "ipad", "mobile", "revoke"],
     available: (ctx) => !ctx.remote,
     panel: (ctx) => <DevicesSettings bridge={ctx.bridge} />,
+  },
+  {
+    id: "browser",
+    label: "Browser",
+    icon: Globe,
+    group: "Host",
+    keywords: ["tabs", "popups", "windows", "limit", "downloads", "passwords", "sites", "dev server", "agent"],
+    available: (ctx) => ctx.browser,
+    panel: (ctx) => <BrowserSettings bridge={ctx.bridge} remote={ctx.remote} />,
   },
   {
     id: "advanced",

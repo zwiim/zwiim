@@ -2421,9 +2421,24 @@ pub async fn spawn_agent_connection(
     }
     // The harness's instructions for this connection, built once and shared
     // by every way its session opens (new, load, resume, fork).
-    let user = delegation_injection.as_ref().map(|i| i.user_instructions.as_ref());
-    let instructions =
-        connection_instructions(&connection_id, agent_type, &launch_cwd, user, preferences).await;
+    let user = delegation_injection
+        .as_ref()
+        .map(|i| i.user_instructions.as_ref());
+    // The same switch that decides whether the companion carries the browser
+    // tools (`companion_feature_flags`).
+    let browser = match &delegation_injection {
+        Some(injection) => injection.browser.is_enabled().await,
+        None => false,
+    };
+    let instructions = connection_instructions(
+        &connection_id,
+        agent_type,
+        &launch_cwd,
+        user,
+        preferences,
+        browser,
+    )
+    .await;
     // Zwiim: the agent gets the repository's variables beneath its own; the
     // policies and fingerprint below keep reading `runtime_env` alone.
     let launch_env = beneath(&repository_env, &runtime_env);
@@ -4396,6 +4411,7 @@ async fn connection_instructions(
     cwd: &Path,
     user: Option<&dyn UserInstructionsLookup>,
     preferences: crate::harness::UserPreferences,
+    browser: bool,
 ) -> Option<String> {
     if !delivers_session_instructions(agent_type) {
         return None;
@@ -4406,6 +4422,7 @@ async fn connection_instructions(
     };
     let input = crate::harness::HarnessInput {
         preferences,
+        browser,
         ..crate::harness::gather(cwd, user).await
     };
     let instructions = crate::harness::instruct(&input);
@@ -5302,13 +5319,8 @@ where
         tasks: tasks_enabled,
         automations: authoring.automations_enabled,
         taskboard: authoring.work_tasks_enabled,
-        // `cfg!` rather than a runtime probe: a browser tab is a native
-        // webview owned by this process, and the server binary has no such
-        // thing — what a web user sees in a "browser tab" is an iframe their
-        // own browser renders, which nothing here can read. Advertising the
-        // tools there would promise a capability that cannot exist, and the
-        // agent would find out by being told "no tabs" forever.
-        browser: cfg!(feature = "tauri-runtime") && injection.browser.is_enabled().await,
+        // The Host browser's tabs (design 10.2).
+        browser: injection.browser.is_enabled().await,
         browser_eval: cfg!(feature = "tauri-runtime")
             && injection.browser.is_eval_enabled().await,
         // The Git Harness runs git and gh on the user's machine, outside an
@@ -19696,6 +19708,7 @@ mod tests {
             }),
             preferences: Default::default(),
             user: Default::default(),
+            browser: false,
         })
         .text;
 
@@ -19725,8 +19738,15 @@ mod tests {
             crate::harness::instruct(&crate::harness::gather(dir.path(), Default::default()).await)
                 .text;
         assert_eq!(
-            connection_instructions("c", AgentType::ClaudeCode, dir.path(), None, Default::default())
-                .await,
+            connection_instructions(
+                "c",
+                AgentType::ClaudeCode,
+                dir.path(),
+                None,
+                Default::default(),
+                false
+            )
+            .await,
             Some(expected)
         );
         // Git preferences need a checkout to apply to.
@@ -19740,12 +19760,23 @@ mod tests {
             pull_request: Some("Draft PRs only.".into()),
             ..Default::default()
         };
-        let text = connection_instructions("c", AgentType::ClaudeCode, dir.path(), None, preferences.clone())
-            .await
-            .unwrap();
-        assert!(text.ends_with("Pull requests:\nDraft PRs only.\n"), "{text}");
+        let text = connection_instructions(
+            "c",
+            AgentType::ClaudeCode,
+            dir.path(),
+            None,
+            preferences.clone(),
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(
+            text.ends_with("Pull requests:\nDraft PRs only.\n"),
+            "{text}"
+        );
         assert_eq!(
-            connection_instructions("c", AgentType::Grok, dir.path(), None, preferences).await,
+            connection_instructions("c", AgentType::Grok, dir.path(), None, preferences, false)
+                .await,
             None
         );
     }
@@ -19767,14 +19798,29 @@ mod tests {
     async fn connection_instructions_carry_the_users_text() {
         let dir = tempfile::tempdir().unwrap();
         let lookup = FixedUserInstructions(Default::default());
-        let text = connection_instructions("c", AgentType::Codex, dir.path(), Some(&lookup), Default::default())
-            .await
-            .unwrap();
+        let text = connection_instructions(
+            "c",
+            AgentType::Codex,
+            dir.path(),
+            Some(&lookup),
+            Default::default(),
+            false,
+        )
+        .await
+        .unwrap();
         assert!(text.ends_with("\nAnswer in French.\n"), "{text}");
         assert_eq!(*lookup.0.lock().unwrap(), [dir.path().to_path_buf()]);
         // Agents that get no instructions aren't looked up for.
         assert_eq!(
-            connection_instructions("c", AgentType::Grok, dir.path(), Some(&lookup), Default::default()).await,
+            connection_instructions(
+                "c",
+                AgentType::Grok,
+                dir.path(),
+                Some(&lookup),
+                Default::default(),
+                false
+            )
+            .await,
             None
         );
         assert_eq!(lookup.0.lock().unwrap().len(), 1);
@@ -19788,10 +19834,11 @@ mod tests {
         let source = include_str!("connection.rs");
         let code = source.split("#[cfg(test)]\nmod tests {").next().unwrap();
         assert_eq!(code.matches("crate::harness::instruct(").count(), 1);
-        assert_eq!(code.matches("connection_instructions(&connection_id").count(), 1);
+        let call = "connection_instructions(\n        &connection_id,";
+        assert_eq!(code.matches(call).count(), 1);
         let spawn = code.split("pub async fn spawn_agent_connection(").nth(1).unwrap();
         let spawn = spawn.split("\n}\n").next().unwrap();
-        assert!(spawn.contains("connection_instructions(&connection_id"));
+        assert!(spawn.contains(call));
         assert!(spawn.contains("build_agent("));
         assert!(spawn.contains("run_connection("));
 

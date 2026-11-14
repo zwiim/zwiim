@@ -732,6 +732,9 @@ glyph, a title, one line, one action.
 | Cloud unavailable | Banner under Host bar | Cloud only mode, with the Host's LAN endpoint known: "Zwiim Cloud is unreachable. Local connections still work." Otherwise (including Automatic after a LAN miss): "Zwiim Cloud is unreachable." (Automatic mode with LAN available: no banner, just the `⌂ local` pill) |
 | LAN unavailable (Local only) | Banner | "MacBook Pro isn't on this network. Switch to Automatic to connect through Zwiim Cloud." · **Switch** |
 | LAN endpoint not known yet (Local only) | Banner | "This phone doesn't know where MacBook Pro is on the network yet. Switch to Automatic to connect through Zwiim Cloud." · **Switch** |
+| Remote limit reached (`relay_quota_exceeded`) | Sheet over the Host shell, then banner | The account's total relay limit. Sheet, once each time it's hit: title "Remote limit reached" · "Phone access over the internet resets on 12 Dec." · "On the same Wi-Fi as MacBook Pro, everything works." · **OK**. Then the banner "Remote limit reached. On the same Wi-Fi as MacBook Pro, everything works." · **Retry**. Never on LAN or the desktop |
+| Browser limit reached | Sheet over the session's Browser screen | Opening Agent View or Live App over the relay at the browser limit, or crossing it while watching (the picture freezes): title "Browser limit reached" · "You've used 5 GB of remote browsing this period." · "It resets on 12 Dec." · "Chat, terminal and approvals still work." · "On the same Wi-Fi as MacBook Pro, the browser works as usual." · **OK**. Never on LAN or the desktop |
+| Browser usage near the limit | Browser toolbar, one `caption` line in `mut` | From 80% of the browser limit, over the relay: "Free · 4 of 5 GB used · resets 12 Dec". Not a popup. Dates in all three read in the person's own format and time zone |
 | Device not paired | Host row, tapping it | Row meta `not paired on this phone`; tap → Pairing flow |
 | Device revoked (`device_refused`) | Full-screen state over Host shell | `err` glyph · "This phone was removed from MacBook Pro" · "Pair again to reconnect." · **Pair again**, secondary **Back to Hosts**. The local pairing record is cleared |
 | Host identity mismatch (`handshake_failed`, `host_identity_mismatch`) | Full-screen state | "Couldn't verify MacBook Pro" · "The Mac answering isn't the one you paired with. Pair again if you reinstalled Zwiim." · **Pair again** |
@@ -828,6 +831,29 @@ glyph, a title, one line, one action.
   in the preview panel. A workspace image linked in the agent's text shows
   nothing. An image with no row (a message's own image part, a result's extra
   images) gets the same chip.
+- Desktop shows what the Host downloads (an agent's adapter, the browser
+  engine, a Host update, which brings `gh`) the same way everywhere: one row
+  per download right above the composer, its width, `card` with a `border`
+  and a 12px radius, 40px tall: Download icon in `mut`, **Downloading
+  Claude Code…** in `ui` medium (truncated), then the progress in `mut`
+  tabular figures, `23 MB / 89 MB`, or `23 MB` when the total is unknown (an
+  install of many files). Bytes count as the Mac does (1 MB = 1,000,000).
+  Rows fade in and leave when the download ends; there is no bar and no
+  cancel. Every later download (a new agent, `gh`) joins this row, not a
+  screen of its own.
+- Desktop's **Browser** view (Globe) is the fourth view beside Files, Diff
+  and Git. Its tab strip matches the terminals' (the selected tab `accent`,
+  a close X on each); the person's own tabs read `Mine · ` in `mut` before
+  their title, after the chat's tabs. Under it, an address bar: back,
+  forward, reload (stop while loading) as ghost icon buttons, the URL in mono
+  12 in an input, and "Open in my browser" (ExternalLink). The page fills the
+  rest, drawn as large as fits and centred. Notices sit in the middle in
+  `mut` `ui`: no tabs (Globe, "No tabs open.", `secondary` **New tab**),
+  starting ("Starting the browser… The first start downloads it, which can
+  take a minute."), could not start (`destructive` line, the Host's message,
+  **Try again**), crashed and asleep (**Reload**, **Load it again**). The
+  page takes the one focus ring when focused. Hidden or collapsed, the view
+  streams nothing.
 - Desktop's PR banner (V2.3) sits above the Files / Diff / Git views: PR icon,
   mono `#12` and the title (opens the PR), a `done` **Merge** button (tooltip
   names the method, or GitHub's reason when disabled), then the status and check

@@ -75,6 +75,32 @@ export type HostErrorCode =
   | "agent_unreachable"
   /** `host.instructions.set`: an instruction text is larger than 8 KiB. */
   | "too_large"
+  /** `browser.tab.*`: no such tab. */
+  | "tab_not_found"
+  /** `browser.tab.open` / `browser.tab.navigate`: only http, https and about:blank open. */
+  | "unsupported_url"
+  /** `browser.view.open` / a stream's `viewport` input: 100 to 8192 pixels each way, scale 0.5 to 4. */
+  | "invalid_viewport"
+  /** `browser.view.close` / the stream socket: no such stream (they expire 30 s unopened). */
+  | "stream_not_found"
+  /** The stream socket: the stream already has its viewer. */
+  | "stream_attached"
+  /** `browser.ui.answer`: the request was already answered, or dismissed unanswered after 60 s. */
+  | "request_not_found"
+  /** `browser.ui.answer`: the answer is not of the request's kind. */
+  | "invalid_answer"
+  /** `browser.sites.set`: an entry is not a site pattern or an address. */
+  | "invalid_site"
+  /** `browser.tab.open`: the session holds its most tabs (`browser.session_tabs`), or the browser 30. */
+  | "too_many_tabs"
+  /** `browser.tab.open`: the browser is at its memory budget; the message says who holds the most. */
+  | "browser_memory_full"
+  /** `browser.tab.print`: the page's PDF would be over 200 MB. */
+  | "page_too_large"
+  /** `browser.login.save`: the session holds no cookies or storage for the sites named. */
+  | "nothing_to_save"
+  /** `browser.login.*`: the Host keeps no browser logins, or cannot open the saved one. */
+  | "login_unavailable"
   | "internal";
 
 export interface WireError {
@@ -155,7 +181,12 @@ export interface DeviceInfo {
   paired_at: string;
   revoked_at: string | null;
   last_seen_at: string | null;
+  /** What it may do with the Host browser: `view` its sessions' tabs, or `control` them. */
+  browser_access: BrowserAccess;
 }
+
+/** A paired device's browser rights (browser design 7.6); a newly paired one has `view`. */
+export type BrowserAccess = "none" | "view" | "control";
 
 // ─── cloud ───────────────────────────────────────────────────────────────
 
@@ -194,6 +225,254 @@ export interface KeepAwakeStatus {
   warnings: ("lid_close_will_sleep" | "on_battery_will_drain")[];
   power: { source: "ac" | "battery" | "unknown"; battery_percent: number | null };
 }
+
+// ─── browser ─────────────────────────────────────────────────────────────
+
+/** Whose a browser tab is: a session's (its agent may use it) or the person's. */
+export type BrowserTabOwner = { kind: "session"; session_id: string } | { kind: "personal" };
+
+/** A Host browser tab. */
+export interface BrowserTab {
+  tab_id: string;
+  owner: BrowserTabOwner;
+  url: string;
+  title: string;
+  /** Order among its owner's tabs. */
+  position: number;
+  loading: boolean;
+  /** Not loaded in the engine; it loads again from `url` when next used. */
+  discarded: boolean;
+  /** Its page crashed; reloading brings it back. */
+  crashed: boolean;
+  /** It loads again when files in its session's worktree change; absent from older Hosts. */
+  reload_on_save?: boolean;
+  /** The device it is previewed as; absent for a desktop page. */
+  preview?: BrowserPreviewId;
+}
+
+/** A device a tab can be previewed as (`browser.tab.preview`). */
+export type BrowserPreviewId = "iphone" | "android" | "ipad";
+
+/** The devices, with the screen the Host gives each, in CSS pixels. */
+export const BROWSER_PREVIEWS: readonly { id: BrowserPreviewId; name: string; width: number; height: number }[] = [
+  { id: "iphone", name: "iPhone", width: 393, height: 852 },
+  { id: "android", name: "Android phone", width: 412, height: 915 },
+  { id: "ipad", name: "iPad", width: 820, height: 1180 },
+];
+
+/** Why the browser engine could not run. */
+export type BrowserEngineFailure =
+  | "download_offline"
+  | "checksum_mismatch"
+  | "disk_full"
+  | "unsupported_platform"
+  | "crash_loop"
+  | "setup_failed"
+  | (string & {});
+
+/** The Host's browser engine. It starts with the first tab, downloading itself first if needed. */
+export type BrowserEngine =
+  | { state: "stopped" }
+  | { state: "starting" }
+  | { state: "running"; version: string }
+  | { state: "failed"; code: BrowserEngineFailure; message: string };
+
+/** A browser view's page size in CSS pixels, and its device pixel ratio (default 1). */
+export interface BrowserViewport {
+  width: number;
+  height: number;
+  scale?: number;
+}
+
+/** Alt 1, Ctrl 2, Meta 4, Shift 8, as CDP counts them. */
+export type BrowserModifiers = number;
+
+/**
+ * Input a viewer sends as JSON text on its stream socket. Coordinates are CSS
+ * pixels of the page: map the pointer through the frame header first.
+ */
+export type BrowserInput =
+  | {
+      type: "mouse";
+      action: "move" | "down" | "up" | "wheel";
+      x: number;
+      y: number;
+      button?: "none" | "left" | "middle" | "right" | "back" | "forward";
+      /** Buttons held, as `MouseEvent.buttons`. */
+      buttons?: number;
+      click_count?: number;
+      modifiers?: BrowserModifiers;
+      delta_x?: number;
+      delta_y?: number;
+    }
+  | {
+      type: "key";
+      action: "down" | "up";
+      /** `KeyboardEvent.key` and `.code`. */
+      key: string;
+      code: string;
+      /** What the key types, for a key that types something. */
+      text?: string;
+      modifiers?: BrowserModifiers;
+      /** `KeyboardEvent.keyCode`; Enter, Backspace and the arrows need it. */
+      key_code?: number;
+    }
+  | { type: "text"; text: string }
+  | ({ type: "viewport" } & BrowserViewport);
+
+/** A JavaScript dialog's kind; `beforeunload` asks whether to leave the page. */
+export type BrowserDialogType = "alert" | "confirm" | "prompt" | "beforeunload";
+
+/**
+ * Something a tab waits on a person for, which the stream does not show:
+ * each client draws it, and the first answer wins.
+ */
+export type BrowserUiRequest = {
+  request_id: string;
+  tab_id: string;
+  owner: BrowserTabOwner;
+} & (
+  | {
+      kind: "dialog";
+      dialog: BrowserDialogType;
+      message: string;
+      /** A `prompt`'s default answer. */
+      default_text?: string;
+      /** The page that asked. */
+      url: string;
+    }
+  | {
+      /** A site, or a proxy when `proxy`, asks for a username and password. Cancelled after 5 minutes unanswered. */
+      kind: "auth";
+      /** `scheme://host:port` of who asks. */
+      origin: string;
+      /** `basic`, `digest`, `ntlm` or `negotiate`. */
+      scheme: string;
+      realm: string;
+      proxy: boolean;
+      /** The page being loaded. */
+      url: string;
+    }
+  | {
+      /** A page's `<input type=file>` asks for files. Cancelled after 5 minutes unanswered. */
+      kind: "file_chooser";
+      /** More than one file may be picked. */
+      multiple: boolean;
+      /** The page that asked. */
+      url: string;
+    }
+  | ({
+      /** A `<select>` opened: one option to pick. Ends with its document, or after 5 minutes. */
+      kind: "select";
+      options: BrowserSelectOption[];
+    } & BrowserPageBox)
+  | ({
+      /** A date or time input's picker button. Ends with its document, or after 5 minutes. */
+      kind: "date";
+      input_type: "date" | "time" | "datetime-local" | "month" | "week";
+      /** The input's value, in its own format; empty when unset. */
+      value: string;
+      min?: string;
+      max?: string;
+    } & BrowserPageBox)
+  | {
+      /**
+       * An agent's tab loads a site nobody allowed for the session, and
+       * `browser.agent_ask_sites` is on. The page waits; refused after 5 minutes.
+       */
+      kind: "site";
+      /** `host:port`. */
+      site: string;
+      /** The address being loaded. */
+      url: string;
+      /** This machine or the local network. */
+      local: boolean;
+    }
+);
+
+/** An element's box in the page's CSS pixels. */
+export type BrowserPageBox = { x: number; y: number; width: number; height: number };
+
+/** One option of a `<select>`. */
+export type BrowserSelectOption = {
+  index: number;
+  label: string;
+  disabled: boolean;
+  selected: boolean;
+  /** The `<optgroup>` it is in. */
+  group?: string;
+};
+
+/**
+ * A right-click the page left to the browser, at `x`, `y` in its CSS pixels:
+ * the client draws its own menu there. Addresses are http(s) only.
+ */
+export type BrowserMenu = {
+  tab_id: string;
+  x: number;
+  y: number;
+  link_url?: string;
+  image_url?: string;
+  /** The selected text, up to 2000 characters. */
+  selection?: string;
+  /** On a field the person can type into. */
+  editable: boolean;
+};
+
+/**
+ * The answer to a {@link BrowserUiRequest}, of its kind. A dialog: OK (or
+ * Leave) when `accept`; `text` answers a `prompt`. A sign-in: the
+ * credentials when `accept`, Cancel otherwise. They reach the Host's engine
+ * only; nothing stores them. A file chooser: up to 100 files in workspace
+ * `workspace_id`, relative to its root (a session's tab: its session's
+ * workspace only), when `accept`; the input stays as it was otherwise. A
+ * select: the option at `index`. A date: `value` in the input's own format,
+ * empty to clear it.
+ */
+export type BrowserUiAnswer =
+  | { kind: "dialog"; accept: boolean; text?: string }
+  | { kind: "auth"; accept: boolean; username?: string; password?: string }
+  | { kind: "file_chooser"; accept: boolean; workspace_id?: string; paths?: string[] }
+  | { kind: "select"; accept: boolean; index?: number }
+  | { kind: "date"; accept: boolean; value?: string }
+  /** Allow the site for the session, or every session with `always`; refuse it for the session otherwise. */
+  | { kind: "site"; allow: boolean; always?: boolean };
+
+/**
+ * What an agent is about to do on a tab: the point its pointer goes to and,
+ * when known, the element's box, in the page's CSS pixels.
+ */
+export type BrowserAgentAction = {
+  tab_id: string;
+  kind: "click" | "hover" | "type" | "press" | "select";
+  x: number;
+  y: number;
+  box?: { x: number; y: number; width: number; height: number };
+};
+
+/**
+ * An element a person picked on a page (`browser.tab.pick`): `text` is a
+ * markdown block marked as page content, for the agent; `label` names the
+ * element (`button#go`); `url` leaves out secret-looking query values.
+ */
+export type BrowserPick = { label: string; text: string; url: string };
+
+/** `browser.subscribe` frames. Events carry a tab's whole state. */
+export type BrowserFrame =
+  | { type: "browser.snapshot"; tabs: BrowserTab[]; engine: BrowserEngine; ui_requests?: BrowserUiRequest[] }
+  | { type: "browser.tab.state"; tab: BrowserTab }
+  | { type: "browser.tab.removed"; tab_id: string; owner: BrowserTabOwner }
+  | { type: "browser.engine.state"; engine: BrowserEngine }
+  | { type: "browser.ui.request"; request: BrowserUiRequest }
+  /** Answered, dismissed unanswered after 60 s, or its tab went. */
+  | { type: "browser.ui.done"; request_id: string; tab_id: string }
+  /** Sent just before the agent acts. */
+  | { type: "browser.agent.action"; action: BrowserAgentAction }
+  | { type: "browser.ui.menu"; menu: BrowserMenu }
+  /** A pick ended: the element, or `null` when it was called off, the page went, or nobody picked. */
+  | { type: "browser.tab.picked"; tab_id: string; owner: BrowserTabOwner; pick: BrowserPick | null }
+  /** `browser.subscribe` was refused (`permission_denied` on a paired device). */
+  | { type: "browser.error"; error: WireError };
 
 // ─── lan ─────────────────────────────────────────────────────────────────
 
@@ -716,7 +995,18 @@ export interface AgentDefaults {
  * `terminal.scrollback`, the bytes of output each terminal keeps (within
  * `SCROLLBACK_RANGE`; unset keeps `DEFAULT_SCROLLBACK_BYTES`), and
  * `git.push_sets_upstream`, whether a plain `git push` in a worktree sets the
- * branch's upstream (unset is on). Null when unset.
+ * branch's upstream (unset is on), and from revision 33 (capability
+ * `browser`) `browser.agent_passwords`, whether agents may type into
+ * password fields on any site rather than only on loopback dev servers
+ * (unset is off), and `browser.agent_ask_sites`, whether a site an agent's
+ * tab loads for the first time in a session waits for a person (unset is
+ * off), and `browser.open_dev_servers`, whether a dev server a session starts
+ * opens in that session's tab (unset is on), and `browser.session_tabs`, the
+ * most tabs one session holds, those its pages open included (within
+ * `SESSION_TABS_RANGE`; unset keeps `DEFAULT_SESSION_TABS`), and
+ * `browser.timeline_mb` and `browser.timeline_days`, how much of each
+ * session's browser recording the Host keeps (within `TIMELINE_MB_RANGE`
+ * and `TIMELINE_DAYS_RANGE`; unset keeps the defaults). Null when unset.
  */
 export type HostSettingKey =
   | "defaults.agent"
@@ -731,7 +1021,13 @@ export type HostSettingKey =
   | "prompts.pull_request"
   | "prompts.branch_name"
   | "terminal.scrollback"
-  | "git.push_sets_upstream";
+  | "git.push_sets_upstream"
+  | "browser.agent_passwords"
+  | "browser.agent_ask_sites"
+  | "browser.open_dev_servers"
+  | "browser.session_tabs"
+  | "browser.timeline_mb"
+  | "browser.timeline_days";
 
 /** Longest `prompts.*` setting the Host accepts, in UTF-8 bytes. */
 export const MAX_PROMPT_BYTES = 8000;
@@ -741,6 +1037,18 @@ export const SCROLLBACK_RANGE = { min: 64 * 1024, max: 16 * 1024 * 1024 } as con
 
 /** What a terminal keeps while `terminal.scrollback` is unset, in bytes. */
 export const DEFAULT_SCROLLBACK_BYTES = 1024 * 1024;
+
+/** What `browser.session_tabs` can be. */
+export const SESSION_TABS_RANGE = { min: 1, max: 30 } as const;
+
+/** Tabs a session holds while `browser.session_tabs` is unset. */
+export const DEFAULT_SESSION_TABS = 20;
+
+/** What `browser.timeline_mb` and `browser.timeline_days` can be, and their defaults. */
+export const TIMELINE_MB_RANGE = { min: 1, max: 1000 } as const;
+export const DEFAULT_TIMELINE_MB = 50;
+export const TIMELINE_DAYS_RANGE = { min: 1, max: 90 } as const;
+export const DEFAULT_TIMELINE_DAYS = 7;
 
 /** `host.folders`: where the Host keeps its data, worktrees and clones (revision 20). */
 export interface HostFolders {
@@ -908,6 +1216,11 @@ export interface ToolCall {
   kind?: string | null;
   status: ToolCallStatus | null;
   content: unknown;
+  /**
+   * The call's arguments as JSON text (at most 2,000 characters), only for
+   * Zwiim's own tools other than Git; absent for every other tool.
+   */
+  input?: string;
   images?: AgentImage[];
   /**
    * The sub-agent tool call that made this call; absent on the main thread
@@ -1456,7 +1769,21 @@ export type HostFeedEvent = { seq: number } & (
   | { type: "clone.changed"; payload: { clone: CloneJob } }
   | { type: "clone.removed"; payload: { clone_id: string } }
   | { type: "host.keep_awake_changed"; payload: KeepAwakeStatus }
+  /** Capability `downloads`: one started or moved (at most every 250 ms each). */
+  | { type: "download.changed"; payload: { download: HostDownload } }
+  | { type: "download.removed"; payload: { download_id: string } }
 );
+
+/** Something the Host is downloading: an agent's adapter, the browser engine, a Host update. */
+export interface HostDownload {
+  download_id: string;
+  /** What it is, as the person knows it: "Claude Code", "Browser engine 157.0.8103.78", "Zwiim 0.6.0". */
+  label: string;
+  /** Bytes received so far. */
+  received: number;
+  /** Bytes in all; null when unknown (an install of many files). */
+  total: number | null;
+}
 
 /** The feed's baseline: what `workspace.list`, `session.list` and `terminal.list` return. */
 export interface HostSnapshot {
@@ -1479,6 +1806,8 @@ export interface HostSnapshot {
   clones?: CloneJob[];
   /** What keeping the Mac awake is doing; null until the host first looked (older Hosts omit it). */
   keep_awake?: KeepAwakeStatus | null;
+  /** What the Host is downloading, oldest first (older Hosts omit it). */
+  downloads?: HostDownload[];
 }
 
 // ─── event socket ────────────────────────────────────────────────────────
@@ -1495,6 +1824,8 @@ export type ClientMessage =
   | { op: "terminal.subscribe"; terminal_id: string }
   | { op: "terminal.unsubscribe"; terminal_id: string }
   | { op: "host.subscribe" }
+  /** Capability `browser`; Host only for now. */
+  | { op: "browser.subscribe" }
   | { op: "ping" };
 
 export type DetachReason = "session_not_live" | "lagged" | "server_shutdown";
@@ -1521,6 +1852,7 @@ export type ServerFrame =
   | { type: "terminal"; event: TerminalEvent }
   | ({ type: "host.snapshot" } & HostSnapshot)
   | { type: "host.event"; epoch: string; event: HostFeedEvent }
+  | BrowserFrame
   | { type: "pong" }
   | { type: "error"; subscription_id: string | null; error: WireError };
 
@@ -1978,6 +2310,8 @@ export interface Operations {
   ];
   "device.list": [Record<string, never>, { devices: DeviceInfo[] }];
   "device.revoke": [{ device_id: string }, Record<string, never>];
+  /** Local host authority only: what a trusted device may do with the Host browser. */
+  "device.update": [{ device_id: string; browser_access: BrowserAccess }, Record<string, never>];
   /** Local host authority only: enroll this host with a Zwiim Cloud. */
   "cloud.enroll": [
     { cloud_url: string; enrollment_token: string; name?: string },
@@ -1997,6 +2331,115 @@ export interface Operations {
   "host.instructions": [Record<string, never>, UserInstructions];
   /** Idempotent: sets one scope's texts, never appends. */
   "host.instructions.set": [InstructionsChange, UserInstructions];
+  /** Tabs in each owner's order, only `session_id`'s when given (capability `browser`, local authority). */
+  "browser.tabs.list": [{ session_id?: string }, { tabs: BrowserTab[]; engine: BrowserEngine }];
+  /** Open a tab, blank without `url`. Starts the engine; `not_found` for a session that is gone. */
+  "browser.tab.open": [{ owner: BrowserTabOwner; url?: string }, BrowserTab];
+  "browser.tab.close": [{ tab_id: string }, Record<string, never>];
+  /** Go to `url`, or `back`, `forward`, `reload` or `stop`. A discarded tab loads again. */
+  "browser.tab.navigate": [
+    { tab_id: string } & ({ url: string } | { action: "back" | "forward" | "reload" | "stop" }),
+    BrowserTab,
+  ];
+  /**
+   * Highlight `query` (up to 200 characters, any case) and go to its next
+   * match, or the one before; an empty query clears it. `current` counts from
+   * 1, 0 with no match. `page_not_ready` while the page loads.
+   */
+  "browser.tab.find": [
+    { tab_id: string; query: string; backwards?: boolean },
+    { matches: number; current: number },
+  ];
+  /** Save the page as a PDF in the tab's downloads folder; the file's name. */
+  "browser.tab.print": [{ tab_id: string }, { name: string }];
+  /** Reload a session's tab whenever files in its worktree change, or stop; the tab. */
+  "browser.tab.reload_on_save": [{ tab_id: string; on: boolean }, BrowserTab];
+  "browser.tab.preview": [{ tab_id: string; preview: BrowserPreviewId | null }, BrowserTab];
+  /** Let the person point at an element; the outcome arrives as `browser.tab.picked`. */
+  "browser.tab.pick": [{ tab_id: string }, Record<string, never>];
+  /** Call the tab's pick off; it ends with a `browser.tab.picked` without a pick. */
+  "browser.tab.pick_cancel": [{ tab_id: string }, Record<string, never>];
+  /**
+   * Drop files on the page at `(x, y)` in its CSS pixels, as the person
+   * dragging them there: workspace files by relative path, or files uploaded
+   * with `attachments.upload` by id. A session's tab takes files from its
+   * own workspace only.
+   */
+  "browser.tab.drop": [
+    {
+      tab_id: string;
+      x: number;
+      y: number;
+      workspace_id: string;
+      paths?: string[];
+      attachment_ids?: string[];
+    },
+    Record<string, never>,
+  ];
+  /** Clear an engine failure, `crash_loop` too, so the next tab starts it again. */
+  "browser.engine.reset": [Record<string, never>, { engine: BrowserEngine }];
+  /**
+   * A stream of the tab at `viewport`, for one viewer to open at
+   * `/zwiim/v1/browser/stream/<stream_id>` within 30 s. Loads a discarded tab.
+   */
+  "browser.view.open": [{ tab_id: string; viewport: BrowserViewport }, { stream_id: string }];
+  /** End the stream and its socket. */
+  "browser.view.close": [{ stream_id: string }, Record<string, never>];
+  /** Answer what a tab waits on; a later answer is `request_not_found`. */
+  "browser.ui.answer": [{ request_id: string; answer: BrowserUiAnswer }, Record<string, never>];
+  /**
+   * Where browser downloads go: null is the default, each session's
+   * `<worktree>/.zwiim/browser/<id>/` (removed with the session); a chosen
+   * `root` holds `<root>/zwiim/<repo>/downloads/`. The person's tabs save to `~/Downloads`.
+   */
+  "browser.downloads.location": [Record<string, never>, { root: string | null }];
+  /** Choose the root folder (an existing absolute folder on the Host), or null for the default. */
+  "browser.downloads.set_location": [{ root: string | null }, { root: string | null }];
+  /** The session's strict site list; empty for none. */
+  "browser.sites.get": [{ session_id: string }, { sites: string[] }];
+  /**
+   * Keep the session's agent to these sites (`example.com`, `*.example.com`,
+   * `localhost:3000`, or pasted addresses; at most 100) and its own dev
+   * servers; empty lets it open any. Returns them as kept; a bad one is `invalid_site`.
+   */
+  "browser.sites.set": [{ session_id: string; sites: string[] }, { sites: string[] }];
+  /**
+   * The sites the session's browser holds cookies for or has open now, and
+   * those its workspace's saved login keeps. Cookies and storage never leave the Host.
+   */
+  "browser.login.get": [{ session_id: string }, BrowserLoginSites];
+  /**
+   * Keep the session's cookies and `localStorage` for these sites (1 to 100)
+   * as its workspace's login, which the workspace's new sessions start from;
+   * `nothing_to_save` when it holds neither for them. Returns the sites kept.
+   */
+  "browser.login.save": [{ session_id: string; sites: string[] }, { saved: string[] }];
+  /** Drop these sites from the workspace's login, or all of it without `sites`. Returns the sites kept. */
+  "browser.login.forget": [{ session_id: string; sites?: string[] }, { saved: string[] }];
+  /** What the session's agent did in its browser, newest first: at most `limit` (50; 200 at most), older than step `before`. */
+  "browser.timeline.list": [{ session_id: string; before?: number; limit?: number }, { steps: BrowserStep[] }];
+  /** Step `seq`'s picture as base64 JPEG; `not_found` once trimmed. */
+  "browser.timeline.image": [{ session_id: string; seq: number }, { jpeg: string }];
+}
+
+/** One recorded step of an agent in its browser. */
+export interface BrowserStep {
+  /** From 1, per session, never reused. */
+  seq: number;
+  /** Unix milliseconds. */
+  at: number;
+  tab_id: string;
+  /** What the agent did: "Clicked", "Opened https://…". Typed text is never kept. */
+  action: string;
+  /** The page the step left the tab on. */
+  url: string;
+  bytes: number;
+}
+
+/** `browser.login.get`: sites by name, such as `app.example.com`. */
+export interface BrowserLoginSites {
+  available: string[];
+  saved: string[];
 }
 
 export type OpName = keyof Operations;
@@ -2032,6 +2475,19 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "terminal.write",
   "terminal.resize",
   "terminal.kill",
+  "browser.tab.open",
+  "browser.tab.close",
+  "browser.tab.navigate",
+  "browser.tab.find",
+  "browser.tab.print",
+  "browser.tab.drop",
+  "browser.engine.reset",
+  "browser.view.open",
+  "browser.ui.answer",
+  "browser.downloads.set_location",
+  "browser.sites.set",
+  "browser.login.save",
+  "browser.login.forget",
   "session.start",
   "session.send",
   "session.cancel",

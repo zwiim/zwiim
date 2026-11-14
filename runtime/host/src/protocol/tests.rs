@@ -115,12 +115,37 @@ const OPS: &[&str] = &[
     "device.pair_invite",
     "device.list",
     "device.revoke",
+    "device.update",
     "cloud.enroll",
     "cloud.status",
     "lan.status",
     "lan.set",
     "host.keep_awake.status",
     "host.keep_awake.set",
+    "browser.tabs.list",
+    "browser.tab.open",
+    "browser.tab.close",
+    "browser.tab.navigate",
+    "browser.tab.find",
+    "browser.tab.print",
+    "browser.tab.drop",
+    "browser.tab.pick",
+    "browser.tab.pick_cancel",
+    "browser.tab.reload_on_save",
+    "browser.tab.preview",
+    "browser.engine.reset",
+    "browser.view.open",
+    "browser.view.close",
+    "browser.ui.answer",
+    "browser.sites.get",
+    "browser.sites.set",
+    "browser.login.get",
+    "browser.login.save",
+    "browser.login.forget",
+    "browser.timeline.list",
+    "browser.timeline.image",
+    "browser.downloads.location",
+    "browser.downloads.set_location",
 ];
 
 pub(crate) fn git(dir: &std::path::Path, args: &[&str]) {
@@ -3186,7 +3211,29 @@ async fn session_operations_over_http() {
         h.err("session.delete", json!({"session_id": sid})).await,
         (StatusCode::CONFLICT, "turn_in_progress".into())
     );
+    let tab = |id: &str, session_id: &str| crate::browser::store::TabRecord {
+        id: id.into(),
+        owner: crate::browser::store::TabOwner::Session {
+            session_id: session_id.into(),
+        },
+        url: "http://localhost:5173/".into(),
+        title: String::new(),
+        position: 0,
+        discarded: true,
+    };
+    crate::browser::store::insert(&h.state.db.conn, &tab("t-idle", &idle))
+        .await
+        .unwrap();
+    crate::browser::store::insert(&h.state.db.conn, &tab("t-other", &sid))
+        .await
+        .unwrap();
     h.ok("session.delete", json!({"session_id": idle})).await;
+    // Its browser tabs go with it; other sessions' stay.
+    let tabs = crate::browser::store::load(&h.state.db.conn).await.unwrap();
+    assert_eq!(
+        tabs.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+        vec!["t-other"]
+    );
     let listed = h
         .ok(
             "session.list",
@@ -5533,6 +5580,34 @@ async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
         ),
         ("agent.remove_key", json!({"agent": "codex"})),
         ("agent.sign_out", json!({"agent": "codex"})),
+        (
+            "device.update",
+            json!({"device_id": "dev-1", "browser_access": "control"}),
+        ),
+        ("browser.engine.reset", json!({})),
+        (
+            "browser.view.open",
+            json!({"tab_id": "t", "viewport": {"width": 800, "height": 600}}),
+        ),
+        ("browser.view.close", json!({"stream_id": "s"})),
+        ("browser.sites.get", json!({"session_id": "s"})),
+        (
+            "browser.sites.set",
+            json!({"session_id": "s", "sites": ["example.com"]}),
+        ),
+        ("browser.login.get", json!({"session_id": "s"})),
+        (
+            "browser.login.save",
+            json!({"session_id": "s", "sites": ["example.com"]}),
+        ),
+        ("browser.login.forget", json!({"session_id": "s"})),
+        ("browser.timeline.list", json!({"session_id": "s"})),
+        (
+            "browser.timeline.image",
+            json!({"session_id": "s", "seq": 1}),
+        ),
+        ("browser.downloads.location", json!({})),
+        ("browser.downloads.set_location", json!({"root": "/tmp"})),
     ] {
         let (status, body) = h.call_as(&credential, op, body).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{op}");
@@ -6339,4 +6414,1124 @@ async fn a_steer_goes_into_the_running_turn() {
     assert_eq!(follow_ups_of(&h, &sid).await[0]["text"], "and tests");
     let sent = agent.await.unwrap();
     assert!(matches!(&sent[0][..], [PromptInputBlock::Text { text }] if text == "use the cache"));
+}
+
+// ─── browser ─────────────────────────────────────────────────────────────
+
+/// Give the Host a browser on a fake engine.
+async fn fake_browser(h: &Host) -> crate::browser::engine::fake::FakeEngine {
+    use crate::browser::engine::{fake::FakeEngine, manager::EngineManager};
+    let fake = FakeEngine::default();
+    let service = crate::browser::service::BrowserService::start(
+        EngineManager::new(fake.start_fn()),
+        h.state.db.conn.clone(),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(h.state.browser.set(service).is_ok());
+    fake
+}
+
+#[tokio::test]
+async fn browser_tabs_over_http() {
+    let h = host(false).await;
+    let fake = fake_browser(&h).await;
+    assert_eq!(
+        h.ok("browser.tabs.list", json!({})).await,
+        json!({"tabs": [], "engine": {"state": "stopped"}})
+    );
+
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let owner = json!({"kind": "session", "session_id": sid});
+    let tab = h
+        .ok(
+            "browser.tab.open",
+            json!({"owner": owner, "url": "http://localhost:5173/"}),
+        )
+        .await;
+    let tab_id = tab["tab_id"].as_str().unwrap().to_string();
+    assert_eq!(tab["owner"], owner);
+    assert_eq!(tab["url"], "http://localhost:5173/");
+    assert_eq!(tab["discarded"], false);
+    let personal = h
+        .ok("browser.tab.open", json!({"owner": {"kind": "personal"}}))
+        .await;
+    assert_eq!(personal["url"], "about:blank");
+
+    let listed = h.ok("browser.tabs.list", json!({"session_id": sid})).await;
+    assert_eq!(listed["tabs"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["tabs"][0]["tab_id"], tab_id.as_str());
+    assert_eq!(listed["engine"]["state"], "running");
+    assert!(listed["engine"]["version"].is_string());
+    assert_eq!(
+        h.ok("browser.tabs.list", json!({})).await["tabs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    h.ok(
+        "browser.tab.navigate",
+        json!({"tab_id": tab_id, "url": "https://example.com/"}),
+    )
+    .await;
+    fake.wait_url("https://example.com/").await;
+    h.ok(
+        "browser.tab.navigate",
+        json!({"tab_id": tab_id, "action": "reload"}),
+    )
+    .await;
+    assert_eq!(fake.calls("Page.reload").len(), 1);
+
+    for body in [
+        json!({"tab_id": tab_id}),
+        json!({"tab_id": tab_id, "url": "https://example.com/", "action": "back"}),
+        json!({"tab_id": tab_id, "action": "sideways"}),
+    ] {
+        assert_eq!(
+            h.err("browser.tab.navigate", body).await,
+            (StatusCode::BAD_REQUEST, "invalid_request".into())
+        );
+    }
+    assert_eq!(
+        h.err(
+            "browser.tab.navigate",
+            json!({"tab_id": tab_id, "url": "file:///etc/passwd"}),
+        )
+        .await,
+        (StatusCode::UNPROCESSABLE_ENTITY, "unsupported_url".into())
+    );
+    assert_eq!(
+        h.err(
+            "browser.tab.open",
+            json!({"owner": {"kind": "session", "session_id": "nope"}}),
+        )
+        .await,
+        (StatusCode::NOT_FOUND, "not_found".into())
+    );
+
+    h.ok("browser.tab.close", json!({"tab_id": tab_id})).await;
+    assert_eq!(
+        h.err("browser.tab.close", json!({"tab_id": tab_id})).await,
+        (StatusCode::NOT_FOUND, "tab_not_found".into())
+    );
+    assert_eq!(
+        h.err(
+            "browser.tab.navigate",
+            json!({"tab_id": tab_id, "action": "stop"})
+        )
+        .await,
+        (StatusCode::NOT_FOUND, "tab_not_found".into())
+    );
+    assert_eq!(
+        h.ok("browser.engine.reset", json!({})).await["engine"]["state"],
+        "running"
+    );
+}
+
+/// Frames until one of `kind` that `matches`; panics after 50 others.
+async fn browser_frame(
+    ws: &mut TestWebSocket,
+    kind: &str,
+    matches: impl Fn(&Value) -> bool,
+) -> Value {
+    for _ in 0..50 {
+        let frame = recv(ws).await;
+        if frame["type"] == kind && matches(&frame) {
+            return frame;
+        }
+    }
+    panic!("no {kind} frame");
+}
+
+#[tokio::test]
+async fn browser_subscribe_streams_tabs_and_the_engine() {
+    let h = host(true).await;
+    let _fake = fake_browser(&h).await;
+    let mut ws = h.ws().await;
+    ws.send_json(&json!({"op": "browser.subscribe"})).await;
+    assert_eq!(
+        recv(&mut ws).await,
+        json!({"type": "browser.snapshot", "tabs": [], "engine": {"state": "stopped"}, "ui_requests": []})
+    );
+
+    let tab = h
+        .ok(
+            "browser.tab.open",
+            json!({"owner": {"kind": "personal"}, "url": "https://example.com/"}),
+        )
+        .await;
+    let tab_id = tab["tab_id"].as_str().unwrap().to_string();
+    let running = browser_frame(&mut ws, "browser.engine.state", |f| {
+        f["engine"]["state"] == "running"
+    })
+    .await;
+    assert!(running["engine"]["version"].is_string());
+    let state = browser_frame(&mut ws, "browser.tab.state", |f| {
+        f["tab"]["tab_id"] == tab_id.as_str()
+    })
+    .await;
+    assert_eq!(state["tab"]["owner"], json!({"kind": "personal"}));
+    assert_no_internal_keys(&state);
+
+    h.ok("browser.tab.close", json!({"tab_id": tab_id})).await;
+    assert_eq!(
+        browser_frame(&mut ws, "browser.tab.removed", |_| true).await,
+        json!({"type": "browser.tab.removed", "tab_id": tab_id, "owner": {"kind": "personal"}})
+    );
+
+    // Subscribing again starts over from a snapshot.
+    ws.send_json(&json!({"op": "browser.subscribe"})).await;
+    let again = browser_frame(&mut ws, "browser.snapshot", |_| true).await;
+    assert_eq!(again["tabs"], json!([]));
+    assert_eq!(again["engine"]["state"], "running");
+}
+
+#[tokio::test]
+async fn a_page_dialog_reaches_clients_and_the_first_answer_wins() {
+    let h = host(true).await;
+    let fake = fake_browser(&h).await;
+    let tab = h
+        .ok(
+            "browser.tab.open",
+            json!({"owner": {"kind": "personal"}, "url": "https://example.com/"}),
+        )
+        .await;
+    let tab_id = tab["tab_id"].as_str().unwrap().to_string();
+    let mut ws = h.ws().await;
+    ws.send_json(&json!({"op": "browser.subscribe"})).await;
+    browser_frame(&mut ws, "browser.snapshot", |_| true).await;
+
+    let target = fake.wait_url("https://example.com/").await;
+    let session = fake.lock().targets[&target].session.clone().unwrap();
+    fake.emit(
+        "Page.javascriptDialogOpening",
+        json!({"type": "confirm", "message": "Leave?", "url": "https://example.com/"}),
+        Some(&session),
+    );
+    let request = browser_frame(&mut ws, "browser.ui.request", |_| true).await["request"].clone();
+    let request_id = request["request_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        request,
+        json!({"request_id": request_id, "tab_id": tab_id, "owner": {"kind": "personal"},
+               "kind": "dialog", "dialog": "confirm", "message": "Leave?",
+               "url": "https://example.com/"})
+    );
+
+    // A client that subscribes now still sees it.
+    let mut late = h.ws().await;
+    late.send_json(&json!({"op": "browser.subscribe"})).await;
+    let snapshot = browser_frame(&mut late, "browser.snapshot", |_| true).await;
+    assert_eq!(snapshot["ui_requests"], json!([request]));
+
+    let answer = json!({"request_id": request_id, "answer": {"kind": "dialog", "accept": false}});
+    assert_eq!(h.ok("browser.ui.answer", answer.clone()).await, json!({}));
+    assert_eq!(fake.calls("Page.handleJavaScriptDialog"), vec![json!({"accept": false})]);
+    assert_eq!(
+        browser_frame(&mut ws, "browser.ui.done", |_| true).await,
+        json!({"type": "browser.ui.done", "request_id": request_id, "tab_id": tab_id})
+    );
+    assert_eq!(
+        h.err("browser.ui.answer", answer).await,
+        (StatusCode::NOT_FOUND, "request_not_found".into())
+    );
+    assert_eq!(
+        h.err(
+            "browser.ui.answer",
+            json!({"request_id": request_id, "answer": {"kind": "dialog"}}),
+        )
+        .await,
+        (StatusCode::BAD_REQUEST, "invalid_request".into())
+    );
+}
+
+#[tokio::test]
+async fn a_file_chooser_gets_files_of_its_sessions_workspace_only() {
+    let h = host(true).await;
+    let fake = fake_browser(&h).await;
+    let wt = std::path::Path::new(&h.wt);
+    std::fs::write(wt.join("photo.png"), b"png").unwrap();
+    std::fs::write(wt.join(".env"), b"SECRET=1").unwrap();
+    std::os::unix::fs::symlink(wt.join(".env"), wt.join("notes.txt")).unwrap();
+    std::os::unix::fs::symlink("/etc/hosts", wt.join("hosts")).unwrap();
+
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let tab = h
+        .ok(
+            "browser.tab.open",
+            json!({"owner": {"kind": "session", "session_id": sid}, "url": "https://example.com/"}),
+        )
+        .await;
+    let target = fake.wait_url("https://example.com/").await;
+    let session = fake.lock().targets[&target].session.clone().unwrap();
+    let mut ws = h.ws().await;
+    ws.send_json(&json!({"op": "browser.subscribe"})).await;
+    browser_frame(&mut ws, "browser.snapshot", |_| true).await;
+    fake.emit(
+        "Page.fileChooserOpened",
+        json!({"frameId": target, "mode": "selectSingle", "backendNodeId": 7}),
+        Some(&session),
+    );
+    let request = browser_frame(&mut ws, "browser.ui.request", |_| true).await["request"].clone();
+    assert_eq!(request["kind"], "file_chooser");
+    assert_eq!(request["tab_id"], tab["tab_id"]);
+    assert_eq!(request["multiple"], false);
+    let request_id = request["request_id"].as_str().unwrap().to_string();
+
+    let answer = |workspace_id: &str, path: &str| {
+        json!({"request_id": request_id, "answer":
+               {"kind": "file_chooser", "accept": true, "workspace_id": workspace_id, "paths": [path]}})
+    };
+    for (body, refused) in [
+        (answer(&h.workspace_id, "photo.png"), (StatusCode::FORBIDDEN, "permission_denied")),
+        (answer(&h.wt_workspace_id, "../photo.png"), (StatusCode::BAD_REQUEST, "invalid_input")),
+        (answer(&h.wt_workspace_id, "missing.png"), (StatusCode::NOT_FOUND, "not_found")),
+        (answer(&h.wt_workspace_id, "hosts"), (StatusCode::NOT_FOUND, "not_found")),
+        (answer(&h.wt_workspace_id, "notes.txt"), (StatusCode::NOT_FOUND, "not_found")),
+        (
+            json!({"request_id": request_id, "answer": {"kind": "file_chooser", "accept": true,
+                   "workspace_id": h.wt_workspace_id, "paths": ["photo.png"], "files": ["/etc/hosts"]}}),
+            (StatusCode::BAD_REQUEST, "invalid_request"),
+        ),
+    ] {
+        assert_eq!(
+            h.err("browser.ui.answer", body.clone()).await,
+            (refused.0, refused.1.into()),
+            "{body}"
+        );
+    }
+    assert!(fake.calls("DOM.setFileInputFiles").is_empty());
+
+    h.ok("browser.ui.answer", answer(&h.wt_workspace_id, "photo.png")).await;
+    let photo = wt.join("photo.png").canonicalize().unwrap();
+    assert_eq!(
+        fake.calls("DOM.setFileInputFiles"),
+        vec![json!({"files": [photo], "backendNodeId": 7})]
+    );
+    browser_frame(&mut ws, "browser.ui.done", |_| true).await;
+}
+
+#[tokio::test]
+async fn files_dropped_on_a_tab_come_from_its_sessions_workspace() {
+    let h = host(true).await;
+    let fake = fake_browser(&h).await;
+    let wt = std::path::Path::new(&h.wt);
+    std::fs::write(wt.join("photo.png"), b"png").unwrap();
+    let uploaded = crate::attachments::store(wt, "scan.pdf", b"pdf")
+        .await
+        .unwrap();
+
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let tab = h
+        .ok(
+            "browser.tab.open",
+            json!({"owner": {"kind": "session", "session_id": sid}, "url": "https://example.com/"}),
+        )
+        .await;
+    let drop = |workspace_id: &str, extra: Value| {
+        let mut body =
+            json!({"tab_id": tab["tab_id"], "x": 5, "y": 6, "workspace_id": workspace_id});
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        body
+    };
+    for (body, refused) in [
+        (
+            drop(&h.workspace_id, json!({"paths": ["photo.png"]})),
+            (StatusCode::FORBIDDEN, "permission_denied"),
+        ),
+        (
+            drop(&h.wt_workspace_id, json!({})),
+            (StatusCode::BAD_REQUEST, "invalid_request"),
+        ),
+        (
+            drop(&h.wt_workspace_id, json!({"attachment_ids": ["nope"]})),
+            (StatusCode::NOT_FOUND, "attachment_not_found"),
+        ),
+    ] {
+        assert_eq!(
+            h.err("browser.tab.drop", body.clone()).await,
+            (refused.0, refused.1.into()),
+            "{body}"
+        );
+    }
+    assert!(fake.calls("Input.dispatchDragEvent").is_empty());
+
+    h.ok(
+        "browser.tab.drop",
+        drop(
+            &h.wt_workspace_id,
+            json!({"paths": ["photo.png"], "attachment_ids": [uploaded.attachment_id]}),
+        ),
+    )
+    .await;
+    let dropped = fake.calls("Input.dispatchDragEvent");
+    assert_eq!(dropped.len(), 3);
+    let files = dropped[2]["data"]["files"].as_array().unwrap();
+    assert_eq!(
+        files[0],
+        json!(wt.join("photo.png").canonicalize().unwrap())
+    );
+    assert!(files[1].as_str().unwrap().ends_with("scan.pdf"));
+}
+
+#[tokio::test]
+async fn printing_a_missing_tab_is_not_found() {
+    let h = host(false).await;
+    let _fake = fake_browser(&h).await;
+    assert_eq!(
+        h.err("browser.tab.print", json!({"tab_id": "nope"})).await,
+        (StatusCode::NOT_FOUND, "tab_not_found".into())
+    );
+}
+
+#[tokio::test]
+async fn a_sessions_strict_site_list_is_kept_and_checked() {
+    let h = host(false).await;
+    let _fake = fake_browser(&h).await;
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    assert_eq!(
+        h.ok("browser.sites.get", json!({"session_id": sid})).await,
+        json!({"sites": []})
+    );
+    assert_eq!(
+        h.ok(
+            "browser.sites.set",
+            json!({"session_id": sid, "sites": ["https://GitHub.com/zwiim", "*.example.com"]})
+        )
+        .await,
+        json!({"sites": ["github.com", "*.example.com"]})
+    );
+    assert_eq!(
+        h.ok("browser.sites.get", json!({"session_id": sid})).await,
+        json!({"sites": ["github.com", "*.example.com"]})
+    );
+    let (status, body) = h
+        .call(
+            "browser.sites.set",
+            json!({"session_id": sid, "sites": ["not a site"]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_site");
+    let (status, _) = h
+        .call("browser.sites.get", json!({"session_id": "nope"}))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_workspace_login_is_listed_saved_and_forgotten_by_site() {
+    use crate::browser::engine::{fake::FakeEngine, manager::EngineManager};
+    let h = host(false).await;
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeEngine::default();
+    let service = crate::browser::service::BrowserService::start(
+        EngineManager::new(fake.start_fn()),
+        h.state.db.conn.clone(),
+        Some(crate::browser::snapshot::Snapshot::with_key(
+            dir.path().join("personal.snapshot"),
+            [5; 32],
+        )),
+    )
+    .await
+    .unwrap();
+    assert!(h.state.browser.set(service.clone()).is_ok());
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    assert_eq!(
+        h.ok("browser.login.get", json!({"session_id": sid})).await,
+        json!({"available": [], "saved": []})
+    );
+    h.ok(
+        "browser.tab.open",
+        json!({"owner": {"kind": "session", "session_id": sid}}),
+    )
+    .await;
+    let ctx = fake.calls("Target.createTarget")[0]["browserContextId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    fake.lock().cookies.insert(
+        ctx,
+        vec![json!({ "name": "sid", "value": "secret", "domain": "app.example", "path": "/" })],
+    );
+    assert_eq!(
+        h.ok("browser.login.get", json!({"session_id": sid})).await,
+        json!({"available": ["app.example"], "saved": []})
+    );
+    assert_eq!(
+        h.err(
+            "browser.login.save",
+            json!({"session_id": sid, "sites": ["x.example"]})
+        )
+        .await,
+        (StatusCode::CONFLICT, "nothing_to_save".into())
+    );
+    assert_eq!(
+        h.ok(
+            "browser.login.save",
+            json!({"session_id": sid, "sites": ["app.example"]})
+        )
+        .await,
+        json!({"saved": ["app.example"]})
+    );
+    assert_eq!(
+        h.ok("browser.login.get", json!({"session_id": sid})).await["saved"],
+        json!(["app.example"])
+    );
+    assert_eq!(
+        h.ok("browser.login.forget", json!({"session_id": sid}))
+            .await,
+        json!({"saved": []})
+    );
+    assert_eq!(
+        h.err(
+            "browser.login.save",
+            json!({"session_id": sid, "sites": []})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let (status, _) = h
+        .call("browser.login.get", json!({"session_id": "nope"}))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_sessions_browser_steps_are_listed_with_their_pictures() {
+    let h = host(false).await;
+    let _fake = fake_browser(&h).await;
+    let dir = tempfile::tempdir().unwrap();
+    let browser = h.state.browser.get().unwrap().clone();
+    browser.keep_timeline(dir.path().to_path_buf());
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    assert_eq!(
+        h.ok("browser.timeline.list", json!({"session_id": sid}))
+            .await,
+        json!({"steps": []})
+    );
+    let tab = h
+        .ok(
+            "browser.tab.open",
+            json!({"owner": {"kind": "session", "session_id": sid}}),
+        )
+        .await;
+    let tab_id = tab["tab_id"].as_str().unwrap();
+    browser.record_step(&sid, tab_id, "Clicked".into()).await;
+    browser
+        .record_step(&sid, tab_id, "Pressed Enter".into())
+        .await;
+    let listed = h
+        .ok("browser.timeline.list", json!({"session_id": sid}))
+        .await;
+    let steps = listed["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[0]["action"], "Pressed Enter");
+    assert_eq!(steps[0]["seq"], 2);
+    assert_eq!(steps[0]["tab_id"], tab_id);
+    let older = h
+        .ok(
+            "browser.timeline.list",
+            json!({"session_id": sid, "before": 2, "limit": 5}),
+        )
+        .await;
+    assert_eq!(older["steps"][0]["action"], "Clicked");
+    assert_eq!(
+        h.ok(
+            "browser.timeline.image",
+            json!({"session_id": sid, "seq": 1})
+        )
+        .await,
+        json!({"jpeg": crate::browser::engine::fake::screenshot_base64()})
+    );
+    assert_eq!(
+        h.err(
+            "browser.timeline.image",
+            json!({"session_id": sid, "seq": 9})
+        )
+        .await,
+        (StatusCode::NOT_FOUND, "not_found".into())
+    );
+}
+
+#[tokio::test]
+async fn browser_downloads_go_to_the_worktree_or_the_chosen_root() {
+    let h = host(false).await;
+    let fake = fake_browser(&h).await;
+    assert_eq!(
+        h.ok("browser.downloads.location", json!({})).await,
+        json!({"root": null})
+    );
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    h.ok(
+        "browser.tab.open",
+        json!({"owner": {"kind": "session", "session_id": sid}}),
+    )
+    .await;
+    let own = std::path::Path::new(&h.wt)
+        .join(".zwiim/browser")
+        .join(&sid[..8]);
+    let path_of = |i: usize| {
+        std::path::PathBuf::from(
+            fake.calls("Browser.setDownloadBehavior")[i]["downloadPath"]
+                .as_str()
+                .unwrap(),
+        )
+    };
+    assert_eq!(path_of(0), own);
+
+    for (root, refused) in [
+        ("relative/dir", (StatusCode::BAD_REQUEST, "invalid_input")),
+        ("/no/such/folder/here", (StatusCode::NOT_FOUND, "not_found")),
+    ] {
+        assert_eq!(
+            h.err("browser.downloads.set_location", json!({"root": root}))
+                .await,
+            (refused.0, refused.1.into())
+        );
+    }
+    let chosen = tempfile::tempdir().unwrap();
+    let chosen_path = chosen.path().canonicalize().unwrap();
+    assert_eq!(
+        h.ok(
+            "browser.downloads.set_location",
+            json!({"root": chosen.path()})
+        )
+        .await,
+        json!({"root": chosen_path})
+    );
+    // Open tabs follow at once, to the repository's shared folder.
+    let repo = std::path::Path::new(&h.root).file_name().unwrap();
+    assert_eq!(
+        path_of(1),
+        chosen_path.join("zwiim").join(repo).join("downloads")
+    );
+
+    // Back to the default; deleting the session removes its own folder.
+    h.ok("browser.downloads.set_location", json!({"root": null}))
+        .await;
+    assert_eq!(path_of(2), own);
+    std::fs::create_dir_all(&own).unwrap();
+    std::fs::write(own.join("report.pdf"), "x").unwrap();
+    h.ok("session.delete", json!({"session_id": sid})).await;
+    assert!(!own.exists());
+    assert!(std::path::Path::new(&h.wt).join(".zwiim").exists());
+}
+
+#[tokio::test]
+async fn a_session_tab_reloads_when_its_worktree_changes() {
+    let h = host(false).await;
+    let fake = fake_browser(&h).await;
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let tab = h
+        .ok(
+            "browser.tab.open",
+            json!({"owner": {"kind": "session", "session_id": sid}, "url": "http://localhost:5173/"}),
+        )
+        .await;
+    let tab_id = tab["tab_id"].as_str().unwrap().to_string();
+    assert_eq!(tab["reload_on_save"], false);
+
+    let on = h
+        .ok(
+            "browser.tab.reload_on_save",
+            json!({"tab_id": tab_id, "on": true}),
+        )
+        .await;
+    assert_eq!(on["reload_on_save"], true);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    std::fs::write(
+        std::path::Path::new(&h.wt).join("index.html"),
+        "<p>saved</p>",
+    )
+    .unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while fake.calls("Page.reload").is_empty() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(fake.calls("Page.reload").len(), 1);
+
+    let off = h
+        .ok(
+            "browser.tab.reload_on_save",
+            json!({"tab_id": tab_id, "on": false}),
+        )
+        .await;
+    assert_eq!(off["reload_on_save"], false);
+    std::fs::write(
+        std::path::Path::new(&h.wt).join("index.html"),
+        "<p>again</p>",
+    )
+    .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    assert_eq!(fake.calls("Page.reload").len(), 1);
+
+    // The person's tabs have no worktree to follow.
+    let personal = h
+        .ok("browser.tab.open", json!({"owner": {"kind": "personal"}}))
+        .await;
+    assert_eq!(
+        h.err(
+            "browser.tab.reload_on_save",
+            json!({"tab_id": personal["tab_id"], "on": true}),
+        )
+        .await,
+        (StatusCode::BAD_REQUEST, "session_tab_only".into())
+    );
+}
+
+#[tokio::test]
+async fn a_tab_is_previewed_as_a_phone_and_back_as_a_desktop_page() {
+    let h = host(false).await;
+    let fake = fake_browser(&h).await;
+    let tab = h
+        .ok("browser.tab.open", json!({"owner": {"kind": "personal"}}))
+        .await;
+    let tab_id = tab["tab_id"].as_str().unwrap().to_string();
+    assert!(tab.get("preview").is_none());
+    h.ok(
+        "browser.view.open",
+        json!({"tab_id": tab_id, "viewport": {"width": 900, "height": 700, "scale": 2.0}}),
+    )
+    .await;
+
+    let phone = h
+        .ok(
+            "browser.tab.preview",
+            json!({"tab_id": tab_id, "preview": "iphone"}),
+        )
+        .await;
+    assert_eq!(phone["preview"], "iphone");
+    let metrics = fake.calls("Emulation.setDeviceMetricsOverride");
+    let last = &metrics.last().unwrap();
+    assert_eq!(
+        (last["width"].as_u64(), last["mobile"].as_bool()),
+        (Some(393), Some(true))
+    );
+    assert_eq!(
+        fake.calls("Emulation.setTouchEmulationEnabled")
+            .last()
+            .unwrap()["enabled"],
+        true
+    );
+    let ua = fake.calls("Emulation.setUserAgentOverride");
+    assert!(ua.last().unwrap()["userAgent"]
+        .as_str()
+        .unwrap()
+        .contains("iPhone"));
+
+    // The viewer resizing leaves the phone's size alone.
+    let before = fake.calls("Emulation.setDeviceMetricsOverride").len();
+    let stream = h
+        .ok(
+            "browser.view.open",
+            json!({"tab_id": tab_id, "viewport": {"width": 1000, "height": 700, "scale": 2.0}}),
+        )
+        .await;
+    assert!(stream.get("stream_id").is_some());
+    assert_eq!(
+        fake.calls("Emulation.setDeviceMetricsOverride").len(),
+        before
+    );
+
+    let desktop = h
+        .ok(
+            "browser.tab.preview",
+            json!({"tab_id": tab_id, "preview": null}),
+        )
+        .await;
+    assert!(desktop.get("preview").is_none());
+    assert_eq!(fake.calls("Emulation.clearDeviceMetricsOverride").len(), 1);
+    // Back at the size its viewer asked for, with the desktop agent.
+    let metrics = fake.calls("Emulation.setDeviceMetricsOverride");
+    let last = &metrics.last().unwrap();
+    assert_eq!(
+        (last["width"].as_u64(), last["mobile"].as_bool()),
+        (Some(1000), Some(false))
+    );
+    let ua = fake.calls("Emulation.setUserAgentOverride");
+    assert!(!ua.last().unwrap()["userAgent"]
+        .as_str()
+        .unwrap()
+        .contains("iPhone"));
+
+    assert_eq!(
+        h.err(
+            "browser.tab.preview",
+            json!({"tab_id": tab_id, "preview": "fridge"})
+        )
+        .await,
+        (StatusCode::BAD_REQUEST, "unknown_preview".into())
+    );
+}
+
+#[tokio::test]
+async fn a_device_reaches_its_sessions_tabs_by_its_browser_access() {
+    let h = host(false).await;
+    let fake = fake_browser(&h).await;
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    let owner = json!({"kind": "session", "session_id": sid});
+    let tab = h.ok("browser.tab.open", json!({"owner": owner})).await;
+    let tab_id = tab["tab_id"].as_str().unwrap().to_string();
+    let personal = h
+        .ok("browser.tab.open", json!({"owner": {"kind": "personal"}}))
+        .await;
+    let personal_id = personal["tab_id"].as_str().unwrap().to_string();
+    let device = bearer_device(&h, "dev-1").await;
+    let refused = |body: Value| {
+        body["error"]["code"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    // A newly paired device watches: it lists its sessions' tabs, never the
+    // person's, and can't steer them.
+    assert_eq!(
+        h.ok("device.list", json!({})).await["devices"][0]["browser_access"],
+        "view"
+    );
+    let (status, listed) = h.call_as(&device, "browser.tabs.list", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    let ids: Vec<&str> = listed["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["tab_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, [tab_id.as_str()]);
+    let navigate = json!({"tab_id": tab_id, "action": "reload"});
+    let (status, body) = h
+        .call_as(&device, "browser.tab.navigate", navigate.clone())
+        .await;
+    assert_eq!(
+        (status, refused(body.clone())),
+        (StatusCode::FORBIDDEN, "permission_denied".into())
+    );
+    assert_eq!(
+        body["error"]["message"],
+        "This device can only watch the Mac's browser. Allow it to steer on the Mac."
+    );
+    assert!(fake.calls("Page.reload").is_empty());
+
+    // Allowed to steer on the Mac, it does, from its next request.
+    h.ok(
+        "device.update",
+        json!({"device_id": "dev-1", "browser_access": "control"}),
+    )
+    .await;
+    assert_eq!(
+        h.ok("device.list", json!({})).await["devices"][0]["browser_access"],
+        "control"
+    );
+    assert_eq!(
+        h.call_as(&device, "browser.tab.navigate", navigate).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(fake.calls("Page.reload").len(), 1);
+    let (status, opened) = h
+        .call_as(&device, "browser.tab.open", json!({"owner": owner}))
+        .await;
+    assert_eq!((status, &opened["owner"]), (StatusCode::OK, &owner));
+
+    // The person's tabs stay hidden: as if they weren't there.
+    for (op, body) in [
+        (
+            "browser.tab.navigate",
+            json!({"tab_id": personal_id, "action": "reload"}),
+        ),
+        ("browser.tab.close", json!({"tab_id": personal_id})),
+        (
+            "browser.tab.find",
+            json!({"tab_id": personal_id, "query": "a"}),
+        ),
+        ("browser.tab.print", json!({"tab_id": personal_id})),
+        (
+            "browser.tab.drop",
+            json!({"tab_id": personal_id, "x": 1, "y": 1, "workspace_id": h.workspace_id, "paths": ["a"]}),
+        ),
+    ] {
+        let (status, body) = h.call_as(&device, op, body).await;
+        assert_eq!(
+            (status, refused(body)),
+            (StatusCode::NOT_FOUND, "tab_not_found".into()),
+            "{op}"
+        );
+    }
+    let (status, body) = h
+        .call_as(
+            &device,
+            "browser.tab.open",
+            json!({"owner": {"kind": "personal"}}),
+        )
+        .await;
+    assert_eq!(
+        (status, refused(body)),
+        (StatusCode::FORBIDDEN, "permission_denied".into())
+    );
+    let (status, body) = h
+        .call_as(
+            &device,
+            "browser.ui.answer",
+            json!({"request_id": "ui-1", "answer": {"kind": "dialog", "accept": true}}),
+        )
+        .await;
+    assert_eq!(
+        (status, refused(body)),
+        (StatusCode::NOT_FOUND, "request_not_found".into())
+    );
+    assert_eq!(
+        h.ok("browser.tabs.list", json!({})).await["tabs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3,
+        "the person's tab is still open"
+    );
+
+    // Taken away, the browser is closed to it.
+    h.ok(
+        "device.update",
+        json!({"device_id": "dev-1", "browser_access": "none"}),
+    )
+    .await;
+    let (status, body) = h.call_as(&device, "browser.tabs.list", json!({})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        body["error"]["message"],
+        "This device can't use the Mac's browser. Allow it on the Mac."
+    );
+
+    assert_eq!(
+        h.err(
+            "device.update",
+            json!({"device_id": "nope", "browser_access": "view"})
+        )
+        .await,
+        (StatusCode::NOT_FOUND, "not_found".into())
+    );
+    assert_eq!(
+        h.err(
+            "device.update",
+            json!({"device_id": "dev-1", "browser_access": "admin"})
+        )
+        .await
+        .1,
+        "invalid_request"
+    );
+}
+
+#[tokio::test]
+async fn a_paired_device_cannot_subscribe_to_the_browser() {
+    let h = host(true).await;
+    let _fake = fake_browser(&h).await;
+    let credential = bearer_device(&h, "dev-1").await;
+    let mut ws = h.ws_as("/zwiim/v1/ws", &credential).await;
+    ws.send_json(&json!({"op": "browser.subscribe"})).await;
+    assert_eq!(
+        recv(&mut ws).await,
+        json!({"type": "browser.error", "error": {
+            "code": "permission_denied",
+            "message": "This operation requires local host authority",
+        }})
+    );
+    h.ok("browser.tab.open", json!({"owner": {"kind": "personal"}}))
+        .await;
+    assert_silent(&mut ws).await;
+}
+
+/// A viewer's socket on `stream_id`, with `token`.
+async fn stream_socket(h: &Host, stream_id: &str, token: &str) -> axum_test::TestResponse {
+    let proto = format!(
+        "zwiim-browser-stream, zwiim-token.{}",
+        URL_SAFE_NO_PAD.encode(token)
+    );
+    h.server
+        .get_websocket(&format!("/zwiim/v1/browser/stream/{stream_id}"))
+        .add_header("sec-websocket-protocol", proto)
+        .await
+}
+
+#[tokio::test]
+async fn browser_frames_reach_the_stream_socket() {
+    let h = host(true).await;
+    let fake = fake_browser(&h).await;
+    let tab = h
+        .ok("browser.tab.open", json!({"owner": {"kind": "personal"}}))
+        .await;
+    let tab_id = tab["tab_id"].as_str().unwrap();
+    let view = json!({"tab_id": tab_id, "viewport": {"width": 800, "height": 600, "scale": 2}});
+    let stream_id = h.ok("browser.view.open", view).await["stream_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut ws = stream_socket(&h, &stream_id, HOST_TOKEN)
+        .await
+        .into_websocket()
+        .await;
+    // One viewer per stream.
+    let again = stream_socket(&h, &stream_id, HOST_TOKEN).await;
+    assert_eq!(again.status_code(), StatusCode::CONFLICT);
+    assert_eq!(again.json::<Value>()["error"]["code"], "stream_attached");
+
+    let (_, session) = h
+        .state
+        .browser
+        .get()
+        .unwrap()
+        .session(tab_id)
+        .await
+        .unwrap();
+    for _ in 0..200 {
+        if !fake.calls("Page.startScreencast").is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    fake.emit(
+        "Page.screencastFrame",
+        json!({
+            "data": base64::engine::general_purpose::STANDARD.encode(b"JPEG"),
+            "sessionId": 9,
+            "metadata": {"deviceWidth": 800, "deviceHeight": 600, "pageScaleFactor": 1,
+                "scrollOffsetX": 0, "scrollOffsetY": 0, "offsetTop": 0, "timestamp": 1.0}
+        }),
+        Some(&session),
+    );
+    let frame = tokio::time::timeout(Duration::from_secs(5), ws.receive_bytes())
+        .await
+        .unwrap();
+    assert_eq!(&frame[..2], &[1, 1]);
+    assert_eq!(&frame[crate::browser::stream::HEADER_LEN..], b"JPEG");
+    for _ in 0..200 {
+        if fake.calls("Page.screencastFrameAck") == vec![json!({"sessionId": 9})] {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(
+        fake.calls("Page.screencastFrameAck"),
+        vec![json!({"sessionId": 9})]
+    );
+
+    // Closing the view ends the socket.
+    h.ok("browser.view.close", json!({"stream_id": stream_id}))
+        .await;
+    let closed = tokio::time::timeout(Duration::from_secs(5), ws.receive_message())
+        .await
+        .unwrap();
+    assert!(
+        matches!(closed, axum_test::WsMessage::Close(_)),
+        "{closed:?}"
+    );
+    assert_eq!(
+        h.err("browser.view.close", json!({"stream_id": stream_id}))
+            .await,
+        (StatusCode::NOT_FOUND, "stream_not_found".into())
+    );
+}
+
+#[tokio::test]
+async fn browser_views_refuse_bad_input_and_devices() {
+    let h = host(true).await;
+    let _fake = fake_browser(&h).await;
+    let tab = h
+        .ok("browser.tab.open", json!({"owner": {"kind": "personal"}}))
+        .await;
+    assert_eq!(
+        h.err(
+            "browser.view.open",
+            json!({"tab_id": tab["tab_id"], "viewport": {"width": 5, "height": 600}})
+        )
+        .await,
+        (StatusCode::BAD_REQUEST, "invalid_viewport".into())
+    );
+    assert_eq!(
+        h.err(
+            "browser.view.open",
+            json!({"tab_id": "nope", "viewport": {"width": 800, "height": 600}})
+        )
+        .await,
+        (StatusCode::NOT_FOUND, "tab_not_found".into())
+    );
+    let unknown = stream_socket(&h, "nope", HOST_TOKEN).await;
+    assert_eq!(unknown.status_code(), StatusCode::NOT_FOUND);
+    assert_eq!(unknown.json::<Value>()["error"]["code"], "stream_not_found");
+
+    let stream_id = h
+        .ok(
+            "browser.view.open",
+            json!({"tab_id": tab["tab_id"], "viewport": {"width": 800, "height": 600}}),
+        )
+        .await["stream_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let credential = bearer_device(&h, "dev-1").await;
+    let device = stream_socket(&h, &stream_id, &credential).await;
+    assert_eq!(device.status_code(), StatusCode::FORBIDDEN);
+    assert_eq!(device.json::<Value>()["error"]["code"], "permission_denied");
+}
+
+#[tokio::test]
+async fn the_stream_socket_takes_input() {
+    let h = host(true).await;
+    let fake = fake_browser(&h).await;
+    let tab = h
+        .ok("browser.tab.open", json!({"owner": {"kind": "personal"}}))
+        .await;
+    let view = json!({"tab_id": tab["tab_id"], "viewport": {"width": 800, "height": 600}});
+    let stream_id = h.ok("browser.view.open", view).await["stream_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut ws = stream_socket(&h, &stream_id, HOST_TOKEN)
+        .await
+        .into_websocket()
+        .await;
+
+    ws.send_json(&json!({"type": "mouse", "action": "down", "x": 5, "y": 6, "button": "left", "click_count": 1}))
+        .await;
+    ws.send_json(&json!({"type": "text", "text": "hi"})).await;
+    ws.send_json(&json!({"type": "viewport", "width": 1024, "height": 700}))
+        .await;
+    ws.send_json(&json!({"type": "teleport"})).await;
+    let err: Value = tokio::time::timeout(Duration::from_secs(5), ws.receive_json())
+        .await
+        .unwrap();
+    assert_eq!(err["type"], "error");
+    assert_eq!(err["error"]["code"], "invalid_request");
+    // Messages are handled in order, so the good ones are in by now.
+    assert_eq!(
+        fake.calls("Input.dispatchMouseEvent")[0]["type"],
+        "mousePressed"
+    );
+    assert_eq!(fake.calls("Input.insertText"), vec![json!({"text": "hi"})]);
+    assert_eq!(
+        fake.calls("Emulation.setDeviceMetricsOverride")
+            .last()
+            .unwrap()["width"],
+        1024
+    );
+
+    ws.send_json(&json!({"type": "viewport", "width": 5, "height": 700}))
+        .await;
+    let err: Value = tokio::time::timeout(Duration::from_secs(5), ws.receive_json())
+        .await
+        .unwrap();
+    assert_eq!(err["error"]["code"], "invalid_viewport");
 }

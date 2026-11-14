@@ -182,6 +182,84 @@ describe("transcript", () => {
     controller.dispose();
   });
 
+  it("names Zwiim's browser tools by what they do, with the browser's icon", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        turn("t1", "assistant", [
+          {
+            type: "tool_call",
+            tool_call_id: "b1",
+            title: "mcp__zwiim-mcp__browser_navigate",
+            input_preview: '{"tabId":"a","url":"https://example.com/"}',
+            status: "completed",
+          },
+          {
+            type: "tool_call",
+            tool_call_id: "q1",
+            // Codex's transcripts spell the server zwiim_mcp.
+            title: "mcp__zwiim_mcp__ask_user_question",
+            input_preview: '{"questions":[{"question":"Which branch?"}]}',
+            status: "completed",
+          },
+        ]),
+      ],
+    });
+    const { controller, frame } = await openSession(t);
+    const [call, ask] = screen.getAllByTestId("tool-call");
+    expect(ask!.textContent).toContain("Ask");
+    expect(ask!.textContent).toContain("Which branch?");
+    expect(ask!.textContent).not.toContain("zwiim");
+    expect(call!.textContent).toContain("Go to");
+    expect(call!.textContent).toContain("https://example.com/");
+    expect(call!.textContent).not.toContain("zwiim-mcp");
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot({ status: "prompting" }) });
+    await frame({
+      type: "event",
+      event: {
+        session_id: "s1",
+        seq: 2,
+        type: "agent.tool_call",
+        payload: { tool_call_id: "b2", title: "mcp__zwiim-mcp__browser_click", kind: "other", status: "in_progress", content: null },
+      },
+    });
+    expect(screen.getAllByTestId("tool-call").at(-1)!.textContent).toBe("Clickrunning");
+    // The Host sends a Zwiim tool's input live, so a running call says what it acts on.
+    await frame({
+      type: "event",
+      event: {
+        session_id: "s1",
+        seq: 3,
+        type: "agent.tool_call",
+        payload: {
+          tool_call_id: "b3",
+          title: "mcp__zwiim-mcp__browser_navigate",
+          kind: "other",
+          status: "in_progress",
+          content: null,
+          input: '{"tabId":"a","url":"https://example.org/"}',
+        },
+      },
+    });
+    expect(screen.getAllByTestId("tool-call").at(-1)!.textContent).toContain("Go tohttps://example.org/");
+    await frame({
+      type: "event",
+      event: {
+        session_id: "s1",
+        seq: 4,
+        type: "agent.tool_call",
+        payload: { tool_call_id: "o1", title: "Type", kind: "other", status: "in_progress", content: null },
+      },
+    });
+    // The icon follows the tool, not its words: another tool titled "Type" is no browser step.
+    const calls = screen.getAllByTestId("tool-call");
+    expect(calls.at(-2)!.querySelector(".lucide-globe")).toBeTruthy();
+    expect(calls.at(-1)!.textContent).toBe("Typerunning");
+    expect(calls.at(-1)!.querySelector(".lucide-globe")).toBeNull();
+    controller.dispose();
+  });
+
   it("names Zwiim's own tool by what it does while it runs", async () => {
     const t = new FakeTransport();
     const { controller, frame } = await openSession(t);
@@ -1405,6 +1483,34 @@ describe("changed files", () => {
       fireEvent.click(remove);
       await act(async () => {});
       expect(removed).toEqual([{ session_id: "s1" }]);
+      controller.dispose();
+    });
+
+    it("sends what was picked on a page after the message, and lets it be taken back", async () => {
+      const t = new FakeTransport();
+      t.handlers["session.history"] = (p) => ({ session_id: p.session_id, turns: [] });
+      const sent: { blocks: unknown[] }[] = [];
+      t.handlers["session.follow_up"] = (p) => (sent.push(p), { outcome: "sent" });
+      const { controller } = await openSession(t);
+      const { handToChat } = await import("@/lib/page-handoff");
+      await act(async () => {
+        handToChat("s1", { label: "button#go", text: "picked block" });
+        handToChat("s1", { label: "div.card", text: "second block" });
+      });
+      expect(screen.getAllByTestId("pending-page-block").map((c) => c.textContent)).toEqual(["button#go", "div.card"]);
+      fireEvent.click(screen.getByRole("button", { name: "Remove div.card" }));
+      await act(async () => {});
+      expect(screen.getAllByTestId("pending-page-block")).toHaveLength(1);
+
+      fireEvent.change(screen.getByRole("textbox"), { target: { value: "Fix this" } });
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /send/i }));
+      });
+      expect(sent[0]!.blocks).toEqual([
+        { type: "text", text: "Fix this" },
+        { type: "text", text: "picked block" },
+      ]);
+      expect(screen.queryByTestId("pending-page-block")).toBeNull();
       controller.dispose();
     });
 

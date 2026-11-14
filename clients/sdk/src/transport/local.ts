@@ -1,3 +1,10 @@
+import {
+  BROWSER_STREAM_SUBPROTOCOL,
+  driveBrowserStream,
+  type BrowserStream,
+  type BrowserStreamHandlers,
+  type BrowserStreamTransport,
+} from "../browser/stream";
 import { ZwiimClientError } from "../client/errors";
 import {
   EVENTS_SUBPROTOCOL,
@@ -29,7 +36,7 @@ export interface LocalTransportOptions {
 const DEFAULT_TIMEOUT_MS = 60_000;
 
 /** Localhost HTTP + WebSocket transport to a host on the same machine. */
-export class LocalTransport implements Transport {
+export class LocalTransport implements Transport, BrowserStreamTransport {
   private readonly base: string;
   private readonly token: string;
   private readonly fetchImpl: typeof fetch;
@@ -98,6 +105,16 @@ export class LocalTransport implements Transport {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /** A browser view's stream socket, on the same listener and token as `/ws`. */
+  openBrowserStream(stream_id: string, handlers: BrowserStreamHandlers): BrowserStream {
+    const url = `${this.base.replace(/^http/, "ws")}${PROTOCOL_PREFIX}/browser/stream/${encodeURIComponent(stream_id)}`;
+    const socket = new this.WebSocketImpl(url, [
+      BROWSER_STREAM_SUBPROTOCOL,
+      `${TOKEN_SUBPROTOCOL_PREFIX}${base64Url(this.token)}`,
+    ]);
+    return driveBrowserStream(socket, handlers);
   }
 
   openEvents(handlers: EventChannelHandlers): EventChannel {

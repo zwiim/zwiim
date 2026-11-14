@@ -25,7 +25,7 @@
 
 use std::net::IpAddr;
 
-use tauri::Url;
+use url::Url;
 
 use super::agent::ListenerIdentity;
 
@@ -99,6 +99,30 @@ pub fn identify(port: u16) -> Option<ListenerIdentity> {
         program: Some(program),
         workdir,
     })
+}
+
+/// A loopback listener among a set of processes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listening {
+    pub pid: u32,
+    pub port: u16,
+    /// Where the process runs; absent where the platform cannot say.
+    pub workdir: Option<String>,
+}
+
+/// The loopback ports `pids` listen on. macOS only for now; elsewhere none.
+///
+/// Blocking: two `lsof` runs, about 20 ms together.
+pub fn listening(pids: &[u32]) -> Vec<Listening> {
+    #[cfg(target_os = "macos")]
+    {
+        imp::listening(pids)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pids;
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +220,50 @@ fn parse_lsof_listeners(output: &str, port: u16) -> Vec<u32> {
         }
     }
     pids
+}
+
+/// The loopback ports each process listens on, from `lsof -F pn` output
+/// about many processes: `(pid, port)`, once each.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn parse_lsof_ports(output: &str) -> Vec<(u32, u16)> {
+    let mut ports = Vec::new();
+    let mut current: Option<u32> = None;
+    for line in output.lines() {
+        let mut chars = line.chars();
+        let Some(tag) = chars.next() else { continue };
+        let value = chars.as_str();
+        match tag {
+            'p' => current = value.parse().ok(),
+            'n' => {
+                let Some(pid) = current else { continue };
+                let Some(port) = value.rsplit_once(':').and_then(|(_, p)| p.parse().ok()) else {
+                    continue;
+                };
+                if lsof_address_serves(value, port) && !ports.contains(&(pid, port)) {
+                    ports.push((pid, port));
+                }
+            }
+            _ => {}
+        }
+    }
+    ports
+}
+
+/// Each process's path, from `lsof -F pn` output with one file per process.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn parse_lsof_paths(output: &str) -> Vec<(u32, String)> {
+    let mut paths = Vec::new();
+    let mut current: Option<u32> = None;
+    for line in output.lines() {
+        if let Some(pid) = line.strip_prefix('p') {
+            current = pid.parse().ok();
+        } else if let (Some(pid), Some(path)) = (current, line.strip_prefix('n')) {
+            if !path.is_empty() {
+                paths.push((pid, path.to_string()));
+            }
+        }
+    }
+    paths
 }
 
 /// Whether an `lsof -nP` address names a loopback listener on `port`.
@@ -343,7 +411,7 @@ mod imp {
 mod imp {
     use std::process::Command;
 
-    use super::{parse_lsof_listeners, parse_lsof_path, sole};
+    use super::{parse_lsof_listeners, parse_lsof_path, parse_lsof_paths, parse_lsof_ports, sole};
 
     pub const WORKDIR_AVAILABLE: bool = true;
 
@@ -381,6 +449,37 @@ mod imp {
     pub fn workdir_of(pid: u32) -> Option<String> {
         let out = lsof(&["-nP", "-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])?;
         parse_lsof_path(&out)
+    }
+
+    pub fn listening(pids: &[u32]) -> Vec<super::Listening> {
+        if pids.is_empty() {
+            return Vec::new();
+        }
+        let list = pids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let Some(out) = lsof(&["-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-p", &list, "-Fpn"]) else {
+            return Vec::new();
+        };
+        let ports = parse_lsof_ports(&out);
+        if ports.is_empty() {
+            return Vec::new();
+        }
+        let mut owners: Vec<String> = ports.iter().map(|(pid, _)| pid.to_string()).collect();
+        owners.dedup();
+        let dirs = lsof(&["-nP", "-a", "-p", &owners.join(","), "-d", "cwd", "-Fpn"])
+            .map(|out| parse_lsof_paths(&out))
+            .unwrap_or_default();
+        ports
+            .into_iter()
+            .map(|(pid, port)| super::Listening {
+                pid,
+                port,
+                workdir: dirs.iter().find(|(p, _)| *p == pid).map(|(_, d)| d.clone()),
+            })
+            .collect()
     }
 
     /// `None` only when the command could not be run. Finding nothing is a
@@ -649,6 +748,30 @@ mod tests {
         // A second socket under the same pid is the same program.
         let dual = "p3646\nf4\nn127.0.0.1:8791\nf5\nn[::1]:8791\n";
         assert_eq!(parse_lsof_listeners(dual, 8791), vec![3646]);
+    }
+
+    #[test]
+    fn many_processes_list_their_loopback_ports_once_each() {
+        let out =
+            "p10\nf4\nn127.0.0.1:5173\nf5\nn[::1]:5173\np11\nf6\nn*:3000\nf7\nn192.168.1.5:9000\n";
+        assert_eq!(parse_lsof_ports(out), vec![(10, 5173), (11, 3000)]);
+        let cwd = "p10\nfcwd\nn/work/a\np11\nfcwd\nn/work/b\n";
+        assert_eq!(
+            parse_lsof_paths(cwd),
+            vec![(10, "/work/a".to_string()), (11, "/work/b".to_string())]
+        );
+    }
+
+    /// The scan finds a listener this process holds, and where it runs.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn this_process_is_found_listening() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let found = listening(&[std::process::id()]);
+        let mine = found.iter().find(|l| l.port == port).expect("listed");
+        let here = std::env::current_dir().unwrap();
+        assert_eq!(mine.workdir.as_deref(), here.to_str());
     }
 
     #[test]

@@ -40,7 +40,7 @@
 //! one. Inlined text can close the wrapper around it and return anything at
 //! all, so nothing in [`EvalAnswer`] can be trusted for a decision. Where the
 //! page *is* comes from a separate evaluation in zwiim's own world, which no
-//! agent text ever enters; see `commands::browser::agent_eval_core`.
+//! agent text ever enters. The Host's browser tools leave `browser_eval` off.
 
 use serde::{Deserialize, Serialize};
 

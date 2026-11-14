@@ -10,6 +10,7 @@
 //! authority (`web::auth::require_local_authority`); `device.pair` is the one
 //! unauthenticated operation, authorized by its one-time pairing code.
 
+pub mod browser;
 pub mod compat;
 pub mod error;
 pub mod events;
@@ -106,6 +107,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/device.pair_invite", post(http::device_pair_invite))
         .route("/device.list", post(http::device_list))
         .route("/device.revoke", post(http::device_revoke))
+        .route("/device.update", post(http::device_update))
         .route("/cloud.enroll", post(http::cloud_enroll))
         .route("/cloud.status", post(http::cloud_status))
         .route("/lan.status", post(http::lan_status))
@@ -125,10 +127,45 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/agent.save_key", post(http::agent_save_key))
         .route("/agent.remove_key", post(http::agent_remove_key))
         .route("/agent.sign_out", post(http::agent_sign_out))
+        // The browser's engine, site lists, downloads and local stream stay
+        // with the Mac; devices reach their sessions' tabs by their browser
+        // access (below).
+        .route("/browser.engine.reset", post(browser::engine_reset))
+        .route("/browser.view.open", post(browser::view_open))
+        .route("/browser.view.close", post(browser::view_close))
+        .route("/browser.sites.get", post(browser::sites_get))
+        .route("/browser.sites.set", post(browser::sites_set))
+        .route("/browser.login.get", post(browser::login_get))
+        .route("/browser.login.save", post(browser::login_save))
+        .route("/browser.login.forget", post(browser::login_forget))
+        .route("/browser.timeline.list", post(browser::timeline_list))
+        .route("/browser.timeline.image", post(browser::timeline_image))
+        .route("/browser.downloads.location", post(browser::downloads_location))
+        .route(
+            "/browser.downloads.set_location",
+            post(browser::downloads_set_location),
+        )
+        .route("/browser/stream/{stream_id}", get(browser::stream_socket))
         .route_layer(middleware::from_fn(auth::require_local_authority));
 
     let authenticated = Router::new()
         .route("/host.hello", post(http::host_hello))
+        // Each checks the device's browser access itself.
+        .route("/browser.tabs.list", post(browser::tabs_list))
+        .route("/browser.tab.open", post(browser::tab_open))
+        .route("/browser.tab.close", post(browser::tab_close))
+        .route("/browser.tab.navigate", post(browser::tab_navigate))
+        .route("/browser.tab.find", post(browser::tab_find))
+        .route("/browser.tab.print", post(browser::tab_print))
+        .route("/browser.tab.drop", post(browser::tab_drop))
+        .route("/browser.tab.pick", post(browser::tab_pick))
+        .route(
+            "/browser.tab.reload_on_save",
+            post(browser::tab_reload_on_save),
+        )
+        .route("/browser.tab.preview", post(browser::tab_preview))
+        .route("/browser.tab.pick_cancel", post(browser::tab_pick_cancel))
+        .route("/browser.ui.answer", post(browser::ui_answer))
         .route("/host.lan_endpoint", post(http::host_lan_endpoint))
         .route("/host.update.status", post(http::host_update_status))
         .route("/host.diagnostics", post(http::host_diagnostics))

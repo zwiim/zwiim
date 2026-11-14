@@ -299,7 +299,172 @@ use serde::{Deserialize, Serialize};
 /// {workspace_id}` fills the repository's unset scripts from its Conductor
 /// settings and returns `{values, imported}`, the keys it set. `not_found`
 /// when the repository has none.
-pub const PROTOCOL_REVISION: u32 = 32;
+///
+/// 33 (`browser`): the Host browser's tabs. `browser.tabs.list {session_id?}`
+/// returns `{tabs, engine}`; `browser.tab.open {owner, url?}`,
+/// `browser.tab.navigate {tab_id, url | action}` (`back`, `forward`,
+/// `reload`, `stop`) and `browser.tab.close {tab_id}` act on one tab, and
+/// `browser.engine.reset` clears an engine failure. A tab is `{tab_id,
+/// owner, url, title, position, loading, discarded, crashed}`, its owner
+/// `{kind: "session", session_id}` or `{kind: "personal"}`; the engine is
+/// `{state}` (`stopped`, `starting`, `running` with `version`, `failed` with
+/// `code` and `message`). On the socket, `browser.subscribe` answers with a
+/// `browser.snapshot {tabs, engine}`, then `browser.tab.state {tab}`,
+/// `browser.tab.removed {tab_id, owner}` and `browser.engine.state {engine}`,
+/// or a `browser.error {error}`. Refused with `tab_not_found`,
+/// `unsupported_url` or an engine setup code (`download_offline`,
+/// `checksum_mismatch`, `disk_full`, `unsupported_platform`, `crash_loop`,
+/// `setup_failed`, `engine_error`). `browser.view.open {tab_id, viewport}`
+/// (`{width, height, scale?}` in CSS pixels) returns `{stream_id}`, and one
+/// viewer opens `/zwiim/v1/browser/stream/<stream_id>` (subprotocol
+/// `zwiim-browser-stream`) for the tab's frames as binary messages, a
+/// 34-byte little-endian header then the JPEG, and sends its input as JSON
+/// text; `browser.view.close {stream_id}` ends it (`stream_not_found`,
+/// `stream_attached`, `invalid_viewport`). A tab that waits on a person (a
+/// JavaScript `alert`, `confirm`, `prompt` or `beforeunload` dialog) sends
+/// `browser.ui.request {request}`, a request `{request_id, tab_id, owner,
+/// kind: "dialog", dialog, message, default_text?, url}`, and
+/// `browser.ui.done {request_id, tab_id}` once it is answered, dismissed
+/// after 60 s unanswered, or its tab goes; the snapshot carries the open ones
+/// as `ui_requests`. `browser.ui.answer {request_id, answer}` with `answer`
+/// `{kind: "dialog", accept, text?}` answers one; the first answer wins and
+/// a later one is refused with `request_not_found`. A site or proxy asking
+/// to sign in is a request `{kind: "auth", origin, scheme, realm, proxy,
+/// url}`, answered `{kind: "auth", accept, username, password}` and
+/// cancelled after 5 minutes unanswered; an answer of the wrong kind is
+/// `invalid_answer`. A page's file input is a request `{kind:
+/// "file_chooser", multiple, url}`, answered `{kind: "file_chooser", accept,
+/// workspace_id, paths}` with up to 100 files inside that workspace (a
+/// session's tab: its session's workspace only, else `permission_denied`;
+/// a path outside it or a missing file is `not_found`). A page's download
+/// is one of the Host's downloads (capability `downloads`) while it runs.
+/// Just before an agent acts on a tab, `browser.agent.action {action}` says
+/// where: `{tab_id, kind, x, y, box?}`, `kind` one of `click`, `hover`,
+/// `type`, `press` and `select`, the point and the element's box (`{x, y,
+/// width, height}`) in the page's CSS pixels. A right-click the page leaves
+/// to the browser sends `browser.ui.menu {menu}`, `{tab_id, x, y, link_url?,
+/// image_url?, selection?, editable}`, for the client to draw its own menu
+/// at that point (CSS pixels); the addresses are http(s) only. A `<select>`
+/// opening is a request `{kind: "select", options, x, y, width, height}`,
+/// each option `{index, label, disabled, selected, group?}`, answered
+/// `{kind: "select", accept, index?}`; a date or time input's picker button
+/// is `{kind: "date", input_type, value, min?, max?, x, y, width, height}`
+/// (`input_type` one of `date`, `time`, `datetime-local`, `month`, `week`),
+/// answered `{kind: "date", accept, value}` in the input's own format. Both
+/// end with their document and after 5 minutes. `browser.tab.find {tab_id,
+/// query, backwards?}` highlights `query` (up to 200 characters, case
+/// insensitive) on the page and goes to its next match, or the one before;
+/// it returns `{matches, current}` (`current` from 1, 0 with none), an empty
+/// query clears it, and a page still loading is `page_not_ready`. `settings` gains
+/// `browser.agent_passwords` (a boolean; unset is off): whether agents may
+/// type into password fields on any site rather than only on loopback dev
+/// servers.
+/// `settings` also gains `browser.agent_ask_sites` (a boolean; unset is
+/// off): whether a site an agent's tab loads for the first time in a session
+/// waits for a person. It is then asked as `{kind: "site", site, url,
+/// local}` (`site` is `host:port`, `local` true for this machine or the
+/// local network) and answered `{kind: "site", allow, always?}`: allowed for
+/// the session, or for every session with `always`; refused for the session
+/// otherwise, and after 5 minutes unanswered.
+/// `browser.tab.print {tab_id}` saves the page as a PDF in the tab's
+/// downloads folder and returns `{name}` (`page_too_large` over 200 MB), and
+/// `browser.tab.drop {tab_id, x, y, workspace_id, paths?, attachment_ids?}`
+/// drops files on the page at `(x, y)` in its CSS pixels: workspace files by
+/// relative path, or uploaded ones by attachment id, from the session's own
+/// workspace for a session's tab.
+/// `settings` also gains `browser.open_dev_servers` (a boolean; unset is
+/// on): whether a dev server a session starts opens in that session's tab,
+/// which then arrives as an ordinary `browser.tab.state`.
+/// `browser.sites.get {session_id}` returns the session's strict site list,
+/// `{sites}` (empty for none), and `browser.sites.set {session_id, sites}`
+/// replaces it, returning it as kept: site patterns (`example.com`,
+/// `*.example.com`, `localhost:3000`) or pasted addresses, at most 100; a
+/// bad entry is `invalid_site`. With a list, the session's agent opens only
+/// those sites and its own dev servers; the person's navigations are not
+/// limited. Host only for now.
+/// `browser.login.get {session_id}` returns `{available, saved}`: the sites
+/// the session's browser holds cookies for or has open now, and those its
+/// workspace's saved login keeps. `browser.login.save {session_id, sites}`
+/// keeps the session's cookies and `localStorage` for those sites (1 to 100)
+/// as the workspace's login, sealed on the Host, and returns `{saved}`; it is
+/// `nothing_to_save` when the session holds neither for them. `browser.login.forget {session_id,
+/// sites?}` drops those sites, or the whole login, and returns `{saved}`.
+/// Every new session in the workspace starts its browser from that login.
+/// `login_unavailable` when the Host keeps no logins. Host only for now.
+/// `browser.timeline.list {session_id, before?, limit?}` returns `{steps}`,
+/// what the session's agent did in its browser, newest first: each
+/// `{seq, at, tab_id, action, url, bytes}` (`at` in Unix milliseconds,
+/// `limit` 50 unless given and 200 at most, `before` a `seq`), and
+/// `browser.timeline.image {session_id, seq}` returns that step's picture
+/// as `{jpeg}` in base64, `not_found` once trimmed. `settings` also gains
+/// `browser.timeline_mb` (1 to 1000; unset is 50) and
+/// `browser.timeline_days` (1 to 90; unset is 7): how much of each
+/// session's recording the Host keeps. Host only for now.
+/// `browser.tab.open` is refused with `too_many_tabs` past a session's tab
+/// cap or 30 tabs in all, and with `browser_memory_full` (its message says
+/// which sessions hold the most) while the browser is at its memory budget.
+/// `settings` also gains `browser.session_tabs` (an integer from 1 to 30;
+/// unset is 20): the most tabs one session holds, those its pages open
+/// included. A window a page opens past it is closed and never becomes a tab.
+/// The Host may also put tabs nobody uses to sleep: they come back
+/// `discarded` and load again when used.
+/// A session's tab saves to `<worktree>/.zwiim/browser/<id>/`, removed with
+/// the session, unless `browser.downloads.set_location {root}` chose a
+/// folder (`root` an existing absolute folder, null for the default): then
+/// to `<root>/zwiim/<repo>/downloads/`. The person's tabs save to
+/// `~/Downloads`. `browser.downloads.location` returns `{root}`. Host only for now:
+/// paired devices are refused with `permission_denied`.
+/// `browser.tab.pick {tab_id}` lets the person point at an element of the
+/// page: it returns once the picker is armed (`page_not_ready` before the
+/// page is), the element under the pointer is highlighted in the page, and
+/// the click that chooses it does not press it. The socket then sends
+/// `browser.tab.picked {tab_id, owner, pick}`, `pick` `{label, text, url}`
+/// (`text` a markdown block marked as page content, `url` with
+/// secret-looking query values left out) or null when the person pressed
+/// Escape, `browser.tab.pick_cancel {tab_id}` called it off, the page went,
+/// or nobody picked in 2 minutes. A new pick replaces the tab's earlier one,
+/// which ends without an event.
+/// `browser.tab.reload_on_save {tab_id, on}` returns the tab: a session's
+/// tab then loads again 300 ms after files in its worktree stop changing
+/// (Git's, `.zwiim` and `node_modules` aside), and a tab carries
+/// `reload_on_save`. It is not kept across a Host restart; the person's tabs
+/// are refused with `session_tab_only`.
+/// `browser.tab.preview {tab_id, preview}` returns the tab, shown as a phone
+/// or tablet shows it (`preview` `iphone`, `android` or `ipad`: its screen,
+/// pixel ratio, touch and user agent) or, with null, as a desktop page again;
+/// another name is `unknown_preview`. A previewed tab carries `preview` and
+/// keeps the device's size whatever size its viewers ask for, so its frames
+/// come at that size. It is not kept across a Host restart.
+/// A paired device reaches its sessions' tabs by its browser access, which
+/// `device.list` reports as `browser_access` (`none`, `view` or `control`;
+/// a newly paired device has `view`) and `device.update {device_id,
+/// browser_access}` (Host only; `not_found` for no trusted device) sets.
+/// With `view` it may call `browser.tabs.list`; with `control` also
+/// `browser.tab.open`, `browser.tab.navigate`, `browser.tab.close`,
+/// `browser.tab.find`, `browser.tab.print`, `browser.tab.drop`,
+/// `browser.tab.pick`, `browser.tab.pick_cancel`,
+/// `browser.tab.reload_on_save`, `browser.tab.preview` and
+/// `browser.ui.answer`.
+/// Below that it is refused with `permission_denied`.
+/// It never sees the person's tabs: they are left out of its list, opening
+/// one is `permission_denied`, and acting on one is `tab_not_found` (its
+/// requests `request_not_found`). The engine, site lists, downloads,
+/// `browser.view.*`, the stream socket and `browser.subscribe` stay Host
+/// only.
+///
+/// 33 (`downloads`): what the Host is downloading (an agent's adapter, the
+/// browser engine, a Host update). The host snapshot carries `downloads`, a
+/// list of `{download_id, label, received, total}` (bytes; `total` null when
+/// unknown), and the feed sends `download.changed {download}` as one starts
+/// or moves (at most every 250 ms each) and `download.removed
+/// {download_id}` when it ends.
+///
+/// 33 (live Zwiim tool input): a live call of one of Zwiim's own tools other
+/// than Git (`agent.tool_call`, `agent.tool_call_update`, a snapshot's
+/// `tool_calls`) carries `input`, its arguments as JSON text (at most 2,000
+/// characters), so a running call can say what it acts on. Other tools carry
+/// none. Older clients ignore the field.
+pub const PROTOCOL_REVISION: u32 = 33;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -363,6 +528,8 @@ pub const CAPABILITIES: &[&str] = &[
     "session.fork",
     "session.transcript_remove",
     "repository.settings_import",
+    "browser",
+    "downloads",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -515,7 +682,19 @@ mod tests {
     #[test]
     fn repository_settings_import_is_served() {
         assert!(CAPABILITIES.contains(&"repository.settings_import"));
-        assert_eq!(PROTOCOL_REVISION, 32);
+        const _: () = assert!(PROTOCOL_REVISION >= 32);
+    }
+
+    #[test]
+    fn the_browser_is_served() {
+        assert!(CAPABILITIES.contains(&"browser"));
+        assert_eq!(PROTOCOL_REVISION, 33);
+    }
+
+    #[test]
+    fn downloads_are_served() {
+        assert!(CAPABILITIES.contains(&"downloads"));
+        const _: () = assert!(PROTOCOL_REVISION >= 33);
     }
 
     #[test]

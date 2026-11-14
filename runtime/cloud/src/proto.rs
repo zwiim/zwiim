@@ -26,6 +26,9 @@ pub const ENROLLMENTS_PATH: &str = "/v1/enrollments";
 pub const ENROLL_PATH: &str = "/v1/hosts/enroll";
 /// `GET` with an account token: the account's hosts.
 pub const HOSTS_PATH: &str = "/v1/hosts";
+/// `GET` with an account token: the account's plan and relay usage
+/// ([`UsageResponse`]).
+pub const USAGE_PATH: &str = "/v1/usage";
 /// The host's control socket.
 pub const CONTROL_PATH: &str = "/v1/hosts/control";
 /// The device's relay socket.
@@ -33,7 +36,8 @@ pub const RELAY_DEVICE_PATH: &str = "/v1/relay/device";
 /// The host's relay socket, one per dial.
 pub const RELAY_HOST_PATH: &str = "/v1/relay/host";
 
-/// `POST` with an account token: a connection ticket for `host_id`.
+/// `POST` [`TicketRequest`] with an account token: a connection ticket for
+/// `host_id`. An empty body asks for a `control` ticket.
 pub fn tickets_path(host_id: &str) -> String {
     format!("/v1/hosts/{host_id}/tickets")
 }
@@ -58,8 +62,35 @@ pub const CLOSE_PROTOCOL: u16 = 4400;
 pub const CLOSE_UNAUTHENTICATED: u16 = 4401;
 /// A newer control connection from the same host replaced this one.
 pub const CLOSE_REPLACED: u16 = 4409;
+/// The account reached a relay limit of its plan ([`QuotaExceeded`]).
+pub const CLOSE_QUOTA_EXCEEDED: u16 = 4429;
 /// The host is not connected, or did not answer the dial in time.
 pub const CLOSE_HOST_OFFLINE: u16 = 4503;
+
+// ─── relay channels ──────────────────────────────────────────────────────
+
+/// The kind of traffic a relay connection carries. Each connection has one,
+/// chosen with its ticket; the Cloud counts and limits them separately.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Channel {
+    /// The Zwiim protocol. What clients that name no channel get.
+    #[default]
+    Control,
+    /// Agent View and Live App.
+    Browser,
+}
+
+impl Channel {
+    pub const ALL: [Channel; 2] = [Channel::Control, Channel::Browser];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Channel::Control => "control",
+            Channel::Browser => "browser",
+        }
+    }
+}
 
 // ─── control socket ──────────────────────────────────────────────────────
 
@@ -72,8 +103,14 @@ pub enum ControlFromCloud {
     /// Authenticated; the host is online.
     Ready,
     /// A device holds a ticket for this host: open a relay socket and
-    /// present `rendezvous` + `token` (single use, short-lived).
-    Dial { rendezvous: String, token: String },
+    /// present `rendezvous` + `token` (single use, short-lived). Clouds
+    /// before relay channels send no `channel`: `control`.
+    Dial {
+        rendezvous: String,
+        token: String,
+        #[serde(default)]
+        channel: Channel,
+    },
     HeartbeatAck,
 }
 
@@ -147,11 +184,57 @@ pub struct HostInfo {
     pub last_seen_at: Option<u64>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TicketRequest {
+    #[serde(default)]
+    pub channel: Channel,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TicketResponse {
     pub ticket: String,
     /// Unix seconds.
     pub expires_at: u64,
+}
+
+/// The account's plan and its relay usage this period.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageResponse {
+    /// `None` when this Cloud keeps no plan for the account: nothing is
+    /// limited, and the period fields are absent.
+    pub plan: Option<PlanInfo>,
+    #[serde(default, flatten, skip_serializing_if = "Option::is_none")]
+    pub period: Option<UsagePeriod>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanInfo {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsagePeriod {
+    /// Unix seconds.
+    pub period_start: u64,
+    /// Unix seconds.
+    pub resets_at: u64,
+    pub channels: UsageChannels,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageChannels {
+    pub browser: ChannelUsage,
+    /// Every channel together.
+    pub total: ChannelUsage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelUsage {
+    pub used: u64,
+    /// `None` is unlimited.
+    pub limit: Option<u64>,
 }
 
 /// Every HTTP error: `{"error": {"code", "message"}}`.
@@ -164,6 +247,32 @@ pub struct ErrorBody {
 pub struct ErrorDetail {
     pub code: String,
     pub message: String,
+    /// With `relay_quota_exceeded` only.
+    #[serde(default, flatten, skip_serializing_if = "Option::is_none")]
+    pub quota: Option<QuotaExceeded>,
+}
+
+/// Which limit a ticket or relay ran into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaLimit {
+    /// Browser bytes this period.
+    Browser,
+    /// Bytes this period over every channel.
+    Total,
+}
+
+/// A refused ticket (`429 relay_quota_exceeded`) says which limit, and when
+/// it lifts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuotaExceeded {
+    pub channel: QuotaLimit,
+    /// The plan id.
+    pub plan: String,
+    pub used_bytes: u64,
+    pub limit_bytes: u64,
+    /// Unix seconds.
+    pub resets_at: u64,
 }
 
 // ─── signed messages ─────────────────────────────────────────────────────
@@ -325,11 +434,14 @@ mod tests {
 
     #[test]
     fn control_messages_are_tagged() {
-        let dial = ControlFromCloud::Dial { rendezvous: "r".into(), token: "t".into() };
+        let dial = ControlFromCloud::Dial { rendezvous: "r".into(), token: "t".into(), channel: Channel::Browser };
         assert_eq!(
             serde_json::to_value(&dial).unwrap(),
-            serde_json::json!({"type": "dial", "rendezvous": "r", "token": "t"})
+            serde_json::json!({"type": "dial", "rendezvous": "r", "token": "t", "channel": "browser"})
         );
+        // From a Cloud before relay channels.
+        let old: ControlFromCloud = serde_json::from_str(r#"{"type":"dial","rendezvous":"r","token":"t"}"#).unwrap();
+        assert!(matches!(old, ControlFromCloud::Dial { channel: Channel::Control, .. }));
         let hello: RelayHello = serde_json::from_str(r#"{"type":"device","ticket":"k"}"#).unwrap();
         assert_eq!(hello, RelayHello::Device { ticket: "k".into() });
         assert!(serde_json::from_str::<ControlFromHost>(r#"{"type":"dial"}"#).is_err());

@@ -571,6 +571,7 @@ describe("devices", () => {
         paired_at: "2026-09-26T10:00:00Z",
         revoked_at: null,
         last_seen_at: null,
+        browser_access: "view",
       },
     ];
     env.local.handlers["device.list"] = () => ({ devices });
@@ -578,6 +579,10 @@ describe("devices", () => {
       devices = devices.map((d) =>
         d.device_id === p.device_id ? { ...d, status: "revoked", revoked_at: "2026-09-26T11:00:00Z" } : d,
       );
+      return {};
+    };
+    env.local.handlers["device.update"] = (p) => {
+      devices = devices.map((d) => (d.device_id === p.device_id ? { ...d, browser_access: p.browser_access } : d));
       return {};
     };
     env.local.handlers["device.pair_invite"] = () => env.studio.invite();
@@ -621,6 +626,23 @@ describe("devices", () => {
     const payload = JSON.parse(dialog.getByTestId("pairing-text").textContent!);
     expect(Object.keys(payload).sort()).toEqual(["code", "expires_at", "host_id", "host_static_pubkey", "v"]);
     expect(dialog.getByTestId("pairing-text").textContent).not.toMatch(/https?:|\d+\.\d+\.\d+\.\d+|token/);
+  });
+
+  it("sets what a device may do with this Mac's browser", async () => {
+    const env = world();
+    withDevices(env);
+    vi.stubGlobal("WebSocket", env.cloud.WebSocket);
+    mount(env);
+    await screen.findByText("repo-w-local");
+    fireEvent.click(openMenu().getByText("Devices"));
+    const dialog = within(await screen.findByRole("dialog", { name: "Settings" }));
+    const access = (await dialog.findByLabelText("What Phone may do with this Mac's browser")) as HTMLSelectElement;
+    expect(access.value).toBe("view");
+    fireEvent.change(access, { target: { value: "control" } });
+    await waitFor(() => expect(access.value).toBe("control"));
+    expect(env.local.calls.filter((c) => c.op === "device.update").map((c) => c.params)).toEqual([
+      { device_id: "phone-1", browser_access: "control" },
+    ]);
   });
 
   it("enables remote access with a one-time enrollment token from the account", async () => {

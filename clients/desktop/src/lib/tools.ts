@@ -2,6 +2,7 @@
 // Edit…) and what it works on (a command, a path, a query). The same reading
 // as the mobile transcript (`clients/mobile/src/sessions/transcript.ts`).
 
+import { firstQuestion, zwiimTool, type ZwiimToolGroup } from "@zwiim/sdk";
 import { editChanges, parseCodexPatch, type FileDiff } from "@/lib/diff";
 
 /** The most of a tool's input or output the transcript shows. More (an
@@ -52,21 +53,6 @@ const NAME_VERBS: Record<string, string> = {
   view_image: "View",
 };
 
-/**
- * Zwiim's own tools, as the agent names them: `mcp__zwiim-mcp__<tool>`, or
- * `mcp.zwiim-mcp.<tool>` in a Codex title. Read by what they do, never by
- * that name.
- */
-const ZWIIM_TOOLS: Record<string, string> = {
-  update_progress: "Updated tasks",
-};
-
-/** What one of Zwiim's own tools does, or null for any other tool. */
-function zwiimTool(name: string): string | null {
-  const m = /^mcp(?:__|\.)zwiim-mcp(?:__|\.)(\w+)$/.exec(name.trim());
-  return m ? (ZWIIM_TOOLS[m[1]!] ?? null) : null;
-}
-
 const TARGET_KEYS = [
   "command",
   "cmd",
@@ -94,6 +80,8 @@ export interface ToolSummary {
   path?: string | null;
   /** The changes an edit makes, a file each, read from its input. */
   changes?: FileDiff[] | null;
+  /** Which of Zwiim's own tools it is, for its icon; absent for any other tool. */
+  group?: ZwiimToolGroup;
 }
 
 /** A title without the backticks agents wrap commands in. */
@@ -130,18 +118,21 @@ function patchTool(input: string | null): ToolSummary | null {
   return { verb, target: path ?? "", input: null, path, changes: changes.length > 0 ? changes : null };
 }
 
-/** What a Codex tool works on, where its input does not name it under a common key. */
+/** What a Codex or question tool works on, where its input does not name it under a common key. */
 function codexTarget(name: string, args: Record<string, unknown>): string | null {
-  if (name === "request_user_input" && Array.isArray(args.questions)) {
-    const first = args.questions[0] as Record<string, unknown> | undefined;
-    return str(first?.question) ?? str(first?.header);
-  }
+  if (name === "request_user_input" || name.endsWith("ask_user_question")) return firstQuestion(args);
   if (name === "codex_script") return str(args.source);
   return null;
 }
 
 /** A call from a transcript: the tool's name and its input as JSON. */
 export function historyTool(name: string, input: string | null): ToolSummary {
+  const summary = readHistoryTool(name, input);
+  const own = zwiimTool(name);
+  return own ? { ...summary, group: own.group } : summary;
+}
+
+function readHistoryTool(name: string, input: string | null): ToolSummary {
   if (name === "context_compaction") return { verb: "Chat compacted", target: "", input: null };
   if (name === "apply_patch") {
     const patch = patchTool(input);
@@ -154,7 +145,7 @@ export function historyTool(name: string, input: string | null): ToolSummary {
   } catch {
     // Not JSON (or cut short): shown as it is.
   }
-  const verb = zwiimTool(name) ?? NAME_VERBS[name.toLowerCase()] ?? name;
+  const verb = zwiimTool(name)?.label ?? NAME_VERBS[name.toLowerCase()] ?? name;
   if (!args) {
     const target = firstLine(input ?? "");
     return { verb, target, input: input?.trim() === target ? null : input };
@@ -193,11 +184,14 @@ const CODEX_TITLES: [RegExp, string][] = [
   [/^Compact conversation$/, "Chat compacted"],
 ];
 
-/** A live call: the agent's title ("Read src/a.ts", "`ls -la`") and kind. */
-export function liveTool(title: string | null, kind: string | null | undefined): ToolSummary {
+/**
+ * A live call: the agent's title ("Read src/a.ts", "`ls -la`") and kind, and
+ * for Zwiim's own tools the input the Host sends with it.
+ */
+export function liveTool(title: string | null, kind: string | null | undefined, input?: string | null): ToolSummary {
   const t = unquote(title ?? "");
   const own = zwiimTool(t);
-  if (own) return { verb: own, target: "", input: null };
+  if (own) return input ? historyTool(t, input) : { verb: own.label, target: "", input: null, group: own.group };
   const summary = (verb: string, whole: string): ToolSummary => ({
     verb,
     target: firstLine(whole),

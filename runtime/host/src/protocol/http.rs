@@ -474,6 +474,38 @@ pub async fn device_revoke(
     ok()
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceUpdateParams {
+    pub device_id: String,
+    pub browser_access: crate::identity::trusted_devices::BrowserAccess,
+}
+
+/// `device.update {device_id, browser_access}`: what a trusted device may do
+/// with the Host browser (browser design 7.6). Host only, so a device never
+/// raises its own rights; it applies from the device's next request.
+pub async fn device_update(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<DeviceUpdateParams>,
+) -> ZResult<Value> {
+    if !crate::identity::trusted_devices::set_browser_access(
+        &state.db.conn,
+        &p.device_id,
+        p.browser_access,
+    )
+    .await
+    .map_err(db_error)?
+    {
+        return Err(ZwiimError::not_found("Device not found"));
+    }
+    tracing::info!(
+        "[identity] device {} browser access set to {}",
+        p.device_id,
+        p.browser_access.as_str()
+    );
+    ok()
+}
+
 // ─── settings ────────────────────────────────────────────────────────────
 
 pub async fn settings_get(Extension(state): Extension<Arc<AppState>>) -> ZResult<Value> {
@@ -1435,7 +1467,7 @@ pub struct FileDownloadParams {
 /// Whether `target`, what `path` resolved to under `root`, is hidden when
 /// `path` doesn't say so. Page code can't see that from the path alone: a repo
 /// can commit `notes.txt -> .env`.
-fn link_reaches_hidden(root: &std::path::Path, target: &std::path::Path, path: &str) -> bool {
+pub(super) fn link_reaches_hidden(root: &std::path::Path, target: &std::path::Path, path: &str) -> bool {
     let Ok(resolved) = target.strip_prefix(root) else {
         return true;
     };
@@ -2575,6 +2607,8 @@ pub async fn session_delete(
     Extension(state): Extension<Arc<AppState>>,
     ZJson(p): ZJson<SessionParams>,
 ) -> ZResult<Value> {
+    // Found while the session still resolves.
+    let downloads = crate::browser::saving::session_folder(&state.db.conn, &p.session_id).await;
     session::delete(
         &state.db,
         &state.emitter,
@@ -2582,6 +2616,26 @@ pub async fn session_delete(
         &p.session_id,
     )
     .await?;
+    // Its browser downloads (in the default folder), recording, tabs and
+    // context go with it.
+    if let Some(dir) = downloads {
+        crate::browser::saving::remove(&dir).await;
+    }
+    let timeline = crate::browser::timeline::Timeline::new(
+        crate::browser::engine::browser_dir(&state.data_dir).join("timeline"),
+    );
+    let sid = p.session_id.clone();
+    let _ = tokio::task::spawn_blocking(move || timeline.remove(&sid)).await;
+    match state.browser.get() {
+        Some(browser) => browser.close_session(&p.session_id).await,
+        None => {
+            let removed =
+                crate::browser::store::remove_session(&state.db.conn, &p.session_id).await;
+            if let Err(e) = removed {
+                tracing::warn!(error = %e, "could not remove a deleted session's browser tabs");
+            }
+        }
+    }
     ok()
 }
 

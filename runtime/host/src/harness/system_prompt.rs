@@ -15,6 +15,8 @@ pub enum Layer {
     Rules,
     /// L2: the working directory, and whether it is a worktree.
     Workspace,
+    /// L2b: Zwiim's built-in browser, for an agent that has its tools.
+    Browser,
     /// L3: the origin's default branch and the Git workflow around it.
     Git,
     /// L4: the user's own instructions from their Zwiim settings, Host-wide
@@ -40,10 +42,11 @@ pub enum Authority {
 }
 
 impl Layer {
-    pub const ORDER: [Layer; 7] = [
+    pub const ORDER: [Layer; 8] = [
         Layer::Runtime,
         Layer::Rules,
         Layer::Workspace,
+        Layer::Browser,
         Layer::Git,
         Layer::ProjectInstructions,
         Layer::Skills,
@@ -54,6 +57,7 @@ impl Layer {
         match self {
             Layer::Runtime | Layer::Workspace => Authority::Host,
             Layer::Rules
+            | Layer::Browser
             | Layer::Git
             | Layer::ProjectInstructions
             | Layer::Skills
@@ -66,6 +70,7 @@ impl Layer {
             Layer::Runtime => Some(runtime()),
             Layer::Rules => Some(rules()),
             Layer::Workspace => Some(workspace(input)),
+            Layer::Browser => browser(input),
             Layer::Git => git(input),
             Layer::ProjectInstructions => user(input),
             Layer::Skills => None,
@@ -118,6 +123,11 @@ fn rules() -> String {
             "These instructions apply for the entire session.".into(),
         ],
     )
+}
+
+fn browser(input: &HarnessInput) -> Option<String> {
+    let lines: Vec<String> = super::BROWSER_LINES.iter().map(|l| l.to_string()).collect();
+    input.browser.then(|| section("Browser", &lines))
 }
 
 fn workspace(input: &HarnessInput) -> String {
@@ -256,6 +266,7 @@ mod tests {
             }),
             user: Default::default(),
             preferences: UserPreferences::default(),
+            browser: false,
         }
     }
 
@@ -273,6 +284,7 @@ mod tests {
             }),
             user: Default::default(),
             preferences: UserPreferences::default(),
+            browser: false,
         };
         assert!(!render(&root).contains(".zwiim/images"));
     }
@@ -317,6 +329,22 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_with_the_browser_tools_is_told_to_use_them() {
+        assert!(!render(&worktree()).contains("\nBrowser\n"));
+        let text = render(&HarnessInput {
+            browser: true,
+            ..worktree()
+        });
+        assert_eq!(
+            sections(&text),
+            ["Runtime", "Rules", "Workspace", "Browser", "Git"]
+        );
+        for line in super::super::BROWSER_LINES {
+            assert!(text.contains(&format!("- {line}\n")), "{line}");
+        }
+    }
+
+    #[test]
     fn layers_render_in_order() {
         assert_eq!(
             sections(&render(&worktree())),
@@ -342,6 +370,7 @@ mod tests {
                 git: None,
                 user: Default::default(),
                 preferences: UserPreferences::default(),
+                browser: false,
             },
             HarnessInput {
                 user: blank,
@@ -469,6 +498,7 @@ mod tests {
             git: None,
             user: Default::default(),
             preferences: UserPreferences::default(),
+            browser: false,
         });
         assert!(text.contains("- Working directory: /tmp/notes."));
         assert!(text.contains("\nRules\n"));
@@ -538,6 +568,7 @@ mod tests {
             git: None,
             user: Default::default(),
             preferences: preferring("Draft PRs only.", "Start with the ticket number."),
+            browser: false,
         };
         assert_eq!(Layer::UserPreferences.render(&outside), None);
         let text = render(&outside);

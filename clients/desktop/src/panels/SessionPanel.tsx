@@ -1,6 +1,6 @@
 import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowDown, ArrowUp, GitBranch, GitBranchPlus, Loader2, Paperclip, Square } from "lucide-react";
+import { ArrowDown, ArrowUp, GitBranch, GitBranchPlus, Loader2, Paperclip, SquareDashedMousePointer, Square, X } from "lucide-react";
 import {
   effortFor,
   FORK_BUSY_NOTE,
@@ -43,6 +43,7 @@ import { pastedFiles } from "@/attachments/long-paste";
 import { UPLOAD_FAILED_MESSAGE, usePendingAttachments } from "@/attachments/usePendingAttachments";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
+import { removeFromChat, sentToChat, useHandedBlocks, type PageBlock } from "@/lib/page-handoff";
 import { formatShortcut } from "@/lib/platform";
 import { agentChoices, autoConvertLongText, followUpMode, rememberAgentChoices, sendKey } from "@/lib/prefs";
 import { isOtherSendKey, isSendKey, sendShortcut } from "@/lib/send-key";
@@ -56,6 +57,7 @@ import { ContinuedCard, ForkedFromRow, ForkStart } from "./ContinuedCard";
 import { dropForkedDraft, EMPTY_DRAFT, forkedDraft, keepForkedDraft, type ComposerDraft } from "./forkedDraft";
 import { PlanStrip } from "./PlanStrip";
 import { FollowUpQueue } from "./FollowUpQueue";
+import { HostDownloads } from "./HostDownloads";
 import { useSlashMenu } from "./SlashCommands";
 import { AgentTerminalCard, AgentTerminalsContext } from "./AgentTerminal";
 import { SignInNeededCard } from "./SignInNeededCard";
@@ -847,6 +849,7 @@ function OpenSession({
           workspaceId={workspaceId}
           initialDraft={startingDraft}
           draftRef={composerDraft}
+          handoffChat={sessionId}
           transcript={waitingTranscript(view)}
           onRemoveTranscript={() => controller.removeTranscript(sessionId)}
           placeholder={
@@ -984,6 +987,31 @@ function OpenSession({
 }
 
 const NO_TURNS: readonly HistoryTurn[] = [];
+
+/** An element picked on a page, going with the next message. */
+function PageBlockChip({ block, disabled, onRemove }: { block: PageBlock; disabled?: boolean; onRemove(): void }) {
+  return (
+    <span
+      className="bg-background border-border flex h-7 max-w-full min-w-0 items-center rounded-md border text-xs"
+      title="Picked on a page: goes with this message as page content"
+      data-testid="pending-page-block"
+    >
+      <span className="border-border flex h-full shrink-0 items-center border-r px-1.5">
+        <SquareDashedMousePointer className="text-muted-foreground size-3.5" />
+      </span>
+      <span className="text-foreground min-w-0 truncate px-2 font-mono">{block.label}</span>
+      <button
+        type="button"
+        className="text-muted-foreground hover:text-foreground mr-1.5 shrink-0 disabled:opacity-50"
+        aria-label={`Remove ${block.label}`}
+        disabled={disabled}
+        onClick={onRemove}
+      >
+        <X className="size-3" />
+      </button>
+    </span>
+  );
+}
 
 /** What a message's blocks say and attach, to match a sent message with its turn in the history. */
 const sentKey = (blocks: readonly { type: string; text?: string; attachment_id?: string }[]) =>
@@ -1231,6 +1259,8 @@ function Composer(props: {
   initialDraft?: ComposerDraft;
   /** Kept up to date with the message and its files, for the panel to read. */
   draftRef?: React.RefObject<ComposerDraft>;
+  /** The chat whose page picks (browser design 10.6) go with the next message. */
+  handoffChat?: string;
   /** A fork's transcript: goes with the next message, or as the message. */
   transcript?: AttachmentBlock | null;
   onRemoveTranscript?(): Promise<void>;
@@ -1271,6 +1301,7 @@ function Composer(props: {
   const area = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const attachments = usePendingAttachments(props.initialDraft?.files);
+  const handed = useHandedBlocks(props.handoffChat);
   const { draftRef } = props;
   useEffect(() => {
     if (draftRef) draftRef.current = { text, files: attachments.files };
@@ -1308,7 +1339,8 @@ function Composer(props: {
   async function send(steer = !!props.steerable && steerFirst) {
     const trimmed = text.trim();
     const attaching = attachments.files.length > 0;
-    if ((!trimmed && !attaching && !props.transcript) || sending || props.busy) return;
+    const picks = handed;
+    if ((!trimmed && !attaching && !picks.length && !props.transcript) || sending || props.busy) return;
     setSending(true);
     setError(null);
     try {
@@ -1320,9 +1352,16 @@ function Composer(props: {
       }
       // Sent once, tagged so the host's echo of it can be recognised; on an
       // unknown outcome the text stays for the user to decide.
-      await props.onSend([...(trimmed ? [{ type: "text" as const, text: trimmed }] : []), ...files], crypto.randomUUID(), steer);
+      // Page picks follow the message, each its own block.
+      const blocks: PromptBlock[] = [
+        ...(trimmed ? [{ type: "text" as const, text: trimmed }] : []),
+        ...picks.map((b) => ({ type: "text" as const, text: b.text })),
+        ...files,
+      ];
+      await props.onSend(blocks, crypto.randomUUID(), steer);
       setText("");
       attachments.clear();
+      if (props.handoffChat) sentToChat(props.handoffChat, picks);
     } catch (e) {
       if (isClientError(e, "attachment_not_found")) attachments.forgetUploads();
       setError(errorMessage(e));
@@ -1355,6 +1394,7 @@ function Composer(props: {
   return (
     <div className="shrink-0 px-6 pt-1 pb-4">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-2">
+        <HostDownloads />
         {props.notice}
         {error && (
           <p className="text-destructive text-xs" role="alert">
@@ -1385,12 +1425,24 @@ function Composer(props: {
           <PendingAttachments
             className="px-4 pt-3"
             leading={
-              props.transcript && (
-                <TranscriptChip
-                  block={props.transcript}
-                  disabled={props.disabled || sending}
-                  onRemove={() => void removeTranscript()}
-                />
+              (props.transcript || handed.length > 0) && (
+                <>
+                  {props.transcript && (
+                    <TranscriptChip
+                      block={props.transcript}
+                      disabled={props.disabled || sending}
+                      onRemove={() => void removeTranscript()}
+                    />
+                  )}
+                  {handed.map((b) => (
+                    <PageBlockChip
+                      key={b.id}
+                      block={b}
+                      disabled={sending}
+                      onRemove={() => props.handoffChat && removeFromChat(props.handoffChat, b.id)}
+                    />
+                  ))}
+                </>
               )
             }
             files={attachments.files}
@@ -1466,7 +1518,12 @@ function Composer(props: {
                 type="button"
                 className="bg-brand text-brand-foreground enabled:hover:bg-brand/88 disabled:bg-muted disabled:text-muted-foreground ease-std grid size-8 shrink-0 place-items-center rounded-full transition-[background-color,color,transform] duration-120 enabled:active:scale-[.96]"
                 onClick={() => void send()}
-                disabled={props.disabled || props.busy || sending || (!text.trim() && attachments.files.length === 0 && !props.transcript)}
+                disabled={
+                  props.disabled ||
+                  props.busy ||
+                  sending ||
+                  (!text.trim() && attachments.files.length === 0 && handed.length === 0 && !props.transcript)
+                }
                 title={sendTitle}
                 aria-label={sendLabel}
               >

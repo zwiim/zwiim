@@ -157,4 +157,124 @@ describe("terminal scrollback", () => {
     expect(scrollbackLines(64 * 1024)).toBe(1000);
     expect(scrollbackLines(16 * 1024 * 1024)).toBe(50_000);
   });
+
+  it("chooses where the browser saves downloads, and goes back to the worktrees", async () => {
+    const t = host();
+    let root: string | null = null;
+    t.handlers["browser.downloads.location"] = () => ({ root });
+    t.handlers["browser.downloads.set_location"] = (p: { root: string | null }) => {
+      root = p.root;
+      return { root };
+    };
+    await mount(t, bridge({ pickFolder: vi.fn(async () => "/Users/me/Saved") }));
+    const dialog = openSettings("Browser");
+    await tick();
+    expect(dialog.getByText("Downloads")).toBeTruthy();
+    expect(dialog.getByText(/saves what pages download in its worktree, under .zwiim\/browser/)).toBeTruthy();
+    fireEvent.click(dialog.getByText("Choose folder…"));
+    await tick();
+    expect(t.calls.find((c) => c.op === "browser.downloads.set_location")!.params).toEqual({ root: "/Users/me/Saved" });
+    expect(dialog.getByText("/Users/me/Saved")).toBeTruthy();
+    expect(dialog.getByText(/zwiim\/<repository>\/downloads/)).toBeTruthy();
+    fireEvent.click(dialog.getByText("Use worktrees"));
+    await tick();
+    expect(t.calls.filter((c) => c.op === "browser.downloads.set_location").at(-1)!.params).toEqual({ root: null });
+    expect(dialog.queryByText("/Users/me/Saved")).toBeNull();
+  });
+
+  it("lets agents type passwords on any site only once turned on", async () => {
+    const t = host();
+    const c = await mount(t);
+    const dialog = openSettings("Browser");
+    await tick();
+    const toggle = dialog.getByTestId("browser-agent-passwords") as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    expect(dialog.getByText(/only on this computer's dev servers/)).toBeTruthy();
+    fireEvent.click(toggle);
+    await tick();
+    expect((dialog.getByTestId("browser-agent-passwords") as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(dialog.getByTestId("browser-agent-passwords"));
+    await tick();
+    expect(updates(t)).toEqual([{ "browser.agent_passwords": true }, { "browser.agent_passwords": null }]);
+    c.dispose();
+  });
+
+  it("asks before agents open new sites only once turned on", async () => {
+    const t = host();
+    const c = await mount(t);
+    const dialog = openSettings("Browser");
+    await tick();
+    const toggle = dialog.getByTestId("browser-agent-ask-sites") as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    expect(dialog.getByText(/the page waits until you allow it/)).toBeTruthy();
+    fireEvent.click(toggle);
+    await tick();
+    expect(updates(t)).toEqual([{ "browser.agent_ask_sites": true }]);
+    c.dispose();
+  });
+
+  it("opens dev servers in the session's tab unless turned off", async () => {
+    const t = host();
+    const c = await mount(t);
+    const dialog = openSettings("Browser");
+    await tick();
+    const toggle = dialog.getByTestId("browser-open-dev-servers") as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(toggle);
+    await tick();
+    expect(updates(t)).toEqual([{ "browser.open_dev_servers": false }]);
+    c.dispose();
+  });
+
+  it("holds 20 tabs per session unless another count is chosen", async () => {
+    const t = host();
+    const c = await mount(t);
+    const dialog = openSettings("Browser");
+    await tick();
+    const tabs = dialog.getByLabelText("Tabs per session") as HTMLSelectElement;
+    expect(tabs.value).toBe("");
+    expect([...tabs.options].map((o) => o.text)).toEqual(["20 (default)", "5", "10", "30"]);
+    expect(dialog.getByText(/those its pages open by themselves included/)).toBeTruthy();
+    fireEvent.change(tabs, { target: { value: "10" } });
+    await tick();
+    fireEvent.change(dialog.getByLabelText("Tabs per session"), { target: { value: "" } });
+    await tick();
+    expect(updates(t)).toEqual([{ "browser.session_tabs": 10 }, { "browser.session_tabs": null }]);
+    c.dispose();
+  });
+
+  it("keeps 50 MB of recording for 7 days unless chosen otherwise", async () => {
+    const t = host();
+    const c = await mount(t);
+    const dialog = openSettings("Browser");
+    await tick();
+    const mb = dialog.getByLabelText("Recording per session") as HTMLSelectElement;
+    expect([...mb.options].map((o) => o.text)).toEqual(["50 MB (default)", "10 MB", "200 MB", "1000 MB"]);
+    const days = dialog.getByLabelText("Keep recordings for") as HTMLSelectElement;
+    expect([...days.options].map((o) => o.text)).toEqual(["7 days (default)", "1 day", "30 days", "90 days"]);
+    fireEvent.change(mb, { target: { value: "200" } });
+    await tick();
+    fireEvent.change(dialog.getByLabelText("Keep recordings for"), { target: { value: "30" } });
+    await tick();
+    expect(updates(t)).toEqual([{ "browser.timeline_mb": 200 }, { "browser.timeline_days": 30 }]);
+    c.dispose();
+  });
+
+  it("leaves the downloads row out while the host does not say where it saves", async () => {
+    await mount(host());
+    const dialog = openSettings("Browser");
+    await tick();
+    expect(dialog.queryByText("Downloads")).toBeNull();
+  });
+
+  it("is not offered by a host without the browser", async () => {
+    const t = host();
+    t.handlers["host.hello"] = () => hostHello({ capabilities: CLIENT_CAPABILITIES.filter((x) => x !== "browser") });
+    const c = await mount(t);
+    fireEvent.click(openMenu().getByRole("menuitem", { name: /^Settings/ }));
+    const nav = within(screen.getByRole("navigation", { name: "Settings sections" }));
+    expect(nav.queryByText("Browser")).toBeNull();
+    expect(nav.getByText("Advanced")).toBeTruthy();
+    c.dispose();
+  });
 });

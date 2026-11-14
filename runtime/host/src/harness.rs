@@ -73,7 +73,19 @@ pub struct HarnessInput {
     pub user: InstructionTexts,
     /// Empty unless the connection's opener read them from the settings.
     pub preferences: UserPreferences,
+    /// The agent has Zwiim's browser tools (design 10.2).
+    pub browser: bool,
 }
+
+/// What an agent with Zwiim's browser tools is told about them, whichever
+/// way it is told: in its session instructions, or by the tool server when
+/// it connects (`zwiim-mcp`'s `instructions`), for agents that take no
+/// session instructions.
+pub const BROWSER_LINES: [&str; 3] = [
+    "For anything you would use a web browser for (checking a dev server or a page you changed, testing a flow, reading a site), use Zwiim's built-in browser through the `browser_*` tools from zwiim-mcp. Start with `browser_list_tabs` or `browser_open_tab`.",
+    "The user watches those tabs live in Zwiim's Browser panel and can use them with you.",
+    "Don't open the user's own browser (`open`, `xdg-open`, `start`) or start another one (Playwright, Puppeteer, a Chrome of your own) unless the user asks for it.",
+];
 
 /// The instructions an agent session runs with, and their identity for logs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +104,7 @@ pub async fn gather(cwd: &Path, user: InstructionTexts) -> HarnessInput {
         git: git_facts(cwd).await,
         user,
         preferences: UserPreferences::default(),
+        browser: false,
     }
 }
 
@@ -514,6 +527,7 @@ mod tests {
             }),
             preferences: UserPreferences::default(),
             user: Default::default(),
+            browser: false,
         }
     }
 
