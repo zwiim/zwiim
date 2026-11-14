@@ -246,7 +246,19 @@ export interface BrowserTab {
   crashed: boolean;
   /** It loads again when files in its session's worktree change; absent from older Hosts. */
   reload_on_save?: boolean;
+  /** The device it is previewed as; absent for a desktop page. */
+  preview?: BrowserPreviewId;
 }
+
+/** A device a tab can be previewed as (`browser.tab.preview`). */
+export type BrowserPreviewId = "iphone" | "android" | "ipad";
+
+/** The devices, with the screen the Host gives each, in CSS pixels. */
+export const BROWSER_PREVIEWS: readonly { id: BrowserPreviewId; name: string; width: number; height: number }[] = [
+  { id: "iphone", name: "iPhone", width: 393, height: 852 },
+  { id: "android", name: "Android phone", width: 412, height: 915 },
+  { id: "ipad", name: "iPad", width: 820, height: 1180 },
+];
 
 /** Why the browser engine could not run. */
 export type BrowserEngineFailure =
@@ -2337,6 +2349,7 @@ export interface Operations {
   "browser.tab.print": [{ tab_id: string }, { name: string }];
   /** Reload a session's tab whenever files in its worktree change, or stop; the tab. */
   "browser.tab.reload_on_save": [{ tab_id: string; on: boolean }, BrowserTab];
+  "browser.tab.preview": [{ tab_id: string; preview: BrowserPreviewId | null }, BrowserTab];
   /** Let the person point at an element; the outcome arrives as `browser.tab.picked`. */
   "browser.tab.pick": [{ tab_id: string }, Record<string, never>];
   /** Call the tab's pick off; it ends with a `browser.tab.picked` without a pick. */

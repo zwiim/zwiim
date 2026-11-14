@@ -12,6 +12,7 @@ import type {
   AgentType,
   BrowserEngine,
   BrowserTab,
+  BrowserPreviewId,
   BrowserTabOwner,
   BrowserLoginSites,
   BrowserStep,
@@ -796,6 +797,11 @@ export class HostController {
   /** Reload a session's tab whenever files in its worktree change (`on`), or stop. */
   async setBrowserReloadOnSave(tab_id: string, on: boolean): Promise<BrowserTab> {
     return this.client.request("browser.tab.reload_on_save", { tab_id, on });
+  }
+
+  /** Show the tab as that phone or tablet shows it, or as a desktop page again with null. */
+  async setBrowserPreview(tab_id: string, preview: BrowserPreviewId | null): Promise<BrowserTab> {
+    return this.client.request("browser.tab.preview", { tab_id, preview });
   }
 
   /** Let the person point at an element of the tab's page; the outcome arrives in the browser state's `picks`. */
