@@ -659,6 +659,58 @@ pub async fn login_forget(
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct TimelineParams {
+    pub session_id: String,
+    /// Only steps older than this one.
+    #[serde(default)]
+    pub before: Option<u64>,
+    /// At most this many; 50 unless given, 200 at most.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// `browser.timeline.list {session_id, before?, limit?}` → `{steps}`: what
+/// the session's agent did in its browser, newest first (design 10.7).
+pub async fn timeline_list(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<TimelineParams>,
+) -> ZResult<Value> {
+    known_session(&state, &p.session_id).await?;
+    let limit = p.limit.unwrap_or(50).clamp(1, 200);
+    let steps = service(&state)
+        .await?
+        .timeline_steps(&p.session_id, p.before, limit)
+        .await;
+    Ok(Json(json!({ "steps": steps })))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimelineImageParams {
+    pub session_id: String,
+    pub seq: u64,
+}
+
+/// `browser.timeline.image {session_id, seq}` → `{jpeg}`: step `seq`'s
+/// picture, base64; `not_found` once it is trimmed.
+pub async fn timeline_image(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<TimelineImageParams>,
+) -> ZResult<Value> {
+    use base64::Engine as _;
+    known_session(&state, &p.session_id).await?;
+    let jpeg = service(&state)
+        .await?
+        .timeline_image(&p.session_id, p.seq)
+        .await
+        .ok_or_else(|| ZwiimError::not_found("No such step"))?;
+    Ok(Json(json!({
+        "jpeg": base64::engine::general_purpose::STANDARD.encode(jpeg)
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DownloadLocationParams {
     /// A folder on the Host, or null for the default.
     pub root: Option<String>,

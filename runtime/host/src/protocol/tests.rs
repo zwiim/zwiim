@@ -141,6 +141,8 @@ const OPS: &[&str] = &[
     "browser.login.get",
     "browser.login.save",
     "browser.login.forget",
+    "browser.timeline.list",
+    "browser.timeline.image",
     "browser.downloads.location",
     "browser.downloads.set_location",
 ];
@@ -5598,6 +5600,11 @@ async fn a_paired_device_cannot_manage_devices_or_claim_the_host() {
             json!({"session_id": "s", "sites": ["example.com"]}),
         ),
         ("browser.login.forget", json!({"session_id": "s"})),
+        ("browser.timeline.list", json!({"session_id": "s"})),
+        (
+            "browser.timeline.image",
+            json!({"session_id": "s", "seq": 1}),
+        ),
         ("browser.downloads.location", json!({})),
         ("browser.downloads.set_location", json!({"root": "/tmp"})),
     ] {
@@ -6897,6 +6904,64 @@ async fn a_workspace_login_is_listed_saved_and_forgotten_by_site() {
         .call("browser.login.get", json!({"session_id": "nope"}))
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_sessions_browser_steps_are_listed_with_their_pictures() {
+    let h = host(false).await;
+    let _fake = fake_browser(&h).await;
+    let dir = tempfile::tempdir().unwrap();
+    let browser = h.state.browser.get().unwrap().clone();
+    browser.keep_timeline(dir.path().to_path_buf());
+    let conv = seed_conversation(&h.state.db, h.wt_folder_id, AgentType::ClaudeCode).await;
+    let sid = session_id_of(&h.state, conv).await;
+    assert_eq!(
+        h.ok("browser.timeline.list", json!({"session_id": sid}))
+            .await,
+        json!({"steps": []})
+    );
+    let tab = h
+        .ok(
+            "browser.tab.open",
+            json!({"owner": {"kind": "session", "session_id": sid}}),
+        )
+        .await;
+    let tab_id = tab["tab_id"].as_str().unwrap();
+    browser.record_step(&sid, tab_id, "Clicked".into()).await;
+    browser
+        .record_step(&sid, tab_id, "Pressed Enter".into())
+        .await;
+    let listed = h
+        .ok("browser.timeline.list", json!({"session_id": sid}))
+        .await;
+    let steps = listed["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[0]["action"], "Pressed Enter");
+    assert_eq!(steps[0]["seq"], 2);
+    assert_eq!(steps[0]["tab_id"], tab_id);
+    let older = h
+        .ok(
+            "browser.timeline.list",
+            json!({"session_id": sid, "before": 2, "limit": 5}),
+        )
+        .await;
+    assert_eq!(older["steps"][0]["action"], "Clicked");
+    assert_eq!(
+        h.ok(
+            "browser.timeline.image",
+            json!({"session_id": sid, "seq": 1})
+        )
+        .await,
+        json!({"jpeg": "ZmFrZSBqcGVn"})
+    );
+    assert_eq!(
+        h.err(
+            "browser.timeline.image",
+            json!({"session_id": sid, "seq": 9})
+        )
+        .await,
+        (StatusCode::NOT_FOUND, "not_found".into())
+    );
 }
 
 #[tokio::test]

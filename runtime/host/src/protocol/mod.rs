@@ -138,6 +138,8 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/browser.login.get", post(browser::login_get))
         .route("/browser.login.save", post(browser::login_save))
         .route("/browser.login.forget", post(browser::login_forget))
+        .route("/browser.timeline.list", post(browser::timeline_list))
+        .route("/browser.timeline.image", post(browser::timeline_image))
         .route("/browser.downloads.location", post(browser::downloads_location))
         .route(
             "/browser.downloads.set_location",

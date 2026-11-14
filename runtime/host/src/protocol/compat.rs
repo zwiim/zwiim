@@ -391,6 +391,15 @@ use serde::{Deserialize, Serialize};
 /// sites?}` drops those sites, or the whole login, and returns `{saved}`.
 /// Every new session in the workspace starts its browser from that login.
 /// `login_unavailable` when the Host keeps no logins. Host only for now.
+/// `browser.timeline.list {session_id, before?, limit?}` returns `{steps}`,
+/// what the session's agent did in its browser, newest first: each
+/// `{seq, at, tab_id, action, url, bytes}` (`at` in Unix milliseconds,
+/// `limit` 50 unless given and 200 at most, `before` a `seq`), and
+/// `browser.timeline.image {session_id, seq}` returns that step's picture
+/// as `{jpeg}` in base64, `not_found` once trimmed. `settings` also gains
+/// `browser.timeline_mb` (1 to 1000; unset is 50) and
+/// `browser.timeline_days` (1 to 90; unset is 7): how much of each
+/// session's recording the Host keeps. Host only for now.
 /// `browser.tab.open` is refused with `too_many_tabs` past a session's tab
 /// cap or 30 tabs in all, and with `browser_memory_full` (its message says
 /// which sessions hold the most) while the browser is at its memory budget.
