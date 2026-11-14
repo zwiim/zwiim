@@ -20,8 +20,6 @@ use crate::models::{
     TerminalShellOption,
 };
 use crate::network::proxy;
-#[cfg(feature = "tauri-runtime")]
-use crate::preferences;
 use crate::terminal::manager::resolve_shell;
 
 pub(crate) const SYSTEM_PROXY_SETTINGS_KEY: &str = "system_proxy_settings";
@@ -701,29 +699,6 @@ pub async fn update_system_terminal_settings(
     let config = manager.terminal_shell_config();
     let emitter = crate::web::event_bridge::EventEmitter::Tauri(app);
     set_system_terminal_settings_core(&db.conn, &config, &emitter, settings).await
-}
-
-#[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn get_system_rendering_settings() -> Result<SystemRenderingSettings, AppCommandError> {
-    let prefs = preferences::load();
-    Ok(SystemRenderingSettings {
-        disable_hardware_acceleration: prefs.disable_hardware_acceleration,
-    })
-}
-
-#[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn update_system_rendering_settings(
-    settings: SystemRenderingSettings,
-) -> Result<SystemRenderingSettings, AppCommandError> {
-    let mut prefs = preferences::load();
-    prefs.disable_hardware_acceleration = settings.disable_hardware_acceleration;
-    preferences::save(&prefs).map_err(|err| {
-        AppCommandError::io_error("Failed to persist rendering settings")
-            .with_detail(err.to_string())
-    })?;
-    Ok(settings)
 }
 
 /// Reach for the manager through `try_state` rather than the plugin's
