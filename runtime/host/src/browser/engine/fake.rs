@@ -431,6 +431,17 @@ impl FakeEngine {
                 }
                 Ok(json!({}))
             }
+            "Page.getLayoutMetrics" => {
+                target_of_session(&s)?;
+                Ok(
+                    json!({ "cssVisualViewport": { "pageX": 0, "pageY": 0, "clientWidth": 1280, "clientHeight": 800 } }),
+                )
+            }
+            // Base64 of "fake jpeg".
+            "Page.captureScreenshot" => {
+                target_of_session(&s)?;
+                Ok(json!({ "data": "ZmFrZSBqcGVn" }))
+            }
             "Fetch.fulfillRequest" | "DOMStorage.enable" => {
                 target_of_session(&s)?;
                 Ok(json!({}))

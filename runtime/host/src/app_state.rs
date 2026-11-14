@@ -288,7 +288,10 @@ impl AppState {
                 let manager =
                     engine::manager::EngineManager::new(engine::host_start(dir.join("engine")));
                 let snapshot = Snapshot::at(dir.join("personal.snapshot"));
-                BrowserService::start(manager, self.db.conn.clone(), Some(snapshot)).await
+                let service =
+                    BrowserService::start(manager, self.db.conn.clone(), Some(snapshot)).await?;
+                service.keep_timeline(dir.join("timeline"));
+                Ok(service)
             })
             .await
             .cloned()

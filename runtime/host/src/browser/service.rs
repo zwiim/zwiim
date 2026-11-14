@@ -290,6 +290,48 @@ pub struct LoginSites {
 /// items given.
 type StorageJob = (String, Option<Vec<(String, String)>>);
 
+/// A recorded step's picture: this wide in CSS pixels at most, as a JPEG of
+/// this quality.
+const THUMBNAIL_WIDTH: f64 = 480.0;
+const THUMBNAIL_QUALITY: u8 = 60;
+
+/// A small JPEG of the viewport of the page on CDP session `session`.
+async fn thumbnail(cdp: &Cdp, session: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine as _;
+    let s = Some(session);
+    let metrics = cdp
+        .call("Page.getLayoutMetrics", json!({}), s)
+        .await
+        .map_err(|e| e.to_string())?;
+    let css = &metrics["cssVisualViewport"];
+    let width = css["clientWidth"].as_f64().unwrap_or(0.0);
+    let height = css["clientHeight"].as_f64().unwrap_or(0.0);
+    if width <= 0.0 || height <= 0.0 {
+        return Err("the page has no viewport".into());
+    }
+    let shot = cdp
+        .call(
+            "Page.captureScreenshot",
+            json!({
+                "format": "jpeg",
+                "quality": THUMBNAIL_QUALITY,
+                "clip": {
+                    "x": css["pageX"].as_f64().unwrap_or(0.0),
+                    "y": css["pageY"].as_f64().unwrap_or(0.0),
+                    "width": width,
+                    "height": height,
+                    "scale": (THUMBNAIL_WIDTH / width).min(1.0),
+                },
+            }),
+            s,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    base64::engine::general_purpose::STANDARD
+        .decode(shot["data"].as_str().unwrap_or_default())
+        .map_err(|e| e.to_string())
+}
+
 /// How long a hidden page waits for its origin's request.
 const BLANK_PAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -476,6 +518,8 @@ pub struct BrowserService {
     /// CDP sessions of the hidden pages that read and write a workspace
     /// login's `localStorage`; their requests are answered, not screened.
     blank_pages: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Where each session's recording goes, once the Host names it.
+    timeline: std::sync::OnceLock<Arc<super::timeline::Timeline>>,
 }
 
 impl BrowserService {
@@ -537,6 +581,7 @@ impl BrowserService {
             }),
             events: broadcast::channel(EVENT_BUFFER).0,
             blank_pages: std::sync::Mutex::new(std::collections::HashSet::new()),
+            timeline: std::sync::OnceLock::new(),
         });
         tokio::spawn(follow_engine(Arc::downgrade(&service), state));
         tokio::spawn(govern(Arc::downgrade(&service)));
@@ -2704,6 +2749,79 @@ impl BrowserService {
     pub async fn stop_engine(&self) {
         self.save_personal().await;
         self.engine.stop().await;
+    }
+
+    /// Record what agents do in sessions' tabs under `root` (design 10.7).
+    pub fn keep_timeline(&self, root: std::path::PathBuf) {
+        let _ = self
+            .timeline
+            .set(Arc::new(super::timeline::Timeline::new(root)));
+    }
+
+    /// Record a step of session `session_id`'s agent in tab `tab_id`: a
+    /// small picture of the page now and `action`. Nothing is recorded
+    /// without a timeline, and a picture that cannot be taken skips the
+    /// step.
+    pub async fn record_step(&self, session_id: &str, tab_id: &str, action: String) {
+        let Some(timeline) = self.timeline.get().cloned() else {
+            return;
+        };
+        let Ok((cdp, session)) = self.session(tab_id).await else {
+            return;
+        };
+        let jpeg = match thumbnail(&cdp, &session).await {
+            Ok(jpeg) => jpeg,
+            Err(e) => {
+                tracing::debug!(error = %e, "could not picture a browser step");
+                return;
+            }
+        };
+        let url = self.tab(tab_id).await.map(|t| t.url).unwrap_or_default();
+        let limits = crate::settings::browser_timeline_limits(&self.db).await;
+        let step = super::timeline::Step {
+            seq: 0,
+            at: chrono::Utc::now().timestamp_millis(),
+            tab_id: tab_id.to_string(),
+            action,
+            url,
+            bytes: 0,
+        };
+        let session_id = session_id.to_string();
+        let saved =
+            tokio::task::spawn_blocking(move || timeline.append(&session_id, step, &jpeg, limits))
+                .await;
+        if let Ok(Err(e)) = saved {
+            tracing::warn!(error = %e, "could not record a browser step");
+        }
+    }
+
+    /// Session `session_id`'s recorded steps, newest first: at most `limit`,
+    /// older than step `before` when given.
+    pub async fn timeline_steps(
+        &self,
+        session_id: &str,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Vec<super::timeline::Step> {
+        let Some(timeline) = self.timeline.get().cloned() else {
+            return Vec::new();
+        };
+        let limits = crate::settings::browser_timeline_limits(&self.db).await;
+        let now = chrono::Utc::now().timestamp_millis();
+        let session_id = session_id.to_string();
+        tokio::task::spawn_blocking(move || timeline.steps(&session_id, before, limit, now, limits))
+            .await
+            .unwrap_or_default()
+    }
+
+    /// The picture of session `session_id`'s step `seq`.
+    pub async fn timeline_image(&self, session_id: &str, seq: u64) -> Option<Vec<u8>> {
+        let timeline = self.timeline.get().cloned()?;
+        let session_id = session_id.to_string();
+        tokio::task::spawn_blocking(move || timeline.image(&session_id, seq).ok())
+            .await
+            .ok()
+            .flatten()
     }
 
     /// The workspace session `session_id` works in.

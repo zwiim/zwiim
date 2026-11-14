@@ -400,6 +400,9 @@ pub(crate) async fn tab_op(
         }
         Err(e) => return BrowserTabOutcome::refused(Some(&tab_id), ERROR_OPEN_FAILED, e.message),
     };
+    browser
+        .record_step(session, &tab_id, format!("Opened {url}"))
+        .await;
     match browser.tab(&tab_id).await {
         Some(tab) => BrowserTabOutcome::tab(summary(&tab), load_error),
         None => BrowserTabOutcome::refused(Some(&tab_id), ERROR_OPEN_FAILED, no_such_tab(&tab_id)),
@@ -841,7 +844,7 @@ pub(crate) async fn act(
                     "That is a password field, and agents may type passwords only on this \
                      computer's dev servers (localhost). Nothing was typed. Ask the person to \
                      sign in themselves, or to turn on \"Let agents type passwords on any \
-                     site\" in Zwiim's Settings > Advanced > Browser.",
+                     site\" in Zwiim's Settings > Browser.",
                 );
             }
             Ok(_) => return stale("No snapshot has been taken of this page; take one first."),
@@ -906,6 +909,9 @@ pub(crate) async fn act(
             tokio::time::sleep(ACTION_GRACE).await;
             settle(browser, tab_id, &cdp, &cdp_session).await;
             let effects = watch.effects(browser, session, tab_id).await;
+            browser
+                .record_step(session, tab_id, step_note(&request.action))
+                .await;
             BrowserActOutcome::done(tab_id, outcome).with_effects(effects)
         }
         Ok(Err((Some(ActionError::Stale) | None, detail))) => stale(&detail),
@@ -1089,6 +1095,24 @@ fn same_page(expected: &str, url: &str) -> bool {
 }
 
 /// The action's name as clients show it.
+/// An action as its recorded step says it (design 10.7). Typed text is
+/// never kept: it may be a secret.
+fn step_note(action: &ActionKind) -> String {
+    match action {
+        ActionKind::Click { count: Some(2), .. } => "Double-clicked".into(),
+        ActionKind::Click {
+            button: Some(PointerButton::Right),
+            ..
+        } => "Right-clicked".into(),
+        ActionKind::Click { .. } => "Clicked".into(),
+        ActionKind::Hover => "Hovered".into(),
+        ActionKind::Type { submit: true, .. } => "Typed into a field and pressed Enter".into(),
+        ActionKind::Type { .. } => "Typed into a field".into(),
+        ActionKind::Press { key } => format!("Pressed {key}"),
+        ActionKind::Select { .. } => "Chose an option".into(),
+    }
+}
+
 fn kind_of(action: &ActionKind) -> &'static str {
     match action {
         ActionKind::Click { .. } => "click",
@@ -1367,6 +1391,42 @@ mod tests {
         BrowserService::start(EngineManager::new(fake.start_fn()), db.conn.clone(), None)
             .await
             .unwrap()
+    }
+
+    /// What an agent does in its tabs is recorded, a picture and a line a
+    /// step, when the Host keeps a timeline (design 10.7).
+    #[tokio::test]
+    async fn an_agents_page_loads_are_recorded_as_steps() {
+        let fake = FakeEngine::default();
+        let browser = browser(&fake).await;
+        let dir = tempfile::tempdir().unwrap();
+        browser.keep_timeline(dir.path().to_path_buf());
+        let opened = tab_op(
+            &browser,
+            &Worlds::default(),
+            "s1",
+            BrowserTabOp::Open {
+                url: "http://localhost:5173/".into(),
+            },
+        )
+        .await;
+        let tab = opened.tab.unwrap();
+        let steps = browser.timeline_steps("s1", None, 10).await;
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].action, "Opened http://localhost:5173/");
+        assert_eq!(steps[0].tab_id, tab.tab_id);
+        assert_eq!(
+            browser.timeline_image("s1", steps[0].seq).await.as_deref(),
+            Some(&b"fake jpeg"[..])
+        );
+        assert!(browser.timeline_steps("s2", None, 10).await.is_empty());
+        assert_eq!(
+            step_note(&ActionKind::Type {
+                text: "hunter2".into(),
+                submit: false
+            }),
+            "Typed into a field"
+        );
     }
 
     #[tokio::test]

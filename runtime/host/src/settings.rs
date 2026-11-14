@@ -43,6 +43,10 @@ enum Kind {
     Scrollback,
     /// Tabs one session's browser may hold (see [`SESSION_TABS_RANGE`]).
     SessionTabs,
+    /// Megabytes of one session's browser recording (see [`TIMELINE_MB_RANGE`]).
+    TimelineMb,
+    /// Days a browser recording is kept (see [`TIMELINE_DAYS_RANGE`]).
+    TimelineDays,
 }
 
 pub const DEFAULT_AGENT: &str = "defaults.agent";
@@ -58,6 +62,8 @@ pub const BROWSER_AGENT_PASSWORDS: &str = "browser.agent_passwords";
 pub const BROWSER_AGENT_ASK_SITES: &str = "browser.agent_ask_sites";
 pub const BROWSER_OPEN_DEV_SERVERS: &str = "browser.open_dev_servers";
 pub const BROWSER_SESSION_TABS: &str = "browser.session_tabs";
+pub const BROWSER_TIMELINE_MB: &str = "browser.timeline_mb";
+pub const BROWSER_TIMELINE_DAYS: &str = "browser.timeline_days";
 
 /// Every setting the Host keeps.
 const KEYS: &[(&str, Kind)] = &[
@@ -74,6 +80,8 @@ const KEYS: &[(&str, Kind)] = &[
     (PROMPT_BRANCH_NAME, Kind::Prompt),
     (TERMINAL_SCROLLBACK, Kind::Scrollback),
     (BROWSER_SESSION_TABS, Kind::SessionTabs),
+    (BROWSER_TIMELINE_MB, Kind::TimelineMb),
+    (BROWSER_TIMELINE_DAYS, Kind::TimelineDays),
     (PUSH_SETS_UPSTREAM, Kind::Bool),
     (BROWSER_AGENT_PASSWORDS, Kind::Bool),
     (BROWSER_AGENT_ASK_SITES, Kind::Bool),
@@ -88,6 +96,13 @@ pub const SCROLLBACK_RANGE: std::ops::RangeInclusive<u64> = 64 * 1024..=16 * 102
 pub const SESSION_TABS_RANGE: std::ops::RangeInclusive<u64> =
     1..=crate::browser::governor::MAX_TABS as u64;
 pub const DEFAULT_SESSION_TABS: usize = 20;
+
+/// How much of a session's browser recording is kept, and for how long,
+/// and the defaults (browser design 10.7).
+pub const TIMELINE_MB_RANGE: std::ops::RangeInclusive<u64> = 1..=1000;
+pub const DEFAULT_TIMELINE_MB: u64 = 50;
+pub const TIMELINE_DAYS_RANGE: std::ops::RangeInclusive<u64> = 1..=90;
+pub const DEFAULT_TIMELINE_DAYS: u64 = 7;
 
 /// Longest text value accepted.
 const MAX_TEXT: usize = 200;
@@ -161,6 +176,12 @@ fn check(key: &str, value: &Value) -> Result<(), ZwiimError> {
         (Kind::SessionTabs, value) => value
             .as_u64()
             .is_some_and(|n| SESSION_TABS_RANGE.contains(&n)),
+        (Kind::TimelineMb, value) => value
+            .as_u64()
+            .is_some_and(|n| TIMELINE_MB_RANGE.contains(&n)),
+        (Kind::TimelineDays, value) => value
+            .as_u64()
+            .is_some_and(|n| TIMELINE_DAYS_RANGE.contains(&n)),
         _ => false,
     };
     if valid {
@@ -260,6 +281,30 @@ pub async fn browser_session_tabs(db: &DatabaseConnection) -> usize {
         .and_then(|v| v.as_u64())
         .filter(|n| SESSION_TABS_RANGE.contains(n))
         .map_or(DEFAULT_SESSION_TABS, |n| n as usize)
+}
+
+/// How much of a session's browser recording to keep: the person's choices,
+/// or [`DEFAULT_TIMELINE_MB`] and [`DEFAULT_TIMELINE_DAYS`].
+pub async fn browser_timeline_limits(db: &DatabaseConnection) -> crate::browser::timeline::Limits {
+    let read = |v: Option<Value>, range: &std::ops::RangeInclusive<u64>, default: u64| {
+        v.and_then(|v| v.as_u64())
+            .filter(|n| range.contains(n))
+            .unwrap_or(default)
+    };
+    let mb = read(
+        read_value(db, BROWSER_TIMELINE_MB).await,
+        &TIMELINE_MB_RANGE,
+        DEFAULT_TIMELINE_MB,
+    );
+    let days = read(
+        read_value(db, BROWSER_TIMELINE_DAYS).await,
+        &TIMELINE_DAYS_RANGE,
+        DEFAULT_TIMELINE_DAYS,
+    );
+    crate::browser::timeline::Limits {
+        max_bytes: mb << 20,
+        max_age: std::time::Duration::from_secs(days * 24 * 60 * 60),
+    }
 }
 
 /// Whether removing a worktree also deletes its branch, when no work is lost.
@@ -507,6 +552,11 @@ mod tests {
         assert!(check("browser.session_tabs", &Value::from(0)).is_err());
         assert!(check("browser.session_tabs", &Value::from(31)).is_err());
         assert!(check("browser.session_tabs", &Value::from("20")).is_err());
+        assert!(check("browser.timeline_mb", &Value::from(50)).is_ok());
+        assert!(check("browser.timeline_mb", &Value::from(0)).is_err());
+        assert!(check("browser.timeline_mb", &Value::from(1001)).is_err());
+        assert!(check("browser.timeline_days", &Value::from(7)).is_ok());
+        assert!(check("browser.timeline_days", &Value::from(91)).is_err());
         assert!(check("git.push_sets_upstream", &Value::from(false)).is_ok());
     }
 

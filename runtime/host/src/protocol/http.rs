@@ -2616,10 +2616,16 @@ pub async fn session_delete(
         &p.session_id,
     )
     .await?;
-    // Its browser downloads (in the default folder), tabs and context go with it.
+    // Its browser downloads (in the default folder), recording, tabs and
+    // context go with it.
     if let Some(dir) = downloads {
         crate::browser::saving::remove(&dir).await;
     }
+    let timeline = crate::browser::timeline::Timeline::new(
+        crate::browser::engine::browser_dir(&state.data_dir).join("timeline"),
+    );
+    let sid = p.session_id.clone();
+    let _ = tokio::task::spawn_blocking(move || timeline.remove(&sid)).await;
     match state.browser.get() {
         Some(browser) => browser.close_session(&p.session_id).await,
         None => {
