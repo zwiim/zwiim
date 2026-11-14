@@ -1336,7 +1336,10 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 12. Dev-server-to-worktree mapping and auto-open in the session tab. Done
     on macOS (10.5); the Linux and Windows scans are not built.
 13. Print to PDF, drag and drop. Done (7.6, 7.7).
-14. Remove the dead upstream webview modules.
+14. Remove the dead upstream webview modules. Done: the webview surfaces,
+    their Tauri commands and scripts are gone; `handoff` now builds in the
+    Host for element pick (10.6). The rest of the gated Tauri desktop app in
+    `lib.rs` is not part of this step.
 
 ### P2a — Live App on the phone (covers R2 on the phone)
 
