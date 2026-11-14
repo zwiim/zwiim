@@ -552,6 +552,10 @@ pub struct PageSnapshot {
     pub refs_count: usize,
     /// The tree stops at `max_chars` rather than at the end of the page.
     pub truncated: bool,
+    /// Set by the host when `tree` holds only what changed since the
+    /// snapshot with this generation (see `tree_diff`), not the whole page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changes_since: Option<String>,
 }
 
 /// The host's half of the token a snapshot hands out: which incarnation of

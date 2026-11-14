@@ -898,7 +898,12 @@ impl DelegationListener {
             );
         };
         self.browser
-            .snapshot(&entry.parent_connection_id, &req.tab_id, req.max_chars)
+            .snapshot(
+                &entry.parent_connection_id,
+                &req.tab_id,
+                req.max_chars,
+                req.changes_only,
+            )
             .await
     }
 
@@ -1688,6 +1693,7 @@ mod tests {
             _caller: &str,
             tab_id: &str,
             max_chars: Option<usize>,
+            _changes_only: bool,
         ) -> BrowserSnapshotOutcome {
             self.calls
                 .lock()
@@ -3398,6 +3404,7 @@ mod tests {
                 token: "tok".into(),
                 tab_id: "t9".into(),
                 max_chars: Some(1234),
+                changes_only: false,
             }),
         )
         .await;
@@ -3592,6 +3599,7 @@ mod tests {
                 token: "not-a-token".into(),
                 tab_id: "t1".into(),
                 max_chars: None,
+                changes_only: false,
             }),
         )
         .await;

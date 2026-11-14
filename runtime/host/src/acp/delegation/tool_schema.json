@@ -433,6 +433,10 @@
           "type": "integer",
           "minimum": 0,
           "description": "Cap on the rendered tree, in characters. Defaults to 40000; pass 0 for the whole page however large. A tree that was cut comes back marked as truncated, so you can ask again for more. The cut takes the refs with it: only the refs in the part you were shown can be acted on, and every snapshot replaces the last one's refs — so a small snapshot taken after a large one leaves the refs you were holding unusable. Take the snapshot you mean to act from."
+        },
+        "changesOnly": {
+          "type": "boolean",
+          "description": "Return only what changed since your last snapshot of this tab, instead of the whole tree: lines marked `+ ` are new, `- ` are gone, and unmarked lines are the parents they sit under. Use it after an action to see its effect cheaply. Refs from that last snapshot that are not gone keep working with this snapshot's generation. When the page has navigated since, or your last snapshot was cut short, the whole tree comes back instead."
         }
       }
     }

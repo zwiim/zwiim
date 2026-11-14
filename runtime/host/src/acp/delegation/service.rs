@@ -390,6 +390,7 @@ mod tests {
             _caller: &str,
             tab_id: &str,
             _max_chars: Option<usize>,
+            _changes_only: bool,
         ) -> crate::acp::browser_tools::BrowserSnapshotOutcome {
             crate::acp::browser_tools::BrowserSnapshotOutcome::refused(
                 tab_id,

@@ -30,6 +30,7 @@ use super::service::{
 };
 use super::sites::{self, Actor, Verdict};
 use super::store::TabOwner;
+use super::tree_diff;
 use super::ui::UiKind;
 use crate::acp::browser_tools::{
     ActionEffects, BrowserActOutcome, BrowserCaptureOutcome, BrowserConsoleOutcome,
@@ -118,10 +119,19 @@ impl BrowserToolAccess for HostBrowserTools {
         caller: &str,
         tab_id: &str,
         max_chars: Option<usize>,
+        changes_only: bool,
     ) -> BrowserSnapshotOutcome {
         match self.context(caller).await {
             Some((browser, session)) => {
-                snapshot(&browser, &self.worlds, &session, tab_id, max_chars).await
+                snapshot(
+                    &browser,
+                    &self.worlds,
+                    &session,
+                    tab_id,
+                    max_chars,
+                    changes_only,
+                )
+                .await
             }
             None => BrowserSnapshotOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_SESSION_NOTE),
         }
@@ -257,7 +267,8 @@ pub(crate) async fn tab_op(
                     no_such_tab(&tab_id),
                 );
             }
-            worlds.0.lock().await.remove(&tab_id);
+            worlds.contexts.lock().await.remove(&tab_id);
+            worlds.seen.lock().await.remove(&tab_id);
             return match browser.close(&tab_id).await {
                 Ok(()) => BrowserTabOutcome::closed(&tab_id),
                 Err(_) => BrowserTabOutcome::refused(
@@ -621,7 +632,51 @@ async fn wait_for(
 /// page-reading script was installed in. A new document ends it, and with it
 /// every ref the script handed out.
 #[derive(Default)]
-pub(crate) struct Worlds(Mutex<HashMap<String, i64>>);
+pub(crate) struct Worlds {
+    contexts: Mutex<HashMap<String, i64>>,
+    /// The tree each tab's last snapshot showed, for the next one to say only
+    /// what changed.
+    seen: Mutex<HashMap<String, Seen>>,
+}
+
+/// Tabs whose last tree is kept; past it, all are dropped and the next
+/// snapshot of each comes whole.
+const MAX_SEEN: usize = 64;
+
+/// What a tab's last snapshot showed the agent.
+#[derive(Clone)]
+struct Seen {
+    /// Which document it was of: its generation without the snapshot's own
+    /// number.
+    document: String,
+    generation: String,
+    tree: String,
+    /// The agent was shown all of it, so a change can be told against it.
+    whole: bool,
+}
+
+/// The document a snapshot generation (`<world>.<number>.<epoch>`) is of.
+fn document_of(generation: &str) -> String {
+    let mut parts = generation.split('.');
+    let world = parts.next().unwrap_or_default();
+    parts.next();
+    let epoch: Vec<&str> = parts.collect();
+    format!("{world}.{}", epoch.join("."))
+}
+
+/// `text` cut to `max` bytes at a line's end, the way the engine cuts a tree;
+/// `0` is no cap.
+fn cut_tree(text: &str, max: usize) -> (String, bool) {
+    if max == 0 || text.len() <= max {
+        return (text.to_string(), false);
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let end = text[..end].rfind('\n').filter(|&n| n > 0).unwrap_or(end);
+    (text[..end].to_string(), true)
+}
 
 /// Why the world could not be asked.
 enum WorldError {
@@ -639,7 +694,7 @@ impl From<BrowserError> for WorldError {
 impl Worlds {
     /// The tab's world as it is, if the script was installed in it.
     async fn current(&self, tab_id: &str) -> Option<i64> {
-        self.0.lock().await.get(tab_id).copied()
+        self.contexts.lock().await.get(tab_id).copied()
     }
 
     /// A new world in the tab's main frame.
@@ -660,15 +715,36 @@ impl Worlds {
         let context = world["executionContextId"]
             .as_i64()
             .ok_or_else(|| WorldError::Failed("the engine made no world".into()))?;
-        self.0.lock().await.insert(tab_id.to_string(), context);
+        self.contexts
+            .lock()
+            .await
+            .insert(tab_id.to_string(), context);
         Ok(context)
     }
 
     async fn forget(&self, tab_id: &str, context: i64) {
-        let mut worlds = self.0.lock().await;
+        let mut worlds = self.contexts.lock().await;
         if worlds.get(tab_id) == Some(&context) {
             worlds.remove(tab_id);
         }
+    }
+
+    /// The tree the tab's last snapshot showed in full, if it did.
+    async fn seen(&self, tab_id: &str) -> Option<Seen> {
+        self.seen
+            .lock()
+            .await
+            .get(tab_id)
+            .filter(|seen| seen.whole)
+            .cloned()
+    }
+
+    async fn saw(&self, tab_id: &str, seen: Seen) {
+        let mut all = self.seen.lock().await;
+        if all.len() >= MAX_SEEN && !all.contains_key(tab_id) {
+            all.clear();
+        }
+        all.insert(tab_id.to_string(), seen);
     }
 }
 
@@ -718,17 +794,52 @@ pub(crate) async fn snapshot(
     session: &str,
     tab_id: &str,
     max_chars: Option<usize>,
+    changes_only: bool,
 ) -> BrowserSnapshotOutcome {
     if own_tab(browser, session, tab_id).await.is_none() {
         return BrowserSnapshotOutcome::refused(tab_id, ERROR_NO_SUCH_TAB, no_such_tab(tab_id));
     }
-    let request = SnapshotRequest {
-        max_chars: Some(max_chars.unwrap_or(DEFAULT_SNAPSHOT_MAX_CHARS)),
+    let cap = max_chars.unwrap_or(DEFAULT_SNAPSHOT_MAX_CHARS);
+    let base = match changes_only {
+        true => worlds.seen(tab_id).await,
+        false => None,
     };
-    match read_page(browser, worlds, tab_id, &request).await {
-        Ok(page) => BrowserSnapshotOutcome::page(tab_id, page),
-        Err(message) => BrowserSnapshotOutcome::refused(tab_id, ERROR_READ_FAILED, message),
-    }
+    // With a tree to compare against, the page is read whole, so every ref in
+    // it stays live, and the answer is cut here instead.
+    let request = SnapshotRequest {
+        max_chars: Some(if base.is_some() { 0 } else { cap }),
+    };
+    let mut page = match read_page(browser, worlds, tab_id, &request).await {
+        Ok(page) => page,
+        Err(message) => return BrowserSnapshotOutcome::refused(tab_id, ERROR_READ_FAILED, message),
+    };
+    let document = document_of(&page.generation);
+    let whole = page.tree.clone();
+    let base = base.filter(|base| base.document == document);
+    let shown = match &base {
+        Some(base) => tree_diff::changes(&base.tree, &whole).unwrap_or_default(),
+        None => whole.clone(),
+    };
+    let (shown, truncated) = cut_tree(&shown, cap);
+    page.truncated = page.truncated || truncated;
+    page.changes_since = base.map(|base| base.generation);
+    worlds
+        .saw(
+            tab_id,
+            Seen {
+                document,
+                generation: page.generation.clone(),
+                tree: if page.changes_since.is_some() {
+                    whole
+                } else {
+                    shown.clone()
+                },
+                whole: !page.truncated,
+            },
+        )
+        .await;
+    page.tree = shown;
+    BrowserSnapshotOutcome::page(tab_id, page)
 }
 
 /// Take a snapshot in the tab's world, making the world and installing the
@@ -1717,6 +1828,19 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn a_generation_names_its_document_and_a_tree_is_cut_at_a_line() {
+        assert_eq!(document_of("abc.7.12.0"), "abc.12.0");
+        assert_eq!(document_of("abc.8.12.0"), document_of("abc.7.12.0"));
+        assert_ne!(document_of("abd.7.12.0"), document_of("abc.7.12.0"));
+        assert_eq!(
+            cut_tree("- a\n- b\n- c", 0),
+            ("- a\n- b\n- c".into(), false)
+        );
+        assert_eq!(cut_tree("- a\n- b\n- c", 6), ("- a".into(), true));
+        assert_eq!(cut_tree("- é", 3), ("- ".into(), true));
+    }
+
     #[tokio::test]
     async fn an_action_reports_the_tabs_downloads_and_moves_it_caused() {
         let fake = FakeEngine::default();
@@ -1839,7 +1963,7 @@ mod tests {
         );
         assert_eq!(browser.tab(&tab).await.unwrap().url, home);
 
-        let page = snapshot(&browser, &worlds, "s1", &tab, None).await;
+        let page = snapshot(&browser, &worlds, "s1", &tab, None, false).await;
         let page = page.snapshot.unwrap_or_else(|| panic!("{:?}", page.note));
         let line = page
             .tree
@@ -1929,7 +2053,7 @@ mod tests {
         .await;
         let tab = opened.tab.expect("opened").tab_id;
 
-        let page = snapshot(&browser, &worlds, "s1", &tab, None).await;
+        let page = snapshot(&browser, &worlds, "s1", &tab, None, false).await;
         let page = page.snapshot.unwrap_or_else(|| panic!("{:?}", page.note));
         let ref_of = |tree: &str, role: &str| {
             let line = tree.lines().find(|l| l.contains(role)).unwrap().to_string();
@@ -2020,12 +2144,40 @@ mod tests {
         };
         assert_eq!((shown.tab_id.as_str(), shown.kind), (tab.as_str(), "click"));
         assert!(shown.x > 0.0 && shown.y > 0.0);
-        let after = snapshot(&browser, &worlds, "s1", &tab, None)
+        // Only what changed since the first snapshot comes back.
+        let after = snapshot(&browser, &worlds, "s1", &tab, None, true)
             .await
             .snapshot
             .unwrap();
         assert_eq!(after.title, "clicked:true");
-        assert!(after.tree.contains("Ada"), "{}", after.tree);
+        assert_eq!(
+            after.changes_since.as_deref(),
+            Some(page.generation.as_str())
+        );
+        assert!(
+            after.tree.contains("+ ") && after.tree.contains("Thanks, Ada!"),
+            "{}",
+            after.tree
+        );
+        assert!(!after.tree.contains("Secret"), "{}", after.tree);
+        let again = snapshot(&browser, &worlds, "s1", &tab, None, true)
+            .await
+            .snapshot
+            .unwrap();
+        assert_eq!((again.tree.as_str(), again.truncated), ("", false));
+        // A ref from the first snapshot still works with the new generation.
+        let hovered = act(
+            &browser,
+            &worlds,
+            "s1",
+            &tab,
+            &ActionRequest {
+                generation: again.generation.clone(),
+                ..request(&button, ActionKind::Hover)
+            },
+        )
+        .await;
+        assert_eq!(hovered.error, None, "{:?}", hovered.note);
 
         let printed = console(&browser, "s1", &tab, &ConsoleQuery::default()).await;
         let lines = printed.console.unwrap().entries;
@@ -2059,8 +2211,8 @@ mod tests {
         let whole = whole.capture.unwrap_or_else(|| panic!("{:?}", whole.note));
         assert!(!whole.clipped && whole.width > 0 && whole.region.width > 0.0);
         let shot = CaptureRequest {
-            generation: Some(after.generation.clone()),
-            target: Some(ref_of(&after.tree, "button \"Go\"")),
+            generation: Some(again.generation.clone()),
+            target: Some(button.clone()),
             ..Default::default()
         };
         let element = screenshot(&browser, &worlds, "s1", &tab, &shot).await;
@@ -2113,7 +2265,7 @@ mod tests {
         assert_eq!(states["result"]["value"], "granted,denied");
 
         // Another session sees none of it.
-        let other = snapshot(&browser, &worlds, "s2", &tab, None).await;
+        let other = snapshot(&browser, &worlds, "s2", &tab, None, false).await;
         assert_eq!(other.error.as_deref(), Some(ERROR_NO_SUCH_TAB));
 
         // A new document: the old generation's refs are stale.

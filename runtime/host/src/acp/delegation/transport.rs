@@ -279,6 +279,9 @@ pub struct BrokerBrowserSnapshotRequest {
     /// [`crate::acp::browser_tools::DEFAULT_SNAPSHOT_MAX_CHARS`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_chars: Option<usize>,
+    /// Only what changed since the last snapshot of this page.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub changes_only: bool,
 }
 
 /// Act on one shared page. Backs the five action tools (`browser_click`,

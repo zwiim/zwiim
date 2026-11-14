@@ -777,6 +777,11 @@ async fn build_tools_call_spawn(
                 token: ctx.token.clone(),
                 tab_id,
                 max_chars: parse_max_chars(&arguments),
+                changes_only: arguments
+                    .get("changesOnly")
+                    .or_else(|| arguments.get("changes_only"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
             };
             // No external_handle, and no broker-side cancel: dropping this
             // round-trip only suppresses the answer. The read itself finishes
@@ -2626,8 +2631,24 @@ pub fn render_browser_snapshot_result(outcome: &Value) -> Value {
                      replaced the ones from any earlier snapshot of this tab.\n",
                 );
             }
+            let since = snapshot.get("changesSince").and_then(|v| v.as_str());
+            if let Some(since) = since {
+                // The refs did not move: the page is the same document, and
+                // the engine keeps an element's ref while it lives. Only the
+                // generation to quote is new.
+                out.push_str(&format!(
+                    "Only what changed since snapshot {since}: `+ ` lines are new, `- ` lines \
+                     are gone, unmarked lines are the parents they sit under. Refs from that \
+                     snapshot that are not gone still work; quote this snapshot's generation \
+                     with them.\n"
+                ));
+            }
             out.push('\n');
-            out.push_str(s("tree"));
+            if since.is_some() && s("tree").is_empty() {
+                out.push_str("Nothing on the page changed.");
+            } else {
+                out.push_str(s("tree"));
+            }
             out
         }
         _ => outcome
@@ -5361,6 +5382,32 @@ mod tests {
         assert_eq!(refused["isError"], false);
     }
 
+    #[test]
+    fn a_snapshot_of_changes_says_so_and_an_unchanged_page_says_nothing_changed() {
+        let changes = |tree: &str| {
+            let page = render_browser_snapshot_result(&json!({
+                "tabId": "t1",
+                "snapshot": {
+                    "generation": "w.2.3.0",
+                    "url": "https://example.com/",
+                    "title": "Example",
+                    "viewport": { "width": 1280.0, "height": 800.0, "dpr": 2.0 },
+                    "tree": tree,
+                    "refsCount": 4,
+                    "truncated": false,
+                    "changesSince": "w.1.3.0"
+                }
+            }));
+            page["content"][0]["text"].as_str().unwrap().to_string()
+        };
+        let text = changes("+ - status [ref=e9]: Saved");
+        assert!(
+            text.contains("Only what changed since snapshot w.1.3.0"),
+            "{text}"
+        );
+        assert!(text.ends_with("+ - status [ref=e9]: Saved"), "{text}");
+        assert!(changes("").ends_with("Nothing on the page changed."));
+    }
 
     // ── git tools ──────────────────────────────────────────────────────────
 

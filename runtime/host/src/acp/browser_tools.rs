@@ -649,12 +649,15 @@ pub trait BrowserToolAccess: Send + Sync {
     async fn list_tabs(&self, caller: &str) -> BrowserTabsOutcome;
 
     /// Read one shared page. `max_chars` is the caller's own cap; `None` means
-    /// [`DEFAULT_SNAPSHOT_MAX_CHARS`].
+    /// [`DEFAULT_SNAPSHOT_MAX_CHARS`]. With `changes_only`, the tree holds only
+    /// what changed since the last snapshot of the same document, when there
+    /// was one the caller saw whole.
     async fn snapshot(
         &self,
         caller: &str,
         tab_id: &str,
         max_chars: Option<usize>,
+        changes_only: bool,
     ) -> BrowserSnapshotOutcome;
 
     /// Act on one shared page, by a ref from a snapshot of it. Needs the tab
@@ -714,6 +717,7 @@ impl BrowserToolAccess for NoBrowserTabs {
         _caller: &str,
         tab_id: &str,
         _max_chars: Option<usize>,
+        _changes_only: bool,
     ) -> BrowserSnapshotOutcome {
         BrowserSnapshotOutcome::refused(tab_id, ERROR_UNAVAILABLE, NO_BROWSER_NOTE)
     }
@@ -844,6 +848,7 @@ mod tests {
                 tree: "- heading \"Example\"".into(),
                 refs_count: 1,
                 truncated: false,
+                changes_since: None,
             },
         ))
         .expect("serialises");
@@ -864,7 +869,7 @@ mod tests {
         assert!(quiet.tabs.is_empty());
         assert_eq!(quiet.note, None);
 
-        let refused = NoBrowserTabs.snapshot("c1", "t1", None).await;
+        let refused = NoBrowserTabs.snapshot("c1", "t1", None, false).await;
         assert_eq!(refused.error.as_deref(), Some(ERROR_UNAVAILABLE));
     }
 
