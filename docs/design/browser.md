@@ -1384,14 +1384,17 @@ Status (2026-11-13, measured on an Apple M5 Mac with 157.0.8103.78):
 4. Snapshots that return only what changed. Element refs can drift, so this
    waits until the basic tools are proven.
 5. Reload on save; mobile preview tab. Reload on save is done.
-6. DevTools on the desktop, served by the Host from the engine's own
-   DevTools frontend through the proxy.
 
 ### Deferred — out of scope until decided otherwise
 
 1. Control lease with generation, and `browser_request_takeover` with
    hand-back (7.5, was P1.9). The per-session CDP proxy (P2b.4) and phone
    takeover (P2b.3) depend on it and wait for it.
+2. DevTools on the desktop, served by the Host from the engine's own
+   DevTools frontend through the proxy (was P3.6). Agents already read the
+   console, network log, page tree and run scripts through their own
+   browser tools, so only a person would gain from it. Deferred from the
+   first release.
 
 ### P4 — optional, only if measurements or the relay bill call for it
 
