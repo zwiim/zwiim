@@ -161,6 +161,8 @@ jobs:
           APP=target/release/bundle/macos/Zwiim.app
           codesign --verify --deep --strict --verbose=2 "$APP"
           codesign -dv "$APP" 2>&1 | grep -q "TeamIdentifier=$APPLE_TEAM_ID"
+          # Hardened runtime blocks the microphone without this entitlement, and macOS never asks.
+          codesign -d --entitlements - --xml "$APP" | grep -q com.apple.security.device.audio-input
           # The bundler re-signs its sidecars; the Host must come out as com.zwiim.host.
           scripts/release/check-host-signature.sh "$APP/Contents/MacOS/zwiim-host"
           # launchd runs the power helper as root from the plist that names it.
