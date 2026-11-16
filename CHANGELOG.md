@@ -12,7 +12,8 @@ have their own versions and are listed under Compatibility.
 - None.
 
 ### Changed
-- None.
+- The terminal draws with the GPU (WebGL) when it can, so heavy output
+  scrolls smoothly.
 
 ### Fixed
 - The terminal no longer stutters when the dock opens or closes, and the

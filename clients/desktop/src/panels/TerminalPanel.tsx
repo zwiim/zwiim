@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { ChevronDown, ExternalLink, Play, Plus, RotateCcw, Settings, Square, SquareTerminal, X } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import {
   DEFAULT_SCROLLBACK_BYTES,
   hasCapability,
@@ -560,6 +561,14 @@ export function TerminalView({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(el);
+    // Drawn on the GPU when it can be; xterm's DOM renderer otherwise.
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      term.loadAddon(webgl);
+    } catch {
+      // no WebGL2
+    }
 
     // Listen before attaching so the initial snapshot is not missed.
     const off = controller.onTerminalOutput((id, out) => {
