@@ -35,7 +35,7 @@ have their own versions and are listed under Compatibility.
 ## [0.2.2] - 2026-11-16
 
 ### Added
-- Dictate into the Desktop composer with ⌘E or the mic button. Speech is recognized on your Mac with open-source models (Parakeet TDT v3 recommended), downloaded and chosen in Settings › Voice. Audio and text never leave the computer.
+- Dictate into the Desktop composer with ⌘E or the mic button. Speech is recognized on your Mac with open-source models (Parakeet TDT v3 recommended), downloaded and chosen in Settings › Voice. Audio and text never leave the computer. Thanks to @RudreshNarwal for building it.
 
 ### Changed
 - None.
