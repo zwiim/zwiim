@@ -58,6 +58,7 @@ import { dropForkedDraft, EMPTY_DRAFT, forkedDraft, keepForkedDraft, type Compos
 import { PlanStrip } from "./PlanStrip";
 import { FollowUpQueue } from "./FollowUpQueue";
 import { HostDownloads } from "./HostDownloads";
+import { Dictation } from "./Dictation";
 import { useSlashMenu } from "./SlashCommands";
 import { AgentTerminalCard, AgentTerminalsContext } from "./AgentTerminal";
 import { SignInNeededCard } from "./SignInNeededCard";
@@ -1512,6 +1513,7 @@ function Composer(props: {
             )}
             {props.leading}
             <div className="flex min-w-0 flex-1 items-center justify-end gap-0.5">{props.controls}</div>
+            <Dictation area={area} value={text} onChange={setText} disabled={props.disabled || sending} />
             {props.action}
             {(!props.action || props.queueing) && (
               <button

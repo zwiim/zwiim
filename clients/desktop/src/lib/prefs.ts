@@ -376,3 +376,44 @@ export function turnAlerts(): TurnAlerts {
 export function rememberTurnAlerts(alerts: Partial<TurnAlerts>): void {
   write("turn_alerts", { ...turnAlerts(), ...alerts });
 }
+
+/** Dictation runs on this computer, including when the composer reaches a remote host. */
+export interface VoicePrefs {
+  enabled: boolean;
+  mode: "auto" | "hold" | "toggle";
+  model: string;
+  language: string;
+  input: string;
+  silenceSecs: number;
+  removeFillers: boolean;
+  vocabulary: { word: string; heardAs: string }[];
+  gpu: boolean;
+  keepLoadedSecs: number;
+}
+
+export function voice(): VoicePrefs {
+  const raw = read<unknown>("voice", {});
+  const v = (raw && typeof raw === "object" ? raw : {}) as Partial<VoicePrefs>;
+  return {
+    enabled: typeof v.enabled === "boolean" ? v.enabled : true,
+    mode: v.mode === "hold" || v.mode === "toggle" ? v.mode : "auto",
+    model: typeof v.model === "string" && v.model ? v.model : "parakeet-tdt-v3",
+    language: typeof v.language === "string" && v.language ? v.language : "auto",
+    input: typeof v.input === "string" ? v.input : "",
+    silenceSecs: [0, 30, 60, 120].includes(v.silenceSecs as number) ? v.silenceSecs! : 60,
+    removeFillers: typeof v.removeFillers === "boolean" ? v.removeFillers : true,
+    vocabulary: Array.isArray(v.vocabulary)
+      ? v.vocabulary.flatMap((entry) =>
+          entry && typeof entry.word === "string" && entry.word.trim()
+            ? [{ word: entry.word.trim(), heardAs: typeof entry.heardAs === "string" ? entry.heardAs.trim() : "" }]
+            : [],
+        )
+      : [],
+    gpu: typeof v.gpu === "boolean" ? v.gpu : true,
+    keepLoadedSecs: [0, 300, 900, -1].includes(v.keepLoadedSecs as number) ? v.keepLoadedSecs! : 900,
+  };
+}
+
+export function rememberVoice(patch: Partial<VoicePrefs>): void {
+  write("voice", { ...voice(), ...patch });
+}

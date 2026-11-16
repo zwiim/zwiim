@@ -27,6 +27,7 @@ pub mod notify;
 pub mod preview;
 pub mod reveal;
 pub mod update;
+pub mod voice;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -375,6 +376,16 @@ pub fn run() {
         notify::desktop_notify,
         fonts::installed_fonts,
         reveal::reveal_folder,
+        voice::models::voice_models,
+        voice::models::voice_model_download,
+        voice::models::voice_model_delete,
+        voice::voice_inputs,
+        voice::voice_listen,
+        voice::voice_unlisten,
+        voice::voice_start,
+        voice::voice_stop,
+        voice::voice_cancel,
+        voice::voice_unload_after,
         window_zoom
     ];
     tauri::Builder::default()
@@ -409,6 +420,7 @@ pub fn run() {
             login::sync_at_launch(app.handle());
             Ok(())
         })
+        .manage(voice::Voice::default())
         .manage(SignIn::default())
         .manage(update::DesktopUpdate::default())
         .manage(lan::Discovery::default())

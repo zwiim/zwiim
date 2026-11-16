@@ -12,6 +12,8 @@ accepted = [
     "MIT-0",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    # libbz2-rs-sys, used to extract the local speech models.
+    "bzip2-1.0.6",
     "ISC",
     "Zlib",
     "0BSD",

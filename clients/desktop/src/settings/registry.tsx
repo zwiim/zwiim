@@ -11,6 +11,7 @@ import {
   Globe,
   Info,
   MessageSquareText,
+  Mic,
   Network,
   Palette,
   ScrollText,
@@ -62,9 +63,11 @@ import { BrowserSettings } from "@/settings/browser";
 import { ModelsSettings } from "@/settings/models";
 import { PromptsSettings } from "@/settings/prompts";
 import { RepositorySettings } from "@/settings/repository";
+import { VOICE_SETTINGS } from "@/settings/voice";
 
 export type SettingsTab =
   | "general"
+  | "voice"
   | "appearance"
   | "account"
   | "agents"
@@ -149,6 +152,14 @@ export interface SettingDef extends SettingMeta {
 
 export const TABS: readonly TabDef[] = [
   { id: "general", label: "General", icon: Settings2, group: "Settings" },
+  {
+    id: "voice",
+    label: "Voice",
+    icon: Mic,
+    group: "Settings",
+    keywords: ["dictation", "speech", "microphone", "talk", "whisper", "parakeet", "transcribe"],
+    available: (ctx) => !!ctx.bridge.voice,
+  },
   {
     id: "appearance",
     label: "Appearance",
@@ -280,6 +291,7 @@ export const TABS: readonly TabDef[] = [
 ];
 
 export const SETTINGS: readonly SettingDef[] = [
+  ...VOICE_SETTINGS,
   {
     id: "theme",
     tab: "appearance",

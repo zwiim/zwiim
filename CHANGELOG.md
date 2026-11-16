@@ -8,6 +8,8 @@ have their own versions and are listed under Compatibility.
 
 ## [Unreleased]
 
+- Desktop: dictate into the composer with ⌘E. Speech is recognized on your Mac with open-source models (Parakeet TDT v3 recommended); set it up in Settings › Voice.
+
 ### Added
 - None.
 
