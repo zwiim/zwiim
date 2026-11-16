@@ -63,3 +63,5 @@ runtime/power-helper/src/probe.rs
 runtime/power-helper/src/auth.rs
 runtime/power-helper/src/server.rs
 runtime/power-helper/build.rs
+clients/desktop/src-tauri/src/voice.rs
+clients/desktop/src-tauri/src/voice/models.rs

@@ -1,10 +1,12 @@
 // The only native surface the UI uses: host discovery, host start, the
-// folder picker, the optional account sign-in and, for hosts on other
+// folder picker, local dictation, the optional account sign-in and, for hosts on other
 // computers, this device's identity and the account's Cloud requests.
 // Everything else goes through the SDK over HTTP/WS (or the device tunnel,
 // through the Cloud relay or directly on the local network).
 
+import { createContext } from "react";
 import type { ByteChannel, LanDial, LanDiscover } from "@zwiim/sdk";
+import type { VoicePrefs } from "@/lib/prefs";
 
 export interface DiscoveredHost {
   host_id: string;
@@ -127,6 +129,8 @@ export interface NativeBridge {
   lidHelper?: LidHelper;
   /** Only in the desktop app: the system's notifications. */
   notifier?: Notifier;
+  /** Local microphone capture and speech recognition, only in the Desktop shell. */
+  voice?: VoiceBridge;
   /** Only in the desktop app: zooming the whole window, as a browser does. */
   zoom?: WindowZoom;
   /** Only in the desktop app: the fonts installed on this computer. */
@@ -134,6 +138,39 @@ export interface NativeBridge {
   /** Only in the desktop app: showing a folder of this computer. */
   folders?: FolderReveal;
 }
+
+export interface VoiceModel {
+  id: string;
+  label: string;
+  description: string;
+  quality: string;
+  recommended: boolean;
+  size_mb: number;
+  installed: boolean;
+  /** A download is running now, also one started before this view opened. */
+  downloading: boolean;
+}
+
+export interface VoiceEvents {
+  download: { id: string; downloaded?: number; total?: number | null; done?: boolean; error?: string };
+  level: { rms: number };
+  partial: { text: string };
+  stopped: { reason: "silence" | "error"; error?: string };
+}
+
+export interface VoiceBridge {
+  models(): Promise<VoiceModel[]>;
+  download(id: string): Promise<void>;
+  delete(id: string): Promise<void>;
+  inputs(): Promise<string[]>;
+  start(opts: Pick<VoicePrefs, "model" | "language" | "input" | "gpu"> & { silence_secs: number }): Promise<void>;
+  stop(): Promise<string>;
+  cancel(): Promise<void>;
+  unloadAfter(secs: number): Promise<void>;
+  listen<K extends keyof VoiceEvents>(event: K, listener: (payload: VoiceEvents[K]) => void): Promise<() => void>;
+}
+
+export const VoiceContext = createContext<VoiceBridge | undefined>(undefined);
 
 export interface FolderReveal {
   /** Show folder `path` (absolute, on this computer) in the file manager. */
@@ -310,6 +347,49 @@ export function tauriBridge(): NativeBridge {
       async setup() {
         const { invoke } = await import("@tauri-apps/api/core");
         return invoke<LidHelperSetup>("lid_helper_setup");
+      },
+    },
+    voice: {
+      async models() {
+        const { invoke } = await import("@tauri-apps/api/core");
+        return invoke<VoiceModel[]>("voice_models");
+      },
+      async download(id) {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("voice_model_download", { id });
+      },
+      async delete(id) {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("voice_model_delete", { id });
+      },
+      async inputs() {
+        const { invoke } = await import("@tauri-apps/api/core");
+        return invoke<string[]>("voice_inputs");
+      },
+      async start(opts) {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("voice_start", { opts });
+      },
+      async stop() {
+        const { invoke } = await import("@tauri-apps/api/core");
+        return invoke<string>("voice_stop");
+      },
+      async cancel() {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("voice_cancel");
+      },
+      async unloadAfter(secs) {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("voice_unload_after", { secs });
+      },
+      async listen<K extends keyof VoiceEvents>(event: K, listener: (payload: VoiceEvents[K]) => void) {
+        // Core event commands stay disabled: preview frames share the window's IPC.
+        // These subscriptions pass through the shell's app-origin check, as LAN does.
+        const { Channel, invoke } = await import("@tauri-apps/api/core");
+        const onEvent = new Channel<VoiceEvents[K]>();
+        onEvent.onmessage = listener;
+        const id = await invoke<number>("voice_listen", { event, onEvent });
+        return () => { void invoke("voice_unlisten", { id }).catch(() => {}); };
       },
     },
     notifier: {

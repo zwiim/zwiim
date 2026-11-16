@@ -32,7 +32,7 @@ import { useAccount } from "@/lib/account";
 import { stepZoom } from "@/lib/appearance";
 import { useTurnAlerts } from "@/lib/attention";
 import { bootHost, type BootOptions, type BootPhase } from "@/lib/boot";
-import type { NativeBridge } from "@/lib/bridge";
+import { VoiceContext, type NativeBridge } from "@/lib/bridge";
 import { draggedFile } from "@/lib/file-drag";
 import { errorMessage, HostProvider, useController, useHost, useOnline } from "@/lib/host-context";
 import { isModKey } from "@/lib/platform";
@@ -652,7 +652,11 @@ export function Workbench({
       )}
     </div>
   );
-  return <OpenSettingsContext.Provider value={setSettings}>{view}</OpenSettingsContext.Provider>;
+  return (
+    <VoiceContext.Provider value={bridge.voice}>
+      <OpenSettingsContext.Provider value={setSettings}>{view}</OpenSettingsContext.Provider>
+    </VoiceContext.Provider>
+  );
 }
 
 const NO_SESSIONS: SessionSummary[] = [];
