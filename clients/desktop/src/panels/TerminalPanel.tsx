@@ -591,15 +591,29 @@ export function TerminalView({
           .catch((e) => onError(errorMessage(e)));
       }, 100);
     });
+    // While a container slides open or shut, fit once at the end, not every frame.
+    let sliding = 0;
     const refit = () => {
       // A collapsed panel has no size; fitting to it would shrink the PTY.
-      if (el.clientWidth === 0 || el.clientHeight === 0) return;
+      if (sliding || el.clientWidth === 0 || el.clientHeight === 0) return;
       try {
         fit.fit();
       } catch {
         // not laid out yet
       }
     };
+    const slides = (e: TransitionEvent) =>
+      (e.propertyName === "height" || e.propertyName === "width") && e.target instanceof Node && e.target.contains(el);
+    const onSlide = (e: TransitionEvent) => {
+      if (slides(e)) sliding++;
+    };
+    const onSlid = (e: TransitionEvent) => {
+      if (!slides(e) || !sliding) return;
+      if (--sliding === 0) refit();
+    };
+    document.addEventListener("transitionrun", onSlide);
+    document.addEventListener("transitionend", onSlid);
+    document.addEventListener("transitioncancel", onSlid);
     const observer = new ResizeObserver(refit);
     observer.observe(el);
     shown.current = { term, fit: refit };
@@ -608,6 +622,9 @@ export function TerminalView({
     return () => {
       shown.current = null;
       clearTimeout(resizeTimer);
+      document.removeEventListener("transitionrun", onSlide);
+      document.removeEventListener("transitionend", onSlid);
+      document.removeEventListener("transitioncancel", onSlid);
       observer.disconnect();
       onData.dispose();
       onResize.dispose();

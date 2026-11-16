@@ -43,9 +43,12 @@ vi.mock("@xterm/xterm", () => ({
     }
   },
 }));
+const fits = vi.hoisted(() => ({ count: 0 }));
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: class {
-    fit() {}
+    fit() {
+      fits.count++;
+    }
   },
 }));
 globalThis.ResizeObserver ??= class {
@@ -56,6 +59,8 @@ globalThis.ResizeObserver ??= class {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
+  fits.count = 0;
   links.openLink.mockClear();
   xterms.length = 0;
   window.localStorage.clear();
@@ -283,6 +288,41 @@ describe("terminals on the host feed", () => {
     act(() => rememberFonts({ terminal: "Menlo", terminalSize: 15 }));
     expect(term.options.fontFamily).toBe(`"Menlo", ${MONO_FONTS}`);
     expect(term.options.fontSize).toBe(15);
+  });
+
+  it("refits once a dock animation ends, not on every frame of it", async () => {
+    const resized: (() => void)[] = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(cb: () => void) {
+          resized.push(cb);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    const t = new FakeTransport();
+    t.handlers["terminal.snapshot"] = (p) => ({ terminal_id: p.terminal_id, alive: true, data: "", seq: 0 });
+    await mount(t, <TerminalPanel workspaceId="w1" />);
+    await t.feedEvent("terminal.changed", { terminal: { terminal_id: "t1", title: "zsh", workspace_id: "w1" } });
+    await tick();
+    const el = screen.getByTestId("terminal");
+    Object.defineProperties(el, { clientWidth: { value: 800 }, clientHeight: { value: 300 } });
+    const dock = el.parentElement!;
+    const transition = (type: string, propertyName: string) =>
+      dock.dispatchEvent(Object.assign(new Event(type, { bubbles: true }), { propertyName }));
+
+    transition("transitionrun", "height");
+    resized.at(-1)!();
+    resized.at(-1)!();
+    expect(fits.count).toBe(0);
+    transition("transitionend", "height");
+    expect(fits.count).toBe(1);
+
+    transition("transitionrun", "opacity");
+    resized.at(-1)!();
+    expect(fits.count).toBe(2);
   });
 
   it("leaves out terminals shown elsewhere", async () => {

@@ -15,7 +15,8 @@ have their own versions and are listed under Compatibility.
 - None.
 
 ### Fixed
-- None.
+- The terminal no longer stutters when the dock opens or closes, and the
+  shell inside it is no longer resized mid-animation.
 
 ### Security
 - None.
