@@ -8,8 +8,6 @@ have their own versions and are listed under Compatibility.
 
 ## [Unreleased]
 
-- Desktop: dictate into the composer with ⌘E. Speech is recognized on your Mac with open-source models (Parakeet TDT v3 recommended); set it up in Settings › Voice.
-
 ### Added
 - None.
 
@@ -33,6 +31,32 @@ have their own versions and are listed under Compatibility.
 
 ### Known limitations
 - None.
+
+## [0.2.2] - 2026-11-16
+
+### Added
+- Dictate into the Desktop composer with ⌘E or the mic button. Speech is recognized on your Mac with open-source models (Parakeet TDT v3 recommended), downloaded and chosen in Settings › Voice. Audio and text never leave the computer.
+
+### Changed
+- None.
+
+### Fixed
+- None.
+
+### Security
+- None.
+
+### Compatibility
+- None.
+
+### Provider changes
+- None.
+
+### Migration notes
+- None.
+
+### Known limitations
+- Dictation is in the Desktop app only, not the terminal or the phone. Models are downloaded from the sherpa-onnx GitHub releases without a checksum check.
 
 ## [0.2.1] - 2026-11-15
 
