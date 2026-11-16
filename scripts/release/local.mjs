@@ -160,6 +160,9 @@ function main() {
   // codesign -dv reports on stderr.
   const signed = spawnSync("codesign", ["-dv", app], { cwd: ROOT, encoding: "utf8" }).stderr;
   if (!signed.includes(`TeamIdentifier=${env.APPLE_TEAM_ID}\n`)) fail(`${app} is not signed by team ${env.APPLE_TEAM_ID}`);
+  // Hardened runtime blocks the microphone without this entitlement, and macOS never asks.
+  const entitlements = execFileSync("codesign", ["-d", "--entitlements", "-", "--xml", app], { cwd: ROOT, encoding: "utf8" });
+  if (!entitlements.includes("com.apple.security.device.audio-input")) fail(`${app} lacks the microphone entitlement`);
   // The bundler re-signs its sidecars; the Host must come out as com.zwiim.host.
   run("scripts/release/check-host-signature.sh", [`${app}/Contents/MacOS/zwiim-host`]);
   // launchd runs the power helper as root from the plist that names it.
