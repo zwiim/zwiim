@@ -10000,7 +10000,7 @@ dependencies = [
 
 [[package]]
 name = "zwiim-desktop"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "base64 0.22.1",
  "bzip2 0.6.1",
@@ -10031,7 +10031,7 @@ dependencies = [
 
 [[package]]
 name = "zwiim-host"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "aes-gcm",
  "agent-client-protocol-schema",

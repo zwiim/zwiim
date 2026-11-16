@@ -32,6 +32,32 @@ have their own versions and are listed under Compatibility.
 ### Known limitations
 - None.
 
+## [0.2.3] - 2026-11-16
+
+### Added
+- None.
+
+### Changed
+- None.
+
+### Fixed
+- Dictation now hears the microphone. In 0.2.2 the signed app could not use the microphone and macOS never asked for permission; the first dictation now shows the macOS microphone prompt.
+
+### Security
+- None.
+
+### Compatibility
+- None.
+
+### Provider changes
+- None.
+
+### Migration notes
+- None.
+
+### Known limitations
+- None.
+
 ## [0.2.2] - 2026-11-16
 
 ### Added
