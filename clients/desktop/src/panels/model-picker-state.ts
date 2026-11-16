@@ -21,6 +21,11 @@ function models(agent: AgentSummary): OptionValue[] {
   return agent.options?.model?.values ?? [];
 }
 
+function resolveEffort(agent: AgentSummary, model: string, remembered: string | null): string | null {
+  const effort = effortFor(agent, model);
+  return remembered && effort?.values.some((v) => v.value === remembered) ? remembered : (effort?.current ?? null);
+}
+
 /** Favorites first, then the most recent models that are not favorites. */
 export function quickRows(
   agents: AgentSummary[],
@@ -31,7 +36,9 @@ export function quickRows(
   const rowFor = (ref: ModelRef, effort: string | null, favorite: boolean): QuickRow[] => {
     const found = agents.find((a) => a.agent === ref.agent && models(a).some((m) => m.value === ref.model));
     const option = found && models(found).find((m) => m.value === ref.model);
-    return option ? [{ ref: { agent: ref.agent, model: ref.model }, label: option.label, effort, favorite }] : [];
+    return found && option
+      ? [{ ref: { agent: ref.agent, model: ref.model }, label: option.label, effort: resolveEffort(found, ref.model, effort), favorite }]
+      : [];
   };
   const isFavorite = (ref: ModelRef) => favorites.some((f) => f.agent === ref.agent && f.model === ref.model);
   const favoriteRows = favorites.flatMap((f) => rowFor(f, modelEffort(f), true));
@@ -54,10 +61,8 @@ export function modelRows(agent: AgentSummary, query: string, expanded: boolean)
   const capped = !query.trim() && !expanded && found.length > COLLAPSED_ROWS;
   const shown = capped ? found.slice(0, COLLAPSED_ROWS) : found;
   const rows = shown.map((m): ModelRow => {
-    const effort = effortFor(agent, m.value);
-    const remembered = modelEffort({ agent: agent.agent, model: m.value });
-    const chosen = remembered && effort?.values.some((v) => v.value === remembered) ? remembered : (effort?.current ?? null);
-    return { value: m.value, label: m.label, description: m.description, effort: chosen };
+    const effort = resolveEffort(agent, m.value, modelEffort({ agent: agent.agent, model: m.value }));
+    return { value: m.value, label: m.label, description: m.description, effort };
   });
   return { rows, more: found.length - shown.length };
 }

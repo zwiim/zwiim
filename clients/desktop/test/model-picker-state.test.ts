@@ -39,7 +39,7 @@ function agent(id: string, models: string[], effortByModel: Record<string, strin
 beforeEach(() => window.localStorage.clear());
 
 describe("quickRows", () => {
-  const agents = [agent("codex", ["gpt-5.5", "gpt-5"]), agent("opencode", ["gpt-5.5", "x"]), agent("claude_code", ["opus", "sonnet"])];
+  const agents = [agent("codex", ["gpt-5.5", "gpt-5"], { "gpt-5": ["low", "high"] }), agent("opencode", ["gpt-5.5", "x"]), agent("claude_code", ["opus", "sonnet"])];
 
   it("puts favorites first, then unfavorited recents, at most 2 recents", () => {
     const rows = quickRows(
@@ -68,6 +68,21 @@ describe("quickRows", () => {
       [{ agent: "opencode", model: "gpt-5.5", effort: null }],
     );
     expect(rows.map((r) => r.ref.agent)).toEqual(["codex", "opencode"]);
+  });
+});
+
+describe("quickRows effort", () => {
+  const agents = [agent("a", ["m", "n"], { m: ["low", "high"], n: ["low", "high"] })];
+
+  it("falls back to the current effort when the stored one is no longer offered", () => {
+    rememberModelEffort({ agent: "a", model: "m" }, "gone");
+    const rows = quickRows(agents, [{ agent: "a", model: "m" }], [{ agent: "a", model: "n", effort: "gone" }]);
+    expect(rows.map((r) => r.effort)).toEqual(["low", "low"]);
+  });
+
+  it("uses the current effort for a favorite with nothing remembered, and a valid stored one otherwise", () => {
+    expect(quickRows(agents, [{ agent: "a", model: "m" }], [])[0]!.effort).toBe("low");
+    expect(quickRows(agents, [], [{ agent: "a", model: "n", effort: "high" }])[0]!.effort).toBe("high");
   });
 });
 

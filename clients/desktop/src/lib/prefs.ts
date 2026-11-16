@@ -154,7 +154,7 @@ const MAX_RECENT_MODELS = 5;
 
 function modelRefs<T extends ModelRef>(key: string, pick: (v: Partial<T>) => T | null): T[] {
   const v = read<unknown>(key, []);
-  return Array.isArray(v) ? v.flatMap((e) => (e && typeof e === "object" ? [pick(e as Partial<T>)] : [])).filter((e): e is T => e !== null) : [];
+  return Array.isArray(v) ? v.flatMap((e) => (e && typeof e === "object" ? (pick(e as Partial<T>) ?? []) : [])) : [];
 }
 
 function refOf(v: Partial<ModelRef>): ModelRef | null {
