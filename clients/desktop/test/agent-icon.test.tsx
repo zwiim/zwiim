@@ -8,7 +8,7 @@ describe("agentBrand", () => {
   it("knows the built-in agents", () => {
     expect(agentBrand("codex", "Codex").dot).toBe("#B8BEC6");
     expect(agentBrand("claude_code", "Claude Code")).toMatchObject({ short: "Claude", tile: "#D97757" });
-    expect(agentBrand("opencode", "opencode").ink).toBe("#111111");
+    expect(agentBrand("open_code", "opencode").ink).toBe("#111111");
     expect(agentBrand("gemini", "Gemini CLI").tile).toBe("#4E86F6");
   });
 

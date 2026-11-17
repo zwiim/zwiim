@@ -10,7 +10,7 @@ export interface AgentBrand {
 const BRANDS: Record<string, AgentBrand> = {
   claude_code: { short: "Claude", tile: "#D97757", ink: "#FFFFFF", dot: "#D97757" },
   codex: { short: "Codex", tile: "#454B52", ink: "#FFFFFF", dot: "#B8BEC6" },
-  opencode: { short: "OpenCode", tile: "#F2F3F5", ink: "#111111", dot: "#F2F3F5" },
+  open_code: { short: "OpenCode", tile: "#F2F3F5", ink: "#111111", dot: "#F2F3F5" },
   gemini: { short: "Gemini", tile: "#4E86F6", ink: "#FFFFFF", dot: "#4E86F6" },
 };
 
@@ -38,7 +38,7 @@ const GLYPHS: Record<string, { strokeWidth?: number; fill?: boolean; body: React
       </>
     ),
   },
-  opencode: { body: <path d="M9 6H6v12h3M15 6h3v12h-3" /> },
+  open_code: { body: <path d="M9 6H6v12h3M15 6h3v12h-3" /> },
   gemini: {
     fill: true,
     body: <path d="M12 2.5c.8 5 4.5 8.7 9.5 9.5-5 .8-8.7 4.5-9.5 9.5-.8-5-4.5-8.7-9.5-9.5 5-.8 8.7-4.5 9.5-9.5z" />,

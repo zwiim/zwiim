@@ -56,7 +56,7 @@ const AGENTS: AgentSummary[] = [
       mode: { current: "normal", label: "", available: ["normal", "unattended"] },
     },
   }),
-  agent("opencode", "OpenCode", {
+  agent("open_code", "OpenCode", {
     support: "experimental",
     options: {
       model: choice(
