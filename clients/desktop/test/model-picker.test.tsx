@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSummary, ChoiceOption, OptionValue, SessionMode, SessionOptions } from "@zwiim/sdk";
 import { favoriteModels, recentModels, rememberModelEffort, toggleFavoriteModel } from "@/lib/prefs";
-import { ModelPicker } from "@/panels/ModelPicker";
+import { alignsEnd, ModelPicker } from "@/panels/ModelPicker";
 
 afterEach(cleanup);
 
@@ -175,6 +175,25 @@ describe("model picker", () => {
     expect(option(/^Opus/).textContent).toContain("Medium");
     expect(option(/^Opus/).textContent).not.toContain("High");
     expect(option(/^Sonnet/).textContent).toContain("Max");
+  });
+
+  it("keeps the panel inside the window: it hangs from the chip's right edge when there is no room to the right", () => {
+    expect(alignsEnd({ left: 20, right: 200 }, 1280)).toBe(false);
+    expect(alignsEnd({ left: 700, right: 880 }, 1000)).toBe(true);
+    const rect = (left: number, right: number) =>
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ left, right } as DOMRect);
+    const spy = rect(window.innerWidth - 180, window.innerWidth - 20);
+    render(picker());
+    open();
+    expect(dialog().getAttribute("data-align")).toBe("end");
+    expect(dialog().parentElement!.className).toContain("right-0");
+    spy.mockRestore();
+    cleanup();
+    rect(20, 200);
+    render(picker());
+    open();
+    expect(dialog().getAttribute("data-align")).toBe("start");
+    vi.restoreAllMocks();
   });
 
   it("sends only the model on a started session", () => {

@@ -26,6 +26,15 @@ function rove(items: HTMLElement[], down: boolean) {
 const kbd = "text-muted-foreground rounded border px-1 font-mono text-[11px] leading-4";
 const ring = "focus-visible:ring-ring/50 outline-none focus-visible:ring-2";
 
+const PANEL_WIDTH = 440;
+/** The panel and its side list (220px) with the gap between them. */
+const PANEL_WITH_SIDE = PANEL_WIDTH + 6 + 220;
+
+/** Whether the panel hangs from the chip's right edge: the left-aligned one would run past the window. */
+export function alignsEnd(chip: { left: number; right: number }, viewport: number): boolean {
+  return chip.left + PANEL_WITH_SIDE > viewport && chip.right > viewport - chip.left;
+}
+
 /**
  * The composer's agent, model, effort and mode, as one chip that opens a
  * panel: search, a strip of agents, their models, and Effort and Mode side
@@ -59,6 +68,7 @@ export function ModelPicker({
   const hint = disabled && disabledReason ? disabledReason : undefined;
   const { mode, model, effort } = options;
   const [open, setOpen] = useState(false);
+  const [alignEnd, setAlignEnd] = useState(false);
   const [side, setSide] = useState<Side | null>(null);
   const [query, setQuery] = useState("");
   const [view, setView] = useState(agent);
@@ -120,6 +130,8 @@ export function ModelPicker({
     setView(agent);
     setAct(null);
     setExpanded([]);
+    const rect = chip.current?.getBoundingClientRect();
+    setAlignEnd(!!rect && alignsEnd(rect, window.innerWidth));
     setOpen(true);
   }
 
@@ -369,7 +381,7 @@ export function ModelPicker({
       {hint && <span className="sr-only">{hint}</span>}
       {panel.mounted && (
         <div
-          className="absolute bottom-full left-0 z-20 mb-2 flex items-end gap-1.5"
+          className={cn("absolute bottom-full z-20 mb-2 flex items-end gap-1.5", alignEnd ? "right-0 flex-row-reverse" : "left-0")}
           aria-hidden={!open || undefined}
           inert={!open}
         >
@@ -378,7 +390,11 @@ export function ModelPicker({
             aria-label="Agent options"
             data-state={panel.state}
             onKeyDown={onPanelKey}
-            className="bg-popover text-popover-foreground presence-pop shadow-pop flex w-[440px] origin-bottom-left flex-col overflow-hidden rounded-xl border"
+            className={cn(
+              "bg-popover text-popover-foreground presence-pop shadow-pop flex w-[440px] flex-col overflow-hidden rounded-xl border",
+              alignEnd ? "origin-bottom-right" : "origin-bottom-left",
+            )}
+            data-align={alignEnd ? "end" : "start"}
           >
             <div className="text-faint flex h-[42px] items-center gap-2 border-b px-3">
               <Search aria-hidden className="size-[15px] shrink-0" />
