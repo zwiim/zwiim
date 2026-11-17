@@ -814,7 +814,7 @@ glyph, a title, one line, one action.
   "Auto mode, Claude, Opus 5.5, High effort".
   It opens a panel upward, 440px wide: a search field, a column of icon-only
   agent tiles (a dot marks the agent in use, a ring the one being browsed; the
-  column scrolls on its own), the list, `Effort ›`, `Fast` and `Mode ›` rows,
+  column scrolls on its own), the list, `Effort ›`, `Mode ›` and `Fast` rows,
   and a footer of keys. Picking a model picks its agent. The list starts with
   **Recent & favorites** (favorites first, marked ★, then at most 2 recent
   models), then the browsed agent's models; each row shows the effort that

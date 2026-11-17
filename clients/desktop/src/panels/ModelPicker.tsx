@@ -256,8 +256,8 @@ export function ModelPicker({
         searchEl.current,
         tabEls.current[browsed.agent],
         !effortOff && rowEls.current.effort,
-        fastEl.current,
         !modeOff && rowEls.current.mode,
+        fastEl.current,
       ] as (HTMLElement | null | false | undefined)[]).filter((el): el is HTMLElement => !!el);
       const at = order.findIndex((el) => el === document.activeElement);
       order[(at + (e.shiftKey ? -1 : 1) + order.length) % order.length]?.focus();
@@ -462,6 +462,7 @@ export function ModelPicker({
               />
             </div>
             {optionRow("effort", "Effort", effortOff ? "not offered" : currentLabel(effort!), effortOff)}
+            {optionRow("mode", "Mode", mode ? MODE_LABEL[mode.current] : "not offered", modeOff)}
             {fast != null && (
               <button
                 ref={fastEl}
@@ -487,7 +488,6 @@ export function ModelPicker({
                 </span>
               </button>
             )}
-            {optionRow("mode", "Mode", mode ? MODE_LABEL[mode.current] : "not offered", modeOff)}
             <div className="text-muted-foreground flex items-center gap-3 border-t bg-black/10 px-3 py-2 text-xs">
               {[
                 ["↑↓", "move"],
@@ -511,7 +511,7 @@ export function ModelPicker({
               aria-label={side === "effort" ? "Effort" : "Mode"}
               className="bg-popover text-popover-foreground shadow-pop w-[220px] rounded-xl border p-1.5"
               // Its foot sits by its row: the footer is 33px, a row 38px.
-              style={{ marginBottom: side === "mode" ? 27 : fast != null ? 103 : 65 }}
+              style={{ marginBottom: (side === "effort" ? 65 : 27) + (fast != null ? 38 : 0) }}
               onKeyDown={(e) => {
                 if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                   e.preventDefault();
