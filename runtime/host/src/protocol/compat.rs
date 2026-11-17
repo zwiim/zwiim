@@ -488,7 +488,15 @@ use serde::{Deserialize, Serialize};
 /// 36 (`browser.search_engine`): `settings` gains `browser.search_engine`,
 /// where the browser's address bar sends a search: `google`, `duckduckgo` or
 /// `brave` (unset is Google). Older clients never see or set it.
-pub const PROTOCOL_REVISION: u32 = 36;
+///
+/// 37 (`session.fast`): session options carry `fast`, whether the agent's
+/// fast mode is on (`null` where the model offers none), and
+/// `session.set_options` and `session.start`'s `options` take `fast`
+/// (a boolean). A new session starts with it off unless `fast` is `true`;
+/// `true` where the model offers none is `option_unavailable`, `false` is a
+/// no-op. Each `agent.list` entry gains `fast_by_model`, whether each model
+/// that has run here offers it. Older clients never see or set it.
+pub const PROTOCOL_REVISION: u32 = 37;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -554,6 +562,7 @@ pub const CAPABILITIES: &[&str] = &[
     "repository.settings_import",
     "browser",
     "downloads",
+    "session.fast",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -727,7 +736,13 @@ mod tests {
 
     #[test]
     fn search_engines_are_revision_36() {
-        assert_eq!(PROTOCOL_REVISION, 36);
+        const _: () = assert!(PROTOCOL_REVISION >= 36);
+    }
+
+    #[test]
+    fn fast_mode_is_revision_37() {
+        assert_eq!(PROTOCOL_REVISION, 37);
+        assert!(CAPABILITIES.contains(&"session.fast"));
     }
 
     #[test]

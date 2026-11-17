@@ -9,7 +9,8 @@
 //! carries (`plan`, `full_access`, …), plus Codex's separate
 //! `collaboration_mode` select for plan. `unattended` is offered only when the
 //! agent advertises a `full_access` value, and is never selected unless a
-//! client asks for it.
+//! client asks for it. `fast` passes through the agent's boolean `fast`
+//! option (Claude's fast mode), which only some models offer.
 //!
 //! Chosen native values are persisted per session in `app_metadata` and handed
 //! back to the agent as preferred values whenever the session's agent is
@@ -42,6 +43,7 @@ const MODEL_CATEGORY: &str = "model";
 const EFFORT_CATEGORY: &str = "thought_level";
 /// Codex keeps plan on its own select, separate from the permission mode.
 const COLLABORATION_ID: &str = "collaboration_mode";
+const FAST_ID: &str = "fast";
 const PLAN: &str = "plan";
 const FULL_ACCESS: &str = "full_access";
 /// codex-acp 2.x's "Workspace access" preset: workspace-write sandbox with the
@@ -92,6 +94,9 @@ pub struct SessionOptions {
     pub model: Option<ChoiceOption>,
     pub effort: Option<ChoiceOption>,
     pub mode: Option<ModeOption>,
+    /// Whether fast mode is on.
+    #[serde(default)]
+    pub fast: Option<bool>,
     /// Whether `session.revert` can rewind this session's chat as well as its
     /// files. Set where the session's agent is known; absent elsewhere, so a
     /// client keeps the last value it was told.
@@ -109,11 +114,13 @@ pub struct OptionsRequest {
     pub effort: Option<String>,
     #[serde(default)]
     pub mode: Option<Mode>,
+    #[serde(default)]
+    pub fast: Option<bool>,
 }
 
 impl OptionsRequest {
     pub fn is_empty(&self) -> bool {
-        self.model.is_none() && self.effort.is_none() && self.mode.is_none()
+        self.model.is_none() && self.effort.is_none() && self.mode.is_none() && self.fast.is_none()
     }
 }
 
@@ -173,6 +180,30 @@ fn select_where<'a>(
     })
 }
 
+/// A boolean option passed through from the agent.
+struct Toggle<'a> {
+    id: &'a str,
+    current: bool,
+}
+
+fn toggle_where<'a>(
+    options: &'a [SessionConfigOptionInfo],
+    pred: impl Fn(&SessionConfigOptionInfo) -> bool,
+) -> Option<Toggle<'a>> {
+    options.iter().find(|o| pred(o)).and_then(|o| match &o.kind {
+        SessionConfigKindInfo::Boolean(b) => Some(Toggle {
+            id: &o.id,
+            current: b.current_value,
+        }),
+        SessionConfigKindInfo::Select(_) => None,
+    })
+}
+
+/// A boolean's native value, as ACP config sets carry it.
+fn encoded(on: bool) -> &'static str {
+    if on { "true" } else { "false" }
+}
+
 struct Native<'a> {
     model: Option<Select<'a>>,
     effort: Option<Select<'a>>,
@@ -180,6 +211,7 @@ struct Native<'a> {
     mode: Option<Select<'a>>,
     /// A separate plan switch (Codex), only when it offers `plan`.
     collaboration: Option<Select<'a>>,
+    fast: Option<Toggle<'a>>,
 }
 
 impl<'a> Native<'a> {
@@ -194,7 +226,13 @@ impl<'a> Native<'a> {
                 o.id == COLLABORATION_ID || o.category.as_deref() == Some(COLLABORATION_ID)
             })
             .filter(|s| s.find(PLAN).is_some()),
+            fast: toggle_where(options, |o| o.id == FAST_ID),
         }
+    }
+
+    /// The model in effect, when the agent names one.
+    fn current_model(&self) -> Option<&'a str> {
+        self.model.as_ref().map(Select::current).filter(|m| !m.is_empty())
     }
 
     fn in_collaboration_plan(&self) -> bool {
@@ -237,12 +275,13 @@ impl<'a> Native<'a> {
             .map(|v| v.value.as_str())
     }
 
-    /// The native values of every select this module tracks.
+    /// The native values of every option this module tracks.
     fn tracked_values(&self) -> BTreeMap<String, String> {
         [&self.model, &self.effort, &self.mode, &self.collaboration]
             .into_iter()
             .flatten()
             .map(|s| (s.id.to_string(), s.current().to_string()))
+            .chain(self.fast.iter().map(|t| (t.id.to_string(), encoded(t.current).to_string())))
             .collect()
     }
 }
@@ -287,6 +326,7 @@ pub fn project(options: &[SessionConfigOptionInfo]) -> SessionOptions {
         model: native.model.as_ref().map(Select::choice),
         effort: native.effort.as_ref().map(Select::choice),
         mode,
+        fast: native.fast.as_ref().map(|t| t.current),
         can_rewind_chat: None,
     }
 }
@@ -316,6 +356,12 @@ pub fn resolve(
             Some(s) if s.find(value).is_some() => sets.push(s, value),
             _ => return Err(option_unavailable(name, value)),
         }
+    }
+    // Off is what an agent without fast mode already runs.
+    match (request.fast, &native.fast) {
+        (Some(on), Some(fast)) => sets.toggle(fast, on),
+        (Some(true), None) => return Err(option_unavailable("fast", encoded(true))),
+        _ => {}
     }
     let Some(mode) = request.mode else {
         return Ok(sets.0);
@@ -356,6 +402,12 @@ impl Sets {
         }
     }
 
+    fn toggle(&mut self, toggle: &Toggle<'_>, on: bool) {
+        if toggle.current != on {
+            self.0.push((toggle.id.to_string(), encoded(on).to_string()));
+        }
+    }
+
     fn leave_collaboration_plan(&mut self, native: &Native<'_>) {
         if let Some(c) = native.collaboration.as_ref().filter(|c| c.current() == PLAN) {
             if let Some(other) = c.values().find(|v| v.value != PLAN) {
@@ -384,25 +436,29 @@ fn mode_name(mode: Mode) -> &'static str {
     }
 }
 
-/// `options` with each tracked select's current value replaced by the value
-/// in `values` the select still offers: what the agent will hold once those
-/// values are replayed onto it.
+/// `options` with each tracked option's current value replaced by the value
+/// in `values` it still offers: what the agent will hold once those values
+/// are replayed onto it.
 fn overlay(
     mut options: Vec<SessionConfigOptionInfo>,
     values: &BTreeMap<String, String>,
 ) -> Vec<SessionConfigOptionInfo> {
     for option in &mut options {
-        if let (Some(value), SessionConfigKindInfo::Select(select)) =
-            (values.get(&option.id), &mut option.kind)
-        {
-            let offered = select
-                .options
-                .iter()
-                .chain(select.groups.iter().flat_map(|g| g.options.iter()))
-                .any(|v| &v.value == value);
-            if offered {
-                select.current_value = value.clone();
+        let Some(value) = values.get(&option.id) else {
+            continue;
+        };
+        match &mut option.kind {
+            SessionConfigKindInfo::Select(select) => {
+                let offered = select
+                    .options
+                    .iter()
+                    .chain(select.groups.iter().flat_map(|g| g.options.iter()))
+                    .any(|v| &v.value == value);
+                if offered {
+                    select.current_value = value.clone();
+                }
             }
+            SessionConfigKindInfo::Boolean(b) => b.current_value = value == encoded(true),
         }
     }
     options
@@ -498,7 +554,7 @@ pub async fn effort_by_model(db: &DatabaseConnection, agent: &str) -> BTreeMap<S
 /// what its current model offers.
 fn learn_model_effort(mut kept: ModelEfforts, reported: &[SessionConfigOptionInfo]) -> ModelEfforts {
     let native = Native::of(reported);
-    let Some(model) = native.model.as_ref().map(Select::current).filter(|m| !m.is_empty()) else {
+    let Some(model) = native.current_model() else {
         return kept;
     };
     let effort = native
@@ -508,6 +564,48 @@ fn learn_model_effort(mut kept: ModelEfforts, reported: &[SessionConfigOptionInf
         .cloned();
     kept.insert(model.to_string(), effort);
     kept
+}
+
+fn model_fast_key(agent: &str) -> String {
+    format!("zwiim.agent_model_fast:{agent}")
+}
+
+/// Fast mode belongs to the model too: per model value, whether it offers
+/// fast mode. A model not listed has not run on this host yet.
+pub async fn fast_by_model(db: &DatabaseConnection, agent: &str) -> BTreeMap<String, bool> {
+    read_json(db, &model_fast_key(agent)).await.unwrap_or_default()
+}
+
+/// `kept` once a session reports `reported`: whether its current model offers
+/// fast mode.
+fn learn_model_fast(mut kept: BTreeMap<String, bool>, reported: &[SessionConfigOptionInfo]) -> BTreeMap<String, bool> {
+    let native = Native::of(reported);
+    if let Some(model) = native.current_model() {
+        kept.insert(model.to_string(), native.fast.is_some());
+    }
+    kept
+}
+
+/// Keep what the current model of a session reporting `reported` offers.
+async fn remember_model_report(db: &DatabaseConnection, agent: &str, reported: &[SessionConfigOptionInfo]) {
+    let efforts = learn_model_effort(model_efforts(db, agent).await, reported);
+    write_json(db, &model_effort_key(agent), &efforts).await;
+    let fast = learn_model_fast(fast_by_model(db, agent).await, reported);
+    write_json(db, &model_fast_key(agent), &fast).await;
+}
+
+/// `catalog` without fast mode when `model` is known not to offer it. The
+/// catalog keeps the option once any model has reported it.
+async fn with_model_fast(
+    db: &DatabaseConnection,
+    agent: &str,
+    mut catalog: Vec<SessionConfigOptionInfo>,
+    model: &str,
+) -> Vec<SessionConfigOptionInfo> {
+    if fast_by_model(db, agent).await.get(model) == Some(&false) {
+        catalog.retain(|o| o.id != FAST_ID);
+    }
+    catalog
 }
 
 /// `catalog` with its effort replaced by the one a model offers, or without
@@ -526,19 +624,24 @@ fn with_model_effort(
 pub(crate) async fn remember_agent_report(db: &DatabaseConnection, agent: &str, reported: &[SessionConfigOptionInfo]) {
     let catalog = merge_catalog(agent_catalog(db, agent).await, reported);
     write_json(db, &agent_key(agent), &catalog).await;
-    let efforts = learn_model_effort(model_efforts(db, agent).await, reported);
-    write_json(db, &model_effort_key(agent), &efforts).await;
+    remember_model_report(db, agent, reported).await;
 }
 
 /// The options a new session of `agent` can choose, from what the agent last
 /// advertised on this host; `None` before its first session. A new session
-/// starts in `normal` mode whatever the last one used.
+/// starts in `normal` mode, with fast mode off, whatever the last one used.
 pub async fn for_new_session(db: &DatabaseConnection, agent: &str) -> Option<SessionOptions> {
-    let mut options = project(&agent_catalog(db, agent).await?);
+    let catalog = agent_catalog(db, agent).await?;
+    let catalog = match Native::of(&catalog).current_model().map(str::to_string) {
+        Some(model) => with_model_fast(db, agent, catalog, &model).await,
+        None => catalog,
+    };
+    let mut options = project(&catalog);
     if let Some(mode) = options.mode.as_mut() {
         mode.current = Mode::Normal;
         mode.label = String::new();
     }
+    options.fast = options.fast.map(|_| false);
     Some(options)
 }
 
@@ -560,7 +663,8 @@ const LEARN_GRACE: Duration = Duration::from_millis(500);
 /// Learn what a new session of `agent_type` can choose before its first
 /// session here, in the background: open a throwaway session in an empty
 /// directory, keep the options and slash commands it advertises, switch it
-/// through each model to learn the effort each offers, and close it. Nothing
+/// through each model to learn the effort and fast mode each offers, and
+/// close it. Nothing
 /// is prompted. The next `agent.list` reports them.
 pub fn learn_in_background(state: Arc<AppState>, agent_type: AgentType) {
     let Some(agent) = agent_name(agent_type) else {
@@ -638,7 +742,8 @@ async fn learn_from(
         return Ok(());
     }
     remember_agent_report(db, agent, &reported).await;
-    // Effort belongs to the model: switch to each other model to learn its own.
+    // Effort and fast mode belong to the model: switch to each other model to
+    // learn its own.
     let Some(model) = Native::of(&reported).model else {
         return Ok(());
     };
@@ -664,8 +769,7 @@ async fn learn_from(
         }
         tokio::time::sleep(LEARN_GRACE).await;
         let now = session.read().await.config_options.clone().unwrap_or_default();
-        let efforts = learn_model_effort(model_efforts(db, agent).await, &now);
-        write_json(db, &model_effort_key(agent), &efforts).await;
+        remember_model_report(db, agent, &now).await;
     }
     Ok(())
 }
@@ -728,10 +832,10 @@ fn agent_rewinds_chat(agent_type: &str) -> bool {
     crate::models::agent::AgentType::from_wire(agent_type).is_some_and(crate::session::can_rewind_chat)
 }
 
-/// `idle_options` for session `stored` of `agent`, with the effort of the
-/// model it will run (`model`, else its current one) once that model has run
-/// here: a session moved to a model without effort shows none, and never
-/// keeps another model's effort.
+/// `idle_options` for session `stored` of `agent`, with the effort and fast
+/// mode of the model it will run (`model`, else its current one) once that
+/// model has run here: a session moved to a model without effort shows none,
+/// and never keeps another model's effort.
 async fn idle_view(
     db: &DatabaseConnection,
     agent: &str,
@@ -743,6 +847,7 @@ async fn idle_view(
     let Some(model) = model.map(str::to_string).or(current) else {
         return Some(options);
     };
+    let options = with_model_fast(db, agent, options, &model).await;
     Some(match model_efforts(db, agent).await.remove(&model) {
         Some(effort) => overlay(with_model_effort(options, effort), &stored.values),
         None => options,
@@ -826,14 +931,7 @@ pub async fn change(
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
-        let sets = resolve(&options, request, stored.normal_mode.as_deref())?;
-        for (config_id, value) in &sets {
-            connections
-                .set_config_option(&connection_id, config_id.clone(), value.clone())
-                .await?;
-        }
-        settle(&state, &sets).await;
-        return Ok(());
+        return apply_live(connections, &connection_id, &state, &options, request, stored.normal_mode.as_deref()).await;
     }
     // Effort is resolved against the requested model's own.
     let options = idle_view(db, &row.agent_type, &stored, request.model.as_deref())
@@ -845,8 +943,11 @@ pub async fn change(
         next.values.insert(config_id, value);
     }
     remember_normal(&mut next, &options);
-    // A session keeps only an effort its model offers.
+    // A session keeps only an effort and fast mode its model offers.
     let view = idle_view(db, &row.agent_type, &next, None).await.unwrap_or_default();
+    if Native::of(&view).fast.is_none() {
+        next.values.remove(FAST_ID);
+    }
     let offered = Native::of(&view).effort.map(|e| (e.id.to_string(), e));
     let catalog = agent_catalog(db, &row.agent_type).await.unwrap_or_default();
     for effort_id in catalog.iter().filter(|o| o.category.as_deref() == Some(EFFORT_CATEGORY)).map(|o| &o.id) {
@@ -882,7 +983,7 @@ async fn settle(
                     .find(|o| &o.id == id)
                     .is_some_and(|o| match &o.kind {
                         SessionConfigKindInfo::Select(select) => &select.current_value == value,
-                        SessionConfigKindInfo::Boolean(_) => true,
+                        SessionConfigKindInfo::Boolean(b) => encoded(b.current_value) == value,
                     })
             });
             if settled {
@@ -903,8 +1004,10 @@ fn option_unavailable_any(request: &OptionsRequest) -> ZwiimError {
         option_unavailable("model", model)
     } else if let Some(effort) = &request.effort {
         option_unavailable("effort", effort)
+    } else if let Some(mode) = request.mode {
+        option_unavailable("mode", mode_name(mode))
     } else {
-        option_unavailable("mode", request.mode.map(mode_name).unwrap_or_default())
+        option_unavailable("fast", encoded(request.fast.unwrap_or_default()))
     }
 }
 
@@ -939,11 +1042,13 @@ pub async fn preferred_for_start(
     let Some(mut catalog) = agent_catalog(db, &name).await else {
         return Ok(None);
     };
-    // Effort is checked against the requested model's own, once it has run here.
+    // Effort and fast mode are checked against the requested model's own,
+    // once it has run here.
     if let Some(model) = &request.model {
         if let Some(effort) = model_efforts(db, &name).await.remove(model) {
             catalog = with_model_effort(catalog, effort);
         }
+        catalog = with_model_fast(db, &name, catalog, model).await;
     }
     // A new session starts from the agent's defaults, not from what the last
     // one held: clear every current value so each requested one is applied.
@@ -952,7 +1057,12 @@ pub async fn preferred_for_start(
             select.current_value.clear();
         }
     }
-    Ok(Some(resolve(&catalog, request, None)?.into_iter().collect()))
+    let mut values: BTreeMap<String, String> = resolve(&catalog, request, None)?.into_iter().collect();
+    // A boolean has no empty value to clear: send a requested one either way.
+    if let (Some(on), Some(fast)) = (request.fast, Native::of(&catalog).fast) {
+        values.insert(fast.id.to_string(), encoded(on).to_string());
+    }
+    Ok(Some(values))
 }
 
 /// Record the values a new session was started with, so it reads right
@@ -999,14 +1109,49 @@ pub async fn apply_on_start(
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    let sets = resolve(&options, request, None)?;
-    for (config_id, value) in &sets {
+    // Settles before the first prompt, so it runs with the options in effect.
+    apply_live(connections, connection_id, &state, &options, request, None).await
+}
+
+/// Resolve `request` against `options`, the live agent's, and apply it,
+/// waiting for the agent to settle. Fast mode belongs to the model, so it is
+/// resolved once the rest of `request` has left its model in effect.
+async fn apply_live(
+    connections: &ConnectionManager,
+    connection_id: &str,
+    state: &tokio::sync::RwLock<crate::acp::SessionState>,
+    options: &[SessionConfigOptionInfo],
+    request: &OptionsRequest,
+    remembered_normal: Option<&str>,
+) -> Result<(), ZwiimError> {
+    let rest = OptionsRequest {
+        fast: None,
+        ..request.clone()
+    };
+    set_all(connections, connection_id, state, &resolve(options, &rest, remembered_normal)?).await?;
+    let Some(on) = request.fast else {
+        return Ok(());
+    };
+    let now = state.read().await.config_options.clone().unwrap_or_default();
+    let fast = OptionsRequest {
+        fast: Some(on),
+        ..Default::default()
+    };
+    set_all(connections, connection_id, state, &resolve(&now, &fast, None)?).await
+}
+
+async fn set_all(
+    connections: &ConnectionManager,
+    connection_id: &str,
+    state: &tokio::sync::RwLock<crate::acp::SessionState>,
+    sets: &[(String, String)],
+) -> Result<(), ZwiimError> {
+    for (config_id, value) in sets {
         connections
             .set_config_option(connection_id, config_id.clone(), value.clone())
             .await?;
     }
-    // Settle before the first prompt, so it runs with the options in effect.
-    settle(&state, &sets).await;
+    settle(state, sets).await;
     Ok(())
 }
 
@@ -1498,10 +1643,45 @@ pub(crate) mod tests {
         remember_normal(&mut stored, &claude("acceptEdits"));
         assert_eq!(stored.normal_mode.as_deref(), Some("acceptEdits"));
         assert_eq!(stored.values.get("mode").map(String::as_str), Some("acceptEdits"));
-        assert!(!stored.values.contains_key("fast"));
+        assert_eq!(stored.values.get("fast").map(String::as_str), Some("false"));
         stored.values = Native::of(&claude("plan")).tracked_values();
         remember_normal(&mut stored, &claude("plan"));
         assert_eq!(stored.normal_mode.as_deref(), Some("acceptEdits"));
+    }
+
+    /// `options` with fast mode switched `on`.
+    fn with_fast(mut options: Vec<SessionConfigOptionInfo>, on: bool) -> Vec<SessionConfigOptionInfo> {
+        for option in &mut options {
+            if let SessionConfigKindInfo::Boolean(b) = &mut option.kind {
+                b.current_value = on;
+            }
+        }
+        options
+    }
+
+    #[test]
+    fn projects_and_resolves_fast_mode() {
+        let fast = |on: bool| OptionsRequest {
+            fast: Some(on),
+            ..Default::default()
+        };
+        assert_eq!(project(&claude("default")).fast, Some(false));
+        assert_eq!(project(&with_fast(claude("default"), true)).fast, Some(true));
+        assert_eq!(project(&codex("agent", "default")).fast, None);
+
+        assert_eq!(resolve(&claude("default"), &fast(true), None).unwrap(), sets(&[("fast", "true")]));
+        assert!(resolve(&claude("default"), &fast(false), None).unwrap().is_empty());
+        // Off is what an agent without fast mode runs already; on is refused.
+        assert!(resolve(&codex("agent", "default"), &fast(false), None).unwrap().is_empty());
+        let err = resolve(&codex("agent", "default"), &fast(true), None).unwrap_err();
+        assert_eq!(err.details.unwrap()["option"], "fast");
+    }
+
+    #[test]
+    fn fast_mode_is_replayed_like_the_other_values() {
+        let values = Native::of(&with_fast(claude("default"), true)).tracked_values();
+        assert_eq!(values.get("fast").map(String::as_str), Some("true"));
+        assert_eq!(project(&overlay(claude("default"), &values)).fast, Some(true));
     }
 
     /// Claude on Haiku as captured live: the model switched, no effort, no fast.
@@ -1606,5 +1786,42 @@ pub(crate) mod tests {
             .unwrap_err();
         assert_eq!(err.code, "option_unavailable");
         assert!(effort_by_model(&db.conn, "codex").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fast_mode_belongs_to_the_model_and_starts_off() {
+        use crate::db::test_helpers::fresh_in_memory_db;
+        let db = fresh_in_memory_db().await;
+        let start = |model: &str, fast: bool| OptionsRequest {
+            model: Some(model.into()),
+            fast: Some(fast),
+            ..Default::default()
+        };
+        remember_agent_report(&db.conn, "claude_code", &with_fast(claude("default"), true)).await;
+        remember_agent_report(&db.conn, "claude_code", &claude_on_haiku()).await;
+
+        let listed = fast_by_model(&db.conn, "claude_code").await;
+        assert_eq!(listed, BTreeMap::from([("haiku".into(), false), ("opus[1m]".into(), true)]));
+        // The last session ran Haiku: a new one shows none, then off on Opus.
+        assert_eq!(for_new_session(&db.conn, "claude_code").await.unwrap().fast, None);
+        remember_agent_report(&db.conn, "claude_code", &with_fast(claude("default"), true)).await;
+        assert_eq!(for_new_session(&db.conn, "claude_code").await.unwrap().fast, Some(false));
+
+        // Off is sent even where the agent's last session held it off.
+        remember_agent_report(&db.conn, "claude_code", &claude("default")).await;
+        let opus = preferred_for_start(&db.conn, AgentType::ClaudeCode, &start("opus[1m]", false))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(opus.get("fast").map(String::as_str), Some("false"));
+        let haiku = preferred_for_start(&db.conn, AgentType::ClaudeCode, &start("haiku", false))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!haiku.contains_key("fast"));
+        let err = preferred_for_start(&db.conn, AgentType::ClaudeCode, &start("haiku", true))
+            .await
+            .unwrap_err();
+        assert_eq!(err.details.unwrap()["option"], "fast");
     }
 }

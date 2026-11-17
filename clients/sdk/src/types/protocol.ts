@@ -889,6 +889,11 @@ export interface SessionOptions {
   effort: ChoiceOption | null;
   mode: ModeOption | null;
   /**
+   * Whether the agent's fast mode is on; null where the model offers none,
+   * absent on older Hosts. Capability `session.fast`.
+   */
+  fast?: boolean | null;
+  /**
    * Whether `session.revert` can rewind this session's chat as well as its
    * files. Present on `session.options` replies; absent on older Hosts and on
    * live option changes (keep the last value seen).
@@ -901,6 +906,8 @@ export interface OptionsRequest {
   model?: string;
   effort?: string;
   mode?: SessionMode;
+  /** Capability `session.fast`. A new session starts with it off unless `true`. */
+  fast?: boolean;
 }
 
 /** A slash command the agent offers. Run it by sending `/name args` as text. */
@@ -965,6 +972,11 @@ export interface AgentSummary {
    * none. See `effortFor`.
    */
   effort_by_model: Record<string, ChoiceOption | null>;
+  /**
+   * Fast mode belongs to the model too: whether each model that has run here
+   * offers it, by model value. See `fastFor`. Capability `session.fast`.
+   */
+  fast_by_model?: Record<string, boolean>;
   /** The slash commands it offered in its last session here; null before its first. */
   commands: SessionCommand[] | null;
   /** It is the agent new sessions start with (`defaults.agent`). Capability `settings`. */

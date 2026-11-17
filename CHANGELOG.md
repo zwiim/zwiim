@@ -21,7 +21,7 @@ have their own versions and are listed under Compatibility.
 - None.
 
 ### Compatibility
-- None.
+- Protocol revision 37: session options carry `fast` (the agent's fast mode, `null` where the model offers none), `session.set_options` and `session.start` take it, and `agent.list` entries gain `fast_by_model`. A new session starts with fast mode off. Older clients never see or set it.
 
 ### Provider changes
 - None.

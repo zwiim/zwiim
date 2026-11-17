@@ -257,6 +257,7 @@ pub(crate) async fn carried_options(
         model: current.model.map(|m| m.current),
         effort: current.effort.map(|e| e.current),
         mode: current.mode.map(|m| m.current),
+        fast: current.fast,
     }
 }
 

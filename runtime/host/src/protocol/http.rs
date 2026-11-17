@@ -596,6 +596,9 @@ pub struct AgentSummary {
     /// listed has not run here yet: `options.effort` is the best guess.
     pub effort_by_model:
         std::collections::BTreeMap<String, Option<crate::session_options::ChoiceOption>>,
+    /// Whether each model that has run here offers fast mode, by model value.
+    /// A model not listed has not run here yet.
+    pub fast_by_model: std::collections::BTreeMap<String, bool>,
     /// The slash commands it offered in its last session here; `null`
     /// before its first.
     pub commands: Option<Vec<crate::session_commands::SessionCommand>>,
@@ -645,15 +648,16 @@ pub async fn agent_list(Extension(state): Extension<Arc<AppState>>) -> ZResult<V
             Ok(()) if !enabled => Some("disabled"),
             Ok(()) => None,
         };
-        let (mut options, mut effort_by_model, commands, defaults) =
+        let (mut options, mut effort_by_model, fast_by_model, commands, defaults) =
             match crate::session_options::agent_name(agent) {
                 Some(name) => (
                     crate::session_options::for_new_session(&state.db.conn, &name).await,
                     crate::session_options::effort_by_model(&state.db.conn, &name).await,
+                    crate::session_options::fast_by_model(&state.db.conn, &name).await,
                     crate::session_commands::for_new_session(&state.db.conn, &name).await,
                     crate::settings::agent_defaults(&state.db.conn, &name).await,
                 ),
-                None => (None, Default::default(), None, Default::default()),
+                None => (None, Default::default(), Default::default(), None, Default::default()),
             };
         let defaults = match options.as_mut() {
             Some(o) => {
@@ -681,6 +685,7 @@ pub async fn agent_list(Extension(state): Extension<Arc<AppState>>) -> ZResult<V
             adapter,
             options,
             effort_by_model,
+            fast_by_model,
             commands,
             default: default_agent == Some(agent),
             defaults,
@@ -2410,13 +2415,17 @@ pub async fn session_start(
 }
 
 /// `request` with what it leaves out taken from the Host's defaults for
-/// `agent`, where the agent offers them. Unchanged before the agent's first
-/// session here, when what it offers is not known.
+/// `agent`, where the agent offers them, before the agent's first session
+/// here only fast mode. Fast mode starts off unless asked for: it uses more.
 async fn with_start_defaults(
     db: &sea_orm::DatabaseConnection,
     agent: AgentType,
     request: crate::session_options::OptionsRequest,
 ) -> crate::session_options::OptionsRequest {
+    let request = crate::session_options::OptionsRequest {
+        fast: Some(request.fast.unwrap_or(false)),
+        ..request
+    };
     let Some(name) = crate::session_options::agent_name(agent) else {
         return request;
     };
@@ -2605,9 +2614,11 @@ pub struct SessionSetOptionsParams {
     pub effort: Option<String>,
     #[serde(default)]
     pub mode: Option<crate::session_options::Mode>,
+    #[serde(default)]
+    pub fast: Option<bool>,
 }
 
-/// Change a session's model / effort / mode between turns.
+/// Change a session's model / effort / mode / fast mode between turns.
 pub async fn session_set_options(
     Extension(state): Extension<Arc<AppState>>,
     ZJson(p): ZJson<SessionSetOptionsParams>,
@@ -2616,6 +2627,7 @@ pub async fn session_set_options(
         model: p.model,
         effort: p.effort,
         mode: p.mode,
+        fast: p.fast,
     };
     if request.is_empty() {
         return Err(ZwiimError::invalid_input("Nothing to change"));

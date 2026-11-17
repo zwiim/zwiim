@@ -478,6 +478,7 @@ pub fn fill_start(
         model,
         effort,
         mode: request.mode.or(defaults.mode),
+        fast: request.fast,
     }
 }
 
@@ -509,6 +510,7 @@ mod tests {
                 label: String::new(),
                 available: vec![Mode::Normal, Mode::Plan],
             }),
+            fast: None,
             can_rewind_chat: None,
         };
         let efforts = BTreeMap::from([
@@ -629,6 +631,7 @@ mod tests {
             model: None,
             effort: None,
             mode: Some(Mode::Normal),
+            fast: None,
         };
         let got = fill_start(&request, &defaults, &options, &efforts);
         assert_eq!(got.model.as_deref(), Some("opus"));
