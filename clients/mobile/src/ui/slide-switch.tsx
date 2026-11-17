@@ -80,9 +80,11 @@ export function SlideSwitch({
     if (busy.current || !segW) return;
     // While a pick is on its way the switch stays where it was put.
     if (disabled && shown.current === value) return;
+    // The first placement (each time the sheet opens) is not a move.
+    const first = shown.current === null;
     shown.current = value;
     setLit(value);
-    if (reduce) left.setValue(value * segW);
+    if (reduce || first) left.setValue(value * segW);
     else Animated.timing(left, { toValue: value * segW, duration: SETTLE_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
   }, [value, segW, reduce, left, disabled]);
 
@@ -102,22 +104,34 @@ export function SlideSwitch({
         }, Math.max(0, (k + 1) * STEP_MS - 40)),
       );
     });
-    const done = () => {
-      busy.current = false;
-      setLit(to);
-      if (to !== value) onChange(to);
-    };
     if (reduce) {
       left.setValue(to * segW);
-      return done();
+      return finish(to);
     }
     Animated.timing(left, {
       toValue: to * segW,
       duration: Math.max(1, path.length) * STEP_MS + 120,
       easing: Easing.bezier(0.3, 1.25, 0.5, 1),
       useNativeDriver: false,
-    }).start(done);
+    }).start(({ finished }) => {
+      // Cut short by another tap or a drag: that one reports instead.
+      if (finished) finish(to);
+    });
   };
+
+  /** A tap's travel or a drag has landed on `to`: report it, unless the switch locked meanwhile. */
+  function finish(to: number) {
+    busy.current = false;
+    const { value: current, disabled: locked, onChange: report, segW: w } = live.current;
+    if (locked && to !== current) {
+      // A turn started or the connection dropped: nothing is sent, so go back.
+      setLit(current);
+      Animated.timing(left, { toValue: current * w, duration: SETTLE_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
+      return;
+    }
+    setLit(to);
+    if (to !== current) report(to);
+  }
 
   // The responder outlives renders; it reads the latest of these.
   const live = useRef({ segW, inner, count, value, disabled, onChange, enabled, lit });
@@ -154,14 +168,12 @@ export function SlideSwitch({
   );
 
   function settle() {
-    const { segW: w, value: current, onChange: report, enabled: can } = live.current;
+    const { segW: w, value: current, enabled: can } = live.current;
     // A drag can pass a mode the agent lacks, never stop on one.
     const to = can(drag.current.over) ? drag.current.over : current;
     Animated.timing(left, { toValue: to * w, duration: SETTLE_MS, easing: Easing.out(Easing.back(1.4)), useNativeDriver: false }).start(
-      () => {
-        busy.current = false;
-        setLit(to);
-        if (to !== current) report(to);
+      ({ finished }) => {
+        if (finished) finish(to);
       },
     );
   }
