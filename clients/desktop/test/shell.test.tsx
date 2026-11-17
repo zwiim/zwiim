@@ -330,6 +330,10 @@ describe("workbench", () => {
       ...(p.file ? { patch: "@@ -1 +1 @@\n-old\n+new" } : {}),
     });
     const c = await mount(t, <Workbench bridge={bridge()} />);
+    // The Diff tab counts the changed files before it is opened.
+    await tick();
+    expect(screen.getByTestId("diff-count").textContent).toBe("1");
+    expect(screen.getByRole("button", { name: "Diff" }).title).toBe("1 changed file");
     fireEvent.click(screen.getByRole("button", { name: "Diff" }));
     await tick();
     fireEvent.click(screen.getByText("src/a.txt"));

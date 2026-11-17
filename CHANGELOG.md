@@ -9,10 +9,13 @@ have their own versions and are listed under Compatibility.
 ## [Unreleased]
 
 ### Added
-- None.
+- Desktop: text files open ready to edit; ⌘S saves them through the Host, and the change shows in Diff and Git.
+- Desktop: Discard on a file in Diff throws away its uncommitted changes, after a confirm (`git.discard`, protocol revision 37).
+- Desktop: the Diff tab shows how many files changed, before it is opened.
+- Desktop: a file's diff has Edit, which types into the file in place with its changes still marked; the file editor colors code by its language.
 
 ### Changed
-- None.
+- Desktop: a unified diff numbers each line once, as the file is now; a removed line shows its old number.
 
 ### Fixed
 - None.

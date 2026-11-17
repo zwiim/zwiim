@@ -66,7 +66,7 @@ import { cn } from "@/lib/utils";
 import { ConnectionStatus, type RemoteLink } from "@/panels/ConnectionStatus";
 import { ControlCenter } from "@/panels/ControlCenter";
 import { BrowserPanel } from "@/panels/BrowserPanel";
-import { DiffPanel, DiffView } from "@/panels/DiffPanel";
+import { DiffPanel, DiffView, type DiffCount } from "@/panels/DiffPanel";
 import { FilesPanel, FileView } from "@/panels/FilesPanel";
 import { GitPanel } from "@/panels/GitPanel";
 import { HostPathDialog, HostPicker, PairDialog, type PairTarget } from "@/panels/Hosts";
@@ -614,7 +614,7 @@ export function Workbench({
                 shownDocs.map((d) => (
                   <TabPane key={docKey(d)} active={current === d}>
                     {d.kind === "diff" ? (
-                      <DiffView workspace={workspace} path={d.path} />
+                      <DiffView workspace={workspace} path={d.path} active={current === d} />
                     ) : (
                       <FileView workspaceId={d.workspaceId} path={d.path} active={current === d} />
                     )}
@@ -949,7 +949,9 @@ function WorkspacePanel({
   const [tab, setTab] = useState<Tab>("files");
   // Views mount on first visit and then stay mounted, so switching tabs
   // keeps each one's state (open files, selected diff, scroll).
-  const [visited, setVisited] = useState<Set<Tab>>(() => new Set(["files"]));
+  // Diff mounts from the start too: its tab shows how many files changed.
+  const [visited, setVisited] = useState<Set<Tab>>(() => new Set(["files", "diff"]));
+  const [changes, setChanges] = useState<DiffCount | null>(null);
   const drag = useRef<{ x: number; width: number } | null>(null);
   // Width follows the pointer directly while dragging; it animates only on collapse.
   const [resizing, setResizing] = useState(false);
@@ -1000,12 +1002,19 @@ function WorkspacePanel({
                   tab === t.id ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground",
                 )}
                 aria-current={tab === t.id ? "page" : undefined}
+                title={t.id === "diff" && changes ? changedFiles(changes) : undefined}
                 onClick={() => setTab(t.id)}
                 // A file dragged from Files opens the browser on the way to a page.
                 onDragEnter={() => t.id === "browser" && draggedFile() && setTab("browser")}
               >
                 <t.icon className="size-3.5" />
                 {t.label}
+                {t.id === "diff" && changes && (
+                  <span className="text-muted-foreground text-xs tabular-nums" aria-hidden data-testid="diff-count">
+                    {changes.count}
+                    {changes.truncated && "+"}
+                  </span>
+                )}
               </button>
             ))}
             <Button
@@ -1033,6 +1042,7 @@ function WorkspacePanel({
                     workspace={workspace}
                     selected={showing?.kind === "diff" ? showing.path : null}
                     onOpen={(path) => onOpen("diff", path)}
+                    onCount={setChanges}
                   />
                 </TabPane>
               )}
@@ -1184,6 +1194,11 @@ function WorkspacePanel({
 }
 
 /** A mounted panel; hidden ones keep their state. */
+/** "3 changed files", for the Diff tab's count. */
+function changedFiles({ count, truncated }: DiffCount): string {
+  return `${count}${truncated ? "+" : ""} changed ${count === 1 && !truncated ? "file" : "files"}`;
+}
+
 function TabPane({ active, children }: { active: boolean; children: React.ReactNode }) {
   return (
     <div

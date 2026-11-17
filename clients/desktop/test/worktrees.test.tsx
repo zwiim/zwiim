@@ -10,7 +10,7 @@ import {
   type WorkspaceInspection,
 } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
-import { DiffPanel, DiffView } from "@/panels/DiffPanel";
+import { DiffPanel, DiffView, uncommittedPaths } from "@/panels/DiffPanel";
 import { SessionPanel } from "@/panels/SessionPanel";
 import { busyMessage, removalNote, Sidebar, type SidebarProps } from "@/panels/Sidebar";
 import { OpenSettingsContext } from "@/settings/open";
@@ -715,6 +715,86 @@ describe("diff", () => {
     await mount(t, () => <DiffPanel workspace={root} selected={null} onOpen={() => {}} />);
     expect(screen.getByText("Uncommitted changes against HEAD")).toBeTruthy();
     expect(screen.getByText("No changes")).toBeTruthy();
+  });
+});
+
+describe("discarding a file's changes", () => {
+  const file = (path: string, change: "added" | "modified") => ({
+    path,
+    change,
+    additions: 1,
+    deletions: 0,
+    binary: false,
+    too_large: false,
+    untracked: change === "added",
+  });
+  function diffWith(t: FakeTransport) {
+    t.handlers["git.diff"] = () => ({
+      base_commit: BASE,
+      truncated: false,
+      files: [file("committed.rs", "modified"), file("src/a.rs", "modified"), file("new.txt", "added")],
+    });
+    // committed.rs differs from the base only by commits: nothing to discard.
+    t.handlers["git.status"] = () => [
+      { status: "M", file: "src/a.rs" },
+      { status: "??", file: "new.txt" },
+    ];
+    t.handlers["git.discard"] = () => ({ discarded: true });
+  }
+  const discards = (t: FakeTransport) => t.calls.filter((c) => c.op === "git.discard").map((c) => c.params);
+
+  it("offers Discard only on files with uncommitted changes, and asks first", async () => {
+    const t = new FakeTransport();
+    diffWith(t);
+    await mount(t, () => <DiffPanel workspace={worktree("a1b2c3d4")} selected={null} onOpen={() => {}} />);
+    expect(screen.queryByRole("button", { name: "Discard changes to committed.rs" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes to src/a.rs" }));
+    let dialog = screen.getByRole("dialog", { name: "Discard changes?" });
+    expect(dialog.textContent).toContain("goes back to its last commit");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(discards(t)).toEqual([]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes to new.txt" }));
+    dialog = screen.getByRole("dialog", { name: "Discard changes?" });
+    expect(dialog.textContent).toContain("will be deleted");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Discard" }));
+    await tick();
+    expect(discards(t)).toEqual([{ workspace_id: "a1b2c3d4", file: "new.txt" }]);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("keeps the dialog open with the Host's refusal", async () => {
+    const t = new FakeTransport();
+    diffWith(t);
+    t.handlers["git.discard"] = () => {
+      throw new ZwiimClientError("invalid_input", "Only a file can be discarded", 400);
+    };
+    await mount(t, () => <DiffPanel workspace={worktree("a1b2c3d4")} selected={null} onOpen={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes to src/a.rs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    await tick();
+    expect(screen.getByRole("alert").textContent).toBe("Only a file can be discarded");
+    expect(screen.getByRole("dialog", { name: "Discard changes?" })).toBeTruthy();
+  });
+
+  it("offers no Discard on a Host without it", async () => {
+    const t = new FakeTransport();
+    diffWith(t);
+    t.handlers["host.hello"] = () =>
+      hostHello({ capabilities: hostHello().capabilities!.filter((c) => c !== "git.discard") });
+    await mount(t, () => <DiffPanel workspace={worktree("a1b2c3d4")} selected={null} onOpen={() => {}} />);
+    expect(screen.getByText("src/a.rs")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Discard changes/ })).toBeNull();
+    expect(t.calls.some((c) => c.op === "git.status")).toBe(false);
+  });
+
+  it("reads each side of a staged rename as its own path", () => {
+    expect([...uncommittedPaths([{ status: "R", file: "old.rs -> new.rs" }, { status: "A", file: "b" }])]).toEqual([
+      ["old.rs", "changed"],
+      ["new.rs", "new"],
+      ["b", "new"],
+    ]);
   });
 });
 
