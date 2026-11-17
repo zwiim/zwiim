@@ -109,6 +109,17 @@ describe("new session options", () => {
     expect(sonnet.request).toEqual({ model: "sonnet", effort: "high", mode: "unattended" });
   });
 
+  it("starts fast mode as picked, else as last chosen on the model, and sends none where the model offers none", () => {
+    const fastOn = (model: string | null) => (model === "opus" ? null : false);
+    const sonnet = newSessionOptions(opts(), { model: null, effort: null }, {}, undefined, undefined, fastOn);
+    expect(sonnet.shown.fast).toBe(false);
+    expect(sonnet.request.fast).toBe(false);
+    expect(newSessionOptions(opts(), { model: null, effort: null }, { fast: true }, undefined, undefined, fastOn).request.fast).toBe(true);
+    const opus = newSessionOptions(opts(), { model: "opus", effort: null }, { fast: true }, undefined, undefined, fastOn);
+    expect(opus.shown.fast).toBeNull();
+    expect("fast" in opus.request).toBe(false);
+  });
+
   it("prefers picks, then the Host's defaults, then what this client remembered", () => {
     const remembered = { model: "sonnet", effort: "high" };
     const host = { model: "opus", effort: "low", mode: "plan" as const };

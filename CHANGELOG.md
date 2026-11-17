@@ -9,7 +9,7 @@ have their own versions and are listed under Compatibility.
 ## [Unreleased]
 
 ### Added
-- None.
+- The model picker has a Fast switch for models that offer fast mode (Claude's 2x speed, more usage). It starts off, each model remembers it, and ⚡ marks it while on.
 
 ### Changed
 - The composer's model picker now lists every agent's models: picking a model picks its agent. Favorite and recent models sit at the top, each model remembers its effort, and effort and mode open as side lists.

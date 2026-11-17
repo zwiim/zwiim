@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState, type KeyboardEvent, type MutableRefObject, type ReactNode } from "react";
-import { Check, Star } from "lucide-react";
+import { Check, Star, Zap } from "lucide-react";
 import { effortFor, type AgentSummary } from "@zwiim/sdk";
 import { AgentDot, AgentIcon, agentBrand } from "@/components/AgentIcon";
 import { favoriteModels, recentModels, modelEffort } from "@/lib/prefs";
@@ -20,6 +20,8 @@ export interface Entry {
   effortLabel: string | null;
   /** The effort a same-agent pick sends: one remembered for the model and still offered. */
   send: string | null;
+  /** Whether the row runs, or a pick turns, fast mode on; null where the model offers none. */
+  fast: boolean | null;
   favorite: boolean;
   /** Why it cannot be picked. */
   blocked: string | null;
@@ -65,6 +67,8 @@ export function buildSections(
   const inEffect = (agent: string, model: string) => agent === inUse && !!using?.effort && model === using.model?.current;
   const effortOf = (agent: string, model: string, shown: string | null) =>
     inEffect(agent, model) ? using!.effort!.current : shown;
+  const fastOf = (agent: string, model: string, shown: boolean | null) =>
+    agent === inUse && model === using?.model?.current && using?.fast != null ? using.fast : shown;
   const favorites = favoriteModels();
   const isFavorite = (agent: string, model: string) => favorites.some((f) => f.agent === agent && f.model === model);
 
@@ -84,6 +88,7 @@ export function buildSections(
           effort,
           effortLabel: effortText(owner, r.ref.model, effort),
           send: inEffect(r.ref.agent, r.ref.model) ? null : r.effort,
+          fast: fastOf(r.ref.agent, r.ref.model, r.fast),
           favorite: r.favorite,
           blocked: blocked(owner),
         };
@@ -96,6 +101,7 @@ export function buildSections(
     effort: null,
     effortLabel: null,
     send: null,
+    fast: null,
     favorite: false,
     blocked: null,
   };
@@ -121,6 +127,7 @@ export function buildSections(
         !inEffect(browsed.agent, r.value) && r.effort && modelEffort({ agent: browsed.agent, model: r.value }) === r.effort
           ? r.effort
           : null,
+      fast: fastOf(browsed.agent, r.value, r.fast),
       favorite: isFavorite(browsed.agent, r.value),
       blocked: blocked(browsed),
     };
@@ -240,7 +247,7 @@ const Row = memo(
     const label =
       e.kind === "more" || e.kind === "agent"
         ? e.label
-        : `${e.label}${quickRow ? `, ${agentShort}` : ""}${effort ? `, ${effort} effort` : ""}`;
+        : `${e.label}${quickRow ? `, ${agentShort}` : ""}${effort ? `, ${effort} effort` : ""}${e.fast ? ", fast" : ""}`;
     const description =
       e.blocked ??
       (e.kind === "model" || quickRow
@@ -276,6 +283,7 @@ const Row = memo(
               <span className="text-muted-foreground min-w-0 truncate text-xs">{e.blocked ?? e.description}</span>
             )}
             <span className="ml-auto flex shrink-0 items-center gap-1.5">
+              {e.fast && <Zap aria-hidden className="text-brand size-3 fill-current" />}
               {effort && <span className="text-muted-foreground font-mono text-[11.5px]">{effort}</span>}
               {selected && <Check aria-hidden className="text-brand size-3.5" />}
               {quickRow && i < 9 && (
@@ -315,6 +323,7 @@ const Row = memo(
     a.e.label === b.e.label &&
     a.e.description === b.e.description &&
     a.e.effortLabel === b.e.effortLabel &&
+    a.e.fast === b.e.fast &&
     a.e.favorite === b.e.favorite &&
     a.e.blocked === b.e.blocked,
 );

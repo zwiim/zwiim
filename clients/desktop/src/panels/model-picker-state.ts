@@ -1,10 +1,12 @@
-import { effortFor, type AgentSummary, type OptionValue } from "@zwiim/sdk";
-import { modelEffort, type ModelRef } from "../lib/prefs";
+import { effortFor, fastFor, type AgentSummary, type OptionValue } from "@zwiim/sdk";
+import { modelEffort, modelFast, type ModelRef } from "../lib/prefs";
 
 export interface QuickRow {
   ref: ModelRef;
   label: string;
   effort: string | null;
+  /** Whether a pick turns fast mode on; null where the model offers none. */
+  fast: boolean | null;
   favorite: boolean;
 }
 
@@ -13,6 +15,7 @@ export interface ModelRow {
   label: string;
   description: string | null;
   effort: string | null;
+  fast: boolean | null;
 }
 
 const COLLAPSED_ROWS = 5;
@@ -26,6 +29,10 @@ function resolveEffort(agent: AgentSummary, model: string, remembered: string | 
   return remembered && effort?.values.some((v) => v.value === remembered) ? remembered : (effort?.current ?? null);
 }
 
+function resolveFast(agent: AgentSummary, model: string): boolean | null {
+  return fastFor(agent, model) ? modelFast({ agent: agent.agent, model }) : null;
+}
+
 /** Favorites first, then the most recent models that are not favorites. */
 export function quickRows(
   agents: AgentSummary[],
@@ -37,7 +44,7 @@ export function quickRows(
     const found = agents.find((a) => a.agent === ref.agent && models(a).some((m) => m.value === ref.model));
     const option = found && models(found).find((m) => m.value === ref.model);
     return found && option
-      ? [{ ref: { agent: ref.agent, model: ref.model }, label: option.label, effort: resolveEffort(found, ref.model, effort), favorite }]
+      ? [{ ref: { agent: ref.agent, model: ref.model }, label: option.label, effort: resolveEffort(found, ref.model, effort), fast: resolveFast(found, ref.model), favorite }]
       : [];
   };
   const isFavorite = (ref: ModelRef) => favorites.some((f) => f.agent === ref.agent && f.model === ref.model);
@@ -62,7 +69,7 @@ export function modelRows(agent: AgentSummary, query: string, expanded: boolean)
   const shown = capped ? found.slice(0, COLLAPSED_ROWS) : found;
   const rows = shown.map((m): ModelRow => {
     const effort = resolveEffort(agent, m.value, modelEffort({ agent: agent.agent, model: m.value }));
-    return { value: m.value, label: m.label, description: m.description, effort };
+    return { value: m.value, label: m.label, description: m.description, effort, fast: resolveFast(agent, m.value) };
   });
   return { rows, more: found.length - shown.length };
 }

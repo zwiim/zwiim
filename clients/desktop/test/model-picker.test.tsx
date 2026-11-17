@@ -2,7 +2,7 @@ import { createRef } from "react";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSummary, ChoiceOption, OptionValue, SessionMode, SessionOptions } from "@zwiim/sdk";
-import { favoriteModels, recentModels, rememberModelEffort, toggleFavoriteModel } from "@/lib/prefs";
+import { favoriteModels, modelFast, recentModels, rememberModelEffort, rememberModelFast, toggleFavoriteModel } from "@/lib/prefs";
 import { alignsEnd, ModelPicker } from "@/panels/ModelPicker";
 
 afterEach(cleanup);
@@ -164,6 +164,49 @@ describe("model picker", () => {
     fireEvent.click(option(/^Sonnet/));
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  describe("fast mode", () => {
+    const fastAgents = AGENTS.map((a) =>
+      a.agent === "claude_code" ? { ...a, fast_by_model: { opus: true, sonnet: true, haiku: false } } : a,
+    );
+    const fastRow = () => within(dialog()).queryByRole("switch", { name: "Fast" });
+
+    it("flips in place, remembered for the model, and marks the chip while on", () => {
+      const onChange = vi.fn();
+      const { rerender } = render(picker({ agents: fastAgents, options: { ...claudeOptions(), fast: false }, started: true, onChange }));
+      expect(chip().getAttribute("aria-label")).not.toContain("fast");
+      open();
+      expect(fastRow()!.getAttribute("aria-checked")).toBe("false");
+      fireEvent.click(fastRow()!);
+      expect(onChange).toHaveBeenCalledWith({ fast: true });
+      expect(modelFast({ agent: "claude_code", model: "sonnet" })).toBe(true);
+      expect(dialog()).toBeTruthy();
+      rerender(picker({ agents: fastAgents, options: { ...claudeOptions(), fast: true }, started: true, onChange }));
+      expect(chip().getAttribute("aria-label")).toBe("Ask mode, Claude Code, Sonnet, Medium effort, fast");
+      expect(fastRow()!.getAttribute("aria-checked")).toBe("true");
+      expect(option(/^Sonnet/).getAttribute("aria-label")).toContain(", fast");
+    });
+
+    it("is not offered where the model has none", () => {
+      render(picker({ agents: fastAgents, options: claudeOptions("haiku") }));
+      open();
+      expect(fastRow()).toBeNull();
+    });
+
+    it("a picked model runs fast mode as last chosen there", () => {
+      rememberModelFast({ agent: "claude_code", model: "opus" }, true);
+      const onChange = vi.fn();
+      render(picker({ agents: fastAgents, options: { ...claudeOptions(), fast: false }, started: true, onChange }));
+      open();
+      expect(option(/^Opus/).getAttribute("aria-label")).toContain(", fast");
+      fireEvent.click(option(/^Opus/));
+      expect(onChange).toHaveBeenCalledWith({ model: "opus", fast: true });
+      onChange.mockClear();
+      open();
+      fireEvent.click(option(/^Haiku/));
+      expect(onChange).toHaveBeenCalledWith({ model: "haiku" });
+    });
   });
 
   it("shows the running effort on the model in effect, and remembered ones on the rest", () => {

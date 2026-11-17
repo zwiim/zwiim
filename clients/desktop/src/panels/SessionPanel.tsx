@@ -3,6 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown, ArrowUp, GitBranch, GitBranchPlus, Loader2, Paperclip, SquareDashedMousePointer, Square, X } from "lucide-react";
 import {
   effortFor,
+  fastFor,
   FORK_BUSY_NOTE,
   FORK_OFFLINE_NOTE,
   forkRefusalText,
@@ -46,7 +47,7 @@ import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { removeFromChat, sentToChat, useHandedBlocks, type PageBlock } from "@/lib/page-handoff";
 import { formatShortcut } from "@/lib/platform";
-import { agentChoices, autoConvertLongText, followUpMode, rememberAgentChoices, rememberModelEffort, sendKey } from "@/lib/prefs";
+import { agentChoices, autoConvertLongText, followUpMode, rememberAgentChoices, rememberModelEffort, modelFast, sendKey } from "@/lib/prefs";
 import { isOtherSendKey, isSendKey, sendShortcut } from "@/lib/send-key";
 import { usePref } from "@/lib/use-pref";
 import { cn } from "@/lib/utils";
@@ -106,7 +107,8 @@ export function offeredAgents(agents: readonly AgentSummary[]): AgentSummary[] {
  * offered. Effort is the chosen model's own (`effortOn`; none on a model
  * without one). Mode starts at the Host's default mode, else at Auto
  * (unattended) where the agent offers it, else at the agent's own mode,
- * unless picked.
+ * unless picked. Fast mode, where the chosen model offers it (`fastOn`: as
+ * last chosen there, else null), starts as picked, else as remembered.
  */
 export function newSessionOptions(
   advertised: SessionOptions,
@@ -114,6 +116,7 @@ export function newSessionOptions(
   picks: OptionsRequest,
   effortOn: (model: string | null) => ChoiceOption | null = () => advertised.effort,
   hostDefaults?: AgentDefaults,
+  fastOn: (model: string | null) => boolean | null = () => advertised.fast ?? null,
 ): { shown: SessionOptions; request: OptionsRequest } {
   const request: OptionsRequest = {};
   const choose = (key: "model" | "effort", option: ChoiceOption | null) => {
@@ -132,11 +135,15 @@ export function newSessionOptions(
     request.mode = wantMode;
   }
   const model = choose("model", advertised.model);
+  const rememberedFast = fastOn(model?.current ?? null);
+  const fast = rememberedFast === null ? null : (picks.fast ?? rememberedFast);
+  if (fast !== null) request.fast = fast;
   return {
     shown: {
       model,
       effort: choose("effort", effortOn(model?.current ?? null)),
       mode: mode && request.mode ? { ...mode, current: request.mode, label: "" } : mode,
+      fast,
     },
     request,
   };
@@ -199,6 +206,7 @@ export function useNewSessionAgent() {
           picks,
           (model) => effortFor(summary, model),
           summary.defaults,
+          (model) => (fastFor(summary, model) ? !!model && modelFast({ agent: summary.agent, model }) : null),
         )
       : null;
   return {

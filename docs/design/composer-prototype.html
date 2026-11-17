@@ -1,5 +1,4 @@
 <!doctype html>
-<!-- Fast switch: planned, not built yet. The shipped picker has no Fast switch. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -332,7 +331,7 @@ function renderTabs() {
   $("tabs").innerHTML = tabs.map((t) => `<button class="t" role="tab" aria-selected="${t === cur}" data-tab="${t.id}">
     ${t.running ? '<span class="wdot" aria-label="working"></span>' : ""}<span class="l">${esc(t.title)}</span></button>`).join("") +
     `<button class="plus" id="newtab" title="New session" aria-label="New session"><svg><use href="#plus"/></svg></button><span class="grow"></span>
-     <button class="lay" id="lay" title="Switch the picker's agent strip">Agent strip: ${ui.layout === "v" ? "vertical" : "horizontal"}</button><span class="help">Interactive prototype · fake agents · data comes from the Host in the real app · Fast switch: planned, not built yet</span>`;
+     <button class="lay" id="lay" title="Switch the picker's agent strip">Agent strip: ${ui.layout === "v" ? "vertical" : "horizontal"}</button><span class="help">Interactive prototype · fake agents · data comes from the Host in the real app</span>`;
 }
 function renderTranscript() {
   const el = $("transcript");

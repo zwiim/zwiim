@@ -201,6 +201,17 @@ export function rememberModelEffort(ref: ModelRef, effort: string): void {
   write("models.effort", { ...(v && typeof v === "object" ? v : {}), [`${ref.agent}/${ref.model}`]: effort });
 }
 
+/** Whether fast mode was last turned on for a model; it starts off. */
+export function modelFast(ref: ModelRef): boolean {
+  const v = read<Record<string, unknown>>("models.fast", {});
+  return !!v && typeof v === "object" && v[`${ref.agent}/${ref.model}`] === true;
+}
+
+export function rememberModelFast(ref: ModelRef, on: boolean): void {
+  const v = read<Record<string, unknown>>("models.fast", {});
+  write("models.fast", { ...(v && typeof v === "object" ? v : {}), [`${ref.agent}/${ref.model}`]: on });
+}
+
 /** The first-run choice between signing in and local use was made. */
 export function welcomed(): boolean {
   return read<boolean>("welcomed", false) === true;

@@ -1,8 +1,8 @@
 import { useEffect, useId, useImperativeHandle, useRef, useState, type KeyboardEvent, type Ref } from "react";
-import { Check, ChevronDown, ChevronRight, Search } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Search, Zap } from "lucide-react";
 import type { AgentSummary, ChoiceOption, OptionsRequest, SessionMode, SessionOptions } from "@zwiim/sdk";
 import { AgentIcon, agentBrand } from "@/components/AgentIcon";
-import { rememberModelEffort, rememberRecentModel, toggleFavoriteModel } from "@/lib/prefs";
+import { rememberModelEffort, rememberModelFast, rememberRecentModel, toggleFavoriteModel } from "@/lib/prefs";
 import { usePresence } from "@/lib/presence";
 import { cn } from "@/lib/utils";
 import { searchTarget } from "./model-picker-state";
@@ -36,9 +36,10 @@ export function alignsEnd(chip: { left: number; right: number }, viewport: numbe
 }
 
 /**
- * The composer's agent, model, effort and mode, as one chip that opens a
- * panel: search, a strip of agents, their models, and Effort and Mode side
- * lists. Another agent's model starts that agent in a new session only.
+ * The composer's agent, model, effort, fast mode and mode, as one chip that
+ * opens a panel: search, a strip of agents, their models, Effort and Mode side
+ * lists and a Fast switch. Another agent's model starts that agent in a new
+ * session only.
  */
 export function ModelPicker({
   agents,
@@ -67,6 +68,8 @@ export function ModelPicker({
 }) {
   const hint = disabled && disabledReason ? disabledReason : undefined;
   const { mode, model, effort } = options;
+  const fast = options.fast ?? null;
+  const fastEl = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const [alignEnd, setAlignEnd] = useState(false);
   const [side, setSide] = useState<Side | null>(null);
@@ -203,7 +206,9 @@ export function ModelPicker({
     if (e.agent !== agent) {
       close(true);
       if (e.model) rememberRecentModel({ agent: e.agent, model: e.model }, e.effort);
-      return onAgent?.(e.agent, e.model ? { model: e.model, ...(e.effort ? { effort: e.effort } : {}) } : {});
+      const request: OptionsRequest = e.model ? { model: e.model, ...(e.effort ? { effort: e.effort } : {}) } : {};
+      if (e.model && e.fast != null) request.fast = e.fast;
+      return onAgent?.(e.agent, request);
     }
     if (!e.model) return close(true);
     close(true);
@@ -214,6 +219,8 @@ export function ModelPicker({
     // A new session's earlier effort pick must not outlive the model it was for:
     // send the effort the row shows (none, clearing the pick, when it has none).
     if (!started && request.model) request.effort = e.effort ?? undefined;
+    // Fast mode belongs to the model: a new model runs it as last chosen there.
+    if (request.model) request.fast = e.fast ?? undefined;
     if (request.model || request.effort) onChange(request);
   }
 
@@ -222,6 +229,12 @@ export function ModelPicker({
     toggleFavoriteModel({ agent: e.agent, model: e.model });
     setAct(e.id);
     setFavorites((n) => n + 1);
+  }
+
+  function toggleFast() {
+    if (fast == null) return;
+    if (model) rememberModelFast({ agent, model: model.current }, !fast);
+    onChange({ fast: !fast });
   }
 
   function pickSide(key: Side, value: string) {
@@ -243,6 +256,7 @@ export function ModelPicker({
         searchEl.current,
         tabEls.current[browsed.agent],
         !effortOff && rowEls.current.effort,
+        fastEl.current,
         !modeOff && rowEls.current.mode,
       ] as (HTMLElement | null | false | undefined)[]).filter((el): el is HTMLElement => !!el);
       const at = order.findIndex((el) => el === document.activeElement);
@@ -294,6 +308,7 @@ export function ModelPicker({
     agentName,
     model && currentLabel(model),
     effort && `${currentLabel(effort)} effort`,
+    fast && "fast",
   ]
     .filter(Boolean)
     .join(", ");
@@ -376,6 +391,7 @@ export function ModelPicker({
         <AgentIcon agent={agent} name={agentName} size={18} />
         {model && <span className="truncate font-mono">{currentLabel(model)}</span>}
         {effort && <span className="text-muted-foreground shrink-0">{currentLabel(effort)}</span>}
+        {fast && <Zap aria-hidden className="text-brand size-3 shrink-0 fill-current" />}
         <ChevronDown aria-hidden className="text-faint size-[13px] shrink-0" />
       </button>
       {hint && <span className="sr-only">{hint}</span>}
@@ -446,6 +462,31 @@ export function ModelPicker({
               />
             </div>
             {optionRow("effort", "Effort", effortOff ? "not offered" : currentLabel(effort!), effortOff)}
+            {fast != null && (
+              <button
+                ref={fastEl}
+                type="button"
+                role="switch"
+                aria-checked={fast}
+                aria-label="Fast"
+                aria-description="2x speed, more usage"
+                onClick={toggleFast}
+                onPointerEnter={() => side && setSide(null)}
+                className={cn(ring, "hover:bg-muted flex h-[38px] w-full items-center gap-2.5 border-t px-3 text-left text-ui focus-visible:ring-inset")}
+              >
+                Fast
+                <span className="text-muted-foreground text-xs">2x speed · more usage</span>
+                <span
+                  aria-hidden
+                  className={cn(
+                    "ml-auto flex h-4 w-7 items-center rounded-full p-0.5 transition-colors duration-120",
+                    fast ? "bg-brand justify-end" : "bg-secondary justify-start",
+                  )}
+                >
+                  <span className="bg-background size-3 rounded-full" />
+                </span>
+              </button>
+            )}
             {optionRow("mode", "Mode", mode ? MODE_LABEL[mode.current] : "not offered", modeOff)}
             <div className="text-muted-foreground flex items-center gap-3 border-t bg-black/10 px-3 py-2 text-xs">
               {[
@@ -470,7 +511,7 @@ export function ModelPicker({
               aria-label={side === "effort" ? "Effort" : "Mode"}
               className="bg-popover text-popover-foreground shadow-pop w-[220px] rounded-xl border p-1.5"
               // Its foot sits by its row: the footer is 33px, a row 38px.
-              style={{ marginBottom: side === "effort" ? 65 : 27 }}
+              style={{ marginBottom: side === "mode" ? 27 : fast != null ? 103 : 65 }}
               onKeyDown={(e) => {
                 if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                   e.preventDefault();

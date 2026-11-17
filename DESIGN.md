@@ -804,17 +804,20 @@ glyph, a title, one line, one action.
   reads "not reported".
 - Desktop's composer carries one options chip, bottom left: the mode's icon
   and label (accent when Auto), the agent's icon, the model in mono, the
-  effort and `⌄`. Its name reads "Auto mode, Claude, Opus 5.5, High effort".
+  effort, an accent `⚡` while fast mode is on, and `⌄`. Its name reads
+  "Auto mode, Claude, Opus 5.5, High effort".
   It opens a panel upward, 440px wide: a search field, a column of icon-only
   agent tiles (a dot marks the agent in use, a ring the one being browsed; the
-  column scrolls on its own), the list, `Effort ›` and `Mode ›` rows, and a
-  footer of keys. Picking a model picks its agent. The list starts with
+  column scrolls on its own), the list, `Effort ›`, `Fast` and `Mode ›` rows,
+  and a footer of keys. Picking a model picks its agent. The list starts with
   **Recent & favorites** (favorites first, marked ★, then at most 2 recent
   models), then the browsed agent's models; each row shows the effort that
   model remembers, and past 5 models "Show all n models" opens the rest.
   Search filters the browsed agent and moves to the first agent that matches.
   `Effort ›` and `Mode ›` open a side list of exactly what the agent reports
-  for that model. Mode reads Ask / Plan / **Auto** (Auto is the `unattended`
+  for that model. `Fast` ("2x speed · more usage") is a switch that flips in
+  place, shown only for a model that offers fast mode; it starts off, each
+  model remembers it, and a row with it on carries `⚡`. Mode reads Ask / Plan / **Auto** (Auto is the `unattended`
   mode on the wire). A new session starts in Auto wherever the agent offers
   it; picking Auto takes one click, with no confirmation, and the composer
   keeps its Auto note with **Ask first again**. Keys: In the session
