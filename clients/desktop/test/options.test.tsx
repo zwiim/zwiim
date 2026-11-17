@@ -435,4 +435,50 @@ describe("open session options", () => {
     expect(screen.queryByRole("button", { name: /mode, / })).toBeNull();
     controller.dispose();
   });
+
+  describe("a fork", () => {
+    const agents = () => [
+      { agent: "claude_code", name: "Claude Code", available: true, reason: null, support: "supported", options: opts() },
+      { agent: "codex", name: "Codex", available: true, reason: null, support: "supported", options: codexOptions() },
+    ];
+
+    async function fork(t: FakeTransport, turns: unknown[] = []) {
+      t.handlers["agent.list"] = agents;
+      t.handlers["session.list"] = () => [{ session_id: "s1", workspace_id: "w1", agent: "claude_code", title: "Fork of Old work" }];
+      t.handlers["session.history"] = (p) => ({ session_id: p.session_id, turns, forked_from: { session_id: "s0", title: "Old work" } });
+      const opened = await open(t);
+      await act(async () => {
+        await opened.controller.refreshAgents();
+        await opened.controller.refreshSessions("w1");
+      });
+      await opened.frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot(opts(), "disconnected") });
+      return opened;
+    }
+
+    it("moves to another agent before its first message", async () => {
+      const t = new FakeTransport();
+      t.handlers["session.set_agent"] = () => ({ session_id: "s1", options: codexOptions() });
+      const { controller } = await fork(t);
+      fireEvent.click(chip());
+      fireEvent.click(within(dialog()).getByRole("tab", { name: /^Codex/ }));
+      fireEvent.click(model("GPT-5\\.5,"));
+      await tick();
+      expect(t.calls.find((c) => c.op === "session.set_agent")!.params).toEqual({
+        session_id: "s1",
+        agent: "codex",
+        options: { model: "gpt-5.5", effort: "medium" },
+      });
+      controller.dispose();
+    });
+
+    it("keeps its agent once it has run", async () => {
+      const t = new FakeTransport();
+      const said = { turn_id: "t1", role: "user", blocks: [{ type: "text", text: "go on" }], timestamp: "", completed_at: null, duration_ms: null, model: null, usage: null };
+      const { controller } = await fork(t, [said]);
+      fireEvent.click(chip());
+      fireEvent.click(within(dialog()).getByRole("tab", { name: /^Codex/ }));
+      expect(model("GPT-5\\.5,").getAttribute("aria-disabled")).toBe("true");
+      controller.dispose();
+    });
+  });
 });

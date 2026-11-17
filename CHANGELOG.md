@@ -10,6 +10,7 @@ have their own versions and are listed under Compatibility.
 
 ### Added
 - The model picker has a Fast switch for models that offer fast mode (Claude's 2x speed, more usage). It starts off, each model remembers it, and ⚡ marks it while on.
+- A fork can move to another agent before its first message: pick that agent's model in the composer, and the chat goes on through the fork's transcript.
 
 ### Changed
 - While a turn runs or follow-ups wait, one rail on the composer's top edge shows how long the agent has worked, the plan's progress, the queue and the context window, in place of the plan's working strip and the stacked follow-up list.
@@ -23,6 +24,7 @@ have their own versions and are listed under Compatibility.
 
 ### Compatibility
 - Protocol revision 37: session options carry `fast` (the agent's fast mode, `null` where the model offers none), `session.set_options` and `session.start` take it, and `agent.list` entries gain `fast_by_model`. A new session starts with fast mode off. Older clients never see or set it.
+- Protocol revision 38: `session.set_agent {session_id, agent, options}` moves a fork to another agent before its first message, refused with `agent_fixed` otherwise. Older clients never call it.
 
 ### Provider changes
 - None.

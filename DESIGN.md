@@ -815,7 +815,10 @@ glyph, a title, one line, one action.
   It opens a panel upward, 440px wide: a search field, a column of icon-only
   agent tiles (a dot marks the agent in use, a ring the one being browsed; the
   column scrolls on its own), the list, `Effort ›`, `Mode ›` and `Fast` rows,
-  and a footer of keys. Picking a model picks its agent. The list starts with
+  and a footer of keys. Picking a model picks its agent. Once a session has
+  run, other agents' models are disabled ("Start a new session to use ⟨agent⟩");
+  a fork can still move to another agent until its first message, and its
+  transcript carries the chat over. The list starts with
   **Recent & favorites** (favorites first, marked ★, then at most 2 recent
   models), then the browsed agent's models; each row shows the effort that
   model remembers, and past 5 models "Show all n models" opens the rest.

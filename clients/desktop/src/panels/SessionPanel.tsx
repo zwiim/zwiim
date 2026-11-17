@@ -695,6 +695,9 @@ function OpenSession({
   const rail = !!view && showsTurnRail(running && !removed, railFollowUps);
   const empty =
     view?.history?.length === 0 && !view.settled && !view.live.userMessage && !view.live.message && !running;
+  // A fork can still change agent until its first message.
+  const canSetAgent = useHost((s) => hasCapability(s.connection.compat, "session.set_agent"));
+  const agentOpen = canSetAgent && !!view?.forkedFrom && empty;
 
   async function changeOptions(request: OptionsRequest) {
     setOptionsBusy(true);
@@ -710,6 +713,19 @@ function OpenSession({
           ? `The agent does not offer ${unavailable.value} for ${unavailable.option} now; nothing was changed.`
           : errorMessage(e),
       );
+    } finally {
+      setOptionsBusy(false);
+    }
+  }
+
+  async function changeAgent(agent: AgentType, request: OptionsRequest) {
+    setOptionsBusy(true);
+    setOptionsError(null);
+    try {
+      await controller.setSessionAgent(sessionId, agent, request);
+      rememberAgentChoices(agent, { model: request.model, effort: request.effort });
+    } catch (e) {
+      setOptionsError(errorMessage(e));
     } finally {
       setOptionsBusy(false);
     }
@@ -1029,10 +1045,11 @@ function OpenSession({
                   agent={summary?.agent ?? ""}
                   name={agentName ?? undefined}
                   options={options}
-                  started
+                  started={!agentOpen}
                   disabled={optionsDisabled}
                   disabledReason={optionsLock}
                   onChange={(req) => void changeOptions(req)}
+                  onAgent={agentOpen ? (agent, req) => void changeAgent(agent as AgentType, req) : undefined}
                   handle={optionKeys.handle}
                 />
                 {!rail && <ContextRing view={view} agent={agentName ?? summary?.agent ?? null} />}

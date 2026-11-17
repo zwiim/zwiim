@@ -39,7 +39,7 @@ export function alignsEnd(chip: { left: number; right: number }, viewport: numbe
  * The composer's agent, model, effort, fast mode and mode, as one chip that
  * opens a panel: search, a strip of agents, their models, Effort and Mode side
  * lists and a Fast switch. Another agent's model starts that agent in a new
- * session only.
+ * session, or moves a fork that has not run yet.
  */
 export function ModelPicker({
   agents,
