@@ -16,7 +16,7 @@ const BRANDS: Record<string, AgentBrand> = {
 
 export function agentBrand(agent: string, name: string): AgentBrand {
   return (
-    BRANDS[agent] ?? {
+    (Object.hasOwn(BRANDS, agent) ? BRANDS[agent] : undefined) ?? {
       short: name,
       tile: "var(--secondary)",
       ink: "var(--foreground)",
@@ -48,7 +48,7 @@ const GLYPHS: Record<string, { strokeWidth?: number; fill?: boolean; body: React
 /** The agent's brand tile: its glyph, or the first letter of its name when it has none. */
 export function AgentIcon({ agent, name, size = 26 }: { agent: string; name: string; size?: 18 | 26 }) {
   const brand = agentBrand(agent, name);
-  const glyph = GLYPHS[agent];
+  const glyph = Object.hasOwn(GLYPHS, agent) ? GLYPHS[agent] : undefined;
   const px = size === 26 ? 16 : 12;
   return (
     <span

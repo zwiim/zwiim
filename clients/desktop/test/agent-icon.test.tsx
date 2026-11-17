@@ -12,6 +12,10 @@ describe("agentBrand", () => {
     expect(agentBrand("gemini", "Gemini CLI").tile).toBe("#4E86F6");
   });
 
+  it("does not mistake inherited object keys for agents", () => {
+    expect(agentBrand("constructor", "X").short).toBe("X");
+  });
+
   it("falls back to the raised surface for unknown agents", () => {
     expect(agentBrand("aider", "Aider")).toEqual({
       short: "Aider",
