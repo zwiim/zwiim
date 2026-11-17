@@ -1572,6 +1572,8 @@ function Composer(props: {
             }}
           />
           <div className="flex items-center gap-1 px-2 pb-2">
+            {props.leading}
+            <div className="flex min-w-0 flex-1 items-center gap-0.5">{props.controls}</div>
             {attachments.enabled && (
               <Button
                 size="icon-sm"
@@ -1584,8 +1586,6 @@ function Composer(props: {
                 <Paperclip />
               </Button>
             )}
-            {props.leading}
-            <div className="flex min-w-0 flex-1 items-center justify-end gap-0.5">{props.controls}</div>
             <Dictation area={area} value={text} onChange={setText} disabled={props.disabled || sending} />
             {props.action}
             {(!props.action || props.queueing) && (
