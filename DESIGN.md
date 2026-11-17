@@ -823,7 +823,7 @@ glyph, a title, one line, one action.
   agent. `⌘⇧/` cycles effort and `⇧Tab` cycles mode. The New Worktree dialog
   has the chip but none of these three keys. Mid-turn the chip is disabled with
   the reason "Options change between turns", and a shortcut press shows the same
-  message in the composer's notice line. The phone still
+  message as an error line above the composer. The phone still
   says Unattended and asks first.
 - Desktop folds three or more consecutive tool calls and sub-agent cards into
   one row, as the phone does: a layers icon, `n tool calls`, `m sub-agents` or
