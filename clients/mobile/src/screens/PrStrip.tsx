@@ -1,7 +1,7 @@
-// The PR strip (DESIGN.md, Screen 5): under the session strip, the worktree
-// branch's pull request as the Host follows it on GitHub. One line: `#12` and
-// its status; it opens the PR sheet (title, base ← head, the check counts, each
-// check, Merge). Merge turns the sheet into its confirm, and the Host merges
+// The PR strip (DESIGN.md, Screen 5): under the header, the worktree branch's
+// pull request as the Host follows it on GitHub. One line: `PR #12 · branch`,
+// its status as a pill, and Open; it opens the PR sheet (title, base ← head,
+// the check counts, each check, Merge). Merge turns the sheet into its confirm, and the Host merges
 // at the head shown there or refuses. While GitHub waits on checks or review,
 // Auto-merge (also confirmed) leaves the merge to GitHub, phone and Host asleep
 // or not; Cancel auto-merge stops it. Once merged, the user picks: Continue
@@ -46,7 +46,7 @@ import { archiveBusyText, removalError, removeWorktree } from "../host/removal";
 import { currentHost } from "../services";
 import { Button, Sheet, T } from "../ui/components";
 import { Archive, ChevronRight, GitBranchPlus, GitMerge, GitPullRequest, Icon, X } from "../ui/icons";
-import { space, useTheme, type Palette } from "../ui/tokens";
+import { radius, space, useTheme, type Palette } from "../ui/tokens";
 
 export const toneColor = (tone: PrTone, theme: Palette) =>
   ({ done: theme.done, err: theme.err, work: theme.mut, mut: theme.mut })[tone];
@@ -168,11 +168,17 @@ export function PrStrip({
         style={({ pressed }) => [styles.strip, { borderBottomColor: theme.line }, pressed && { backgroundColor: theme.surface }]}
         testID="pr-strip"
       >
-        <Icon icon={pr.state === "merged" ? GitMerge : GitPullRequest} color={color} size={16} />
-        <T variant="mono" color={theme.fg}>{`#${pr.number}`}</T>
-        <T variant="callout" color={color} testID="pr-strip-status">
-          {look.status}
+        <Icon icon={pr.state === "merged" ? GitMerge : GitPullRequest} color={color} size={14} />
+        <T variant="monoSm" color={theme.mut} numberOfLines={1} ellipsizeMode="middle" style={styles.prName}>
+          <T variant="monoSm" color={theme.fg}>{`PR #${pr.number}`}</T>
+          {` · ${pr.head}`}
         </T>
+        {/* A tinted pill in the status's tone (#rrggbb + 12% alpha). */}
+        <View style={[styles.pill, { backgroundColor: `${color}1F` }]}>
+          <T variant="monoSm" color={color} numberOfLines={1} testID="pr-strip-status">
+            {look.status}
+          </T>
+        </View>
         {/* The counts live in the sheet; a conflict stays here since it needs the user. */}
         {conflict ? (
           <T variant="monoSm" color={theme.mut} numberOfLines={1} style={styles.flex} testID="pr-strip-conflicts">
@@ -181,7 +187,9 @@ export function PrStrip({
         ) : (
           <View style={styles.flex} />
         )}
-        <Icon icon={ChevronRight} color={theme.faint} size={16} />
+        <T variant="monoSm" color={theme.accent}>
+          Open ↗
+        </T>
       </Pressable>
       <PrSheet
         visible={sheet}
@@ -635,14 +643,16 @@ function CheckRow({ check }: { check: PrCheckItem }) {
 
 const styles = StyleSheet.create({
   strip: {
-    minHeight: 40,
+    minHeight: 34,
     flexDirection: "row",
     alignItems: "center",
     gap: space.sm,
     paddingHorizontal: space.lg,
-    paddingVertical: space.xs,
+    paddingVertical: space.xxs,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
+  prName: { flexShrink: 1 },
+  pill: { height: 20, borderRadius: radius.full, paddingHorizontal: space.sm, justifyContent: "center" },
   flex: { flex: 1 },
   statusRow: { flexDirection: "row", alignItems: "center", gap: space.sm },
   checks: { maxHeight: 240 },
