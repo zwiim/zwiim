@@ -36,6 +36,7 @@ export function ModelPicker({
   agent,
   options,
   started,
+  name,
   disabled,
   disabledReason,
   onChange,
@@ -44,6 +45,8 @@ export function ModelPicker({
 }: {
   agents: AgentSummary[];
   agent: string;
+  /** The agent's name when `agents` does not list it (an experimental one). */
+  name?: string;
   options: SessionOptions;
   started: boolean;
   disabled: boolean;
@@ -83,7 +86,7 @@ export function ModelPicker({
         ...agents,
       ];
   const browsed = browsable.find((a) => a.agent === view) ?? browsable.find((a) => a.agent === agent)!;
-  const agentName = own?.name ?? agent;
+  const agentName = own?.name ?? name ?? agent;
   const canSwitch = !started && !!onAgent;
   const sections = buildSections(browsable, browsed, query, expanded.includes(browsed.agent), agent, canSwitch, id);
   const entries = [...(sections.quick ?? []), ...sections.models];
@@ -196,6 +199,9 @@ export function ModelPicker({
     const request: OptionsRequest = {};
     if (e.model !== model?.current) request.model = e.model;
     if (e.send && (request.model || e.send !== effort?.current)) request.effort = e.send;
+    // A new session's earlier effort pick must not outlive the model it was for:
+    // send the effort the row shows (none, clearing the pick, when it has none).
+    if (!started && request.model) request.effort = e.effort ?? undefined;
     if (request.model || request.effort) onChange(request);
   }
 
@@ -255,6 +261,7 @@ export function ModelPicker({
       if (next) setAct(next.id);
       document.getElementById(next?.id ?? "")?.scrollIntoView?.({ block: "nearest" });
     } else if (e.key === "Enter") {
+      if (e.nativeEvent.isComposing) return;
       e.preventDefault();
       if (active) pick(active);
     }

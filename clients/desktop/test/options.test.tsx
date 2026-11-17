@@ -245,6 +245,26 @@ describe("new session options", () => {
     controller.dispose();
   });
 
+  it("starts a model with the effort its row shows, not an earlier effort pick", async () => {
+    const efforts = (current: string) => ({
+      current,
+      values: ["low", "medium", "high", "max"].map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1), description: null })),
+    });
+    const agent = {
+      ...claude(),
+      options: { ...opts(), effort: efforts("medium") },
+      effort_by_model: { sonnet: efforts("medium"), opus: efforts("high") },
+    };
+    const { t, controller } = await newSession([agent]);
+    fireEvent.click(pick("Effort", "Max")!);
+    expect(chip().getAttribute("aria-label")).toContain("Max effort");
+    fireEvent.click(model("Opus"));
+    expect(chip().getAttribute("aria-label")).toBe("Auto mode, Claude Code, Opus, High effort");
+    const params = await send(t);
+    expect(params.options).toEqual({ model: "opus", effort: "high", mode: "unattended" });
+    controller.dispose();
+  });
+
   it("starts an agent the host has not learned yet with the host's defaults", async () => {
     const { t, controller } = await newSession([claude(), codex(null)]);
     fireEvent.click(chip());
@@ -358,6 +378,11 @@ describe("open session options", () => {
     const box = composerBox();
     fireEvent.keyDown(box, { key: "?", code: "Slash", ctrlKey: true, shiftKey: true });
     expect(screen.getByTestId("options-error").textContent).toBe("Options change between turns");
+    // The message goes when the turn ends.
+    await frame({ type: "event", event: { session_id: "s1", seq: 2, type: "agent.turn_complete", payload: { stop_reason: "end_turn" } } });
+    await frame({ type: "event", event: { session_id: "s1", seq: 3, type: "agent.status", payload: { status: "connected" } } });
+    expect(screen.queryByTestId("options-error")).toBeNull();
+    await frame({ type: "snapshot", epoch: "e", event_seq: 4, snapshot: snapshot(opts(), "prompting") });
     fireEvent.keyDown(box, { key: "Tab", shiftKey: true });
     fireEvent.keyDown(box, { key: ".", ctrlKey: true });
     expect(screen.queryByRole("dialog", { name: "Agent options" })).toBeNull();

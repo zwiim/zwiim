@@ -133,13 +133,29 @@ describe("model picker", () => {
     expect(screen.getByRole("menuitemradio", { name: /^Plan/ })).toBeTruthy();
   });
 
+  it("names an agent the list does not offer by its own name", () => {
+    render(
+      <ModelPicker
+        agents={AGENTS.filter((a) => a.support === "supported")}
+        agent="open_code"
+        name="OpenCode"
+        options={claudeOptions()}
+        started
+        disabled={false}
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /^Ask mode, OpenCode,/ })).toBeTruthy();
+  });
+
   it("picks a model and sends only the model", () => {
     const onChange = vi.fn();
     render(picker({ onChange }));
     open();
     fireEvent.click(option(/^Opus/));
     expect(onChange).toHaveBeenCalledTimes(1);
-    expect(onChange).toHaveBeenCalledWith({ model: "opus" });
+    // A new session sends the effort the row shows too.
+    expect(onChange).toHaveBeenCalledWith({ model: "opus", effort: "high" });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(chip());
     expect(recentModels()[0]).toMatchObject({ agent: "claude_code", model: "opus" });
@@ -148,6 +164,14 @@ describe("model picker", () => {
     fireEvent.click(option(/^Sonnet/));
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("sends only the model on a started session", () => {
+    const onChange = vi.fn();
+    render(picker({ onChange, started: true }));
+    open();
+    fireEvent.click(option(/^Opus/));
+    expect(onChange).toHaveBeenCalledWith({ model: "opus" });
   });
 
   it("restores a model's remembered effort while the model offers it", () => {
@@ -161,7 +185,7 @@ describe("model picker", () => {
     rememberModelEffort({ agent: "claude_code", model: "opus" }, "turbo");
     open();
     fireEvent.click(option(/^Opus/));
-    expect(onChange).toHaveBeenLastCalledWith({ model: "opus" });
+    expect(onChange).toHaveBeenLastCalledWith({ model: "opus", effort: "high" });
   });
 
   it("shows an unlisted current model", () => {
