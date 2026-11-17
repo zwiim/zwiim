@@ -5,7 +5,7 @@
 // own between turns and the sheet shows what the Host reports back. Context
 // figures are the agent's own, and one it didn't report reads "not reported".
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Switch, TextInput, useWindowDimensions, View } from "react-native";
 import Svg, { Circle } from "react-native-svg";
 import { hasCapability, type SessionOptions, type SessionView } from "@zwiim/sdk";
@@ -27,7 +27,7 @@ import { agentNote, offeredAgents } from "../sessions/start";
 import { useCurrentHost, useHostState } from "../app/hooks";
 import { currentHost } from "../services";
 import { Button, Sheet, T } from "../ui/components";
-import { Bot, Check, ChevronDown, ChevronUp, Icon, ListChecks, Search, Shield, ShieldOff, X, Zap } from "../ui/icons";
+import { Bot, Check, ChevronDown, ChevronRight, ChevronUp, Icon, ListChecks, Search, Shield, ShieldOff, X, Zap } from "../ui/icons";
 import { SlideSwitch } from "../ui/slide-switch";
 import { PRESSED_OPACITY, radius, space, type, useTheme, type Palette } from "../ui/tokens";
 
@@ -465,6 +465,90 @@ export function SessionOptionsSheet({
           </View>
         ) : null}
       </ScrollView>
+    </Sheet>
+  );
+}
+
+/**
+ * The header's `⋯`: what this session is (title; agent · workspace · host),
+ * its context in use, opening the figures, and Stop agent while it runs.
+ * Stop agent opens its own confirm once this sheet has slid away.
+ */
+export function SessionMenuSheet({
+  visible,
+  onClose,
+  title,
+  detail,
+  view,
+  agent,
+  live,
+  connected,
+  onStopAgent,
+}: {
+  visible: boolean;
+  onClose(): void;
+  title: string;
+  /** Agent · workspace · host, in one mono line. */
+  detail: string;
+  view: SessionView | undefined;
+  agent: string | null;
+  live: boolean;
+  connected: boolean;
+  onStopAgent(): void;
+}) {
+  const theme = useTheme();
+  const [context, setContext] = useState(false);
+  const stopNext = useRef(false);
+  const close = () => {
+    setContext(false);
+    onClose();
+  };
+  return (
+    <Sheet
+      visible={visible}
+      onClose={close}
+      onClosed={() => {
+        if (!stopNext.current) return;
+        stopNext.current = false;
+        onStopAgent();
+      }}
+    >
+      <View style={styles.head}>
+        <T variant="title" numberOfLines={2} testID="menu-title">
+          {title}
+        </T>
+        <T variant="monoSm" color={theme.mut} numberOfLines={1} testID="menu-detail">
+          {detail}
+        </T>
+      </View>
+      {context ? (
+        <Context view={view} agent={agent} />
+      ) : (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Context: ${contextLine(view)}`}
+          onPress={() => setContext(true)}
+          style={({ pressed }) => [styles.contextLine, pressed && { opacity: 0.7 }]}
+          testID="menu-context-line"
+        >
+          <T variant="monoSm" color={theme.mut} style={[styles.tabular, styles.shrink]} numberOfLines={1}>
+            {contextLine(view)}
+          </T>
+          <Icon icon={ChevronRight} color={theme.faint} size={14} />
+        </Pressable>
+      )}
+      {live ? (
+        <Button
+          kind="destructive"
+          label="Stop agent"
+          disabled={!connected}
+          onPress={() => {
+            stopNext.current = true;
+            close();
+          }}
+          testID="session-stop-agent"
+        />
+      ) : null}
     </Sheet>
   );
 }

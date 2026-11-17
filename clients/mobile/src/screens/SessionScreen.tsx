@@ -1,14 +1,14 @@
-// A session (DESIGN.md, Screen 5), pushed over the Host shell: its header
-// (title; agent · workspace · the host's path), the transcript as the agent
-// writes it, the Now bar on what the agent is doing, and the composer. The
-// request it waits on is answered here as on the Sessions tab. Everything on
-// screen is the host's: a message shows once the host echoes it, and Stop
-// holds until the host ends the turn. Stop agent (in the header) ends the
-// agent and its background work, keeping the session. The session strip under
-// the header switches between the sessions of its worktree in place, and the
-// PR strip under it follows the worktree branch's pull request. Chips over
-// the composer (and the header's `⋯`) open Session options: the model, effort
-// and mode the Host reports, changed between turns, and the agent's context.
+// A session (DESIGN.md, Screen 5), pushed over the Host shell: one header row
+// (back; the session strip: its worktree and the sessions there, switched in
+// place; `⋯`), the PR strip under it following the worktree branch's pull
+// request, the transcript as the agent writes it, and the composer with what
+// the agent is doing now. The request it waits on is answered here as on the
+// Sessions tab. Everything on screen is the host's: a message shows once the
+// host echoes it, and Stop holds until the host ends the turn. The `⋯` menu
+// names the session, shows its context and holds Stop agent, which ends the
+// agent and its background work, keeping the session. The composer's chip
+// opens Agent & model: the agent, model, effort and mode the Host reports,
+// changed between turns.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { FlatList, Keyboard, KeyboardAvoidingView, Platform, Pressable, StyleSheet, View } from "react-native";
@@ -111,7 +111,7 @@ import {
 import { space, useTheme } from "../ui/tokens";
 import { useHostName } from "./HostFrame";
 import { RequestCard, RequestSheet } from "./requests";
-import { ComposerChips, SessionOptionsSheet } from "./SessionControls";
+import { ComposerChips, SessionMenuSheet, SessionOptionsSheet } from "./SessionControls";
 import { PrStrip } from "./PrStrip";
 import { SessionStrip } from "./SessionStrip";
 
@@ -141,6 +141,7 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
   const connected = connection?.status === "live";
   const [stopAgent, setStopAgent] = useState(false);
   const [optionsOpen, setOptionsOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const agent = agentName(state.agents, item?.agent);
   const back = () => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Host"));
   // An edited file opens on its own screen while its worktree is still there.
@@ -225,28 +226,24 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
         <Pressable accessibilityRole="button" accessibilityLabel="Back" onPress={back} style={styles.back} testID="session-back">
           <Icon icon={ChevronLeft} color={theme.fg} size={24} />
         </Pressable>
-        <View style={styles.headerText}>
-          <T variant="headline" numberOfLines={1} testID="session-title">
+        {worktree && item ? (
+          <SessionStrip
+            worktree={worktree}
+            session_id={session_id}
+            onOpen={open}
+            onNew={() => startIn(worktree.workspace_id)}
+            onWorktree={toWorktree}
+          />
+        ) : (
+          <T variant="headline" numberOfLines={1} style={styles.headerText} testID="session-title">
             {item?.title ?? (waiting ? "Starting…" : "Session")}
           </T>
-          <T variant="monoSm" color={theme.mut} numberOfLines={1} testID="session-subtitle">
-            {[agent, item?.workspace, `${name} ${text.pill}`].filter(Boolean).join(" · ")}
-          </T>
-        </View>
-        {item?.live ? (
-          <Button
-            kind="destructive"
-            label="Stop agent"
-            disabled={!connected}
-            onPress={() => setStopAgent(true)}
-            testID="session-stop-agent"
-          />
-        ) : null}
+        )}
         {item ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Session options"
-            onPress={() => setOptionsOpen(true)}
+            accessibilityLabel="Session menu"
+            onPress={() => setMenuOpen(true)}
             style={styles.more}
             testID="session-options"
           >
@@ -254,15 +251,6 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
           </Pressable>
         ) : null}
       </View>
-      {worktree && item ? (
-        <SessionStrip
-          worktree={worktree}
-          session_id={session_id}
-          onOpen={open}
-          onNew={() => startIn(worktree.workspace_id)}
-          onWorktree={toWorktree}
-        />
-      ) : null}
       {worktree && item ? (
         <PrStrip
           workspace_id={worktree.workspace_id}
@@ -281,6 +269,18 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
         session_id={session_id}
         hostName={name}
         onClose={() => setStopAgent(false)}
+      />
+      <SessionMenuSheet
+        key={`menu-${session_id}`}
+        visible={menuOpen && !!item}
+        onClose={() => setMenuOpen(false)}
+        title={item?.title ?? "Session"}
+        detail={[agent, item?.workspace, `${name} ${text.pill}`].filter(Boolean).join(" · ")}
+        view={view}
+        agent={agent}
+        live={!!item?.live}
+        connected={connected}
+        onStopAgent={() => setStopAgent(true)}
       />
       <SessionOptionsSheet
         key={`options-${session_id}`}
@@ -1280,7 +1280,7 @@ const styles = StyleSheet.create({
   page: { flex: 1 },
   flex: { flex: 1 },
   header: {
-    minHeight: 56,
+    minHeight: 52,
     flexDirection: "row",
     alignItems: "center",
     paddingRight: space.xs,
@@ -1288,7 +1288,7 @@ const styles = StyleSheet.create({
   },
   back: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   more: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
-  headerText: { flex: 1, gap: space.xxs },
+  headerText: { flex: 1 },
   dim: { opacity: 0.6 },
   list: { paddingHorizontal: space.lg },
   headerStack: { gap: space.sm, paddingBottom: space.md },
