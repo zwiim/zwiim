@@ -40,6 +40,7 @@ export {
   Search,
   Shield,
   ShieldOff,
+  Square,
   X,
   Zap,
 } from "lucide-react-native";

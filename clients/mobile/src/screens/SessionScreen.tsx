@@ -99,7 +99,6 @@ import {
   ResumePanel,
   RevertAction,
   RevertSheet,
-  StepMeter,
   StepSheet,
   SubagentRow,
   ThoughtRow,
@@ -212,6 +211,7 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
         agentName={agent ?? "Agent"}
         connected={connected}
         onOptions={() => setOptionsOpen(true)}
+        onMenu={() => setMenuOpen(true)}
         fileOf={fileOf}
         onOpenFile={openFile}
         resettable={canReset(workspace)}
@@ -399,6 +399,7 @@ function Live({
   agentName,
   connected,
   onOptions,
+  onMenu,
   fileOf,
   onOpenFile,
   resettable,
@@ -411,6 +412,7 @@ function Live({
   agentName: string;
   connected: boolean;
   onOptions(): void;
+  onMenu(): void;
   fileOf(path: string): string | null;
   onOpenFile(path: string): void;
   resettable: boolean;
@@ -743,29 +745,26 @@ function Live({
 
   const nowBar = (tick: number) => {
     if (!now) return null;
-    const stopButton = running ? (
-      <NowAction kind="inverse" label="Stop" onPress={() => void stop()} loading={stopping} disabled={!connected} testID="now-stop" />
-    ) : null;
     const time = started ? clock(tick - started) : null;
     if (ui.kind === "working" && meterTakesNowBar(ui, planNowState(now))) {
       const step = ui.current === null ? undefined : ui.progress.steps[ui.current];
+      const doing = nowActivity(now) ?? step?.title ?? "Working";
       return (
-        <StepMeter
-          title={step?.title ?? "Working"}
-          activity={nowActivity(now)}
-          count={`${ui.progress.completed} of ${ui.progress.total}`}
+        <NowBar
+          tone="plain"
+          dot="work"
+          pips={pipStates(ui)}
+          text={`${doing} · Plan ${ui.progress.completed}/${ui.progress.total}`}
           time={time}
-          states={pipStates(ui)}
-          action={stopButton}
-          onOpen={() => setStepsOpen(true)}
+          onPress={() => setStepsOpen(true)}
         />
       );
     }
     switch (now.type) {
       case "working":
-        return <NowBar tone="plain" dot="work" text={now.text} time={time} action={stopButton} />;
+        return <NowBar tone="plain" dot="work" text={now.text} time={time} />;
       case "thinking":
-        return <NowBar tone="plain" dot="work" text="Thinking" time={time} action={stopButton} />;
+        return <NowBar tone="plain" dot="work" text="Thinking" time={time} />;
       case "needs_you":
         return (
           <NowBar
@@ -846,7 +845,6 @@ function Live({
         style={{ paddingBottom: keyboard ? space.sm : Math.max(insets.bottom, space.sm) }}
         pointerEvents={connected ? "auto" : "none"}
       >
-        <Ticking on={ticking}>{nowBar}</Ticking>
         {!now && view ? (
           <PlanSlot
             view={view}
@@ -885,7 +883,7 @@ function Live({
           placeholder={agentAway ? "Send to restart the agent" : commands.length ? "Reply, steer, or type /" : "Reply or steer…"}
           disabled={!connected}
           sending={sending}
-          controls={<ComposerChips view={view} locked={running} onOpen={onOptions} />}
+          controls={<ComposerChips view={view} locked={running} onOpen={onOptions} onContext={onMenu} />}
           note={lockedNote(view?.options ?? null, running)}
           border={view?.options?.mode?.current === "unattended" ? theme.need : undefined}
           files={canAttach ? attachments.files : []}
@@ -896,6 +894,9 @@ function Live({
           onOpenTranscript={transcript && workspace_id ? () => openSent(transcript) : undefined}
           onRemoveTranscript={() => void removeTranscript()}
           commands={commands}
+          status={<Ticking on={ticking}>{nowBar}</Ticking>}
+          onStop={running && connected ? () => void stop() : undefined}
+          stopping={stopping}
         />
       </View>
       <AttachSheet visible={attaching} onClose={() => setAttaching(false)} onPick={pick} onClosed={openPicker} />

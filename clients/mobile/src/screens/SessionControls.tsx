@@ -1,5 +1,6 @@
 // A session's controls (DESIGN.md, Screen 5): one chip inside the composer for
-// the mode, model and effort, a ring for the context in use, and the Agent &
+// the mode, model and effort (⚡ when fast), a ring for the context in use
+// (opening the session menu with its figures), and the Agent &
 // model sheet the chip opens: the agent, the models with a search, and the
 // Effort and Mode switches. Every value is the Host's; a change is sent on its
 // own between turns and the sheet shows what the Host reports back. Context
@@ -38,33 +39,38 @@ export function ComposerChips({
   view,
   locked,
   onOpen,
+  onContext,
 }: {
   view: SessionView | undefined;
   /** A turn runs: the options wait for it, so the chip dims. */
   locked: boolean;
+  /** The chip: Agent & model. */
   onOpen(): void;
+  /** The ring: the session menu, with the context figures. */
+  onContext(): void;
 }) {
   const theme = useTheme();
   const chips = optionChips(view?.options ?? null);
-  const mode = chips.mode;
-  const unattended = mode?.mode === "unattended";
+  const unattended = chips.mode?.mode === "unattended";
   const ink = unattended ? theme.needInk : theme.mut;
   const context = contextChip(view);
+  const fast = view?.options?.fast === true;
   return (
     <>
       {chips.text ? (
         <Chip
           onPress={onOpen}
-          label={`Session options: ${chips.text}`}
+          label={`Agent and model: ${chips.text}${fast ? ", fast" : ""}`}
           fill={unattended ? theme.need : theme.raised}
           shrink
           dim={locked}
           testID="chip-options"
         >
-          {mode ? <Icon icon={MODE_ICON[mode.mode]} color={ink} size={14} /> : null}
+          <Icon icon={Bot} color={ink} size={14} />
           <T variant="monoSm" color={ink} numberOfLines={1} style={unattended ? [styles.shrink, styles.strong] : styles.shrink}>
             {chips.text}
           </T>
+          {fast ? <Icon icon={Zap} color={unattended ? theme.needInk : theme.accent} size={12} /> : null}
           <Icon icon={ChevronDown} color={unattended ? theme.needInk : theme.faint} size={12} />
         </Chip>
       ) : null}
@@ -72,15 +78,12 @@ export function ComposerChips({
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`Context: ${context === "—" ? "not reported" : `${context} in use`}`}
-        onPress={onOpen}
-        hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+        onPress={onContext}
+        hitSlop={8}
         style={({ pressed }) => [styles.ring, pressed && { opacity: 0.7 }]}
         testID="chip-context"
       >
         <Ring fraction={contextFigures(view).fraction} theme={theme} />
-        <T variant="monoSm" color={theme.mut} style={styles.tabular}>
-          {context}
-        </T>
       </Pressable>
     </>
   );
@@ -646,8 +649,8 @@ const styles = StyleSheet.create({
   strong: { fontWeight: "500" },
   tabular: { fontVariant: ["tabular-nums"] },
   chip: {
-    height: 28,
-    borderRadius: radius.sm,
+    height: 30,
+    borderRadius: 15,
     paddingHorizontal: space.sm,
     flexDirection: "row",
     alignItems: "center",
