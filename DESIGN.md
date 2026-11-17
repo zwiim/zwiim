@@ -36,7 +36,7 @@ from the list).
   one-handed. Calm when things work; impossible to miss when the agent needs you.
 - **Never:** gradients, glows as decoration, illustrated empty states, chat-bubble
   avatars, colored icon circles, centered-everything layouts. The one exception
-  is the agent icons in the model picker (see the Decisions Log, 2026-11-17).
+  is the agent icons and agent dots in the model picker (see the Decisions Log, 2026-11-17).
 
 ## Typography — two voices
 
@@ -817,12 +817,13 @@ glyph, a title, one line, one action.
   for that model. Mode reads Ask / Plan / **Auto** (Auto is the `unattended`
   mode on the wire). A new session starts in Auto wherever the agent offers
   it; picking Auto takes one click, with no confirmation, and the composer
-  keeps its Auto note with **Ask first again**. Keys: `⌘.` opens and closes
-  the panel; in it `↑↓` move, `→` or `↵` open a side list, `←` or Escape step
+  keeps its Auto note with **Ask first again**. Keys: In the session
+  composer `⌘.` opens and closes the panel; in it `↑↓` move, `→` or `↵` open a side list, `←` or Escape step
   back, `⌃1`-`⌃9` pick a quick row, `⌘D` stars a model, `⌘[` and `⌘]` switch
-  agent. In the session composer `⌘⇧/` cycles effort and `⇧Tab` cycles mode;
-  the New Worktree dialog has the chip but not these two keys. Mid-turn the chip
-  is disabled and a key says "Options change between turns". The phone still
+  agent. `⌘⇧/` cycles effort and `⇧Tab` cycles mode. The New Worktree dialog
+  has the chip but none of these three keys. Mid-turn the chip is disabled with
+  the reason "Options change between turns", and a shortcut press shows the same
+  message in the composer's notice line. The phone still
   says Unattended and asks first.
 - Desktop folds three or more consecutive tool calls and sub-agent cards into
   one row, as the phone does: a layers icon, `n tool calls`, `m sub-agents` or
@@ -1078,5 +1079,5 @@ glyph, a title, one line, one action.
 | 2026-11-06 | Every fork carries a visible transcript | User call: the chat should reach the fork the same way for every agent, and the user should see and control it. Agent-native fork is gone from `session.fork`; chat rewind keeps it. The transcript is a chip in the composer, owned by the Host, with an X and a preview. **Fork here** became **Fork to new tab** to say where the fork lands. A worktree fork says what it made |
 | 2026-11-06 | A fork's transcript chip is bordered, with its icon in a cell of its own | Asked for by the user, to read as one attached file. An exception to surfaces separating by tone: other chips keep `bg-muted`. Full name, no size; the X always shows, so removing it is a plain click |
 | 2026-11-06 | Desktop's fork icon opens on a click only | User call: a menu that opens as the mouse passes gets in the way. A click opens it, and it stays until a second click, Escape, a click elsewhere or a pick. Replaces the hover in the 2026-11-05 row. |
-| 2026-11-17 | Model picks the agent; recent and favorites; effort remembered per model | Found in design-shotgun and a prototype (`docs/design/composer-prototype.html`). One panel lists every agent's models, so one pick sets agent and model, and each model keeps the effort last used with it. |
-| 2026-11-17 | Agent icons are the one place colored tiles are allowed | User call. Agents must be told apart at a glance in the chip and the strip. The glyphs are Zwiim's own, not vendor logos. |
+| 2026-11-17 | Model picks the agent; recent & favorites; effort remembered per model (design-shotgun, prototype) | Found in design-shotgun and a prototype (`docs/design/composer-prototype.html`). One panel lists every agent's models, so one pick sets agent and model, and each model keeps the effort last used with it. |
+| 2026-11-17 | Agent icons are the one place colored tiles are allowed (user call) | User call. Agents must be told apart at a glance in the chip and the strip. The glyphs are Zwiim's own, not vendor logos. |
