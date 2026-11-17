@@ -12,7 +12,7 @@ have their own versions and are listed under Compatibility.
 - None.
 
 ### Changed
-- None.
+- The composer's model picker now lists every agent's models: picking a model picks its agent. Favorite and recent models sit at the top, each model remembers its effort, and effort and mode open as side lists.
 
 ### Fixed
 - None.
