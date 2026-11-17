@@ -357,6 +357,11 @@ export class CurrentHost {
     return this.#opened().setSessionOptions(session_id, request);
   }
 
+  /** Move a fork to another agent before its first message (`session.set_agent`). Never retried. */
+  async setSessionAgent(session_id: string, agent: AgentType, request: OptionsRequest): Promise<SessionOptions> {
+    return this.#opened().setSessionAgent(session_id, agent, request);
+  }
+
   /** A read of the host (its files, its Git state), over the open connection. */
   async request<O extends OpName>(op: O, params: OpParams<O>, opts?: { timeoutMs?: number }): Promise<OpResult<O>> {
     return this.#opened().request(op, params, opts);

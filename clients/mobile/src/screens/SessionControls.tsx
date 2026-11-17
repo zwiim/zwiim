@@ -1,38 +1,34 @@
 // A session's controls (DESIGN.md, Screen 5): one chip inside the composer for
-// the mode, model and effort, a ring for the context in use, and the Session
-// options sheet they open (also from the header's `⋯`): three summary rows, each
-// opening its own page to pick from, and a context line opening the figures.
-// Every value is the Host's; a change is sent on its own between turns and the
-// sheet shows what the Host reports back. Context figures are the agent's own,
-// and one it didn't report reads "not reported".
+// the mode, model and effort, a ring for the context in use, and the Agent &
+// model sheet the chip opens: the agent, the models with a search, and the
+// Effort and Mode switches. Every value is the Host's; a change is sent on its
+// own between turns and the sheet shows what the Host reports back. Context
+// figures are the agent's own, and one it didn't report reads "not reported".
 
 import { useEffect, useState, type ReactNode } from "react";
-import { Pressable, ScrollView, StyleSheet, TextInput, useWindowDimensions, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Switch, TextInput, useWindowDimensions, View } from "react-native";
 import Svg, { Circle } from "react-native-svg";
-import type { SessionMode, SessionOptions, SessionView } from "@zwiim/sdk";
+import { hasCapability, type SessionOptions, type SessionView } from "@zwiim/sdk";
 import {
   changeRequest,
   contextChip,
   contextFigures,
   contextLine,
   contextSummary,
-  filterChoices,
   needsConfirm,
   optionChips,
-  optionRows,
   optionsEditable,
   optionsError,
-  SEARCH_FROM,
-  settleOptions,
   type ContextRow,
   type OptionChange,
-  type OptionsPage,
 } from "../sessions/controls";
-import { MODE_LABELS } from "../sessions/start";
+import { agentLock, heatLook, modeSegments, showAllLabel, visibleModels } from "../sessions/picker";
+import { agentNote, offeredAgents } from "../sessions/start";
+import { useCurrentHost, useHostState } from "../app/hooks";
 import { currentHost } from "../services";
-import { Field, RadioGroup } from "../ui/choices";
 import { Button, Sheet, T } from "../ui/components";
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Icon, ListChecks, Search, Shield, ShieldOff } from "../ui/icons";
+import { Bot, Check, ChevronDown, ChevronUp, Icon, ListChecks, Search, Shield, ShieldOff, X, Zap } from "../ui/icons";
+import { SlideSwitch } from "../ui/slide-switch";
 import { PRESSED_OPACITY, radius, space, type, useTheme, type Palette } from "../ui/tokens";
 
 const MODE_ICON = { normal: Shield, plan: ListChecks, unattended: ShieldOff } as const;
@@ -154,15 +150,17 @@ function Chip({
 }
 
 /**
- * Session options: the agent, a summary row for each of mode / model / effort it
- * offers, and the context line. A row opens its page to pick from; a pick goes
- * back to the summary. Changes go one at a time, between turns.
+ * Agent & model: one page with the agent row, the model list with its
+ * search, and the Effort and Mode switches (and Fast where the model has
+ * it). Each pick goes to the Host at once and the sheet stays open; on a
+ * refusal the control returns to what the Host holds and the error says why.
  */
 export function SessionOptionsSheet({
   visible,
   onClose,
   session_id,
   agent,
+  agentType,
   view,
   connected,
   running,
@@ -173,6 +171,8 @@ export function SessionOptionsSheet({
   session_id: string;
   /** The agent's display name. */
   agent: string | null;
+  /** The session's agent, to mark it in the agent row. */
+  agentType?: string | null;
   view: SessionView | undefined;
   connected: boolean;
   running: boolean;
@@ -180,55 +180,47 @@ export function SessionOptionsSheet({
 }) {
   const theme = useTheme();
   const { height } = useWindowDimensions();
+  const state = useHostState();
+  const compat = useCurrentHost().view?.compat ?? null;
   const options = view?.options ?? null;
   const [confirmUnattended, setConfirmUnattended] = useState(false);
   const [changing, setChanging] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [page, setPage] = useState<OptionsPage>("root");
   const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState(false);
   const editable = optionsEditable({ options, connected, running, changing, hostName });
-  const rows = optionRows(options, editable.ok);
-  // A page whose option locks (a turn starts, the connection drops) falls back to
-  // the summary, and stays there, search cleared, once the option unlocks.
-  const settled = settleOptions({ page, query }, rows);
-  const shown = settled.page;
-  useEffect(() => {
-    if (settled.page === page) return;
-    setPage(settled.page);
-    setQuery(settled.query);
-  }, [settled.page, settled.query, page]);
-
-  const open = (next: OptionsPage) => {
-    setQuery("");
-    setPage(next);
-  };
 
   const close = () => {
     setConfirmUnattended(false);
     setError(null);
-    open("root");
+    setQuery("");
     onClose();
   };
 
-  const change = async (c: OptionChange) => {
+  const run = async (send: () => Promise<unknown>) => {
     setConfirmUnattended(false);
-    open("root");
     setChanging(true);
     setError(null);
     try {
-      await currentHost.setSessionOptions(session_id, changeRequest(c));
+      await send();
     } catch (e) {
       setError(optionsError(e, hostName));
     } finally {
       setChanging(false);
     }
   };
+  const change = (c: OptionChange) => run(() => currentHost.setSessionOptions(session_id, changeRequest(c)));
 
-  const pick = (current: string, c: OptionChange, value: string) => {
-    if (value === current) return open("root");
+  const pick = (current: string | boolean, c: OptionChange, value: string | boolean) => {
+    if (value === current || !editable.ok) return;
     if (needsConfirm(c)) return setConfirmUnattended(true);
     void change(c);
   };
+
+  // A fork can still change agent until its first message.
+  const sent = !(view?.history?.length === 0 && !view.settled && !view.live.userMessage && !view.live.message && !running);
+  const lock = agentLock({ canSetAgent: hasCapability(compat, "session.set_agent"), forkedFrom: !!view?.forkedFrom, sent });
+  const agents = offeredAgents(state.agents) ?? [];
 
   const notes = (
     <>
@@ -245,10 +237,9 @@ export function SessionOptionsSheet({
     </>
   );
 
-  let body;
   if (confirmUnattended) {
-    body = (
-      <>
+    return (
+      <Sheet visible={visible} onClose={close}>
         <T variant="title">Turn on Auto?</T>
         <T color={theme.mut}>The agent will run commands and edit files in this workspace without asking you first.</T>
         <View style={styles.confirm}>
@@ -260,199 +251,226 @@ export function SessionOptionsSheet({
             testID="options-unattended-confirm"
           />
         </View>
-      </>
-    );
-  } else if (shown === "root") {
-    body = (
-      <ScrollView contentContainerStyle={styles.content} testID="options-root">
-        <View style={styles.head}>
-          <T variant="title">Session options</T>
-          {agent ? (
-            <T variant="monoSm" color={theme.mut} testID="options-agent">
-              {agent}
-            </T>
-          ) : null}
-        </View>
-        {notes}
-        {rows.length > 0 ? (
-          <View style={[styles.group, { backgroundColor: theme.surface }]}>
-            {rows.map((r, i) => (
-              <Field
-                key={r.key}
-                first={i === 0}
-                label={r.label}
-                value={r.value}
-                color={r.key === "mode" && options?.mode?.current === "unattended" ? theme.need : undefined}
-                onPress={r.open ? () => open(r.key) : undefined}
-                testID={`options-row-${r.key}`}
-              />
-            ))}
-          </View>
-        ) : null}
-        {options?.mode?.current === "unattended" ? (
-          <View style={styles.note} testID="options-unattended">
-            <T variant="callout" color={theme.need}>
-              Auto: the agent runs commands and edits files without asking.
-            </T>
-            {options.mode.available.includes("normal") ? (
-              <Button
-                kind="secondary"
-                label="Ask first again"
-                disabled={!editable.ok}
-                onPress={() => void change({ mode: "normal" })}
-                testID="options-ask-again"
-              />
-            ) : null}
-          </View>
-        ) : null}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Context: ${contextLine(view)}`}
-          onPress={() => open("context")}
-          style={({ pressed }) => [styles.contextLine, pressed && { opacity: 0.7 }]}
-          testID="options-context-line"
-        >
-          <T variant="monoSm" color={theme.mut} style={[styles.tabular, styles.shrink]} numberOfLines={1}>
-            {contextLine(view)}
-          </T>
-          <Icon icon={ChevronRight} color={theme.faint} size={14} />
-        </Pressable>
-      </ScrollView>
-    );
-  } else {
-    const title = shown === "context" ? "Context" : rows.find((r) => r.key === shown)?.label ?? "";
-    body = (
-      <>
-        <View style={styles.pageHead}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Back"
-            onPress={() => open("root")}
-            hitSlop={8}
-            style={({ pressed }) => [styles.back, pressed && { opacity: 0.7 }]}
-            testID="options-back"
-          >
-            <Icon icon={ChevronLeft} color={theme.accent} size={22} />
-          </Pressable>
-          <View style={styles.pageTitle}>
-            <T variant="headline" numberOfLines={1}>
-              {title}
-            </T>
-            {agent ? (
-              <T variant="monoSm" color={theme.mut} numberOfLines={1}>
-                {agent}
-              </T>
-            ) : null}
-          </View>
-          <View style={styles.back} />
-        </View>
-        {notes}
-        <ScrollView
-          style={{ maxHeight: Math.round(height * 0.62) }}
-          contentContainerStyle={styles.content}
-          keyboardShouldPersistTaps="handled"
-        >
-          {shown === "context" ? (
-            <Context view={view} agent={agent} />
-          ) : (
-            <OptionPage options={options} page={shown} query={query} onQuery={setQuery} onPick={pick} theme={theme} />
-          )}
-        </ScrollView>
-      </>
+      </Sheet>
     );
   }
 
+  const model = options?.model ?? null;
+  const effort = options?.effort ?? null;
+  const modes = modeSegments(options?.mode ?? null);
+  const fast = hasCapability(compat, "session.fast") ? options?.fast ?? null : null;
+  const list = model ? visibleModels(model.values, { expanded, query }) : null;
+  const more = model && !query.trim() ? showAllLabel(model.values.length, expanded) : null;
+  const effortAt = effort ? Math.max(0, effort.values.findIndex((v) => v.value === effort.current)) : 0;
+  const modeAt = Math.max(0, modes.findIndex((m) => m.mode === options?.mode?.current));
+  const locked = !editable.ok;
+
   return (
     <Sheet visible={visible} onClose={close}>
-      {body}
+      <ScrollView
+        style={{ maxHeight: Math.round(height * 0.8) }}
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        testID="options-root"
+      >
+        <T variant="title">Agent &amp; model</T>
+        {notes}
+        {lock === "switchable" && agents.length > 1 ? (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            snapToInterval={AGENT_CHIP + space.sm}
+            decelerationRate="fast"
+            contentContainerStyle={styles.agents}
+            testID="options-agents"
+          >
+            {agents.map((a) => {
+              const note = agentNote(a);
+              const current = a.agent === agentType;
+              const can = a.available && !locked && !current;
+              return (
+                <Pressable
+                  key={a.agent}
+                  accessibilityRole="button"
+                  accessibilityLabel={note ? `${a.name}, ${note}` : a.name}
+                  accessibilityState={{ selected: current, disabled: !can }}
+                  disabled={!can}
+                  onPress={() => void run(() => currentHost.setSessionAgent(session_id, a.agent, {}))}
+                  style={({ pressed }) => [
+                    styles.agentChip,
+                    {
+                      backgroundColor: theme.surface,
+                      borderColor: current ? theme.accent : "transparent",
+                      opacity: !a.available ? 0.45 : pressed ? PRESSED_OPACITY : 1,
+                    },
+                  ]}
+                  testID={`options-agent-${a.agent}`}
+                >
+                  <Icon icon={Bot} color={current ? theme.accent : theme.mut} size={16} />
+                  <View style={styles.shrink}>
+                    <T variant="callout" numberOfLines={1}>
+                      {a.name}
+                    </T>
+                    {note ? (
+                      <T variant="monoSm" color={theme.faint} numberOfLines={1}>
+                        {note}
+                      </T>
+                    ) : null}
+                  </View>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        ) : agent ? (
+          <View style={[styles.agentLocked, { backgroundColor: theme.surface }]} testID="options-agent">
+            <Icon icon={Bot} color={theme.mut} size={16} />
+            <T variant="callout" numberOfLines={1} style={styles.shrink}>
+              {agent}
+            </T>
+            <T variant="monoSm" color={theme.faint} numberOfLines={1}>
+              set at first message
+            </T>
+          </View>
+        ) : null}
+
+        {model && list ? (
+          <View style={styles.section}>
+            <View style={styles.searchRow}>
+              <View style={[styles.search, styles.flex, { backgroundColor: theme.surface }]}>
+                <Icon icon={Search} color={theme.faint} size={16} />
+                <TextInput
+                  value={query}
+                  onChangeText={setQuery}
+                  placeholder={agent ? `Search ${agent} models` : "Search models"}
+                  placeholderTextColor={theme.faint}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  spellCheck={false}
+                  returnKeyType="search"
+                  style={[type.body, styles.searchInput, { color: theme.fg }]}
+                  accessibilityLabel="Search models"
+                  testID="options-model-search"
+                />
+                {query ? (
+                  <Pressable accessibilityRole="button" accessibilityLabel="Clear search" onPress={() => setQuery("")} hitSlop={10} testID="options-model-clear">
+                    <Icon icon={X} color={theme.faint} size={16} />
+                  </Pressable>
+                ) : null}
+              </View>
+              {more ? (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => setExpanded((e) => !e)}
+                  hitSlop={8}
+                  style={styles.more}
+                  testID="options-model-more"
+                >
+                  <T variant="callout" color={theme.accent}>
+                    {more}
+                  </T>
+                </Pressable>
+              ) : null}
+            </View>
+            {list.shown.length > 0 ? (
+              list.shown.map((v) => {
+                const current = v.value === model.current;
+                return (
+                  <Pressable
+                    key={v.value}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: current, disabled: locked }}
+                    disabled={locked}
+                    onPress={() => pick(model.current, { model: v.value }, v.value)}
+                    style={({ pressed }) => [styles.modelRow, { opacity: locked ? 0.5 : pressed ? PRESSED_OPACITY : 1 }]}
+                    testID={`options-model-${v.value}`}
+                  >
+                    <T variant="body" numberOfLines={1} style={styles.modelName}>
+                      {v.label}
+                    </T>
+                    <T variant="callout" color={theme.faint} numberOfLines={1} style={[styles.shrink, styles.flex]}>
+                      {v.description ?? ""}
+                    </T>
+                    {current ? <Icon icon={Check} color={theme.accent} size={16} /> : null}
+                  </Pressable>
+                );
+              })
+            ) : (
+              <T variant="callout" color={theme.mut} testID="options-model-empty">
+                No models match "{query.trim()}"
+              </T>
+            )}
+          </View>
+        ) : null}
+
+        {effort && effort.values.length > 1 ? (
+          <View style={styles.section}>
+            <View style={styles.summary}>
+              <T variant="caption" color={theme.mut}>
+                Effort
+              </T>
+              <T variant="callout" color={heatLook(effortAt, effort.values.length).text} numberOfLines={1} style={styles.shrink}>
+                {effort.values[effortAt]?.label ?? ""}
+              </T>
+            </View>
+            <SlideSwitch
+              segments={effort.values.map((v) => ({ key: v.value, label: v.label }))}
+              value={effortAt}
+              onChange={(i) => pick(effort.current, { effort: effort.values[i]!.value }, effort.values[i]!.value)}
+              tone="heat"
+              disabled={locked}
+              testID="options-effort"
+            />
+          </View>
+        ) : null}
+
+        {modes.length > 0 ? (
+          <View style={styles.section}>
+            <T variant="caption" color={theme.mut}>
+              Mode
+            </T>
+            <SlideSwitch
+              segments={modes.map((m) => ({
+                key: m.mode,
+                label: m.label,
+                enabled: m.enabled,
+                icon: <Icon icon={MODE_ICON[m.mode]} color={m.mode === options?.mode?.current ? (m.mode === "unattended" ? theme.needInk : theme.fg) : theme.faint} size={14} />,
+              }))}
+              value={modeAt}
+              onChange={(i) => pick(options!.mode!.current, { mode: modes[i]!.mode }, modes[i]!.mode)}
+              tone="plain"
+              accentAt={2}
+              disabled={locked}
+              testID="options-mode"
+            />
+            <T variant="callout" color={options?.mode?.current === "unattended" ? theme.need : theme.mut} testID="options-mode-hint">
+              {modes[modeAt]?.hint}
+            </T>
+          </View>
+        ) : null}
+
+        {fast !== null ? (
+          <View style={[styles.fastRow, { backgroundColor: theme.surface }]}>
+            <Icon icon={Zap} color={fast ? theme.accent : theme.mut} size={16} />
+            <T variant="body" style={styles.flex}>
+              Fast
+            </T>
+            <Switch
+              value={fast}
+              disabled={locked}
+              onValueChange={(on) => pick(fast, { fast: on }, on)}
+              trackColor={{ true: theme.accent, false: theme.raised }}
+              accessibilityLabel="Fast"
+              testID="options-fast"
+            />
+          </View>
+        ) : null}
+      </ScrollView>
     </Sheet>
   );
 }
 
-/** One option's values to pick from; the model list gets a search once it is long. */
-function OptionPage({
-  options,
-  page,
-  query,
-  onQuery,
-  onPick,
-  theme,
-}: {
-  options: SessionOptions | null;
-  page: "mode" | "model" | "effort";
-  query: string;
-  onQuery(q: string): void;
-  onPick(current: string, c: OptionChange, value: string): void;
-  theme: Palette;
-}) {
-  if (page === "mode") {
-    const mode = options?.mode;
-    if (!mode) return null;
-    return (
-      <RadioGroup
-        items={mode.available.map((m) => ({
-          value: m,
-          label: MODE_LABELS[m].label,
-          detail: MODE_LABELS[m].hint,
-          icon: MODE_ICON[m],
-          tint: m === "unattended" ? theme.need : undefined,
-        }))}
-        current={mode.current}
-        onChoose={(m) => onPick(mode.current, { mode: m as SessionMode }, m)}
-        testID="options-mode"
-      />
-    );
-  }
-  if (page === "effort") {
-    const effort = options?.effort;
-    if (!effort) return null;
-    return (
-      <RadioGroup
-        items={effort.values.map((v) => ({ value: v.value, label: v.label, detail: v.description }))}
-        current={effort.current}
-        onChoose={(v) => onPick(effort.current, { effort: v }, v)}
-        testID="options-effort"
-      />
-    );
-  }
-  const model = options?.model;
-  if (!model) return null;
-  const found = filterChoices(model.values, query);
-  return (
-    <>
-      {model.values.length >= SEARCH_FROM ? (
-        <View style={[styles.search, { backgroundColor: theme.surface }]}>
-          <Icon icon={Search} color={theme.faint} size={16} />
-          <TextInput
-            value={query}
-            onChangeText={onQuery}
-            placeholder="Search models"
-            placeholderTextColor={theme.faint}
-            autoCapitalize="none"
-            autoCorrect={false}
-            spellCheck={false}
-            returnKeyType="search"
-            style={[type.body, styles.searchInput, { color: theme.fg }]}
-            accessibilityLabel="Search models"
-            testID="options-model-search"
-          />
-        </View>
-      ) : null}
-      {found.length > 0 ? (
-        <RadioGroup
-          items={found.map((v) => ({ value: v.value, label: v.label, detail: v.description }))}
-          current={model.current}
-          onChoose={(v) => onPick(model.current, { model: v }, v)}
-          testID="options-model"
-        />
-      ) : (
-        <T variant="callout" color={theme.mut} testID="options-model-empty">
-          No models match "{query.trim()}"
-        </T>
-      )}
-    </>
-  );
-}
+/** An agent chip's width in the agent row, which snaps chip by chip. */
+const AGENT_CHIP = 148;
 
 /** The context window in one line and the last turn's tokens folded under it, as the agent reported them. */
 function Context({ view, agent }: { view: SessionView | undefined; agent: string | null }) {
@@ -567,6 +585,14 @@ const styles = StyleSheet.create({
   track: { height: 6, borderRadius: radius.full, overflow: "hidden" },
   fill: { height: 6, borderRadius: radius.full },
   summary: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", gap: space.sm },
+  agents: { gap: space.sm },
+  agentChip: { width: AGENT_CHIP, height: 44, borderRadius: radius.md, borderWidth: 1, paddingHorizontal: space.sm, flexDirection: "row", alignItems: "center", gap: space.sm },
+  agentLocked: { height: 44, borderRadius: radius.md, paddingHorizontal: space.md, flexDirection: "row", alignItems: "center", gap: space.sm },
+  searchRow: { flexDirection: "row", alignItems: "center", gap: space.md },
+  more: { minHeight: 40, justifyContent: "center" },
+  modelRow: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: space.sm },
+  modelName: { flexShrink: 0, maxWidth: "60%" },
+  fastRow: { height: 48, borderRadius: radius.md, paddingHorizontal: space.md, flexDirection: "row", alignItems: "center", gap: space.sm },
   fold: { minHeight: 40, flexDirection: "row", alignItems: "center", gap: space.sm },
   figure: { minHeight: 40, paddingHorizontal: space.md, flexDirection: "row", alignItems: "center", gap: space.sm },
 });

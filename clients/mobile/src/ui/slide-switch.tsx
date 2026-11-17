@@ -73,13 +73,18 @@ export function SlideSwitch({
     };
   }, [left]);
 
-  // The Host's value, or a new width: go there without reporting a change.
+  // The Host's value, a new width, or a change ending (a refusal keeps the
+  // old value): go there without reporting a change.
+  const shown = useRef<number | null>(null);
   useEffect(() => {
     if (busy.current || !segW) return;
+    // While a pick is on its way the switch stays where it was put.
+    if (disabled && shown.current === value) return;
+    shown.current = value;
     setLit(value);
     if (reduce) left.setValue(value * segW);
     else Animated.timing(left, { toValue: value * segW, duration: SETTLE_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
-  }, [value, segW, reduce, left]);
+  }, [value, segW, reduce, left, disabled]);
 
   const enabled = (i: number) => segments[i]?.enabled !== false;
 

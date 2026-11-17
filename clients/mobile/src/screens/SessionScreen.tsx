@@ -288,6 +288,7 @@ export function SessionScreen({ route, navigation }: NativeStackScreenProps<Root
         onClose={() => setOptionsOpen(false)}
         session_id={session_id}
         agent={agent}
+        agentType={item?.agent}
         view={view}
         connected={connected}
         running={turnRunning(view)}
