@@ -69,6 +69,8 @@ export type HostErrorCode =
   | "fork_unavailable"
   /** `session.send`: a forked session's transcript file is gone; sending again goes on without it. */
   | "transcript_missing"
+  /** `session.set_agent`: only a fork waiting for its first message can change agent. */
+  | "agent_fixed"
   /** `session.retry` / `session.retry_in_new_chat`: the session has no saved can't-reach turn to retry. */
   | "nothing_to_retry"
   /** `agent.error` code: the agent could not reach its provider's server. */
@@ -2258,6 +2260,15 @@ export interface Operations {
    */
   "session.transcript_remove": [{ session_id: string }, Record<string, never>];
   /**
+   * Move a fork to another agent before its first message, with `options` as
+   * `session.start` takes them. Capability `session.set_agent`. `agent_fixed`
+   * once the session's agent has started, or for a session that is not a fork.
+   */
+  "session.set_agent": [
+    { session_id: string; agent: AgentType; options?: OptionsRequest },
+    { session_id: string; options: SessionOptions },
+  ];
+  /**
    * Send now when the agent is idle and nothing is queued, else queue behind
    * what is. The Host sends the next one when a turn ends normally; a stopped
    * or failed turn holds the queue. Capability `session.follow_ups`.
@@ -2529,6 +2540,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "session.continue_plan",
   "session.fork",
   "session.transcript_remove",
+  "session.set_agent",
   "session.follow_up",
   "session.follow_up_send",
   "session.respond",

@@ -2962,6 +2962,36 @@ pub async fn session_transcript_remove(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct SessionSetAgentParams {
+    pub session_id: String,
+    pub agent: AgentType,
+    #[serde(default)]
+    pub options: crate::session_options::OptionsRequest,
+}
+
+/// Move a fork to another agent before its first message.
+pub async fn session_set_agent(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<SessionSetAgentParams>,
+) -> ZResult<Value> {
+    let options = with_start_defaults(&state.db.conn, p.agent, p.options).await;
+    crate::session_fork::set_agent(
+        &state.db,
+        &state.connection_manager,
+        &p.session_id,
+        p.agent,
+        &options,
+    )
+    .await?;
+    announce_sessions_changed(&state, &[&p.session_id]).await;
+    let options = session::options(&state.db, &state.connection_manager, &p.session_id).await?;
+    Ok(Json(
+        json!({ "session_id": p.session_id, "options": options }),
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionRevertParams {
     pub session_id: String,
     pub turn_id: String,

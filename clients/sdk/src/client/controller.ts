@@ -588,6 +588,17 @@ export class HostController {
     return options;
   }
 
+  /**
+   * Move a fork to `agent` before its first message, with `request` as a new
+   * session of that agent starts with. `agent_fixed` once its agent started.
+   */
+  async setSessionAgent(session_id: string, agent: AgentType, request: OptionsRequest): Promise<SessionOptions> {
+    const { options } = await this.client.request("session.set_agent", { session_id, agent, options: request });
+    this.bumpOptions(session_id);
+    this.store.dispatch({ type: "session_frame", session_id, frame: { type: "options", options } });
+    return options;
+  }
+
   private bumpOptions(session_id: string): void {
     this.optionsRevision.set(session_id, (this.optionsRevision.get(session_id) ?? 0) + 1);
   }

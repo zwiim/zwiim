@@ -21,7 +21,7 @@ import { isClientError } from "./errors";
 export const PROTOCOL_MAJOR = 1;
 
 /** Protocol revision this client speaks. Bump with the Host's revision. */
-export const CLIENT_REVISION = 37;
+export const CLIENT_REVISION = 38;
 
 /** Oldest Host revision this client can work with. */
 export const MIN_HOST_REVISION = 1;
@@ -80,6 +80,7 @@ export const CLIENT_CAPABILITIES: readonly string[] = [
   "workspace.layout",
   "session.fork",
   "session.transcript_remove",
+  "session.set_agent",
   "repository.settings_import",
   "browser",
   "downloads",

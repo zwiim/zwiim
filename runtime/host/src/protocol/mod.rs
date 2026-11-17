@@ -258,6 +258,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/session.continue_plan", post(http::session_continue_plan))
         .route("/session.fork", post(http::session_fork))
         .route("/session.transcript_remove", post(http::session_transcript_remove))
+        .route("/session.set_agent", post(http::session_set_agent))
         .route("/settings.get", post(http::settings_get))
         .route("/settings.update", post(http::settings_update))
         .route(

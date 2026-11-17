@@ -1079,6 +1079,16 @@ pub async fn remember_start(db: &DatabaseConnection, session_id: &str, values: B
     write_json(db, &session_key(session_id), &stored).await;
 }
 
+/// Replace what session `session_id` holds with the `values` it starts with,
+/// for a session that moved to another agent before it ever ran.
+pub async fn restart_with(db: &DatabaseConnection, session_id: &str, values: BTreeMap<String, String>) {
+    let stored = Stored {
+        values,
+        normal_mode: None,
+    };
+    write_json(db, &session_key(session_id), &stored).await;
+}
+
 /// Wait (bounded) for a freshly spawned agent to advertise its options, then
 /// resolve `request` against them and apply them ahead of the first prompt.
 pub async fn apply_on_start(

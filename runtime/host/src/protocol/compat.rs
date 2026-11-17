@@ -496,7 +496,13 @@ use serde::{Deserialize, Serialize};
 /// `true` where the model offers none is `option_unavailable`, `false` is a
 /// no-op. Each `agent.list` entry gains `fast_by_model`, whether each model
 /// that has run here offers it. Older clients never see or set it.
-pub const PROTOCOL_REVISION: u32 = 37;
+///
+/// 38 (`session.set_agent`): `session.set_agent {session_id, agent, options}`
+/// moves a fork to another agent before its first message, with `options` as
+/// `session.start` takes them, and replies with the session's options. It is
+/// refused with `agent_fixed` for a session that is not a fork or whose agent
+/// has started. Older clients never call it.
+pub const PROTOCOL_REVISION: u32 = 38;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -559,6 +565,7 @@ pub const CAPABILITIES: &[&str] = &[
     "workspace.layout",
     "session.fork",
     "session.transcript_remove",
+    "session.set_agent",
     "repository.settings_import",
     "browser",
     "downloads",
@@ -741,8 +748,14 @@ mod tests {
 
     #[test]
     fn fast_mode_is_revision_37() {
-        assert_eq!(PROTOCOL_REVISION, 37);
+        const _: () = assert!(PROTOCOL_REVISION >= 37);
         assert!(CAPABILITIES.contains(&"session.fast"));
+    }
+
+    #[test]
+    fn fork_agent_change_is_revision_38() {
+        assert_eq!(PROTOCOL_REVISION, 38);
+        assert!(CAPABILITIES.contains(&"session.set_agent"));
     }
 
     #[test]
