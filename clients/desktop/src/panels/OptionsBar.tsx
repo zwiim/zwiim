@@ -10,13 +10,13 @@ export const MODE_LABEL: Record<SessionMode, string> = {
   unattended: "Auto",
 };
 
-const MODE_ICON: Record<SessionMode, typeof ShieldCheck> = {
+export const MODE_ICON: Record<SessionMode, typeof ShieldCheck> = {
   normal: ShieldCheck,
   plan: ListChecks,
   unattended: ShieldAlert,
 };
 
-const MODE_HINT: Record<SessionMode, string> = {
+export const MODE_HINT: Record<SessionMode, string> = {
   normal: "Asks before running commands or editing files",
   plan: "Plans first and asks you to approve the plan",
   unattended: "Runs commands and edits files without asking",
