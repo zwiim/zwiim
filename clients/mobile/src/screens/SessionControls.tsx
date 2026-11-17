@@ -249,13 +249,13 @@ export function SessionOptionsSheet({
   if (confirmUnattended) {
     body = (
       <>
-        <T variant="title">Turn off approvals?</T>
+        <T variant="title">Turn on Auto?</T>
         <T color={theme.mut}>The agent will run commands and edit files in this workspace without asking you first.</T>
         <View style={styles.confirm}>
           <Button kind="secondary" label="Keep asking" onPress={() => setConfirmUnattended(false)} />
           <Button
             kind="destructive"
-            label="Run unattended"
+            label="Turn on Auto"
             onPress={() => void change({ mode: "unattended" })}
             testID="options-unattended-confirm"
           />
@@ -292,7 +292,7 @@ export function SessionOptionsSheet({
         {options?.mode?.current === "unattended" ? (
           <View style={styles.note} testID="options-unattended">
             <T variant="callout" color={theme.need}>
-              Unattended: the agent runs commands and edits files without asking.
+              Auto: the agent runs commands and edits files without asking.
             </T>
             {options.mode.available.includes("normal") ? (
               <Button

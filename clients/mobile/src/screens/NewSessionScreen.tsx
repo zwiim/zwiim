@@ -314,7 +314,7 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
           ) : null}
           {mode === "unattended" ? (
             <T variant="callout" color={theme.need} testID="new-session-unattended">
-              Unattended: the agent runs commands and edits files without asking.
+              Auto: the agent runs commands and edits files without asking.
             </T>
           ) : null}
 
@@ -407,13 +407,13 @@ export function NewSessionScreen({ navigation, route }: NativeStackScreenProps<R
           />
         ) : confirmUnattended ? (
           <>
-            <T variant="title">Turn off approvals?</T>
+            <T variant="title">Turn on Auto?</T>
             <T color={theme.mut}>The agent will run commands and edit files in this workspace without asking you first.</T>
             <View style={styles.confirm}>
               <Button kind="secondary" label="Keep asking" onPress={closeSheet} />
               <Button
                 kind="destructive"
-                label="Run unattended"
+                label="Turn on Auto"
                 onPress={() => {
                   setPicks((p) => ({ ...p, mode: "unattended" }));
                   closeSheet();

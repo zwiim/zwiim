@@ -61,7 +61,7 @@ describe("session controls", () => {
     expect(optionChips(codexLike).text).toBe("Plan · GPT-5.3 Codex · Medium");
     expect(optionChips(claudeLike("", null)).text).toBe("Ask · Default");
     expect(optionChips({ ...codexLike, mode: { current: "unattended", label: "Full access", available: ["normal", "unattended"] } }).mode)
-      .toEqual({ mode: "unattended", label: "Unattended" });
+      .toEqual({ mode: "unattended", label: "Auto" });
     expect(optionChips({ model: null, effort: null, mode: null })).toEqual({ mode: null, text: null });
     expect(optionChips(null)).toEqual({ mode: null, text: null });
   });
