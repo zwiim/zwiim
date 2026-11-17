@@ -75,6 +75,7 @@ import { forkDisabledNote, forkedSendError, forkError, forkNote, type TurnFork }
 import { canReset, oneReset, revertError } from "../sessions/revert";
 import { offeredAgents } from "../sessions/start";
 import { stopAgentError } from "../host/removal";
+import { offeredCommands } from "../sessions/commands";
 import { agentName, lockedNote } from "../sessions/controls";
 import { currentHost } from "../services";
 import { Button, EmptyState, Sheet, SkeletonRows, T } from "../ui/components";
@@ -435,6 +436,11 @@ function Live({
   const firstUserKey = useMemo(() => (continues ? rows.find((r) => r.type === "user")?.key ?? null : null), [continues, rows]);
   const cardShown = useMemo(() => rows.some((r) => r.type === "unreachable"), [rows]);
   const ticking = running || now?.type === "reconnecting" || now?.type === "waiting" || request !== null;
+  const agents = useHostState().agents;
+  const commands = useMemo(
+    () => offeredCommands(view?.commands, agents?.find((a) => a.agent === item.agent)?.commands),
+    [view?.commands, agents, item.agent],
+  );
 
   // The running turn's timer, from when this phone first saw it.
   const key = turnKey(session_id, view);
@@ -875,7 +881,7 @@ function Live({
             if (unsure) setUnsure(null);
           }}
           onSend={() => void send()}
-          placeholder={agentAway ? "Send to restart the agent" : "Reply or steer…"}
+          placeholder={agentAway ? "Send to restart the agent" : commands.length ? "Reply, steer, or type /" : "Reply or steer…"}
           disabled={!connected}
           sending={sending}
           controls={<ComposerChips view={view} locked={running} onOpen={onOptions} />}
@@ -888,6 +894,7 @@ function Live({
           transcript={transcript}
           onOpenTranscript={transcript && workspace_id ? () => openSent(transcript) : undefined}
           onRemoveTranscript={() => void removeTranscript()}
+          commands={commands}
         />
       </View>
       <AttachSheet visible={attaching} onClose={() => setAttaching(false)} onPick={pick} onClosed={openPicker} />

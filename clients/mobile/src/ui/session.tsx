@@ -17,6 +17,7 @@ import {
   type ForkWorktree,
   type ProgressStep,
   type RevertChoice,
+  type SessionCommand,
 } from "@zwiim/sdk";
 import type { PendingFile } from "../attachments/pending";
 import {
@@ -29,6 +30,7 @@ import {
   stoppedTitle,
   type PipState,
 } from "../sessions/plan";
+import { insertCommand, matchCommands, slashQuery } from "../sessions/commands";
 import { forkedFromLabel, forkWorktreeLines, type TurnFork } from "../sessions/fork";
 import { revertCopy } from "../sessions/revert";
 import {
@@ -1461,6 +1463,7 @@ export function Composer({
   transcript,
   onOpenTranscript,
   onRemoveTranscript,
+  commands = [],
 }: {
   value: string;
   onChange(text: string): void;
@@ -1484,9 +1487,34 @@ export function Composer({
   transcript?: AttachmentBlock | null;
   onOpenTranscript?(): void;
   onRemoveTranscript?(): void;
+  /** The agent's slash commands, offered when a word starts with `/`. */
+  commands?: readonly SessionCommand[];
 }) {
   const theme = useTheme();
   const can = !disabled && !sending && (value.trim().length > 0 || files.length > 0 || !!transcript);
+  const [caret, setCaret] = useState(value.length);
+  /** Set once after a pick to move the caret past it, then released to the input. */
+  const [selection, setSelection] = useState<{ start: number; end: number } | undefined>();
+  /** The `/query` start the user closed the menu on. */
+  const [dismissed, setDismissed] = useState<number | null>(null);
+  const found = slashQuery(value, caret);
+  const matches = found ? matchCommands(commands, found.query) : [];
+  const menuOpen = !disabled && !sending && found !== null && found.start !== dismissed && matches.length > 0;
+  const change = (text: string) => {
+    // The selection event can trail the text on Android: guess the caret
+    // from the edit until it arrives.
+    const at = Math.max(0, Math.min(text.length, caret + text.length - value.length));
+    setCaret(at);
+    if (dismissed !== null && slashQuery(text, at)?.start !== dismissed) setDismissed(null);
+    onChange(text);
+  };
+  const pickCommand = (name: string) => {
+    if (!found) return;
+    const next = insertCommand(value, caret, found, name);
+    onChange(next.text);
+    setCaret(next.caret);
+    setSelection({ start: next.caret, end: next.caret });
+  };
   return (
     <View
       style={[
@@ -1511,9 +1539,52 @@ export function Composer({
         disabled={sending}
         onRemove={(id) => onRemoveFile?.(id)}
       />
+      {menuOpen ? (
+        <View style={[styles.slashMenu, { borderColor: theme.line }]} testID="slash-menu">
+          <ScrollView keyboardShouldPersistTaps="handled" style={styles.slashList} nestedScrollEnabled>
+            {matches.map((c) => (
+              <Pressable
+                key={c.name}
+                accessibilityRole="button"
+                accessibilityLabel={`/${c.name}. ${c.description}`}
+                onPress={() => pickCommand(c.name)}
+                style={({ pressed }) => [styles.slashRow, { opacity: pressed ? PRESSED_OPACITY : 1 }]}
+                testID={`slash-${c.name}`}
+              >
+                <T variant="mono" color={theme.fg} numberOfLines={1} style={styles.slashName}>
+                  /{c.name}
+                </T>
+                {c.hint ? (
+                  <T variant="monoSm" color={theme.faint} numberOfLines={1} style={styles.slashHint}>
+                    {c.hint}
+                  </T>
+                ) : null}
+                <T variant="callout" color={theme.mut} numberOfLines={1} style={styles.shrink}>
+                  {c.description}
+                </T>
+              </Pressable>
+            ))}
+          </ScrollView>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close commands"
+            onPress={() => setDismissed(found!.start)}
+            hitSlop={8}
+            style={styles.slashClose}
+            testID="slash-close"
+          >
+            <Icon icon={X} color={theme.faint} size={16} />
+          </Pressable>
+        </View>
+      ) : null}
       <TextInput
         value={value}
-        onChangeText={onChange}
+        onChangeText={change}
+        onSelectionChange={(e) => {
+          setCaret(e.nativeEvent.selection.end);
+          if (selection) setSelection(undefined);
+        }}
+        selection={selection}
         placeholder={placeholder}
         placeholderTextColor={theme.faint}
         multiline
@@ -1672,6 +1743,13 @@ const styles = StyleSheet.create({
   },
   input: { minHeight: 40, maxHeight: 140, paddingTop: space.sm, paddingBottom: space.xs, paddingRight: space.sm, fontFamily: fonts.sans },
   composerNote: { paddingBottom: space.xxs },
+  slashMenu: { flexDirection: "row", alignItems: "flex-start", borderBottomWidth: StyleSheet.hairlineWidth, paddingTop: space.xs },
+  // Five 44pt rows, then it scrolls.
+  slashList: { flex: 1, maxHeight: 220 },
+  slashRow: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: space.sm },
+  slashName: { flexShrink: 0, maxWidth: "50%" },
+  slashHint: { flexShrink: 0, maxWidth: "30%" },
+  slashClose: { width: 32, height: 44, alignItems: "center", justifyContent: "center" },
   composerRow: { flexDirection: "row", alignItems: "center", gap: space.sm },
   composerControls: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs },
   send: { width: 36, height: 36, borderRadius: radius.full, alignItems: "center", justifyContent: "center" },
