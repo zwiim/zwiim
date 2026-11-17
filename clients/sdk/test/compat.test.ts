@@ -103,8 +103,14 @@ describe("evaluateCompatibility", () => {
     expect(CLIENT_CAPABILITIES).toContain("repository.settings_import");
   });
 
-  it("speaks revision 36 (search engines)", () => {
-    expect(CLIENT_REVISION).toBe(36);
+  it("speaks revision 38 and moves a fork to another agent", () => {
+    expect(CLIENT_REVISION).toBe(38);
+    expect(CLIENT_CAPABILITIES).toContain("session.set_agent");
+  });
+
+  it("speaks revision 37 and uses fast mode", () => {
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(37);
+    expect(CLIENT_CAPABILITIES).toContain("session.fast");
   });
 
   it("speaks revision 33 and uses the Host browser", () => {

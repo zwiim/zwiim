@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostController } from "../src/client/controller";
 import { hostOwnedDetails, optionUnavailableDetails, ZwiimClientError } from "../src/client/errors";
 import { HostClient } from "../src/client/host-client";
-import { effortFor } from "../src/state/options";
+import { effortFor, fastFor } from "../src/state/options";
 import { initialSessionView, reduceSession } from "../src/state/session";
 import type { AgentSummary, SessionOptions, SessionSnapshot } from "../src/types/protocol";
 import { FakeTransport, flush } from "./fakes";
@@ -118,6 +118,32 @@ describe("effort for a model", () => {
     expect(effortFor(claude, null)?.values).toHaveLength(3);
     expect(effortFor(claude, "constructor")?.values).toHaveLength(3);
     expect(effortFor({ ...claude, options: null, effort_by_model: {} }, "opus")).toBeNull();
+  });
+});
+
+describe("fast mode for a model", () => {
+  const claude: AgentSummary = {
+    agent: "claude_code",
+    name: "Claude Code",
+    available: true,
+    reason: null,
+    support: "supported",
+    adapter: null,
+    options: { ...opts("normal"), fast: false },
+    effort_by_model: {},
+    fast_by_model: { sonnet: true, haiku: false },
+    commands: null,
+  };
+
+  it("is the model's own once it has run on the Host", () => {
+    expect(fastFor(claude, "sonnet")).toBe(true);
+    expect(fastFor(claude, "haiku")).toBe(false);
+  });
+
+  it("follows the agent-wide option for a model not run yet, or an older Host", () => {
+    expect(fastFor(claude, "opus")).toBe(true);
+    expect(fastFor(claude, "constructor")).toBe(true);
+    expect(fastFor({ ...claude, options: opts("normal"), fast_by_model: undefined }, "sonnet")).toBe(false);
   });
 });
 

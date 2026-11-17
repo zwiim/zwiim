@@ -129,8 +129,11 @@ describe("follow-ups", () => {
     const t = host([queued("f1", "first"), queued("f2", "", 2)]);
     const { controller, status } = await open(t);
     await status("prompting");
+    // The queue opens in the turn rail, beside how long the agent has worked.
+    const rail = within(screen.getByTestId("turn-rail"));
+    expect(rail.getByRole("status").textContent).toMatch(/^Working · /);
+    expect(rail.getByRole("button", { name: "Queue, 2 waiting" }).getAttribute("aria-expanded")).toBe("true");
     const list = within(screen.getByTestId("follow-ups"));
-    expect(list.getByRole("status").textContent).toBe("Queued");
     const [first, second] = list.getAllByTestId("follow-up");
     expect(first!.textContent).toContain("first");
     expect(second!.textContent).toContain("Attachments only");
@@ -160,14 +163,40 @@ describe("follow-ups", () => {
     const t = host([queued("f1", "first"), queued("f2", "second")]);
     const { controller, status } = await open(t);
     await status("connected");
+    expect(within(screen.getByTestId("turn-rail")).getByRole("status").textContent).toMatch(/^Paused/);
     const list = within(screen.getByTestId("follow-ups"));
-    expect(list.getByRole("status").textContent).toMatch(/^Paused/);
     expect(list.getAllByText("Send now")).toHaveLength(2);
     // A new message joins the held queue rather than going ahead of it.
     expect(screen.getByLabelText("Queue message")).toBeTruthy();
     fireEvent.click(list.getAllByText("Send now")[0]!);
     await tick();
     expect(calls(t, "session.follow_up_send")).toEqual([{ session_id: "s1", follow_up_id: "f1" }]);
+    controller.dispose();
+  });
+
+  it("opens the queue in the turn rail as one is added, and the context beside it", async () => {
+    const t = host();
+    const { controller } = await open(t);
+    expect(screen.queryByTestId("turn-rail")).toBeNull();
+    await act(async () =>
+      t.frame({
+        subscription_id: "sub-1",
+        session_id: "s1",
+        type: "snapshot",
+        epoch: "e",
+        event_seq: 1,
+        snapshot: snapshot({ status: "prompting", usage: { used: 800000, size: 1000000 } }),
+      } as never),
+    );
+    const rail = within(screen.getByTestId("turn-rail"));
+    expect(rail.queryByRole("button", { name: /^Queue/ })).toBeNull();
+    fireEvent.click(rail.getByRole("button", { name: "Context, 80% in use" }));
+    expect(screen.getByTestId("rail-context").textContent).toContain("800,000");
+    await t.feedEvent("session.changed", { session: summary([queued("f1", "first")]) });
+    expect(rail.getByRole("button", { name: "Queue, 1 waiting" }).getAttribute("aria-expanded")).toBe("true");
+    expect(screen.queryByTestId("rail-context")).toBeNull();
+    fireEvent.click(rail.getByRole("button", { name: "Queue, 1 waiting" }));
+    expect(screen.queryByTestId("follow-ups")).toBeNull();
     controller.dispose();
   });
 

@@ -1,0 +1,804 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Zwiim composer prototype</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:#121416; --chrome:#17191B; --surface:#1E2123; --raised:#282A2D; --code:#0D0E10;
+  --fg:#DFE1E3; --prose:#C8CBCE; --mut:#A3A6A9; --faint:#75787C; --line:rgba(255,255,255,.07);
+  --accent:#6CB4F0; --ink:#071A2B; --done:#4CC38A; --err:#FF6467;
+  --std:cubic-bezier(.2,0,0,1);
+}
+* { box-sizing:border-box; } [hidden] { display:none !important; }
+html, body { height:100%; }
+body { margin:0; background:var(--bg); color:var(--fg); font:13px/18px Inter, sans-serif; display:flex; flex-direction:column; }
+button { font:inherit; color:inherit; white-space:nowrap; cursor:pointer; }
+button:focus-visible, input:focus-visible, [tabindex]:focus-visible { outline:2px solid rgba(108,180,240,.55); outline-offset:2px; }
+.mono { font-family:"JetBrains Mono", monospace; }
+svg { width:15px; height:15px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; flex:none; }
+.kbd { white-space:nowrap; font:11px "JetBrains Mono", monospace; color:var(--mut); border:1px solid var(--line); border-radius:4px; padding:0 4px; line-height:16px; }
+
+/* tabs */
+.tabs { display:flex; align-items:center; gap:2px; height:40px; padding:0 10px; background:var(--chrome); border-bottom:1px solid var(--line); flex:none; }
+.tabs .t { display:flex; align-items:center; gap:7px; height:28px; padding:0 10px; border:0; border-radius:7px; background:transparent; color:var(--mut); max-width:220px; }
+.tabs .t span.l { overflow:hidden; text-overflow:ellipsis; }
+.tabs .t[aria-selected=true] { background:var(--surface); color:var(--fg); }
+.tabs .t:hover { color:var(--fg); }
+.tabs .plus { width:28px; height:28px; border:0; border-radius:7px; background:transparent; color:var(--mut); display:grid; place-items:center; }
+.tabs .plus:hover { background:var(--surface); color:var(--fg); }
+.tabs .grow { flex:1; }
+.tabs .help { color:var(--mut); font-size:12px; }
+.wdot { width:7px; height:7px; border-radius:50%; background:var(--mut); animation:breathe 1.6s ease-in-out infinite; flex:none; }
+@keyframes breathe { 50% { opacity:.3; } }
+
+/* transcript */
+.scroll { flex:1; overflow:auto; }
+.transcript { max-width:760px; margin:0 auto; padding:28px 24px 12px; display:flex; flex-direction:column; gap:12px; }
+.empty { margin:14vh auto 0; text-align:center; color:var(--mut); }
+.empty h2 { color:var(--fg); font-size:20px; font-weight:600; margin:0 0 6px; }
+.msg-user { align-self:flex-end; background:var(--surface); border-radius:12px; padding:9px 13px; max-width:80%; color:var(--fg); font-size:14px; line-height:22px; }
+.msg-agent { color:var(--prose); font-size:14px; line-height:22px; }
+.msg-tool { font:12px/18px "JetBrains Mono"; color:var(--mut); }
+.msg-tool .add { color:var(--done); } .msg-tool .del { color:var(--err); }
+.msg-note { font-size:12px; color:var(--mut); }
+.rise { animation:rise .32s var(--std); } @keyframes rise { from { opacity:0; transform:translateY(12px); } }
+
+/* composer */
+.dock { flex:none; padding:4px 24px 18px; }
+.col { max-width:760px; margin:0 auto; position:relative; }
+.card { background:var(--surface); border-radius:16px; box-shadow:0 0 0 1px var(--line), 0 10px 30px rgba(0,0,0,.35); position:relative; transition:box-shadow .12s var(--std); }
+.card:focus-within { box-shadow:0 0 0 1px rgba(108,180,240,.45), 0 10px 30px rgba(0,0,0,.35); }
+.card.auto { box-shadow:0 0 0 1px rgba(108,180,240,.55), 0 10px 30px rgba(0,0,0,.35); }
+textarea { display:block; width:100%; background:transparent; border:0; outline:0; resize:none; color:var(--fg); font:14px/22px Inter; padding:12px 16px 4px; min-height:48px; max-height:240px; }
+textarea::placeholder { color:var(--faint); }
+
+.railwrap { display:grid; grid-template-rows:0fr; transition:grid-template-rows .2s var(--std); }
+.railwrap.show { grid-template-rows:1fr; }
+.railwrap > div { overflow:hidden; }
+.rail { display:flex; align-items:center; gap:2px; height:34px; padding:0 8px; background:var(--chrome); border-radius:16px 16px 0 0; border-bottom:1px solid var(--line); }
+.working { display:inline-flex; align-items:center; gap:7px; font:11px "JetBrains Mono"; color:var(--mut); padding:0 10px 0 4px; }
+.working.idle { color:var(--mut); }
+.rtab { display:inline-flex; align-items:center; gap:6px; height:24px; padding:0 9px; border-radius:6px; border:0; background:transparent; color:var(--mut); font-size:12px; }
+.rtab:hover { color:var(--fg); }
+.rtab .n { font:11px "JetBrains Mono"; color:var(--fg); }
+.rtab[aria-selected=true] { background:var(--raised); color:var(--fg); }
+.bar { width:44px; height:3px; border-radius:2px; background:var(--raised); overflow:hidden; } .bar i { display:block; height:100%; background:var(--mut); transition:width .3s var(--std); }
+.rpanel { padding:8px 10px 0; display:flex; flex-direction:column; gap:4px; }
+.q { display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:8px; background:var(--bg); color:var(--prose); }
+.q[draggable=true] { cursor:grab; } .q.dragging { opacity:.4; }
+.q .h { color:var(--faint); font:11px "JetBrains Mono"; } .q .t { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.q .x { border:0; background:transparent; color:var(--faint); width:22px; height:22px; border-radius:6px; display:grid; place-items:center; }
+.q .x:hover { background:var(--raised); color:var(--fg); }
+.step { display:flex; align-items:center; gap:9px; padding:4px 8px; color:var(--mut); }
+.rtab .now { max-width:220px; overflow:hidden; text-overflow:ellipsis; color:var(--mut); }
+.rtab .pchev { width:12px; height:12px; color:var(--faint); transition:transform .12s var(--std); }
+.rtab[aria-expanded=false] .pchev { transform:rotate(180deg); }
+.planpop { position:absolute; left:0; right:0; bottom:calc(100% + 8px); background:var(--raised); border-radius:12px; padding:6px 6px 8px; box-shadow:0 0 0 1px var(--line), 0 18px 44px rgba(0,0,0,.55); max-height:50vh; overflow:auto; z-index:4; animation:pop .18s var(--std); transform-origin:bottom center; }
+.planpop .ttl { display:flex; justify-content:space-between; padding:6px 8px 6px; font:600 10px Inter; letter-spacing:.06em; text-transform:uppercase; color:var(--mut); }
+.planpop .ttl .n { font:11px "JetBrains Mono"; letter-spacing:0; text-transform:none; }
+.step.done { color:var(--mut); text-decoration:line-through; } .step.now { color:var(--fg); }
+.step .b { width:14px; height:14px; border-radius:4px; border:1.5px solid var(--faint); display:grid; place-items:center; flex:none; }
+.step.done .b { background:var(--done); border-color:var(--done); color:var(--bg); } .step.now .b { border-color:var(--mut); }
+.step .b svg { width:10px; height:10px; stroke-width:3; }
+.ctx { padding:4px 8px 6px; color:var(--mut); display:flex; flex-direction:column; gap:6px; }
+.ctx .big { height:6px; border-radius:3px; background:var(--raised); overflow:hidden; } .ctx .big i { display:block; height:100%; background:var(--mut); }
+.ctx .row2 { display:flex; justify-content:space-between; font:11.5px "JetBrains Mono"; }
+
+.row { display:flex; align-items:center; gap:4px; padding:6px 8px 8px; }
+.grow { flex:1; }
+.pick { display:inline-flex; align-items:center; gap:7px; height:28px; padding:0 8px 0 4px; border-radius:8px; border:0; background:transparent; color:var(--fg); font-size:12px; max-width:70%; }
+.pick:hover:not(:disabled), .pick[aria-expanded=true] { background:var(--raised); }
+.pick:disabled { opacity:.55; cursor:default; }
+.pick .chipico { width:18px; height:18px; border-radius:5px; } .pick .chipico svg { width:12px; height:12px; } .pick .m { font-family:"JetBrains Mono"; } .pick .e { color:var(--mut); } .pick .chev { color:var(--faint); width:13px; height:13px; }
+.modetag { display:inline-flex; align-items:center; gap:5px; height:22px; padding:0 7px; border-radius:6px; background:var(--bg); color:var(--mut); font-weight:500; font-size:11px; }
+.modetag svg { width:11px; height:11px; }
+.modetag.auto { background:rgba(108,180,240,.14); color:var(--accent); }
+.ibtn { display:grid; place-items:center; width:30px; height:30px; border-radius:8px; border:0; background:transparent; color:var(--mut); }
+.ibtn:hover { background:var(--raised); color:var(--fg); }
+.ibtn.rec { color:var(--err); }
+.send, .stop { width:32px; height:32px; border-radius:50%; border:0; display:grid; place-items:center; transition:transform .12s var(--std), background .12s; flex:none; }
+.send { background:var(--accent); color:var(--ink); } .send:disabled { background:var(--raised); color:var(--faint); cursor:default; }
+.send:active:not(:disabled), .stop:active { transform:scale(.96); }
+.stop { background:var(--fg); color:var(--bg); }
+.legend { display:flex; gap:16px; justify-content:center; margin-top:10px; color:var(--mut); font:11px "JetBrains Mono"; flex-wrap:wrap; }
+
+/* picker */
+.popwrap { position:absolute; left:8px; bottom:44px; display:flex; align-items:flex-end; gap:6px; z-index:5; }
+.pop, .side { background:var(--raised); border-radius:12px; box-shadow:0 0 0 1px var(--line), 0 18px 44px rgba(0,0,0,.55); animation:pop .18s var(--std); transform-origin:bottom left; }
+@keyframes pop { from { opacity:0; transform:scale(.97) translateY(4px); } }
+.pop { width:420px; overflow:hidden; display:flex; flex-direction:column; }
+.pop.v, .pop.h { width:440px; }
+.pop .body { display:flex; min-height:0; }
+.pop.h .body { flex-direction:column; }
+.pop .lcol { flex:1; min-width:0; display:flex; flex-direction:column; }
+.agents { display:flex; gap:2px; padding:6px; }
+.pop.v .body { height:300px; }
+.pop.v .lcol .list { max-height:none; flex:1; }
+.pop.v .agents { flex-direction:column; flex:none; border-right:1px solid var(--line); padding:6px 5px; overflow-y:auto; overscroll-behavior:contain; scrollbar-width:none; }
+.agents::-webkit-scrollbar { display:none; }
+.pop.v .agents.up { mask-image:linear-gradient(transparent, #000 22px); }
+.pop.v .agents.down { mask-image:linear-gradient(#000 calc(100% - 22px), transparent); }
+.pop.v .agents.up.down { mask-image:linear-gradient(transparent, #000 22px, #000 calc(100% - 22px), transparent); }
+.pop.h .agents { border-bottom:1px solid var(--line); overflow-x:auto; scrollbar-width:none; }
+.pop.h .agents.up { mask-image:linear-gradient(90deg, transparent, #000 22px); }
+.pop.h .agents.down { mask-image:linear-gradient(90deg, #000 calc(100% - 22px), transparent); }
+.pop.h .agents.up.down { mask-image:linear-gradient(90deg, transparent, #000 22px, #000 calc(100% - 22px), transparent); }
+.ag { position:relative; display:flex; align-items:center; gap:7px; border:0; background:transparent; color:var(--mut); border-radius:8px; padding:4px; }
+.pop.v .ag { flex:none; width:38px; height:38px; justify-content:center; padding:0; }
+.pop.v .agname { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+.pop.h .ag { flex:none; padding:4px 9px 4px 4px; }
+.ag:hover { background:rgba(255,255,255,.04); color:var(--fg); }
+.ag.on { background:rgba(108,180,240,.12); color:var(--fg); }
+.ag.off { opacity:.5; }
+.mono-tile { display:grid; place-items:center; width:26px; height:26px; border-radius:7px; box-shadow:0 0 0 1px var(--line); }
+.mono-tile svg { width:16px; height:16px; stroke-width:2; }
+.ag.off .mono-tile { filter:grayscale(1); }
+.ag.on .mono-tile { box-shadow:0 0 0 2px var(--raised), 0 0 0 3.5px var(--accent); }
+.agname { font-size:12px; } .pop.v .agname { font-size:10px; }
+.ag .here { position:absolute; top:3px; right:3px; width:6px; height:6px; border-radius:50%; background:var(--done); }
+.pop.h .ag .here { top:3px; right:3px; }
+.ag .cnt { position:absolute; bottom:2px; right:4px; font:10px "JetBrains Mono"; color:var(--accent); }
+.vhead { display:flex; align-items:center; justify-content:space-between; padding:10px 14px 4px; font:600 10px Inter; letter-spacing:.06em; text-transform:uppercase; color:var(--faint); }
+.vhead .cur { text-transform:none; letter-spacing:0; font-weight:500; color:var(--mut); }
+.pop .list { padding-top:2px; max-height:340px; }
+.pop.v .list { min-height:0; }
+.sec { display:flex; align-items:center; justify-content:space-between; padding:10px 8px 4px; font:600 10.5px Inter; letter-spacing:.06em; text-transform:uppercase; color:var(--mut); }
+.sec .cur { text-transform:none; letter-spacing:0; font-weight:500; color:var(--mut); }
+.mono-tile.tiny { width:18px; height:18px; border-radius:5px; } .mono-tile.tiny svg { width:12px; height:12px; }
+.it .eff { font:11.5px "JetBrains Mono"; color:var(--mut); }
+.it .kbd { opacity:0; } .it.act .kbd { opacity:1; }
+.favmark { width:11px; height:11px; fill:var(--mut); stroke:none; margin-left:-4px; }
+.agn { font-size:12px; color:var(--mut); }
+.hint { display:flex; align-items:center; gap:7px; padding:4px 8px 6px; color:var(--mut); font-size:12px; }
+.hint svg { width:13px; height:13px; }
+.opt:focus-visible, .ag:focus-visible { outline:2px solid rgba(108,180,240,.55); outline-offset:-2px; }
+.adot { width:7px; height:7px; border-radius:50%; flex:none; margin:0 2px 0 3px; box-shadow:0 0 0 1px rgba(255,255,255,.28); }
+.star { border:0; background:transparent; width:24px; height:24px; cursor:pointer; border-radius:6px; display:grid; place-items:center; color:var(--faint); opacity:0; padding:0; }
+.star svg { width:13px; height:13px; }
+.it:hover .star, .it.act .star { opacity:1; }
+.star.on { opacity:1; color:var(--fg); } .star.on svg { fill:currentColor; }
+.star:hover { background:var(--raised); color:var(--fg); }
+.it.rec .eff { color:var(--mut); }
+.qedit { flex:1; background:var(--surface); border:0; outline:0; color:var(--fg); font:13px Inter; padding:3px 6px; border-radius:6px; box-shadow:0 0 0 1px rgba(108,180,240,.5); }
+.q .t { cursor:text; }
+.qnow { border:0; background:transparent; color:var(--accent); font-size:12px; height:22px; padding:0 6px; border-radius:6px; }
+.qnow:hover { background:var(--raised); }
+.lnk { border:0; background:transparent; color:var(--accent); padding:6px 0 0; }
+.lay { border:1px solid var(--line); background:transparent; color:var(--mut); height:26px; border-radius:7px; padding:0 9px; font-size:12px; margin-right:12px; }
+.lay:hover { color:var(--fg); }
+.search { display:flex; align-items:center; gap:8px; padding:0 12px; height:42px; border-bottom:1px solid var(--line); color:var(--faint); }
+.search input { flex:1; background:transparent; border:0; outline:0; color:var(--fg); font:13px Inter; }
+.search input::placeholder { color:var(--faint); }
+.list { max-height:300px; overflow:auto; padding:0 6px 6px; }
+.grp { display:flex; align-items:center; gap:6px; font:600 10px Inter; letter-spacing:.06em; color:var(--faint); padding:10px 8px 4px; text-transform:uppercase; }
+.grp .on { width:6px; height:6px; border-radius:50%; background:var(--done); } .grp .off { width:6px; height:6px; border-radius:50%; border:1.5px solid var(--faint); }
+.grp .cur { margin-left:auto; text-transform:none; letter-spacing:0; font-weight:500; color:var(--mut); }
+.it { display:flex; align-items:center; gap:10px; padding:7px 8px; border-radius:8px; position:relative; cursor:pointer; min-height:32px; }
+.it.act { background:rgba(255,255,255,.06); }
+.it.sel::before { content:""; position:absolute; left:0; top:8px; bottom:8px; width:2px; border-radius:2px; background:var(--accent); }
+.it.dis { cursor:default; opacity:.5; }
+.it .name { font:12.5px "JetBrains Mono"; color:var(--fg); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:62%; flex:none; } .it .desc { color:var(--mut); font-size:12px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; min-width:0; }
+.it .r { margin-left:auto; display:flex; align-items:center; gap:6px; color:var(--faint); }
+.it .chk { color:var(--accent); }
+.it.more { color:var(--mut); font-size:12px; }
+.opt { display:flex; align-items:center; gap:10px; padding:0 12px; height:38px; border-top:1px solid var(--line); cursor:pointer; color:var(--fg); }
+.opt.act, .opt.open { background:rgba(255,255,255,.06); }
+.opt.dis { color:var(--faint); cursor:default; }
+.opt .v { margin-left:auto; color:var(--mut); font:12px "JetBrains Mono"; display:flex; align-items:center; gap:6px; }
+.opt .v svg { width:13px; height:13px; color:var(--faint); }
+.opt .fhint { color:var(--mut); font:12px Inter; }
+.sw { width:28px; height:16px; border-radius:8px; background:var(--line2, #3A3D41); box-shadow:inset 0 0 0 1px rgba(255,255,255,.12); position:relative; transition:background .15s var(--std); flex:none; }
+.sw::after { content:""; position:absolute; top:2px; left:2px; width:12px; height:12px; border-radius:50%; background:var(--mut); transition:transform .15s var(--std), background .15s; }
+.sw.on { background:var(--accent); box-shadow:none; } .sw.on::after { transform:translateX(12px); background:var(--ink); }
+.fastic { width:12px; height:12px; color:var(--accent); flex:none; }
+.pick .fastic { width:13px; height:13px; }
+.foot { display:flex; gap:12px; align-items:center; padding:8px 12px; border-top:1px solid var(--line); color:var(--mut); font-size:12px; background:rgba(0,0,0,.12); }
+.foot span { display:inline-flex; gap:5px; align-items:center; }
+.side { width:220px; padding:6px; }
+.side .o { display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:8px; font-size:13px; cursor:pointer; }
+.side .o.act { background:rgba(255,255,255,.06); }
+.side .o .d { color:var(--mut); font-size:11.5px; }
+.side .o svg.c { margin-left:auto; color:var(--accent); }
+.side .ttl { font:600 10px Inter; letter-spacing:.06em; color:var(--mut); padding:6px 10px 4px; text-transform:uppercase; }
+.none { padding:18px; color:var(--mut); text-align:center; }
+
+.toast { position:fixed; left:50%; top:52px; transform:translate(-50%, -8px); opacity:0; background:var(--raised); color:var(--fg); padding:9px 14px; border-radius:10px; box-shadow:0 0 0 1px var(--line), 0 10px 30px rgba(0,0,0,.5); transition:all .18s var(--std); pointer-events:none; z-index:20; }
+.toast.on { opacity:1; transform:translate(-50%, 0); }
+.sr { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+@media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; } }
+</style>
+</head>
+<body>
+<svg style="display:none">
+  <symbol id="clip" viewBox="0 0 24 24"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></symbol>
+  <symbol id="mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5"/></symbol>
+  <symbol id="up" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+  <symbol id="sq" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor"/></symbol>
+  <symbol id="dn" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="rt" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+  <symbol id="srch" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+  <symbol id="chk" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="ext" viewBox="0 0 24 24"><path d="M7 17 17 7M8 7h9v9"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="ask" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></symbol>
+  <symbol id="plan" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></symbol>
+  <symbol id="bolt" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></symbol>
+  <symbol id="fast" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="hammer" viewBox="0 0 24 24"><path d="m15 12-8.5 8.5a2.1 2.1 0 0 1-3-3L12 9M17.6 15 22 10.6M20 12.6l-4.6-4.6 2.5-2.5L22 9.6"/></symbol>
+</svg>
+
+<nav class="tabs" role="tablist" aria-label="Sessions" id="tabs"></nav>
+<main class="scroll" id="scroll"><div class="transcript" id="transcript" aria-live="polite"></div></main>
+<div class="dock">
+  <div class="col">
+    <div class="card" id="card">
+      <div class="railwrap" id="railwrap"><div>
+        <div class="rail" role="tablist" aria-label="Turn" id="rail"></div>
+        <div id="rpanel"></div>
+      </div></div>
+      <textarea id="input" rows="1" aria-label="Message"></textarea>
+      <div class="row">
+        <button class="pick" id="pick" aria-haspopup="dialog" aria-expanded="false"></button>
+        <span class="grow"></span>
+        <button class="ibtn" id="attach" title="Attach files (⌘U)" aria-label="Attach files"><svg><use href="#clip"/></svg></button>
+        <button class="ibtn" id="voice" title="Dictate (⌘E)" aria-label="Dictate"><svg><use href="#mic"/></svg></button>
+        <button class="stop" id="stop" aria-label="Stop agent" title="Stop the agent's current turn" hidden><svg style="width:12px;height:12px"><use href="#sq"/></svg></button>
+        <button class="send" id="send" aria-label="Send"><svg><use href="#up"/></svg></button>
+      </div>
+      <div class="popwrap" id="popwrap" hidden></div>
+      <div class="planpop" id="planpop" role="dialog" aria-label="Plan" hidden></div>
+    </div>
+    <div class="legend" id="legend"></div>
+  </div>
+</div>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+// ---- fake data: in Zwiim this comes from the Host (AgentSummary.options) ----
+const CLAUDE_EFF = ["Low", "Medium", "High", "Extra high", "Max", "Ultracode"];
+const AGENTS = [
+  { id: "claude", name: "Claude Code", short: "Claude", mono: "Cl", color: "#D97757", ink: "#fff", glyph: '<path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6 5.6 18.4" stroke-width="2.4"/>', installed: true,
+    modes: [{ id: "ask", label: "Ask", icon: "ask", d: "Asks before edits and commands" }, { id: "plan", label: "Plan", icon: "plan", d: "Plans first, no edits" }, { id: "auto", label: "Auto", icon: "bolt", d: "Runs without asking", auto: true }],
+    models: [
+      { id: "opus", name: "Opus 5.5", desc: "Most capable", efforts: CLAUDE_EFF, def: "High", fast: true },
+      { id: "sonnet", name: "Sonnet 5.5", desc: "Everyday coding", efforts: ["Low", "Medium", "High", "Max"], def: "Medium", fast: true },
+      { id: "haiku", name: "Haiku 5.5", desc: "Quick edits", efforts: [], def: null },
+    ] },
+  { id: "codex", name: "Codex", short: "Codex", mono: "Cx", color: "#454B52", dot: "#B8BEC6", ink: "#fff", glyph: '<circle cx="12" cy="12" r="7.5"/><path d="M8.5 10.5 11 12.5l-2.5 2M13 15h3"/>', installed: true,
+    modes: [{ id: "ro", label: "Read only", icon: "eye", d: "Reads, never writes" }, { id: "ask", label: "Ask", icon: "ask", d: "Asks before edits" }, { id: "auto", label: "Auto", icon: "bolt", d: "Runs without asking", auto: true }],
+    models: [
+      { id: "gpt55", name: "GPT-5.5", desc: "Frontier reasoning", efforts: ["Minimal", "Low", "Medium", "High", "Extra high"], def: "Medium", fast: true },
+      { id: "gpt55m", name: "GPT-5.5 mini", desc: "Fast and cheap", efforts: ["Low", "Medium", "High"], def: "Low" },
+    ] },
+  { id: "opencode", name: "OpenCode", short: "OpenCode", mono: "OC", color: "#F2F3F5", ink: "#111", glyph: '<path d="M9 6H6v12h3M15 6h3v12h-3"/>', installed: true,
+    modes: [{ id: "build", label: "Build", icon: "hammer", d: "Edits and runs" }, { id: "plan", label: "Plan", icon: "plan", d: "Plans first, no edits" }],
+    models: ["anthropic/claude-sonnet-5.5", "openai/gpt-5.5", "google/gemini-3-pro", "deepseek/deepseek-v4", "qwen/qwen3-coder", "moonshot/kimi-k3", "x-ai/grok-5", "mistral/devstral-2", "zai/glm-5"]
+      .map((n) => ({ id: n, name: n, desc: "", efforts: [], def: null })) },
+  { id: "gemini", name: "Gemini CLI", short: "Gemini", mono: "Ge", color: "#4E86F6", ink: "#fff", glyph: '<path d="M12 2.5c.8 5 4.5 8.7 9.5 9.5-5 .8-8.7 4.5-9.5 9.5-.8-5-4.5-8.7-9.5-9.5 5-.8 8.7-4.5 9.5-9.5z" fill="#fff" stroke="none"/>', installed: false, modes: [], models: [] },
+  ...[["cursor", "Cursor CLI", "Cursor", "#5A6270", '<path d="M6 4l12 7-5.5 1.5L10 18z"/>'],
+      ["amp", "Amp", "Amp", "#E5484D", '<path d="M5 18 12 5l7 13M8 13h8"/>'],
+      ["goose", "Goose", "Goose", "#3E9B6B", '<path d="M8 18c0-5 2-8 6-8M14 10V6l3 2"/>'],
+      ["aider", "Aider", "Aider", "#8E6CEF", '<path d="M5 17 12 5l7 12zM9 13h6"/>'],
+      ["qwen", "Qwen Code", "Qwen", "#615CED", '<circle cx="12" cy="12" r="6"/><path d="m15 15 3 3"/>'],
+      ["kiro", "Kiro", "Kiro", "#9B5DE5", '<path d="M8 5v14M8 12l7-7M10 10l6 9"/>']]
+    .map(([id, name, short, color, glyph]) => ({ id, name, short, mono: short.slice(0, 2), color, ink: "#fff", glyph, installed: false, modes: [], models: [] })),
+];
+const CAP = 5;
+const agentOf = (id) => AGENTS.find((a) => a.id === id);
+const modelOf = (t) => agentOf(t.agent).models.find((m) => m.id === t.model);
+const modeOf = (t) => agentOf(t.agent).modes.find((m) => m.id === t.mode);
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+// ---- state ----
+let seq = 0;
+function newTab(agent = "claude", model = "opus", draft = "") {
+  const a = agentOf(agent), m = a.models.find((x) => x.id === model);
+  return { id: ++seq, title: "New session", started: false, agent, model, effort: m.def, fast: false, mode: a.modes[0].id,
+    msgs: [], running: false, t0: 0, queue: [], plan: [], step: 0, ctx: 0, railTab: null, draft, timer: null };
+}
+const tabs = [newTab()];
+let cur = tabs[0];
+const key = (a, m) => `${a}/${m}`;
+const memFast = new Map();
+const fastFor = (a, m) => !!m.fast && (memFast.get(key(a.id, m.id)) ?? false);
+const memEffort = new Map([[key("claude", "sonnet"), "Medium"], [key("codex", "gpt55"), "Medium"]]);
+let recents = [{ agent: "claude", model: "opus", effort: "High" }, { agent: "codex", model: "gpt55", effort: "Medium" }, { agent: "claude", model: "sonnet", effort: "Medium" }];
+function remember(t) {
+  if (t.effort) memEffort.set(key(t.agent, t.model), t.effort);
+  recents = [{ agent: t.agent, model: t.model, effort: t.effort }, ...recents.filter((r) => !(r.agent === t.agent && r.model === t.model))].slice(0, 3);
+}
+const favs = new Set([key("claude", "opus")]);
+let qEdit = null;
+const ui = { open: false, q: "", act: 0, side: null, sideAct: 0, expanded: new Set(), rows: [], view: "claude", layout: "v" };
+
+const $ = (id) => document.getElementById(id);
+const input = $("input"), card = $("card"), pop = $("popwrap"), pickBtn = $("pick");
+
+function toast(text) {
+  const t = $("toast"); t.textContent = text; t.classList.add("on");
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove("on"), 2200);
+}
+
+// ---- render ----
+function render() {
+  renderTabs(); renderTranscript(); renderRail(); renderComposer();
+  if (ui.open) renderPicker();
+}
+function renderTabs() {
+  $("tabs").innerHTML = tabs.map((t) => `<button class="t" role="tab" aria-selected="${t === cur}" data-tab="${t.id}">
+    ${t.running ? '<span class="wdot" aria-label="working"></span>' : ""}<span class="l">${esc(t.title)}</span></button>`).join("") +
+    `<button class="plus" id="newtab" title="New session" aria-label="New session"><svg><use href="#plus"/></svg></button><span class="grow"></span>
+     <button class="lay" id="lay" title="Switch the picker's agent strip">Agent strip: ${ui.layout === "v" ? "vertical" : "horizontal"}</button><span class="help">Interactive prototype · fake agents · data comes from the Host in the real app</span>`;
+}
+function renderTranscript() {
+  const el = $("transcript");
+  if (!cur.msgs.length) {
+    const a = agentOf(cur.agent);
+    el.innerHTML = `<div class="empty"><h2>New session</h2><p>Choosing a model chooses the agent. Open the picker with <span class="kbd">⌘.</span> or click the chip.</p></div>`;
+    return;
+  }
+  el.innerHTML = cur.msgs.map((m) => `<div class="msg-${m.k}">${m.html}</div>`).join("");
+  $("scroll").scrollTop = 1e9;
+}
+function elapsed() {
+  const s = Math.floor((Date.now() - cur.t0) / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+}
+function renderRail() {
+  const show = cur.running || cur.queue.length > 0;
+  $("railwrap").classList.toggle("show", show);
+  if (!show) return void ($("planpop").hidden = true);
+  const done = cur.plan.filter((p) => p.done).length;
+  const rail = $("rail");
+  // Built once; ticks only update the text inside, so a click never lands on a replaced button.
+  if (!rail.firstElementChild) {
+    rail.innerHTML = `
+    <span class="working" id="rwork"></span>
+    <button class="rtab" data-rail="plan" aria-haspopup="dialog">Plan <span class="n" id="rplan"></span><span class="now" id="rnow"></span><svg class="pchev"><use href="#dn"/></svg></button>
+    <button class="rtab" role="tab" data-rail="queue">Queue <span class="n" id="rqueue"></span></button>
+    <button class="rtab" role="tab" data-rail="context">Context <span class="bar"><i id="rbar"></i></span><span class="n" id="rctx"></span></button>
+    <span class="grow"></span>
+    <button class="rtab" data-act="sendnext" id="rnext">Send next ↵</button>`;
+  }
+  const work = $("rwork");
+  work.className = "working" + (cur.running ? "" : " idle");
+  work.innerHTML = cur.running ? `<span class="wdot"></span>Working · ${elapsed()}` : "Stopped";
+  $("rplan").textContent = `${done}/${cur.plan.length}`;
+  $("rnow").textContent = cur.running && cur.plan[cur.step] ? cur.plan[cur.step].t : "";
+  $("rnow").hidden = !$("rnow").textContent;
+  $("rqueue").textContent = cur.queue.length;
+  $("rbar").style.width = cur.ctx + "%";
+  $("rctx").textContent = cur.ctx + "%";
+  $("rnext").hidden = cur.running || !cur.queue.length;
+  rail.querySelectorAll("[data-rail]").forEach((b) => b.setAttribute("aria-selected", cur.railTab === b.dataset.rail));
+  rail.querySelector('[data-rail="plan"]').setAttribute("aria-expanded", cur.railTab === "plan");
+  let p = "";
+  if (cur.railTab === "queue") {
+    p = cur.queue.length ? cur.queue.map((q, i) => `<div class="q" draggable="${qEdit !== i}" data-q="${i}"><span class="h">⋮⋮</span>${qEdit === i
+        ? `<input class="qedit" data-qe="${i}" value="${esc(q)}" aria-label="Edit queued message">`
+        : `<span class="t" data-qt="${i}" title="Click to edit">${esc(q)}</span>`}
+        ${cur.running && qEdit !== i ? `<button class="qnow" data-qs="${i}" title="Send into the running turn">Send now</button>` : ""}
+        <button class="x" data-qx="${i}" aria-label="Remove queued message"><svg viewBox="0 0 24 24" style="width:12px;height:12px"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>`).join("")
+      : `<div class="msg-note" style="padding:4px 8px 6px">Nothing queued. Messages you send while the agent works wait here.</div>`;
+  } else if (cur.railTab === "context") {
+    p = `<div class="ctx"><div class="big"><i style="width:${cur.ctx}%"></i></div>
+      <div class="row2"><span>${Math.round(cur.ctx * 2)}k of 200k tokens</span><span>last turn ${(cur.ctx * 0.31).toFixed(1)}k</span></div></div>`;
+  }
+  const html = p ? `<div class="rpanel" role="tabpanel">${p}</div>` : "";
+  if ($("rpanel").dataset.h !== html) { $("rpanel").innerHTML = html; $("rpanel").dataset.h = html; $("rpanel").querySelector(".qedit")?.focus(); }
+  const pp = $("planpop");
+  pp.hidden = cur.railTab !== "plan";
+  if (!pp.hidden) {
+    pp.innerHTML = `<div class="ttl"><span>Plan</span><span class="n">${done} of ${cur.plan.length} done</span></div>` +
+      cur.plan.map((s, i) => `<div class="step ${s.done ? "done" : i === cur.step && cur.running ? "now" : ""}"><span class="b">${s.done ? '<svg><use href="#chk"/></svg>' : ""}</span>${esc(s.t)}</div>`).join("");
+  }
+}
+function chipHTML(t) {
+  const md = modeOf(t), m = modelOf(t), a = agentOf(t.agent);
+  return `<span class="modetag ${md.auto ? "auto" : ""}"><svg><use href="#${md.icon}"/></svg>${md.label}</span>
+    <span class="mono-tile chipico" style="background:${a.color};color:${a.ink}" title="${a.name}"><svg viewBox="0 0 24 24" aria-hidden="true">${a.glyph}</svg></span><span class="m">${esc(m.name)}</span>${t.fast ? '<svg class="fastic" aria-hidden="true"><use href="#fast"/></svg>' : ""}${t.effort ? `<span class="e">${t.effort}</span>` : ""}<svg class="chev"><use href="#dn"/></svg>`;
+}
+function renderComposer() {
+  const md = modeOf(cur), m = modelOf(cur), a = agentOf(cur.agent);
+  card.classList.toggle("auto", !!md.auto);
+  pickBtn.innerHTML = chipHTML(cur);
+  pickBtn.disabled = cur.running;
+  pickBtn.title = cur.running ? "Options change between turns" : "Agent, model, effort and mode (⌘.)";
+  pickBtn.setAttribute("aria-label", `${md.label} mode, ${a.name}, ${m.name}${cur.fast ? ", Fast" : ""}${cur.effort ? ", " + cur.effort + " effort" : ""}`);
+  pickBtn.setAttribute("aria-expanded", ui.open);
+  input.placeholder = !cur.started ? "Describe the task. Ask for a task list to track progress" : cur.running ? "Add a follow-up" : "Send a message";
+  $("stop").hidden = !cur.running;
+  $("send").disabled = !input.value.trim() && !(!cur.running && cur.queue.length);
+  $("send").setAttribute("aria-label", cur.running ? "Queue follow-up" : "Send");
+  $("legend").innerHTML = `<span>↵ send</span><span>⇧↵ newline</span><span>⌘. options</span><span>⇧Tab mode</span><span>⌘⇧/ effort</span>${cur.running ? "<span>esc esc stop</span>" : ""}`;
+}
+
+// ---- picker ----
+function matches(a, q) {
+  return a.models.filter((m) => !q || m.name.toLowerCase().includes(q) || m.desc.toLowerCase().includes(q));
+}
+function buildRows() {
+  const q = ui.q.trim().toLowerCase();
+  // Typing a query that the browsed agent has nothing for moves to the first agent that does.
+  if (q && !matches(agentOf(ui.view), q).length) {
+    const hit = AGENTS.find((a) => a.installed && matches(a, q).length);
+    if (hit) ui.view = hit.id;
+  }
+  const a = agentOf(ui.view);
+  const favRows = [...favs].map((k) => { const [ag, md] = k.split("/"); return { agent: ag, model: md, effort: memEffort.get(k) ?? agentOf(ag).models.find((x) => x.id === md).def, fav: true }; });
+  const quick = [...favRows, ...recents.filter((r) => !favs.has(key(r.agent, r.model))).slice(0, 2)];
+  const rec = q ? [] : quick.map((r, i) => ({ type: "recent", fav: !!r.fav, a: agentOf(r.agent), m: agentOf(r.agent).models.find((x) => x.id === r.model), effort: r.effort, key: i < 9 ? i + 1 : null }));
+  if (!a.installed) return [...rec, { type: "model", a, dis: true }];
+  const models = matches(a, q);
+  const capped = !q && !ui.expanded.has(a.id) && models.length > CAP;
+  const rows = [...rec, ...(capped ? models.slice(0, CAP) : models).map((m) => ({ type: "model", a, m }))];
+  if (capped) rows.push({ type: "more", a, n: models.length });
+  return rows;
+}
+function navRows() { return [...ui.rows.filter((r) => !r.dis), ...optRows()]; }
+function optRows() {
+  const m = modelOf(cur);
+  return [{ type: "opt", id: "effort", dis: !m.efforts.length }, { type: "opt", id: "fast", dis: !m.fast }, { type: "opt", id: "mode" }].filter((r) => !r.dis);
+}
+function renderPicker() {
+  ui.rows = buildRows();
+  const nav = navRows();
+  ui.act = Math.max(0, Math.min(ui.act, nav.length - 1));
+  const active = nav[ui.act];
+  const m = modelOf(cur), md = modeOf(cur);
+  // Each section is a labelled group, so a screen reader says "Favorites, Opus 5.5 …".
+  const QUICK = "Recent & favorites";
+  const secOf = (r) => r.type === "recent" ? QUICK : agentOf(ui.view).name;
+  const groups = [];
+  for (const r of ui.rows) {
+    const name = secOf(r);
+    if (groups.at(-1)?.name !== name) groups.push({ name, rows: [] });
+    groups.at(-1).rows.push(r);
+  }
+  const quickGroup = groups.find((g) => g.name === QUICK);
+  if (quickGroup && !favs.size) quickGroup.hint = true;
+  const showHeads = groups.length > 1;
+  const listHTML = groups.map((g, gi) => {
+    const extra = g.name === agentOf(ui.view).name && cur.started && ui.view !== cur.agent && agentOf(ui.view).installed ? '<span class="cur">opens a new session</span>' : "";
+    return `<div role="group" aria-labelledby="sec-${gi}">${showHeads ? `<div class="sec" id="sec-${gi}">${g.name}${extra}</div>` : `<span class="sr" id="sec-${gi}">${g.name}</span>`}
+      ${g.rows.map(rowHTML).join("")}
+      ${g.hint ? '<div class="hint"><svg viewBox="0 0 24 24"><path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></svg>Star a model to keep it here · <span class="kbd">⌘D</span></div>' : ""}</div>`;
+  }).join("");
+  function rowHTML(r) {
+    if (r.type === "recent") {
+      const other = cur.started && r.a.id !== cur.agent;
+      const sel = r.a.id === cur.agent && r.m.id === cur.model && r.effort === cur.effort;
+      return `<div class="it rec ${r === active ? "act" : ""} ${sel ? "sel" : ""}" data-nav="${nav.indexOf(r)}" role="option" aria-selected="${sel}" id="row-${nav.indexOf(r)}">
+        <span class="adot" style="background:${r.a.dot ?? r.a.color}" aria-hidden="true"></span>
+        <span class="name">${esc(r.m.name)}</span>${r.fav ? '<svg class="favmark" viewBox="0 0 24 24" role="img" aria-label="favorite"><path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></svg>' : ""}${r.a.id !== ui.view ? `<span class="agn">${r.a.short}</span>` : `<span class="sr">${r.a.short}</span>`}${r.effort ? `<span class="eff">${r.effort}</span>` : ""}
+        <span class="r">${sel ? '<svg class="chk"><use href="#chk"/></svg>' : ""}${other ? '<svg><use href="#ext"/></svg>' : ""}${r.key ? `<span class="kbd">⌃${r.key}</span>` : ""}</span></div>`;
+    }
+    if (r.type === "more") return `<div class="it more ${r === active ? "act" : ""}" data-nav="${nav.indexOf(r)}" role="option">Show all ${r.n} models</div>`;
+    if (r.dis) return `<div class="none">${r.a.name} is not installed on this computer.<br><button class="lnk">Install in Settings › Agents</button></div>`;
+    const other = cur.started && r.a.id !== cur.agent;
+    const sel = r.a.id === cur.agent && r.m.id === cur.model;
+    return `<div class="it ${r === active ? "act" : ""} ${sel ? "sel" : ""}" data-nav="${nav.indexOf(r)}" role="option" aria-selected="${sel}" id="row-${nav.indexOf(r)}" aria-description="${favs.has(key(r.a.id, r.m.id)) ? "Favorite. " : ""}Press Command D to ${favs.has(key(r.a.id, r.m.id)) ? "remove from" : "add to"} favorites">
+      <span class="name">${esc(r.m.name)}</span><span class="desc">${other ? "New session with " + r.a.short : esc(r.m.desc)}</span>
+      <span class="r">${(sel ? cur.fast : fastFor(r.a, r.m)) ? '<svg class="fastic" role="img" aria-label="Fast"><use href="#fast"/></svg>' : ""}${r.m.efforts.length ? `<span class="eff">${sel ? cur.effort : memEffort.get(key(r.a.id, r.m.id)) ?? r.m.def}</span>` : ""}${sel ? '<svg class="chk"><use href="#chk"/></svg>' : ""}${other ? '<svg><use href="#ext"/></svg>' : ""}
+      <span class="star ${favs.has(key(r.a.id, r.m.id)) ? "on" : ""}" data-fav="${key(r.a.id, r.m.id)}" aria-hidden="true" title="${favs.has(key(r.a.id, r.m.id)) ? "Remove from favorites (⌘D)" : "Add to favorites (⌘D)"}"><svg viewBox="0 0 24 24"><path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></svg></span></span></div>`;
+  }
+  const opt = (id, label, val, dis) => {
+    const r = nav.find((x) => x.type === "opt" && x.id === id);
+    return `<div class="opt ${r && r === active ? "act" : ""} ${ui.side === id ? "open" : ""} ${dis ? "dis" : ""}" ${r ? `data-nav="${nav.indexOf(r)}"` : ""} data-opt="${id}" role="button" aria-label="${label}: ${val}" tabindex="${dis ? -1 : 0}" aria-disabled="${dis}" aria-haspopup="menu" aria-expanded="${ui.side === id}">
+      ${label}<span class="v">${val}${dis ? "" : '<svg><use href="#rt"/></svg>'}</span></div>`;
+  };
+  // Fast is a switch, not a list: it flips in place.
+  const fastRow = () => {
+    const r = nav.find((x) => x.type === "opt" && x.id === "fast");
+    return `<div class="opt ${r === active ? "act" : ""}" data-nav="${nav.indexOf(r)}" data-opt="fast" role="switch" aria-checked="${cur.fast}" aria-label="Fast mode" aria-description="About 2x speed, uses more of your plan" tabindex="0">
+      Fast<span class="v"><span class="fhint">2x speed · more usage</span><span class="sw ${cur.fast ? "on" : ""}"></span></span></div>`;
+  };
+  let side = "";
+  if (ui.side) {
+    const items = ui.side === "effort" ? m.efforts.map((e) => ({ id: e, label: e, d: "" })) : agentOf(cur.agent).modes.map((x) => ({ id: x.id, label: x.label, d: x.d }));
+    const curVal = ui.side === "effort" ? cur.effort : cur.mode;
+    side = `<div class="side" role="menu" aria-label="${ui.side}" id="side"><div class="ttl">${ui.side === "effort" ? "Effort · " + esc(m.name) : "Mode · " + agentOf(cur.agent).short}</div>
+      ${items.map((it, i) => `<div class="o ${i === ui.sideAct ? "act" : ""}" role="menuitemradio" aria-checked="${it.id === curVal}" data-side="${i}">
+        <span>${it.label}</span>${it.d ? `<span class="d">${it.d}</span>` : ""}${it.id === curVal ? '<svg class="c"><use href="#chk"/></svg>' : ""}</div>`).join("")}</div>`;
+  }
+  const hadFocus = document.activeElement && document.activeElement.id === "psearch";
+  const caret = hadFocus ? document.activeElement.selectionStart : null;
+  const q = ui.q.trim().toLowerCase(), va = agentOf(ui.view);
+  const strip = `<div class="agents" role="tablist" aria-label="Agents" aria-orientation="${ui.layout === "v" ? "vertical" : "horizontal"}">${AGENTS.map((a) => {
+    const n = q ? matches(a, q).length : 0;
+    return `<button class="ag ${a.id === ui.view ? "on" : ""} ${a.installed ? "" : "off"}" role="tab" aria-selected="${a.id === ui.view}" data-agent="${a.id}" title="${a.name}${a.installed ? "" : " · not installed"}" aria-label="${a.name}${a.installed ? "" : ", not installed"}${a.id === cur.agent ? ", in use" : ""}" tabindex="${a.id === ui.view ? 0 : -1}">
+      <span class="mono-tile" style="background:${a.color};color:${a.ink}"><svg viewBox="0 0 24 24" aria-hidden="true">${a.glyph}</svg></span><span class="agname">${a.short}</span>${a.id === cur.agent ? '<span class="here" aria-label="current"></span>' : ""}${q && n ? `<span class="cnt">${n}</span>` : ""}</button>`;
+  }).join("")}</div>`;
+  const head = `<div class="vhead"><span>${va.name}</span>${cur.started && va.id === cur.agent ? '<span class="cur">this session</span>' : cur.started && va.installed ? `<span class="cur">opens a new session</span>` : ""}</div>`;
+  pop.innerHTML = `<div class="pop ${ui.layout}" role="dialog" aria-label="Agent options" id="pop">
+      <div class="search"><svg><use href="#srch"/></svg><input id="psearch" placeholder="Search ${esc(va.short)} models" value="${esc(ui.q)}" aria-controls="plist" aria-activedescendant="row-${ui.act}" autocomplete="off"></div>
+      <div class="body">${strip}<div class="lcol"><div class="list" id="plist" role="listbox" aria-label="Models">${listHTML || `<div class="none">No ${esc(va.short)} models match</div>`}</div></div></div>
+      ${opt("effort", "Effort", m.efforts.length ? cur.effort : "not offered", !m.efforts.length)}
+      ${m.fast ? fastRow() : ""}
+      ${opt("mode", "Mode", md.label, false)}
+      <div class="foot"><span><span class="kbd">↑↓</span>move</span><span><span class="kbd">→</span>open</span><span><span class="kbd">↵</span>pick</span><span><span class="kbd">⌘[ ]</span>agent</span><span><span class="kbd">⌘D</span>favorite</span><span class="grow"></span><span><span class="kbd">esc</span></span></div>
+    </div>${side}`;
+  if (ui.side) {
+    const row = pop.querySelector(`[data-opt="${ui.side}"]`), p = $("pop");
+    $("side").style.marginBottom = Math.max(0, p.getBoundingClientRect().bottom - row.getBoundingClientRect().bottom - 6) + "px";
+  }
+  const s = $("psearch");
+  if (ui.side) { $("side").setAttribute("tabindex", "-1"); $("side").focus(); }
+  else if (ui.focus === "strip") pop.querySelector('.ag[tabindex="0"]').focus();
+  else if (ui.focus === "effort" || ui.focus === "fast" || ui.focus === "mode") (pop.querySelector(`[data-opt="${ui.focus}"][tabindex="0"]`) ?? s).focus();
+  else { s.focus(); if (caret !== null) s.setSelectionRange(caret, caret); }
+  pop.querySelector(".it.act")?.scrollIntoView({ block: "nearest" });
+  const ags = pop.querySelector(".agents");
+  pop.querySelector(".ag.on")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  const fade = () => {
+    const v = ui.layout === "v", pos = v ? ags.scrollTop : ags.scrollLeft, room = v ? ags.scrollHeight - ags.clientHeight : ags.scrollWidth - ags.clientWidth;
+    ags.classList.toggle("up", pos > 1); ags.classList.toggle("down", pos < room - 1);
+  };
+  ags.addEventListener("scroll", fade, { passive: true }); fade();
+}
+function openPicker() {
+  if (cur.running) return toast("Options change between turns");
+  ui.open = true; ui.q = ""; ui.side = null; ui.act = 0; ui.view = cur.agent; ui.focus = "search";
+  pop.hidden = false; render();
+  const nav = navRows(); ui.act = Math.max(0, nav.findIndex((r) => r.m && r.a.id === cur.agent && r.m.id === cur.model)); renderPicker();
+}
+function closePicker(focusInput = true) {
+  ui.open = false; ui.side = null; pop.hidden = true; pop.innerHTML = ""; renderComposer();
+  if (focusInput) input.focus();
+}
+function chooseModel(a, m, effort) {
+  if (cur.started && a.id !== cur.agent) {
+    const draft = input.value;
+    cur.draft = ""; input.value = "";
+    const t = newTab(a.id, m.id, draft);
+    t.effort = effort ?? memEffort.get(key(a.id, m.id)) ?? m.def;
+    t.fast = fastFor(a, m);
+    tabs.push(t); switchTo(t); closePicker();
+    toast(`New session with ${a.short} · ${m.name}. Your draft came along.`);
+    return;
+  }
+  const changedAgent = a.id !== cur.agent;
+  cur.agent = a.id; cur.model = m.id;
+  cur.effort = effort ?? memEffort.get(key(a.id, m.id)) ?? m.def;
+  cur.fast = fastFor(a, m);
+  if (changedAgent) cur.mode = a.modes[0].id;
+  closePicker();
+  toast(changedAgent ? `Agent is now ${a.name} · ${m.name}` : `Model: ${m.name}`);
+}
+function toggleFast() {
+  const m = modelOf(cur); if (!m.fast) return;
+  cur.fast = !cur.fast; memFast.set(key(cur.agent, cur.model), cur.fast);
+  renderComposer(); if (ui.open) renderPicker();
+  toast(cur.fast ? `Fast on for ${m.name} · about 2x speed, uses more of your plan` : "Fast off");
+}
+function activate(r) {
+  if (!r) return;
+  if (r.type === "model") return chooseModel(r.a, r.m);
+  if (r.type === "recent") return chooseModel(r.a, r.m, r.effort);
+  if (r.type === "more") { ui.expanded.add(r.a.id); return renderPicker(); }
+  if (r.type === "opt" && r.id === "fast") { ui.focus = "fast"; return toggleFast(); }
+  if (r.type === "opt") { ui.side = r.id; ui.sideAct = sideIndex(); renderPicker(); }
+}
+function sideItems() { return ui.side === "effort" ? modelOf(cur).efforts : agentOf(cur.agent).modes.map((m) => m.id); }
+function sideIndex() { const items = sideItems(); return Math.max(0, items.indexOf(ui.side === "effort" ? cur.effort : cur.mode)); }
+function pickSide(i) {
+  const v = sideItems()[i];
+  if (ui.side === "effort") { cur.effort = v; memEffort.set(key(cur.agent, cur.model), v); } else cur.mode = v;
+  ui.side = null; renderComposer(); renderPicker();
+}
+pop.addEventListener("input", (e) => { if (e.target.id === "psearch") { ui.q = e.target.value; ui.act = 0; renderPicker(); } });
+function switchAgent(step) {
+  const i = AGENTS.findIndex((a) => a.id === ui.view);
+  ui.view = AGENTS[(i + step + AGENTS.length) % AGENTS.length].id; ui.act = 0;
+}
+pop.addEventListener("keydown", (e) => {
+  const nav = navRows();
+  // Tab walks the dialog's parts and stays inside it.
+  if (e.key === "Tab" && !ui.side) {
+    const order = ["search", "strip", ...(pop.querySelector('[data-opt="effort"][tabindex="0"]') ? ["effort"] : []), ...(pop.querySelector('[data-opt="fast"]') ? ["fast"] : []), "mode"];
+    const i = order.indexOf(ui.focus ?? "search");
+    ui.focus = order[(i + (e.shiftKey ? -1 : 1) + order.length) % order.length];
+    e.preventDefault(); return renderPicker();
+  }
+  if ((e.metaKey || e.ctrlKey) && (e.key === "[" || e.key === "]")) { e.preventDefault(); switchAgent(e.key === "]" ? 1 : -1); return renderPicker(); }
+  if (!ui.side && e.target.closest(".ag")) {
+    const fwd = ui.layout === "v" ? "ArrowDown" : "ArrowRight", back = ui.layout === "v" ? "ArrowUp" : "ArrowLeft";
+    if (e.key === fwd || e.key === back) { e.preventDefault(); switchAgent(e.key === fwd ? 1 : -1); return renderPicker(); }
+    if (e.key === "Escape") return e.preventDefault(), closePicker();
+    return;
+  }
+  const o = !ui.side && e.target.closest("[data-opt]");
+  if (o) {
+    if (o.dataset.opt === "fast" && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); ui.focus = "fast"; return toggleFast(); }
+    if (o.dataset.opt !== "fast" && (e.key === "Enter" || e.key === " " || e.key === "ArrowRight")) { e.preventDefault(); ui.side = o.dataset.opt; ui.sideAct = sideIndex(); return renderPicker(); }
+    if (e.key === "Escape") return e.preventDefault(), closePicker();
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    ui.focus = "search";
+  }
+  if (ui.side) {
+    const n = sideItems().length;
+    if (e.key === "ArrowDown") ui.sideAct = (ui.sideAct + 1) % n;
+    else if (e.key === "ArrowUp") ui.sideAct = (ui.sideAct - 1 + n) % n;
+    else if (e.key === "Enter" || e.key === " ") return e.preventDefault(), pickSide(ui.sideAct);
+    else if (e.key === "ArrowLeft" || e.key === "Escape" || e.key === "Tab") ui.side = null;
+    else return;
+    e.preventDefault(); return renderPicker();
+  }
+  if (e.key === "ArrowDown") ui.act = (ui.act + 1) % nav.length;
+  else if (e.key === "ArrowUp") ui.act = (ui.act - 1 + nav.length) % nav.length;
+  else if (e.key === "Enter") return e.preventDefault(), activate(nav[ui.act]);
+  else if (e.key === "ArrowRight" && nav[ui.act]?.type === "opt" && nav[ui.act].id !== "fast") return e.preventDefault(), activate(nav[ui.act]);
+  else if (e.key === "Escape") return e.preventDefault(), closePicker();
+  else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "d") { const r = nav[ui.act]; if (r?.m) { const k = key(r.a.id, r.m.id); favs.has(k) ? favs.delete(k) : favs.add(k); } }
+  else if (e.ctrlKey && /^[1-9]$/.test(e.key)) { const r = nav.find((x) => x.type === "recent" && x.key === +e.key); if (r) chooseModel(r.a, r.m, r.effort); return e.preventDefault(); }
+  else return;
+  e.preventDefault(); renderPicker();
+});
+pop.addEventListener("mousemove", (e) => {
+  const o = e.target.closest("[data-side]");
+  if (o && +o.dataset.side !== ui.sideAct) { ui.sideAct = +o.dataset.side; renderPicker(); return; }
+  const r = e.target.closest("[data-nav]");
+  if (r && +r.dataset.nav !== ui.act) {
+    ui.act = +r.dataset.nav;
+    const row = navRows()[ui.act];
+    const lists = row.type === "opt" && row.id !== "fast";
+    if (lists && ui.side !== row.id) { ui.side = row.id; ui.sideAct = sideIndex(); return renderPicker(); }
+    if (!lists && ui.side) { ui.side = null; return renderPicker(); }
+    // Hover only moves the highlight: rebuilding here would swap the element under a click.
+    pop.querySelectorAll("[data-nav].act").forEach((x) => x.classList.remove("act"));
+    r.classList.add("act");
+  }
+});
+pop.addEventListener("click", (e) => {
+  const st = e.target.closest("[data-fav]");
+  if (st) { const k = st.dataset.fav; favs.has(k) ? favs.delete(k) : favs.add(k); toast(favs.has(k) ? "Added to favorites" : "Removed from favorites"); return renderPicker(); }
+  const ag = e.target.closest("[data-agent]"); if (ag) { ui.view = ag.dataset.agent; ui.act = 0; ui.side = null; ui.focus = "search"; return renderPicker(); }
+  if (e.target.closest(".lnk")) return toast("Opens Settings › Agents");
+  const o = e.target.closest("[data-side]"); if (o) return pickSide(+o.dataset.side);
+  const r = e.target.closest("[data-nav]"); if (r) activate(navRows()[+r.dataset.nav]);
+});
+document.addEventListener("pointerdown", (e) => {
+  if (ui.open && !pop.contains(e.target) && !pickBtn.contains(e.target)) closePicker(false);
+  if (cur.railTab === "plan" && !$("planpop").contains(e.target) && !e.target.closest('[data-rail="plan"]')) { cur.railTab = null; renderRail(); }
+});
+pickBtn.addEventListener("click", () => (ui.open ? closePicker() : openPicker()));
+
+// ---- turn simulation ----
+const PLANS = [
+  ["Read the composer and its options bar", "Add the picker panel", "Group models under their agent", "Move effort to a side list", "Run the desktop tests"],
+  ["Find where the queue is rendered", "Move it into the rail", "Animate the rail in and out", "Update the tests"],
+  ["Check the follow-up", "Make the change", "Run typecheck and tests"],
+];
+const TOOLS = ["Read src/panels/SessionPanel.tsx", 'Edited src/panels/OptionsBar.tsx <span class="add">+42</span> <span class="del">−18</span>',
+  "Ran npm run typecheck", 'Edited test/feed.test.tsx <span class="add">+31</span>', "Ran npm test --workspace clients/desktop", "Searched for useNewSessionAgent"];
+function push(k, html, tab = cur) { tab.msgs.push({ k, html }); if (tab === cur) renderTranscript(); }
+function startTurn(tab) {
+  remember(tab);
+  tab.running = true; tab.t0 = Date.now();
+  tab.plan = PLANS[Math.floor(Math.random() * PLANS.length)].map((t) => ({ t, done: false })); tab.step = 0;
+  tab.railTab = tab.queue.length ? "queue" : null;
+  const m = modelOf(tab);
+  push("note", `${agentOf(tab.agent).short} · ${esc(m.name)}${tab.effort ? " · " + tab.effort : ""}${tab.fast ? " · Fast" : ""} · ${modeOf(tab).label}`, tab);
+  tab.timer = setInterval(() => tick(tab), location.search.includes("slow") ? 9000 : 2600);
+  render();
+}
+function tick(tab) {
+  if (!tab.running) return;
+  push("tool", TOOLS[Math.floor(Math.random() * TOOLS.length)], tab);
+  tab.plan[tab.step].done = true; tab.step++;
+  tab.ctx = Math.min(96, tab.ctx + 3);
+  if (tab.step >= tab.plan.length) endTurn(tab, false);
+  if (tab === cur) { renderRail(); renderTabs(); }
+}
+function endTurn(tab, stopped) {
+  clearInterval(tab.timer); tab.running = false;
+  push(stopped ? "note" : "agent", stopped ? "Stopped by you." : "Done. The picker now groups models under each agent, and effort opens as a list beside it.", tab);
+  if (!stopped && tab.queue.length) {
+    const next = tab.queue.shift();
+    setTimeout(() => { push("user", esc(next), tab); startTurn(tab); }, 500);
+  }
+  if (!tab.queue.length) tab.railTab = null;
+  render();
+}
+function send() {
+  const text = input.value.trim();
+  if (!text) { if (!cur.running && cur.queue.length) sendNext(); return; }
+  input.value = ""; autosize();
+  if (cur.running) {
+    cur.queue.push(text); cur.railTab = "queue"; render();
+    return toast("Queued. It goes when this turn ends.");
+  }
+  if (!cur.started) { cur.started = true; cur.title = text.length > 28 ? text.slice(0, 28) + "…" : text; }
+  push("user", esc(text));
+  startTurn(cur);
+}
+function sendNext() { const next = cur.queue.shift(); push("user", esc(next)); startTurn(cur); }
+function switchTo(t) {
+  cur.draft = input.value; cur = t; input.value = t.draft; autosize();
+  if (ui.open) closePicker(false);
+  render(); input.focus();
+}
+
+// ---- events ----
+function autosize() { input.style.height = "auto"; input.style.height = Math.min(240, input.scrollHeight) + "px"; }
+input.addEventListener("input", () => { autosize(); renderComposer(); });
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  else if (e.key === "Tab" && e.shiftKey) {
+    e.preventDefault();
+    if (cur.running) return toast("Options change between turns");
+    const modes = agentOf(cur.agent).modes, i = modes.findIndex((m) => m.id === cur.mode);
+    cur.mode = modes[(i + 1) % modes.length].id; renderComposer(); toast(`Mode: ${modeOf(cur).label}`);
+  }
+});
+let lastEsc = 0;
+document.addEventListener("keydown", (e) => {
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key === ".") { e.preventDefault(); ui.open ? closePicker() : openPicker(); }
+  else if (mod && e.shiftKey && (e.key === "/" || e.key === "?")) {
+    e.preventDefault();
+    if (cur.running) return toast("Options change between turns");
+    const effs = modelOf(cur).efforts; if (!effs.length) return toast(`${modelOf(cur).name} has no effort levels`);
+    cur.effort = effs[(effs.indexOf(cur.effort) + 1) % effs.length]; renderComposer(); if (ui.open) renderPicker(); toast(`Effort: ${cur.effort}`);
+  }
+  else if (mod && e.key.toLowerCase() === "u") { e.preventDefault(); toast("Attach: opens the file dialog"); }
+  else if (mod && e.key.toLowerCase() === "e") { e.preventDefault(); $("voice").click(); }
+  else if (e.key === "Escape" && cur.railTab === "plan") { cur.railTab = null; renderRail(); }
+  else if (e.key === "Escape" && !ui.open && cur.running) {
+    if (Date.now() - lastEsc < 600) { endTurn(cur, true); lastEsc = 0; } else { lastEsc = Date.now(); toast("Press Esc again to stop"); }
+  }
+});
+$("send").addEventListener("click", send);
+$("stop").addEventListener("click", () => endTurn(cur, true));
+$("attach").addEventListener("click", () => toast("Attach: opens the file dialog"));
+$("voice").addEventListener("click", function () { this.classList.toggle("rec"); toast(this.classList.contains("rec") ? "Listening… (⌘E to stop)" : "Dictation stopped"); });
+$("tabs").addEventListener("click", (e) => {
+  if (e.target.closest("#lay")) { ui.layout = ui.layout === "v" ? "h" : "v"; renderTabs(); if (ui.open) renderPicker(); else openPicker(); return; }
+  if (e.target.closest("#newtab")) { const t = newTab(cur.agent, cur.model); tabs.push(t); return switchTo(t); }
+  const b = e.target.closest("[data-tab]"); if (b) switchTo(tabs.find((t) => t.id === +b.dataset.tab));
+});
+$("rail").addEventListener("pointerdown", (e) => {
+  if (e.target.closest('[data-act="sendnext"]')) return sendNext();
+  const b = e.target.closest("[data-rail]"); if (!b) return;
+  cur.railTab = cur.railTab === b.dataset.rail ? null : b.dataset.rail; renderRail();
+});
+$("rpanel").addEventListener("click", (e) => {
+  const t = e.target.closest("[data-qt]");
+  if (t) { qEdit = +t.dataset.qt; return renderRail(); }
+  const sn = e.target.closest("[data-qs]");
+  if (sn) {
+    const [msg] = cur.queue.splice(+sn.dataset.qs, 1);
+    push("user", esc(msg)); push("note", "Steered into this turn");
+    toast("Sent into the running turn");
+    if (!cur.queue.length) cur.railTab = null;
+    return render();
+  }
+  const x = e.target.closest("[data-qx]"); if (!x) return;
+  cur.queue.splice(+x.dataset.qx, 1); if (!cur.queue.length && !cur.running) cur.railTab = null; render();
+});
+$("rpanel").addEventListener("keydown", (e) => {
+  const f = e.target.closest("[data-qe]"); if (!f) return;
+  if (e.key === "Enter") { const v = f.value.trim(); const i = +f.dataset.qe; if (v) cur.queue[i] = v; else cur.queue.splice(i, 1); qEdit = null; renderRail(); input.focus(); }
+  else if (e.key === "Escape") { e.stopPropagation(); qEdit = null; renderRail(); input.focus(); }
+});
+$("rpanel").addEventListener("focusout", (e) => {
+  const f = e.target.closest("[data-qe]"); if (!f || qEdit === null) return;
+  const v = f.value.trim(); if (v) cur.queue[+f.dataset.qe] = v; qEdit = null; setTimeout(renderRail);
+});
+let dragFrom = null;
+$("rpanel").addEventListener("dragstart", (e) => { const q = e.target.closest("[data-q]"); if (q) { dragFrom = +q.dataset.q; q.classList.add("dragging"); } });
+$("rpanel").addEventListener("dragover", (e) => { if (dragFrom !== null) e.preventDefault(); });
+$("rpanel").addEventListener("drop", (e) => {
+  const q = e.target.closest("[data-q]"); if (!q || dragFrom === null) return;
+  const [item] = cur.queue.splice(dragFrom, 1); cur.queue.splice(+q.dataset.q, 0, item); dragFrom = null; renderRail();
+});
+$("rpanel").addEventListener("dragend", () => { dragFrom = null; renderRail(); });
+setInterval(() => { if (cur.running) $("rail").querySelector(".working").innerHTML = `<span class="wdot"></span>Working · ${elapsed()}`; }, 1000);
+
+render(); input.focus();
+</script>
+</body>
+</html>

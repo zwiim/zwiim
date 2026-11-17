@@ -1,5 +1,5 @@
-// The follow-ups waiting for the agent's running turn to end, above the
-// composer. The host keeps the queue, so every device shows and changes the
+// The follow-ups waiting for the agent's running turn to end, in the turn
+// rail's Queue. The host keeps the queue, so every device shows and changes the
 // same one; it sends the first when a turn ends normally and holds the queue
 // after a stopped or failed turn until the user sends one.
 
@@ -48,10 +48,7 @@ export function FollowUpQueue({
   }
 
   return (
-    <section className="bg-card animate-enter flex flex-col gap-1 rounded-lg px-3 py-2 text-xs shadow-sm" data-testid="follow-ups">
-      <span className="text-muted-foreground" role="status">
-        {running ? "Queued" : "Paused · Send one to carry on"}
-      </span>
+    <section className="flex flex-col gap-1 px-3 pb-1 text-xs" data-testid="follow-ups">
       {items.map((f, i) => (
         <div key={f.follow_up_id} className="flex min-w-0 items-center gap-2" data-testid="follow-up">
           {editing?.id === f.follow_up_id ? (

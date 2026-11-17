@@ -144,6 +144,74 @@ export function rememberAgentChoices(agent: string, choices: Partial<AgentChoice
   write(`agent.${agent}`, next);
 }
 
+/** A model, by the agent that runs it: the same model id under two agents is two choices. */
+export interface ModelRef {
+  agent: string;
+  model: string;
+}
+
+const MAX_RECENT_MODELS = 5;
+
+function modelRefs<T extends ModelRef>(key: string, pick: (v: Partial<T>) => T | null): T[] {
+  const v = read<unknown>(key, []);
+  return Array.isArray(v) ? v.flatMap((e) => (e && typeof e === "object" ? (pick(e as Partial<T>) ?? []) : [])) : [];
+}
+
+function refOf(v: Partial<ModelRef>): ModelRef | null {
+  return typeof v.agent === "string" && typeof v.model === "string" ? { agent: v.agent, model: v.model } : null;
+}
+
+function sameModel(a: ModelRef, b: ModelRef): boolean {
+  return a.agent === b.agent && a.model === b.model;
+}
+
+export function favoriteModels(): ModelRef[] {
+  return modelRefs<ModelRef>("models.favorites", refOf);
+}
+
+/** Stars or unstars a model; returns whether it is a favorite now. */
+export function toggleFavoriteModel(ref: ModelRef): boolean {
+  const all = favoriteModels();
+  const on = !all.some((f) => sameModel(f, ref));
+  write("models.favorites", on ? [...all, { agent: ref.agent, model: ref.model }] : all.filter((f) => !sameModel(f, ref)));
+  return on;
+}
+
+export function recentModels(): (ModelRef & { effort: string | null })[] {
+  return modelRefs<ModelRef & { effort: string | null }>("models.recent", (v) => {
+    const ref = refOf(v);
+    return ref && { ...ref, effort: typeof v.effort === "string" ? v.effort : null };
+  });
+}
+
+export function rememberRecentModel(ref: ModelRef, effort: string | null): void {
+  const rest = recentModels().filter((r) => !sameModel(r, ref));
+  write("models.recent", [{ agent: ref.agent, model: ref.model, effort }, ...rest].slice(0, MAX_RECENT_MODELS));
+}
+
+/** The effort last chosen on a model; effort belongs to the model. */
+export function modelEffort(ref: ModelRef): string | null {
+  const v = read<Record<string, unknown>>("models.effort", {});
+  const effort = v && typeof v === "object" ? v[`${ref.agent}/${ref.model}`] : null;
+  return typeof effort === "string" ? effort : null;
+}
+
+export function rememberModelEffort(ref: ModelRef, effort: string): void {
+  const v = read<Record<string, unknown>>("models.effort", {});
+  write("models.effort", { ...(v && typeof v === "object" ? v : {}), [`${ref.agent}/${ref.model}`]: effort });
+}
+
+/** Whether fast mode was last turned on for a model; it starts off. */
+export function modelFast(ref: ModelRef): boolean {
+  const v = read<Record<string, unknown>>("models.fast", {});
+  return !!v && typeof v === "object" && v[`${ref.agent}/${ref.model}`] === true;
+}
+
+export function rememberModelFast(ref: ModelRef, on: boolean): void {
+  const v = read<Record<string, unknown>>("models.fast", {});
+  write("models.fast", { ...(v && typeof v === "object" ? v : {}), [`${ref.agent}/${ref.model}`]: on });
+}
+
 /** The first-run choice between signing in and local use was made. */
 export function welcomed(): boolean {
   return read<boolean>("welcomed", false) === true;

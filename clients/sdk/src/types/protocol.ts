@@ -69,6 +69,8 @@ export type HostErrorCode =
   | "fork_unavailable"
   /** `session.send`: a forked session's transcript file is gone; sending again goes on without it. */
   | "transcript_missing"
+  /** `session.set_agent`: only a fork waiting for its first message can change agent. */
+  | "agent_fixed"
   /** `session.retry` / `session.retry_in_new_chat`: the session has no saved can't-reach turn to retry. */
   | "nothing_to_retry"
   /** `agent.error` code: the agent could not reach its provider's server. */
@@ -889,6 +891,11 @@ export interface SessionOptions {
   effort: ChoiceOption | null;
   mode: ModeOption | null;
   /**
+   * Whether the agent's fast mode is on; null where the model offers none,
+   * absent on older Hosts. Capability `session.fast`.
+   */
+  fast?: boolean | null;
+  /**
    * Whether `session.revert` can rewind this session's chat as well as its
    * files. Present on `session.options` replies; absent on older Hosts and on
    * live option changes (keep the last value seen).
@@ -901,6 +908,8 @@ export interface OptionsRequest {
   model?: string;
   effort?: string;
   mode?: SessionMode;
+  /** Capability `session.fast`. A new session starts with it off unless `true`. */
+  fast?: boolean;
 }
 
 /** A slash command the agent offers. Run it by sending `/name args` as text. */
@@ -965,6 +974,11 @@ export interface AgentSummary {
    * none. See `effortFor`.
    */
   effort_by_model: Record<string, ChoiceOption | null>;
+  /**
+   * Fast mode belongs to the model too: whether each model that has run here
+   * offers it, by model value. See `fastFor`. Capability `session.fast`.
+   */
+  fast_by_model?: Record<string, boolean>;
   /** The slash commands it offered in its last session here; null before its first. */
   commands: SessionCommand[] | null;
   /** It is the agent new sessions start with (`defaults.agent`). Capability `settings`. */
@@ -2246,6 +2260,15 @@ export interface Operations {
    */
   "session.transcript_remove": [{ session_id: string }, Record<string, never>];
   /**
+   * Move a fork to another agent before its first message, with `options` as
+   * `session.start` takes them. Capability `session.set_agent`. `agent_fixed`
+   * once the session's agent has started, or for a session that is not a fork.
+   */
+  "session.set_agent": [
+    { session_id: string; agent: AgentType; options?: OptionsRequest },
+    { session_id: string; options: SessionOptions },
+  ];
+  /**
    * Send now when the agent is idle and nothing is queued, else queue behind
    * what is. The Host sends the next one when a turn ends normally; a stopped
    * or failed turn holds the queue. Capability `session.follow_ups`.
@@ -2517,6 +2540,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "session.continue_plan",
   "session.fork",
   "session.transcript_remove",
+  "session.set_agent",
   "session.follow_up",
   "session.follow_up_send",
   "session.respond",

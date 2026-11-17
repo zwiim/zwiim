@@ -730,7 +730,7 @@ describe("sessions and removed worktrees", () => {
     await tick();
     const dialog = screen.getByRole("dialog", { name: "New worktree" });
     fireEvent.change(within(dialog).getByLabelText("What do you want to work on?"), { target: { value: "go" } });
-    expect((within(dialog).getByLabelText("Agent") as HTMLSelectElement).value).toBe("claude_code");
+    expect(within(dialog).getByRole("button", { name: /^Claude Code/ })).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Create" }));
     await tick();
     expect(
@@ -783,7 +783,7 @@ describe("sessions and removed worktrees", () => {
     const dialog = screen.getByRole("dialog", { name: "New worktree" });
     // The remote's default branch is preselected; the mode menu is not offered here.
     expect(within(dialog).getByLabelText("Base branch: origin/main")).toBeTruthy();
-    expect(within(dialog).getByRole("button", { name: /^Session options:/ }).getAttribute("aria-label")).not.toMatch(/Ask|Plan|Auto/);
+    expect(within(dialog).getByRole("button", { name: /^Claude Code, / }).getAttribute("aria-label")).not.toMatch(/ mode,/);
     fireEvent.click(within(dialog).getByLabelText("Base branch: origin/main"));
     expect(
       within(within(dialog).getByRole("listbox"))
