@@ -59,7 +59,7 @@ import { UnreachableCard } from "./UnreachableCard";
 import { ContinuedCard, ForkedFromRow, ForkStart } from "./ContinuedCard";
 import { dropForkedDraft, EMPTY_DRAFT, forkedDraft, keepForkedDraft, type ComposerDraft } from "./forkedDraft";
 import { PlanStrip } from "./PlanStrip";
-import { FollowUpQueue } from "./FollowUpQueue";
+import { showsTurnRail, TurnRail } from "./TurnRail";
 import { HostDownloads } from "./HostDownloads";
 import { Dictation } from "./Dictation";
 import { useSlashMenu } from "./SlashCommands";
@@ -691,6 +691,8 @@ function OpenSession({
       onNotice={setPlanNotice}
     />
   );
+  const railFollowUps = canFollowUp && !removed ? followUps : [];
+  const rail = !!view && showsTurnRail(running && !removed, railFollowUps);
   const empty =
     view?.history?.length === 0 && !view.settled && !view.live.userMessage && !view.live.message && !running;
 
@@ -953,9 +955,6 @@ function OpenSession({
           notice={
             <>
               <AgentTerminalCard workspaceId={workspaceId} />
-              {canFollowUp && followUps.length > 0 && !removed && (
-                <FollowUpQueue sessionId={sessionId} items={followUps} running={running} disabled={!online} />
-              )}
               {steerQueued && (
                 <p className="text-muted-foreground text-xs" role="status" data-testid="steer-queued">
                   The agent could not take it mid-turn, so it waits in the queue.
@@ -998,7 +997,21 @@ function OpenSession({
               )}
             </>
           }
-          dock={strip}
+          dock={
+            <>
+              {strip}
+              {rail && (
+                <TurnRail
+                  view={view}
+                  sessionId={sessionId}
+                  followUps={railFollowUps}
+                  running={running}
+                  disabled={!online}
+                  agent={agentName ?? summary?.agent ?? null}
+                />
+              )}
+            </>
+          }
           banner={
             options && (
               <UnattendedBanner
@@ -1022,7 +1035,7 @@ function OpenSession({
                   onChange={(req) => void changeOptions(req)}
                   handle={optionKeys.handle}
                 />
-                <ContextRing view={view} agent={agentName ?? summary?.agent ?? null} />
+                {!rail && <ContextRing view={view} agent={agentName ?? summary?.agent ?? null} />}
               </>
             )
           }

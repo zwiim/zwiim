@@ -65,8 +65,6 @@ export function ContextRing({ view, agent }: { view: SessionView | undefined; ag
 
   const fraction = contextFraction(view?.usage);
   const percent = fraction === null ? "—" : `${Math.round(fraction * 100)}%`;
-  const rows = contextRows(view);
-  const reported = view?.usage != null && (view.usage.used != null || view.usage.size != null);
 
   useEffect(() => {
     if (!pinned) return;
@@ -143,28 +141,40 @@ export function ContextRing({ view, agent }: { view: SessionView | undefined; ag
           inert={!open}
         >
           <p className="text-muted-foreground text-2xs font-semibold tracking-wide uppercase">Context</p>
-          {fraction !== null && (
-            <div className="bg-muted h-1.5 overflow-hidden rounded-full">
-              <div className="bg-brand ease-std h-full rounded-full transition-[width] duration-300" style={{ width: `${Math.max(2, fraction * 100)}%` }} />
-            </div>
-          )}
-          {reported ? (
-            <Figures rows={rows.window} />
-          ) : (
-            <p className="text-muted-foreground" data-testid="context-unreported">
-              {agent ?? "The agent"} hasn't reported its context window yet.
-            </p>
-          )}
-          {rows.lastTurn && (
-            <>
-              <p className="text-muted-foreground text-2xs mt-1 font-semibold tracking-wide uppercase">Last turn · tokens</p>
-              <Figures rows={rows.lastTurn} />
-            </>
-          )}
-          <p className="text-muted-foreground">As {agent ?? "the agent"} reports them. Nothing here is estimated.</p>
+          <ContextDetails view={view} agent={agent} />
         </div>
       )}
     </div>
+  );
+}
+
+/** The window's bar and the figures the agent reported, its own and the last turn's. */
+export function ContextDetails({ view, agent }: { view: SessionView | undefined; agent: string | null }) {
+  const fraction = contextFraction(view?.usage);
+  const rows = contextRows(view);
+  const reported = view?.usage != null && (view.usage.used != null || view.usage.size != null);
+  return (
+    <>
+      {fraction !== null && (
+        <div className="bg-muted h-1.5 overflow-hidden rounded-full">
+          <div className="bg-brand ease-std h-full rounded-full transition-[width] duration-300" style={{ width: `${Math.max(2, fraction * 100)}%` }} />
+        </div>
+      )}
+      {reported ? (
+        <Figures rows={rows.window} />
+      ) : (
+        <p className="text-muted-foreground" data-testid="context-unreported">
+          {agent ?? "The agent"} hasn't reported its context window yet.
+        </p>
+      )}
+      {rows.lastTurn && (
+        <>
+          <p className="text-muted-foreground text-2xs mt-1 font-semibold tracking-wide uppercase">Last turn · tokens</p>
+          <Figures rows={rows.lastTurn} />
+        </>
+      )}
+      <p className="text-muted-foreground">As {agent ?? "the agent"} reports them. Nothing here is estimated.</p>
+    </>
   );
 }
 

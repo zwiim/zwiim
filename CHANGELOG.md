@@ -12,6 +12,7 @@ have their own versions and are listed under Compatibility.
 - The model picker has a Fast switch for models that offer fast mode (Claude's 2x speed, more usage). It starts off, each model remembers it, and ⚡ marks it while on.
 
 ### Changed
+- While a turn runs or follow-ups wait, one rail on the composer's top edge shows how long the agent has worked, the plan's progress, the queue and the context window, in place of the plan's working strip and the stacked follow-up list.
 - The composer's model picker now lists every agent's models: picking a model picks its agent. Favorite and recent models sit at the top, each model remembers its effort, and effort and mode open as side lists.
 
 ### Fixed

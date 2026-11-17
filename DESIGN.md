@@ -802,6 +802,12 @@ glyph, a title, one line, one action.
   shows the window and last turn's tokens; a click pins them until Escape or a
   click elsewhere. Same rule as the phone: only reported figures, a missing one
   reads "not reported".
+- While a turn runs or follow-ups wait, a turn rail sits on the composer's top
+  edge: `Working · 1m 05s` (or "Paused · Send one to carry on" while a held
+  queue waits), then `Plan 2/5 · current step` whose tasks open upward,
+  `Queue n` and `Context n%`, which open inline under the rail. A newly queued
+  follow-up opens the queue. While the rail shows, its Context replaces the
+  ring beside send. A plan that stopped part way keeps its resume bar above.
 - Desktop's composer carries one options chip, bottom left: the mode's icon
   and label (accent when Auto), the agent's icon, the model in mono, the
   effort, an accent `⚡` while fast mode is on, and `⌄`. Its name reads

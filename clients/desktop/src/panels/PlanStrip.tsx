@@ -3,14 +3,12 @@ import { ChevronDown, ChevronUp, Loader2 } from "lucide-react";
 import {
   derivePlanUi,
   hasCapability,
-  turnDuration,
   ZwiimClientError,
   type AgentType,
   type ProgressStep,
   type SessionView,
 } from "@zwiim/sdk";
 
-import { WorkingMark } from "@/components/WorkingMark";
 import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { cn } from "@/lib/utils";
@@ -18,16 +16,15 @@ import { cn } from "@/lib/utils";
 import { ContinuedInRow } from "./ContinuedCard";
 import { focusMenu } from "./ControlCenter";
 import { offeredAgents } from "./SessionPanel";
-import { turnStart } from "./Transcript";
 
 export const ROOT_REASON = "Continue needs a worktree. Start a new session from a worktree.";
 export const ARCHIVED_REASON = "This worktree was archived. Its tasks can't be continued here.";
 
 /**
- * The session's plan, docked on the composer's top edge: a slim strip while
- * the agent works through it, a resume bar with Continue when it stopped
- * part way, and where it went once another session took it over. Nothing on
- * a Host without `agent.progress`, nor once the plan is done.
+ * The session's plan, docked on the composer's top edge: a resume bar with
+ * Continue when it stopped part way, and where it went once another session
+ * took it over. While the agent works through it, the turn rail shows it.
+ * Nothing on a Host without `agent.progress`, nor once the plan is done.
  */
 export function PlanStrip({
   view,
@@ -56,8 +53,6 @@ export function PlanStrip({
   if (!progress) return null;
   const ui = derivePlanUi(view);
   if (ui.kind === "continued") return <ContinuedInRow sessionId={ui.sessionId} onOpenSession={onOpenSession} />;
-  if (ui.kind === "working")
-    return <WorkingStrip steps={ui.progress.steps} completed={ui.progress.completed} total={ui.progress.total} current={ui.current} turnId={view.live.userMessage?.message_id} />;
   if (ui.kind !== "stopped" || !canContinue || cardShown || hidden === ui.plan.plan_id) return null;
   return (
     <ResumeBar
@@ -82,38 +77,6 @@ function Dock({ children, below }: { children: React.ReactNode; below?: React.Re
       <div className="text-ui flex h-9 items-center gap-2.5 px-3">{children}</div>
       {below}
     </div>
-  );
-}
-
-function WorkingStrip({
-  steps,
-  completed,
-  total,
-  current,
-  turnId,
-}: {
-  steps: ProgressStep[];
-  completed: number;
-  total: number;
-  current: number | null;
-  turnId: string | undefined;
-}) {
-  const [since] = useState(() => turnStart(turnId));
-  const [now, setNow] = useState(since);
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
-  const title = current === null ? null : steps[current]?.title;
-  return (
-    <Dock>
-      <WorkingMark />
-      <span className="min-w-0 flex-1 truncate">{title ?? "Working"}</span>
-      <span className="text-muted-foreground font-mono text-xs tabular-nums">{`${completed} of ${total}`}</span>
-      <Pips steps={steps} />
-      <span className="text-muted-foreground font-mono text-xs tabular-nums">{turnDuration(Math.max(0, now - since))}</span>
-      <StepsButton steps={steps} />
-    </Dock>
   );
 }
 
@@ -266,7 +229,7 @@ function Pips({ steps, stoppedAt }: { steps: ProgressStep[]; stoppedAt?: number 
   );
 }
 
-function pipClass(step: ProgressStep, stopped: boolean): string {
+export function pipClass(step: ProgressStep, stopped: boolean): string {
   if (stopped) return "border-brand border";
   if (step.status === "completed") return "bg-done";
   if (step.status === "in_progress") return "bg-muted-foreground";
@@ -299,20 +262,27 @@ function StepsButton({ steps, stoppedAt }: { steps: ProgressStep[]; stoppedAt?: 
           role="dialog"
           label="Tasks"
         >
-          <ol className="flex flex-col gap-0.5" data-testid="plan-steps">
-            {steps.map((s, i) => (
-              <li key={i} className="text-ui flex items-center gap-2.5 rounded-md px-2 py-1">
-                <span className={cn("size-1.5 shrink-0 rounded-full", pipClass(s, i === stoppedAt))} aria-hidden />
-                <span className="text-muted-foreground w-4 shrink-0 font-mono text-xs tabular-nums">{i + 1}</span>
-                <span className={cn("min-w-0 flex-1 truncate", s.status === "completed" && "text-muted-foreground")}>
-                  {s.title}
-                </span>
-              </li>
-            ))}
-          </ol>
+          <StepList steps={steps} stoppedAt={stoppedAt} />
         </Popover>
       )}
     </span>
+  );
+}
+
+/** The plan's steps, numbered, each with its pip. */
+export function StepList({ steps, stoppedAt }: { steps: ProgressStep[]; stoppedAt?: number }) {
+  return (
+    <ol className="flex flex-col gap-0.5" data-testid="plan-steps">
+      {steps.map((s, i) => (
+        <li key={i} className="text-ui flex items-center gap-2.5 rounded-md px-2 py-1">
+          <span className={cn("size-1.5 shrink-0 rounded-full", pipClass(s, i === stoppedAt))} aria-hidden />
+          <span className="text-muted-foreground w-4 shrink-0 font-mono text-xs tabular-nums">{i + 1}</span>
+          <span className={cn("min-w-0 flex-1 truncate", s.status === "completed" && "text-muted-foreground")}>
+            {s.title}
+          </span>
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -321,7 +291,7 @@ function StepsButton({ steps, stoppedAt }: { steps: ProgressStep[]; stoppedAt?: 
  * the button that opened it is left to that button. A menu takes focus on its
  * first item.
  */
-function Popover({
+export function Popover({
   children,
   className,
   role,
