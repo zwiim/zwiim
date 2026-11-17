@@ -3010,6 +3010,73 @@ pub async fn git_rollback_file(path: String, file: String) -> Result<(), AppComm
     Ok(())
 }
 
+/// `git.discard`: what became of one file's uncommitted changes.
+#[derive(Debug, Serialize)]
+pub struct GitDiscardResult {
+    /// False when the file had no uncommitted changes to discard.
+    pub discarded: bool,
+}
+
+/// Throw away one file's uncommitted changes, staged and unstaged, so it is
+/// as the last commit has it: a changed or deleted file is restored, a file
+/// added since is removed. Commits are never touched. `file` is relative to
+/// the workspace and names one file, never a folder.
+pub(crate) async fn git_discard(root: &str, file: &str) -> Result<GitDiscardResult, AppCommandError> {
+    ensure_git_repo(root)?;
+    if file.trim().is_empty() {
+        return Err(AppCommandError::invalid_input("File path cannot be empty"));
+    }
+    let target = resolve_tree_path(Path::new(root), file)?;
+    if std::fs::symlink_metadata(&target).is_ok_and(|m| m.is_dir()) {
+        return Err(AppCommandError::invalid_input("Only a file can be discarded"));
+    }
+    let literal = to_git_literal_pathspec(file);
+
+    // `--no-renames`: each side of a rename is its own entry, so one path is
+    // at most one entry and discarding it leaves the other side alone.
+    let status = crate::process::tokio_command("git")
+        .args(["-c", "core.quotePath=false"])
+        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--"])
+        .arg(&literal)
+        .current_dir(root)
+        .output()
+        .await
+        .map_err(AppCommandError::io)?;
+    if !status.status.success() {
+        return Err(git_command_error("status", &status.stderr));
+    }
+    let entries: Vec<&[u8]> = status
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|e| !e.is_empty())
+        .collect();
+    let entry = match entries.as_slice() {
+        [] => return Ok(GitDiscardResult { discarded: false }),
+        [one] => *one,
+        _ => return Err(AppCommandError::invalid_input("Only a file can be discarded")),
+    };
+
+    if entry.starts_with(b"??") {
+        // Untracked: git has nothing to restore it from, so it goes. Git
+        // listed it, so it is a file inside the workspace, never followed
+        // through a symlink.
+        std::fs::remove_file(&target).map_err(AppCommandError::io)?;
+        return Ok(GitDiscardResult { discarded: true });
+    }
+
+    let restore = crate::process::tokio_command("git")
+        .args(["restore", "--source=HEAD", "--staged", "--worktree", "--"])
+        .arg(&literal)
+        .current_dir(root)
+        .output()
+        .await
+        .map_err(AppCommandError::io)?;
+    if !restore.status.success() {
+        return Err(git_command_error("restore", &restore.stderr));
+    }
+    Ok(GitDiscardResult { discarded: true })
+}
+
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn git_add_files(path: String, files: Vec<String>) -> Result<(), AppCommandError> {
     if files.is_empty() {

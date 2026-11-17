@@ -2127,6 +2127,12 @@ export interface Operations {
     { committed_files: number },
   ];
   "git.diff": [{ workspace_id: string; file?: string }, WorkspaceDiff];
+  /**
+   * Throw away one file's uncommitted changes, staged and unstaged (Hosts with
+   * `git.discard`): it goes back to HEAD, and a file added since is removed.
+   * `discarded` is false when it had none. A folder is `invalid_input`.
+   */
+  "git.discard": [{ workspace_id: string; file: string }, { discarded: boolean }];
   "git.branches": [{ workspace_id: string }, WorktreeBases];
   /** The Host's view of the branch's pull request; `refresh` asks GitHub now. */
   "git.pr": [{ workspace_id: string; refresh?: boolean }, PrEntry];
@@ -2472,6 +2478,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "host.claim",
   "host.update.apply",
   "git.commit",
+  "git.discard",
   "git.pr_merge",
   "git.pr_auto_merge",
   "session.set_options",

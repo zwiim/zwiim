@@ -103,8 +103,13 @@ describe("evaluateCompatibility", () => {
     expect(CLIENT_CAPABILITIES).toContain("repository.settings_import");
   });
 
+  it("speaks revision 37 and discards a file's uncommitted changes", () => {
+    expect(CLIENT_REVISION).toBe(37);
+    expect(CLIENT_CAPABILITIES).toContain("git.discard");
+  });
+
   it("speaks revision 36 (search engines)", () => {
-    expect(CLIENT_REVISION).toBe(36);
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(36);
   });
 
   it("speaks revision 33 and uses the Host browser", () => {

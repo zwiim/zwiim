@@ -488,7 +488,13 @@ use serde::{Deserialize, Serialize};
 /// 36 (`browser.search_engine`): `settings` gains `browser.search_engine`,
 /// where the browser's address bar sends a search: `google`, `duckduckgo` or
 /// `brave` (unset is Google). Older clients never see or set it.
-pub const PROTOCOL_REVISION: u32 = 36;
+///
+/// 37 (`git.discard`): `git.discard {workspace_id, file}` throws away one
+/// file's uncommitted changes, staged and unstaged: a changed or deleted file
+/// is restored from HEAD, a file added since is removed. Commits are never
+/// touched. It answers `discarded`, false when the file had no uncommitted
+/// changes; a folder is `invalid_input`. Older clients never call it.
+pub const PROTOCOL_REVISION: u32 = 37;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -554,6 +560,7 @@ pub const CAPABILITIES: &[&str] = &[
     "repository.settings_import",
     "browser",
     "downloads",
+    "git.discard",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -727,7 +734,13 @@ mod tests {
 
     #[test]
     fn search_engines_are_revision_36() {
-        assert_eq!(PROTOCOL_REVISION, 36);
+        const _: () = assert!(PROTOCOL_REVISION >= 36);
+    }
+
+    #[test]
+    fn discarding_a_file_is_revision_37() {
+        assert!(CAPABILITIES.contains(&"git.discard"));
+        assert_eq!(PROTOCOL_REVISION, 37);
     }
 
     #[test]
