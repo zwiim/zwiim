@@ -60,6 +60,11 @@ export function buildSections(
         : canSwitch
           ? null
           : `Start a new session to use ${short(a)}`;
+  // The model in effect shows the effort it runs at, not a remembered or default one.
+  const using = agents.find((a) => a.agent === inUse)?.options;
+  const inEffect = (agent: string, model: string) => agent === inUse && !!using?.effort && model === using.model?.current;
+  const effortOf = (agent: string, model: string, shown: string | null) =>
+    inEffect(agent, model) ? using!.effort!.current : shown;
   const favorites = favoriteModels();
   const isFavorite = (agent: string, model: string) => favorites.some((f) => f.agent === agent && f.model === model);
 
@@ -67,6 +72,7 @@ export function buildSections(
     ? null
     : quickRows(agents, favorites, recentModels()).map((r, i): Entry => {
         const owner = agents.find((a) => a.agent === r.ref.agent);
+        const effort = effortOf(r.ref.agent, r.ref.model, r.effort);
         return {
           id: `${idPrefix}-q:${r.ref.agent}/${r.ref.model}`,
           kind: "quick",
@@ -75,9 +81,9 @@ export function buildSections(
           model: r.ref.model,
           label: r.label,
           description: null,
-          effort: r.effort,
-          effortLabel: effortText(owner, r.ref.model, r.effort),
-          send: r.effort,
+          effort,
+          effortLabel: effortText(owner, r.ref.model, effort),
+          send: inEffect(r.ref.agent, r.ref.model) ? null : r.effort,
           favorite: r.favorite,
           blocked: blocked(owner),
         };
@@ -99,8 +105,9 @@ export function buildSections(
     return { quick, browsed, models: [row], note: null };
   }
   const { rows, more } = modelRows(browsed, query, expanded);
-  const models = rows.map(
-    (r): Entry => ({
+  const models = rows.map((r): Entry => {
+    const effort = effortOf(browsed.agent, r.value, r.effort);
+    return {
       id: `${idPrefix}-m:${browsed.agent}/${r.value}`,
       kind: "model",
       agent: browsed.agent,
@@ -108,13 +115,16 @@ export function buildSections(
       model: r.value,
       label: r.label,
       description: r.description,
-      effort: r.effort,
-      effortLabel: effortText(browsed, r.value, r.effort),
-      send: r.effort && modelEffort({ agent: browsed.agent, model: r.value }) === r.effort ? r.effort : null,
+      effort,
+      effortLabel: effortText(browsed, r.value, effort),
+      send:
+        !inEffect(browsed.agent, r.value) && r.effort && modelEffort({ agent: browsed.agent, model: r.value }) === r.effort
+          ? r.effort
+          : null,
       favorite: isFavorite(browsed.agent, r.value),
       blocked: blocked(browsed),
-    }),
-  );
+    };
+  });
   if (more > 0) models.push({ ...base, id: `${idPrefix}-more`, kind: "more", model: null, label: `Show all ${rows.length + more} models` });
   const note = query.trim() && !rows.length ? `No ${short(browsed)} models match` : null;
   return { quick, browsed, models, note };

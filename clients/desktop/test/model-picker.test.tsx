@@ -166,6 +166,17 @@ describe("model picker", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("shows the running effort on the model in effect, and remembered ones on the rest", () => {
+    rememberModelEffort({ agent: "claude_code", model: "opus" }, "high");
+    rememberModelEffort({ agent: "claude_code", model: "sonnet" }, "max");
+    const options = { ...claudeOptions("opus"), effort: choice("medium", CLAUDE_EFFORT) };
+    render(picker({ options, started: true }));
+    open();
+    expect(option(/^Opus/).textContent).toContain("Medium");
+    expect(option(/^Opus/).textContent).not.toContain("High");
+    expect(option(/^Sonnet/).textContent).toContain("Max");
+  });
+
   it("sends only the model on a started session", () => {
     const onChange = vi.fn();
     render(picker({ onChange, started: true }));
@@ -259,9 +270,9 @@ describe("model picker", () => {
     fireEvent.click(side("Effort", "High")!);
     expect(onChange).toHaveBeenCalledWith({ effort: "high" });
     expect(screen.queryByRole("menu", { name: "Effort" })).toBeNull();
-    // A fresh render reads the remembered effort for Sonnet.
+    // Once the session runs at High, the Sonnet row shows it; Opus keeps its default.
     cleanup();
-    render(picker());
+    render(picker({ options: { ...claudeOptions(), effort: choice("high", SONNET_EFFORT) } }));
     open();
     expect(option(/^Sonnet/).textContent).toContain("High");
   });
