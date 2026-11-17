@@ -244,7 +244,7 @@ function useOptionKeys(
 ) {
   const handle = useRef<{ toggle(): void } | null>(null);
   function onKey(e: React.KeyboardEvent) {
-    if (e.defaultPrevented) return;
+    if (e.defaultPrevented || e.nativeEvent.isComposing) return;
     const mod = e.metaKey || e.ctrlKey;
     if (mod && !e.shiftKey && e.key === ".") {
       e.preventDefault();
@@ -744,6 +744,10 @@ function OpenSession({
   const options = view?.options && !removed ? view.options : null;
   const optionsDisabled = running || starting || !online || optionsBusy;
   const optionsLock = running ? "Options change between turns" : starting ? "The agent is starting…" : null;
+  // A lock message ("Options change between turns") is stale once the lock lifts.
+  useEffect(() => {
+    if (!optionsLock) setOptionsError(null);
+  }, [optionsLock]);
   const optionKeys = useOptionKeys(
     options,
     optionsLock ?? (optionsDisabled ? "" : null),
@@ -1002,6 +1006,7 @@ function OpenSession({
                 <ModelPicker
                   agents={offered ? offeredAgents(offered) : []}
                   agent={summary?.agent ?? ""}
+                  name={agentName ?? undefined}
                   options={options}
                   started
                   disabled={optionsDisabled}
