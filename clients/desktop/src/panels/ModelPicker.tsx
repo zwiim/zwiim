@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useImperativeHandle, useRef, useState, type KeyboardEvent, type Ref } from "react";
 import { Check, ChevronDown, ChevronRight, Search } from "lucide-react";
 import type { AgentSummary, ChoiceOption, OptionsRequest, SessionMode, SessionOptions } from "@zwiim/sdk";
 import { AgentIcon, agentBrand } from "@/components/AgentIcon";
@@ -40,6 +40,7 @@ export function ModelPicker({
   disabledReason,
   onChange,
   onAgent,
+  handle,
 }: {
   agents: AgentSummary[];
   agent: string;
@@ -49,6 +50,8 @@ export function ModelPicker({
   disabledReason?: string | null;
   onChange(request: OptionsRequest): void;
   onAgent?(agent: string, request: OptionsRequest): void;
+  /** Lets the composer open and close the panel from its keys. */
+  handle?: Ref<{ toggle(): void }>;
 }) {
   const hint = disabled && disabledReason ? disabledReason : undefined;
   const { mode, model, effort } = options;
@@ -116,6 +119,8 @@ export function ModelPicker({
     setExpanded([]);
     setOpen(true);
   }
+
+  useImperativeHandle(handle, () => ({ toggle: () => (open ? close(true) : openPanel()) }));
 
   useEffect(() => {
     if (!open) return;

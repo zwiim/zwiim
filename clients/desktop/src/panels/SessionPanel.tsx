@@ -32,6 +32,7 @@ import {
   type RevertChoice,
   type SessionBackground,
   type SessionCommand,
+  type SessionMode,
   type SessionOptions,
   type SessionView,
   type TurnGroup,
@@ -45,12 +46,13 @@ import { Button } from "@/components/ui/button";
 import { errorMessage, useController, useHost, useOnline } from "@/lib/host-context";
 import { removeFromChat, sentToChat, useHandedBlocks, type PageBlock } from "@/lib/page-handoff";
 import { formatShortcut } from "@/lib/platform";
-import { agentChoices, autoConvertLongText, followUpMode, rememberAgentChoices, sendKey } from "@/lib/prefs";
+import { agentChoices, autoConvertLongText, followUpMode, rememberAgentChoices, rememberModelEffort, sendKey } from "@/lib/prefs";
 import { isOtherSendKey, isSendKey, sendShortcut } from "@/lib/send-key";
 import { usePref } from "@/lib/use-pref";
 import { cn } from "@/lib/utils";
 import { ContextRing } from "./ContextRing";
-import { ControlSelect, OptionsBar, UnattendedBanner } from "./OptionsBar";
+import { ModelPicker } from "./ModelPicker";
+import { UnattendedBanner } from "./OptionsBar";
 import { RequestCard } from "./RequestCard";
 import { UnreachableCard } from "./UnreachableCard";
 import { ContinuedCard, ForkedFromRow, ForkStart } from "./ContinuedCard";
@@ -211,33 +213,86 @@ export function useNewSessionAgent() {
       setPicks((p) => ({ ...p, ...req }));
       if (agent) rememberAgentChoices(agent, { model: req.model, effort: req.effort });
     },
-    choose(next: string) {
+    /** Starts `next` with the model and effort just picked for it. */
+    chooseWith(next: string, request: OptionsRequest) {
       setChosen(next);
-      setPicks({});
+      setPicks(request);
+      rememberAgentChoices(next, { model: request.model, effort: request.effort });
     },
   };
+}
+
+const NO_OPTIONS: SessionOptions = { model: null, effort: null, mode: null };
+
+/** The value after `current` in `values`, wrapping; null when there is nothing else to pick. */
+function nextValue(values: readonly string[], current: string): string | null {
+  const next = values[(values.indexOf(current) + 1) % values.length];
+  return values.length > 1 && next !== current ? next : null;
+}
+
+/**
+ * The composer's option keys: `Mod+.` toggles the picker; `Mod+Shift+/` cycles
+ * the effort and `Shift+Tab` the mode from the message box, each refused (with
+ * `locked` as the reason) while the options cannot change.
+ */
+function useOptionKeys(
+  options: SessionOptions | null,
+  locked: string | null,
+  agent: string | null,
+  change: (request: OptionsRequest) => void,
+  refuse: (reason: string) => void,
+) {
+  const handle = useRef<{ toggle(): void } | null>(null);
+  function onKey(e: React.KeyboardEvent) {
+    if (e.defaultPrevented) return;
+    const mod = e.metaKey || e.ctrlKey;
+    if (mod && !e.shiftKey && e.key === ".") {
+      e.preventDefault();
+      handle.current?.toggle();
+      return;
+    }
+    if (!options || !(e.target instanceof HTMLTextAreaElement)) return;
+    const effort = mod && e.shiftKey && (e.code === "Slash" || e.key === "/" || e.key === "?");
+    const mode = !mod && !e.altKey && e.shiftKey && e.key === "Tab";
+    if (!effort && !mode) return;
+    e.preventDefault();
+    if (locked !== null) return refuse(locked);
+    if (effort && options.effort) {
+      const value = nextValue(options.effort.values.map((v) => v.value), options.effort.current);
+      if (!value) return;
+      if (agent && options.model) rememberModelEffort({ agent, model: options.model.current }, value);
+      change({ effort: value });
+    } else if (mode && options.mode) {
+      const value = nextValue(options.mode.available, options.mode.current);
+      if (value) change({ mode: value as SessionMode });
+    }
+  }
+  return { handle, onKey };
 }
 
 /** The agent picker and its options, as composer controls. */
 export function NewSessionControls({
   picker,
   disabled,
+  handle,
 }: {
   picker: ReturnType<typeof useNewSessionAgent>;
   disabled: boolean;
+  handle?: React.Ref<{ toggle(): void }>;
 }) {
   const { agents, agent, start } = picker;
   if (!agents || agent === null) return null;
   return (
-    <>
-      <ControlSelect
-        label="Agent"
-        value={agent}
-        onChange={picker.choose}
-        options={agents.map((a) => ({ value: a.agent, label: agentLabel(a), disabled: !a.available }))}
-      />
-      {start && <OptionsBar options={start.shown} disabled={disabled} onChange={picker.pick} />}
-    </>
+    <ModelPicker
+      agents={agents}
+      agent={agent}
+      options={start?.shown ?? NO_OPTIONS}
+      started={false}
+      disabled={disabled}
+      onChange={picker.pick}
+      onAgent={picker.chooseWith}
+      handle={handle}
+    />
   );
 }
 
@@ -365,6 +420,7 @@ function NewSession({ workspaceId, onStarted }: { workspaceId: string; onStarted
   const picker = useNewSessionAgent();
   const { agents, agent, start } = picker;
   const terminal = useAgentTerminal(workspaceId, agent);
+  const optionKeys = useOptionKeys(start?.shown ?? null, null, agent, picker.pick, () => {});
   return (
     <div className="flex h-full flex-col">
       <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
@@ -389,7 +445,8 @@ function NewSession({ workspaceId, onStarted }: { workspaceId: string; onStarted
         disabled={!online || agent === null}
         unattended={start?.shown.mode?.current === "unattended"}
         banner={start && <UnattendedBanner options={start.shown} disabled={!online} onChange={picker.pick} />}
-        controls={<NewSessionControls picker={picker} disabled={!online} />}
+        controls={<NewSessionControls picker={picker} disabled={!online} handle={optionKeys.handle} />}
+        onOptionKey={optionKeys.onKey}
         commands={picker.commands}
         terminal={terminal}
         notice={<AgentTerminalCard workspaceId={workspaceId} />}
@@ -686,6 +743,15 @@ function OpenSession({
 
   const options = view?.options && !removed ? view.options : null;
   const optionsDisabled = running || starting || !online || optionsBusy;
+  const optionsLock = running ? "Options change between turns" : starting ? "The agent is starting…" : null;
+  const optionKeys = useOptionKeys(
+    options,
+    optionsLock ?? (optionsDisabled ? "" : null),
+    summary?.agent ?? null,
+    (req) => void changeOptions(req),
+    (reason) => reason && setOptionsError(reason),
+  );
+  const offered = useHost((s) => s.agents);
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex h-11 shrink-0 items-center gap-2.5 px-5">
@@ -850,6 +916,7 @@ function OpenSession({
           workspaceId={workspaceId}
           initialDraft={startingDraft}
           draftRef={composerDraft}
+          onOptionKey={optionKeys.onKey}
           handoffChat={sessionId}
           transcript={waitingTranscript(view)}
           onRemoveTranscript={() => controller.removeTranscript(sessionId)}
@@ -932,17 +999,15 @@ function OpenSession({
           controls={
             options && (
               <>
-                {(agentName ?? summary?.agent) && (
-                  <span className="text-muted-foreground flex min-w-0 items-center gap-1 pl-2 text-xs">
-                    <span className="truncate">{agentName ?? summary?.agent}</span>
-                    <span aria-hidden>·</span>
-                  </span>
-                )}
-                <OptionsBar
+                <ModelPicker
+                  agents={offered ? offeredAgents(offered) : []}
+                  agent={summary?.agent ?? ""}
                   options={options}
+                  started
                   disabled={optionsDisabled}
-                  disabledReason={running ? "Options change between turns" : starting ? "The agent is starting…" : null}
+                  disabledReason={optionsLock}
                   onChange={(req) => void changeOptions(req)}
+                  handle={optionKeys.handle}
                 />
                 <ContextRing view={view} agent={agentName ?? summary?.agent ?? null} />
               </>
@@ -1285,6 +1350,8 @@ function Composer(props: {
   banner?: React.ReactNode;
   leading?: React.ReactNode;
   controls?: React.ReactNode;
+  /** Sees every key pressed inside the composer, for the option shortcuts. */
+  onOptionKey?(e: React.KeyboardEvent): void;
   /** Replaces send (the stop button while the agent works). */
   action?: React.ReactNode;
   /** The agent's slash commands, offered when a word starts with `/`. */
@@ -1409,6 +1476,7 @@ function Composer(props: {
             props.unattended ? "ring-brand/50" : "ring-border focus-within:ring-ring/60",
           )}
           data-testid="composer"
+          onKeyDown={props.onOptionKey}
           onClick={(e) => {
             if (e.target === e.currentTarget) area.current?.focus();
           }}

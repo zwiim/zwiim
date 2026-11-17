@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { createRef } from "react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSummary, ChoiceOption, OptionValue, SessionMode, SessionOptions } from "@zwiim/sdk";
 import { favoriteModels, recentModels, rememberModelEffort, toggleFavoriteModel } from "@/lib/prefs";
@@ -183,6 +184,20 @@ describe("model picker", () => {
     fireEvent.click(chip());
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("opens and closes from its handle, and not while the options are locked", () => {
+    const handle = createRef<{ toggle(): void }>();
+    const props = { agents: AGENTS, agent: "claude_code", options: claudeOptions(), started: false, onChange: () => {} };
+    const { rerender } = render(<ModelPicker {...props} disabled={false} handle={handle} />);
+    act(() => handle.current!.toggle());
+    expect(dialog()).toBeTruthy();
+    act(() => handle.current!.toggle());
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(chip());
+    rerender(<ModelPicker {...props} disabled handle={handle} />);
+    act(() => handle.current!.toggle());
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("Escape closes the side list first, then the panel, without changing anything", () => {
