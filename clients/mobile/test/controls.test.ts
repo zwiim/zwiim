@@ -50,6 +50,7 @@ describe("session controls", () => {
   it("sends one option per change", () => {
     expect(changeRequest({ model: "haiku" })).toEqual({ model: "haiku" });
     expect(changeRequest({ effort: "low" })).toEqual({ effort: "low" });
+    expect(changeRequest({ fast: true })).toEqual({ fast: true });
     expect(changeRequest({ mode: "plan" })).toEqual({ mode: "plan" });
   });
 

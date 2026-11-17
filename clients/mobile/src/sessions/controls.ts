@@ -25,7 +25,7 @@ export function agentName(agents: readonly AgentSummary[] | null, agent: string 
 }
 
 /** One option changed on its own, as Desktop sends it: a new model never carries the old model's effort. */
-export type OptionChange = { model: string } | { effort: string } | { mode: SessionMode };
+export type OptionChange = { model: string } | { effort: string } | { mode: SessionMode } | { fast: boolean };
 
 export function changeRequest(change: OptionChange): OptionsRequest {
   return { ...change };
