@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   agentName,
   changeRequest,
+  composerButtons,
   compactTokens,
   contextChip,
   contextFigures,
@@ -226,5 +227,14 @@ describe("context figures", () => {
   it("formats counts", () => {
     expect(tokens(1234567)).toBe("1,234,567");
     expect(tokens(0)).toBe("0");
+  });
+});
+
+describe("composerButtons", () => {
+  it("offers stop while a turn runs, beside send once there is something to send", () => {
+    expect(composerButtons({ canSend: false, canStop: true })).toEqual({ stop: true, send: false });
+    expect(composerButtons({ canSend: true, canStop: true })).toEqual({ stop: true, send: true });
+    expect(composerButtons({ canSend: true, canStop: false })).toEqual({ stop: false, send: true });
+    expect(composerButtons({ canSend: false, canStop: false })).toEqual({ stop: false, send: true });
   });
 });

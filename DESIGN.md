@@ -459,8 +459,9 @@ Top to bottom:
   `faint` track; a dashed `faint` ring until the agent reports both figures),
   with no figure beside it; it opens the session menu. While a turn runs, a
   `monoSm` `faint` line under the input reads "Options change when the turn
-  ends" and the chip dims, and with nothing typed send becomes a 36pt `err`
-  round **stop** → `session.cancel`. The chip opens **Agent & model** (R8.15).
+  ends" and the chip dims, and a 36pt `err` round **stop** → `session.cancel`
+  takes send's place (send returns beside it once a steer is typed). The chip
+  opens **Agent & model** (R8.15).
   While a turn runs, send stays available only if the agent accepts it;
   on `turn_in_progress` show "The agent is still working. Stop it or wait."
   Slash commands: typing `/` at the start or after a space opens a list over the

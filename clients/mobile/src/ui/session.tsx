@@ -31,6 +31,7 @@ import {
   type PipState,
 } from "../sessions/plan";
 import { insertCommand, matchCommands, slashQuery } from "../sessions/commands";
+import { composerButtons } from "../sessions/controls";
 import { forkedFromLabel, forkWorktreeLines, type TurnFork } from "../sessions/fork";
 import { revertCopy } from "../sessions/revert";
 import {
@@ -1383,8 +1384,8 @@ export function ContinuedInRow({ title, onOpen }: { title: string | null | undef
 /**
  * The message box: what the agent is doing now along its top edge, the
  * multiline input, and a row of attach, the session's controls and the round
- * send. While a turn runs and there is nothing to send, send is a red stop
- * that ends the turn. An accent border marks an Auto session (fainter while
+ * send. While a turn runs a red stop ends it, with send beside it once
+ * there is a steer to send. An accent border marks an Auto session (fainter while
  * a turn runs).
  */
 export function Composer({
@@ -1435,13 +1436,13 @@ export function Composer({
   commands?: readonly SessionCommand[];
   /** Along the top edge: the Now bar. */
   status?: ReactNode;
-  /** A turn runs: an empty composer's send stops it. */
+  /** A turn runs: a red stop ends it. */
   onStop?(): void;
   stopping?: boolean;
 }) {
   const theme = useTheme();
   const can = !disabled && !sending && (value.trim().length > 0 || files.length > 0 || !!transcript);
-  const stops = !!onStop && !can && !sending;
+  const buttons = composerButtons({ canSend: can, canStop: !!onStop && !sending });
   const [caret, setCaret] = useState(value.length);
   /** Set once after a pick to move the caret past it, then released to the input. */
   const [selection, setSelection] = useState<{ start: number; end: number } | undefined>();
@@ -1564,7 +1565,7 @@ export function Composer({
           </Pressable>
         ) : null}
         <View style={styles.composerControls}>{controls}</View>
-        {stops ? (
+        {buttons.stop ? (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Stop"
@@ -1577,7 +1578,8 @@ export function Composer({
           >
             {stopping ? <ActivityIndicator size="small" color="#ffffff" /> : <Icon icon={Square} color="#ffffff" size={14} />}
           </Pressable>
-        ) : (
+        ) : null}
+        {buttons.send ? (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Send"
@@ -1595,7 +1597,7 @@ export function Composer({
               <Icon icon={ArrowUp} color={can ? theme.accentInk : theme.faint} size={20} />
             )}
           </Pressable>
-        )}
+        ) : null}
       </View>
     </View>
   );

@@ -144,6 +144,14 @@ export function filterChoices(values: readonly OptionValue[], query: string): Op
   return values.filter((v) => [v.label, v.value, v.description ?? ""].some((s) => s.toLowerCase().includes(q)));
 }
 
+/**
+ * The composer's round buttons: stop while a turn runs, and send beside it
+ * once there is something to send (a steer), else send alone.
+ */
+export function composerButtons({ canSend, canStop }: { canSend: boolean; canStop: boolean }): { stop: boolean; send: boolean } {
+  return { stop: canStop, send: canSend || !canStop };
+}
+
 /** The composer's line while a turn runs: the options wait for it to end. */
 export function lockedNote(options: SessionOptions | null, running: boolean): string | null {
   return running && options ? "Options change when the turn ends" : null;
