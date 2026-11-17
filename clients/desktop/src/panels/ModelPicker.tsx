@@ -86,12 +86,18 @@ export function ModelPicker({
   const entries = [...(sections.quick ?? []), ...sections.models];
   const nav = entries.filter((e) => !e.blocked);
   const isSelected = (e: Entry) => e.agent === agent && e.model != null && e.model === model?.current;
+  // When the highlighted row disappears (a star moved it), stay on the same model, else the same place.
+  const actAt = useRef(0);
+  const gone = act && !nav.some((e) => e.id === act);
   const activeId =
-    (act && nav.some((e) => e.id === act) ? act : null) ??
+    (act && !gone ? act : null) ??
+    (gone ? nav.find((e) => e.id === act.replace("-q:", "-m:"))?.id : null) ??
+    (gone ? nav[Math.min(actAt.current, nav.length - 1)]?.id : null) ??
     (query.trim() ? null : nav.find((e) => e.kind === "model" && isSelected(e))?.id) ??
     nav[0]?.id ??
     null;
   const active = nav.find((e) => e.id === activeId);
+  actAt.current = Math.max(0, nav.findIndex((e) => e.id === activeId));
 
   const effortOff = !effort || effort.values.length === 0;
   const modeOff = !mode || mode.available.length === 0;
@@ -191,6 +197,7 @@ export function ModelPicker({
   function star(e: Entry) {
     if (!e.model) return;
     toggleFavoriteModel({ agent: e.agent, model: e.model });
+    setAct(e.id);
     setFavorites((n) => n + 1);
   }
 

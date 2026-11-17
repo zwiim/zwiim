@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type KeyboardEvent, type MutableRefObject, type ReactNode } from "react";
 import { Check, Star } from "lucide-react";
 import { effortFor, type AgentSummary } from "@zwiim/sdk";
 import { AgentDot, AgentIcon, agentBrand } from "@/components/AgentIcon";
@@ -68,7 +68,7 @@ export function buildSections(
     : quickRows(agents, favorites, recentModels()).map((r, i): Entry => {
         const owner = agents.find((a) => a.agent === r.ref.agent);
         return {
-          id: `${idPrefix}-q${i}`,
+          id: `${idPrefix}-q:${r.ref.agent}/${r.ref.model}`,
           kind: "quick",
           agent: r.ref.agent,
           agentName: owner?.name ?? r.ref.agent,
@@ -100,8 +100,8 @@ export function buildSections(
   }
   const { rows, more } = modelRows(browsed, query, expanded);
   const models = rows.map(
-    (r, i): Entry => ({
-      id: `${idPrefix}-m${i}`,
+    (r): Entry => ({
+      id: `${idPrefix}-m:${browsed.agent}/${r.value}`,
       kind: "model",
       agent: browsed.agent,
       agentName: browsed.name,
@@ -219,31 +219,11 @@ function Group({ id, label, aside, children }: { id: string; label: string; asid
 }
 
 /** The list: Recent & favorites, then the browsed agent's models. Hover only moves the highlight. */
-export function ModelList({
-  sections,
-  listId,
-  view,
-  activeId,
-  isSelected,
-  onHover,
-  onPick,
-  onStar,
-}: {
-  sections: Sections;
-  listId: string;
-  view: string;
-  activeId: string | null;
-  isSelected(e: Entry): boolean;
-  onHover(e: Entry): void;
-  onPick(e: Entry): void;
-  onStar(e: Entry): void;
-}) {
-  const { quick, browsed, models, note } = sections;
-  const hasFavorite = quick?.some((q) => q.favorite) ?? false;
+type Handlers = { onHover(e: Entry): void; onPick(e: Entry): void; onStar(e: Entry): void };
 
-  const row = (e: Entry, i: number) => {
-    const active = e.id === activeId;
-    const selected = isSelected(e);
+/** Re-renders only when its own row changes, so hovering never rebuilds the rows under the pointer. */
+const Row = memo(
+  function Row({ e, i, active, selected, view, h }: { e: Entry; i: number; active: boolean; selected: boolean; view: string; h: MutableRefObject<Handlers> }) {
     const quickRow = e.kind === "quick";
     const effort = e.effortLabel;
     const agentShort = agentBrand(e.agent, e.agentName).short;
@@ -258,15 +238,14 @@ export function ModelList({
         : undefined);
     return (
       <div
-        key={e.id}
         id={e.id}
         role="option"
         aria-selected={selected}
         aria-disabled={e.blocked ? true : undefined}
         aria-label={label}
         aria-description={description}
-        onPointerMove={() => !active && onHover(e)}
-        onClick={() => !e.blocked && onPick(e)}
+        onPointerMove={() => !active && h.current.onHover(e)}
+        onClick={() => !e.blocked && h.current.onPick(e)}
         className={cn(
           "group/row relative flex min-h-8 items-center gap-2.5 rounded-lg px-2 py-[7px]",
           active && !e.blocked && "bg-muted",
@@ -300,7 +279,7 @@ export function ModelList({
                   title={e.favorite ? "Remove from favorites (⌘D)" : "Add to favorites (⌘D)"}
                   onClick={(ev) => {
                     ev.stopPropagation();
-                    onStar(e);
+                    h.current.onStar(e);
                   }}
                   className={cn(
                     "hover:bg-secondary hover:text-foreground grid size-6 place-items-center rounded-md",
@@ -316,7 +295,47 @@ export function ModelList({
         )}
       </div>
     );
-  };
+  },
+  (a, b) =>
+    a.active === b.active &&
+    a.selected === b.selected &&
+    a.view === b.view &&
+    a.i === b.i &&
+    a.e.id === b.e.id &&
+    a.e.label === b.e.label &&
+    a.e.description === b.e.description &&
+    a.e.effortLabel === b.e.effortLabel &&
+    a.e.favorite === b.e.favorite &&
+    a.e.blocked === b.e.blocked,
+);
+
+export function ModelList({
+  sections,
+  listId,
+  view,
+  activeId,
+  isSelected,
+  onHover,
+  onPick,
+  onStar,
+}: {
+  sections: Sections;
+  listId: string;
+  view: string;
+  activeId: string | null;
+  isSelected(e: Entry): boolean;
+  onHover(e: Entry): void;
+  onPick(e: Entry): void;
+  onStar(e: Entry): void;
+}) {
+  const { quick, browsed, models, note } = sections;
+  const hasFavorite = quick?.some((q) => q.favorite) ?? false;
+
+  const h = useRef<Handlers>({ onHover, onPick, onStar });
+  h.current = { onHover, onPick, onStar };
+  const row = (e: Entry, i: number) => (
+    <Row key={e.id} e={e} i={i} active={e.id === activeId} selected={isSelected(e)} view={view} h={h} />
+  );
   return (
     <div id={listId} role="listbox" aria-label="Models" className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-1.5">
       {quick && (

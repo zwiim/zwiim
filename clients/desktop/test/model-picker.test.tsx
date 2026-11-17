@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSummary, ChoiceOption, OptionValue, SessionMode, SessionOptions } from "@zwiim/sdk";
-import { favoriteModels, recentModels, rememberModelEffort } from "@/lib/prefs";
+import { favoriteModels, recentModels, rememberModelEffort, toggleFavoriteModel } from "@/lib/prefs";
 import { ModelPicker } from "@/panels/ModelPicker";
 
 afterEach(cleanup);
@@ -292,6 +292,41 @@ describe("model picker", () => {
     );
     fireEvent.keyDown(search(), { key: "1", ctrlKey: true });
     expect(onChange).toHaveBeenCalledWith({ model: "opus", effort: "high" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("keeps the highlight on the same model when a star reorders the quick rows", () => {
+    toggleFavoriteModel({ agent: "claude_code", model: "opus" });
+    toggleFavoriteModel({ agent: "claude_code", model: "haiku" });
+    render(picker());
+    open();
+    const quick = within(group("Recent & favorites")).getAllByRole("option");
+    expect(quick[0]!.getAttribute("aria-label")).toMatch(/^Opus/);
+    fireEvent.pointerMove(quick[0]!);
+    fireEvent.keyDown(search(), { key: "d", metaKey: true });
+    expect(favoriteModels()).toEqual([{ agent: "claude_code", model: "haiku" }]);
+    fireEvent.keyDown(search(), { key: "d", metaKey: true });
+    expect(favoriteModels()).toHaveLength(2);
+    expect(favoriteModels().some((f) => f.model === "opus")).toBe(true);
+  });
+
+  it("a click on a hovered row's star toggles the favorite and does not pick the model", () => {
+    const onChange = vi.fn();
+    render(picker({ onChange }));
+    open();
+    const row = option(/^Opus/);
+    fireEvent.pointerMove(row);
+    expect(option(/^Opus/)).toBe(row);
+    fireEvent.click(within(row).getByTitle("Add to favorites (⌘D)"));
+    expect(favoriteModels()).toEqual([{ agent: "claude_code", model: "opus" }]);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Agent options" })).toBeTruthy();
+  });
+
+  it("closes on a pointer press outside the panel", () => {
+    render(picker());
+    open();
+    fireEvent.pointerDown(document.body);
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
