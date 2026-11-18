@@ -28,6 +28,7 @@ import {
 } from "@zwiim/sdk";
 import { FileLinksContext } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
+import { Dialog } from "@/components/ui/dialog";
 import { useAccount } from "@/lib/account";
 import { stepZoom } from "@/lib/appearance";
 import { useTurnAlerts } from "@/lib/attention";
@@ -288,6 +289,18 @@ export function Workbench({
   const [docs, setDocs] = useState<OpenDoc[]>([]);
   /** The open file showing in the middle; null shows the session. */
   const [activeDoc, setActiveDoc] = useState<string | null>(null);
+  /** Open files with typing not yet saved; closing one asks first. */
+  const [unsaved, setUnsaved] = useState<ReadonlySet<string>>(() => new Set());
+  const [closing, setClosing] = useState<string | null>(null);
+  const markUnsaved = useCallback((key: string, dirty: boolean) => {
+    setUnsaved((all) => {
+      if (all.has(key) === dirty) return all;
+      const next = new Set(all);
+      if (dirty) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
   /** Slash commands running in an agent's CLI, over each workspace's composer. */
   const agentTerminals = useAgentTerminalsState();
   /** Each workspace's session last shown here (null: a new one), to return to it. */
@@ -377,6 +390,12 @@ export function Workbench({
   }
 
   function closeDoc(key: string) {
+    if (unsaved.has(key)) setClosing(key);
+    else dropDoc(key);
+  }
+
+  function dropDoc(key: string) {
+    markUnsaved(key, false);
     const at = shownDocs.findIndex((d) => docKey(d) === key);
     setDocs((all) => all.filter((d) => docKey(d) !== key));
     if (activeDoc === key) {
@@ -525,6 +544,16 @@ export function Workbench({
           onClose={() => setSettings(null)}
         />
       )}
+      {closing && (
+        <UnsavedDialog
+          name={docs.find((d) => docKey(d) === closing)?.path ?? closing}
+          onDiscard={() => {
+            dropDoc(closing);
+            setClosing(null);
+          }}
+          onClose={() => setClosing(null)}
+        />
+      )}
       {askPath && (
         <HostPathDialog
           onDone={(path) => {
@@ -610,16 +639,22 @@ export function Workbench({
                   </AgentTerminalsContext.Provider>
                 </FileLinksContext.Provider>
               </TabPane>
-              {workspace &&
-                shownDocs.map((d) => (
-                  <TabPane key={docKey(d)} active={current === d}>
+              {/* Every workspace's open files stay mounted, so typing not yet saved survives a switch. */}
+              {docs.map((d) => {
+                const own = workspaces?.find((w) => w.workspace_id === d.workspaceId);
+                if (!own) return null;
+                const key = docKey(d);
+                const onDirty = (dirty: boolean) => markUnsaved(key, dirty);
+                return (
+                  <TabPane key={key} active={current === d}>
                     {d.kind === "diff" ? (
-                      <DiffView workspace={workspace} path={d.path} active={current === d} />
+                      <DiffView workspace={own} path={d.path} active={current === d} onDirty={onDirty} />
                     ) : (
-                      <FileView workspaceId={d.workspaceId} path={d.path} active={current === d} />
+                      <FileView workspaceId={d.workspaceId} path={d.path} active={current === d} onDirty={onDirty} />
                     )}
                   </TabPane>
-                ))}
+                );
+              })}
             </div>
           </>
         ) : (
@@ -1193,12 +1228,35 @@ function WorkspacePanel({
   );
 }
 
-/** A mounted panel; hidden ones keep their state. */
 /** "3 changed files", for the Diff tab's count. */
 function changedFiles({ count, truncated }: DiffCount): string {
   return `${count}${truncated ? "+" : ""} changed ${count === 1 && !truncated ? "file" : "files"}`;
 }
 
+/** Asks before closing a file tab whose typing is not saved. */
+function UnsavedDialog({ name, onDiscard, onClose }: { name: string; onDiscard(): void; onClose(): void }) {
+  return (
+    <Dialog className="max-w-md" aria-label="Discard unsaved edits?" onClose={onClose}>
+      <div className="flex flex-col gap-2 px-5 pt-5">
+        <h2 className="text-xl font-semibold tracking-tight">Discard unsaved edits?</h2>
+        <p className="text-muted-foreground text-sm leading-relaxed">
+          <span className="text-foreground font-mono">{name.slice(name.lastIndexOf("/") + 1)}</span> has edits that
+          aren't saved. Closing the tab loses them; press ⌘S first to keep them.
+        </p>
+      </div>
+      <div className="flex justify-end gap-2 p-5">
+        <Button variant="secondary" size="sm" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button variant="destructive" size="sm" onClick={onDiscard}>
+          Discard
+        </Button>
+      </div>
+    </Dialog>
+  );
+}
+
+/** A mounted panel; hidden ones keep their state. */
 function TabPane({ active, children }: { active: boolean; children: React.ReactNode }) {
   return (
     <div

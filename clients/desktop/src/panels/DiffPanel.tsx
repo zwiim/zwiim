@@ -339,17 +339,21 @@ export function DiffView({
   workspace,
   path,
   active = true,
+  onDirty,
 }: {
   workspace: WorkspaceInfo;
   path: string;
   /** Whether its tab is the one showing. */
   active?: boolean;
+  /** Whether Edit holds typing not yet saved, as that changes. */
+  onDirty?(dirty: boolean): void;
 }) {
   const controller = useController();
   const canWrite = useHost((s) => hasCapability(s.connection.compat, "files.write"));
   // Edit: the file as it is now, typed in place, its changes still marked.
   const [editing, setEditing] = useState(false);
   const [dirty, setDirty] = useState(false);
+  useEffect(() => onDirty?.(dirty), [onDirty, dirty]);
   const workspaceId = workspace.workspace_id;
   const revision = useHost((s) => s.diffRevision[workspaceId] ?? 0);
   const [viewed, setViewed] = useState<Viewed | null>(null);
