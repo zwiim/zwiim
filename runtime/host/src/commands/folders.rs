@@ -3064,16 +3064,26 @@ pub(crate) async fn git_discard(root: &str, file: &str) -> Result<GitDiscardResu
         return Ok(GitDiscardResult { discarded: true });
     }
 
-    let restore = crate::process::tokio_command("git")
-        .args(["restore", "--source=HEAD", "--staged", "--worktree", "--"])
-        .arg(&literal)
-        .current_dir(root)
-        .output()
-        .await
-        .map_err(AppCommandError::io)?;
-    if !restore.status.success() {
-        return Err(git_command_error("restore", &restore.stderr));
+    if get_head_hash(root).await?.is_none() {
+        // Before the first commit there is nothing to restore from: the file
+        // was added since, so it leaves the index and the disk.
+        let rm = crate::process::tokio_command("git")
+            .args(["rm", "--cached", "--force", "--quiet", "--"])
+            .arg(&literal)
+            .current_dir(root)
+            .output()
+            .await
+            .map_err(AppCommandError::io)?;
+        if !rm.status.success() {
+            return Err(git_command_error("rm --cached", &rm.stderr));
+        }
+        if std::fs::symlink_metadata(&target).is_ok() {
+            std::fs::remove_file(&target).map_err(AppCommandError::io)?;
+        }
+        return Ok(GitDiscardResult { discarded: true });
     }
+
+    git_rollback_file(root.to_string(), file.to_string()).await?;
     Ok(GitDiscardResult { discarded: true })
 }
 

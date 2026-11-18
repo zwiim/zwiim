@@ -3007,6 +3007,36 @@ async fn workspace_files_git_resolve_workspace_id_only() {
 }
 
 #[tokio::test]
+async fn git_discard_removes_a_staged_file_before_the_first_commit() {
+    let h = host(false).await;
+    let wid = h.workspace_id.clone();
+    let root = std::path::Path::new(&h.root);
+    // No commit yet: HEAD names a branch that does not exist.
+    git(root, &["update-ref", "-d", "refs/heads/main"]);
+    std::fs::write(root.join("added.txt"), "new\n").unwrap();
+    git(root, &["add", "added.txt"]);
+    std::fs::write(root.join("edited.txt"), "staged\n").unwrap();
+    git(root, &["add", "edited.txt"]);
+    std::fs::write(root.join("edited.txt"), "unstaged\n").unwrap();
+
+    for file in ["added.txt", "edited.txt"] {
+        assert_eq!(
+            h.ok("git.discard", json!({"workspace_id": wid, "file": file}))
+                .await,
+            json!({"discarded": true}),
+            "{file}"
+        );
+        assert!(!root.join(file).exists(), "{file}");
+    }
+    let status = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "");
+}
+
+#[tokio::test]
 async fn git_discard_drops_one_files_uncommitted_changes() {
     let h = host(false).await;
     let wid = h.workspace_id.clone();
