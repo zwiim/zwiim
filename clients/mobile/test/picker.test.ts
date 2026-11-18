@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   agentLock,
   heatLook,
+  levelAt,
   modeSegments,
   segmentAt,
   showAllLabel,
@@ -82,4 +83,12 @@ it("lets only an unsent fork switch agent", () => {
   expect(agentLock({ canSetAgent: false, forkedFrom: true, sent: false })).toBe("locked");
   expect(agentLock({ canSetAgent: true, forkedFrom: true, sent: true })).toBe("locked");
   expect(agentLock({ canSetAgent: true, forkedFrom: false, sent: false })).toBe("locked");
+});
+
+describe("levelAt", () => {
+  it("finds the Host's level, or none when it is not one the switch lists", () => {
+    expect(levelAt(v(3), "m2")).toBe(2);
+    expect(levelAt(v(3), "xhigh")).toBeNull();
+    expect(levelAt(v(3), null)).toBeNull();
+  });
 });

@@ -6,10 +6,10 @@
 // own between turns and the sheet shows what the Host reports back. Context
 // figures are the agent's own, and one it didn't report reads "not reported".
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Switch, TextInput, useWindowDimensions, View } from "react-native";
 import Svg, { Circle } from "react-native-svg";
-import { hasCapability, type SessionOptions, type SessionView } from "@zwiim/sdk";
+import { hasCapability, type SessionView } from "@zwiim/sdk";
 import {
   changeRequest,
   contextChip,
@@ -23,8 +23,8 @@ import {
   type ContextRow,
   type OptionChange,
 } from "../sessions/controls";
-import { agentLock, heatLook, modeSegments, showAllLabel, visibleModels } from "../sessions/picker";
-import { agentNote, offeredAgents } from "../sessions/start";
+import { agentLock, heatLook, levelAt, modeSegments, showAllLabel, visibleModels } from "../sessions/picker";
+import { agentNote, choiceLabel, offeredAgents } from "../sessions/start";
 import { useCurrentHost, useHostState } from "../app/hooks";
 import { currentHost } from "../services";
 import { Button, Sheet, T } from "../ui/components";
@@ -197,6 +197,7 @@ export function SessionOptionsSheet({
     setConfirmUnattended(false);
     setError(null);
     setQuery("");
+    setExpanded(false);
     onClose();
   };
 
@@ -264,7 +265,7 @@ export function SessionOptionsSheet({
   const fast = hasCapability(compat, "session.fast") ? options?.fast ?? null : null;
   const list = model ? visibleModels(model.values, { expanded, query }) : null;
   const more = model && !query.trim() ? showAllLabel(model.values.length, expanded) : null;
-  const effortAt = effort ? Math.max(0, effort.values.findIndex((v) => v.value === effort.current)) : 0;
+  const effortAt = effort ? levelAt(effort.values, effort.current) : null;
   const modeAt = Math.max(0, modes.findIndex((m) => m.mode === options?.mode?.current));
   const locked = !editable.ok;
 
@@ -298,7 +299,12 @@ export function SessionOptionsSheet({
                   accessibilityLabel={note ? `${a.name}, ${note}` : a.name}
                   accessibilityState={{ selected: current, disabled: !can }}
                   disabled={!can}
-                  onPress={() => void run(() => currentHost.setSessionAgent(session_id, a.agent, {}))}
+                  onPress={() => {
+                    // The new agent's models: the old search and expansion don't apply.
+                    setQuery("");
+                    setExpanded(false);
+                    void run(() => currentHost.setSessionAgent(session_id, a.agent, {}));
+                  }}
                   style={({ pressed }) => [
                     styles.agentChip,
                     {
@@ -411,8 +417,13 @@ export function SessionOptionsSheet({
               <T variant="caption" color={theme.mut}>
                 Effort
               </T>
-              <T variant="callout" color={heatLook(effortAt, effort.values.length).text} numberOfLines={1} style={styles.shrink}>
-                {effort.values[effortAt]?.label ?? ""}
+              <T
+                variant="callout"
+                color={effortAt === null ? theme.mut : heatLook(effortAt, effort.values.length).text}
+                numberOfLines={1}
+                style={styles.shrink}
+              >
+                {choiceLabel(effort, effort.current)}
               </T>
             </View>
             <SlideSwitch

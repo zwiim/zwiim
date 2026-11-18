@@ -43,8 +43,8 @@ export function SlideSwitch({
   testID,
 }: {
   segments: readonly SlideSegment[];
-  /** The index of the Host's current value. */
-  value: number;
+  /** The index of the Host's current value; null when it is none of these. */
+  value: number | null;
   /** Called once: after a tap's travel, or on release. */
   onChange(index: number): void;
   /** `heat`: Effort's colours; `plain`: a raised pill. */
@@ -59,7 +59,7 @@ export function SlideSwitch({
   const count = Math.max(1, segments.length);
   const [inner, setInner] = useState(0);
   const segW = inner / count;
-  const [lit, setLit] = useState(value);
+  const [lit, setLit] = useState<number | null>(value);
   const left = useRef(new Animated.Value(0)).current;
   const at = useRef(0);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
@@ -75,15 +75,16 @@ export function SlideSwitch({
 
   // The Host's value, a new width, or a change ending (a refusal keeps the
   // old value): go there without reporting a change.
-  const shown = useRef<number | null>(null);
+  const shown = useRef<number | null | undefined>(undefined);
   useEffect(() => {
     if (busy.current || !segW) return;
     // While a pick is on its way the switch stays where it was put.
     if (disabled && shown.current === value) return;
     // The first placement (each time the sheet opens) is not a move.
-    const first = shown.current === null;
+    const first = shown.current == null;
     shown.current = value;
     setLit(value);
+    if (value === null) return;
     if (reduce || first) left.setValue(value * segW);
     else Animated.timing(left, { toValue: value * segW, duration: SETTLE_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
   }, [value, segW, reduce, left, disabled]);
@@ -94,8 +95,14 @@ export function SlideSwitch({
     timers.current.forEach(clearTimeout);
     timers.current = [];
     const from = lit;
-    const path = travelPath(from, to);
     busy.current = true;
+    // Nothing lit to travel from: go straight there.
+    if (reduce || from === null) {
+      tick(to, count);
+      left.setValue(to * segW);
+      return finish(to);
+    }
+    const path = travelPath(from, to);
     path.forEach((level, k) => {
       timers.current.push(
         setTimeout(() => {
@@ -104,10 +111,6 @@ export function SlideSwitch({
         }, Math.max(0, (k + 1) * STEP_MS - 40)),
       );
     });
-    if (reduce) {
-      left.setValue(to * segW);
-      return finish(to);
-    }
     Animated.timing(left, {
       toValue: to * segW,
       duration: Math.max(1, path.length) * STEP_MS + 120,
@@ -126,7 +129,7 @@ export function SlideSwitch({
     if (locked && to !== current) {
       // A turn started or the connection dropped: nothing is sent, so go back.
       setLit(current);
-      Animated.timing(left, { toValue: current * w, duration: SETTLE_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
+      if (current !== null) Animated.timing(left, { toValue: current * w, duration: SETTLE_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
       return;
     }
     setLit(to);
@@ -148,7 +151,7 @@ export function SlideSwitch({
           timers.current.forEach(clearTimeout);
           left.stopAnimation();
           busy.current = true;
-          drag.current = { start: at.current, over: live.current.lit };
+          drag.current = { start: at.current, over: live.current.lit ?? -1 };
         },
         onPanResponderMove: (_, g) => {
           const { segW: w, inner: track, count: n } = live.current;
@@ -170,7 +173,13 @@ export function SlideSwitch({
   function settle() {
     const { segW: w, value: current, enabled: can } = live.current;
     // A drag can pass a mode the agent lacks, never stop on one.
-    const to = can(drag.current.over) ? drag.current.over : current;
+    const { over } = drag.current;
+    const to = over >= 0 && can(over) ? over : current;
+    if (to === null) {
+      busy.current = false;
+      setLit(null);
+      return;
+    }
     Animated.timing(left, { toValue: to * w, duration: SETTLE_MS, easing: Easing.out(Easing.back(1.4)), useNativeDriver: false }).start(
       ({ finished }) => {
         if (finished) finish(to);
@@ -179,18 +188,17 @@ export function SlideSwitch({
   }
 
   const onLayout = (e: LayoutChangeEvent) => setInner(e.nativeEvent.layout.width - PAD * 2);
-  const heat = tone === "heat" ? heatLook(lit, count) : null;
+  const heat = tone === "heat" ? heatLook(lit ?? 0, count) : null;
   const accent = accentAt !== undefined && lit === accentAt;
 
   return (
     <View
       onLayout={onLayout}
       style={[styles.track, { backgroundColor: theme.surface, opacity: disabled ? 0.5 : 1 }]}
-      accessibilityRole="adjustable"
       testID={testID}
       {...pan.panHandlers}
     >
-      {segW > 0 ? (
+      {segW > 0 && lit !== null ? (
         <Animated.View
           pointerEvents="none"
           style={[

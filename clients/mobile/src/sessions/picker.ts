@@ -53,6 +53,12 @@ export function heatLook(index: number, count: number): Heat {
   };
 }
 
+/** Where the Host's value sits in the switch; null when it is not one the switch lists. */
+export function levelAt(values: readonly OptionValue[], current: string | null): number | null {
+  const i = values.findIndex((v) => v.value === current);
+  return i < 0 ? null : i;
+}
+
 /** The levels a tap passes through, after `from` up to and including `to`. */
 export function travelPath(from: number, to: number): number[] {
   const step = to > from ? 1 : -1;
