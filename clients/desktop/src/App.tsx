@@ -1078,6 +1078,7 @@ function WorkspacePanel({
                     selected={showing?.kind === "diff" ? showing.path : null}
                     onOpen={(path) => onOpen("diff", path)}
                     onCount={setChanges}
+                    active={tab === "diff"}
                   />
                 </TabPane>
               )}

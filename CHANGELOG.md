@@ -24,11 +24,13 @@ have their own versions and are listed under Compatibility.
 - The composer's model picker now lists every agent's models: picking a model picks its agent. Favorite and recent models sit at the top, each model remembers its effort, and effort and mode open as side lists.
 - The terminal draws with the GPU (WebGL) when it can, so heavy output
   scrolls smoothly.
-- Desktop: a unified diff numbers each line once, as the file is now; a removed line shows its old number.
 
 ### Fixed
 - The terminal no longer stutters when the dock opens or closes, and the
   shell inside it is no longer resized mid-animation.
+- Desktop: a replace, or the file changing on disk, no longer moves the caret to the end of the file being edited or clears its undo.
+- Desktop: typing in a long file no longer lags; colors catch up once typing pauses.
+- Desktop: the Diff tab's count no longer runs a full Git status on every change while the tab is hidden.
 
 ### Security
 - None.

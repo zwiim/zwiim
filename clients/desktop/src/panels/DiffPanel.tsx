@@ -47,6 +47,9 @@ export interface DiffCount {
   truncated: boolean;
 }
 
+/** While the Diff tab is hidden, its count is refreshed at most this often. */
+export const HIDDEN_DIFF_EVERY_MS = 3000;
+
 /** What a workspace's changes are measured against. */
 function againstLabel(workspace: WorkspaceInfo, baseCommit: string | null | undefined): string {
   return workspace.parent_workspace_id === null
@@ -59,13 +62,16 @@ function againstLabel(workspace: WorkspaceInfo, baseCommit: string | null | unde
  * its base, the root's uncommitted changes against HEAD. Refetched when the
  * host says this workspace's diff may have changed. Opening a file shows its
  * patch beside the conversation; a file with uncommitted changes can have
- * them discarded, after a confirm.
+ * them discarded, after a confirm. Hidden, it only keeps the tab's count
+ * fresh: the diff at most every few seconds, and not which files are
+ * uncommitted until it shows.
  */
 export function DiffPanel({
   workspace,
   selected,
   onOpen,
   onCount,
+  active = true,
 }: {
   workspace: WorkspaceInfo;
   /** The file whose patch is showing, if any. */
@@ -73,6 +79,8 @@ export function DiffPanel({
   onOpen(path: string): void;
   /** How many files changed, once known; null while loading or with no Git. */
   onCount?(count: DiffCount | null): void;
+  /** Whether its tab is the one showing. */
+  active?: boolean;
 }) {
   const controller = useController();
   const workspaceId = workspace.workspace_id;
@@ -91,21 +99,24 @@ export function DiffPanel({
   /** Bumped per load; answers to older loads are dropped. */
   const loads = useRef(0);
 
-  const refresh = useCallback(async () => {
+  /** `full`: also which files are uncommitted, for Discard; a hidden panel skips it. */
+  const refresh = useCallback(async (full = true) => {
     const load = ++loads.current;
     setError(null);
     setLoading(true);
     // Which files have uncommitted changes, for Discard; without it, none offer it.
-    const status = canDiscard
-      ? controller.client
-          .request("git.status", { workspace_id: workspaceId, show_all_untracked: true })
-          .then(uncommittedPaths, () => new Map<string, "new" | "changed">())
-      : Promise.resolve(new Map<string, "new" | "changed">());
+    const status = !full
+      ? null
+      : canDiscard
+        ? controller.client
+            .request("git.status", { workspace_id: workspaceId, show_all_untracked: true })
+            .then(uncommittedPaths, () => new Map<string, "new" | "changed">())
+        : Promise.resolve(new Map<string, "new" | "changed">());
     try {
       const [next, paths] = await Promise.all([controller.loadDiff(workspaceId), status]);
       if (load === loads.current) {
         setDiff(next);
-        setUncommitted(paths);
+        if (paths) setUncommitted(paths);
       }
     } catch (e) {
       if (load === loads.current) setError(errorMessage(e));
@@ -120,10 +131,22 @@ export function DiffPanel({
   }, [workspaceId]);
 
   const isRepo = workspace.is_git_repo;
+  const hiddenAt = useRef(0);
   useEffect(() => {
     // A plain folder has no diff: Git is never asked.
-    if (isRepo) void refresh();
-  }, [refresh, revision, isRepo]);
+    if (!isRepo) return;
+    if (active) {
+      void refresh();
+      return;
+    }
+    // Hidden: a burst of changes costs one diff per interval, never starved by the next change.
+    const wait = Math.max(0, hiddenAt.current + HIDDEN_DIFF_EVERY_MS - Date.now());
+    const timer = setTimeout(() => {
+      hiddenAt.current = Date.now();
+      void refresh(false);
+    }, wait);
+    return () => clearTimeout(timer);
+  }, [refresh, revision, isRepo, active]);
 
   if (!isRepo) return <NotGitRepository name={workspace.alias ?? workspace.name} />;
 
@@ -131,7 +154,7 @@ export function DiffPanel({
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-2 px-3 py-1">
         <span className="text-muted-foreground truncate text-xs">{againstLabel(workspace, diff?.base_commit)}</span>
-        <Button className="ml-auto" size="icon-sm" variant="ghost" title="Refresh" onClick={refresh} disabled={loading}>
+        <Button className="ml-auto" size="icon-sm" variant="ghost" title="Refresh" onClick={() => void refresh()} disabled={loading}>
           <RefreshCw className={cn(loading && "animate-spin")} />
         </Button>
       </div>
@@ -140,7 +163,7 @@ export function DiffPanel({
           <p className="text-destructive min-w-0 flex-1" role="alert" data-testid="diff-error">
             {error}
           </p>
-          <Button size="xs" variant="outline" onClick={refresh} disabled={loading}>
+          <Button size="xs" variant="outline" onClick={() => void refresh()} disabled={loading}>
             Retry
           </Button>
         </div>
