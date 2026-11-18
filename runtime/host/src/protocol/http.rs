@@ -1781,6 +1781,24 @@ pub async fn git_commit(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct GitDiscardParams {
+    pub workspace_id: String,
+    /// Workspace-relative path of the file whose uncommitted changes go.
+    pub file: String,
+}
+
+pub async fn git_discard(
+    Extension(state): Extension<Arc<AppState>>,
+    ZJson(p): ZJson<GitDiscardParams>,
+) -> ZResult<folder_commands::GitDiscardResult> {
+    let root = workspace::resolve(&state.db.conn, &p.workspace_id)
+        .await?
+        .path;
+    Ok(Json(folder_commands::git_discard(&root, &p.file).await?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GitDiffParams {
     pub workspace_id: String,
     /// Workspace-relative path of one changed file: return its patch too.

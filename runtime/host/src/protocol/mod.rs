@@ -217,6 +217,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/git.branches", post(http::git_branches))
         .route("/git.commit", post(http::git_commit))
         .route("/git.diff", post(http::git_diff))
+        .route("/git.discard", post(http::git_discard))
         .route("/git.pr", post(http::git_pr))
         .route("/git.pr_merge", post(http::git_pr_merge))
         .route("/git.pr_auto_merge", post(http::git_pr_auto_merge))

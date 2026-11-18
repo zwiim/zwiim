@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ExternalLink, ChevronRight, Eye, Loader2, Pencil, RefreshCw, Search } from "lucide-react";
 import { FolderIcon, fileIcon } from "@/components/FileIcon";
 import {
@@ -33,6 +33,8 @@ import { Button } from "@/components/ui/button";
 import { isTauri, openFileBytes } from "@/lib/bridge";
 import { fileDragProps } from "@/lib/file-drag";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
+import { isModKey } from "@/lib/platform";
+import { languageFor, TokenLine, useHighlighted } from "@/lib/highlight";
 import { markdownStyle } from "@/lib/prefs";
 import { usePref } from "@/lib/use-pref";
 import { cn } from "@/lib/utils";
@@ -243,10 +245,28 @@ type Shown =
   | { none: true };
 
 /**
- * One file's contents, read-only, in its own tab; what has no preview opens in
- * its own app. `active` is whether its tab is the one showing.
+ * One file's contents in its own tab: text the Host can save is edited in
+ * place and saved with ⌘S; what has no preview opens in its own app. `active`
+ * is whether its tab is the one showing.
  */
-export function FileView({ workspaceId, path, active = true }: { workspaceId: string; path: string; active?: boolean }) {
+export function FileView({
+  workspaceId,
+  path,
+  active = true,
+  changes,
+  actions,
+  onDirty,
+}: {
+  workspaceId: string;
+  path: string;
+  active?: boolean;
+  /** Lines changed against a base, for the text `text` (the diff tab's edit). */
+  changes?: LineChanges & { text: string };
+  /** More header buttons, before the file's own. */
+  actions?: React.ReactNode;
+  /** Whether there are unsaved edits, as that changes. */
+  onDirty?(dirty: boolean): void;
+}) {
   const controller = useController();
   const root = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
@@ -265,7 +285,7 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
   const [mode, setMode] = useState<"rendered" | "source">("rendered");
   // A CSV/TSV being edited: the table, and the text and etag it was read at.
   const [editing, setEditing] = useState<{ table: DelimitedTable; source: string; etag: string } | null>(null);
-  // A text file changed by replace: the text and etag it was read at, and the text now.
+  // A text file changed by typing or replace: the text and etag it was read at, and the text now.
   const [textEdit, setTextEdit] = useState<{ source: string; etag: string; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
@@ -276,6 +296,7 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
     () => (editing ? serializeDelimited(editing.table) !== editing.source : !!textEdit && textEdit.text !== textEdit.source),
     [editing, textEdit],
   );
+  useEffect(() => onDirty?.(dirty), [onDirty, dirty]);
   const [preview, setPreview] = useState(false);
   const book = usePref(markdownStyle) === "book";
 
@@ -384,8 +405,14 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
     setEditError(null);
     try {
       const content = editing ? serializeDelimited(editing.table) : textEdit!.text;
-      await controller.client.request("files.write", { workspace_id: workspaceId, path, content, etag: edit.etag });
-      stopEdit();
+      const saved = await controller.client.request("files.write", { workspace_id: workspaceId, path, content, etag: edit.etag });
+      if (editing) stopEdit();
+      else {
+        // Show what was saved at once; typing that went on during the save stays as edits on top of it.
+        setShown((s) => (s && "text" in s ? { text: { ...s.text, ...saved, content } } : s));
+        setTextEdit((e) => (e && e.text !== content ? { ...e, source: content, etag: saved.etag } : null));
+        setStale(false);
+      }
       void refresh();
     } catch (e) {
       if (e instanceof ZwiimClientError && e.code === "file_changed") setStale(true);
@@ -403,6 +430,10 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
   // Replace saves the whole text back, so only text the Host read exactly
   // (no U+FFFD standing in for bytes it could not decode) into a file it can write.
   const replaceable = !!read && canWrite && !read.readonly && !read.content.includes("\uFFFD");
+  // Typing goes through a textarea, which has only "\n": text with one kind of
+  // line ending is edited and saved back with that ending, mixed ones only by replace.
+  const eol = replaceable ? lineEnding(read.content) : null;
+  const typing = !!eol && !(preview && markdown);
   // What find searches: the text as shown in lines, or the rendered page. A
   // page framed at its own origin cannot be searched from here.
   const findText = text !== null && !(preview && markdown) ? text : null;
@@ -419,6 +450,10 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
             ? "page"
             : null;
   const find = useFind(active && !!findIn, root);
+  const shownChanges = useMemo(
+    () => (changes && text !== null ? carryChanges(changes, changes.text, text) : undefined),
+    [changes, text],
+  );
   const query = useDeferredValue(find.query);
   const matches = useMemo(
     () => (find.open && findText !== null ? findMatches(findText, query, find.options) : []),
@@ -468,11 +503,26 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
     const chosen = which === "all" ? matches : matches.slice(i, i + 1);
     if (!chosen.length) return;
     const next = replaceMatches(findText, chosen, find.replacement);
-    setTextEdit((e) => ({ source: e?.source ?? read.content, etag: e?.etag ?? read.etag, text: next }));
+    edit(next);
     // The next match starts after the replacement, even one the replacement itself contains.
     const after = chosen[0]!.start + find.replacement.length;
     const left = findMatches(next, query, find.options).findIndex((m) => m.start >= after);
     find.setCurrent(Math.max(0, left));
+  }
+
+  /** Makes `next` the text; back to what was read, nothing is edited. */
+  function edit(next: string) {
+    if (!read) return;
+    setTextEdit((e) => {
+      const source = e?.source ?? read.content;
+      return next === source ? null : { source, etag: e?.etag ?? read.etag, text: next };
+    });
+  }
+
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (!isModKey(e) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "s") return;
+    e.preventDefault();
+    if (dirty && !saving) void save();
   }
 
   function replaceCells(which: "current" | "all") {
@@ -491,9 +541,10 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
   }
 
   return (
-    <div ref={root} className="flex h-full min-h-0 flex-col" data-testid="file-view">
+    <div ref={root} className="flex h-full min-h-0 flex-col" data-testid="file-view" onKeyDown={onKeyDown}>
       <div className="text-muted-foreground flex h-10 shrink-0 items-center gap-2 border-b px-4 text-xs">
         <span className="text-foreground min-w-0 flex-1 truncate font-mono">{path}</span>
+        {actions}
         {page && (
           <div className="bg-muted flex shrink-0 gap-0.5 rounded-lg p-0.5" role="radiogroup" aria-label="Show">
             {(["rendered", "source"] as const).map((m) => (
@@ -524,7 +575,7 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
             <Eye /> Preview
           </Button>
         )}
-        {read && <span className="shrink-0">{textEdit ? "edited" : "read-only"}</span>}
+        {read && (dirty ? <span className="shrink-0">edited</span> : !eol && <span className="shrink-0">read-only</span>)}
         {findIn && (
           <Button size="icon-sm" variant="ghost" title="Find" aria-label="Find" onClick={() => find.show()}>
             <Search />
@@ -643,7 +694,14 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
             />
           </div>
         ) : shown ? (
-          <FileText text={text ?? ""} matches={matches} current={at(find, matches.length)} />
+          <FileText
+            text={text ?? ""}
+            path={path}
+            changes={shownChanges}
+            matches={matches}
+            current={at(find, matches.length)}
+            onChange={typing ? (v) => edit(eol === "\r\n" ? v.replace(/\n/g, "\r\n") : v) : undefined}
+          />
         ) : (
           <PreviewLoading />
         )}
@@ -652,8 +710,93 @@ export function FileView({ workspaceId, path, active = true }: { workspaceId: st
   );
 }
 
-/** Text in numbered lines, with find's `matches` marked and the `current` one scrolled to. */
-function FileText({ text, matches = [], current = 0 }: { text: string; matches?: FindMatch[]; current?: number }) {
+/**
+ * The one line ending `text` can be typed in with: "\n", or "\r\n" when every
+ * line has it. Null for mixed endings or a lone "\r", which a textarea would rewrite.
+ */
+export function lineEnding(text: string): "\n" | "\r\n" | null {
+  if (/\r(?!\n)/.test(text)) return null;
+  if (!text.includes("\r\n")) return "\n";
+  return /(^|[^\r])\n/.test(text) ? null : "\r\n";
+}
+
+/**
+ * Whether `path` opens as text that can be typed into, read as `content`:
+ * not an image, table, document or rendered page, with one kind of line
+ * ending and no bytes the Host could not decode. A read-only file shows as
+ * read-only once open.
+ */
+export function typesInPlace(path: string, content: string): boolean {
+  const kind = previewKind(path.slice(path.lastIndexOf("/") + 1));
+  const text = kind === "text" || (kind === "html" && !isTauri());
+  return text && !content.includes("\uFFFD") && lineEnding(content) !== null;
+}
+
+/** Lines changed against a base, by index in the text shown: added or changed, and where lines were removed. */
+export interface LineChanges {
+  added: ReadonlySet<number>;
+  /** A removal sits before this line; the line count for one at the end. */
+  removedBefore: ReadonlySet<number>;
+}
+
+/** The lines of `text`, without a final newline's empty line. */
+function splitLines(text: string): string[] {
+  const body = text.endsWith("\n") ? text.slice(0, -1) : text;
+  return body.split(/\r?\n/);
+}
+
+/**
+ * `changes`, made for the text `from`, carried over to the text `to`: lines
+ * kept before and after an edit keep their marks, and the lines in between
+ * were typed, so they are changed.
+ */
+export function carryChanges(changes: LineChanges, from: string, to: string): LineChanges {
+  if (from === to) return changes;
+  const a = splitLines(from);
+  const b = splitLines(to);
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let tail = 0;
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+  const shift = b.length - a.length;
+  const added = new Set<number>();
+  const removedBefore = new Set<number>();
+  for (const i of changes.added) {
+    if (i < head) added.add(i);
+    else if (i >= a.length - tail) added.add(i + shift);
+  }
+  for (const i of changes.removedBefore) {
+    if (i <= head) removedBefore.add(i);
+    else if (i >= a.length - tail) removedBefore.add(i + shift);
+  }
+  for (let i = head; i < b.length - tail; i++) added.add(i);
+  // Lines taken out with nothing typed in their place.
+  if (head === b.length - tail && a.length > b.length) removedBefore.add(head);
+  return { added, removedBefore };
+}
+
+/**
+ * Text in numbered lines, colored by its language, with find's `matches`
+ * marked and the `current` one scrolled to; `changes` tint changed lines and
+ * mark removed ones. With `onChange` it is typed in: a textarea with clear
+ * text lies over the lines, so colors and marks still show beneath the caret.
+ */
+export function FileText({
+  text,
+  path,
+  matches = [],
+  current = 0,
+  changes,
+  onChange,
+}: {
+  text: string;
+  /** The file's path, which names its language. */
+  path?: string;
+  matches?: FindMatch[];
+  current?: number;
+  changes?: LineChanges;
+  onChange?(text: string): void;
+}) {
   const box = useRef<HTMLDivElement>(null);
   const lines = useMemo(() => {
     const out: { start: number; text: string }[] = [];
@@ -677,23 +820,76 @@ function FileText({ text, matches = [], current = 0 }: { text: string; matches?:
     });
     return out;
   }, [matches, lines]);
+  // Colored a beat behind typing; a line whose colors are not for its text yet draws plain.
+  const colored = useDeferredValue(text);
+  const [tokens] = useHighlighted(
+    useMemo(() => [splitLines(colored).join("\n")], [colored]),
+    path ? languageFor(path) : null,
+  );
+  const colorsOf = (i: number, line: string) => {
+    const t = tokens?.[i];
+    return t && t.map((x) => x.content).join("") === line ? t : null;
+  };
   useEffect(() => {
     box.current?.querySelector("[data-current]")?.scrollIntoView?.({ block: "center", inline: "nearest" });
   }, [matches, current]);
+  // Set through the element, not as a child, so the text is in the page once.
+  const area = useRef<HTMLTextAreaElement>(null);
+  const typed = useMemo(() => (onChange ? text.replace(/\r\n/g, "\n") : ""), [onChange, text]);
+  useLayoutEffect(() => {
+    if (area.current && area.current.value !== typed) area.current.value = typed;
+  }, [typed]);
+  // A removal draws as a red rule at the top of the line after it, which never moves a line.
+  const removed = (i: number) => changes?.removedBefore.has(i) && "shadow-[inset_0_2px_0_var(--destructive)]";
   return (
     <div ref={box} className="min-h-0 flex-1 overflow-auto" data-testid="file-content">
-      <table className="border-collapse font-mono text-xs leading-5">
-        <tbody>
-          {lines.map((line, i) => (
-            <tr key={i}>
-              <td className="text-muted-foreground border-r px-2 text-right align-top select-none">{i + 1}</td>
-              <td className="px-3 whitespace-pre">
-                {marks.has(i) ? <Marked line={line} matches={matches} at={marks.get(i)!} current={current} /> : line.text || " "}
-              </td>
-            </tr>
+      <div className="flex min-w-max font-mono text-xs leading-5">
+        <div className="text-muted-foreground border-r text-right select-none" aria-hidden>
+          {lines.map((_, i) => (
+            <div key={i} className={cn("px-2", changes?.added.has(i) && "bg-add text-done", removed(i))}>
+              {i + 1}
+            </div>
           ))}
-        </tbody>
-      </table>
+          {changes?.removedBefore.has(lines.length) && <div className={cn("h-0", removed(lines.length))} />}
+        </div>
+        <div className="grid flex-1">
+          {/* One more line under the text, for the caret after a final newline. */}
+          <div className={cn("col-start-1 row-start-1 whitespace-pre", onChange && "pb-5")}>
+            {lines.map((line, i) => {
+              const colors = marks.has(i) ? null : colorsOf(i, line.text);
+              return (
+                <div key={i} className={cn("px-3", changes?.added.has(i) && "bg-add", removed(i))} data-line>
+                  {marks.has(i) ? (
+                    <Marked line={line} matches={matches} at={marks.get(i)!} current={current} />
+                  ) : colors && line.text ? (
+                    <TokenLine tokens={colors} />
+                  ) : (
+                    line.text || " "
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {onChange && (
+            <textarea
+              className="caret-foreground col-start-1 row-start-1 resize-none overflow-hidden bg-transparent px-3 font-mono text-xs leading-5 whitespace-pre text-transparent outline-none"
+              ref={area}
+              aria-label="File text"
+              wrap="off"
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+              onChange={(e) => onChange(e.target.value)}
+              onKeyDown={(e) => {
+                // Tab types a tab, as in an editor, rather than leaving the file.
+                if (e.key !== "Tab" || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
+                e.preventDefault();
+                document.execCommand("insertText", false, "\t");
+              }}
+            />
+          )}
+        </div>
+      </div>
     </div>
   );
 }

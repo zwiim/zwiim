@@ -823,6 +823,7 @@ describe("HostController", () => {
 
   it("never retries saving a file", () => {
     expect(MUTATING_OPS.has("files.write")).toBe(true);
+    expect(MUTATING_OPS.has("git.discard")).toBe(true);
     expect(MUTATING_OPS.has("files.read")).toBe(false);
   });
 

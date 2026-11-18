@@ -12,6 +12,10 @@ have their own versions and are listed under Compatibility.
 - Typing `/` in the phone's composer lists the agent's slash commands; a tap writes the command into the message. With more than five, "Search all" opens a sheet to search them.
 - The model picker has a Fast switch for models that offer fast mode (Claude's 2x speed, more usage). It starts off, each model remembers it, and ⚡ marks it while on.
 - A fork can move to another agent before its first message: pick that agent's model in the composer, and the chat goes on through the fork's transcript.
+- Desktop: text files open ready to edit; ⌘S saves them through the Host, and the change shows in Diff and Git. Thanks to @anshul89237 for building it.
+- Desktop: Discard on a file in Diff throws away its uncommitted changes, after a confirm (`git.discard`, protocol revision 39).
+- Desktop: the Diff tab shows how many files changed, before it is opened.
+- Desktop: a file's diff has Edit, which types into the file in place with its changes still marked; the file editor colors code by its language.
 
 ### Changed
 - The phone's session screen has one header row (back, the worktree, the session tabs, + and ⋯); the title, the agent line and Stop agent move into ⋯ with the context figures. The PR line reads `PR #12 · branch` with its status as a pill.
@@ -20,6 +24,7 @@ have their own versions and are listed under Compatibility.
 - The composer's model picker now lists every agent's models: picking a model picks its agent. Favorite and recent models sit at the top, each model remembers its effort, and effort and mode open as side lists.
 - The terminal draws with the GPU (WebGL) when it can, so heavy output
   scrolls smoothly.
+- Desktop: a unified diff numbers each line once, as the file is now; a removed line shows its old number.
 
 ### Fixed
 - The terminal no longer stutters when the dock opens or closes, and the
