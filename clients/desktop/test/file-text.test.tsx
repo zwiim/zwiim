@@ -1,6 +1,7 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
-import { FileText, textChange } from "@/panels/FilesPanel";
+import { act, cleanup, render, renderHook, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ThemedToken } from "@/lib/highlight";
+import { FileText, lineColorer, textChange, useSettled } from "@/panels/FilesPanel";
 
 afterEach(cleanup);
 
@@ -24,5 +25,33 @@ describe("typing in a file", () => {
     // A change after the caret leaves it alone.
     rerender(<FileText text={"zero\none\ntwo\nthree\n"} onChange={onChange} />);
     expect([area.selectionStart, area.selectionEnd]).toEqual([10, 10]);
+  });
+});
+
+describe("coloring while typing", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("recolors once typing settles, not on every keystroke", () => {
+    vi.useFakeTimers();
+    const { result, rerender } = renderHook(({ v }) => useSettled(v, 300), { initialProps: { v: "a" } });
+    expect(result.current).toBe("a");
+    rerender({ v: "ab" });
+    act(() => vi.advanceTimersByTime(200));
+    rerender({ v: "abc" });
+    act(() => vi.advanceTimersByTime(200));
+    expect(result.current).toBe("a");
+    act(() => vi.advanceTimersByTime(100));
+    expect(result.current).toBe("abc");
+  });
+
+  it("keeps a moved line's colors until the file is colored again", () => {
+    const tok = (content: string): ThemedToken[] => [{ content, offset: 0 }];
+    const colors = lineColorer([tok("const a = 1;"), tok("let b;")]);
+    expect(colors(0, "const a = 1;")).toEqual(tok("const a = 1;"));
+    // A line typed above pushed both down a line.
+    expect(colors(2, "let b;")).toEqual(tok("let b;"));
+    // A line changed by typing draws plain.
+    expect(colors(1, "let bc;")).toBeNull();
+    expect(lineColorer(null)(0, "x")).toBeNull();
   });
 });

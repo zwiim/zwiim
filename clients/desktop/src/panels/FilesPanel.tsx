@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ExternalLink, ChevronRight, Eye, Loader2, Pencil, RefreshCw, Search } from "lucide-react";
 import { FolderIcon, fileIcon } from "@/components/FileIcon";
 import {
@@ -34,7 +34,7 @@ import { isTauri, openFileBytes } from "@/lib/bridge";
 import { fileDragProps } from "@/lib/file-drag";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
 import { isModKey } from "@/lib/platform";
-import { languageFor, TokenLine, useHighlighted } from "@/lib/highlight";
+import { languageFor, TokenLine, useHighlighted, type ThemedToken } from "@/lib/highlight";
 import { markdownStyle } from "@/lib/prefs";
 import { usePref } from "@/lib/use-pref";
 import { cn } from "@/lib/utils";
@@ -820,16 +820,14 @@ export function FileText({
     });
     return out;
   }, [matches, lines]);
-  // Colored a beat behind typing; a line whose colors are not for its text yet draws plain.
-  const colored = useDeferredValue(text);
+  // Colored once typing settles, the whole file at once: meanwhile a line an
+  // edit only moved keeps its colors, and one it changed draws plain.
+  const colored = useSettled(text, COLOR_SETTLE_MS);
   const [tokens] = useHighlighted(
     useMemo(() => [splitLines(colored).join("\n")], [colored]),
     path ? languageFor(path) : null,
   );
-  const colorsOf = (i: number, line: string) => {
-    const t = tokens?.[i];
-    return t && t.map((x) => x.content).join("") === line ? t : null;
-  };
+  const colorsOf = useMemo(() => lineColorer(tokens), [tokens]);
   useEffect(() => {
     box.current?.querySelector("[data-current]")?.scrollIntoView?.({ block: "center", inline: "nearest" });
   }, [matches, current]);
@@ -867,15 +865,14 @@ export function FileText({
             {lines.map((line, i) => {
               const colors = marks.has(i) ? null : colorsOf(i, line.text);
               return (
-                <div key={i} className={cn("px-3", changes?.added.has(i) && "bg-add", removed(i))} data-line>
-                  {marks.has(i) ? (
-                    <Marked line={line} matches={matches} at={marks.get(i)!} current={current} />
-                  ) : colors && line.text ? (
-                    <TokenLine tokens={colors} />
-                  ) : (
-                    line.text || " "
-                  )}
-                </div>
+                <FileLine
+                  key={i}
+                  text={line.text}
+                  colors={colors}
+                  className={cn("px-3", changes?.added.has(i) && "bg-add", removed(i))}
+                >
+                  {marks.has(i) ? <Marked line={line} matches={matches} at={marks.get(i)!} current={current} /> : null}
+                </FileLine>
               );
             })}
           </div>
@@ -902,6 +899,58 @@ export function FileText({
     </div>
   );
 }
+
+/** How long typing pauses before the file is colored again. */
+const COLOR_SETTLE_MS = 300;
+
+/** `value` once it has stayed the same for `ms`; the first value at once. */
+export function useSettled<T>(value: T, ms: number): T {
+  const [settled, setSettled] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(value), ms);
+    return () => clearTimeout(timer);
+  }, [value, ms]);
+  return settled;
+}
+
+/**
+ * Each line's colors from a coloring of the file: the line at its index,
+ * else (it moved since) a colored line with the same text; null for one
+ * typed since.
+ */
+export function lineColorer(tokens: ThemedToken[][] | null): (i: number, line: string) => ThemedToken[] | null {
+  const textOf = (t: ThemedToken[]) => t.map((x) => x.content).join("");
+  let byText: Map<string, ThemedToken[]> | null = null;
+  return (i, line) => {
+    const at = tokens?.[i];
+    if (!tokens) return null;
+    if (at && textOf(at) === line) return at;
+    if (!byText) {
+      byText = new Map();
+      for (const t of tokens) if (!byText.has(textOf(t))) byText.set(textOf(t), t);
+    }
+    return byText.get(line) ?? null;
+  };
+}
+
+/** One line of a file; redrawn only when its text, colors or look change. Matches draw as `children`. */
+const FileLine = memo(function FileLine({
+  text,
+  colors,
+  className,
+  children,
+}: {
+  text: string;
+  colors: ThemedToken[] | null;
+  className: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className={className} data-line>
+      {children ?? (colors && text ? <TokenLine tokens={colors} /> : text || " ")}
+    </div>
+  );
+});
 
 /** The one span `before` and `after` differ in: where it starts and ends in `before`, and what replaces it. */
 export function textChange(before: string, after: string): { start: number; end: number; text: string } | null {
