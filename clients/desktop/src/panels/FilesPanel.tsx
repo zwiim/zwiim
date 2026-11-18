@@ -720,6 +720,18 @@ export function lineEnding(text: string): "\n" | "\r\n" | null {
   return /(^|[^\r])\n/.test(text) ? null : "\r\n";
 }
 
+/**
+ * Whether `path` opens as text that can be typed into, read as `content`:
+ * not an image, table, document or rendered page, with one kind of line
+ * ending and no bytes the Host could not decode. A read-only file shows as
+ * read-only once open.
+ */
+export function typesInPlace(path: string, content: string): boolean {
+  const kind = previewKind(path.slice(path.lastIndexOf("/") + 1));
+  const text = kind === "text" || (kind === "html" && !isTauri());
+  return text && !content.includes("\uFFFD") && lineEnding(content) !== null;
+}
+
 /** Lines changed against a base, by index in the text shown: added or changed, and where lines were removed. */
 export interface LineChanges {
   added: ReadonlySet<number>;

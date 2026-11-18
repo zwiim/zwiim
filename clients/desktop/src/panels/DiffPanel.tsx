@@ -20,7 +20,7 @@ import { diffLayout, markdownStyle, rememberDiffLayout, type DiffLayout } from "
 import { usePref } from "@/lib/use-pref";
 import { cn } from "@/lib/utils";
 import { FileChanges } from "./FileChanges";
-import { FileView, type LineChanges } from "./FilesPanel";
+import { FileView, typesInPlace, type LineChanges } from "./FilesPanel";
 
 const CHANGE_LETTER: Record<DiffFile["change"], string> = { added: "A", modified: "M", deleted: "D" };
 
@@ -472,7 +472,7 @@ export function DiffView({
               <Eye /> Preview
             </Button>
           )}
-          {canWrite && content !== null && file?.change !== "deleted" && (
+          {canWrite && content !== null && file?.change !== "deleted" && typesInPlace(path, content) && (
             <Button size="xs" variant="ghost" title="Edit this file here" onClick={() => setEditing(true)}>
               <Pencil /> Edit
             </Button>

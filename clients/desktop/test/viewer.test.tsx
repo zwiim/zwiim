@@ -205,6 +205,23 @@ describe("editing from the diff", () => {
     await mount(host({ file: changed("a.txt", { change: "deleted" }), patch: "@@ -1 +0,0 @@\n-a\n" }, null), "a.txt");
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
   });
+
+  it("offers Edit only where the file opens as text it can type into", async () => {
+    const patch = "@@ -1 +1 @@\n-a\n+b\n";
+    // An image, a table, mixed line endings, bytes the Host could not decode.
+    for (const [path, content] of [
+      ["pic.svg", "<svg/>\n"],
+      ["t.csv", "a,b\n"],
+      ["a.txt", "one\r\ntwo\n"],
+      ["a.txt", "bad \uFFFD\n"],
+    ] as const) {
+      await mount(host({ file: changed(path), patch }, content), path);
+      expect(screen.queryByRole("button", { name: "Edit" }), path).toBeNull();
+      cleanup();
+    }
+    await mount(host({ file: changed("a.txt"), patch }, "one\r\ntwo\r\n"), "a.txt");
+    expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
+  });
 });
 
 describe("line changes", () => {
