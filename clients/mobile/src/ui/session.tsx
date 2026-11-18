@@ -2,13 +2,15 @@
 // transcript's rows, the Now bar and the composer. They draw what they are
 // given; the screen decides what that is.
 
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
-import { ActivityIndicator, Animated, PanResponder, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { ActivityIndicator, Animated, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
 import {
   basename,
   FORK_LABELS,
   formatSize,
+  matchCommands,
   revertWarning,
+  slashQuery,
   type AgentImage,
   type AgentType,
   type AttachmentBlock,
@@ -17,18 +19,19 @@ import {
   type ForkWorktree,
   type ProgressStep,
   type RevertChoice,
+  type SessionCommand,
 } from "@zwiim/sdk";
 import type { PendingFile } from "../attachments/pending";
 import {
   CONTINUE_NOTE,
   continuedInLabel,
   continuingLabel,
-  doneCount,
   fromLabel,
   pipWindow,
-  stoppedTitle,
   type PipState,
 } from "../sessions/plan";
+import { commandPreview, insertCommand } from "../sessions/commands";
+import { composerButtons } from "../sessions/controls";
 import { forkedFromLabel, forkWorktreeLines, type TurnFork } from "../sessions/fork";
 import { revertCopy } from "../sessions/revert";
 import {
@@ -53,7 +56,7 @@ import {
   type TranscriptRow,
 } from "../sessions/transcript";
 import { Button, Sheet, StatusDot, T, useBreathing, useReduceMotion } from "./components";
-import { ArrowUp, Bot, CircleAlert, FileText, GitFork, Icon, Image, Paperclip, RotateCcw, X } from "./icons";
+import { ArrowUp, Bot, ChevronRight, CircleAlert, FileText, GitFork, Icon, Image, Paperclip, RotateCcw, Search, Square, X } from "./icons";
 import { fonts, PRESSED_OPACITY, radius, space, type, useTheme } from "./tokens";
 
 /** The streaming caret: blinks once a second (static under Reduce Motion). */
@@ -989,8 +992,9 @@ function FileChip({
 }
 
 /**
- * What the agent is doing now, above the composer: a dot, one mono line, a
- * timer and the one action that fits (Stop, Review).
+ * What the agent is doing now, along the composer's top edge: a dot (or the
+ * plan's pips), one mono line, a timer and the one action that fits (Review).
+ * With `onPress` the line opens something (the plan's tasks).
  */
 export function NowBar({
   tone,
@@ -998,30 +1002,45 @@ export function NowBar({
   text,
   time,
   action,
+  pips,
+  onPress,
 }: {
   tone: "plain" | "need";
   dot: "work" | "need" | "off" | null;
   text: string;
   time?: string | null;
   action?: ReactNode;
+  /** The plan's steps, in place of the dot. */
+  pips?: readonly PipState[];
+  onPress?(): void;
 }) {
   const theme = useTheme();
-  return (
-    <View
-      style={[styles.now, { backgroundColor: tone === "need" ? `${theme.need}26` : theme.surface }]}
-      testID="now-bar"
-      accessibilityLiveRegion="polite"
-    >
-      {dot ? <StatusDot state={dot} /> : null}
-      <T variant="mono" numberOfLines={1} color={tone === "need" ? theme.need : theme.fg} style={styles.shrink} testID="now-text">
+  const line = (
+    <>
+      {pips ? <Pips states={pips} /> : dot ? <StatusDot state={dot} /> : null}
+      <T variant="monoSm" numberOfLines={1} color={tone === "need" ? theme.need : theme.fg} style={styles.shrink} testID="now-text">
         {text}
       </T>
       {time ? (
-        <T variant="mono" color={theme.mut} style={styles.tabular} testID="now-time">
+        <T variant="monoSm" color={theme.mut} style={styles.tabular} testID="now-time">
           {time}
         </T>
       ) : null}
-      <View style={styles.flexSpacer} />
+    </>
+  );
+  return (
+    <View
+      style={[styles.now, { backgroundColor: tone === "need" ? `${theme.need}26` : `${theme.accent}14`, borderBottomColor: theme.line }]}
+      testID="now-bar"
+      accessibilityLiveRegion="polite"
+    >
+      {onPress ? (
+        <Pressable accessibilityRole="button" accessibilityHint="Shows the tasks" onPress={onPress} style={styles.nowLine} testID="now-open">
+          {line}
+        </Pressable>
+      ) : (
+        <View style={styles.nowLine}>{line}</View>
+      )}
       {action}
     </View>
   );
@@ -1144,85 +1163,7 @@ export function StepList({
   );
 }
 
-/**
- * The plan's status while the agent works through it, in the Now bar's place,
- * two lines. First: the pips, `N of M`, the time, and Stop. Second: the step in
- * hand, then what the agent is doing, in mono. A tap or a swipe up opens the steps.
- */
-export function StepMeter({
-  title,
-  activity,
-  count,
-  time,
-  states,
-  action,
-  onOpen,
-}: {
-  title: string;
-  activity?: string | null;
-  count: string;
-  time?: string | null;
-  states: readonly PipState[];
-  action?: ReactNode;
-  onOpen(): void;
-}) {
-  const theme = useTheme();
-  const open = useRef(onOpen);
-  useEffect(() => {
-    open.current = onOpen;
-  });
-  const swipe = useRef(
-    PanResponder.create({
-      // Capture: the body's Pressable would otherwise keep a vertical drag as its own.
-      onMoveShouldSetPanResponderCapture: (_, g) => g.dy < -10 && Math.abs(g.dy) > 2 * Math.abs(g.dx),
-      onPanResponderRelease: (_, g) => {
-        if (g.dy < -24) open.current();
-      },
-    }),
-  ).current;
-  return (
-    <View
-      style={[styles.meter, { backgroundColor: theme.surface }]}
-      testID="step-meter"
-      accessibilityLiveRegion="polite"
-      {...swipe.panHandlers}
-    >
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${title}. ${count}. Show tasks`}
-        onPress={onOpen}
-        style={styles.meterBody}
-        testID="step-meter-open"
-      >
-        <View style={styles.meterTop}>
-          <Pips states={states} />
-          <T variant="mono" color={theme.mut} style={styles.tabular} testID="step-meter-count">
-            {count}
-          </T>
-          {time ? (
-            <T variant="mono" color={theme.mut} style={styles.tabular} testID="now-time">
-              {time}
-            </T>
-          ) : null}
-        </View>
-        <View style={styles.meterLine}>
-          <T variant="callout" numberOfLines={1} style={styles.meterTitle} testID="step-meter-title">
-            {title}
-          </T>
-          {activity ? (
-            <T variant="mono" color={theme.mut} numberOfLines={1} style={styles.shrink} testID="step-meter-activity">
-              {activity}
-            </T>
-          ) : null}
-        </View>
-      </Pressable>
-      {/* Beside the body, level with its first line. */}
-      {action ? <View style={styles.meterAction}>{action}</View> : null}
-    </View>
-  );
-}
-
-/** The steps of the plan in a sheet, opened from the meter. */
+/** The steps of the plan in a sheet, opened from the Now bar. */
 export function StepSheet({
   visible,
   onClose,
@@ -1440,9 +1381,97 @@ export function ContinuedInRow({ title, onOpen }: { title: string | null | undef
   );
 }
 
+/** One slash command: its `/name`, argument hint and what it does. */
+function CommandRow({ command: c, onPick }: { command: SessionCommand; onPick(name: string): void }) {
+  const theme = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`/${c.name}. ${c.description}`}
+      onPress={() => onPick(c.name)}
+      style={({ pressed }) => [styles.slashRow, { opacity: pressed ? PRESSED_OPACITY : 1 }]}
+      testID={`slash-${c.name}`}
+    >
+      <T variant="mono" color={theme.fg} numberOfLines={1} style={styles.slashName}>
+        /{c.name}
+      </T>
+      {c.hint ? (
+        <T variant="monoSm" color={theme.faint} numberOfLines={1} style={styles.slashHint}>
+          {c.hint}
+        </T>
+      ) : null}
+      <T variant="callout" color={theme.mut} numberOfLines={1} style={styles.shrink}>
+        {c.description}
+      </T>
+    </Pressable>
+  );
+}
+
+/** Every slash command with a search, for lists too long to scroll over the composer. */
+function CommandsSheet({
+  visible,
+  commands,
+  query,
+  onQuery,
+  onPick,
+  onClose,
+}: {
+  visible: boolean;
+  commands: readonly SessionCommand[];
+  query: string;
+  onQuery(query: string): void;
+  onPick(name: string): void;
+  onClose(): void;
+}) {
+  const theme = useTheme();
+  const { height } = useWindowDimensions();
+  const shown = matchCommands(commands, query.trim());
+  return (
+    <Sheet visible={visible} onClose={onClose}>
+      <View style={styles.commandsSheet}>
+        <T variant="title">Commands</T>
+        <View style={[styles.commandSearch, { backgroundColor: theme.surface }]}>
+          <Icon icon={Search} color={theme.faint} size={16} />
+          <TextInput
+            value={query}
+            onChangeText={onQuery}
+            placeholder="Search commands"
+            placeholderTextColor={theme.faint}
+            autoFocus
+            autoCapitalize="none"
+            autoCorrect={false}
+            spellCheck={false}
+            returnKeyType="search"
+            style={[type.body, styles.commandSearchInput, { color: theme.fg }]}
+            accessibilityLabel="Search commands"
+            testID="slash-search"
+          />
+          {query ? (
+            <Pressable accessibilityRole="button" accessibilityLabel="Clear search" onPress={() => onQuery("")} hitSlop={10} testID="slash-search-clear">
+              <Icon icon={X} color={theme.faint} size={16} />
+            </Pressable>
+          ) : null}
+        </View>
+        <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: Math.round(height * 0.5) }} testID="slash-sheet-list">
+          {shown.length > 0 ? (
+            shown.map((c) => <CommandRow key={c.name} command={c} onPick={onPick} />)
+          ) : (
+            <T variant="callout" color={theme.mut} style={styles.commandsEmpty}>
+              No commands match "{query.trim()}"
+            </T>
+          )}
+        </ScrollView>
+      </View>
+    </Sheet>
+  );
+}
+
 /**
- * The message box: multiline input over a row of the session's controls and
- * the round accent send. An accent border marks an unattended session.
+ * The message box: what the agent is doing now along its top edge, the
+ * multiline input, and a row of attach, the session's controls and the round
+ * send. While a turn runs a red stop ends it, with send beside it once
+ * there is a steer to send. An accent border marks an Auto session (fainter while
+ * a turn runs).
  */
 export function Composer({
   value,
@@ -1461,6 +1490,10 @@ export function Composer({
   transcript,
   onOpenTranscript,
   onRemoveTranscript,
+  commands = [],
+  status,
+  onStop,
+  stopping,
 }: {
   value: string;
   onChange(text: string): void;
@@ -1484,17 +1517,54 @@ export function Composer({
   transcript?: AttachmentBlock | null;
   onOpenTranscript?(): void;
   onRemoveTranscript?(): void;
+  /** The agent's slash commands, offered when a word starts with `/`. */
+  commands?: readonly SessionCommand[];
+  /** Along the top edge: the Now bar. */
+  status?: ReactNode;
+  /** A turn runs: a red stop ends it. */
+  onStop?(): void;
+  stopping?: boolean;
 }) {
   const theme = useTheme();
   const can = !disabled && !sending && (value.trim().length > 0 || files.length > 0 || !!transcript);
+  const buttons = composerButtons({ canSend: can, canStop: !!onStop && !sending });
+  const [caret, setCaret] = useState(value.length);
+  /** Set once after a pick to move the caret past it, then released to the input. */
+  const [selection, setSelection] = useState<{ start: number; end: number } | undefined>();
+  /** The `/query` start the user closed the menu on. */
+  const [dismissed, setDismissed] = useState<number | null>(null);
+  const found = slashQuery(value, caret);
+  const matches = found ? matchCommands(commands, found.query) : [];
+  const preview = commandPreview(matches);
+  /** The sheet with every command and a search, opened from the menu's last row. */
+  const [browsing, setBrowsing] = useState(false);
+  const [search, setSearch] = useState("");
+  const menuOpen = !disabled && !sending && found !== null && found.start !== dismissed && matches.length > 0;
+  const change = (text: string) => {
+    // The selection event can trail the text on Android: guess the caret
+    // from the edit until it arrives.
+    const at = Math.max(0, Math.min(text.length, caret + text.length - value.length));
+    setCaret(at);
+    if (dismissed !== null && slashQuery(text, at)?.start !== dismissed) setDismissed(null);
+    onChange(text);
+  };
+  const pickCommand = (name: string) => {
+    setBrowsing(false);
+    if (!found) return;
+    const next = insertCommand(value, caret, found, name);
+    onChange(next.text);
+    setCaret(next.caret);
+    setSelection({ start: next.caret, end: next.caret });
+  };
   return (
     <View
       style={[
         styles.composer,
-        { backgroundColor: theme.surface, borderColor: border ?? "transparent", opacity: disabled ? 0.6 : 1 },
+        { backgroundColor: theme.surface, borderColor: border ?? (onStop ? `${theme.accent}73` : "transparent"), opacity: disabled ? 0.6 : 1 },
       ]}
       testID="composer"
     >
+      {status}
       <PendingFiles
         transcript={
           transcript ? (
@@ -1511,9 +1581,58 @@ export function Composer({
         disabled={sending}
         onRemove={(id) => onRemoveFile?.(id)}
       />
+      {menuOpen ? (
+        <View style={[styles.slashMenu, { borderColor: theme.line }]} testID="slash-menu">
+          <ScrollView keyboardShouldPersistTaps="handled" style={styles.slashList} nestedScrollEnabled>
+            {preview.shown.map((c) => (
+              <CommandRow key={c.name} command={c} onPick={pickCommand} />
+            ))}
+            {preview.more ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setSearch(found!.query);
+                  setBrowsing(true);
+                }}
+                style={({ pressed }) => [styles.slashRow, { opacity: pressed ? PRESSED_OPACITY : 1 }]}
+                testID="slash-all"
+              >
+                <Icon icon={Search} color={theme.accent} size={14} />
+                <T variant="callout" color={theme.accent} numberOfLines={1} style={styles.shrink}>
+                  Search all {preview.more} commands
+                </T>
+                <Icon icon={ChevronRight} color={theme.faint} size={14} />
+              </Pressable>
+            ) : null}
+          </ScrollView>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close commands"
+            onPress={() => setDismissed(found!.start)}
+            hitSlop={8}
+            style={styles.slashClose}
+            testID="slash-close"
+          >
+            <Icon icon={X} color={theme.faint} size={16} />
+          </Pressable>
+        </View>
+      ) : null}
+      <CommandsSheet
+        visible={browsing}
+        commands={commands}
+        query={search}
+        onQuery={setSearch}
+        onPick={pickCommand}
+        onClose={() => setBrowsing(false)}
+      />
       <TextInput
         value={value}
-        onChangeText={onChange}
+        onChangeText={change}
+        onSelectionChange={(e) => {
+          setCaret(e.nativeEvent.selection.end);
+          if (selection) setSelection(undefined);
+        }}
+        selection={selection}
         placeholder={placeholder}
         placeholderTextColor={theme.faint}
         multiline
@@ -1542,23 +1661,39 @@ export function Composer({
           </Pressable>
         ) : null}
         <View style={styles.composerControls}>{controls}</View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Send"
-          accessibilityState={{ disabled: !can, busy: !!sending }}
-          onPress={onSend}
-          disabled={!can}
-          hitSlop={6}
-          style={({ pressed }) => [
-            styles.send,
-            { backgroundColor: can || sending ? theme.accent : theme.raised, opacity: pressed ? PRESSED_OPACITY : 1 },
-          ]}
-          testID="composer-send"
-        >
-          {sending ? <ActivityIndicator size="small" color={theme.accentInk} /> : (
-            <Icon icon={ArrowUp} color={can ? theme.accentInk : theme.faint} size={20} />
-          )}
-        </Pressable>
+        {buttons.stop ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Stop"
+            accessibilityState={{ disabled: !!disabled || !!stopping, busy: !!stopping }}
+            onPress={onStop}
+            disabled={disabled || stopping}
+            hitSlop={6}
+            style={({ pressed }) => [styles.send, { backgroundColor: theme.err, opacity: pressed ? PRESSED_OPACITY : 1 }]}
+            testID="composer-stop"
+          >
+            {stopping ? <ActivityIndicator size="small" color="#ffffff" /> : <Icon icon={Square} color="#ffffff" size={14} />}
+          </Pressable>
+        ) : null}
+        {buttons.send ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Send"
+            accessibilityState={{ disabled: !can, busy: !!sending }}
+            onPress={onSend}
+            disabled={!can}
+            hitSlop={6}
+            style={({ pressed }) => [
+              styles.send,
+              { backgroundColor: can || sending ? theme.accent : theme.raised, opacity: pressed ? PRESSED_OPACITY : 1 },
+            ]}
+            testID="composer-send"
+          >
+            {sending ? <ActivityIndicator size="small" color={theme.accentInk} /> : (
+              <Icon icon={ArrowUp} color={can ? theme.accentInk : theme.faint} size={20} />
+            )}
+          </Pressable>
+        ) : null}
       </View>
     </View>
   );
@@ -1608,14 +1743,22 @@ const styles = StyleSheet.create({
   // Left-aligned text, a full touch target tall.
   retryButton: { minHeight: RETRY_TARGET, flexDirection: "row", alignItems: "center", gap: space.sm, alignSelf: "flex-start" },
   retryLabel: { fontFamily: fonts.sansMedium },
+  // Along the composer's top edge, edge to edge inside its border.
   now: {
-    height: 44,
+    height: 34,
     flexDirection: "row",
     alignItems: "center",
     gap: space.sm,
-    paddingLeft: space.lg,
-    paddingRight: space.sm,
+    marginLeft: -space.md,
+    marginRight: -space.sm,
+    marginTop: -space.xs,
+    paddingLeft: space.md,
+    paddingRight: space.xs,
+    borderTopLeftRadius: radius.xl,
+    borderTopRightRadius: radius.xl,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
+  nowLine: { flex: 1, minWidth: 0, height: 34, flexDirection: "row", alignItems: "center", gap: space.sm },
   nowAction: {
     height: 30,
     minWidth: 56,
@@ -1628,16 +1771,10 @@ const styles = StyleSheet.create({
   pips: { flexDirection: "row", flexWrap: "nowrap", alignItems: "center", gap: space.xs, flexShrink: 1, overflow: "hidden" },
   pip: { width: 8, height: 8, borderRadius: radius.full, flexShrink: 0 },
   steps: { gap: space.xs },
+  meterLine: { flexDirection: "row", alignItems: "center", gap: space.sm },
   step: { minHeight: 32, flexDirection: "row", alignItems: "flex-start", gap: space.sm, paddingTop: space.xs },
   stepHere: { fontFamily: fonts.sansMedium },
   stepScroll: { flexGrow: 0, maxHeight: 220 },
-  // 64pt: 4 above, a 32pt first line (level with Stop), 2, a 22pt second line, 4 below.
-  meter: { height: 64, flexDirection: "row", alignItems: "flex-start", paddingLeft: space.lg, paddingRight: space.sm, gap: space.sm },
-  meterBody: { flex: 1, minWidth: 0, height: 64, paddingVertical: space.xs, gap: space.xxs },
-  meterTop: { height: 32, flexDirection: "row", alignItems: "center", gap: space.sm },
-  meterAction: { marginTop: space.xs, height: 32, justifyContent: "center" },
-  meterTitle: { flexShrink: 0, maxWidth: "60%" },
-  meterLine: { flexDirection: "row", alignItems: "center", gap: space.sm },
   resume: { marginHorizontal: space.md, borderRadius: radius.xl, padding: space.md, gap: space.sm },
   resumeHead: { minHeight: 44, justifyContent: "center", gap: space.xs },
   resumeTitle: { fontFamily: fonts.sansMedium },
@@ -1672,6 +1809,17 @@ const styles = StyleSheet.create({
   },
   input: { minHeight: 40, maxHeight: 140, paddingTop: space.sm, paddingBottom: space.xs, paddingRight: space.sm, fontFamily: fonts.sans },
   composerNote: { paddingBottom: space.xxs },
+  slashMenu: { flexDirection: "row", alignItems: "flex-start", borderBottomWidth: StyleSheet.hairlineWidth, paddingTop: space.xs },
+  // Five 44pt rows, then it scrolls.
+  slashList: { flex: 1, maxHeight: 264 },
+  slashRow: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: space.sm },
+  slashName: { flexShrink: 0, maxWidth: "50%" },
+  slashHint: { flexShrink: 0, maxWidth: "30%" },
+  slashClose: { width: 32, height: 44, alignItems: "center", justifyContent: "center" },
+  commandsSheet: { gap: space.md },
+  commandSearch: { height: 40, borderRadius: radius.md, paddingHorizontal: space.md, flexDirection: "row", alignItems: "center", gap: space.sm },
+  commandSearchInput: { flex: 1, padding: 0 },
+  commandsEmpty: { paddingVertical: space.md },
   composerRow: { flexDirection: "row", alignItems: "center", gap: space.sm },
   composerControls: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs },
   send: { width: 36, height: 36, borderRadius: radius.full, alignItems: "center", justifyContent: "center" },

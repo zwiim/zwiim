@@ -10,7 +10,7 @@ import {
 } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
 import { rememberAgentChoices } from "@/lib/prefs";
-import { OptionsBar, UnattendedBanner } from "@/panels/OptionsBar";
+import { UnattendedBanner } from "@/panels/OptionsBar";
 import { newSessionOptions, SessionPanel } from "@/panels/SessionPanel";
 import { FakeTransport, tick } from "./fakes";
 
@@ -32,6 +32,18 @@ const opts = (
   mode: { current: mode, label: mode === "normal" ? "Manual" : "", available },
 });
 
+const codexOptions = (): SessionOptions => ({
+  model: {
+    current: "gpt-5.5",
+    values: [
+      { value: "gpt-5.5", label: "GPT-5.5", description: null },
+      { value: "gpt-5.5-mini", label: "GPT-5.5 mini", description: null },
+    ],
+  },
+  effort: { current: "medium", values: [{ value: "medium", label: "Medium", description: null }, { value: "high", label: "High", description: null }] },
+  mode: { current: "normal", label: "", available: ["normal", "unattended"] },
+});
+
 const snapshot = (options: SessionOptions, status = "connected"): SessionSnapshot => ({
   status: status as SessionSnapshot["status"],
   live_message: null,
@@ -44,201 +56,30 @@ const snapshot = (options: SessionOptions, status = "connected"): SessionSnapsho
   commands: [],
 });
 
-/** Opens the options menu, then `row`'s submenu, and returns its entry for `item`. */
-function pick(row: "Mode" | "Model" | "Effort", item: string) {
-  if (!screen.queryByRole("menu", { name: "Session options" })) fireEvent.click(screen.getByRole("button", { name: /^Session options:/ }));
-  fireEvent.click(screen.getByRole("menuitem", { name: new RegExp(`^${row} `) }));
+const chip = () => screen.getByRole("button", { name: /^(Ask|Auto|Plan) mode, / }) as HTMLButtonElement;
+const composerBox = () => screen.getByTestId("composer").querySelector("textarea")!;
+const dialog = () => screen.getByRole("dialog", { name: "Agent options" });
+
+/** Opens the picker and returns the side-list entry for `item` under `row`. */
+function pick(row: "Mode" | "Effort", item: string) {
+  if (!screen.queryByRole("dialog", { name: "Agent options" })) fireEvent.click(chip());
+  fireEvent.click(within(dialog()).getByRole("button", { name: new RegExp(`^${row}: `) }));
   return screen.queryByRole("menuitemradio", { name: new RegExp(`^${item}$`) });
 }
-const chip = () => screen.getByRole("button", { name: /^Session options:/ }) as HTMLButtonElement;
 
-const models = (n: number): SessionOptions["model"] => ({
-  current: "sonnet",
-  values: [
-    { value: "sonnet", label: "Sonnet", description: null },
-    { value: "opus", label: "Opus", description: "Most capable" },
-    { value: "opus-1m", label: "Opus 1M", description: null },
-    ...Array.from({ length: n - 3 }, (_, i) => ({ value: `m${i}`, label: `Model ${i}`, description: null })),
-  ],
-});
+/** Opens the picker and returns the model row whose name starts with `name`. */
+function model(name: string) {
+  if (!screen.queryByRole("dialog", { name: "Agent options" })) fireEvent.click(chip());
+  return within(screen.getByRole("listbox", { name: "Models" })).getAllByRole("option", { name: new RegExp(`^${name}`) }).at(-1)!;
+}
 
-describe("options bar", () => {
-  it("hides what the agent does not offer", () => {
-    render(
-      <OptionsBar
-        options={{ ...opts("normal", ["normal", "plan"]), effort: null }}
-        disabled={false}
-        onChange={() => {}}
-      />,
-    );
-    expect(chip().getAttribute("aria-label")).toBe("Session options: Ask · Sonnet");
-    fireEvent.click(chip());
-    expect(screen.queryByRole("menuitem", { name: /^Effort/ })).toBeNull();
-    expect(screen.getByRole("menuitem", { name: /^Model/ })).toBeTruthy();
-    expect(pick("Mode", "Auto")).toBeNull();
-    expect(screen.getByRole("menuitemradio", { name: /^Plan/ })).toBeTruthy();
-  });
-
-  it("opens one menu with mode, model and effort", () => {
-    render(<OptionsBar options={opts()} disabled={false} onChange={() => {}} />);
-    expect(chip().getAttribute("aria-label")).toBe("Session options: Ask · Sonnet · Low");
-    fireEvent.click(chip());
-    const menu = screen.getByRole("menu", { name: "Session options" });
-    expect(within(menu).getAllByRole("menuitem").map((r) => r.getAttribute("aria-label"))).toEqual([
-      "Mode Ask",
-      "Model Sonnet",
-      "Effort Low",
-    ]);
-  });
-
-  // The chip sits at the composer's right edge, beside Send: the menu and its
-  // submenus grow leftward so they stay inside the window.
-  it("opens the menu and its submenus leftward from the chip", () => {
-    render(<OptionsBar options={opts()} disabled={false} onChange={() => {}} />);
-    pick("Model", "Opus");
-    const menu = screen.getByRole("menu", { name: "Session options" });
-    expect(menu.className).toMatch(/\bright-0\b/);
-    expect(menu.className).not.toMatch(/\bleft-0\b/);
-    const sub = screen.getByRole("menu", { name: "Model" });
-    expect(sub.className).toMatch(/\bright-full\b/);
-    expect(sub.className).not.toMatch(/\bleft-full\b/);
-  });
-
-  it("picks a model from its submenu and sends only the model", () => {
-    const onChange = vi.fn();
-    render(<OptionsBar options={opts()} disabled={false} onChange={onChange} />);
-    fireEvent.click(pick("Model", "Opus")!);
-    expect(onChange).toHaveBeenCalledTimes(1);
-    expect(onChange).toHaveBeenCalledWith({ model: "opus" });
-    expect(screen.queryByRole("menu")).toBeNull();
-    // The current model is no change.
-    fireEvent.click(pick("Model", "Sonnet")!);
-    expect(onChange).toHaveBeenCalledTimes(1);
-    expect(screen.queryByRole("menu")).toBeNull();
-  });
-
-  it("searches models when the agent offers many", () => {
-    const { rerender } = render(<OptionsBar options={{ ...opts(), model: models(12) }} disabled={false} onChange={() => {}} />);
-    pick("Model", "Opus");
-    const search = screen.getByRole("textbox", { name: "Search models" });
-    expect(document.activeElement).toBe(search);
-    fireEvent.change(search, { target: { value: "OPUS" } });
-    const sub = screen.getByRole("menu", { name: "Model" });
-    expect(within(sub).getAllByRole("menuitemradio").map((i) => i.getAttribute("aria-label"))).toEqual(["Opus", "Opus 1M"]);
-    // Descriptions match too.
-    fireEvent.change(search, { target: { value: "capable" } });
-    expect(within(sub).getAllByRole("menuitemradio").map((i) => i.getAttribute("aria-label"))).toEqual(["Opus"]);
-    fireEvent.change(search, { target: { value: "xyz" } });
-    expect(within(sub).queryAllByRole("menuitemradio")).toEqual([]);
-    expect(screen.getByText('No models match "xyz"')).toBeTruthy();
-    rerender(<OptionsBar options={opts()} disabled={false} onChange={() => {}} />);
-    fireEvent.keyDown(screen.getByRole("menu", { name: "Model" }), { key: "Escape" });
-    pick("Model", "Opus");
-    expect(screen.queryByRole("textbox", { name: "Search models" })).toBeNull();
-  });
-
-  it("starts each model search afresh", () => {
-    render(<OptionsBar options={{ ...opts(), model: models(12) }} disabled={false} onChange={() => {}} />);
-    pick("Model", "Opus");
-    fireEvent.change(screen.getByRole("textbox", { name: "Search models" }), { target: { value: "xyz" } });
-    fireEvent.keyDown(screen.getByRole("menu", { name: "Model" }), { key: "Escape" });
-    pick("Model", "Opus");
-    expect((screen.getByRole("textbox", { name: "Search models" }) as HTMLInputElement).value).toBe("");
-  });
-
-  it("shows an unlisted current model", () => {
-    const options = opts();
-    render(<OptionsBar options={{ ...options, model: { ...options.model!, current: "opus-old" } }} disabled={false} onChange={() => {}} />);
-    expect(chip().getAttribute("aria-label")).toContain("opus-old");
-    pick("Model", "Opus");
-    const sub = screen.getByRole("menu", { name: "Model" });
-    expect(within(sub).queryAllByRole("menuitemradio", { checked: true })).toEqual([]);
-  });
-
-  it("a single model does not open", () => {
-    const options = opts();
-    render(
-      <OptionsBar
-        options={{ ...options, model: { current: "sonnet", values: [options.model!.values[0]] } }}
-        disabled={false}
-        onChange={() => {}}
-      />,
-    );
-    fireEvent.click(chip());
-    const row = screen.getByRole("menuitem", { name: /^Model/ });
-    expect(row.getAttribute("aria-disabled")).toBe("true");
-    fireEvent.click(row);
-    expect(screen.queryByRole("menu", { name: "Model" })).toBeNull();
-  });
-
-  it("closes when the options lock", () => {
-    const { rerender } = render(<OptionsBar options={opts()} disabled={false} onChange={() => {}} />);
-    pick("Model", "Opus");
-    expect(screen.getByRole("menu", { name: "Model" })).toBeTruthy();
-    rerender(<OptionsBar options={opts()} disabled onChange={() => {}} />);
-    expect(screen.queryByRole("menu")).toBeNull();
-    expect(chip().disabled).toBe(true);
-  });
-
-  it("Escape closes the submenu first, then the menu, without changing anything", () => {
-    const onChange = vi.fn();
-    render(<OptionsBar options={opts()} disabled={false} onChange={onChange} />);
-    expect(pick("Model", "Sonnet")?.getAttribute("aria-checked")).toBe("true");
-    fireEvent.keyDown(screen.getByRole("menu", { name: "Model" }), { key: "Escape" });
-    expect(screen.queryByRole("menu", { name: "Model" })).toBeNull();
-    expect(screen.getByRole("menu", { name: "Session options" })).toBeTruthy();
-    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: /^Model/ }));
-    fireEvent.keyDown(screen.getByRole("menu", { name: "Session options" }), { key: "Escape" });
-    expect(screen.queryByRole("menu")).toBeNull();
-    expect(document.activeElement).toBe(chip());
-    expect(onChange).not.toHaveBeenCalled();
-  });
-
-  it("opens a submenu with ArrowRight and closes it with ArrowLeft", () => {
-    render(<OptionsBar options={opts()} disabled={false} onChange={() => {}} />);
-    fireEvent.click(chip());
-    const row = screen.getByRole("menuitem", { name: /^Effort/ });
-    fireEvent.keyDown(row, { key: "ArrowRight" });
-    const sub = screen.getByRole("menu", { name: "Effort" });
-    expect(document.activeElement).toBe(within(sub).getByRole("menuitemradio", { name: "Low" }));
-    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
-    expect(document.activeElement).toBe(within(sub).getByRole("menuitemradio", { name: "High" }));
-    fireEvent.keyDown(document.activeElement!, { key: "ArrowLeft" });
-    expect(screen.queryByRole("menu", { name: "Effort" })).toBeNull();
-    expect(document.activeElement).toBe(row);
-  });
-
-  it("switches to Auto directly, without a confirmation", () => {
-    const onChange = vi.fn();
-    render(<OptionsBar options={opts()} disabled={false} onChange={onChange} />);
-    fireEvent.click(pick("Mode", "Auto")!);
-    expect(onChange).toHaveBeenCalledWith({ mode: "unattended" });
-    // The menu closes (it plays its exit hidden from assistive tech).
-    expect(screen.queryByRole("menu")).toBeNull();
-  });
-
+describe("unattended banner", () => {
   it("makes the Auto state obvious and easy to leave", () => {
     const onChange = vi.fn();
-    render(
-      <>
-        <UnattendedBanner options={opts("unattended")} disabled={false} onChange={onChange} />
-        <OptionsBar options={opts("unattended")} disabled={false} onChange={onChange} />
-      </>,
-    );
+    render(<UnattendedBanner options={opts("unattended")} disabled={false} onChange={onChange} />);
     expect(screen.getByTestId("unattended-banner").textContent).toContain("without asking");
-    expect(chip().getAttribute("aria-label")).toContain("Auto");
     fireEvent.click(screen.getByText("Ask first again"));
     expect(onChange).toHaveBeenCalledWith({ mode: "normal" });
-  });
-
-  it("switches plan on and off directly", () => {
-    const onChange = vi.fn();
-    const { rerender } = render(<OptionsBar options={opts()} disabled={false} onChange={onChange} />);
-    fireEvent.click(pick("Mode", "Plan")!);
-    expect(onChange).toHaveBeenLastCalledWith({ mode: "plan" });
-    rerender(<OptionsBar options={opts("plan")} disabled={false} onChange={onChange} />);
-    fireEvent.click(pick("Mode", "Ask")!);
-    expect(onChange).toHaveBeenLastCalledWith({ mode: "normal" });
   });
 });
 
@@ -266,6 +107,17 @@ describe("new session options", () => {
     expect(opus.request).toEqual({ model: "opus", mode: "unattended" });
     const sonnet = newSessionOptions(opts(), { model: "opus", effort: "low" }, { model: "sonnet" }, effortOn);
     expect(sonnet.request).toEqual({ model: "sonnet", effort: "high", mode: "unattended" });
+  });
+
+  it("starts fast mode as picked, else as last chosen on the model, and sends none where the model offers none", () => {
+    const fastOn = (model: string | null) => (model === "opus" ? null : false);
+    const sonnet = newSessionOptions(opts(), { model: null, effort: null }, {}, undefined, undefined, fastOn);
+    expect(sonnet.shown.fast).toBe(false);
+    expect(sonnet.request.fast).toBe(false);
+    expect(newSessionOptions(opts(), { model: null, effort: null }, { fast: true }, undefined, undefined, fastOn).request.fast).toBe(true);
+    const opus = newSessionOptions(opts(), { model: "opus", effort: null }, { fast: true }, undefined, undefined, fastOn);
+    expect(opus.shown.fast).toBeNull();
+    expect("fast" in opus.request).toBe(false);
   });
 
   it("prefers picks, then the Host's defaults, then what this client remembered", () => {
@@ -307,6 +159,7 @@ describe("new session options", () => {
     await tick();
     expect(chip().getAttribute("aria-label")).toContain("Opus");
     fireEvent.click(pick("Mode", "Plan")!);
+    expect(chip().getAttribute("aria-label")).toBe("Plan mode, Claude Code, Opus, Low effort");
     const box = screen.getByPlaceholderText(/^Describe the task/);
     fireEvent.change(box, { target: { value: "go" } });
     fireEvent.keyDown(box, { key: "Enter" });
@@ -340,7 +193,7 @@ describe("new session options", () => {
         </HostProvider>,
       );
       await tick();
-      expect(screen.queryByRole("button", { name: /^Session options:/ })).toBeNull();
+      expect(screen.queryByRole("button", { name: /mode, / })).toBeNull();
       learned = true;
       await act(async () => vi.advanceTimersByTime(2000));
       await tick();
@@ -352,6 +205,121 @@ describe("new session options", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  const codex = (options: SessionOptions | null = codexOptions()) => ({
+    agent: "codex",
+    name: "Codex",
+    available: true,
+    reason: null,
+    support: "supported",
+    options,
+  });
+  const claude = () => ({ agent: "claude_code", name: "Claude Code", available: true, reason: null, support: "supported", options: opts() });
+
+  async function newSession(agents: object[]) {
+    const t = new FakeTransport();
+    t.handlers["agent.list"] = () => agents;
+    t.handlers["session.start"] = () => ({ session_id: "s1" });
+    const client = new HostClient({ transport: t });
+    const controller = new HostController(client);
+    client.start();
+    await tick();
+    render(
+      <HostProvider value={controller}>
+        <SessionPanel workspaceId="w1" sessionId={null} onSessionStarted={() => {}} />
+      </HostProvider>,
+    );
+    await tick();
+    return { t, controller };
+  }
+
+  async function send(t: FakeTransport) {
+    const box = screen.getByPlaceholderText(/^Describe the task/);
+    fireEvent.change(box, { target: { value: "go" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await tick();
+    return t.calls.find((c) => c.op === "session.start")!.params;
+  }
+
+  it("starts another agent with the model and effort picked in the picker", async () => {
+    // Stale per-agent choices must not win over the pick.
+    rememberAgentChoices("codex", { model: "gpt-5.5-mini", effort: "low" });
+    const { t, controller } = await newSession([claude(), codex()]);
+    fireEvent.click(chip());
+    fireEvent.click(within(dialog()).getByRole("tab", { name: /^Codex/ }));
+    fireEvent.click(model("GPT-5\\.5,"));
+    expect(chip().getAttribute("aria-label")).toBe("Auto mode, Codex, GPT-5.5, Medium effort");
+    const params = await send(t);
+    expect(params.agent).toBe("codex");
+    expect(params.options).toEqual({ model: "gpt-5.5", effort: "medium", mode: "unattended" });
+    controller.dispose();
+  });
+
+  it("starts a model with the effort its row shows, not an earlier effort pick", async () => {
+    const efforts = (current: string) => ({
+      current,
+      values: ["low", "medium", "high", "max"].map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1), description: null })),
+    });
+    const agent = {
+      ...claude(),
+      options: { ...opts(), effort: efforts("medium") },
+      effort_by_model: { sonnet: efforts("medium"), opus: efforts("high") },
+    };
+    const { t, controller } = await newSession([agent]);
+    fireEvent.click(pick("Effort", "Max")!);
+    expect(chip().getAttribute("aria-label")).toContain("Max effort");
+    fireEvent.click(model("Opus"));
+    expect(chip().getAttribute("aria-label")).toBe("Auto mode, Claude Code, Opus, High effort");
+    const params = await send(t);
+    expect(params.options).toEqual({ model: "opus", effort: "high", mode: "unattended" });
+    controller.dispose();
+  });
+
+  it("starts an agent the host has not learned yet with the host's defaults", async () => {
+    const { t, controller } = await newSession([claude(), codex(null)]);
+    fireEvent.click(chip());
+    fireEvent.click(within(dialog()).getByRole("tab", { name: /^Codex/ }));
+    expect(within(screen.getByRole("listbox", { name: "Models" })).getByText("Learning its models…")).toBeTruthy();
+    fireEvent.click(within(screen.getByRole("listbox", { name: "Models" })).getByRole("option"));
+    const params = await send(t);
+    expect(params.agent).toBe("codex");
+    expect(params.options).toBeUndefined();
+    controller.dispose();
+  });
+
+  it("never selects an unavailable agent", async () => {
+    const gone = { ...codex(null), available: false, reason: "not_installed" };
+    const { t, controller } = await newSession([claude(), gone]);
+    fireEvent.click(chip());
+    fireEvent.click(within(dialog()).getByRole("tab", { name: /^Codex/ }));
+    const list = within(screen.getByRole("listbox", { name: "Models" }));
+    expect(list.getByText(/not installed/)).toBeTruthy();
+    expect(list.queryAllByRole("option")).toEqual([]);
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Search models" }), { key: "Enter" });
+    fireEvent.keyDown(dialog(), { key: "Escape" });
+    expect((await send(t)).agent).toBe("claude_code");
+    controller.dispose();
+  });
+
+  it("opens the picker from the composer with Command .", async () => {
+    const { controller } = await newSession([claude()]);
+    const box = screen.getByPlaceholderText(/^Describe the task/);
+    fireEvent.keyDown(box, { key: ".", ctrlKey: true });
+    expect(dialog()).toBeTruthy();
+    fireEvent.keyDown(within(dialog()).getByRole("combobox", { name: "Search models" }), { key: ".", ctrlKey: true });
+    expect(screen.queryByRole("dialog", { name: "Agent options" })).toBeNull();
+    expect(document.activeElement).toBe(chip());
+    controller.dispose();
+  });
+
+  it("cycles effort and mode from the composer in a new session", async () => {
+    const { controller } = await newSession([claude()]);
+    const box = screen.getByPlaceholderText(/^Describe the task/);
+    fireEvent.keyDown(box, { key: "?", code: "Slash", ctrlKey: true, shiftKey: true });
+    fireEvent.keyDown(box, { key: "Tab", shiftKey: true });
+    expect(chip().getAttribute("aria-label")).toBe("Ask mode, Claude Code, Sonnet, High effort");
+    controller.dispose();
   });
 });
 
@@ -376,19 +344,73 @@ describe("open session options", () => {
     t.handlers["session.set_options"] = (p) => ({ session_id: "s1", options: opts("normal", undefined, p.model) });
     const { controller, frame } = await open(t);
     await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot(opts(), "prompting") });
-    const bar = screen.getByTestId("options-bar");
     // The agent's options live in the composer, next to send/stop.
-    expect(screen.getByTestId("composer").contains(bar)).toBe(true);
+    expect(screen.getByTestId("composer").contains(chip())).toBe(true);
     expect(within(screen.getByTestId("composer")).getByLabelText("Stop agent")).toBeTruthy();
-    expect(within(bar).getByRole("button", { name: /^Session options:/ }).hasAttribute("disabled")).toBe(true);
-    expect(bar.textContent).toContain("between turns");
+    expect(chip().getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByTestId("composer").textContent).toContain("between turns");
+    fireEvent.click(chip());
+    expect(screen.queryByRole("dialog", { name: "Agent options" })).toBeNull();
     await frame({ type: "event", event: { session_id: "s1", seq: 2, type: "agent.turn_complete", payload: { stop_reason: "end_turn" } } });
     await frame({ type: "event", event: { session_id: "s1", seq: 3, type: "agent.status", payload: { status: "connected" } } });
-    expect(chip().disabled).toBe(false);
-    fireEvent.click(pick("Model", "Opus")!);
+    expect(chip().getAttribute("aria-disabled")).toBeNull();
+    fireEvent.click(model("Opus"));
     await tick();
     expect(t.calls.find((c) => c.op === "session.set_options")!.params).toEqual({ session_id: "s1", model: "opus" });
     expect(chip().getAttribute("aria-label")).toContain("Opus");
+    controller.dispose();
+  });
+
+  it("opens the picker with Command . and cycles effort and mode with Command Shift / and Shift Tab", async () => {
+    const t = new FakeTransport();
+    t.handlers["session.set_options"] = (p) => ({
+      session_id: "s1",
+      options: { ...opts(p.mode ?? "normal"), effort: { ...opts().effort!, current: p.effort ?? "low" } },
+    });
+    const { controller, frame } = await open(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot(opts()) });
+    const box = composerBox();
+    fireEvent.keyDown(box, { key: ".", ctrlKey: true });
+    expect(dialog()).toBeTruthy();
+    fireEvent.keyDown(dialog(), { key: "Escape" });
+    fireEvent.keyDown(box, { key: "?", code: "Slash", ctrlKey: true, shiftKey: true });
+    await tick();
+    expect(t.calls.filter((c) => c.op === "session.set_options").at(-1)!.params).toEqual({ session_id: "s1", effort: "high" });
+    fireEvent.keyDown(box, { key: "Tab", shiftKey: true });
+    await tick();
+    expect(t.calls.filter((c) => c.op === "session.set_options").at(-1)!.params).toEqual({ session_id: "s1", mode: "plan" });
+    controller.dispose();
+  });
+
+  it("refuses the cycling keys mid-turn", async () => {
+    const t = new FakeTransport();
+    const { controller, frame } = await open(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot(opts(), "prompting") });
+    const box = composerBox();
+    fireEvent.keyDown(box, { key: "?", code: "Slash", ctrlKey: true, shiftKey: true });
+    expect(screen.getByTestId("options-error").textContent).toBe("Options change between turns");
+    // The message goes when the turn ends.
+    await frame({ type: "event", event: { session_id: "s1", seq: 2, type: "agent.turn_complete", payload: { stop_reason: "end_turn" } } });
+    await frame({ type: "event", event: { session_id: "s1", seq: 3, type: "agent.status", payload: { status: "connected" } } });
+    expect(screen.queryByTestId("options-error")).toBeNull();
+    await frame({ type: "snapshot", epoch: "e", event_seq: 4, snapshot: snapshot(opts(), "prompting") });
+    fireEvent.keyDown(box, { key: "Tab", shiftKey: true });
+    fireEvent.keyDown(box, { key: ".", ctrlKey: true });
+    expect(screen.queryByRole("dialog", { name: "Agent options" })).toBeNull();
+    expect(t.calls.some((c) => c.op === "session.set_options")).toBe(false);
+    controller.dispose();
+  });
+
+  it("closes the open picker when the host locks options, and sends nothing", async () => {
+    const t = new FakeTransport();
+    const { controller, frame } = await open(t);
+    await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot(opts()) });
+    fireEvent.click(chip());
+    expect(dialog()).toBeTruthy();
+    await frame({ type: "snapshot", epoch: "e", event_seq: 2, snapshot: snapshot(opts(), "prompting") });
+    expect(screen.queryByRole("dialog", { name: "Agent options" })).toBeNull();
+    expect(document.activeElement).toBe(chip());
+    expect(t.calls.some((c) => c.op === "session.set_options")).toBe(false);
     controller.dispose();
   });
 
@@ -399,7 +421,7 @@ describe("open session options", () => {
     };
     const { controller, frame } = await open(t);
     await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot(opts()) });
-    fireEvent.click(pick("Model", "Opus")!);
+    fireEvent.click(model("Opus"));
     await tick();
     expect(screen.getByTestId("options-error").textContent).toContain("does not offer opus");
     expect(chip().getAttribute("aria-label")).toContain("Sonnet");
@@ -410,7 +432,53 @@ describe("open session options", () => {
     const t = new FakeTransport();
     const { controller, frame } = await open(t);
     await frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: { ...snapshot(opts()), options: null } });
-    expect(screen.queryByTestId("options-bar")).toBeNull();
+    expect(screen.queryByRole("button", { name: /mode, / })).toBeNull();
     controller.dispose();
+  });
+
+  describe("a fork", () => {
+    const agents = () => [
+      { agent: "claude_code", name: "Claude Code", available: true, reason: null, support: "supported", options: opts() },
+      { agent: "codex", name: "Codex", available: true, reason: null, support: "supported", options: codexOptions() },
+    ];
+
+    async function fork(t: FakeTransport, turns: unknown[] = []) {
+      t.handlers["agent.list"] = agents;
+      t.handlers["session.list"] = () => [{ session_id: "s1", workspace_id: "w1", agent: "claude_code", title: "Fork of Old work" }];
+      t.handlers["session.history"] = (p) => ({ session_id: p.session_id, turns, forked_from: { session_id: "s0", title: "Old work" } });
+      const opened = await open(t);
+      await act(async () => {
+        await opened.controller.refreshAgents();
+        await opened.controller.refreshSessions("w1");
+      });
+      await opened.frame({ type: "snapshot", epoch: "e", event_seq: 1, snapshot: snapshot(opts(), "disconnected") });
+      return opened;
+    }
+
+    it("moves to another agent before its first message", async () => {
+      const t = new FakeTransport();
+      t.handlers["session.set_agent"] = () => ({ session_id: "s1", options: codexOptions() });
+      const { controller } = await fork(t);
+      fireEvent.click(chip());
+      fireEvent.click(within(dialog()).getByRole("tab", { name: /^Codex/ }));
+      fireEvent.click(model("GPT-5\\.5,"));
+      await tick();
+      expect(t.calls.find((c) => c.op === "session.set_agent")!.params).toEqual({
+        session_id: "s1",
+        agent: "codex",
+        options: { model: "gpt-5.5", effort: "medium" },
+      });
+      controller.dispose();
+    });
+
+    it("keeps its agent once it has run", async () => {
+      const t = new FakeTransport();
+      const said = { turn_id: "t1", role: "user", blocks: [{ type: "text", text: "go on" }], timestamp: "", completed_at: null, duration_ms: null, model: null, usage: null };
+      const { controller } = await fork(t, [said]);
+      fireEvent.click(chip());
+      fireEvent.click(within(dialog()).getByRole("tab", { name: /^Codex/ }));
+      expect(model("GPT-5\\.5,").getAttribute("aria-disabled")).toBe("true");
+      controller.dispose();
+    });
   });
 });

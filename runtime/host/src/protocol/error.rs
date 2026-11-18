@@ -196,6 +196,16 @@ impl ZwiimError {
         )
     }
 
+    /// A session's agent is fixed once it has run: only a fork waiting for
+    /// its first message can move to another.
+    pub fn agent_fixed() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            "agent_fixed",
+            "Only a fork can change agent, before its first message",
+        )
+    }
+
     /// The Host is draining to stop or restart; retry once it is back.
     pub fn host_restarting() -> Self {
         let mut e = Self::new(

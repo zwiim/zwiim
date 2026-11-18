@@ -16,7 +16,7 @@ import {
   type SessionOptions,
   type SessionView,
 } from "@zwiim/sdk";
-import { MODE_LABELS, choiceLabel, modeChoosable } from "./start";
+import { MODE_LABELS, choiceLabel } from "./start";
 
 /** The agent's own name for a session's agent (`claude_code` → "Claude Code"). */
 export function agentName(agents: readonly AgentSummary[] | null, agent: string | null | undefined): string | null {
@@ -25,7 +25,7 @@ export function agentName(agents: readonly AgentSummary[] | null, agent: string 
 }
 
 /** One option changed on its own, as Desktop sends it: a new model never carries the old model's effort. */
-export type OptionChange = { model: string } | { effort: string } | { mode: SessionMode };
+export type OptionChange = { model: string } | { effort: string } | { mode: SessionMode } | { fast: boolean };
 
 export function changeRequest(change: OptionChange): OptionsRequest {
   return { ...change };
@@ -85,63 +85,24 @@ export function optionChips(options: SessionOptions | null): OptionChips {
   return { mode, text: parts.length > 0 ? parts.join(" · ") : null };
 }
 
-export type OptionKey = "mode" | "model" | "effort";
-
-/** One summary row in Session options; `open` while it has a page to choose from. */
-export interface OptionRow {
-  key: OptionKey;
-  label: "Mode" | "Model" | "Effort";
-  value: string;
-  open: boolean;
-}
-
-export function optionRows(options: SessionOptions | null, editable: boolean): OptionRow[] {
-  const rows: OptionRow[] = [];
-  if (!options) return rows;
-  if (options.mode) {
-    rows.push({ key: "mode", label: "Mode", value: MODE_LABELS[options.mode.current].label, open: editable && modeChoosable(options) });
-  }
-  if (options.model) {
-    rows.push({ key: "model", label: "Model", value: shownValue(options.model), open: editable && options.model.values.length >= 2 });
-  }
-  if (options.effort) {
-    rows.push({ key: "effort", label: "Effort", value: shownValue(options.effort), open: editable && options.effort.values.length >= 2 });
-  }
-  return rows;
-}
-
-/** Which page of Session options shows. */
-export type OptionsPage = "root" | OptionKey | "context";
-
-/** The page to show: an option's page falls back to the summary once it can no longer change. */
-export function pageFor(page: OptionsPage, rows: readonly OptionRow[]): OptionsPage {
-  if (page === "root" || page === "context") return page;
-  return rows.some((r) => r.key === page && r.open) ? page : "root";
-}
-
-export interface OptionsState {
-  page: OptionsPage;
-  query: string;
-}
-
-/** The page to keep: one that fell back stays on the summary, its search cleared, when its option unlocks. */
-export function settleOptions(state: OptionsState, rows: readonly OptionRow[]): OptionsState {
-  return pageFor(state.page, rows) === state.page ? state : { page: "root", query: "" };
-}
-
 /** Unattended turns approvals off, so the phone asks first. */
 export function needsConfirm(change: OptionChange): boolean {
   return "mode" in change && change.mode === "unattended";
 }
-
-/** Model lists this long get a search field. */
-export const SEARCH_FROM = 8;
 
 /** The values matching a search by name, id or description, in the agent's order. */
 export function filterChoices(values: readonly OptionValue[], query: string): OptionValue[] {
   const q = query.trim().toLowerCase();
   if (!q) return [...values];
   return values.filter((v) => [v.label, v.value, v.description ?? ""].some((s) => s.toLowerCase().includes(q)));
+}
+
+/**
+ * The composer's round buttons: stop while a turn runs, and send beside it
+ * once there is something to send (a steer), else send alone.
+ */
+export function composerButtons({ canSend, canStop }: { canSend: boolean; canStop: boolean }): { stop: boolean; send: boolean } {
+  return { stop: canStop, send: canSend || !canStop };
 }
 
 /** The composer's line while a turn runs: the options wait for it to end. */

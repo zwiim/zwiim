@@ -32,7 +32,7 @@ use crate::protocol::error::ZwiimError;
 use crate::session::{history, resolve, row_busy, session_lock, StartingGuard};
 use crate::session_checkpoints::match_turns;
 use crate::session_continue::{remove_attachments, store};
-use crate::session_options::{apply_on_start, preferred_for_start, remember_start, OptionsRequest};
+use crate::session_options::{apply_on_start, preferred_for_start, remember_start, restart_with, OptionsRequest};
 use crate::session_retry::carried_options;
 use crate::session_summary::{self, SummaryKind};
 use crate::terminal::manager::TerminalManager;
@@ -253,6 +253,51 @@ pub async fn remove_transcript(
     conversation_service::touch(&db.conn, row.id)
         .await
         .map_err(|_| ZwiimError::internal())?;
+    Ok(())
+}
+
+/// Move forked session `session_id` to `agent` before its first message, with
+/// `options` as a new session of that agent starts with. The chat goes on in
+/// the transcript the session holds. Refused with `agent_fixed` for a session
+/// that is not a fork or whose agent has started.
+pub async fn set_agent(
+    db: &AppDatabase,
+    connections: &ConnectionManager,
+    session_id: &str,
+    agent: AgentType,
+    options: &OptionsRequest,
+) -> Result<(), ZwiimError> {
+    let row = resolve(&db.conn, session_id).await?;
+    let lock = session_lock(session_id);
+    let _guard = lock.lock().await;
+    let link = session_fork::Entity::find_by_id(session_id)
+        .one(&db.conn)
+        .await
+        .map_err(|_| ZwiimError::internal())?
+        .ok_or_else(ZwiimError::agent_fixed)?;
+    if row.external_id.is_some() || crate::session::connection_for(connections, &row).await.is_some() {
+        return Err(ZwiimError::agent_fixed());
+    }
+    let preferred = preferred_for_start(&db.conn, agent, options).await?;
+    let held = match preferred {
+        Some(_) => None,
+        None => Some(serde_json::to_string(options).map_err(|_| ZwiimError::internal())?),
+    };
+    let wire = serde_json::to_value(agent)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .ok_or_else(ZwiimError::internal)?;
+    conversation::Entity::update_many()
+        .col_expr(conversation::Column::AgentType, Expr::value(wire))
+        .col_expr(conversation::Column::Model, Expr::value(options.model.clone()))
+        .filter(conversation::Column::Id.eq(row.id))
+        .exec(&db.conn)
+        .await
+        .map_err(|_| ZwiimError::internal())?;
+    let mut moved = link_of(&link);
+    moved.pending_options = Set(held);
+    moved.update(&db.conn).await.map_err(|_| ZwiimError::internal())?;
+    restart_with(&db.conn, session_id, preferred.unwrap_or_default()).await;
     Ok(())
 }
 
@@ -926,6 +971,36 @@ mod tests {
             .lines()
             .map(str::to_string)
             .collect()
+    }
+
+    #[tokio::test]
+    async fn a_fork_changes_agent_until_its_first_message() {
+        let f = forkable().await;
+        let forked = idle_fork(&f, "turn-3").await;
+        let model = OptionsRequest {
+            model: Some("opus".into()),
+            ..Default::default()
+        };
+
+        set_agent(&f.db, &f.mgr, &forked.session_id, AgentType::ClaudeCode, &model)
+            .await
+            .unwrap();
+        let row = resolve(&f.db.conn, &forked.session_id).await.unwrap();
+        assert_eq!(row.agent_type, "claude_code");
+        assert_eq!(row.model.as_deref(), Some("opus"));
+        // Claude has never said what it takes here, so its first launch applies them.
+        let held = link(&f, &forked.session_id).await.pending_options.expect("held");
+        assert!(held.contains("opus"), "{held}");
+        assert!(pending(&f, &forked.session_id).await.is_some());
+
+        say(&f, &forked.session_id, "go on").await.unwrap();
+        assert_eq!(
+            set_agent(&f.db, &f.mgr, &forked.session_id, AgentType::Codex, &OptionsRequest::default())
+                .await
+                .unwrap_err()
+                .code,
+            "agent_fixed"
+        );
     }
 
     #[tokio::test]

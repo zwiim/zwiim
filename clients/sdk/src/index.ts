@@ -83,6 +83,7 @@ export * from "./state/plan";
 export * from "./state/clones";
 export * from "./state/keep-awake";
 export * from "./state/instructions";
+export * from "./state/commands";
 export * from "./changes/diff";
 export * from "./changes/turns";
 export * from "./changes/fullfile";

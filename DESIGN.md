@@ -35,7 +35,8 @@ from the list).
 - **Mood:** a serious instrument panel you can read at a glance in bad light,
   one-handed. Calm when things work; impossible to miss when the agent needs you.
 - **Never:** gradients, glows as decoration, illustrated empty states, chat-bubble
-  avatars, colored icon circles, centered-everything layouts.
+  avatars, colored icon circles, centered-everything layouts. The one exception
+  is the agent icons and agent dots in the model picker (see the Decisions Log, 2026-11-17).
 
 ## Typography — two voices
 
@@ -322,11 +323,11 @@ Approved layout (variant A):
   `todo · pune`; defaults to the Files selection, picking here does
   not change Files; its sheet is the workspace tree below), **Agent** (`agent.list`, unavailable agents disabled with
   their reason), then only what the agent advertises: **Model**, **Effort**,
-  **Mode** (Ask / Plan / Unattended, the names the Session screen uses).
+  **Mode** (Ask / Plan / Auto, the names the Session screen uses; Auto is `unattended`).
   Effort follows the Model row: the levels that model offers, and no Effort
   row on a model without one (Haiku); an Effort pick comes back with a model
   that offers it (R8.14).
-  Unattended asks first ("Turn off approvals?") and shows in `need`. Then
+  Auto asks first ("Turn on Auto?") and shows in `need`. Then
   **First prompt** and a full-width **Start session** in the thumb zone. A
   selected worktree that was archived shows `zwiim · fix-auth was archived` in red
   (`Workspace removed` when the Host no longer lists it) and Start
@@ -353,29 +354,32 @@ Approved layout (variant A):
 
 Top to bottom:
 
-- **Nav header:** back, session title (`headline`, one line), mono subtitle
-  `agent · workspace · worktree · Host ⌂/☁`. Trailing `⋯` → options sheet (model, effort,
-  mode from `SessionOptions`; only options the agent offers). While an agent is
-  attached, a **Stop agent** button (`destructive`) sits at the right: it stops
-  the agent, not only the turn (that is the Now bar's **Stop**). A confirm sheet
-  "Stop the agent?" says its background work stops too and that the session and
-  transcript stay; the next message starts the agent again (R8.13).
-- **Session strip** (48pt, hairline below; R8.11): the sessions of this session's
-  worktree, Desktop's tabs made thumb-sized. Leading `⎇ fix-auth ▾` (mono `mut`,
-  `· removed` in `faint`) → **Switch worktree** sheet: the workspace tree with no
+- **Header** (one 52pt row, hairline below): back, the session strip, `⋯`.
+  There is no title row: the open tab names the session. `⋯` opens the
+  **session menu** sheet: the title (`title`), `agent · workspace · Host ⌂/☁` in
+  mono, the context line (opens the **Context** figures in place) and, while an
+  agent is attached, **Stop agent** (`destructive`): it stops the agent, not only
+  the turn (that is the composer's stop). A confirm sheet "Stop the agent?" says
+  its background work stops too and that the session and transcript stay; the
+  next message starts the agent again (R8.13).
+- **Session strip** (in the header row; R8.11): the sessions of this session's
+  worktree, Desktop's tabs made thumb-sized. Leading `⎇ fix-auth ▾`, a 30pt
+  `surface` pill, max 118pt, ellipsized in the middle (mono `mut`, `· removed` in
+  `faint`) → **Switch worktree** sheet: the workspace tree with no
   create rows; picking one opens its last session on screen, else its newest,
-  else New session there. Then a hairline and a horizontal scroll of pill tabs
-  (32pt, max 176, one-line title), oldest first: the open one `surface` with an
+  else New session there. Then a horizontal scroll of pill tabs
+  (32pt, max 176, one-line title, fading out at the right edge), oldest first: the open one `surface` with an
   accent border, the rest `mut` text; `need` / breathing `work` dot only while a
   tab needs you or works. The open tab scrolls into view. Tapping a tab swaps the
   session in place (no screen pushed); `+` pinned at the right → New session defaulting to
   this worktree, and after Start the strip shows the new tab. A removed
   worktree has no `+`. Files' selection never changes from here.
-- **PR strip** (40pt, hairline below; V2.3), only while the worktree's branch has
+- **PR strip** (34pt, hairline below; V2.3), only while the worktree's branch has
   a pull request: a GitPullRequest icon (GitMerge once merged) in the status
-  tone, mono `#12`, the status in `callout` (`Checks running` `accent`,
-  `Checks passed` `done`, `Checks failed` `err`, `Draft` / `Open` / `Closed`
-  `mut`, `Merged` `done`), `›`. The counts live in the sheet, not on the
+  tone, mono `PR #12 · branch`, the status as a 20pt pill tinted 12% in its tone
+  (`Checks running` `mut`, `Checks passed` `done`, `Checks failed` `err`, `Draft` /
+  `Open` / `Closed` `mut`, `Merged` `done`), and `Open ↗` in `accent` at the
+  right; the row opens the PR sheet. The counts live in the sheet, not on the
   strip; its spoken label says them while open and drops them once merged or closed. The Host follows the PR on GitHub and the strip only renders its feed;
   the phone never asks GitHub. When the Host's GitHub CLI is missing or signed
   out, the strip is one `mut` mono line saying so and what to run on the Mac.
@@ -433,54 +437,73 @@ Top to bottom:
   - **since you left** divider: accent mono label with the count of events since
     the device last saw this session; auto-scroll lands on it on open.
   - streaming: the last agent message ends with the accent caret.
-- **Now bar** (pinned above the composer, 44pt, mono):
-  - working: breathing dot · `Running npm test -- lan` · elapsed · **Stop** (`fg` button) → `session.cancel`
-  - thinking: `Thinking` · elapsed · **Stop**
+- **Now bar** (inside the composer's top edge, 34pt, `monoSm`, `accent` at 8%,
+  hairline under):
+  - working: breathing dot · `Running npm test -- lan` · elapsed
+  - working through a plan: the plan's pips · `Editing lan.ts · Plan 2/5` ·
+    elapsed; a tap opens the tasks sheet
+  - thinking: `Thinking` · elapsed
   - needs you: `need` tint, `Waiting for you · Edit transport/lan.ts` · **Review** → Request sheet
     (and the sheet auto-presents once when the request arrives while the screen is open)
   - reconnecting: `Reconnecting… retry in 3s` (from `ConnectionState.retryInMs`)
   - idle / completed: bar hidden.
-- **Composer** (`surface`, radius 16): multiline input "Reply or steer…"
-  over one row: one options chip, then round accent send (the Desktop
-  composer's shape). The chip is 28pt, radius 6, `raised` on the composer,
-  `monoSm` `mut`: the mode's icon (shield Ask, list-check Plan) and the
-  session's options in one line, `Ask · Opus 5.5 · High ⌄` (each part only as
-  the agent offers it; effort only while the model offers one). Unattended
-  makes it a solid `need` chip in `need-ink`, and the whole composer takes a
-  1pt `need` border. At the right, beside send, a 20pt ring with the share of
-  the context window in use (`accent` arc on a `faint` track, `23%`; a dashed
-  `faint` ring and `—` until the agent reports both figures). While a turn
-  runs, a `monoSm` `faint` line under the input reads "Options change when the
-  turn ends" and the chip dims. The chip and the ring open **Session options**
-  (R8.15).
+- **Composer** (`surface`, radius 16): the Now bar, a multiline input "Reply or
+  steer…" (", or type /" when the agent lists commands), then one row: attach,
+  the picker chip, the context ring, send (the Desktop composer's shape). The
+  chip is 30pt, radius 15, `raised`, `monoSm` `mut`: the agent icon and the
+  session's options in one line, `Ask · Opus 5.5 · High ⚡ ⌄` (each part only as
+  the agent offers it; effort only while the model offers one; `⚡` while Fast is
+  on). Auto makes it a solid `need` chip in `need-ink`, and the whole composer
+  takes a 1pt `need` border; while a turn runs the border is `accent` at 45%. The
+  20pt ring shows the share of the context window in use (`accent` arc on a
+  `faint` track; a dashed `faint` ring until the agent reports both figures),
+  with no figure beside it; it opens the session menu. While a turn runs, a
+  `monoSm` `faint` line under the input reads "Options change when the turn
+  ends" and the chip dims, and a 36pt `err` round **stop** → `session.cancel`
+  takes send's place (send returns beside it once a steer is typed). The chip
+  opens **Agent & model** (R8.15).
   While a turn runs, send stays available only if the agent accepts it;
   on `turn_in_progress` show "The agent is still working. Stop it or wait."
-  Slash commands: typing `/` opens a sheet of `SessionCommand`s.
+  Slash commands: typing `/` at the start or after a space opens a list over the
+  input of the session's `SessionCommand`s (before the agent lists them, the ones
+  it listed last time), names starting with the typed text first; a tap writes
+  `/name ` into the message. The list shows five; with more, a last row
+  "Search all N commands" opens a sheet with every command and a search field. `/mcp`, `/model`, `/config` and `/status` are left
+  out: their screen is the agent's CLI, which the phone does not have.
   Unsent text is kept per session (in memory on the phone, never on the Host),
   so switching tabs or worktrees keeps each draft; a send the Host takes clears
   only that session's draft, and a failed send keeps it (R8.12).
 
-**Session options sheet** (header `⋯`, the options chip or the ring; R8.15):
-title and the agent's name in mono, then one card of rows, only as the agent
-offers them: **Mode**, **Model** and **Effort** (only while the current model
-offers one), each its name, its value in mono and `›` when there is more than
-one to choose. In Unattended a `need` note carries **Ask first again**. Under
-the card, one mono context line (`23% of 1M context`, or the figure the agent
-reported, or `Context not reported`) with `›` opens the **Context** page.
-A row opens its page in the same sheet: `‹` back, the title, the agent's name
-in mono, then grouped radio rows, the current one in a tonal fill with an
-accent check. Mode lists Ask / Plan / Unattended with their icons and hints
-(Unattended's label turns `need` when chosen); Model is one flat list in the
-agent's order with the agent's description in `mut`, and from 8 models a
-"Search models" field that matches label, id or description (`No models match
-"…"` when none do); Effort lists the model's levels. A pick is sent alone
-(`session.set_options` with that one option) and returns to the rows, which
-then show what the Host reports, so a new model brings its own effort (or
-none) and never the old one. Unattended asks first ("Turn off approvals?").
-While a turn runs, offline, or before the agent reports its options, the rows
-are read-only with the reason in `mut` under the title, and an open page falls
-back to the rows; refusals (`turn_in_progress`, `option_unavailable`) show in
-`err`. The **Context** page: a 6pt accent bar (only with both figures) and one
+**Agent & model sheet** (the composer's chip; R8.15): one page, titled
+**Agent & model**. A fork nothing was sent to yet, on a Host with
+`session.set_agent`, shows a horizontal row of agent chips (44pt, snapping chip
+by chip; the current one with an `accent` border; one that can't start dimmed
+with its reason, `setting up`); otherwise one locked row, `Claude Code · set at
+first message`. Then a full-width search field, "Search ⟨agent⟩ models", with
+**Show all N** in `accent` at its right; the first 5 models show, Show all
+expands in place (**Show less**), typing searches every model and hides it, and
+`✕` clears. Model rows are one line: the name, the description in `faint`, an
+`accent` check on the current one. **Effort** (only with two or more levels) is
+a segmented switch, one segment per level the Host reports, its label shrinking
+to 11pt and then ellipsizing; the current level's name shows at the right of
+the heading in its heat colour. The highlight heats with the level, spread
+evenly over however many there are: calm blue, blue, violet, pink, fire orange,
+with glow, a passing shine and sparks at its edges growing toward the top. A tap
+travels through each level in between, lighting and ticking (haptic) each; a
+drag follows the finger and settles on the level under it. **Mode** is the same
+switch with a plain `raised` highlight: shield **Ask first**, list-check
+**Plan**, shield-off **Auto** (`unattended`, `need` when lit), modes the agent
+lacks dimmed, and the mode's hint under it. Auto asks first ("Turn on Auto?").
+**Fast**, a switch row, shows only when the model offers it (`session.fast`).
+Each pick is sent alone (`session.set_options`, or `session.set_agent`) and the
+sheet stays open showing what the Host reports, so a new model brings its own
+effort (or none) and the switch moves to it. While a turn runs, offline, or
+during a change, the controls dim with the reason in `mut`; a refusal
+(`turn_in_progress`, `option_unavailable`) shows in `err` and the control goes
+back to what the Host holds.
+
+The **Context** figures (from the session menu): a 6pt accent bar (only with
+both figures) and one
 mono line, `37,738 of 1,000,000` with `962,262 left` at the right (a missing
 figure is named: `window not reported`, in `faint`). After a finished turn, a
 fold **Last turn · 87,352 tokens ⌄** opens rows Input, Output, Cache read,
@@ -801,17 +824,41 @@ glyph, a title, one line, one action.
   shows the window and last turn's tokens; a click pins them until Escape or a
   click elsewhere. Same rule as the phone: only reported figures, a missing one
   reads "not reported".
-- Desktop's composer carries one options chip, as the phone does: the mode's
-  icon and `Ask · Opus 5.5 · High ⌄`. It opens a menu of three rows, Mode,
-  Model and Effort, each with its value in mono and `›`; a row opens its
-  submenu to the right on click, hover or →, and ← or Escape steps back. Mode
-  reads Ask / Plan / **Auto** (Auto is the `unattended` mode on the wire);
-  Model lists the agent's models in its order with their descriptions, and
-  from 8 models a "Search models" field. A new session starts in Auto wherever
-  the agent offers it; picking Auto takes one click, with no confirmation. The
-  chip stays `brand` and the composer keeps its Auto note with **Ask first
-  again**.
-  The phone still says Unattended and asks first.
+- While a turn runs or follow-ups wait, a turn rail sits on the composer's top
+  edge: `Working · 1m 05s` (or "Paused · Send one to carry on" while a held
+  queue waits), then `Plan 2/5 · current step` whose tasks open upward,
+  `Queue n` and `Context n%`, which open inline under the rail. A newly queued
+  follow-up opens the queue. While the rail shows, its Context replaces the
+  ring beside send. A plan that stopped part way keeps its resume bar above.
+- Desktop's composer carries one options chip, bottom left: the mode's icon
+  and label (accent when Auto), the agent's icon, the model in mono, the
+  effort, an accent `⚡` while fast mode is on, and `⌄`. Its name reads
+  "Auto mode, Claude, Opus 5.5, High effort".
+  It opens a panel upward, 440px wide: a search field, a column of icon-only
+  agent tiles (a dot marks the agent in use, a ring the one being browsed; the
+  column scrolls on its own), the list, `Effort ›`, `Mode ›` and `Fast` rows,
+  and a footer of keys. Picking a model picks its agent. Once a session has
+  run, other agents' models are disabled ("Start a new session to use ⟨agent⟩");
+  a fork can still move to another agent until its first message, and its
+  transcript carries the chat over. The list starts with
+  **Recent & favorites** (favorites first, marked ★, then at most 2 recent
+  models), then the browsed agent's models; each row shows the effort that
+  model remembers, and past 5 models "Show all n models" opens the rest.
+  Search filters the browsed agent and moves to the first agent that matches.
+  `Effort ›` and `Mode ›` open a side list of exactly what the agent reports
+  for that model. `Fast` ("2x speed · more usage") is a switch that flips in
+  place, shown only for a model that offers fast mode; it starts off, each
+  model remembers it, and a row with it on carries `⚡`. Mode reads Ask / Plan / **Auto** (Auto is the `unattended`
+  mode on the wire). A new session starts in Auto wherever the agent offers
+  it; picking Auto takes one click, with no confirmation, and the composer
+  keeps its Auto note with **Ask first again**. Keys: In the session
+  composer `⌘.` opens and closes the panel; in it `↑↓` move, `→` or `↵` open a side list, `←` or Escape step
+  back, `⌃1`-`⌃9` pick a quick row, `⌘D` stars a model, `⌘[` and `⌘]` switch
+  agent. `⌘⇧/` cycles effort and `⇧Tab` cycles mode. The New Worktree dialog
+  has the chip but none of these three keys. Mid-turn the chip is disabled with
+  the reason "Options change between turns", and a shortcut press shows the same
+  message as an error line above the composer. The phone says Auto too, but
+  still asks first.
 - Desktop folds three or more consecutive tool calls and sub-agent cards into
   one row, as the phone does: a layers icon, `n tool calls`, `m sub-agents` or
   `n tool calls, m sub-agents` (shimmering while a call or a sub-agent runs) and
@@ -1066,3 +1113,6 @@ glyph, a title, one line, one action.
 | 2026-11-06 | Every fork carries a visible transcript | User call: the chat should reach the fork the same way for every agent, and the user should see and control it. Agent-native fork is gone from `session.fork`; chat rewind keeps it. The transcript is a chip in the composer, owned by the Host, with an X and a preview. **Fork here** became **Fork to new tab** to say where the fork lands. A worktree fork says what it made |
 | 2026-11-06 | A fork's transcript chip is bordered, with its icon in a cell of its own | Asked for by the user, to read as one attached file. An exception to surfaces separating by tone: other chips keep `bg-muted`. Full name, no size; the X always shows, so removing it is a plain click |
 | 2026-11-06 | Desktop's fork icon opens on a click only | User call: a menu that opens as the mouse passes gets in the way. A click opens it, and it stays until a second click, Escape, a click elsewhere or a pick. Replaces the hover in the 2026-11-05 row. |
+| 2026-11-17 | Model picks the agent; recent & favorites; effort remembered per model (design-shotgun, prototype) | Found in design-shotgun and a prototype (`docs/design/composer-prototype.html`). One panel lists every agent's models, so one pick sets agent and model, and each model keeps the effort last used with it. |
+| 2026-11-17 | Agent icons are the one place colored tiles are allowed (user call) | User call. Agents must be told apart at a glance in the chip and the strip. The glyphs are Zwiim's own, not vendor logos. |
+| 2026-11-17 | Mobile session redesign: one-row header, desktop-like composer, one-page Agent & model sheet with sliding Effort and Mode switches | The two-row header repeated the open tab's title and kept a red Stop agent on screen; both move to `⋯`. Stop for the turn moves onto send, as on Desktop. The picker's pages became one page a thumb can work. User-approved exception: Effort's highlight heats from blue through violet and pink to fire orange (with glow, shine and edge sparks) so a higher level reads as more; those colours appear only inside that switch and never carry status. "Unattended" reads "Auto", as on Desktop |

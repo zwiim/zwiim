@@ -111,7 +111,7 @@ export type StartPicks = OptionsRequest;
 export const MODE_LABELS: Record<SessionMode, { label: string; hint: string }> = {
   normal: { label: "Ask", hint: "Asks before running commands or editing files" },
   plan: { label: "Plan", hint: "Plans first and asks you to approve the plan" },
-  unattended: { label: "Unattended", hint: "Runs commands and edits files without asking" },
+  unattended: { label: "Auto", hint: "Runs commands and edits files without asking" },
 };
 
 /** The value a choice shows: the pick while the agent still offers it, else the agent's current. */

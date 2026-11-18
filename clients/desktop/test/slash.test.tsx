@@ -1,9 +1,17 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CLIENT_CAPABILITIES, HostClient, HostController, type SessionCommand, type SessionSnapshot } from "@zwiim/sdk";
+import {
+  CLIENT_CAPABILITIES,
+  HostClient,
+  HostController,
+  matchCommands,
+  slashQuery,
+  type SessionCommand,
+  type SessionSnapshot,
+} from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
 import { SessionPanel } from "@/panels/SessionPanel";
-import { matchCommands, slashQuery, terminalCommand } from "@/panels/SlashCommands";
+import { terminalCommand } from "@/panels/SlashCommands";
 import { AgentTerminalsContext, useAgentTerminalsState } from "@/panels/AgentTerminal";
 import { TerminalPanel } from "@/panels/TerminalPanel";
 import { FakeTransport, hostHello, tick } from "./fakes";

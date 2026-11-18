@@ -30,6 +30,7 @@ import {
   type OpParams,
   type ForkTarget,
   type OpResult,
+  type AgentType,
   type OptionsRequest,
   type PrAutoMerged,
   type PrMerged,
@@ -381,6 +382,11 @@ export class HostConnection {
    */
   async setSessionOptions(session_id: string, request: OptionsRequest): Promise<SessionOptions> {
     return this.#live().setSessionOptions(session_id, request);
+  }
+
+  /** Move a fork to another agent before its first message (`session.set_agent`). Never retried. */
+  async setSessionAgent(session_id: string, agent: AgentType, request: OptionsRequest): Promise<SessionOptions> {
+    return this.#live().setSessionAgent(session_id, agent, request);
   }
 
   /** Read the host's agents again (`agent.list`) into the store. */

@@ -1,4 +1,4 @@
-// The session strip (DESIGN.md, Screen 5): under a session's header, the
+// The session strip (DESIGN.md, Screen 5): in a session's header row, the
 // other sessions of its worktree, so switching between tasks in one worktree
 // is a tap. `⎇ fix-auth ▾` switches worktree (its sessions, or New session
 // when it has none); the tabs are its sessions, oldest first, the one on
@@ -7,6 +7,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { sessionLook, type SessionItem } from "../sessions/model";
 import type { WorktreeSessions } from "../sessions/worktree";
 import { Sheet, StatusDot, T } from "../ui/components";
@@ -46,12 +47,13 @@ export function SessionStrip({
   useEffect(() => place(session_id), [session_id]);
 
   return (
-    <View style={[styles.strip, { borderBottomColor: theme.line }]} accessibilityRole="tablist" testID="session-strip">
+    <View style={styles.strip} accessibilityRole="tablist" testID="session-strip">
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`Worktree ${worktree.label}${worktree.removed ? ", removed" : ""}. Switch worktree`}
         onPress={() => setSwitching(true)}
-        style={({ pressed }) => [styles.worktree, pressed && { backgroundColor: theme.surface }]}
+        hitSlop={{ top: 7, bottom: 7 }}
+        style={({ pressed }) => [styles.worktree, { backgroundColor: pressed ? theme.raised : theme.surface }]}
         testID="strip-worktree"
       >
         <T
@@ -66,7 +68,7 @@ export function SessionStrip({
         </T>
         <Icon icon={ChevronDown} color={theme.faint} size={14} />
       </Pressable>
-      <View style={[styles.divider, { backgroundColor: theme.line }]} />
+      <View style={styles.flex}>
       <ScrollView
         ref={scroll}
         horizontal
@@ -91,6 +93,17 @@ export function SessionStrip({
           />
         ))}
       </ScrollView>
+      {/* More tabs past the edge fade out rather than stop. */}
+      <Svg pointerEvents="none" width={24} height="100%" style={styles.fade}>
+        <Defs>
+          <LinearGradient id="strip-fade" x1="0" y1="0" x2="1" y2="0">
+            <Stop offset="0" stopColor={theme.bg} stopOpacity={0} />
+            <Stop offset="1" stopColor={theme.bg} stopOpacity={1} />
+          </LinearGradient>
+        </Defs>
+        <Rect x="0" y="0" width="100%" height="100%" fill="url(#strip-fade)" />
+      </Svg>
+      </View>
       {/* Pinned: however many tabs, another session is one tap away. */}
       {worktree.removed ? null : (
         <Pressable
@@ -156,24 +169,20 @@ function Tab({
 }
 
 const styles = StyleSheet.create({
-  strip: {
-    height: 48,
-    flexDirection: "row",
-    alignItems: "center",
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
+  strip: { flex: 1, minWidth: 0, height: 44, flexDirection: "row", alignItems: "center" },
   worktree: {
-    height: 48,
-    maxWidth: 148,
+    height: 30,
+    maxWidth: 118,
     flexDirection: "row",
     alignItems: "center",
     gap: space.xxs,
-    paddingLeft: space.lg,
-    paddingRight: space.sm,
+    paddingLeft: space.sm + 2,
+    paddingRight: space.xs + 2,
+    borderRadius: radius.full,
   },
   worktreeText: { flexShrink: 1 },
-  divider: { width: StyleSheet.hairlineWidth, height: 20 },
-  tabs: { alignItems: "center", gap: space.xs, paddingHorizontal: space.sm },
+  fade: { position: "absolute", right: 0, top: 0, bottom: 0 },
+  tabs: { alignItems: "center", gap: space.xs, paddingLeft: space.xs, paddingRight: space.lg },
   tab: {
     height: 32,
     maxWidth: 176,
@@ -189,7 +198,6 @@ const styles = StyleSheet.create({
   add: {
     width: 32,
     height: 32,
-    marginHorizontal: space.sm,
     borderRadius: radius.full,
     alignItems: "center",
     justifyContent: "center",

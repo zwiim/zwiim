@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CLIENT_CAPABILITIES,
@@ -144,21 +144,25 @@ const refuse = (t: FakeTransport, code: string) => {
 };
 
 describe("PlanStrip", () => {
-  it("shows the working strip with count and steps", async () => {
+  it("shows the working plan in the turn rail, with its steps above", async () => {
     const t = new FakeTransport();
     const { controller } = await mountPlan(t, { status: "prompting", progress: working });
-    const strip = screen.getByTestId("plan-strip");
-    expect(strip.textContent).toContain("Run the LAN tests");
-    expect(strip.textContent).toContain("2 of 5");
+    expect(screen.queryByTestId("plan-strip")).toBeNull();
+    const rail = screen.getByTestId("turn-rail");
+    expect(rail.textContent).toContain("Run the LAN tests");
+    expect(rail.textContent).toContain("2/5");
+    expect(within(rail).getByRole("status").textContent).toMatch(/^Working · /);
+    const plan = screen.getByRole("button", { name: "Plan, 2 of 5 done · Run the LAN tests" });
     expect(screen.queryByTestId("plan-steps")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Show tasks" }));
+    fireEvent.click(plan);
     const list = screen.getByTestId("plan-steps");
     expect(list.querySelectorAll("li")).toHaveLength(5);
     expect(list.textContent).toContain("Ship it");
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByTestId("plan-steps")).toBeNull();
+    expect(document.activeElement).toBe(plan);
     // A click outside closes it too.
-    fireEvent.click(screen.getByRole("button", { name: "Show tasks" }));
+    fireEvent.click(plan);
     expect(screen.getByTestId("plan-steps")).toBeTruthy();
     fireEvent.pointerDown(document.body);
     expect(screen.queryByTestId("plan-steps")).toBeNull();
@@ -362,6 +366,7 @@ describe("PlanStrip", () => {
       hostHello({ capabilities: CLIENT_CAPABILITIES.filter((x) => x !== "agent.progress") });
     const c2 = await mountPlan(t2, { status: "prompting", progress: working });
     expect(screen.queryByTestId("plan-strip")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Plan,/ })).toBeNull();
     c2.controller.dispose();
   });
 

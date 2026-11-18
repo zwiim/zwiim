@@ -40,7 +40,9 @@ export {
   Search,
   Shield,
   ShieldOff,
+  Square,
   X,
+  Zap,
 } from "lucide-react-native";
 
 /** An icon at the app's stroke weight; the stroke stays 1.75pt at any size. */

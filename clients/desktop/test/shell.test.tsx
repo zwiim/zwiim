@@ -226,11 +226,10 @@ describe("agent picker", () => {
   it("offers only usable agents and labels the others", async () => {
     const t = new FakeTransport();
     const c = await mount(t, <SessionPanel workspaceId="w1" sessionId={null} onSessionStarted={() => {}} />);
-    const select = screen.getByRole("combobox") as HTMLSelectElement;
-    expect(select.value).toBe("claude_code");
-    const codex = [...select.options].find((o) => o.value === "codex")!;
-    expect(codex.disabled).toBe(true);
-    expect(codex.textContent).toBe("Codex — not installed");
+    fireEvent.click(screen.getByRole("button", { name: /^Claude Code/ }));
+    const codex = within(screen.getByRole("dialog", { name: "Agent options" })).getByRole("tab", { name: "Codex, not installed" });
+    fireEvent.click(codex);
+    expect(within(screen.getByRole("listbox", { name: "Models" })).queryAllByRole("option")).toEqual([]);
     c.dispose();
   });
 

@@ -489,12 +489,26 @@ use serde::{Deserialize, Serialize};
 /// where the browser's address bar sends a search: `google`, `duckduckgo` or
 /// `brave` (unset is Google). Older clients never see or set it.
 ///
-/// 37 (`git.discard`): `git.discard {workspace_id, file}` throws away one
+/// 37 (`session.fast`): session options carry `fast`, whether the agent's
+/// fast mode is on (`null` where the model offers none), and
+/// `session.set_options` and `session.start`'s `options` take `fast`
+/// (a boolean). A new session starts with it off unless `fast` is `true`;
+/// `true` where the model offers none is `option_unavailable`, `false` is a
+/// no-op. Each `agent.list` entry gains `fast_by_model`, whether each model
+/// that has run here offers it. Older clients never see or set it.
+///
+/// 38 (`session.set_agent`): `session.set_agent {session_id, agent, options}`
+/// moves a fork to another agent before its first message, with `options` as
+/// `session.start` takes them, and replies with the session's options. It is
+/// refused with `agent_fixed` for a session that is not a fork or whose agent
+/// has started. Older clients never call it.
+///
+/// 39 (`git.discard`): `git.discard {workspace_id, file}` throws away one
 /// file's uncommitted changes, staged and unstaged: a changed or deleted file
 /// is restored from HEAD, a file added since is removed. Commits are never
 /// touched. It answers `discarded`, false when the file had no uncommitted
 /// changes; a folder is `invalid_input`. Older clients never call it.
-pub const PROTOCOL_REVISION: u32 = 37;
+pub const PROTOCOL_REVISION: u32 = 39;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -557,9 +571,11 @@ pub const CAPABILITIES: &[&str] = &[
     "workspace.layout",
     "session.fork",
     "session.transcript_remove",
+    "session.set_agent",
     "repository.settings_import",
     "browser",
     "downloads",
+    "session.fast",
     "git.discard",
 ];
 
@@ -738,9 +754,21 @@ mod tests {
     }
 
     #[test]
-    fn discarding_a_file_is_revision_37() {
+    fn fast_mode_is_revision_37() {
+        const _: () = assert!(PROTOCOL_REVISION >= 37);
+        assert!(CAPABILITIES.contains(&"session.fast"));
+    }
+
+    #[test]
+    fn fork_agent_change_is_revision_38() {
+        const _: () = assert!(PROTOCOL_REVISION >= 38);
+        assert!(CAPABILITIES.contains(&"session.set_agent"));
+    }
+
+    #[test]
+    fn discarding_a_file_is_revision_39() {
         assert!(CAPABILITIES.contains(&"git.discard"));
-        assert_eq!(PROTOCOL_REVISION, 37);
+        assert_eq!(PROTOCOL_REVISION, 39);
     }
 
     #[test]
