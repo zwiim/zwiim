@@ -28,6 +28,9 @@ have their own versions and are listed under Compatibility.
 ### Fixed
 - The terminal no longer stutters when the dock opens or closes, and the
   shell inside it is no longer resized mid-animation.
+- Desktop: a replace, or the file changing on disk, no longer moves the caret to the end of the file being edited or clears its undo.
+- Desktop: typing in a long file no longer lags; colors catch up once typing pauses.
+- Desktop: the Diff tab's count no longer runs a full Git status on every change while the tab is hidden.
 
 ### Security
 - None.
