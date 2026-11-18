@@ -13,12 +13,8 @@ import {
   lockedNote,
   needsConfirm,
   optionChips,
-  optionRows,
   optionsEditable,
   optionsError,
-  pageFor,
-  settleOptions,
-  SEARCH_FROM,
   tokens,
 } from "../src/sessions/controls";
 
@@ -67,44 +63,6 @@ describe("session controls", () => {
     expect(optionChips(null)).toEqual({ mode: null, text: null });
   });
 
-  it("summary rows open only what can change", () => {
-    expect(optionRows(claudeLike("opus[1m]", "high"), true)).toEqual([
-      { key: "mode", label: "Mode", value: "Ask", open: true },
-      { key: "model", label: "Model", value: "Opus 5", open: true },
-      { key: "effort", label: "Effort", value: "High", open: true },
-    ]);
-    // Codex offers one model: shown, not openable.
-    expect(optionRows(codexLike, true).find((r) => r.key === "model")).toEqual({ key: "model", label: "Model", value: "GPT-5.3 Codex", open: false });
-    expect(optionRows(claudeLike("haiku", null), true).map((r) => r.key)).toEqual(["mode", "model"]);
-    expect(optionRows(claudeLike("opus[1m]", "high"), false).every((r) => !r.open)).toBe(true);
-    expect(optionRows({ ...codexLike, mode: { current: "normal", label: "", available: ["normal"] } }, true)[0]?.open).toBe(false);
-    expect(optionRows(null, true)).toEqual([]);
-  });
-
-  it("summary rows keep an unlisted current value", () => {
-    expect(optionRows(claudeLike("opus-old", null), true)[1]?.value).toBe("opus-old");
-    expect(optionRows(claudeLike("", null), true)[1]?.value).toBe("Default");
-  });
-
-  it("a page that can no longer open falls back to the summary", () => {
-    const rows = optionRows(claudeLike("opus[1m]", "high"), true);
-    expect(pageFor("model", rows)).toBe("model");
-    expect(pageFor("root", rows)).toBe("root");
-    expect(pageFor("model", optionRows(claudeLike("opus[1m]", "high"), false))).toBe("root");
-    expect(pageFor("effort", optionRows(claudeLike("haiku", null), true))).toBe("root");
-    expect(pageFor("context", [])).toBe("context");
-  });
-
-  it("a page that fell back stays on the summary once its option unlocks", () => {
-    const locked = optionRows(claudeLike("opus[1m]", "high"), false);
-    const open = optionRows(claudeLike("opus[1m]", "high"), true);
-    const settled = settleOptions({ page: "model", query: "op" }, locked);
-    expect(settled).toEqual({ page: "root", query: "" });
-    expect(pageFor(settled.page, open)).toBe("root");
-    const kept = { page: "model" as const, query: "op" };
-    expect(settleOptions(kept, open)).toBe(kept);
-  });
-
   it("asks first only before Unattended", () => {
     expect(needsConfirm({ mode: "unattended" })).toBe(true);
     expect(needsConfirm({ mode: "plan" })).toBe(false);
@@ -122,7 +80,6 @@ describe("session controls", () => {
     expect(filterChoices(v, "4-8").map((x) => x.value)).toEqual(["claude-opus-4-8"]);
     expect(filterChoices(v, "quick").map((x) => x.value)).toEqual(["haiku"]);
     expect(filterChoices(v, "xyz")).toEqual([]);
-    expect(SEARCH_FROM).toBe(8);
   });
 
   it("context line is short and names what is missing", () => {

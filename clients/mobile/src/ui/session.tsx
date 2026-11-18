@@ -2,8 +2,8 @@
 // transcript's rows, the Now bar and the composer. They draw what they are
 // given; the screen decides what that is.
 
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
-import { ActivityIndicator, Animated, PanResponder, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { ActivityIndicator, Animated, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
 import {
   basename,
   FORK_LABELS,
@@ -24,10 +24,8 @@ import {
   CONTINUE_NOTE,
   continuedInLabel,
   continuingLabel,
-  doneCount,
   fromLabel,
   pipWindow,
-  stoppedTitle,
   type PipState,
 } from "../sessions/plan";
 import { insertCommand, matchCommands, slashQuery } from "../sessions/commands";
