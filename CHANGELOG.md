@@ -9,6 +9,32 @@ have their own versions and are listed under Compatibility.
 ## [Unreleased]
 
 ### Added
+- None.
+
+### Changed
+- None.
+
+### Fixed
+- None.
+
+### Security
+- None.
+
+### Compatibility
+- None.
+
+### Provider changes
+- None.
+
+### Migration notes
+- None.
+
+### Known limitations
+- None.
+
+## [0.2.4] - 2026-11-18
+
+### Added
 - Typing `/` in the phone's composer lists the agent's slash commands; a tap writes the command into the message. With more than five, "Search all" opens a sheet to search them.
 - The model picker has a Fast switch for models that offer fast mode (Claude's 2x speed, more usage). It starts off, each model remembers it, and ⚡ marks it while on.
 - A fork can move to another agent before its first message: pick that agent's model in the composer, and the chat goes on through the fork's transcript.
@@ -38,6 +64,7 @@ have their own versions and are listed under Compatibility.
 ### Compatibility
 - Protocol revision 37: session options carry `fast` (the agent's fast mode, `null` where the model offers none), `session.set_options` and `session.start` take it, and `agent.list` entries gain `fast_by_model`. A new session starts with fast mode off. Older clients never see or set it.
 - Protocol revision 38: `session.set_agent {session_id, agent, options}` moves a fork to another agent before its first message, refused with `agent_fixed` otherwise. Older clients never call it.
+- Protocol revision 39: `git.discard {workspace_id, file}` throws away one file's uncommitted changes, staged and unstaged, and answers `discarded`. Older clients never call it.
 
 ### Provider changes
 - None.
