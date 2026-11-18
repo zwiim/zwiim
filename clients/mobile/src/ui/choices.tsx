@@ -16,7 +16,7 @@ export interface Choice {
   detail?: string | null;
   disabled?: boolean;
   icon?: LucideIcon;
-  /** The label's color when chosen (needs-you for Unattended); accent by default. */
+  /** The label's color when chosen (needs-you for Auto); accent by default. */
   tint?: string;
 }
 

@@ -9,10 +9,13 @@ have their own versions and are listed under Compatibility.
 ## [Unreleased]
 
 ### Added
+- Typing `/` in the phone's composer lists the agent's slash commands; a tap writes the command into the message. With more than five, "Search all" opens a sheet to search them.
 - The model picker has a Fast switch for models that offer fast mode (Claude's 2x speed, more usage). It starts off, each model remembers it, and ⚡ marks it while on.
 - A fork can move to another agent before its first message: pick that agent's model in the composer, and the chat goes on through the fork's transcript.
 
 ### Changed
+- The phone's session screen has one header row (back, the worktree, the session tabs, + and ⋯); the title, the agent line and Stop agent move into ⋯ with the context figures. The PR line reads `PR #12 · branch` with its status as a pill.
+- The phone's composer follows Desktop's: what the agent is doing sits on its top edge with the plan's progress, send turns into stop while a turn runs, and the chip opens one Agent & model sheet with the agent, a model search, and sliding Effort and Mode switches (plus Fast). The unattended mode is called Auto on the phone too.
 - While a turn runs or follow-ups wait, one rail on the composer's top edge shows how long the agent has worked, the plan's progress, the queue and the context window, in place of the plan's working strip and the stacked follow-up list.
 - The composer's model picker now lists every agent's models: picking a model picks its agent. Favorite and recent models sit at the top, each model remembers its effort, and effort and mode open as side lists.
 - The terminal draws with the GPU (WebGL) when it can, so heavy output

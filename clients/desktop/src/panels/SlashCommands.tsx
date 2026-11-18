@@ -1,28 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { SquareTerminal } from "lucide-react";
-import type { SessionCommand } from "@zwiim/sdk";
+import { CLI_SCREEN_COMMANDS, matchCommands, slashQuery, type SessionCommand, type SlashQuery } from "@zwiim/sdk";
 import { usePresence } from "@/lib/presence";
 import { cn } from "@/lib/utils";
-
-/** `/query` being typed just before the caret, at the start or after a space. */
-export function slashQuery(text: string, caret: number): { start: number; query: string } | null {
-  const m = /(^|\s)\/(\S*)$/.exec(text.slice(0, caret));
-  return m ? { start: m.index + m[1]!.length, query: m[2]! } : null;
-}
-
-/** Commands matching `query`: names starting with it first, then containing it. */
-export function matchCommands(commands: readonly SessionCommand[], query: string): SessionCommand[] {
-  const q = query.toLowerCase();
-  const starts = commands.filter((c) => c.name.toLowerCase().startsWith(q));
-  const contains = commands.filter((c) => !c.name.toLowerCase().startsWith(q) && c.name.toLowerCase().includes(q));
-  return [...starts, ...contains];
-}
-
-/**
- * Commands the agents list whose real screen is their CLI's: over ACP they
- * only reply in text, so they run in the embedded terminal instead.
- */
-export const CLI_SCREEN_COMMANDS: ReadonlySet<string> = new Set(["mcp", "model", "config", "status"]);
 
 /**
  * The command to offer in the agent's CLI: a `/name` opening the message
@@ -31,7 +11,7 @@ export const CLI_SCREEN_COMMANDS: ReadonlySet<string> = new Set(["mcp", "model",
  * commands, any.
  */
 export function terminalCommand(
-  found: { start: number; query: string } | null,
+  found: SlashQuery | null,
   commands: readonly SessionCommand[] | null | undefined,
 ): string | null {
   if (!found || found.start !== 0 || !/^[a-z][\w:.-]*$/i.test(found.query)) return null;
