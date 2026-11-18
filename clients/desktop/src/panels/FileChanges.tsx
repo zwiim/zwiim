@@ -1,6 +1,5 @@
 // A whole file with its changes marked, as the diff tab shows it: unchanged
-// stretches folded behind bars, in one column (numbered as the file is now,
-// a removed line by its old number) or old beside new.
+// stretches folded behind bars, in one column or old beside new.
 
 import { Fragment, useMemo } from "react";
 import { ChevronsUpDown } from "lucide-react";
@@ -40,7 +39,7 @@ export function FileChanges({
 }) {
   const segments = fileSegments(lines, opened);
   const colors = useLineColors(lines, path ? languageFor(path) : null);
-  const columns = layout === "split" ? 6 : 3;
+  const columns = layout === "split" ? 6 : 4;
   return (
     <table className="w-full table-fixed border-collapse font-mono text-xs leading-5" data-testid="file-changes">
       <colgroup>
@@ -55,6 +54,7 @@ export function FileChanges({
           </>
         ) : (
           <>
+            <col className="w-11" />
             <col className="w-11" />
             <col className="w-5" />
             <col />
@@ -91,8 +91,8 @@ export function FileChanges({
             <Fragment key={`lines-${s.from}`}>
               {lines.slice(s.from, s.to).map((l, i) => (
                 <tr key={s.from + i} className={cn("align-top", TINT[l.kind])} data-kind={l.kind}>
-                  {/* One number per line: the file's own, or a removed line's old one. */}
-                  <Gutter n={l.new ?? l.old} kind={l.kind} />
+                  <Gutter n={l.old} kind={l.kind} />
+                  <Gutter n={l.new} kind={l.kind} />
                   <td className={cn("text-center select-none", SIGN_COLOR[l.kind])}>{SIGN[l.kind]}</td>
                   <Text text={l.text} tokens={colors.get(l)} />
                 </tr>

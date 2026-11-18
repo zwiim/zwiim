@@ -165,12 +165,16 @@ describe("editing from the diff", () => {
   // b changed, d removed, f added at the end.
   const patch = "@@ -1,7 +1,6 @@\n a\n-B\n+b\n c\n-D\n-d0\n d\n e\n+f\n";
 
-  it("numbers each line once, as the file is now", async () => {
+  it("numbers each line by the old file and the new, so no number stands for two lines", async () => {
     await mount(host({ file: changed("a.txt"), patch }, "a\nb\nc\nd\ne\nf\n"), "a.txt");
-    const row = [...body().querySelectorAll("tr")].find((r) => r.textContent?.includes("-d0"))!;
-    // A removed line keeps its old number; a kept line shows the one it has now.
-    expect(row.querySelectorAll("td")[0]!.textContent).toBe("5");
-    expect([...body().querySelectorAll("tr")].find((r) => r.textContent?.endsWith("e"))!.textContent).toBe("5e");
+    const cells = (match: (t: string) => boolean) => {
+      const row = [...body().querySelectorAll("tr")].find((r) => match(r.textContent ?? ""))!;
+      return [...row.querySelectorAll("td")].slice(0, 2).map((td) => td.textContent);
+    };
+    // A removed line has only its old number, an added one only its new; a kept line both.
+    expect(cells((t) => t.includes("-d0") || t.endsWith("d0"))).toEqual(["5", ""]);
+    expect(cells((t) => t.endsWith("e"))).toEqual(["7", "5"]);
+    expect(cells((t) => t.endsWith("f"))).toEqual(["", "6"]);
   });
 
   it("edits the file in place and saves it on ⌘S, its changes still marked", async () => {
