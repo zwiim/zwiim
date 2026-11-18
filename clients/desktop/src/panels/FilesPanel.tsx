@@ -836,8 +836,17 @@ export function FileText({
   // Set through the element, not as a child, so the text is in the page once.
   const area = useRef<HTMLTextAreaElement>(null);
   const typed = useMemo(() => (onChange ? text.replace(/\r\n/g, "\n") : ""), [onChange, text]);
+  const filled = useRef(false);
   useLayoutEffect(() => {
-    if (area.current && area.current.value !== typed) area.current.value = typed;
+    const el = area.current;
+    if (!el || el.value === typed) return;
+    // The first fill is the file as read: nothing to undo back to.
+    if (!filled.current) {
+      el.value = typed;
+      filled.current = true;
+      return;
+    }
+    replaceOutside(el, typed);
   }, [typed]);
   // A removal draws as a red rule at the top of the line after it, which never moves a line.
   const removed = (i: number) => changes?.removedBefore.has(i) && "shadow-[inset_0_2px_0_var(--destructive)]";
@@ -892,6 +901,46 @@ export function FileText({
       </div>
     </div>
   );
+}
+
+/** The one span `before` and `after` differ in: where it starts and ends in `before`, and what replaces it. */
+export function textChange(before: string, after: string): { start: number; end: number; text: string } | null {
+  if (before === after) return null;
+  let start = 0;
+  const most = Math.min(before.length, after.length);
+  while (start < most && before[start] === after[start]) start++;
+  let tail = 0;
+  while (tail < most - start && before[before.length - 1 - tail] === after[after.length - 1 - tail]) tail++;
+  return { start, end: before.length - tail, text: after.slice(start, after.length - tail) };
+}
+
+/**
+ * Put `next` in the textarea after a change made outside it (replace, or the
+ * file changing on disk): only the span that differs is replaced, so the
+ * caret stays where it was. Through the editing commands where the textarea
+ * can take focus, so ⌘Z undoes it as it does typing.
+ */
+function replaceOutside(el: HTMLTextAreaElement, next: string) {
+  const before = el.value;
+  const change = textChange(before, next);
+  if (!change) return;
+  const { selectionStart: from, selectionEnd: to } = el;
+  const delta = change.text.length - (change.end - change.start);
+  const shift = (at: number) => (at <= change.start ? at : at >= change.end ? at + delta : change.start + change.text.length);
+  const back = document.activeElement;
+  el.focus({ preventScroll: true });
+  let done = false;
+  // Only into this textarea: a hidden tab cannot take focus, and the command would type elsewhere.
+  if (document.activeElement === el) {
+    el.setSelectionRange(change.start, change.end);
+    done = document.execCommand?.(change.text ? "insertText" : "delete", false, change.text) && el.value === next;
+  }
+  if (!done) {
+    if (el.value !== before) el.value = before;
+    el.setRangeText(change.text, change.start, change.end);
+  }
+  el.setSelectionRange(shift(from), shift(to));
+  if (back instanceof HTMLElement && back !== el) back.focus({ preventScroll: true });
 }
 
 /** One line split around its matches (`at`, indexes into `matches`). */
