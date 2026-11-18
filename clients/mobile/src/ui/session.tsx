@@ -8,7 +8,9 @@ import {
   basename,
   FORK_LABELS,
   formatSize,
+  matchCommands,
   revertWarning,
+  slashQuery,
   type AgentImage,
   type AgentType,
   type AttachmentBlock,
@@ -28,7 +30,7 @@ import {
   pipWindow,
   type PipState,
 } from "../sessions/plan";
-import { insertCommand, matchCommands, slashQuery } from "../sessions/commands";
+import { commandPreview, insertCommand } from "../sessions/commands";
 import { composerButtons } from "../sessions/controls";
 import { forkedFromLabel, forkWorktreeLines, type TurnFork } from "../sessions/fork";
 import { revertCopy } from "../sessions/revert";
@@ -54,7 +56,7 @@ import {
   type TranscriptRow,
 } from "../sessions/transcript";
 import { Button, Sheet, StatusDot, T, useBreathing, useReduceMotion } from "./components";
-import { ArrowUp, Bot, CircleAlert, FileText, GitFork, Icon, Image, Paperclip, RotateCcw, Square, X } from "./icons";
+import { ArrowUp, Bot, ChevronRight, CircleAlert, FileText, GitFork, Icon, Image, Paperclip, RotateCcw, Search, Square, X } from "./icons";
 import { fonts, PRESSED_OPACITY, radius, space, type, useTheme } from "./tokens";
 
 /** The streaming caret: blinks once a second (static under Reduce Motion). */
@@ -1379,6 +1381,91 @@ export function ContinuedInRow({ title, onOpen }: { title: string | null | undef
   );
 }
 
+/** One slash command: its `/name`, argument hint and what it does. */
+function CommandRow({ command: c, onPick }: { command: SessionCommand; onPick(name: string): void }) {
+  const theme = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`/${c.name}. ${c.description}`}
+      onPress={() => onPick(c.name)}
+      style={({ pressed }) => [styles.slashRow, { opacity: pressed ? PRESSED_OPACITY : 1 }]}
+      testID={`slash-${c.name}`}
+    >
+      <T variant="mono" color={theme.fg} numberOfLines={1} style={styles.slashName}>
+        /{c.name}
+      </T>
+      {c.hint ? (
+        <T variant="monoSm" color={theme.faint} numberOfLines={1} style={styles.slashHint}>
+          {c.hint}
+        </T>
+      ) : null}
+      <T variant="callout" color={theme.mut} numberOfLines={1} style={styles.shrink}>
+        {c.description}
+      </T>
+    </Pressable>
+  );
+}
+
+/** Every slash command with a search, for lists too long to scroll over the composer. */
+function CommandsSheet({
+  visible,
+  commands,
+  query,
+  onQuery,
+  onPick,
+  onClose,
+}: {
+  visible: boolean;
+  commands: readonly SessionCommand[];
+  query: string;
+  onQuery(query: string): void;
+  onPick(name: string): void;
+  onClose(): void;
+}) {
+  const theme = useTheme();
+  const { height } = useWindowDimensions();
+  const shown = matchCommands(commands, query.trim());
+  return (
+    <Sheet visible={visible} onClose={onClose}>
+      <View style={styles.commandsSheet}>
+        <T variant="title">Commands</T>
+        <View style={[styles.commandSearch, { backgroundColor: theme.surface }]}>
+          <Icon icon={Search} color={theme.faint} size={16} />
+          <TextInput
+            value={query}
+            onChangeText={onQuery}
+            placeholder="Search commands"
+            placeholderTextColor={theme.faint}
+            autoFocus
+            autoCapitalize="none"
+            autoCorrect={false}
+            spellCheck={false}
+            returnKeyType="search"
+            style={[type.body, styles.commandSearchInput, { color: theme.fg }]}
+            accessibilityLabel="Search commands"
+            testID="slash-search"
+          />
+          {query ? (
+            <Pressable accessibilityRole="button" accessibilityLabel="Clear search" onPress={() => onQuery("")} hitSlop={10} testID="slash-search-clear">
+              <Icon icon={X} color={theme.faint} size={16} />
+            </Pressable>
+          ) : null}
+        </View>
+        <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: Math.round(height * 0.5) }} testID="slash-sheet-list">
+          {shown.length > 0 ? (
+            shown.map((c) => <CommandRow key={c.name} command={c} onPick={onPick} />)
+          ) : (
+            <T variant="callout" color={theme.mut} style={styles.commandsEmpty}>
+              No commands match "{query.trim()}"
+            </T>
+          )}
+        </ScrollView>
+      </View>
+    </Sheet>
+  );
+}
+
 /**
  * The message box: what the agent is doing now along its top edge, the
  * multiline input, and a row of attach, the session's controls and the round
@@ -1448,6 +1535,10 @@ export function Composer({
   const [dismissed, setDismissed] = useState<number | null>(null);
   const found = slashQuery(value, caret);
   const matches = found ? matchCommands(commands, found.query) : [];
+  const preview = commandPreview(matches);
+  /** The sheet with every command and a search, opened from the menu's last row. */
+  const [browsing, setBrowsing] = useState(false);
+  const [search, setSearch] = useState("");
   const menuOpen = !disabled && !sending && found !== null && found.start !== dismissed && matches.length > 0;
   const change = (text: string) => {
     // The selection event can trail the text on Android: guess the caret
@@ -1458,6 +1549,7 @@ export function Composer({
     onChange(text);
   };
   const pickCommand = (name: string) => {
+    setBrowsing(false);
     if (!found) return;
     const next = insertCommand(value, caret, found, name);
     onChange(next.text);
@@ -1492,28 +1584,26 @@ export function Composer({
       {menuOpen ? (
         <View style={[styles.slashMenu, { borderColor: theme.line }]} testID="slash-menu">
           <ScrollView keyboardShouldPersistTaps="handled" style={styles.slashList} nestedScrollEnabled>
-            {matches.map((c) => (
-              <Pressable
-                key={c.name}
-                accessibilityRole="button"
-                accessibilityLabel={`/${c.name}. ${c.description}`}
-                onPress={() => pickCommand(c.name)}
-                style={({ pressed }) => [styles.slashRow, { opacity: pressed ? PRESSED_OPACITY : 1 }]}
-                testID={`slash-${c.name}`}
-              >
-                <T variant="mono" color={theme.fg} numberOfLines={1} style={styles.slashName}>
-                  /{c.name}
-                </T>
-                {c.hint ? (
-                  <T variant="monoSm" color={theme.faint} numberOfLines={1} style={styles.slashHint}>
-                    {c.hint}
-                  </T>
-                ) : null}
-                <T variant="callout" color={theme.mut} numberOfLines={1} style={styles.shrink}>
-                  {c.description}
-                </T>
-              </Pressable>
+            {preview.shown.map((c) => (
+              <CommandRow key={c.name} command={c} onPick={pickCommand} />
             ))}
+            {preview.more ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setSearch(found!.query);
+                  setBrowsing(true);
+                }}
+                style={({ pressed }) => [styles.slashRow, { opacity: pressed ? PRESSED_OPACITY : 1 }]}
+                testID="slash-all"
+              >
+                <Icon icon={Search} color={theme.accent} size={14} />
+                <T variant="callout" color={theme.accent} numberOfLines={1} style={styles.shrink}>
+                  Search all {preview.more} commands
+                </T>
+                <Icon icon={ChevronRight} color={theme.faint} size={14} />
+              </Pressable>
+            ) : null}
           </ScrollView>
           <Pressable
             accessibilityRole="button"
@@ -1527,6 +1617,14 @@ export function Composer({
           </Pressable>
         </View>
       ) : null}
+      <CommandsSheet
+        visible={browsing}
+        commands={commands}
+        query={search}
+        onQuery={setSearch}
+        onPick={pickCommand}
+        onClose={() => setBrowsing(false)}
+      />
       <TextInput
         value={value}
         onChangeText={change}
@@ -1713,11 +1811,15 @@ const styles = StyleSheet.create({
   composerNote: { paddingBottom: space.xxs },
   slashMenu: { flexDirection: "row", alignItems: "flex-start", borderBottomWidth: StyleSheet.hairlineWidth, paddingTop: space.xs },
   // Five 44pt rows, then it scrolls.
-  slashList: { flex: 1, maxHeight: 220 },
+  slashList: { flex: 1, maxHeight: 264 },
   slashRow: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: space.sm },
   slashName: { flexShrink: 0, maxWidth: "50%" },
   slashHint: { flexShrink: 0, maxWidth: "30%" },
   slashClose: { width: 32, height: 44, alignItems: "center", justifyContent: "center" },
+  commandsSheet: { gap: space.md },
+  commandSearch: { height: 40, borderRadius: radius.md, paddingHorizontal: space.md, flexDirection: "row", alignItems: "center", gap: space.sm },
+  commandSearchInput: { flex: 1, padding: 0 },
+  commandsEmpty: { paddingVertical: space.md },
   composerRow: { flexDirection: "row", alignItems: "center", gap: space.sm },
   composerControls: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs },
   send: { width: 36, height: 36, borderRadius: radius.full, alignItems: "center", justifyContent: "center" },

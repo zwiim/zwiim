@@ -1,29 +1,4 @@
-import type { SessionCommand } from "@zwiim/sdk";
-
-/** A `/query` being typed just before the caret, at the start or after a space. */
-export interface SlashQuery {
-  start: number;
-  query: string;
-}
-
-export function slashQuery(text: string, caret: number): SlashQuery | null {
-  const m = /(^|\s)\/(\S*)$/.exec(text.slice(0, caret));
-  return m ? { start: m.index + m[1]!.length, query: m[2]! } : null;
-}
-
-/** Commands matching `query`: names starting with it first, then containing it. */
-export function matchCommands(commands: readonly SessionCommand[], query: string): SessionCommand[] {
-  const q = query.toLowerCase();
-  const starts = commands.filter((c) => c.name.toLowerCase().startsWith(q));
-  const contains = commands.filter((c) => !c.name.toLowerCase().startsWith(q) && c.name.toLowerCase().includes(q));
-  return [...starts, ...contains];
-}
-
-/**
- * Commands whose real screen is the agent's CLI: over ACP they only reply in
- * text. Desktop runs them in an embedded terminal; the phone has none.
- */
-const CLI_SCREEN_COMMANDS: ReadonlySet<string> = new Set(["mcp", "model", "config", "status"]);
+import { CLI_SCREEN_COMMANDS, type SessionCommand, type SlashQuery } from "@zwiim/sdk";
 
 /**
  * What the menu offers: the session's commands, or before its agent lists
@@ -34,6 +9,15 @@ export function offeredCommands(
   agent: readonly SessionCommand[] | null | undefined,
 ): SessionCommand[] {
   return (session ?? agent ?? []).filter((c) => !CLI_SCREEN_COMMANDS.has(c.name));
+}
+
+/** Commands listed over the composer; more open a searchable sheet. */
+export const COMMAND_PREVIEW = 5;
+
+/** The matches to list inline, and how many there are when some only show in the sheet. */
+export function commandPreview(matches: readonly SessionCommand[]): { shown: SessionCommand[]; more: number | null } {
+  if (matches.length <= COMMAND_PREVIEW) return { shown: [...matches], more: null };
+  return { shown: matches.slice(0, COMMAND_PREVIEW), more: matches.length };
 }
 
 /** The text with `/name` in place of the query, and the caret just after it and one space. */

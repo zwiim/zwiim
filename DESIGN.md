@@ -467,7 +467,8 @@ Top to bottom:
   Slash commands: typing `/` at the start or after a space opens a list over the
   input of the session's `SessionCommand`s (before the agent lists them, the ones
   it listed last time), names starting with the typed text first; a tap writes
-  `/name ` into the message. `/mcp`, `/model`, `/config` and `/status` are left
+  `/name ` into the message. The list shows five; with more, a last row
+  "Search all N commands" opens a sheet with every command and a search field. `/mcp`, `/model`, `/config` and `/status` are left
   out: their screen is the agent's CLI, which the phone does not have.
   Unsent text is kept per session (in memory on the phone, never on the Host),
   so switching tabs or worktrees keeps each draft; a send the Host takes clears

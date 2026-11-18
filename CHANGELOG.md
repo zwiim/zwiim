@@ -9,7 +9,7 @@ have their own versions and are listed under Compatibility.
 ## [Unreleased]
 
 ### Added
-- Typing `/` in the phone's composer lists the agent's slash commands; a tap writes the command into the message.
+- Typing `/` in the phone's composer lists the agent's slash commands; a tap writes the command into the message. With more than five, "Search all" opens a sheet to search them.
 - The model picker has a Fast switch for models that offer fast mode (Claude's 2x speed, more usage). It starts off, each model remembers it, and ⚡ marks it while on.
 - A fork can move to another agent before its first message: pick that agent's model in the composer, and the chat goes on through the fork's transcript.
 
