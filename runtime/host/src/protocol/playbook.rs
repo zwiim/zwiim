@@ -719,6 +719,9 @@ mod tests {
             reason_code: None,
             epoch: 2,
             outward_started_at: None,
+            cap_site: None,
+            cap_kind: None,
+            cap_day: None,
             created_at: now,
             updated_at: now,
         };

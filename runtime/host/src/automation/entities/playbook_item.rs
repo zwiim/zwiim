@@ -19,6 +19,10 @@ pub struct Model {
     pub reason_code: Option<String>,
     pub epoch: i32,
     pub outward_started_at: Option<DateTimeUtc>,
+    /// The cap slot the dispatch took: site, kind and local day (6.6.5).
+    pub cap_site: Option<String>,
+    pub cap_kind: Option<String>,
+    pub cap_day: Option<String>,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
 }

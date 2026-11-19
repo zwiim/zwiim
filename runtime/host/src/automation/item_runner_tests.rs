@@ -547,10 +547,13 @@ async fn not_sent_redo_requeues_and_frees_the_item() {
         status(&runner, id).await,
         ItemStatus::WaitingPerson.as_str()
     );
+    assert_eq!(cap_used(&runner, "*").await, 1);
     runner.redo_not_sent(id, &keys).await.expect("redo");
     assert_eq!(status(&runner, id).await, ItemStatus::Queued.as_str());
     assert!(!outward_at(&runner, id).await);
     assert_eq!(key_state(&runner).await, None);
+    // Proven not sent: the day's cap slot is given back (spec 6.6.5).
+    assert_eq!(cap_used(&runner, "*").await, 0);
 }
 
 /// Park an item on an Ask rule and approve it, as the person would.

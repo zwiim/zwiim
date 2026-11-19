@@ -102,11 +102,18 @@ pub async fn redo_not_sent(
     keys: &[crate::automation::engine::LedgerKey],
 ) -> Result<()> {
     let tx = conn.begin().await?;
+    let slot = playbook_item::Entity::find_by_id(item_id)
+        .one(&tx)
+        .await?
+        .and_then(|m| Some((m.cap_site?, m.account, m.cap_kind, m.cap_day?)));
     let res = playbook_item::Entity::update_many()
         .col_expr(
             playbook_item::Column::Status,
             Expr::value(ItemStatus::Queued.as_str()),
         )
+        .col_expr(playbook_item::Column::CapSite, Expr::value(None::<String>))
+        .col_expr(playbook_item::Column::CapKind, Expr::value(None::<String>))
+        .col_expr(playbook_item::Column::CapDay, Expr::value(None::<String>))
         .col_expr(
             playbook_item::Column::OutwardStartedAt,
             Expr::value(None::<DateTime<Utc>>),
@@ -129,6 +136,10 @@ pub async fn redo_not_sent(
     }
     for key in keys {
         crate::automation::engine::LedgerKey::release(&tx, key, item_id).await?;
+    }
+    // Give back the slot on the day it was taken, site total and kind.
+    if let Some((site, account, kind, day)) = slot {
+        cap::release_taken(&tx, &site, &account, kind.as_deref(), &day).await?;
     }
     tx.commit().await?;
     Ok(())
@@ -269,6 +280,18 @@ async fn dispatch_tx(
             playbook_item::Column::OutwardStartedAt,
             Expr::value(Some(now)),
         )
+        .col_expr(
+            playbook_item::Column::CapSite,
+            Expr::value(cap.site.clone()),
+        )
+        .col_expr(
+            playbook_item::Column::CapKind,
+            Expr::value(cap.kind_cap.map(|_| cap.action_kind.clone())),
+        )
+        .col_expr(
+            playbook_item::Column::CapDay,
+            Expr::value(cap.local_day.clone()),
+        )
         .col_expr(playbook_item::Column::UpdatedAt, Expr::value(now))
         .filter(playbook_item::Column::Id.eq(item_id))
         .filter(playbook_item::Column::OutwardStartedAt.is_null())
@@ -375,12 +398,27 @@ pub mod cap {
         Ok(res.rows_affected == 1)
     }
 
-    /// Give back the slot for a proven-not-sent redo (spec 6.6.5): decrement
-    /// the site total and the kind, never below zero.
-    pub async fn release<C: ConnectionTrait>(conn: &C, slot: &CapSlot) -> Result<()> {
-        decrement(conn, slot, "*").await?;
-        if slot.kind_cap.is_some() {
-            decrement(conn, slot, &slot.action_kind).await?;
+    /// Give back the slot an item recorded at dispatch, for a proven-not-sent
+    /// redo (spec 6.6.5): the site total, and the kind when that kind has its
+    /// own cap; never below zero.
+    pub async fn release_taken<C: ConnectionTrait>(
+        conn: &C,
+        site: &str,
+        account: &str,
+        kind: Option<&str>,
+        local_day: &str,
+    ) -> Result<()> {
+        let slot = CapSlot {
+            site: site.to_string(),
+            account: account.to_string(),
+            action_kind: kind.unwrap_or("*").to_string(),
+            local_day: local_day.to_string(),
+            site_cap: 0,
+            kind_cap: None,
+        };
+        decrement(conn, &slot, "*").await?;
+        if let Some(kind) = kind {
+            decrement(conn, &slot, kind).await?;
         }
         Ok(())
     }
