@@ -12,6 +12,7 @@ pub mod acp;
 pub mod adapters;
 pub mod agent_auth;
 pub mod attachments;
+pub mod automation;
 pub mod agent_images;
 pub mod acp_transcript;
 pub use acp::{

@@ -103,8 +103,9 @@ describe("evaluateCompatibility", () => {
     expect(CLIENT_CAPABILITIES).toContain("repository.settings_import");
   });
 
-  it("speaks revision 38 and moves a fork to another agent", () => {
-    expect(CLIENT_REVISION).toBe(38);
+  it("speaks revision 39 and serves playbooks", () => {
+    expect(CLIENT_REVISION).toBe(39);
+    expect(CLIENT_CAPABILITIES).toContain("playbooks");
     expect(CLIENT_CAPABILITIES).toContain("session.set_agent");
   });
 

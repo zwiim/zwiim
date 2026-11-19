@@ -103,6 +103,32 @@ export type HostErrorCode =
   | "nothing_to_save"
   /** `browser.login.*`: the Host keeps no browser logins, or cannot open the saved one. */
   | "login_unavailable"
+  /**
+   * `playbook.*` / `run.*` / `site.*` (automation-engine spec 11.2.2). All
+   * gated by the `playbooks.enabled` Labs setting.
+   */
+  /** `run.start`: the playbook already has an active run. Details `{ run_id }`. */
+  | "run_active"
+  /** A rule set an always-ask kind (pay, change_account, delete) to auto. */
+  | "action_kind_requires_ask"
+  /** A token budget was set for an agent that reports no token usage. */
+  | "budget_unsupported_for_agent"
+  /** An approval was already answered. Details `{ state }`. */
+  | "approval_not_pending"
+  /** `site.resume`: the site is not paused. */
+  | "site_not_paused"
+  /** `run.resume`: the run is not paused. */
+  | "run_not_paused"
+  /** `run.pause`: the run is not running. */
+  | "run_not_running"
+  /** A playbook failed validation. Details `[{ line, field, problem, fix }]`. */
+  | "playbook_invalid"
+  /** `run.start` from the phone or a schedule: 1a-i starts from the Mac only. */
+  | "run_start_requires_mac"
+  /** Enabling a schedule before a completed show-me run (1a-ii). */
+  | "schedule_needs_show_me_run"
+  /** Any `playbook.*` / `run.*` / `site.*` while Playbooks are off in Settings > Labs. */
+  | "playbooks_disabled"
   | "internal";
 
 export interface WireError {
@@ -2036,6 +2062,131 @@ export interface AgentAuthStatus {
   saved_providers?: string[];
 }
 
+/**
+ * The automation engine (revision 39, capability `playbooks`). All
+ * operations are gated by the `playbooks.enabled` Labs setting and error in
+ * the `HostErrorCode` vocabulary above (`run_active`, `run_start_requires_mac`,
+ * ...). Wall-clock fields are RFC 3339.
+ */
+export interface PlaybookSummary {
+  playbook_id: number;
+  name: string;
+  /** The saved version; a run pins the one it started on. */
+  version: number;
+  /** Every outward action asks (locked on in 1a-i). */
+  show_me: boolean;
+  freeze_learning: boolean;
+}
+
+/** `playbook.get`: the playbook's summary and its current text. */
+export interface PlaybookDetail {
+  playbook: PlaybookSummary;
+  source: string;
+}
+
+/** Run statuses (spec 6.5.1). `active`: discovering, running or paused. */
+export type RunStatus = "discovering" | "running" | "paused" | "done" | "stopped" | "failed";
+
+/** Why a run is paused (spec 6.5.2); there is no `sleep`. */
+export type RunPauseReason =
+  | "person"
+  | "approval"
+  | "site_paused"
+  | "budget_hit"
+  | "agent_rate_limited"
+  | "discovery_needs_person";
+
+export type RunTrigger = "mac" | "phone" | "schedule" | "agent";
+
+/** How a finished run ended (spec 6.5.5). */
+export type RunOutcome = "complete" | "needs_person";
+
+export interface RunSummary {
+  run_id: number;
+  playbook_id: number;
+  playbook_version: number;
+  trigger: RunTrigger;
+  status: RunStatus;
+  pause_reason: RunPauseReason | null;
+  outcome: RunOutcome | null;
+  items_total: number;
+  items_done: number;
+  created_at: string;
+  ended_at: string | null;
+}
+
+/** Item statuses (spec 6.4). */
+export type ItemStatus =
+  | "queued"
+  | "working"
+  | "waiting_approval"
+  | "waiting_person"
+  | "done"
+  | "skipped"
+  | "failed"
+  | "deferred"
+  | "retries_exhausted"
+  | "stopped";
+
+/** Item reason codes (spec 11.2.1); mirrored from the Host enum. */
+export type ItemReasonCode =
+  | "login_expired"
+  | "captcha"
+  | "blocked_by_site"
+  | "form_field_unanswerable"
+  | "daily_cap_hit"
+  | "approval_rejected"
+  | "undeclared_outward_action"
+  | "action_kind_never"
+  | "navigation_outside_playbook_sites"
+  | "already_done"
+  | "check_failed"
+  | "page_unrecognised"
+  | "agent_failed"
+  | "agent_limit"
+  | "agent_rate_limited"
+  | "timeout"
+  | "host_restarted";
+
+export interface ItemSummary {
+  item_id: number;
+  site: string;
+  account: string;
+  key: string;
+  title: string | null;
+  url: string | null;
+  status: ItemStatus;
+  reason_code: ItemReasonCode | null;
+  updated_at: string;
+}
+
+/** `run.items`: one page of the run record, items by page (spec 11.1). */
+export interface ItemPage {
+  items: ItemSummary[];
+  /** Pass as `cursor` for the next page; null at the end. */
+  next_cursor: number | null;
+}
+
+/** Why a site is paused (spec 10.2.3). */
+export type SitePauseCause = "captcha" | "blocked" | "login";
+
+/** A site the Host knows for an account, from run history and site knowledge. */
+export interface SiteSummary {
+  site: string;
+  account: string;
+  /** Null when not paused. */
+  paused_cause: SitePauseCause | null;
+  /** The person accepted the site's automation risk (spec 14.5). */
+  risk_accepted: boolean;
+}
+
+/** `site.usage`: today's cap use on one (site, account). */
+export interface SiteUsage {
+  /** `YYYY-MM-DD` in the Host's local zone. */
+  day: string;
+  used: { action_kind: string; used: number }[];
+}
+
 /** How the Host's `gh` is signed in to GitHub. `unavailable`: gh is not installed. */
 export type GithubAuthState = "signed_out" | "signing_in" | "signed_in" | "unavailable";
 
@@ -2287,6 +2438,52 @@ export interface Operations {
   "session.follow_up_remove": [{ session_id: string; follow_up_id: string }, Record<string, never>];
   /** Send a queued follow-up now when idle (resuming a held queue), else move it first. */
   "session.follow_up_send": [{ session_id: string; follow_up_id: string }, { outcome: FollowUpOutcome }];
+  /**
+   * The Host's playbooks (revision 39, capability `playbooks`). Off unless
+   * `playbooks.enabled` is on in Settings > Labs; then `playbooks_disabled`.
+   */
+  "playbook.list": [Record<string, never>, PlaybookSummary[]];
+  /** One playbook's summary and current text. `not_found` when gone. */
+  "playbook.get": [{ playbook_id: number }, PlaybookDetail];
+  /** Replace the text: one new version. A running run keeps the one it pinned. */
+  "playbook.save": [{ playbook_id: number; source: string }, { playbook: PlaybookSummary }];
+  /**
+   * Start a run. In 1a-i `trigger` is `mac` (or absent); `phone` and
+   * `schedule` are `run_start_requires_mac`. `item_limit: 1` is "Try on one
+   * item". `run_active` (details `{ run_id }`) while one is active.
+   */
+  "run.start": [
+    { playbook_id: number; trigger?: RunTrigger; item_limit?: number },
+    { run_id: number },
+  ];
+  /**
+   * "Try on one item": a run with item limit 1, show-me on, under all the
+   * normal rules; the ledger is touched only if the item goes out.
+   */
+  "run.try": [{ playbook_id: number }, { run_id: number }];
+  "run.get": [{ run_id: number }, RunSummary];
+  /** One page of the run's items, oldest first; follow `next_cursor`. */
+  "run.items": [{ run_id: number; cursor?: number; limit?: number }, ItemPage];
+  /** Idempotent: pausing a paused run returns it unchanged. */
+  "run.pause": [{ run_id: number }, RunSummary];
+  /** `run_not_paused` when the run is not paused. Idempotent like pause. */
+  "run.resume": [{ run_id: number }, RunSummary];
+  /** Cancel parked approvals; their items end `stopped`. Idempotent once stopped. */
+  "run.stop": [{ run_id: number }, RunSummary];
+  /** Approve (Send) a pending approval; first answer wins. `approval_not_pending` + `details.state` otherwise. */
+  "run.approve": [{ approval_id: number }, { approval_id: number; state: string }];
+  /** Skip a pending item; it ends `skipped` (`approval_rejected`). */
+  "run.reject": [{ approval_id: number }, { approval_id: number; state: string }];
+  /** Every site the Host knows for `account` (default `main`). */
+  "site.list": [{ account?: string }, SiteSummary[]];
+  /** Pause a (site, account) for every playbook, with a cause. */
+  "site.pause": [{ site: string; account?: string; cause: SitePauseCause }, { paused: true }];
+  /** Clear a pause. `site_not_paused` when it was not paused. */
+  "site.resume": [{ site: string; account?: string }, { resumed: true }];
+  /** Record the person's acceptance of the site's automation risk (spec 14.5). */
+  "site.risk_accept": [{ site: string; account?: string }, { accepted: true }];
+  /** Today's cap use per action kind for one (site, account). */
+  "site.usage": [{ site: string; account?: string; day?: string }, SiteUsage];
   /** The Host's settings. Capability `settings`. */
   "settings.get": [Record<string, never>, HostSettings];
   /**
@@ -2551,4 +2748,15 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "workspace.clone_cancel",
   "github.sign_in",
   "github.cancel_sign_in",
+  "playbook.save",
+  "run.start",
+  "run.try",
+  "run.pause",
+  "run.resume",
+  "run.stop",
+  "run.approve",
+  "run.reject",
+  "site.pause",
+  "site.resume",
+  "site.risk_accept",
 ]);

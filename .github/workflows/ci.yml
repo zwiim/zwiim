@@ -101,6 +101,8 @@ jobs:
         run: grep -v '^#' .github/rustfmt-owned.txt | xargs rustfmt --edition 2021 --check
       - name: clippy
         run: cargo clippy -p zwiim-host -p zwiim-cloud -p zwiim-desktop --all-targets -- -D clippy::correctness -D clippy::suspicious
+      - name: Automation reason-code docs are current
+        run: node scripts/automation-docs.mjs
       - name: Host unit + protocol + compatibility + update tests
         run: cargo test -p zwiim-host --lib
       # Only runtime/host/tests: `--tests` would run the unit tests again.

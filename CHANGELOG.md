@@ -9,6 +9,7 @@ have their own versions and are listed under Compatibility.
 ## [Unreleased]
 
 ### Added
+- Playbooks (Labs, off by default): the automation engine's foundation — playbooks that outlive sessions, runs that survive restarts without redoing sent items, approval rules, Host-checked done, caps and site pauses — with `playbook.*`, `run.*` and `site.*` protocol operations (including validated `format: 1` playbooks and "Try on one item"). Building; no UI yet.
 - The model picker has a Fast switch for models that offer fast mode (Claude's 2x speed, more usage). It starts off, each model remembers it, and ⚡ marks it while on.
 - A fork can move to another agent before its first message: pick that agent's model in the composer, and the chat goes on through the fork's transcript.
 

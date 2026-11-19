@@ -16,6 +16,7 @@ pub mod error;
 pub mod events;
 pub mod http;
 pub mod instructions;
+pub mod playbook;
 pub mod ws;
 
 #[cfg(test)]
@@ -259,6 +260,23 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/session.fork", post(http::session_fork))
         .route("/session.transcript_remove", post(http::session_transcript_remove))
         .route("/session.set_agent", post(http::session_set_agent))
+        .route("/playbook.list", post(playbook::playbook_list))
+        .route("/playbook.get", post(playbook::playbook_get))
+        .route("/playbook.save", post(playbook::playbook_save))
+        .route("/run.start", post(playbook::run_start))
+        .route("/run.try", post(playbook::run_try))
+        .route("/run.get", post(playbook::run_get))
+        .route("/run.items", post(playbook::run_items))
+        .route("/run.pause", post(playbook::run_pause))
+        .route("/run.resume", post(playbook::run_resume))
+        .route("/run.stop", post(playbook::run_stop))
+        .route("/run.approve", post(playbook::run_approve))
+        .route("/run.reject", post(playbook::run_reject))
+        .route("/site.list", post(playbook::site_list))
+        .route("/site.pause", post(playbook::site_pause))
+        .route("/site.resume", post(playbook::site_resume))
+        .route("/site.risk_accept", post(playbook::site_risk_accept))
+        .route("/site.usage", post(playbook::site_usage))
         .route("/settings.get", post(http::settings_get))
         .route("/settings.update", post(http::settings_update))
         .route(

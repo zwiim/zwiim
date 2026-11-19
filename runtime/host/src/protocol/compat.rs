@@ -502,7 +502,17 @@ use serde::{Deserialize, Serialize};
 /// `session.start` takes them, and replies with the session's options. It is
 /// refused with `agent_fixed` for a session that is not a fork or whose agent
 /// has started. Older clients never call it.
-pub const PROTOCOL_REVISION: u32 = 38;
+///
+/// 39 (`playbook.*`, `run.*`, `site.*`): the automation engine's operations
+/// (automation-engine spec 18.2). `playbook.list` / `playbook.get` /
+/// `playbook.save`; `run.start` (Mac only in 1a-i) / `run.get` / `run.items`
+/// (paginated) / `run.pause` / `run.resume` / `run.stop`; `site.list` /
+/// `site.pause` / `site.resume` / `site.risk_accept` / `site.usage`. All are
+/// behind the `playbooks.enabled` Labs setting and reply their errors in the
+/// spec 11.2 vocabulary (`run_active`, `run_start_requires_mac`,
+/// `run_not_paused`, `site_not_paused`, `playbooks_disabled`). Older clients
+/// never see or call them.
+pub const PROTOCOL_REVISION: u32 = 39;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -570,6 +580,7 @@ pub const CAPABILITIES: &[&str] = &[
     "browser",
     "downloads",
     "session.fast",
+    "playbooks",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -754,8 +765,14 @@ mod tests {
 
     #[test]
     fn fork_agent_change_is_revision_38() {
-        assert_eq!(PROTOCOL_REVISION, 38);
+        const _: () = assert!(PROTOCOL_REVISION >= 38);
         assert!(CAPABILITIES.contains(&"session.set_agent"));
+    }
+
+    #[test]
+    fn playbooks_are_revision_39() {
+        assert_eq!(PROTOCOL_REVISION, 39);
+        assert!(CAPABILITIES.contains(&"playbooks"));
     }
 
     #[test]
