@@ -190,11 +190,38 @@ pub enum DispatchOutcome {
 #[derive(Debug, Clone)]
 pub struct AutomationEngine {
     db: DatabaseConnection,
+    /// Bumped after every run or item write, so the Host feed re-reads them
+    /// (spec 11.4.1). `None` outside the Host.
+    changes: Option<std::sync::Arc<tokio::sync::watch::Sender<u64>>>,
 }
 
 impl AutomationEngine {
     pub fn new(db: DatabaseConnection) -> Self {
-        Self { db }
+        Self { db, changes: None }
+    }
+
+    /// Tell `changes` after every write (the Host passes
+    /// `AppState::playbook_changes`).
+    pub fn with_changes(
+        mut self,
+        changes: std::sync::Arc<tokio::sync::watch::Sender<u64>>,
+    ) -> Self {
+        self.changes = Some(changes);
+        self
+    }
+
+    /// Tell the feed that runs, items or approvals may have changed.
+    pub fn notify(&self) {
+        if let Some(changes) = &self.changes {
+            changes.send_modify(|v| *v += 1);
+        }
+    }
+
+    fn noted<T, E>(&self, result: Result<T, E>) -> Result<T, E> {
+        if result.is_ok() {
+            self.notify();
+        }
+        result
     }
 
     pub fn db(&self) -> &DatabaseConnection {
@@ -235,7 +262,10 @@ impl AutomationEngine {
         .exec_with_returning(&self.db)
         .await;
         match inserted {
-            Ok(m) => Ok(m.id),
+            Ok(m) => {
+                self.notify();
+                Ok(m.id)
+            }
             Err(e) => {
                 if is_unique_violation(&e) {
                     // The partial unique index caught a concurrent start.
@@ -254,12 +284,12 @@ impl AutomationEngine {
         to: ItemStatus,
         reason_code: Option<&str>,
     ) -> Result<(), TransitionError> {
-        engine_svc::transition_item(&self.db, item_id, from, to, reason_code).await
+        self.noted(engine_svc::transition_item(&self.db, item_id, from, to, reason_code).await)
     }
 
     /// `queued -> working` with the new attempt's epoch (spec 6.6.7).
     pub async fn start_attempt(&self, item_id: i32) -> Result<i32, TransitionError> {
-        engine_svc::start_attempt(&self.db, item_id).await
+        self.noted(engine_svc::start_attempt(&self.db, item_id).await)
     }
 
     /// [`Self::transition_item`] for one attempt's session (spec 6.6.7).
@@ -271,7 +301,9 @@ impl AutomationEngine {
         to: ItemStatus,
         reason_code: Option<&str>,
     ) -> Result<(), TransitionError> {
-        engine_svc::transition_attempt(&self.db, item_id, epoch, from, to, reason_code).await
+        self.noted(
+            engine_svc::transition_attempt(&self.db, item_id, epoch, from, to, reason_code).await,
+        )
     }
 
     pub async fn transition_run(
@@ -281,7 +313,7 @@ impl AutomationEngine {
         to: RunStatus,
         pause_reason: Option<&str>,
     ) -> Result<(), TransitionError> {
-        engine_svc::transition_run(&self.db, run_id, from, to, pause_reason).await
+        self.noted(engine_svc::transition_run(&self.db, run_id, from, to, pause_reason).await)
     }
 
     pub async fn begin_dispatch(
@@ -291,7 +323,7 @@ impl AutomationEngine {
         keys: &[LedgerKey],
         cap: CapSlot,
     ) -> Result<DispatchOutcome, TransitionError> {
-        engine_svc::begin_dispatch(&self.db, item_id, epoch, keys, cap).await
+        self.noted(engine_svc::begin_dispatch(&self.db, item_id, epoch, keys, cap).await)
     }
 
     pub async fn begin_approved_dispatch(
@@ -302,7 +334,10 @@ impl AutomationEngine {
         cap: CapSlot,
         approved: &crate::automation::Declaration,
     ) -> Result<DispatchOutcome, TransitionError> {
-        engine_svc::begin_approved_dispatch(&self.db, item_id, epoch, keys, cap, approved).await
+        self.noted(
+            engine_svc::begin_approved_dispatch(&self.db, item_id, epoch, keys, cap, approved)
+                .await,
+        )
     }
 }
 

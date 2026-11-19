@@ -463,7 +463,7 @@ async fn async_main() -> Exit {
         )),
            keep_awake: Default::default(),
            downloads: zwiim_host::downloads::global(),
-        playbook_approvals: Arc::new(tokio::sync::watch::channel(0).0),
+        playbook_changes: Arc::new(tokio::sync::watch::channel(0).0),
         github_auth: Default::default(),
         browser: Default::default(),
         browser_streams: Default::default(),

@@ -302,7 +302,7 @@ async fn start(
     let clones_rx = state.clones.subscribe();
     let mut keep_awake_rx = state.keep_awake.subscribe();
     let mut downloads_rx = state.downloads.subscribe();
-    let mut approvals_rx = state.playbook_approvals.subscribe();
+    let mut approvals_rx = state.playbook_changes.subscribe();
     let (pr_results, pr_rx) = mpsc::unbounded_channel();
     let pr_cmd = pr_watch::spawn(state.db.conn.clone(), state.data_dir.clone(), prs, pr_results);
     let (conflict_results, conflict_rx) = mpsc::unbounded_channel();
@@ -2840,7 +2840,7 @@ esac
         )
         .await
         .unwrap();
-        f.state.playbook_approvals.send_modify(|v| *v += 1);
+        f.state.playbook_changes.send_modify(|v| *v += 1);
         let requested: Vec<_> = feed
             .drain(500)
             .await
@@ -2856,7 +2856,7 @@ esac
         crate::automation::approvals::stop_pending(&f.state.db.conn, 1)
             .await
             .unwrap();
-        f.state.playbook_approvals.send_modify(|v| *v += 1);
+        f.state.playbook_changes.send_modify(|v| *v += 1);
         let cleared: Vec<_> = feed
             .drain(500)
             .await

@@ -8726,8 +8726,36 @@ async fn answering_an_approval_tells_the_feed() {
     // The feed re-reads pending approvals when an answer changes them.
     let h = host(false).await;
     let (_, _, approval_id) = seed_parked_item(&h).await;
-    let before = *h.state.playbook_approvals.borrow();
+    let before = *h.state.playbook_changes.borrow();
     let (status, body) = h.call("run.reject", json!({ "approval_id": approval_id })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(*h.state.playbook_approvals.borrow() > before);
+    assert!(*h.state.playbook_changes.borrow() > before);
+}
+
+#[tokio::test]
+async fn run_operations_tell_the_feed() {
+    // Spec 11.4.1: each run change reaches the feed.
+    let h = host(false).await;
+    let id = seed_playbook(&h).await;
+    let mut last = *h.state.playbook_changes.borrow();
+    let mut changed = |h: &Host, op: &str| {
+        let now = *h.state.playbook_changes.borrow();
+        assert!(now > last, "{op} did not tell the feed");
+        last = now;
+    };
+    let (_, body) = h.call("run.start", json!({ "playbook_id": id })).await;
+    let run_id = body["run_id"].as_i64().unwrap();
+    changed(&h, "run.start");
+    h.call("run.pause", json!({ "run_id": run_id })).await;
+    changed(&h, "run.pause");
+    h.call("run.resume", json!({ "run_id": run_id })).await;
+    changed(&h, "run.resume");
+    h.call(
+        "settings.update",
+        json!({ "values": { "playbooks.enabled": false } }),
+    )
+    .await;
+    changed(&h, "playbooks off");
+    h.call("run.stop", json!({ "run_id": run_id })).await;
+    changed(&h, "run.stop");
 }

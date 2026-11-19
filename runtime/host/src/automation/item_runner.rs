@@ -79,9 +79,6 @@ pub struct ItemRunner {
     store: PlaybookStore,
     caps: Caps,
     limits: SessionLimits,
-    /// Bumped when an item parks on a new approval, so the Host feed
-    /// publishes the request (spec 8.5.1). `None` outside the Host.
-    approvals_feed: Option<std::sync::Arc<tokio::sync::watch::Sender<u64>>>,
     /// Back-to-back rate-limited sessions per run (spec 7.1.7). Kept in
     /// memory: a Host restart starts the backoff over.
     rate_limited: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<i32, u32>>>,
@@ -109,7 +106,6 @@ impl ItemRunner {
             store,
             caps: Caps::default(),
             limits: SessionLimits::default(),
-            approvals_feed: None,
             rate_limited: Default::default(),
         }
     }
@@ -119,13 +115,13 @@ impl ItemRunner {
         self
     }
 
-    /// Tell `feed` whenever an item parks on a new approval (the Host passes
-    /// `AppState::playbook_approvals`).
-    pub fn with_approvals_feed(
+    /// Tell `changes` after every run, item or approval write, so the Host
+    /// feed publishes them (the Host passes `AppState::playbook_changes`).
+    pub fn with_changes(
         mut self,
-        feed: std::sync::Arc<tokio::sync::watch::Sender<u64>>,
+        changes: std::sync::Arc<tokio::sync::watch::Sender<u64>>,
     ) -> Self {
-        self.approvals_feed = Some(feed);
+        self.engine = self.engine.with_changes(changes);
         self
     }
 
@@ -296,6 +292,7 @@ impl ItemRunner {
         crate::automation::approvals::release_approved(self.engine.db(), run_id)
             .await
             .map_err(RunError::Db)?;
+        self.engine.notify();
         match self.engine.start_attempt(item_id).await {
             Ok(epoch) => Ok(Some(epoch)),
             // Lost the lane to another item, or the item moved: not an error
@@ -515,9 +512,7 @@ impl ItemRunner {
                     )
                     .await
                     .map_err(RunError::Db)?;
-                    if let Some(feed) = &self.approvals_feed {
-                        feed.send_modify(|v| *v += 1);
-                    }
+                    self.engine.notify();
                 }
                 Ok(SessionResult::WaitingApproval)
             }
@@ -709,6 +704,7 @@ impl ItemRunner {
     pub async fn redo_not_sent(&self, item_id: i32, keys: &[LedgerKey]) -> Result<()> {
         crate::db::service::playbook_engine_service::redo_not_sent(self.engine.db(), item_id, keys)
             .await?;
+        self.engine.notify();
         Ok(())
     }
 

@@ -111,9 +111,9 @@ pub struct AppState {
     pub keep_awake: Arc<tokio::sync::watch::Sender<Option<crate::power::KeepAwakeStatus>>>,
     /// What is downloading (adapters, the browser engine, Host updates).
     pub downloads: Arc<crate::downloads::Downloads>,
-    /// Bumped whenever the set of pending playbook approvals may have
-    /// changed; the Host feed re-reads them (automation spec 8.5.1).
-    pub playbook_approvals: Arc<tokio::sync::watch::Sender<u64>>,
+    /// Bumped whenever playbook runs, items or approvals may have changed;
+    /// the Host feed re-reads them (automation spec 8.5.1, 11.4.1).
+    pub playbook_changes: Arc<tokio::sync::watch::Sender<u64>>,
     /// The GitHub sign-in through `gh` (one at a time, in memory).
     pub github_auth: Arc<crate::git_harness::GithubSignIn>,
     /// The Host browser, made on first use (see [`AppState::browser`]).
@@ -397,7 +397,7 @@ impl AppState {
             )),
             keep_awake: Default::default(),
             downloads: crate::downloads::Downloads::new(),
-            playbook_approvals: Arc::new(tokio::sync::watch::channel(0).0),
+            playbook_changes: Arc::new(tokio::sync::watch::channel(0).0),
             github_auth: Default::default(),
             browser: Default::default(),
             browser_streams: Default::default(),
