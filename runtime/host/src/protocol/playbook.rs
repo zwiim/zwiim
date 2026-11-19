@@ -314,6 +314,29 @@ async fn start_run_inner(
     let trigger = permitted_trigger(principal, requested_trigger.as_deref())?;
     let store = PlaybookStore::new(state.db.conn.clone());
     let book = store.get(playbook_id).await.map_err(engine_err)?;
+    // Nothing runs on a site before the person accepts its risk (spec
+    // 14.5). Phase 1 has one account per site (14.6).
+    if let Ok(doc) = crate::automation::validate_playbook(&book.source) {
+        let mut pending = Vec::new();
+        for site in &doc.sites {
+            if !store
+                .risk_accepted(site, &default_account())
+                .await
+                .map_err(engine_err)?
+            {
+                pending.push(site.clone());
+            }
+        }
+        if !pending.is_empty() {
+            let mut err = ZwiimError::new(
+                axum::http::StatusCode::CONFLICT,
+                crate::automation::ErrorCode::SiteRiskNotAccepted.as_str(),
+                "Accept the risk on each of the playbook's sites first",
+            );
+            err.details = Some(serde_json::json!({ "sites": pending }));
+            return Err(err);
+        }
+    }
     let engine = AutomationEngine::new(state.db.conn.clone());
     // Read the active run first so `run_active` can name it.
     let active = active_run_id(state, book.id).await;

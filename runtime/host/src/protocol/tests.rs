@@ -8333,6 +8333,39 @@ async fn saving_an_invalid_playbook_is_refused_with_line_anchored_errors() {
 }
 
 #[tokio::test]
+async fn a_run_waits_for_the_risk_step_on_each_of_its_sites() {
+    // Spec 14.5: nothing runs on a site before the person accepts its risk.
+    let h = host(false).await;
+    let id = seed_playbook(&h).await;
+    let (status, _) = h
+        .call(
+            "playbook.save",
+            json!({
+                "playbook_id": id,
+                "source": crate::automation::playbook_format::EXAMPLE_PLAYBOOK,
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    for op in ["run.start", "run.try"] {
+        let (status, body) = h.call(op, json!({ "playbook_id": id })).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{op}");
+        assert_eq!(body["error"]["code"], "site_risk_not_accepted", "{op}");
+        assert_eq!(
+            body["error"]["details"]["sites"],
+            json!(["fixture.zwiim.test"]),
+            "{op}"
+        );
+    }
+    let (status, _) = h
+        .call("site.risk_accept", json!({ "site": "fixture.zwiim.test" }))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = h.call("run.start", json!({ "playbook_id": id })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
 async fn try_on_one_item_starts_a_one_item_run() {
     let h = host(false).await;
     let id = seed_playbook(&h).await;

@@ -38,3 +38,4 @@ the drift test `scripts/automation-docs.mjs` fails on a hand edit.
 | `schedule_needs_show_me_run` | A schedule needs a completed show-me run first. |
 | `playbooks_disabled` | Playbooks are off in Settings > Labs. |
 | `run_not_running` | The run is not running. |
+| `site_risk_not_accepted` | A site of the playbook has no risk step yet; `details.sites` lists them. |
