@@ -469,18 +469,33 @@ pub async fn run_resume(
     // Resuming needs the engine on (no new work without it).
     require_enabled(&state.db.conn).await?;
     let engine = AutomationEngine::new(state.db.conn.clone());
-    let current = run_status(&state, p.run_id).await?;
-    if current != RunStatus::Paused {
-        return Err(ZwiimError::new(
+    let not_paused = || {
+        ZwiimError::new(
             axum::http::StatusCode::CONFLICT,
             crate::automation::ErrorCode::RunNotPaused.as_str(),
             "The run is not paused",
-        ));
+        )
+    };
+    // Idempotent like pause (spec 8.5.4, 18.5): resuming a running run, or
+    // losing the race to another resume, answers with the running run.
+    match run_status(&state, p.run_id).await? {
+        RunStatus::Paused => {}
+        RunStatus::Running => return load_run(&state, p.run_id).await,
+        _ => return Err(not_paused()),
     }
-    engine
+    match engine
         .transition_run(p.run_id, RunStatus::Paused, RunStatus::Running, None)
         .await
-        .map_err(engine_err)?;
+    {
+        Ok(()) => {}
+        Err(crate::db::service::playbook_engine_service::TransitionError::RunStale { .. }) => {
+            return match run_status(&state, p.run_id).await? {
+                RunStatus::Running => load_run(&state, p.run_id).await,
+                _ => Err(not_paused()),
+            };
+        }
+        Err(e) => return Err(engine_err(e)),
+    }
     // Approvals given while paused act now (spec 8.8.3).
     crate::automation::approvals::release_approved(&state.db.conn, p.run_id)
         .await

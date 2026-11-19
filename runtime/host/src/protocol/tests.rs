@@ -8249,12 +8249,18 @@ async fn a_run_pages_its_items_and_pauses_resumes_and_stops() {
     let (status, body) = h.call("run.resume", json!({ "run_id": run_id })).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "running");
+    // Resume is idempotent too (spec 8.5.4, 18.5): a second one, as from
+    // the phone racing the Mac, answers with the running run.
     let (status, body) = h.call("run.resume", json!({ "run_id": run_id })).await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(body["error"]["code"], "run_not_paused");
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "running");
     let (status, body) = h.call("run.stop", json!({ "run_id": run_id })).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "stopped");
+    // A stopped run was never paused: resuming it is refused.
+    let (status, body) = h.call("run.resume", json!({ "run_id": run_id })).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "run_not_paused");
 }
 
 #[tokio::test]

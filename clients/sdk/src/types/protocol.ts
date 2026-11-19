@@ -2520,7 +2520,7 @@ export interface Operations {
   "run.items": [{ run_id: number; cursor?: number; limit?: number }, ItemPage];
   /** Idempotent: pausing a paused run returns it unchanged. */
   "run.pause": [{ run_id: number }, RunSummary];
-  /** `run_not_paused` when the run is not paused. Idempotent like pause. */
+  /** Idempotent like pause: a running run answers as it is. `run_not_paused` for a run neither paused nor running. */
   "run.resume": [{ run_id: number }, RunSummary];
   /** Cancel parked approvals; their items end `stopped`. Idempotent once stopped. */
   "run.stop": [{ run_id: number }, RunSummary];
