@@ -49,6 +49,7 @@ use crate::conflict_watch::{
     self, ConflictCmd, ConflictResult, ConflictTarget, ConflictWatchConfig,
 };
 use crate::git_harness::{ConflictCheck, GitError, GitErrorCode, PrLifecycle};
+use crate::automation::approvals::PendingApproval;
 use crate::power::KeepAwakeStatus;
 use crate::pr_watch::{self, PrCmd, PrEntry, PrResult, PrTarget, PrWatchConfig};
 use crate::protocol::http::SessionSummary;
@@ -122,6 +123,8 @@ pub struct HostSnapshot {
     pub resolving: BTreeMap<String, String>,
     /// What the Host is downloading, oldest first.
     pub downloads: Vec<Download>,
+    /// Playbook approvals waiting for the person, oldest first.
+    pub approvals: Vec<PendingApproval>,
 }
 
 /// How long `git.pr { refresh }` waits for GitHub.
@@ -142,6 +145,7 @@ struct Projection {
     keep_awake: Option<KeepAwakeStatus>,
     resolving: BTreeMap<String, String>,
     downloads: Vec<Download>,
+    approvals: Vec<PendingApproval>,
 }
 
 impl Projection {
@@ -164,6 +168,7 @@ impl Projection {
             keep_awake: self.keep_awake.clone(),
             resolving: self.resolving.clone(),
             downloads: self.downloads.clone(),
+            approvals: self.approvals.clone(),
         }
     }
 }
@@ -297,6 +302,7 @@ async fn start(
     let clones_rx = state.clones.subscribe();
     let mut keep_awake_rx = state.keep_awake.subscribe();
     let mut downloads_rx = state.downloads.subscribe();
+    let mut approvals_rx = state.playbook_approvals.subscribe();
     let (pr_results, pr_rx) = mpsc::unbounded_channel();
     let pr_cmd = pr_watch::spawn(state.db.conn.clone(), state.data_dir.clone(), prs, pr_results);
     let (conflict_results, conflict_rx) = mpsc::unbounded_channel();
@@ -328,6 +334,8 @@ async fn start(
     task.projection.keep_awake = keep_awake_rx.borrow_and_update().clone();
     downloads_rx.borrow_and_update();
     task.projection.downloads = task.downloads.list();
+    approvals_rx.borrow_and_update();
+    task.projection.approvals = read_approvals(&task.db).await;
     let ids: Vec<String> = task
         .projection
         .workspaces
@@ -358,8 +366,20 @@ async fn start(
         clones_rx,
         keep_awake_rx,
         downloads_rx,
+        approvals_rx,
     ));
     Ok(shared)
+}
+
+/// Pending playbook approvals; a read error is logged and reads as none,
+/// like the feed's other best-effort sources.
+async fn read_approvals(db: &DatabaseConnection) -> Vec<PendingApproval> {
+    crate::automation::approvals::pending(db)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "[zwiim] pending approvals could not be read");
+            Vec::new()
+        })
 }
 
 /// A re-read a pass arranged for later.
@@ -559,6 +579,7 @@ impl FeedTask {
         mut clones_rx: tokio::sync::watch::Receiver<u64>,
         mut keep_awake_rx: tokio::sync::watch::Receiver<Option<KeepAwakeStatus>>,
         mut downloads_rx: tokio::sync::watch::Receiver<u64>,
+        mut approvals_rx: tokio::sync::watch::Receiver<u64>,
     ) {
         let (recheck_tx, mut recheck_rx) = mpsc::unbounded_channel::<Recheck>();
         let mut stale = Stale::default();
@@ -603,6 +624,14 @@ impl FeedTask {
                     Ok(()) => {
                         downloads_rx.borrow_and_update();
                         self.apply_downloads(&shared);
+                        continue;
+                    }
+                    Err(_) => return,
+                },
+                r = approvals_rx.changed() => match r {
+                    Ok(()) => {
+                        approvals_rx.borrow_and_update();
+                        self.apply_approvals(&shared).await;
                         continue;
                     }
                     Err(_) => return,
@@ -916,6 +945,7 @@ impl FeedTask {
             conflicts,
             resolving,
             downloads: old.downloads.clone(),
+            approvals: old.approvals.clone(),
         };
         self.publish(shared, events);
         self.sync_watchers().await;
@@ -1060,6 +1090,33 @@ impl FeedTask {
             events.push((
                 "download.removed",
                 json!({ "download_id": gone.download_id }),
+            ));
+        }
+        if !events.is_empty() {
+            self.publish(shared, events);
+        }
+    }
+
+    /// Publish each approval that started waiting, and each that no longer
+    /// waits (answered, stopped, or its item moved on).
+    async fn apply_approvals(&mut self, shared: &Shared) {
+        let now = read_approvals(&self.db).await;
+        let old = std::mem::replace(&mut self.projection.approvals, now.clone());
+        let mut events = Vec::new();
+        for approval in now
+            .iter()
+            .filter(|a| !old.iter().any(|o| o.approval_id == a.approval_id))
+        {
+            let payload = serde_json::to_value(approval).unwrap_or(Value::Null);
+            events.push(("run.approval_requested", payload));
+        }
+        for gone in old
+            .iter()
+            .filter(|o| !now.iter().any(|a| a.approval_id == o.approval_id))
+        {
+            events.push((
+                "run.approval_cleared",
+                json!({ "approval_id": gone.approval_id, "run_id": gone.run_id }),
             ));
         }
         if !events.is_empty() {
@@ -2753,6 +2810,63 @@ esac
         f.state.keep_awake.send_replace(Some(keep_awake(false)));
         let (snapshot, _) = f.subscribe().await;
         assert_eq!(snapshot.keep_awake, Some(keep_awake(false)));
+    }
+
+    // ── playbook approvals ──────────────────────────────────────────────
+
+    fn approval_declaration() -> crate::automation::Declaration {
+        use crate::automation::declaration::Target;
+        crate::automation::Declaration {
+            kind: crate::automation::ActionKind::SubmitApplication,
+            summary: "Apply to Acme".into(),
+            fields: vec![],
+            submit_target: Target::new("button", "Submit"),
+        }
+    }
+
+    #[tokio::test]
+    async fn approvals_stream_and_are_in_the_snapshot() {
+        // Spec 8.5.1, 11.4: an approval request reaches every client, and a
+        // client that connects later finds it in the snapshot.
+        let f = fixture().await;
+        let (snapshot, mut feed) = f.subscribe().await;
+        assert!(snapshot.approvals.is_empty());
+
+        let a = crate::automation::approvals::create(
+            &f.state.db.conn,
+            1,
+            7,
+            &approval_declaration(),
+        )
+        .await
+        .unwrap();
+        f.state.playbook_approvals.send_modify(|v| *v += 1);
+        let requested: Vec<_> = feed
+            .drain(500)
+            .await
+            .into_iter()
+            .filter(|e| e.kind == "run.approval_requested")
+            .collect();
+        assert_eq!(requested.len(), 1, "{requested:?}");
+        assert_eq!(requested[0].payload["approval_id"], a.id);
+        assert_eq!(requested[0].payload["summary"], "Apply to Acme");
+        let (snapshot, _) = f.subscribe().await;
+        assert_eq!(snapshot.approvals.len(), 1);
+
+        crate::automation::approvals::stop_pending(&f.state.db.conn, 1)
+            .await
+            .unwrap();
+        f.state.playbook_approvals.send_modify(|v| *v += 1);
+        let cleared: Vec<_> = feed
+            .drain(500)
+            .await
+            .into_iter()
+            .filter(|e| e.kind == "run.approval_cleared")
+            .collect();
+        assert_eq!(cleared.len(), 1, "{cleared:?}");
+        assert_eq!(cleared[0].payload["approval_id"], a.id);
+        let (snapshot, _) = f.subscribe().await;
+        assert!(snapshot.approvals.is_empty());
     }
 
     // ── downloads ───────────────────────────────────────────────────────

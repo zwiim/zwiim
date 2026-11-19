@@ -79,6 +79,9 @@ pub struct ItemRunner {
     store: PlaybookStore,
     caps: Caps,
     limits: SessionLimits,
+    /// Bumped when an item parks on a new approval, so the Host feed
+    /// publishes the request (spec 8.5.1). `None` outside the Host.
+    approvals_feed: Option<std::sync::Arc<tokio::sync::watch::Sender<u64>>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -100,11 +103,22 @@ impl ItemRunner {
             store,
             caps: Caps::default(),
             limits: SessionLimits::default(),
+            approvals_feed: None,
         }
     }
 
     pub fn with_caps(mut self, caps: Caps) -> Self {
         self.caps = caps;
+        self
+    }
+
+    /// Tell `feed` whenever an item parks on a new approval (the Host passes
+    /// `AppState::playbook_approvals`).
+    pub fn with_approvals_feed(
+        mut self,
+        feed: std::sync::Arc<tokio::sync::watch::Sender<u64>>,
+    ) -> Self {
+        self.approvals_feed = Some(feed);
         self
     }
 
@@ -385,6 +399,9 @@ impl ItemRunner {
                     )
                     .await
                     .map_err(RunError::Db)?;
+                    if let Some(feed) = &self.approvals_feed {
+                        feed.send_modify(|v| *v += 1);
+                    }
                 }
                 Ok(SessionResult::WaitingApproval)
             }

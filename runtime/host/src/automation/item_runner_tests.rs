@@ -707,3 +707,18 @@ async fn an_approval_waiting_for_its_lane_goes_before_queued_work() {
     assert_eq!(status(&runner, parked).await, ItemStatus::Working.as_str());
     assert_eq!(status(&runner, queued).await, ItemStatus::Queued.as_str());
 }
+
+#[tokio::test]
+async fn parking_an_item_tells_the_approvals_feed() {
+    let (runner, run) = setup().await;
+    let (tx, rx) = tokio::sync::watch::channel(0u64);
+    let runner = runner.with_approvals_feed(std::sync::Arc::new(tx));
+    let (id, mut item) = working_item(&runner, run).await;
+    item.rules
+        .insert(ActionKind::SubmitApplication, ApprovalRule::Ask);
+    runner
+        .finish_session(id, &item, ItemOutcome::ReadyToDispatch(declaration()))
+        .await
+        .expect("session");
+    assert_eq!(*rx.borrow(), 1);
+}

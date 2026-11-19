@@ -510,6 +510,7 @@ pub async fn run_stop(
     // (spec 8.8.1-2). Items past `outward_started` finish their outward step.
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
     let _ = crate::automation::approvals::stop_pending(&state.db.conn, p.run_id).await;
+    state.playbook_approvals.send_modify(|v| *v += 1);
     let _ = playbook_item::Entity::update_many()
         .col_expr(
             playbook_item::Column::Status,
@@ -799,12 +800,15 @@ async fn answer_approval(
     require_enabled(&state.db.conn).await?;
     use crate::automation::approvals::{self, AnswerOutcome};
     // The answer and its effect on the item commit together (spec 8.5.4).
-    match approvals::respond(&state.db.conn, approval_id, answer.clone(), edits)
+    let outcome = approvals::respond(&state.db.conn, approval_id, answer.clone(), edits)
         .await
         .map_err(|e| match e {
             crate::db::error::DbError::NotFound(what) => ZwiimError::not_found(what),
             other => engine_err(other),
-        })? {
+        })?;
+    // The pending set may have changed: clients drop the card (spec 8.5.4).
+    state.playbook_approvals.send_modify(|v| *v += 1);
+    match outcome {
         AnswerOutcome::NotPending(current) => {
             let mut err = ZwiimError::new(
                 axum::http::StatusCode::CONFLICT,

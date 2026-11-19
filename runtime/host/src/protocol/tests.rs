@@ -8520,3 +8520,14 @@ async fn an_edit_to_a_field_the_agent_did_not_declare_is_refused() {
     assert_eq!(approval_state(&h, approval_id).await, "pending");
     assert_eq!(item_status(&h, item_id).await, "waiting_approval");
 }
+
+#[tokio::test]
+async fn answering_an_approval_tells_the_feed() {
+    // The feed re-reads pending approvals when an answer changes them.
+    let h = host(false).await;
+    let (_, _, approval_id) = seed_parked_item(&h).await;
+    let before = *h.state.playbook_approvals.borrow();
+    let (status, body) = h.call("run.reject", json!({ "approval_id": approval_id })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(*h.state.playbook_approvals.borrow() > before);
+}

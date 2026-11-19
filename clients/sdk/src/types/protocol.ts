@@ -1821,6 +1821,10 @@ export type HostFeedEvent = { seq: number } & (
   /** Capability `downloads`: one started or moved (at most every 250 ms each). */
   | { type: "download.changed"; payload: { download: HostDownload } }
   | { type: "download.removed"; payload: { download_id: string } }
+  /** Capability `playbooks`: an item parked on an outward approval (spec 8.5.1). */
+  | { type: "run.approval_requested"; payload: PendingApproval }
+  /** Capability `playbooks`: the approval no longer waits (answered, stopped, or its item moved on). */
+  | { type: "run.approval_cleared"; payload: { approval_id: number; run_id: number } }
 );
 
 /** Something the Host is downloading: an agent's adapter, the browser engine, a Host update. */
@@ -1862,6 +1866,8 @@ export interface HostSnapshot {
   keep_awake?: KeepAwakeStatus | null;
   /** What the Host is downloading, oldest first (older Hosts omit it). */
   downloads?: HostDownload[];
+  /** Playbook approvals waiting for the person, oldest first (older Hosts omit it). */
+  approvals?: PendingApproval[];
 }
 
 // ─── event socket ────────────────────────────────────────────────────────
@@ -2100,6 +2106,48 @@ export type RunTrigger = "mac" | "phone" | "schedule" | "agent";
 
 /** How a finished run ended (spec 6.5.5). */
 export type RunOutcome = "complete" | "needs_person";
+
+/** A control the agent declared, as the approval sheet shows it. */
+export interface PlaybookTarget {
+  role: string;
+  name: string;
+  text?: string;
+  attrs?: Record<string, string>;
+}
+
+export type DeclaredControl =
+  | "text"
+  | "text_area"
+  | "content_editable"
+  | "select"
+  | "checkbox"
+  | "radio"
+  | "file"
+  | "secret";
+
+/** A secret field carries its handle (`{{secret:name}}`), never a value. */
+export type DeclaredValue =
+  | { value_kind: "text"; text: string }
+  | { value_kind: "secret"; handle: string }
+  | { value_kind: "input_file"; name: string };
+
+export interface DeclaredField {
+  target: PlaybookTarget;
+  control: DeclaredControl;
+  value: DeclaredValue;
+}
+
+/** An outward action waiting for the person's Send, edit, or Skip (spec 8.5). */
+export interface PendingApproval {
+  approval_id: number;
+  run_id: number;
+  item_id: number;
+  kind: string;
+  summary: string;
+  fields: DeclaredField[];
+  submit_target: PlaybookTarget;
+  created_at: string;
+}
 
 export interface RunSummary {
   run_id: number;

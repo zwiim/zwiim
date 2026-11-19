@@ -395,6 +395,47 @@ pub async fn approved_declaration<C: ConnectionTrait>(
     Ok(row.and_then(|m| serde_json::from_str(&m.payload).ok()))
 }
 
+/// A pending approval as clients render it on the approval sheet (spec
+/// 8.5.1-2): the item, the kind, and the exact content that will go out.
+/// Secret fields carry their handle, never a value.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PendingApproval {
+    pub approval_id: i32,
+    pub run_id: i32,
+    pub item_id: i32,
+    pub kind: String,
+    pub summary: String,
+    pub fields: Vec<crate::automation::declaration::DeclaredField>,
+    pub submit_target: crate::automation::declaration::Target,
+    pub created_at: chrono::DateTime<Utc>,
+}
+
+/// Every pending approval, oldest first.
+pub async fn pending<C: ConnectionTrait>(conn: &C) -> Result<Vec<PendingApproval>, DbError> {
+    use sea_orm::QueryOrder;
+    let rows = playbook_approval::Entity::find()
+        .filter(playbook_approval::Column::State.eq("pending"))
+        .order_by_asc(playbook_approval::Column::Id)
+        .all(conn)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|m| {
+            let declaration: Declaration = serde_json::from_str(&m.payload).ok()?;
+            Some(PendingApproval {
+                approval_id: m.id,
+                run_id: m.run_id,
+                item_id: m.item_id,
+                kind: m.kind,
+                summary: declaration.summary,
+                fields: declaration.fields,
+                submit_target: declaration.submit_target,
+                created_at: m.created_at,
+            })
+        })
+        .collect())
+}
+
 /// Cancel every pending approval of a run (Stop, spec 8.8.2).
 pub async fn stop_pending(conn: &DatabaseConnection, run_id: i32) -> Result<u64, DbError> {
     let res = playbook_approval::Entity::update_many()
