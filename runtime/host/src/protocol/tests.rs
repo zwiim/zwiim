@@ -8571,6 +8571,29 @@ async fn an_approval_given_while_paused_acts_on_resume() {
 }
 
 #[tokio::test]
+async fn a_repeated_resume_still_releases_approvals_given_while_paused() {
+    // A resume that moved the run but not its approvals (a crash between
+    // the two writes) is finished by the next, idempotent, resume.
+    let h = host(false).await;
+    let (run_id, item_id, approval_id) = seed_parked_item(&h).await;
+    h.call("run.pause", json!({ "run_id": run_id })).await;
+    h.call("run.approve", json!({ "approval_id": approval_id })).await;
+    crate::automation::AutomationEngine::new(h.state.db.conn.clone())
+        .transition_run(
+            run_id as i32,
+            crate::automation::RunStatus::Paused,
+            crate::automation::RunStatus::Running,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(item_status(&h, item_id).await, "waiting_approval");
+    let (status, body) = h.call("run.resume", json!({ "run_id": run_id })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(item_status(&h, item_id).await, "working");
+}
+
+#[tokio::test]
 async fn answering_an_unknown_approval_is_not_found() {
     let h = host(false).await;
     seed_playbook(&h).await;
