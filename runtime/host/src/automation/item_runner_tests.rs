@@ -646,3 +646,64 @@ async fn an_approved_click_on_a_changed_page_restarts_and_keeps_the_approval() {
         .expect("dispatch");
     assert_eq!(sent, DispatchResult::Done);
 }
+
+async fn item_with(runner: &ItemRunner, run: i32, key: &str, status: ItemStatus) -> i32 {
+    let now = chrono::Utc::now();
+    playbook_item::Entity::insert(playbook_item::ActiveModel {
+        run_id: sea_orm::Set(run),
+        playbook_id: sea_orm::Set(1),
+        site: sea_orm::Set("indeed.com".into()),
+        account: sea_orm::Set("main".into()),
+        item_key: sea_orm::Set(key.into()),
+        status: sea_orm::Set(status.as_str().into()),
+        epoch: sea_orm::Set(1),
+        created_at: sea_orm::Set(now),
+        updated_at: sea_orm::Set(now),
+        ..Default::default()
+    })
+    .exec_with_returning(runner_engine(runner))
+    .await
+    .expect("insert")
+    .id
+}
+
+#[tokio::test]
+async fn an_approval_waiting_for_its_lane_goes_before_queued_work() {
+    // Spec 8.5.5: the approved click takes the lane. Approved while another
+    // item held the lane, the parked item starts as soon as the lane frees,
+    // ahead of queued items.
+    let (runner, run) = setup().await;
+    let busy = item_with(&runner, run, "job-busy", ItemStatus::Working).await;
+    let parked = item_with(&runner, run, "job-parked", ItemStatus::WaitingApproval).await;
+    let queued = item_with(&runner, run, "job-next", ItemStatus::Queued).await;
+    let a =
+        crate::automation::approvals::create(runner_engine(&runner), run, parked, &declaration())
+            .await
+            .unwrap();
+    crate::automation::approvals::respond(
+        runner_engine(&runner),
+        a.id,
+        crate::automation::ApprovalAnswer::Approve,
+        &[],
+    )
+    .await
+    .unwrap();
+    // The lane was busy: the approval is recorded, the item still parked.
+    assert_eq!(
+        status(&runner, parked).await,
+        ItemStatus::WaitingApproval.as_str()
+    );
+
+    runner
+        .engine_for_tests()
+        .transition_item(busy, ItemStatus::Working, ItemStatus::Done, None)
+        .await
+        .unwrap();
+    let started = runner
+        .begin_item(queued, "indeed.com", "main")
+        .await
+        .expect("begin");
+    assert!(!started);
+    assert_eq!(status(&runner, parked).await, ItemStatus::Working.as_str());
+    assert_eq!(status(&runner, queued).await, ItemStatus::Queued.as_str());
+}

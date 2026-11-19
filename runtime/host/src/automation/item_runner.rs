@@ -235,6 +235,11 @@ impl ItemRunner {
         {
             return Ok(false);
         }
+        // The approved click takes the lane (spec 8.5.5): items approved
+        // while their lane was busy start before queued work.
+        crate::automation::approvals::release_approved(self.engine.db(), run_id)
+            .await
+            .map_err(RunError::Db)?;
         match self
             .engine
             .transition_item(item_id, ItemStatus::Queued, ItemStatus::Working, None)
@@ -244,6 +249,11 @@ impl ItemRunner {
             // Lost the lane to another item, or the item moved: not an error
             // the caller retries, just "did not start".
             Err(TransitionError::ItemStale { .. }) => Ok(false),
+            Err(TransitionError::Db(e))
+                if e.to_string().to_ascii_lowercase().contains("unique") =>
+            {
+                Ok(false)
+            }
             Err(e) => Err(e.into()),
         }
     }
