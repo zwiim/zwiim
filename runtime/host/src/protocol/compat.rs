@@ -521,7 +521,8 @@ use serde::{Deserialize, Serialize};
 /// `site_not_paused`, `approval_not_pending`, `playbook_invalid`,
 /// `playbooks_disabled`, `site_risk_not_accepted`). The Host feed publishes
 /// `run.approval_requested` / `run.approval_cleared`, `run.changed` (a run's
-/// state and item totals) and `run.item_changed`, and its snapshot carries
+/// state and item totals), `run.item_changed` and `run.alert` (sent once per
+/// item or run and kind), and its snapshot carries
 /// `approvals` and the active `runs`. Older clients never see or call them.
 pub const PROTOCOL_REVISION: u32 = 40;
 

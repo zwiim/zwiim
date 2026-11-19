@@ -1831,6 +1831,8 @@ export type HostFeedEvent = { seq: number } & (
   | { type: "run.changed"; payload: RunView }
   /** Capability `playbooks`: one item of a followed run changed state. */
   | { type: "run.item_changed"; payload: RunItemView }
+  /** Capability `playbooks`: something needs the person; sent once per item or run and kind (spec 11.4.2-3). */
+  | { type: "run.alert"; payload: RunAlert }
 );
 
 /** Something the Host is downloading: an agent's adapter, the browser engine, a Host update. */
@@ -2168,6 +2170,17 @@ export interface RunView {
   totals: { items: number; done: number; skipped: number; failed: number; deferred: number; waiting: number };
   created_at: string;
   ended_at: string | null;
+}
+
+/** A ping for the person, shown as a local notification (spec 11.4.2). */
+export interface RunAlert {
+  alert_id: number;
+  kind: "run_done" | "item_waiting_person" | "item_retries_exhausted" | "approval_waiting";
+  run_id: number;
+  /** Null for a run-level alert (`run_done`). */
+  item_id: number | null;
+  text: string;
+  created_at: string;
 }
 
 /** An item as `run.item_changed` carries it. */

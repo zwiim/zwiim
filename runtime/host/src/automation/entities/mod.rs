@@ -6,6 +6,7 @@ pub mod cap_usage;
 pub mod item_retry_counter;
 pub mod never_twice_ledger;
 pub mod playbook;
+pub mod playbook_alert;
 pub mod playbook_approval;
 pub mod playbook_item;
 pub mod playbook_run;
