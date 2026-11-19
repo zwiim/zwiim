@@ -50,6 +50,7 @@ use crate::conflict_watch::{
 };
 use crate::git_harness::{ConflictCheck, GitError, GitErrorCode, PrLifecycle};
 use crate::automation::approvals::PendingApproval;
+use crate::automation::run_views::{ItemView, RunView};
 use crate::power::KeepAwakeStatus;
 use crate::pr_watch::{self, PrCmd, PrEntry, PrResult, PrTarget, PrWatchConfig};
 use crate::protocol::http::SessionSummary;
@@ -125,6 +126,8 @@ pub struct HostSnapshot {
     pub downloads: Vec<Download>,
     /// Playbook approvals waiting for the person, oldest first.
     pub approvals: Vec<PendingApproval>,
+    /// Playbook runs not yet ended, oldest first, with their item counts.
+    pub runs: Vec<RunView>,
 }
 
 /// How long `git.pr { refresh }` waits for GitHub.
@@ -146,6 +149,7 @@ struct Projection {
     resolving: BTreeMap<String, String>,
     downloads: Vec<Download>,
     approvals: Vec<PendingApproval>,
+    runs: Vec<RunView>,
 }
 
 impl Projection {
@@ -169,6 +173,7 @@ impl Projection {
             resolving: self.resolving.clone(),
             downloads: self.downloads.clone(),
             approvals: self.approvals.clone(),
+            runs: self.runs.clone(),
         }
     }
 }
@@ -327,6 +332,7 @@ async fn start(
         clones: state.clones.clone(),
         downloads: state.downloads.clone(),
         layout_retrying: false,
+        run_items: HashMap::new(),
     };
     task.projection.workspaces = workspace::list(&task.db).await?;
     task.projection.layout = layout::read(&task.db).await?;
@@ -336,6 +342,9 @@ async fn start(
     task.projection.downloads = task.downloads.list();
     approvals_rx.borrow_and_update();
     task.projection.approvals = read_approvals(&task.db).await;
+    let (runs, items) = read_runs(&task.db, &[]).await;
+    task.projection.runs = runs;
+    task.run_items = items.into_iter().map(|i| (i.item_id, i)).collect();
     let ids: Vec<String> = task
         .projection
         .workspaces
@@ -369,6 +378,17 @@ async fn start(
         approvals_rx,
     ));
     Ok(shared)
+}
+
+/// Active runs (plus `also`) and their items; a read error is logged and
+/// reads as none, like the feed's other best-effort sources.
+async fn read_runs(db: &DatabaseConnection, also: &[i32]) -> (Vec<RunView>, Vec<ItemView>) {
+    crate::automation::run_views::read(db, also)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "[zwiim] playbook runs could not be read");
+            (Vec::new(), Vec::new())
+        })
 }
 
 /// Pending playbook approvals; a read error is logged and reads as none,
@@ -456,6 +476,9 @@ struct FeedTask {
     downloads: Arc<Downloads>,
     /// A failed layout read is waiting to be tried again.
     layout_retrying: bool,
+    /// The items of the runs in the projection, by id, to publish only the
+    /// ones that change (clients page items with `run.items`).
+    run_items: HashMap<i32, ItemView>,
 }
 
 /// Spellings a watcher event may name `path` by: as given and canonical.
@@ -632,6 +655,7 @@ impl FeedTask {
                     Ok(()) => {
                         approvals_rx.borrow_and_update();
                         self.apply_approvals(&shared).await;
+                        self.apply_runs(&shared).await;
                         continue;
                     }
                     Err(_) => return,
@@ -946,6 +970,7 @@ impl FeedTask {
             resolving,
             downloads: old.downloads.clone(),
             approvals: old.approvals.clone(),
+            runs: old.runs.clone(),
         };
         self.publish(shared, events);
         self.sync_watchers().await;
@@ -1119,6 +1144,41 @@ impl FeedTask {
                 json!({ "approval_id": gone.approval_id, "run_id": gone.run_id }),
             ));
         }
+        if !events.is_empty() {
+            self.publish(shared, events);
+        }
+    }
+
+    /// Publish each run and item whose state changed (spec 11.4.1). A run
+    /// that ended is published once more and then leaves the projection.
+    async fn apply_runs(&mut self, shared: &Shared) {
+        let followed: Vec<i32> = self.projection.runs.iter().map(|r| r.run_id).collect();
+        let (runs, items) = read_runs(&self.db, &followed).await;
+        let mut events = Vec::new();
+        for run in &runs {
+            let old = self.projection.runs.iter().find(|o| o.run_id == run.run_id);
+            if old != Some(run) {
+                events.push((
+                    "run.changed",
+                    serde_json::to_value(run).unwrap_or(Value::Null),
+                ));
+            }
+        }
+        for item in &items {
+            if self.run_items.get(&item.item_id) != Some(item) {
+                events.push((
+                    "run.item_changed",
+                    serde_json::to_value(item).unwrap_or(Value::Null),
+                ));
+            }
+        }
+        let active: Vec<RunView> = runs.into_iter().filter(RunView::is_active).collect();
+        self.run_items = items
+            .into_iter()
+            .filter(|i| active.iter().any(|r| r.run_id == i.run_id))
+            .map(|i| (i.item_id, i))
+            .collect();
+        self.projection.runs = active;
         if !events.is_empty() {
             self.publish(shared, events);
         }
@@ -2867,6 +2927,102 @@ esac
         assert_eq!(cleared[0].payload["approval_id"], a.id);
         let (snapshot, _) = f.subscribe().await;
         assert!(snapshot.approvals.is_empty());
+    }
+
+    // ── playbook runs ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn runs_and_items_stream_and_active_runs_are_in_the_snapshot() {
+        // Spec 11.4.1: run and item changes reach every client; a client
+        // that connects later finds the active runs in the snapshot.
+        use crate::automation::entities::playbook_item;
+        use crate::automation::{AutomationEngine, ItemStatus, RunStatus, RunTrigger};
+        use sea_orm::EntityTrait;
+        let f = fixture().await;
+        let (snapshot, mut feed) = f.subscribe().await;
+        assert!(snapshot.runs.is_empty());
+
+        let conn = f.state.db.conn.clone();
+        let pb = crate::automation::PlaybookStore::new(conn.clone())
+            .create("Apply", "goal")
+            .await
+            .unwrap();
+        let engine =
+            AutomationEngine::new(conn.clone()).with_changes(f.state.playbook_changes.clone());
+        let run = engine
+            .start_run(pb.id, pb.version, RunTrigger::Mac, None)
+            .await
+            .unwrap();
+        let now = chrono::Utc::now();
+        let item = playbook_item::Entity::insert(playbook_item::ActiveModel {
+            run_id: sea_orm::Set(run),
+            playbook_id: sea_orm::Set(pb.id),
+            site: sea_orm::Set("indeed.com".into()),
+            account: sea_orm::Set("main".into()),
+            item_key: sea_orm::Set("job-1".into()),
+            title: sea_orm::Set(Some("Backend Engineer @ Acme".into())),
+            status: sea_orm::Set(ItemStatus::Queued.as_str().into()),
+            epoch: sea_orm::Set(0),
+            created_at: sea_orm::Set(now),
+            updated_at: sea_orm::Set(now),
+            ..Default::default()
+        })
+        .exec_with_returning(&conn)
+        .await
+        .unwrap()
+        .id;
+        engine.notify();
+        let events = feed.drain(500).await;
+        let last = |kind: &str| {
+            events
+                .iter()
+                .rev()
+                .find(|e| e.kind == kind)
+                .unwrap_or_else(|| panic!("no {kind} in {events:?}"))
+                .payload
+                .clone()
+        };
+        let run_ev = last("run.changed");
+        assert_eq!(run_ev["run_id"], run);
+        assert_eq!(run_ev["status"], "discovering");
+        assert_eq!(run_ev["totals"]["items"], 1);
+        let item_ev = last("run.item_changed");
+        assert_eq!(item_ev["item_id"], item);
+        assert_eq!(item_ev["run_id"], run);
+        assert_eq!(item_ev["title"], "Backend Engineer @ Acme");
+        assert_eq!(item_ev["status"], "queued");
+        let (snapshot, _) = f.subscribe().await;
+        assert_eq!(snapshot.runs.len(), 1);
+
+        engine
+            .transition_item(item, ItemStatus::Queued, ItemStatus::Working, None)
+            .await
+            .unwrap();
+        engine
+            .transition_item(item, ItemStatus::Working, ItemStatus::Done, None)
+            .await
+            .unwrap();
+        engine
+            .transition_run(run, RunStatus::Discovering, RunStatus::Done, None)
+            .await
+            .unwrap();
+        let events = feed.drain(500).await;
+        let run_ev = events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "run.changed")
+            .expect("run.changed");
+        assert_eq!(run_ev.payload["status"], "done");
+        assert_eq!(run_ev.payload["totals"]["done"], 1);
+        let item_ev = events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "run.item_changed")
+            .expect("run.item_changed");
+        assert_eq!(item_ev.payload["status"], "done");
+        // A finished run leaves the snapshot; run.get still has it.
+        let (snapshot, _) = f.subscribe().await;
+        assert!(snapshot.runs.is_empty());
     }
 
     // ── downloads ───────────────────────────────────────────────────────
