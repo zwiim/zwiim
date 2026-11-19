@@ -181,6 +181,9 @@ pub enum DispatchOutcome {
     AlreadyDone,
     /// No cap slot left: the item ends `deferred`, nothing reserved.
     DailyCapHit,
+    /// The approved click found no unused approval for this content;
+    /// nothing changed and nothing is sent.
+    NotApproved,
 }
 
 /// The Host-side engine handle.
@@ -271,6 +274,16 @@ impl AutomationEngine {
         cap: CapSlot,
     ) -> Result<DispatchOutcome, TransitionError> {
         engine_svc::begin_dispatch(&self.db, item_id, keys, cap).await
+    }
+
+    pub async fn begin_approved_dispatch(
+        &self,
+        item_id: i32,
+        keys: &[LedgerKey],
+        cap: CapSlot,
+        approved: &crate::automation::Declaration,
+    ) -> Result<DispatchOutcome, TransitionError> {
+        engine_svc::begin_approved_dispatch(&self.db, item_id, keys, cap, approved).await
     }
 }
 

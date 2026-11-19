@@ -65,6 +65,11 @@ pub enum DispatchResult {
     WaitingPerson(String),
     /// The keys or the cap blocked the send; ends skipped / deferred.
     NotSent(ReasonCode),
+    /// No unused approval matches: nothing was sent and nothing changed.
+    NotApproved,
+    /// The page no longer matches the approved content; a new session
+    /// restarts the item and the approval is kept (spec 8.7).
+    Restart,
 }
 
 /// The item-session runner.
@@ -156,6 +161,11 @@ impl ItemRunner {
     #[cfg(test)]
     pub(crate) fn db_for_tests(&self) -> &sea_orm::DatabaseConnection {
         self.engine.db()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn engine_for_tests(&self) -> &AutomationEngine {
+        &self.engine
     }
 
     #[cfg(test)]
@@ -320,6 +330,19 @@ impl ItemRunner {
                 return Ok(SessionResult::RunNotRunning);
             }
         }
+        // A continuation session re-declaring what the person approved
+        // proceeds on the exact match, without asking again (spec 8.7).
+        if let Some(approved) =
+            crate::automation::approvals::approved_declaration(self.engine.db(), item_id)
+                .await
+                .map_err(RunError::Db)?
+        {
+            if crate::automation::approvals::binding_hash(&approved)
+                == crate::automation::approvals::binding_hash(&declaration)
+            {
+                return Ok(SessionResult::ApprovedDispatch(approved));
+            }
+        }
         let rule = item.rule_for(declaration.kind);
         let show_me_run = item.show_me_run_for_kind(declaration.kind);
         let decision = crate::automation::declaration::decide(
@@ -384,7 +407,65 @@ impl ItemRunner {
         keys: &[LedgerKey],
         local_day: &str,
     ) -> Result<DispatchResult> {
-        let cap = CapSlot {
+        let cap = self.cap_slot(item, kind, local_day);
+        let outcome = self.engine.begin_dispatch(item_id, keys, cap).await?;
+        self.settle_dispatch(item_id, outcome).await
+    }
+
+    /// The Host's approved click (spec 8.5.5, 8.7): the pre-submit check of
+    /// the approved content (edits included) against the page, then the
+    /// dispatch transaction, which uses the approval up. A page that no
+    /// longer matches sends the item to a new session and keeps the
+    /// approval; a second click is `NotApproved` and changes nothing.
+    pub async fn dispatch_approved(
+        &self,
+        item_id: i32,
+        item: &ItemRef,
+        keys: &[LedgerKey],
+        local_day: &str,
+    ) -> Result<DispatchResult> {
+        let Some(approved) =
+            crate::automation::approvals::approved_declaration(self.engine.db(), item_id)
+                .await
+                .map_err(RunError::Db)?
+        else {
+            return Ok(DispatchResult::NotApproved);
+        };
+        if !PreSubmitCheck::evaluate(&approved, &item.scope).passed() {
+            if self.is_outward(item_id).await? {
+                // A confirm step on a page that changed: the person decides.
+                self.engine
+                    .transition_item(
+                        item_id,
+                        ItemStatus::Working,
+                        ItemStatus::WaitingPerson,
+                        Some(ReasonCode::PageUnrecognised.as_str()),
+                    )
+                    .await?;
+                return Ok(DispatchResult::WaitingPerson(
+                    "the page changed after approval".to_string(),
+                ));
+            }
+            self.engine
+                .transition_item(
+                    item_id,
+                    ItemStatus::Working,
+                    ItemStatus::Queued,
+                    Some(ReasonCode::UndeclaredOutwardAction.as_str()),
+                )
+                .await?;
+            return Ok(DispatchResult::Restart);
+        }
+        let cap = self.cap_slot(item, approved.kind, local_day);
+        let outcome = self
+            .engine
+            .begin_approved_dispatch(item_id, keys, cap, &approved)
+            .await?;
+        self.settle_dispatch(item_id, outcome).await
+    }
+
+    fn cap_slot(&self, item: &ItemRef, kind: ActionKind, local_day: &str) -> CapSlot {
+        CapSlot {
             site: item
                 .outward_site
                 .clone()
@@ -394,8 +475,16 @@ impl ItemRunner {
             local_day: local_day.to_string(),
             site_cap: self.caps.site_daily,
             kind_cap: kind.daily_cap(),
-        };
-        match self.engine.begin_dispatch(item_id, keys, cap).await? {
+        }
+    }
+
+    async fn settle_dispatch(
+        &self,
+        item_id: i32,
+        outcome: DispatchOutcome,
+    ) -> Result<DispatchResult> {
+        match outcome {
+            DispatchOutcome::NotApproved => Ok(DispatchResult::NotApproved),
             DispatchOutcome::AlreadyDone => {
                 self.engine
                     .transition_item(
@@ -678,6 +767,10 @@ pub enum SessionResult {
     Restart,
     /// Auto allowed: the caller may click `submit_target` and dispatch.
     AllowDispatch(Declaration),
+    /// The person already approved exactly this content (a continuation
+    /// session, spec 8.7): the caller performs the approved click with
+    /// [`ItemRunner::dispatch_approved`]; no new ask.
+    ApprovedDispatch(Declaration),
 }
 
 /// The item facts a session works from (spec 7.1.1). The runner only reads

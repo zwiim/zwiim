@@ -194,6 +194,29 @@ pub async fn begin_dispatch(
     keys: &[crate::automation::engine::LedgerKey],
     cap: crate::automation::engine::CapSlot,
 ) -> Result<crate::automation::engine::DispatchOutcome> {
+    dispatch_tx(conn, item_id, keys, cap, None).await
+}
+
+/// [`begin_dispatch`] for the Host's approved click (spec 8.5.5): the
+/// person's approval of `approved` is used up in the same transaction, so
+/// a second click, or one with changed content, is `NotApproved`.
+pub async fn begin_approved_dispatch(
+    conn: &DatabaseConnection,
+    item_id: i32,
+    keys: &[crate::automation::engine::LedgerKey],
+    cap: crate::automation::engine::CapSlot,
+    approved: &crate::automation::Declaration,
+) -> Result<crate::automation::engine::DispatchOutcome> {
+    dispatch_tx(conn, item_id, keys, cap, Some(approved)).await
+}
+
+async fn dispatch_tx(
+    conn: &DatabaseConnection,
+    item_id: i32,
+    keys: &[crate::automation::engine::LedgerKey],
+    cap: crate::automation::engine::CapSlot,
+    approved: Option<&crate::automation::Declaration>,
+) -> Result<crate::automation::engine::DispatchOutcome> {
     use crate::automation::engine::{DispatchOutcome, LedgerKey, LedgerKeyOutcome};
     let tx = conn.begin().await?;
 
@@ -202,6 +225,12 @@ pub async fn begin_dispatch(
         .await?
         .filter(|m| m.status == ItemStatus::Working.as_str())
         .ok_or_else(|| TransitionError::NotFound(format!("item {item_id} is not working")))?;
+    if let Some(declaration) = approved {
+        if !crate::automation::approvals::consume(&tx, item_id, declaration).await? {
+            tx.rollback().await?;
+            return Ok(DispatchOutcome::NotApproved);
+        }
+    }
     // A later declaration in the same item (a confirm step) reuses the keys
     // and the one cap slot; the outward mark is already set (6.6.3).
     let already_outward = item.outward_started_at.is_some();

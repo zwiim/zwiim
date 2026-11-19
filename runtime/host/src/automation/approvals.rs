@@ -320,6 +320,21 @@ pub async fn consume<C: ConnectionTrait>(
     Ok(res.rows_affected == 1)
 }
 
+/// The content the person approved for an item and the Host has not yet
+/// sent, if any: the declaration with any edits applied (spec 8.5.3).
+pub async fn approved_declaration<C: ConnectionTrait>(
+    conn: &C,
+    item_id: i32,
+) -> Result<Option<Declaration>, DbError> {
+    let row = playbook_approval::Entity::find()
+        .filter(playbook_approval::Column::ItemId.eq(item_id))
+        .filter(playbook_approval::Column::State.eq("approved"))
+        .filter(playbook_approval::Column::ConsumedAt.is_null())
+        .one(conn)
+        .await?;
+    Ok(row.and_then(|m| serde_json::from_str(&m.payload).ok()))
+}
+
 /// Cancel every pending approval of a run (Stop, spec 8.8.2).
 pub async fn stop_pending(conn: &DatabaseConnection, run_id: i32) -> Result<u64, DbError> {
     let res = playbook_approval::Entity::update_many()

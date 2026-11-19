@@ -552,3 +552,93 @@ async fn not_sent_redo_requeues_and_frees_the_item() {
     assert!(!outward_at(&runner, id).await);
     assert_eq!(key_state(&runner).await, None);
 }
+
+/// Park an item on an Ask rule and approve it, as the person would.
+async fn approved_item(runner: &ItemRunner, run: i32) -> (i32, ItemRef) {
+    let (id, mut item) = working_item(runner, run).await;
+    item.rules
+        .insert(ActionKind::SubmitApplication, ApprovalRule::Ask);
+    let result = runner
+        .finish_session(id, &item, ItemOutcome::ReadyToDispatch(declaration()))
+        .await
+        .expect("session");
+    assert_eq!(result, SessionResult::WaitingApproval);
+    use crate::automation::entities::playbook_approval;
+    let a = playbook_approval::Entity::find()
+        .one(runner_engine(runner))
+        .await
+        .unwrap()
+        .expect("approval");
+    crate::automation::approvals::respond(
+        runner_engine(runner),
+        a.id,
+        crate::automation::ApprovalAnswer::Approve,
+    )
+    .await
+    .expect("approve");
+    assert_eq!(status(runner, id).await, ItemStatus::Working.as_str());
+    (id, item)
+}
+
+#[tokio::test]
+async fn an_approved_click_sends_once() {
+    // Spec 8.5.5, 8.3: the approval is used by exactly one Host click.
+    let (runner, run) = setup().await;
+    let (id, item) = approved_item(&runner, run).await;
+    let keys = job_keys();
+    let first = runner
+        .dispatch_approved(id, &item, &keys, "2026-11-19")
+        .await
+        .expect("dispatch");
+    assert_eq!(first, DispatchResult::Done);
+    assert!(outward_at(&runner, id).await);
+    let second = runner
+        .dispatch_approved(id, &item, &keys, "2026-11-19")
+        .await
+        .expect("second");
+    assert_eq!(second, DispatchResult::NotApproved);
+    assert_eq!(cap_used(&runner, "*").await, 1);
+}
+
+#[tokio::test]
+async fn an_approved_click_on_a_changed_page_restarts_and_keeps_the_approval() {
+    // Spec 8.5.5, 8.7: the pre-submit check runs before the approved click;
+    // a mismatch sends the item to a new session, which proceeds only on an
+    // exact match of what the person approved.
+    let (runner, run) = setup().await;
+    let (id, mut item) = approved_item(&runner, run).await;
+    item.scope = vec![crate::automation::declaration::ScopeControl {
+        target: Target::new("textbox", "Cover letter"),
+        control: ControlKind::Text,
+        value: "something the agent typed".into(),
+        hidden: false,
+        read_only: false,
+        disabled: false,
+        prefilled: false,
+    }];
+    let result = runner
+        .dispatch_approved(id, &item, &job_keys(), "2026-11-19")
+        .await
+        .expect("dispatch");
+    assert_eq!(result, DispatchResult::Restart);
+    assert_eq!(status(&runner, id).await, ItemStatus::Queued.as_str());
+    assert!(!outward_at(&runner, id).await);
+
+    // The continuation session declares the same content: no new ask.
+    runner
+        .engine_for_tests()
+        .transition_item(id, ItemStatus::Queued, ItemStatus::Working, None)
+        .await
+        .unwrap();
+    item.scope.clear();
+    let again = runner
+        .finish_session(id, &item, ItemOutcome::ReadyToDispatch(declaration()))
+        .await
+        .expect("session");
+    assert_eq!(again, SessionResult::ApprovedDispatch(declaration()));
+    let sent = runner
+        .dispatch_approved(id, &item, &job_keys(), "2026-11-19")
+        .await
+        .expect("dispatch");
+    assert_eq!(sent, DispatchResult::Done);
+}
