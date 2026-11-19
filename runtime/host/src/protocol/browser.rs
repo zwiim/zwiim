@@ -1,6 +1,7 @@
 //! `browser.*` operations: the Host browser's tabs (design 18).
 //!
-//! Tabs belong to a session or to the person (`owner`). A paired device
+//! Tabs belong to a session, to the person or to a run's lane (`owner`).
+//! Only the Mac sees lane tabs, and only runs open them. A paired device
 //! reaches its sessions' tabs by its `browser_access` (design 7.6): `view`
 //! lists them, `control` steers them. Personal tabs, the engine, site lists,
 //! downloads and the stream socket stay with the Mac; a device never learns
@@ -153,10 +154,16 @@ async fn visible_tab(
     }
 }
 
-/// A session owner must name a live session.
+/// A session owner must name a live session; lane tabs are opened by runs.
 async fn check_owner(state: &AppState, owner: &TabOwner) -> Result<(), ZwiimError> {
-    if let TabOwner::Session { session_id } = owner {
-        crate::session::resolve(&state.db.conn, session_id).await?;
+    match owner {
+        TabOwner::Session { session_id } => {
+            crate::session::resolve(&state.db.conn, session_id).await?;
+        }
+        TabOwner::Lane { .. } => {
+            return Err(ZwiimError::invalid_input("Runs open their own lane tabs"));
+        }
+        TabOwner::Personal => {}
     }
     Ok(())
 }

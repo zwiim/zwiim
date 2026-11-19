@@ -18,6 +18,9 @@ pub enum TabOwner {
     Session { session_id: String },
     /// The person's tab, in the personal context.
     Personal,
+    /// A run's tab on one (site, account) login (automation spec 14.1): one
+    /// context per lane, shared by every run on that site.
+    Lane { site: String, account: String },
 }
 
 impl TabOwner {
@@ -25,20 +28,34 @@ impl TabOwner {
         match self {
             TabOwner::Session { .. } => "session",
             TabOwner::Personal => "personal",
+            TabOwner::Lane { .. } => "lane",
         }
     }
 
     fn session_id(&self) -> Option<String> {
         match self {
             TabOwner::Session { session_id } => Some(session_id.clone()),
-            TabOwner::Personal => None,
+            _ => None,
         }
     }
 
-    fn from_row(kind: &str, session_id: Option<String>) -> Option<TabOwner> {
-        match (kind, session_id) {
-            ("session", Some(session_id)) => Some(TabOwner::Session { session_id }),
-            ("personal", None) => Some(TabOwner::Personal),
+    fn lane(&self) -> (Option<String>, Option<String>) {
+        match self {
+            TabOwner::Lane { site, account } => (Some(site.clone()), Some(account.clone())),
+            _ => (None, None),
+        }
+    }
+
+    fn from_row(row: &browser_tab::Model) -> Option<TabOwner> {
+        match (
+            row.owner_kind.as_str(),
+            row.session_id.clone(),
+            row.lane_site.clone(),
+            row.lane_account.clone(),
+        ) {
+            ("session", Some(session_id), None, None) => Some(TabOwner::Session { session_id }),
+            ("personal", None, None, None) => Some(TabOwner::Personal),
+            ("lane", None, Some(site), Some(account)) => Some(TabOwner::Lane { site, account }),
             _ => None,
         }
     }
@@ -64,7 +81,7 @@ pub async fn load(conn: &DatabaseConnection) -> Result<Vec<TabRecord>, DbErr> {
         .into_iter()
         .filter_map(|row| {
             Some(TabRecord {
-                owner: TabOwner::from_row(&row.owner_kind, row.session_id)?,
+                owner: TabOwner::from_row(&row)?,
                 id: row.id,
                 url: row.url,
                 title: row.title,
@@ -85,16 +102,24 @@ pub async fn next_position(conn: &DatabaseConnection, owner: &TabOwner) -> Resul
         Some(id) => query.filter(browser_tab::Column::SessionId.eq(id)),
         None => query.filter(browser_tab::Column::SessionId.is_null()),
     };
+    if let (Some(site), Some(account)) = owner.lane() {
+        query = query
+            .filter(browser_tab::Column::LaneSite.eq(site))
+            .filter(browser_tab::Column::LaneAccount.eq(account));
+    }
     let max: Option<Option<i32>> = query.into_tuple().one(conn).await?;
     Ok(max.flatten().map_or(0, |m| m + 1))
 }
 
 pub async fn insert(conn: &DatabaseConnection, tab: &TabRecord) -> Result<(), DbErr> {
     let now = Utc::now();
+    let (lane_site, lane_account) = tab.owner.lane();
     browser_tab::ActiveModel {
         id: Set(tab.id.clone()),
         owner_kind: Set(tab.owner.kind().to_string()),
         session_id: Set(tab.owner.session_id()),
+        lane_site: Set(lane_site),
+        lane_account: Set(lane_account),
         url: Set(tab.url.clone()),
         title: Set(tab.title.clone()),
         position: Set(tab.position),
@@ -277,6 +302,13 @@ mod tests {
         }
     }
 
+    fn lane(site: &str, account: &str) -> TabOwner {
+        TabOwner::Lane {
+            site: site.into(),
+            account: account.into(),
+        }
+    }
+
     #[tokio::test]
     async fn tabs_round_trip_in_order_with_positions_per_owner() {
         let db = fresh_in_memory_db().await;
@@ -332,6 +364,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lane_tabs_round_trip_with_positions_per_lane() {
+        let db = fresh_in_memory_db().await;
+        let conn = &db.conn;
+        insert(conn, &tab("a", lane("jobsy.example", "main"), 0))
+            .await
+            .unwrap();
+        insert(conn, &tab("s", session("s1"), 0)).await.unwrap();
+        assert_eq!(
+            next_position(conn, &lane("jobsy.example", "main"))
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            next_position(conn, &lane("jobsy.example", "other"))
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            next_position(conn, &lane("acme.example", "main"))
+                .await
+                .unwrap(),
+            0
+        );
+        let tabs = load(conn).await.unwrap();
+        let a = tabs.iter().find(|t| t.id == "a").unwrap();
+        assert_eq!(a.owner, lane("jobsy.example", "main"));
+        // A lane outlives every session.
+        remove_session(conn, "s1").await.unwrap();
+        assert_eq!(load(conn).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn updating_a_closed_tab_is_not_an_error() {
         let db = fresh_in_memory_db().await;
         update_page(&db.conn, "gone", "x", "y").await.unwrap();
@@ -347,6 +413,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(TabOwner::Personal).unwrap(),
             serde_json::json!({"kind": "personal"})
+        );
+        assert_eq!(
+            serde_json::to_value(lane("jobsy.example", "main")).unwrap(),
+            serde_json::json!({"kind": "lane", "site": "jobsy.example", "account": "main"})
         );
     }
 

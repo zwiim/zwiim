@@ -620,7 +620,7 @@ impl BrowserService {
             .filter(|t| match (session_id, &t.owner) {
                 (None, _) => true,
                 (Some(id), TabOwner::Session { session_id }) => id == session_id,
-                (Some(_), TabOwner::Personal) => false,
+                (Some(_), _) => false,
             })
             .collect();
         tabs.sort_by(|a, b| {
@@ -1126,6 +1126,7 @@ impl BrowserService {
                     TabOwner::Session { session_id } => {
                         self.restore_login(cdp, &ctx, session_id).await;
                     }
+                    TabOwner::Lane { .. } => {}
                 }
                 ctx
             }
@@ -1819,7 +1820,7 @@ impl BrowserService {
             .owner;
         let watch = match (&owner, on) {
             (_, false) => None,
-            (TabOwner::Personal, true) => {
+            (TabOwner::Personal | TabOwner::Lane { .. }, true) => {
                 return Err(BrowserError {
                     code: "session_tab_only",
                     message: "Only a chat's tab follows its worktree".into(),
@@ -3295,6 +3296,7 @@ fn busiest(inner: &Inner, used: u64, budget: u64) -> String {
         let who = match &tab.info.owner {
             TabOwner::Session { session_id } => format!("session {}", short(session_id)),
             TabOwner::Personal => "your own tabs".to_string(),
+            TabOwner::Lane { site, .. } => format!("runs on {site}"),
         };
         *held.entry(who).or_default() += 1;
     }
@@ -3432,11 +3434,12 @@ fn record_of(info: &TabInfo) -> TabRecord {
     }
 }
 
-/// Personal tabs first, then sessions by id.
-fn owner_key(owner: &TabOwner) -> (u8, &str) {
+/// Personal tabs first, then sessions by id, then lanes.
+fn owner_key(owner: &TabOwner) -> (u8, &str, &str) {
     match owner {
-        TabOwner::Personal => (0, ""),
-        TabOwner::Session { session_id } => (1, session_id.as_str()),
+        TabOwner::Personal => (0, "", ""),
+        TabOwner::Session { session_id } => (1, session_id.as_str(), ""),
+        TabOwner::Lane { site, account } => (2, site.as_str(), account.as_str()),
     }
 }
 
@@ -3562,6 +3565,61 @@ mod tests {
         assert_eq!(svc.list(None).await[0].id, p.id, "personal tabs first");
         assert_eq!(store::load(&db.conn).await.unwrap().len(), 4);
         assert_eq!(events.recv().await.unwrap(), BrowserEvent::Tab(a.clone()));
+    }
+
+    fn lane(site: &str, account: &str) -> TabOwner {
+        TabOwner::Lane {
+            site: site.into(),
+            account: account.into(),
+        }
+    }
+
+    /// Spec 14.1: a lane needs no session, and every run on (site, account)
+    /// borrows its one context.
+    #[tokio::test]
+    async fn a_lane_has_one_context_shared_by_its_tabs_and_no_session() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let mut values = serde_json::Map::new();
+        values.insert("browser.session_tabs".into(), json!(1));
+        crate::settings::update(&db.conn, &values).await.unwrap();
+        let svc = service(&fake, &db.conn).await;
+
+        let item = svc
+            .open(lane("jobsy.example", "main"), None)
+            .await
+            .unwrap();
+        // Past the per-session cap: that cap is a chat's, not a lane's.
+        let discovery = svc
+            .open(lane("jobsy.example", "main"), None)
+            .await
+            .unwrap();
+        let other_account = svc
+            .open(lane("jobsy.example", "second"), None)
+            .await
+            .unwrap();
+        let chat = svc.open(session("s1"), None).await.unwrap();
+
+        let contexts: Vec<String> = fake
+            .calls("Target.createTarget")
+            .iter()
+            .map(|c| c["browserContextId"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(contexts[0], contexts[1], "one lane, one context");
+        assert_ne!(contexts[1], contexts[2], "accounts do not share");
+        assert_ne!(contexts[0], contexts[3], "a chat does not share a lane's");
+        assert_eq!(
+            (item.position, discovery.position, other_account.position),
+            (0, 1, 0)
+        );
+
+        // A session's list never holds lane tabs; the Mac's has them all.
+        assert_eq!(svc.list(Some("s1")).await, vec![chat]);
+        assert_eq!(svc.list(None).await.len(), 4);
+        // Ending a chat leaves the lanes alone.
+        svc.close_session("s1").await;
+        assert_eq!(svc.list(None).await.len(), 3);
+        assert_eq!(store::load(&db.conn).await.unwrap().len(), 3);
     }
 
     #[tokio::test]
