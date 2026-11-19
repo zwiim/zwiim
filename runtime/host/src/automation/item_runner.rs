@@ -172,7 +172,20 @@ impl ItemRunner {
         Ok(row.map(|m| m.outward_started_at.is_some()).unwrap_or(true))
     }
 
-    async fn epoch_of(&self, item_id: i32) -> Result<i32> {
+    async fn item_outward_site(&self, item_id: i32) -> Result<Option<String>> {
+        use crate::automation::entities::playbook_item;
+        use sea_orm::EntityTrait;
+        let row = playbook_item::Entity::find_by_id(item_id)
+            .one(self.engine.db())
+            .await
+            .map_err(|e| RunError::Db(DbError::from(e)))?;
+        Ok(row.and_then(|m| m.outward_site))
+    }
+
+    /// The item's current attempt epoch (spec 6.6.7): what the Host puts in
+    /// the [`ItemRef`] of its approved click after an approval moved the item
+    /// back to `working` with a new epoch.
+    pub async fn current_epoch(&self, item_id: i32) -> Result<i32> {
         use crate::automation::entities::playbook_item;
         use sea_orm::EntityTrait;
         playbook_item::Entity::find_by_id(item_id)
@@ -261,21 +274,23 @@ impl ItemRunner {
         {
             return Ok(None);
         }
-        // Nothing runs on a site before the person accepts its risk (14.5).
+        // Nothing runs on a site before the person accepts its risk (14.5),
+        // including the site a hand-off sends on.
         if !self.store.risk_accepted(site, account).await? {
             return Ok(None);
+        }
+        if let Some(outward) = self.item_outward_site(item_id).await? {
+            if !self.store.risk_accepted(&outward, account).await? {
+                return Ok(None);
+            }
         }
         // The approved click takes the lane (spec 8.5.5): items approved
         // while their lane was busy start before queued work.
         crate::automation::approvals::release_approved(self.engine.db(), run_id)
             .await
             .map_err(RunError::Db)?;
-        match self
-            .engine
-            .transition_item(item_id, ItemStatus::Queued, ItemStatus::Working, None)
-            .await
-        {
-            Ok(()) => Ok(Some(self.epoch_of(item_id).await?)),
+        match self.engine.start_attempt(item_id).await {
+            Ok(epoch) => Ok(Some(epoch)),
             // Lost the lane to another item, or the item moved: not an error
             // the caller retries, just "did not start".
             Err(TransitionError::ItemStale { .. }) => Ok(None),
@@ -298,7 +313,7 @@ impl ItemRunner {
     ) -> Result<SessionResult> {
         // A session of an earlier attempt is refused before anything is
         // decided (spec 6.6.7); its writes below also filter on the epoch.
-        if self.epoch_of(item_id).await? != item.epoch {
+        if self.current_epoch(item_id).await? != item.epoch {
             return Err(TransitionError::StaleAttempt {
                 item_id,
                 epoch: item.epoch,
@@ -725,42 +740,32 @@ impl ItemRunner {
     }
 
     /// Count one failure against the item's retry counter; the third makes
-    /// it `retries_exhausted` (spec 6.7.4).
+    /// it `retries_exhausted` (spec 6.7.4). The counter moves only once the
+    /// attempt's own `working -> failed` write has gone through.
     async fn fail_or_exhaust(
         &self,
         item_id: i32,
         item: &ItemRef,
         reason: ReasonCode,
     ) -> Result<()> {
-        let epoch = item.epoch;
+        self.engine
+            .transition_attempt(
+                item_id,
+                item.epoch,
+                ItemStatus::Working,
+                ItemStatus::Failed,
+                Some(reason.as_str()),
+            )
+            .await?;
         let failures = self
             .bump_retry(item.playbook_id, &item.site, &item.account, &item.key)
             .await?;
         if failures >= 3 {
             self.engine
-                .transition_attempt(
-                    item_id,
-                    epoch,
-                    ItemStatus::Working,
-                    ItemStatus::Failed,
-                    Some(reason.as_str()),
-                )
-                .await?;
-            self.engine
                 .transition_item(
                     item_id,
                     ItemStatus::Failed,
                     ItemStatus::RetriesExhausted,
-                    Some(reason.as_str()),
-                )
-                .await?;
-        } else {
-            self.engine
-                .transition_attempt(
-                    item_id,
-                    epoch,
-                    ItemStatus::Working,
-                    ItemStatus::Failed,
                     Some(reason.as_str()),
                 )
                 .await?;

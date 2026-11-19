@@ -61,6 +61,42 @@ async fn accept_risk(runner: &ItemRunner, site: &str) {
 }
 
 #[tokio::test]
+async fn nothing_starts_when_the_outward_site_risk_was_not_accepted() {
+    // A hand-off (apply on the company's own site) sends on the outward
+    // site, so its risk step is needed too (spec 14.5).
+    let (runner, run) = setup().await;
+    let now = chrono::Utc::now();
+    let id = playbook_item::Entity::insert(playbook_item::ActiveModel {
+        run_id: sea_orm::Set(run),
+        playbook_id: sea_orm::Set(1),
+        site: sea_orm::Set("indeed.com".into()),
+        account: sea_orm::Set("main".into()),
+        item_key: sea_orm::Set("job-handoff".into()),
+        outward_site: sea_orm::Set(Some("acme.example".into())),
+        status: sea_orm::Set(ItemStatus::Queued.as_str().into()),
+        epoch: sea_orm::Set(0),
+        created_at: sea_orm::Set(now),
+        updated_at: sea_orm::Set(now),
+        ..Default::default()
+    })
+    .exec_with_returning(runner_engine(&runner))
+    .await
+    .expect("insert")
+    .id;
+    let begun = runner
+        .begin_item(id, "indeed.com", "main")
+        .await
+        .expect("begin");
+    assert_eq!(begun, None);
+    accept_risk(&runner, "acme.example").await;
+    let begun = runner
+        .begin_item(id, "indeed.com", "main")
+        .await
+        .expect("begin");
+    assert_eq!(begun, Some(1));
+}
+
+#[tokio::test]
 async fn nothing_starts_on_a_site_whose_risk_was_not_accepted() {
     // Spec 14.5: nothing runs on a site without the person's risk step.
     let (runner, run) = setup().await;
@@ -643,8 +679,9 @@ async fn approved_item(runner: &ItemRunner, run: i32) -> (i32, ItemRef) {
     .await
     .expect("approve");
     assert_eq!(status(runner, id).await, ItemStatus::Working.as_str());
-    // The approved click is a new attempt (waiting_approval -> working).
-    item.epoch = epoch_of(runner, id).await;
+    // The approved click is a new attempt (waiting_approval -> working);
+    // the Host reads its epoch for the click's ItemRef.
+    item.epoch = runner.current_epoch(id).await.expect("epoch");
     (id, item)
 }
 
@@ -728,6 +765,51 @@ async fn a_stale_attempt_cannot_declare_or_end_the_item() {
         .await
         .expect("session");
     assert!(matches!(ok, SessionResult::AllowDispatch(_)));
+}
+
+#[tokio::test]
+async fn a_failure_refused_at_its_write_does_not_count_a_retry() {
+    // The item was requeued (same epoch, not working): the session's
+    // failure changes nothing, retry counter included (spec 6.7.4).
+    let (runner, run) = setup().await;
+    let (id, item) = working_item(&runner, run).await;
+    runner
+        .engine_for_tests()
+        .transition_item(id, ItemStatus::Working, ItemStatus::Queued, None)
+        .await
+        .unwrap();
+    let failed = runner
+        .finish_session(id, &item, ItemOutcome::Failed(ReasonCode::PageUnrecognised))
+        .await;
+    assert!(failed.is_err(), "{failed:?}");
+    use crate::automation::entities::item_retry_counter;
+    assert!(item_retry_counter::Entity::find()
+        .one(runner_engine(&runner))
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn a_stale_attempt_on_an_item_no_longer_working_is_named_stale() {
+    let (runner, run) = setup().await;
+    let (id, zombie) = working_item(&runner, run).await;
+    restart_attempt(&runner, id).await;
+    runner
+        .engine_for_tests()
+        .transition_item(id, ItemStatus::Working, ItemStatus::Queued, None)
+        .await
+        .unwrap();
+    let result = runner
+        .dispatch(
+            id,
+            &zombie,
+            ActionKind::SubmitApplication,
+            &job_keys(),
+            "2026-11-19",
+        )
+        .await;
+    assert!(is_stale_attempt(&result), "{result:?}");
 }
 
 #[tokio::test]

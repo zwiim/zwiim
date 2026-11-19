@@ -257,6 +257,11 @@ impl AutomationEngine {
         engine_svc::transition_item(&self.db, item_id, from, to, reason_code).await
     }
 
+    /// `queued -> working` with the new attempt's epoch (spec 6.6.7).
+    pub async fn start_attempt(&self, item_id: i32) -> Result<i32, TransitionError> {
+        engine_svc::start_attempt(&self.db, item_id).await
+    }
+
     /// [`Self::transition_item`] for one attempt's session (spec 6.6.7).
     pub async fn transition_attempt(
         &self,

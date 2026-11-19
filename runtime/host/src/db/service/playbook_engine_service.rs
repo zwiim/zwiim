@@ -74,8 +74,31 @@ pub async fn transition_attempt(
     transition(conn, item_id, Some(epoch), from, to, reason_code).await
 }
 
-async fn transition(
-    conn: &DatabaseConnection,
+/// Start a queued item's new attempt (spec 6.4, 6.6.7): `queued ->
+/// working` and the new epoch, read in the same transaction so the epoch
+/// returned is the one this start gave the item.
+pub async fn start_attempt(conn: &DatabaseConnection, item_id: i32) -> Result<i32> {
+    let tx = conn.begin().await?;
+    transition(
+        &tx,
+        item_id,
+        None,
+        ItemStatus::Queued,
+        ItemStatus::Working,
+        None,
+    )
+    .await?;
+    let epoch = playbook_item::Entity::find_by_id(item_id)
+        .one(&tx)
+        .await?
+        .map(|m| m.epoch)
+        .ok_or_else(|| TransitionError::NotFound(format!("item {item_id}")))?;
+    tx.commit().await?;
+    Ok(epoch)
+}
+
+async fn transition<C: sea_orm::ConnectionTrait>(
+    conn: &C,
     item_id: i32,
     attempt: Option<i32>,
     from: ItemStatus,
@@ -278,14 +301,19 @@ async fn dispatch_tx(
     let item = playbook_item::Entity::find_by_id(item_id)
         .one(&tx)
         .await?
-        .filter(|m| m.status == ItemStatus::Working.as_str())
-        .ok_or_else(|| TransitionError::NotFound(format!("item {item_id} is not working")))?;
+        .ok_or_else(|| TransitionError::NotFound(format!("item {item_id}")))?;
     // Only the current attempt's session may send (6.6.7). The outward
     // update below also filters on the epoch, so a requeue racing this
     // transaction rolls it back.
     if item.epoch != epoch {
         tx.rollback().await?;
         return Err(TransitionError::StaleAttempt { item_id, epoch });
+    }
+    if item.status != ItemStatus::Working.as_str() {
+        tx.rollback().await?;
+        return Err(TransitionError::NotFound(format!(
+            "item {item_id} is not working"
+        )));
     }
     if let Some(declaration) = approved {
         if !crate::automation::approvals::consume(&tx, item_id, declaration).await? {
