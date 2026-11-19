@@ -8602,6 +8602,50 @@ async fn answering_an_unknown_approval_is_not_found() {
 }
 
 #[tokio::test]
+async fn turning_playbooks_off_pauses_active_runs() {
+    // Spec 6.5.9, 10.12.2: the switch going off pauses active runs as the
+    // person would (`pause_reason: person`); tables stay.
+    let h = host(false).await;
+    let store = crate::automation::PlaybookStore::new(h.state.db.conn.clone());
+    let discovering = seed_playbook(&h).await;
+    let running = store.create("Post", "goal: post").await.unwrap().id;
+    let (_, a) = h.call("run.start", json!({ "playbook_id": discovering })).await;
+    let (_, b) = h.call("run.start", json!({ "playbook_id": running })).await;
+    let (a, b) = (
+        a["run_id"].as_i64().unwrap() as i32,
+        b["run_id"].as_i64().unwrap() as i32,
+    );
+    crate::automation::AutomationEngine::new(h.state.db.conn.clone())
+        .transition_run(
+            b,
+            crate::automation::RunStatus::Discovering,
+            crate::automation::RunStatus::Running,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let (status, _) = h
+        .call(
+            "settings.update",
+            json!({ "values": { "playbooks.enabled": false } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    use crate::automation::entities::playbook_run;
+    use sea_orm::EntityTrait;
+    for id in [a, b] {
+        let run = playbook_run::Entity::find_by_id(id)
+            .one(&h.state.db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.status, "paused", "run {id}");
+        assert_eq!(run.pause_reason.as_deref(), Some("person"), "run {id}");
+    }
+}
+
+#[tokio::test]
 async fn pause_and_stop_answer_with_the_run_when_playbooks_are_off() {
     // Spec 10.12.2: turning the switch off never strands a run, so Pause and
     // Stop work and report the run they changed.

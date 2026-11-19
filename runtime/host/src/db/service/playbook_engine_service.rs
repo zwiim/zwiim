@@ -248,6 +248,25 @@ pub async fn transition_run(
     Ok(())
 }
 
+/// Pause every discovering or running run with `reason` (spec 6.5.9: the
+/// Labs switch going off pauses active runs as the person would). Both
+/// edges are in the run table; a run already paused keeps its own reason.
+pub async fn pause_active_runs(conn: &DatabaseConnection, reason: &str) -> Result<u64> {
+    let res = playbook_run::Entity::update_many()
+        .col_expr(
+            playbook_run::Column::Status,
+            Expr::value(RunStatus::Paused.as_str()),
+        )
+        .col_expr(playbook_run::Column::PauseReason, Expr::value(reason))
+        .filter(
+            playbook_run::Column::Status
+                .is_in([RunStatus::Discovering.as_str(), RunStatus::Running.as_str()]),
+        )
+        .exec(conn)
+        .await?;
+    Ok(res.rows_affected)
+}
+
 /// Count the playbook's active runs. A start that reads 0 and then inserts is
 /// protected by the partial unique index; this is the pre-check that turns
 /// the race into `run_active` without a constraint error.
