@@ -8107,7 +8107,7 @@ async fn the_stream_socket_takes_input() {
 // ─── playbooks (automation engine, revision 40) ──────────────────────────
 
 /// Seed one playbook the store's shape and enable the Labs switch.
-async fn seed_playbook(h: &Host) -> i32 {
+async fn seed_playbook(h: &Host) -> crate::automation::playbook_store::Playbook {
     let store = crate::automation::PlaybookStore::new(h.state.db.conn.clone());
     let pb = store.create("Apply", "goal: apply").await.unwrap();
     h.call(
@@ -8115,7 +8115,20 @@ async fn seed_playbook(h: &Host) -> i32 {
         json!({ "values": { "playbooks.enabled": true } }),
     )
     .await;
-    pb.id
+    pb
+}
+
+/// The row id behind a run's public id, for seeding rows directly.
+async fn run_row_id(h: &Host, run_id: &str) -> i32 {
+    use crate::automation::entities::playbook_run;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    playbook_run::Entity::find()
+        .filter(playbook_run::Column::PublicId.eq(run_id))
+        .one(&h.state.db.conn)
+        .await
+        .unwrap()
+        .unwrap()
+        .id
 }
 
 #[tokio::test]
@@ -8128,7 +8141,7 @@ async fn playbook_operations_are_off_until_the_labs_switch() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["error"]["code"], "playbooks_disabled");
 
-    let (status, body) = h.call("run.start", json!({ "playbook_id": pb.id })).await;
+    let (status, body) = h.call("run.start", json!({ "playbook_id": pb.public_id })).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["error"]["code"], "playbooks_disabled");
 }
@@ -8136,13 +8149,14 @@ async fn playbook_operations_are_off_until_the_labs_switch() {
 #[tokio::test]
 async fn a_playbook_lists_reads_and_saves_with_a_new_version() {
     let h = host(false).await;
-    let id = seed_playbook(&h).await;
+    let pb = seed_playbook(&h).await;
+    let id = pb.public_id.clone();
 
     let (status, body) = h.call("playbook.list", json!({})).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body[0]["name"], "Apply");
     assert_eq!(body[0]["version"], 1);
-    assert!(body[0]["playbook_id"].is_number());
+    assert!(body[0]["playbook_id"].is_string());
 
     let (status, body) = h.call("playbook.get", json!({ "playbook_id": id })).await;
     assert_eq!(status, StatusCode::OK);
@@ -8165,7 +8179,8 @@ async fn a_playbook_lists_reads_and_saves_with_a_new_version() {
 #[tokio::test]
 async fn a_run_starts_from_the_mac_only_and_answers_run_active() {
     let h = host(false).await;
-    let id = seed_playbook(&h).await;
+    let pb = seed_playbook(&h).await;
+    let id = pb.public_id.clone();
 
     // A client cannot ask for a Host-owned trigger: only `mac` is accepted,
     // and the phone/schedule forms are refused as invalid input.
@@ -8182,7 +8197,7 @@ async fn a_run_starts_from_the_mac_only_and_answers_run_active() {
 
     let (status, body) = h.call("run.start", json!({ "playbook_id": id })).await;
     assert_eq!(status, StatusCode::OK);
-    let run_id = body["run_id"].as_i64().unwrap();
+    let run_id = body["run_id"].as_str().unwrap().to_string();
 
     // A second start while one is active names the active run.
     let (status, body) = h.call("run.start", json!({ "playbook_id": id })).await;
@@ -8199,9 +8214,10 @@ async fn a_run_starts_from_the_mac_only_and_answers_run_active() {
 #[tokio::test]
 async fn a_run_pages_its_items_and_pauses_resumes_and_stops() {
     let h = host(false).await;
-    let id = seed_playbook(&h).await;
+    let pb = seed_playbook(&h).await;
+    let id = pb.public_id.clone();
     let (_, body) = h.call("run.start", json!({ "playbook_id": id })).await;
-    let run_id = body["run_id"].as_i64().unwrap();
+    let run_id = body["run_id"].as_str().unwrap().to_string();
 
     // Seed three items directly; the page caps at `limit`.
     use crate::automation::entities::playbook_item;
@@ -8209,8 +8225,9 @@ async fn a_run_pages_its_items_and_pauses_resumes_and_stops() {
     for n in 1..=3 {
         let now = chrono::Utc::now();
         playbook_item::Entity::insert(playbook_item::ActiveModel {
-            run_id: Set(run_id as i32),
-            playbook_id: Set(id),
+            public_id: Set(uuid::Uuid::new_v4().to_string()),
+            run_id: Set(run_row_id(&h, &run_id).await),
+            playbook_id: Set(pb.id),
             site: Set("indeed.com".into()),
             account: Set("main".into()),
             item_key: Set(format!("job-{n}")),
@@ -8229,7 +8246,7 @@ async fn a_run_pages_its_items_and_pauses_resumes_and_stops() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(page["items"].as_array().unwrap().len(), 2);
-    let cursor = page["next_cursor"].as_i64().unwrap();
+    let cursor = page["next_cursor"].as_str().unwrap().to_string();
     let (_, page2) = h
         .call(
             "run.items",
@@ -8311,7 +8328,8 @@ async fn a_site_pauses_resumes_and_records_risk() {
 #[tokio::test]
 async fn saving_an_invalid_playbook_is_refused_with_line_anchored_errors() {
     let h = host(false).await;
-    let id = seed_playbook(&h).await;
+    let pb = seed_playbook(&h).await;
+    let id = pb.public_id.clone();
     let (status, body) = h
         .call(
             "playbook.save",
@@ -8336,7 +8354,8 @@ async fn saving_an_invalid_playbook_is_refused_with_line_anchored_errors() {
 async fn a_run_waits_for_the_risk_step_on_each_of_its_sites() {
     // Spec 14.5: nothing runs on a site before the person accepts its risk.
     let h = host(false).await;
-    let id = seed_playbook(&h).await;
+    let pb = seed_playbook(&h).await;
+    let id = pb.public_id.clone();
     let (status, _) = h
         .call(
             "playbook.save",
@@ -8368,10 +8387,11 @@ async fn a_run_waits_for_the_risk_step_on_each_of_its_sites() {
 #[tokio::test]
 async fn try_on_one_item_starts_a_one_item_run() {
     let h = host(false).await;
-    let id = seed_playbook(&h).await;
+    let pb = seed_playbook(&h).await;
+    let id = pb.public_id.clone();
     let (status, body) = h.call("run.try", json!({ "playbook_id": id })).await;
     assert_eq!(status, StatusCode::OK);
-    let run_id = body["run_id"].as_i64().unwrap();
+    let run_id = body["run_id"].as_str().unwrap().to_string();
     let (_, run) = h.call("run.get", json!({ "run_id": run_id })).await;
     // Try is a normal run; the item cap lives at dispatch, not the run row.
     assert_eq!(run["playbook_id"], id);
@@ -8382,7 +8402,8 @@ async fn a_paired_device_cannot_start_a_run() {
     // The trigger comes from the authenticated principal, not the body: a
     // device is refused in 1a-i (spec 6.1, 19.3).
     let h = host(false).await;
-    let id = seed_playbook(&h).await;
+    let pb = seed_playbook(&h).await;
+    let id = pb.public_id.clone();
     let device = bearer_device(&h, "dev-run").await;
     let (status, body) = h
         .call_as(&device, "run.start", json!({ "playbook_id": id }))
@@ -8399,9 +8420,10 @@ async fn a_paired_device_cannot_start_a_run() {
 #[tokio::test]
 async fn a_second_approval_answer_is_approval_not_pending() {
     let h = host(false).await;
-    let id = seed_playbook(&h).await;
+    let pb = seed_playbook(&h).await;
+    let id = pb.public_id.clone();
     let (_, body) = h.call("run.start", json!({ "playbook_id": id })).await;
-    let run_id = body["run_id"].as_i64().unwrap();
+    let run_id = body["run_id"].as_str().unwrap().to_string();
     // Seed an item and a pending approval the way the runner does.
     use crate::automation::declaration::{
         ControlKind, Declaration, DeclaredField, DeclaredValue, Target,
@@ -8410,8 +8432,9 @@ async fn a_second_approval_answer_is_approval_not_pending() {
     use sea_orm::{EntityTrait, Set};
     let now = chrono::Utc::now();
     let item = playbook_item::Entity::insert(playbook_item::ActiveModel {
-        run_id: Set(run_id as i32),
-        playbook_id: Set(id),
+        public_id: Set(uuid::Uuid::new_v4().to_string()),
+        run_id: Set(run_row_id(&h, &run_id).await),
+        playbook_id: Set(pb.id),
         site: Set("indeed.com".into()),
         account: Set("main".into()),
         item_key: Set("job-1".into()),
@@ -8436,11 +8459,11 @@ async fn a_second_approval_answer_is_approval_not_pending() {
         }],
         submit_target: Target::new("button", "Submit"),
     };
-    let a = crate::automation::approvals::create(&h.state.db.conn, run_id as i32, item.id, &decl)
+    let a = crate::automation::approvals::create(&h.state.db.conn, run_row_id(&h, &run_id).await, item.id, &decl)
         .await
         .unwrap();
 
-    let (status, body) = h.call("run.approve", json!({ "approval_id": a.id })).await;
+    let (status, body) = h.call("run.approve", json!({ "approval_id": a.public_id })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["state"], "approved");
     // The item continued to `working` (the Host click comes next).
@@ -8452,7 +8475,7 @@ async fn a_second_approval_answer_is_approval_not_pending() {
     assert_eq!(row.status, "working");
 
     // The second answer loses.
-    let (status, body) = h.call("run.reject", json!({ "approval_id": a.id })).await;
+    let (status, body) = h.call("run.reject", json!({ "approval_id": a.public_id })).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["error"]["code"], "approval_not_pending");
     assert_eq!(body["error"]["details"]["state"], "approved");
@@ -8463,19 +8486,21 @@ async fn a_second_approval_answer_is_approval_not_pending() {
 }
 
 /// A run with one item parked on a pending approval, as the runner leaves it.
-async fn seed_parked_item(h: &Host) -> (i64, i32, i32) {
+async fn seed_parked_item(h: &Host) -> (String, i32, String) {
     use crate::automation::declaration::{
         ControlKind, Declaration, DeclaredField, DeclaredValue, Target,
     };
     use crate::automation::entities::playbook_item;
     use sea_orm::{EntityTrait, Set};
-    let id = seed_playbook(h).await;
+    let pb = seed_playbook(h).await;
+    let id = pb.public_id.clone();
     let (_, body) = h.call("run.start", json!({ "playbook_id": id })).await;
-    let run_id = body["run_id"].as_i64().unwrap();
+    let run_id = body["run_id"].as_str().unwrap().to_string();
     let now = chrono::Utc::now();
     let item = playbook_item::Entity::insert(playbook_item::ActiveModel {
-        run_id: Set(run_id as i32),
-        playbook_id: Set(id),
+        public_id: Set(uuid::Uuid::new_v4().to_string()),
+        run_id: Set(run_row_id(h, &run_id).await),
+        playbook_id: Set(pb.id),
         site: Set("indeed.com".into()),
         account: Set("main".into()),
         item_key: Set("job-1".into()),
@@ -8500,10 +8525,10 @@ async fn seed_parked_item(h: &Host) -> (i64, i32, i32) {
         }],
         submit_target: Target::new("button", "Submit"),
     };
-    let a = crate::automation::approvals::create(&h.state.db.conn, run_id as i32, item.id, &decl)
+    let a = crate::automation::approvals::create(&h.state.db.conn, run_row_id(h, &run_id).await, item.id, &decl)
         .await
         .unwrap();
-    (run_id, item.id, a.id)
+    (run_id, item.id, a.public_id)
 }
 
 async fn item_status(h: &Host, item_id: i32) -> String {
@@ -8517,10 +8542,11 @@ async fn item_status(h: &Host, item_id: i32) -> String {
         .status
 }
 
-async fn approval_state(h: &Host, approval_id: i32) -> String {
+async fn approval_state(h: &Host, approval_id: &str) -> String {
     use crate::automation::entities::playbook_approval;
-    use sea_orm::EntityTrait;
-    playbook_approval::Entity::find_by_id(approval_id)
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    playbook_approval::Entity::find()
+        .filter(playbook_approval::Column::PublicId.eq(approval_id))
         .one(&h.state.db.conn)
         .await
         .unwrap()
@@ -8549,7 +8575,7 @@ async fn an_approval_is_not_used_up_when_its_item_has_moved_on() {
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["error"]["code"], "approval_not_pending");
     assert_eq!(body["error"]["details"]["state"], "stopped");
-    assert_eq!(approval_state(&h, approval_id).await, "stopped");
+    assert_eq!(approval_state(&h, &approval_id).await, "stopped");
     assert_eq!(item_status(&h, item_id).await, "skipped");
 }
 
@@ -8563,7 +8589,7 @@ async fn an_approval_given_while_paused_acts_on_resume() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let (status, body) = h.call("run.approve", json!({ "approval_id": approval_id })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(approval_state(&h, approval_id).await, "approved");
+    assert_eq!(approval_state(&h, &approval_id).await, "approved");
     assert_eq!(item_status(&h, item_id).await, "waiting_approval");
     let (status, body) = h.call("run.resume", json!({ "run_id": run_id })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -8580,7 +8606,7 @@ async fn a_repeated_resume_still_releases_approvals_given_while_paused() {
     h.call("run.approve", json!({ "approval_id": approval_id })).await;
     crate::automation::AutomationEngine::new(h.state.db.conn.clone())
         .transition_run(
-            run_id as i32,
+            run_row_id(&h, &run_id).await,
             crate::automation::RunStatus::Paused,
             crate::automation::RunStatus::Running,
             None,
@@ -8597,7 +8623,7 @@ async fn a_repeated_resume_still_releases_approvals_given_while_paused() {
 async fn answering_an_unknown_approval_is_not_found() {
     let h = host(false).await;
     seed_playbook(&h).await;
-    let (status, body) = h.call("run.approve", json!({ "approval_id": 9999 })).await;
+    let (status, body) = h.call("run.approve", json!({ "approval_id": "no-such-approval" })).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
 }
 
@@ -8608,12 +8634,12 @@ async fn turning_playbooks_off_pauses_active_runs() {
     let h = host(false).await;
     let store = crate::automation::PlaybookStore::new(h.state.db.conn.clone());
     let discovering = seed_playbook(&h).await;
-    let running = store.create("Post", "goal: post").await.unwrap().id;
-    let (_, a) = h.call("run.start", json!({ "playbook_id": discovering })).await;
+    let running = store.create("Post", "goal: post").await.unwrap().public_id;
+    let (_, a) = h.call("run.start", json!({ "playbook_id": discovering.public_id })).await;
     let (_, b) = h.call("run.start", json!({ "playbook_id": running })).await;
     let (a, b) = (
-        a["run_id"].as_i64().unwrap() as i32,
-        b["run_id"].as_i64().unwrap() as i32,
+        run_row_id(&h, a["run_id"].as_str().unwrap()).await,
+        run_row_id(&h, b["run_id"].as_str().unwrap()).await,
     );
     crate::automation::AutomationEngine::new(h.state.db.conn.clone())
         .transition_run(
@@ -8650,9 +8676,10 @@ async fn pause_and_stop_answer_with_the_run_when_playbooks_are_off() {
     // Spec 10.12.2: turning the switch off never strands a run, so Pause and
     // Stop work and report the run they changed.
     let h = host(false).await;
-    let id = seed_playbook(&h).await;
+    let pb = seed_playbook(&h).await;
+    let id = pb.public_id.clone();
     let (_, body) = h.call("run.start", json!({ "playbook_id": id })).await;
-    let run_id = body["run_id"].as_i64().unwrap();
+    let run_id = body["run_id"].as_str().unwrap().to_string();
     h.call(
         "settings.update",
         json!({ "values": { "playbooks.enabled": false } }),
@@ -8693,8 +8720,9 @@ async fn an_edited_approval_binds_to_the_edited_text() {
         }
     );
     use crate::automation::entities::playbook_approval;
-    use sea_orm::EntityTrait;
-    let row = playbook_approval::Entity::find_by_id(approval_id)
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    let row = playbook_approval::Entity::find()
+        .filter(playbook_approval::Column::PublicId.eq(approval_id))
         .one(&h.state.db.conn)
         .await
         .unwrap()
@@ -8717,7 +8745,7 @@ async fn an_edit_to_a_field_the_agent_did_not_declare_is_refused() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"]["code"], "invalid_input");
-    assert_eq!(approval_state(&h, approval_id).await, "pending");
+    assert_eq!(approval_state(&h, &approval_id).await, "pending");
     assert_eq!(item_status(&h, item_id).await, "waiting_approval");
 }
 
@@ -8736,7 +8764,8 @@ async fn answering_an_approval_tells_the_feed() {
 async fn run_operations_tell_the_feed() {
     // Spec 11.4.1: each run change reaches the feed.
     let h = host(false).await;
-    let id = seed_playbook(&h).await;
+    let pb = seed_playbook(&h).await;
+    let id = pb.public_id.clone();
     let mut last = *h.state.playbook_changes.borrow();
     let mut changed = |h: &Host, op: &str| {
         let now = *h.state.playbook_changes.borrow();
@@ -8744,7 +8773,7 @@ async fn run_operations_tell_the_feed() {
         last = now;
     };
     let (_, body) = h.call("run.start", json!({ "playbook_id": id })).await;
-    let run_id = body["run_id"].as_i64().unwrap();
+    let run_id = body["run_id"].as_str().unwrap().to_string();
     changed(&h, "run.start");
     h.call("run.pause", json!({ "run_id": run_id })).await;
     changed(&h, "run.pause");
@@ -8758,4 +8787,33 @@ async fn run_operations_tell_the_feed() {
     changed(&h, "playbooks off");
     h.call("run.stop", json!({ "run_id": run_id })).await;
     changed(&h, "run.stop");
+}
+
+fn is_public_id(v: &Value) -> bool {
+    v.as_str().is_some_and(|s| uuid::Uuid::parse_str(s).is_ok())
+}
+
+#[tokio::test]
+async fn playbooks_runs_items_and_approvals_have_public_ids() {
+    // protocol/mod.rs: clients address everything by opaque ids; internal
+    // row ids never cross the protocol.
+    let h = host(false).await;
+    let (run_id, _, approval_id) = seed_parked_item(&h).await;
+    let (_, list) = h.call("playbook.list", json!({})).await;
+    assert!(is_public_id(&list[0]["playbook_id"]), "{list}");
+    let (_, run) = h.call("run.get", json!({ "run_id": run_id })).await;
+    assert!(is_public_id(&run["run_id"]), "{run}");
+    assert!(is_public_id(&run["playbook_id"]), "{run}");
+    let (_, page) = h.call("run.items", json!({ "run_id": run_id })).await;
+    assert!(is_public_id(&page["items"][0]["item_id"]), "{page}");
+    let (status, body) = h
+        .call("run.items", json!({ "run_id": run_id, "cursor": "nope" }))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = h.call("run.approve", json!({ "approval_id": approval_id })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(is_public_id(&body["approval_id"]), "{body}");
+    // A row id is not an id a client can use.
+    let (status, _) = h.call("run.get", json!({ "run_id": 1 })).await;
+    assert!(status.is_client_error(), "{status}");
 }

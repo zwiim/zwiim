@@ -2085,7 +2085,7 @@ export interface AgentAuthStatus {
  * ...). Wall-clock fields are RFC 3339.
  */
 export interface PlaybookSummary {
-  playbook_id: number;
+  playbook_id: string;
   name: string;
   /** The saved version; a run pins the one it started on. */
   version: number;
@@ -2193,8 +2193,8 @@ export interface RunItemView {
 }
 
 export interface RunSummary {
-  run_id: number;
-  playbook_id: number;
+  run_id: string;
+  playbook_id: string;
   playbook_version: number;
   trigger: RunTrigger;
   status: RunStatus;
@@ -2240,7 +2240,7 @@ export type ItemReasonCode =
   | "host_restarted";
 
 export interface ItemSummary {
-  item_id: number;
+  item_id: string;
   site: string;
   account: string;
   key: string;
@@ -2255,7 +2255,7 @@ export interface ItemSummary {
 export interface ItemPage {
   items: ItemSummary[];
   /** Pass as `cursor` for the next page; null at the end. */
-  next_cursor: number | null;
+  next_cursor: string | null;
 }
 
 /** Why a site is paused (spec 10.2.3). */
@@ -2541,9 +2541,9 @@ export interface Operations {
    */
   "playbook.list": [Record<string, never>, PlaybookSummary[]];
   /** One playbook's summary and current text. `not_found` when gone. */
-  "playbook.get": [{ playbook_id: number }, PlaybookDetail];
+  "playbook.get": [{ playbook_id: string }, PlaybookDetail];
   /** Replace the text: one new version. A running run keeps the one it pinned. */
-  "playbook.save": [{ playbook_id: number; source: string }, { playbook: PlaybookSummary }];
+  "playbook.save": [{ playbook_id: string; source: string }, { playbook: PlaybookSummary }];
   /**
    * Start a run. In 1a-i `trigger` is `mac` (or absent); `phone` and
    * `schedule` are `run_start_requires_mac`. `item_limit: 1` is "Try on one
@@ -2552,30 +2552,30 @@ export interface Operations {
    * for each of the playbook's sites.
    */
   "run.start": [
-    { playbook_id: number; trigger?: RunTrigger; item_limit?: number },
-    { run_id: number },
+    { playbook_id: string; trigger?: RunTrigger; item_limit?: number },
+    { run_id: string },
   ];
   /**
    * "Try on one item": a run with item limit 1, show-me on, under all the
    * normal rules; the ledger is touched only if the item goes out.
    */
-  "run.try": [{ playbook_id: number }, { run_id: number }];
-  "run.get": [{ run_id: number }, RunSummary];
+  "run.try": [{ playbook_id: string }, { run_id: string }];
+  "run.get": [{ run_id: string }, RunSummary];
   /** One page of the run's items, oldest first; follow `next_cursor`. */
-  "run.items": [{ run_id: number; cursor?: number; limit?: number }, ItemPage];
+  "run.items": [{ run_id: string; cursor?: string; limit?: number }, ItemPage];
   /** Idempotent: pausing a paused run returns it unchanged. */
-  "run.pause": [{ run_id: number }, RunSummary];
+  "run.pause": [{ run_id: string }, RunSummary];
   /** Idempotent like pause: a running run answers as it is. `run_not_paused` for a run neither paused nor running. */
-  "run.resume": [{ run_id: number }, RunSummary];
+  "run.resume": [{ run_id: string }, RunSummary];
   /** Cancel parked approvals; their items end `stopped`. Idempotent once stopped. */
-  "run.stop": [{ run_id: number }, RunSummary];
+  "run.stop": [{ run_id: string }, RunSummary];
   /** Approve (Send) a pending approval; first answer wins. `approval_not_pending` + `details.state` otherwise. `edits` (edit then send) replaces declared text fields; the approval binds to the edited content. An edit to an undeclared or non-text field is `invalid_input`. */
   "run.approve": [
-    { approval_id: number; edits?: { role: string; name: string; text: string }[] },
-    { approval_id: number; state: string },
+    { approval_id: string; edits?: { role: string; name: string; text: string }[] },
+    { approval_id: string; state: string },
   ];
   /** Skip a pending item; it ends `skipped` (`approval_rejected`). */
-  "run.reject": [{ approval_id: number }, { approval_id: number; state: string }];
+  "run.reject": [{ approval_id: string }, { approval_id: string; state: string }];
   /** Every site the Host knows for `account` (default `main`). */
   "site.list": [{ account?: string }, SiteSummary[]];
   /** Pause a (site, account) for every playbook, with a cause. */

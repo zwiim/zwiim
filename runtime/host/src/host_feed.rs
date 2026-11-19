@@ -3018,6 +3018,7 @@ esac
             .unwrap();
         let now = chrono::Utc::now();
         let item = playbook_item::Entity::insert(playbook_item::ActiveModel {
+            public_id: Set(uuid::Uuid::new_v4().to_string()),
             run_id: sea_orm::Set(run),
             playbook_id: sea_orm::Set(pb.id),
             site: sea_orm::Set("indeed.com".into()),
@@ -3111,6 +3112,7 @@ esac
             .unwrap();
         let now = chrono::Utc::now();
         let item = playbook_item::Entity::insert(playbook_item::ActiveModel {
+            public_id: Set(uuid::Uuid::new_v4().to_string()),
             run_id: sea_orm::Set(run),
             playbook_id: sea_orm::Set(pb.id),
             site: sea_orm::Set("indeed.com".into()),

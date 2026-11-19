@@ -67,6 +67,7 @@ async fn nothing_starts_when_the_outward_site_risk_was_not_accepted() {
     let (runner, run) = setup().await;
     let now = chrono::Utc::now();
     let id = playbook_item::Entity::insert(playbook_item::ActiveModel {
+        public_id: sea_orm::Set(uuid::Uuid::new_v4().to_string()),
         run_id: sea_orm::Set(run),
         playbook_id: sea_orm::Set(1),
         site: sea_orm::Set("indeed.com".into()),
@@ -102,6 +103,7 @@ async fn nothing_starts_on_a_site_whose_risk_was_not_accepted() {
     let (runner, run) = setup().await;
     let now = chrono::Utc::now();
     let id = playbook_item::Entity::insert(playbook_item::ActiveModel {
+        public_id: sea_orm::Set(uuid::Uuid::new_v4().to_string()),
         run_id: sea_orm::Set(run),
         playbook_id: sea_orm::Set(1),
         site: sea_orm::Set("new.example".into()),
@@ -150,6 +152,7 @@ async fn mark_outward(runner: &ItemRunner, id: i32) {
 async fn working_item(runner: &ItemRunner, run: i32) -> (i32, ItemRef) {
     let now = chrono::Utc::now();
     let id = playbook_item::Entity::insert(playbook_item::ActiveModel {
+        public_id: sea_orm::Set(uuid::Uuid::new_v4().to_string()),
         run_id: sea_orm::Set(run),
         playbook_id: sea_orm::Set(1),
         site: sea_orm::Set("indeed.com".into()),
@@ -443,6 +446,7 @@ async fn a_paused_site_keeps_a_queued_item_out() {
     let (runner, run) = setup().await;
     let now = chrono::Utc::now();
     let id = playbook_item::Entity::insert(playbook_item::ActiveModel {
+        public_id: sea_orm::Set(uuid::Uuid::new_v4().to_string()),
         run_id: sea_orm::Set(run),
         playbook_id: sea_orm::Set(1),
         site: sea_orm::Set("indeed.com".into()),
@@ -479,6 +483,7 @@ async fn a_paused_site_keeps_a_queued_item_out() {
     .await
     .expect("pause");
     let id2 = playbook_item::Entity::insert(playbook_item::ActiveModel {
+        public_id: sea_orm::Set(uuid::Uuid::new_v4().to_string()),
         run_id: sea_orm::Set(run),
         playbook_id: sea_orm::Set(1),
         site: sea_orm::Set("x.example".into()),
@@ -995,6 +1000,7 @@ async fn an_approved_click_on_a_changed_page_restarts_and_keeps_the_approval() {
 async fn item_with(runner: &ItemRunner, run: i32, key: &str, status: ItemStatus) -> i32 {
     let now = chrono::Utc::now();
     playbook_item::Entity::insert(playbook_item::ActiveModel {
+        public_id: sea_orm::Set(uuid::Uuid::new_v4().to_string()),
         run_id: sea_orm::Set(run),
         playbook_id: sea_orm::Set(1),
         site: sea_orm::Set("indeed.com".into()),

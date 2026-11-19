@@ -46,6 +46,7 @@ impl SiteKnowledgeKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Playbook {
     pub id: i32,
+    pub public_id: String,
     pub name: String,
     pub source: String,
     pub format: i32,
@@ -73,6 +74,7 @@ impl PlaybookStore {
     pub async fn create(&self, name: &str, source: &str) -> Result<Playbook, DbError> {
         let now = Utc::now();
         let row = playbook::Entity::insert(playbook::ActiveModel {
+            public_id: Set(uuid::Uuid::new_v4().to_string()),
             name: Set(name.to_string()),
             source: Set(source.to_string()),
             format: Set(1),
@@ -284,6 +286,7 @@ impl PlaybookStore {
 fn to_playbook(m: playbook::Model) -> Playbook {
     Playbook {
         id: m.id,
+        public_id: m.public_id,
         name: m.name,
         source: m.source,
         format: m.format,

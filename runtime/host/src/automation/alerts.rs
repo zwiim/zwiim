@@ -53,6 +53,7 @@ pub async fn record<C: ConnectionTrait>(
 ) -> Result<Option<Alert>, DbError> {
     let now = chrono::Utc::now();
     let inserted = playbook_alert::Entity::insert(playbook_alert::ActiveModel {
+        public_id: Set(uuid::Uuid::new_v4().to_string()),
         kind: Set(kind.as_str().to_string()),
         subject: Set(subject),
         run_id: Set(run_id),

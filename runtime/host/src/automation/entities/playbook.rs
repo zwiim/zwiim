@@ -6,6 +6,8 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i32,
+    /// What clients address it by; the row id stays inside the Host.
+    pub public_id: String,
     pub name: String,
     pub source: String,
     pub format: i32,

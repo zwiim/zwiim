@@ -21,6 +21,7 @@ use crate::db::error::DbError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Approval {
     pub id: i32,
+    pub public_id: String,
     pub run_id: i32,
     pub item_id: i32,
     pub kind: String,
@@ -144,6 +145,7 @@ pub async fn create(
         .await?;
     let payload = serde_json::to_string(declaration).unwrap_or_default();
     let row = playbook_approval::Entity::insert(playbook_approval::ActiveModel {
+        public_id: Set(uuid::Uuid::new_v4().to_string()),
         run_id: Set(run_id),
         item_id: Set(item_id),
         kind: Set(declaration.kind.as_str().to_string()),
@@ -453,6 +455,7 @@ pub async fn stop_pending(conn: &DatabaseConnection, run_id: i32) -> Result<u64,
 fn to_approval(m: playbook_approval::Model) -> Approval {
     Approval {
         id: m.id,
+        public_id: m.public_id,
         run_id: m.run_id,
         item_id: m.item_id,
         kind: m.kind,

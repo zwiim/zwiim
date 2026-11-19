@@ -32,6 +32,7 @@ async fn item(
 ) -> i32 {
     let now = chrono::Utc::now();
     playbook_item::Entity::insert(playbook_item::ActiveModel {
+        public_id: sea_orm::Set(uuid::Uuid::new_v4().to_string()),
         run_id: sea_orm::Set(run_id),
         playbook_id: sea_orm::Set(playbook_id),
         site: sea_orm::Set(site.to_string()),
