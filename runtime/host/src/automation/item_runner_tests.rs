@@ -573,6 +573,7 @@ async fn approved_item(runner: &ItemRunner, run: i32) -> (i32, ItemRef) {
         runner_engine(runner),
         a.id,
         crate::automation::ApprovalAnswer::Approve,
+        &[],
     )
     .await
     .expect("approve");

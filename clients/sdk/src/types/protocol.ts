@@ -2470,8 +2470,11 @@ export interface Operations {
   "run.resume": [{ run_id: number }, RunSummary];
   /** Cancel parked approvals; their items end `stopped`. Idempotent once stopped. */
   "run.stop": [{ run_id: number }, RunSummary];
-  /** Approve (Send) a pending approval; first answer wins. `approval_not_pending` + `details.state` otherwise. */
-  "run.approve": [{ approval_id: number }, { approval_id: number; state: string }];
+  /** Approve (Send) a pending approval; first answer wins. `approval_not_pending` + `details.state` otherwise. `edits` (edit then send) replaces declared text fields; the approval binds to the edited content. An edit to an undeclared or non-text field is `invalid_input`. */
+  "run.approve": [
+    { approval_id: number; edits?: { role: string; name: string; text: string }[] },
+    { approval_id: number; state: string },
+  ];
   /** Skip a pending item; it ends `skipped` (`approval_rejected`). */
   "run.reject": [{ approval_id: number }, { approval_id: number; state: string }];
   /** Every site the Host knows for `account` (default `main`). */

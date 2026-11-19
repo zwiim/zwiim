@@ -505,13 +505,15 @@ use serde::{Deserialize, Serialize};
 ///
 /// 39 (`playbook.*`, `run.*`, `site.*`): the automation engine's operations
 /// (automation-engine spec 18.2). `playbook.list` / `playbook.get` /
-/// `playbook.save`; `run.start` (Mac only in 1a-i) / `run.get` / `run.items`
-/// (paginated) / `run.pause` / `run.resume` / `run.stop`; `site.list` /
-/// `site.pause` / `site.resume` / `site.risk_accept` / `site.usage`. All are
-/// behind the `playbooks.enabled` Labs setting and reply their errors in the
-/// spec 11.2 vocabulary (`run_active`, `run_start_requires_mac`,
-/// `run_not_paused`, `site_not_paused`, `playbooks_disabled`). Older clients
-/// never see or call them.
+/// `playbook.save`; `run.start` (Mac only in 1a-i) / `run.try` / `run.get` /
+/// `run.items` (paginated) / `run.pause` / `run.resume` / `run.stop`;
+/// `run.approve` (with optional `edits`, edit then send) / `run.reject`;
+/// `site.list` / `site.pause` / `site.resume` / `site.risk_accept` /
+/// `site.usage`. All but Pause and Stop are behind the `playbooks.enabled`
+/// Labs setting. Errors use the spec 11.2 vocabulary (`run_active`,
+/// `run_start_requires_mac`, `run_not_paused`, `run_not_running`,
+/// `site_not_paused`, `approval_not_pending`, `playbook_invalid`,
+/// `playbooks_disabled`). Older clients never see or call them.
 pub const PROTOCOL_REVISION: u32 = 39;
 
 /// Oldest client revision this Host serves. Raise only after a release that

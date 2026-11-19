@@ -67,12 +67,25 @@ pub enum ApprovalAnswer {
     Skip,
 }
 
+/// One edit the person made on the approval sheet: new text for a declared
+/// text field, found by its role and accessible name (spec 8.5.2).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FieldEdit {
+    pub role: String,
+    pub name: String,
+    pub text: String,
+}
+
 /// Whether the answer found the approval pending (first-wins) or already
 /// answered (the caller raises `approval_not_pending` with `current`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnswerOutcome {
     Applied,
     NotPending(ApprovalState),
+    /// An edit named a field the agent did not declare as text; nothing
+    /// changed.
+    InvalidEdit(String),
 }
 
 /// The whitespace-insensitive binding hash (spec 8.5.3). Whitespace-only
@@ -158,6 +171,7 @@ pub async fn respond(
     conn: &DatabaseConnection,
     approval_id: i32,
     reply: ApprovalAnswer,
+    edits: &[FieldEdit],
 ) -> Result<AnswerOutcome, DbError> {
     use crate::automation::entities::{playbook_item, playbook_run};
     let tx = conn.begin().await?;
@@ -175,6 +189,34 @@ pub async fn respond(
         set_state(&tx, approval_id, "pending", "stopped").await?;
         tx.commit().await?;
         return Ok(AnswerOutcome::NotPending(ApprovalState::Stopped));
+    }
+    if !edits.is_empty() && row.state == "pending" {
+        // An edited approval binds to the edited content (spec 8.5.3).
+        let Ok(mut declaration) = serde_json::from_str::<Declaration>(&row.payload) else {
+            tx.rollback().await?;
+            return Err(DbError::Conflict(format!(
+                "approval {approval_id} has an unreadable payload"
+            )));
+        };
+        if let Err(message) = apply_edits(&mut declaration, edits) {
+            tx.rollback().await?;
+            return Ok(AnswerOutcome::InvalidEdit(message));
+        }
+        playbook_approval::Entity::update_many()
+            .col_expr(
+                playbook_approval::Column::Payload,
+                sea_orm::sea_query::Expr::value(
+                    serde_json::to_string(&declaration).unwrap_or_default(),
+                ),
+            )
+            .col_expr(
+                playbook_approval::Column::Hash,
+                sea_orm::sea_query::Expr::value(binding_hash(&declaration)),
+            )
+            .filter(playbook_approval::Column::Id.eq(approval_id))
+            .filter(playbook_approval::Column::State.eq("pending"))
+            .exec(&tx)
+            .await?;
     }
     let outcome = answer(&tx, approval_id, reply.clone()).await?;
     if outcome != AnswerOutcome::Applied {
@@ -197,6 +239,24 @@ pub async fn respond(
     }
     tx.commit().await?;
     Ok(AnswerOutcome::Applied)
+}
+
+/// Put the person's edits into the declaration. Only declared text fields
+/// can be edited: secrets and files are never typed on the sheet, and a
+/// field the agent did not declare is refused.
+fn apply_edits(declaration: &mut Declaration, edits: &[FieldEdit]) -> Result<(), String> {
+    for edit in edits {
+        let field = declaration
+            .fields
+            .iter_mut()
+            .find(|f| f.target.role == edit.role && f.target.name == edit.name)
+            .ok_or_else(|| format!("'{}' is not a declared field", edit.name))?;
+        match &mut field.value {
+            DeclaredValue::Text { text } => *text = edit.text.clone(),
+            _ => return Err(format!("'{}' is not a text field", edit.name)),
+        }
+    }
+    Ok(())
 }
 
 /// Move a run's approved, parked items to `working` (on resume, spec 8.8.3).

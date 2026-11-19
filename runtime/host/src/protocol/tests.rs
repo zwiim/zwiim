@@ -8465,3 +8465,58 @@ async fn pause_and_stop_answer_with_the_run_when_playbooks_are_off() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["status"], "stopped");
 }
+
+#[tokio::test]
+async fn an_edited_approval_binds_to_the_edited_text() {
+    // Spec 8.5.2-3: the person edits then sends; what goes out is the edited
+    // text, and the approval's hash is the edited content's.
+    let h = host(false).await;
+    let (_, item_id, approval_id) = seed_parked_item(&h).await;
+    let (status, body) = h
+        .call(
+            "run.approve",
+            json!({
+                "approval_id": approval_id,
+                "edits": [{ "role": "textbox", "name": "Name", "text": "Asha K" }]
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let approved = crate::automation::approvals::approved_declaration(&h.state.db.conn, item_id)
+        .await
+        .unwrap()
+        .expect("approved");
+    assert_eq!(
+        approved.fields[0].value,
+        crate::automation::declaration::DeclaredValue::Text {
+            text: "Asha K".into()
+        }
+    );
+    use crate::automation::entities::playbook_approval;
+    use sea_orm::EntityTrait;
+    let row = playbook_approval::Entity::find_by_id(approval_id)
+        .one(&h.state.db.conn)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.hash, crate::automation::approvals::binding_hash(&approved));
+}
+
+#[tokio::test]
+async fn an_edit_to_a_field_the_agent_did_not_declare_is_refused() {
+    let h = host(false).await;
+    let (_, item_id, approval_id) = seed_parked_item(&h).await;
+    let (status, body) = h
+        .call(
+            "run.approve",
+            json!({
+                "approval_id": approval_id,
+                "edits": [{ "role": "textbox", "name": "Salary", "text": "1" }]
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "invalid_input");
+    assert_eq!(approval_state(&h, approval_id).await, "pending");
+    assert_eq!(item_status(&h, item_id).await, "waiting_approval");
+}

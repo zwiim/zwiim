@@ -742,6 +742,15 @@ pub struct ApprovalAnswerParams {
     pub approval_id: i32,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalSendParams {
+    pub approval_id: i32,
+    /// Edit then send (spec 8.5.2): new text for declared text fields.
+    #[serde(default)]
+    pub edits: Vec<crate::automation::approvals::FieldEdit>,
+}
+
 #[derive(Serialize)]
 pub struct ApprovalAnswerResult {
     pub approval_id: i32,
@@ -753,12 +762,13 @@ pub struct ApprovalAnswerResult {
 /// `approval_not_pending` with the current state.
 pub async fn run_approve(
     Extension(state): Extension<Arc<AppState>>,
-    axum::extract::Json(p): axum::extract::Json<ApprovalAnswerParams>,
+    axum::extract::Json(p): axum::extract::Json<ApprovalSendParams>,
 ) -> ZResult<ApprovalAnswerResult> {
     answer_approval(
         &state,
         p.approval_id,
         crate::automation::ApprovalAnswer::Approve,
+        &p.edits,
     )
     .await
 }
@@ -772,6 +782,7 @@ pub async fn run_reject(
         &state,
         p.approval_id,
         crate::automation::ApprovalAnswer::Skip,
+        &[],
     )
     .await
 }
@@ -780,11 +791,12 @@ async fn answer_approval(
     state: &AppState,
     approval_id: i32,
     answer: crate::automation::ApprovalAnswer,
+    edits: &[crate::automation::approvals::FieldEdit],
 ) -> ZResult<ApprovalAnswerResult> {
     require_enabled(&state.db.conn).await?;
     use crate::automation::approvals::{self, AnswerOutcome};
     // The answer and its effect on the item commit together (spec 8.5.4).
-    match approvals::respond(&state.db.conn, approval_id, answer.clone())
+    match approvals::respond(&state.db.conn, approval_id, answer.clone(), edits)
         .await
         .map_err(|e| match e {
             crate::db::error::DbError::NotFound(what) => ZwiimError::not_found(what),
@@ -799,6 +811,7 @@ async fn answer_approval(
             err.details = Some(serde_json::json!({ "state": current.as_str() }));
             Err(err)
         }
+        AnswerOutcome::InvalidEdit(message) => Err(ZwiimError::invalid_input(message)),
         AnswerOutcome::Applied => Ok(Json(ApprovalAnswerResult {
             approval_id,
             state: match answer {
