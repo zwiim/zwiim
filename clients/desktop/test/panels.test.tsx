@@ -177,8 +177,8 @@ describe("files panel", () => {
     expect(screen.getByText("Opening…")).toBeTruthy();
     release();
     await tick();
-    const rows = screen.getByTestId("file-content").querySelectorAll("tr");
-    expect([...rows].map((r) => r.textContent)).toEqual(["1one", "2two"]);
+    const rows = screen.getByTestId("file-content").querySelectorAll("[data-line]");
+    expect([...rows].map((r) => r.textContent)).toEqual(["one", "two"]);
     cleanup();
 
     await mount(t, <FileView workspaceId="w1" path="big.bin" />);
@@ -255,8 +255,8 @@ describe("files panel", () => {
     await t.feedEvent("workspace.diff_changed", { workspace_id: "w1" });
     await tick();
     expect(screen.getByText("b.txt")).toBeTruthy();
-    const rows = screen.getByTestId("file-content").querySelectorAll("tr");
-    expect([...rows].map((r) => r.textContent)).toEqual(["1one", "2two"]);
+    const rows = screen.getByTestId("file-content").querySelectorAll("[data-line]");
+    expect([...rows].map((r) => r.textContent)).toEqual(["one", "two"]);
   });
 
   it("opens a folder holding only a folder straight through, on one row", async () => {

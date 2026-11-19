@@ -28,6 +28,7 @@ import {
 } from "@zwiim/sdk";
 import { FileLinksContext } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
+import { Dialog } from "@/components/ui/dialog";
 import { useAccount } from "@/lib/account";
 import { stepZoom } from "@/lib/appearance";
 import { useTurnAlerts } from "@/lib/attention";
@@ -66,7 +67,7 @@ import { cn } from "@/lib/utils";
 import { ConnectionStatus, type RemoteLink } from "@/panels/ConnectionStatus";
 import { ControlCenter } from "@/panels/ControlCenter";
 import { BrowserPanel } from "@/panels/BrowserPanel";
-import { DiffPanel, DiffView } from "@/panels/DiffPanel";
+import { DiffPanel, DiffView, type DiffCount } from "@/panels/DiffPanel";
 import { FilesPanel, FileView } from "@/panels/FilesPanel";
 import { GitPanel } from "@/panels/GitPanel";
 import { HostPathDialog, HostPicker, PairDialog, type PairTarget } from "@/panels/Hosts";
@@ -288,6 +289,18 @@ export function Workbench({
   const [docs, setDocs] = useState<OpenDoc[]>([]);
   /** The open file showing in the middle; null shows the session. */
   const [activeDoc, setActiveDoc] = useState<string | null>(null);
+  /** Open files with typing not yet saved; closing one asks first. */
+  const [unsaved, setUnsaved] = useState<ReadonlySet<string>>(() => new Set());
+  const [closing, setClosing] = useState<string | null>(null);
+  const markUnsaved = useCallback((key: string, dirty: boolean) => {
+    setUnsaved((all) => {
+      if (all.has(key) === dirty) return all;
+      const next = new Set(all);
+      if (dirty) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
   /** Slash commands running in an agent's CLI, over each workspace's composer. */
   const agentTerminals = useAgentTerminalsState();
   /** Each workspace's session last shown here (null: a new one), to return to it. */
@@ -377,6 +390,12 @@ export function Workbench({
   }
 
   function closeDoc(key: string) {
+    if (unsaved.has(key)) setClosing(key);
+    else dropDoc(key);
+  }
+
+  function dropDoc(key: string) {
+    markUnsaved(key, false);
     const at = shownDocs.findIndex((d) => docKey(d) === key);
     setDocs((all) => all.filter((d) => docKey(d) !== key));
     if (activeDoc === key) {
@@ -525,6 +544,16 @@ export function Workbench({
           onClose={() => setSettings(null)}
         />
       )}
+      {closing && (
+        <UnsavedDialog
+          name={docs.find((d) => docKey(d) === closing)?.path ?? closing}
+          onDiscard={() => {
+            dropDoc(closing);
+            setClosing(null);
+          }}
+          onClose={() => setClosing(null)}
+        />
+      )}
       {askPath && (
         <HostPathDialog
           onDone={(path) => {
@@ -610,16 +639,22 @@ export function Workbench({
                   </AgentTerminalsContext.Provider>
                 </FileLinksContext.Provider>
               </TabPane>
-              {workspace &&
-                shownDocs.map((d) => (
-                  <TabPane key={docKey(d)} active={current === d}>
+              {/* Every workspace's open files stay mounted, so typing not yet saved survives a switch. */}
+              {docs.map((d) => {
+                const own = workspaces?.find((w) => w.workspace_id === d.workspaceId);
+                if (!own) return null;
+                const key = docKey(d);
+                const onDirty = (dirty: boolean) => markUnsaved(key, dirty);
+                return (
+                  <TabPane key={key} active={current === d}>
                     {d.kind === "diff" ? (
-                      <DiffView workspace={workspace} path={d.path} />
+                      <DiffView workspace={own} path={d.path} active={current === d} onDirty={onDirty} />
                     ) : (
-                      <FileView workspaceId={d.workspaceId} path={d.path} active={current === d} />
+                      <FileView workspaceId={d.workspaceId} path={d.path} active={current === d} onDirty={onDirty} />
                     )}
                   </TabPane>
-                ))}
+                );
+              })}
             </div>
           </>
         ) : (
@@ -949,7 +984,9 @@ function WorkspacePanel({
   const [tab, setTab] = useState<Tab>("files");
   // Views mount on first visit and then stay mounted, so switching tabs
   // keeps each one's state (open files, selected diff, scroll).
-  const [visited, setVisited] = useState<Set<Tab>>(() => new Set(["files"]));
+  // Diff mounts from the start too: its tab shows how many files changed.
+  const [visited, setVisited] = useState<Set<Tab>>(() => new Set(["files", "diff"]));
+  const [changes, setChanges] = useState<DiffCount | null>(null);
   const drag = useRef<{ x: number; width: number } | null>(null);
   // Width follows the pointer directly while dragging; it animates only on collapse.
   const [resizing, setResizing] = useState(false);
@@ -1000,12 +1037,19 @@ function WorkspacePanel({
                   tab === t.id ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground",
                 )}
                 aria-current={tab === t.id ? "page" : undefined}
+                title={t.id === "diff" && changes ? changedFiles(changes) : undefined}
                 onClick={() => setTab(t.id)}
                 // A file dragged from Files opens the browser on the way to a page.
                 onDragEnter={() => t.id === "browser" && draggedFile() && setTab("browser")}
               >
                 <t.icon className="size-3.5" />
                 {t.label}
+                {t.id === "diff" && changes && (
+                  <span className="text-muted-foreground text-xs tabular-nums" aria-hidden data-testid="diff-count">
+                    {changes.count}
+                    {changes.truncated && "+"}
+                  </span>
+                )}
               </button>
             ))}
             <Button
@@ -1033,6 +1077,8 @@ function WorkspacePanel({
                     workspace={workspace}
                     selected={showing?.kind === "diff" ? showing.path : null}
                     onOpen={(path) => onOpen("diff", path)}
+                    onCount={setChanges}
+                    active={tab === "diff"}
                   />
                 </TabPane>
               )}
@@ -1180,6 +1226,34 @@ function WorkspacePanel({
         />
       )}
     </aside>
+  );
+}
+
+/** "3 changed files", for the Diff tab's count. */
+function changedFiles({ count, truncated }: DiffCount): string {
+  return `${count}${truncated ? "+" : ""} changed ${count === 1 && !truncated ? "file" : "files"}`;
+}
+
+/** Asks before closing a file tab whose typing is not saved. */
+function UnsavedDialog({ name, onDiscard, onClose }: { name: string; onDiscard(): void; onClose(): void }) {
+  return (
+    <Dialog className="max-w-md" aria-label="Discard unsaved edits?" onClose={onClose}>
+      <div className="flex flex-col gap-2 px-5 pt-5">
+        <h2 className="text-xl font-semibold tracking-tight">Discard unsaved edits?</h2>
+        <p className="text-muted-foreground text-sm leading-relaxed">
+          <span className="text-foreground font-mono">{name.slice(name.lastIndexOf("/") + 1)}</span> has edits that
+          aren't saved. Closing the tab loses them; press ⌘S first to keep them.
+        </p>
+      </div>
+      <div className="flex justify-end gap-2 p-5">
+        <Button variant="secondary" size="sm" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button variant="destructive" size="sm" onClick={onDiscard}>
+          Discard
+        </Button>
+      </div>
+    </Dialog>
   );
 }
 

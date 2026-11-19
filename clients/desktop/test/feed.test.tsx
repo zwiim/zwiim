@@ -11,7 +11,7 @@ import {
 import { MONO_FONTS } from "@/lib/appearance";
 import { HostProvider } from "@/lib/host-context";
 import { rememberFonts } from "@/lib/prefs";
-import { DiffPanel, DiffView } from "@/panels/DiffPanel";
+import { DiffPanel, HIDDEN_DIFF_EVERY_MS, DiffView } from "@/panels/DiffPanel";
 import { Sidebar, type SidebarProps } from "@/panels/Sidebar";
 import { TerminalPanel } from "@/panels/TerminalPanel";
 import { OpenSettingsContext } from "@/settings/open";
@@ -242,6 +242,49 @@ describe("diff on the host feed", () => {
     expect(screen.getByTestId("diff-files").textContent).not.toContain("a.txt");
     expect(screen.getByTestId("diff-patch").textContent).toContain("No uncommitted changes");
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+describe("a hidden Diff panel", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("keeps only its count fresh, at most every few seconds, and asks which files are uncommitted once shown", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const t = new FakeTransport();
+    t.handlers["workspace.list"] = () => [worktree("a1b2c3d4")];
+    t.handlers["git.diff"] = () => ({ base_commit: null, truncated: false, files: [] });
+    t.handlers["git.status"] = () => [];
+    const ws = worktree("a1b2c3d4");
+    const calls = (op: string) => t.calls.filter((c) => c.op === op).length;
+    const counts: unknown[] = [];
+    const panel = (active: boolean) => (
+      <DiffPanel workspace={ws} selected={null} onOpen={() => {}} active={active} onCount={(c) => counts.push(c)} />
+    );
+    const client = new HostClient({ transport: t });
+    const controller = new HostController(client);
+    client.start();
+    await tick();
+    const shown = (active: boolean) => <HostProvider value={controller}>{panel(active)}</HostProvider>;
+    const { rerender } = render(shown(false));
+    await tick();
+    await act(async () => vi.advanceTimersByTime(0));
+    await tick();
+    expect(calls("git.diff")).toBe(1);
+    expect(counts.at(-1)).toEqual({ count: 0, truncated: false });
+
+    // A burst of changes while hidden: one more diff once the interval passes, no status.
+    for (let i = 0; i < 3; i++) await t.feedEvent("workspace.diff_changed", { workspace_id: "a1b2c3d4" });
+    await tick();
+    expect(calls("git.diff")).toBe(1);
+    await act(async () => vi.advanceTimersByTime(HIDDEN_DIFF_EVERY_MS));
+    await tick();
+    expect(calls("git.diff")).toBe(2);
+    expect(calls("git.status")).toBe(0);
+
+    // Shown: a full load, Discard's status included.
+    rerender(shown(true));
+    await tick();
+    expect(calls("git.status")).toBe(1);
   });
 });
 

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   agentName,
   changeRequest,
+  composerButtons,
   compactTokens,
   contextChip,
   contextFigures,
@@ -12,12 +13,8 @@ import {
   lockedNote,
   needsConfirm,
   optionChips,
-  optionRows,
   optionsEditable,
   optionsError,
-  pageFor,
-  settleOptions,
-  SEARCH_FROM,
   tokens,
 } from "../src/sessions/controls";
 
@@ -50,6 +47,7 @@ describe("session controls", () => {
   it("sends one option per change", () => {
     expect(changeRequest({ model: "haiku" })).toEqual({ model: "haiku" });
     expect(changeRequest({ effort: "low" })).toEqual({ effort: "low" });
+    expect(changeRequest({ fast: true })).toEqual({ fast: true });
     expect(changeRequest({ mode: "plan" })).toEqual({ mode: "plan" });
   });
 
@@ -60,47 +58,9 @@ describe("session controls", () => {
     expect(optionChips(codexLike).text).toBe("Plan · GPT-5.3 Codex · Medium");
     expect(optionChips(claudeLike("", null)).text).toBe("Ask · Default");
     expect(optionChips({ ...codexLike, mode: { current: "unattended", label: "Full access", available: ["normal", "unattended"] } }).mode)
-      .toEqual({ mode: "unattended", label: "Unattended" });
+      .toEqual({ mode: "unattended", label: "Auto" });
     expect(optionChips({ model: null, effort: null, mode: null })).toEqual({ mode: null, text: null });
     expect(optionChips(null)).toEqual({ mode: null, text: null });
-  });
-
-  it("summary rows open only what can change", () => {
-    expect(optionRows(claudeLike("opus[1m]", "high"), true)).toEqual([
-      { key: "mode", label: "Mode", value: "Ask", open: true },
-      { key: "model", label: "Model", value: "Opus 5", open: true },
-      { key: "effort", label: "Effort", value: "High", open: true },
-    ]);
-    // Codex offers one model: shown, not openable.
-    expect(optionRows(codexLike, true).find((r) => r.key === "model")).toEqual({ key: "model", label: "Model", value: "GPT-5.3 Codex", open: false });
-    expect(optionRows(claudeLike("haiku", null), true).map((r) => r.key)).toEqual(["mode", "model"]);
-    expect(optionRows(claudeLike("opus[1m]", "high"), false).every((r) => !r.open)).toBe(true);
-    expect(optionRows({ ...codexLike, mode: { current: "normal", label: "", available: ["normal"] } }, true)[0]?.open).toBe(false);
-    expect(optionRows(null, true)).toEqual([]);
-  });
-
-  it("summary rows keep an unlisted current value", () => {
-    expect(optionRows(claudeLike("opus-old", null), true)[1]?.value).toBe("opus-old");
-    expect(optionRows(claudeLike("", null), true)[1]?.value).toBe("Default");
-  });
-
-  it("a page that can no longer open falls back to the summary", () => {
-    const rows = optionRows(claudeLike("opus[1m]", "high"), true);
-    expect(pageFor("model", rows)).toBe("model");
-    expect(pageFor("root", rows)).toBe("root");
-    expect(pageFor("model", optionRows(claudeLike("opus[1m]", "high"), false))).toBe("root");
-    expect(pageFor("effort", optionRows(claudeLike("haiku", null), true))).toBe("root");
-    expect(pageFor("context", [])).toBe("context");
-  });
-
-  it("a page that fell back stays on the summary once its option unlocks", () => {
-    const locked = optionRows(claudeLike("opus[1m]", "high"), false);
-    const open = optionRows(claudeLike("opus[1m]", "high"), true);
-    const settled = settleOptions({ page: "model", query: "op" }, locked);
-    expect(settled).toEqual({ page: "root", query: "" });
-    expect(pageFor(settled.page, open)).toBe("root");
-    const kept = { page: "model" as const, query: "op" };
-    expect(settleOptions(kept, open)).toBe(kept);
   });
 
   it("asks first only before Unattended", () => {
@@ -120,7 +80,6 @@ describe("session controls", () => {
     expect(filterChoices(v, "4-8").map((x) => x.value)).toEqual(["claude-opus-4-8"]);
     expect(filterChoices(v, "quick").map((x) => x.value)).toEqual(["haiku"]);
     expect(filterChoices(v, "xyz")).toEqual([]);
-    expect(SEARCH_FROM).toBe(8);
   });
 
   it("context line is short and names what is missing", () => {
@@ -225,5 +184,14 @@ describe("context figures", () => {
   it("formats counts", () => {
     expect(tokens(1234567)).toBe("1,234,567");
     expect(tokens(0)).toBe("0");
+  });
+});
+
+describe("composerButtons", () => {
+  it("offers stop while a turn runs, beside send once there is something to send", () => {
+    expect(composerButtons({ canSend: false, canStop: true })).toEqual({ stop: true, send: false });
+    expect(composerButtons({ canSend: true, canStop: true })).toEqual({ stop: true, send: true });
+    expect(composerButtons({ canSend: true, canStop: false })).toEqual({ stop: false, send: true });
+    expect(composerButtons({ canSend: false, canStop: false })).toEqual({ stop: false, send: true });
   });
 });

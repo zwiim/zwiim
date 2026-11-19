@@ -1,24 +1,54 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Columns2, Copy, Eye, FileText, RefreshCw, Rows2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, Columns2, Copy, Eye, FileText, Loader2, Pencil, RefreshCw, Rows2, Undo2 } from "lucide-react";
 import {
   fullFile,
+  hasCapability,
   isMarkdown,
   ZwiimClientError,
   type DiffFile,
   type FileLine,
+  type GitStatusEntry,
   type WorkspaceDiff,
   type WorkspaceInfo,
 } from "@zwiim/sdk";
 import { Markdown } from "@/components/Markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog } from "@/components/ui/dialog";
 import { errorMessage, useController, useHost } from "@/lib/host-context";
 import { diffLayout, markdownStyle, rememberDiffLayout, type DiffLayout } from "@/lib/prefs";
 import { usePref } from "@/lib/use-pref";
 import { cn } from "@/lib/utils";
 import { FileChanges } from "./FileChanges";
+import { FileView, typesInPlace, type LineChanges } from "./FilesPanel";
 
 const CHANGE_LETTER: Record<DiffFile["change"], string> = { added: "A", modified: "M", deleted: "D" };
+
+/**
+ * Each path with uncommitted changes, and whether discarding them deletes it
+ * (`new`: no commit has it) or takes it back to HEAD (`changed`). A staged
+ * rename's two paths are each their own.
+ */
+export function uncommittedPaths(status: GitStatusEntry[]): Map<string, "new" | "changed"> {
+  const out = new Map<string, "new" | "changed">();
+  for (const { status: code, file } of status) {
+    const [from, to] = file.split(" -> ");
+    if (to !== undefined) {
+      out.set(from!, "changed");
+      out.set(to, "new");
+    } else out.set(file, code === "??" || code.startsWith("A") ? "new" : "changed");
+  }
+  return out;
+}
+
+/** How many files changed; `truncated` when the Host listed only some. */
+export interface DiffCount {
+  count: number;
+  truncated: boolean;
+}
+
+/** While the Diff tab is hidden, its count is refreshed at most this often. */
+export const HIDDEN_DIFF_EVERY_MS = 3000;
 
 /** What a workspace's changes are measured against. */
 function againstLabel(workspace: WorkspaceInfo, baseCommit: string | null | undefined): string {
@@ -31,48 +61,92 @@ function againstLabel(workspace: WorkspaceInfo, baseCommit: string | null | unde
  * A workspace's changed files, as the host computes them: a worktree against
  * its base, the root's uncommitted changes against HEAD. Refetched when the
  * host says this workspace's diff may have changed. Opening a file shows its
- * patch beside the conversation.
+ * patch beside the conversation; a file with uncommitted changes can have
+ * them discarded, after a confirm. Hidden, it only keeps the tab's count
+ * fresh: the diff at most every few seconds, and not which files are
+ * uncommitted until it shows.
  */
 export function DiffPanel({
   workspace,
   selected,
   onOpen,
+  onCount,
+  active = true,
 }: {
   workspace: WorkspaceInfo;
   /** The file whose patch is showing, if any. */
   selected: string | null;
   onOpen(path: string): void;
+  /** How many files changed, once known; null while loading or with no Git. */
+  onCount?(count: DiffCount | null): void;
+  /** Whether its tab is the one showing. */
+  active?: boolean;
 }) {
   const controller = useController();
   const workspaceId = workspace.workspace_id;
   const revision = useHost((s) => s.diffRevision[workspaceId] ?? 0);
   const [diff, setDiff] = useState<WorkspaceDiff | null>(null);
+  const count = diff && workspace.is_git_repo ? diff.files.length : null;
+  const truncated = !!diff?.truncated;
+  useEffect(() => {
+    onCount?.(count === null ? null : { count, truncated });
+  }, [onCount, count, truncated]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const canDiscard = useHost((s) => hasCapability(s.connection.compat, "git.discard"));
+  const [uncommitted, setUncommitted] = useState<Map<string, "new" | "changed">>(new Map());
+  const [discarding, setDiscarding] = useState<{ path: string; kind: "new" | "changed" } | null>(null);
   /** Bumped per load; answers to older loads are dropped. */
   const loads = useRef(0);
 
-  const refresh = useCallback(async () => {
+  /** `full`: also which files are uncommitted, for Discard; a hidden panel skips it. */
+  const refresh = useCallback(async (full = true) => {
     const load = ++loads.current;
     setError(null);
     setLoading(true);
+    // Which files have uncommitted changes, for Discard; without it, none offer it.
+    const status = !full
+      ? null
+      : canDiscard
+        ? controller.client
+            .request("git.status", { workspace_id: workspaceId, show_all_untracked: true })
+            .then(uncommittedPaths, () => new Map<string, "new" | "changed">())
+        : Promise.resolve(new Map<string, "new" | "changed">());
     try {
-      const next = await controller.loadDiff(workspaceId);
-      if (load === loads.current) setDiff(next);
+      const [next, paths] = await Promise.all([controller.loadDiff(workspaceId), status]);
+      if (load === loads.current) {
+        setDiff(next);
+        if (paths) setUncommitted(paths);
+      }
     } catch (e) {
       if (load === loads.current) setError(errorMessage(e));
     } finally {
       if (load === loads.current) setLoading(false);
     }
-  }, [controller, workspaceId]);
+  }, [controller, workspaceId, canDiscard]);
 
-  useEffect(() => setDiff(null), [workspaceId]);
+  useEffect(() => {
+    setDiff(null);
+    setUncommitted(new Map());
+  }, [workspaceId]);
 
   const isRepo = workspace.is_git_repo;
+  const hiddenAt = useRef(0);
   useEffect(() => {
     // A plain folder has no diff: Git is never asked.
-    if (isRepo) void refresh();
-  }, [refresh, revision, isRepo]);
+    if (!isRepo) return;
+    if (active) {
+      void refresh();
+      return;
+    }
+    // Hidden: a burst of changes costs one diff per interval, never starved by the next change.
+    const wait = Math.max(0, hiddenAt.current + HIDDEN_DIFF_EVERY_MS - Date.now());
+    const timer = setTimeout(() => {
+      hiddenAt.current = Date.now();
+      void refresh(false);
+    }, wait);
+    return () => clearTimeout(timer);
+  }, [refresh, revision, isRepo, active]);
 
   if (!isRepo) return <NotGitRepository name={workspace.alias ?? workspace.name} />;
 
@@ -80,7 +154,7 @@ export function DiffPanel({
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-2 px-3 py-1">
         <span className="text-muted-foreground truncate text-xs">{againstLabel(workspace, diff?.base_commit)}</span>
-        <Button className="ml-auto" size="icon-sm" variant="ghost" title="Refresh" onClick={refresh} disabled={loading}>
+        <Button className="ml-auto" size="icon-sm" variant="ghost" title="Refresh" onClick={() => void refresh()} disabled={loading}>
           <RefreshCw className={cn(loading && "animate-spin")} />
         </Button>
       </div>
@@ -89,7 +163,7 @@ export function DiffPanel({
           <p className="text-destructive min-w-0 flex-1" role="alert" data-testid="diff-error">
             {error}
           </p>
-          <Button size="xs" variant="outline" onClick={refresh} disabled={loading}>
+          <Button size="xs" variant="outline" onClick={() => void refresh()} disabled={loading}>
             Retry
           </Button>
         </div>
@@ -97,24 +171,122 @@ export function DiffPanel({
       <section className="min-h-0 flex-1 overflow-auto px-1 pb-1" data-testid="diff-files">
         {diff === null && !error && <ListSkeleton rows={5} />}
         {diff?.files.length === 0 && <p className="text-muted-foreground p-2 text-xs">No changes</p>}
-        {diff?.files.map((f) => (
-          <button
-            key={f.path}
-            className={cn(
-              "hover:bg-muted flex w-full items-center gap-2 rounded-md px-2 py-1 text-left font-mono text-xs transition-colors",
-              selected === f.path && "bg-accent",
-            )}
-            title={f.path}
-            onClick={() => onOpen(f.path)}
-          >
-            <span className="text-muted-foreground w-3 shrink-0">{CHANGE_LETTER[f.change]}</span>
-            <span className="truncate">{f.path}</span>
-            <FileBadges file={f} />
-          </button>
-        ))}
+        {diff?.files.map((f) => {
+          const kind = uncommitted.get(f.path);
+          return (
+            <div
+              key={f.path}
+              className={cn(
+                "group hover:bg-muted flex items-center rounded-md transition-colors",
+                selected === f.path && "bg-accent",
+              )}
+            >
+              <button
+                className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1 text-left font-mono text-xs"
+                title={f.path}
+                onClick={() => onOpen(f.path)}
+              >
+                <span className="text-muted-foreground w-3 shrink-0">{CHANGE_LETTER[f.change]}</span>
+                <span className="truncate">{f.path}</span>
+                <FileBadges file={f} />
+              </button>
+              {/* Every row keeps the button's room, so the counts line up. */}
+              {canDiscard && !kind && <span className="mr-0.5 size-6 shrink-0" />}
+              {kind && (
+                <Button
+                  className="mr-0.5 size-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                  size="icon-sm"
+                  variant="ghost"
+                  title="Discard changes"
+                  aria-label={`Discard changes to ${f.path}`}
+                  onClick={() => setDiscarding({ path: f.path, kind })}
+                >
+                  <Undo2 className="size-3.5" />
+                </Button>
+              )}
+            </div>
+          );
+        })}
         {diff?.truncated && <p className="text-muted-foreground p-2 text-xs">More files changed than can be listed.</p>}
       </section>
+      {discarding && (
+        <DiscardDialog
+          path={discarding.path}
+          kind={discarding.kind}
+          onDiscard={async () => {
+            await controller.client.request("git.discard", { workspace_id: workspaceId, file: discarding.path });
+            void refresh();
+          }}
+          onClose={() => setDiscarding(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/** Asks before one file's uncommitted changes go; a refusal reads under the buttons. */
+function DiscardDialog({
+  path,
+  kind,
+  onDiscard,
+  onClose,
+}: {
+  path: string;
+  kind: "new" | "changed";
+  onDiscard(): Promise<void>;
+  onClose(): void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const name = path.slice(path.lastIndexOf("/") + 1);
+
+  async function discard() {
+    setBusy(true);
+    setError(null);
+    try {
+      await onDiscard();
+      onClose();
+    } catch (e) {
+      setError(errorMessage(e));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog className="max-w-md" aria-label="Discard changes?" dismissible={!busy} onClose={onClose}>
+      <div className="flex flex-col gap-2 px-5 pt-5">
+        <h2 className="text-xl font-semibold tracking-tight">Discard changes?</h2>
+        <p className="text-muted-foreground text-sm leading-relaxed">
+          {kind === "new" ? (
+            <>
+              <span className="text-foreground font-mono">{name}</span> is not in any commit, so it will be deleted.
+            </>
+          ) : (
+            <>
+              <span className="text-foreground font-mono">{name}</span> goes back to its last commit. Its uncommitted
+              changes are lost; committed ones stay.
+            </>
+          )}{" "}
+          This can't be undone.
+        </p>
+      </div>
+      <div className="flex flex-col gap-2 p-5">
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" size="sm" disabled={busy} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="destructive" size="sm" disabled={busy} onClick={() => void discard()}>
+            {busy && <Loader2 className="animate-spin" />}
+            Discard
+          </Button>
+        </div>
+        {error && (
+          <p className="text-destructive text-xs" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+    </Dialog>
   );
 }
 
@@ -143,6 +315,29 @@ function FileBadges({ file }: { file: DiffFile }) {
   );
 }
 
+/**
+ * Where `lines` differ from the base, by line of the file as it is now: added
+ * or changed lines, and removals with nothing in their place.
+ */
+export function lineChanges(lines: readonly FileLine[]): LineChanges {
+  const added = new Set<number>();
+  const removedBefore = new Set<number>();
+  let at = 0;
+  let removal: number | null = null;
+  for (const l of lines) {
+    if (l.kind === "del") removal ??= at;
+    else {
+      // Removed lines followed by added ones were changed, not removed.
+      if (l.kind === "add") added.add(at);
+      else if (removal !== null) removedBefore.add(removal);
+      removal = null;
+      at++;
+    }
+  }
+  if (removal !== null) removedBefore.add(removal);
+  return { added, removedBefore };
+}
+
 /** What one file's tab shows, from its diff and its current content. */
 type Viewed =
   | { kind: "lines"; lines: FileLine[]; file: DiffFile | null; baseCommit: string | null; content: string | null }
@@ -163,8 +358,25 @@ function isTooLarge(e: unknown): boolean {
  * says the workspace's diff may have changed; a file whose changes were
  * committed or reverted still shows, unmarked.
  */
-export function DiffView({ workspace, path }: { workspace: WorkspaceInfo; path: string }) {
+export function DiffView({
+  workspace,
+  path,
+  active = true,
+  onDirty,
+}: {
+  workspace: WorkspaceInfo;
+  path: string;
+  /** Whether its tab is the one showing. */
+  active?: boolean;
+  /** Whether Edit holds typing not yet saved, as that changes. */
+  onDirty?(dirty: boolean): void;
+}) {
   const controller = useController();
+  const canWrite = useHost((s) => hasCapability(s.connection.compat, "files.write"));
+  // Edit: the file as it is now, typed in place, its changes still marked.
+  const [editing, setEditing] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  useEffect(() => onDirty?.(dirty), [onDirty, dirty]);
   const workspaceId = workspace.workspace_id;
   const revision = useHost((s) => s.diffRevision[workspaceId] ?? 0);
   const [viewed, setViewed] = useState<Viewed | null>(null);
@@ -225,6 +437,31 @@ export function DiffView({ workspace, path }: { workspace: WorkspaceInfo; path: 
   const showPreview = preview && markdown && content !== null;
   const book = usePref(markdownStyle) === "book";
   const slash = path.lastIndexOf("/");
+  const changes = useMemo(
+    () => (viewed?.kind === "lines" && content !== null ? { ...lineChanges(viewed.lines), text: content } : undefined),
+    [viewed, content],
+  );
+  if (editing)
+    return (
+      <FileView
+        workspaceId={workspaceId}
+        path={path}
+        active={active}
+        changes={changes}
+        onDirty={setDirty}
+        actions={
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={dirty}
+            title={dirty ? "Save or cancel your edits first" : "Back to the diff"}
+            onClick={() => setEditing(false)}
+          >
+            <Check /> Done
+          </Button>
+        }
+      />
+    );
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="diff-view">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b px-4 text-xs">
@@ -256,6 +493,11 @@ export function DiffView({ workspace, path }: { workspace: WorkspaceInfo; path: 
               onClick={() => setPreview((p) => !p)}
             >
               <Eye /> Preview
+            </Button>
+          )}
+          {canWrite && content !== null && file?.change !== "deleted" && typesInPlace(path, content) && (
+            <Button size="xs" variant="ghost" title="Edit this file here" onClick={() => setEditing(true)}>
+              <Pencil /> Edit
             </Button>
           )}
           <CopyButton text={file?.change === "deleted" ? null : content} />

@@ -329,6 +329,10 @@ describe("workbench", () => {
       ...(p.file ? { patch: "@@ -1 +1 @@\n-old\n+new" } : {}),
     });
     const c = await mount(t, <Workbench bridge={bridge()} />);
+    // The Diff tab counts the changed files before it is opened.
+    await tick();
+    expect(screen.getByTestId("diff-count").textContent).toBe("1");
+    expect(screen.getByRole("button", { name: "Diff" }).title).toBe("1 changed file");
     fireEvent.click(screen.getByRole("button", { name: "Diff" }));
     await tick();
     fireEvent.click(screen.getByText("src/a.txt"));
@@ -373,6 +377,52 @@ describe("workbench", () => {
     expect(screen.getByRole("navigation", { name: "Open tabs" }).textContent).toContain("a.txt");
     expect(screen.getByText("hello from a")).toBeTruthy();
     expect(t.calls.find((x) => x.op === "files.read")?.params).toEqual({ workspace_id: "w2", path: "a.txt" });
+    c.dispose();
+  });
+
+  it("keeps a file tab's unsaved edits across workspaces, and asks before closing it", async () => {
+    const t = workbenchHost();
+    t.handlers["session.history"] = (p) => ({
+      session_id: p.session_id,
+      turns: [
+        {
+          turn_id: "t1",
+          role: "assistant",
+          blocks: [{ type: "text", text: "Wrote [a.txt](a.txt)." }],
+          timestamp: "",
+          completed_at: null,
+          duration_ms: null,
+          model: null,
+          usage: null,
+        },
+      ],
+    });
+    const c = await mount(t, <Workbench bridge={bridge()} />);
+    fireEvent.click(screen.getByText("repo-w2"));
+    await tick();
+    fireEvent.click(screen.getByRole("link", { name: "a.txt" }));
+    await tick();
+    const area = () => screen.getByRole("textbox", { name: "File text" }) as HTMLTextAreaElement;
+    fireEvent.change(area(), { target: { value: "edited" } });
+
+    // Another workspace and back: the typing is still there.
+    fireEvent.click(screen.getByText("repo-w1"));
+    await tick();
+    fireEvent.click(screen.getByText("repo-w2"));
+    await tick();
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Open tabs" })).getByText("a.txt"));
+    expect(area().value).toBe("edited");
+
+    // Closing it asks first; Cancel keeps the tab and its edits.
+    fireEvent.click(screen.getByLabelText("Close a.txt"));
+    const ask = screen.getByRole("dialog", { name: "Discard unsaved edits?" });
+    fireEvent.click(within(ask).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Discard unsaved edits?" })).toBeNull();
+    expect(area().value).toBe("edited");
+    fireEvent.click(screen.getByLabelText("Close a.txt"));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Discard unsaved edits?" })).getByRole("button", { name: "Discard" }));
+    expect(screen.getByRole("navigation", { name: "Open tabs" }).textContent).not.toContain("a.txt");
+    expect(t.calls.some((x) => x.op === "files.write")).toBe(false);
     c.dispose();
   });
 

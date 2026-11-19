@@ -10,10 +10,42 @@ have their own versions and are listed under Compatibility.
 
 ### Added
 - Playbooks (Labs, off by default): the automation engine's foundation — playbooks that outlive sessions, runs that survive restarts without redoing sent items, approval rules, Host-checked done, caps and site pauses — with `playbook.*`, `run.*` and `site.*` protocol operations (including validated `format: 1` playbooks and "Try on one item"). Building; no UI yet.
-- The model picker has a Fast switch for models that offer fast mode (Claude's 2x speed, more usage). It starts off, each model remembers it, and ⚡ marks it while on.
-- A fork can move to another agent before its first message: pick that agent's model in the composer, and the chat goes on through the fork's transcript.
 
 ### Changed
+- None.
+
+### Fixed
+- None.
+
+### Security
+- None.
+
+### Compatibility
+- Protocol revision 40: `playbook.*`, `run.*` and `site.*` operations (capability `playbooks`, behind the `playbooks.enabled` Labs setting), and the Host feed's `run.approval_requested` / `run.approval_cleared` events with `approvals` in its snapshot. Older clients never see or call them.
+
+### Provider changes
+- None.
+
+### Migration notes
+- None.
+
+### Known limitations
+- None.
+
+## [0.2.4] - 2026-11-18
+
+### Added
+- Typing `/` in the phone's composer lists the agent's slash commands; a tap writes the command into the message. With more than five, "Search all" opens a sheet to search them.
+- The model picker has a Fast switch for models that offer fast mode (Claude's 2x speed, more usage). It starts off, each model remembers it, and ⚡ marks it while on.
+- A fork can move to another agent before its first message: pick that agent's model in the composer, and the chat goes on through the fork's transcript.
+- Desktop: text files open ready to edit; ⌘S saves them through the Host, and the change shows in Diff and Git. Thanks to @anshul89237 for building it.
+- Desktop: Discard on a file in Diff throws away its uncommitted changes, after a confirm (`git.discard`, protocol revision 39).
+- Desktop: the Diff tab shows how many files changed, before it is opened.
+- Desktop: a file's diff has Edit, which types into the file in place with its changes still marked; the file editor colors code by its language.
+
+### Changed
+- The phone's session screen has one header row (back, the worktree, the session tabs, + and ⋯); the title, the agent line and Stop agent move into ⋯ with the context figures. The PR line reads `PR #12 · branch` with its status as a pill.
+- The phone's composer follows Desktop's: what the agent is doing sits on its top edge with the plan's progress, send turns into stop while a turn runs, and the chip opens one Agent & model sheet with the agent, a model search, and sliding Effort and Mode switches (plus Fast). The unattended mode is called Auto on the phone too.
 - While a turn runs or follow-ups wait, one rail on the composer's top edge shows how long the agent has worked, the plan's progress, the queue and the context window, in place of the plan's working strip and the stacked follow-up list.
 - The composer's model picker now lists every agent's models: picking a model picks its agent. Favorite and recent models sit at the top, each model remembers its effort, and effort and mode open as side lists.
 - The terminal draws with the GPU (WebGL) when it can, so heavy output
@@ -22,6 +54,9 @@ have their own versions and are listed under Compatibility.
 ### Fixed
 - The terminal no longer stutters when the dock opens or closes, and the
   shell inside it is no longer resized mid-animation.
+- Desktop: a replace, or the file changing on disk, no longer moves the caret to the end of the file being edited or clears its undo.
+- Desktop: typing in a long file no longer lags; colors catch up once typing pauses.
+- Desktop: the Diff tab's count no longer runs a full Git status on every change while the tab is hidden.
 
 ### Security
 - None.
@@ -29,6 +64,7 @@ have their own versions and are listed under Compatibility.
 ### Compatibility
 - Protocol revision 37: session options carry `fast` (the agent's fast mode, `null` where the model offers none), `session.set_options` and `session.start` take it, and `agent.list` entries gain `fast_by_model`. A new session starts with fast mode off. Older clients never see or set it.
 - Protocol revision 38: `session.set_agent {session_id, agent, options}` moves a fork to another agent before its first message, refused with `agent_fixed` otherwise. Older clients never call it.
+- Protocol revision 39: `git.discard {workspace_id, file}` throws away one file's uncommitted changes, staged and unstaged, and answers `discarded`. Older clients never call it.
 
 ### Provider changes
 - None.

@@ -486,7 +486,7 @@ describe("replace in text files", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await tick();
     expect(writes(t)).toEqual([{ workspace_id: "w1", path: "a.json", content: '{"older": 1, "old_x": "older"}\r\n', etag: "e1" }]);
-    expect(screen.getByText("read-only")).toBeTruthy();
+    expect(screen.queryByText("edited")).toBeNull();
     controller.dispose();
   });
 
@@ -559,6 +559,85 @@ describe("replace in text files", () => {
     fireEvent.click(screen.getByRole("button", { name: "Find" }));
     expect(screen.queryByRole("button", { name: "Show replace" })).toBeNull();
     controller.dispose();
+  });
+});
+
+describe("typing in text files", () => {
+  // A Host whose reads return what was last written.
+  function text(t: FakeTransport, path: string, content: string, extra: Record<string, unknown> = {}) {
+    let etag = 1;
+    t.handlers["files.read"] = () => ({ path, content, etag: `e${etag}`, mtime_ms: null, readonly: false, line_ending: "lf", ...extra });
+    t.handlers["files.write"] = (p) => {
+      content = (p as { content: string }).content;
+      return { path, etag: `e${++etag}`, mtime_ms: null, readonly: false, line_ending: "lf" };
+    };
+  }
+  const writes = (t: FakeTransport) => t.calls.filter((c) => c.op === "files.write").map((c) => c.params);
+  const box = () => screen.getByRole("textbox", { name: "File text" }) as HTMLTextAreaElement;
+  const saveKey = (target: Element) => fireEvent.keyDown(target, { key: "s", metaKey: true, ctrlKey: true });
+
+  it("opens editable, and saves typing on ⌘S with the etag it read", async () => {
+    const t = new FakeTransport();
+    text(t, "a.env", "A=1\n");
+    const controller = await mount(t, "a.env");
+    expect(screen.queryByText("read-only")).toBeNull();
+    expect(box().value).toBe("A=1\n");
+    fireEvent.change(box(), { target: { value: "A=2\n" } });
+    expect(screen.getByText("edited")).toBeTruthy();
+    expect(screen.getByTestId("file-content").textContent).toContain("A=2");
+    saveKey(box());
+    await tick();
+    expect(writes(t)).toEqual([{ workspace_id: "w1", path: "a.env", content: "A=2\n", etag: "e1" }]);
+    expect(screen.queryByText("edited")).toBeNull();
+    expect(box().value).toBe("A=2\n");
+    // The next save uses the etag the last one returned.
+    fireEvent.change(box(), { target: { value: "A=3\n" } });
+    saveKey(box());
+    await tick();
+    expect(writes(t)[1]).toMatchObject({ content: "A=3\n", etag: "e2" });
+    controller.dispose();
+  });
+
+  it("drops the edit when typing returns to the file, and ⌘S then writes nothing", async () => {
+    const t = new FakeTransport();
+    text(t, "a.txt", "one\n");
+    const controller = await mount(t, "a.txt");
+    fireEvent.change(box(), { target: { value: "one!\n" } });
+    fireEvent.change(box(), { target: { value: "one\n" } });
+    expect(screen.queryByText("edited")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    saveKey(box());
+    await tick();
+    expect(writes(t)).toEqual([]);
+    controller.dispose();
+  });
+
+  it("keeps CRLF line endings", async () => {
+    const t = new FakeTransport();
+    text(t, "a.txt", "one\r\ntwo\r\n", { line_ending: "crlf" });
+    const controller = await mount(t, "a.txt");
+    expect(box().value).toBe("one\ntwo\n");
+    fireEvent.change(box(), { target: { value: "one\ntwo\nthree\n" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await tick();
+    expect(writes(t)[0]).toMatchObject({ content: "one\r\ntwo\r\nthree\r\n" });
+    controller.dispose();
+  });
+
+  it("stays read-only for text it cannot save exactly", async () => {
+    for (const [content, extra] of [
+      ["a\n", { readonly: true }],
+      ["a\r\nb\n", {}],
+      ["caf\uFFFD\n", {}],
+    ] as const) {
+      const t = new FakeTransport();
+      text(t, "a.txt", content, extra);
+      const controller = await mount(t, "a.txt");
+      expect(screen.queryByRole("textbox", { name: "File text" })).toBeNull();
+      expect(screen.getByText("read-only")).toBeTruthy();
+      controller.dispose();
+      cleanup();
+    }
   });
 });
 

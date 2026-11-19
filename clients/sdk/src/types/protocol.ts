@@ -2069,7 +2069,7 @@ export interface AgentAuthStatus {
 }
 
 /**
- * The automation engine (revision 39, capability `playbooks`). All
+ * The automation engine (revision 40, capability `playbooks`). All
  * operations are gated by the `playbooks.enabled` Labs setting and error in
  * the `HostErrorCode` vocabulary above (`run_active`, `run_start_requires_mac`,
  * ...). Wall-clock fields are RFC 3339.
@@ -2340,6 +2340,12 @@ export interface Operations {
     { committed_files: number },
   ];
   "git.diff": [{ workspace_id: string; file?: string }, WorkspaceDiff];
+  /**
+   * Throw away one file's uncommitted changes, staged and unstaged (Hosts with
+   * `git.discard`): it goes back to HEAD, and a file added since is removed.
+   * `discarded` is false when it had none. A folder is `invalid_input`.
+   */
+  "git.discard": [{ workspace_id: string; file: string }, { discarded: boolean }];
   "git.branches": [{ workspace_id: string }, WorktreeBases];
   /** The Host's view of the branch's pull request; `refresh` asks GitHub now. */
   "git.pr": [{ workspace_id: string; refresh?: boolean }, PrEntry];
@@ -2487,7 +2493,7 @@ export interface Operations {
   /** Send a queued follow-up now when idle (resuming a held queue), else move it first. */
   "session.follow_up_send": [{ session_id: string; follow_up_id: string }, { outcome: FollowUpOutcome }];
   /**
-   * The Host's playbooks (revision 39, capability `playbooks`). Off unless
+   * The Host's playbooks (revision 40, capability `playbooks`). Off unless
    * `playbooks.enabled` is on in Settings > Labs; then `playbooks_disabled`.
    */
   "playbook.list": [Record<string, never>, PlaybookSummary[]];
@@ -2743,6 +2749,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "host.claim",
   "host.update.apply",
   "git.commit",
+  "git.discard",
   "git.pr_merge",
   "git.pr_auto_merge",
   "session.set_options",

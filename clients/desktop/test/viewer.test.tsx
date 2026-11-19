@@ -1,9 +1,10 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HostClient, HostController, ZwiimClientError, type DiffFile, type WorkspaceInfo } from "@zwiim/sdk";
+import { fullFile, HostClient, HostController, ZwiimClientError, type DiffFile, type WorkspaceInfo } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
 import { rememberMarkdownStyle } from "@/lib/prefs";
-import { DiffView } from "@/panels/DiffPanel";
+import { DiffView, lineChanges } from "@/panels/DiffPanel";
+import { carryChanges } from "@/panels/FilesPanel";
 import { FakeTransport, tick } from "./fakes";
 
 const root: WorkspaceInfo = {
@@ -156,5 +157,93 @@ describe("file viewer", () => {
     cleanup();
     await mount(host(null, null), "a.txt");
     expect(body().textContent).toBe("This file is gone.");
+  });
+});
+
+describe("editing from the diff", () => {
+  const five = "a\nb\nc\nd\ne\n";
+  // b changed, d removed, f added at the end.
+  const patch = "@@ -1,7 +1,6 @@\n a\n-B\n+b\n c\n-D\n-d0\n d\n e\n+f\n";
+
+  it("numbers each line by the old file and the new, so no number stands for two lines", async () => {
+    await mount(host({ file: changed("a.txt"), patch }, "a\nb\nc\nd\ne\nf\n"), "a.txt");
+    const cells = (match: (t: string) => boolean) => {
+      const row = [...body().querySelectorAll("tr")].find((r) => match(r.textContent ?? ""))!;
+      return [...row.querySelectorAll("td")].slice(0, 2).map((td) => td.textContent);
+    };
+    // A removed line has only its old number, an added one only its new; a kept line both.
+    expect(cells((t) => t.includes("-d0") || t.endsWith("d0"))).toEqual(["5", ""]);
+    expect(cells((t) => t.endsWith("e"))).toEqual(["7", "5"]);
+    expect(cells((t) => t.endsWith("f"))).toEqual(["", "6"]);
+  });
+
+  it("edits the file in place and saves it on ⌘S, its changes still marked", async () => {
+    const t = host({ file: changed("a.txt"), patch }, "a\nb\nc\nd\ne\nf\n");
+    t.handlers["files.write"] = () => ({ path: "a.txt", etag: "e2", mtime_ms: null, readonly: false, line_ending: "lf" });
+    await mount(t, "a.txt");
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    await tick();
+    const area = screen.getByRole("textbox", { name: "File text" }) as HTMLTextAreaElement;
+    expect(area.value).toBe("a\nb\nc\nd\ne\nf\n");
+    const tinted = () =>
+      [...screen.getByTestId("file-content").querySelectorAll("[data-line]")]
+        .filter((l) => l.className.includes("bg-add"))
+        .map((l) => l.textContent);
+    expect(tinted()).toEqual(["b", "f"]);
+
+    fireEvent.change(area, { target: { value: "a\nb\nc\nd\nE\nf\n" } });
+    expect(tinted()).toEqual(["b", "E", "f"]);
+    const done = screen.getByRole("button", { name: "Done" }) as HTMLButtonElement;
+    expect(done.disabled).toBe(true);
+    fireEvent.keyDown(area, { key: "s", metaKey: true, ctrlKey: true });
+    await tick();
+    expect(t.calls.filter((c) => c.op === "files.write").map((c) => c.params)).toEqual([
+      { workspace_id: "root", path: "a.txt", content: "a\nb\nc\nd\nE\nf\n", etag: "e" },
+    ]);
+    expect(done.disabled).toBe(false);
+    fireEvent.click(done);
+    expect(screen.getByTestId("diff-view")).toBeTruthy();
+  });
+
+  it("offers no Edit for a deleted file", async () => {
+    await mount(host({ file: changed("a.txt", { change: "deleted" }), patch: "@@ -1 +0,0 @@\n-a\n" }, null), "a.txt");
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+  });
+
+  it("offers Edit only where the file opens as text it can type into", async () => {
+    const patch = "@@ -1 +1 @@\n-a\n+b\n";
+    // An image, a table, mixed line endings, bytes the Host could not decode.
+    for (const [path, content] of [
+      ["pic.svg", "<svg/>\n"],
+      ["t.csv", "a,b\n"],
+      ["a.txt", "one\r\ntwo\n"],
+      ["a.txt", "bad \uFFFD\n"],
+    ] as const) {
+      await mount(host({ file: changed(path), patch }, content), path);
+      expect(screen.queryByRole("button", { name: "Edit" }), path).toBeNull();
+      cleanup();
+    }
+    await mount(host({ file: changed("a.txt"), patch }, "one\r\ntwo\r\n"), "a.txt");
+    expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
+  });
+});
+
+describe("line changes", () => {
+  it("marks changed lines and removals by the line they now sit before", () => {
+    const lines = fullFile("@@ -1,7 +1,6 @@\n a\n-B\n+b\n c\n-D\n-d0\n d\n e\n+f\n", "a\nb\nc\nd\ne\nf\n");
+    const c = lineChanges(lines);
+    expect([...c.added]).toEqual([1, 5]);
+    expect([...c.removedBefore]).toEqual([3]);
+  });
+
+  it("carries marks across an edit, marking what was typed", () => {
+    const c = { added: new Set([1, 5]), removedBefore: new Set([3]) };
+    // A line typed after line 0 moves every later mark down by one.
+    const moved = carryChanges(c, "a\nb\nc\nd\ne\nf\n", "a\nnew\nb\nc\nd\ne\nf\n");
+    expect([...moved.added].sort()).toEqual([1, 2, 6]);
+    expect([...moved.removedBefore]).toEqual([4]);
+    // A line taken out leaves a removal where it was.
+    const cut = carryChanges({ added: new Set(), removedBefore: new Set() }, "a\nb\nc\n", "a\nc\n");
+    expect([...cut.removedBefore]).toEqual([1]);
   });
 });
