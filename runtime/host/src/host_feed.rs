@@ -346,7 +346,7 @@ async fn start(
     task.projection.approvals = read_approvals(&task.db).await;
     let (runs, items) = read_runs(&task.db, &[]).await;
     task.projection.runs = runs;
-    task.run_items = items.into_iter().map(|i| (i.item_id, i)).collect();
+    task.run_items = items.into_iter().map(|i| (i.id, i)).collect();
     let ids: Vec<String> = task
         .projection
         .workspaces
@@ -1141,9 +1141,9 @@ impl FeedTask {
             self.alert(
                 &mut events,
                 AlertKind::ApprovalWaiting,
-                approval.approval_id,
-                approval.run_id,
-                Some(approval.item_id),
+                approval.id,
+                approval.run,
+                Some(approval.item),
                 &format!("{}: waiting for your approval", approval.summary),
             )
             .await;
@@ -1165,7 +1165,7 @@ impl FeedTask {
     /// Publish each run and item whose state changed (spec 11.4.1). A run
     /// that ended is published once more and then leaves the projection.
     async fn apply_runs(&mut self, shared: &Shared) {
-        let followed: Vec<i32> = self.projection.runs.iter().map(|r| r.run_id).collect();
+        let followed: Vec<i32> = self.projection.runs.iter().map(|r| r.id).collect();
         let (runs, items) = read_runs(&self.db, &followed).await;
         let mut events = Vec::new();
         for run in &runs {
@@ -1178,7 +1178,7 @@ impl FeedTask {
             }
         }
         for item in &items {
-            if self.run_items.get(&item.item_id) != Some(item) {
+            if self.run_items.get(&item.id) != Some(item) {
                 events.push((
                     "run.item_changed",
                     serde_json::to_value(item).unwrap_or(Value::Null),
@@ -1198,15 +1198,15 @@ impl FeedTask {
                 AlertKind::ItemWaitingPerson => format!("{title}: needs you"),
                 _ => format!("{title}: failed 3 times"),
             };
-            self.alert(&mut events, kind, item.item_id, item.run_id, Some(item.item_id), &text)
+            self.alert(&mut events, kind, item.id, item.run, Some(item.id), &text)
                 .await;
         }
         for run in runs.iter().filter(|r| r.status == RunStatus::Done.as_str()) {
             self.alert(
                 &mut events,
                 AlertKind::RunDone,
-                run.run_id,
-                run.run_id,
+                run.id,
+                run.id,
                 None,
                 "A playbook run finished",
             )
@@ -1215,8 +1215,8 @@ impl FeedTask {
         let active: Vec<RunView> = runs.into_iter().filter(RunView::is_active).collect();
         self.run_items = items
             .into_iter()
-            .filter(|i| active.iter().any(|r| r.run_id == i.run_id))
-            .map(|i| (i.item_id, i))
+            .filter(|i| active.iter().any(|r| r.id == i.run))
+            .map(|i| (i.id, i))
             .collect();
         self.projection.runs = active;
         if !events.is_empty() {
@@ -2947,18 +2947,68 @@ esac
         }
     }
 
+    /// A run with one item in `status`: the run's row id and the item.
+    async fn seed_run_item(
+        f: &Fixture,
+        status: crate::automation::ItemStatus,
+    ) -> (i32, crate::automation::entities::playbook_item::Model) {
+        use crate::automation::entities::playbook_item;
+        use crate::automation::{AutomationEngine, RunTrigger};
+        use sea_orm::EntityTrait;
+        let conn = f.state.db.conn.clone();
+        let pb = crate::automation::PlaybookStore::new(conn.clone())
+            .create("Apply", "goal")
+            .await
+            .unwrap();
+        let run = AutomationEngine::new(conn.clone())
+            .start_run(pb.id, pb.version, RunTrigger::Mac, None)
+            .await
+            .unwrap();
+        let now = chrono::Utc::now();
+        let item = playbook_item::Entity::insert(playbook_item::ActiveModel {
+            public_id: Set(uuid::Uuid::new_v4().to_string()),
+            run_id: Set(run),
+            playbook_id: Set(pb.id),
+            site: Set("indeed.com".into()),
+            account: Set("main".into()),
+            item_key: Set("job-1".into()),
+            title: Set(Some("Backend Engineer @ Acme".into())),
+            status: Set(status.as_str().into()),
+            epoch: Set(1),
+            created_at: Set(now),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .exec_with_returning(&conn)
+        .await
+        .unwrap();
+        (run, item)
+    }
+
+    async fn run_public_id(f: &Fixture, run: i32) -> String {
+        use sea_orm::EntityTrait;
+        crate::automation::entities::playbook_run::Entity::find_by_id(run)
+            .one(&f.state.db.conn)
+            .await
+            .unwrap()
+            .unwrap()
+            .public_id
+    }
+
     #[tokio::test]
     async fn approvals_stream_and_are_in_the_snapshot() {
         // Spec 8.5.1, 11.4: an approval request reaches every client, and a
         // client that connects later finds it in the snapshot.
         let f = fixture().await;
+        let (run, item) =
+            seed_run_item(&f, crate::automation::ItemStatus::WaitingApproval).await;
         let (snapshot, mut feed) = f.subscribe().await;
         assert!(snapshot.approvals.is_empty());
 
         let a = crate::automation::approvals::create(
             &f.state.db.conn,
-            1,
-            7,
+            run,
+            item.id,
             &approval_declaration(),
         )
         .await
@@ -2971,12 +3021,15 @@ esac
             .filter(|e| e.kind == "run.approval_requested")
             .collect();
         assert_eq!(requested.len(), 1, "{requested:?}");
-        assert_eq!(requested[0].payload["approval_id"], a.id);
+        // Public ids only: row ids never reach clients.
+        assert_eq!(requested[0].payload["approval_id"], a.public_id);
+        assert_eq!(requested[0].payload["run_id"], run_public_id(&f, run).await);
+        assert_eq!(requested[0].payload["item_id"], item.public_id);
         assert_eq!(requested[0].payload["summary"], "Apply to Acme");
         let (snapshot, _) = f.subscribe().await;
         assert_eq!(snapshot.approvals.len(), 1);
 
-        crate::automation::approvals::stop_pending(&f.state.db.conn, 1)
+        crate::automation::approvals::stop_pending(&f.state.db.conn, run)
             .await
             .unwrap();
         f.state.playbook_changes.send_modify(|v| *v += 1);
@@ -2987,7 +3040,7 @@ esac
             .filter(|e| e.kind == "run.approval_cleared")
             .collect();
         assert_eq!(cleared.len(), 1, "{cleared:?}");
-        assert_eq!(cleared[0].payload["approval_id"], a.id);
+        assert_eq!(cleared[0].payload["approval_id"], a.public_id);
         let (snapshot, _) = f.subscribe().await;
         assert!(snapshot.approvals.is_empty());
     }
@@ -3033,8 +3086,9 @@ esac
         })
         .exec_with_returning(&conn)
         .await
-        .unwrap()
-        .id;
+        .unwrap();
+        let (item, item_public) = (item.id, item.public_id);
+        let run_public = run_public_id(&f, run).await;
         engine.notify();
         let events = feed.drain(500).await;
         let last = |kind: &str| {
@@ -3047,12 +3101,13 @@ esac
                 .clone()
         };
         let run_ev = last("run.changed");
-        assert_eq!(run_ev["run_id"], run);
+        assert_eq!(run_ev["run_id"], run_public);
+        assert_eq!(run_ev["playbook_id"], pb.public_id);
         assert_eq!(run_ev["status"], "discovering");
         assert_eq!(run_ev["totals"]["items"], 1);
         let item_ev = last("run.item_changed");
-        assert_eq!(item_ev["item_id"], item);
-        assert_eq!(item_ev["run_id"], run);
+        assert_eq!(item_ev["item_id"], item_public);
+        assert_eq!(item_ev["run_id"], run_public);
         assert_eq!(item_ev["title"], "Backend Engineer @ Acme");
         assert_eq!(item_ev["status"], "queued");
         let (snapshot, _) = f.subscribe().await;
@@ -3128,8 +3183,9 @@ esac
         })
         .exec_with_returning(&conn)
         .await
-        .unwrap()
-        .id;
+        .unwrap();
+        let (item, item_public) = (item.id, item.public_id);
+        let run_public = run_public_id(&f, run).await;
         crate::automation::approvals::create(&conn, run, item, &approval_declaration())
             .await
             .unwrap();
@@ -3149,8 +3205,9 @@ esac
             .iter()
             .find(|a| a["kind"] == "item_waiting_person")
             .unwrap();
-        assert_eq!(waiting["item_id"], item);
-        assert_eq!(waiting["run_id"], run);
+        assert_eq!(waiting["item_id"], item_public);
+        assert_eq!(waiting["run_id"], run_public);
+        assert!(uuid::Uuid::parse_str(waiting["alert_id"].as_str().unwrap()).is_ok());
         assert!(waiting["text"].as_str().unwrap().contains("Backend Engineer @ Acme"));
 
         // A later change re-reads everything; nothing alerts twice.
@@ -3164,7 +3221,7 @@ esac
         let done = alerts(&feed.drain(500).await);
         assert_eq!(done.len(), 1, "{done:?}");
         assert_eq!(done[0]["kind"], "run_done");
-        assert_eq!(done[0]["run_id"], run);
+        assert_eq!(done[0]["run_id"], run_public);
         assert!(done[0]["item_id"].is_null());
     }
 

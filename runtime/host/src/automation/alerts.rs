@@ -7,7 +7,7 @@ use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, Set};
 use serde::Serialize;
 
-use crate::automation::entities::playbook_alert;
+use crate::automation::entities::{playbook_alert, playbook_item, playbook_run};
 use crate::db::error::DbError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,10 +32,10 @@ impl AlertKind {
 /// One alert as `run.alert` carries it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Alert {
-    pub alert_id: i32,
+    pub alert_id: String,
     pub kind: String,
-    pub run_id: i32,
-    pub item_id: Option<i32>,
+    pub run_id: String,
+    pub item_id: Option<String>,
     pub text: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -81,11 +81,26 @@ pub async fn record<C: ConnectionTrait>(
         .one(conn)
         .await?
         .ok_or_else(|| DbError::NotFound(format!("alert {} {subject}", kind.as_str())))?;
+    // Clients see public ids only.
+    let run = playbook_run::Entity::find_by_id(row.run_id)
+        .one(conn)
+        .await?
+        .ok_or_else(|| DbError::NotFound(format!("run {}", row.run_id)))?;
+    let item = match row.item_id {
+        Some(id) => Some(
+            playbook_item::Entity::find_by_id(id)
+                .one(conn)
+                .await?
+                .ok_or_else(|| DbError::NotFound(format!("item {id}")))?
+                .public_id,
+        ),
+        None => None,
+    };
     Ok(Some(Alert {
-        alert_id: row.id,
+        alert_id: row.public_id,
         kind: row.kind,
-        run_id: row.run_id,
-        item_id: row.item_id,
+        run_id: run.public_id,
+        item_id: item,
         text: row.text,
         created_at: row.created_at,
     }))
@@ -101,32 +116,67 @@ mod tests {
     async fn an_alert_is_recorded_once_per_kind_and_subject() {
         let db = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
         Migrator::up(&db, None).await.unwrap();
+        let pb = crate::automation::PlaybookStore::new(db.clone())
+            .create("Apply", "goal")
+            .await
+            .unwrap();
+        let run = crate::automation::AutomationEngine::new(db.clone())
+            .start_run(pb.id, pb.version, crate::automation::RunTrigger::Mac, None)
+            .await
+            .unwrap();
+        let now = chrono::Utc::now();
+        let item = playbook_item::Entity::insert(playbook_item::ActiveModel {
+            public_id: Set(uuid::Uuid::new_v4().to_string()),
+            run_id: Set(run),
+            playbook_id: Set(pb.id),
+            site: Set("indeed.com".into()),
+            account: Set("main".into()),
+            item_key: Set("job-1".into()),
+            status: Set("waiting_person".into()),
+            epoch: Set(1),
+            created_at: Set(now),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .exec_with_returning(&db)
+        .await
+        .unwrap();
         let first = record(
             &db,
             AlertKind::ItemWaitingPerson,
-            7,
-            1,
-            Some(7),
+            item.id,
+            run,
+            Some(item.id),
             "Acme: needs you",
         )
         .await
-        .unwrap();
-        assert!(first.is_some());
+        .unwrap()
+        .expect("new");
+        // Clients see public ids only.
+        assert_eq!(first.item_id, Some(item.public_id.clone()));
+        assert!(uuid::Uuid::parse_str(&first.run_id).is_ok());
         let again = record(
             &db,
             AlertKind::ItemWaitingPerson,
-            7,
-            1,
-            Some(7),
+            item.id,
+            run,
+            Some(item.id),
             "Acme: needs you",
         )
         .await
         .unwrap();
         assert_eq!(again, None);
         // Another kind about the same item is its own alert.
-        let other = record(&db, AlertKind::ItemRetriesExhausted, 7, 1, Some(7), "Acme")
-            .await
-            .unwrap();
+        let other = record(
+            &db,
+            AlertKind::ItemRetriesExhausted,
+            item.id,
+            run,
+            Some(item.id),
+            "Acme",
+        )
+        .await
+        .unwrap();
         assert!(other.is_some());
     }
 }

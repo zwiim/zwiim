@@ -402,9 +402,16 @@ pub async fn approved_declaration<C: ConnectionTrait>(
 /// Secret fields carry their handle, never a value.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct PendingApproval {
-    pub approval_id: i32,
-    pub run_id: i32,
-    pub item_id: i32,
+    /// Row ids, for the Host only; clients see the public ids below.
+    #[serde(skip)]
+    pub id: i32,
+    #[serde(skip)]
+    pub run: i32,
+    #[serde(skip)]
+    pub item: i32,
+    pub approval_id: String,
+    pub run_id: String,
+    pub item_id: String,
     pub kind: String,
     pub summary: String,
     pub fields: Vec<crate::automation::declaration::DeclaredField>,
@@ -414,20 +421,38 @@ pub struct PendingApproval {
 
 /// Every pending approval, oldest first.
 pub async fn pending<C: ConnectionTrait>(conn: &C) -> Result<Vec<PendingApproval>, DbError> {
+    use crate::automation::entities::{playbook_item, playbook_run};
     use sea_orm::QueryOrder;
     let rows = playbook_approval::Entity::find()
         .filter(playbook_approval::Column::State.eq("pending"))
         .order_by_asc(playbook_approval::Column::Id)
         .all(conn)
         .await?;
+    let items: std::collections::HashMap<i32, String> = playbook_item::Entity::find()
+        .filter(playbook_item::Column::Id.is_in(rows.iter().map(|m| m.item_id)))
+        .all(conn)
+        .await?
+        .into_iter()
+        .map(|i| (i.id, i.public_id))
+        .collect();
+    let runs: std::collections::HashMap<i32, String> = playbook_run::Entity::find()
+        .filter(playbook_run::Column::Id.is_in(rows.iter().map(|m| m.run_id)))
+        .all(conn)
+        .await?
+        .into_iter()
+        .map(|r| (r.id, r.public_id))
+        .collect();
     Ok(rows
         .into_iter()
         .filter_map(|m| {
             let declaration: Declaration = serde_json::from_str(&m.payload).ok()?;
             Some(PendingApproval {
-                approval_id: m.id,
-                run_id: m.run_id,
-                item_id: m.item_id,
+                id: m.id,
+                run: m.run_id,
+                item: m.item_id,
+                approval_id: m.public_id,
+                run_id: runs.get(&m.run_id)?.clone(),
+                item_id: items.get(&m.item_id)?.clone(),
                 kind: m.kind,
                 summary: declaration.summary,
                 fields: declaration.fields,

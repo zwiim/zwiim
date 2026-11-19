@@ -1826,7 +1826,7 @@ export type HostFeedEvent = { seq: number } & (
   /** Capability `playbooks`: an item parked on an outward approval (spec 8.5.1). */
   | { type: "run.approval_requested"; payload: PendingApproval }
   /** Capability `playbooks`: the approval no longer waits (answered, stopped, or its item moved on). */
-  | { type: "run.approval_cleared"; payload: { approval_id: number; run_id: number } }
+  | { type: "run.approval_cleared"; payload: { approval_id: string; run_id: string } }
   /** Capability `playbooks`: a run's state or item counts changed (spec 11.4.1). Last one for a run that ended. */
   | { type: "run.changed"; payload: RunView }
   /** Capability `playbooks`: one item of a followed run changed state. */
@@ -2082,7 +2082,7 @@ export interface AgentAuthStatus {
  * The automation engine (revision 40, capability `playbooks`). All
  * operations are gated by the `playbooks.enabled` Labs setting and error in
  * the `HostErrorCode` vocabulary above (`run_active`, `run_start_requires_mac`,
- * ...). Wall-clock fields are RFC 3339.
+ * ...). Ids are opaque strings. Wall-clock fields are RFC 3339.
  */
 export interface PlaybookSummary {
   playbook_id: string;
@@ -2149,9 +2149,9 @@ export interface DeclaredField {
 
 /** An outward action waiting for the person's Send, edit, or Skip (spec 8.5). */
 export interface PendingApproval {
-  approval_id: number;
-  run_id: number;
-  item_id: number;
+  approval_id: string;
+  run_id: string;
+  item_id: string;
   kind: string;
   summary: string;
   fields: DeclaredField[];
@@ -2161,8 +2161,8 @@ export interface PendingApproval {
 
 /** A run as the Host feed carries it (`run.changed`, snapshot `runs`). */
 export interface RunView {
-  run_id: number;
-  playbook_id: number;
+  run_id: string;
+  playbook_id: string;
   status: RunStatus;
   pause_reason: RunPauseReason | null;
   outcome: RunOutcome | null;
@@ -2174,19 +2174,19 @@ export interface RunView {
 
 /** A ping for the person, shown as a local notification (spec 11.4.2). */
 export interface RunAlert {
-  alert_id: number;
+  alert_id: string;
   kind: "run_done" | "item_waiting_person" | "item_retries_exhausted" | "approval_waiting";
-  run_id: number;
+  run_id: string;
   /** Null for a run-level alert (`run_done`). */
-  item_id: number | null;
+  item_id: string | null;
   text: string;
   created_at: string;
 }
 
 /** An item as `run.item_changed` carries it. */
 export interface RunItemView {
-  run_id: number;
-  item_id: number;
+  run_id: string;
+  item_id: string;
   title: string | null;
   status: ItemStatus;
   reason_code: string | null;
