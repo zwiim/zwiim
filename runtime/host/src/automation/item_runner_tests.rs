@@ -41,7 +41,59 @@ async fn setup() -> (ItemRunner, i32) {
         )
         .await
         .expect("running");
+    // The person accepted the risk on the test sites (spec 14.5).
+    for site in ["indeed.com", "x.example"] {
+        accept_risk(&runner, site).await;
+    }
     (runner, run)
+}
+
+async fn accept_risk(runner: &ItemRunner, site: &str) {
+    PlaybookStore::new(runner_engine(runner).clone())
+        .set_site_value(
+            site,
+            crate::automation::SiteKnowledgeKind::RiskAccept,
+            "main",
+            "2026-11-19T00:00:00Z",
+        )
+        .await
+        .expect("accept risk");
+}
+
+#[tokio::test]
+async fn nothing_starts_on_a_site_whose_risk_was_not_accepted() {
+    // Spec 14.5: nothing runs on a site without the person's risk step.
+    let (runner, run) = setup().await;
+    let now = chrono::Utc::now();
+    let id = playbook_item::Entity::insert(playbook_item::ActiveModel {
+        run_id: sea_orm::Set(run),
+        playbook_id: sea_orm::Set(1),
+        site: sea_orm::Set("new.example".into()),
+        account: sea_orm::Set("main".into()),
+        item_key: sea_orm::Set("job-new".into()),
+        status: sea_orm::Set(ItemStatus::Queued.as_str().into()),
+        epoch: sea_orm::Set(0),
+        created_at: sea_orm::Set(now),
+        updated_at: sea_orm::Set(now),
+        ..Default::default()
+    })
+    .exec_with_returning(runner_engine(&runner))
+    .await
+    .expect("insert")
+    .id;
+    let begun = runner
+        .begin_item(id, "new.example", "main")
+        .await
+        .expect("begin");
+    assert_eq!(begun, None);
+    assert_eq!(status(&runner, id).await, ItemStatus::Queued.as_str());
+
+    accept_risk(&runner, "new.example").await;
+    let begun = runner
+        .begin_item(id, "new.example", "main")
+        .await
+        .expect("begin");
+    assert_eq!(begun, Some(1));
 }
 
 /// Mark an item as having gone outward, as the dispatch transaction does.

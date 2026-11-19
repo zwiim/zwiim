@@ -245,8 +245,8 @@ impl ItemRunner {
 
     /// Take a queued item to `working` when the lane and the run allow it
     /// (spec 6.4), and give the new attempt's epoch for the session's
-    /// [`ItemRef`] (6.6.7). When the site is paused or the run is not running
-    /// the item stays queued (`None`).
+    /// [`ItemRef`] (6.6.7). When the site is paused or its risk not accepted,
+    /// or the run is not running, the item stays queued (`None`).
     pub async fn begin_item(&self, item_id: i32, site: &str, account: &str) -> Result<Option<i32>> {
         let run_id = match self.item_run_id(item_id).await? {
             Some(id) => id,
@@ -259,6 +259,10 @@ impl ItemRunner {
             .await?
             .is_some()
         {
+            return Ok(None);
+        }
+        // Nothing runs on a site before the person accepts its risk (14.5).
+        if !self.store.risk_accepted(site, account).await? {
             return Ok(None);
         }
         // The approved click takes the lane (spec 8.5.5): items approved
