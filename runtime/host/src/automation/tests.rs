@@ -146,7 +146,7 @@ async fn dispatch_reserves_the_key_and_takes_one_cap_slot() {
     .await;
 
     let out = engine
-        .begin_dispatch(id, &[key("apply")], slot("apply", 25))
+        .begin_dispatch(id, 0, &[key("apply")], slot("apply", 25))
         .await
         .expect("dispatch");
     assert_eq!(out, DispatchOutcome::Dispatched);
@@ -188,7 +188,7 @@ async fn a_taken_key_skips_with_no_cap_spent_and_no_outward_start() {
     )
     .await;
     engine
-        .begin_dispatch(first, &[key("apply")], slot("apply", 25))
+        .begin_dispatch(first, 0, &[key("apply")], slot("apply", 25))
         .await
         .expect("first dispatch");
 
@@ -213,7 +213,7 @@ async fn a_taken_key_skips_with_no_cap_spent_and_no_outward_start() {
     )
     .await;
     let out = engine
-        .begin_dispatch(second, &[key("apply")], slot("apply", 25))
+        .begin_dispatch(second, 0, &[key("apply")], slot("apply", 25))
         .await
         .expect("dispatch 2");
     assert_eq!(out, DispatchOutcome::AlreadyDone);
@@ -256,7 +256,7 @@ async fn a_full_day_defers_the_item_without_outward_start() {
     )
     .await;
     let out = engine
-        .begin_dispatch(id, &[key("apply")], slot("apply", 0))
+        .begin_dispatch(id, 0, &[key("apply")], slot("apply", 0))
         .await
         .expect("dispatch");
     assert_eq!(out, DispatchOutcome::DailyCapHit);
@@ -424,7 +424,10 @@ async fn the_site_total_and_the_kind_cap_are_both_enforced() {
             action_kind: "publish_post".into(),
             item_key: format!("post-{i}"),
         }];
-        let out = engine.begin_dispatch(id, &keys, s).await.expect("dispatch");
+        let out = engine
+            .begin_dispatch(id, 0, &keys, s)
+            .await
+            .expect("dispatch");
         if out == DispatchOutcome::Dispatched {
             n += 1;
         }
@@ -463,7 +466,7 @@ async fn the_site_total_and_the_kind_cap_are_both_enforced() {
             item_key: format!("y-{i}"),
         }];
         if engine
-            .begin_dispatch(id, &keys, base.clone())
+            .begin_dispatch(id, 0, &keys, base.clone())
             .await
             .expect("dispatch")
             == DispatchOutcome::Dispatched

@@ -7,13 +7,14 @@ use crate::automation::checks::{Check, PageFacts};
 use crate::automation::declaration::{ControlKind, DeclaredField, DeclaredValue, Target};
 use crate::automation::entities::playbook_item;
 use crate::automation::item_runner::{
-    DispatchResult, ItemOutcome, ItemRef, ItemRunner, SessionResult,
+    DispatchResult, ItemOutcome, ItemRef, ItemRunner, RunError, SessionResult,
 };
 use crate::automation::pauses::NavigationSignal;
 use crate::automation::reasons::{ActionKind, ApprovalRule, ReasonCode};
 use crate::automation::states::{ItemStatus, PauseReason, RunStatus, RunTrigger};
 use crate::automation::{AutomationEngine, LedgerKey, PlaybookStore};
 use crate::db::migration::Migrator;
+use crate::db::service::playbook_engine_service::TransitionError;
 use sea_orm::{Database, DatabaseConnection, EntityTrait};
 use sea_orm_migration::MigratorTrait;
 
@@ -97,6 +98,7 @@ fn item_ref() -> ItemRef {
         rules: Default::default(),
         show_me_run_kinds: Default::default(),
         scope: vec![],
+        epoch: 1,
     }
 }
 
@@ -157,7 +159,7 @@ async fn an_auto_declaration_allows_dispatch_and_checks_decide_done() {
         text: "Application sent".into(),
     }];
     runner
-        .settle_after_checks(id, &keys, &checks, &facts, true)
+        .settle_after_checks(id, item.epoch, &keys, &checks, &facts, true)
         .await
         .expect("settle");
     assert_eq!(status(&runner, id).await, ItemStatus::Done.as_str());
@@ -370,10 +372,14 @@ async fn a_paused_site_keeps_a_queued_item_out() {
     .id;
 
     // Not paused: the item can start.
-    assert!(runner
-        .begin_item(id, "indeed.com", "main")
-        .await
-        .expect("begin"));
+    // Starting gives the session its attempt epoch (spec 6.6.7).
+    assert_eq!(
+        runner
+            .begin_item(id, "indeed.com", "main")
+            .await
+            .expect("begin"),
+        Some(1)
+    );
     // Paused: a fresh queued item stays out.
     let store = crate::automation::PlaybookStore::new(runner_engine(&runner).clone());
     crate::automation::SitePause::pause(
@@ -400,10 +406,13 @@ async fn a_paused_site_keeps_a_queued_item_out() {
     .await
     .expect("insert")
     .id;
-    assert!(!runner
-        .begin_item(id2, "x.example", "main")
-        .await
-        .expect("begin"));
+    assert_eq!(
+        runner
+            .begin_item(id2, "x.example", "main")
+            .await
+            .expect("begin"),
+        None
+    );
     assert_eq!(status(&runner, id2).await, ItemStatus::Queued.as_str());
 }
 
@@ -534,6 +543,7 @@ async fn not_sent_redo_requeues_and_frees_the_item() {
     runner
         .settle_after_checks(
             id,
+            item.epoch,
             &keys,
             &[Check::TextPresent {
                 text: "sent".into(),
@@ -581,7 +591,129 @@ async fn approved_item(runner: &ItemRunner, run: i32) -> (i32, ItemRef) {
     .await
     .expect("approve");
     assert_eq!(status(runner, id).await, ItemStatus::Working.as_str());
+    // The approved click is a new attempt (waiting_approval -> working).
+    item.epoch = epoch_of(runner, id).await;
     (id, item)
+}
+
+async fn epoch_of(runner: &ItemRunner, id: i32) -> i32 {
+    playbook_item::Entity::find_by_id(id)
+        .one(runner_engine(runner))
+        .await
+        .expect("read")
+        .expect("item")
+        .epoch
+}
+
+fn is_stale_attempt<T: std::fmt::Debug>(r: &Result<T, RunError>) -> bool {
+    matches!(
+        r,
+        Err(RunError::Transition(TransitionError::StaleAttempt { .. }))
+    )
+}
+
+/// Requeue a working item and start it again, as a wake gap or timeout
+/// does (spec 6.6.7): the old session keeps the old epoch.
+async fn restart_attempt(runner: &ItemRunner, id: i32) {
+    let engine = runner.engine_for_tests();
+    engine
+        .transition_item(id, ItemStatus::Working, ItemStatus::Queued, None)
+        .await
+        .unwrap();
+    engine
+        .transition_item(id, ItemStatus::Queued, ItemStatus::Working, None)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_stale_attempt_cannot_declare_or_end_the_item() {
+    // Spec 6.6.7: a declaration or result carrying a stale epoch is refused.
+    let (runner, run) = setup().await;
+    let (id, mut zombie) = working_item(&runner, run).await;
+    restart_attempt(&runner, id).await;
+
+    zombie
+        .rules
+        .insert(ActionKind::SubmitApplication, ApprovalRule::Auto);
+    let declared = runner
+        .finish_session(id, &zombie, ItemOutcome::ReadyToDispatch(declaration()))
+        .await;
+    assert!(is_stale_attempt(&declared), "{declared:?}");
+
+    zombie
+        .rules
+        .insert(ActionKind::SubmitApplication, ApprovalRule::Ask);
+    let asked = runner
+        .finish_session(id, &zombie, ItemOutcome::ReadyToDispatch(declaration()))
+        .await;
+    assert!(is_stale_attempt(&asked), "{asked:?}");
+    use crate::automation::entities::playbook_approval;
+    assert!(playbook_approval::Entity::find()
+        .one(runner_engine(&runner))
+        .await
+        .unwrap()
+        .is_none());
+
+    let failed = runner
+        .finish_session(
+            id,
+            &zombie,
+            ItemOutcome::Failed(ReasonCode::PageUnrecognised),
+        )
+        .await;
+    assert!(is_stale_attempt(&failed), "{failed:?}");
+    assert_eq!(status(&runner, id).await, ItemStatus::Working.as_str());
+
+    // The current attempt still works.
+    let mut current = zombie.clone();
+    current.epoch = epoch_of(&runner, id).await;
+    current
+        .rules
+        .insert(ActionKind::SubmitApplication, ApprovalRule::Auto);
+    let ok = runner
+        .finish_session(id, &current, ItemOutcome::ReadyToDispatch(declaration()))
+        .await
+        .expect("session");
+    assert!(matches!(ok, SessionResult::AllowDispatch(_)));
+}
+
+#[tokio::test]
+async fn a_stale_attempt_cannot_dispatch() {
+    let (runner, run) = setup().await;
+    let (id, zombie) = working_item(&runner, run).await;
+    restart_attempt(&runner, id).await;
+    let result = runner
+        .dispatch(
+            id,
+            &zombie,
+            ActionKind::SubmitApplication,
+            &job_keys(),
+            "2026-11-19",
+        )
+        .await;
+    assert!(is_stale_attempt(&result), "{result:?}");
+    assert!(!outward_at(&runner, id).await);
+    assert_eq!(cap_used(&runner, "*").await, 0);
+    assert_eq!(key_state(&runner).await, None);
+}
+
+#[tokio::test]
+async fn a_stale_approved_click_leaves_the_approval_for_the_current_attempt() {
+    let (runner, run) = setup().await;
+    let (id, item) = approved_item(&runner, run).await;
+    let mut zombie = item.clone();
+    zombie.epoch -= 1;
+    let stale = runner
+        .dispatch_approved(id, &zombie, &job_keys(), "2026-11-19")
+        .await;
+    assert!(is_stale_attempt(&stale), "{stale:?}");
+    assert!(!outward_at(&runner, id).await);
+    let sent = runner
+        .dispatch_approved(id, &item, &job_keys(), "2026-11-19")
+        .await
+        .expect("dispatch");
+    assert_eq!(sent, DispatchResult::Done);
 }
 
 #[tokio::test]
@@ -634,6 +766,7 @@ async fn an_approved_click_on_a_changed_page_restarts_and_keeps_the_approval() {
         .transition_item(id, ItemStatus::Queued, ItemStatus::Working, None)
         .await
         .unwrap();
+    item.epoch = epoch_of(&runner, id).await;
     item.scope.clear();
     let again = runner
         .finish_session(id, &item, ItemOutcome::ReadyToDispatch(declaration()))
@@ -703,7 +836,7 @@ async fn an_approval_waiting_for_its_lane_goes_before_queued_work() {
         .begin_item(queued, "indeed.com", "main")
         .await
         .expect("begin");
-    assert!(!started);
+    assert_eq!(started, None);
     assert_eq!(status(&runner, parked).await, ItemStatus::Working.as_str());
     assert_eq!(status(&runner, queued).await, ItemStatus::Queued.as_str());
 }

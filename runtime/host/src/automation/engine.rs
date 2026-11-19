@@ -257,6 +257,18 @@ impl AutomationEngine {
         engine_svc::transition_item(&self.db, item_id, from, to, reason_code).await
     }
 
+    /// [`Self::transition_item`] for one attempt's session (spec 6.6.7).
+    pub async fn transition_attempt(
+        &self,
+        item_id: i32,
+        epoch: i32,
+        from: ItemStatus,
+        to: ItemStatus,
+        reason_code: Option<&str>,
+    ) -> Result<(), TransitionError> {
+        engine_svc::transition_attempt(&self.db, item_id, epoch, from, to, reason_code).await
+    }
+
     pub async fn transition_run(
         &self,
         run_id: i32,
@@ -270,20 +282,22 @@ impl AutomationEngine {
     pub async fn begin_dispatch(
         &self,
         item_id: i32,
+        epoch: i32,
         keys: &[LedgerKey],
         cap: CapSlot,
     ) -> Result<DispatchOutcome, TransitionError> {
-        engine_svc::begin_dispatch(&self.db, item_id, keys, cap).await
+        engine_svc::begin_dispatch(&self.db, item_id, epoch, keys, cap).await
     }
 
     pub async fn begin_approved_dispatch(
         &self,
         item_id: i32,
+        epoch: i32,
         keys: &[LedgerKey],
         cap: CapSlot,
         approved: &crate::automation::Declaration,
     ) -> Result<DispatchOutcome, TransitionError> {
-        engine_svc::begin_approved_dispatch(&self.db, item_id, keys, cap, approved).await
+        engine_svc::begin_approved_dispatch(&self.db, item_id, epoch, keys, cap, approved).await
     }
 }
 

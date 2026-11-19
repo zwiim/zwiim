@@ -172,6 +172,17 @@ impl ItemRunner {
         Ok(row.map(|m| m.outward_started_at.is_some()).unwrap_or(true))
     }
 
+    async fn epoch_of(&self, item_id: i32) -> Result<i32> {
+        use crate::automation::entities::playbook_item;
+        use sea_orm::EntityTrait;
+        playbook_item::Entity::find_by_id(item_id)
+            .one(self.engine.db())
+            .await
+            .map_err(|e| RunError::Db(DbError::from(e)))?
+            .map(|m| m.epoch)
+            .ok_or_else(|| RunError::Db(DbError::NotFound(format!("item {item_id}"))))
+    }
+
     #[cfg(test)]
     pub(crate) fn db_for_tests(&self) -> &sea_orm::DatabaseConnection {
         self.engine.db()
@@ -233,21 +244,22 @@ impl ItemRunner {
     }
 
     /// Take a queued item to `working` when the lane and the run allow it
-    /// (spec 6.4). When the site is paused or the run is not running the item
-    /// stays queued.
-    pub async fn begin_item(&self, item_id: i32, site: &str, account: &str) -> Result<bool> {
+    /// (spec 6.4), and give the new attempt's epoch for the session's
+    /// [`ItemRef`] (6.6.7). When the site is paused or the run is not running
+    /// the item stays queued (`None`).
+    pub async fn begin_item(&self, item_id: i32, site: &str, account: &str) -> Result<Option<i32>> {
         let run_id = match self.item_run_id(item_id).await? {
             Some(id) => id,
-            None => return Ok(false),
+            None => return Ok(None),
         };
         if !self.run_is_running(run_id).await? {
-            return Ok(false);
+            return Ok(None);
         }
         if SitePause::current(&self.store, site, account)
             .await?
             .is_some()
         {
-            return Ok(false);
+            return Ok(None);
         }
         // The approved click takes the lane (spec 8.5.5): items approved
         // while their lane was busy start before queued work.
@@ -259,14 +271,14 @@ impl ItemRunner {
             .transition_item(item_id, ItemStatus::Queued, ItemStatus::Working, None)
             .await
         {
-            Ok(()) => Ok(true),
+            Ok(()) => Ok(Some(self.epoch_of(item_id).await?)),
             // Lost the lane to another item, or the item moved: not an error
             // the caller retries, just "did not start".
-            Err(TransitionError::ItemStale { .. }) => Ok(false),
+            Err(TransitionError::ItemStale { .. }) => Ok(None),
             Err(TransitionError::Db(e))
                 if e.to_string().to_ascii_lowercase().contains("unique") =>
             {
-                Ok(false)
+                Ok(None)
             }
             Err(e) => Err(e.into()),
         }
@@ -280,11 +292,21 @@ impl ItemRunner {
         item: &ItemRef,
         outcome: ItemOutcome,
     ) -> Result<SessionResult> {
+        // A session of an earlier attempt is refused before anything is
+        // decided (spec 6.6.7); its writes below also filter on the epoch.
+        if self.epoch_of(item_id).await? != item.epoch {
+            return Err(TransitionError::StaleAttempt {
+                item_id,
+                epoch: item.epoch,
+            }
+            .into());
+        }
         match outcome {
             ItemOutcome::AwaitingApproval => {
                 self.engine
-                    .transition_item(
+                    .transition_attempt(
                         item_id,
+                        item.epoch,
                         ItemStatus::Working,
                         ItemStatus::WaitingApproval,
                         None,
@@ -294,8 +316,9 @@ impl ItemRunner {
             }
             ItemOutcome::Skip(reason) => {
                 self.engine
-                    .transition_item(
+                    .transition_attempt(
                         item_id,
+                        item.epoch,
                         ItemStatus::Working,
                         ItemStatus::Skipped,
                         Some(reason.as_str()),
@@ -306,8 +329,9 @@ impl ItemRunner {
             }
             ItemOutcome::Unanswerable(question) => {
                 self.engine
-                    .transition_item(
+                    .transition_attempt(
                         item_id,
+                        item.epoch,
                         ItemStatus::Working,
                         ItemStatus::WaitingPerson,
                         Some(ReasonCode::FormFieldUnanswerable.as_str()),
@@ -320,8 +344,9 @@ impl ItemRunner {
                 // to the person instead. Read the mark from the database.
                 if self.is_outward(item_id).await? {
                     self.engine
-                        .transition_item(
+                        .transition_attempt(
                             item_id,
+                            item.epoch,
                             ItemStatus::Working,
                             ItemStatus::WaitingPerson,
                             Some(reason.as_str()),
@@ -381,8 +406,9 @@ impl ItemRunner {
             // Ask: park the item and its tab.
             DeclarationDecision::Pending => {
                 self.engine
-                    .transition_item(
+                    .transition_attempt(
                         item_id,
+                        item.epoch,
                         ItemStatus::Working,
                         ItemStatus::WaitingApproval,
                         None,
@@ -411,8 +437,9 @@ impl ItemRunner {
                 if !check.passed() {
                     // A mismatch sends the item to a new session (8.6.5).
                     self.engine
-                        .transition_item(
+                        .transition_attempt(
                             item_id,
+                            item.epoch,
                             ItemStatus::Working,
                             ItemStatus::Queued,
                             Some(ReasonCode::UndeclaredOutwardAction.as_str()),
@@ -435,8 +462,11 @@ impl ItemRunner {
         local_day: &str,
     ) -> Result<DispatchResult> {
         let cap = self.cap_slot(item, kind, local_day);
-        let outcome = self.engine.begin_dispatch(item_id, keys, cap).await?;
-        self.settle_dispatch(item_id, outcome).await
+        let outcome = self
+            .engine
+            .begin_dispatch(item_id, item.epoch, keys, cap)
+            .await?;
+        self.settle_dispatch(item_id, item.epoch, outcome).await
     }
 
     /// The Host's approved click (spec 8.5.5, 8.7): the pre-submit check of
@@ -462,8 +492,9 @@ impl ItemRunner {
             if self.is_outward(item_id).await? {
                 // A confirm step on a page that changed: the person decides.
                 self.engine
-                    .transition_item(
+                    .transition_attempt(
                         item_id,
+                        item.epoch,
                         ItemStatus::Working,
                         ItemStatus::WaitingPerson,
                         Some(ReasonCode::PageUnrecognised.as_str()),
@@ -474,8 +505,9 @@ impl ItemRunner {
                 ));
             }
             self.engine
-                .transition_item(
+                .transition_attempt(
                     item_id,
+                    item.epoch,
                     ItemStatus::Working,
                     ItemStatus::Queued,
                     Some(ReasonCode::UndeclaredOutwardAction.as_str()),
@@ -486,9 +518,9 @@ impl ItemRunner {
         let cap = self.cap_slot(item, approved.kind, local_day);
         let outcome = self
             .engine
-            .begin_approved_dispatch(item_id, keys, cap, &approved)
+            .begin_approved_dispatch(item_id, item.epoch, keys, cap, &approved)
             .await?;
-        self.settle_dispatch(item_id, outcome).await
+        self.settle_dispatch(item_id, item.epoch, outcome).await
     }
 
     fn cap_slot(&self, item: &ItemRef, kind: ActionKind, local_day: &str) -> CapSlot {
@@ -508,14 +540,16 @@ impl ItemRunner {
     async fn settle_dispatch(
         &self,
         item_id: i32,
+        epoch: i32,
         outcome: DispatchOutcome,
     ) -> Result<DispatchResult> {
         match outcome {
             DispatchOutcome::NotApproved => Ok(DispatchResult::NotApproved),
             DispatchOutcome::AlreadyDone => {
                 self.engine
-                    .transition_item(
+                    .transition_attempt(
                         item_id,
+                        epoch,
                         ItemStatus::Working,
                         ItemStatus::Skipped,
                         Some(ReasonCode::AlreadyDone.as_str()),
@@ -525,8 +559,9 @@ impl ItemRunner {
             }
             DispatchOutcome::DailyCapHit => {
                 self.engine
-                    .transition_item(
+                    .transition_attempt(
                         item_id,
+                        epoch,
                         ItemStatus::Working,
                         ItemStatus::Deferred,
                         Some(ReasonCode::DailyCapHit.as_str()),
@@ -546,6 +581,7 @@ impl ItemRunner {
     pub async fn settle_after_checks(
         &self,
         item_id: i32,
+        epoch: i32,
         keys: &[LedgerKey],
         checks: &[Check],
         facts: &PageFacts,
@@ -554,7 +590,7 @@ impl ItemRunner {
         let results = checks::evaluate(checks, facts, agent_says_done);
         if checks::all_pass(&results) {
             self.engine
-                .transition_item(item_id, ItemStatus::Working, ItemStatus::Done, None)
+                .transition_attempt(item_id, epoch, ItemStatus::Working, ItemStatus::Done, None)
                 .await?;
             // The reserved keys become `done` (spec 6.6.5, 6.7.1).
             for key in keys {
@@ -566,8 +602,9 @@ impl ItemRunner {
         }
         // Outward: never back to failed/queued; go to the person.
         self.engine
-            .transition_item(
+            .transition_attempt(
                 item_id,
+                epoch,
                 ItemStatus::Working,
                 ItemStatus::WaitingPerson,
                 Some(ReasonCode::CheckFailed.as_str()),
@@ -691,13 +728,15 @@ impl ItemRunner {
         item: &ItemRef,
         reason: ReasonCode,
     ) -> Result<()> {
+        let epoch = item.epoch;
         let failures = self
             .bump_retry(item.playbook_id, &item.site, &item.account, &item.key)
             .await?;
         if failures >= 3 {
             self.engine
-                .transition_item(
+                .transition_attempt(
                     item_id,
+                    epoch,
                     ItemStatus::Working,
                     ItemStatus::Failed,
                     Some(reason.as_str()),
@@ -713,8 +752,9 @@ impl ItemRunner {
                 .await?;
         } else {
             self.engine
-                .transition_item(
+                .transition_attempt(
                     item_id,
+                    epoch,
                     ItemStatus::Working,
                     ItemStatus::Failed,
                     Some(reason.as_str()),
@@ -818,6 +858,9 @@ pub struct ItemRef {
     pub show_me_run_kinds: std::collections::HashSet<ActionKind>,
     /// What the Host read from the submit scope now (spec 8.6).
     pub scope: Vec<ScopeControl>,
+    /// The attempt this session belongs to, from [`ItemRunner::begin_item`]
+    /// (spec 6.6.7). A call carrying an older epoch is refused.
+    pub epoch: i32,
 }
 
 impl ItemRef {
