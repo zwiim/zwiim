@@ -46,6 +46,9 @@ use crate::web::event_bridge::{emit_with_state, emit_with_state_gated, EventEmit
 /// IM message, or the webhook body.
 const USER_PROMPT_PREVIEW_MAX_CHARS: usize = 500;
 
+/// The owner label of every connection the automation engine launches.
+const ENGINE_OWNER_LABEL: &str = "automation";
+
 /// Grace window `disconnect_all` waits after firing every `Disconnect` before
 /// hard-killing surviving agent process trees. Long enough for a driver thread
 /// to unwind and run its own post-loop cleanup (delegation/question/plan-approval
@@ -792,6 +795,61 @@ impl ConnectionManager {
         preferred_mode_id: Option<String>,
         preferred_config_values: BTreeMap<String, String>,
     ) -> Result<String, AcpError> {
+        self.spawn_connection(
+            agent_type,
+            working_dir,
+            intent,
+            runtime_env,
+            repository_env,
+            owner_window_label,
+            emitter,
+            preferred_mode_id,
+            preferred_config_values,
+            None,
+        )
+        .await
+    }
+
+    /// Zwiim: launch a fresh connection for the automation engine (spec
+    /// 10.5). The Host sets `engine` here, so the connection's lockdown never
+    /// depends on anything the agent or the person's settings say.
+    pub async fn spawn_engine_agent(
+        &self,
+        agent_type: AgentType,
+        working_dir: String,
+        runtime_env: BTreeMap<String, String>,
+        emitter: EventEmitter,
+        engine: crate::automation::lockdown::EngineLaunch,
+    ) -> Result<String, AcpError> {
+        self.spawn_connection(
+            agent_type,
+            Some(working_dir),
+            LaunchIntent::New,
+            runtime_env,
+            BTreeMap::new(),
+            ENGINE_OWNER_LABEL.to_string(),
+            emitter,
+            None,
+            BTreeMap::new(),
+            Some(engine),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_connection(
+        &self,
+        agent_type: AgentType,
+        working_dir: Option<String>,
+        intent: LaunchIntent,
+        runtime_env: BTreeMap<String, String>,
+        repository_env: BTreeMap<String, String>,
+        owner_window_label: String,
+        emitter: EventEmitter,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
+        engine: Option<crate::automation::lockdown::EngineLaunch>,
+    ) -> Result<String, AcpError> {
         // Held for the whole establishment. A restore writing back to the
         // agents' own directories takes the write side, so it can never see an
         // empty connection list and then have one appear underneath it. Not
@@ -875,6 +933,7 @@ impl ConnectionManager {
             self.delegation_snapshot(),
             self.terminal_shell_config.clone(),
             preferences,
+            engine,
         )
         .await?;
 

@@ -98,6 +98,14 @@ impl SessionKind {
     }
 }
 
+/// What the Host knows about a connection it launched for the engine. Set at
+/// launch from the Host's own state, so nothing the agent writes (title,
+/// kind) can make a session an engine session or stop it being one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EngineLaunch {
+    pub kind: SessionKind,
+}
+
 /// Tools that are never allowed to any engine session, whatever its kind
 /// (spec 10.8.2): Git, session tools, authoring, `ask_user_question`,
 /// `browser_eval`, console or network-log bodies.

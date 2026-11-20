@@ -2385,6 +2385,7 @@ pub async fn spawn_agent_connection(
     delegation_injection: Option<DelegationInjection>,
     terminal_shell_config: TerminalShellRuntimeConfig,
     preferences: crate::harness::UserPreferences,
+    engine: Option<crate::automation::lockdown::EngineLaunch>,
 ) -> Result<tokio::sync::oneshot::Receiver<()>, AcpError> {
     // Create the authoritative session state up front. Subsequent emit_with_state
     // calls write through this state and increment its seq counter so the first
@@ -2396,6 +2397,7 @@ pub async fn spawn_agent_connection(
         owner_window_label.clone(),
         None, // folder_id 由后续 prompt handler 在首次 send 时绑定 (Phase 2)
     );
+    initial_state.engine = engine;
 
     // Install the SessionStarted dedup signal BEFORE wrapping into Arc so the
     // first event (StatusChanged{Connecting} below) doesn't race with the
@@ -5703,6 +5705,7 @@ async fn run_connection(
     // Claude's AIR frames: trimmed `_meta` merged back, and the permission
     // card's missing kind / diff (see `claude_tool_frames`).
     let claude_frames = claude_tool_frames::ClaudeToolFrames::shared();
+    let engine_session = state.read().await.engine.is_some();
 
     Client
         .builder()
@@ -5731,6 +5734,18 @@ async fn run_connection(
                 async move |mut req: RequestPermissionRequest,
                             responder: Responder<RequestPermissionResponse>,
                             _cx: ConnectionTo<Agent>| {
+                    // An engine session's requests never reach the person
+                    // (spec 10.5.2): its tools are pre-allowed, so anything
+                    // asking is outside its profile.
+                    if engine_session {
+                        tracing::info!(
+                            "[ACP] rejecting a permission request from engine session {perm_conn_id}"
+                        );
+                        let _ = responder.respond(RequestPermissionResponse::new(
+                            engine_permission_rejection(&req),
+                        ));
+                        return Ok(());
+                    }
                     claude_frames
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
@@ -7161,6 +7176,21 @@ fn zwiim_ask_auto_allow_option(req: &RequestPermissionRequest) -> Option<String>
         .iter()
         .find(|opt| opt.kind == PermissionOptionKind::AllowOnce)
         .map(|opt| opt.option_id.to_string())
+}
+
+/// The answer to any permission request from an engine session (spec
+/// 10.5.2): the agent's reject-once option, else a cancel. Never a
+/// reject-always, which would write a rule into the agent's settings.
+fn engine_permission_rejection(req: &RequestPermissionRequest) -> RequestPermissionOutcome {
+    req.options
+        .iter()
+        .find(|opt| opt.kind == PermissionOptionKind::RejectOnce)
+        .map(|opt| {
+            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                opt.option_id.to_string(),
+            ))
+        })
+        .unwrap_or(RequestPermissionOutcome::Cancelled)
 }
 
 /// Answer a permission request that is merely gating Zwiim's own ask tool, so
@@ -18063,6 +18093,60 @@ mod tests {
             permission_option_infos(AgentType::Codex, &req.options).len(),
             CLAUDE_EXIT_PLAN_OPTIONS.len()
         );
+    }
+
+    #[test]
+    fn an_engine_session_permission_request_is_rejected_once() {
+        // Even Zwiim's own ask tool, which a person's session auto-allows.
+        let req = claude_mcp_permission_request(
+            "mcp__zwiim-mcp__ask_user_question",
+            claude_permission_options(),
+        );
+        match engine_permission_rejection(&req) {
+            RequestPermissionOutcome::Selected(selected) => {
+                assert_eq!(selected.option_id.to_string(), "reject");
+            }
+            other => panic!("expected the reject-once option, got {other:?}"),
+        }
+        // No reject-once option: cancel, never an "always" rule.
+        let always_only = claude_mcp_permission_request(
+            "mcp__zwiim-mcp__browser_click",
+            vec![
+                sacp::schema::PermissionOption::new(
+                    "allow-once",
+                    "Yes",
+                    PermissionOptionKind::AllowOnce,
+                ),
+                sacp::schema::PermissionOption::new(
+                    "reject-always",
+                    "Never",
+                    PermissionOptionKind::RejectAlways,
+                ),
+            ],
+        );
+        assert!(matches!(
+            engine_permission_rejection(&always_only),
+            RequestPermissionOutcome::Cancelled
+        ));
+    }
+
+    /// The engine check runs first in the permission handler, before the
+    /// ask auto-allow and every bridge, so no request from an engine session
+    /// reaches the person (spec 10.5.2).
+    #[test]
+    fn the_permission_handler_rejects_engine_requests_before_anything_else() {
+        let source = include_str!("connection.rs");
+        let code = source.split("#[cfg(test)]\nmod tests {").next().unwrap();
+        let handler = code
+            .split("async move |mut req: RequestPermissionRequest,")
+            .nth(1)
+            .unwrap();
+        let reject = handler.find("engine_permission_rejection(&req)").unwrap();
+        let ask = handler.find("try_auto_allow_zwiim_ask(").unwrap();
+        assert!(reject < ask);
+        let spawn = code.split("pub async fn spawn_agent_connection(").nth(1).unwrap();
+        let spawn = spawn.split("\n}\n").next().unwrap();
+        assert!(spawn.contains("initial_state.engine = engine;"));
     }
 
     #[test]
