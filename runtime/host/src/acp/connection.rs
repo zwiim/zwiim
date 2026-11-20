@@ -4946,9 +4946,6 @@ fn agent_delivers_wire_mcp(agent_type: AgentType) -> bool {
     !matches!(agent_type, AgentType::Pi)
 }
 
-/// Load MCP servers configured for `agent_type` and convert them into the
-/// ACP wire format. Errors and unsupported entries are logged and skipped so
-/// a single malformed entry never blocks a session from starting.
 /// The person's own MCP servers for this agent, or none for an engine
 /// session, which gets only zwiim-mcp (automation spec 10.6.1).
 fn user_mcp_servers(agent_type: AgentType, engine_session: bool) -> Vec<McpServer> {
@@ -4958,6 +4955,9 @@ fn user_mcp_servers(agent_type: AgentType, engine_session: bool) -> Vec<McpServe
     load_mcp_servers_for_agent(agent_type)
 }
 
+/// Load MCP servers configured for `agent_type` and convert them into the
+/// ACP wire format. Errors and unsupported entries are logged and skipped so
+/// a single malformed entry never blocks a session from starting.
 fn load_mcp_servers_for_agent(agent_type: AgentType) -> Vec<McpServer> {
     // Hermes, Kimi Code, Grok, and Cursor each read their own native MCP
     // config at launch — Hermes from `~/.hermes/config.yaml` (`mcp_servers`,
@@ -18236,6 +18236,112 @@ mod tests {
         assert_eq!(env.get("GITHUB_TOKEN").map(String::as_str), Some(""));
         assert_eq!(env.get("GH_TOKEN").map(String::as_str), Some(""));
         assert!(!env.contains_key("ANTHROPIC_API_KEY"));
+    }
+
+    /// The lockdown conformance matrix (automation spec 10.9), for every
+    /// built-in agent and every engine session kind, as far as it holds
+    /// without a live agent: the tool list the companion would serve equals
+    /// the profile, the person's MCP servers stay out, every permission
+    /// request is rejected, fs and terminal are refused, batch kinds get no
+    /// browser, Claude Code runs with the lockdown options, and no agent is
+    /// labelled fully locked yet. The live half (a real shell request, a user
+    /// hook, the network gate) runs with the fixture site (task 18).
+    #[tokio::test]
+    async fn every_agent_and_kind_meets_the_lockdown_it_can_be_checked_for() {
+        use crate::acp::delegation::companion::{
+            dispatch_line, parse_csv_list, CompanionContext, CompanionFeatures, InflightCalls,
+            LineAction,
+        };
+        use crate::automation::lockdown::{
+            lockdown_level, EngineLaunch, LockdownLevel, SessionKind,
+        };
+        let injection = test_delegation_injection(
+            Arc::new(TestAllAgentsAvailable) as Arc<dyn AgentAvailabilityLookup>
+        );
+        let cwd = PathBuf::from("/tmp");
+        for &agent in crate::models::agent::BUILTIN_AGENT_TYPES {
+            assert!(user_mcp_servers(agent, true).is_empty(), "{agent:?}");
+            assert_eq!(lockdown_level(agent), LockdownLevel::BestEffort, "{agent:?}");
+            for &kind in SessionKind::all() {
+                let launch = EngineLaunch { kind, attempt: None };
+                let mut servers = Vec::new();
+                let injected = inject_zwiim_mcp_with_binary_locator(
+                    &mut servers,
+                    &injection,
+                    "engine-conn",
+                    &cwd,
+                    false,
+                    HostToolsPolicy::Default,
+                    Some(launch),
+                    || Some(PathBuf::from("/bin/zwiim-mcp")),
+                )
+                .await;
+                if !kind.has_browser() {
+                    assert!(injected.is_none() && servers.is_empty(), "{kind:?}");
+                } else {
+                    let McpServer::Stdio(server) = &servers[0] else {
+                        panic!("expected stdio");
+                    };
+                    let arg = |flag: &str| {
+                        server
+                            .args
+                            .iter()
+                            .position(|a| a == flag)
+                            .map(|at| server.args[at + 1].clone())
+                    };
+                    let ctx = CompanionContext {
+                        parent_connection_id: "engine-conn".into(),
+                        socket_path: "/tmp/none.sock".into(),
+                        token: injected.expect("token").token,
+                        features: CompanionFeatures::parse(arg("--features").as_deref()),
+                        custom_agents: Vec::new(),
+                        disabled_agents: Vec::new(),
+                        only_tools: parse_csv_list(arg("--tools").as_deref()),
+                    };
+                    let LineAction::Respond(listed) = dispatch_line(
+                        &ctx,
+                        Arc::new(InflightCalls::new()),
+                        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+                    )
+                    .await
+                    else {
+                        panic!("expected a listing");
+                    };
+                    let mut names: Vec<String> = listed.result.unwrap()["tools"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|t| t["name"].as_str().unwrap().to_string())
+                        .collect();
+                    names.sort();
+                    let mut profile: Vec<String> =
+                        kind.browser_tools().iter().map(|t| t.to_string()).collect();
+                    profile.sort();
+                    assert_eq!(names, profile, "{agent:?} {kind:?}");
+                }
+                for method in ["fs/read_text_file", "fs/write_text_file", "terminal/create"] {
+                    assert!(channel_refusal(method, true, HostToolsPolicy::Default).is_some());
+                }
+                let req = claude_mcp_permission_request("Bash", claude_permission_options());
+                assert!(!matches!(
+                    engine_permission_rejection(&req),
+                    RequestPermissionOutcome::Selected(ref s) if s.option_id.to_string() == "allow-once"
+                ));
+                let opened = serde_json::to_value(build_new_session_request(
+                    agent,
+                    &cwd,
+                    Vec::new(),
+                    None,
+                    Some(kind),
+                ))
+                .unwrap();
+                if agent == AgentType::ClaudeCode {
+                    let options = &opened["_meta"]["claudeCode"]["options"];
+                    assert_eq!(options["settingSources"], serde_json::json!([]));
+                    assert_eq!(options["tools"], serde_json::json!([]));
+                }
+            }
+        }
     }
 
     #[test]
