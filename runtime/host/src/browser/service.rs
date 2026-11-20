@@ -105,6 +105,23 @@ pub enum BrowserEvent {
         owner: TabOwner,
         handoff: Option<PageHandoff>,
     },
+    /// A lane's page needs a person (automation spec 14.3); told to the
+    /// run, never to clients.
+    LaneAsk {
+        tab_id: String,
+        site: String,
+        account: String,
+        need: LaneNeed,
+    },
+}
+
+/// What a lane's page asks of a person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneNeed {
+    /// The site asks for a sign-in.
+    SignIn,
+    /// A dialog only a person can answer.
+    Page,
 }
 
 /// What an agent is about to do, for clients to show: where its pointer
@@ -2711,18 +2728,36 @@ impl BrowserService {
 
     /// Ask a person for `kind` on behalf of the tab `tab_id`, until answered
     /// or [`ui::timeout`].
+    /// A lane's page also tells its run (automation spec 14.3), and its
+    /// file chooser is never asked: files reach lane pages through
+    /// `playbook_attach_file`.
     fn ask_locked(&self, inner: &mut Inner, tab_id: &str, kind: UiKind) {
+        let owner = inner.tabs[tab_id].info.owner.clone();
+        let lane_need = match (&owner, &kind) {
+            (TabOwner::Lane { .. }, UiKind::FileChooser { .. }) => return,
+            (TabOwner::Lane { .. }, UiKind::Auth { .. }) => Some(LaneNeed::SignIn),
+            (TabOwner::Lane { .. }, UiKind::Dialog { .. }) => Some(LaneNeed::Page),
+            _ => None,
+        };
         inner.next_ui += 1;
         let request = UiRequest {
             request_id: format!("ui-{}", inner.next_ui),
             tab_id: tab_id.to_string(),
-            owner: inner.tabs[tab_id].info.owner.clone(),
+            owner: owner.clone(),
             kind,
         };
         let wait = ui::timeout(&request.kind);
         let request_id = request.request_id.clone();
         inner.ui.insert(request_id.clone(), request.clone());
         self.emit(BrowserEvent::Ui(request));
+        if let (TabOwner::Lane { site, account }, Some(need)) = (owner, lane_need) {
+            self.emit(BrowserEvent::LaneAsk {
+                tab_id: tab_id.to_string(),
+                site,
+                account,
+                need,
+            });
+        }
         let me = self.me.clone();
         tokio::spawn(async move {
             tokio::time::sleep(wait).await;
@@ -3732,6 +3767,88 @@ mod tests {
                 return request_id;
             }
         }
+    }
+
+    /// Spec 14.3: what a page on a lane asks of a person is told to the
+    /// run as well (`LaneAsk`); a lane's file chooser is never asked, as
+    /// files reach lane pages through `playbook_attach_file`.
+    #[tokio::test]
+    async fn a_lane_tells_its_run_what_its_page_asks_of_a_person() {
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let tab = svc
+            .open(lane("jobsy.example", "main"), Some("https://jobsy.example/"))
+            .await
+            .unwrap();
+        let chat = svc
+            .open(session("s1"), Some("https://chat.example/"))
+            .await
+            .unwrap();
+        let target = fake.wait_url("https://jobsy.example/").await;
+        let page = fake.lock().targets[&target].session.clone().unwrap();
+        let chat_target = fake.wait_url("https://chat.example/").await;
+        let chat_page = fake.lock().targets[&chat_target].session.clone().unwrap();
+        let mut events = svc.subscribe();
+        let lane_ask = |need| BrowserEvent::LaneAsk {
+            tab_id: tab.id.clone(),
+            site: "jobsy.example".into(),
+            account: "main".into(),
+            need,
+        };
+        let next_lane_ask = |events: &mut broadcast::Receiver<BrowserEvent>| {
+            let mut events = events.resubscribe();
+            async move {
+                loop {
+                    if let e @ BrowserEvent::LaneAsk { .. } = events.recv().await.unwrap() {
+                        return e;
+                    }
+                }
+            }
+        };
+
+        // A session's dialog is the session's alone.
+        let dialog = json!({"type": "confirm", "message": "Sure?", "url": "https://x/"});
+        fake.emit("Page.javascriptDialogOpening", dialog.clone(), Some(&chat_page));
+        let pending = next_lane_ask(&mut events);
+        fake.emit("Page.javascriptDialogOpening", dialog, Some(&page));
+        assert_eq!(pending.await, lane_ask(LaneNeed::Page));
+        let asked = svc.ui_requests().await;
+        assert!(asked.iter().any(|r| r.tab_id == chat.id));
+        assert!(asked.iter().any(|r| r.tab_id == tab.id), "the Mac is asked too");
+
+        let pending = next_lane_ask(&mut events);
+        fake.emit(
+            "Fetch.authRequired",
+            json!({"requestId": "r1", "frameId": "F1", "resourceType": "Document",
+                   "request": {"url": "https://jobsy.example/account"},
+                   "authChallenge": {"source": "Server", "origin": "https://jobsy.example",
+                                     "scheme": "basic", "realm": "Jobsy"}}),
+            Some(&page),
+        );
+        assert_eq!(pending.await, lane_ask(LaneNeed::SignIn));
+
+        let before = svc.ui_requests().await.len();
+        fake.emit(
+            "Page.fileChooserOpened",
+            json!({"frameId": "F1", "mode": "selectSingle", "backendNodeId": 7}),
+            Some(&page),
+        );
+        fake.emit(
+            "Page.fileChooserOpened",
+            json!({"frameId": "F1", "mode": "selectSingle", "backendNodeId": 7}),
+            Some(&chat_page),
+        );
+        // The chat's chooser is asked; the lane's never is.
+        loop {
+            if let BrowserEvent::Ui(r) = events.recv().await.unwrap() {
+                if matches!(r.kind, UiKind::FileChooser { .. }) {
+                    assert_eq!(r.tab_id, chat.id);
+                    break;
+                }
+            }
+        }
+        assert_eq!(svc.ui_requests().await.len(), before + 1);
     }
 
     #[tokio::test]

@@ -2244,7 +2244,8 @@ export type ItemReasonCode =
   | "agent_limit"
   | "agent_rate_limited"
   | "timeout"
-  | "host_restarted";
+  | "host_restarted"
+  | "page_needs_person";
 
 export interface ItemSummary {
   item_id: string;

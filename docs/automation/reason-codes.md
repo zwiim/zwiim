@@ -22,6 +22,7 @@ the drift test `scripts/automation-docs.mjs` fails on a hand edit.
 | `agent_rate_limited` | The agent's provider rate-limited us. | yes | unknown | Wait; the run backs off and resumes. |
 | `timeout` | A step or session timed out. | yes | unknown | Nothing; the item retries. |
 | `host_restarted` | The Host restarted mid-item. | yes | unknown | Nothing; the item restarts from its first step. |
+| `page_needs_person` | The site's page asked something only a person can answer. | no | unknown | Answer it in the playbook tab on the Mac, then Resume. |
 
 ## Protocol error codes
 

@@ -294,6 +294,11 @@ impl AppState {
                 let service =
                     BrowserService::start(manager, self.db.conn.clone(), Some(snapshot)).await?;
                 service.keep_timeline(dir.join("timeline"));
+                crate::automation::lane_asks::follow(
+                    service.subscribe(),
+                    crate::automation::AutomationEngine::new(self.db.conn.clone())
+                        .with_changes(self.playbook_changes.clone()),
+                );
                 Ok(service)
             })
             .await

@@ -1007,6 +1007,8 @@ impl BrowserFeed {
                     // Told to the agent that acted (design 10.3); clients
                     // follow downloads in the Host's downloads.
                     Ok(BrowserEvent::Download { .. }) => continue,
+                    // The run's alone (automation spec 14.3).
+                    Ok(BrowserEvent::LaneAsk { .. }) => continue,
                     Err(RecvError::Lagged(_)) => Some(self.snapshot().await),
                     Err(RecvError::Closed) => None,
                 },

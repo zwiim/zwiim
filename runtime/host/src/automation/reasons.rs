@@ -155,6 +155,7 @@ pub enum ReasonCode {
     AgentRateLimited,
     Timeout,
     HostRestarted,
+    PageNeedsPerson,
 }
 
 impl ReasonCode {
@@ -177,6 +178,7 @@ impl ReasonCode {
             ReasonCode::AgentRateLimited => "agent_rate_limited",
             ReasonCode::Timeout => "timeout",
             ReasonCode::HostRestarted => "host_restarted",
+            ReasonCode::PageNeedsPerson => "page_needs_person",
         }
     }
 
@@ -199,6 +201,7 @@ impl ReasonCode {
             "agent_rate_limited" => ReasonCode::AgentRateLimited,
             "timeout" => ReasonCode::Timeout,
             "host_restarted" => ReasonCode::HostRestarted,
+            "page_needs_person" => ReasonCode::PageNeedsPerson,
             _ => return None,
         })
     }
@@ -222,6 +225,7 @@ impl ReasonCode {
             ReasonCode::AgentRateLimited,
             ReasonCode::Timeout,
             ReasonCode::HostRestarted,
+            ReasonCode::PageNeedsPerson,
         ]
     }
 
@@ -244,7 +248,9 @@ impl ReasonCode {
             | ReasonCode::AgentRateLimited
             | ReasonCode::AgentFailed => SideEffects::Unknown,
             ReasonCode::CheckFailed => SideEffects::Partial,
-            ReasonCode::Timeout | ReasonCode::HostRestarted => SideEffects::Unknown,
+            ReasonCode::Timeout | ReasonCode::HostRestarted | ReasonCode::PageNeedsPerson => {
+                SideEffects::Unknown
+            }
         }
     }
 }
@@ -384,6 +390,12 @@ pub fn reason_infos() -> &'static [ReasonInfo] {
             meaning: "The Host restarted mid-item.",
             retried: true,
             fix: "Nothing; the item restarts from its first step.",
+        },
+        ReasonInfo {
+            code: PageNeedsPerson,
+            meaning: "The site's page asked something only a person can answer.",
+            retried: false,
+            fix: "Answer it in the playbook tab on the Mac, then Resume.",
         },
     ]
 }
