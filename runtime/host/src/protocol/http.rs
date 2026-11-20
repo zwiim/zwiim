@@ -524,6 +524,18 @@ pub async fn settings_update(
     ZJson(p): ZJson<SettingsUpdateParams>,
 ) -> ZResult<Value> {
     crate::settings::update(&state.db.conn, &p.values).await?;
+    // Playbooks going off pauses their active runs (automation spec 6.5.9).
+    if p.values.get(crate::settings::PLAYBOOKS_ENABLED) == Some(&Value::Bool(false)) {
+        crate::db::service::playbook_engine_service::pause_active_runs(
+            &state.db.conn,
+            crate::automation::PauseReason::Person.as_str(),
+        )
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "[zwiim] pausing runs as playbooks turned off");
+            ZwiimError::internal()
+        })?;
+    }
     settings_get(Extension(state)).await
 }
 

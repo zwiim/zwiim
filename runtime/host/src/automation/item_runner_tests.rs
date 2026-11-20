@@ -812,6 +812,84 @@ async fn a_stale_attempt_on_an_item_no_longer_working_is_named_stale() {
     assert!(is_stale_attempt(&result), "{result:?}");
 }
 
+/// One rate-limited session: start the item, the agent hits its limit.
+async fn rate_limited_session(runner: &ItemRunner, id: i32) -> SessionResult {
+    let mut item = item_ref();
+    item.epoch = runner
+        .begin_item(id, "indeed.com", "main")
+        .await
+        .expect("begin")
+        .expect("started");
+    runner
+        .finish_session(id, &item, ItemOutcome::Failed(ReasonCode::AgentRateLimited))
+        .await
+        .expect("session")
+}
+
+async fn run_row(
+    runner: &ItemRunner,
+    run: i32,
+) -> crate::automation::entities::playbook_run::Model {
+    crate::automation::entities::playbook_run::Entity::find_by_id(run)
+        .one(runner_engine(runner))
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_rate_limited_agent_backs_off_three_times_then_pauses_the_run() {
+    // Spec 7.1.7: the item is not failed; the run stays running for up to 3
+    // backoff retries, then pauses with `agent_rate_limited`.
+    let (runner, run) = setup().await;
+    let id = item_with(&runner, run, "job-rl", ItemStatus::Queued).await;
+    for retry in 1..=3 {
+        assert_eq!(
+            rate_limited_session(&runner, id).await,
+            SessionResult::BackOff { retry }
+        );
+        assert_eq!(status(&runner, id).await, ItemStatus::Queued.as_str());
+        assert_eq!(run_row(&runner, run).await.status, "running");
+    }
+    assert_eq!(
+        rate_limited_session(&runner, id).await,
+        SessionResult::RunPaused(PauseReason::AgentRateLimited)
+    );
+    let row = run_row(&runner, run).await;
+    assert_eq!(row.status, "paused");
+    assert_eq!(row.pause_reason.as_deref(), Some("agent_rate_limited"));
+    assert_eq!(status(&runner, id).await, ItemStatus::Queued.as_str());
+    use crate::automation::entities::item_retry_counter;
+    assert!(item_retry_counter::Entity::find()
+        .one(runner_engine(&runner))
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn a_session_that_gets_through_resets_the_rate_limit_backoff() {
+    let (runner, run) = setup().await;
+    let id = item_with(&runner, run, "job-rl", ItemStatus::Queued).await;
+    rate_limited_session(&runner, id).await;
+    rate_limited_session(&runner, id).await;
+    let mut item = item_ref();
+    item.epoch = runner
+        .begin_item(id, "indeed.com", "main")
+        .await
+        .unwrap()
+        .unwrap();
+    runner
+        .finish_session(id, &item, ItemOutcome::Skip(ReasonCode::ApprovalRejected))
+        .await
+        .unwrap();
+    let other = item_with(&runner, run, "job-rl-2", ItemStatus::Queued).await;
+    assert_eq!(
+        rate_limited_session(&runner, other).await,
+        SessionResult::BackOff { retry: 1 }
+    );
+}
+
 #[tokio::test]
 async fn a_stale_attempt_cannot_dispatch() {
     let (runner, run) = setup().await;

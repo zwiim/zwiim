@@ -82,7 +82,13 @@ pub struct ItemRunner {
     /// Bumped when an item parks on a new approval, so the Host feed
     /// publishes the request (spec 8.5.1). `None` outside the Host.
     approvals_feed: Option<std::sync::Arc<tokio::sync::watch::Sender<u64>>>,
+    /// Back-to-back rate-limited sessions per run (spec 7.1.7). Kept in
+    /// memory: a Host restart starts the backoff over.
+    rate_limited: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<i32, u32>>>,
 }
+
+/// Backoff retries on an agent rate limit before the run pauses (7.1.7).
+const RATE_LIMIT_RETRIES: u32 = 3;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -104,6 +110,7 @@ impl ItemRunner {
             caps: Caps::default(),
             limits: SessionLimits::default(),
             approvals_feed: None,
+            rate_limited: Default::default(),
         }
     }
 
@@ -320,6 +327,13 @@ impl ItemRunner {
             }
             .into());
         }
+        let run_id = self.item_run_id(item_id).await?;
+        if !matches!(outcome, ItemOutcome::Failed(ReasonCode::AgentRateLimited)) {
+            // A session that got through ends the run's backoff.
+            if let Some(run_id) = run_id {
+                self.rate_limits().remove(&run_id);
+            }
+        }
         match outcome {
             ItemOutcome::AwaitingApproval => {
                 self.engine
@@ -375,6 +389,9 @@ impl ItemRunner {
                         "may have been sent; check and tell me".to_string(),
                     ));
                 }
+                if reason == ReasonCode::AgentRateLimited {
+                    return self.rate_limited(item_id, item, run_id).await;
+                }
                 self.fail_or_exhaust(item_id, item, reason).await?;
                 Ok(SessionResult::Failed(reason))
             }
@@ -382,6 +399,60 @@ impl ItemRunner {
                 self.declare(item_id, item, declaration).await
             }
         }
+    }
+
+    fn rate_limits(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<i32, u32>> {
+        self.rate_limited
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The agent hit its usage limit before `outward_started` (spec 7.1.7):
+    /// the item goes back to the queue without counting a failure, and the
+    /// run backs off up to three times, then pauses for the person.
+    async fn rate_limited(
+        &self,
+        item_id: i32,
+        item: &ItemRef,
+        run_id: Option<i32>,
+    ) -> Result<SessionResult> {
+        self.engine
+            .transition_attempt(
+                item_id,
+                item.epoch,
+                ItemStatus::Working,
+                ItemStatus::Queued,
+                Some(ReasonCode::AgentRateLimited.as_str()),
+            )
+            .await?;
+        let Some(run_id) = run_id else {
+            return Ok(SessionResult::BackOff { retry: 1 });
+        };
+        let retry = {
+            let mut limits = self.rate_limits();
+            let n = limits.entry(run_id).or_insert(0);
+            *n += 1;
+            *n
+        };
+        if retry <= RATE_LIMIT_RETRIES {
+            return Ok(SessionResult::BackOff { retry });
+        }
+        self.rate_limits().remove(&run_id);
+        match self
+            .engine
+            .transition_run(
+                run_id,
+                RunStatus::Running,
+                RunStatus::Paused,
+                Some(PauseReason::AgentRateLimited.as_str()),
+            )
+            .await
+        {
+            // The person paused or stopped it meanwhile: theirs stands.
+            Ok(()) | Err(TransitionError::RunStale { .. }) => {}
+            Err(e) => return Err(e.into()),
+        }
+        Ok(SessionResult::RunPaused(PauseReason::AgentRateLimited))
     }
 
     /// Decide and act on a declaration (spec 8.2.2, 8.3, 8.6).
@@ -841,6 +912,12 @@ pub enum SessionResult {
     RunNotRunning,
     /// The pre-submit check failed; a new session restarts the item.
     Restart,
+    /// The agent hit its usage limit (spec 7.1.7): the item is back in the
+    /// queue, not failed, and the run stays running. The caller waits before
+    /// starting work again ("Retrying at HH:MM"); `retry` is 1 to 3.
+    BackOff { retry: u32 },
+    /// The run was paused for this reason; the person resumes it.
+    RunPaused(PauseReason),
     /// Auto allowed: the caller may click `submit_target` and dispatch.
     AllowDispatch(Declaration),
     /// The person already approved exactly this content (a continuation

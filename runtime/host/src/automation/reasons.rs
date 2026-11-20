@@ -518,6 +518,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_error_code_is_in_the_sdk_error_union() {
+        // The SDK's `HostErrorCode` is written by hand; this keeps it from
+        // missing a code the Host sends (spec 11.2).
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../clients/sdk/src/types/protocol.ts"
+        );
+        let sdk = std::fs::read_to_string(path).expect("read the SDK protocol types");
+        let start = sdk
+            .find("export type HostErrorCode =")
+            .expect("HostErrorCode");
+        // Members are `| "code"` lines; the union ends at the first line
+        // ending in `;` (doc comments in between may hold semicolons).
+        let members: Vec<&str> = sdk[start..]
+            .lines()
+            .skip(1)
+            .map(str::trim)
+            .take_while(|l| l.starts_with('|') || l.starts_with("/*") || l.starts_with('*'))
+            .filter_map(|l| l.strip_prefix("| "))
+            .map(|l| l.trim_end_matches(';').trim_matches('"'))
+            .collect();
+        for code in ErrorCode::all() {
+            assert!(
+                members.contains(&code.as_str()),
+                "`{}` is missing from HostErrorCode in clients/sdk/src/types/protocol.ts",
+                code.as_str()
+            );
+        }
+    }
+
+    #[test]
     fn always_ask_kinds_never_go_auto_and_names_round_trip() {
         for &kind in ActionKind::all() {
             assert_eq!(ActionKind::parse(kind.as_str()), Some(kind));
