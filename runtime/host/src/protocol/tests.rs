@@ -8249,12 +8249,18 @@ async fn a_run_pages_its_items_and_pauses_resumes_and_stops() {
     let (status, body) = h.call("run.resume", json!({ "run_id": run_id })).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "running");
+    // Resume is idempotent too (spec 8.5.4, 18.5): a second one, as from
+    // the phone racing the Mac, answers with the running run.
     let (status, body) = h.call("run.resume", json!({ "run_id": run_id })).await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(body["error"]["code"], "run_not_paused");
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "running");
     let (status, body) = h.call("run.stop", json!({ "run_id": run_id })).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "stopped");
+    // A stopped run was never paused: resuming it is refused.
+    let (status, body) = h.call("run.resume", json!({ "run_id": run_id })).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "run_not_paused");
 }
 
 #[tokio::test]
@@ -8324,6 +8330,39 @@ async fn saving_an_invalid_playbook_is_refused_with_line_anchored_errors() {
     // The text was not saved.
     let (_, body) = h.call("playbook.get", json!({ "playbook_id": id })).await;
     assert_eq!(body["source"], "goal: apply");
+}
+
+#[tokio::test]
+async fn a_run_waits_for_the_risk_step_on_each_of_its_sites() {
+    // Spec 14.5: nothing runs on a site before the person accepts its risk.
+    let h = host(false).await;
+    let id = seed_playbook(&h).await;
+    let (status, _) = h
+        .call(
+            "playbook.save",
+            json!({
+                "playbook_id": id,
+                "source": crate::automation::playbook_format::EXAMPLE_PLAYBOOK,
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    for op in ["run.start", "run.try"] {
+        let (status, body) = h.call(op, json!({ "playbook_id": id })).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{op}");
+        assert_eq!(body["error"]["code"], "site_risk_not_accepted", "{op}");
+        assert_eq!(
+            body["error"]["details"]["sites"],
+            json!(["fixture.zwiim.test"]),
+            "{op}"
+        );
+    }
+    let (status, _) = h
+        .call("site.risk_accept", json!({ "site": "fixture.zwiim.test" }))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = h.call("run.start", json!({ "playbook_id": id })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 #[tokio::test]
@@ -8525,6 +8564,29 @@ async fn an_approval_given_while_paused_acts_on_resume() {
     let (status, body) = h.call("run.approve", json!({ "approval_id": approval_id })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(approval_state(&h, approval_id).await, "approved");
+    assert_eq!(item_status(&h, item_id).await, "waiting_approval");
+    let (status, body) = h.call("run.resume", json!({ "run_id": run_id })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(item_status(&h, item_id).await, "working");
+}
+
+#[tokio::test]
+async fn a_repeated_resume_still_releases_approvals_given_while_paused() {
+    // A resume that moved the run but not its approvals (a crash between
+    // the two writes) is finished by the next, idempotent, resume.
+    let h = host(false).await;
+    let (run_id, item_id, approval_id) = seed_parked_item(&h).await;
+    h.call("run.pause", json!({ "run_id": run_id })).await;
+    h.call("run.approve", json!({ "approval_id": approval_id })).await;
+    crate::automation::AutomationEngine::new(h.state.db.conn.clone())
+        .transition_run(
+            run_id as i32,
+            crate::automation::RunStatus::Paused,
+            crate::automation::RunStatus::Running,
+            None,
+        )
+        .await
+        .unwrap();
     assert_eq!(item_status(&h, item_id).await, "waiting_approval");
     let (status, body) = h.call("run.resume", json!({ "run_id": run_id })).await;
     assert_eq!(status, StatusCode::OK, "{body}");

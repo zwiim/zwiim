@@ -34,6 +34,10 @@ pub enum TransitionError {
     RunStale { run_id: i32, expected: RunStatus },
     #[error("not found: {0}")]
     NotFound(String),
+    /// A session of an earlier attempt of the item (spec 6.6.7): the Host
+    /// requeued or restarted the item since, so the call is refused.
+    #[error("item {item_id}: stale attempt {epoch}")]
+    StaleAttempt { item_id: i32, epoch: i32 },
 }
 
 type Result<T> = std::result::Result<T, TransitionError>;
@@ -49,6 +53,54 @@ impl From<sea_orm::DbErr> for TransitionError {
 pub async fn transition_item(
     conn: &DatabaseConnection,
     item_id: i32,
+    from: ItemStatus,
+    to: ItemStatus,
+    reason_code: Option<&str>,
+) -> Result<()> {
+    transition(conn, item_id, None, from, to, reason_code).await
+}
+
+/// [`transition_item`] on behalf of one attempt's session (spec 6.6.7): it
+/// applies only while the item is still on `epoch`; a session of an earlier
+/// attempt gets `StaleAttempt` and changes nothing.
+pub async fn transition_attempt(
+    conn: &DatabaseConnection,
+    item_id: i32,
+    epoch: i32,
+    from: ItemStatus,
+    to: ItemStatus,
+    reason_code: Option<&str>,
+) -> Result<()> {
+    transition(conn, item_id, Some(epoch), from, to, reason_code).await
+}
+
+/// Start a queued item's new attempt (spec 6.4, 6.6.7): `queued ->
+/// working` and the new epoch, read in the same transaction so the epoch
+/// returned is the one this start gave the item.
+pub async fn start_attempt(conn: &DatabaseConnection, item_id: i32) -> Result<i32> {
+    let tx = conn.begin().await?;
+    transition(
+        &tx,
+        item_id,
+        None,
+        ItemStatus::Queued,
+        ItemStatus::Working,
+        None,
+    )
+    .await?;
+    let epoch = playbook_item::Entity::find_by_id(item_id)
+        .one(&tx)
+        .await?
+        .map(|m| m.epoch)
+        .ok_or_else(|| TransitionError::NotFound(format!("item {item_id}")))?;
+    tx.commit().await?;
+    Ok(epoch)
+}
+
+async fn transition<C: sea_orm::ConnectionTrait>(
+    conn: &C,
+    item_id: i32,
+    attempt: Option<i32>,
     from: ItemStatus,
     to: ItemStatus,
     reason_code: Option<&str>,
@@ -73,6 +125,9 @@ pub async fn transition_item(
     }
     let mut update = update.filter(playbook_item::Column::Id.eq(item_id));
     update = update.filter(playbook_item::Column::Status.eq(from.as_str()));
+    if let Some(epoch) = attempt {
+        update = update.filter(playbook_item::Column::Epoch.eq(epoch));
+    }
     // Spec 6.4.1: after outward_started an item never becomes failed,
     // queued, deferred or stopped. The one exception is a proven-not-sent
     // redo (6.6.5), which goes through `redo_not_sent`.
@@ -84,6 +139,15 @@ pub async fn transition_item(
     }
     let res = update.exec(conn).await?;
     if res.rows_affected == 0 {
+        if let Some(epoch) = attempt {
+            let current = playbook_item::Entity::find_by_id(item_id)
+                .one(conn)
+                .await?
+                .map(|m| m.epoch);
+            if current.is_some_and(|e| e != epoch) {
+                return Err(TransitionError::StaleAttempt { item_id, epoch });
+            }
+        }
         return Err(TransitionError::ItemStale {
             item_id,
             expected: from,
@@ -202,10 +266,11 @@ pub async fn active_run_count(conn: &DatabaseConnection, playbook_id: i32) -> Re
 pub async fn begin_dispatch(
     conn: &DatabaseConnection,
     item_id: i32,
+    epoch: i32,
     keys: &[crate::automation::engine::LedgerKey],
     cap: crate::automation::engine::CapSlot,
 ) -> Result<crate::automation::engine::DispatchOutcome> {
-    dispatch_tx(conn, item_id, keys, cap, None).await
+    dispatch_tx(conn, item_id, epoch, keys, cap, None).await
 }
 
 /// [`begin_dispatch`] for the Host's approved click (spec 8.5.5): the
@@ -214,16 +279,18 @@ pub async fn begin_dispatch(
 pub async fn begin_approved_dispatch(
     conn: &DatabaseConnection,
     item_id: i32,
+    epoch: i32,
     keys: &[crate::automation::engine::LedgerKey],
     cap: crate::automation::engine::CapSlot,
     approved: &crate::automation::Declaration,
 ) -> Result<crate::automation::engine::DispatchOutcome> {
-    dispatch_tx(conn, item_id, keys, cap, Some(approved)).await
+    dispatch_tx(conn, item_id, epoch, keys, cap, Some(approved)).await
 }
 
 async fn dispatch_tx(
     conn: &DatabaseConnection,
     item_id: i32,
+    epoch: i32,
     keys: &[crate::automation::engine::LedgerKey],
     cap: crate::automation::engine::CapSlot,
     approved: Option<&crate::automation::Declaration>,
@@ -234,8 +301,20 @@ async fn dispatch_tx(
     let item = playbook_item::Entity::find_by_id(item_id)
         .one(&tx)
         .await?
-        .filter(|m| m.status == ItemStatus::Working.as_str())
-        .ok_or_else(|| TransitionError::NotFound(format!("item {item_id} is not working")))?;
+        .ok_or_else(|| TransitionError::NotFound(format!("item {item_id}")))?;
+    // Only the current attempt's session may send (6.6.7). The outward
+    // update below also filters on the epoch, so a requeue racing this
+    // transaction rolls it back.
+    if item.epoch != epoch {
+        tx.rollback().await?;
+        return Err(TransitionError::StaleAttempt { item_id, epoch });
+    }
+    if item.status != ItemStatus::Working.as_str() {
+        tx.rollback().await?;
+        return Err(TransitionError::NotFound(format!(
+            "item {item_id} is not working"
+        )));
+    }
     if let Some(declaration) = approved {
         if !crate::automation::approvals::consume(&tx, item_id, declaration).await? {
             tx.rollback().await?;
@@ -296,6 +375,7 @@ async fn dispatch_tx(
         .filter(playbook_item::Column::Id.eq(item_id))
         .filter(playbook_item::Column::OutwardStartedAt.is_null())
         .filter(playbook_item::Column::Status.eq(ItemStatus::Working.as_str()))
+        .filter(playbook_item::Column::Epoch.eq(epoch))
         .exec(&tx)
         .await?;
     if res.rows_affected == 0 {

@@ -125,6 +125,8 @@ export type HostErrorCode =
   | "playbook_invalid"
   /** `run.start` from the phone or a schedule: 1a-i starts from the Mac only. */
   | "run_start_requires_mac"
+  /** `run.start` / `run.try`: a playbook site has no risk step yet. Details `{ sites }`. */
+  | "site_risk_not_accepted"
   /** Enabling a schedule before a completed show-me run (1a-ii). */
   | "schedule_needs_show_me_run"
   /** Any `playbook.*` / `run.*` / `site.*` while Playbooks are off in Settings > Labs. */
@@ -2504,7 +2506,9 @@ export interface Operations {
   /**
    * Start a run. In 1a-i `trigger` is `mac` (or absent); `phone` and
    * `schedule` are `run_start_requires_mac`. `item_limit: 1` is "Try on one
-   * item". `run_active` (details `{ run_id }`) while one is active.
+   * item". `run_active` (details `{ run_id }`) while one is active;
+   * `site_risk_not_accepted` (details `{ sites }`) until `site.risk_accept`
+   * for each of the playbook's sites.
    */
   "run.start": [
     { playbook_id: number; trigger?: RunTrigger; item_limit?: number },
@@ -2520,7 +2524,7 @@ export interface Operations {
   "run.items": [{ run_id: number; cursor?: number; limit?: number }, ItemPage];
   /** Idempotent: pausing a paused run returns it unchanged. */
   "run.pause": [{ run_id: number }, RunSummary];
-  /** `run_not_paused` when the run is not paused. Idempotent like pause. */
+  /** Idempotent like pause: a running run answers as it is. `run_not_paused` for a run neither paused nor running. */
   "run.resume": [{ run_id: number }, RunSummary];
   /** Cancel parked approvals; their items end `stopped`. Idempotent once stopped. */
   "run.stop": [{ run_id: number }, RunSummary];

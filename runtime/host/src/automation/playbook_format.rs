@@ -65,7 +65,7 @@ pub enum Source {
 /// An input the person provides (spec 5.3.1.2). A secret references a
 /// keychain handle, never a value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Input {
     /// A file the Host attaches (e.g. the resume).
     File { name: String, path: String },
@@ -450,6 +450,23 @@ mod tests {
         );
         let errs = validate(&text).unwrap_err();
         assert!(errs.iter().any(|e| e.field == "inputs.password"));
+    }
+
+    #[test]
+    fn a_secret_input_with_a_value_beside_its_handle_is_refused() {
+        // Spec 10.11.1: the playbook text is saved to SQLite, so a secret's
+        // value must never be accepted in it, even next to a valid handle.
+        let text = EXAMPLE_PLAYBOOK.replace(
+            r#"    handle: "{{secret:fixture_password}}""#,
+            "    handle: \"{{secret:fixture_password}}\"\n    value: hunter2",
+        );
+        assert_ne!(text, EXAMPLE_PLAYBOOK, "the test replacement must apply");
+        let errs = validate(&text).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.problem.contains("unknown field `value`")),
+            "{errs:?}"
+        );
     }
 
     #[test]

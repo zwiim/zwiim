@@ -314,6 +314,29 @@ async fn start_run_inner(
     let trigger = permitted_trigger(principal, requested_trigger.as_deref())?;
     let store = PlaybookStore::new(state.db.conn.clone());
     let book = store.get(playbook_id).await.map_err(engine_err)?;
+    // Nothing runs on a site before the person accepts its risk (spec
+    // 14.5). Phase 1 has one account per site (14.6).
+    if let Ok(doc) = crate::automation::validate_playbook(&book.source) {
+        let mut pending = Vec::new();
+        for site in &doc.sites {
+            if !store
+                .risk_accepted(site, &default_account())
+                .await
+                .map_err(engine_err)?
+            {
+                pending.push(site.clone());
+            }
+        }
+        if !pending.is_empty() {
+            let mut err = ZwiimError::new(
+                axum::http::StatusCode::CONFLICT,
+                crate::automation::ErrorCode::SiteRiskNotAccepted.as_str(),
+                "Accept the risk on each of the playbook's sites first",
+            );
+            err.details = Some(serde_json::json!({ "sites": pending }));
+            return Err(err);
+        }
+    }
     let engine = AutomationEngine::new(state.db.conn.clone());
     // Read the active run first so `run_active` can name it.
     let active = active_run_id(state, book.id).await;
@@ -469,18 +492,35 @@ pub async fn run_resume(
     // Resuming needs the engine on (no new work without it).
     require_enabled(&state.db.conn).await?;
     let engine = AutomationEngine::new(state.db.conn.clone());
-    let current = run_status(&state, p.run_id).await?;
-    if current != RunStatus::Paused {
-        return Err(ZwiimError::new(
+    let not_paused = || {
+        ZwiimError::new(
             axum::http::StatusCode::CONFLICT,
             crate::automation::ErrorCode::RunNotPaused.as_str(),
             "The run is not paused",
-        ));
+        )
+    };
+    // Idempotent like pause (spec 8.5.4, 18.5): resuming a running run, or
+    // losing the race to another resume, answers with the running run.
+    // Either way the approvals given while paused are released below, so a
+    // repeated resume finishes one that stopped between its two writes.
+    match run_status(&state, p.run_id).await? {
+        RunStatus::Paused => match engine
+            .transition_run(p.run_id, RunStatus::Paused, RunStatus::Running, None)
+            .await
+        {
+            Ok(()) => {}
+            Err(crate::db::service::playbook_engine_service::TransitionError::RunStale {
+                ..
+            }) => {
+                if run_status(&state, p.run_id).await? != RunStatus::Running {
+                    return Err(not_paused());
+                }
+            }
+            Err(e) => return Err(engine_err(e)),
+        },
+        RunStatus::Running => {}
+        _ => return Err(not_paused()),
     }
-    engine
-        .transition_run(p.run_id, RunStatus::Paused, RunStatus::Running, None)
-        .await
-        .map_err(engine_err)?;
     // Approvals given while paused act now (spec 8.8.3).
     crate::automation::approvals::release_approved(&state.db.conn, p.run_id)
         .await

@@ -442,6 +442,9 @@ fn error_meaning(code: ErrorCode) -> &'static str {
         ErrorCode::ScheduleNeedsShowMeRun => "A schedule needs a completed show-me run first.",
         ErrorCode::PlaybooksDisabled => "Playbooks are off in Settings > Labs.",
         ErrorCode::RunNotRunning => "The run is not running.",
+        ErrorCode::SiteRiskNotAccepted => {
+            "A site of the playbook has no risk step yet; `details.sites` lists them."
+        }
     }
 }
 
@@ -469,6 +472,9 @@ pub enum ErrorCode {
     PlaybooksDisabled,
     /// `run.pause` asked about a run that is not running.
     RunNotRunning,
+    /// `run.start` / `run.try` on a playbook with a site whose risk the
+    /// person has not accepted (spec 14.5).
+    SiteRiskNotAccepted,
 }
 
 impl ErrorCode {
@@ -485,6 +491,7 @@ impl ErrorCode {
             ErrorCode::ScheduleNeedsShowMeRun => "schedule_needs_show_me_run",
             ErrorCode::PlaybooksDisabled => "playbooks_disabled",
             ErrorCode::RunNotRunning => "run_not_running",
+            ErrorCode::SiteRiskNotAccepted => "site_risk_not_accepted",
         }
     }
 
@@ -501,6 +508,7 @@ impl ErrorCode {
             ErrorCode::ScheduleNeedsShowMeRun,
             ErrorCode::PlaybooksDisabled,
             ErrorCode::RunNotRunning,
+            ErrorCode::SiteRiskNotAccepted,
         ]
     }
 }
