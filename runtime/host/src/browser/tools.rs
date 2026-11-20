@@ -558,6 +558,22 @@ async fn load(browser: &BrowserService, tab_id: &str, url: &str) -> Result<Load,
     Ok(Load::Done(None))
 }
 
+/// Load `url` in `tab_id` and wait for it, as an agent's navigation does:
+/// for the engine's own tabs (automation spec 6.2.1, 6.3.4). An error page or
+/// a site the person is asked about first is an error.
+pub(crate) async fn load_page(
+    browser: &BrowserService,
+    tab_id: &str,
+    url: &str,
+) -> Result<(), String> {
+    match load(browser, tab_id, url).await {
+        Ok(Load::Done(None)) => Ok(()),
+        Ok(Load::Done(Some(kind))) => Err(format!("the page did not load ({kind})")),
+        Ok(Load::Asked(site)) => Err(format!("the person is asked about {site} first")),
+        Err(e) => Err(e.message),
+    }
+}
+
 /// The agent's error for a site policy refusal `code` (design 13.2).
 fn site_error(code: &str) -> Option<&'static str> {
     match code {

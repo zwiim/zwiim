@@ -616,6 +616,8 @@ async fn async_main() -> Exit {
         ));
         // Their one result and their call count go to the engine.
         listener.set_engine_sessions(state.engine_sessions.clone());
+        // Runs move along on their own from here (automation spec 6.1).
+        zwiim_host::automation::run_loop::spawn(state.clone());
         // Bind through the service handle rather than a bare `listener.run`
         // spawn: it keeps the bind error and the accept-loop handle around, so
         // the workspace status indicator can report why the broker socket is

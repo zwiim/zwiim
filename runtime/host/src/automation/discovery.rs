@@ -50,6 +50,8 @@ pub const MAX_CANDIDATES: usize = 100;
 pub trait LaneTabs: Send + Sync {
     /// A new tab on `lane` at `url`; its id.
     async fn open(&self, lane: &TabOwner, url: &str) -> Result<String, String>;
+    /// Where the tab is now.
+    async fn url(&self, tab_id: &str) -> Option<String>;
     async fn close(&self, tab_id: &str);
 }
 
@@ -63,10 +65,19 @@ impl LaneTabs for BrowserLaneTabs {
     async fn open(&self, lane: &TabOwner, url: &str) -> Result<String, String> {
         let browser = self.state.browser().await.map_err(|e| e.to_string())?;
         let tab = browser
-            .open(lane.clone(), Some(url))
+            .open(lane.clone(), None)
             .await
             .map_err(|e| e.message)?;
+        if let Err(e) = crate::browser::tools::load_page(&browser, &tab.id, url).await {
+            let _ = browser.close(&tab.id).await;
+            return Err(e);
+        }
         Ok(tab.id)
+    }
+
+    async fn url(&self, tab_id: &str) -> Option<String> {
+        let browser = self.state.browser().await.ok()?;
+        browser.tab(tab_id).await.map(|t| t.url)
     }
 
     async fn close(&self, tab_id: &str) {
@@ -93,6 +104,19 @@ pub fn site_for(url: &str, sites: &[String]) -> Option<String> {
 pub struct ItemIdRule {
     #[serde(default)]
     pub query: Vec<String>,
+}
+
+/// The site's confirmed item-ID rule, or the default (host and path).
+pub async fn item_id_rule(store: &PlaybookStore, site: &str) -> Result<ItemIdRule, DbError> {
+    Ok(
+        match store
+            .site_value(site, SiteKnowledgeKind::ItemIdRule, ACCOUNT)
+            .await?
+        {
+            Some(value) => serde_json::from_str(&value).unwrap_or_default(),
+            None => ItemIdRule::default(),
+        },
+    )
 }
 
 /// The normalized key of an item URL: the host lowercased and the path
@@ -314,13 +338,7 @@ impl Discovery<'_> {
                 counts.dropped += 1;
                 continue;
             };
-            let rule = match store
-                .site_value(&site, SiteKnowledgeKind::ItemIdRule, ACCOUNT)
-                .await?
-            {
-                Some(value) => serde_json::from_str(&value).unwrap_or_default(),
-                None => ItemIdRule::default(),
-            };
+            let rule = item_id_rule(&store, &site).await?;
             let Some(key) = item_key(&candidate.url, &rule) else {
                 counts.dropped += 1;
                 continue;
@@ -518,7 +536,7 @@ fn discovery_prompt(doc: &PlaybookDoc, url: &str, tab: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::automation::launcher::tests::{FakeLauncher, Script};
     use crate::automation::{AutomationEngine, RunTrigger};
@@ -526,10 +544,12 @@ mod tests {
     use serde_json::json;
     use std::sync::{Arc, Mutex};
 
+    /// Lane tabs that land where they were sent, or where `redirects` says.
     #[derive(Default)]
-    struct FakeTabs {
-        opened: Mutex<Vec<(TabOwner, String)>>,
-        closed: Mutex<Vec<String>>,
+    pub(crate) struct FakeTabs {
+        pub opened: Mutex<Vec<(TabOwner, String)>>,
+        pub closed: Mutex<Vec<String>>,
+        pub redirects: Mutex<std::collections::HashMap<String, String>>,
     }
 
     #[async_trait]
@@ -538,6 +558,12 @@ mod tests {
             let mut opened = self.opened.lock().unwrap();
             opened.push((lane.clone(), url.to_string()));
             Ok(format!("tab-{}", opened.len()))
+        }
+        async fn url(&self, tab_id: &str) -> Option<String> {
+            let n: usize = tab_id.strip_prefix("tab-")?.parse().ok()?;
+            let url = self.opened.lock().unwrap().get(n - 1)?.1.clone();
+            let redirects = self.redirects.lock().unwrap();
+            Some(redirects.get(&url).cloned().unwrap_or(url))
         }
         async fn close(&self, tab_id: &str) {
             self.closed.lock().unwrap().push(tab_id.to_string());
