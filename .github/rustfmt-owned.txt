@@ -24,6 +24,7 @@ runtime/host/src/automation/approvals.rs
 runtime/host/src/automation/caps.rs
 runtime/host/src/automation/checks.rs
 runtime/host/src/automation/declaration.rs
+runtime/host/src/automation/discovery.rs
 runtime/host/src/automation/engine.rs
 runtime/host/src/automation/entities/cap_usage.rs
 runtime/host/src/automation/entities/item_retry_counter.rs
@@ -33,6 +34,7 @@ runtime/host/src/automation/entities/playbook_alert.rs
 runtime/host/src/automation/entities/playbook_approval.rs
 runtime/host/src/automation/entities/playbook_item.rs
 runtime/host/src/automation/entities/playbook_run.rs
+runtime/host/src/automation/entities/playbook_run_source.rs
 runtime/host/src/automation/entities/playbook_skip.rs
 runtime/host/src/automation/entities/playbook_step.rs
 runtime/host/src/automation/entities/playbook_version.rs
@@ -58,6 +60,7 @@ runtime/host/src/db/migration/m20261119_000003_item_cap_slot.rs
 runtime/host/src/db/migration/m20261119_000004_playbook_alert.rs
 runtime/host/src/db/migration/m20261119_000005_playbook_public_ids.rs
 runtime/host/src/db/migration/m20261119_000006_browser_tab_lanes.rs
+runtime/host/src/db/migration/m20261120_000001_playbook_run_source.rs
 runtime/host/src/db/schema_guard.rs
 runtime/host/src/db/schema_guard/tests.rs
 runtime/host/src/db/service/playbook_engine_service.rs

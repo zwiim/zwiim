@@ -19,6 +19,7 @@ pub mod approvals;
 pub mod caps;
 pub mod checks;
 pub mod declaration;
+pub mod discovery;
 pub mod engine;
 pub mod entities;
 pub mod item_runner;
