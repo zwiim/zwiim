@@ -519,9 +519,11 @@ use serde::{Deserialize, Serialize};
 /// Labs setting. Errors use the spec 11.2 vocabulary (`run_active`,
 /// `run_start_requires_mac`, `run_not_paused`, `run_not_running`,
 /// `site_not_paused`, `approval_not_pending`, `playbook_invalid`,
-/// `playbooks_disabled`, `site_risk_not_accepted`). The Host feed publishes `run.approval_requested` /
-/// `run.approval_cleared` and its snapshot carries `approvals`. Older
-/// clients never see or call them.
+/// `playbooks_disabled`, `site_risk_not_accepted`). The Host feed publishes
+/// `run.approval_requested` / `run.approval_cleared`, `run.changed` (a run's
+/// state and item totals), `run.item_changed` and `run.alert` (sent once per
+/// item or run and kind), and its snapshot carries
+/// `approvals` and the active `runs`. Older clients never see or call them.
 pub const PROTOCOL_REVISION: u32 = 40;
 
 /// Oldest client revision this Host serves. Raise only after a release that

@@ -535,6 +535,7 @@ pub async fn settings_update(
             tracing::warn!(error = %e, "[zwiim] pausing runs as playbooks turned off");
             ZwiimError::internal()
         })?;
+        state.playbook_changes.send_modify(|v| *v += 1);
     }
     settings_get(Extension(state)).await
 }

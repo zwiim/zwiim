@@ -14,6 +14,7 @@
 //! action (spec 6.4).
 
 pub mod agent_gate;
+pub mod alerts;
 pub mod approvals;
 pub mod caps;
 pub mod checks;
@@ -28,6 +29,7 @@ pub mod pauses;
 pub mod playbook_format;
 pub mod playbook_store;
 pub mod reasons;
+pub mod run_views;
 pub mod states;
 #[cfg(test)]
 mod tests;

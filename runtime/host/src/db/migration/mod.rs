@@ -65,6 +65,7 @@ mod m20261114_000001_device_browser_access;
 mod m20261119_000001_playbook_engine;
 mod m20261119_000002_playbook_approval;
 mod m20261119_000003_item_cap_slot;
+mod m20261119_000004_playbook_alert;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -135,6 +136,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261119_000001_playbook_engine::Migration),
             Box::new(m20261119_000002_playbook_approval::Migration),
             Box::new(m20261119_000003_item_cap_slot::Migration),
+            Box::new(m20261119_000004_playbook_alert::Migration),
         ]
     }
 }

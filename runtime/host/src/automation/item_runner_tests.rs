@@ -1054,16 +1054,39 @@ async fn an_approval_waiting_for_its_lane_goes_before_queued_work() {
 }
 
 #[tokio::test]
-async fn parking_an_item_tells_the_approvals_feed() {
+async fn parking_an_item_tells_the_feed() {
     let (runner, run) = setup().await;
     let (tx, rx) = tokio::sync::watch::channel(0u64);
-    let runner = runner.with_approvals_feed(std::sync::Arc::new(tx));
+    let runner = runner.with_changes(std::sync::Arc::new(tx));
     let (id, mut item) = working_item(&runner, run).await;
     item.rules
         .insert(ActionKind::SubmitApplication, ApprovalRule::Ask);
+    let before = *rx.borrow();
     runner
         .finish_session(id, &item, ItemOutcome::ReadyToDispatch(declaration()))
         .await
         .expect("session");
-    assert_eq!(*rx.borrow(), 1);
+    assert!(*rx.borrow() > before);
+}
+
+#[tokio::test]
+async fn starting_and_ending_an_item_tell_the_feed() {
+    // Spec 11.4.1: the feed re-reads runs and items on every change.
+    let (runner, run) = setup().await;
+    let (tx, rx) = tokio::sync::watch::channel(0u64);
+    let runner = runner.with_changes(std::sync::Arc::new(tx));
+    let id = item_with(&runner, run, "job-feed", ItemStatus::Queued).await;
+    let mut item = item_ref();
+    item.epoch = runner
+        .begin_item(id, "indeed.com", "main")
+        .await
+        .unwrap()
+        .unwrap();
+    let started = *rx.borrow();
+    assert!(started > 0, "starting an item tells the feed");
+    runner
+        .finish_session(id, &item, ItemOutcome::Skip(ReasonCode::ApprovalRejected))
+        .await
+        .unwrap();
+    assert!(*rx.borrow() > started, "ending an item tells the feed");
 }

@@ -1827,6 +1827,12 @@ export type HostFeedEvent = { seq: number } & (
   | { type: "run.approval_requested"; payload: PendingApproval }
   /** Capability `playbooks`: the approval no longer waits (answered, stopped, or its item moved on). */
   | { type: "run.approval_cleared"; payload: { approval_id: number; run_id: number } }
+  /** Capability `playbooks`: a run's state or item counts changed (spec 11.4.1). Last one for a run that ended. */
+  | { type: "run.changed"; payload: RunView }
+  /** Capability `playbooks`: one item of a followed run changed state. */
+  | { type: "run.item_changed"; payload: RunItemView }
+  /** Capability `playbooks`: something needs the person; sent once per item or run and kind (spec 11.4.2-3). */
+  | { type: "run.alert"; payload: RunAlert }
 );
 
 /** Something the Host is downloading: an agent's adapter, the browser engine, a Host update. */
@@ -1870,6 +1876,8 @@ export interface HostSnapshot {
   downloads?: HostDownload[];
   /** Playbook approvals waiting for the person, oldest first (older Hosts omit it). */
   approvals?: PendingApproval[];
+  /** Playbook runs not yet ended, oldest first (older Hosts omit it). */
+  runs?: RunView[];
 }
 
 // ─── event socket ────────────────────────────────────────────────────────
@@ -2149,6 +2157,39 @@ export interface PendingApproval {
   fields: DeclaredField[];
   submit_target: PlaybookTarget;
   created_at: string;
+}
+
+/** A run as the Host feed carries it (`run.changed`, snapshot `runs`). */
+export interface RunView {
+  run_id: number;
+  playbook_id: number;
+  status: RunStatus;
+  pause_reason: RunPauseReason | null;
+  outcome: RunOutcome | null;
+  /** `failed` includes retries exhausted; `waiting` is approval plus person. */
+  totals: { items: number; done: number; skipped: number; failed: number; deferred: number; waiting: number };
+  created_at: string;
+  ended_at: string | null;
+}
+
+/** A ping for the person, shown as a local notification (spec 11.4.2). */
+export interface RunAlert {
+  alert_id: number;
+  kind: "run_done" | "item_waiting_person" | "item_retries_exhausted" | "approval_waiting";
+  run_id: number;
+  /** Null for a run-level alert (`run_done`). */
+  item_id: number | null;
+  text: string;
+  created_at: string;
+}
+
+/** An item as `run.item_changed` carries it. */
+export interface RunItemView {
+  run_id: number;
+  item_id: number;
+  title: string | null;
+  status: ItemStatus;
+  reason_code: string | null;
 }
 
 export interface RunSummary {

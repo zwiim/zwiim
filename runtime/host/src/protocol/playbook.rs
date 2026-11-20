@@ -30,6 +30,17 @@ fn engine_err(e: impl std::fmt::Display) -> ZwiimError {
     }
 }
 
+/// The engine handle for a request: its writes tell the Host feed (11.4).
+fn engine(state: &AppState) -> AutomationEngine {
+    AutomationEngine::new(state.db.conn.clone()).with_changes(state.playbook_changes.clone())
+}
+
+/// Runs, items or approvals changed outside the engine handle: tell the
+/// Host feed to re-read them (spec 11.4.1).
+fn changed(state: &AppState) {
+    state.playbook_changes.send_modify(|v| *v += 1);
+}
+
 async fn require_enabled(db: &sea_orm::DatabaseConnection) -> Result<(), ZwiimError> {
     if crate::settings::playbooks_enabled(db).await {
         Ok(())
@@ -337,7 +348,7 @@ async fn start_run_inner(
             return Err(err);
         }
     }
-    let engine = AutomationEngine::new(state.db.conn.clone());
+    let engine = engine(&state);
     // Read the active run first so `run_active` can name it.
     let active = active_run_id(state, book.id).await;
     let run = engine
@@ -462,7 +473,7 @@ pub async fn run_pause(
 ) -> ZResult<RunSummary> {
     // Pausing must work even with the Labs flag off, so a running run is
     // never stranded (spec 10.12.2).
-    let engine = AutomationEngine::new(state.db.conn.clone());
+    let engine = engine(&state);
     let current = run_status(&state, p.run_id).await?;
     if current == RunStatus::Paused || current.is_terminal() {
         // Idempotent (spec 8.5.4): pausing a paused or finished run is not
@@ -491,7 +502,7 @@ pub async fn run_resume(
 ) -> ZResult<RunSummary> {
     // Resuming needs the engine on (no new work without it).
     require_enabled(&state.db.conn).await?;
-    let engine = AutomationEngine::new(state.db.conn.clone());
+    let engine = engine(&state);
     let not_paused = || {
         ZwiimError::new(
             axum::http::StatusCode::CONFLICT,
@@ -525,6 +536,7 @@ pub async fn run_resume(
     crate::automation::approvals::release_approved(&state.db.conn, p.run_id)
         .await
         .map_err(engine_err)?;
+    changed(&state);
     run_get(
         Extension(state),
         axum::extract::Json(RunGetParams { run_id: p.run_id }),
@@ -537,7 +549,7 @@ pub async fn run_stop(
     axum::extract::Json(p): axum::extract::Json<RunIdParams>,
 ) -> ZResult<RunSummary> {
     // Stopping must work even with the Labs flag off (spec 10.12.2).
-    let engine = AutomationEngine::new(state.db.conn.clone());
+    let engine = engine(&state);
     let current = run_status(&state, p.run_id).await?;
     if current.is_terminal() {
         return load_run(&state, p.run_id).await;
@@ -550,7 +562,6 @@ pub async fn run_stop(
     // (spec 8.8.1-2). Items past `outward_started` finish their outward step.
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
     let _ = crate::automation::approvals::stop_pending(&state.db.conn, p.run_id).await;
-    state.playbook_approvals.send_modify(|v| *v += 1);
     let _ = playbook_item::Entity::update_many()
         .col_expr(
             playbook_item::Column::Status,
@@ -561,6 +572,7 @@ pub async fn run_stop(
         .filter(playbook_item::Column::Status.is_in(["working", "waiting_approval"]))
         .exec(&state.db.conn)
         .await;
+    changed(&state);
     load_run(&state, p.run_id).await
 }
 
@@ -847,7 +859,7 @@ async fn answer_approval(
             other => engine_err(other),
         })?;
     // The pending set may have changed: clients drop the card (spec 8.5.4).
-    state.playbook_approvals.send_modify(|v| *v += 1);
+    changed(&state);
     match outcome {
         AnswerOutcome::NotPending(current) => {
             let mut err = ZwiimError::new(
