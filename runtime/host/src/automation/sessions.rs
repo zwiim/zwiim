@@ -131,6 +131,14 @@ pub fn parse_report(kind: SessionKind, args: &serde_json::Value) -> Result<Sessi
     }
 }
 
+/// The browser an engine session may use: its lane, and in it only the tabs
+/// the Host gave it (spec 5.6, 6.2.5). Batch kinds have none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineScope {
+    pub lane: crate::browser::store::TabOwner,
+    pub tabs: Vec<String>,
+}
+
 /// What the launcher holds while its session runs.
 pub struct SessionWatch {
     /// The session's one result.
@@ -141,6 +149,7 @@ pub struct SessionWatch {
 
 struct Live {
     kind: SessionKind,
+    scope: Option<EngineScope>,
     report: Option<oneshot::Sender<SessionReport>>,
     calls: watch::Sender<u32>,
 }
@@ -166,11 +175,24 @@ impl EngineSessions {
             connection_id.to_string(),
             Live {
                 kind,
+                scope: None,
                 report: Some(report_tx),
                 calls: calls_tx,
             },
         );
         SessionWatch { report, calls }
+    }
+
+    /// Give the session its lane tabs.
+    pub fn set_scope(&self, connection_id: &str, scope: EngineScope) {
+        if let Some(live) = self.live().get_mut(connection_id) {
+            live.scope = Some(scope);
+        }
+    }
+
+    /// The browser the session may use; `None` when it has none or has ended.
+    pub fn scope(&self, connection_id: &str) -> Option<EngineScope> {
+        self.live().get(connection_id)?.scope.clone()
     }
 
     /// Stop tracking it; a later result or call is refused.
