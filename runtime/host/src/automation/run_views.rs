@@ -4,15 +4,18 @@
 
 use serde::Serialize;
 
-use crate::automation::entities::{playbook_item, playbook_run};
+use crate::automation::entities::{playbook, playbook_item, playbook_run};
 use crate::automation::states::{ItemStatus, RunStatus};
 use crate::db::error::DbError;
 
-/// One run as `run.changed` carries it: its state and item counts.
+/// One run as `run.changed` carries it: its state and item counts. Clients
+/// see public ids only; the row ids stay for the feed's own bookkeeping.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RunView {
-    pub run_id: i32,
-    pub playbook_id: i32,
+    #[serde(skip)]
+    pub id: i32,
+    pub run_id: String,
+    pub playbook_id: String,
     pub status: String,
     pub pause_reason: Option<String>,
     pub outcome: Option<String>,
@@ -36,8 +39,13 @@ pub struct RunTotals {
 /// One item as `run.item_changed` carries it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ItemView {
-    pub run_id: i32,
-    pub item_id: i32,
+    #[serde(skip)]
+    pub id: i32,
+    /// The run's row id.
+    #[serde(skip)]
+    pub run: i32,
+    pub run_id: String,
+    pub item_id: String,
     pub title: Option<String>,
     pub status: String,
     pub reason_code: Option<String>,
@@ -56,6 +64,7 @@ pub async fn read(
     also: &[i32],
 ) -> Result<(Vec<RunView>, Vec<ItemView>), DbError> {
     use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder};
+    use std::collections::HashMap;
     let active = [
         RunStatus::Discovering.as_str(),
         RunStatus::Running.as_str(),
@@ -75,12 +84,21 @@ pub async fn read(
         .order_by_asc(playbook_item::Column::Id)
         .all(db)
         .await?;
+    let playbooks: HashMap<i32, String> = playbook::Entity::find()
+        .filter(playbook::Column::Id.is_in(runs.iter().map(|r| r.playbook_id)))
+        .all(db)
+        .await?
+        .into_iter()
+        .map(|p| (p.id, p.public_id))
+        .collect();
+    let run_ids: HashMap<i32, String> = runs.iter().map(|r| (r.id, r.public_id.clone())).collect();
     let views = runs
         .into_iter()
         .map(|r| RunView {
             totals: totals(items.iter().filter(|i| i.run_id == r.id)),
-            run_id: r.id,
-            playbook_id: r.playbook_id,
+            id: r.id,
+            run_id: r.public_id,
+            playbook_id: playbooks.get(&r.playbook_id).cloned().unwrap_or_default(),
             status: r.status,
             pause_reason: r.pause_reason,
             outcome: r.outcome,
@@ -91,8 +109,10 @@ pub async fn read(
     let items = items
         .into_iter()
         .map(|i| ItemView {
-            run_id: i.run_id,
-            item_id: i.id,
+            id: i.id,
+            run: i.run_id,
+            run_id: run_ids.get(&i.run_id).cloned().unwrap_or_default(),
+            item_id: i.public_id,
             title: i.title,
             status: i.status,
             reason_code: i.reason_code,

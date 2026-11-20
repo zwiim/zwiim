@@ -244,6 +244,7 @@ impl AutomationEngine {
         use sea_orm::{EntityTrait, Set};
         let now = chrono::Utc::now();
         let inserted = playbook_run::Entity::insert(playbook_run::ActiveModel {
+            public_id: Set(uuid::Uuid::new_v4().to_string()),
             playbook_id: Set(playbook_id),
             playbook_version: Set(playbook_version),
             trigger: Set(trigger.as_str().to_string()),
