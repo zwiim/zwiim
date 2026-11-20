@@ -4907,6 +4907,15 @@ fn agent_delivers_wire_mcp(agent_type: AgentType) -> bool {
 /// Load MCP servers configured for `agent_type` and convert them into the
 /// ACP wire format. Errors and unsupported entries are logged and skipped so
 /// a single malformed entry never blocks a session from starting.
+/// The person's own MCP servers for this agent, or none for an engine
+/// session, which gets only zwiim-mcp (automation spec 10.6.1).
+fn user_mcp_servers(agent_type: AgentType, engine_session: bool) -> Vec<McpServer> {
+    if engine_session {
+        return Vec::new();
+    }
+    load_mcp_servers_for_agent(agent_type)
+}
+
 fn load_mcp_servers_for_agent(agent_type: AgentType) -> Vec<McpServer> {
     // Hermes, Kimi Code, Grok, and Cursor each read their own native MCP
     // config at launch — Hermes from `~/.hermes/config.yaml` (`mcp_servers`,
@@ -5219,6 +5228,24 @@ struct CompanionFeatureFlags {
     progress: bool,
 }
 
+/// The tool groups of an engine session kind, from the lockdown policy.
+fn engine_feature_flags(kind: crate::automation::lockdown::SessionKind) -> CompanionFeatureFlags {
+    let f = crate::automation::lockdown::companion_features(kind);
+    CompanionFeatureFlags {
+        delegation: f.delegation,
+        feedback: f.feedback,
+        ask: f.ask,
+        sessions: f.sessions,
+        tasks: f.tasks,
+        automations: f.automations,
+        taskboard: f.taskboard,
+        browser: f.browser,
+        browser_eval: f.browser_eval,
+        git: f.git,
+        progress: f.progress,
+    }
+}
+
 /// The `--features` value for a companion launch, or `None` when no group is
 /// enabled (the companion isn't injected at all). Pulled out as a pure function
 /// so the inject/skip decision is unit-testable without a real binary on disk or
@@ -5285,6 +5312,7 @@ async fn inject_zwiim_mcp(
     working_dir: &Path,
     tasks_enabled: bool,
     host_tools: HostToolsPolicy,
+    engine: Option<crate::automation::lockdown::SessionKind>,
 ) -> Option<CompanionInjection> {
     inject_zwiim_mcp_with_binary_locator(
         servers,
@@ -5293,6 +5321,7 @@ async fn inject_zwiim_mcp(
         working_dir,
         tasks_enabled,
         host_tools,
+        engine,
         locate_zwiim_mcp_binary,
     )
     .await
@@ -5305,70 +5334,78 @@ async fn inject_zwiim_mcp_with_binary_locator<F>(
     working_dir: &Path,
     tasks_enabled: bool,
     host_tools: HostToolsPolicy,
+    engine: Option<crate::automation::lockdown::SessionKind>,
     locate_binary: F,
 ) -> Option<CompanionInjection>
 where
     F: FnOnce() -> Option<PathBuf>,
 {
-    // zwiim-mcp carries BOTH the delegation tools and the live-feedback tool.
-    // Inject it when EITHER feature is enabled; the `--features` arg tells the
-    // companion which tool groups to expose so a disabled feature's tools never
-    // surface to the LLM. (Historically this was gated on delegation alone.)
-    // `tasks_enabled` is per-spawn: true only for task-engine launches, which
-    // must get their reporting tools regardless of the settings toggles.
-    let feedback_enabled = injection.feedback.is_enabled().await;
-    let authoring = injection.authoring.snapshot().await;
-    // Delegation is a THIRD door into the same room as `fs/*` and `terminal/*`:
-    // `delegate_to_agent` has Zwiim spawn a second agent — in Zwiim's process
-    // tree, under ITS own (by default `Default`) policy — and hand its output
-    // back. A sandboxed agent that cannot read `.env` itself would just ask a
-    // sibling to read it. That defeats the boundary this switch advertises, for
-    // the same reason withholding only one of fs/terminal would, so `agent`
-    // withholds this group too. The other groups stay: they surface Zwiim's own
-    // state (feedback, ask, session info, task reporting), not arbitrary file
-    // or command execution on the user's machine.
-    let delegation_configured = injection.broker.config_snapshot().await.enabled;
-    let delegation_enabled = delegation_configured && host_tools.hosts_channels();
-    if delegation_configured && !delegation_enabled {
-        // The one combination that looks like a bug from the settings UI: the
-        // multi-agent switch reads "on" and the tools are still absent. Say so
-        // once per launch, naming the knob, so the log answers the question the
-        // user actually asks ("why did delegate_to_agent disappear?").
-        tracing::info!(
-            "[delegation] multi-agent delegation is enabled in settings but withheld from \
-             connection {parent_connection_id}: {HOST_TOOLS_ENV}=agent hands fs/terminal back \
-             to this agent, and delegate_to_agent would route the same work through Zwiim \
-             anyway. Turn that per-agent switch off to restore the delegation tools."
-        );
-    }
-    // Which agents the user switched off, so the companion's advertised enum
-    // tracks the live toggle. One indexed query, skipped outright when
-    // delegation is off, and it fails open: the spawn-time disabled check is
-    // the hard gate either way.
-    let disabled = if delegation_enabled {
-        injection.agent_availability.disabled_agent_wire_slugs().await
+    // An engine launch takes its tools from its session kind alone, never
+    // from the person's switches (automation spec 10.8.3).
+    let (flags, disabled) = if let Some(kind) = engine {
+        (engine_feature_flags(kind), Vec::new())
     } else {
-        Vec::new()
-    };
-    let flags = CompanionFeatureFlags {
-        delegation: delegation_enabled,
-        feedback: feedback_enabled,
-        ask: injection.ask.is_enabled().await,
-        sessions: injection.sessions.is_enabled().await,
-        tasks: tasks_enabled,
-        automations: authoring.automations_enabled,
-        taskboard: authoring.work_tasks_enabled,
-        // The Host browser's tabs (design 10.2).
-        browser: injection.browser.is_enabled().await,
-        browser_eval: cfg!(feature = "tauri-runtime")
-            && injection.browser.is_eval_enabled().await,
-        // The Git Harness runs git and gh on the user's machine, outside an
-        // agent's own sandbox, so `agent` withholds it for the same reason it
-        // withholds delegation.
-        git: host_tools.hosts_channels(),
-        // Step progress is what keeps the user out of the dark while any agent
-        // works, whatever the agent and whatever its sandbox.
-        progress: true,
+        // zwiim-mcp carries BOTH the delegation tools and the live-feedback tool.
+        // Inject it when EITHER feature is enabled; the `--features` arg tells the
+        // companion which tool groups to expose so a disabled feature's tools never
+        // surface to the LLM. (Historically this was gated on delegation alone.)
+        // `tasks_enabled` is per-spawn: true only for task-engine launches, which
+        // must get their reporting tools regardless of the settings toggles.
+        let feedback_enabled = injection.feedback.is_enabled().await;
+        let authoring = injection.authoring.snapshot().await;
+        // Delegation is a THIRD door into the same room as `fs/*` and `terminal/*`:
+        // `delegate_to_agent` has Zwiim spawn a second agent — in Zwiim's process
+        // tree, under ITS own (by default `Default`) policy — and hand its output
+        // back. A sandboxed agent that cannot read `.env` itself would just ask a
+        // sibling to read it. That defeats the boundary this switch advertises, for
+        // the same reason withholding only one of fs/terminal would, so `agent`
+        // withholds this group too. The other groups stay: they surface Zwiim's own
+        // state (feedback, ask, session info, task reporting), not arbitrary file
+        // or command execution on the user's machine.
+        let delegation_configured = injection.broker.config_snapshot().await.enabled;
+        let delegation_enabled = delegation_configured && host_tools.hosts_channels();
+        if delegation_configured && !delegation_enabled {
+            // The one combination that looks like a bug from the settings UI: the
+            // multi-agent switch reads "on" and the tools are still absent. Say so
+            // once per launch, naming the knob, so the log answers the question the
+            // user actually asks ("why did delegate_to_agent disappear?").
+            tracing::info!(
+                "[delegation] multi-agent delegation is enabled in settings but withheld from \
+                 connection {parent_connection_id}: {HOST_TOOLS_ENV}=agent hands fs/terminal back \
+                 to this agent, and delegate_to_agent would route the same work through Zwiim \
+                 anyway. Turn that per-agent switch off to restore the delegation tools."
+            );
+        }
+        // Which agents the user switched off, so the companion's advertised enum
+        // tracks the live toggle. One indexed query, skipped outright when
+        // delegation is off, and it fails open: the spawn-time disabled check is
+        // the hard gate either way.
+        let disabled = if delegation_enabled {
+            injection.agent_availability.disabled_agent_wire_slugs().await
+        } else {
+            Vec::new()
+        };
+        let flags = CompanionFeatureFlags {
+            delegation: delegation_enabled,
+            feedback: feedback_enabled,
+            ask: injection.ask.is_enabled().await,
+            sessions: injection.sessions.is_enabled().await,
+            tasks: tasks_enabled,
+            automations: authoring.automations_enabled,
+            taskboard: authoring.work_tasks_enabled,
+            // The Host browser's tabs (design 10.2).
+            browser: injection.browser.is_enabled().await,
+            browser_eval: cfg!(feature = "tauri-runtime")
+                && injection.browser.is_eval_enabled().await,
+            // The Git Harness runs git and gh on the user's machine, outside an
+            // agent's own sandbox, so `agent` withholds it for the same reason it
+            // withholds delegation.
+            git: host_tools.hosts_channels(),
+            // Step progress is what keeps the user out of the dark while any agent
+            // works, whatever the agent and whatever its sandbox.
+            progress: true,
+        };
+        (flags, disabled)
     };
     // `None` (no feature enabled) short-circuits BEFORE the binary lookup, the
     // token registration and the server append: there is no companion to launch,
@@ -5399,6 +5436,7 @@ where
             crate::acp::delegation::listener::TokenEntry {
                 parent_connection_id: parent_connection_id.to_string(),
                 working_dir: working_dir.to_path_buf(),
+                engine,
             },
         )
         .await;
@@ -5420,6 +5458,11 @@ where
         "--features".to_string(),
         features_arg,
     ];
+    // An engine session lists exactly its profile, not the whole group.
+    if let Some(kind) = engine {
+        args.push("--tools".to_string());
+        args.push(kind.browser_tools().join(","));
+    }
     if !custom_slugs.is_empty() {
         args.push("--custom-agents".to_string());
         args.push(custom_slugs.join(","));
@@ -5432,7 +5475,7 @@ where
     servers.push(McpServer::Stdio(server));
     Some(CompanionInjection {
         token,
-        feedback_available: feedback_enabled,
+        feedback_available: flags.feedback,
         delegation_enabled: flags.delegation,
     })
 }
@@ -5705,7 +5748,8 @@ async fn run_connection(
     // Claude's AIR frames: trimmed `_meta` merged back, and the permission
     // card's missing kind / diff (see `claude_tool_frames`).
     let claude_frames = claude_tool_frames::ClaudeToolFrames::shared();
-    let engine_session = state.read().await.engine.is_some();
+    let engine_kind = state.read().await.engine.map(|e| e.kind);
+    let engine_session = engine_kind.is_some();
 
     Client
         .builder()
@@ -6196,7 +6240,7 @@ async fn run_connection(
             // ACP spec; HTTP/SSE are gated on `mcp_capabilities.{http,sse}`.
             let mut mcp_servers: Vec<McpServer> = if agent_supports_mcp {
                 let mcp_caps = &init_resp.agent_capabilities.mcp_capabilities;
-                load_mcp_servers_for_agent(agent_type)
+                user_mcp_servers(agent_type, engine_kind.is_some())
                     .into_iter()
                     .filter(|s| match s {
                         McpServer::Stdio(_) => true,
@@ -6251,6 +6295,7 @@ async fn run_connection(
                         &cwd,
                         tasks_enabled,
                         host_tools,
+                        engine_kind,
                     )
                     .await
                 } else {
@@ -26207,6 +26252,7 @@ mod tests {
             std::path::Path::new("/tmp"),
             false,
             HostToolsPolicy::Default,
+            None,
         )
         .await;
 
@@ -26221,6 +26267,59 @@ mod tests {
             injection.tokens.lookup("any-token").await.is_none(),
             "disabled broker must not register a delegate token"
         );
+    }
+
+    /// An engine launch gets its kind's tools whatever the person's global
+    /// switches say (automation spec 10.8.3): the browser group for item and
+    /// discovery, narrowed by `--tools` to the profile, a token the Host ties
+    /// to the kind, and no companion at all for the batch kinds.
+    #[tokio::test]
+    async fn an_engine_launch_injects_exactly_its_kinds_tools() {
+        use crate::automation::lockdown::SessionKind;
+        let injection = test_delegation_injection(
+            Arc::new(TestAllAgentsAvailable) as Arc<dyn AgentAvailabilityLookup>
+        );
+        let mut servers = Vec::new();
+        let injected = inject_zwiim_mcp_with_binary_locator(
+            &mut servers,
+            &injection,
+            "engine-conn",
+            std::path::Path::new("/tmp"),
+            false,
+            HostToolsPolicy::Default,
+            Some(SessionKind::Item),
+            || Some(PathBuf::from("/bin/zwiim-mcp")),
+        )
+        .await
+        .expect("item sessions get the companion");
+        let McpServer::Stdio(server) = &servers[0] else {
+            panic!("expected stdio");
+        };
+        let arg = |flag: &str| {
+            let at = server.args.iter().position(|a| a == flag).expect(flag);
+            server.args[at + 1].clone()
+        };
+        assert_eq!(arg("--features"), "browser");
+        assert_eq!(arg("--tools"), SessionKind::Item.browser_tools().join(","));
+        let entry = injection.tokens.lookup(&injected.token).await.expect("token");
+        assert_eq!(entry.engine, Some(SessionKind::Item));
+
+        let mut none = Vec::new();
+        let batch = inject_zwiim_mcp_with_binary_locator(
+            &mut none,
+            &injection,
+            "batch-conn",
+            std::path::Path::new("/tmp"),
+            false,
+            HostToolsPolicy::Default,
+            Some(SessionKind::JudgmentBatch),
+            || Some(PathBuf::from("/bin/zwiim-mcp")),
+        )
+        .await;
+        assert!(batch.is_none() && none.is_empty());
+
+        // The person's own MCP servers never reach an engine session.
+        assert!(user_mcp_servers(AgentType::ClaudeCode, true).is_empty());
     }
 
     // ─── delegate_target_args: enable-toggle filtering ──────────
