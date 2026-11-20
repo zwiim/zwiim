@@ -1,9 +1,15 @@
-//! Zwiim-owned: what a lane's page asks of a person reaches the run
-//! (automation-engine spec 14.3). A sign-in pauses the lane (10.3); any
-//! other ask parks the lane's working item for the person.
+//! Zwiim-owned: what runs and their browser lanes tell each other. What a
+//! lane's page asks of a person reaches the run (automation-engine spec
+//! 14.3): a sign-in pauses the lane (10.3), any other ask parks the lane's
+//! working item for the person. The browser learns which lanes have a
+//! working item, whose tabs memory pressure never takes (15.4).
 
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use std::collections::HashSet;
+use std::sync::Weak;
+
 use tokio::sync::broadcast::{self, error::RecvError};
+use tokio::sync::watch;
 
 use crate::automation::engine::AutomationEngine;
 use crate::automation::entities::playbook_item;
@@ -11,7 +17,8 @@ use crate::automation::pauses::{PauseCause, SitePause};
 use crate::automation::playbook_store::PlaybookStore;
 use crate::automation::reasons::ReasonCode;
 use crate::automation::states::ItemStatus;
-use crate::browser::service::{BrowserEvent, LaneNeed};
+use crate::browser::service::{BrowserEvent, BrowserService, LaneNeed};
+use crate::browser::store::TabOwner;
 use crate::db::error::DbError;
 use crate::db::service::playbook_engine_service::TransitionError;
 
@@ -70,6 +77,44 @@ async fn working_on(
         .filter(playbook_item::Column::Status.eq(ItemStatus::Working.as_str()))
         .one(db)
         .await?)
+}
+
+/// The lanes with a working item.
+pub async fn working_lanes(db: &DatabaseConnection) -> Result<HashSet<TabOwner>, DbError> {
+    let items = playbook_item::Entity::find()
+        .filter(playbook_item::Column::Status.eq(ItemStatus::Working.as_str()))
+        .all(db)
+        .await?;
+    Ok(items
+        .into_iter()
+        .map(|i| TabOwner::Lane {
+            site: i.site,
+            account: i.account,
+        })
+        .collect())
+}
+
+/// Tell `browser` which lanes have a working item after every run or item
+/// change, until either goes.
+pub fn follow_working(
+    mut changes: watch::Receiver<u64>,
+    db: DatabaseConnection,
+    browser: Weak<BrowserService>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match working_lanes(&db).await {
+                Ok(lanes) => match browser.upgrade() {
+                    Some(browser) => browser.set_working_lanes(lanes),
+                    None => return,
+                },
+                Err(e) => tracing::warn!(error = %e, "could not read the working lanes"),
+            }
+            if changes.changed().await.is_err() {
+                return;
+            }
+        }
+    })
 }
 
 /// Apply every lane ask `events` carries until the browser goes.
@@ -154,6 +199,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_lanes_with_a_working_item_are_known() {
+        let db = db().await;
+        assert!(working_lanes(&db).await.unwrap().is_empty());
+        let id = working_item(&db, false).await;
+        assert_eq!(
+            working_lanes(&db).await.unwrap(),
+            [TabOwner::Lane {
+                site: "jobsy.example".into(),
+                account: "main".into(),
+            }]
+            .into()
+        );
+        AutomationEngine::new(db.clone())
+            .transition_item(id, ItemStatus::Working, ItemStatus::Done, None)
+            .await
+            .unwrap();
+        assert!(working_lanes(&db).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn a_page_ask_parks_the_lanes_working_item_for_the_person() {
         let db = db().await;
         let id = working_item(&db, false).await;
@@ -219,7 +284,6 @@ mod tests {
     async fn a_dialog_on_a_lane_page_parks_its_item() {
         use crate::browser::engine::{fake::FakeEngine, manager::EngineManager};
         use crate::browser::service::BrowserService;
-        use crate::browser::store::TabOwner;
         let db = db().await;
         let id = working_item(&db, false).await;
         let fake = FakeEngine::default();

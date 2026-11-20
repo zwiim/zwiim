@@ -260,6 +260,8 @@ struct Usage {
     active_at: tokio::time::Instant,
     /// Why new tabs are refused, while they are.
     refuse: Option<String>,
+    /// Lanes whose item is working: their tabs are in use.
+    working_lanes: HashSet<TabOwner>,
     /// The engine's tree runs in the background priority.
     background: bool,
 }
@@ -608,6 +610,7 @@ impl BrowserService {
                 shown: std::collections::HashSet::new(),
                 active_at: tokio::time::Instant::now(),
                 refuse: None,
+                working_lanes: HashSet::new(),
                 background: false,
             }),
             events: broadcast::channel(EVENT_BUFFER).0,
@@ -2111,6 +2114,12 @@ impl BrowserService {
         }
     }
 
+    /// The lanes whose item is working now (automation spec 15.4): memory
+    /// pressure never takes their tabs.
+    pub fn set_working_lanes(&self, lanes: HashSet<TabOwner>) {
+        self.usage_mut().working_lanes = lanes;
+    }
+
     fn usage_mut(&self) -> std::sync::MutexGuard<'_, Usage> {
         self.usage.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -2280,10 +2289,11 @@ impl BrowserService {
                 .tabs
                 .iter()
                 .filter(|(_, t)| t.live.is_some())
-                .map(|(id, _)| TabUse {
+                .map(|(id, t)| TabUse {
                     tab_id: id.clone(),
                     in_use: usage.viewers.contains_key(id)
                         || busy.contains(id)
+                        || usage.working_lanes.contains(&t.info.owner)
                         || usage
                             .agent_at
                             .get(id)
@@ -4316,6 +4326,31 @@ mod tests {
         for id in [viewed, driven, old] {
             assert!(discarded(svc.clone(), id.clone()).await, "{id}");
         }
+    }
+
+    /// Spec 15.4: memory pressure never takes the tab of a lane whose item
+    /// is working, even unseen and idle; an idle lane's tab goes as any.
+    #[tokio::test]
+    async fn the_governor_keeps_a_working_lanes_tabs() {
+        use governor::Pressure;
+        let fake = FakeEngine::default();
+        let db = fresh_in_memory_db().await;
+        let svc = service(&fake, &db.conn).await;
+        let working = svc.open(lane("jobsy.example", "main"), None).await.unwrap();
+        let idle = svc.open(lane("acme.example", "main"), None).await.unwrap();
+        let discarded = |id: &str| {
+            let (svc, id) = (svc.clone(), id.to_string());
+            async move { svc.tab(&id).await.unwrap().discarded }
+        };
+        svc.set_working_lanes([lane("jobsy.example", "main")].into());
+        svc.ease(10, 100, Pressure::Critical).await;
+        assert!(discarded(&idle.id).await);
+        assert!(!discarded(&working.id).await);
+
+        // Its item done, the lane's tab may go too.
+        svc.set_working_lanes(Default::default());
+        svc.ease(10, 100, Pressure::Critical).await;
+        assert!(discarded(&working.id).await);
     }
 
     #[tokio::test]
