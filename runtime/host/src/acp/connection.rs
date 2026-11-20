@@ -2469,18 +2469,28 @@ pub async fn spawn_agent_connection(
         Some(injection) => injection.browser.is_enabled().await,
         None => false,
     };
-    let instructions = connection_instructions(
-        &connection_id,
-        agent_type,
-        &launch_cwd,
-        user,
-        preferences,
-        browser,
-    )
-    .await;
+    // An engine session works from the engine's own prompt: none of the
+    // person's instructions reach it (automation spec 10.6.1).
+    let instructions = match engine {
+        Some(_) => None,
+        None => {
+            connection_instructions(
+                &connection_id,
+                agent_type,
+                &launch_cwd,
+                user,
+                preferences,
+                browser,
+            )
+            .await
+        }
+    };
     // Zwiim: the agent gets the repository's variables beneath its own; the
     // policies and fingerprint below keep reading `runtime_env` alone.
-    let launch_env = beneath(&repository_env, &runtime_env);
+    let mut launch_env = beneath(&repository_env, &runtime_env);
+    if engine.is_some() {
+        scrub_engine_env(&mut launch_env, agent_type);
+    }
     let agent = match build_agent(
         agent_type,
         &launch_env,
@@ -4431,6 +4441,34 @@ fn claude_raw_sdk_session_meta(
     Some(meta)
 }
 
+/// Add the engine lockdown to a Claude session's SDK options, beside the
+/// connection's own (automation spec 10.6, 10.7).
+fn add_engine_claude_options(
+    meta: &mut serde_json::Map<String, serde_json::Value>,
+    kind: crate::automation::lockdown::SessionKind,
+) {
+    let lockdown = crate::automation::lockdown::claude_code_options(kind);
+    let Some(options) = meta
+        .get_mut("claudeCode")
+        .and_then(|c| c.get_mut("options"))
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    if let serde_json::Value::Object(lockdown) = lockdown {
+        options.extend(lockdown);
+    }
+}
+
+/// Remove from an engine launch's environment every token its agent does not
+/// sign in with (automation spec 10.6.1). Empty is what the spawn layer turns
+/// into `env_remove`.
+fn scrub_engine_env(env: &mut BTreeMap<String, String>, agent_type: AgentType) {
+    for key in crate::automation::lockdown::scrubbed_env(agent_type) {
+        env.insert(key.to_string(), String::new());
+    }
+}
+
 /// Whether this launch delivers Zwiim's session instructions. Claude takes
 /// them in its session requests (`_meta.systemPrompt`), Codex at launch
 /// (`apply_codex_instructions_policy`), alongside any `developer_instructions`
@@ -4757,9 +4795,13 @@ fn build_new_session_request(
     cwd: &Path,
     mcp_servers: Vec<McpServer>,
     instructions: Option<&str>,
+    engine: Option<crate::automation::lockdown::SessionKind>,
 ) -> NewSessionRequest {
     let mut req = NewSessionRequest::new(cwd.to_path_buf());
-    if let Some(meta) = claude_raw_sdk_session_meta(agent_type, instructions) {
+    if let Some(mut meta) = claude_raw_sdk_session_meta(agent_type, instructions) {
+        if let Some(kind) = engine {
+            add_engine_claude_options(&mut meta, kind);
+        }
         req = req.meta(meta);
     }
     if !mcp_servers.is_empty() {
@@ -6824,6 +6866,7 @@ async fn run_connection(
                             &cwd,
                             mcp_servers.clone(),
                             instructions.as_deref(),
+                            engine_kind,
                         ),
                         )
                         .await
@@ -6930,6 +6973,7 @@ async fn run_connection(
                             &cwd,
                             mcp_servers.clone(),
                             instructions.as_deref(),
+                            engine_kind,
                         ),
                 )
                 .await
@@ -18153,6 +18197,46 @@ mod tests {
         );
     }
 
+    /// An engine Claude session keeps the connection's own options and gains
+    /// the lockdown ones (automation spec 10.6, 10.7); a person's session
+    /// gets none of them.
+    #[test]
+    fn an_engine_claude_session_carries_the_lockdown_options() {
+        use crate::automation::lockdown::SessionKind;
+        let cwd = PathBuf::from("/tmp");
+        let req = serde_json::to_value(build_new_session_request(
+            AgentType::ClaudeCode,
+            &cwd,
+            Vec::new(),
+            None,
+            Some(SessionKind::Item),
+        ))
+        .unwrap();
+        let options = &req["_meta"]["claudeCode"]["options"];
+        assert_eq!(options["extraArgs"]["thinking-display"], "summarized");
+        assert_eq!(options["settingSources"], serde_json::json!([]));
+        assert_eq!(options["strictMcpConfig"], true);
+        let person = serde_json::to_value(build_new_session_request(
+            AgentType::ClaudeCode,
+            &cwd,
+            Vec::new(),
+            None,
+            None,
+        ))
+        .unwrap();
+        assert!(person["_meta"]["claudeCode"]["options"].get("settingSources").is_none());
+    }
+
+    #[test]
+    fn an_engine_launch_removes_the_tokens_it_does_not_need() {
+        let mut env = BTreeMap::from([("GITHUB_TOKEN".to_string(), "ghp_x".to_string())]);
+        scrub_engine_env(&mut env, AgentType::ClaudeCode);
+        // Empty is what the spawn layer turns into `env_remove`.
+        assert_eq!(env.get("GITHUB_TOKEN").map(String::as_str), Some(""));
+        assert_eq!(env.get("GH_TOKEN").map(String::as_str), Some(""));
+        assert!(!env.contains_key("ANTHROPIC_API_KEY"));
+    }
+
     #[test]
     fn an_engine_session_permission_request_is_rejected_once() {
         // Even Zwiim's own ask tool, which a person's session auto-allows.
@@ -19791,6 +19875,7 @@ mod tests {
                 &cwd,
                 Vec::new(),
                 Some("be kind"),
+                None,
             ))
             .unwrap(),
             serde_json::to_value(build_load_session_request(
@@ -19939,6 +20024,7 @@ mod tests {
             &cwd,
             Vec::new(),
             Some(&text),
+            None,
         ))
         .unwrap();
         assert_eq!(
@@ -20056,7 +20142,7 @@ mod tests {
         let source = include_str!("connection.rs");
         let code = source.split("#[cfg(test)]\nmod tests {").next().unwrap();
         assert_eq!(code.matches("crate::harness::instruct(").count(), 1);
-        let call = "connection_instructions(\n        &connection_id,";
+        let call = "connection_instructions(\n                &connection_id,";
         assert_eq!(code.matches(call).count(), 1);
         let spawn = code.split("pub async fn spawn_agent_connection(").nth(1).unwrap();
         let spawn = spawn.split("\n}\n").next().unwrap();
@@ -21608,7 +21694,7 @@ mod tests {
     #[test]
     fn build_new_session_request_sets_claude_raw_meta() {
         let cwd = std::path::PathBuf::from("/tmp/zwiim");
-        let req = build_new_session_request(AgentType::ClaudeCode, &cwd, Vec::new(), None);
+        let req = build_new_session_request(AgentType::ClaudeCode, &cwd, Vec::new(), None, None);
 
         assert_eq!(
             req.meta
@@ -21853,7 +21939,7 @@ mod tests {
     fn openclaw_session_requests_carry_no_mcp_servers() {
         let cwd = std::path::PathBuf::from("/tmp/zwiim");
 
-        let new_req = build_new_session_request(AgentType::OpenClaw, &cwd, Vec::new(), None);
+        let new_req = build_new_session_request(AgentType::OpenClaw, &cwd, Vec::new(), None, None);
         assert!(
             new_req.mcp_servers.is_empty(),
             "OpenClaw session/new must carry no MCP servers"
@@ -26655,7 +26741,7 @@ mod tests {
     #[test]
     fn untyped_new_session_carries_the_typed_request_payload() {
         let cwd = std::path::PathBuf::from("/tmp/zwiim");
-        let req = build_new_session_request(AgentType::Cline, &cwd, Vec::new(), None);
+        let req = build_new_session_request(AgentType::Cline, &cwd, Vec::new(), None, None);
         let expected = serde_json::to_value(&req).unwrap();
 
         let untyped = UntypedMessage::new("session/new", req).expect("builds");

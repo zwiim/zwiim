@@ -42,7 +42,7 @@ pub use checks::{Check, CheckResult};
 pub use declaration::{Declaration, PreSubmitCheck, Target};
 pub use engine::{AutomationEngine, CapSlot, DispatchOutcome, LedgerKey, StartRunError};
 pub use item_runner::{ItemOutcome, ItemRef, ItemRunner, SessionResult};
-pub use lockdown::{AgentCapabilities, IsolationPlan, LockdownLevel, SessionKind, SessionProfile};
+pub use lockdown::{AgentCapabilities, LockdownLevel, SessionKind, SessionProfile};
 pub use pauses::{PauseCause, SitePause, TokenBudget};
 pub use playbook_format::{validate_playbook, PlaybookDoc, ValidationError};
 pub use playbook_store::{Playbook, PlaybookStore, SiteKnowledgeKind};

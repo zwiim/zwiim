@@ -135,43 +135,59 @@ pub const NEVER_ALLOWED: &[&str] = &[
 pub const LOCKDOWN_REFUSAL: &str =
     "Refused: not available in automation sessions; use the browser tools.";
 
-/// The isolation flags a launch applies for a given agent (spec 10.6): no
-/// user MCP servers, no user hooks, no user settings, a separate config
-/// directory, and a scrubbed environment. These are the *names* of the
-/// settings, so the launch code and the conformance test agree on them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IsolationPlan {
-    /// Where the agent's config directory points for this launch.
-    pub config_dir: String,
-    /// No user hooks are loaded.
-    pub no_user_hooks: bool,
-    /// No user MCP servers beyond zwiim-mcp.
-    pub no_user_mcp: bool,
-    /// No user settings files.
-    pub no_user_settings: bool,
-    /// Environment variable names removed from the child.
-    pub scrub_env: Vec<String>,
+/// The Claude Code SDK options an engine launch adds under
+/// `_meta.claudeCode.options` (spec 10.6, 10.7): no user, project or local
+/// settings (so no user hooks, permissions or memory files), no MCP server
+/// but the ones Zwiim passes, no built-in tools (shell, web, files), no
+/// bypass mode, and the kind's zwiim-mcp tools pre-allowed so they raise no
+/// permission request. claude-agent-acp 0.99.0 spreads these over its own
+/// defaults; checked against its source, not yet against a live run.
+pub fn claude_code_options(kind: SessionKind) -> serde_json::Value {
+    let allowed: Vec<String> = kind
+        .browser_tools()
+        .iter()
+        .map(|tool| format!("mcp__zwiim-mcp__{tool}"))
+        .collect();
+    serde_json::json!({
+        "settingSources": [],
+        "strictMcpConfig": true,
+        "tools": [],
+        "allowDangerouslySkipPermissions": false,
+        "allowedTools": allowed,
+    })
 }
 
-impl IsolationPlan {
-    /// A fully isolated plan for an engine launch in `config_dir`. The
-    /// environment scrub list is the tokens an agent could otherwise
-    /// exfiltrate through its own network tools (spec 10.6.1).
-    pub fn strict(config_dir: impl Into<String>) -> Self {
-        Self {
-            config_dir: config_dir.into(),
-            no_user_hooks: true,
-            no_user_mcp: true,
-            no_user_settings: true,
-            scrub_env: vec![
-                "ANTHROPIC_API_KEY".into(),
-                "OPENAI_API_KEY".into(),
-                "GITHUB_TOKEN".into(),
-                "GH_TOKEN".into(),
-                "ZWIIM_HOST_TOKEN".into(),
-            ],
-        }
-    }
+/// Tokens an engine session's agent never needs, removed from its
+/// environment so its own tools cannot send them anywhere (spec 10.6.1).
+const SCRUBBED_ENV: &[&str] = &[
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "ZWIIM_HOST_TOKEN",
+    "NPM_TOKEN",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+];
+
+/// The variables removed from an engine launch of `agent`: every scrubbed
+/// token except the one the agent signs in with.
+pub fn scrubbed_env(agent: crate::models::agent::AgentType) -> Vec<&'static str> {
+    use crate::models::agent::AgentType;
+    let own: &[&str] = match agent {
+        AgentType::ClaudeCode => &["ANTHROPIC_API_KEY"],
+        AgentType::Codex => &["OPENAI_API_KEY"],
+        AgentType::Gemini => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        _ => &[],
+    };
+    SCRUBBED_ENV
+        .iter()
+        .copied()
+        .filter(|key| !own.contains(key))
+        .collect()
 }
 
 /// Whether an agent can be isolated and locked fully, or only best effort
@@ -221,6 +237,25 @@ impl AgentCapabilities {
             LockdownLevel::BestEffort
         }
     }
+}
+
+/// What Zwiim knows of an agent's lockdown (spec 10.7.2). Claude Code runs
+/// with no built-in tools, no bypass mode and no network tools, but its
+/// isolation is not yet checked against a live CLI (spec 22.1), so it stays
+/// best effort. Every other agent is unchecked.
+pub fn capabilities(agent: crate::models::agent::AgentType) -> AgentCapabilities {
+    let claude = agent == crate::models::agent::AgentType::ClaudeCode;
+    AgentCapabilities {
+        delegates_fs_and_terminal: claude,
+        strict_permission_mode: claude,
+        network_tools_disableable: claude,
+        isolatable: false,
+    }
+}
+
+/// The label for an agent in the picker and on the playbook page.
+pub fn lockdown_level(agent: crate::models::agent::AgentType) -> LockdownLevel {
+    capabilities(agent).level()
 }
 
 /// A zwiim-mcp tool group the engine launch enables (spec 10.8.3): groups
@@ -407,10 +442,47 @@ mod tests {
     }
 
     #[test]
-    fn a_strict_isolation_plan_scrubs_tokens_and_user_config() {
-        let plan = IsolationPlan::strict("/tmp/engine-config");
-        assert!(plan.no_user_hooks && plan.no_user_mcp && plan.no_user_settings);
-        assert!(plan.scrub_env.contains(&"GITHUB_TOKEN".to_string()));
-        assert_eq!(plan.config_dir, "/tmp/engine-config");
+    fn claude_code_runs_with_no_user_config_no_built_ins_and_its_tools_pre_allowed() {
+        let options = claude_code_options(SessionKind::Item);
+        assert_eq!(options["settingSources"], serde_json::json!([]));
+        assert_eq!(options["strictMcpConfig"], true);
+        assert_eq!(options["tools"], serde_json::json!([]));
+        assert_eq!(options["allowDangerouslySkipPermissions"], false);
+        let allowed: Vec<String> = SessionKind::Item
+            .browser_tools()
+            .iter()
+            .map(|t| format!("mcp__zwiim-mcp__{t}"))
+            .collect();
+        assert_eq!(options["allowedTools"], serde_json::json!(allowed));
+        let batch = claude_code_options(SessionKind::JudgmentBatch);
+        assert_eq!(batch["allowedTools"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn an_engine_agent_keeps_its_own_key_and_loses_every_other_token() {
+        use crate::models::agent::AgentType;
+        let claude = scrubbed_env(AgentType::ClaudeCode);
+        for gone in [
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "ZWIIM_HOST_TOKEN",
+            "OPENAI_API_KEY",
+        ] {
+            assert!(claude.contains(&gone), "{gone}");
+        }
+        assert!(!claude.contains(&"ANTHROPIC_API_KEY"));
+        let codex = scrubbed_env(AgentType::Codex);
+        assert!(codex.contains(&"ANTHROPIC_API_KEY"));
+        assert!(!codex.contains(&"OPENAI_API_KEY"));
+    }
+
+    /// Spec 22.1: no agent is "fully locked" until its isolation has been
+    /// checked against a live CLI.
+    #[test]
+    fn every_agent_is_best_effort_until_verified() {
+        use crate::models::agent::AgentType;
+        for agent in [AgentType::ClaudeCode, AgentType::Codex, AgentType::Gemini] {
+            assert_eq!(lockdown_level(agent), LockdownLevel::BestEffort);
+        }
     }
 }
