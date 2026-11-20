@@ -117,6 +117,25 @@ pub fn item_key(url: &str, rule: &ItemIdRule) -> Option<String> {
     Some(key)
 }
 
+/// Candidates per judgment batch (spec 6.2.3).
+pub const JUDGMENT_BATCH: usize = 10;
+
+/// A judgment batch's limits [est]: it reads text and answers once.
+pub const JUDGMENT_LIMITS: SessionLimits = SessionLimits {
+    minutes: 10,
+    tool_calls: 5,
+};
+
+/// The skip-list reason of a rule skip.
+pub const RULE_SKIP: &str = "skipped_by_rule";
+
+#[derive(Debug, Default)]
+struct Counts {
+    queued: usize,
+    dropped: usize,
+    ruled: usize,
+}
+
 /// What discovery did for a run.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DiscoverySummary {
@@ -149,8 +168,15 @@ impl Discovery<'_> {
                 continue;
             }
             let (candidates, mut note) = self.candidates(doc, source).await;
-            let (queued, dropped) = self.queue(run_id, doc, candidates).await?;
+            let Counts {
+                queued,
+                dropped,
+                ruled,
+            } = self.queue(run_id, doc, candidates).await?;
             summary.queued += queued;
+            if ruled > 0 {
+                note.push_str(&format!("; {ruled} skipped by a rule"));
+            }
             if dropped > 0 {
                 note.push_str(&format!(
                     "; {dropped} already known or off the playbook's sites"
@@ -270,33 +296,24 @@ impl Discovery<'_> {
         }
     }
 
-    /// Queue what is new; how many were queued and dropped.
+    /// Queue what is new: drop what is known, let a judgment batch apply
+    /// the rules, queue the rest up to the cap.
     async fn queue(
         &self,
         run_id: i32,
         doc: &PlaybookDoc,
         candidates: Vec<Candidate>,
-    ) -> Result<(usize, usize), DbError> {
+    ) -> Result<Counts, DbError> {
         let run = playbook_run::Entity::find_by_id(run_id)
             .one(self.db)
             .await?
             .ok_or_else(|| DbError::NotFound(format!("run {run_id}")))?;
         let store = PlaybookStore::new(self.db.clone());
-        let cap = run
-            .item_limit
-            .or(doc.caps.as_ref().and_then(|c| c.run_items))
-            .map(|n| n.max(0) as u64);
-        let mut have = playbook_item::Entity::find()
-            .filter(playbook_item::Column::RunId.eq(run_id))
-            .count(self.db)
-            .await?;
-        let (mut queued, mut dropped) = (0, 0);
+        let mut counts = Counts::default();
+        let mut fresh: Vec<(Candidate, String, String)> = Vec::new();
         for candidate in candidates {
-            if cap.is_some_and(|cap| have >= cap) {
-                break;
-            }
             let Some(site) = site_for(&candidate.url, &doc.sites) else {
-                dropped += 1;
+                counts.dropped += 1;
                 continue;
             };
             let rule = match store
@@ -307,15 +324,48 @@ impl Discovery<'_> {
                 None => ItemIdRule::default(),
             };
             let Some(key) = item_key(&candidate.url, &rule) else {
-                dropped += 1;
+                counts.dropped += 1;
                 continue;
             };
-            if self
-                .known(run_id, run.playbook_id, doc, &site, &key, &store)
-                .await?
+            let repeated = fresh.iter().any(|(_, s, k)| *s == site && *k == key);
+            if repeated
+                || self
+                    .known(run_id, run.playbook_id, doc, &site, &key, &store)
+                    .await?
             {
-                dropped += 1;
+                counts.dropped += 1;
                 continue;
+            }
+            fresh.push((candidate, site, key));
+        }
+        if !doc.rules.is_empty() {
+            let mut kept = Vec::new();
+            for batch in fresh.chunks(JUDGMENT_BATCH) {
+                let skipped = self.judge(doc, batch).await;
+                for (candidate, site, key) in batch {
+                    if skipped.contains(&candidate.url) {
+                        store
+                            .skip_item(run.playbook_id, site, ACCOUNT, key, RULE_SKIP)
+                            .await?;
+                        counts.ruled += 1;
+                    } else {
+                        kept.push((candidate.clone(), site.clone(), key.clone()));
+                    }
+                }
+            }
+            fresh = kept;
+        }
+        let cap = run
+            .item_limit
+            .or(doc.caps.as_ref().and_then(|c| c.run_items))
+            .map(|n| n.max(0) as u64);
+        let mut have = playbook_item::Entity::find()
+            .filter(playbook_item::Column::RunId.eq(run_id))
+            .count(self.db)
+            .await?;
+        for (candidate, site, key) in fresh {
+            if cap.is_some_and(|cap| have >= cap) {
+                break;
             }
             let now = Utc::now();
             playbook_item::ActiveModel {
@@ -335,10 +385,43 @@ impl Discovery<'_> {
             }
             .insert(self.db)
             .await?;
-            queued += 1;
+            counts.queued += 1;
             have += 1;
         }
-        Ok((queued, dropped))
+        Ok(counts)
+    }
+
+    /// One judgment batch (spec 6.2.3): the URLs its rules skip. A batch
+    /// that returns nothing skips nothing; the item session still applies
+    /// every rule to the detail page.
+    async fn judge(
+        &self,
+        doc: &PlaybookDoc,
+        batch: &[(Candidate, String, String)],
+    ) -> std::collections::HashSet<String> {
+        let end = run_session(
+            self.launcher,
+            self.sessions,
+            SessionRequest {
+                kind: SessionKind::JudgmentBatch,
+                agent: self.agent,
+                attempt: None,
+                prompt: judgment_prompt(doc, batch.iter().map(|(c, _, _)| c)),
+                scope: None,
+                limits: JUDGMENT_LIMITS,
+            },
+        )
+        .await;
+        let urls: std::collections::HashSet<&str> =
+            batch.iter().map(|(c, _, _)| c.url.as_str()).collect();
+        match end {
+            SessionEnd::Reported(SessionReport::Judgment(decisions)) => decisions
+                .into_iter()
+                .filter(|d| !d.keep && urls.contains(d.url.as_str()))
+                .map(|d| d.url)
+                .collect(),
+            _ => Default::default(),
+        }
     }
 
     /// Whether the key is taken for this playbook (spec 6.2.4) or the run
@@ -390,6 +473,25 @@ fn expand_home(path: &str) -> std::path::PathBuf {
         (Some(rest), Some(home)) => home.join(rest),
         _ => std::path::PathBuf::from(path),
     }
+}
+
+/// What a judgment batch is told: the rules and the list text only.
+fn judgment_prompt<'a>(doc: &PlaybookDoc, batch: impl Iterator<Item = &'a Candidate>) -> String {
+    let rules: Vec<String> = doc.rules.iter().map(|r| format!("- {r}")).collect();
+    let items: Vec<String> = batch
+        .map(|c| format!("- url: {}\n  title: {}\n  text: {}", c.url, c.title, c.text))
+        .collect();
+    format!(
+        "You are deciding which items the playbook \"{name}\" should work, from \
+         their list text alone.\n\nRules:\n{rules}\n\nItems:\n{items}\n\n\
+         For each item decide keep (true) or drop (false). Drop an item only \
+         when its text shows it breaks a rule, and name that rule; when the \
+         text does not say, keep it. Then call playbook_item_result with \
+         status \"judged\" and one decision per item, and end your turn.",
+        name = doc.name,
+        rules = rules.join("\n"),
+        items = items.join("\n"),
+    )
 }
 
 /// What a discovery session is told (spec 6.2.1, 6.2.2).
@@ -605,6 +707,78 @@ mod tests {
 
         let again = discovery.discover(run_id, &doc).await.unwrap();
         assert_eq!(again, DiscoverySummary::default());
+    }
+
+    /// Rules that need judgment on list text are decided by a judgment
+    /// batch per 10 candidates, with no browser (spec 6.2.3); a skip goes on
+    /// the playbook's skip list so it is not found again.
+    #[tokio::test]
+    async fn a_judgment_batch_skips_by_rule_onto_the_skip_list() {
+        let db = fresh_in_memory_db().await.conn;
+        let (pb, run_id) = run(&db, None).await;
+        let skip = |url: &str| json!({ "url": url, "keep": false, "rule": "no relocation" });
+        let sessions = Arc::new(EngineSessions::default());
+        let launcher = FakeLauncher::new(
+            sessions.clone(),
+            vec![
+                Script::Act {
+                    calls: 0,
+                    result: Some(json!({
+                        "status": "judged",
+                        "decisions": [skip("https://jobs.test/j/1"), { "url": "https://jobs.test/j/2", "keep": true }],
+                    })),
+                },
+                Script::Act {
+                    calls: 0,
+                    result: Some(
+                        json!({ "status": "judged", "decisions": [skip("https://jobs.test/j/11")] }),
+                    ),
+                },
+            ],
+        );
+        let tabs = FakeTabs::default();
+        let discovery = Discovery {
+            db: &db,
+            launcher: &launcher,
+            sessions: &sessions,
+            tabs: &tabs,
+            agent: AgentType::ClaudeCode,
+        };
+        let items: String = (1..=12)
+            .map(|n| format!("      - https://jobs.test/j/{n}\n"))
+            .collect();
+        let mut doc = doc(&format!("  - type: list\n    items:\n{items}"));
+        doc.rules = vec!["Skip roles that need relocation".into()];
+        let summary = discovery.discover(run_id, &doc).await.unwrap();
+
+        assert_eq!(summary.queued, 10);
+        assert!(
+            summary.notes[0].contains("2 skipped by a rule"),
+            "{:?}",
+            summary.notes
+        );
+        let queued = keys(&db, run_id).await;
+        assert!(!queued.contains(&"jobs.test/j/1".to_string()));
+        assert!(!queued.contains(&"jobs.test/j/11".to_string()));
+        let store = PlaybookStore::new(db.clone());
+        for key in ["jobs.test/j/1", "jobs.test/j/11"] {
+            assert!(
+                store
+                    .is_skipped(pb, "jobs.test", "main", key)
+                    .await
+                    .unwrap(),
+                "{key}"
+            );
+        }
+        let prompted = launcher.prompted.lock().unwrap();
+        assert_eq!(prompted.len(), 2);
+        for (kind, prompt, scope) in prompted.iter() {
+            assert_eq!(*kind, SessionKind::JudgmentBatch);
+            assert!(prompt.contains("Skip roles that need relocation"));
+            assert_eq!(*scope, None);
+        }
+        assert!(prompted[0].1.contains("https://jobs.test/j/10"));
+        assert!(!prompted[0].1.contains("https://jobs.test/j/11"));
     }
 
     /// A source not done when the Host stopped is discovered again; items
