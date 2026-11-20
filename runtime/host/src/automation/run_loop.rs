@@ -30,7 +30,9 @@ use crate::automation::lockdown::{ItemAttempt, SessionKind};
 use crate::automation::playbook_format::PlaybookDoc;
 use crate::automation::playbook_store::PlaybookStore;
 use crate::automation::reasons::ReasonCode;
-use crate::automation::sessions::{EngineScope, EngineSessions, ItemReportStatus, SessionReport};
+use crate::automation::sessions::{
+    EngineScope, EngineSessions, ItemReport, ItemReportStatus, SessionReport,
+};
 use crate::automation::states::{ItemStatus, RunError, RunOutcome, RunStatus};
 use crate::browser::store::TabOwner;
 use crate::db::error::DbError;
@@ -245,7 +247,8 @@ impl RunLoop {
         // ones behind it, even if the lane frees meanwhile.
         let mut waiting: HashSet<(String, String)> = HashSet::new();
         for item in queued {
-            if waiting.contains(&(item.site.clone(), item.account.clone())) {
+            let lane_site = lane_site(&item).to_string();
+            if waiting.contains(&(lane_site.clone(), item.account.clone())) {
                 continue;
             }
             let Some(slot) = self.gate.try_acquire() else {
@@ -255,12 +258,12 @@ impl RunLoop {
             // the item waits for a later tick.
             let epoch = match self
                 .runner
-                .begin_item(item.id, &item.site, &item.account)
+                .begin_item(item.id, &lane_site, &item.account)
                 .await
             {
                 Ok(Some(epoch)) => epoch,
                 Ok(None) => {
-                    waiting.insert((item.site.clone(), item.account.clone()));
+                    waiting.insert((lane_site, item.account.clone()));
                     continue;
                 }
                 Err(e) => {
@@ -308,7 +311,7 @@ impl RunLoop {
             epoch,
         };
         let lane = TabOwner::Lane {
-            site: item.site.clone(),
+            site: lane_site(&item).to_string(),
             account: item.account.clone(),
         };
         let (outcome, tab) = match self.open_item_page(&lane, &item).await? {
@@ -356,6 +359,14 @@ impl RunLoop {
                     )
                     .await?;
                 }
+                if let SessionEnd::Reported(SessionReport::Item(ItemReport {
+                    status: ItemReportStatus::HandOff { url },
+                    ..
+                })) = &end
+                {
+                    self.tabs.close(&tab).await;
+                    return self.hand_off(&doc, &item, epoch, url).await;
+                }
                 (outcome_of(end), Some(tab))
             }
         };
@@ -392,7 +403,8 @@ impl RunLoop {
         lane: &TabOwner,
         item: &playbook_item::Model,
     ) -> Result<Result<String, ReasonCode>, DbError> {
-        let Some(url) = &item.url else {
+        // A handed-off item continues at its hand-off address (spec 6.9).
+        let Some(url) = item.outward_url.as_ref().or(item.url.as_ref()) else {
             return Ok(Err(ReasonCode::PageUnrecognised));
         };
         let tab = match self.tabs.open(lane, url).await {
@@ -402,13 +414,74 @@ impl RunLoop {
                 return Ok(Err(ReasonCode::AgentFailed));
             }
         };
-        let rule = item_id_rule(&self.store, &item.site).await?;
+        let rule = item_id_rule(&self.store, lane_site(item)).await?;
+        let expected = match &item.outward_url {
+            Some(outward) => item_key(outward, &rule),
+            None => Some(item.item_key.clone()),
+        };
         let landed = self.tabs.url(&tab).await;
-        if landed.and_then(|u| item_key(&u, &rule)).as_deref() != Some(&item.item_key) {
+        if expected.is_none() || landed.and_then(|u| item_key(&u, &rule)) != expected {
             self.tabs.close(&tab).await;
             return Ok(Err(ReasonCode::PageUnrecognised));
         }
         Ok(Ok(tab))
+    }
+
+    /// The item continues on another of the playbook's sites (spec 6.9): it
+    /// leaves this lane and waits, in queue order, for that site's lane. A
+    /// site the playbook does not list waits for the person (8.10).
+    async fn hand_off(
+        &self,
+        doc: &PlaybookDoc,
+        item: &playbook_item::Model,
+        epoch: i32,
+        url: &str,
+    ) -> Result<(), StepError> {
+        let to = crate::automation::discovery::site_for(url, &doc.sites);
+        let (status, reason, site) = match to {
+            Some(site) if site != lane_site(item) => (ItemStatus::Queued, None, Some(site)),
+            Some(_) => (ItemStatus::Failed, Some(ReasonCode::AgentFailed), None),
+            None => (
+                ItemStatus::WaitingPerson,
+                Some(ReasonCode::NavigationOutsidePlaybookSites),
+                None,
+            ),
+        };
+        let Some(site) = site else {
+            let reason = reason.map(ReasonCode::as_str);
+            return match self
+                .engine
+                .transition_attempt(item.id, epoch, ItemStatus::Working, status, reason)
+                .await
+            {
+                Ok(()) | Err(TransitionError::StaleAttempt { .. }) => Ok(()),
+                Err(e) => Err(e.into()),
+            };
+        };
+        // One write: the new lane and the requeue, only for this attempt and
+        // only before anything went out.
+        use sea_orm::sea_query::Expr;
+        playbook_item::Entity::update_many()
+            .col_expr(playbook_item::Column::OutwardSite, Expr::value(site))
+            .col_expr(playbook_item::Column::OutwardUrl, Expr::value(url))
+            .col_expr(playbook_item::Column::Status, Expr::value(status.as_str()))
+            .col_expr(
+                playbook_item::Column::ReasonCode,
+                Expr::value(None::<String>),
+            )
+            .col_expr(
+                playbook_item::Column::UpdatedAt,
+                Expr::value(chrono::Utc::now()),
+            )
+            .filter(playbook_item::Column::Id.eq(item.id))
+            .filter(playbook_item::Column::Epoch.eq(epoch))
+            .filter(playbook_item::Column::Status.eq(ItemStatus::Working.as_str()))
+            .filter(playbook_item::Column::OutwardStartedAt.is_null())
+            .exec(&self.db)
+            .await
+            .map_err(DbError::from)?;
+        self.engine.notify();
+        Ok(())
     }
 
     /// The agent cannot start: the item goes back to the queue unharmed and
@@ -566,6 +639,11 @@ pub fn spawn(state: Arc<crate::app_state::AppState>) {
     });
 }
 
+/// The site an item works on now: its hand-off site, else where it was found.
+fn lane_site(item: &playbook_item::Model) -> &str {
+    item.outward_site.as_deref().unwrap_or(&item.site)
+}
+
 fn db_err(e: TransitionError) -> DbError {
     match e {
         TransitionError::Db(e) => e,
@@ -587,7 +665,7 @@ fn outcome_of(end: SessionEnd) -> ItemOutcome {
         SessionEnd::Reported(SessionReport::Item(report)) => match report.status {
             ItemReportStatus::Skipped { .. } => ItemOutcome::Skip(ReasonCode::SkippedByRule),
             ItemReportStatus::Failed { .. } => ItemOutcome::Failed(ReasonCode::AgentFailed),
-            // Hand-offs are taken up in a later build step.
+            // Taken up before the item's end is decided (`hand_off`).
             ItemReportStatus::HandOff { .. } => ItemOutcome::Failed(ReasonCode::AgentFailed),
             ItemReportStatus::AskPerson { question } => ItemOutcome::Unanswerable(question),
         },
@@ -660,7 +738,11 @@ fn item_prompt(
                 .join("\n")
         },
         title = item.title.as_deref().unwrap_or(&item.item_key),
-        url = item.url.as_deref().unwrap_or(""),
+        url = item
+            .outward_url
+            .as_deref()
+            .or(item.url.as_deref())
+            .unwrap_or(""),
     )
 }
 
@@ -706,6 +788,38 @@ mod tests {
             .set_site_value("jobs.test", SiteKnowledgeKind::RiskAccept, "main", "yes")
             .await
             .unwrap();
+        let run_id = AutomationEngine::new(db.clone())
+            .start_run(pb.id, pb.version, RunTrigger::Mac, None)
+            .await
+            .unwrap();
+        let sessions = Arc::new(EngineSessions::default());
+        let launcher = Arc::new(FakeLauncher::new(sessions.clone(), scripts));
+        let tabs = Arc::new(FakeTabs::default());
+        let run_loop = RunLoop::new(db.clone(), None, launcher.clone(), sessions, tabs.clone());
+        Fixture {
+            db,
+            run_loop,
+            launcher,
+            tabs,
+            run_id,
+        }
+    }
+
+    /// One listed item on jobs.test; the playbook also lists apply.test.
+    async fn cross_site_fixture(scripts: Vec<Script>) -> Fixture {
+        let db = fresh_in_memory_db().await.conn;
+        let store = PlaybookStore::new(db.clone());
+        let source = "format: 1\nname: Apply\ngoal: Backend roles\n\
+            main_kind: submit_application\nsites:\n  - jobs.test\n  - apply.test\n\
+            checks:\n  - kind: text_present\n    text: Applied\n\
+            sources:\n  - type: list\n    items:\n      - https://jobs.test/j/1\n";
+        let pb = store.create("Apply", source).await.unwrap();
+        for site in ["jobs.test", "apply.test"] {
+            store
+                .set_site_value(site, SiteKnowledgeKind::RiskAccept, "main", "yes")
+                .await
+                .unwrap();
+        }
         let run_id = AutomationEngine::new(db.clone())
             .start_run(pb.id, pb.version, RunTrigger::Mac, None)
             .await
@@ -950,6 +1064,119 @@ mod tests {
         assert!(tips
             .iter()
             .any(|t| t.text == injected && t.state == "proposed"));
+    }
+
+    /// A hand-off moves the item to the site it continues on (spec 6.9): its
+    /// next session works in that site's lane, at the hand-off address.
+    #[tokio::test]
+    async fn a_hand_off_continues_the_item_in_the_other_sites_lane() {
+        let f = cross_site_fixture(vec![
+            result(json!({ "status": "hand_off", "url": "https://apply.test/form/9" })),
+            result(json!({ "status": "skipped", "rule": "r" })),
+        ])
+        .await;
+        drive(&f.run_loop).await;
+
+        let item = playbook_item::Entity::find()
+            .filter(playbook_item::Column::RunId.eq(f.run_id))
+            .one(&f.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(item.status, "skipped");
+        assert_eq!(item.site, "jobs.test");
+        assert_eq!(item.outward_site.as_deref(), Some("apply.test"));
+        let opened = f.tabs.opened.lock().unwrap().clone();
+        assert_eq!(
+            opened[1],
+            (
+                TabOwner::Lane {
+                    site: "apply.test".into(),
+                    account: "main".into()
+                },
+                "https://apply.test/form/9".to_string()
+            )
+        );
+        let prompts = item_prompts(&f.launcher);
+        assert_eq!(prompts.len(), 2);
+        assert!(prompts[1].1.contains("https://apply.test/form/9"));
+    }
+
+    /// A handed-off item holds the lane it continues on and frees the one it
+    /// was found on, so hand-offs between two sites never block each other.
+    #[tokio::test]
+    async fn a_handed_off_item_holds_its_new_lane() {
+        let f = cross_site_fixture(vec![]).await;
+        let started = f.run_loop.tick().await.unwrap();
+        for task in started {
+            task.await.unwrap();
+        }
+        let first = playbook_item::Entity::find()
+            .filter(playbook_item::Column::RunId.eq(f.run_id))
+            .one(&f.db)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut moved: playbook_item::ActiveModel = first.clone().into();
+        moved.outward_site = sea_orm::Set(Some("apply.test".into()));
+        moved.outward_url = sea_orm::Set(Some("https://apply.test/form/9".into()));
+        sea_orm::ActiveModelTrait::update(moved, &f.db)
+            .await
+            .unwrap();
+        let runner = &f.run_loop.runner;
+        assert!(runner
+            .begin_item(first.id, "apply.test", "main")
+            .await
+            .unwrap()
+            .is_some());
+        let insert = |site: &str, key: &str| playbook_item::ActiveModel {
+            public_id: sea_orm::Set(uuid::Uuid::new_v4().to_string()),
+            run_id: sea_orm::Set(f.run_id),
+            playbook_id: sea_orm::Set(first.playbook_id),
+            site: sea_orm::Set(site.into()),
+            account: sea_orm::Set("main".into()),
+            item_key: sea_orm::Set(key.into()),
+            status: sea_orm::Set("queued".into()),
+            epoch: sea_orm::Set(0),
+            created_at: sea_orm::Set(chrono::Utc::now()),
+            updated_at: sea_orm::Set(chrono::Utc::now()),
+            ..Default::default()
+        };
+        let on_apply =
+            sea_orm::ActiveModelTrait::insert(insert("apply.test", "apply.test/x/2"), &f.db)
+                .await
+                .unwrap();
+        let on_jobs =
+            sea_orm::ActiveModelTrait::insert(insert("jobs.test", "jobs.test/j/3"), &f.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            runner
+                .begin_item(on_apply.id, "apply.test", "main")
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(runner
+            .begin_item(on_jobs.id, "jobs.test", "main")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    /// A hand-off to a site the playbook does not list waits for the person
+    /// (spec 6.9, 8.10): nothing opens there.
+    #[tokio::test]
+    async fn a_hand_off_off_the_playbooks_sites_waits_for_the_person() {
+        let f = cross_site_fixture(vec![result(
+            json!({ "status": "hand_off", "url": "https://elsewhere.test/apply" }),
+        )])
+        .await;
+        drive(&f.run_loop).await;
+        let item = &items(&f.db, f.run_id).await[0];
+        assert_eq!(item.0, "waiting_person");
+        assert_eq!(item.1.as_deref(), Some("navigation_outside_playbook_sites"));
+        assert_eq!(f.tabs.opened.lock().unwrap().len(), 1);
     }
 
     /// After a Host restart no session is alive: an item left `working`

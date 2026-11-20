@@ -65,6 +65,7 @@ runtime/host/src/db/migration/m20261119_000005_playbook_public_ids.rs
 runtime/host/src/db/migration/m20261119_000006_browser_tab_lanes.rs
 runtime/host/src/db/migration/m20261120_000001_playbook_run_source.rs
 runtime/host/src/db/migration/m20261120_000002_playbook_knowledge.rs
+runtime/host/src/db/migration/m20261120_000003_item_lane.rs
 runtime/host/src/db/schema_guard.rs
 runtime/host/src/db/schema_guard/tests.rs
 runtime/host/src/db/service/playbook_engine_service.rs
