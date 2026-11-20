@@ -5816,8 +5816,8 @@ async fn run_connection(
                 async move |req: ReadTextFileRequest,
                             responder: Responder<ReadTextFileResponse>,
                             _cx: ConnectionTo<Agent>| {
-                    if !host_tools.hosts_channels() {
-                        return refuse_unadvertised_channel(responder, "fs/read_text_file");
+                    if let Some(error) = channel_refusal("fs/read_text_file", engine_session, host_tools) {
+                        return responder.respond_with_error(error);
                     }
                     respond_file_system_request(responder, runtime.read_text_file(req).await)?;
                     Ok(())
@@ -5831,8 +5831,8 @@ async fn run_connection(
                 async move |req: WriteTextFileRequest,
                             responder: Responder<WriteTextFileResponse>,
                             _cx: ConnectionTo<Agent>| {
-                    if !host_tools.hosts_channels() {
-                        return refuse_unadvertised_channel(responder, "fs/write_text_file");
+                    if let Some(error) = channel_refusal("fs/write_text_file", engine_session, host_tools) {
+                        return responder.respond_with_error(error);
                     }
                     respond_file_system_request(responder, runtime.write_text_file(req).await)?;
                     Ok(())
@@ -5846,8 +5846,8 @@ async fn run_connection(
                 async move |req: CreateTerminalRequest,
                             responder: Responder<CreateTerminalResponse>,
                             _cx: ConnectionTo<Agent>| {
-                    if !host_tools.hosts_channels() {
-                        return refuse_unadvertised_channel(responder, "terminal/create");
+                    if let Some(error) = channel_refusal("terminal/create", engine_session, host_tools) {
+                        return responder.respond_with_error(error);
                     }
                     respond_terminal_request(responder, runtime.create_terminal(req).await)?;
                     Ok(())
@@ -5861,8 +5861,8 @@ async fn run_connection(
                 async move |req: TerminalOutputRequest,
                             responder: Responder<TerminalOutputResponse>,
                             _cx: ConnectionTo<Agent>| {
-                    if !host_tools.hosts_channels() {
-                        return refuse_unadvertised_channel(responder, "terminal/output");
+                    if let Some(error) = channel_refusal("terminal/output", engine_session, host_tools) {
+                        return responder.respond_with_error(error);
                     }
                     respond_terminal_request(responder, runtime.terminal_output(req).await)?;
                     Ok(())
@@ -5876,11 +5876,13 @@ async fn run_connection(
                 async move |req: WaitForTerminalExitRequest,
                             responder: Responder<WaitForTerminalExitResponse>,
                             cx: ConnectionTo<Agent>| {
-                    if !host_tools.hosts_channels() {
+                    if let Some(error) =
+                        channel_refusal("terminal/wait_for_exit", engine_session, host_tools)
+                    {
                         // Refuse INLINE, before the spawn below: there is no
                         // terminal to wait on, so answering immediately is
                         // correct and keeps the refusal off the spawn path.
-                        return refuse_unadvertised_channel(responder, "terminal/wait_for_exit");
+                        return responder.respond_with_error(error);
                     }
                     // `terminal/wait_for_exit` blocks until the command exits,
                     // and sacp awaits request handlers INSIDE its single
@@ -5919,8 +5921,8 @@ async fn run_connection(
                 async move |req: KillTerminalRequest,
                             responder: Responder<KillTerminalResponse>,
                             _cx: ConnectionTo<Agent>| {
-                    if !host_tools.hosts_channels() {
-                        return refuse_unadvertised_channel(responder, "terminal/kill");
+                    if let Some(error) = channel_refusal("terminal/kill", engine_session, host_tools) {
+                        return responder.respond_with_error(error);
                     }
                     respond_terminal_request(responder, runtime.kill_terminal(req).await)?;
                     Ok(())
@@ -5934,8 +5936,8 @@ async fn run_connection(
                 async move |req: ReleaseTerminalRequest,
                             responder: Responder<ReleaseTerminalResponse>,
                             _cx: ConnectionTo<Agent>| {
-                    if !host_tools.hosts_channels() {
-                        return refuse_unadvertised_channel(responder, "terminal/release");
+                    if let Some(error) = channel_refusal("terminal/release", engine_session, host_tools) {
+                        return responder.respond_with_error(error);
                     }
                     respond_terminal_request(responder, runtime.release_terminal(req).await)?;
                     Ok(())
@@ -7955,26 +7957,37 @@ fn respond_terminal_request<T: sacp::JsonRpcResponse>(
     }
 }
 
-/// Refuse a channel this launch never advertised
-/// ([`HostToolsPolicy::Agent`], #436). Withholding the capability is a
-/// DECLARATION; a non-conforming agent can still call the method, and if Zwiim
-/// then served it the whole switch would be a suggestion — the operation would
-/// land back in Zwiim's process, outside the agent's sandbox, which is exactly
-/// the bug. `method_not_found` is the honest wire answer: as far as this
-/// connection is concerned the method does not exist, which is what the agent
-/// was told on Initialize.
-fn refuse_unadvertised_channel<T: sacp::JsonRpcResponse>(
-    responder: Responder<T>,
+/// Whether this connection refuses an `fs/*` or `terminal/*` call, and with
+/// what. An engine session refuses every one with the lockdown line (spec
+/// 10.7.1): the channels stay advertised so the agent does not fall back to
+/// its own tools, but nothing is served. Otherwise a channel this launch
+/// never advertised ([`HostToolsPolicy::Agent`], #436) is refused: withholding
+/// the capability is a DECLARATION, and a non-conforming agent can still call
+/// the method; serving it would land the operation back in Zwiim's process,
+/// outside the agent's sandbox.
+fn channel_refusal(
     method: &str,
-) -> Result<(), sacp::Error> {
+    engine_session: bool,
+    host_tools: HostToolsPolicy,
+) -> Option<sacp::Error> {
+    if engine_session {
+        tracing::warn!("[ACP] refusing {method} in an engine session (automation lockdown)");
+        return Some(sacp::Error::new(
+            -32600,
+            crate::automation::lockdown::LOCKDOWN_REFUSAL,
+        ));
+    }
+    if host_tools.hosts_channels() {
+        return None;
+    }
     tracing::warn!(
         "[ACP] refusing {method}: {HOST_TOOLS_ENV}=agent, so this channel was never \
          advertised — the agent must use its own (sandboxable) tools"
     );
-    responder.respond_with_error(unadvertised_channel_error(method))
+    Some(unadvertised_channel_error(method))
 }
 
-/// The error [`refuse_unadvertised_channel`] answers with. Split out because a
+/// The error a withheld channel answers with. Split out because a
 /// `Responder` cannot be built outside a live connection, so this is the part
 /// of the refusal a unit test can pin; the wiring itself is covered end-to-end.
 fn unadvertised_channel_error(method: &str) -> sacp::Error {
@@ -19625,6 +19638,36 @@ mod tests {
             serde_json::Value::Bool(true)
         );
         assert_eq!(claude["fs"]["readTextFile"], serde_json::Value::Bool(false));
+    }
+
+    /// An engine session still sees fs and terminal advertised, but every
+    /// call is refused with the lockdown line (spec 10.7.1), whatever the
+    /// host-tools policy; a person's session keeps today's behaviour.
+    #[test]
+    fn an_engine_session_refuses_every_fs_and_terminal_call() {
+        for method in [
+            "fs/read_text_file",
+            "fs/write_text_file",
+            "terminal/create",
+            "terminal/output",
+            "terminal/wait_for_exit",
+            "terminal/kill",
+            "terminal/release",
+        ] {
+            for host_tools in [HostToolsPolicy::Default, HostToolsPolicy::Agent] {
+                let error = channel_refusal(method, true, host_tools).expect("refused");
+                assert!(
+                    error.message.contains("not available in automation sessions"),
+                    "{method}: {error:?}"
+                );
+            }
+            assert!(channel_refusal(method, false, HostToolsPolicy::Default).is_none());
+            assert!(channel_refusal(method, false, HostToolsPolicy::Agent).is_some());
+        }
+        let source = include_str!("connection.rs");
+        let code = source.split("#[cfg(test)]\nmod tests {").next().unwrap();
+        assert_eq!(code.matches("refuse_unadvertised_channel(responder").count(), 0);
+        assert_eq!(code.matches("channel_refusal(\"").count(), 7);
     }
 
     #[test]
