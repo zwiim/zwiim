@@ -9,6 +9,7 @@ pub mod playbook;
 pub mod playbook_alert;
 pub mod playbook_approval;
 pub mod playbook_item;
+pub mod playbook_knowledge;
 pub mod playbook_run;
 pub mod playbook_run_source;
 pub mod playbook_skip;

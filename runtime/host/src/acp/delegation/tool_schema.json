@@ -1192,5 +1192,23 @@
       },
       "additionalProperties": false
     }
+  },
+  {
+    "name": "playbook_ask_person",
+    "description": "Ask the person a question about themselves that the playbook's facts and saved answers do not cover, such as a form field you would otherwise have to guess. Never guess. This ends the item: it waits for the person's answer, which is saved for every later item on this site. Call it once, then end your turn.",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "question"
+      ],
+      "properties": {
+        "question": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "The question as the form asks it."
+        }
+      },
+      "additionalProperties": false
+    }
   }
 ]

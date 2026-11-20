@@ -42,6 +42,9 @@ pub enum ItemReportStatus {
     Failed { note: String },
     /// The item continues on another site (spec 6.9).
     HandOff { url: String },
+    /// A question about the person the playbook cannot answer (spec 7.3),
+    /// from `playbook_ask_person`.
+    AskPerson { question: String },
 }
 
 /// One item found by discovery.
@@ -84,6 +87,9 @@ enum WireReport {
         #[serde(default)]
         tips: Vec<String>,
     },
+    AskPerson {
+        question: String,
+    },
     Listed {
         candidates: Vec<Candidate>,
     },
@@ -120,6 +126,9 @@ pub fn parse_report(kind: SessionKind, args: &serde_json::Value) -> Result<Sessi
         }
         (SessionKind::Item, WireReport::HandOff { url, tips }) => {
             Ok(item(ItemReportStatus::HandOff { url }, tips))
+        }
+        (SessionKind::Item, WireReport::AskPerson { question }) if !question.trim().is_empty() => {
+            Ok(item(ItemReportStatus::AskPerson { question }, Vec::new()))
         }
         (SessionKind::Discovery, WireReport::Listed { candidates }) => {
             Ok(SessionReport::Discovery(candidates))
@@ -270,6 +279,17 @@ mod tests {
             let refusal = parse_report(kind, args).unwrap_err();
             assert!(refusal.starts_with("Refused: invalid_result"), "{refusal}");
         }
+        let ask = json!({ "status": "ask_person", "question": "Relocate?" });
+        assert!(matches!(
+            parse_report(SessionKind::Item, &ask),
+            Ok(SessionReport::Item(ItemReport {
+                status: ItemReportStatus::AskPerson { .. },
+                ..
+            }))
+        ));
+        assert!(parse_report(SessionKind::Discovery, &ask).is_err());
+        let blank = json!({ "status": "ask_person", "question": "  " });
+        assert!(parse_report(SessionKind::Item, &blank).is_err());
         let extra = json!({ "status": "failed", "note": "n", "sent": true });
         assert!(parse_report(SessionKind::Item, &extra).is_err());
     }

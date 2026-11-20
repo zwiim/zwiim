@@ -323,7 +323,17 @@ impl RunLoop {
                             item_id: item.id,
                             epoch,
                         }),
-                        prompt: item_prompt(&doc, &item, &tab),
+                        prompt: item_prompt(
+                            &doc,
+                            &item,
+                            &tab,
+                            &crate::automation::knowledge::answers(
+                                &self.db,
+                                run.playbook_id,
+                                &item.site,
+                            )
+                            .await?,
+                        ),
                         scope: Some(EngineScope {
                             lane,
                             tabs: vec![tab.clone()],
@@ -339,10 +349,25 @@ impl RunLoop {
                 (outcome_of(end), Some(tab))
             }
         };
+        let question = match &outcome {
+            ItemOutcome::Unanswerable(question) => Some(question.clone()),
+            _ => None,
+        };
         let result = self
             .runner
             .finish_session(item.id, &item_ref, outcome)
             .await;
+        // Asked once, kept for the person's answer (spec 7.3).
+        if let (Some(question), Ok(SessionResult::WaitingPerson(_))) = (&question, &result) {
+            crate::automation::knowledge::ask(
+                &self.db,
+                run.playbook_id,
+                &item.site,
+                item.id,
+                question,
+            )
+            .await?;
+        }
         // A parked approval keeps its tab (spec 8.7); every other end closes it.
         if let Some(tab) = tab {
             if !matches!(result, Ok(SessionResult::WaitingApproval)) {
@@ -561,6 +586,7 @@ fn outcome_of(end: SessionEnd) -> ItemOutcome {
             ItemReportStatus::Failed { .. } => ItemOutcome::Failed(ReasonCode::AgentFailed),
             // Hand-offs are taken up in a later build step.
             ItemReportStatus::HandOff { .. } => ItemOutcome::Failed(ReasonCode::AgentFailed),
+            ItemReportStatus::AskPerson { question } => ItemOutcome::Unanswerable(question),
         },
         SessionEnd::TimedOut => ItemOutcome::Failed(ReasonCode::Timeout),
         SessionEnd::ToolLimit => ItemOutcome::Failed(ReasonCode::AgentLimit),
@@ -572,7 +598,12 @@ fn outcome_of(end: SessionEnd) -> ItemOutcome {
 
 /// What an item session is told (spec 7.1.1, 7.3): the playbook, this item,
 /// the inputs (secrets by handle name only), and how to end.
-fn item_prompt(doc: &PlaybookDoc, item: &playbook_item::Model, tab: &str) -> String {
+fn item_prompt(
+    doc: &PlaybookDoc,
+    item: &playbook_item::Model,
+    tab: &str,
+    answers: &[(String, String)],
+) -> String {
     use crate::automation::playbook_format::Input;
     let rules: Vec<String> = doc.rules.iter().map(|r| format!("- {r}")).collect();
     let inputs: Vec<String> = doc
@@ -584,6 +615,8 @@ fn item_prompt(doc: &PlaybookDoc, item: &playbook_item::Model, tab: &str) -> Str
             Input::Secret { name, .. } => format!("- {name}: a secret the Host types"),
         })
         .collect();
+    let mut inputs = inputs;
+    inputs.extend(answers.iter().map(|(q, a)| format!("- {q} {a}")));
     let none = || "- (none)".to_string();
     format!(
         "You are working one item for the playbook \"{name}\".\n\
@@ -595,7 +628,8 @@ fn item_prompt(doc: &PlaybookDoc, item: &playbook_item::Model, tab: &str) -> Str
          and work in tab {tab} only.\n\n\
          First check the rules against the page. If a rule says skip, call \
          playbook_item_result with status \"skipped\" and the rule.\n\
-         Never guess a fact about the person that is not above. Do not submit, \
+         Never guess a fact about the person that is not above: when the page \
+         asks one, call playbook_ask_person with the question. Do not submit, \
          post or send anything: this build cannot declare an outward action \
          yet. When you cannot go on, call playbook_item_result with status \
          \"failed\" and say why. Then end your turn.",
@@ -829,6 +863,46 @@ mod tests {
         let prompted = item_prompts(&f.launcher);
         assert!(!prompted.iter().any(|(_, p, _)| p.contains("/j/1\n")));
         assert_eq!(prompted.len(), 2);
+    }
+
+    /// A question the inputs do not cover is asked once and never guessed:
+    /// the item waits for the person with the question kept, and a saved
+    /// answer is in every later item's prompt (spec 7.3).
+    #[tokio::test]
+    async fn an_unanswerable_question_waits_for_the_person() {
+        let f = fixture(vec![
+            result(json!({ "status": "ask_person", "question": "Are you willing to relocate?" })),
+            result(json!({ "status": "skipped", "rule": "r" })),
+            result(json!({ "status": "skipped", "rule": "r" })),
+        ])
+        .await;
+        let pb = run(&f.db, f.run_id).await.playbook_id;
+        crate::automation::knowledge::ask(&f.db, pb, "jobs.test", 0, "Notice period?")
+            .await
+            .unwrap();
+        let saved = crate::automation::knowledge::all(&f.db, pb, "jobs.test", "answer")
+            .await
+            .unwrap();
+        crate::automation::knowledge::answer(&f.run_loop.engine, saved[0].id, "30 days")
+            .await
+            .unwrap();
+        drive(&f.run_loop).await;
+
+        let first = &items(&f.db, f.run_id).await[0];
+        assert_eq!(first.0, "waiting_person");
+        assert_eq!(first.1.as_deref(), Some("form_field_unanswerable"));
+        let asked = crate::automation::knowledge::all(&f.db, pb, "jobs.test", "answer")
+            .await
+            .unwrap();
+        assert!(asked
+            .iter()
+            .any(|q| q.text == "Are you willing to relocate?" && q.state == "open"));
+        let run = run(&f.db, f.run_id).await;
+        assert_eq!(run.outcome.as_deref(), Some("needs_person"));
+        for (_, prompt, _) in item_prompts(&f.launcher) {
+            assert!(prompt.contains("Notice period? 30 days"), "{prompt}");
+            assert!(prompt.contains("playbook_ask_person"));
+        }
     }
 
     /// After a Host restart no session is alive: an item left `working`

@@ -919,6 +919,28 @@ async fn build_tools_call_spawn(
                 Box::pin(async move { client_browser_tab_op_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_browser_tab_op_result).await
         }
+        "playbook_ask_person" => {
+            let Some(question) = arguments
+                .get("question")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|q| !q.is_empty())
+            else {
+                return LineAction::Respond(err(
+                    id,
+                    -32602,
+                    "playbook_ask_person requires a non-empty `question` string",
+                ));
+            };
+            // The question ends the item session: it is the session's result.
+            let req = BrokerPlaybookResultRequest {
+                token: ctx.token.clone(),
+                arguments: json!({ "status": "ask_person", "question": question }),
+            };
+            let round_trip =
+                Box::pin(async move { client_playbook_result_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_playbook_result).await
+        }
         "playbook_item_result" => {
             if !arguments.is_object() {
                 return LineAction::Respond(err(
@@ -4682,6 +4704,47 @@ mod tests {
         .to_string();
         assert!(matches!(
             dispatch_line(&engine, Arc::new(InflightCalls::new()), &call).await,
+            LineAction::Spawn(_)
+        ));
+    }
+
+    /// An item session can ask the person; the question must be there.
+    #[tokio::test]
+    async fn an_item_session_asks_the_person_with_a_question() {
+        use crate::automation::lockdown::SessionKind;
+        let item = CompanionContext {
+            only_tools: Some(
+                SessionKind::Item
+                    .allowed_tools()
+                    .iter()
+                    .map(|t| t.to_string())
+                    .collect(),
+            ),
+            ..ctx_with(BROWSER_ONLY)
+        };
+        let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let names =
+            list_tool_names(dispatch_line(&item, Arc::new(InflightCalls::new()), list).await);
+        assert!(names.contains(&"playbook_ask_person".to_string()), "{names:?}");
+        let call = |args: Value| {
+            json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": { "name": "playbook_ask_person", "arguments": args }
+            })
+            .to_string()
+        };
+        let empty = unwrap_respond(
+            dispatch_line(&item, Arc::new(InflightCalls::new()), &call(json!({ "question": " " })))
+                .await,
+        );
+        assert!(empty.error.unwrap().message.contains("question"));
+        assert!(matches!(
+            dispatch_line(
+                &item,
+                Arc::new(InflightCalls::new()),
+                &call(json!({ "question": "Relocate?" }))
+            )
+            .await,
             LineAction::Spawn(_)
         ));
     }
