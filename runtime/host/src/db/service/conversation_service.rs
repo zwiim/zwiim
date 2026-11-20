@@ -1449,6 +1449,17 @@ pub async fn list_all(
     // Loop-engineering runs never surface in the workspace conversation list —
     // their entry point is the loops workbench.
     query = query.filter(conversation::Column::Kind.ne(ConversationKind::Loop));
+    // Automation engine sessions live in the hidden engine folder and never
+    // surface either (automation spec 10.5.1).
+    query = query.filter(
+        conversation::Column::FolderId.not_in_subquery(
+            sea_orm::sea_query::Query::select()
+                .column(folder::Column::Id)
+                .from(folder::Entity)
+                .and_where(folder::Column::Kind.eq(folder::FolderKind::Engine))
+                .to_owned(),
+        ),
+    );
 
     if !include_children {
         query = query.filter(conversation::Column::ParentId.is_null());
@@ -3458,6 +3469,37 @@ mod tests {
         .expect("delegate");
         assert_eq!(child.kind, ConversationKind::Delegate);
         assert_eq!(child.parent_id, Some(regular.id));
+    }
+
+    #[tokio::test]
+    async fn the_engine_folder_is_one_hidden_row_and_hides_its_conversations() {
+        use crate::db::service::folder_service;
+        let db = fresh_in_memory_db().await;
+        let regular = seed_folder(&db, "/tmp/engine-filter").await;
+        let engine = folder_service::engine_folder(&db.conn, "/tmp/zwiim-engine-sessions")
+            .await
+            .expect("engine folder");
+        // One row, however often the Host asks for it.
+        assert_eq!(
+            folder_service::engine_folder(&db.conn, "/tmp/zwiim-engine-sessions")
+                .await
+                .expect("again"),
+            engine
+        );
+        let keep = create(&db.conn, regular, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("keep");
+        let hide = create(&db.conn, engine, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("hide");
+
+        let rows = list_all(&db.conn, None, None, None, None, None, false)
+            .await
+            .expect("list");
+        assert!(rows.iter().any(|r| r.id == keep.id));
+        assert!(rows.iter().all(|r| r.id != hide.id), "engine session leaked");
+        let folders = folder_service::list_folders(&db.conn).await.expect("folders");
+        assert!(folders.iter().all(|f| f.id != engine));
     }
 
     #[tokio::test]

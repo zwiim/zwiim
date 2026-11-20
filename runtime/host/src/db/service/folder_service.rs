@@ -270,6 +270,47 @@ pub async fn ensure_folder_for_path(
     Ok(to_entry(model))
 }
 
+/// The one Host-owned folder automation engine sessions live in (automation
+/// spec 10.5.1), created at `path` the first time it is asked for. Its kind
+/// keeps it out of every folder and workspace list.
+pub async fn engine_folder(conn: &DatabaseConnection, path: &str) -> Result<i32, DbError> {
+    let existing = folder::Entity::find()
+        .filter(folder::Column::Kind.eq(FolderKind::Engine))
+        .filter(folder::Column::DeletedAt.is_null())
+        .one(conn)
+        .await?;
+    if let Some(row) = existing {
+        return Ok(row.id);
+    }
+    let now = Utc::now();
+    let next_order = next_sort_order(conn).await?;
+    let row = folder::ActiveModel {
+        id: NotSet,
+        name: Set("Automation".to_string()),
+        path: Set(path.to_string()),
+        git_branch: Set(None),
+        default_agent_type: Set(None),
+        last_opened_at: Set(now),
+        created_at: Set(now),
+        updated_at: Set(now),
+        deleted_at: Set(None),
+        is_open: Set(false),
+        sort_order: Set(next_order),
+        color: Set(DEFAULT_FOLDER_COLOR.to_string()),
+        parent_id: Set(None),
+        kind: Set(FolderKind::Engine),
+        alias: Set(None),
+        group_id: Set(None),
+        workspace_id: NotSet,
+        base_branch: NotSet,
+        base_commit: NotSet,
+        port: NotSet,
+    }
+    .insert(conn)
+    .await?;
+    Ok(row.id)
+}
+
 /// Create a dedicated hidden folder backing a single chat-mode conversation.
 ///
 /// Unlike [`add_folder`], the display name is a fixed sentinel ("Chat") rather
