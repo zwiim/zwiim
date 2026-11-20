@@ -47,6 +47,7 @@ runtime/host/src/automation/playbook_format.rs
 runtime/host/src/automation/playbook_store.rs
 runtime/host/src/automation/reasons.rs
 runtime/host/src/automation/run_views.rs
+runtime/host/src/automation/sessions.rs
 runtime/host/src/automation/states.rs
 runtime/host/src/automation/tests.rs
 runtime/host/src/bin/zwiim_automation_docs.rs

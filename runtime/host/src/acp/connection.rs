@@ -5503,7 +5503,7 @@ where
     // An engine session lists exactly its profile, not the whole group.
     if let Some(launch) = engine {
         args.push("--tools".to_string());
-        args.push(launch.kind.browser_tools().join(","));
+        args.push(launch.kind.allowed_tools().join(","));
     }
     if !custom_slugs.is_empty() {
         args.push("--custom-agents".to_string());
@@ -18314,9 +18314,16 @@ mod tests {
                         .map(|t| t["name"].as_str().unwrap().to_string())
                         .collect();
                     names.sort();
-                    let mut profile: Vec<String> =
-                        kind.browser_tools().iter().map(|t| t.to_string()).collect();
+                    // The profile, less the engine tools a later build serves.
+                    let served = crate::acp::delegation::companion::TOOL_SCHEMA_JSON;
+                    let mut profile: Vec<String> = kind
+                        .allowed_tools()
+                        .iter()
+                        .filter(|t| served.contains(&format!("\"name\": \"{t}\"")))
+                        .map(|t| t.to_string())
+                        .collect();
                     profile.sort();
+                    assert!(profile.contains(&"playbook_item_result".to_string()));
                     assert_eq!(names, profile, "{agent:?} {kind:?}");
                 }
                 for method in ["fs/read_text_file", "fs/write_text_file", "terminal/create"] {
@@ -26493,7 +26500,7 @@ mod tests {
             server.args[at + 1].clone()
         };
         assert_eq!(arg("--features"), "browser");
-        assert_eq!(arg("--tools"), SessionKind::Item.browser_tools().join(","));
+        assert_eq!(arg("--tools"), SessionKind::Item.allowed_tools().join(","));
         let entry = injection.tokens.lookup(&injected.token).await.expect("token");
         assert_eq!(entry.engine.map(|e| e.kind), Some(SessionKind::Item));
 

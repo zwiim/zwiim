@@ -30,7 +30,8 @@ use crate::acp::delegation::transport::{
     BrokerCommitFeedbackRequest, BrokerFeedbackRequest, BrokerMessage, BrokerRequest,
     BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerGitRequest, BrokerResponse,
     BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
-    BrokerTaskCompleteRequest, BrokerTaskProgressRequest, BrokerUpdateProgressRequest,
+    BrokerPlaybookResultRequest, BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
+    BrokerUpdateProgressRequest,
 };
 use crate::acp::delegation::types::{
     DelegationRequest, DelegationTaskReport, ResumeDelegationRequest, TaskStatus,
@@ -188,6 +189,9 @@ pub struct DelegationListener {
     /// Checks an engine token's item attempt before each call. Set once at
     /// startup; unset refuses (see [`ItemAttempts`]).
     attempts: std::sync::OnceLock<Arc<dyn ItemAttempts>>,
+    /// The live engine sessions: where `playbook_item_result` goes and where
+    /// each engine call is counted. Set once at startup; unset refuses.
+    engine_sessions: std::sync::OnceLock<Arc<crate::automation::sessions::EngineSessions>>,
 }
 
 impl DelegationListener {
@@ -218,6 +222,7 @@ impl DelegationListener {
             git,
             progress,
             attempts: std::sync::OnceLock::new(),
+            engine_sessions: std::sync::OnceLock::new(),
         })
     }
 
@@ -225,6 +230,15 @@ impl DelegationListener {
     /// ignored.
     pub fn set_item_attempts(&self, attempts: Arc<dyn ItemAttempts>) {
         let _ = self.attempts.set(attempts);
+    }
+
+    /// Give the listener the engine's live sessions. A second call is
+    /// ignored.
+    pub fn set_engine_sessions(
+        &self,
+        sessions: Arc<crate::automation::sessions::EngineSessions>,
+    ) {
+        let _ = self.engine_sessions.set(sessions);
     }
 
     /// Bind the socket, then serve it forever. Kept as the one-call entry
@@ -665,6 +679,12 @@ impl DelegationListener {
                     outcome: crate::acp::git_tools::reply(self.process_git(req).await),
                 }
             }
+            BrokerMessage::PlaybookResult(req) => BrokerResponse {
+                outcome: match self.process_playbook_result(req).await {
+                    Ok(()) => serde_json::json!({ "ok": true }),
+                    Err(note) => serde_json::json!({ "error": "refused", "note": note }),
+                },
+            },
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
                 // Empty ack — the companion only uses this to detect the
@@ -708,6 +728,9 @@ impl DelegationListener {
         }
         let kind = launch.kind;
         if engine_tool(msg).is_some_and(|tool| kind.allows(tool)) {
+            if let Some(sessions) = self.engine_sessions.get() {
+                sessions.tool_called(&entry.parent_connection_id);
+            }
             return None;
         }
         tracing::warn!(
@@ -722,6 +745,22 @@ impl DelegationListener {
                 "note": crate::automation::lockdown::LOCKDOWN_REFUSAL,
             }),
         })
+    }
+
+    /// Hand an engine session's result to its launcher. Only an engine
+    /// session has one to give; the error is the line the agent is told.
+    async fn process_playbook_result(&self, req: BrokerPlaybookResultRequest) -> Result<(), String> {
+        let entry = self.tokens.lookup(&req.token).await;
+        let Some(entry) = entry.filter(|e| e.engine.is_some()) else {
+            return Err(
+                "Refused: not_engine_session; only an automation session returns a result."
+                    .to_string(),
+            );
+        };
+        let Some(sessions) = self.engine_sessions.get() else {
+            return Err("Refused: no_session; this session has ended, so stop.".to_string());
+        };
+        sessions.report(&entry.parent_connection_id, &req.arguments)
     }
 
     /// Validate the token, resolve the caller's parent connection/conversation,
@@ -1260,15 +1299,17 @@ fn broker_token(msg: &BrokerMessage) -> Option<&str> {
         BrokerMessage::BrowserEval(r) => &r.token,
         BrokerMessage::BrowserTabOp(r) => &r.token,
         BrokerMessage::Git(r) => &r.token,
+        BrokerMessage::PlaybookResult(r) => &r.token,
     })
 }
 
-/// The browser tool a broker message serves, by the name a session profile
-/// lists. `None` for every other message, which no engine profile holds.
+/// The tool a broker message serves, by the name a session profile lists.
+/// `None` for every other message, which no engine profile holds.
 fn engine_tool(msg: &BrokerMessage) -> Option<&'static str> {
     use crate::acp::browser_tools::BrowserTabOp;
     use crate::browser::agent::ActionKind;
     Some(match msg {
+        BrokerMessage::PlaybookResult(_) => "playbook_item_result",
         BrokerMessage::BrowserTabs(_) => "browser_list_tabs",
         BrokerMessage::BrowserSnapshot(_) => "browser_snapshot",
         BrokerMessage::BrowserConsole(_) => "browser_console_messages",
@@ -3682,6 +3723,77 @@ mod tests {
             assert_eq!(resp.outcome["note"], LOCKDOWN_REFUSAL);
         }
         assert_eq!(browser.calls.lock().await.len(), 1, "only the click ran");
+    }
+
+    /// An engine session's `playbook_item_result` reaches the session's
+    /// launcher, and every call it makes is counted for its limits. A
+    /// person's session has no result to give: refused.
+    #[tokio::test]
+    async fn an_engine_result_reaches_its_launcher() {
+        use crate::automation::lockdown::{EngineLaunch, SessionKind};
+        use crate::automation::sessions::{EngineSessions, SessionReport};
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "disc".into(),
+                TokenEntry {
+                    parent_connection_id: "conn-disc".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                    engine: Some(EngineLaunch {
+                        kind: SessionKind::Discovery,
+                        attempt: None,
+                    }),
+                },
+            )
+            .await;
+        tokens
+            .register(
+                "person".into(),
+                TokenEntry {
+                    parent_connection_id: "conn-person".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                    engine: None,
+                },
+            )
+            .await;
+        let result = |token: &str| {
+            BrokerMessage::PlaybookResult(BrokerPlaybookResultRequest {
+                token: token.into(),
+                arguments: serde_json::json!({
+                    "status": "listed",
+                    "candidates": [{ "url": "https://a.test/j/1" }],
+                }),
+            })
+        };
+        let browser = Arc::new(StubBrowser::default());
+        let listener = make_browser_listener(tokens, browser);
+        let sessions = Arc::new(EngineSessions::default());
+        listener.set_engine_sessions(sessions.clone());
+        let mut watch = sessions.open("conn-disc", SessionKind::Discovery);
+
+        let person = browser_round_trip(listener.clone(), result("person")).await;
+        assert_eq!(person.outcome["error"], "refused");
+        let read = BrokerMessage::BrowserSnapshot(BrokerBrowserSnapshotRequest {
+            token: "disc".into(),
+            tab_id: "t1".into(),
+            max_chars: None,
+            changes_only: false,
+        });
+        browser_round_trip(listener.clone(), read).await;
+        let ok = browser_round_trip(listener.clone(), result("disc")).await;
+        assert_eq!(ok.outcome["ok"], true);
+        let again = browser_round_trip(listener, result("disc")).await;
+        assert_eq!(again.outcome["error"], "refused");
+        assert!(again.outcome["note"]
+            .as_str()
+            .unwrap()
+            .starts_with("Refused: already_reported"));
+
+        assert_eq!(*watch.calls.borrow_and_update(), 3);
+        assert!(matches!(
+            watch.report.await.unwrap(),
+            SessionReport::Discovery(c) if c.len() == 1
+        ));
     }
 
     /// A call carrying an attempt the item has moved past is refused before
