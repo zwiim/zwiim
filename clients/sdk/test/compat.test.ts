@@ -103,8 +103,13 @@ describe("evaluateCompatibility", () => {
     expect(CLIENT_CAPABILITIES).toContain("repository.settings_import");
   });
 
+  it("speaks revision 40 and serves playbooks", () => {
+    expect(CLIENT_REVISION).toBe(40);
+    expect(CLIENT_CAPABILITIES).toContain("playbooks");
+  });
+
   it("speaks revision 39 and discards a file's uncommitted changes", () => {
-    expect(CLIENT_REVISION).toBe(39);
+    expect(CLIENT_REVISION).toBeGreaterThanOrEqual(39);
     expect(CLIENT_CAPABILITIES).toContain("git.discard");
   });
 

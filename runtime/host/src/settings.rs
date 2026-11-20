@@ -67,6 +67,8 @@ pub const BROWSER_SESSION_TABS: &str = "browser.session_tabs";
 pub const BROWSER_TIMELINE_MB: &str = "browser.timeline_mb";
 pub const BROWSER_TIMELINE_DAYS: &str = "browser.timeline_days";
 pub const BROWSER_SEARCH_ENGINE: &str = "browser.search_engine";
+/// Labs: the automation engine, off unless the person turns it on (spec 10.12).
+pub const PLAYBOOKS_ENABLED: &str = "playbooks.enabled";
 
 /// Every setting the Host keeps.
 const KEYS: &[(&str, Kind)] = &[
@@ -90,6 +92,7 @@ const KEYS: &[(&str, Kind)] = &[
     (BROWSER_AGENT_ASK_SITES, Kind::Bool),
     (BROWSER_OPEN_DEV_SERVERS, Kind::Bool),
     (BROWSER_SEARCH_ENGINE, Kind::SearchEngine),
+    (PLAYBOOKS_ENABLED, Kind::Bool),
 ];
 
 /// The search engines the browser's address bar offers; unset is Google.
@@ -223,6 +226,14 @@ pub fn valid_prefix(prefix: &str) -> bool {
 
 fn mode_of(s: &str) -> Option<Mode> {
     serde_json::from_value(Value::String(s.to_string())).ok()
+}
+
+/// Whether the automation engine is enabled (off unless set).
+pub async fn playbooks_enabled(db: &DatabaseConnection) -> bool {
+    read_value(db, PLAYBOOKS_ENABLED)
+        .await
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 async fn read_value(db: &DatabaseConnection, key: &str) -> Option<Value> {

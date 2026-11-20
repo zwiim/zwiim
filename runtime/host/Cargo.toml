@@ -47,6 +47,11 @@ name = "zwiim-mcp"
 path = "src/bin/zwiim_mcp.rs"
 required-features = []
 
+[[bin]]
+name = "zwiim-automation-docs"
+path = "src/bin/zwiim_automation_docs.rs"
+required-features = []
+
 [dependencies]
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }

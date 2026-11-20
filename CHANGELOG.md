@@ -9,7 +9,7 @@ have their own versions and are listed under Compatibility.
 ## [Unreleased]
 
 ### Added
-- None.
+- Playbooks (Labs, off by default): the automation engine's foundation — playbooks that outlive sessions, runs that survive restarts without redoing sent items, approval rules, Host-checked done, caps and site pauses — with `playbook.*`, `run.*` and `site.*` protocol operations (including validated `format: 1` playbooks and "Try on one item"). Building; no UI yet.
 
 ### Changed
 - None.
@@ -21,7 +21,7 @@ have their own versions and are listed under Compatibility.
 - None.
 
 ### Compatibility
-- None.
+- Protocol revision 40: `playbook.*`, `run.*` and `site.*` operations (capability `playbooks`, behind the `playbooks.enabled` Labs setting), and the Host feed's `run.approval_requested` / `run.approval_cleared` events with `approvals` in its snapshot. Older clients never see or call them.
 
 ### Provider changes
 - None.

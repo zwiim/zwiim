@@ -508,7 +508,21 @@ use serde::{Deserialize, Serialize};
 /// is restored from HEAD, a file added since is removed. Commits are never
 /// touched. It answers `discarded`, false when the file had no uncommitted
 /// changes; a folder is `invalid_input`. Older clients never call it.
-pub const PROTOCOL_REVISION: u32 = 39;
+///
+/// 40 (`playbook.*`, `run.*`, `site.*`): the automation engine's operations
+/// (automation-engine spec 18.2). `playbook.list` / `playbook.get` /
+/// `playbook.save`; `run.start` (Mac only in 1a-i) / `run.try` / `run.get` /
+/// `run.items` (paginated) / `run.pause` / `run.resume` / `run.stop`;
+/// `run.approve` (with optional `edits`, edit then send) / `run.reject`;
+/// `site.list` / `site.pause` / `site.resume` / `site.risk_accept` /
+/// `site.usage`. All but Pause and Stop are behind the `playbooks.enabled`
+/// Labs setting. Errors use the spec 11.2 vocabulary (`run_active`,
+/// `run_start_requires_mac`, `run_not_paused`, `run_not_running`,
+/// `site_not_paused`, `approval_not_pending`, `playbook_invalid`,
+/// `playbooks_disabled`). The Host feed publishes `run.approval_requested` /
+/// `run.approval_cleared` and its snapshot carries `approvals`. Older
+/// clients never see or call them.
+pub const PROTOCOL_REVISION: u32 = 40;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -577,6 +591,7 @@ pub const CAPABILITIES: &[&str] = &[
     "downloads",
     "session.fast",
     "git.discard",
+    "playbooks",
 ];
 
 /// What a client says about itself. Every field is optional so a partial or
@@ -768,7 +783,13 @@ mod tests {
     #[test]
     fn discarding_a_file_is_revision_39() {
         assert!(CAPABILITIES.contains(&"git.discard"));
-        assert_eq!(PROTOCOL_REVISION, 39);
+        assert!(PROTOCOL_REVISION >= 39);
+    }
+
+    #[test]
+    fn playbooks_are_revision_40() {
+        assert_eq!(PROTOCOL_REVISION, 40);
+        assert!(CAPABILITIES.contains(&"playbooks"));
     }
 
     #[test]

@@ -148,6 +148,23 @@ const OPS: &[&str] = &[
     "browser.timeline.image",
     "browser.downloads.location",
     "browser.downloads.set_location",
+    "playbook.list",
+    "playbook.get",
+    "playbook.save",
+    "run.start",
+    "run.try",
+    "run.get",
+    "run.items",
+    "run.pause",
+    "run.resume",
+    "run.stop",
+    "run.approve",
+    "run.reject",
+    "site.list",
+    "site.pause",
+    "site.resume",
+    "site.risk_accept",
+    "site.usage",
 ];
 
 pub(crate) fn git(dir: &std::path::Path, args: &[&str]) {
@@ -2229,7 +2246,8 @@ async fn session_retry_in_new_chat_over_http() {
 
     let (sid, _rx) = h.live_session().await;
     assert_eq!(
-        h.err("session.retry_in_new_chat", json!({"session_id": sid})).await,
+        h.err("session.retry_in_new_chat", json!({"session_id": sid}))
+            .await,
         (StatusCode::CONFLICT, "nothing_to_retry".into())
     );
 
@@ -2246,7 +2264,12 @@ async fn session_retry_in_new_chat_over_http() {
     // A session in a repository's root workspace has no worktree to start in.
     let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::Codex).await;
     let root_sid = session_id_of(&h.state, conv).await;
-    save_unreachable_turn(&h, &root_sid, vec![PromptInputBlock::Text { text: "hi".into() }]).await;
+    save_unreachable_turn(
+        &h,
+        &root_sid,
+        vec![PromptInputBlock::Text { text: "hi".into() }],
+    )
+    .await;
     assert_eq!(
         h.err("session.retry_in_new_chat", json!({"session_id": root_sid}))
             .await
@@ -2428,7 +2451,8 @@ async fn session_continue_plan_over_http() {
 
     let (sid, _rx) = h.live_session().await;
     assert_eq!(
-        h.err("session.continue_plan", json!({"session_id": sid})).await,
+        h.err("session.continue_plan", json!({"session_id": sid}))
+            .await,
         (StatusCode::CONFLICT, "nothing_to_continue".into())
     );
     assert_eq!(
@@ -2518,7 +2542,9 @@ async fn continue_emits_session_changed_for_old_session() {
         .await
         .unwrap();
     crate::protocol::http::announce_session_changed(&h.state, conv).await;
-    let changed = event_is("session.changed", |p| p["session"]["session_id"] == sid.as_str());
+    let changed = event_is("session.changed", |p| {
+        p["session"]["session_id"] == sid.as_str()
+    });
     h.host_event(&mut ws, "old session changed", &changed).await;
 }
 
@@ -2634,15 +2660,15 @@ async fn session_revert_speaks_zwiim_only() {
         }
     }
 
-    let revert = |turn_id: &str, files: bool, chat: bool| {
-        json!({"session_id": sid, "turn_id": turn_id, "files": files, "chat": chat})
-    };
+    let revert = |turn_id: &str, files: bool, chat: bool| json!({"session_id": sid, "turn_id": turn_id, "files": files, "chat": chat});
     assert_eq!(
-        h.err("session.revert", revert("turn-404", true, true)).await,
+        h.err("session.revert", revert("turn-404", true, true))
+            .await,
         (StatusCode::CONFLICT, "checkpoint_unavailable".into())
     );
     assert_eq!(
-        h.err("session.revert", revert("turn-404", false, false)).await,
+        h.err("session.revert", revert("turn-404", false, false))
+            .await,
         (StatusCode::BAD_REQUEST, "invalid_input".into())
     );
     assert_eq!(
@@ -2675,9 +2701,7 @@ async fn session_fork_speaks_zwiim_only() {
     let h = host(false).await;
     let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
     let sid = session_id_of(&h.state, conv).await;
-    let fork = |session_id: &str, target: &str| {
-        json!({"session_id": session_id, "turn_id": "turn-404", "target": target})
-    };
+    let fork = |session_id: &str, target: &str| json!({"session_id": session_id, "turn_id": "turn-404", "target": target});
     assert_eq!(
         h.err("session.fork", fork(&sid, "current")).await,
         (StatusCode::CONFLICT, "fork_unavailable".into())
@@ -2712,9 +2736,11 @@ async fn transcript_remove_speaks_zwiim_only() {
 
     let history = h.ok("session.history", json!({"session_id": sid})).await;
     assert!(history["pending_transcript"].is_null(), "{history}");
-    h.ok("session.transcript_remove", json!({"session_id": sid})).await;
+    h.ok("session.transcript_remove", json!({"session_id": sid}))
+        .await;
     assert_eq!(
-        h.err("session.transcript_remove", json!({"session_id": "nope"})).await,
+        h.err("session.transcript_remove", json!({"session_id": "nope"}))
+            .await,
         (StatusCode::NOT_FOUND, "not_found".into())
     );
 }
@@ -2746,9 +2772,13 @@ async fn transcript_remove_tells_every_device() {
     .unwrap();
     let (mut ws, _) = h.feed().await;
 
-    h.ok("session.transcript_remove", json!({"session_id": sid})).await;
-    let changed = event_is("session.changed", |p| p["session"]["session_id"] == sid.as_str());
-    h.host_event(&mut ws, "transcript taken back", &changed).await;
+    h.ok("session.transcript_remove", json!({"session_id": sid}))
+        .await;
+    let changed = event_is("session.changed", |p| {
+        p["session"]["session_id"] == sid.as_str()
+    });
+    h.host_event(&mut ws, "transcript taken back", &changed)
+        .await;
 }
 
 /// A fork waiting for its first message moves to another agent, for every
@@ -2763,7 +2793,11 @@ async fn set_agent_moves_only_an_unsent_fork() {
     let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
     let sid = session_id_of(&h.state, conv).await;
     assert_eq!(
-        h.err("session.set_agent", json!({"session_id": source, "agent": "codex"})).await,
+        h.err(
+            "session.set_agent",
+            json!({"session_id": source, "agent": "codex"})
+        )
+        .await,
         (StatusCode::CONFLICT, "agent_fixed".into())
     );
     crate::db::entities::session_fork::ActiveModel {
@@ -2782,7 +2816,12 @@ async fn set_agent_moves_only_an_unsent_fork() {
     .unwrap();
     let (mut ws, _) = h.feed().await;
 
-    let moved = h.ok("session.set_agent", json!({"session_id": sid, "agent": "codex"})).await;
+    let moved = h
+        .ok(
+            "session.set_agent",
+            json!({"session_id": sid, "agent": "codex"}),
+        )
+        .await;
     assert_eq!(moved["session_id"], sid.as_str());
     let changed = event_is("session.changed", |p| {
         p["session"]["session_id"] == sid.as_str() && p["session"]["agent"] == "codex"
@@ -2797,9 +2836,13 @@ async fn history_names_the_session_a_fork_came_from() {
     let h = host(false).await;
     let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
     let source = session_id_of(&h.state, conv).await;
-    crate::db::service::conversation_service::update_title(&h.state.db.conn, conv, "Fix the leak".into())
-        .await
-        .unwrap();
+    crate::db::service::conversation_service::update_title(
+        &h.state.db.conn,
+        conv,
+        "Fix the leak".into(),
+    )
+    .await
+    .unwrap();
     let conv = seed_conversation(&h.state.db, h.folder_id, AgentType::ClaudeCode).await;
     let sid = session_id_of(&h.state, conv).await;
 
@@ -3141,8 +3184,11 @@ async fn pull_request_ops_answer_in_zwiim_shape() {
     );
     // Auto-merge says on or off, and turning it on names the head.
     assert_eq!(
-        h.err("git.pr_auto_merge", json!({"workspace_id": wid, "number": 1}))
-            .await,
+        h.err(
+            "git.pr_auto_merge",
+            json!({"workspace_id": wid, "number": 1})
+        )
+        .await,
         (StatusCode::BAD_REQUEST, "invalid_request".into())
     );
     assert_eq!(
@@ -3170,7 +3216,11 @@ fn git_errors_keep_their_codes_and_never_gh_s_words() {
     let cases = [
         (NotMergeable, StatusCode::CONFLICT, "not_mergeable"),
         (PrChanged, StatusCode::CONFLICT, "pr_changed"),
-        (AutoMergeDisabled, StatusCode::CONFLICT, "auto_merge_disabled"),
+        (
+            AutoMergeDisabled,
+            StatusCode::CONFLICT,
+            "auto_merge_disabled",
+        ),
         (
             GhUnavailable,
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -4719,7 +4769,10 @@ async fn settings_round_trip_and_refuse_what_they_do_not_know() {
     assert_eq!(set["values"]["defaults.agent"], "codex");
     assert_eq!(set["values"]["defaults.claude_code.model"], "haiku");
     let cleared = h
-        .ok("settings.update", json!({"values": {"defaults.agent": null}}))
+        .ok(
+            "settings.update",
+            json!({"values": {"defaults.agent": null}}),
+        )
         .await;
     assert_eq!(cleared["values"]["defaults.agent"], Value::Null);
     assert_eq!(cleared["values"]["defaults.claude_code.model"], "haiku");
@@ -4729,7 +4782,11 @@ async fn settings_round_trip_and_refuse_what_they_do_not_know() {
         json!({"values": {"defaults.mode": "bypassPermissions"}}),
         json!({"values": {"defaults.codex.effort": 3}}),
     ] {
-        assert_eq!(h.err("settings.update", bad.clone()).await.1, "invalid_input", "{bad}");
+        assert_eq!(
+            h.err("settings.update", bad.clone()).await.1,
+            "invalid_input",
+            "{bad}"
+        );
     }
     // Nothing is written when one value is refused.
     h.err(
@@ -4737,8 +4794,16 @@ async fn settings_round_trip_and_refuse_what_they_do_not_know() {
         json!({"values": {"defaults.mode": "plan", "defaults.nope": "x"}}),
     )
     .await;
-    assert_eq!(h.ok("settings.get", json!({})).await["values"]["defaults.mode"], Value::Null);
-    assert_eq!(h.err("settings.update", json!({"values": {}, "x": 1})).await.1, "invalid_request");
+    assert_eq!(
+        h.ok("settings.get", json!({})).await["values"]["defaults.mode"],
+        Value::Null
+    );
+    assert_eq!(
+        h.err("settings.update", json!({"values": {}, "x": 1}))
+            .await
+            .1,
+        "invalid_request"
+    );
 }
 
 #[tokio::test]
@@ -4747,7 +4812,10 @@ async fn advanced_settings_take_effect_on_the_host() {
     let empty = h.ok("settings.get", json!({})).await;
     assert_eq!(empty["values"]["terminal.scrollback"], Value::Null);
     assert_eq!(empty["values"]["git.push_sets_upstream"], Value::Null);
-    assert!(crate::settings::push_sets_upstream(&h.state.db.conn).await, "on until turned off");
+    assert!(
+        crate::settings::push_sets_upstream(&h.state.db.conn).await,
+        "on until turned off"
+    );
     let set = h
         .ok(
             "settings.update",
@@ -4763,7 +4831,11 @@ async fn advanced_settings_take_effect_on_the_host() {
     ] {
         assert_eq!(h.err("settings.update", bad).await.1, "invalid_input");
     }
-    h.ok("settings.update", json!({"values": {"terminal.scrollback": null}})).await;
+    h.ok(
+        "settings.update",
+        json!({"values": {"terminal.scrollback": null}}),
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -4779,8 +4851,14 @@ async fn folders_are_where_the_host_keeps_things() {
     assert_eq!(res.status_code(), StatusCode::OK, "{}", res.text());
     let f: Value = res.json();
     assert_eq!(f["data"], h.state.data_dir.to_string_lossy().as_ref());
-    assert_eq!(f["worktrees"], h.state.worktrees_dir.to_string_lossy().as_ref());
-    assert_eq!(f["repositories"], h.state.repos_dir.to_string_lossy().as_ref());
+    assert_eq!(
+        f["worktrees"],
+        h.state.worktrees_dir.to_string_lossy().as_ref()
+    );
+    assert_eq!(
+        f["repositories"],
+        h.state.repos_dir.to_string_lossy().as_ref()
+    );
 }
 
 #[tokio::test]
@@ -4810,10 +4888,16 @@ async fn prompt_settings_keep_the_users_words() {
         assert_eq!(h.err("settings.update", bad).await.1, "invalid_input");
     }
     let cleared = h
-        .ok("settings.update", json!({"values": {"prompts.pull_request": null}}))
+        .ok(
+            "settings.update",
+            json!({"values": {"prompts.pull_request": null}}),
+        )
         .await;
     assert_eq!(cleared["values"]["prompts.pull_request"], Value::Null);
-    assert_eq!(cleared["values"]["prompts.branch_name"], "Start with the ticket number.");
+    assert_eq!(
+        cleared["values"]["prompts.branch_name"],
+        "Start with the ticket number."
+    );
 }
 
 #[tokio::test]
@@ -4897,16 +4981,24 @@ async fn repository_scripts_run_around_a_worktrees_life() {
         json!({"workspace_id": wid, "values": {"env": {"A": 1}}}),
         json!({"workspace_id": wid, "values": {"scripts.setup": "x".repeat(crate::repository_settings::MAX_SCRIPT + 1)}}),
     ] {
-        assert_eq!(h.err("repository.settings.update", bad).await.1, "invalid_input");
+        assert_eq!(
+            h.err("repository.settings.update", bad).await.1,
+            "invalid_input"
+        );
     }
     assert_eq!(
-        h.err("repository.settings.update", json!({"workspace_id": wid, "values": {}, "x": 1}))
-            .await
-            .1,
+        h.err(
+            "repository.settings.update",
+            json!({"workspace_id": wid, "values": {}, "x": 1})
+        )
+        .await
+        .1,
         "invalid_request"
     );
     assert_eq!(
-        h.err("repository.settings.get", json!({"workspace_id": "nope"})).await.1,
+        h.err("repository.settings.get", json!({"workspace_id": "nope"}))
+            .await
+            .1,
         "not_found"
     );
 
@@ -4926,8 +5018,14 @@ async fn repository_scripts_run_around_a_worktrees_life() {
             }}),
         )
         .await;
-    assert_eq!(set["values"]["scripts.setup"], "echo \"$API_URL\" > setup-ran");
-    assert_eq!(set["values"]["env"], json!({"API_URL": "http://localhost:4000"}));
+    assert_eq!(
+        set["values"]["scripts.setup"],
+        "echo \"$API_URL\" > setup-ran"
+    );
+    assert_eq!(
+        set["values"]["env"],
+        json!({"API_URL": "http://localhost:4000"})
+    );
 
     // The setup script starts in a terminal of the new worktree, without
     // holding up the reply.
@@ -4935,7 +5033,10 @@ async fn repository_scripts_run_around_a_worktrees_life() {
         .ok("workspace.create_worktree", json!({"workspace_id": wid}))
         .await;
     let wt_id = wt["workspace_id"].as_str().unwrap().to_string();
-    let wt_path = crate::workspace::resolve(&h.state.db.conn, &wt_id).await.unwrap().path;
+    let wt_path = crate::workspace::resolve(&h.state.db.conn, &wt_id)
+        .await
+        .unwrap()
+        .path;
     let wt_path = std::path::Path::new(&wt_path);
     assert!(wt_path.join("keys.local").exists() && !wt_path.join(".env").exists());
     // The setup script sees the repository's variables.
@@ -4949,11 +5050,13 @@ async fn repository_scripts_run_around_a_worktrees_life() {
     }
     assert_eq!(ran, "http://localhost:4000\n");
     let list = h.ok("terminal.list", json!({})).await;
-    assert!(list
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|t| t["title"] == "Setup" && t["workspace_id"] == wt_id.as_str()), "{list}");
+    assert!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["title"] == "Setup" && t["workspace_id"] == wt_id.as_str()),
+        "{list}"
+    );
     // A worktree reads and changes its repository's.
     let through_worktree = h
         .ok("repository.settings.get", json!({"workspace_id": wt_id}))
@@ -4974,12 +5077,23 @@ async fn repository_scripts_run_around_a_worktrees_life() {
     };
     let run = |script: &str| json!({"workspace_id": wt_id, "script": script});
     let (_, code, details) = h.err_details("workspace.run_script", run("run")).await;
-    assert_eq!((code.as_str(), details), ("script_not_set", Some(json!({"script": "run"}))));
     assert_eq!(
-        h.err("workspace.run_script", json!({"workspace_id": wid, "script": "setup"})).await.1,
+        (code.as_str(), details),
+        ("script_not_set", Some(json!({"script": "run"})))
+    );
+    assert_eq!(
+        h.err(
+            "workspace.run_script",
+            json!({"workspace_id": wid, "script": "setup"})
+        )
+        .await
+        .1,
         "root_workspace"
     );
-    assert_eq!(h.err("workspace.run_script", run("deploy")).await.1, "invalid_request");
+    assert_eq!(
+        h.err("workspace.run_script", run("deploy")).await.1,
+        "invalid_request"
+    );
     h.ok(
         "repository.settings.update",
         json!({"workspace_id": wid, "values": {"scripts.run": "echo \"$ZWIIM_PORT\" > run-port; sleep 30"}}),
@@ -5010,7 +5124,11 @@ async fn repository_scripts_run_around_a_worktrees_life() {
             .collect::<Vec<_>>()
     };
     assert_eq!(titled("Run"), vec![again["terminal_id"].clone()], "{list}");
-    assert_eq!(titled("Setup"), vec![setup["terminal_id"].clone()], "{list}");
+    assert_eq!(
+        titled("Setup"),
+        vec![setup["terminal_id"].clone()],
+        "{list}"
+    );
 
     // Its previews: the repository's URLs, with the worktree's ports.
     h.ok(
@@ -5020,16 +5138,22 @@ async fn repository_scripts_run_around_a_worktrees_life() {
     .await;
     let app = port.trim().parse::<u16>().unwrap() + 1;
     assert_eq!(
-        h.ok("workspace.previews", json!({"workspace_id": wt_id})).await,
+        h.ok("workspace.previews", json!({"workspace_id": wt_id}))
+            .await,
         json!({"previews": [{"name": "App", "url": format!("http://localhost:{app}")}]})
     );
     assert_eq!(
-        h.err("workspace.previews", json!({"workspace_id": wid})).await.1,
+        h.err("workspace.previews", json!({"workspace_id": wid}))
+            .await
+            .1,
         "root_workspace"
     );
 
     let removed = h
-        .ok("workspace.remove_worktree", json!({"workspace_id": wt_id, "force": true}))
+        .ok(
+            "workspace.remove_worktree",
+            json!({"workspace_id": wt_id, "force": true}),
+        )
         .await;
     assert_eq!(
         removed["archive_script"],
@@ -5067,7 +5191,10 @@ async fn agent_list_shows_the_host_defaults_it_offers() {
     };
     let before = claude(h.ok("agent.list", json!({})).await);
     assert_eq!(before["default"], false);
-    assert_eq!(before["defaults"], json!({"model": null, "effort": null, "mode": null}));
+    assert_eq!(
+        before["defaults"],
+        json!({"model": null, "effort": null, "mode": null})
+    );
 
     h.ok(
         "settings.update",
@@ -5079,26 +5206,47 @@ async fn agent_list_shows_the_host_defaults_it_offers() {
     )
     .await;
     let listed = h.ok("agent.list", json!({})).await;
-    let codex = listed.as_array().unwrap().iter().find(|a| a["agent"] == "codex").unwrap();
+    let codex = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["agent"] == "codex")
+        .unwrap();
     assert_eq!(codex["default"], false);
-    assert_eq!(codex["defaults"]["mode"], Value::Null, "no catalog, nothing offered");
+    assert_eq!(
+        codex["defaults"]["mode"],
+        Value::Null,
+        "no catalog, nothing offered"
+    );
     let now = claude(listed);
     assert_eq!(now["default"], true);
-    assert_eq!(now["defaults"], json!({"model": null, "effort": "low", "mode": "plan"}));
+    assert_eq!(
+        now["defaults"],
+        json!({"model": null, "effort": "low", "mode": "plan"})
+    );
     assert_eq!(now["options"]["mode"]["current"], "plan");
     assert_eq!(now["options"]["effort"]["current"], "low");
     assert_eq!(now["effort_by_model"]["opus[1m]"]["current"], "low");
 
     // Haiku offers no effort: the default effort does not apply on it, and a
     // model the agent does not offer is ignored.
-    h.ok("settings.update", json!({"values": {"defaults.claude_code.model": "haiku"}}))
-        .await;
+    h.ok(
+        "settings.update",
+        json!({"values": {"defaults.claude_code.model": "haiku"}}),
+    )
+    .await;
     let on_haiku = claude(h.ok("agent.list", json!({})).await);
-    assert_eq!(on_haiku["defaults"], json!({"model": "haiku", "effort": null, "mode": "plan"}));
+    assert_eq!(
+        on_haiku["defaults"],
+        json!({"model": "haiku", "effort": null, "mode": "plan"})
+    );
     assert_eq!(on_haiku["options"]["model"]["current"], "haiku");
     assert_eq!(on_haiku["options"]["effort"], Value::Null);
-    h.ok("settings.update", json!({"values": {"defaults.claude_code.model": "sonnet"}}))
-        .await;
+    h.ok(
+        "settings.update",
+        json!({"values": {"defaults.claude_code.model": "sonnet"}}),
+    )
+    .await;
     let dropped = claude(h.ok("agent.list", json!({})).await);
     assert_eq!(dropped["defaults"]["model"], Value::Null);
     assert_eq!(dropped["options"]["model"]["current"], "opus[1m]");
@@ -6067,7 +6215,10 @@ async fn host_instructions_round_trip() {
             json!({"scope": "workspace", "workspace_id": h.wt_workspace_id, "general": "x"}),
         )
         .await;
-    assert_eq!((status, code.as_str()), (StatusCode::NOT_FOUND, "not_found"));
+    assert_eq!(
+        (status, code.as_str()),
+        (StatusCode::NOT_FOUND, "not_found")
+    );
     let (status, code) = h
         .err(
             "host.instructions.set",
@@ -6145,21 +6296,30 @@ async fn attachments_upload_into_the_workspace_and_download_back() {
     );
 
     assert_eq!(
-        h.err("attachments.upload", json!({"workspace_id": wid, "name": "a.txt", "data": "%%%"}))
-            .await
-            .1,
+        h.err(
+            "attachments.upload",
+            json!({"workspace_id": wid, "name": "a.txt", "data": "%%%"})
+        )
+        .await
+        .1,
         "invalid_request"
     );
     assert_eq!(
-        h.err("attachments.upload", json!({"workspace_id": wid, "name": "..", "data": b64(b"x")}))
-            .await
-            .1,
+        h.err(
+            "attachments.upload",
+            json!({"workspace_id": wid, "name": "..", "data": b64(b"x")})
+        )
+        .await
+        .1,
         "invalid_name"
     );
     assert_eq!(
-        h.err("attachments.upload", json!({"workspace_id": "nope", "name": "a", "data": b64(b"x")}))
-            .await
-            .1,
+        h.err(
+            "attachments.upload",
+            json!({"workspace_id": "nope", "name": "a", "data": b64(b"x")})
+        )
+        .await
+        .1,
         "not_found"
     );
 }
@@ -6187,11 +6347,18 @@ async fn attachments_take_ten_mebibytes_and_refuse_more() {
     );
 
     // Downloads share the cap.
-    std::fs::write(std::path::Path::new(&h.wt).join("huge.bin"), vec![0u8; max + 1]).unwrap();
+    std::fs::write(
+        std::path::Path::new(&h.wt).join("huge.bin"),
+        vec![0u8; max + 1],
+    )
+    .unwrap();
     assert_eq!(
-        h.err("files.download", json!({"workspace_id": wid, "path": "huge.bin"}))
-            .await
-            .1,
+        h.err(
+            "files.download",
+            json!({"workspace_id": wid, "path": "huge.bin"})
+        )
+        .await
+        .1,
         "file_too_large"
     );
 }
@@ -6205,7 +6372,13 @@ async fn files_download_stays_inside_the_workspace() {
     #[cfg(unix)]
     std::os::unix::fs::symlink(&outside, std::path::Path::new(&h.wt).join("link.txt")).unwrap();
 
-    for path in ["../secret.txt", outside.to_str().unwrap(), "link.txt", "missing.txt", ""] {
+    for path in [
+        "../secret.txt",
+        outside.to_str().unwrap(),
+        "link.txt",
+        "missing.txt",
+        "",
+    ] {
         let (status, _) = h
             .err("files.download", json!({"workspace_id": wid, "path": path}))
             .await;
@@ -6239,7 +6412,11 @@ async fn files_download_guard_keeps_a_link_away_from_hidden_files() {
         h.ok("files.download", guarded(path)).await;
     }
     // Every other caller keeps following links.
-    h.ok("files.download", json!({"workspace_id": wid, "path": "env.txt"})).await;
+    h.ok(
+        "files.download",
+        json!({"workspace_id": wid, "path": "env.txt"}),
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -6253,33 +6430,55 @@ async fn files_download_reads_ranges_past_the_whole_file_cap() {
     let size = bytes.len() as u64;
     let range = |offset: Option<u64>, length: Option<u64>| {
         let mut body = json!({"workspace_id": wid, "path": "big.bin"});
-        if let Some(o) = offset { body["offset"] = json!(o); }
-        if let Some(l) = length { body["length"] = json!(l); }
+        if let Some(o) = offset {
+            body["offset"] = json!(o);
+        }
+        if let Some(l) = length {
+            body["length"] = json!(l);
+        }
         body
     };
 
     // The whole file is still refused past 10 MiB.
-    assert_eq!(h.err("files.download", range(None, None)).await.1, "file_too_large");
+    assert_eq!(
+        h.err("files.download", range(None, None)).await.1,
+        "file_too_large"
+    );
 
     // A small range, from the start.
     let r = h.ok("files.download", range(Some(0), Some(4))).await;
-    assert_eq!(r, json!({"name": "big.bin", "mime_type": "application/octet-stream", "size": size, "offset": 0, "data": b64(&bytes[..4])}));
+    assert_eq!(
+        r,
+        json!({"name": "big.bin", "mime_type": "application/octet-stream", "size": size, "offset": 0, "data": b64(&bytes[..4])})
+    );
 
     // `length` alone starts at 0.
     let r = h.ok("files.download", range(None, Some(3))).await;
-    assert_eq!((r["offset"].clone(), r["data"].clone()), (json!(0), json!(b64(&bytes[..3]))));
+    assert_eq!(
+        (r["offset"].clone(), r["data"].clone()),
+        (json!(0), json!(b64(&bytes[..3])))
+    );
 
     // No length, or a huge one, is clamped to 8 MiB.
     for length in [None, Some(u64::MAX)] {
         let r = h.ok("files.download", range(Some(3), length)).await;
-        assert_eq!(r["data"], json!(b64(&bytes[3..3 + range_max])), "{length:?}");
+        assert_eq!(
+            r["data"],
+            json!(b64(&bytes[3..3 + range_max])),
+            "{length:?}"
+        );
     }
 
     // The tail, the exact end, and past the end.
-    let r = h.ok("files.download", range(Some(size - 2), Some(10))).await;
+    let r = h
+        .ok("files.download", range(Some(size - 2), Some(10)))
+        .await;
     assert_eq!(r["data"], json!(b64(&bytes[bytes.len() - 2..])));
     let r = h.ok("files.download", range(Some(size), Some(10))).await;
-    assert_eq!((r["data"].clone(), r["size"].clone()), (json!(""), json!(size)));
+    assert_eq!(
+        (r["data"].clone(), r["size"].clone()),
+        (json!(""), json!(size))
+    );
     assert_eq!(
         h.err("files.download", range(Some(size + 1), None)).await,
         (StatusCode::BAD_REQUEST, "invalid_input".into())
@@ -6294,9 +6493,19 @@ async fn ranged_reads_keep_the_workspace_jail() {
     std::fs::write(&outside, "secret").unwrap();
     #[cfg(unix)]
     std::os::unix::fs::symlink(&outside, std::path::Path::new(&h.wt).join("link.txt")).unwrap();
-    for path in ["../secret.txt", outside.to_str().unwrap(), "link.txt", "missing.txt", "", "."] {
+    for path in [
+        "../secret.txt",
+        outside.to_str().unwrap(),
+        "link.txt",
+        "missing.txt",
+        "",
+        ".",
+    ] {
         let (status, _) = h
-            .err("files.download", json!({"workspace_id": wid, "path": path, "offset": 0, "length": 4}))
+            .err(
+                "files.download",
+                json!({"workspace_id": wid, "path": path, "offset": 0, "length": 4}),
+            )
             .await;
         assert!(status.is_client_error(), "{path}: {status}");
     }
@@ -6306,7 +6515,9 @@ async fn ranged_reads_keep_the_workspace_jail() {
 async fn the_host_offers_file_ranges() {
     let h = host(false).await;
     let hello = h.ok("host.hello", json!({})).await;
-    assert!(hello["capabilities"].as_array().is_some_and(|c| c.iter().any(|v| v == "file_ranges")));
+    assert!(hello["capabilities"]
+        .as_array()
+        .is_some_and(|c| c.iter().any(|v| v == "file_ranges")));
 }
 
 #[tokio::test]
@@ -6336,7 +6547,10 @@ async fn attachment_blocks_reach_the_agent_as_one_note() {
     let mut ids = Vec::new();
     for name in ["a.pdf", "b.xlsx"] {
         let up = h
-            .ok("attachments.upload", json!({"workspace_id": wid, "name": name, "data": b64(b"x")}))
+            .ok(
+                "attachments.upload",
+                json!({"workspace_id": wid, "name": name, "data": b64(b"x")}),
+            )
             .await;
         ids.push(up["attachment_id"].as_str().unwrap().to_string());
     }
@@ -6389,13 +6603,18 @@ async fn an_attachment_alone_is_a_prompt() {
     let Some(ConnectionCommand::Prompt { blocks, .. }) = rx.recv().await else {
         panic!("no prompt");
     };
-    assert!(matches!(&blocks[..], [PromptInputBlock::Text { text }] if text.starts_with(crate::attachments::NOTE_OPEN)));
+    assert!(
+        matches!(&blocks[..], [PromptInputBlock::Text { text }] if text.starts_with(crate::attachments::NOTE_OPEN))
+    );
 }
 
 /// The follow-ups queued on session `sid`, as `session.list` shows them.
 async fn follow_ups_of(h: &Host, sid: &str) -> Value {
     let list = h
-        .ok("session.list", json!({"workspace_id": h.wt_workspace_id.clone()}))
+        .ok(
+            "session.list",
+            json!({"workspace_id": h.wt_workspace_id.clone()}),
+        )
         .await;
     let row = list
         .as_array()
@@ -6432,9 +6651,12 @@ async fn follow_up_goes_out_at_once_to_an_idle_session() {
     assert_eq!(follow_ups_of(&h, &sid).await, json!([]));
 
     assert_eq!(
-        h.err("session.follow_up", json!({"session_id": sid, "blocks": []}))
-            .await
-            .1,
+        h.err(
+            "session.follow_up",
+            json!({"session_id": sid, "blocks": []})
+        )
+        .await
+        .1,
         "invalid_input"
     );
     assert_eq!(
@@ -6461,13 +6683,21 @@ async fn follow_ups_queue_behind_a_running_turn_and_can_be_changed() {
             blocks.push(json!({"type": "image", "data": "AAAA", "mime_type": "image/png"}));
         }
         let queued = h
-            .ok("session.follow_up", json!({"session_id": sid, "blocks": blocks}))
+            .ok(
+                "session.follow_up",
+                json!({"session_id": sid, "blocks": blocks}),
+            )
             .await;
         assert_eq!(queued, json!({"outcome": "queued"}));
     }
     assert!(rx.try_recv().is_err(), "nothing reaches the busy agent");
     let queue = follow_ups_of(&h, &sid).await;
-    let texts: Vec<_> = queue.as_array().unwrap().iter().map(|f| f["text"].clone()).collect();
+    let texts: Vec<_> = queue
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["text"].clone())
+        .collect();
     assert_eq!(texts, [json!("first"), json!("second"), json!("third")]);
     assert_eq!(queue[1]["attachments"], 1);
     let id = |i: usize| queue[i]["follow_up_id"].as_str().unwrap().to_string();
@@ -6496,34 +6726,54 @@ async fn follow_ups_queue_behind_a_running_turn_and_can_be_changed() {
         .1,
         "not_found"
     );
-    h.ok("session.follow_up_remove", json!({"session_id": sid, "follow_up_id": id(2)}))
-        .await;
+    h.ok(
+        "session.follow_up_remove",
+        json!({"session_id": sid, "follow_up_id": id(2)}),
+    )
+    .await;
     // Already gone is fine: another device may have sent or removed it.
-    h.ok("session.follow_up_remove", json!({"session_id": sid, "follow_up_id": id(2)}))
-        .await;
+    h.ok(
+        "session.follow_up_remove",
+        json!({"session_id": sid, "follow_up_id": id(2)}),
+    )
+    .await;
 
     // Sending one while the turn runs puts it first.
     let moved = h
-        .ok("session.follow_up_send", json!({"session_id": sid, "follow_up_id": id(1)}))
+        .ok(
+            "session.follow_up_send",
+            json!({"session_id": sid, "follow_up_id": id(1)}),
+        )
         .await;
     assert_eq!(moved, json!({"outcome": "queued"}));
     let queue = follow_ups_of(&h, &sid).await;
-    let texts: Vec<_> = queue.as_array().unwrap().iter().map(|f| f["text"].clone()).collect();
+    let texts: Vec<_> = queue
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["text"].clone())
+        .collect();
     assert_eq!(texts, [json!("second"), json!("first, edited")]);
 
     // Idle, it goes out now.
     st.write().await.turn_in_flight = false;
     let sent = h
-        .ok("session.follow_up_send", json!({"session_id": sid, "follow_up_id": id(0)}))
+        .ok(
+            "session.follow_up_send",
+            json!({"session_id": sid, "follow_up_id": id(0)}),
+        )
         .await;
     assert_eq!(sent, json!({"outcome": "sent"}));
     assert_eq!(prompt_text(rx.recv().await), "first, edited");
     let queue = follow_ups_of(&h, &sid).await;
     assert_eq!(queue.as_array().unwrap().len(), 1);
     assert_eq!(
-        h.err("session.follow_up_send", json!({"session_id": sid, "follow_up_id": id(0)}))
-            .await
-            .1,
+        h.err(
+            "session.follow_up_send",
+            json!({"session_id": sid, "follow_up_id": id(0)})
+        )
+        .await
+        .1,
         "not_found"
     );
 }
@@ -6583,13 +6833,19 @@ async fn a_steer_the_agent_cannot_take_goes_through_the_queue() {
     let steer = |text: &str| json!({"session_id": sid, "blocks": [{"type": "text", "text": text}], "steer": true});
 
     // Idle: there is no turn to steer, so it starts one.
-    assert_eq!(h.ok("session.follow_up", steer("now")).await, json!({"outcome": "sent"}));
+    assert_eq!(
+        h.ok("session.follow_up", steer("now")).await,
+        json!({"outcome": "sent"})
+    );
     assert_eq!(prompt_text(rx.recv().await), "now");
 
     // Running, on an agent that cannot take messages mid-turn: it waits.
     let st = h.state.connection_manager.get_state(CONN).await.unwrap();
     st.write().await.turn_in_flight = true;
-    assert_eq!(h.ok("session.follow_up", steer("later")).await, json!({"outcome": "queued"}));
+    assert_eq!(
+        h.ok("session.follow_up", steer("later")).await,
+        json!({"outcome": "queued"})
+    );
     assert!(rx.try_recv().is_err());
     assert_eq!(follow_ups_of(&h, &sid).await[0]["text"], "later");
 }
@@ -6861,7 +7117,10 @@ async fn a_page_dialog_reaches_clients_and_the_first_answer_wins() {
 
     let answer = json!({"request_id": request_id, "answer": {"kind": "dialog", "accept": false}});
     assert_eq!(h.ok("browser.ui.answer", answer.clone()).await, json!({}));
-    assert_eq!(fake.calls("Page.handleJavaScriptDialog"), vec![json!({"accept": false})]);
+    assert_eq!(
+        fake.calls("Page.handleJavaScriptDialog"),
+        vec![json!({"accept": false})]
+    );
     assert_eq!(
         browser_frame(&mut ws, "browser.ui.done", |_| true).await,
         json!({"type": "browser.ui.done", "request_id": request_id, "tab_id": tab_id})
@@ -6919,11 +7178,26 @@ async fn a_file_chooser_gets_files_of_its_sessions_workspace_only() {
                {"kind": "file_chooser", "accept": true, "workspace_id": workspace_id, "paths": [path]}})
     };
     for (body, refused) in [
-        (answer(&h.workspace_id, "photo.png"), (StatusCode::FORBIDDEN, "permission_denied")),
-        (answer(&h.wt_workspace_id, "../photo.png"), (StatusCode::BAD_REQUEST, "invalid_input")),
-        (answer(&h.wt_workspace_id, "missing.png"), (StatusCode::NOT_FOUND, "not_found")),
-        (answer(&h.wt_workspace_id, "hosts"), (StatusCode::NOT_FOUND, "not_found")),
-        (answer(&h.wt_workspace_id, "notes.txt"), (StatusCode::NOT_FOUND, "not_found")),
+        (
+            answer(&h.workspace_id, "photo.png"),
+            (StatusCode::FORBIDDEN, "permission_denied"),
+        ),
+        (
+            answer(&h.wt_workspace_id, "../photo.png"),
+            (StatusCode::BAD_REQUEST, "invalid_input"),
+        ),
+        (
+            answer(&h.wt_workspace_id, "missing.png"),
+            (StatusCode::NOT_FOUND, "not_found"),
+        ),
+        (
+            answer(&h.wt_workspace_id, "hosts"),
+            (StatusCode::NOT_FOUND, "not_found"),
+        ),
+        (
+            answer(&h.wt_workspace_id, "notes.txt"),
+            (StatusCode::NOT_FOUND, "not_found"),
+        ),
         (
             json!({"request_id": request_id, "answer": {"kind": "file_chooser", "accept": true,
                    "workspace_id": h.wt_workspace_id, "paths": ["photo.png"], "files": ["/etc/hosts"]}}),
@@ -6938,7 +7212,8 @@ async fn a_file_chooser_gets_files_of_its_sessions_workspace_only() {
     }
     assert!(fake.calls("DOM.setFileInputFiles").is_empty());
 
-    h.ok("browser.ui.answer", answer(&h.wt_workspace_id, "photo.png")).await;
+    h.ok("browser.ui.answer", answer(&h.wt_workspace_id, "photo.png"))
+        .await;
     let photo = wt.join("photo.png").canonicalize().unwrap();
     assert_eq!(
         fake.calls("DOM.setFileInputFiles"),
@@ -7827,4 +8102,526 @@ async fn the_stream_socket_takes_input() {
         .await
         .unwrap();
     assert_eq!(err["error"]["code"], "invalid_viewport");
+}
+
+// ─── playbooks (automation engine, revision 40) ──────────────────────────
+
+/// Seed one playbook the store's shape and enable the Labs switch.
+async fn seed_playbook(h: &Host) -> i32 {
+    let store = crate::automation::PlaybookStore::new(h.state.db.conn.clone());
+    let pb = store.create("Apply", "goal: apply").await.unwrap();
+    h.call(
+        "settings.update",
+        json!({ "values": { "playbooks.enabled": true } }),
+    )
+    .await;
+    pb.id
+}
+
+#[tokio::test]
+async fn playbook_operations_are_off_until_the_labs_switch() {
+    let h = host(false).await;
+    let store = crate::automation::PlaybookStore::new(h.state.db.conn.clone());
+    let pb = store.create("Apply", "goal").await.unwrap();
+
+    let (status, body) = h.call("playbook.list", json!({})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"]["code"], "playbooks_disabled");
+
+    let (status, body) = h.call("run.start", json!({ "playbook_id": pb.id })).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"]["code"], "playbooks_disabled");
+}
+
+#[tokio::test]
+async fn a_playbook_lists_reads_and_saves_with_a_new_version() {
+    let h = host(false).await;
+    let id = seed_playbook(&h).await;
+
+    let (status, body) = h.call("playbook.list", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body[0]["name"], "Apply");
+    assert_eq!(body[0]["version"], 1);
+    assert!(body[0]["playbook_id"].is_number());
+
+    let (status, body) = h.call("playbook.get", json!({ "playbook_id": id })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["source"], "goal: apply");
+
+    // A valid format 1 playbook saves and bumps the version.
+    let source = crate::automation::playbook_format::EXAMPLE_PLAYBOOK;
+    let (status, body) = h
+        .call(
+            "playbook.save",
+            json!({ "playbook_id": id, "source": source }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["playbook"]["version"], 2);
+    let (_, body) = h.call("playbook.get", json!({ "playbook_id": id })).await;
+    assert_eq!(body["source"], source);
+}
+
+#[tokio::test]
+async fn a_run_starts_from_the_mac_only_and_answers_run_active() {
+    let h = host(false).await;
+    let id = seed_playbook(&h).await;
+
+    // A client cannot ask for a Host-owned trigger: only `mac` is accepted,
+    // and the phone/schedule forms are refused as invalid input.
+    for trigger in ["phone", "schedule", "agent"] {
+        let (status, body) = h
+            .call(
+                "run.start",
+                json!({ "playbook_id": id, "trigger": trigger }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{trigger}");
+        assert_eq!(body["error"]["code"], "invalid_input", "{trigger}");
+    }
+
+    let (status, body) = h.call("run.start", json!({ "playbook_id": id })).await;
+    assert_eq!(status, StatusCode::OK);
+    let run_id = body["run_id"].as_i64().unwrap();
+
+    // A second start while one is active names the active run.
+    let (status, body) = h.call("run.start", json!({ "playbook_id": id })).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "run_active");
+    assert_eq!(body["error"]["details"]["run_id"], run_id);
+
+    let (status, body) = h.call("run.get", json!({ "run_id": run_id })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "discovering");
+    assert_eq!(body["run_id"], run_id);
+}
+
+#[tokio::test]
+async fn a_run_pages_its_items_and_pauses_resumes_and_stops() {
+    let h = host(false).await;
+    let id = seed_playbook(&h).await;
+    let (_, body) = h.call("run.start", json!({ "playbook_id": id })).await;
+    let run_id = body["run_id"].as_i64().unwrap();
+
+    // Seed three items directly; the page caps at `limit`.
+    use crate::automation::entities::playbook_item;
+    use sea_orm::{EntityTrait, Set};
+    for n in 1..=3 {
+        let now = chrono::Utc::now();
+        playbook_item::Entity::insert(playbook_item::ActiveModel {
+            run_id: Set(run_id as i32),
+            playbook_id: Set(id),
+            site: Set("indeed.com".into()),
+            account: Set("main".into()),
+            item_key: Set(format!("job-{n}")),
+            status: Set("queued".into()),
+            epoch: Set(0),
+            created_at: Set(now),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .exec(&h.state.db.conn)
+        .await
+        .unwrap();
+    }
+    let (status, page) = h
+        .call("run.items", json!({ "run_id": run_id, "limit": 2 }))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["items"].as_array().unwrap().len(), 2);
+    let cursor = page["next_cursor"].as_i64().unwrap();
+    let (_, page2) = h
+        .call(
+            "run.items",
+            json!({ "run_id": run_id, "limit": 2, "cursor": cursor }),
+        )
+        .await;
+    assert_eq!(page2["items"].as_array().unwrap().len(), 1);
+    assert!(page2["next_cursor"].is_null());
+
+    // Pause is idempotent; resume then stop.
+    let (status, body) = h.call("run.pause", json!({ "run_id": run_id })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "paused");
+    assert_eq!(body["pause_reason"], "person");
+    let (status, _) = h.call("run.pause", json!({ "run_id": run_id })).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = h.call("run.resume", json!({ "run_id": run_id })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "running");
+    let (status, body) = h.call("run.resume", json!({ "run_id": run_id })).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "run_not_paused");
+    let (status, body) = h.call("run.stop", json!({ "run_id": run_id })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "stopped");
+}
+
+#[tokio::test]
+async fn a_site_pauses_resumes_and_records_risk() {
+    let h = host(false).await;
+    seed_playbook(&h).await;
+
+    let (status, _) = h.call("site.resume", json!({ "site": "indeed.com" })).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    let (status, body) = h
+        .call(
+            "site.pause",
+            json!({ "site": "indeed.com", "cause": "captcha" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["paused"], true);
+
+    let (_, list) = h.call("site.list", json!({})).await;
+    let site = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["site"] == "indeed.com")
+        .expect("site listed");
+    assert_eq!(site["paused_cause"], "captcha");
+
+    let (status, _) = h.call("site.resume", json!({ "site": "indeed.com" })).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = h.call("site.resume", json!({ "site": "indeed.com" })).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    let (status, _) = h
+        .call("site.risk_accept", json!({ "site": "indeed.com" }))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, list) = h.call("site.list", json!({})).await;
+    let site = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["site"] == "indeed.com")
+        .unwrap();
+    assert_eq!(site["risk_accepted"], true);
+}
+
+#[tokio::test]
+async fn saving_an_invalid_playbook_is_refused_with_line_anchored_errors() {
+    let h = host(false).await;
+    let id = seed_playbook(&h).await;
+    let (status, body) = h
+        .call(
+            "playbook.save",
+            json!({ "playbook_id": id, "source": "format: 1\nname: \n" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["error"]["code"], "playbook_invalid");
+    let details = body["error"]["details"].as_array().expect("details");
+    assert!(!details.is_empty());
+    for e in details {
+        assert!(e["line"].as_u64().unwrap() >= 1);
+        assert!(!e["field"].as_str().unwrap().is_empty());
+        assert!(!e["fix"].as_str().unwrap().is_empty());
+    }
+    // The text was not saved.
+    let (_, body) = h.call("playbook.get", json!({ "playbook_id": id })).await;
+    assert_eq!(body["source"], "goal: apply");
+}
+
+#[tokio::test]
+async fn try_on_one_item_starts_a_one_item_run() {
+    let h = host(false).await;
+    let id = seed_playbook(&h).await;
+    let (status, body) = h.call("run.try", json!({ "playbook_id": id })).await;
+    assert_eq!(status, StatusCode::OK);
+    let run_id = body["run_id"].as_i64().unwrap();
+    let (_, run) = h.call("run.get", json!({ "run_id": run_id })).await;
+    // Try is a normal run; the item cap lives at dispatch, not the run row.
+    assert_eq!(run["playbook_id"], id);
+}
+
+#[tokio::test]
+async fn a_paired_device_cannot_start_a_run() {
+    // The trigger comes from the authenticated principal, not the body: a
+    // device is refused in 1a-i (spec 6.1, 19.3).
+    let h = host(false).await;
+    let id = seed_playbook(&h).await;
+    let device = bearer_device(&h, "dev-run").await;
+    let (status, body) = h
+        .call_as(&device, "run.start", json!({ "playbook_id": id }))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "run_start_requires_mac");
+    let (status, body) = h
+        .call_as(&device, "run.try", json!({ "playbook_id": id }))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "run_start_requires_mac");
+}
+
+#[tokio::test]
+async fn a_second_approval_answer_is_approval_not_pending() {
+    let h = host(false).await;
+    let id = seed_playbook(&h).await;
+    let (_, body) = h.call("run.start", json!({ "playbook_id": id })).await;
+    let run_id = body["run_id"].as_i64().unwrap();
+    // Seed an item and a pending approval the way the runner does.
+    use crate::automation::declaration::{
+        ControlKind, Declaration, DeclaredField, DeclaredValue, Target,
+    };
+    use crate::automation::entities::{playbook_approval, playbook_item};
+    use sea_orm::{EntityTrait, Set};
+    let now = chrono::Utc::now();
+    let item = playbook_item::Entity::insert(playbook_item::ActiveModel {
+        run_id: Set(run_id as i32),
+        playbook_id: Set(id),
+        site: Set("indeed.com".into()),
+        account: Set("main".into()),
+        item_key: Set("job-1".into()),
+        status: Set("waiting_approval".into()),
+        epoch: Set(1),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    })
+    .exec_with_returning(&h.state.db.conn)
+    .await
+    .unwrap();
+    let decl = Declaration {
+        kind: crate::automation::ActionKind::SubmitApplication,
+        summary: "Apply".into(),
+        fields: vec![DeclaredField {
+            target: Target::new("textbox", "Name"),
+            control: ControlKind::Text,
+            value: DeclaredValue::Text {
+                text: "Asha".into(),
+            },
+        }],
+        submit_target: Target::new("button", "Submit"),
+    };
+    let a = crate::automation::approvals::create(&h.state.db.conn, run_id as i32, item.id, &decl)
+        .await
+        .unwrap();
+
+    let (status, body) = h.call("run.approve", json!({ "approval_id": a.id })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "approved");
+    // The item continued to `working` (the Host click comes next).
+    let row = playbook_item::Entity::find_by_id(item.id)
+        .one(&h.state.db.conn)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.status, "working");
+
+    // The second answer loses.
+    let (status, body) = h.call("run.reject", json!({ "approval_id": a.id })).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "approval_not_pending");
+    assert_eq!(body["error"]["details"]["state"], "approved");
+    let _ = playbook_approval::Entity::find_by_id(a.id)
+        .one(&h.state.db.conn)
+        .await
+        .unwrap();
+}
+
+/// A run with one item parked on a pending approval, as the runner leaves it.
+async fn seed_parked_item(h: &Host) -> (i64, i32, i32) {
+    use crate::automation::declaration::{
+        ControlKind, Declaration, DeclaredField, DeclaredValue, Target,
+    };
+    use crate::automation::entities::playbook_item;
+    use sea_orm::{EntityTrait, Set};
+    let id = seed_playbook(h).await;
+    let (_, body) = h.call("run.start", json!({ "playbook_id": id })).await;
+    let run_id = body["run_id"].as_i64().unwrap();
+    let now = chrono::Utc::now();
+    let item = playbook_item::Entity::insert(playbook_item::ActiveModel {
+        run_id: Set(run_id as i32),
+        playbook_id: Set(id),
+        site: Set("indeed.com".into()),
+        account: Set("main".into()),
+        item_key: Set("job-1".into()),
+        status: Set("waiting_approval".into()),
+        epoch: Set(1),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    })
+    .exec_with_returning(&h.state.db.conn)
+    .await
+    .unwrap();
+    let decl = Declaration {
+        kind: crate::automation::ActionKind::SubmitApplication,
+        summary: "Apply".into(),
+        fields: vec![DeclaredField {
+            target: Target::new("textbox", "Name"),
+            control: ControlKind::Text,
+            value: DeclaredValue::Text {
+                text: "Asha".into(),
+            },
+        }],
+        submit_target: Target::new("button", "Submit"),
+    };
+    let a = crate::automation::approvals::create(&h.state.db.conn, run_id as i32, item.id, &decl)
+        .await
+        .unwrap();
+    (run_id, item.id, a.id)
+}
+
+async fn item_status(h: &Host, item_id: i32) -> String {
+    use crate::automation::entities::playbook_item;
+    use sea_orm::EntityTrait;
+    playbook_item::Entity::find_by_id(item_id)
+        .one(&h.state.db.conn)
+        .await
+        .unwrap()
+        .unwrap()
+        .status
+}
+
+async fn approval_state(h: &Host, approval_id: i32) -> String {
+    use crate::automation::entities::playbook_approval;
+    use sea_orm::EntityTrait;
+    playbook_approval::Entity::find_by_id(approval_id)
+        .one(&h.state.db.conn)
+        .await
+        .unwrap()
+        .unwrap()
+        .state
+}
+
+#[tokio::test]
+async fn an_approval_is_not_used_up_when_its_item_has_moved_on() {
+    // The answer and the item move commit together: an item no longer
+    // parked turns its approval `stopped`, and the item is untouched.
+    let h = host(false).await;
+    let (_, item_id, approval_id) = seed_parked_item(&h).await;
+    use crate::automation::entities::playbook_item;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    playbook_item::Entity::update_many()
+        .col_expr(
+            playbook_item::Column::Status,
+            sea_orm::sea_query::Expr::value("skipped"),
+        )
+        .filter(playbook_item::Column::Id.eq(item_id))
+        .exec(&h.state.db.conn)
+        .await
+        .unwrap();
+    let (status, body) = h.call("run.approve", json!({ "approval_id": approval_id })).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "approval_not_pending");
+    assert_eq!(body["error"]["details"]["state"], "stopped");
+    assert_eq!(approval_state(&h, approval_id).await, "stopped");
+    assert_eq!(item_status(&h, item_id).await, "skipped");
+}
+
+#[tokio::test]
+async fn an_approval_given_while_paused_acts_on_resume() {
+    // Spec 8.8.3: recorded while the person has the run paused, it moves
+    // the item only when the run resumes.
+    let h = host(false).await;
+    let (run_id, item_id, approval_id) = seed_parked_item(&h).await;
+    let (status, body) = h.call("run.pause", json!({ "run_id": run_id })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = h.call("run.approve", json!({ "approval_id": approval_id })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(approval_state(&h, approval_id).await, "approved");
+    assert_eq!(item_status(&h, item_id).await, "waiting_approval");
+    let (status, body) = h.call("run.resume", json!({ "run_id": run_id })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(item_status(&h, item_id).await, "working");
+}
+
+#[tokio::test]
+async fn answering_an_unknown_approval_is_not_found() {
+    let h = host(false).await;
+    seed_playbook(&h).await;
+    let (status, body) = h.call("run.approve", json!({ "approval_id": 9999 })).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+}
+
+#[tokio::test]
+async fn pause_and_stop_answer_with_the_run_when_playbooks_are_off() {
+    // Spec 10.12.2: turning the switch off never strands a run, so Pause and
+    // Stop work and report the run they changed.
+    let h = host(false).await;
+    let id = seed_playbook(&h).await;
+    let (_, body) = h.call("run.start", json!({ "playbook_id": id })).await;
+    let run_id = body["run_id"].as_i64().unwrap();
+    h.call(
+        "settings.update",
+        json!({ "values": { "playbooks.enabled": false } }),
+    )
+    .await;
+    let (status, body) = h.call("run.pause", json!({ "run_id": run_id })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "paused");
+    let (status, body) = h.call("run.stop", json!({ "run_id": run_id })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "stopped");
+}
+
+#[tokio::test]
+async fn an_edited_approval_binds_to_the_edited_text() {
+    // Spec 8.5.2-3: the person edits then sends; what goes out is the edited
+    // text, and the approval's hash is the edited content's.
+    let h = host(false).await;
+    let (_, item_id, approval_id) = seed_parked_item(&h).await;
+    let (status, body) = h
+        .call(
+            "run.approve",
+            json!({
+                "approval_id": approval_id,
+                "edits": [{ "role": "textbox", "name": "Name", "text": "Asha K" }]
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let approved = crate::automation::approvals::approved_declaration(&h.state.db.conn, item_id)
+        .await
+        .unwrap()
+        .expect("approved");
+    assert_eq!(
+        approved.fields[0].value,
+        crate::automation::declaration::DeclaredValue::Text {
+            text: "Asha K".into()
+        }
+    );
+    use crate::automation::entities::playbook_approval;
+    use sea_orm::EntityTrait;
+    let row = playbook_approval::Entity::find_by_id(approval_id)
+        .one(&h.state.db.conn)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.hash, crate::automation::approvals::binding_hash(&approved));
+}
+
+#[tokio::test]
+async fn an_edit_to_a_field_the_agent_did_not_declare_is_refused() {
+    let h = host(false).await;
+    let (_, item_id, approval_id) = seed_parked_item(&h).await;
+    let (status, body) = h
+        .call(
+            "run.approve",
+            json!({
+                "approval_id": approval_id,
+                "edits": [{ "role": "textbox", "name": "Salary", "text": "1" }]
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "invalid_input");
+    assert_eq!(approval_state(&h, approval_id).await, "pending");
+    assert_eq!(item_status(&h, item_id).await, "waiting_approval");
+}
+
+#[tokio::test]
+async fn answering_an_approval_tells_the_feed() {
+    // The feed re-reads pending approvals when an answer changes them.
+    let h = host(false).await;
+    let (_, _, approval_id) = seed_parked_item(&h).await;
+    let before = *h.state.playbook_approvals.borrow();
+    let (status, body) = h.call("run.reject", json!({ "approval_id": approval_id })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(*h.state.playbook_approvals.borrow() > before);
 }
