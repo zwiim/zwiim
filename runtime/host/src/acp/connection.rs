@@ -5354,7 +5354,7 @@ async fn inject_zwiim_mcp(
     working_dir: &Path,
     tasks_enabled: bool,
     host_tools: HostToolsPolicy,
-    engine: Option<crate::automation::lockdown::SessionKind>,
+    engine: Option<crate::automation::lockdown::EngineLaunch>,
 ) -> Option<CompanionInjection> {
     inject_zwiim_mcp_with_binary_locator(
         servers,
@@ -5376,7 +5376,7 @@ async fn inject_zwiim_mcp_with_binary_locator<F>(
     working_dir: &Path,
     tasks_enabled: bool,
     host_tools: HostToolsPolicy,
-    engine: Option<crate::automation::lockdown::SessionKind>,
+    engine: Option<crate::automation::lockdown::EngineLaunch>,
     locate_binary: F,
 ) -> Option<CompanionInjection>
 where
@@ -5384,8 +5384,8 @@ where
 {
     // An engine launch takes its tools from its session kind alone, never
     // from the person's switches (automation spec 10.8.3).
-    let (flags, disabled) = if let Some(kind) = engine {
-        (engine_feature_flags(kind), Vec::new())
+    let (flags, disabled) = if let Some(launch) = engine {
+        (engine_feature_flags(launch.kind), Vec::new())
     } else {
         // zwiim-mcp carries BOTH the delegation tools and the live-feedback tool.
         // Inject it when EITHER feature is enabled; the `--features` arg tells the
@@ -5501,9 +5501,9 @@ where
         features_arg,
     ];
     // An engine session lists exactly its profile, not the whole group.
-    if let Some(kind) = engine {
+    if let Some(launch) = engine {
         args.push("--tools".to_string());
-        args.push(kind.browser_tools().join(","));
+        args.push(launch.kind.browser_tools().join(","));
     }
     if !custom_slugs.is_empty() {
         args.push("--custom-agents".to_string());
@@ -5790,7 +5790,8 @@ async fn run_connection(
     // Claude's AIR frames: trimmed `_meta` merged back, and the permission
     // card's missing kind / diff (see `claude_tool_frames`).
     let claude_frames = claude_tool_frames::ClaudeToolFrames::shared();
-    let engine_kind = state.read().await.engine.map(|e| e.kind);
+    let engine_launch = state.read().await.engine;
+    let engine_kind = engine_launch.map(|e| e.kind);
     let engine_session = engine_kind.is_some();
 
     Client
@@ -6337,7 +6338,7 @@ async fn run_connection(
                         &cwd,
                         tasks_enabled,
                         host_tools,
-                        engine_kind,
+                        engine_launch,
                     )
                     .await
                 } else {
@@ -26361,7 +26362,7 @@ mod tests {
     /// to the kind, and no companion at all for the batch kinds.
     #[tokio::test]
     async fn an_engine_launch_injects_exactly_its_kinds_tools() {
-        use crate::automation::lockdown::SessionKind;
+        use crate::automation::lockdown::{EngineLaunch, SessionKind};
         let injection = test_delegation_injection(
             Arc::new(TestAllAgentsAvailable) as Arc<dyn AgentAvailabilityLookup>
         );
@@ -26373,7 +26374,7 @@ mod tests {
             std::path::Path::new("/tmp"),
             false,
             HostToolsPolicy::Default,
-            Some(SessionKind::Item),
+            Some(EngineLaunch { kind: SessionKind::Item, attempt: None }),
             || Some(PathBuf::from("/bin/zwiim-mcp")),
         )
         .await
@@ -26388,7 +26389,7 @@ mod tests {
         assert_eq!(arg("--features"), "browser");
         assert_eq!(arg("--tools"), SessionKind::Item.browser_tools().join(","));
         let entry = injection.tokens.lookup(&injected.token).await.expect("token");
-        assert_eq!(entry.engine, Some(SessionKind::Item));
+        assert_eq!(entry.engine.map(|e| e.kind), Some(SessionKind::Item));
 
         let mut none = Vec::new();
         let batch = inject_zwiim_mcp_with_binary_locator(
@@ -26398,7 +26399,7 @@ mod tests {
             std::path::Path::new("/tmp"),
             false,
             HostToolsPolicy::Default,
-            Some(SessionKind::JudgmentBatch),
+            Some(EngineLaunch { kind: SessionKind::JudgmentBatch, attempt: None }),
             || Some(PathBuf::from("/bin/zwiim-mcp")),
         )
         .await;

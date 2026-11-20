@@ -74,6 +74,14 @@ pub trait ParentSessionLookup: Send + Sync {
     async fn current_conversation_id(&self, parent_connection_id: &str) -> Option<i32>;
 }
 
+/// Whether an engine item attempt is still the item's current one (automation
+/// spec 6.6.7). The production impl reads the engine's rows; with none set
+/// the listener refuses every attempt-bound call.
+#[async_trait]
+pub trait ItemAttempts: Send + Sync {
+    async fn is_current(&self, attempt: crate::automation::lockdown::ItemAttempt) -> bool;
+}
+
 /// Per-launch token entry. Bound at MCP injection time and revoked on parent
 /// connection teardown.
 #[derive(Debug, Clone)]
@@ -83,7 +91,7 @@ pub struct TokenEntry {
     /// The engine session kind of the parent, set by the Host at injection
     /// from its own launch state. `Some` limits the token to that kind's
     /// tool profile (automation spec 10.8).
-    pub engine: Option<crate::automation::lockdown::SessionKind>,
+    pub engine: Option<crate::automation::lockdown::EngineLaunch>,
 }
 
 #[derive(Default)]
@@ -177,6 +185,9 @@ pub struct DelegationListener {
     /// session. Parent-scoped like the delegation arms: the session comes from
     /// the token, never from the companion.
     pub progress: Arc<dyn SessionProgressAccess>,
+    /// Checks an engine token's item attempt before each call. Set once at
+    /// startup; unset refuses (see [`ItemAttempts`]).
+    attempts: std::sync::OnceLock<Arc<dyn ItemAttempts>>,
 }
 
 impl DelegationListener {
@@ -206,7 +217,14 @@ impl DelegationListener {
             browser,
             git,
             progress,
+            attempts: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Give the listener the engine's attempt check. A second call is
+    /// ignored.
+    pub fn set_item_attempts(&self, attempts: Arc<dyn ItemAttempts>) {
+        let _ = self.attempts.set(attempts);
     }
 
     /// Bind the socket, then serve it forever. Kept as the one-call entry
@@ -668,7 +686,27 @@ impl DelegationListener {
     /// session, or a tool in the profile.
     async fn lockdown_refusal(&self, msg: &BrokerMessage) -> Option<BrokerResponse> {
         let entry = self.tokens.lookup(broker_token(msg)?).await?;
-        let kind = entry.engine?;
+        let launch = entry.engine?;
+        if let Some(attempt) = launch.attempt {
+            let current = match self.attempts.get() {
+                Some(attempts) => attempts.is_current(attempt).await,
+                None => false,
+            };
+            if !current {
+                tracing::warn!(
+                    "[delegation] refusing a call from ended attempt {} of item {}",
+                    attempt.epoch,
+                    attempt.item_id
+                );
+                return Some(BrokerResponse {
+                    outcome: serde_json::json!({
+                        "error": "stale_attempt",
+                        "note": crate::automation::lockdown::STALE_ATTEMPT_REFUSAL,
+                    }),
+                });
+            }
+        }
+        let kind = launch.kind;
         if engine_tool(msg).is_some_and(|tool| kind.allows(tool)) {
             return None;
         }
@@ -3579,7 +3617,7 @@ mod tests {
     /// listed, because the agent can talk to the socket itself.
     #[tokio::test]
     async fn an_engine_token_reaches_only_its_profile() {
-        use crate::automation::lockdown::{SessionKind, LOCKDOWN_REFUSAL};
+        use crate::automation::lockdown::{EngineLaunch, SessionKind, LOCKDOWN_REFUSAL};
         use crate::browser::agent::{ActionKind, ActionRequest};
         let tokens = Arc::new(TokenRegistry::default());
         for (token, kind) in [("item", SessionKind::Item), ("batch", SessionKind::JudgmentBatch)] {
@@ -3589,7 +3627,7 @@ mod tests {
                     TokenEntry {
                         parent_connection_id: format!("conn-{token}"),
                         working_dir: PathBuf::from("/tmp"),
-                        engine: Some(kind),
+                        engine: Some(EngineLaunch { kind, attempt: None }),
                     },
                 )
                 .await;
@@ -3644,6 +3682,59 @@ mod tests {
             assert_eq!(resp.outcome["note"], LOCKDOWN_REFUSAL);
         }
         assert_eq!(browser.calls.lock().await.len(), 1, "only the click ran");
+    }
+
+    /// A call carrying an attempt the item has moved past is refused before
+    /// it runs (automation spec 6.6.7): a zombie agent of an earlier attempt
+    /// cannot touch the lane. With no way to ask, the Host refuses too.
+    #[tokio::test]
+    async fn a_call_from_an_ended_attempt_is_refused() {
+        use crate::automation::lockdown::{EngineLaunch, ItemAttempt, SessionKind};
+        struct AtEpoch(i32);
+        #[async_trait]
+        impl ItemAttempts for AtEpoch {
+            async fn is_current(&self, attempt: ItemAttempt) -> bool {
+                attempt.item_id == 7 && attempt.epoch == self.0
+            }
+        }
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "item".into(),
+                TokenEntry {
+                    parent_connection_id: "conn-item".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                    engine: Some(EngineLaunch {
+                        kind: SessionKind::Item,
+                        attempt: Some(ItemAttempt { item_id: 7, epoch: 2 }),
+                    }),
+                },
+            )
+            .await;
+        let read = || {
+            BrokerMessage::BrowserSnapshot(BrokerBrowserSnapshotRequest {
+                token: "item".into(),
+                tab_id: "t1".into(),
+                max_chars: None,
+                changes_only: false,
+            })
+        };
+        let browser = Arc::new(StubBrowser::default());
+        let listener = make_browser_listener(tokens, browser.clone());
+        let unset = browser_round_trip(listener.clone(), read()).await;
+        assert_eq!(unset.outcome["error"], "stale_attempt");
+        listener.set_item_attempts(Arc::new(AtEpoch(3)));
+        let stale = browser_round_trip(listener.clone(), read()).await;
+        assert_eq!(stale.outcome["error"], "stale_attempt");
+        assert!(browser.calls.lock().await.is_empty());
+
+        let browser = Arc::new(StubBrowser::default());
+        let tokens = listener.tokens.clone();
+        let listener = make_browser_listener(tokens, browser.clone());
+        listener.set_item_attempts(Arc::new(AtEpoch(2)));
+        let current = browser_round_trip(listener, read()).await;
+        assert_ne!(current.outcome["error"], "stale_attempt");
+        assert_eq!(browser.calls.lock().await.len(), 1);
     }
 
     /// The console and screenshot arms carry their whole request through and

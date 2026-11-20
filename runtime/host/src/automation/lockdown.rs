@@ -104,6 +104,51 @@ impl SessionKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EngineLaunch {
     pub kind: SessionKind,
+    /// The item attempt an item session works; `None` for the other kinds.
+    pub attempt: Option<ItemAttempt>,
+}
+
+/// One attempt at one item (spec 6.6.7). A call carrying an attempt the item
+/// has moved past is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ItemAttempt {
+    pub item_id: i32,
+    pub epoch: i32,
+}
+
+/// The refusal a call from an ended attempt gets (spec 6.6.7, 22.6).
+pub const STALE_ATTEMPT_REFUSAL: &str =
+    "Refused: stale_attempt; this attempt at the item has ended, so stop.";
+
+/// Answers whether an item attempt is still the item's current one, from
+/// the engine's own rows.
+pub struct DbItemAttempts {
+    db: sea_orm::DatabaseConnection,
+}
+
+impl DbItemAttempts {
+    pub fn new(db: sea_orm::DatabaseConnection) -> Self {
+        Self { db }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::acp::delegation::listener::ItemAttempts for DbItemAttempts {
+    async fn is_current(&self, attempt: ItemAttempt) -> bool {
+        use crate::automation::entities::playbook_item;
+        use sea_orm::EntityTrait;
+        match playbook_item::Entity::find_by_id(attempt.item_id)
+            .one(&self.db)
+            .await
+        {
+            Ok(row) => row.is_some_and(|item| item.epoch == attempt.epoch),
+            // A read that fails refuses: the call may be stale.
+            Err(e) => {
+                tracing::warn!("[lockdown] reading item {} failed: {e}", attempt.item_id);
+                false
+            }
+        }
+    }
 }
 
 /// Tools that are never allowed to any engine session, whatever its kind
@@ -322,6 +367,54 @@ pub fn auto_reject(is_engine_folder: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn only_the_items_current_epoch_is_current() {
+        use crate::acp::delegation::listener::ItemAttempts;
+        use crate::automation::entities::playbook_item;
+        use crate::automation::{AutomationEngine, PlaybookStore, RunTrigger};
+        use sea_orm::{EntityTrait, Set};
+        use sea_orm_migration::MigratorTrait;
+        let db = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
+        crate::db::migration::Migrator::up(&db, None).await.unwrap();
+        let pb = PlaybookStore::new(db.clone())
+            .create("Apply", "goal")
+            .await
+            .unwrap();
+        let run = AutomationEngine::new(db.clone())
+            .start_run(pb.id, pb.version, RunTrigger::Mac, None)
+            .await
+            .unwrap();
+        let now = chrono::Utc::now();
+        let item_id = playbook_item::Entity::insert(playbook_item::ActiveModel {
+            public_id: Set(uuid::Uuid::new_v4().to_string()),
+            run_id: Set(run),
+            playbook_id: Set(pb.id),
+            site: Set("jobsy.example".into()),
+            account: Set("main".into()),
+            item_key: Set("job-1".into()),
+            status: Set("working".into()),
+            epoch: Set(2),
+            created_at: Set(now),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .exec_with_returning(&db)
+        .await
+        .unwrap()
+        .id;
+        let attempts = DbItemAttempts::new(db);
+        assert!(attempts.is_current(ItemAttempt { item_id, epoch: 2 }).await);
+        assert!(!attempts.is_current(ItemAttempt { item_id, epoch: 1 }).await);
+        assert!(
+            !attempts
+                .is_current(ItemAttempt {
+                    item_id: item_id + 1,
+                    epoch: 2
+                })
+                .await
+        );
+    }
 
     #[test]
     fn each_kind_gets_exactly_its_profile_tools() {

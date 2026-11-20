@@ -608,6 +608,11 @@ async fn async_main() -> Exit {
                 manager: Arc::new(state.connection_manager.clone_ref()),
             }),
         );
+        // Engine sessions' tool calls are checked against their item's
+        // current attempt (automation spec 6.6.7).
+        listener.set_item_attempts(Arc::new(
+            zwiim_host::automation::lockdown::DbItemAttempts::new(state.db.conn.clone()),
+        ));
         // Bind through the service handle rather than a bare `listener.run`
         // spawn: it keeps the bind error and the accept-loop handle around, so
         // the workspace status indicator can report why the broker socket is
