@@ -7685,6 +7685,36 @@ async fn a_tab_is_previewed_as_a_phone_and_back_as_a_desktop_page() {
     );
 }
 
+/// Lane tabs are a run's (spec 14.1): the Mac sees them, a device does
+/// not, and no client opens one.
+#[tokio::test]
+async fn lane_tabs_show_on_the_mac_only_and_runs_alone_open_them() {
+    let h = host(false).await;
+    let _fake = fake_browser(&h).await;
+    let lane = crate::browser::store::TabOwner::Lane {
+        site: "jobsy.example".into(),
+        account: "main".into(),
+    };
+    let tab = h.state.browser().await.unwrap().open(lane, None).await.unwrap();
+
+    let listed = h.ok("browser.tabs.list", json!({})).await;
+    assert_eq!(listed["tabs"][0]["tab_id"], tab.id.as_str());
+    assert_eq!(
+        listed["tabs"][0]["owner"],
+        json!({"kind": "lane", "site": "jobsy.example", "account": "main"})
+    );
+    let device = bearer_device(&h, "dev-1").await;
+    let (status, listed) = h.call_as(&device, "browser.tabs.list", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed["tabs"], json!([]));
+
+    let owner = json!({"kind": "lane", "site": "jobsy.example", "account": "main"});
+    assert_eq!(
+        h.err("browser.tab.open", json!({"owner": owner})).await,
+        (StatusCode::BAD_REQUEST, "invalid_input".into())
+    );
+}
+
 #[tokio::test]
 async fn a_device_reaches_its_sessions_tabs_by_its_browser_access() {
     let h = host(false).await;

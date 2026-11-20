@@ -258,8 +258,15 @@ export interface KeepAwakeStatus {
 
 // ─── browser ─────────────────────────────────────────────────────────────
 
-/** Whose a browser tab is: a session's (its agent may use it) or the person's. */
-export type BrowserTabOwner = { kind: "session"; session_id: string } | { kind: "personal" };
+/**
+ * Whose a browser tab is: a session's (its agent may use it), the person's,
+ * or a run's lane, one (site, account) login that only the Mac sees and only
+ * runs open.
+ */
+export type BrowserTabOwner =
+  | { kind: "session"; session_id: string }
+  | { kind: "personal" }
+  | { kind: "lane"; site: string; account: string };
 
 /** A Host browser tab. */
 export interface BrowserTab {
@@ -2237,7 +2244,8 @@ export type ItemReasonCode =
   | "agent_limit"
   | "agent_rate_limited"
   | "timeout"
-  | "host_restarted";
+  | "host_restarted"
+  | "page_needs_person";
 
 export interface ItemSummary {
   item_id: string;

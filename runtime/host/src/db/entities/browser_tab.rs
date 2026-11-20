@@ -6,10 +6,13 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: String,
-    /// `session` or `personal`.
+    /// `session`, `personal` or `lane`.
     pub owner_kind: String,
     /// The public session id of a session tab.
     pub session_id: Option<String>,
+    /// A lane tab's site and account.
+    pub lane_site: Option<String>,
+    pub lane_account: Option<String>,
     pub url: String,
     pub title: String,
     pub position: i32,

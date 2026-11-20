@@ -24,6 +24,7 @@ pub mod entities;
 pub mod item_runner;
 #[cfg(test)]
 mod item_runner_tests;
+pub mod lanes;
 pub mod lockdown;
 pub mod pauses;
 pub mod playbook_format;

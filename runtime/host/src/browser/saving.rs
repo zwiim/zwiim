@@ -41,13 +41,16 @@ pub async fn set_root(conn: &DatabaseConnection, root: Option<&Path>) -> Result<
     app_metadata_service::upsert_value(conn, ROOT_KEY, &raw).await
 }
 
-/// Where `owner`'s tabs save downloads; none when the session is gone.
+/// Where `owner`'s tabs save downloads; none for a lane or when the
+/// session is gone.
 pub async fn folder_for(conn: &DatabaseConnection, owner: &TabOwner) -> Option<PathBuf> {
     let session_id = match owner {
         TabOwner::Personal => {
             return dirs::download_dir().or_else(|| dirs::home_dir().map(|h| h.join("Downloads")))
         }
         TabOwner::Session { session_id } => session_id,
+        // Files reach a lane's pages through `playbook_attach_file` only.
+        TabOwner::Lane { .. } => return None,
     };
     let row = crate::session::resolve(conn, session_id).await.ok()?;
     let worktree = folder::Entity::find_by_id(row.folder_id)

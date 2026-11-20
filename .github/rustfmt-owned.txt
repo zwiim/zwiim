@@ -39,6 +39,7 @@ runtime/host/src/automation/entities/playbook_version.rs
 runtime/host/src/automation/entities/site_knowledge.rs
 runtime/host/src/automation/item_runner.rs
 runtime/host/src/automation/item_runner_tests.rs
+runtime/host/src/automation/lanes.rs
 runtime/host/src/automation/lockdown.rs
 runtime/host/src/automation/mod.rs
 runtime/host/src/automation/pauses.rs
@@ -54,6 +55,7 @@ runtime/host/src/db/migration/m20261119_000002_playbook_approval.rs
 runtime/host/src/db/migration/m20261119_000003_item_cap_slot.rs
 runtime/host/src/db/migration/m20261119_000004_playbook_alert.rs
 runtime/host/src/db/migration/m20261119_000005_playbook_public_ids.rs
+runtime/host/src/db/migration/m20261119_000006_browser_tab_lanes.rs
 runtime/host/src/db/schema_guard.rs
 runtime/host/src/db/schema_guard/tests.rs
 runtime/host/src/db/service/playbook_engine_service.rs
