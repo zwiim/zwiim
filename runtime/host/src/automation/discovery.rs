@@ -26,6 +26,7 @@ use crate::automation::launcher::{run_session, EngineLauncher, SessionEnd, Sessi
 use crate::automation::lockdown::SessionKind;
 use crate::automation::playbook_format::{PlaybookDoc, Source};
 use crate::automation::playbook_store::{PlaybookStore, SiteKnowledgeKind};
+use crate::automation::reasons::ReasonCode;
 use crate::automation::sessions::{Candidate, EngineScope, EngineSessions, SessionReport};
 use crate::automation::states::ItemStatus;
 use crate::browser::store::TabOwner;
@@ -125,9 +126,6 @@ pub const JUDGMENT_LIMITS: SessionLimits = SessionLimits {
     minutes: 10,
     tool_calls: 5,
 };
-
-/// The skip-list reason of a rule skip.
-pub const RULE_SKIP: &str = "skipped_by_rule";
 
 #[derive(Debug, Default)]
 struct Counts {
@@ -345,7 +343,13 @@ impl Discovery<'_> {
                 for (candidate, site, key) in batch {
                     if skipped.contains(&candidate.url) {
                         store
-                            .skip_item(run.playbook_id, site, ACCOUNT, key, RULE_SKIP)
+                            .skip_item(
+                                run.playbook_id,
+                                site,
+                                ACCOUNT,
+                                key,
+                                ReasonCode::SkippedByRule.as_str(),
+                            )
                             .await?;
                         counts.ruled += 1;
                     } else {

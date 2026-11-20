@@ -156,6 +156,9 @@ pub enum ReasonCode {
     Timeout,
     HostRestarted,
     PageNeedsPerson,
+    /// A playbook rule says skip (spec 6.4: incl. detail rules); spec 11.2.1
+    /// has no code for it.
+    SkippedByRule,
 }
 
 impl ReasonCode {
@@ -179,6 +182,7 @@ impl ReasonCode {
             ReasonCode::Timeout => "timeout",
             ReasonCode::HostRestarted => "host_restarted",
             ReasonCode::PageNeedsPerson => "page_needs_person",
+            ReasonCode::SkippedByRule => "skipped_by_rule",
         }
     }
 
@@ -202,6 +206,7 @@ impl ReasonCode {
             "timeout" => ReasonCode::Timeout,
             "host_restarted" => ReasonCode::HostRestarted,
             "page_needs_person" => ReasonCode::PageNeedsPerson,
+            "skipped_by_rule" => ReasonCode::SkippedByRule,
             _ => return None,
         })
     }
@@ -226,6 +231,7 @@ impl ReasonCode {
             ReasonCode::Timeout,
             ReasonCode::HostRestarted,
             ReasonCode::PageNeedsPerson,
+            ReasonCode::SkippedByRule,
         ]
     }
 
@@ -237,7 +243,8 @@ impl ReasonCode {
             | ReasonCode::ActionKindNever
             | ReasonCode::ApprovalRejected
             | ReasonCode::DailyCapHit
-            | ReasonCode::NavigationOutsidePlaybookSites => SideEffects::None,
+            | ReasonCode::NavigationOutsidePlaybookSites
+            | ReasonCode::SkippedByRule => SideEffects::None,
             ReasonCode::Captcha
             | ReasonCode::BlockedBySite
             | ReasonCode::LoginExpired
@@ -396,6 +403,12 @@ pub fn reason_infos() -> &'static [ReasonInfo] {
             meaning: "The site's page asked something only a person can answer.",
             retried: false,
             fix: "Answer it in the playbook tab on the Mac, then Resume.",
+        },
+        ReasonInfo {
+            code: SkippedByRule,
+            meaning: "A playbook rule says this item is not one to work.",
+            retried: false,
+            fix: "Nothing; edit the rule if it skipped one you want.",
         },
     ]
 }
@@ -558,6 +571,39 @@ mod tests {
                 code.as_str()
             );
         }
+    }
+
+    /// The SDK's `ItemReasonCode` is written by hand too; every item reason
+    /// the Host records is in it, the rule skip included.
+    #[test]
+    fn every_reason_code_is_in_the_sdk_item_reason_union() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../clients/sdk/src/types/protocol.ts"
+        );
+        let sdk = std::fs::read_to_string(path).expect("read the SDK protocol types");
+        let start = sdk
+            .find("export type ItemReasonCode =")
+            .expect("ItemReasonCode");
+        let members: Vec<&str> = sdk[start..]
+            .lines()
+            .skip(1)
+            .map(str::trim)
+            .take_while(|l| l.starts_with('|'))
+            .filter_map(|l| l.strip_prefix("| "))
+            .map(|l| l.trim_end_matches(';').trim_matches('"'))
+            .collect();
+        for code in ReasonCode::all() {
+            assert!(
+                members.contains(&code.as_str()),
+                "`{}` is missing from ItemReasonCode in clients/sdk/src/types/protocol.ts",
+                code.as_str()
+            );
+        }
+        assert_eq!(
+            ReasonCode::parse("skipped_by_rule"),
+            Some(ReasonCode::SkippedByRule)
+        );
     }
 
     #[test]
