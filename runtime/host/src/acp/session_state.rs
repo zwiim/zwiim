@@ -424,6 +424,9 @@ pub struct SessionState {
     pub working_dir: Option<PathBuf>,
     pub owner_window_label: String,
     pub folder_id: Option<i32>,
+    /// Set by the Host when it launches this connection for the automation
+    /// engine (spec 10.5); never from anything the agent writes.
+    pub engine: Option<crate::automation::lockdown::EngineLaunch>,
 
     // 状态
     pub status: ConnectionStatus,
@@ -881,6 +884,7 @@ impl SessionState {
             working_dir,
             owner_window_label,
             folder_id,
+            engine: None,
             status: ConnectionStatus::Connecting,
             live_message: None,
             active_tool_calls: BTreeMap::new(),

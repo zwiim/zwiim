@@ -302,6 +302,34 @@ pub struct CompanionContext {
     /// flag). Disabled customs never appear here: the parent just leaves them
     /// out of `custom_agents`.
     pub disabled_agents: Vec<String>,
+    /// The exact tool names this launch may list and call, from `--tools`.
+    /// Set only for automation engine sessions, whose profile is narrower
+    /// than a whole group (automation spec 10.8). `None` leaves the groups
+    /// alone.
+    pub only_tools: Option<Vec<String>>,
+}
+
+impl CompanionContext {
+    /// Whether this launch lists and serves the named tool.
+    pub fn exposes(&self, name: &str) -> bool {
+        self.features.allows_tool(name)
+            && self
+                .only_tools
+                .as_ref()
+                .is_none_or(|only| only.iter().any(|t| t == name))
+    }
+}
+
+/// Split an optional comma-joined `--tools` value into its names; `None`
+/// when the flag was not passed.
+pub fn parse_csv_list(raw: Option<&str>) -> Option<Vec<String>> {
+    raw.map(|csv| {
+        csv.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
 }
 
 /// Per-in-flight-call state. The companion stashes one of these per
@@ -469,7 +497,7 @@ pub async fn dispatch_line(
                         .filter(|t| {
                             t.get("name")
                                 .and_then(|v| v.as_str())
-                                .map(|n| ctx.features.allows_tool(n))
+                                .map(|n| ctx.exposes(n))
                                 .unwrap_or(false)
                         })
                         .cloned()
@@ -566,7 +594,7 @@ async fn build_tools_call_spawn(
     // tool is rejected uniformly as "unknown tool" — indistinguishable from a
     // genuinely nonexistent one (no leak that the feature exists but is off),
     // and matching the legacy unknown-tool rejection shape.
-    if !ctx.features.allows_tool(&name) {
+    if !ctx.exposes(&name) {
         return LineAction::Respond(err(id, -32602, format!("unknown tool: {name}")));
     }
     match name.as_str() {
@@ -2893,6 +2921,7 @@ mod tests {
             features,
             custom_agents: Vec::new(),
             disabled_agents: Vec::new(),
+            only_tools: None,
         }
     }
 
@@ -4432,6 +4461,7 @@ mod tests {
             features: FEEDBACK_ONLY,
             custom_agents: Vec::new(),
             disabled_agents: Vec::new(),
+            only_tools: None,
         };
         let inflight = Arc::new(InflightCalls::new());
         // tools/call → Spawn (registers the inflight entry).
@@ -4537,6 +4567,33 @@ mod tests {
         let names = list_tool_names(dispatch_with_features(BROWSER_WITH_EVAL, list).await);
         assert!(names.contains(&"browser_eval".to_string()));
         assert!(names.contains(&"browser_snapshot".to_string()));
+    }
+
+    /// An engine launch's `--tools` narrows the groups to its profile: the
+    /// listing is exactly that list and any other tool is unknown
+    /// (automation spec 10.8).
+    #[tokio::test]
+    async fn a_tools_list_narrows_the_groups_to_exactly_it() {
+        let ctx = CompanionContext {
+            only_tools: Some(vec!["browser_snapshot".into(), "browser_click".into()]),
+            ..ctx_with(BROWSER_ONLY)
+        };
+        let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let names =
+            list_tool_names(dispatch_line(&ctx, Arc::new(InflightCalls::new()), list).await);
+        assert_eq!(names, vec!["browser_snapshot".to_string(), "browser_click".to_string()]);
+        let hover = json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": { "name": "browser_hover", "arguments": {} }
+        })
+        .to_string();
+        let resp = unwrap_respond(dispatch_line(&ctx, Arc::new(InflightCalls::new()), &hover).await);
+        assert!(resp.error.unwrap().message.contains("unknown tool"));
+        assert_eq!(
+            parse_csv_list(Some("browser_snapshot,browser_click")),
+            Some(vec!["browser_snapshot".to_string(), "browser_click".to_string()])
+        );
+        assert_eq!(parse_csv_list(None), None);
     }
 
     /// `browser_eval` needs BOTH tokens. A `--features browser_eval` that lost

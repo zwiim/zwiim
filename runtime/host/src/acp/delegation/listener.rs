@@ -74,12 +74,24 @@ pub trait ParentSessionLookup: Send + Sync {
     async fn current_conversation_id(&self, parent_connection_id: &str) -> Option<i32>;
 }
 
+/// Whether an engine item attempt is still the item's current one (automation
+/// spec 6.6.7). The production impl reads the engine's rows; with none set
+/// the listener refuses every attempt-bound call.
+#[async_trait]
+pub trait ItemAttempts: Send + Sync {
+    async fn is_current(&self, attempt: crate::automation::lockdown::ItemAttempt) -> bool;
+}
+
 /// Per-launch token entry. Bound at MCP injection time and revoked on parent
 /// connection teardown.
 #[derive(Debug, Clone)]
 pub struct TokenEntry {
     pub parent_connection_id: String,
     pub working_dir: PathBuf,
+    /// The engine session kind of the parent, set by the Host at injection
+    /// from its own launch state. `Some` limits the token to that kind's
+    /// tool profile (automation spec 10.8).
+    pub engine: Option<crate::automation::lockdown::EngineLaunch>,
 }
 
 #[derive(Default)]
@@ -173,6 +185,9 @@ pub struct DelegationListener {
     /// session. Parent-scoped like the delegation arms: the session comes from
     /// the token, never from the companion.
     pub progress: Arc<dyn SessionProgressAccess>,
+    /// Checks an engine token's item attempt before each call. Set once at
+    /// startup; unset refuses (see [`ItemAttempts`]).
+    attempts: std::sync::OnceLock<Arc<dyn ItemAttempts>>,
 }
 
 impl DelegationListener {
@@ -202,7 +217,14 @@ impl DelegationListener {
             browser,
             git,
             progress,
+            attempts: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Give the listener the engine's attempt check. A second call is
+    /// ignored.
+    pub fn set_item_attempts(&self, attempts: Arc<dyn ItemAttempts>) {
+        let _ = self.attempts.set(attempts);
     }
 
     /// Bind the socket, then serve it forever. Kept as the one-call entry
@@ -435,6 +457,10 @@ impl DelegationListener {
         C: AsyncReadExt + AsyncWriteExt + Unpin,
     {
         let msg: BrokerMessage = read_frame(conn).await?;
+        if let Some(refusal) = self.lockdown_refusal(&msg).await {
+            write_frame(conn, &refusal).await?;
+            return Ok(());
+        }
         let resp = match msg {
             // Untokened on purpose — see `BrokerMessage::Ping`. Answered before
             // anything else is touched so the probe measures the serve path and
@@ -650,6 +676,52 @@ impl DelegationListener {
         };
         write_frame(conn, &resp).await?;
         Ok(())
+    }
+
+    /// The refusal for a call an engine session's profile does not hold
+    /// (automation spec 10.8), answered before anything else runs. The
+    /// companion lists only the profile, but the agent can reach this socket
+    /// with the token itself, so the Host decides here. `None` lets the call
+    /// through: no token (the arms refuse that themselves), a person's
+    /// session, or a tool in the profile.
+    async fn lockdown_refusal(&self, msg: &BrokerMessage) -> Option<BrokerResponse> {
+        let entry = self.tokens.lookup(broker_token(msg)?).await?;
+        let launch = entry.engine?;
+        if let Some(attempt) = launch.attempt {
+            let current = match self.attempts.get() {
+                Some(attempts) => attempts.is_current(attempt).await,
+                None => false,
+            };
+            if !current {
+                tracing::warn!(
+                    "[delegation] refusing a call from ended attempt {} of item {}",
+                    attempt.epoch,
+                    attempt.item_id
+                );
+                return Some(BrokerResponse {
+                    outcome: serde_json::json!({
+                        "error": "stale_attempt",
+                        "note": crate::automation::lockdown::STALE_ATTEMPT_REFUSAL,
+                    }),
+                });
+            }
+        }
+        let kind = launch.kind;
+        if engine_tool(msg).is_some_and(|tool| kind.allows(tool)) {
+            return None;
+        }
+        tracing::warn!(
+            "[delegation] refusing {:?} for engine session {} ({})",
+            engine_tool(msg),
+            entry.parent_connection_id,
+            kind.as_str()
+        );
+        Some(BrokerResponse {
+            outcome: serde_json::json!({
+                "error": "lockdown_refused",
+                "note": crate::automation::lockdown::LOCKDOWN_REFUSAL,
+            }),
+        })
     }
 
     /// Validate the token, resolve the caller's parent connection/conversation,
@@ -1162,6 +1234,65 @@ impl DelegationListener {
 
 /// Serialize a [`DelegationTaskReport`] into a [`BrokerResponse`] for the wire.
 /// Used by the `Call` / `CancelTask` arms, which each resolve to one report.
+/// The token a broker message carries; `None` only for the untokened ping.
+fn broker_token(msg: &BrokerMessage) -> Option<&str> {
+    Some(match msg {
+        BrokerMessage::Ping => return None,
+        BrokerMessage::Call(r) => &r.token,
+        BrokerMessage::Cancel(r) => &r.token,
+        BrokerMessage::Status(r) => &r.token,
+        BrokerMessage::CancelTask(r) => &r.token,
+        BrokerMessage::ResumeTask(r) => &r.token,
+        BrokerMessage::Feedback(r) => &r.token,
+        BrokerMessage::CommitFeedback(r) => &r.token,
+        BrokerMessage::Ask(r) => &r.token,
+        BrokerMessage::SessionInfo(r) => &r.token,
+        BrokerMessage::TaskProgress(r) => &r.token,
+        BrokerMessage::TaskComplete(r) => &r.token,
+        BrokerMessage::UpdateProgress(r) => &r.token,
+        BrokerMessage::CreateAutomation(r) => &r.token,
+        BrokerMessage::CreateWorkTask(r) => &r.token,
+        BrokerMessage::BrowserTabs(r) => &r.token,
+        BrokerMessage::BrowserSnapshot(r) => &r.token,
+        BrokerMessage::BrowserAct(r) => &r.token,
+        BrokerMessage::BrowserConsole(r) => &r.token,
+        BrokerMessage::BrowserCapture(r) => &r.token,
+        BrokerMessage::BrowserEval(r) => &r.token,
+        BrokerMessage::BrowserTabOp(r) => &r.token,
+        BrokerMessage::Git(r) => &r.token,
+    })
+}
+
+/// The browser tool a broker message serves, by the name a session profile
+/// lists. `None` for every other message, which no engine profile holds.
+fn engine_tool(msg: &BrokerMessage) -> Option<&'static str> {
+    use crate::acp::browser_tools::BrowserTabOp;
+    use crate::browser::agent::ActionKind;
+    Some(match msg {
+        BrokerMessage::BrowserTabs(_) => "browser_list_tabs",
+        BrokerMessage::BrowserSnapshot(_) => "browser_snapshot",
+        BrokerMessage::BrowserConsole(_) => "browser_console_messages",
+        BrokerMessage::BrowserCapture(_) => "browser_screenshot",
+        BrokerMessage::BrowserEval(_) => "browser_eval",
+        BrokerMessage::BrowserAct(r) => match r.request.action {
+            ActionKind::Click { .. } => "browser_click",
+            ActionKind::Hover => "browser_hover",
+            ActionKind::Type { .. } => "browser_type",
+            ActionKind::Press { .. } => "browser_press_key",
+            ActionKind::Select { .. } => "browser_select_option",
+        },
+        BrokerMessage::BrowserTabOp(r) => match r.op {
+            BrowserTabOp::Open { .. } => "browser_open_tab",
+            BrowserTabOp::Navigate { .. } => "browser_navigate",
+            BrowserTabOp::Close { .. } => "browser_close_tab",
+            BrowserTabOp::Permissions { .. } => "browser_set_permissions",
+            BrowserTabOp::Wait { .. } => "browser_wait_for",
+            BrowserTabOp::Network { .. } => "browser_network_log",
+        },
+        _ => return None,
+    })
+}
+
 fn report_response(report: DelegationTaskReport) -> std::io::Result<BrokerResponse> {
     Ok(BrokerResponse {
         outcome: serde_json::to_value(&report).map_err(|e| {
@@ -2096,6 +2227,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "other-parent".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -2120,6 +2252,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -2145,6 +2278,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -2176,6 +2310,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -2250,6 +2385,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -2400,6 +2536,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -2504,6 +2641,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -2551,6 +2689,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -2662,6 +2801,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -2729,6 +2869,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "p1".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -2738,6 +2879,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "p1".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -2747,6 +2889,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "p2".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -2785,6 +2928,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -2862,6 +3006,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -2910,6 +3055,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -2951,6 +3097,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -3019,6 +3166,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/repo/app"),
+                    engine: None,
                 },
             )
             .await;
@@ -3066,6 +3214,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/repo/app"),
+                    engine: None,
                 },
             )
             .await;
@@ -3143,6 +3292,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -3256,6 +3406,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -3313,6 +3464,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -3365,6 +3517,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "conn-1".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -3456,6 +3609,132 @@ mod tests {
             &[r#"act t1 g.4.2 Object {"kind": String("type"), "submit": Bool(true), "text": String("Ada")}"#
                 .to_string()]
         );
+    }
+
+    /// An engine session's token reaches only the tools of its kind's
+    /// profile (automation spec 10.8); everything else is refused by the
+    /// Host before any browser or broker hears of it, whatever the companion
+    /// listed, because the agent can talk to the socket itself.
+    #[tokio::test]
+    async fn an_engine_token_reaches_only_its_profile() {
+        use crate::automation::lockdown::{EngineLaunch, SessionKind, LOCKDOWN_REFUSAL};
+        use crate::browser::agent::{ActionKind, ActionRequest};
+        let tokens = Arc::new(TokenRegistry::default());
+        for (token, kind) in [("item", SessionKind::Item), ("batch", SessionKind::JudgmentBatch)] {
+            tokens
+                .register(
+                    token.into(),
+                    TokenEntry {
+                        parent_connection_id: format!("conn-{token}"),
+                        working_dir: PathBuf::from("/tmp"),
+                        engine: Some(EngineLaunch { kind, attempt: None }),
+                    },
+                )
+                .await;
+        }
+        let browser = Arc::new(StubBrowser::default());
+        let listener = make_browser_listener(tokens, browser.clone());
+        let act = |token: &str, action: ActionKind| {
+            BrokerMessage::BrowserAct(BrokerBrowserActRequest {
+                token: token.into(),
+                tab_id: "t1".into(),
+                request: ActionRequest {
+                    generation: "g.1.1".into(),
+                    target: Some("e1".into()),
+                    action,
+                    expect_url: None,
+                },
+            })
+        };
+
+        // In the item profile: reaches the browser.
+        let clicked = browser_round_trip(
+            listener.clone(),
+            act("item", ActionKind::Click { button: None, count: None }),
+        )
+        .await;
+        assert_ne!(clicked.outcome["error"], "lockdown_refused");
+        // Outside it: hover, the tab listing, a new tab, the batch kind's
+        // snapshot, and every non-browser tool.
+        let refused = [
+            act("item", ActionKind::Hover),
+            BrokerMessage::BrowserTabs(BrokerBrowserTabsRequest { token: "item".into() }),
+            BrokerMessage::BrowserTabOp(BrokerBrowserTabOpRequest {
+                token: "item".into(),
+                op: crate::acp::browser_tools::BrowserTabOp::Open {
+                    url: "https://example.com".into(),
+                },
+            }),
+            BrokerMessage::BrowserSnapshot(BrokerBrowserSnapshotRequest {
+                token: "batch".into(),
+                tab_id: "t1".into(),
+                max_chars: None,
+                changes_only: false,
+            }),
+            BrokerMessage::SessionInfo(
+                serde_json::from_value(serde_json::json!({ "token": "item", "session_id": 1 }))
+                    .unwrap(),
+            ),
+        ];
+        for msg in refused {
+            let resp = browser_round_trip(listener.clone(), msg).await;
+            assert_eq!(resp.outcome["error"], "lockdown_refused");
+            assert_eq!(resp.outcome["note"], LOCKDOWN_REFUSAL);
+        }
+        assert_eq!(browser.calls.lock().await.len(), 1, "only the click ran");
+    }
+
+    /// A call carrying an attempt the item has moved past is refused before
+    /// it runs (automation spec 6.6.7): a zombie agent of an earlier attempt
+    /// cannot touch the lane. With no way to ask, the Host refuses too.
+    #[tokio::test]
+    async fn a_call_from_an_ended_attempt_is_refused() {
+        use crate::automation::lockdown::{EngineLaunch, ItemAttempt, SessionKind};
+        struct AtEpoch(i32);
+        #[async_trait]
+        impl ItemAttempts for AtEpoch {
+            async fn is_current(&self, attempt: ItemAttempt) -> bool {
+                attempt.item_id == 7 && attempt.epoch == self.0
+            }
+        }
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "item".into(),
+                TokenEntry {
+                    parent_connection_id: "conn-item".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                    engine: Some(EngineLaunch {
+                        kind: SessionKind::Item,
+                        attempt: Some(ItemAttempt { item_id: 7, epoch: 2 }),
+                    }),
+                },
+            )
+            .await;
+        let read = || {
+            BrokerMessage::BrowserSnapshot(BrokerBrowserSnapshotRequest {
+                token: "item".into(),
+                tab_id: "t1".into(),
+                max_chars: None,
+                changes_only: false,
+            })
+        };
+        let browser = Arc::new(StubBrowser::default());
+        let listener = make_browser_listener(tokens, browser.clone());
+        let unset = browser_round_trip(listener.clone(), read()).await;
+        assert_eq!(unset.outcome["error"], "stale_attempt");
+        listener.set_item_attempts(Arc::new(AtEpoch(3)));
+        let stale = browser_round_trip(listener.clone(), read()).await;
+        assert_eq!(stale.outcome["error"], "stale_attempt");
+        assert!(browser.calls.lock().await.is_empty());
+
+        let browser = Arc::new(StubBrowser::default());
+        let tokens = listener.tokens.clone();
+        let listener = make_browser_listener(tokens, browser.clone());
+        listener.set_item_attempts(Arc::new(AtEpoch(2)));
+        let current = browser_round_trip(listener, read()).await;
+        assert_ne!(current.outcome["error"], "stale_attempt");
+        assert_eq!(browser.calls.lock().await.len(), 1);
     }
 
     /// The console and screenshot arms carry their whole request through and
@@ -3766,6 +4045,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -3837,6 +4117,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -3897,6 +4178,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/tmp"),
+                    engine: None,
                 },
             )
             .await;
@@ -3976,6 +4258,7 @@ mod tests {
                 TokenEntry {
                     parent_connection_id: "parent-conn".into(),
                     working_dir: PathBuf::from("/elsewhere"),
+                    engine: None,
                 },
             )
             .await;
@@ -4021,6 +4304,7 @@ mod tests {
                 features: CompanionFeatures::parse(Some("git")),
                 custom_agents: Vec::new(),
                 disabled_agents: Vec::new(),
+                only_tools: None,
             };
             let line = json!({
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",

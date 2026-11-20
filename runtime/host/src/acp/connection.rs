@@ -2385,6 +2385,7 @@ pub async fn spawn_agent_connection(
     delegation_injection: Option<DelegationInjection>,
     terminal_shell_config: TerminalShellRuntimeConfig,
     preferences: crate::harness::UserPreferences,
+    engine: Option<crate::automation::lockdown::EngineLaunch>,
 ) -> Result<tokio::sync::oneshot::Receiver<()>, AcpError> {
     // Create the authoritative session state up front. Subsequent emit_with_state
     // calls write through this state and increment its seq counter so the first
@@ -2396,6 +2397,7 @@ pub async fn spawn_agent_connection(
         owner_window_label.clone(),
         None, // folder_id 由后续 prompt handler 在首次 send 时绑定 (Phase 2)
     );
+    initial_state.engine = engine;
 
     // Install the SessionStarted dedup signal BEFORE wrapping into Arc so the
     // first event (StatusChanged{Connecting} below) doesn't race with the
@@ -2467,18 +2469,28 @@ pub async fn spawn_agent_connection(
         Some(injection) => injection.browser.is_enabled().await,
         None => false,
     };
-    let instructions = connection_instructions(
-        &connection_id,
-        agent_type,
-        &launch_cwd,
-        user,
-        preferences,
-        browser,
-    )
-    .await;
+    // An engine session works from the engine's own prompt: none of the
+    // person's instructions reach it (automation spec 10.6.1).
+    let instructions = match engine {
+        Some(_) => None,
+        None => {
+            connection_instructions(
+                &connection_id,
+                agent_type,
+                &launch_cwd,
+                user,
+                preferences,
+                browser,
+            )
+            .await
+        }
+    };
     // Zwiim: the agent gets the repository's variables beneath its own; the
     // policies and fingerprint below keep reading `runtime_env` alone.
-    let launch_env = beneath(&repository_env, &runtime_env);
+    let mut launch_env = beneath(&repository_env, &runtime_env);
+    if engine.is_some() {
+        scrub_engine_env(&mut launch_env, agent_type);
+    }
     let agent = match build_agent(
         agent_type,
         &launch_env,
@@ -4429,6 +4441,34 @@ fn claude_raw_sdk_session_meta(
     Some(meta)
 }
 
+/// Add the engine lockdown to a Claude session's SDK options, beside the
+/// connection's own (automation spec 10.6, 10.7).
+fn add_engine_claude_options(
+    meta: &mut serde_json::Map<String, serde_json::Value>,
+    kind: crate::automation::lockdown::SessionKind,
+) {
+    let lockdown = crate::automation::lockdown::claude_code_options(kind);
+    let Some(options) = meta
+        .get_mut("claudeCode")
+        .and_then(|c| c.get_mut("options"))
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    if let serde_json::Value::Object(lockdown) = lockdown {
+        options.extend(lockdown);
+    }
+}
+
+/// Remove from an engine launch's environment every token its agent does not
+/// sign in with (automation spec 10.6.1). Empty is what the spawn layer turns
+/// into `env_remove`.
+fn scrub_engine_env(env: &mut BTreeMap<String, String>, agent_type: AgentType) {
+    for key in crate::automation::lockdown::scrubbed_env(agent_type) {
+        env.insert(key.to_string(), String::new());
+    }
+}
+
 /// Whether this launch delivers Zwiim's session instructions. Claude takes
 /// them in its session requests (`_meta.systemPrompt`), Codex at launch
 /// (`apply_codex_instructions_policy`), alongside any `developer_instructions`
@@ -4755,9 +4795,13 @@ fn build_new_session_request(
     cwd: &Path,
     mcp_servers: Vec<McpServer>,
     instructions: Option<&str>,
+    engine: Option<crate::automation::lockdown::SessionKind>,
 ) -> NewSessionRequest {
     let mut req = NewSessionRequest::new(cwd.to_path_buf());
-    if let Some(meta) = claude_raw_sdk_session_meta(agent_type, instructions) {
+    if let Some(mut meta) = claude_raw_sdk_session_meta(agent_type, instructions) {
+        if let Some(kind) = engine {
+            add_engine_claude_options(&mut meta, kind);
+        }
         req = req.meta(meta);
     }
     if !mcp_servers.is_empty() {
@@ -4900,6 +4944,15 @@ async fn send_load_session(
 /// is a separate, narrower gate. Gate zwiim-mcp injection on it.
 fn agent_delivers_wire_mcp(agent_type: AgentType) -> bool {
     !matches!(agent_type, AgentType::Pi)
+}
+
+/// The person's own MCP servers for this agent, or none for an engine
+/// session, which gets only zwiim-mcp (automation spec 10.6.1).
+fn user_mcp_servers(agent_type: AgentType, engine_session: bool) -> Vec<McpServer> {
+    if engine_session {
+        return Vec::new();
+    }
+    load_mcp_servers_for_agent(agent_type)
 }
 
 /// Load MCP servers configured for `agent_type` and convert them into the
@@ -5217,6 +5270,24 @@ struct CompanionFeatureFlags {
     progress: bool,
 }
 
+/// The tool groups of an engine session kind, from the lockdown policy.
+fn engine_feature_flags(kind: crate::automation::lockdown::SessionKind) -> CompanionFeatureFlags {
+    let f = crate::automation::lockdown::companion_features(kind);
+    CompanionFeatureFlags {
+        delegation: f.delegation,
+        feedback: f.feedback,
+        ask: f.ask,
+        sessions: f.sessions,
+        tasks: f.tasks,
+        automations: f.automations,
+        taskboard: f.taskboard,
+        browser: f.browser,
+        browser_eval: f.browser_eval,
+        git: f.git,
+        progress: f.progress,
+    }
+}
+
 /// The `--features` value for a companion launch, or `None` when no group is
 /// enabled (the companion isn't injected at all). Pulled out as a pure function
 /// so the inject/skip decision is unit-testable without a real binary on disk or
@@ -5283,6 +5354,7 @@ async fn inject_zwiim_mcp(
     working_dir: &Path,
     tasks_enabled: bool,
     host_tools: HostToolsPolicy,
+    engine: Option<crate::automation::lockdown::EngineLaunch>,
 ) -> Option<CompanionInjection> {
     inject_zwiim_mcp_with_binary_locator(
         servers,
@@ -5291,6 +5363,7 @@ async fn inject_zwiim_mcp(
         working_dir,
         tasks_enabled,
         host_tools,
+        engine,
         locate_zwiim_mcp_binary,
     )
     .await
@@ -5303,70 +5376,78 @@ async fn inject_zwiim_mcp_with_binary_locator<F>(
     working_dir: &Path,
     tasks_enabled: bool,
     host_tools: HostToolsPolicy,
+    engine: Option<crate::automation::lockdown::EngineLaunch>,
     locate_binary: F,
 ) -> Option<CompanionInjection>
 where
     F: FnOnce() -> Option<PathBuf>,
 {
-    // zwiim-mcp carries BOTH the delegation tools and the live-feedback tool.
-    // Inject it when EITHER feature is enabled; the `--features` arg tells the
-    // companion which tool groups to expose so a disabled feature's tools never
-    // surface to the LLM. (Historically this was gated on delegation alone.)
-    // `tasks_enabled` is per-spawn: true only for task-engine launches, which
-    // must get their reporting tools regardless of the settings toggles.
-    let feedback_enabled = injection.feedback.is_enabled().await;
-    let authoring = injection.authoring.snapshot().await;
-    // Delegation is a THIRD door into the same room as `fs/*` and `terminal/*`:
-    // `delegate_to_agent` has Zwiim spawn a second agent — in Zwiim's process
-    // tree, under ITS own (by default `Default`) policy — and hand its output
-    // back. A sandboxed agent that cannot read `.env` itself would just ask a
-    // sibling to read it. That defeats the boundary this switch advertises, for
-    // the same reason withholding only one of fs/terminal would, so `agent`
-    // withholds this group too. The other groups stay: they surface Zwiim's own
-    // state (feedback, ask, session info, task reporting), not arbitrary file
-    // or command execution on the user's machine.
-    let delegation_configured = injection.broker.config_snapshot().await.enabled;
-    let delegation_enabled = delegation_configured && host_tools.hosts_channels();
-    if delegation_configured && !delegation_enabled {
-        // The one combination that looks like a bug from the settings UI: the
-        // multi-agent switch reads "on" and the tools are still absent. Say so
-        // once per launch, naming the knob, so the log answers the question the
-        // user actually asks ("why did delegate_to_agent disappear?").
-        tracing::info!(
-            "[delegation] multi-agent delegation is enabled in settings but withheld from \
-             connection {parent_connection_id}: {HOST_TOOLS_ENV}=agent hands fs/terminal back \
-             to this agent, and delegate_to_agent would route the same work through Zwiim \
-             anyway. Turn that per-agent switch off to restore the delegation tools."
-        );
-    }
-    // Which agents the user switched off, so the companion's advertised enum
-    // tracks the live toggle. One indexed query, skipped outright when
-    // delegation is off, and it fails open: the spawn-time disabled check is
-    // the hard gate either way.
-    let disabled = if delegation_enabled {
-        injection.agent_availability.disabled_agent_wire_slugs().await
+    // An engine launch takes its tools from its session kind alone, never
+    // from the person's switches (automation spec 10.8.3).
+    let (flags, disabled) = if let Some(launch) = engine {
+        (engine_feature_flags(launch.kind), Vec::new())
     } else {
-        Vec::new()
-    };
-    let flags = CompanionFeatureFlags {
-        delegation: delegation_enabled,
-        feedback: feedback_enabled,
-        ask: injection.ask.is_enabled().await,
-        sessions: injection.sessions.is_enabled().await,
-        tasks: tasks_enabled,
-        automations: authoring.automations_enabled,
-        taskboard: authoring.work_tasks_enabled,
-        // The Host browser's tabs (design 10.2).
-        browser: injection.browser.is_enabled().await,
-        browser_eval: cfg!(feature = "tauri-runtime")
-            && injection.browser.is_eval_enabled().await,
-        // The Git Harness runs git and gh on the user's machine, outside an
-        // agent's own sandbox, so `agent` withholds it for the same reason it
-        // withholds delegation.
-        git: host_tools.hosts_channels(),
-        // Step progress is what keeps the user out of the dark while any agent
-        // works, whatever the agent and whatever its sandbox.
-        progress: true,
+        // zwiim-mcp carries BOTH the delegation tools and the live-feedback tool.
+        // Inject it when EITHER feature is enabled; the `--features` arg tells the
+        // companion which tool groups to expose so a disabled feature's tools never
+        // surface to the LLM. (Historically this was gated on delegation alone.)
+        // `tasks_enabled` is per-spawn: true only for task-engine launches, which
+        // must get their reporting tools regardless of the settings toggles.
+        let feedback_enabled = injection.feedback.is_enabled().await;
+        let authoring = injection.authoring.snapshot().await;
+        // Delegation is a THIRD door into the same room as `fs/*` and `terminal/*`:
+        // `delegate_to_agent` has Zwiim spawn a second agent — in Zwiim's process
+        // tree, under ITS own (by default `Default`) policy — and hand its output
+        // back. A sandboxed agent that cannot read `.env` itself would just ask a
+        // sibling to read it. That defeats the boundary this switch advertises, for
+        // the same reason withholding only one of fs/terminal would, so `agent`
+        // withholds this group too. The other groups stay: they surface Zwiim's own
+        // state (feedback, ask, session info, task reporting), not arbitrary file
+        // or command execution on the user's machine.
+        let delegation_configured = injection.broker.config_snapshot().await.enabled;
+        let delegation_enabled = delegation_configured && host_tools.hosts_channels();
+        if delegation_configured && !delegation_enabled {
+            // The one combination that looks like a bug from the settings UI: the
+            // multi-agent switch reads "on" and the tools are still absent. Say so
+            // once per launch, naming the knob, so the log answers the question the
+            // user actually asks ("why did delegate_to_agent disappear?").
+            tracing::info!(
+                "[delegation] multi-agent delegation is enabled in settings but withheld from \
+                 connection {parent_connection_id}: {HOST_TOOLS_ENV}=agent hands fs/terminal back \
+                 to this agent, and delegate_to_agent would route the same work through Zwiim \
+                 anyway. Turn that per-agent switch off to restore the delegation tools."
+            );
+        }
+        // Which agents the user switched off, so the companion's advertised enum
+        // tracks the live toggle. One indexed query, skipped outright when
+        // delegation is off, and it fails open: the spawn-time disabled check is
+        // the hard gate either way.
+        let disabled = if delegation_enabled {
+            injection.agent_availability.disabled_agent_wire_slugs().await
+        } else {
+            Vec::new()
+        };
+        let flags = CompanionFeatureFlags {
+            delegation: delegation_enabled,
+            feedback: feedback_enabled,
+            ask: injection.ask.is_enabled().await,
+            sessions: injection.sessions.is_enabled().await,
+            tasks: tasks_enabled,
+            automations: authoring.automations_enabled,
+            taskboard: authoring.work_tasks_enabled,
+            // The Host browser's tabs (design 10.2).
+            browser: injection.browser.is_enabled().await,
+            browser_eval: cfg!(feature = "tauri-runtime")
+                && injection.browser.is_eval_enabled().await,
+            // The Git Harness runs git and gh on the user's machine, outside an
+            // agent's own sandbox, so `agent` withholds it for the same reason it
+            // withholds delegation.
+            git: host_tools.hosts_channels(),
+            // Step progress is what keeps the user out of the dark while any agent
+            // works, whatever the agent and whatever its sandbox.
+            progress: true,
+        };
+        (flags, disabled)
     };
     // `None` (no feature enabled) short-circuits BEFORE the binary lookup, the
     // token registration and the server append: there is no companion to launch,
@@ -5397,6 +5478,7 @@ where
             crate::acp::delegation::listener::TokenEntry {
                 parent_connection_id: parent_connection_id.to_string(),
                 working_dir: working_dir.to_path_buf(),
+                engine,
             },
         )
         .await;
@@ -5418,6 +5500,11 @@ where
         "--features".to_string(),
         features_arg,
     ];
+    // An engine session lists exactly its profile, not the whole group.
+    if let Some(launch) = engine {
+        args.push("--tools".to_string());
+        args.push(launch.kind.browser_tools().join(","));
+    }
     if !custom_slugs.is_empty() {
         args.push("--custom-agents".to_string());
         args.push(custom_slugs.join(","));
@@ -5430,7 +5517,7 @@ where
     servers.push(McpServer::Stdio(server));
     Some(CompanionInjection {
         token,
-        feedback_available: feedback_enabled,
+        feedback_available: flags.feedback,
         delegation_enabled: flags.delegation,
     })
 }
@@ -5703,6 +5790,9 @@ async fn run_connection(
     // Claude's AIR frames: trimmed `_meta` merged back, and the permission
     // card's missing kind / diff (see `claude_tool_frames`).
     let claude_frames = claude_tool_frames::ClaudeToolFrames::shared();
+    let engine_launch = state.read().await.engine;
+    let engine_kind = engine_launch.map(|e| e.kind);
+    let engine_session = engine_kind.is_some();
 
     Client
         .builder()
@@ -5731,6 +5821,18 @@ async fn run_connection(
                 async move |mut req: RequestPermissionRequest,
                             responder: Responder<RequestPermissionResponse>,
                             _cx: ConnectionTo<Agent>| {
+                    // An engine session's requests never reach the person
+                    // (spec 10.5.2): its tools are pre-allowed, so anything
+                    // asking is outside its profile.
+                    if engine_session {
+                        tracing::info!(
+                            "[ACP] rejecting a permission request from engine session {perm_conn_id}"
+                        );
+                        let _ = responder.respond(RequestPermissionResponse::new(
+                            engine_permission_rejection(&req),
+                        ));
+                        return Ok(());
+                    }
                     claude_frames
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
@@ -5801,8 +5903,8 @@ async fn run_connection(
                 async move |req: ReadTextFileRequest,
                             responder: Responder<ReadTextFileResponse>,
                             _cx: ConnectionTo<Agent>| {
-                    if !host_tools.hosts_channels() {
-                        return refuse_unadvertised_channel(responder, "fs/read_text_file");
+                    if let Some(error) = channel_refusal("fs/read_text_file", engine_session, host_tools) {
+                        return responder.respond_with_error(error);
                     }
                     respond_file_system_request(responder, runtime.read_text_file(req).await)?;
                     Ok(())
@@ -5816,8 +5918,8 @@ async fn run_connection(
                 async move |req: WriteTextFileRequest,
                             responder: Responder<WriteTextFileResponse>,
                             _cx: ConnectionTo<Agent>| {
-                    if !host_tools.hosts_channels() {
-                        return refuse_unadvertised_channel(responder, "fs/write_text_file");
+                    if let Some(error) = channel_refusal("fs/write_text_file", engine_session, host_tools) {
+                        return responder.respond_with_error(error);
                     }
                     respond_file_system_request(responder, runtime.write_text_file(req).await)?;
                     Ok(())
@@ -5831,8 +5933,8 @@ async fn run_connection(
                 async move |req: CreateTerminalRequest,
                             responder: Responder<CreateTerminalResponse>,
                             _cx: ConnectionTo<Agent>| {
-                    if !host_tools.hosts_channels() {
-                        return refuse_unadvertised_channel(responder, "terminal/create");
+                    if let Some(error) = channel_refusal("terminal/create", engine_session, host_tools) {
+                        return responder.respond_with_error(error);
                     }
                     respond_terminal_request(responder, runtime.create_terminal(req).await)?;
                     Ok(())
@@ -5846,8 +5948,8 @@ async fn run_connection(
                 async move |req: TerminalOutputRequest,
                             responder: Responder<TerminalOutputResponse>,
                             _cx: ConnectionTo<Agent>| {
-                    if !host_tools.hosts_channels() {
-                        return refuse_unadvertised_channel(responder, "terminal/output");
+                    if let Some(error) = channel_refusal("terminal/output", engine_session, host_tools) {
+                        return responder.respond_with_error(error);
                     }
                     respond_terminal_request(responder, runtime.terminal_output(req).await)?;
                     Ok(())
@@ -5861,11 +5963,13 @@ async fn run_connection(
                 async move |req: WaitForTerminalExitRequest,
                             responder: Responder<WaitForTerminalExitResponse>,
                             cx: ConnectionTo<Agent>| {
-                    if !host_tools.hosts_channels() {
+                    if let Some(error) =
+                        channel_refusal("terminal/wait_for_exit", engine_session, host_tools)
+                    {
                         // Refuse INLINE, before the spawn below: there is no
                         // terminal to wait on, so answering immediately is
                         // correct and keeps the refusal off the spawn path.
-                        return refuse_unadvertised_channel(responder, "terminal/wait_for_exit");
+                        return responder.respond_with_error(error);
                     }
                     // `terminal/wait_for_exit` blocks until the command exits,
                     // and sacp awaits request handlers INSIDE its single
@@ -5904,8 +6008,8 @@ async fn run_connection(
                 async move |req: KillTerminalRequest,
                             responder: Responder<KillTerminalResponse>,
                             _cx: ConnectionTo<Agent>| {
-                    if !host_tools.hosts_channels() {
-                        return refuse_unadvertised_channel(responder, "terminal/kill");
+                    if let Some(error) = channel_refusal("terminal/kill", engine_session, host_tools) {
+                        return responder.respond_with_error(error);
                     }
                     respond_terminal_request(responder, runtime.kill_terminal(req).await)?;
                     Ok(())
@@ -5919,8 +6023,8 @@ async fn run_connection(
                 async move |req: ReleaseTerminalRequest,
                             responder: Responder<ReleaseTerminalResponse>,
                             _cx: ConnectionTo<Agent>| {
-                    if !host_tools.hosts_channels() {
-                        return refuse_unadvertised_channel(responder, "terminal/release");
+                    if let Some(error) = channel_refusal("terminal/release", engine_session, host_tools) {
+                        return responder.respond_with_error(error);
                     }
                     respond_terminal_request(responder, runtime.release_terminal(req).await)?;
                     Ok(())
@@ -6179,7 +6283,7 @@ async fn run_connection(
             // ACP spec; HTTP/SSE are gated on `mcp_capabilities.{http,sse}`.
             let mut mcp_servers: Vec<McpServer> = if agent_supports_mcp {
                 let mcp_caps = &init_resp.agent_capabilities.mcp_capabilities;
-                load_mcp_servers_for_agent(agent_type)
+                user_mcp_servers(agent_type, engine_kind.is_some())
                     .into_iter()
                     .filter(|s| match s {
                         McpServer::Stdio(_) => true,
@@ -6234,6 +6338,7 @@ async fn run_connection(
                         &cwd,
                         tasks_enabled,
                         host_tools,
+                        engine_launch,
                     )
                     .await
                 } else {
@@ -6762,6 +6867,7 @@ async fn run_connection(
                             &cwd,
                             mcp_servers.clone(),
                             instructions.as_deref(),
+                            engine_kind,
                         ),
                         )
                         .await
@@ -6868,6 +6974,7 @@ async fn run_connection(
                             &cwd,
                             mcp_servers.clone(),
                             instructions.as_deref(),
+                            engine_kind,
                         ),
                 )
                 .await
@@ -7161,6 +7268,21 @@ fn zwiim_ask_auto_allow_option(req: &RequestPermissionRequest) -> Option<String>
         .iter()
         .find(|opt| opt.kind == PermissionOptionKind::AllowOnce)
         .map(|opt| opt.option_id.to_string())
+}
+
+/// The answer to any permission request from an engine session (spec
+/// 10.5.2): the agent's reject-once option, else a cancel. Never a
+/// reject-always, which would write a rule into the agent's settings.
+fn engine_permission_rejection(req: &RequestPermissionRequest) -> RequestPermissionOutcome {
+    req.options
+        .iter()
+        .find(|opt| opt.kind == PermissionOptionKind::RejectOnce)
+        .map(|opt| {
+            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                opt.option_id.to_string(),
+            ))
+        })
+        .unwrap_or(RequestPermissionOutcome::Cancelled)
 }
 
 /// Answer a permission request that is merely gating Zwiim's own ask tool, so
@@ -7925,26 +8047,37 @@ fn respond_terminal_request<T: sacp::JsonRpcResponse>(
     }
 }
 
-/// Refuse a channel this launch never advertised
-/// ([`HostToolsPolicy::Agent`], #436). Withholding the capability is a
-/// DECLARATION; a non-conforming agent can still call the method, and if Zwiim
-/// then served it the whole switch would be a suggestion — the operation would
-/// land back in Zwiim's process, outside the agent's sandbox, which is exactly
-/// the bug. `method_not_found` is the honest wire answer: as far as this
-/// connection is concerned the method does not exist, which is what the agent
-/// was told on Initialize.
-fn refuse_unadvertised_channel<T: sacp::JsonRpcResponse>(
-    responder: Responder<T>,
+/// Whether this connection refuses an `fs/*` or `terminal/*` call, and with
+/// what. An engine session refuses every one with the lockdown line (spec
+/// 10.7.1): the channels stay advertised so the agent does not fall back to
+/// its own tools, but nothing is served. Otherwise a channel this launch
+/// never advertised ([`HostToolsPolicy::Agent`], #436) is refused: withholding
+/// the capability is a DECLARATION, and a non-conforming agent can still call
+/// the method; serving it would land the operation back in Zwiim's process,
+/// outside the agent's sandbox.
+fn channel_refusal(
     method: &str,
-) -> Result<(), sacp::Error> {
+    engine_session: bool,
+    host_tools: HostToolsPolicy,
+) -> Option<sacp::Error> {
+    if engine_session {
+        tracing::warn!("[ACP] refusing {method} in an engine session (automation lockdown)");
+        return Some(sacp::Error::new(
+            -32600,
+            crate::automation::lockdown::LOCKDOWN_REFUSAL,
+        ));
+    }
+    if host_tools.hosts_channels() {
+        return None;
+    }
     tracing::warn!(
         "[ACP] refusing {method}: {HOST_TOOLS_ENV}=agent, so this channel was never \
          advertised — the agent must use its own (sandboxable) tools"
     );
-    responder.respond_with_error(unadvertised_channel_error(method))
+    Some(unadvertised_channel_error(method))
 }
 
-/// The error [`refuse_unadvertised_channel`] answers with. Split out because a
+/// The error a withheld channel answers with. Split out because a
 /// `Responder` cannot be built outside a live connection, so this is the part
 /// of the refusal a unit test can pin; the wiring itself is covered end-to-end.
 fn unadvertised_channel_error(method: &str) -> sacp::Error {
@@ -18065,6 +18198,206 @@ mod tests {
         );
     }
 
+    /// An engine Claude session keeps the connection's own options and gains
+    /// the lockdown ones (automation spec 10.6, 10.7); a person's session
+    /// gets none of them.
+    #[test]
+    fn an_engine_claude_session_carries_the_lockdown_options() {
+        use crate::automation::lockdown::SessionKind;
+        let cwd = PathBuf::from("/tmp");
+        let req = serde_json::to_value(build_new_session_request(
+            AgentType::ClaudeCode,
+            &cwd,
+            Vec::new(),
+            None,
+            Some(SessionKind::Item),
+        ))
+        .unwrap();
+        let options = &req["_meta"]["claudeCode"]["options"];
+        assert_eq!(options["extraArgs"]["thinking-display"], "summarized");
+        assert_eq!(options["settingSources"], serde_json::json!([]));
+        assert_eq!(options["strictMcpConfig"], true);
+        let person = serde_json::to_value(build_new_session_request(
+            AgentType::ClaudeCode,
+            &cwd,
+            Vec::new(),
+            None,
+            None,
+        ))
+        .unwrap();
+        assert!(person["_meta"]["claudeCode"]["options"].get("settingSources").is_none());
+    }
+
+    #[test]
+    fn an_engine_launch_removes_the_tokens_it_does_not_need() {
+        let mut env = BTreeMap::from([("GITHUB_TOKEN".to_string(), "ghp_x".to_string())]);
+        scrub_engine_env(&mut env, AgentType::ClaudeCode);
+        // Empty is what the spawn layer turns into `env_remove`.
+        assert_eq!(env.get("GITHUB_TOKEN").map(String::as_str), Some(""));
+        assert_eq!(env.get("GH_TOKEN").map(String::as_str), Some(""));
+        assert!(!env.contains_key("ANTHROPIC_API_KEY"));
+    }
+
+    /// The lockdown conformance matrix (automation spec 10.9), for every
+    /// built-in agent and every engine session kind, as far as it holds
+    /// without a live agent: the tool list the companion would serve equals
+    /// the profile, the person's MCP servers stay out, every permission
+    /// request is rejected, fs and terminal are refused, batch kinds get no
+    /// browser, Claude Code runs with the lockdown options, and no agent is
+    /// labelled fully locked yet. The live half (a real shell request, a user
+    /// hook, the network gate) runs with the fixture site (task 18).
+    #[tokio::test]
+    async fn every_agent_and_kind_meets_the_lockdown_it_can_be_checked_for() {
+        use crate::acp::delegation::companion::{
+            dispatch_line, parse_csv_list, CompanionContext, CompanionFeatures, InflightCalls,
+            LineAction,
+        };
+        use crate::automation::lockdown::{
+            lockdown_level, EngineLaunch, LockdownLevel, SessionKind,
+        };
+        let injection = test_delegation_injection(
+            Arc::new(TestAllAgentsAvailable) as Arc<dyn AgentAvailabilityLookup>
+        );
+        let cwd = PathBuf::from("/tmp");
+        for &agent in crate::models::agent::BUILTIN_AGENT_TYPES {
+            assert!(user_mcp_servers(agent, true).is_empty(), "{agent:?}");
+            assert_eq!(lockdown_level(agent), LockdownLevel::BestEffort, "{agent:?}");
+            for &kind in SessionKind::all() {
+                let launch = EngineLaunch { kind, attempt: None };
+                let mut servers = Vec::new();
+                let injected = inject_zwiim_mcp_with_binary_locator(
+                    &mut servers,
+                    &injection,
+                    "engine-conn",
+                    &cwd,
+                    false,
+                    HostToolsPolicy::Default,
+                    Some(launch),
+                    || Some(PathBuf::from("/bin/zwiim-mcp")),
+                )
+                .await;
+                if !kind.has_browser() {
+                    assert!(injected.is_none() && servers.is_empty(), "{kind:?}");
+                } else {
+                    let McpServer::Stdio(server) = &servers[0] else {
+                        panic!("expected stdio");
+                    };
+                    let arg = |flag: &str| {
+                        server
+                            .args
+                            .iter()
+                            .position(|a| a == flag)
+                            .map(|at| server.args[at + 1].clone())
+                    };
+                    let ctx = CompanionContext {
+                        parent_connection_id: "engine-conn".into(),
+                        socket_path: "/tmp/none.sock".into(),
+                        token: injected.expect("token").token,
+                        features: CompanionFeatures::parse(arg("--features").as_deref()),
+                        custom_agents: Vec::new(),
+                        disabled_agents: Vec::new(),
+                        only_tools: parse_csv_list(arg("--tools").as_deref()),
+                    };
+                    let LineAction::Respond(listed) = dispatch_line(
+                        &ctx,
+                        Arc::new(InflightCalls::new()),
+                        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+                    )
+                    .await
+                    else {
+                        panic!("expected a listing");
+                    };
+                    let mut names: Vec<String> = listed.result.unwrap()["tools"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|t| t["name"].as_str().unwrap().to_string())
+                        .collect();
+                    names.sort();
+                    let mut profile: Vec<String> =
+                        kind.browser_tools().iter().map(|t| t.to_string()).collect();
+                    profile.sort();
+                    assert_eq!(names, profile, "{agent:?} {kind:?}");
+                }
+                for method in ["fs/read_text_file", "fs/write_text_file", "terminal/create"] {
+                    assert!(channel_refusal(method, true, HostToolsPolicy::Default).is_some());
+                }
+                let req = claude_mcp_permission_request("Bash", claude_permission_options());
+                assert!(!matches!(
+                    engine_permission_rejection(&req),
+                    RequestPermissionOutcome::Selected(ref s) if s.option_id.to_string() == "allow-once"
+                ));
+                let opened = serde_json::to_value(build_new_session_request(
+                    agent,
+                    &cwd,
+                    Vec::new(),
+                    None,
+                    Some(kind),
+                ))
+                .unwrap();
+                if agent == AgentType::ClaudeCode {
+                    let options = &opened["_meta"]["claudeCode"]["options"];
+                    assert_eq!(options["settingSources"], serde_json::json!([]));
+                    assert_eq!(options["tools"], serde_json::json!([]));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_engine_session_permission_request_is_rejected_once() {
+        // Even Zwiim's own ask tool, which a person's session auto-allows.
+        let req = claude_mcp_permission_request(
+            "mcp__zwiim-mcp__ask_user_question",
+            claude_permission_options(),
+        );
+        match engine_permission_rejection(&req) {
+            RequestPermissionOutcome::Selected(selected) => {
+                assert_eq!(selected.option_id.to_string(), "reject");
+            }
+            other => panic!("expected the reject-once option, got {other:?}"),
+        }
+        // No reject-once option: cancel, never an "always" rule.
+        let always_only = claude_mcp_permission_request(
+            "mcp__zwiim-mcp__browser_click",
+            vec![
+                sacp::schema::PermissionOption::new(
+                    "allow-once",
+                    "Yes",
+                    PermissionOptionKind::AllowOnce,
+                ),
+                sacp::schema::PermissionOption::new(
+                    "reject-always",
+                    "Never",
+                    PermissionOptionKind::RejectAlways,
+                ),
+            ],
+        );
+        assert!(matches!(
+            engine_permission_rejection(&always_only),
+            RequestPermissionOutcome::Cancelled
+        ));
+    }
+
+    /// The engine check runs first in the permission handler, before the
+    /// ask auto-allow and every bridge, so no request from an engine session
+    /// reaches the person (spec 10.5.2).
+    #[test]
+    fn the_permission_handler_rejects_engine_requests_before_anything_else() {
+        let source = include_str!("connection.rs");
+        let code = source.split("#[cfg(test)]\nmod tests {").next().unwrap();
+        let handler = code
+            .split("async move |mut req: RequestPermissionRequest,")
+            .nth(1)
+            .unwrap();
+        let reject = handler.find("engine_permission_rejection(&req)").unwrap();
+        let ask = handler.find("try_auto_allow_zwiim_ask(").unwrap();
+        assert!(reject < ask);
+        let spawn = code.split("pub async fn spawn_agent_connection(").nth(1).unwrap();
+        let spawn = spawn.split("\n}\n").next().unwrap();
+        assert!(spawn.contains("initial_state.engine = engine;"));
+    }
+
     #[test]
     fn zwiim_ask_auto_allow_option_picks_allow_once_for_zwiims_own_ask_tool() {
         let req = claude_mcp_permission_request(
@@ -19543,6 +19876,36 @@ mod tests {
         assert_eq!(claude["fs"]["readTextFile"], serde_json::Value::Bool(false));
     }
 
+    /// An engine session still sees fs and terminal advertised, but every
+    /// call is refused with the lockdown line (spec 10.7.1), whatever the
+    /// host-tools policy; a person's session keeps today's behaviour.
+    #[test]
+    fn an_engine_session_refuses_every_fs_and_terminal_call() {
+        for method in [
+            "fs/read_text_file",
+            "fs/write_text_file",
+            "terminal/create",
+            "terminal/output",
+            "terminal/wait_for_exit",
+            "terminal/kill",
+            "terminal/release",
+        ] {
+            for host_tools in [HostToolsPolicy::Default, HostToolsPolicy::Agent] {
+                let error = channel_refusal(method, true, host_tools).expect("refused");
+                assert!(
+                    error.message.contains("not available in automation sessions"),
+                    "{method}: {error:?}"
+                );
+            }
+            assert!(channel_refusal(method, false, HostToolsPolicy::Default).is_none());
+            assert!(channel_refusal(method, false, HostToolsPolicy::Agent).is_some());
+        }
+        let source = include_str!("connection.rs");
+        let code = source.split("#[cfg(test)]\nmod tests {").next().unwrap();
+        assert_eq!(code.matches("refuse_unadvertised_channel(responder").count(), 0);
+        assert_eq!(code.matches("channel_refusal(\"").count(), 7);
+    }
+
     #[test]
     fn a_withheld_channel_is_refused_as_method_not_found() {
         // Every channel Zwiim stops advertising must also stop being SERVED.
@@ -19619,6 +19982,7 @@ mod tests {
                 &cwd,
                 Vec::new(),
                 Some("be kind"),
+                None,
             ))
             .unwrap(),
             serde_json::to_value(build_load_session_request(
@@ -19767,6 +20131,7 @@ mod tests {
             &cwd,
             Vec::new(),
             Some(&text),
+            None,
         ))
         .unwrap();
         assert_eq!(
@@ -19884,7 +20249,7 @@ mod tests {
         let source = include_str!("connection.rs");
         let code = source.split("#[cfg(test)]\nmod tests {").next().unwrap();
         assert_eq!(code.matches("crate::harness::instruct(").count(), 1);
-        let call = "connection_instructions(\n        &connection_id,";
+        let call = "connection_instructions(\n                &connection_id,";
         assert_eq!(code.matches(call).count(), 1);
         let spawn = code.split("pub async fn spawn_agent_connection(").nth(1).unwrap();
         let spawn = spawn.split("\n}\n").next().unwrap();
@@ -21436,7 +21801,7 @@ mod tests {
     #[test]
     fn build_new_session_request_sets_claude_raw_meta() {
         let cwd = std::path::PathBuf::from("/tmp/zwiim");
-        let req = build_new_session_request(AgentType::ClaudeCode, &cwd, Vec::new(), None);
+        let req = build_new_session_request(AgentType::ClaudeCode, &cwd, Vec::new(), None, None);
 
         assert_eq!(
             req.meta
@@ -21681,7 +22046,7 @@ mod tests {
     fn openclaw_session_requests_carry_no_mcp_servers() {
         let cwd = std::path::PathBuf::from("/tmp/zwiim");
 
-        let new_req = build_new_session_request(AgentType::OpenClaw, &cwd, Vec::new(), None);
+        let new_req = build_new_session_request(AgentType::OpenClaw, &cwd, Vec::new(), None, None);
         assert!(
             new_req.mcp_servers.is_empty(),
             "OpenClaw session/new must carry no MCP servers"
@@ -26080,6 +26445,7 @@ mod tests {
             std::path::Path::new("/tmp"),
             false,
             HostToolsPolicy::Default,
+            None,
         )
         .await;
 
@@ -26094,6 +26460,59 @@ mod tests {
             injection.tokens.lookup("any-token").await.is_none(),
             "disabled broker must not register a delegate token"
         );
+    }
+
+    /// An engine launch gets its kind's tools whatever the person's global
+    /// switches say (automation spec 10.8.3): the browser group for item and
+    /// discovery, narrowed by `--tools` to the profile, a token the Host ties
+    /// to the kind, and no companion at all for the batch kinds.
+    #[tokio::test]
+    async fn an_engine_launch_injects_exactly_its_kinds_tools() {
+        use crate::automation::lockdown::{EngineLaunch, SessionKind};
+        let injection = test_delegation_injection(
+            Arc::new(TestAllAgentsAvailable) as Arc<dyn AgentAvailabilityLookup>
+        );
+        let mut servers = Vec::new();
+        let injected = inject_zwiim_mcp_with_binary_locator(
+            &mut servers,
+            &injection,
+            "engine-conn",
+            std::path::Path::new("/tmp"),
+            false,
+            HostToolsPolicy::Default,
+            Some(EngineLaunch { kind: SessionKind::Item, attempt: None }),
+            || Some(PathBuf::from("/bin/zwiim-mcp")),
+        )
+        .await
+        .expect("item sessions get the companion");
+        let McpServer::Stdio(server) = &servers[0] else {
+            panic!("expected stdio");
+        };
+        let arg = |flag: &str| {
+            let at = server.args.iter().position(|a| a == flag).expect(flag);
+            server.args[at + 1].clone()
+        };
+        assert_eq!(arg("--features"), "browser");
+        assert_eq!(arg("--tools"), SessionKind::Item.browser_tools().join(","));
+        let entry = injection.tokens.lookup(&injected.token).await.expect("token");
+        assert_eq!(entry.engine.map(|e| e.kind), Some(SessionKind::Item));
+
+        let mut none = Vec::new();
+        let batch = inject_zwiim_mcp_with_binary_locator(
+            &mut none,
+            &injection,
+            "batch-conn",
+            std::path::Path::new("/tmp"),
+            false,
+            HostToolsPolicy::Default,
+            Some(EngineLaunch { kind: SessionKind::JudgmentBatch, attempt: None }),
+            || Some(PathBuf::from("/bin/zwiim-mcp")),
+        )
+        .await;
+        assert!(batch.is_none() && none.is_empty());
+
+        // The person's own MCP servers never reach an engine session.
+        assert!(user_mcp_servers(AgentType::ClaudeCode, true).is_empty());
     }
 
     // ─── delegate_target_args: enable-toggle filtering ──────────
@@ -26429,7 +26848,7 @@ mod tests {
     #[test]
     fn untyped_new_session_carries_the_typed_request_payload() {
         let cwd = std::path::PathBuf::from("/tmp/zwiim");
-        let req = build_new_session_request(AgentType::Cline, &cwd, Vec::new(), None);
+        let req = build_new_session_request(AgentType::Cline, &cwd, Vec::new(), None, None);
         let expected = serde_json::to_value(&req).unwrap();
 
         let untyped = UntypedMessage::new("session/new", req).expect("builds");

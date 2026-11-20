@@ -40,7 +40,7 @@ use std::sync::Arc;
 
 use zwiim_host::acp::delegation::companion::{
     dispatch_line, drain_and_cancel_all, CompanionContext, CompanionFeatures, InflightCalls,
-    JsonRpcResponse, LineAction, SpawnResult,
+    parse_csv_list, JsonRpcResponse, LineAction, SpawnResult,
 };
 use zwiim_host::acp::delegation::parent_watcher::{wait_for_parent_exit, DEFAULT_POLL_INTERVAL};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Stdout};
@@ -71,6 +71,9 @@ struct Args {
     /// only launchable targets are advertised. Omitted when nothing is
     /// disabled (disabled customs are simply left out of `--custom-agents`).
     disabled_agents: Option<String>,
+    /// Comma-joined exact tool names, passed only for automation engine
+    /// sessions; narrows the groups to that list.
+    tools: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -81,6 +84,7 @@ fn parse_args() -> Result<Args, String> {
     let mut features = None;
     let mut custom_agents = None;
     let mut disabled_agents = None;
+    let mut tools = None;
 
     let mut iter = std::env::args().skip(1);
     while let Some(arg) = iter.next() {
@@ -130,9 +134,15 @@ fn parse_args() -> Result<Args, String> {
                         .ok_or_else(|| "--disabled-agents requires a value".to_string())?,
                 );
             }
+            "--tools" => {
+                tools = Some(
+                    iter.next()
+                        .ok_or_else(|| "--tools requires a value".to_string())?,
+                );
+            }
             "--help" | "-h" => {
                 println!(
-                    "zwiim-mcp --parent-connection-id <uuid> --socket-path <path> --token <secret> [--parent-pid <pid>] [--features delegation,feedback,ask,sessions,tasks,progress] [--custom-agents custom:<id>,...] [--disabled-agents <agent>,...]"
+                    "zwiim-mcp --parent-connection-id <uuid> --socket-path <path> --token <secret> [--parent-pid <pid>] [--features delegation,feedback,ask,sessions,tasks,progress] [--custom-agents custom:<id>,...] [--disabled-agents <agent>,...] [--tools <tool>,...]"
                 );
                 std::process::exit(0);
             }
@@ -148,6 +158,7 @@ fn parse_args() -> Result<Args, String> {
         features,
         custom_agents,
         disabled_agents,
+        tools,
     })
 }
 
@@ -199,6 +210,7 @@ async fn main() -> ExitCode {
         features: CompanionFeatures::parse(args.features.as_deref()),
         custom_agents: parse_csv(args.custom_agents.as_deref()),
         disabled_agents: parse_csv(args.disabled_agents.as_deref()),
+        only_tools: parse_csv_list(args.tools.as_deref()),
     };
 
     let stdin = tokio::io::stdin();
