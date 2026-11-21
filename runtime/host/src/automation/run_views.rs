@@ -58,6 +58,8 @@ pub struct ItemView {
     pub question: Option<String>,
     /// The browser tab it works in or is parked on.
     pub tab_id: Option<String>,
+    /// Its send may have gone out: the person says whether it did.
+    pub may_have_sent: bool,
 }
 
 impl RunView {
@@ -132,6 +134,7 @@ pub async fn read(
             reason_code: i.reason_code,
             question: questions.remove(&i.id).map(|(_, text)| text),
             tab_id: i.tab_id,
+            may_have_sent: i.outward_started_at.is_some(),
         })
         .collect();
     Ok((views, items))

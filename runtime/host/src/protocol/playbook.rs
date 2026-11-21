@@ -142,6 +142,10 @@ pub struct ItemSummary {
     pub question: Option<String>,
     /// The browser tab it works in or is parked on, for a client to show.
     pub tab_id: Option<String>,
+    /// Its send may have gone out: the person says whether it did
+    /// (`run.resolve`).
+    #[serde(default)]
+    pub may_have_sent: bool,
 }
 
 impl From<playbook_item::Model> for ItemSummary {
@@ -158,6 +162,7 @@ impl From<playbook_item::Model> for ItemSummary {
             updated_at: m.updated_at,
             question: None,
             tab_id: m.tab_id,
+            may_have_sent: m.outward_started_at.is_some(),
         }
     }
 }
@@ -725,6 +730,134 @@ pub async fn run_answer(
     Ok(Json(RunAnswerResult {
         item_id: p.item_id,
         requeued,
+    }))
+}
+
+// ── run.resolve (an item waiting on the person, spec 8.9) ─────────────────
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolveChoice {
+    /// "It was sent": the item is done and keeps its slot.
+    Sent,
+    /// "Not sent, redo" (or "Try again" when nothing went out): back to
+    /// the queue, its keys and slot released.
+    NotSent,
+    /// "Skip": skipped and on the playbook's skip list; its keys stay taken.
+    Skip,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunResolveParams {
+    pub item_id: String,
+    pub choice: ResolveChoice,
+}
+
+#[derive(Serialize)]
+pub struct RunResolveResult {
+    pub item_id: String,
+    pub status: String,
+}
+
+/// The person settled an item waiting on them (spec 8.9 "May have been
+/// sent", and a page that needed them). The first answer wins; a later one
+/// finds it `item_not_waiting`.
+pub async fn run_resolve(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Json(p): axum::extract::Json<RunResolveParams>,
+) -> ZResult<RunResolveResult> {
+    require_enabled(&state.db.conn).await?;
+    use crate::automation::engine::LedgerKey;
+    use crate::automation::entities::never_twice_ledger;
+    use crate::automation::states::ItemStatus;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    let not_waiting = || {
+        ZwiimError::new(
+            axum::http::StatusCode::CONFLICT,
+            crate::automation::ErrorCode::ItemNotWaiting.as_str(),
+            "This item is not waiting on you",
+        )
+    };
+    let item = playbook_item::Entity::find()
+        .filter(playbook_item::Column::PublicId.eq(&p.item_id))
+        .one(&state.db.conn)
+        .await
+        .map_err(engine_err)?
+        .ok_or_else(|| ZwiimError::not_found(format!("item {}", p.item_id)))?;
+    if item.status != ItemStatus::WaitingPerson.as_str() {
+        return Err(not_waiting());
+    }
+    let sent = item.outward_started_at.is_some();
+    if p.choice == ResolveChoice::Sent && !sent {
+        return Err(ZwiimError::invalid_input("Nothing was sent for this item"));
+    }
+    // The keys this item holds, as its dispatch reserved them.
+    let keys: Vec<LedgerKey> = never_twice_ledger::Entity::find()
+        .filter(never_twice_ledger::Column::ItemId.eq(item.id))
+        .filter(never_twice_ledger::Column::State.eq("reserved"))
+        .all(&state.db.conn)
+        .await
+        .map_err(engine_err)?
+        .into_iter()
+        .map(|k| LedgerKey {
+            site: k.site,
+            account: k.account,
+            action_kind: k.action_kind,
+            item_key: k.item_key,
+        })
+        .collect();
+    let store = PlaybookStore::new(state.db.conn.clone());
+    let runner = crate::automation::item_runner::ItemRunner::new(engine(&state), store.clone());
+    let stale = |e: crate::automation::item_runner::RunError| match e {
+        crate::automation::item_runner::RunError::Transition(
+            crate::db::service::playbook_engine_service::TransitionError::ItemStale { .. },
+        ) => not_waiting(),
+        other => engine_err(other),
+    };
+    let status = match p.choice {
+        ResolveChoice::Sent => {
+            runner.accept_sent(item.id, &keys).await.map_err(stale)?;
+            ItemStatus::Done
+        }
+        ResolveChoice::NotSent => {
+            runner.redo_not_sent(item.id, &keys).await.map_err(stale)?;
+            ItemStatus::Queued
+        }
+        ResolveChoice::Skip => {
+            // The person's skip, recorded as an approval Skip is (spec 11.2 has no other code).
+            let reason = crate::automation::reasons::ReasonCode::ApprovalRejected.as_str();
+            engine(&state)
+                .transition_item(
+                    item.id,
+                    ItemStatus::WaitingPerson,
+                    ItemStatus::Skipped,
+                    Some(reason),
+                )
+                .await
+                .map_err(|e| match e {
+                    crate::db::service::playbook_engine_service::TransitionError::ItemStale {
+                        ..
+                    } => not_waiting(),
+                    other => engine_err(other),
+                })?;
+            store
+                .skip_item(
+                    item.playbook_id,
+                    &item.site,
+                    &item.account,
+                    &item.item_key,
+                    reason,
+                )
+                .await
+                .map_err(engine_err)?;
+            ItemStatus::Skipped
+        }
+    };
+    changed(&state);
+    Ok(Json(RunResolveResult {
+        item_id: p.item_id,
+        status: status.as_str().to_string(),
     }))
 }
 

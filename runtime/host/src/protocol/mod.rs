@@ -276,6 +276,7 @@ pub fn router(token: String, db: DatabaseConnection) -> Router {
         .route("/run.approve", post(playbook::run_approve))
         .route("/run.reject", post(playbook::run_reject))
         .route("/run.answer", post(playbook::run_answer))
+        .route("/run.resolve", post(playbook::run_resolve))
         .route("/site.list", post(playbook::site_list))
         .route("/site.pause", post(playbook::site_pause))
         .route("/site.resume", post(playbook::site_resume))

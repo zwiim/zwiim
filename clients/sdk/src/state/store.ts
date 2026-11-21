@@ -452,6 +452,7 @@ function itemView(run_id: string, i: ItemSummary): RunItemView {
     url: i.url,
     question: i.question ?? null,
     tab_id: i.tab_id ?? null,
+    may_have_sent: i.may_have_sent ?? false,
   };
 }
 

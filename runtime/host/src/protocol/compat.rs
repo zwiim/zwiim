@@ -546,7 +546,15 @@ use serde::{Deserialize, Serialize};
 /// fields the page pre-filled are marked `prefilled`. Playbooks carry `sites`
 /// with `risk_accepted`; `playbook.save` takes the name from the text. Older
 /// clients ignore the new fields and never call `run.list`.
-pub const PROTOCOL_REVISION: u32 = 43;
+///
+/// 44 (`run.resolve`): `run.resolve {item_id, choice}` settles an item waiting
+/// on the person (spec 8.9): `sent` ends it `done` with its keys done,
+/// `not_sent` puts it back in the queue with its keys and cap slot released,
+/// `skip` ends it `skipped` on the skip list (`{item_id, status}`). `sent`
+/// for an item nothing went out for is `invalid_input`; an item not waiting is
+/// `item_not_waiting`. Items (`run.items`, `run.item_changed`) carry
+/// `may_have_sent`. Older clients ignore the field and never call it.
+pub const PROTOCOL_REVISION: u32 = 44;
 
 /// Oldest client revision this Host serves. Raise only after a release that
 /// reported `client_deprecated`-era clients (see the R9 design, §5.5).
@@ -828,7 +836,12 @@ mod tests {
 
     #[test]
     fn the_automations_canvas_fields_are_revision_43() {
-        assert_eq!(PROTOCOL_REVISION, 43);
+        assert!(PROTOCOL_REVISION >= 43);
+    }
+
+    #[test]
+    fn settling_an_item_waiting_on_the_person_is_revision_44() {
+        assert_eq!(PROTOCOL_REVISION, 44);
     }
 
     #[test]

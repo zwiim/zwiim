@@ -128,6 +128,8 @@ export type HostErrorCode =
   /** `run.start` / `run.try`: a playbook site has no risk step yet. Details `{ sites }`. */
   | "site_risk_not_accepted"
   | "no_open_question"
+  /** `run.resolve`: the item is not waiting on the person. */
+  | "item_not_waiting"
   /** Enabling a schedule before a completed show-me run (1a-ii). */
   | "schedule_needs_show_me_run"
   /** Any `playbook.*` / `run.*` / `site.*` while Playbooks are off in Settings > Labs. */
@@ -2209,6 +2211,9 @@ export interface RunAlert {
 }
 
 /** An item as `run.item_changed` carries it. */
+/** How the person settles an item waiting on them (`run.resolve`). */
+export type RunResolveChoice = "sent" | "not_sent" | "skip";
+
 export interface RunItemView {
   run_id: string;
   item_id: string;
@@ -2222,6 +2227,8 @@ export interface RunItemView {
   question?: string | null;
   /** The browser tab it works in or is parked on (revision 43). */
   tab_id?: string | null;
+  /** Its send may have gone out; the person settles it with `run.resolve` (revision 44). */
+  may_have_sent?: boolean;
 }
 
 export interface RunSummary {
@@ -2296,6 +2303,8 @@ export interface ItemSummary {
   question?: string;
   /** The browser tab it works in or is parked on (revision 43). */
   tab_id?: string | null;
+  /** Its send may have gone out; the person settles it with `run.resolve` (revision 44). */
+  may_have_sent?: boolean;
 }
 
 /** `run.items`: one page of the run record, items by page (spec 11.1). */
@@ -2631,6 +2640,8 @@ export interface Operations {
   "run.reject": [{ approval_id: string }, { approval_id: string; state: string }];
   /** Answer the question an item waits on; saved for the site, and the item is requeued. `no_open_question` when it waits on none (revision 42). */
   "run.answer": [{ item_id: string; answer: string }, { item_id: string; requeued: boolean }];
+  /** Settle an item waiting on the person (spec 8.9): `sent` ends it done, `not_sent` requeues it (keys released), `skip` skips it. `sent` for an item nothing went out for is `invalid_input`; `item_not_waiting` once settled (revision 44). */
+  "run.resolve": [{ item_id: string; choice: RunResolveChoice }, { item_id: string; status: ItemStatus }];
   /** Every site the Host knows for `account` (default `main`). */
   "site.list": [{ account?: string }, SiteSummary[]];
   /** Pause a (site, account) for every playbook, with a cause. */
@@ -2916,6 +2927,7 @@ export const MUTATING_OPS: ReadonlySet<OpName> = new Set<OpName>([
   "run.approve",
   "run.reject",
   "run.answer",
+  "run.resolve",
   "site.pause",
   "site.resume",
   "site.risk_accept",
