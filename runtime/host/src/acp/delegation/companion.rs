@@ -55,8 +55,9 @@ use crate::acp::delegation::transport::{
     client_feedback_round_trip, client_git_round_trip, client_resume_task_round_trip,
     client_round_trip,
     client_session_round_trip, client_status_round_trip, client_task_complete_round_trip,
-    client_playbook_result_round_trip, client_task_progress_round_trip,
-    client_update_progress_round_trip, BrokerPlaybookResultRequest, BrokerAskRequest, BrokerBrowserActRequest, BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest,
+    client_playbook_attach_round_trip, client_playbook_result_round_trip,
+    client_task_progress_round_trip,
+    client_update_progress_round_trip, BrokerPlaybookAttachRequest, BrokerPlaybookResultRequest, BrokerAskRequest, BrokerBrowserActRequest, BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest,
     BrokerBrowserEvalRequest, BrokerBrowserSnapshotRequest, BrokerBrowserTabOpRequest,
     BrokerBrowserTabsRequest,
     BrokerCancelRequest,
@@ -960,6 +961,35 @@ async fn build_tools_call_spawn(
             let round_trip =
                 Box::pin(async move { client_playbook_result_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_playbook_result).await
+        }
+        "playbook_attach_file" => {
+            let text = |key: &str| {
+                arguments
+                    .get(key)
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            };
+            let (Some(name), Some(tab_id), Some(element_ref), Some(generation)) =
+                (text("name"), text("tab_id"), text("ref"), text("generation"))
+            else {
+                return LineAction::Respond(err(
+                    id,
+                    -32602,
+                    "playbook_attach_file requires `name`, `tab_id`, `ref` and `generation` strings",
+                ));
+            };
+            let req = BrokerPlaybookAttachRequest {
+                token: ctx.token.clone(),
+                name,
+                tab_id,
+                generation,
+                element_ref,
+            };
+            let round_trip =
+                Box::pin(async move { client_playbook_attach_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_attach_result).await
         }
         "playbook_item_result" => {
             if !arguments.is_object() {
@@ -2778,6 +2808,24 @@ pub fn render_playbook_result(outcome: &Value) -> Value {
             .unwrap_or("Refused.")
     } else {
         "Result received. End your turn now."
+    };
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": refused,
+    })
+}
+
+/// Map a `playbook_attach_file` round trip into an MCP result; a refusal is
+/// a tool error the agent can act on.
+pub fn render_attach_result(outcome: &Value) -> Value {
+    let refused = outcome.get("error").is_some();
+    let text = if refused {
+        outcome
+            .get("note")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Refused.")
+    } else {
+        "Attached. Take a new browser_snapshot to see the file in the form."
     };
     json!({
         "content": [{ "type": "text", "text": text }],
@@ -4817,6 +4865,31 @@ mod tests {
         });
         assert!(matches!(
             dispatch_line(&item, Arc::new(InflightCalls::new()), &call(args)).await,
+            LineAction::Spawn(_)
+        ));
+
+        // A file is attached by the playbook input's name and the control's
+        // ref; a path is no argument at all.
+        assert!(names.contains(&"playbook_attach_file".to_string()), "{names:?}");
+        let attach = |args: Value| {
+            json!({
+                "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": { "name": "playbook_attach_file", "arguments": args }
+            })
+            .to_string()
+        };
+        let no_ref = unwrap_respond(
+            dispatch_line(
+                &item,
+                Arc::new(InflightCalls::new()),
+                &attach(json!({ "name": "resume", "tab_id": "t1", "generation": "1.1" })),
+            )
+            .await,
+        );
+        assert!(no_ref.error.unwrap().message.contains("ref"));
+        let args = json!({ "name": "resume", "tab_id": "t1", "ref": "e4", "generation": "1.1" });
+        assert!(matches!(
+            dispatch_line(&item, Arc::new(InflightCalls::new()), &attach(args)).await,
             LineAction::Spawn(_)
         ));
     }

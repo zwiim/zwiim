@@ -9,6 +9,7 @@
 //! the launcher can hold the session to its limits.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::Deserialize;
@@ -246,6 +247,9 @@ pub fn parse_report(kind: SessionKind, args: &serde_json::Value) -> Result<Sessi
 pub struct EngineScope {
     pub lane: crate::browser::store::TabOwner,
     pub tabs: Vec<String>,
+    /// The playbook's file inputs it may attach, as (name, path); the agent
+    /// names one and never sees the path (spec 10.8).
+    pub files: Vec<(String, String)>,
 }
 
 /// What the launcher holds while its session runs.
@@ -302,6 +306,36 @@ impl EngineSessions {
     /// The browser the session may use; `None` when it has none or has ended.
     pub fn scope(&self, connection_id: &str) -> Option<EngineScope> {
         self.live().get(connection_id)?.scope.clone()
+    }
+
+    /// The path of the playbook file `name` the session may attach, or the
+    /// refusal the agent is told.
+    pub fn attachable(&self, connection_id: &str, name: &str) -> Result<PathBuf, String> {
+        let Some(scope) = self.scope(connection_id) else {
+            return Err("Refused: no_session; this session has ended, so stop.".to_string());
+        };
+        let Some((_, path)) = scope.files.iter().find(|(n, _)| n == name) else {
+            let names: Vec<&str> = scope.files.iter().map(|(n, _)| n.as_str()).collect();
+            return Err(format!(
+                "Refused: not_a_playbook_file; attach only a file the playbook lists ({}).",
+                if names.is_empty() {
+                    "it lists none".to_string()
+                } else {
+                    names.join(", ")
+                }
+            ));
+        };
+        let path = match path.strip_prefix("~/") {
+            Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
+            None => PathBuf::from(path),
+        };
+        if !path.is_file() {
+            return Err(format!(
+                "Refused: file_missing; the playbook's file '{name}' is not on this computer. \
+                 Call playbook_item_result with status \"failed\" and say so."
+            ));
+        }
+        Ok(path)
     }
 
     /// Stop tracking it; a later result or call is refused.
@@ -470,6 +504,43 @@ mod tests {
             let refusal = parse_report(SessionKind::Item, &args).unwrap_err();
             assert!(refusal.starts_with("Refused: invalid_result"), "{refusal}");
         }
+    }
+
+    #[test]
+    fn only_a_file_the_playbook_lists_is_attachable() {
+        let dir = tempfile::tempdir().unwrap();
+        let resume = dir.path().join("resume.pdf");
+        std::fs::write(&resume, b"%PDF").unwrap();
+        let sessions = EngineSessions::default();
+        let _watch = sessions.open("conn-1", SessionKind::Item);
+        sessions.set_scope(
+            "conn-1",
+            EngineScope {
+                lane: crate::browser::store::TabOwner::Lane {
+                    site: "jobs.test".into(),
+                    account: "main".into(),
+                },
+                tabs: vec!["t1".into()],
+                files: vec![
+                    ("resume".into(), resume.to_string_lossy().into_owned()),
+                    (
+                        "cover".into(),
+                        dir.path().join("gone.pdf").to_string_lossy().into_owned(),
+                    ),
+                ],
+            },
+        );
+        assert_eq!(sessions.attachable("conn-1", "resume").unwrap(), resume);
+        let other = sessions.attachable("conn-1", "/etc/passwd").unwrap_err();
+        assert!(other.starts_with("Refused: not_a_playbook_file"), "{other}");
+        assert!(other.contains("resume, cover"), "{other}");
+        let missing = sessions.attachable("conn-1", "cover").unwrap_err();
+        assert!(missing.starts_with("Refused: file_missing"), "{missing}");
+        assert!(
+            !missing.contains("gone.pdf"),
+            "the path stays with the Host"
+        );
+        assert!(sessions.attachable("conn-2", "resume").is_err());
     }
 
     #[tokio::test]

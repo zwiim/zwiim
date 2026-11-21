@@ -189,6 +189,35 @@ impl BrowserToolAccess for HostBrowserTools {
             None => BrowserTabOutcome::refused(op.tab_id(), ERROR_UNAVAILABLE, NO_SESSION_NOTE),
         }
     }
+
+    async fn attach_file(
+        &self,
+        caller: &str,
+        tab_id: &str,
+        generation: &str,
+        element_ref: &str,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        let (browser, session) = self
+            .context(caller)
+            .await
+            .ok_or_else(|| NO_SESSION_NOTE.to_string())?;
+        if own_tab(&browser, session.caller(), tab_id).await.is_none() {
+            return Err(no_such_tab(tab_id));
+        }
+        attach_file(&browser, &self.worlds, tab_id, generation, element_ref, path).await?;
+        record(
+            &browser,
+            session.caller(),
+            tab_id,
+            format!(
+                "attached {}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ),
+        )
+        .await;
+        Ok(())
+    }
 }
 
 fn owner(session: &str) -> TabOwner {
@@ -976,6 +1005,61 @@ async fn read_page(
     Err("the page kept changing while it was read; try again".into())
 }
 
+/// Put `path` in the file control `element_ref` names: the ref itself, or
+/// the file input a label or wrapper the snapshot showed stands for. Sets
+/// the files directly, so no file chooser opens.
+async fn attach_file(
+    browser: &BrowserService,
+    worlds: &Worlds,
+    tab_id: &str,
+    generation: &str,
+    element_ref: &str,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let stale = || {
+        format!("{element_ref} does not name an element on the page as it is now; take a new snapshot")
+    };
+    let context = worlds.current(tab_id).await.ok_or_else(stale)?;
+    let (cdp, session) = browser.session(tab_id).await.map_err(|e| e.message)?;
+    let expression = format!(
+        "(() => {{ const A = globalThis.{global}; \
+         const e = A && A.elementForRef({generation}, {target}); \
+         if (!e) return null; \
+         const isFile = (x) => x instanceof HTMLInputElement && x.type === 'file'; \
+         if (isFile(e)) return e; \
+         const inner = e.control || (e.querySelector && e.querySelector('input[type=file]')); \
+         return isFile(inner) ? inner : 'not-file'; }})()",
+        global = agent::AGENT_GLOBAL,
+        generation = Value::from(generation),
+        target = Value::from(element_ref),
+    );
+    let reply = cdp
+        .call(
+            "Runtime.evaluate",
+            json!({ "expression": expression, "contextId": context }),
+            Some(&session),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let result = &reply["result"];
+    if result["value"] == "not-file" {
+        return Err(format!(
+            "{element_ref} is not a file control; give the ref of the file input or its label"
+        ));
+    }
+    let Some(object) = result["objectId"].as_str() else {
+        return Err(stale());
+    };
+    cdp.call(
+        "DOM.setFileInputFiles",
+        json!({ "files": [path.to_string_lossy()], "objectId": object }),
+        Some(&session),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// The Host's own read of a tab, never an agent's: a whole snapshot in
 /// `worlds`, then `call(generation)` evaluated in that same world. Its
 /// value is the expression's string.
@@ -1667,6 +1751,7 @@ mod tests {
         let scope = EngineScope {
             lane: lane.clone(),
             tabs: vec![mine.clone()],
+            files: Vec::new(),
         };
         let engine = Caller::Engine(&scope);
 

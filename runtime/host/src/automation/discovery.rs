@@ -336,6 +336,7 @@ impl Discovery<'_> {
                 scope: Some(EngineScope {
                     lane,
                     tabs: vec![tab.clone()],
+                    files: Vec::new(),
                 }),
                 limits: DISCOVERY_LIMITS,
             },
@@ -731,7 +732,8 @@ pub(crate) mod tests {
             prompted[0].2,
             Some(EngineScope {
                 lane,
-                tabs: vec!["tab-1".into()]
+                tabs: vec!["tab-1".into()],
+                files: Vec::new(),
             })
         );
     }

@@ -344,6 +344,7 @@ impl RunLoop {
                         scope: Some(EngineScope {
                             lane,
                             tabs: vec![tab.clone()],
+                            files: input_files(&doc),
                         }),
                         limits: self.limits,
                     },
@@ -673,6 +674,18 @@ fn agent_of(doc: &PlaybookDoc) -> AgentType {
         .unwrap_or(AgentType::ClaudeCode)
 }
 
+/// The playbook's file inputs, as (name, path), for `playbook_attach_file`.
+fn input_files(doc: &PlaybookDoc) -> Vec<(String, String)> {
+    use crate::automation::playbook_format::Input;
+    doc.inputs
+        .iter()
+        .filter_map(|input| match input {
+            Input::File { name, path } => Some((name.clone(), path.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
 /// What an ended item session means for its item.
 fn outcome_of(end: SessionEnd) -> ItemOutcome {
     match end {
@@ -946,7 +959,8 @@ mod tests {
                 *scope,
                 Some(EngineScope {
                     lane: lane.clone(),
-                    tabs: vec![tab.clone()]
+                    tabs: vec![tab.clone()],
+                    files: Vec::new(),
                 })
             );
             assert!(prompt.contains(&format!("https://jobs.test/j/{}", n + 1)));

@@ -1275,6 +1275,37 @@
     }
   },
   {
+    "name": "playbook_attach_file",
+    "description": "Attach one of the playbook's files (such as the resume) to a file control on the page, by the playbook input's name and the control's `ref` from browser_snapshot (the file input, or its label or button). Only files the playbook lists can be attached; you never see or give a path. Never open the file chooser yourself. Declare it in playbook_declare_action as a field with `file` set to the same name.",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "name",
+        "tab_id",
+        "ref",
+        "generation"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The playbook input's name, e.g. resume."
+        },
+        "tab_id": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string",
+          "description": "The file control's ref from the snapshot."
+        },
+        "generation": {
+          "type": "string",
+          "description": "The snapshot's generation the ref came from."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "playbook_ask_person",
     "description": "Ask the person a question about themselves that the playbook's facts and saved answers do not cover, such as a form field you would otherwise have to guess. Never guess. This ends the item: it waits for the person's answer, which is saved for every later item on this site. Call it once, then end your turn.",
     "inputSchema": {

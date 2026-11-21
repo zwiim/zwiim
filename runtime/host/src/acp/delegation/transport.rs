@@ -236,6 +236,17 @@ pub struct BrokerPlaybookResultRequest {
     pub arguments: Value,
 }
 
+/// `playbook_attach_file`: put the playbook's file `name` in the file control
+/// a snapshot's ref names. The agent names the file; the Host holds its path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerPlaybookAttachRequest {
+    pub token: String,
+    pub name: String,
+    pub tab_id: String,
+    pub generation: String,
+    pub element_ref: String,
+}
+
 /// Report the final verdict (+ optional summary) for the work task driving the
 /// parent session. Backs the `task_complete` MCP tool; the verdict decides how
 /// the task settles when the turn ends.
@@ -396,6 +407,7 @@ pub enum BrokerMessage {
     BrowserTabOp(BrokerBrowserTabOpRequest),
     Git(BrokerGitRequest),
     PlaybookResult(BrokerPlaybookResultRequest),
+    PlaybookAttach(BrokerPlaybookAttachRequest),
     /// Liveness probe. Unlike every other variant this one is NOT sent by a
     /// companion — it comes from Zwiim's own service-status check
     /// (`acp::delegation::service`), which is why it carries no `token`: a
@@ -602,6 +614,14 @@ pub async fn client_playbook_result_round_trip(
     req: &BrokerPlaybookResultRequest,
 ) -> io::Result<BrokerResponse> {
     message_round_trip(socket_path, &BrokerMessage::PlaybookResult(req.clone())).await
+}
+
+/// Dispatch a `playbook_attach_file` and read back `{ok}` or a refusal.
+pub async fn client_playbook_attach_round_trip(
+    socket_path: &str,
+    req: &BrokerPlaybookAttachRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::PlaybookAttach(req.clone())).await
 }
 
 /// Dispatch a `create_automation` request and read back the serialized
