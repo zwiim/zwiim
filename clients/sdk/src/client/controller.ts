@@ -791,6 +791,89 @@ export class HostController {
     await this.client.request("browser.view.close", { stream_id });
   }
 
+  // ── Playbooks, runs and sites (capability `playbooks`) ──────────────────
+
+  listPlaybooks(): Promise<OpResult<"playbook.list">> {
+    return this.client.request("playbook.list", {});
+  }
+
+  getPlaybook(playbook_id: string): Promise<OpResult<"playbook.get">> {
+    return this.client.request("playbook.get", { playbook_id });
+  }
+
+  createPlaybook(source: string): Promise<OpResult<"playbook.create">> {
+    return this.client.request("playbook.create", { source });
+  }
+
+  savePlaybook(playbook_id: string, source: string): Promise<OpResult<"playbook.save">> {
+    return this.client.request("playbook.save", { playbook_id, source });
+  }
+
+  /** Start a run; its `run_id`. Progress arrives on the feed (`run.changed`). */
+  async startRun(playbook_id: string): Promise<string> {
+    const { run_id } = await this.client.request("run.start", { playbook_id });
+    return run_id;
+  }
+
+  /** "Try on one item": a one-item run; its `run_id`. */
+  async tryRun(playbook_id: string): Promise<string> {
+    const { run_id } = await this.client.request("run.try", { playbook_id });
+    return run_id;
+  }
+
+  pauseRun(run_id: string): Promise<OpResult<"run.pause">> {
+    return this.client.request("run.pause", { run_id });
+  }
+
+  resumeRun(run_id: string): Promise<OpResult<"run.resume">> {
+    return this.client.request("run.resume", { run_id });
+  }
+
+  stopRun(run_id: string): Promise<OpResult<"run.stop">> {
+    return this.client.request("run.stop", { run_id });
+  }
+
+  /** Past runs, newest first; one page. */
+  listRuns(opts: { playbookId?: string; cursor?: string; limit?: number } = {}): Promise<OpResult<"run.list">> {
+    const params: OpParams<"run.list"> = {};
+    if (opts.playbookId !== undefined) params.playbook_id = opts.playbookId;
+    if (opts.cursor !== undefined) params.cursor = opts.cursor;
+    if (opts.limit !== undefined) params.limit = opts.limit;
+    return this.client.request("run.list", params);
+  }
+
+  /** Load one page of a run's items into `runItems`; the next page's cursor, or null at the end. */
+  async loadRunItems(run_id: string, cursor?: string): Promise<string | null> {
+    const page = await this.client.request("run.items", cursor === undefined ? { run_id } : { run_id, cursor });
+    this.store.dispatch({ type: "run_items_loaded", run_id, items: page.items });
+    return page.next_cursor;
+  }
+
+  approve(approval_id: string): Promise<OpResult<"run.approve">> {
+    return this.client.request("run.approve", { approval_id });
+  }
+
+  reject(approval_id: string): Promise<OpResult<"run.reject">> {
+    return this.client.request("run.reject", { approval_id });
+  }
+
+  /** Answer the question an item waits on; it goes back to the queue. */
+  answer(item_id: string, answer: string): Promise<OpResult<"run.answer">> {
+    return this.client.request("run.answer", { item_id, answer });
+  }
+
+  listSites(): Promise<OpResult<"site.list">> {
+    return this.client.request("site.list", {});
+  }
+
+  acceptSiteRisk(site: string): Promise<OpResult<"site.risk_accept">> {
+    return this.client.request("site.risk_accept", { site });
+  }
+
+  resumeSite(site: string): Promise<OpResult<"site.resume">> {
+    return this.client.request("site.resume", { site });
+  }
+
   /** Find `query` in the tab and go to its next match (the one before with `backwards`). */
   async findInBrowserTab(
     tab_id: string,

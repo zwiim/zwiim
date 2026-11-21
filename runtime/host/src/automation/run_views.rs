@@ -19,6 +19,8 @@ pub struct RunView {
     pub status: String,
     pub pause_reason: Option<String>,
     pub outcome: Option<String>,
+    /// Why a failed run failed (a reason code), else null.
+    pub error: Option<String>,
     pub totals: RunTotals,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -47,8 +49,15 @@ pub struct ItemView {
     pub run_id: String,
     pub item_id: String,
     pub title: Option<String>,
+    /// As `run.items` shows them: the site it was found on and its page.
+    pub site: String,
+    pub url: Option<String>,
     pub status: String,
     pub reason_code: Option<String>,
+    /// The question it waits on the person for.
+    pub question: Option<String>,
+    /// The browser tab it works in or is parked on.
+    pub tab_id: Option<String>,
 }
 
 impl RunView {
@@ -92,6 +101,8 @@ pub async fn read(
         .map(|p| (p.id, p.public_id))
         .collect();
     let run_ids: HashMap<i32, String> = runs.iter().map(|r| (r.id, r.public_id.clone())).collect();
+    let ids: Vec<i32> = items.iter().map(|i| i.id).collect();
+    let mut questions = crate::automation::knowledge::open_questions(db, &ids).await?;
     let views = runs
         .into_iter()
         .map(|r| RunView {
@@ -102,6 +113,7 @@ pub async fn read(
             status: r.status,
             pause_reason: r.pause_reason,
             outcome: r.outcome,
+            error: crate::automation::RunError::code_of(r.error.as_deref()),
             created_at: r.created_at,
             ended_at: r.ended_at,
         })
@@ -114,11 +126,31 @@ pub async fn read(
             run_id: run_ids.get(&i.run_id).cloned().unwrap_or_default(),
             item_id: i.public_id,
             title: i.title,
+            site: i.site,
+            url: i.url,
             status: i.status,
             reason_code: i.reason_code,
+            question: questions.remove(&i.id).map(|(_, text)| text),
+            tab_id: i.tab_id,
         })
         .collect();
     Ok((views, items))
+}
+
+/// The totals of each of `runs` (row ids), counted from their items.
+pub async fn totals_of(
+    db: &sea_orm::DatabaseConnection,
+    runs: &[i32],
+) -> Result<std::collections::HashMap<i32, RunTotals>, DbError> {
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    let items = playbook_item::Entity::find()
+        .filter(playbook_item::Column::RunId.is_in(runs.iter().copied()))
+        .all(db)
+        .await?;
+    Ok(runs
+        .iter()
+        .map(|&run| (run, totals(items.iter().filter(|i| i.run_id == run))))
+        .collect())
 }
 
 fn totals<'a>(items: impl Iterator<Item = &'a playbook_item::Model>) -> RunTotals {

@@ -16,6 +16,7 @@ use crate::app_state::AppState;
 use crate::automation::entities::{playbook, playbook_item, playbook_run};
 use crate::automation::pauses::{PauseCause, SitePause};
 use crate::automation::playbook_store::{PlaybookStore, SiteKnowledgeKind};
+use crate::automation::run_views::RunTotals;
 use crate::automation::{AutomationEngine, RunStatus};
 use crate::protocol::error::ZwiimError;
 use crate::web::auth::Principal;
@@ -62,6 +63,16 @@ pub struct PlaybookSummary {
     pub version: i32,
     pub show_me: bool,
     pub freeze_learning: bool,
+    /// The sites its text declares, and whether the person accepted each
+    /// one's risk; empty while the text does not parse.
+    #[serde(default)]
+    pub sites: Vec<PlaybookSite>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaybookSite {
+    pub site: String,
+    pub risk_accepted: bool,
 }
 
 impl From<playbook::Model> for PlaybookSummary {
@@ -72,6 +83,7 @@ impl From<playbook::Model> for PlaybookSummary {
             version: m.version,
             show_me: m.show_me,
             freeze_learning: m.freeze_learning,
+            sites: Vec::new(),
         }
     }
 }
@@ -87,13 +99,16 @@ pub struct RunSummary {
     pub outcome: Option<String>,
     pub items_total: i32,
     pub items_done: i32,
+    /// Why a failed run failed (a reason code), else null.
+    pub error: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl RunSummary {
-    /// `playbook_id` is the run's playbook's public id.
-    fn new(m: playbook_run::Model, playbook_id: String) -> Self {
+    /// `playbook_id` is the run's playbook's public id; the counts come from
+    /// the run's items, since only a run that finishes writes them to its row.
+    fn new(m: playbook_run::Model, playbook_id: String, totals: &RunTotals) -> Self {
         Self {
             run_id: m.public_id,
             playbook_id,
@@ -102,8 +117,9 @@ impl RunSummary {
             status: m.status,
             pause_reason: m.pause_reason,
             outcome: m.outcome,
-            items_total: m.items_total,
-            items_done: m.items_done,
+            items_total: totals.items as i32,
+            items_done: totals.done as i32,
+            error: crate::automation::RunError::code_of(m.error.as_deref()),
             created_at: m.created_at,
             ended_at: m.ended_at,
         }
@@ -124,6 +140,8 @@ pub struct ItemSummary {
     /// The question the item waits on the person for (`run.answer`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question: Option<String>,
+    /// The browser tab it works in or is parked on, for a client to show.
+    pub tab_id: Option<String>,
 }
 
 impl From<playbook_item::Model> for ItemSummary {
@@ -139,6 +157,7 @@ impl From<playbook_item::Model> for ItemSummary {
             reason_code: m.reason_code,
             updated_at: m.updated_at,
             question: None,
+            tab_id: m.tab_id,
         }
     }
 }
@@ -152,6 +171,29 @@ pub struct ItemPage {
 
 // ── playbook.list ─────────────────────────────────────────────────────────
 
+/// A playbook as clients see it, with its sites read from its text.
+async fn summary(state: &AppState, row: playbook::Model) -> Result<PlaybookSummary, ZwiimError> {
+    let Ok(doc) = crate::automation::validate_playbook(&row.source) else {
+        return Ok(row.into());
+    };
+    let store = PlaybookStore::new(state.db.conn.clone());
+    let mut sites = Vec::with_capacity(doc.sites.len());
+    for site in doc.sites {
+        let risk_accepted = store
+            .risk_accepted(&site, &default_account())
+            .await
+            .map_err(engine_err)?;
+        sites.push(PlaybookSite {
+            site,
+            risk_accepted,
+        });
+    }
+    Ok(PlaybookSummary {
+        sites,
+        ..row.into()
+    })
+}
+
 pub async fn playbook_list(
     Extension(state): Extension<Arc<AppState>>,
 ) -> ZResult<Vec<PlaybookSummary>> {
@@ -163,7 +205,11 @@ pub async fn playbook_list(
         .all(&state.db.conn)
         .await
         .map_err(engine_err)?;
-    Ok(Json(rows.into_iter().map(Into::into).collect()))
+    let mut books = Vec::with_capacity(rows.len());
+    for row in rows {
+        books.push(summary(&state, row).await?);
+    }
+    Ok(Json(books))
 }
 
 // ── playbook.get ──────────────────────────────────────────────────────────
@@ -188,7 +234,7 @@ pub async fn playbook_get(
     let row = playbook_row(&state, &p.playbook_id).await?;
     let source = row.source.clone();
     Ok(Json(PlaybookGetResult {
-        playbook: row.into(),
+        playbook: summary(&state, row).await?,
         source,
     }))
 }
@@ -249,7 +295,7 @@ pub async fn playbook_create(
         .map_err(engine_err)?
         .ok_or_else(|| ZwiimError::not_found(format!("playbook {}", created.id)))?;
     Ok(Json(PlaybookSaveResult {
-        playbook: row.into(),
+        playbook: summary(&state, row).await?,
     }))
 }
 
@@ -258,11 +304,11 @@ pub async fn playbook_save(
     axum::extract::Json(p): axum::extract::Json<PlaybookSaveParams>,
 ) -> ZResult<PlaybookSaveResult> {
     require_enabled(&state.db.conn).await?;
-    validated(&p.source)?;
+    let doc = validated(&p.source)?;
     let book = playbook_row(&state, &p.playbook_id).await?;
     let store = PlaybookStore::new(state.db.conn.clone());
     let saved = store
-        .save_source(book.id, &p.source)
+        .save_source(book.id, &doc.name, &p.source)
         .await
         .map_err(engine_err)?;
     use sea_orm::EntityTrait;
@@ -272,7 +318,7 @@ pub async fn playbook_save(
         .map_err(engine_err)?
         .ok_or_else(|| ZwiimError::not_found(format!("playbook {}", saved.id)))?;
     Ok(Json(PlaybookSaveResult {
-        playbook: row.into(),
+        playbook: summary(&state, row).await?,
     }))
 }
 
@@ -479,7 +525,12 @@ async fn load_run(state: &AppState, run_id: i32) -> ZResult<RunSummary> {
         .map_err(engine_err)?
         .ok_or_else(|| ZwiimError::not_found("playbook"))?
         .public_id;
-    Ok(Json(RunSummary::new(row, playbook_id)))
+    let totals = crate::automation::run_views::totals_of(&state.db.conn, &[row.id])
+        .await
+        .map_err(engine_err)?
+        .remove(&row.id)
+        .unwrap_or_default();
+    Ok(Json(RunSummary::new(row, playbook_id, &totals)))
 }
 
 // ── run.items (paginated, spec 11.1) ──────────────────────────────────────
@@ -545,6 +596,82 @@ pub async fn run_items(
             .collect(),
         next_cursor,
     }))
+}
+
+// ── run.list (past runs, newest first) ────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunListParams {
+    /// Only this playbook's runs; every playbook's when absent.
+    pub playbook_id: Option<String>,
+    /// The `next_cursor` of the previous page.
+    pub cursor: Option<String>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunPage {
+    pub runs: Vec<RunSummary>,
+    pub next_cursor: Option<String>,
+}
+
+const DEFAULT_RUN_PAGE: i64 = 20;
+const MAX_RUN_PAGE: i64 = 100;
+
+pub async fn run_list(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Json(p): axum::extract::Json<RunListParams>,
+) -> ZResult<RunPage> {
+    require_enabled(&state.db.conn).await?;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+    let limit = p.limit.unwrap_or(DEFAULT_RUN_PAGE).clamp(1, MAX_RUN_PAGE);
+    // Row ids order runs as they were created, ties included.
+    let mut query = playbook_run::Entity::find()
+        .order_by_desc(playbook_run::Column::Id)
+        .limit(limit as u64 + 1);
+    if let Some(id) = &p.playbook_id {
+        let book = playbook_row(&state, id).await?;
+        query = query.filter(playbook_run::Column::PlaybookId.eq(book.id));
+    }
+    if let Some(cursor) = p.cursor {
+        // The cursor is the last run of the previous page.
+        let after = playbook_run::Entity::find()
+            .filter(playbook_run::Column::PublicId.eq(cursor))
+            .one(&state.db.conn)
+            .await
+            .map_err(engine_err)?
+            .ok_or_else(|| ZwiimError::invalid_input("Unknown cursor"))?;
+        query = query.filter(playbook_run::Column::Id.lt(after.id));
+    }
+    let mut rows = query.all(&state.db.conn).await.map_err(engine_err)?;
+    let next_cursor = if rows.len() as i64 > limit {
+        rows.truncate(limit as usize);
+        rows.last().map(|m| m.public_id.clone())
+    } else {
+        None
+    };
+    let ids: Vec<i32> = rows.iter().map(|m| m.id).collect();
+    let mut totals = crate::automation::run_views::totals_of(&state.db.conn, &ids)
+        .await
+        .map_err(engine_err)?;
+    let books: std::collections::HashMap<i32, String> = playbook::Entity::find()
+        .filter(playbook::Column::Id.is_in(rows.iter().map(|r| r.playbook_id)))
+        .all(&state.db.conn)
+        .await
+        .map_err(engine_err)?
+        .into_iter()
+        .map(|b| (b.id, b.public_id))
+        .collect();
+    let runs = rows
+        .into_iter()
+        .map(|m| {
+            let t = totals.remove(&m.id).unwrap_or_default();
+            let book = books.get(&m.playbook_id).cloned().unwrap_or_default();
+            RunSummary::new(m, book, &t)
+        })
+        .collect();
+    Ok(Json(RunPage { runs, next_cursor }))
 }
 
 // ── run.answer (an item's question, spec 7.3) ─────────────────────────────
@@ -917,10 +1044,12 @@ mod tests {
             cap_site: None,
             cap_kind: None,
             cap_day: None,
+            tab_id: Some("tab-4".into()),
             created_at: now,
             updated_at: now,
         };
         let summary: ItemSummary = model.into();
+        assert_eq!(summary.tab_id.as_deref(), Some("tab-4"));
         assert_eq!(summary.key, "job-1");
         assert_eq!(summary.item_id, "item-3");
         assert_eq!(summary.status, "done");

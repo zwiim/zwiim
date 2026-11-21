@@ -156,6 +156,7 @@ const OPS: &[&str] = &[
     "run.try",
     "run.get",
     "run.items",
+    "run.list",
     "run.pause",
     "run.resume",
     "run.stop",
@@ -8163,6 +8164,31 @@ async fn run_row_id(h: &Host, run_id: &str) -> i32 {
         .id
 }
 
+/// Seed one item of run row `run` directly, in `status`.
+async fn seed_item(h: &Host, playbook: i32, run: i32, key: &str, status: &str) -> String {
+    use crate::automation::entities::playbook_item;
+    use sea_orm::{EntityTrait, Set};
+    let now = chrono::Utc::now();
+    let public_id = uuid::Uuid::new_v4().to_string();
+    playbook_item::Entity::insert(playbook_item::ActiveModel {
+        public_id: Set(public_id.clone()),
+        run_id: Set(run),
+        playbook_id: Set(playbook),
+        site: Set("jobs.localhost".into()),
+        account: Set("main".into()),
+        item_key: Set(key.into()),
+        status: Set(status.into()),
+        epoch: Set(0),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    })
+    .exec(&h.state.db.conn)
+    .await
+    .unwrap();
+    public_id
+}
+
 #[tokio::test]
 async fn playbook_operations_are_off_until_the_labs_switch() {
     let h = host(false).await;
@@ -8206,6 +8232,295 @@ async fn a_playbook_lists_reads_and_saves_with_a_new_version() {
     assert_eq!(body["playbook"]["version"], 2);
     let (_, body) = h.call("playbook.get", json!({ "playbook_id": id })).await;
     assert_eq!(body["source"], source);
+}
+
+#[tokio::test]
+async fn a_playbook_lists_its_sites_and_their_risk() {
+    let h = host(false).await;
+    seed_playbook(&h).await;
+    let source = crate::automation::playbook_format::EXAMPLE_PLAYBOOK.replace(
+        "sites:\n  - fixture.zwiim.test\n",
+        "sites:\n  - fixture.zwiim.test\n  - apply.zwiim.test\n",
+    );
+    let (status, created) = h.call("playbook.create", json!({ "source": source })).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(
+        created["playbook"]["sites"],
+        json!([
+            { "site": "fixture.zwiim.test", "risk_accepted": false },
+            { "site": "apply.zwiim.test", "risk_accepted": false },
+        ])
+    );
+    h.call("site.risk_accept", json!({ "site": "apply.zwiim.test" }))
+        .await;
+
+    let (status, list) = h.call("playbook.list", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        list[1]["sites"],
+        json!([
+            { "site": "fixture.zwiim.test", "risk_accepted": false },
+            { "site": "apply.zwiim.test", "risk_accepted": true },
+        ])
+    );
+    let id = created["playbook"]["playbook_id"].clone();
+    let (_, got) = h.call("playbook.get", json!({ "playbook_id": id })).await;
+    assert_eq!(got["playbook"]["sites"][1]["risk_accepted"], true);
+}
+
+#[tokio::test]
+async fn a_playbook_that_no_longer_parses_lists_no_sites() {
+    let h = host(false).await;
+    // The seeded text is not a valid playbook.
+    seed_playbook(&h).await;
+    let (status, list) = h.call("playbook.list", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list[0]["sites"], json!([]));
+}
+
+#[tokio::test]
+async fn saving_a_playbook_takes_its_new_name() {
+    let h = host(false).await;
+    let pb = seed_playbook(&h).await;
+    let id = pb.public_id.clone();
+    let source = crate::automation::playbook_format::EXAMPLE_PLAYBOOK
+        .replace("name: Apply to fixture jobs", "name: Renamed jobs");
+
+    let (status, body) = h
+        .call(
+            "playbook.save",
+            json!({ "playbook_id": id, "source": source }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["playbook"]["name"], "Renamed jobs");
+    let (_, body) = h.call("playbook.get", json!({ "playbook_id": id })).await;
+    assert_eq!(body["playbook"]["name"], "Renamed jobs");
+}
+
+/// Seed one ended run of `playbook` (row id) created at `at`; its public id.
+async fn seed_run(h: &Host, playbook: i32, at: chrono::DateTime<chrono::Utc>) -> String {
+    use crate::automation::entities::playbook_run;
+    use sea_orm::{EntityTrait, Set};
+    let public_id = uuid::Uuid::new_v4().to_string();
+    playbook_run::Entity::insert(playbook_run::ActiveModel {
+        public_id: Set(public_id.clone()),
+        playbook_id: Set(playbook),
+        playbook_version: Set(1),
+        trigger: Set("mac".into()),
+        status: Set("done".into()),
+        items_total: Set(0),
+        items_done: Set(0),
+        created_at: Set(at),
+        ended_at: Set(Some(at)),
+        ..Default::default()
+    })
+    .exec(&h.state.db.conn)
+    .await
+    .unwrap();
+    public_id
+}
+
+#[tokio::test]
+async fn runs_list_newest_first_per_playbook() {
+    let h = host(false).await;
+    let a = seed_playbook(&h).await;
+    let store = crate::automation::PlaybookStore::new(h.state.db.conn.clone());
+    let b = store.create("Reply", "goal: reply").await.unwrap();
+    let t0 = chrono::Utc::now();
+    let a1 = seed_run(&h, a.id, t0).await;
+    let b1 = seed_run(&h, b.id, t0 + chrono::Duration::seconds(1)).await;
+    let a2 = seed_run(&h, a.id, t0 + chrono::Duration::seconds(2)).await;
+    let a3 = seed_run(&h, a.id, t0 + chrono::Duration::seconds(3)).await;
+
+    let (status, page) = h
+        .call("run.list", json!({ "playbook_id": a.public_id }))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let ids: Vec<&str> = page["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["run_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![a3.as_str(), a2.as_str(), a1.as_str()]);
+    assert_eq!(page["runs"][0]["playbook_id"], a.public_id);
+    assert!(page["next_cursor"].is_null());
+
+    let (_, page) = h.call("run.list", json!({})).await;
+    assert_eq!(page["runs"].as_array().unwrap().len(), 4);
+    assert_eq!(page["runs"][2]["run_id"], b1);
+
+    let (status, body) = h
+        .call("run.list", json!({ "playbook_id": "nope" }))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "not_found");
+}
+
+#[tokio::test]
+async fn runs_page_without_gaps_when_times_tie() {
+    let h = host(false).await;
+    let a = seed_playbook(&h).await;
+    let at = chrono::Utc::now();
+    let mut seeded = Vec::new();
+    for _ in 0..5 {
+        seeded.push(seed_run(&h, a.id, at).await);
+    }
+    let mut seen = Vec::new();
+    let mut sizes = Vec::new();
+    let mut cursor = serde_json::Value::Null;
+    loop {
+        let mut params = json!({ "playbook_id": a.public_id, "limit": 2 });
+        if !cursor.is_null() {
+            params["cursor"] = cursor.clone();
+        }
+        let (status, page) = h.call("run.list", params).await;
+        assert_eq!(status, StatusCode::OK);
+        let runs = page["runs"].as_array().unwrap();
+        sizes.push(runs.len());
+        seen.extend(runs.iter().map(|r| r["run_id"].as_str().unwrap().to_string()));
+        cursor = page["next_cursor"].clone();
+        if cursor.is_null() {
+            break;
+        }
+    }
+    assert_eq!(sizes, vec![2, 2, 1]);
+    seeded.reverse();
+    assert_eq!(seen, seeded);
+}
+
+#[tokio::test]
+async fn a_run_list_page_holds_at_most_a_hundred() {
+    let h = host(false).await;
+    let a = seed_playbook(&h).await;
+    let at = chrono::Utc::now();
+    for _ in 0..101 {
+        seed_run(&h, a.id, at).await;
+    }
+    let (_, page) = h.call("run.list", json!({ "limit": 1000 })).await;
+    assert_eq!(page["runs"].as_array().unwrap().len(), 100);
+    assert!(page["next_cursor"].is_string());
+}
+
+#[tokio::test]
+async fn a_running_run_counts_its_items_live() {
+    let h = host(false).await;
+    let pb = seed_playbook(&h).await;
+    let (_, body) = h
+        .call("run.start", json!({ "playbook_id": pb.public_id }))
+        .await;
+    let run_id = body["run_id"].as_str().unwrap().to_string();
+    let run = run_row_id(&h, &run_id).await;
+    seed_item(&h, pb.id, run, "job-1", "done").await;
+    seed_item(&h, pb.id, run, "job-2", "queued").await;
+    seed_item(&h, pb.id, run, "job-3", "waiting_approval").await;
+
+    let (status, body) = h.call("run.get", json!({ "run_id": run_id })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["items_total"], 3);
+    assert_eq!(body["items_done"], 1);
+
+    // A stopped run never reaches `finish`; its counts still hold.
+    let (_, body) = h.call("run.stop", json!({ "run_id": run_id })).await;
+    assert_eq!(body["status"], "stopped");
+    assert_eq!(body["items_total"], 3);
+    assert_eq!(body["items_done"], 1);
+}
+
+#[tokio::test]
+async fn items_carry_their_tab_site_url_and_question() {
+    use crate::automation::entities::playbook_item;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    let h = host(false).await;
+    let pb = seed_playbook(&h).await;
+    let (_, body) = h
+        .call("run.start", json!({ "playbook_id": pb.public_id }))
+        .await;
+    let run_id = body["run_id"].as_str().unwrap().to_string();
+    let run = run_row_id(&h, &run_id).await;
+    let item = seed_item(&h, pb.id, run, "job-1", "waiting_person").await;
+    playbook_item::Entity::update_many()
+        .col_expr(
+            playbook_item::Column::TabId,
+            sea_orm::sea_query::Expr::value("tab-7"),
+        )
+        .col_expr(
+            playbook_item::Column::Url,
+            sea_orm::sea_query::Expr::value("http://jobs.localhost/jobs/a"),
+        )
+        .filter(playbook_item::Column::PublicId.eq(item.as_str()))
+        .exec(&h.state.db.conn)
+        .await
+        .unwrap();
+    let row = playbook_item::Entity::find()
+        .filter(playbook_item::Column::PublicId.eq(item.as_str()))
+        .one(&h.state.db.conn)
+        .await
+        .unwrap()
+        .unwrap();
+    crate::automation::knowledge::ask(
+        &h.state.db.conn,
+        pb.id,
+        "jobs.localhost",
+        row.id,
+        "Expected salary?",
+    )
+    .await
+    .unwrap();
+
+    let (_, page) = h.call("run.items", json!({ "run_id": run_id })).await;
+    assert_eq!(page["items"][0]["tab_id"], "tab-7");
+
+    // The feed's item view, which `run.item_changed` carries.
+    let (_, items) = crate::automation::run_views::read(&h.state.db.conn, &[run])
+        .await
+        .unwrap();
+    let view = serde_json::to_value(&items[0]).unwrap();
+    assert_eq!(view["site"], "jobs.localhost");
+    assert_eq!(view["url"], "http://jobs.localhost/jobs/a");
+    assert_eq!(view["question"], "Expected salary?");
+    assert_eq!(view["tab_id"], "tab-7");
+}
+
+#[tokio::test]
+async fn a_failed_run_says_why() {
+    use crate::automation::entities::playbook_run;
+    use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+    let h = host(false).await;
+    let pb = seed_playbook(&h).await;
+    let (_, body) = h
+        .call("run.start", json!({ "playbook_id": pb.public_id }))
+        .await;
+    let run_id = body["run_id"].as_str().unwrap().to_string();
+    let row = run_row_id(&h, &run_id).await;
+    let mut m: playbook_run::ActiveModel = playbook_run::Entity::find_by_id(row)
+        .one(&h.state.db.conn)
+        .await
+        .unwrap()
+        .unwrap()
+        .into();
+    m.status = Set("failed".into());
+    // As the run loop stores it: a code, plus Host-only text and trace.
+    let stored = crate::automation::RunError {
+        code: "agent_unavailable".into(),
+        message: "spawn failed: /opt/agents/claude".into(),
+        context: json!({ "playbook_version": 1 }),
+        trace_path: Some("/Users/x/zwiim/trace.log".into()),
+    };
+    m.error = Set(Some(serde_json::to_string(&stored).unwrap()));
+    m.update(&h.state.db.conn).await.unwrap();
+
+    let (_, body) = h.call("run.get", json!({ "run_id": run_id })).await;
+    assert_eq!(body["error"], "agent_unavailable");
+    assert!(!body.to_string().contains("spawn failed"));
+    assert!(!body.to_string().contains("trace.log"));
+    // The feed's view of the run says it too.
+    let (views, _) = crate::automation::run_views::read(&h.state.db.conn, &[row])
+        .await
+        .unwrap();
+    let view = serde_json::to_value(&views[0]).unwrap();
+    assert_eq!(view["error"], "agent_unavailable");
 }
 
 #[tokio::test]
@@ -8512,6 +8827,7 @@ async fn a_second_approval_answer_is_approval_not_pending() {
             value: DeclaredValue::Text {
                 text: "Asha".into(),
             },
+            prefilled: false,
         }],
         submit_target: Target::new("button", "Submit"),
     };
@@ -8645,6 +8961,7 @@ async fn seed_parked_item(h: &Host) -> (String, i32, String) {
             value: DeclaredValue::Text {
                 text: "Asha".into(),
             },
+            prefilled: false,
         }],
         submit_target: Target::new("button", "Submit"),
     };

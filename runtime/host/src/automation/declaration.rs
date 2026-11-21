@@ -61,6 +61,14 @@ pub struct DeclaredField {
     /// The control's kind, for the per-type comparison (spec 8.6.4).
     pub control: ControlKind,
     pub value: DeclaredValue,
+    /// The page pre-filled it and the agent left it alone; the Host added it
+    /// from the pre-submit check, for the approval sheet to mark.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub prefilled: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// How a control is compared after the click is declared (spec 8.6.4).
@@ -169,6 +177,7 @@ impl PreSubmitCheck {
                         value: DeclaredValue::Text {
                             text: control.value.clone(),
                         },
+                        prefilled: true,
                     });
                 }
                 None if !control.value.trim().is_empty() => {
@@ -278,6 +287,7 @@ mod tests {
             value: DeclaredValue::Text {
                 text: value.to_string(),
             },
+            prefilled: false,
         }
     }
 
@@ -324,6 +334,25 @@ mod tests {
     }
 
     #[test]
+    fn prefilled_controls_join_the_declaration_marked_prefilled() {
+        let scope = vec![
+            control("Name", "Asha", false),
+            control("Notice", "30 days", false),
+            control("Country", "India", true),
+        ];
+        let check = PreSubmitCheck::evaluate(&decl(), &scope);
+        assert!(check.passed());
+        assert_eq!(check.prefilled.len(), 1);
+        assert!(check.prefilled[0].prefilled);
+        assert!(decl().fields.iter().all(|f| !f.prefilled));
+        // The mark reaches clients only when set.
+        let json = serde_json::to_value(&check.prefilled[0]).unwrap();
+        assert_eq!(json["prefilled"], true);
+        let json = serde_json::to_value(&decl().fields[0]).unwrap();
+        assert!(json.get("prefilled").is_none());
+    }
+
+    #[test]
     fn a_prefilled_field_the_agent_left_alone_is_added_not_refused() {
         let mut scope = vec![
             control("Name", "Asha", false),
@@ -364,6 +393,7 @@ mod tests {
             value: DeclaredValue::Secret {
                 handle: "{{secret:pw}}".into(),
             },
+            prefilled: false,
         });
         let mut scope = vec![
             control("Name", "Asha", false),

@@ -300,6 +300,7 @@ async fn a_pre_submit_mismatch_restarts_the_item() {
         value: DeclaredValue::Text {
             text: "Asha".into(),
         },
+        prefilled: false,
     });
     item.scope = vec![crate::automation::declaration::ScopeControl {
         target: Target::new("textbox", "Name"),

@@ -25,6 +25,8 @@ pub struct Model {
     pub cap_site: Option<String>,
     pub cap_kind: Option<String>,
     pub cap_day: Option<String>,
+    /// The browser tab it works in or is parked on; null otherwise.
+    pub tab_id: Option<String>,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
 }

@@ -241,6 +241,18 @@ pub struct RunError {
     pub trace_path: Option<String>,
 }
 
+impl RunError {
+    /// The code of a run's stored error, for clients: the message, context
+    /// and trace stay on the Host. A row that holds a bare code gives it.
+    pub fn code_of(stored: Option<&str>) -> Option<String> {
+        let stored = stored?;
+        Some(match serde_json::from_str::<RunError>(stored) {
+            Ok(error) => error.code,
+            Err(_) => stored.to_string(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

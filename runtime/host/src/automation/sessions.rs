@@ -166,6 +166,7 @@ fn declaration(
                 target: Target::new(f.role, f.name),
                 control,
                 value,
+                prefilled: false,
             })
         })
         .collect::<Result<_, _>>()?;
@@ -449,6 +450,7 @@ mod tests {
             target: Target::new(role, name),
             control,
             value,
+            prefilled: false,
         };
         assert_eq!(
             parse_report(SessionKind::Item, &declared).unwrap(),

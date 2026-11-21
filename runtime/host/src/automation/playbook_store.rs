@@ -101,8 +101,14 @@ impl PlaybookStore {
         Ok(to_playbook(row))
     }
 
-    /// Replace the text: one new version, bumped atomically with the text.
-    pub async fn save_source(&self, id: i32, source: &str) -> Result<Playbook, DbError> {
+    /// Replace the text and the name it declares: one new version, bumped
+    /// atomically with the text.
+    pub async fn save_source(
+        &self,
+        id: i32,
+        name: &str,
+        source: &str,
+    ) -> Result<Playbook, DbError> {
         let current = self.get(id).await?;
         let next = current.version + 1;
         let now = Utc::now();
@@ -120,6 +126,7 @@ impl PlaybookStore {
             .await?
             .ok_or_else(|| DbError::NotFound(format!("playbook {id}")))?
             .into();
+        active.name = Set(name.to_string());
         active.source = Set(source.to_string());
         active.version = Set(next);
         active.updated_at = Set(now);
