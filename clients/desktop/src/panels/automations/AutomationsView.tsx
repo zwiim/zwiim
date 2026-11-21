@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { errorMessage, useController } from "@/lib/host-context";
+import { errorMessage, useController, useHost } from "@/lib/host-context";
 import { useAutomations, type PlaybookRow } from "./data";
+import { FocusView } from "./FocusView";
 import { PlaybookSection, type SectionAction } from "./PlaybookSection";
 import { StartDialog } from "./StartDialog";
 import { defaultOpen, runCounts } from "./status";
@@ -26,6 +27,10 @@ export function AutomationsView() {
   const [refusals, setRefusals] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [asking, setAsking] = useState<PlaybookRow | null>(null);
+  /** The item shown large, if any. */
+  const [focus, setFocus] = useState<{ playbook_id: string; item_id: string } | null>(null);
+  const closeFocus = useCallback(() => setFocus(null), []);
+  const approvals = useHost((s) => s.approvals);
 
   function setOpen(ids: string[], open: boolean) {
     for (const id of ids) toggles.set(id, open);
@@ -77,14 +82,30 @@ export function AutomationsView() {
   const running = rows.filter((r) => r.run?.status === "running" || r.run?.status === "discovering").length;
   const need = rows.reduce((n, r) => n + runCounts(r.items).need, 0);
   const allOpen = rows.length > 0 && rows.every(isOpen);
-  const firstNeed = rows.find((r) => runCounts(r.items).need > 0);
 
+  /** Open the item that has waited longest: the oldest approval's, else the first question. */
   function showNeed() {
-    if (!firstNeed) return;
-    setOpen([firstNeed.playbook.playbook_id], true);
-    document
-      .querySelector(`[data-testid="playbook-${CSS.escape(firstNeed.playbook.playbook_id)}"]`)
-      ?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+    const waiting = Object.values(approvals).sort((a, b) => a.created_at.localeCompare(b.created_at));
+    for (const a of waiting) {
+      const row = rows.find((r) => r.items.some((i) => i.item_id === a.item_id));
+      if (row) return setFocus({ playbook_id: row.playbook.playbook_id, item_id: a.item_id });
+    }
+    for (const row of rows) {
+      const asked = row.items.find((i) => i.status === "waiting_person" || i.status === "waiting_approval");
+      if (asked) return setFocus({ playbook_id: row.playbook.playbook_id, item_id: asked.item_id });
+    }
+  }
+
+  const focusRow = focus ? rows.find((r) => r.playbook.playbook_id === focus.playbook_id) : undefined;
+  if (focus && focusRow) {
+    return (
+      <FocusView
+        row={focusRow}
+        itemId={focus.item_id}
+        onMove={(item_id) => setFocus({ playbook_id: focusRow.playbook.playbook_id, item_id })}
+        onClose={closeFocus}
+      />
+    );
   }
 
   return (
@@ -133,6 +154,7 @@ export function AutomationsView() {
               busy={busy === id}
               onToggle={() => setOpen([id], !open)}
               onAction={(action) => onAction(row, action)}
+              onOpen={(item_id) => setFocus({ playbook_id: id, item_id })}
             />
           );
         })

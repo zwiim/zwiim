@@ -59,6 +59,7 @@ export function PlaybookSection({
   busy,
   onToggle,
   onAction,
+  onOpen,
 }: {
   row: PlaybookRow;
   open: boolean;
@@ -67,6 +68,8 @@ export function PlaybookSection({
   busy: boolean;
   onToggle(): void;
   onAction(action: SectionAction): void;
+  /** Open an item in the focus view. */
+  onOpen(itemId: string): void;
 }) {
   const counts = runCounts(row.items);
   const line = sectionLine(row.run, counts);
@@ -129,7 +132,7 @@ export function PlaybookSection({
         (row.run ? (
           <div className="flex gap-3 overflow-x-auto pb-1 pl-5.5" data-testid="tile-strip">
             {row.items.map((item) => (
-              <ItemTile key={item.item_id} item={item} />
+              <ItemTile key={item.item_id} item={item} onOpen={() => onOpen(item.item_id)} />
             ))}
           </div>
         ) : (

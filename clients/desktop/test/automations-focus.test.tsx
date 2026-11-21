@@ -1,11 +1,15 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { HostClient, HostController, ZwiimClientError, type PendingApproval, type RunItemView } from "@zwiim/sdk";
 import { HostProvider } from "@/lib/host-context";
+import { AutomationsView, resetAutomationsView } from "@/panels/automations/AutomationsView";
 import { FocusPanel } from "@/panels/automations/FocusPanel";
 import { FakeTransport, tick } from "./fakes";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  resetAutomationsView();
+});
 
 function item(extra: Partial<RunItemView> = {}): RunItemView {
   return {
@@ -136,6 +140,127 @@ describe("focus panel", () => {
   it("a working item says it is working", async () => {
     const c = await mount(transport([]), item({ status: "working" }));
     expect(screen.getByTestId("focus-panel").textContent).toContain("Working on it. The page is live.");
+    c.dispose();
+  });
+});
+
+describe("focus view", () => {
+  function host() {
+    const t = new FakeTransport();
+    const snapshot = t.snapshot.bind(t);
+    t.snapshot = () => ({ ...snapshot(), approvals: [{ ...approval(), item_id: "c" }] });
+    t.handlers["playbook.list"] = () => [
+      { playbook_id: "pb1", name: "Apply to jobs", version: 1, show_me: true, freeze_learning: false, sites: [] },
+    ];
+    t.handlers["run.list"] = () => ({
+      runs: [
+        {
+          run_id: "r1",
+          playbook_id: "pb1",
+          playbook_version: 1,
+          trigger: "mac",
+          status: "running",
+          pause_reason: null,
+          outcome: null,
+          items_total: 4,
+          items_done: 1,
+          created_at: "2026-11-21T10:00:00Z",
+          ended_at: null,
+        },
+      ],
+      next_cursor: null,
+    });
+    const all = [
+      summary("a", "done"),
+      summary("b", "working"),
+      summary("c", "waiting_approval"),
+      { ...summary("d", "waiting_person"), question: "Expected salary?" },
+    ];
+    let items = all;
+    t.handlers["run.items"] = () => ({ items, next_cursor: null });
+    return { t, drop: (id: string) => (items = all.filter((i) => i.item_id !== id)) };
+  }
+
+  function summary(id: string, status: RunItemView["status"]) {
+    return {
+      item_id: id,
+      site: "jobs.example",
+      account: "",
+      key: `jobs.example/${id}`,
+      title: `Job ${id}`,
+      url: `https://jobs.example/${id}`,
+      status,
+      reason_code: null,
+      updated_at: "2026-11-21T10:00:00Z",
+    };
+  }
+
+  async function mountView(t: FakeTransport) {
+    const client = new HostClient({ transport: t, random: () => 0.5 });
+    const controller = new HostController(client);
+    client.start();
+    await tick();
+    render(
+      <HostProvider value={controller}>
+        <AutomationsView />
+      </HostProvider>,
+    );
+    await tick();
+    return controller;
+  }
+
+  const shown = () => screen.getByTestId("focus-panel").querySelector("h2")!.textContent;
+  const key = (k: string, target: Element | Window = window) => fireEvent.keyDown(target, { key: k });
+
+  it("a tile opens focus and Esc closes it", async () => {
+    const { t } = host();
+    const c = await mountView(t);
+    fireEvent.click(screen.getByRole("button", { name: /Job b/ }));
+    expect(shown()).toBe("Job b");
+    expect(screen.getByTestId("focus-view").textContent).toContain("2 of 4");
+    key("Escape");
+    expect(screen.queryByTestId("focus-view")).toBeNull();
+    expect(screen.getByTestId("playbook-pb1")).toBeTruthy();
+    c.dispose();
+  });
+
+  it("arrows move through the run's items", async () => {
+    const { t } = host();
+    const c = await mountView(t);
+    fireEvent.click(screen.getByRole("button", { name: /Job b/ }));
+    key("ArrowLeft");
+    expect(shown()).toBe("Job a");
+    key("ArrowLeft");
+    expect(shown()).toBe("Job a");
+    key("ArrowRight");
+    key("ArrowRight");
+    key("ArrowRight");
+    expect(shown()).toBe("Job d");
+    key("ArrowRight");
+    expect(shown()).toBe("Job d");
+    // Keys typed into the answer stay there.
+    key("ArrowLeft", screen.getByRole("textbox", { name: "Your answer" }));
+    expect(shown()).toBe("Job d");
+    c.dispose();
+  });
+
+  it("the need pill opens the waiting item", async () => {
+    const { t } = host();
+    const c = await mountView(t);
+    fireEvent.click(screen.getByRole("button", { name: "2 need you" }));
+    expect(shown()).toBe("Job c");
+    expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
+    c.dispose();
+  });
+
+  it("focus closes when its item is gone", async () => {
+    const { t, drop } = host();
+    const c = await mountView(t);
+    fireEvent.click(screen.getByRole("button", { name: /Job b/ }));
+    drop("b");
+    await act(async () => t.frame({ type: "host.snapshot", ...t.snapshot() } as never));
+    await tick();
+    expect(screen.queryByTestId("focus-view")).toBeNull();
     c.dispose();
   });
 });
