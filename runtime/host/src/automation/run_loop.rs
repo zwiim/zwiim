@@ -331,8 +331,9 @@ impl RunLoop {
                             &doc,
                             &item,
                             &tab,
-                            &knowledge::answers(&self.db, run.playbook_id, &item.site).await?,
-                            &knowledge::approved_tips(&self.db, run.playbook_id, &item.site)
+                            &knowledge::answers(&self.db, run.playbook_id, lane_site(&item))
+                                .await?,
+                            &knowledge::approved_tips(&self.db, run.playbook_id, lane_site(&item))
                                 .await?,
                         ),
                         scope: Some(EngineScope {
@@ -353,7 +354,7 @@ impl RunLoop {
                     knowledge::propose_tips(
                         &self.db,
                         run.playbook_id,
-                        &item.site,
+                        lane_site(&item),
                         item.id,
                         &report.tips,
                     )
@@ -380,7 +381,14 @@ impl RunLoop {
             .await;
         // Asked once, kept for the person's answer (spec 7.3).
         if let (Some(question), Ok(SessionResult::WaitingPerson(_))) = (&question, &result) {
-            knowledge::ask(&self.db, run.playbook_id, &item.site, item.id, question).await?;
+            knowledge::ask(
+                &self.db,
+                run.playbook_id,
+                lane_site(&item),
+                item.id,
+                question,
+            )
+            .await?;
         }
         // A parked approval keeps its tab (spec 8.7); every other end closes it.
         if let Some(tab) = tab {
@@ -1100,6 +1108,47 @@ mod tests {
         let prompts = item_prompts(&f.launcher);
         assert_eq!(prompts.len(), 2);
         assert!(prompts[1].1.contains("https://apply.test/form/9"));
+    }
+
+    /// After a hand-off the item works on the other site, so that site's
+    /// answers reach its prompt and its question is kept for that site (the
+    /// live smoke run filed it under the found site).
+    #[tokio::test]
+    async fn a_handed_off_item_asks_and_reads_answers_on_its_new_site() {
+        let f = cross_site_fixture(vec![
+            result(json!({ "status": "hand_off", "url": "https://apply.test/form/9" })),
+            result(json!({ "status": "ask_person", "question": "Cover letter?" })),
+        ])
+        .await;
+        let pb = run(&f.db, f.run_id).await.playbook_id;
+        knowledge::ask(&f.db, pb, "apply.test", 0, "Notice period?")
+            .await
+            .unwrap();
+        let saved = knowledge::all(&f.db, pb, "apply.test", "answer")
+            .await
+            .unwrap();
+        knowledge::answer(&f.run_loop.engine, saved[0].id, "30 days")
+            .await
+            .unwrap();
+        drive(&f.run_loop).await;
+
+        let prompts = item_prompts(&f.launcher);
+        assert_eq!(prompts.len(), 2);
+        assert!(!prompts[0].1.contains("30 days"));
+        assert!(prompts[1].1.contains("Notice period?"));
+        assert!(prompts[1].1.contains("30 days"));
+        let asked: Vec<String> = knowledge::all(&f.db, pb, "apply.test", "answer")
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|q| q.state == "open")
+            .map(|q| q.text)
+            .collect();
+        assert_eq!(asked, vec!["Cover letter?".to_string()]);
+        assert!(knowledge::all(&f.db, pb, "jobs.test", "answer")
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     /// A handed-off item holds the lane it continues on and frees the one it
