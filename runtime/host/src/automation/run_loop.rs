@@ -30,6 +30,7 @@ use crate::automation::lockdown::{ItemAttempt, SessionKind};
 use crate::automation::playbook_format::PlaybookDoc;
 use crate::automation::playbook_store::PlaybookStore;
 use crate::automation::reasons::ReasonCode;
+use crate::automation::scope::ScopeMiss;
 use crate::automation::sessions::{
     EngineScope, EngineSessions, ItemReport, ItemReportStatus, SessionReport,
 };
@@ -301,17 +302,24 @@ impl RunLoop {
                 run.id
             )))
         })?;
-        let book = self.store.get(run.playbook_id).await?;
-        let item_ref = ItemRef {
+        let mut item_ref = ItemRef {
             playbook_id: run.playbook_id,
             site: item.site.clone(),
             account: item.account.clone(),
             key: item.item_key.clone(),
             outward_site: item.outward_site.clone(),
             outward_started: item.outward_started_at.is_some(),
-            show_me: book.show_me,
+            // Show-me is per kind and site (decided 2026-11-21): the first
+            // approved send of a kind on a site is its show-me run, so the
+            // playbook-wide switch does not hold every send.
+            show_me: false,
             rules: doc.approval.iter().map(|a| (a.kind, a.rule)).collect(),
-            show_me_run_kinds: Default::default(),
+            show_me_run_kinds: crate::automation::approvals::shown_kinds(
+                &self.db,
+                run.playbook_id,
+                lane_site(&item),
+            )
+            .await?,
             scope: Vec::new(),
             epoch,
         };
@@ -374,7 +382,36 @@ impl RunLoop {
                     self.tabs.close(&tab).await;
                     return self.hand_off(&doc, &item, epoch, url).await;
                 }
-                (outcome_of(end), Some(tab))
+                let outcome = match outcome_of(end) {
+                    // The Host reads what the action would send itself
+                    // (spec 8.6.3); a target it cannot find once is the
+                    // agent's mistake.
+                    ItemOutcome::ReadyToDispatch(declaration) => {
+                        match self.tabs.read_scope(&tab, &declaration.submit_target).await {
+                            Ok(Ok(scope)) => {
+                                item_ref.scope = scope.controls;
+                                ItemOutcome::ReadyToDispatch(declaration)
+                            }
+                            Ok(Err(miss)) => {
+                                tracing::warn!(
+                                    "[automation] item {} declared a target the page has {}",
+                                    item.id,
+                                    match miss {
+                                        ScopeMiss::NotFound => "none of",
+                                        ScopeMiss::Ambiguous => "several of",
+                                    }
+                                );
+                                ItemOutcome::Failed(ReasonCode::AgentFailed)
+                            }
+                            Err(e) => {
+                                tracing::warn!("[automation] item {} scope unread: {e}", item.id);
+                                ItemOutcome::Failed(ReasonCode::AgentFailed)
+                            }
+                        }
+                    }
+                    other => other,
+                };
+                (outcome, Some(tab))
             }
         };
         let question = match &outcome {
@@ -741,9 +778,11 @@ fn item_prompt(
          playbook_item_result with status \"skipped\" and the rule.\n\
          Never guess a fact about the person that is not above: when a \
          required field asks one, call playbook_ask_person with the question; \
-         leave an optional field empty when nothing above covers it. Do not submit, \
-         post or send anything: this build cannot declare an outward action \
-         yet. When you cannot go on, call playbook_item_result with status \
+         leave an optional field empty when nothing above covers it. Attach a \
+         file above with playbook_attach_file. Never click the button that \
+         submits, posts, sends or follows: when everything it sends is filled \
+         in, call playbook_declare_action with that button and every control \
+         you filled, and the Host checks the page and clicks it. When you cannot go on, call playbook_item_result with status \
          \"failed\" and say why. You may add tips: short notes that would \
          help with later items on this site. Then end your turn.",
         name = doc.name,
@@ -1064,6 +1103,51 @@ mod tests {
             // cover stays empty (the person's choice after the smoke run).
             assert!(prompt.contains("leave an optional field empty"), "{prompt}");
         }
+    }
+
+    fn declared() -> Script {
+        result(json!({
+            "status": "declared", "kind": "submit_application", "summary": "Apply",
+            "fields": [], "target": { "role": "button", "name": "Submit" }
+        }))
+    }
+
+    /// A declaration the page matches asks the person the first time, and
+    /// the item keeps its tab for the Host's click (spec 8.5, 8.7).
+    #[tokio::test]
+    async fn a_declared_action_waits_for_the_person_with_its_tab() {
+        let f = fixture(vec![declared(), declared(), declared()]).await;
+        *f.tabs.scope.lock().unwrap() = Some(crate::automation::scope::Scope {
+            in_form: true,
+            controls: Vec::new(),
+        });
+        drive(&f.run_loop).await;
+
+        for (status, _) in items(&f.db, f.run_id).await {
+            assert_eq!(status, "waiting_approval");
+        }
+        assert!(f.tabs.closed.lock().unwrap().is_empty());
+        let pending = crate::automation::approvals::pending(&f.db).await.unwrap();
+        assert_eq!(pending.len(), 3);
+        assert!(pending.iter().all(|p| p.kind == "submit_application"));
+        let (_, prompt, _) = &item_prompts(&f.launcher)[0];
+        assert!(prompt.contains("playbook_declare_action"), "{prompt}");
+        assert!(prompt.contains("Never click"), "{prompt}");
+    }
+
+    /// A declared button the Host cannot find on the page fails the item.
+    #[tokio::test]
+    async fn a_declared_target_the_page_lacks_fails_the_item() {
+        let f = fixture(vec![declared(), declared(), declared()]).await;
+        drive(&f.run_loop).await;
+        for (status, reason) in items(&f.db, f.run_id).await {
+            assert_eq!(status, "failed");
+            assert_eq!(reason.as_deref(), Some("agent_failed"));
+        }
+        assert!(crate::automation::approvals::pending(&f.db)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     /// A tip an item agent writes is only a proposal: it is kept for the

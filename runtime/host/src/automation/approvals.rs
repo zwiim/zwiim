@@ -15,6 +15,7 @@ use sea_orm::{
 
 use crate::automation::declaration::{Declaration, DeclaredValue};
 use crate::automation::entities::playbook_approval;
+use crate::automation::reasons::ActionKind;
 use crate::db::error::DbError;
 
 /// An approval as the Host stores and hands back.
@@ -382,6 +383,33 @@ pub async fn consume<C: ConnectionTrait>(
     Ok(res.rows_affected == 1)
 }
 
+/// The kinds the person has approved and the Host has sent for `playbook_id`
+/// on `site` (the item's outward site, else its own): the show-me run that
+/// lets an `auto` rule send that kind there without asking (spec 8.1.3).
+pub async fn shown_kinds<C: ConnectionTrait>(
+    conn: &C,
+    playbook_id: i32,
+    site: &str,
+) -> Result<std::collections::HashSet<ActionKind>, DbError> {
+    use crate::automation::entities::playbook_item;
+    let items: Vec<i32> = playbook_item::Entity::find()
+        .filter(playbook_item::Column::PlaybookId.eq(playbook_id))
+        .all(conn)
+        .await?
+        .into_iter()
+        .filter(|i| i.outward_site.as_deref().unwrap_or(&i.site) == site)
+        .map(|i| i.id)
+        .collect();
+    Ok(playbook_approval::Entity::find()
+        .filter(playbook_approval::Column::ItemId.is_in(items))
+        .filter(playbook_approval::Column::ConsumedAt.is_not_null())
+        .all(conn)
+        .await?
+        .into_iter()
+        .filter_map(|m| ActionKind::parse(&m.kind))
+        .collect())
+}
+
 /// The content the person approved for an item and the Host has not yet
 /// sent, if any: the declaration with any edits applied (spec 8.5.3).
 pub async fn approved_declaration<C: ConnectionTrait>(
@@ -496,7 +524,6 @@ mod tests {
     use crate::automation::declaration::{
         ControlKind, Declaration, DeclaredField, DeclaredValue, Target,
     };
-    use crate::automation::reasons::ActionKind;
 
     fn decl() -> Declaration {
         Declaration {
@@ -576,5 +603,61 @@ mod tests {
         spaced.summary = "Apply  to   Acme".into();
         assert!(consume(&db, 7, &spaced).await.unwrap());
         assert!(!consume(&db, 7, &decl()).await.unwrap());
+    }
+
+    async fn item(
+        db: &DatabaseConnection,
+        playbook_id: i32,
+        site: &str,
+        outward: Option<&str>,
+    ) -> i32 {
+        use crate::automation::entities::playbook_item;
+        use sea_orm::Set;
+        let now = Utc::now();
+        playbook_item::Entity::insert(playbook_item::ActiveModel {
+            public_id: Set(uuid::Uuid::new_v4().to_string()),
+            run_id: Set(1),
+            playbook_id: Set(playbook_id),
+            site: Set(site.into()),
+            account: Set("main".into()),
+            item_key: Set(uuid::Uuid::new_v4().to_string()),
+            outward_site: Set(outward.map(Into::into)),
+            status: Set("done".into()),
+            epoch: Set(1),
+            created_at: Set(now),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .exec_with_returning(db)
+        .await
+        .unwrap()
+        .id
+    }
+
+    #[tokio::test]
+    async fn a_kind_is_shown_once_one_approved_send_of_it_went_out_on_the_site() {
+        let db = test_db().await;
+        let sent = item(&db, 1, "jobs.test", None).await;
+        let only_approved = item(&db, 1, "jobs.test", None).await;
+        let elsewhere = item(&db, 1, "jobs.test", Some("acme.test")).await;
+        let other_playbook = item(&db, 2, "jobs.test", None).await;
+        let mut follow = decl();
+        follow.kind = ActionKind::Follow;
+        for (id, d) in [
+            (sent, decl()),
+            (only_approved, follow.clone()),
+            (elsewhere, follow.clone()),
+            (other_playbook, follow.clone()),
+        ] {
+            let a = create(&db, 1, id, &d).await.unwrap();
+            answer(&db, a.id, ApprovalAnswer::Approve).await.unwrap();
+            if id != only_approved {
+                assert!(consume(&db, id, &d).await.unwrap());
+            }
+        }
+        let shown = shown_kinds(&db, 1, "jobs.test").await.unwrap();
+        assert_eq!(shown, [ActionKind::SubmitApplication].into_iter().collect());
+        let outward = shown_kinds(&db, 1, "acme.test").await.unwrap();
+        assert_eq!(outward, [ActionKind::Follow].into_iter().collect());
     }
 }
