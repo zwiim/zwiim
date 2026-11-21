@@ -113,7 +113,7 @@ pub async fn read(
             status: r.status,
             pause_reason: r.pause_reason,
             outcome: r.outcome,
-            error: r.error,
+            error: crate::automation::RunError::code_of(r.error.as_deref()),
             created_at: r.created_at,
             ended_at: r.ended_at,
         })

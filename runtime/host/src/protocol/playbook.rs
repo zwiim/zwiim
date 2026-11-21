@@ -119,7 +119,7 @@ impl RunSummary {
             outcome: m.outcome,
             items_total: totals.items as i32,
             items_done: totals.done as i32,
-            error: m.error,
+            error: crate::automation::RunError::code_of(m.error.as_deref()),
             created_at: m.created_at,
             ended_at: m.ended_at,
         }

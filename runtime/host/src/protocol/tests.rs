@@ -8501,17 +8501,26 @@ async fn a_failed_run_says_why() {
         .unwrap()
         .into();
     m.status = Set("failed".into());
-    m.error = Set(Some("discovery_failed".into()));
+    // As the run loop stores it: a code, plus Host-only text and trace.
+    let stored = crate::automation::RunError {
+        code: "agent_unavailable".into(),
+        message: "spawn failed: /opt/agents/claude".into(),
+        context: json!({ "playbook_version": 1 }),
+        trace_path: Some("/Users/x/zwiim/trace.log".into()),
+    };
+    m.error = Set(Some(serde_json::to_string(&stored).unwrap()));
     m.update(&h.state.db.conn).await.unwrap();
 
     let (_, body) = h.call("run.get", json!({ "run_id": run_id })).await;
-    assert_eq!(body["error"], "discovery_failed");
+    assert_eq!(body["error"], "agent_unavailable");
+    assert!(!body.to_string().contains("spawn failed"));
+    assert!(!body.to_string().contains("trace.log"));
     // The feed's view of the run says it too.
     let (views, _) = crate::automation::run_views::read(&h.state.db.conn, &[row])
         .await
         .unwrap();
     let view = serde_json::to_value(&views[0]).unwrap();
-    assert_eq!(view["error"], "discovery_failed");
+    assert_eq!(view["error"], "agent_unavailable");
 }
 
 #[tokio::test]
