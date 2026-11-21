@@ -65,6 +65,7 @@ import { connectRemote } from "@/lib/remote";
 import { Welcome } from "@/panels/Account";
 import { cn } from "@/lib/utils";
 import { ConnectionStatus, type RemoteLink } from "@/panels/ConnectionStatus";
+import { AutomationsRow } from "@/panels/automations/AutomationsRow";
 import { ControlCenter } from "@/panels/ControlCenter";
 import { BrowserPanel } from "@/panels/BrowserPanel";
 import { DiffPanel, DiffView, type DiffCount } from "@/panels/DiffPanel";
@@ -283,6 +284,9 @@ export function Workbench({
   const [askPath, setAskPath] = useState<((path: string | null) => void) | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  /** What the middle shows: the workspace's sessions and files, or the Automations canvas. */
+  const [pane, setPane] = useState<"workspace" | "automations">("workspace");
+  const automations = useHost((s) => hasCapability(s.connection.compat, "playbooks"));
   // The browser widened over the chat (Expand): the chat narrows to a column
   // and the sidebar folds, until the person shrinks it again.
   const [browserWide, setBrowserWide] = useState(false);
@@ -366,12 +370,14 @@ export function Workbench({
   const current = shownDocs.find((d) => docKey(d) === activeDoc) ?? null;
 
   function selectSession(id: string | null) {
+    setPane("workspace");
     setSessionId(id);
     setActiveDoc(null);
   }
 
   /** Show a workspace at the session last shown in it, else its newest one. */
   function selectWorkspace(id: string) {
+    setPane("workspace");
     if (id === workspaceId) return;
     const sessions = controller.store.getState().sessionsByWorkspace[id] ?? [];
     const last = lastSession.current[id];
@@ -530,6 +536,7 @@ export function Workbench({
           continueRequest={continueRequest}
           onContinued={() => setContinueRequest(null)}
         />
+        {automations && <AutomationsRow active={pane === "automations"} onOpen={() => setPane("automations")} />}
       </SidebarFrame>
       {settings && (
         <SettingsDialog
@@ -562,7 +569,14 @@ export function Workbench({
           }}
         />
       )}
-      <main className="flex min-w-0 flex-1 flex-col">
+      {pane === "automations" && (
+        <main className="flex min-w-0 flex-1 flex-col">
+          <OfflineBanner />
+          <div data-testid="automations-view" />
+        </main>
+      )}
+      {/* Hidden, not unmounted, behind the canvas: open files keep typing not yet saved. */}
+      <main className={cn("flex min-w-0 flex-1 flex-col", pane === "automations" && "hidden")}>
         <OfflineBanner />
         {workspaceId ? (
           <>
@@ -674,16 +688,18 @@ export function Workbench({
         )}
       </main>
       {workspace && !readOnly && (
-        <WorkspacePanel
-          workspace={workspace}
-          sessionId={sessionId}
-          hiddenTerminals={agentTerminals.ids}
-          showing={current}
-          remote={remote}
-          onOpen={(kind, path) => openDoc({ kind, workspaceId: workspace.workspace_id, path })}
-          wide={browserWide}
-          onWide={setBrowserWide}
-        />
+        <div className={pane === "automations" ? "hidden" : "contents"}>
+          <WorkspacePanel
+            workspace={workspace}
+            sessionId={sessionId}
+            hiddenTerminals={agentTerminals.ids}
+            showing={current}
+            remote={remote}
+            onOpen={(kind, path) => openDoc({ kind, workspaceId: workspace.workspace_id, path })}
+            wide={browserWide}
+            onWide={setBrowserWide}
+          />
+        </div>
       )}
     </div>
   );
