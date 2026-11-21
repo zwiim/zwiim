@@ -19,7 +19,7 @@ use tokio::task::JoinHandle;
 
 use crate::automation::agent_gate::{ItemAgentGate, ItemAgentSlot, DEFAULT_ITEM_AGENTS};
 use crate::automation::checks::{Check, PageFacts};
-use crate::automation::declaration::Declaration;
+use crate::automation::declaration::{ControlKind, Declaration, ScopeControl};
 use crate::automation::discovery::{item_id_rule, item_key, Discovery, LaneTabs};
 use crate::automation::engine::AutomationEngine;
 use crate::automation::engine::LedgerKey;
@@ -386,7 +386,7 @@ impl RunLoop {
                     ItemOutcome::ReadyToDispatch(declaration) => {
                         match self.tabs.read_scope(&tab, &declaration.submit_target).await {
                             Ok(Ok(scope)) => {
-                                item_ref.scope = scope.controls;
+                                item_ref.scope = by_input_name(scope.controls, &doc);
                                 ItemOutcome::ReadyToDispatch(declaration)
                             }
                             Ok(Err(miss)) => {
@@ -590,7 +590,7 @@ impl RunLoop {
         let dispatched = if approved {
             // The page as it is now, not as it was when the person was asked.
             match self.tabs.read_scope(tab, &declaration.submit_target).await {
-                Ok(Ok(scope)) => item_ref.scope = scope.controls,
+                Ok(Ok(scope)) => item_ref.scope = by_input_name(scope.controls, doc),
                 _ => {
                     self.runner
                         .finish_session(
@@ -938,6 +938,23 @@ fn input_files(doc: &PlaybookDoc) -> Vec<(String, String)> {
             _ => None,
         })
         .collect()
+}
+
+/// The scope with each attached file named as the declaration names it: by
+/// the playbook input whose file it is, not the file's own name.
+fn by_input_name(mut scope: Vec<ScopeControl>, doc: &PlaybookDoc) -> Vec<ScopeControl> {
+    let files = input_files(doc);
+    for control in scope.iter_mut().filter(|c| c.control == ControlKind::File) {
+        let input = files.iter().find(|(_, path)| {
+            std::path::Path::new(path)
+                .file_name()
+                .is_some_and(|f| f.to_string_lossy() == control.value)
+        });
+        if let Some((name, _)) = input {
+            control.value = name.clone();
+        }
+    }
+    scope
 }
 
 /// What an ended item session means for its item.
@@ -1451,6 +1468,27 @@ mod tests {
             .collect();
         assert_eq!(statuses, ["done", "waiting_approval", "waiting_approval"]);
         assert_eq!(f.tabs.clicks.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_attached_file_is_compared_by_its_input_name() {
+        let doc = crate::automation::validate_playbook(&PLAYBOOK.replace(
+            "inputs:\n",
+            "inputs:\n  - type: file\n    name: resume\n    path: ~/cv/Ada CV.pdf\n",
+        ))
+        .unwrap();
+        let file = |value: &str| ScopeControl {
+            target: crate::automation::Target::new("button", "Resume"),
+            control: ControlKind::File,
+            value: value.into(),
+            hidden: false,
+            read_only: false,
+            disabled: false,
+            prefilled: false,
+        };
+        let scope = by_input_name(vec![file("Ada CV.pdf"), file("other.pdf")], &doc);
+        assert_eq!(scope[0].value, "resume");
+        assert_eq!(scope[1].value, "other.pdf");
     }
 
     /// A declared button the Host cannot find on the page fails the item.
