@@ -481,3 +481,115 @@ async fn the_site_total_and_the_kind_cap_are_both_enforced() {
     }
     assert_eq!(taken, 2, "the site total of 2 stops the third");
 }
+
+/// A dispatch while another connection is writing (in a live run: another
+/// item's session, a tab, the transcript) waits its turn. Its transaction
+/// used to read before it wrote, so on a file-backed WAL database (a pool,
+/// as in production) the other commit left its read snapshot stale and it
+/// failed with `SQLITE_BUSY_SNAPSHOT` ("database is locked").
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dispatch_waits_for_another_writer() {
+    use sea_orm::{ConnectionTrait, TransactionTrait};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = crate::db::test_helpers::fresh_disk_pool(dir.path()).await;
+    let (engine, store) = (
+        AutomationEngine::new(db.clone()),
+        PlaybookStore::new(db.clone()),
+    );
+    let pb = store.create("Apply", "goal").await.expect("create");
+    let run = engine
+        .start_run(pb.id, pb.version, RunTrigger::Mac, None)
+        .await
+        .expect("start");
+    let id = item(
+        &engine,
+        run,
+        pb.id,
+        "indeed.com",
+        "job-1",
+        ItemStatus::Working,
+    )
+    .await;
+    let other = item(
+        &engine,
+        run,
+        pb.id,
+        "forum.example",
+        "t-1",
+        ItemStatus::Queued,
+    )
+    .await;
+
+    // Another connection holds the write lock while the dispatch starts.
+    let writer = db.begin().await.expect("begin");
+    writer
+        .execute_unprepared(&format!(
+            "UPDATE playbook_item SET updated_at = updated_at WHERE id = {other}"
+        ))
+        .await
+        .expect("take the write lock");
+    let dispatching = {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            engine
+                .begin_dispatch(id, 0, &[key("apply")], slot("apply", 25))
+                .await
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    writer.commit().await.expect("commit");
+
+    let out = dispatching.await.expect("join").expect("no lock error");
+    assert_eq!(out, DispatchOutcome::Dispatched);
+}
+
+/// "Not sent, redo" while another connection writes waits its turn too: its
+/// transaction reads the item's cap slot before it writes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_redo_waits_for_another_writer() {
+    use sea_orm::{ConnectionTrait, TransactionTrait};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = crate::db::test_helpers::fresh_disk_pool(dir.path()).await;
+    let (engine, store) = (
+        AutomationEngine::new(db.clone()),
+        PlaybookStore::new(db.clone()),
+    );
+    let pb = store.create("Apply", "goal").await.expect("create");
+    let run = engine
+        .start_run(pb.id, pb.version, RunTrigger::Mac, None)
+        .await
+        .expect("start");
+    let id = item(
+        &engine,
+        run,
+        pb.id,
+        "indeed.com",
+        "job-1",
+        ItemStatus::WaitingPerson,
+    )
+    .await;
+    let other = item(
+        &engine,
+        run,
+        pb.id,
+        "forum.example",
+        "t-1",
+        ItemStatus::Queued,
+    )
+    .await;
+
+    let writer = db.begin().await.expect("begin");
+    writer
+        .execute_unprepared(&format!(
+            "UPDATE playbook_item SET updated_at = updated_at WHERE id = {other}"
+        ))
+        .await
+        .expect("take the write lock");
+    let redoing = tokio::spawn(async move {
+        crate::db::service::playbook_engine_service::redo_not_sent(&db, id, &[key("apply")]).await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    writer.commit().await.expect("commit");
+
+    redoing.await.expect("join").expect("no lock error");
+}

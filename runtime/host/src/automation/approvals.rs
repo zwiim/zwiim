@@ -178,6 +178,16 @@ pub async fn respond(
 ) -> Result<AnswerOutcome, DbError> {
     use crate::automation::entities::{playbook_item, playbook_run};
     let tx = conn.begin().await?;
+    // Claim the write lock before reading (see
+    // `playbook_engine_service::claim_item`): a self-assignment, no change.
+    playbook_approval::Entity::update_many()
+        .col_expr(
+            playbook_approval::Column::State,
+            sea_orm::sea_query::Expr::col(playbook_approval::Column::State).into(),
+        )
+        .filter(playbook_approval::Column::Id.eq(approval_id))
+        .exec(&tx)
+        .await?;
     let row = playbook_approval::Entity::find_by_id(approval_id)
         .one(&tx)
         .await?
@@ -625,6 +635,35 @@ mod tests {
             answer(&db, a.id, ApprovalAnswer::Skip).await.expect("ok"),
             AnswerOutcome::NotPending(ApprovalState::Approved)
         );
+    }
+
+    /// Answering while another connection writes (an item's session, a
+    /// send) waits its turn: the answer's transaction reads the approval and
+    /// its item before writing, which failed with "database is locked".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_answer_waits_for_another_writer() {
+        use sea_orm::{ConnectionTrait, TransactionTrait};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::test_helpers::fresh_disk_pool(dir.path()).await;
+        let parked = item(&db, 1, "jobs.test", None).await;
+        let other = item(&db, 1, "forum.test", None).await;
+        let a = create(&db, 1, parked, &decl()).await.expect("create");
+
+        let writer = db.begin().await.expect("begin");
+        writer
+            .execute_unprepared(&format!(
+                "UPDATE playbook_item SET updated_at = updated_at WHERE id = {other}"
+            ))
+            .await
+            .expect("take the write lock");
+        let answering = {
+            let db = db.clone();
+            tokio::spawn(async move { respond(&db, a.id, ApprovalAnswer::Approve, &[]).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        writer.commit().await.expect("commit");
+
+        answering.await.expect("join").expect("no lock error");
     }
 
     async fn test_db() -> DatabaseConnection {

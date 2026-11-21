@@ -40,6 +40,17 @@ pub async fn fresh_disk_db(dir: &Path) -> AppDatabase {
     AppDatabase { conn }
 }
 
+/// [`fresh_disk_db`] reopened as a pool of production's size (five
+/// connections). SeaORM's SQLite default is one connection, which serializes
+/// every query and hides races between connections.
+pub async fn fresh_disk_pool(dir: &Path) -> sea_orm::DatabaseConnection {
+    fresh_disk_db(dir).await.conn.close().await.expect("close");
+    let url = format!("sqlite:{}?mode=rwc", dir.join("source.db").to_string_lossy());
+    let mut opts = sea_orm::ConnectOptions::new(url);
+    opts.max_connections(5).sqlx_logging(false);
+    Database::connect(opts).await.expect("open disk pool")
+}
+
 pub async fn fresh_in_memory_db() -> AppDatabase {
     let conn = Database::connect("sqlite::memory:")
         .await
