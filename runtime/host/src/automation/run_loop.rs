@@ -724,8 +724,9 @@ fn item_prompt(
          and work in tab {tab} only.\n\n\
          First check the rules against the page. If a rule says skip, call \
          playbook_item_result with status \"skipped\" and the rule.\n\
-         Never guess a fact about the person that is not above: when the page \
-         asks one, call playbook_ask_person with the question. Do not submit, \
+         Never guess a fact about the person that is not above: when a \
+         required field asks one, call playbook_ask_person with the question; \
+         leave an optional field empty when nothing above covers it. Do not submit, \
          post or send anything: this build cannot declare an outward action \
          yet. When you cannot go on, call playbook_item_result with status \
          \"failed\" and say why. You may add tips: short notes that would \
@@ -1043,6 +1044,9 @@ mod tests {
         for (_, prompt, _) in item_prompts(&f.launcher) {
             assert!(prompt.contains("Notice period? 30 days"), "{prompt}");
             assert!(prompt.contains("playbook_ask_person"));
+            // Ask only for a required field; an optional one the facts do not
+            // cover stays empty (the person's choice after the smoke run).
+            assert!(prompt.contains("leave an optional field empty"), "{prompt}");
         }
     }
 
