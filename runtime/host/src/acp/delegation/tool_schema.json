@@ -1194,6 +1194,87 @@
     }
   },
   {
+    "name": "playbook_declare_action",
+    "description": "Declare the item's one outward action (the submit, post, send or follow) once everything it sends is filled in. Never click that button yourself: the Host checks the page matches this declaration, asks the person if needed, and clicks it. Name each control by the role and name browser_snapshot shows. This ends the item session: call it once, then end your turn.",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "kind",
+        "summary",
+        "fields",
+        "target"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "submit_application",
+            "submit_form",
+            "publish_post",
+            "send_message",
+            "comment",
+            "follow",
+            "delete",
+            "pay",
+            "change_account"
+          ],
+          "description": "What the action does; submit_form for any form send that is none of the others."
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "One line for the person: what is sent, and to whom."
+        },
+        "fields": {
+          "type": "array",
+          "description": "Every control you filled, chose or checked in the form the button sends. Empty for a button outside any form.",
+          "items": {
+            "type": "object",
+            "required": [
+              "role",
+              "name"
+            ],
+            "properties": {
+              "role": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string",
+                "description": "The text you entered or the option label you chose; \"checked\" for a checked checkbox or radio."
+              },
+              "file": {
+                "type": "string",
+                "description": "For a file control: the playbook input name you attached with playbook_attach_file."
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "target": {
+          "type": "object",
+          "required": [
+            "role",
+            "name"
+          ],
+          "properties": {
+            "role": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "description": "The button the Host clicks, as browser_snapshot names it."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "playbook_ask_person",
     "description": "Ask the person a question about themselves that the playbook's facts and saved answers do not cover, such as a form field you would otherwise have to guess. Never guess. This ends the item: it waits for the person's answer, which is saved for every later item on this site. Call it once, then end your turn.",
     "inputSchema": {

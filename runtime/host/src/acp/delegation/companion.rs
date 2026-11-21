@@ -941,6 +941,26 @@ async fn build_tools_call_spawn(
                 Box::pin(async move { client_playbook_result_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_playbook_result).await
         }
+        "playbook_declare_action" => {
+            let Some(declared) = arguments.as_object() else {
+                return LineAction::Respond(err(
+                    id,
+                    -32602,
+                    "playbook_declare_action takes an object with `kind`, `summary`, `fields` and `target`",
+                ));
+            };
+            // The declaration ends the item session, as its result; the Host
+            // checks it against the page and sends it (spec 8.2).
+            let mut arguments = declared.clone();
+            arguments.insert("status".into(), json!("declared"));
+            let req = BrokerPlaybookResultRequest {
+                token: ctx.token.clone(),
+                arguments: Value::Object(arguments),
+            };
+            let round_trip =
+                Box::pin(async move { client_playbook_result_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_playbook_result).await
+        }
         "playbook_item_result" => {
             if !arguments.is_object() {
                 return LineAction::Respond(err(
@@ -4745,6 +4765,58 @@ mod tests {
                 &call(json!({ "question": "Relocate?" }))
             )
             .await,
+            LineAction::Spawn(_)
+        ));
+    }
+
+    /// An item session declares its outward action; the schema offers
+    /// exactly the Host's action kinds.
+    #[tokio::test]
+    async fn an_item_session_declares_its_outward_action() {
+        use crate::automation::lockdown::SessionKind;
+        use crate::automation::reasons::ActionKind;
+        let item = CompanionContext {
+            only_tools: Some(
+                SessionKind::Item
+                    .allowed_tools()
+                    .iter()
+                    .map(|t| t.to_string())
+                    .collect(),
+            ),
+            ..ctx_with(BROWSER_ONLY)
+        };
+        let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let names =
+            list_tool_names(dispatch_line(&item, Arc::new(InflightCalls::new()), list).await);
+        assert!(names.contains(&"playbook_declare_action".to_string()), "{names:?}");
+
+        let all: Value = serde_json::from_str(TOOL_SCHEMA_JSON).unwrap();
+        let tool = all
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "playbook_declare_action")
+            .unwrap();
+        let kinds: Vec<&str> = ActionKind::all().iter().map(|k| k.as_str()).collect();
+        assert_eq!(tool["inputSchema"]["properties"]["kind"]["enum"], json!(kinds));
+
+        let call = |args: Value| {
+            json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": { "name": "playbook_declare_action", "arguments": args }
+            })
+            .to_string()
+        };
+        let bad = unwrap_respond(
+            dispatch_line(&item, Arc::new(InflightCalls::new()), &call(json!("submit"))).await,
+        );
+        assert!(bad.error.unwrap().message.contains("kind"));
+        let args = json!({
+            "kind": "follow", "summary": "Follow Asha", "fields": [],
+            "target": { "role": "button", "name": "Follow" }
+        });
+        assert!(matches!(
+            dispatch_line(&item, Arc::new(InflightCalls::new()), &call(args)).await,
             LineAction::Spawn(_)
         ));
     }

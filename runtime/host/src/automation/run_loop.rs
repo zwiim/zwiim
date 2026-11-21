@@ -682,6 +682,7 @@ fn outcome_of(end: SessionEnd) -> ItemOutcome {
             // Taken up before the item's end is decided (`hand_off`).
             ItemReportStatus::HandOff { .. } => ItemOutcome::Failed(ReasonCode::AgentFailed),
             ItemReportStatus::AskPerson { question } => ItemOutcome::Unanswerable(question),
+            ItemReportStatus::Declared(declaration) => ItemOutcome::ReadyToDispatch(declaration),
         },
         SessionEnd::TimedOut => ItemOutcome::Failed(ReasonCode::Timeout),
         SessionEnd::ToolLimit => ItemOutcome::Failed(ReasonCode::AgentLimit),

@@ -14,7 +14,11 @@ use std::sync::Mutex;
 use serde::Deserialize;
 use tokio::sync::{oneshot, watch};
 
+use crate::automation::declaration::{
+    ControlKind, Declaration, DeclaredField, DeclaredValue, Target,
+};
 use crate::automation::lockdown::SessionKind;
+use crate::automation::reasons::ActionKind;
 
 /// What a session returned through `playbook_item_result`, by kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +49,10 @@ pub enum ItemReportStatus {
     /// A question about the person the playbook cannot answer (spec 7.3),
     /// from `playbook_ask_person`.
     AskPerson { question: String },
+    /// The one outward action, filled and ready, from
+    /// `playbook_declare_action` (spec 8.2.1). The Host sends it, not the
+    /// agent.
+    Declared(Declaration),
 }
 
 /// One item found by discovery.
@@ -96,6 +104,86 @@ enum WireReport {
     Judged {
         decisions: Vec<Judgment>,
     },
+    Declared {
+        kind: String,
+        summary: String,
+        #[serde(default)]
+        fields: Vec<WireField>,
+        target: WireTarget,
+    },
+}
+
+/// A declared field as the agent names it: the role and name its snapshot
+/// shows, and either the text it put there or the playbook file it attached.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireField {
+    role: String,
+    name: String,
+    #[serde(default)]
+    value: Option<String>,
+    #[serde(default)]
+    file: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireTarget {
+    role: String,
+    name: String,
+}
+
+/// The declaration from `playbook_declare_action`'s arguments.
+fn declaration(
+    kind: &str,
+    summary: String,
+    fields: Vec<WireField>,
+    target: WireTarget,
+) -> Result<Declaration, String> {
+    let refused = |why: String| format!("Refused: invalid_result; {why}. Fix it and call again.");
+    let kind = ActionKind::parse(kind).ok_or_else(|| {
+        let kinds: Vec<&str> = ActionKind::all().iter().map(|k| k.as_str()).collect();
+        refused(format!("kind must be one of {}", kinds.join(", ")))
+    })?;
+    if summary.trim().is_empty() {
+        return Err(refused("summary is empty".into()));
+    }
+    let fields = fields
+        .into_iter()
+        .map(|f| {
+            let (control, value) = match (f.value, f.file) {
+                (Some(text), None) => (control_of(&f.role), DeclaredValue::Text { text }),
+                (None, Some(name)) => (ControlKind::File, DeclaredValue::InputFile { name }),
+                _ => {
+                    return Err(refused(format!(
+                        "field '{}' needs exactly one of value or file",
+                        f.name
+                    )))
+                }
+            };
+            Ok(DeclaredField {
+                target: Target::new(f.role, f.name),
+                control,
+                value,
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(Declaration {
+        kind,
+        summary,
+        fields,
+        submit_target: Target::new(target.role, target.name),
+    })
+}
+
+/// How a declared control compares, from its role.
+fn control_of(role: &str) -> ControlKind {
+    match role {
+        "combobox" | "listbox" => ControlKind::Select,
+        "checkbox" => ControlKind::Checkbox,
+        "radio" => ControlKind::Radio,
+        _ => ControlKind::Text,
+    }
 }
 
 /// The refusal for a result the session's kind does not take.
@@ -136,6 +224,18 @@ pub fn parse_report(kind: SessionKind, args: &serde_json::Value) -> Result<Sessi
         (SessionKind::JudgmentBatch, WireReport::Judged { decisions }) => {
             Ok(SessionReport::Judgment(decisions))
         }
+        (
+            SessionKind::Item,
+            WireReport::Declared {
+                kind,
+                summary,
+                fields,
+                target,
+            },
+        ) => Ok(item(
+            ItemReportStatus::Declared(declaration(&kind, summary, fields, target)?),
+            Vec::new(),
+        )),
         _ => Err(wrong_status(kind)),
     }
 }
@@ -292,6 +392,84 @@ mod tests {
         assert!(parse_report(SessionKind::Item, &blank).is_err());
         let extra = json!({ "status": "failed", "note": "n", "sent": true });
         assert!(parse_report(SessionKind::Item, &extra).is_err());
+    }
+
+    #[test]
+    fn an_item_declares_its_one_outward_action() {
+        use crate::automation::declaration::{
+            ControlKind, Declaration, DeclaredField, DeclaredValue, Target,
+        };
+        use crate::automation::reasons::ActionKind;
+        let declared = json!({
+            "status": "declared",
+            "kind": "submit_form",
+            "summary": "Book the 10:00 slot",
+            "fields": [
+                { "role": "textbox", "name": "Name", "value": "Asha" },
+                { "role": "combobox", "name": "Slot", "value": "10:00" },
+                { "role": "button", "name": "Resume", "file": "resume" }
+            ],
+            "target": { "role": "button", "name": "Book" }
+        });
+        let field = |role: &str, name: &str, control, value| DeclaredField {
+            target: Target::new(role, name),
+            control,
+            value,
+        };
+        assert_eq!(
+            parse_report(SessionKind::Item, &declared).unwrap(),
+            SessionReport::Item(ItemReport {
+                status: ItemReportStatus::Declared(Declaration {
+                    kind: ActionKind::SubmitForm,
+                    summary: "Book the 10:00 slot".into(),
+                    fields: vec![
+                        field(
+                            "textbox",
+                            "Name",
+                            ControlKind::Text,
+                            DeclaredValue::Text {
+                                text: "Asha".into()
+                            }
+                        ),
+                        field(
+                            "combobox",
+                            "Slot",
+                            ControlKind::Select,
+                            DeclaredValue::Text {
+                                text: "10:00".into()
+                            }
+                        ),
+                        field(
+                            "button",
+                            "Resume",
+                            ControlKind::File,
+                            DeclaredValue::InputFile {
+                                name: "resume".into()
+                            }
+                        ),
+                    ],
+                    submit_target: Target::new("button", "Book"),
+                }),
+                tips: Vec::new(),
+            })
+        );
+        assert!(parse_report(SessionKind::Discovery, &declared).is_err());
+
+        // An unknown kind, a blank summary, or a field with both or neither
+        // of value and file is refused with a line the agent can act on.
+        for bad in [
+            json!({ "kind": "launch_rocket" }),
+            json!({ "summary": " " }),
+            json!({ "fields": [{ "role": "textbox", "name": "N" }] }),
+            json!({ "fields": [{ "role": "textbox", "name": "N", "value": "a", "file": "f" }] }),
+        ] {
+            let mut args = declared.clone();
+            for (k, v) in bad.as_object().unwrap() {
+                args[k] = v.clone();
+            }
+            let refusal = parse_report(SessionKind::Item, &args).unwrap_err();
+            assert!(refusal.starts_with("Refused: invalid_result"), "{refusal}");
+        }
     }
 
     #[tokio::test]
