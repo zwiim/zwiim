@@ -655,7 +655,7 @@ mod tests {
             .await
             .unwrap();
         let now = Utc::now();
-        let mut row = |key: &str, outward: Option<(&str, &str)>| playbook_item::ActiveModel {
+        let row = |key: &str, outward: Option<(&str, &str)>| playbook_item::ActiveModel {
             public_id: Set(uuid::Uuid::new_v4().to_string()),
             run_id: Set(run),
             playbook_id: Set(pb.id),

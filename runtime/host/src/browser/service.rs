@@ -1169,8 +1169,14 @@ impl BrowserService {
         let target_id = created["targetId"].as_str().unwrap_or_default().to_string();
         // Until someone acts on it, a tab's loads are its opener's: the
         // person's, or an agent's tool, which says so before it loads.
-        self.attach(cdp, inner, owner, target_id, Actor::Person)
-            .await
+        let live = self
+            .attach(cdp, inner, owner, target_id, Actor::Person)
+            .await?;
+        if matches!(owner, TabOwner::Lane { .. }) {
+            super::stream::set_viewport(cdp, &live.session_id, &super::stream::ITEM_VIEWPORT)
+                .await?;
+        }
+        Ok(live)
     }
 
     /// Attach to a page target and set it up as a tab's, its loads counted

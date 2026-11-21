@@ -21,6 +21,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 
 use super::engine::cdp::Cdp;
 use super::service::{BrowserError, BrowserEvent, BrowserService};
+use super::store::TabOwner;
 
 /// Frame message format version (7.1.2).
 pub const FRAME_VERSION: u8 = 1;
@@ -213,13 +214,12 @@ impl StreamHub {
     pub async fn resize(&self, tab_id: &str, viewport: Viewport) -> Result<(), BrowserError> {
         viewport.check()?;
         let (cdp, session) = self.browser.session(tab_id).await?;
-        // A previewed tab keeps its device's size; the viewer letterboxes it.
-        let previewed = self
-            .browser
-            .tab(tab_id)
-            .await
-            .is_some_and(|t| t.preview.is_some());
-        if !previewed {
+        // A previewed tab keeps its device's size, and an automation item's
+        // tab its item size; the viewer letterboxes them.
+        let fixed = self.browser.tab(tab_id).await.is_some_and(|t| {
+            t.preview.is_some() || matches!(t.owner, TabOwner::Lane { .. })
+        });
+        if !fixed {
             set_viewport(&cdp, &session, &viewport).await?;
         }
         let mut inner = self.lock();
@@ -468,7 +468,20 @@ async fn follow_tabs(hub: Weak<StreamHub>, mut events: broadcast::Receiver<Brows
     }
 }
 
-async fn set_viewport(cdp: &Cdp, session: &str, viewport: &Viewport) -> Result<(), BrowserError> {
+/// The size an automation item's tab works at: narrow enough that sites
+/// lay out for a phone-size view, so the page the agent works on is the
+/// page a client shows.
+pub(crate) const ITEM_VIEWPORT: Viewport = Viewport {
+    width: 430,
+    height: 932,
+    scale: 2.0,
+};
+
+pub(crate) async fn set_viewport(
+    cdp: &Cdp,
+    session: &str,
+    viewport: &Viewport,
+) -> Result<(), BrowserError> {
     cdp.call(
         "Emulation.setDeviceMetricsOverride",
         json!({
@@ -617,7 +630,7 @@ mod tests {
     use super::*;
     use crate::browser::engine::fake::FakeEngine;
     use crate::browser::engine::manager::EngineManager;
-    use crate::browser::store::TabOwner;
+
     use crate::db::test_helpers::fresh_in_memory_db;
 
     const VIEW: Viewport = Viewport {
@@ -818,6 +831,39 @@ mod tests {
         fake.crash();
         assert!(viewer.next().await.is_none());
         eventually(|| !hub.casting(&tab)).await;
+    }
+
+    /// An automation item's tab opens at the item width and stays there:
+    /// a viewer letterboxes it rather than reflow the page under the agent.
+    #[tokio::test]
+    async fn an_item_tab_opens_narrow_and_viewers_keep_it_narrow() {
+        let Setup {
+            fake, browser, hub, tab, ..
+        } = setup().await;
+        let lane = TabOwner::Lane {
+            site: "jobs.test".into(),
+            account: "main".into(),
+        };
+        let item = browser.open(lane, None).await.unwrap();
+        let sized = fake.calls("Emulation.setDeviceMetricsOverride");
+        let last = sized.last().expect("the item tab is sized");
+        assert_eq!(last["width"], 430);
+        assert_eq!(last["height"], 932);
+        assert_eq!(last["mobile"], false);
+        let before = sized.len();
+        let wide = Viewport {
+            width: 1280,
+            height: 800,
+            scale: 1.0,
+        };
+        hub.open(&item.id, wide).await.unwrap();
+        assert_eq!(fake.calls("Emulation.setDeviceMetricsOverride").len(), before);
+        // Any other tab still follows its viewer.
+        hub.open(&tab, wide).await.unwrap();
+        assert_eq!(
+            fake.calls("Emulation.setDeviceMetricsOverride").len(),
+            before + 1
+        );
     }
 
     #[tokio::test]
