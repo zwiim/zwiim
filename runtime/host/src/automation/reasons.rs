@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum ActionKind {
     SubmitApplication,
+    /// Any form send that is none of the named kinds (a booking, a support
+    /// ticket, a sign-up).
+    SubmitForm,
     PublishPost,
     SendMessage,
     Comment,
@@ -24,6 +27,7 @@ impl ActionKind {
     pub fn as_str(self) -> &'static str {
         match self {
             ActionKind::SubmitApplication => "submit_application",
+            ActionKind::SubmitForm => "submit_form",
             ActionKind::PublishPost => "publish_post",
             ActionKind::SendMessage => "send_message",
             ActionKind::Comment => "comment",
@@ -37,6 +41,7 @@ impl ActionKind {
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "submit_application" => ActionKind::SubmitApplication,
+            "submit_form" => ActionKind::SubmitForm,
             "publish_post" => ActionKind::PublishPost,
             "send_message" => ActionKind::SendMessage,
             "comment" => ActionKind::Comment,
@@ -51,6 +56,7 @@ impl ActionKind {
     pub fn all() -> &'static [ActionKind] {
         &[
             ActionKind::SubmitApplication,
+            ActionKind::SubmitForm,
             ActionKind::PublishPost,
             ActionKind::SendMessage,
             ActionKind::Comment,
@@ -80,12 +86,13 @@ impl ActionKind {
     }
 
     /// The per-kind daily cap in spec 10.1.1 [est]; `submit_application`
-    /// uses the site cap, so it has no per-kind cap of its own.
+    /// and `submit_form` use the site cap, so they have no per-kind cap.
     pub fn daily_cap(self) -> Option<i32> {
         match self {
             ActionKind::PublishPost => Some(3),
             ActionKind::Comment | ActionKind::Follow | ActionKind::SendMessage => Some(10),
             ActionKind::SubmitApplication
+            | ActionKind::SubmitForm
             | ActionKind::Delete
             | ActionKind::Pay
             | ActionKind::ChangeAccount => None,
@@ -620,6 +627,14 @@ mod tests {
         for &rule in &[ApprovalRule::Auto, ApprovalRule::Ask, ApprovalRule::Never] {
             assert_eq!(ApprovalRule::parse(rule.as_str()), Some(rule));
         }
+    }
+
+    #[test]
+    fn a_general_form_send_is_its_own_kind_under_the_site_cap() {
+        assert_eq!(ActionKind::parse("submit_form"), Some(ActionKind::SubmitForm));
+        assert!(ActionKind::all().contains(&ActionKind::SubmitForm));
+        assert!(!ActionKind::SubmitForm.always_ask());
+        assert_eq!(ActionKind::SubmitForm.daily_cap(), None);
     }
 
     /// The docs table is generated from the enums; this pins that every code
