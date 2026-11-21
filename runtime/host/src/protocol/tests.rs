@@ -4715,6 +4715,34 @@ async fn host_feed_snapshot_carries_keep_awake() {
 }
 
 #[tokio::test]
+async fn host_feed_snapshot_frame_carries_the_whole_snapshot() {
+    // A field the snapshot has but the socket frame drops never reaches a
+    // client: a run active before the client connected must be in it.
+    let h = host(true).await;
+    let conn = h.state.db.conn.clone();
+    let pb = crate::automation::PlaybookStore::new(conn.clone())
+        .create("Apply", "goal")
+        .await
+        .unwrap();
+    crate::automation::AutomationEngine::new(conn)
+        .start_run(pb.id, pb.version, crate::automation::RunTrigger::Mac, None)
+        .await
+        .unwrap();
+    let (_ws, snapshot) = h.feed().await;
+    for key in [
+        "conflicts",
+        "clones",
+        "resolving",
+        "downloads",
+        "approvals",
+        "runs",
+    ] {
+        assert!(snapshot.get(key).is_some(), "{key} missing: {snapshot}");
+    }
+    assert_eq!(snapshot["runs"].as_array().map(Vec::len), Some(1), "{snapshot}");
+}
+
+#[tokio::test]
 async fn host_feed_invalid_subscribe_and_resubscribe() {
     let h = host(true).await;
     let mut ws = h.ws().await;
