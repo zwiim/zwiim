@@ -110,6 +110,15 @@ impl RunLoop {
     /// At Host start no engine session is alive: every item left `working`
     /// takes the restart path (spec 6.6.6, 12.6). How many did.
     pub async fn recover(&self) -> Result<usize, DbError> {
+        // Tabs do not survive the Host: no item names one any more.
+        playbook_item::Entity::update_many()
+            .col_expr(
+                playbook_item::Column::TabId,
+                sea_orm::sea_query::Expr::value(Option::<String>::None),
+            )
+            .filter(playbook_item::Column::TabId.is_not_null())
+            .exec(&self.db)
+            .await?;
         let working = playbook_item::Entity::find()
             .filter(playbook_item::Column::Status.eq(ItemStatus::Working.as_str()))
             .all(&self.db)
@@ -327,6 +336,7 @@ impl RunLoop {
         let (outcome, tab) = match self.open_item_page(&lane, &item).await? {
             Err(reason) => (ItemOutcome::Failed(reason), None),
             Ok(tab) => {
+                self.set_item_tab(item.id, Some(&tab)).await?;
                 let end = run_session(
                     self.launcher.as_ref(),
                     &self.sessions,
@@ -356,7 +366,7 @@ impl RunLoop {
                 )
                 .await;
                 if let SessionEnd::LaunchFailed(e) = &end {
-                    self.tabs.close(&tab).await;
+                    self.close_item_tab(item.id, &tab).await;
                     return self.agent_unavailable(&run, &item_ref, item.id, e).await;
                 }
                 // Tips are proposals for the person, whatever the item's end
@@ -376,7 +386,7 @@ impl RunLoop {
                     ..
                 })) = &end
                 {
-                    self.tabs.close(&tab).await;
+                    self.close_item_tab(item.id, &tab).await;
                     return self.hand_off(&doc, &item, epoch, url).await;
                 }
                 let outcome = match outcome_of(end) {
@@ -449,7 +459,7 @@ impl RunLoop {
                 }
                 _ => Ok(()),
             };
-            self.tabs.close(&tab).await;
+            self.close_item_tab(item.id, &tab).await;
             sent?;
         }
         let result = match result {
@@ -541,7 +551,7 @@ impl RunLoop {
                 false => None,
             };
             let Some(declaration) = approved else {
-                self.tabs.close(&tab).await;
+                self.close_item_tab(item.id, &tab).await;
                 continue;
             };
             let this = self.clone();
@@ -559,7 +569,7 @@ impl RunLoop {
                         .await
                 }
                 .await;
-                this.tabs.close(&tab).await;
+                this.close_item_tab(item.id, &tab).await;
                 if let Err(e) = sent {
                     tracing::warn!("[automation] item {} approved send failed: {e}", item.id);
                 }
@@ -662,6 +672,27 @@ impl RunLoop {
             self.engine.notify();
         }
         Ok(())
+    }
+
+    /// Record the tab `item` works in or is parked on, for clients to show.
+    async fn set_item_tab(&self, item: i32, tab: Option<&str>) -> Result<(), DbError> {
+        playbook_item::Entity::update_many()
+            .col_expr(
+                playbook_item::Column::TabId,
+                sea_orm::sea_query::Expr::value(tab.map(str::to_string)),
+            )
+            .filter(playbook_item::Column::Id.eq(item))
+            .exec(&self.db)
+            .await?;
+        Ok(())
+    }
+
+    /// Close an item's tab; the item names no tab after it.
+    async fn close_item_tab(&self, item: i32, tab: &str) {
+        self.tabs.close(tab).await;
+        if let Err(e) = self.set_item_tab(item, None).await {
+            tracing::warn!("[automation] item {item} tab not cleared: {e}");
+        }
     }
 
     /// The item's tab, on the item's page (spec 6.3.4): a page that is not
@@ -1177,6 +1208,18 @@ mod tests {
             .collect()
     }
 
+    async fn tabs(db: &DatabaseConnection, run_id: i32) -> Vec<Option<String>> {
+        playbook_item::Entity::find()
+            .filter(playbook_item::Column::RunId.eq(run_id))
+            .order_by_asc(playbook_item::Column::Id)
+            .all(db)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|i| i.tab_id)
+            .collect()
+    }
+
     fn item_prompts(launcher: &FakeLauncher) -> Vec<(SessionKind, String, Option<EngineScope>)> {
         launcher
             .prompted
@@ -1371,6 +1414,63 @@ mod tests {
         let (_, prompt, _) = &item_prompts(&f.launcher)[0];
         assert!(prompt.contains("playbook_declare_action"), "{prompt}");
         assert!(prompt.contains("Never click"), "{prompt}");
+    }
+
+    /// A parked item shows the tab it keeps; an item that ended shows none.
+    #[tokio::test]
+    async fn a_parked_item_shows_its_tab_and_an_ended_one_none() {
+        let f = fixture(vec![
+            declared(),
+            result(json!({ "status": "skipped", "rule": "r" })),
+            result(json!({ "status": "failed", "note": "no apply button" })),
+        ])
+        .await;
+        *f.tabs.scope.lock().unwrap() = Some(crate::automation::scope::Scope {
+            in_form: true,
+            controls: Vec::new(),
+        });
+        drive(&f.run_loop).await;
+        assert_eq!(
+            tabs(&f.db, f.run_id).await,
+            vec![Some("tab-1".to_string()), None, None]
+        );
+    }
+
+    /// Tabs do not survive the Host: after a restart no item names one.
+    #[tokio::test]
+    async fn a_restart_leaves_no_item_naming_a_tab() {
+        let f = fixture(vec![declared(), declared(), declared()]).await;
+        *f.tabs.scope.lock().unwrap() = Some(crate::automation::scope::Scope {
+            in_form: true,
+            controls: Vec::new(),
+        });
+        drive(&f.run_loop).await;
+        assert!(tabs(&f.db, f.run_id).await.iter().all(Option::is_some));
+        let restarted = RunLoop::new(
+            f.db.clone(),
+            None,
+            f.launcher.clone(),
+            Arc::new(EngineSessions::default()),
+            f.tabs.clone(),
+        );
+        restarted.recover().await.unwrap();
+        assert_eq!(tabs(&f.db, f.run_id).await, vec![None, None, None]);
+    }
+
+    /// A handed-off item names the tab on its new site, not the closed one.
+    #[tokio::test]
+    async fn a_handed_off_item_shows_its_new_tab() {
+        let f = cross_site_fixture(vec![
+            result(json!({ "status": "hand_off", "url": "https://apply.test/form/9" })),
+            declared(),
+        ])
+        .await;
+        *f.tabs.scope.lock().unwrap() = Some(crate::automation::scope::Scope {
+            in_form: true,
+            controls: Vec::new(),
+        });
+        drive(&f.run_loop).await;
+        assert_eq!(tabs(&f.db, f.run_id).await, vec![Some("tab-2".to_string())]);
     }
 
     /// The person approves the first send; the Host clicks it once on the

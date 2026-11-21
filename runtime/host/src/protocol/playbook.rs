@@ -129,6 +129,8 @@ pub struct ItemSummary {
     /// The question the item waits on the person for (`run.answer`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question: Option<String>,
+    /// The browser tab it works in or is parked on, for a client to show.
+    pub tab_id: Option<String>,
 }
 
 impl From<playbook_item::Model> for ItemSummary {
@@ -144,6 +146,7 @@ impl From<playbook_item::Model> for ItemSummary {
             reason_code: m.reason_code,
             updated_at: m.updated_at,
             question: None,
+            tab_id: m.tab_id,
         }
     }
 }
@@ -1003,10 +1006,12 @@ mod tests {
             cap_site: None,
             cap_kind: None,
             cap_day: None,
+            tab_id: Some("tab-4".into()),
             created_at: now,
             updated_at: now,
         };
         let summary: ItemSummary = model.into();
+        assert_eq!(summary.tab_id.as_deref(), Some("tab-4"));
         assert_eq!(summary.key, "job-1");
         assert_eq!(summary.item_id, "item-3");
         assert_eq!(summary.status, "done");

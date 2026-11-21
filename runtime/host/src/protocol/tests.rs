@@ -8385,6 +8385,61 @@ async fn a_running_run_counts_its_items_live() {
 }
 
 #[tokio::test]
+async fn items_carry_their_tab_site_url_and_question() {
+    use crate::automation::entities::playbook_item;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    let h = host(false).await;
+    let pb = seed_playbook(&h).await;
+    let (_, body) = h
+        .call("run.start", json!({ "playbook_id": pb.public_id }))
+        .await;
+    let run_id = body["run_id"].as_str().unwrap().to_string();
+    let run = run_row_id(&h, &run_id).await;
+    let item = seed_item(&h, pb.id, run, "job-1", "waiting_person").await;
+    playbook_item::Entity::update_many()
+        .col_expr(
+            playbook_item::Column::TabId,
+            sea_orm::sea_query::Expr::value("tab-7"),
+        )
+        .col_expr(
+            playbook_item::Column::Url,
+            sea_orm::sea_query::Expr::value("http://jobs.localhost/jobs/a"),
+        )
+        .filter(playbook_item::Column::PublicId.eq(item.as_str()))
+        .exec(&h.state.db.conn)
+        .await
+        .unwrap();
+    let row = playbook_item::Entity::find()
+        .filter(playbook_item::Column::PublicId.eq(item.as_str()))
+        .one(&h.state.db.conn)
+        .await
+        .unwrap()
+        .unwrap();
+    crate::automation::knowledge::ask(
+        &h.state.db.conn,
+        pb.id,
+        "jobs.localhost",
+        row.id,
+        "Expected salary?",
+    )
+    .await
+    .unwrap();
+
+    let (_, page) = h.call("run.items", json!({ "run_id": run_id })).await;
+    assert_eq!(page["items"][0]["tab_id"], "tab-7");
+
+    // The feed's item view, which `run.item_changed` carries.
+    let (_, items) = crate::automation::run_views::read(&h.state.db.conn, &[run])
+        .await
+        .unwrap();
+    let view = serde_json::to_value(&items[0]).unwrap();
+    assert_eq!(view["site"], "jobs.localhost");
+    assert_eq!(view["url"], "http://jobs.localhost/jobs/a");
+    assert_eq!(view["question"], "Expected salary?");
+    assert_eq!(view["tab_id"], "tab-7");
+}
+
+#[tokio::test]
 async fn a_failed_run_says_why() {
     use crate::automation::entities::playbook_run;
     use sea_orm::{ActiveModelTrait, EntityTrait, Set};
