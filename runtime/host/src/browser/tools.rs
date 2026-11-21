@@ -976,6 +976,32 @@ async fn read_page(
     Err("the page kept changing while it was read; try again".into())
 }
 
+/// The Host's own read of a tab, never an agent's: a whole snapshot in
+/// `worlds`, then `call(generation)` evaluated in that same world. Its
+/// value is the expression's string.
+pub(crate) async fn read_after_snapshot(
+    browser: &BrowserService,
+    worlds: &Worlds,
+    tab_id: &str,
+    call: impl Fn(&str) -> String,
+) -> Result<String, String> {
+    let request = SnapshotRequest { max_chars: Some(0) };
+    let page = read_page(browser, worlds, tab_id, &request).await?;
+    let context = worlds
+        .current(tab_id)
+        .await
+        .ok_or("the page changed while it was read; try again")?;
+    let (cdp, session) = browser.session(tab_id).await.map_err(|e| e.message)?;
+    match eval_in(&cdp, &session, context, &call(&page.generation)).await {
+        Ok(raw) => Ok(raw),
+        Err(WorldError::Gone) => {
+            worlds.forget(tab_id, context).await;
+            Err("the page changed while it was read; try again".into())
+        }
+        Err(WorldError::Failed(m)) => Err(m),
+    }
+}
+
 pub(crate) async fn act(
     browser: &BrowserService,
     worlds: &Worlds,

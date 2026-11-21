@@ -633,6 +633,7 @@ pub fn spawn(state: Arc<crate::app_state::AppState>) {
         state.engine_sessions.clone(),
         Arc::new(crate::automation::discovery::BrowserLaneTabs {
             state: state.clone(),
+            worlds: Default::default(),
         }),
     );
     let mut changes = state.playbook_changes.subscribe();
