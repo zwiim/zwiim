@@ -222,6 +222,8 @@ async fn an_auto_declaration_allows_dispatch_and_checks_decide_done() {
     let (id, mut item) = working_item(&runner, run).await;
     item.rules
         .insert(ActionKind::SubmitApplication, ApprovalRule::Auto);
+    // Auto starts after the kind's first approved send on the site.
+    item.show_me_run_kinds.insert(ActionKind::SubmitApplication);
 
     let result = runner
         .finish_session(id, &item, ItemOutcome::ReadyToDispatch(declaration()))
@@ -288,6 +290,8 @@ async fn a_pre_submit_mismatch_restarts_the_item() {
     let (id, mut item) = working_item(&runner, run).await;
     item.rules
         .insert(ActionKind::SubmitApplication, ApprovalRule::Auto);
+    // Auto starts after the kind's first approved send on the site.
+    item.show_me_run_kinds.insert(ActionKind::SubmitApplication);
     // A declaration promises a name the page does not show.
     let mut decl = declaration();
     decl.fields.push(DeclaredField {
@@ -730,6 +734,10 @@ async fn a_stale_attempt_cannot_declare_or_end_the_item() {
     zombie
         .rules
         .insert(ActionKind::SubmitApplication, ApprovalRule::Auto);
+    // Auto starts after the kind's first approved send on the site.
+    zombie
+        .show_me_run_kinds
+        .insert(ActionKind::SubmitApplication);
     let declared = runner
         .finish_session(id, &zombie, ItemOutcome::ReadyToDispatch(declaration()))
         .await;
@@ -765,6 +773,10 @@ async fn a_stale_attempt_cannot_declare_or_end_the_item() {
     current
         .rules
         .insert(ActionKind::SubmitApplication, ApprovalRule::Auto);
+    // Auto starts after the kind's first approved send on the site.
+    current
+        .show_me_run_kinds
+        .insert(ActionKind::SubmitApplication);
     let ok = runner
         .finish_session(id, &current, ItemOutcome::ReadyToDispatch(declaration()))
         .await

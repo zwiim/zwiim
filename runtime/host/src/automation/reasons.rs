@@ -76,15 +76,6 @@ impl ActionKind {
         )
     }
 
-    /// Kinds that may be set to auto only after a completed show-me run with
-    /// that kind on that site (spec 8.1.3).
-    pub fn auto_needs_show_me_run(self) -> bool {
-        matches!(
-            self,
-            ActionKind::Comment | ActionKind::SendMessage | ActionKind::PublishPost
-        )
-    }
-
     /// The per-kind daily cap in spec 10.1.1 [est]; `submit_application`
     /// and `submit_form` use the site cap, so they have no per-kind cap.
     pub fn daily_cap(self) -> Option<i32> {
@@ -631,7 +622,10 @@ mod tests {
 
     #[test]
     fn a_general_form_send_is_its_own_kind_under_the_site_cap() {
-        assert_eq!(ActionKind::parse("submit_form"), Some(ActionKind::SubmitForm));
+        assert_eq!(
+            ActionKind::parse("submit_form"),
+            Some(ActionKind::SubmitForm)
+        );
         assert!(ActionKind::all().contains(&ActionKind::SubmitForm));
         assert!(!ActionKind::SubmitForm.always_ask());
         assert_eq!(ActionKind::SubmitForm.daily_cap(), None);
