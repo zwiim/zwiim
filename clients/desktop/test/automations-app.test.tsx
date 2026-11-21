@@ -94,12 +94,12 @@ describe("Automations in the sidebar", () => {
 
     fireEvent.click(row);
     await tick();
-    expect(screen.getByTestId("automations-view")).toBeTruthy();
+    expect(screen.getByTestId("automations-header")).toBeTruthy();
     expect(row.getAttribute("aria-current")).toBe("true");
 
     fireEvent.click(document.querySelector('[data-row="w1"]')!);
     await tick();
-    expect(screen.queryByTestId("automations-view")).toBeNull();
+    expect(screen.queryByTestId("automations-header")).toBeNull();
     expect(row.getAttribute("aria-current")).toBeNull();
     c.dispose();
   });

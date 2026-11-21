@@ -66,6 +66,7 @@ import { Welcome } from "@/panels/Account";
 import { cn } from "@/lib/utils";
 import { ConnectionStatus, type RemoteLink } from "@/panels/ConnectionStatus";
 import { AutomationsRow } from "@/panels/automations/AutomationsRow";
+import { AutomationsView } from "@/panels/automations/AutomationsView";
 import { ControlCenter } from "@/panels/ControlCenter";
 import { BrowserPanel } from "@/panels/BrowserPanel";
 import { DiffPanel, DiffView, type DiffCount } from "@/panels/DiffPanel";
@@ -572,7 +573,7 @@ export function Workbench({
       {pane === "automations" && (
         <main className="flex min-w-0 flex-1 flex-col">
           <OfflineBanner />
-          <div data-testid="automations-view" />
+          <AutomationsView />
         </main>
       )}
       {/* Hidden, not unmounted, behind the canvas: open files keep typing not yet saved. */}
