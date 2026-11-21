@@ -258,11 +258,11 @@ pub async fn playbook_save(
     axum::extract::Json(p): axum::extract::Json<PlaybookSaveParams>,
 ) -> ZResult<PlaybookSaveResult> {
     require_enabled(&state.db.conn).await?;
-    validated(&p.source)?;
+    let doc = validated(&p.source)?;
     let book = playbook_row(&state, &p.playbook_id).await?;
     let store = PlaybookStore::new(state.db.conn.clone());
     let saved = store
-        .save_source(book.id, &p.source)
+        .save_source(book.id, &doc.name, &p.source)
         .await
         .map_err(engine_err)?;
     use sea_orm::EntityTrait;

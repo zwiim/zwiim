@@ -279,7 +279,7 @@ async fn a_run_pins_the_text_it_started_on() {
     let (_engine, store) = engine_db().await;
     let pb = store.create("Apply", "v1 text").await.expect("create");
     let edited = store
-        .save_source(pb.id, "v2 text")
+        .save_source(pb.id, "Apply", "v2 text")
         .await
         .expect("save new version");
     assert_eq!(pb.version, 1);

@@ -8209,6 +8209,26 @@ async fn a_playbook_lists_reads_and_saves_with_a_new_version() {
 }
 
 #[tokio::test]
+async fn saving_a_playbook_takes_its_new_name() {
+    let h = host(false).await;
+    let pb = seed_playbook(&h).await;
+    let id = pb.public_id.clone();
+    let source = crate::automation::playbook_format::EXAMPLE_PLAYBOOK
+        .replace("name: Apply to fixture jobs", "name: Renamed jobs");
+
+    let (status, body) = h
+        .call(
+            "playbook.save",
+            json!({ "playbook_id": id, "source": source }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["playbook"]["name"], "Renamed jobs");
+    let (_, body) = h.call("playbook.get", json!({ "playbook_id": id })).await;
+    assert_eq!(body["playbook"]["name"], "Renamed jobs");
+}
+
+#[tokio::test]
 async fn a_run_starts_from_the_mac_only_and_answers_run_active() {
     let h = host(false).await;
     let pb = seed_playbook(&h).await;
