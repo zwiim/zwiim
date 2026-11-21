@@ -55,6 +55,7 @@ function transport(approvals: PendingApproval[] = [approval()]) {
   t.handlers["run.approve"] = (p) => ({ approval_id: p.approval_id, state: "approved" });
   t.handlers["run.reject"] = (p) => ({ approval_id: p.approval_id, state: "rejected" });
   t.handlers["run.answer"] = (p) => ({ item_id: p.item_id, requeued: true });
+  t.handlers["run.resolve"] = (p) => ({ item_id: p.item_id, status: p.choice === "sent" ? "done" : "queued" });
   return t;
 }
 
@@ -137,10 +138,36 @@ describe("focus panel", () => {
     c.dispose();
   });
 
-  it("waiting without a question explains, with nothing to answer", async () => {
-    const c = await mount(transport([]), item({ status: "waiting_person", reason_code: "check_failed", tab_id: null }));
+  it("a send that may have gone out asks whether it did", async () => {
+    const t = transport([]);
+    const c = await mount(
+      t,
+      item({ status: "waiting_person", reason_code: "check_failed", tab_id: null, may_have_sent: true }),
+    );
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.getByTestId("focus-panel").textContent).toContain("It could not confirm the send went through.");
+    expect(screen.getByRole("button", { name: "Not sent, redo" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Skip" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "It was sent" }));
+    await tick();
+    expect(t.calls.filter((x) => x.op === "run.resolve").map((x) => x.params)).toEqual([
+      { item_id: "i1", choice: "sent" },
+    ]);
+    c.dispose();
+  });
+
+  it("a page that needed the person tries again or skips", async () => {
+    const t = transport([]);
+    const c = await mount(t, item({ status: "waiting_person", reason_code: "page_needs_person", may_have_sent: false }));
+    expect(screen.queryByRole("button", { name: "It was sent" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await tick();
+    fireEvent.click(screen.getByRole("button", { name: "Skip" }));
+    await tick();
+    expect(t.calls.filter((x) => x.op === "run.resolve").map((x) => x.params)).toEqual([
+      { item_id: "i1", choice: "not_sent" },
+      { item_id: "i1", choice: "skip" },
+    ]);
     c.dispose();
   });
 

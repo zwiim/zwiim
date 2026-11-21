@@ -102,7 +102,38 @@ export function FocusPanel({ playbookName, item }: { playbookName: string; item:
           </div>
         </div>
       ) : item.status === "waiting_person" && !item.question ? (
-        <p className="text-ui">{needsYouText(item.reason_code)}</p>
+        <div className="flex flex-col gap-3">
+          <p className="text-ui">{needsYouText(item.reason_code)}</p>
+          {/* A send that may have gone out is the person's call; never a silent redo. */}
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={busy}
+              onClick={() => void act(() => controller.resolve(item.item_id, "skip"))}
+            >
+              Skip
+            </Button>
+            <Button
+              variant={item.may_have_sent ? "secondary" : "brand"}
+              size="sm"
+              disabled={busy}
+              onClick={() => void act(() => controller.resolve(item.item_id, "not_sent"))}
+            >
+              {item.may_have_sent ? "Not sent, redo" : "Try again"}
+            </Button>
+            {item.may_have_sent && (
+              <Button
+                variant="brand"
+                size="sm"
+                disabled={busy}
+                onClick={() => void act(() => controller.resolve(item.item_id, "sent"))}
+              >
+                It was sent
+              </Button>
+            )}
+          </div>
+        </div>
       ) : item.status === "waiting_person" ? (
         <form
           className="flex flex-col gap-3"

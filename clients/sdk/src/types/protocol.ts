@@ -2210,10 +2210,10 @@ export interface RunAlert {
   created_at: string;
 }
 
-/** An item as `run.item_changed` carries it. */
 /** How the person settles an item waiting on them (`run.resolve`). */
 export type RunResolveChoice = "sent" | "not_sent" | "skip";
 
+/** An item as `run.item_changed` carries it. */
 export interface RunItemView {
   run_id: string;
   item_id: string;
