@@ -3,12 +3,15 @@
 // real Claude Code engine sessions, and the local fixture site. Manual only:
 // it needs the person's Claude Code login (CI runs the fixture tests, task 18).
 //
-//   node scripts/automation/smoke.mjs [--minutes 20] [--no-build]
+//   node scripts/automation/smoke.mjs [--minutes 20] [--no-build] [--search]
+//
+// `--search` finds the jobs with a discovery session on the board's list
+// page instead of a typed list.
 //
 // State lives in `~/Library/Caches/zwiim-smoke/`, outside any repository as a real
 // install's data folder is (inside one, the agent would read the repo's
 // memory and Git state). Each run wipes it except the downloaded browser and
-// keeps it afterwards for reading: `host.log`, `fixture.log`,
+// agent adapters, and keeps it afterwards for reading: `host.log`, `fixture.log`,
 // `data/engine.log`, `report.json`.
 import { spawn, execFileSync } from "node:child_process";
 import { createServer } from "node:net";
@@ -45,10 +48,13 @@ function freePort() {
   });
 }
 
+// Kept between runs: the downloaded browser and the agent adapters.
+const KEEP = new Set(["browser", "adapters"]);
+
 function fresh() {
   mkdirSync(data, { recursive: true });
   for (const name of readdirSync(data)) {
-    if (name !== "browser") rmSync(join(data, name), { recursive: true, force: true });
+    if (!KEEP.has(name)) rmSync(join(data, name), { recursive: true, force: true });
   }
   for (const name of ["host.log", "fixture.log", "report.json"]) {
     rmSync(join(smoke, name), { force: true });
@@ -104,6 +110,17 @@ function client(port, token) {
   };
 }
 
+const sources = (fx) =>
+  args.includes("--search")
+    ? `  - type: search
+    url: http://jobs.localhost:${fx}/jobs`
+    : `  - type: list
+    items:
+      - http://jobs.localhost:${fx}/jobs/a
+      - http://jobs.localhost:${fx}/jobs/b
+      - http://jobs.localhost:${fx}/jobs/c
+      - http://jobs.localhost:${fx}/jobs/d`;
+
 const playbook = (fx) => `format: 1
 name: Smoke apply to fixture jobs
 goal: Apply to remote engineering roles on the local fixture job board
@@ -113,12 +130,7 @@ sites:
   - jobs.localhost
   - apply.localhost
 sources:
-  - type: list
-    items:
-      - http://jobs.localhost:${fx}/jobs/a
-      - http://jobs.localhost:${fx}/jobs/b
-      - http://jobs.localhost:${fx}/jobs/c
-      - http://jobs.localhost:${fx}/jobs/d
+${sources(fx)}
 inputs:
   - type: fact
     name: full_name
@@ -168,6 +180,18 @@ async function main() {
     }
   }
   say(`host on ${port}`);
+
+  // The engine fails a run whose agent cannot start, so wait for the
+  // Host-managed adapter first (a fresh data folder installs it).
+  await call("agent.setup", { agent: "claude_code" }).catch((e) => say(e.message));
+  for (let i = 0; ; i++) {
+    const agents = await call("agent.list");
+    const claude = agents.find((a) => a.agent === "claude_code");
+    if (claude?.available) break;
+    if (i % 10 === 0) say(`waiting for Claude Code: ${claude?.reason ?? "not listed"}`);
+    if (i > 200) throw new Error("Claude Code did not become available");
+    await sleep(3000);
+  }
 
   await call("settings.update", { values: { "playbooks.enabled": true } });
   const { playbook: pb } = await call("playbook.create", { source: playbook(fx) });
